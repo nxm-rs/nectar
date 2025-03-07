@@ -25,7 +25,7 @@ thiserror.workspace = true
 once_cell.workspace = true
 
 # Trait helpers
-auto_impl.workspace = true
+# auto_impl.workspace = true
 dyn-clone.workspace = true
 
 [dev-dependencies]

@@ -11,7 +11,7 @@ pub mod proof;
 pub use constants::*;
 pub use error::{DigestError, Result};
 pub use hasher::{BMTHasher, BMTHasherFactory};
-pub use proof::{BMTProof, BmtProver, DigestFactory};
+pub use proof::{BMT_PROOF_LENGTH, BMTProof, BmtProver};
 
 #[cfg(test)]
 mod tests;

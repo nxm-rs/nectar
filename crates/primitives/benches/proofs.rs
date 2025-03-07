@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use digest::Digest;
 use nectar_primitives::{
     bmt::{BMTHasher, BmtProver},
     constants::*,
@@ -20,7 +21,8 @@ pub fn proofs(c: &mut Criterion) {
         .collect();
     let mut hasher = BMTHasher::new();
     hasher.set_span(data.len() as u64);
-    let root_hash = hasher.hash_to_b256(&data);
+    hasher.update(&data);
+    let root_hash = hasher.sum();
 
     // Sample indexes to benchmark proof generation
     let indexes = [0, 32, 64, 127];
@@ -87,7 +89,8 @@ pub fn proofs(c: &mut Criterion) {
             |b, _| {
                 let mut h = BMTHasher::new();
                 h.set_span(size as u64);
-                let partial_root = h.hash_to_b256(partial_data);
+                h.update(partial_data);
+                let partial_root = h.sum();
 
                 b.iter(|| {
                     let idx = rand::rng().random_range(0..size / SEGMENT_SIZE);

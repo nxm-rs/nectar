@@ -1,13 +1,12 @@
 //! Reference implementation of a Binary Merkle Tree hasher.
 
 use alloy_primitives::{B256, Keccak256, keccak256};
-use digest::{Digest, FixedOutput, FixedOutputReset, OutputSizeUser, Reset, Update};
+use digest::{FixedOutput, FixedOutputReset, OutputSizeUser, Reset, Update};
 use generic_array::{GenericArray, typenum::U32};
 use std::marker::PhantomData;
 
 use super::constants::*;
 use crate::chunk::ChunkAddress;
-use crate::constants::HASH_SIZE;
 use crate::error::Result;
 
 /// Reference implementation of a BMT hasher that uses Keccak256
@@ -51,18 +50,32 @@ impl BMTHasher {
         self.prefix = prefix.to_vec();
     }
 
-    /// Compute the BMT hash and return the chunk address
-    pub fn chunk_address(&mut self, data: &[u8]) -> Result<ChunkAddress> {
-        let hash_bytes = <BMTHasher as Digest>::digest(data);
-        ChunkAddress::from_slice(hash_bytes.as_slice()).map_err(|e| e.into())
+    /// Get the current prefix
+    pub fn prefix(&self) -> &[u8] {
+        &self.prefix
     }
 
-    /// Hash data using a binary merkle tree
-    ///
-    /// This function is optimized to efficiently hash data in parallel using
-    /// a Binary Merkle Tree with `BMT_BRANCHES` (128) branches.
+    /// Update the hasher with more data (non-destructive)
+    pub fn update_data(&mut self, data: &[u8]) {
+        self.pending_data.extend_from_slice(data);
+    }
+
+    /// Compute the BMT hash and return the chunk address (non-destructive)
+    pub fn chunk_address(&self, data: &[u8]) -> Result<ChunkAddress> {
+        // Create a clone to avoid modifying the original state
+        let mut cloned = self.clone();
+        cloned.update_data(data);
+
+        // Get hash as B256
+        let hash = cloned.sum();
+
+        // Create address from hash
+        ChunkAddress::from_slice(hash.as_slice()).map_err(|e| e.into())
+    }
+
+    /// Hash data using a binary merkle tree (internal implementation)
     #[inline(always)]
-    fn hash_internal(&self, data: &[u8]) -> [u8; HASH_SIZE] {
+    fn hash_internal(&self, data: &[u8]) -> B256 {
         // Create a buffer for hashing
         let mut buffer = vec![0u8; BMT_MAX_DATA_LENGTH];
 
@@ -75,13 +88,10 @@ impl BMTHasher {
     }
 
     /// Recursively hash segments in parallel using rayon
-    ///
-    /// This is the core BMT hashing algorithm that divides work between threads
-    /// for maximum parallelism.
     #[inline(always)]
-    fn hash_helper_parallel(&self, data: &[u8], length: usize) -> [u8; HASH_SIZE] {
+    fn hash_helper_parallel(&self, data: &[u8], length: usize) -> B256 {
         if length == SEGMENT_PAIR_LENGTH {
-            return *keccak256(data);
+            return B256::from_slice(keccak256(data).as_slice());
         }
 
         let half = length / 2;
@@ -94,17 +104,16 @@ impl BMTHasher {
         );
 
         // Combine the hashes
-        let mut pair = [0u8; 2 * HASH_SIZE];
-        pair[..HASH_SIZE].copy_from_slice(&left_hash);
-        pair[HASH_SIZE..].copy_from_slice(&right_hash);
+        let mut pair = Vec::with_capacity(2 * SEGMENT_SIZE);
+        pair.extend_from_slice(left_hash.as_slice());
+        pair.extend_from_slice(right_hash.as_slice());
 
-        *keccak256(&pair)
+        B256::from_slice(keccak256(&pair).as_slice())
     }
 
     /// Finalize with span and optional prefix
-    /// Returns a B256 directly
     #[inline(always)]
-    fn finalize_with_prefix(&self, intermediate_hash: [u8; HASH_SIZE]) -> B256 {
+    fn finalize_with_prefix(&self, intermediate_hash: B256) -> B256 {
         let mut hasher = Keccak256::new();
 
         // Add prefix if present
@@ -116,56 +125,86 @@ impl BMTHasher {
         hasher.update(self.span.to_le_bytes());
 
         // Add the intermediate hash
-        hasher.update(intermediate_hash);
+        hasher.update(intermediate_hash.as_slice());
 
-        // The keccak256 hasher returns a B256 directly
-        hasher.finalize()
+        // Convert to B256
+        B256::from_slice(hasher.finalize().as_slice())
     }
 
-    /// Get the hash as a B256 (preferred output format)
-    pub fn hash_to_b256(&mut self, data: &[u8]) -> B256 {
-        // Use trait implementation methods via fully qualified syntax
-        <Self as Update>::update(self, data);
+    /// Compute the current hash value as B256 (non-destructive)
+    /// This is similar to the Go sum() pattern
+    pub fn sum(&self) -> B256 {
         let hash = self.hash_internal(&self.pending_data);
-        let result = self.finalize_with_prefix(hash);
-        <Self as Reset>::reset(self);
+        self.finalize_with_prefix(hash)
+    }
+
+    /// Finalize the hash computation and reset the hasher (destructive)
+    /// Resets all data except the prefix; span is set to zero.
+    /// Returns the hash as B256
+    pub fn finalize(&mut self) -> B256 {
+        let result = self.sum();
+        self.reset_internal();
         result
+    }
+
+    /// Reset the hasher's internal state
+    fn reset_internal(&mut self) {
+        self.pending_data.clear();
+        self.span = 0;
+        // Don't reset prefix, as it's considered a configuration parameter
+    }
+
+    /// Get segments for the current level of data
+    pub fn get_level_segments(&self, data: &[u8]) -> Vec<B256> {
+        let mut segments = Vec::with_capacity(BMT_BRANCHES);
+        let data_len = data.len();
+
+        for i in 0..BMT_BRANCHES {
+            let start = i * SEGMENT_SIZE;
+            let mut segment = [0u8; SEGMENT_SIZE];
+
+            if start < data_len {
+                let end = (start + SEGMENT_SIZE).min(data_len);
+                let copy_len = end - start;
+                segment[..copy_len].copy_from_slice(&data[start..end]);
+            }
+
+            segments.push(B256::from_slice(&segment));
+        }
+
+        segments
     }
 }
 
+// Implement the Digest trait methods to match the standard patterns
 impl OutputSizeUser for BMTHasher {
     type OutputSize = U32; // 32-byte output size
 }
 
 impl Update for BMTHasher {
     fn update(&mut self, data: &[u8]) {
-        self.pending_data.extend_from_slice(data);
+        self.update_data(data);
     }
 }
 
 impl Reset for BMTHasher {
     fn reset(&mut self) {
-        self.pending_data.clear();
-        self.span = 0; // Reset span to 0
-        // Prefix is preserved intentionally
+        // Reset only clears the data and span, not prefix
+        self.reset_internal();
     }
 }
 
 impl FixedOutput for BMTHasher {
     fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
-        let hash = self.hash_internal(&self.pending_data);
-        let final_hash = self.finalize_with_prefix(hash);
-        out.copy_from_slice(final_hash.as_slice());
+        let b256 = self.sum();
+        out.copy_from_slice(b256.as_slice());
     }
 }
 
 impl FixedOutputReset for BMTHasher {
     fn finalize_into_reset(&mut self, out: &mut GenericArray<u8, Self::OutputSize>) {
-        let hash = self.hash_internal(&self.pending_data);
-        let final_hash = self.finalize_with_prefix(hash);
-        out.copy_from_slice(final_hash.as_slice());
-        // Call the Reset trait method using fully qualified syntax to avoid ambiguity
-        <Self as Reset>::reset(self);
+        let b256 = self.finalize();
+        out.copy_from_slice(b256.as_slice());
     }
 }
 

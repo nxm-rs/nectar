@@ -1,3 +1,4 @@
+// nectar/crates/primitives/benches/primitives.rs
 #![allow(missing_docs)]
 use alloy_primitives::keccak256;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
@@ -24,7 +25,8 @@ pub fn primitives(c: &mut Criterion) {
         b.iter(|| {
             let mut hasher = BMTHasher::new();
             hasher.set_span(random_chunk.len() as u64);
-            black_box(hasher.hash_to_b256(&random_chunk));
+            hasher.update(&random_chunk);
+            black_box(hasher.sum());
         })
     });
 
@@ -36,7 +38,8 @@ pub fn primitives(c: &mut Criterion) {
             b.iter(|| {
                 let mut hasher = BMTHasher::new();
                 hasher.set_span(size as u64);
-                black_box(hasher.hash_to_b256(&data));
+                hasher.update(&data);
+                black_box(hasher.sum());
             });
         });
     }
