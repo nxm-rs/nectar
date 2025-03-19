@@ -1,0 +1,454 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>BMT Hasher Demo</title>
+        <link rel="stylesheet" href="/styles.css" integrity="sha384-ncqn6S9kKkCkJlz4yws3sViqt16EMzyJaH0DCZEQ19No4NdZVzeedKbzzq8pfCIC"/>
+        
+<script type="module">
+import init, * as bindings from '/bmt-wasm-demo.js';
+const wasm = await init({ module_or_path: '/bmt-wasm-demo_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+    <link rel="modulepreload" href="/bmt-wasm-demo.js" crossorigin="anonymous" integrity="sha384-RxqFs69dCnoXOjNVLekSqfGVsWhjqICKX2Wkq8BZVol+Cpj3LPnjCDggG3vZ5Xo4"><link rel="preload" href="/bmt-wasm-demo_bg.wasm" crossorigin="anonymous" integrity="sha384-/80a9UtKlaKEC6iucagZb6pHRRp9IZDmdK/ANqgriTrK/3Fp5YRXhjgcjJ0VK1Mu" as="fetch" type="application/wasm"></head>
+    <body>
+        <main>
+            <h1>Binary Merkle Tree Hasher</h1>
+            <p class="description">
+                This demo shows the BMT hashing functionality and icon
+                generation from the nectar-primitives crate.
+            </p>
+
+            <!-- Tab Navigation -->
+            <div class="tab-nav">
+                <button class="tab-button active" data-tab="bmt-hasher">
+                    BMT Hasher
+                </button>
+                <button class="tab-button" data-tab="icon-generator">
+                    Icon Generator
+                </button>
+                <button class="tab-button" data-tab="benchmarks">
+                    Performance Benchmarks
+                </button>
+            </div>
+
+            <!-- Tab Content -->
+            <div class="tab-content">
+                <!-- BMT Hasher Tab -->
+                <div id="bmt-hasher" class="tab-pane active">
+                    <div class="input-container">
+                        <textarea
+                            id="text-input"
+                            placeholder="Enter text to hash... (max 4096 bytes)"
+                            maxlength="4096"
+                        ></textarea>
+                        <div class="stats">
+                            <div>
+                                Text length:
+                                <span id="text-length">0</span> bytes (max 4096)
+                            </div>
+                            <div class="span-control">
+                                <label for="span-input">Span:</label>
+                                <input
+                                    type="number"
+                                    id="span-input"
+                                    min="0"
+                                    value="0"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="results">
+                        <div class="result-box">
+                            <h3>BMT Hash (Hex)</h3>
+                            <pre id="hash-result" class="hash-output">
+0x0000000000000000000000000000000000000000000000000000000000000000</pre
+                            >
+                            <button id="copy-button" class="copy">Copy</button>
+                        </div>
+
+                        <div class="visualizer">
+                            <h3>Hash Bytes Visualization</h3>
+                            <div id="byte-viz" class="byte-grid"></div>
+                        </div>
+                    </div>
+
+                    <!-- Icon Visualization Options (Collapsible) -->
+                    <details class="info-panel icon-config">
+                        <summary>Icon Visualization Options</summary>
+                        <div class="config-panel">
+                            <div class="config-row">
+                                <div class="config-group">
+                                    <label for="hasher-icon-generator"
+                                        >Icon Style:</label
+                                    >
+                                    <select id="hasher-icon-generator">
+                                        <option value="Geometric">
+                                            Geometric Patterns
+                                        </option>
+                                        <option value="Abstract">
+                                            Abstract Art
+                                        </option>
+                                        <option value="Circular">
+                                            Circular Icon
+                                        </option>
+                                        <option value="Pixelated">
+                                            Pixelated Grid
+                                        </option>
+                                        <option value="Molecular">
+                                            Molecular Structure
+                                        </option>
+                                    </select>
+                                </div>
+
+                                <div class="config-group">
+                                    <label for="hasher-icon-shape"
+                                        >Icon Shape:</label
+                                    >
+                                    <select id="hasher-icon-shape">
+                                        <option value="Square">Square</option>
+                                        <option value="Circle">Circle</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="config-group">
+                                <label>Color Scheme:</label>
+                                <div class="radio-options">
+                                    <div class="radio-option">
+                                        <input
+                                            type="radio"
+                                            id="hasher-color-vibrant"
+                                            name="hasher-color-scheme"
+                                            value="Vibrant"
+                                            checked
+                                        />
+                                        <label for="hasher-color-vibrant"
+                                            >Vibrant</label
+                                        >
+                                    </div>
+                                    <div class="radio-option">
+                                        <input
+                                            type="radio"
+                                            id="hasher-color-pastel"
+                                            name="hasher-color-scheme"
+                                            value="Pastel"
+                                        />
+                                        <label for="hasher-color-pastel"
+                                            >Pastel</label
+                                        >
+                                    </div>
+                                    <div class="radio-option">
+                                        <input
+                                            type="radio"
+                                            id="hasher-color-monochrome"
+                                            name="hasher-color-scheme"
+                                            value="Monochrome"
+                                        />
+                                        <label for="hasher-color-monochrome"
+                                            >Monochrome</label
+                                        >
+                                    </div>
+                                    <div class="radio-option">
+                                        <input
+                                            type="radio"
+                                            id="hasher-color-complementary"
+                                            name="hasher-color-scheme"
+                                            value="Complementary"
+                                        />
+                                        <label for="hasher-color-complementary"
+                                            >Complementary</label
+                                        >
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Icon Preview -->
+                        <div class="icon-preview-container">
+                            <div id="bmt-icon-preview"></div>
+                            <button id="download-bmt-icon" class="small-button">
+                                Download Icon
+                            </button>
+                        </div>
+                    </details>
+
+                    <details class="info-panel">
+                        <summary>About BMT Hasher</summary>
+                        <p>
+                            The Binary Merkle Tree (BMT) hasher is a specialized
+                            content-addressing function that allows efficient
+                            verification of data segments within a larger
+                            payload. It enables inclusion proofs without
+                            requiring all data to be available.
+                        </p>
+                        <p>
+                            This implementation is part of the nectar-primitives
+                            crate, compiled to WebAssembly for in-browser
+                            computation.
+                        </p>
+                        <p>
+                            <strong>Span</strong>: The span represents the total
+                            length of data (in bytes) this chunk belongs to. It
+                            can be different from the actual chunk size,
+                            especially when dealing with large datasets split
+                            across multiple chunks.
+                        </p>
+                    </details>
+                </div>
+
+                <!-- Icon Generator Tab -->
+                <div id="icon-generator" class="tab-pane">
+                    <div class="icon-generator-container">
+                        <div class="input-section">
+                            <h2>Chunk Configuration</h2>
+
+                            <div class="form-group">
+                                <label for="chunk-address"
+                                    >Chunk Address (32 bytes, hex):</label
+                                >
+                                <div class="input-with-button">
+                                    <input
+                                        type="text"
+                                        id="chunk-address"
+                                        placeholder="Enter or generate a 32-byte address (64 hex characters)"
+                                    />
+                                    <button
+                                        id="generate-random-address"
+                                        class="inline-button"
+                                    >
+                                        Generate
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group half">
+                                    <label for="chunk-type"
+                                        >Chunk Type (hex):</label
+                                    >
+                                    <input
+                                        type="text"
+                                        id="chunk-type"
+                                        placeholder="1-byte type (2 hex characters)"
+                                        value="01"
+                                    />
+                                </div>
+
+                                <div class="form-group half">
+                                    <label for="chunk-version"
+                                        >Version (hex):</label
+                                    >
+                                    <input
+                                        type="text"
+                                        id="chunk-version"
+                                        placeholder="1-byte version (2 hex characters)"
+                                        value="01"
+                                    />
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="header-data"
+                                    >Type-specific Header (hex):</label
+                                >
+                                <textarea
+                                    id="header-data"
+                                    rows="2"
+                                    placeholder="Enter optional type-specific header data in hex"
+                                ></textarea>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="payload-data"
+                                    >Payload Data (hex):</label
+                                >
+                                <textarea
+                                    id="payload-data"
+                                    rows="3"
+                                    placeholder="Enter optional payload data in hex"
+                                ></textarea>
+                            </div>
+
+                            <h2>Icon Options</h2>
+
+                            <div class="form-group">
+                                <label for="icon-generator"
+                                    >Icon Generator:</label
+                                >
+                                <select id="icon-generator">
+                                    <option value="Geometric">
+                                        Geometric Patterns
+                                    </option>
+                                    <option value="Abstract">
+                                        Abstract Art
+                                    </option>
+                                    <option value="Circular">
+                                        Circular Icon
+                                    </option>
+                                    <option value="Pixelated">
+                                        Pixelated Grid
+                                    </option>
+                                    <option value="Molecular">
+                                        Molecular Structure
+                                    </option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="icon-shape">Icon Shape:</label>
+                                <select id="icon-shape">
+                                    <option value="Square">Square</option>
+                                    <option value="Circle">Circle</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Color Scheme:</label>
+                                <div class="radio-options">
+                                    <div class="radio-option">
+                                        <input
+                                            type="radio"
+                                            id="color-vibrant"
+                                            name="color-scheme"
+                                            value="Vibrant"
+                                            checked
+                                        />
+                                        <label for="color-vibrant"
+                                            >Vibrant</label
+                                        >
+                                    </div>
+                                    <div class="radio-option">
+                                        <input
+                                            type="radio"
+                                            id="color-pastel"
+                                            name="color-scheme"
+                                            value="Pastel"
+                                        />
+                                        <label for="color-pastel">Pastel</label>
+                                    </div>
+                                    <div class="radio-option">
+                                        <input
+                                            type="radio"
+                                            id="color-monochrome"
+                                            name="color-scheme"
+                                            value="Monochrome"
+                                        />
+                                        <label for="color-monochrome"
+                                            >Monochrome</label
+                                        >
+                                    </div>
+                                    <div class="radio-option">
+                                        <input
+                                            type="radio"
+                                            id="color-complementary"
+                                            name="color-scheme"
+                                            value="Complementary"
+                                        />
+                                        <label for="color-complementary"
+                                            >Complementary</label
+                                        >
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button id="generate-icon" class="primary-button">
+                                Generate Icon
+                            </button>
+                        </div>
+
+                        <div class="output-section">
+                            <h2>Generated Icon</h2>
+                            <div class="icon-preview-container">
+                                <div id="icon-preview"></div>
+                            </div>
+
+                            <div class="icon-controls">
+                                <button id="copy-svg" class="control-button">
+                                    Copy SVG
+                                </button>
+                                <button
+                                    id="download-svg"
+                                    class="control-button"
+                                >
+                                    Download SVG
+                                </button>
+                            </div>
+
+                            <h3>SVG Code</h3>
+                            <pre id="svg-output" class="code-output"></pre>
+
+                            <h3>Example Icons</h3>
+                            <div id="example-icons" class="examples-grid"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Performance Benchmarks Tab -->
+                <div id="benchmarks" class="tab-pane">
+                    <h2>Performance Benchmark</h2>
+                    <p>
+                        Test the performance of the BMT hasher with different
+                        data sizes (max 4096 bytes).
+                    </p>
+
+                    <div class="benchmark-controls">
+                        <div class="benchmark-input">
+                            <label for="benchmark-size"
+                                >Data size (bytes):</label
+                            >
+                            <select id="benchmark-size">
+                                <option value="64">64 bytes</option>
+                                <option value="256">256 bytes</option>
+                                <option value="512">512 bytes</option>
+                                <option value="1024" selected>1 KB</option>
+                                <option value="2048">2 KB</option>
+                                <option value="4096">4 KB</option>
+                            </select>
+                        </div>
+
+                        <div class="benchmark-input">
+                            <label for="benchmark-iterations"
+                                >Iterations:</label
+                            >
+                            <input
+                                type="number"
+                                id="benchmark-iterations"
+                                min="1"
+                                max="1000"
+                                value="100"
+                            />
+                        </div>
+
+                        <button id="run-benchmark" class="benchmark-button">
+                            Run Benchmark
+                        </button>
+                    </div>
+
+                    <div id="benchmark-results" class="benchmark-results">
+                        <div id="result-placeholder">
+                            Benchmark results will appear here.
+                        </div>
+                        <div
+                            id="benchmark-output"
+                            class="benchmark-output"
+                        ></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <div id="library-info"></div>
+        </footer>
+
+        <script src="/app.js" integrity="sha384-SixEGzHHYJAT4i9G2zPxASzXwJX5SRExYCYCe51cerata6q1N5W/FiBLieyrJOwz" type="module"></script>
+    </body>
+</html>
