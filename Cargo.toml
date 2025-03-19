@@ -1,0 +1,69 @@
+[workspace]
+members = ["crates/*", "crates/**/examples/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Nectar Contributors"]
+license = "MIT"
+homepage = "https://nullisxyz.github.io/nectar"
+repository = "https://nullisxyz.github.io/nectar"
+exclude = ["benches/", "tests/"]
+
+[workspace.lints.rust]
+missing-debug-implementations = "warn"
+missing-docs = "warn"
+unreachable-pub = "warn"
+unused-must-use = "deny"
+rust-2018-idioms = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+missing-const-for-fn = "warn"
+use-self = "warn"
+option-if-let-else = "warn"
+redundant-clone = "warn"
+
+[workspace.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[workspace.metadata.rust-analyzer]
+check.all_targets = true
+
+[workspace.dependencies]
+# nectar crates
+nectar-primitives = { path = "crates/primitives" }
+
+# crypt & hashing
+alloy-primitives = { version = "0.8.22", default-features = false }
+digest = "0.10"
+generic-array = "0.14"
+
+# sync
+parking_lot = "0.12"
+
+# concurrency and parallelism
+rayon = { version = "1.10" }
+
+# Core dependencies
+bytes = { version = "1.9.0", default-features = false }
+thiserror = { version = "2.0", default-features = false }
+once_cell = { version = "1.19", default-features = false, features = ["critical-section"] }
+
+# Trait helpers
+auto_impl = "1"
+dyn-clone = "1"
+
+# For tests and examples
+rand = "0.9"
+criterion = { package = "codspeed-criterion-compat", version = "2.7" }
+hex = "0.4.3"
+tokio = { version = "1", default-features = false, features = ["full"] }
+
+# wasm
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+getrandom = { version = "0.2", features = ["js"] }

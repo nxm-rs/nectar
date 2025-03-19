@@ -1,0 +1,58 @@
+[package]
+name = "nectar-primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+## crypt
+alloy-primitives.workspace = true
+digest.workspace = true
+generic-array.workspace = true
+
+# Core dependencies
+bytes.workspace = true
+thiserror.workspace = true
+once_cell.workspace = true
+
+# Trait helpers
+dyn-clone.workspace = true
+
+# Synchronization
+parking_lot = "0.12"
+
+# Only for non-WASM targets - removed the optional flag so it's always included
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon.workspace = true
+
+# Only for WASM-specific targets
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+# For examples
+alloy-primitives.workspace = true
+# For benchmarks
+criterion.workspace = true
+tokio.workspace = true
+rand.workspace = true
+
+[[bench]]
+name = "primitives"
+harness = false
+
+[[bench]]
+name = "proofs"
+harness = false

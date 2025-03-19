@@ -1,0 +1,49 @@
+name: Deploy WASM Demo to GitHub Pages
+
+on:
+    push:
+        branches: [main]
+        paths:
+            - "nectar/crates/primitives/examples/wasm-demo/**"
+    workflow_dispatch: # Allow manual triggering
+
+env:
+    CARGO_TERM_COLOR: always
+
+jobs:
+    build-and-deploy:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v3
+
+            - name: Install Rust
+              uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  override: true
+                  target: wasm32-unknown-unknown
+
+            - name: Cache Rust dependencies
+              uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: "wasm-demo"
+
+            - name: Install Trunk
+              uses: jetli/trunk-action@v0.4.0
+              with:
+                  version: "latest"
+
+            - name: Build WASM Demo
+              run: |
+                  cd nectar/crates/primitives/examples/wasm-demo
+                  trunk build --release
+
+            - name: Deploy to GitHub Pages
+              uses: JamesIves/github-pages-deploy-action@v4
+              with:
+                  folder: nectar/crates/primitives/examples/wasm-demo/dist
+                  branch: gh-pages
+                  clean: true
