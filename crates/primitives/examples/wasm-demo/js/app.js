@@ -11,7 +11,7 @@ import init, {
     GeneratorFunction,
     ColorScheme,
     IconData,
-} from "../bmt-wasm-demo.js";
+} from "./bmt-wasm-demo.js";
 
 // Initialize the WASM module
 async function initWasm() {
