@@ -13,5 +13,8 @@ pub use error::{DigestError, Result};
 pub use hasher::{BMTHasher, BMTHasherFactory};
 pub use proof::{BMT_PROOF_LENGTH, BMTProof, BmtProver};
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 #[cfg(test)]
 mod tests;

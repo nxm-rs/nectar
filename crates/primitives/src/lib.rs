@@ -14,9 +14,13 @@ pub mod bmt;
 pub mod chunk;
 pub mod error;
 
+// WASM bindings - compiled only when targeting wasm32
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 // Re-exports of primary types
-pub use bmt::{error::DigestError, BMTHasher};
-pub use chunk::{error::ChunkError, ChunkAddress, ChunkType, CustomChunk};
+pub use bmt::{BMTHasher, error::DigestError};
+pub use chunk::{ChunkAddress, ChunkType, CustomChunk, error::ChunkError};
 pub use error::{Error, Result};
 
 /// Constants used throughout the crate

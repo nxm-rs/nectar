@@ -107,17 +107,41 @@ impl BmtProver for BMTHasher {
         let mut segments = Vec::with_capacity(BMT_BRANCHES);
         let data_len = data.len();
 
-        for i in 0..BMT_BRANCHES {
-            let start = i * SEGMENT_SIZE;
-            let mut segment = [0u8; SEGMENT_SIZE];
+        // Use platform-specific optimizations for segment generation
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use rayon::prelude::*;
+            segments = (0..BMT_BRANCHES)
+                .into_par_iter()
+                .map(|i| {
+                    let start = i * SEGMENT_SIZE;
+                    let mut segment = [0u8; SEGMENT_SIZE];
 
-            if start < data_len {
-                let end = (start + SEGMENT_SIZE).min(data_len);
-                let copy_len = end - start;
-                segment[..copy_len].copy_from_slice(&data[start..end]);
+                    if start < data_len {
+                        let end = (start + SEGMENT_SIZE).min(data_len);
+                        let copy_len = end - start;
+                        segment[..copy_len].copy_from_slice(&data[start..end]);
+                    }
+
+                    B256::from_slice(&segment)
+                })
+                .collect::<Vec<_>>();
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            for i in 0..BMT_BRANCHES {
+                let start = i * SEGMENT_SIZE;
+                let mut segment = [0u8; SEGMENT_SIZE];
+
+                if start < data_len {
+                    let end = (start + SEGMENT_SIZE).min(data_len);
+                    let copy_len = end - start;
+                    segment[..copy_len].copy_from_slice(&data[start..end]);
+                }
+
+                segments.push(B256::from_slice(&segment));
             }
-
-            segments.push(B256::from_slice(&segment));
         }
 
         // Get the segment being proven

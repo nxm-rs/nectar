@@ -336,3 +336,69 @@ fn test_proof() {
         );
     }
 }
+
+#[test]
+fn test_excess_data_ignored() {
+    // Create data that is exactly BMT_MAX_DATA_LENGTH
+    let exact_data: Vec<u8> = (0..BMT_MAX_DATA_LENGTH).map(|i| (i % 256) as u8).collect();
+
+    // Create data that exceeds the maximum by 100 bytes
+    let mut excess_data = exact_data.clone();
+    excess_data.extend(vec![0xFF; 100]); // Add 100 bytes of 0xFF
+
+    let excess_len = excess_data.len() as u64;
+
+    // Hash with exact data (using excess length as span)
+    let mut hasher1 = BMTHasher::new();
+    hasher1.set_span(excess_len);
+    hasher1.update(&exact_data);
+    let result1 = hasher1.sum();
+
+    // Hash with excess data
+    let mut hasher2 = BMTHasher::new();
+    hasher2.set_span(excess_len);
+    hasher2.update(&excess_data);
+    let result2 = hasher2.sum();
+
+    // Assert that only the first BMT_MAX_DATA_LENGTH bytes were considered
+    assert_eq!(
+        result1, result2,
+        "Excess data should be ignored in hash calculation"
+    );
+
+    // Test incremental updates
+    let mut hasher3 = BMTHasher::new();
+    hasher3.set_span(exact_data.len() as u64);
+
+    // Add exact data first
+    hasher3.update(&exact_data);
+    let result_before_excess = hasher3.sum();
+
+    // Add some excess data
+    hasher3.update(&[0xFF; 100]);
+    let result_after_excess = hasher3.sum();
+
+    // Hash should remain unchanged
+    assert_eq!(
+        result_before_excess, result_after_excess,
+        "Adding excess data should not change the hash"
+    );
+
+    // Test with Write trait
+    let mut hasher4 = BMTHasher::new();
+    hasher4.set_span(exact_data.len() as u64);
+
+    // Write exact data
+    std::io::Write::write(&mut hasher4, &exact_data).unwrap();
+    let write_result_before = hasher4.sum();
+
+    // Try to write more data
+    std::io::Write::write(&mut hasher4, &[0xFF; 100]).unwrap();
+    let write_result_after = hasher4.sum();
+
+    // Hash should remain unchanged when using Write trait
+    assert_eq!(
+        write_result_before, write_result_after,
+        "Adding excess data via Write trait should not change the hash"
+    );
+}

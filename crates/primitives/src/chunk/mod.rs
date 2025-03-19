@@ -228,3 +228,7 @@ impl ChunkData {
         }
     }
 }
+
+// WASM bindings for chunk module - only compiled when targeting wasm32
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;

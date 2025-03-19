@@ -1,12 +1,21 @@
+// nectar/crates/primitives/src/chunk/custom/registry.rs
 //! Registry for custom chunk deserializers
 
 use super::CustomChunk;
 use crate::chunk::error::ChunkError;
-use crate::error::Result; // Use crate-level Result
+use crate::error::Result;
 use bytes::Bytes;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+// Only include parking_lot on non-WASM platforms
+#[cfg(not(target_arch = "wasm32"))]
+use parking_lot::RwLock;
+
+// For WASM, use a simpler mutex from std that works in single-threaded contexts
+#[cfg(target_arch = "wasm32")]
+use std::sync::Mutex as RwLock;
 
 /// Minimum valid type ID for custom chunks
 const CUSTOM_CHUNK_TYPE_MIN: u8 = 0xE0;
@@ -30,6 +39,7 @@ impl CustomChunkRegistry {
     }
 
     /// Register a deserializer for a custom chunk type and version
+    #[cfg(not(target_arch = "wasm32"))]
     fn register<F>(&mut self, type_id: u8, version: u8, deserializer: F) -> &mut Self
     where
         F: Fn(Bytes) -> Result<Box<dyn CustomChunk>> + Send + Sync + 'static,
@@ -44,7 +54,18 @@ impl CustomChunkRegistry {
         self
     }
 
+    /// Register a deserializer for a custom chunk type and version - WASM version (no-op)
+    #[cfg(target_arch = "wasm32")]
+    fn register<F>(&mut self, _type_id: u8, _version: u8, _deserializer: F) -> &mut Self
+    where
+        F: Fn(Bytes) -> Result<Box<dyn CustomChunk>> + Send + Sync + 'static,
+    {
+        // No-op for WASM - custom registrations are not supported
+        self
+    }
+
     /// Try to deserialize custom chunk data
+    #[cfg(not(target_arch = "wasm32"))]
     fn deserialize(
         &self,
         data: Bytes,
@@ -61,7 +82,20 @@ impl CustomChunkRegistry {
         }
     }
 
+    /// Try to deserialize custom chunk data - WASM version (always returns None)
+    #[cfg(target_arch = "wasm32")]
+    fn deserialize(
+        &self,
+        _data: Bytes,
+        _type_id: u8,
+        _version: u8,
+    ) -> Result<Option<Box<dyn CustomChunk>>> {
+        // For WASM, always return None as custom chunks are not supported
+        Ok(None)
+    }
+
     /// Try to deserialize custom chunk data by trying all deserializers
+    #[cfg(not(target_arch = "wasm32"))]
     fn detect_and_deserialize(&self, data: Bytes) -> Result<Option<Box<dyn CustomChunk>>> {
         // Try each deserializer in the custom namespace (0xE0-0xEF)
         for ((type_id, _version), deserializer) in &self.deserializers {
@@ -73,6 +107,13 @@ impl CustomChunkRegistry {
             }
         }
 
+        Ok(None)
+    }
+
+    /// Try to deserialize custom chunk data by trying all deserializers - WASM version (always returns None)
+    #[cfg(target_arch = "wasm32")]
+    fn detect_and_deserialize(&self, _data: Bytes) -> Result<Option<Box<dyn CustomChunk>>> {
+        // For WASM, always return None as custom chunks are not supported
         Ok(None)
     }
 
@@ -88,11 +129,17 @@ impl Default for CustomChunkRegistry {
     }
 }
 
-// Create a global static instance directly
+// Create a global registry with appropriate locking primitive for the platform
+#[cfg(not(target_arch = "wasm32"))]
+static GLOBAL_REGISTRY: Lazy<RwLock<CustomChunkRegistry>> =
+    Lazy::new(|| RwLock::new(CustomChunkRegistry::new()));
+
+#[cfg(target_arch = "wasm32")]
 static GLOBAL_REGISTRY: Lazy<RwLock<CustomChunkRegistry>> =
     Lazy::new(|| RwLock::new(CustomChunkRegistry::new()));
 
 /// Register a custom chunk deserializer
+#[cfg(not(target_arch = "wasm32"))]
 pub fn register_custom_deserializer<F>(type_id: u8, version: u8, deserializer: F) -> Result<()>
 where
     F: Fn(Bytes) -> Result<Box<dyn CustomChunk>> + Send + Sync + 'static,
@@ -102,33 +149,58 @@ where
         return Err(ChunkError::invalid_custom_type(type_id).into());
     }
 
-    let mut registry = GLOBAL_REGISTRY.write().map_err(|_| {
-        ChunkError::registry("Failed to acquire write lock for custom chunk registry")
-    })?;
-
+    let mut registry = GLOBAL_REGISTRY.write();
     registry.register(type_id, version, deserializer);
     Ok(())
 }
 
+/// Register a custom chunk deserializer - WASM version (no-op)
+#[cfg(target_arch = "wasm32")]
+pub fn register_custom_deserializer<F>(_type_id: u8, _version: u8, _deserializer: F) -> Result<()>
+where
+    F: Fn(Bytes) -> Result<Box<dyn CustomChunk>> + Send + Sync + 'static,
+{
+    // Custom chunk registration not supported in WASM
+    Err(ChunkError::format("Custom chunk registration not supported in WASM environments").into())
+}
+
 /// Try to deserialize custom chunk data
+#[cfg(not(target_arch = "wasm32"))]
 pub fn deserialize(data: Bytes, type_id: u8, version: u8) -> Result<Option<Box<dyn CustomChunk>>> {
     // Validate type ID is in custom range
     if !CustomChunkRegistry::is_valid_custom_type_id(type_id) {
         return Err(ChunkError::invalid_custom_type(type_id).into());
     }
 
-    let registry = GLOBAL_REGISTRY.read().map_err(|_| {
-        ChunkError::registry("Failed to acquire read lock for custom chunk registry")
-    })?;
-
+    let registry = GLOBAL_REGISTRY.read();
     registry.deserialize(data, type_id, version)
 }
 
-/// Try to detect and deserialize custom chunk data
-pub fn detect_and_deserialize(data: Bytes) -> Result<Option<Box<dyn CustomChunk>>> {
-    let registry = GLOBAL_REGISTRY.read().map_err(|_| {
-        ChunkError::registry("Failed to acquire read lock for custom chunk registry")
-    })?;
+/// Try to deserialize custom chunk data - WASM version (always returns None)
+#[cfg(target_arch = "wasm32")]
+pub fn deserialize(
+    _data: Bytes,
+    type_id: u8,
+    _version: u8,
+) -> Result<Option<Box<dyn CustomChunk>>> {
+    // Always return an error in WASM, since custom chunks are not supported
+    Err(ChunkError::format(format!(
+        "Custom chunk type {:#04x} not supported in WASM environments",
+        type_id
+    ))
+    .into())
+}
 
+/// Try to detect and deserialize custom chunk data
+#[cfg(not(target_arch = "wasm32"))]
+pub fn detect_and_deserialize(data: Bytes) -> Result<Option<Box<dyn CustomChunk>>> {
+    let registry = GLOBAL_REGISTRY.read();
     registry.detect_and_deserialize(data)
+}
+
+/// Try to detect and deserialize custom chunk data - WASM version (always returns None)
+#[cfg(target_arch = "wasm32")]
+pub fn detect_and_deserialize(_data: Bytes) -> Result<Option<Box<dyn CustomChunk>>> {
+    // Always return None in WASM, since custom chunks are not supported
+    Ok(None)
 }

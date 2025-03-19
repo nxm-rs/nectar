@@ -2,7 +2,7 @@
 
 use crate::constants::*;
 use crate::error::{ChunkError, Result};
-use alloy_primitives::{hex, B256};
+use alloy_primitives::{B256, hex};
 
 /// A 256 bit address for a chunk in the network
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
