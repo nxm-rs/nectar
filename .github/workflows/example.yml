@@ -39,7 +39,7 @@ jobs:
             - name: Build WASM Demo
               run: |
                   cd crates/primitives/examples/wasm-demo
-                  trunk build --release
+                  trunk build --release --public-url /nectar/
 
             - name: Deploy to GitHub Pages
               uses: JamesIves/github-pages-deploy-action@v4
