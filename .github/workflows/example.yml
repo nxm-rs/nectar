@@ -4,7 +4,7 @@ on:
     push:
         branches: [main]
         paths:
-            - "nectar/crates/primitives/examples/wasm-demo/**"
+            - "crates/primitives/examples/wasm-demo/**"
     workflow_dispatch: # Allow manual triggering
 
 env:
@@ -38,12 +38,12 @@ jobs:
 
             - name: Build WASM Demo
               run: |
-                  cd nectar/crates/primitives/examples/wasm-demo
+                  cd crates/primitives/examples/wasm-demo
                   trunk build --release
 
             - name: Deploy to GitHub Pages
               uses: JamesIves/github-pages-deploy-action@v4
               with:
-                  folder: nectar/crates/primitives/examples/wasm-demo/dist
+                  folder: crates/primitives/examples/wasm-demo/dist
                   branch: gh-pages
                   clean: true
