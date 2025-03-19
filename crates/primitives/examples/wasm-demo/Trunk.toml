@@ -1,0 +1,25 @@
+# nectar/crates/primitives/examples/wasm-demo/Trunk.toml
+[build]
+# Build in release mode by default
+release = true
+# The HTML file to use as entry point
+target = "index.html"
+# Output directory (created automatically)
+dist = "dist"
+
+public_url = "/"
+filehash = false
+# inject_scripts = false  # This matches your current config
+offline = false
+frozen = false
+locked = false
+minify = "never"
+no_sri = false
+
+[watch]
+# Watch these directories for changes during 'trunk serve'
+watch = ["src/", "js/"]
+
+[serve]
+port = 8080
+open = true
