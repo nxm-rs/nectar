@@ -3,11 +3,11 @@
     <head>
         <meta charset="utf-8" />
         <title>BMT Hasher Demo</title>
-        <link rel="stylesheet" href="/styles.css" integrity="sha384-ncqn6S9kKkCkJlz4yws3sViqt16EMzyJaH0DCZEQ19No4NdZVzeedKbzzq8pfCIC"/>
+        <link rel="stylesheet" href="/nectar/styles.css" integrity="sha384-ncqn6S9kKkCkJlz4yws3sViqt16EMzyJaH0DCZEQ19No4NdZVzeedKbzzq8pfCIC"/>
         
 <script type="module">
-import init, * as bindings from '/bmt-wasm-demo.js';
-const wasm = await init({ module_or_path: '/bmt-wasm-demo_bg.wasm' });
+import init, * as bindings from '/nectar/bmt-wasm-demo.js';
+const wasm = await init({ module_or_path: '/nectar/bmt-wasm-demo_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -16,7 +16,7 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
-    <link rel="modulepreload" href="/bmt-wasm-demo.js" crossorigin="anonymous" integrity="sha384-RxqFs69dCnoXOjNVLekSqfGVsWhjqICKX2Wkq8BZVol+Cpj3LPnjCDggG3vZ5Xo4"><link rel="preload" href="/bmt-wasm-demo_bg.wasm" crossorigin="anonymous" integrity="sha384-/80a9UtKlaKEC6iucagZb6pHRRp9IZDmdK/ANqgriTrK/3Fp5YRXhjgcjJ0VK1Mu" as="fetch" type="application/wasm"></head>
+    <link rel="modulepreload" href="/nectar/bmt-wasm-demo.js" crossorigin="anonymous" integrity="sha384-RxqFs69dCnoXOjNVLekSqfGVsWhjqICKX2Wkq8BZVol+Cpj3LPnjCDggG3vZ5Xo4"><link rel="preload" href="/nectar/bmt-wasm-demo_bg.wasm" crossorigin="anonymous" integrity="sha384-/80a9UtKlaKEC6iucagZb6pHRRp9IZDmdK/ANqgriTrK/3Fp5YRXhjgcjJ0VK1Mu" as="fetch" type="application/wasm"></head>
     <body>
         <main>
             <h1>Binary Merkle Tree Hasher</h1>
@@ -449,6 +449,6 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             <div id="library-info"></div>
         </footer>
 
-        <script src="/app.js" integrity="sha384-SixEGzHHYJAT4i9G2zPxASzXwJX5SRExYCYCe51cerata6q1N5W/FiBLieyrJOwz" type="module"></script>
+        <script src="/nectar/app.js" integrity="sha384-SixEGzHHYJAT4i9G2zPxASzXwJX5SRExYCYCe51cerata6q1N5W/FiBLieyrJOwz" type="module"></script>
     </body>
 </html>
