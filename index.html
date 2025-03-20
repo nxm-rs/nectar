@@ -3,7 +3,7 @@
     <head>
         <meta charset="utf-8" />
         <title>BMT Hasher Demo</title>
-        <link rel="stylesheet" href="/nectar/styles.css" integrity="sha384-ncqn6S9kKkCkJlz4yws3sViqt16EMzyJaH0DCZEQ19No4NdZVzeedKbzzq8pfCIC"/>
+        <link rel="stylesheet" href="/nectar/styles.css" integrity="sha384-B/4ymavRQ/YLkMUC/DGpSXVU98yHKKLyNYV1tjR7knKSU8GwNUfx6m80jWTX63kY"/>
         
 <script type="module">
 import init, * as bindings from '/nectar/bmt-wasm-demo.js';
@@ -16,7 +16,7 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
-    <link rel="modulepreload" href="/nectar/bmt-wasm-demo.js" crossorigin="anonymous" integrity="sha384-RxqFs69dCnoXOjNVLekSqfGVsWhjqICKX2Wkq8BZVol+Cpj3LPnjCDggG3vZ5Xo4"><link rel="preload" href="/nectar/bmt-wasm-demo_bg.wasm" crossorigin="anonymous" integrity="sha384-/80a9UtKlaKEC6iucagZb6pHRRp9IZDmdK/ANqgriTrK/3Fp5YRXhjgcjJ0VK1Mu" as="fetch" type="application/wasm"></head>
+    <link rel="modulepreload" href="/nectar/bmt-wasm-demo.js" crossorigin="anonymous" integrity="sha384-TGkrOgXua3wUpKmaFCYSI8FGewAW8zPZk6QzZ6eGAhC6nzGo+BVHI9n6cOeyUJNn"><link rel="preload" href="/nectar/bmt-wasm-demo_bg.wasm" crossorigin="anonymous" integrity="sha384-Qy1tCwMkDYynLefzD64X6E6crSvhpbkUQtebq1uz1RPZw75PDx+yorqj7ivARyHh" as="fetch" type="application/wasm"></head>
     <body>
         <main>
             <h1>Binary Merkle Tree Hasher</h1>
@@ -396,8 +396,20 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
                     <h2>Performance Benchmark</h2>
                     <p>
                         Test the performance of the BMT hasher with different
-                        data sizes (max 4096 bytes).
+                        data sizes (max 4096 bytes). The benchmark generates
+                        unique random data for each iteration, ensuring that
+                        each hash operation processes completely different data.
+                        This approach prevents JIT optimizations, branch
+                        prediction, and caching effects from artificially
+                        improving the results.
                     </p>
+
+                    <div class="benchmark-warning">
+                        <strong>Note:</strong> For large numbers of iterations,
+                        this will generate substantial amounts of random data in
+                        memory. You'll be prompted for confirmation if the total
+                        exceeds 500MB.
+                    </div>
 
                     <div class="benchmark-controls">
                         <div class="benchmark-input">
@@ -449,6 +461,6 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             <div id="library-info"></div>
         </footer>
 
-        <script src="/nectar/app.js" integrity="sha384-GhB4X2xL4mCrV4gotnYia5aACkzOk7CZt/eVyswaIEadRbliZFZQQVHQn7r+vkQ9" type="module"></script>
+        <script src="/nectar/app.js" integrity="sha384-aiw6gqf1dkbbvLYwrD/Xa65PVVmEie6+pV9GxiEkLt1cQTccCM8YR+V4N6hMwAzq" type="module"></script>
     </body>
 </html>

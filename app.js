@@ -6,6 +6,7 @@ import init, {
     generate_svg_icon,
     create_icon_from_hex,
     generate_random_chunk_address,
+    benchmark_hash_with_random_data,
     IconConfig,
     IconShape,
     GeneratorFunction,
@@ -463,21 +464,84 @@ function setupBenchmarks() {
             return;
         }
 
-        // Ensure size doesn't exceed 4096
+        // Ensure size doesn't exceed max test size
         const testSize = Math.min(size, 4096);
+
+        // Calculate total data size needed
+        const totalDataSize = testSize * iterations;
+
+        // Check if the data size is reasonable
+        const totalSizeMB = totalDataSize / (1024 * 1024);
+        if (totalSizeMB > 500) {
+            const confirmed = confirm(
+                `This benchmark will generate ${totalSizeMB.toFixed(2)} MB of random data. ` +
+                    `This might cause high memory usage. Continue?`,
+            );
+            if (!confirmed) return;
+        }
 
         // Update UI to show benchmark is running
         runBenchmarkButton.disabled = true;
         runBenchmarkButton.textContent = "Running...";
-        resultPlaceholder.textContent = "Benchmark in progress...";
+        resultPlaceholder.textContent = `Generating ${formatDataSize(totalDataSize)} of random data...`;
         benchmarkOutput.innerHTML = "";
 
         // Add a small delay to allow UI to update
         await new Promise((resolve) => setTimeout(resolve, 50));
 
         try {
-            // Run the benchmark
-            const avgTime = benchmark_hash(testSize, iterations);
+            // Generate a buffer with unique random data for each iteration
+            const startDataGen = performance.now();
+
+            // Create the buffer for all iterations
+            const randomData = new Uint8Array(totalDataSize);
+
+            // Fill the buffer with random data
+            // For large buffers, we'll fill in chunks to avoid UI freezing
+            const CHUNK_SIZE = 1024 * 1024; // 1MB chunks for generation
+
+            for (let offset = 0; offset < totalDataSize; offset += CHUNK_SIZE) {
+                // If we've been generating data for more than 500ms, update the UI
+                const currentTime = performance.now();
+                if (currentTime - startDataGen > 500) {
+                    const percentComplete = Math.min(
+                        100,
+                        (offset / totalDataSize) * 100,
+                    ).toFixed(1);
+                    resultPlaceholder.textContent = `Generating random data: ${percentComplete}% complete...`;
+                    // Allow UI to update
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+
+                // Calculate the size of this chunk
+                const end = Math.min(offset + CHUNK_SIZE, totalDataSize);
+                const currentChunkSize = end - offset;
+
+                // Generate random data for this chunk
+                for (let i = 0; i < currentChunkSize; i++) {
+                    randomData[offset + i] = Math.floor(Math.random() * 256);
+                }
+            }
+
+            const dataGenTime = (performance.now() - startDataGen) / 1000; // in seconds
+
+            // Update status
+            resultPlaceholder.textContent = "Running benchmark...";
+            await new Promise((resolve) => setTimeout(resolve, 50));
+
+            // Run the benchmark with completely random data for each iteration
+            const avgTime = benchmark_hash_with_random_data(
+                randomData,
+                testSize,
+                iterations,
+            );
+
+            // Check for error
+            if (avgTime < 0) {
+                throw new Error(
+                    "Benchmark failed - insufficient data provided",
+                );
+            }
 
             // avgTime is in milliseconds per hash operation
             const millisPerOp = avgTime;
@@ -485,18 +549,8 @@ function setupBenchmarks() {
             // Convert to operations per second
             const opsPerSecond = 1000 / millisPerOp;
 
-            // Calculate throughput in bytes per second correctly
+            // Calculate throughput in bytes per second
             const throughput = testSize * opsPerSecond;
-
-            // Format throughput for display
-            let throughputDisplay;
-            if (throughput < 1024) {
-                throughputDisplay = `${throughput.toFixed(2)} B/s`;
-            } else if (throughput < 1024 * 1024) {
-                throughputDisplay = `${(throughput / 1024).toFixed(2)} KB/s`;
-            } else {
-                throughputDisplay = `${(throughput / (1024 * 1024)).toFixed(2)} MB/s`;
-            }
 
             // Display results
             resultPlaceholder.textContent = "";
@@ -505,7 +559,11 @@ function setupBenchmarks() {
                     <strong>Data Size:</strong> ${formatNumber(testSize)} bytes (${(testSize / 1024).toFixed(2)} KB)
                 </div>
                 <div class="benchmark-result-item">
-                    <strong>Iterations:</strong> ${iterations}
+                    <strong>Iterations:</strong> ${formatNumber(iterations)}
+                </div>
+                <div class="benchmark-result-item">
+                    <strong>Total Random Data:</strong> ${formatDataSize(totalDataSize)}
+                    <br><small>(generated in ${dataGenTime.toFixed(2)}s)</small>
                 </div>
                 <div class="benchmark-result-item">
                     <strong>Average Time:</strong> ${millisPerOp.toFixed(3)} ms per hash
@@ -514,7 +572,7 @@ function setupBenchmarks() {
                     <strong>Operations:</strong> ${opsPerSecond.toFixed(2)} hashes/second
                 </div>
                 <div class="benchmark-result-item">
-                    <strong>Throughput:</strong> ${throughputDisplay}
+                    <strong>Throughput:</strong> ${formatDataSize(throughput)}/second
                 </div>
             `;
         } catch (err) {
@@ -526,6 +584,19 @@ function setupBenchmarks() {
             runBenchmarkButton.textContent = "Run Benchmark";
         }
     });
+
+    // Helper function to format data sizes
+    function formatDataSize(bytes) {
+        if (bytes < 1024) {
+            return `${bytes.toFixed(2)} B`;
+        } else if (bytes < 1024 * 1024) {
+            return `${(bytes / 1024).toFixed(2)} KB`;
+        } else if (bytes < 1024 * 1024 * 1024) {
+            return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+        } else {
+            return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+        }
+    }
 }
 
 // Start the application when the page loads

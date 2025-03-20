@@ -125,6 +125,27 @@ export function benchmark_hash(size, iterations) {
     return ret;
 }
 
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+/**
+ * Benchmark function that hashes pre-generated random data
+ * Each iteration gets its own unique chunk of data
+ * @param {Uint8Array} data
+ * @param {number} chunk_size
+ * @param {number} iterations
+ * @returns {number}
+ */
+export function benchmark_hash_with_random_data(data, chunk_size, iterations) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.benchmark_hash_with_random_data(ptr0, len0, chunk_size, iterations);
+    return ret;
+}
+
 /**
  * Utility function to help with debugging
  * @returns {string}
@@ -140,13 +161,6 @@ export function get_library_info() {
     } finally {
         wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
     }
-}
-
-function passArray8ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 1, 1) >>> 0;
-    getUint8ArrayMemory0().set(arg, ptr / 1);
-    WASM_VECTOR_LEN = arg.length;
-    return ptr;
 }
 
 function takeFromExternrefTable0(idx) {
