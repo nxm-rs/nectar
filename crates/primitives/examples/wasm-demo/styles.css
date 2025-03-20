@@ -581,3 +581,12 @@ pre#svg-output {
     word-break: normal;
     word-wrap: break-word;
 }
+.benchmark-warning {
+    background-color: #fff3cd;
+    border-left: 4px solid #ffc107;
+    padding: 10px 15px;
+    margin-bottom: 20px;
+    color: #664d03;
+    font-size: 14px;
+    border-radius: 4px;
+}

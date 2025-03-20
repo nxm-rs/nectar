@@ -96,6 +96,46 @@ pub fn benchmark_hash(size: u32, iterations: u32) -> f64 {
     elapsed / iterations as f64
 }
 
+/// Benchmark function that hashes pre-generated random data
+/// Each iteration gets its own unique chunk of data
+#[wasm_bindgen]
+pub fn benchmark_hash_with_random_data(data: &[u8], chunk_size: u32, iterations: u32) -> f64 {
+    set_panic_hook();
+
+    // Ensure chunk size is valid
+    let chunk_size = chunk_size as usize;
+
+    // Validate that we have enough data for all iterations
+    if data.len() < chunk_size * iterations as usize {
+        // Not enough data provided, return error value
+        return -1.0;
+    }
+
+    // Get current time
+    let start = js_sys::Date::now();
+
+    // Run the hash multiple times using a unique chunk of data each time
+    for i in 0..iterations {
+        // Calculate the offset for this iteration
+        let offset = i as usize * chunk_size;
+
+        // Create a slice of the data for this iteration
+        let chunk = &data[offset..offset + chunk_size];
+
+        // Create a new hasher and hash the chunk
+        let mut hasher = BMTHasher::new();
+        hasher.set_span(chunk_size as u64);
+        hasher.update(chunk);
+        let _result = hasher.sum();
+    }
+
+    // Calculate elapsed time in milliseconds
+    let elapsed = js_sys::Date::now() - start;
+
+    // Return average time per operation in milliseconds
+    elapsed / iterations as f64
+}
+
 /// Utility function to help with debugging
 #[wasm_bindgen]
 pub fn get_library_info() -> String {
