@@ -385,8 +385,20 @@
                     <h2>Performance Benchmark</h2>
                     <p>
                         Test the performance of the BMT hasher with different
-                        data sizes (max 4096 bytes).
+                        data sizes (max 4096 bytes). The benchmark generates
+                        unique random data for each iteration, ensuring that
+                        each hash operation processes completely different data.
+                        This approach prevents JIT optimizations, branch
+                        prediction, and caching effects from artificially
+                        improving the results.
                     </p>
+
+                    <div class="benchmark-warning">
+                        <strong>Note:</strong> For large numbers of iterations,
+                        this will generate substantial amounts of random data in
+                        memory. You'll be prompted for confirmation if the total
+                        exceeds 500MB.
+                    </div>
 
                     <div class="benchmark-controls">
                         <div class="benchmark-input">
