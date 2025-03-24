@@ -56,3 +56,7 @@ harness = false
 [[bench]]
 name = "proofs"
 harness = false
+
+[[bench]]
+name = "address"
+harness = false

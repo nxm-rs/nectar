@@ -6,7 +6,7 @@ pub use registry::{deserialize, detect_and_deserialize, register_custom_deserial
 
 use core::fmt::Debug;
 
-use super::address::ChunkAddress;
+use super::ChunkAddress;
 use crate::error::Result;
 use dyn_clone::DynClone;
 
