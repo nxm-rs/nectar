@@ -2,20 +2,20 @@
 //!
 //! Chunks are the fundamental unit of data in the storage system.
 
-mod address;
 pub mod content_addressed;
 pub mod custom;
 pub mod error;
 pub mod single_owner;
 
-pub use address::ChunkAddress;
 pub use content_addressed::ContentAddressedChunk;
 pub use custom::{CustomChunk, register_custom_deserializer};
 pub use error::{ChunkError, Result as ChunkResult};
 pub use single_owner::SingleOwnerChunk;
 
-use crate::error::Result; // Use crate-level Result for ChunkData methods
+use crate::{SwarmAddress, error::Result};
 use bytes::{BufMut, Bytes, BytesMut};
+
+pub type ChunkAddress = SwarmAddress;
 
 /// Possible chunk types in the network
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

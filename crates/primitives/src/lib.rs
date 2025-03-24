@@ -10,6 +10,7 @@
 pub use bytes;
 
 // Core modules
+pub mod address;
 pub mod bmt;
 pub mod chunk;
 pub mod error;
@@ -19,6 +20,7 @@ pub mod error;
 pub mod wasm;
 
 // Re-exports of primary types
+pub use address::SwarmAddress;
 pub use bmt::{BMTHasher, error::DigestError};
 pub use chunk::{ChunkAddress, ChunkType, CustomChunk, error::ChunkError};
 pub use error::{Error, Result};
@@ -34,9 +36,7 @@ pub mod constants {
     /// Maximum size of a chunk in bytes
     pub const MAX_CHUNK_SIZE: usize = 4096;
 
-    /// Size of a batch ID in bytes
-    pub const BATCH_ID_SIZE: usize = 32;
+    pub const MAX_PO: usize = 31;
 
-    /// Size of an owner address in bytes
-    pub const OWNER_SIZE: usize = 20;
+    pub const EXTENDED_PO: usize = MAX_PO + 5;
 }

@@ -20,6 +20,10 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    /// Errors related to array operations
+    #[error(transparent)]
+    Array(#[from] core::array::TryFromSliceError),
+
     /// Other errors
     #[error("{0}")]
     Other(String),

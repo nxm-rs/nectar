@@ -1,6 +1,6 @@
 //! Single-owner chunk implementation
 
-use super::address::ChunkAddress;
+use super::ChunkAddress;
 use crate::error::{ChunkError, Result};
 use bytes::Bytes;
 
