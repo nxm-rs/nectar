@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 ## alloy crypto
-alloy-primitives.workspace = true
+# alloy-primitives noted below in architecture-dependent set of crates
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 
@@ -34,16 +34,18 @@ rand = { workspace = true, optional = true }
 
 # Only for non-WASM targets - removed the optional flag so it's always included
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 rayon.workspace = true
 
 # Only for WASM-specific targets
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+alloy-primitives.workspace = true
 wasm-bindgen.workspace = true
 js-sys.workspace = true
 getrandom.workspace = true
 
 [dev-dependencies]
-alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom"] }
+alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "asm-keccak"] }
 
 arbitrary = { workspace = true, features = ["derive"] }
 criterion.workspace = true

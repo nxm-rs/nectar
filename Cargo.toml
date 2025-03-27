@@ -38,7 +38,7 @@ check.all_targets = true
 nectar-primitives = { path = "crates/primitives" }
 
 # crypt & hashing
-alloy-primitives = { version = "0.8.25", default-features = false }
+alloy-primitives = { version = "0.8.25" }
 alloy-signer = { version = "0.12.6", default-features = false }
 alloy-signer-local = { version = "0.12.6", default-features = false }
 
