@@ -1,42 +1,72 @@
-//! Core primitives for a decentralized storage system.
+//! Core primitives for a decentralized storage system
 //!
-//! This crate provides the foundational types and traits for working with
-//! chunks and storage-related access control in a decentralized storage network.
-
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![warn(missing_docs)]
+//! This crate provides the fundamental types and operations used in a decentralized
+//! storage system, including chunk types, address calculations, and binary merkle trees.
+//!
+//! ## Key Components
+//!
+//! - **Chunks**: Content-addressed and signed data chunks ([`ContentChunk`], [`SingleOwnerChunk`])
+//! - **Binary Merkle Tree**: Efficient content addressing and proof generation ([`bmt::Hasher`])
+//! - **SwarmAddress**: 256-bit identifiers for network addressing
+//!
+//! ## Usage Examples
+//!
+//! ```
+//! use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk, SwarmAddress};
+//! use alloy_signer_local::LocalSigner;
+//! use alloy_primitives::FixedBytes;
+//!
+//! // Creating content chunks
+//! let chunk = ContentChunk::new(b"Hello, world!".as_slice()).unwrap();
+//! let address = chunk.address();
+//!
+//! // Using builders for more complex scenarios
+//! let content = ContentChunk::builder()
+//!     .auto_from_data(b"Custom data".as_slice())
+//!     .unwrap()
+//!     .build();
+//!
+//! // Creating signed chunks
+//! let wallet = LocalSigner::random();
+//! let id = FixedBytes::random();
+//! let owner_chunk = SingleOwnerChunk::new(id, b"Signed data".as_slice(), &wallet).unwrap();
+//! ```
 
 // Re-export dependencies that are part of our public API
 pub use bytes;
 
-// Core modules
 pub mod address;
 pub mod bmt;
+mod cache;
 pub mod chunk;
 pub mod error;
 
-// WASM bindings - compiled only when targeting wasm32
-#[cfg(target_arch = "wasm32")]
-pub mod wasm;
+// Re-export core constants
+pub use bmt::MAX_DATA_LENGTH as MAX_CHUNK_SIZE;
 
-// Re-exports of primary types
+// Re-export core types
 pub use address::SwarmAddress;
-pub use bmt::{BMTHasher, error::DigestError};
-pub use chunk::{ChunkAddress, ChunkType, CustomChunk, error::ChunkError};
-pub use error::{Error, Result};
+pub use error::{PrimitivesError, Result};
 
-/// Constants used throughout the crate
-pub mod constants {
-    // Re-export BMT constants
-    pub use crate::bmt::constants::*;
+// Core BMT functionality
+pub use bmt::{Hasher, HasherFactory, Proof, Prover};
 
-    /// Size of a chunk address in bytes (same as hash size)
-    pub const ADDRESS_SIZE: usize = HASH_SIZE;
+// Core chunk functionality
+pub use chunk::{
+    BmtChunk,
+    // Core traits
+    Chunk,
+    ChunkAddress,
+    ChunkSerialization,
 
-    /// Maximum size of a chunk in bytes
-    pub const MAX_CHUNK_SIZE: usize = 4096;
+    // Concrete chunk types
+    ContentChunk,
+    SingleOwnerChunk,
+};
 
-    pub const MAX_PO: usize = 31;
-
-    pub const EXTENDED_PO: usize = MAX_PO + 5;
-}
+// Builder types (facade for implementation)
+pub use chunk::{ContentChunkBuilder, ContentChunkBuilderReady};
+pub use chunk::{
+    SingleOwnerChunkBuilder, SingleOwnerChunkBuilderReady, SingleOwnerChunkBuilderWithData,
+    SingleOwnerChunkBuilderWithId,
+};

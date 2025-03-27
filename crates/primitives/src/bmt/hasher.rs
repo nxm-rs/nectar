@@ -1,4 +1,7 @@
-//! Reference implementation of a Binary Merkle Tree hasher.
+//! Binary Merkle Tree hasher implementation
+//!
+//! This module provides an implementation of a BMT hasher that uses Keccak256
+//! for computing content-addressed hashes of arbitrary data.
 
 use alloy_primitives::{B256, Keccak256};
 use bytes::Bytes;
@@ -7,38 +10,33 @@ use generic_array::{GenericArray, typenum::U32};
 use std::io::{self, Write};
 use std::marker::PhantomData;
 
-// Only include rayon on non-wasm platforms with the parallel feature enabled
+// Use rayon for parallel processing on non-WASM platforms
 #[cfg(not(target_arch = "wasm32"))]
 use rayon;
 
 use super::constants::*;
-use crate::chunk::ChunkAddress;
-use crate::error::Result;
-
-// Precomputed power-of-2 values for bit shifting operations
-const BMT_SEGMENT_SIZE_LOG2: usize = 5; // SEGMENT_SIZE = 32 = 2^5
 
 /// Reference implementation of a BMT hasher that uses Keccak256
 ///
 /// This implementation uses a fixed number of BMT branches (128) as defined by `BMT_BRANCHES`.
 /// The Binary Merkle Tree is structured to efficiently hash data in parallel when supported.
 #[derive(Debug, Clone)]
-pub struct BMTHasher {
+pub struct Hasher {
     span: u64,
     prefix: Option<Vec<u8>>,
-    buffer: [u8; BMT_MAX_DATA_LENGTH],
+    buffer: [u8; MAX_DATA_LENGTH],
     cursor: usize,
     _marker: PhantomData<Keccak256>,
 }
 
-impl Default for BMTHasher {
+impl Default for Hasher {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BMTHasher {
+impl Hasher {
     /// Create a new BMT hasher with `BMT_BRANCHES` (128) branches
     ///
     /// The hasher is optimized for data sized in multiples of SEGMENT_SIZE,
@@ -48,7 +46,7 @@ impl BMTHasher {
         Self {
             span: 0,
             prefix: None,
-            buffer: [0u8; BMT_MAX_DATA_LENGTH], // Pre-initialized with zeros
+            buffer: [0u8; MAX_DATA_LENGTH], // Pre-initialized with zeros
             cursor: 0,
             _marker: PhantomData,
         }
@@ -98,13 +96,13 @@ impl BMTHasher {
 
     /// Update the hasher with more data (non-destructive)
     #[inline]
-    pub fn update_data(&mut self, data: &[u8]) {
+    pub fn update(&mut self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
 
         // Calculate how much data we can actually copy
-        let available_space = BMT_MAX_DATA_LENGTH - self.cursor;
+        let available_space = MAX_DATA_LENGTH - self.cursor;
         let bytes_to_copy = data.len().min(available_space);
 
         if bytes_to_copy > 0 {
@@ -117,45 +115,32 @@ impl BMTHasher {
         }
     }
 
-    /// Compute the BMT hash and return the chunk address (non-destructive)
+    /// Compute the BMT hash and return as SwarmAddress (non-destructive)
     #[inline]
-    pub fn chunk_address(&self, data: &[u8]) -> Result<ChunkAddress> {
-        // Optimize by avoiding cloning when possible
-        let hash = if data.is_empty() {
-            // Use existing data if no new data
-            self.sum()
-        } else {
-            // Create a temporary hasher with same config
-            let mut temp_hasher = BMTHasher::new();
-            temp_hasher.span = self.span;
-            temp_hasher.prefix = self.prefix.clone();
+    pub fn hash(&self, out: &mut [u8]) {
+        let hash = self.sum();
+        out.copy_from_slice(hash.as_slice());
+    }
 
-            // Add our existing data and the new data
-            if self.cursor > 0 {
-                temp_hasher.update_data(&self.buffer[..self.cursor]);
-            }
-            temp_hasher.update_data(data);
-
-            temp_hasher.sum()
-        };
-
-        // Create address from hash
-        ChunkAddress::from_slice(hash.as_slice()).map_err(|e| e.into())
+    /// Compute the BMT hash and return the result (non-destructive)
+    #[inline]
+    pub fn sum(&self) -> B256 {
+        self.finalize_with_prefix(self.hash_internal())
     }
 
     /// Hash data using a binary merkle tree (internal implementation)
     #[inline(always)]
     fn hash_internal(&self) -> B256 {
-        // Use parallel hashing only when supported by the platform and enabled
+        // Use parallel hashing only when supported by the platform
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.hash_helper_parallel(&self.buffer, BMT_MAX_DATA_LENGTH)
+            self.hash_helper_parallel(&self.buffer, MAX_DATA_LENGTH)
         }
 
-        // Use sequential hashing for WASM or when parallel is disabled
+        // Use sequential hashing for WASM
         #[cfg(target_arch = "wasm32")]
         {
-            self.hash_helper_sequential(&self.buffer, BMT_MAX_DATA_LENGTH)
+            self.hash_helper_sequential(&self.buffer, MAX_DATA_LENGTH)
         }
     }
 
@@ -188,7 +173,7 @@ impl BMTHasher {
         B256::from_slice(hasher.finalize().as_slice())
     }
 
-    /// Parallel implementation for hash computation (native environments with parallel feature)
+    /// Parallel implementation for hash computation (native environments)
     #[cfg(not(target_arch = "wasm32"))]
     #[inline(always)]
     fn hash_helper_parallel(&self, data: &[u8], length: usize) -> B256 {
@@ -238,13 +223,6 @@ impl BMTHasher {
         B256::from_slice(hasher.finalize().as_slice())
     }
 
-    /// Compute the current hash value as B256 (non-destructive)
-    /// This is similar to the Go sum() pattern
-    #[inline]
-    pub fn sum(&self) -> B256 {
-        self.finalize_with_prefix(self.hash_internal())
-    }
-
     /// Reset the hasher's internal state
     #[inline(always)]
     fn reset_internal(&mut self) {
@@ -272,16 +250,16 @@ impl BMTHasher {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use rayon::prelude::*;
-            (0..BMT_BRANCHES)
+            (0..BRANCHES)
                 .into_par_iter()
                 .map(|i| self.compute_segment_hash(data, i))
                 .collect()
         }
 
-        // Sequential for WASM or when parallel is disabled
+        // Sequential for WASM
         #[cfg(target_arch = "wasm32")]
         {
-            (0..BMT_BRANCHES)
+            (0..BRANCHES)
                 .map(|i| self.compute_segment_hash(data, i))
                 .collect()
         }
@@ -290,7 +268,7 @@ impl BMTHasher {
     /// Compute the hash for a single segment at given index
     #[inline(always)]
     fn compute_segment_hash(&self, data: &[u8], i: usize) -> B256 {
-        let start = i << BMT_SEGMENT_SIZE_LOG2; // Equivalent to i * SEGMENT_SIZE
+        let start = i << SEGMENT_SIZE_LOG2; // Equivalent to i * SEGMENT_SIZE
         let mut hasher = Keccak256::new();
 
         if start < data.len() {
@@ -313,12 +291,11 @@ impl BMTHasher {
     }
 }
 
-// Implement io::Write trait for BMTHasher
-impl Write for BMTHasher {
+impl Write for Hasher {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // Keep original behavior to ensure tests pass
-        self.update_data(buf);
+        self.update(buf);
         Ok(buf.len())
     }
 
@@ -330,25 +307,25 @@ impl Write for BMTHasher {
 }
 
 // Implement the Digest trait methods to match the standard patterns
-impl OutputSizeUser for BMTHasher {
+impl OutputSizeUser for Hasher {
     type OutputSize = U32; // 32-byte output size
 }
 
-impl Update for BMTHasher {
+impl Update for Hasher {
     #[inline]
     fn update(&mut self, data: &[u8]) {
-        self.update_data(data);
+        self.update(data);
     }
 }
 
-impl Reset for BMTHasher {
+impl Reset for Hasher {
     #[inline]
     fn reset(&mut self) {
         self.reset_internal();
     }
 }
 
-impl FixedOutput for BMTHasher {
+impl FixedOutput for Hasher {
     #[inline]
     fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
         // Just finalize without resetting
@@ -357,7 +334,7 @@ impl FixedOutput for BMTHasher {
     }
 }
 
-impl FixedOutputReset for BMTHasher {
+impl FixedOutputReset for Hasher {
     #[inline]
     fn finalize_into_reset(&mut self, out: &mut GenericArray<u8, Self::OutputSize>) {
         // Compute the hash
@@ -372,14 +349,14 @@ impl FixedOutputReset for BMTHasher {
 }
 
 // Make BMTHasher a valid hash function
-impl digest::HashMarker for BMTHasher {}
+impl digest::HashMarker for Hasher {}
 
-/// A factory that creates BMTHasher instances
+/// A factory that creates BmtHasher instances
 #[derive(Debug, Default, Clone)]
-pub struct BMTHasherFactory;
+pub struct HasherFactory;
 
-impl BMTHasherFactory {
-    /// Create a new factory for BMTHasher instances
+impl HasherFactory {
+    /// Create a new factory for BmtHasher instances
     #[inline]
     pub fn new() -> Self {
         Self
@@ -387,7 +364,7 @@ impl BMTHasherFactory {
 
     /// Create a new BMT hasher
     #[inline]
-    pub fn create_hasher(&self) -> BMTHasher {
-        BMTHasher::new()
+    pub fn create_hasher(&self) -> Hasher {
+        Hasher::new()
     }
 }

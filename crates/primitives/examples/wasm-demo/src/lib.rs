@@ -1,6 +1,5 @@
 use alloy_primitives::{hex, Bytes, FixedBytes};
-use digest::Digest;
-use nectar_primitives::bmt::BMTHasher;
+use nectar_primitives::bmt::Hasher;
 use wasm_bindgen::prelude::*;
 
 // Add SVG generator modules
@@ -38,13 +37,17 @@ impl HashResult {
 }
 
 /// Compute a BMT hash for the given text and span
+///
+/// @param {string} text - The input text to hash
+/// @param {number} span - The span value to use (typically the length of the data)
+/// @returns {HashResult} The computed hash result with hex and binary representations
 #[wasm_bindgen]
 pub fn calculate_bmt_hash(text: &str, span: u32) -> HashResult {
     // Set panic hook for better debugging
     set_panic_hook();
 
     // Create a BMT hasher
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
 
     // Set the specified span (convert to u64)
     hasher.set_span(span as u64);
@@ -65,6 +68,10 @@ pub fn calculate_bmt_hash(text: &str, span: u32) -> HashResult {
 }
 
 /// Benchmark function that hashes data of a specific size
+///
+/// @param {number} size - The size of data to hash in each iteration (in bytes)
+/// @param {number} iterations - The number of hash operations to perform
+/// @returns {number} The average time per hash operation in milliseconds
 #[wasm_bindgen]
 pub fn benchmark_hash(size: u32, iterations: u32) -> f64 {
     set_panic_hook();
@@ -83,7 +90,7 @@ pub fn benchmark_hash(size: u32, iterations: u32) -> f64 {
 
     // Run the hash multiple times
     for _ in 0..iterations {
-        let mut hasher = BMTHasher::new();
+        let mut hasher = Hasher::new();
         hasher.set_span(size as u64);
         hasher.update(&data);
         let _result = hasher.sum();
@@ -98,6 +105,11 @@ pub fn benchmark_hash(size: u32, iterations: u32) -> f64 {
 
 /// Benchmark function that hashes pre-generated random data
 /// Each iteration gets its own unique chunk of data
+///
+/// @param {Uint8Array} data - Pre-generated random data buffer
+/// @param {number} chunk_size - Size of each chunk to hash
+/// @param {number} iterations - Number of hash operations to perform
+/// @returns {number} The average time per hash operation in milliseconds, or -1 if error
 #[wasm_bindgen]
 pub fn benchmark_hash_with_random_data(data: &[u8], chunk_size: u32, iterations: u32) -> f64 {
     set_panic_hook();
@@ -123,7 +135,7 @@ pub fn benchmark_hash_with_random_data(data: &[u8], chunk_size: u32, iterations:
         let chunk = &data[offset..offset + chunk_size];
 
         // Create a new hasher and hash the chunk
-        let mut hasher = BMTHasher::new();
+        let mut hasher = Hasher::new();
         hasher.set_span(chunk_size as u64);
         hasher.update(chunk);
         let _result = hasher.sum();
@@ -137,6 +149,8 @@ pub fn benchmark_hash_with_random_data(data: &[u8], chunk_size: u32, iterations:
 }
 
 /// Utility function to help with debugging
+///
+/// @returns {string} Information about the library version
 #[wasm_bindgen]
 pub fn get_library_info() -> String {
     "BMT Hash Calculator powered by nectar-primitives - WASM Demo".to_string()
@@ -146,32 +160,47 @@ pub fn get_library_info() -> String {
 // SVG Icon Generator
 //------------------------------------------------------------------------------
 
+/// Generator function types for SVG icon generation
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
 pub enum GeneratorFunction {
+    /// Geometric patterns based on chunk data
     Geometric,
+    /// Abstract art representation of chunk data
     Abstract,
+    /// Circular design patterns
     Circular,
+    /// Pixelated grid representation
     Pixelated,
+    /// Molecular-style node and bond structure
     Molecular,
 }
 
+/// Shape options for generated icons
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
 pub enum IconShape {
+    /// Square icon (default)
     Square,
+    /// Circular icon with clipping
     Circle,
 }
 
+/// Color scheme options for generated icons
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
 pub enum ColorScheme {
+    /// Bright, contrasting colors
     Vibrant,
+    /// Soft, muted colors
     Pastel,
+    /// Black, white, and grayscale
     Monochrome,
+    /// Colors from opposite sides of the color wheel
     Complementary,
 }
 
+/// Configuration for icon generation
 #[wasm_bindgen]
 pub struct IconConfig {
     size: u32,
@@ -182,6 +211,13 @@ pub struct IconConfig {
 
 #[wasm_bindgen]
 impl IconConfig {
+    /// Create a new icon configuration
+    ///
+    /// @param {number} size - The size of the icon in pixels
+    /// @param {IconShape} shape - The shape of the icon (Square or Circle)
+    /// @param {GeneratorFunction} generator - The algorithm to use for generation
+    /// @param {ColorScheme} color_scheme - The color scheme to use
+    /// @returns {IconConfig} A new configuration object
     #[wasm_bindgen(constructor)]
     pub fn new(
         size: u32,
@@ -219,6 +255,7 @@ impl IconConfig {
 }
 
 // Rename ChunkData to IconData to avoid name conflict with nectar_primitives
+/// Data structure representing chunk data for icon generation
 #[wasm_bindgen]
 pub struct IconData {
     address: FixedBytes<32>,
@@ -230,6 +267,14 @@ pub struct IconData {
 
 #[wasm_bindgen]
 impl IconData {
+    /// Create a new IconData instance
+    ///
+    /// @param {Uint8Array} address_bytes - 32-byte chunk address
+    /// @param {number} chunk_type - Chunk type identifier (1 byte)
+    /// @param {number} version - Chunk version (1 byte)
+    /// @param {Uint8Array} header_bytes - Chunk header data
+    /// @param {Uint8Array} payload_bytes - Chunk payload data
+    /// @returns {IconData} A new IconData instance
     #[wasm_bindgen(constructor)]
     pub fn new(
         address_bytes: &[u8],
@@ -287,6 +332,13 @@ impl IconData {
 }
 
 /// Create a IconData instance from hex strings (convenience function for JS)
+///
+/// @param {string} address_hex - 32-byte address as hex string
+/// @param {string} type_hex - Chunk type as hex string (1 byte)
+/// @param {string} version_hex - Version as hex string (1 byte)
+/// @param {string} header_hex - Header data as hex string
+/// @param {string} payload_hex - Payload data as hex string
+/// @returns {IconData} A new IconData instance from the hex values
 #[wasm_bindgen]
 pub fn create_icon_from_hex(
     address_hex: &str,
@@ -331,6 +383,8 @@ pub fn create_icon_from_hex(
 }
 
 /// Generate a random chunk address (32 bytes)
+///
+/// @returns {Uint8Array} A randomly generated 32-byte address
 #[wasm_bindgen]
 pub fn generate_random_chunk_address() -> js_sys::Uint8Array {
     let mut bytes = [0u8; 32];
@@ -339,6 +393,10 @@ pub fn generate_random_chunk_address() -> js_sys::Uint8Array {
 }
 
 /// Generate an SVG icon based on IconData and configuration
+///
+/// @param {IconData} data - The chunk data to visualize
+/// @param {IconConfig} config - Configuration options for the icon
+/// @returns {string} SVG content representing the chunk data
 #[wasm_bindgen]
 pub fn generate_svg_icon(data: &IconData, config: &IconConfig) -> String {
     set_panic_hook();
@@ -363,6 +421,84 @@ pub fn generate_svg_icon(data: &IconData, config: &IconConfig) -> String {
         }
         GeneratorFunction::Molecular => {
             svg_generators_additional::generate_molecular_icon(&seed_data, config)
+        }
+    }
+}
+
+/// Create a builder for complex icon configuration
+///
+/// @returns {IconConfigBuilder} A new icon config builder
+#[wasm_bindgen]
+pub fn create_icon_config_builder() -> IconConfigBuilder {
+    IconConfigBuilder {
+        size: 200,
+        shape: IconShape::Square,
+        generator: GeneratorFunction::Geometric,
+        color_scheme: ColorScheme::Vibrant,
+    }
+}
+
+/// Builder for creating IconConfig objects with a fluent API
+#[wasm_bindgen]
+pub struct IconConfigBuilder {
+    size: u32,
+    shape: IconShape,
+    generator: GeneratorFunction,
+    color_scheme: ColorScheme,
+}
+
+#[wasm_bindgen]
+impl IconConfigBuilder {
+    /// Set the size of the generated icon
+    ///
+    /// @param {number} size - Size in pixels (both width and height)
+    /// @returns {IconConfigBuilder} The builder for method chaining
+    #[wasm_bindgen]
+    pub fn with_size(mut self, size: u32) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// Set the shape of the generated icon
+    ///
+    /// @param {IconShape} shape - The shape to use
+    /// @returns {IconConfigBuilder} The builder for method chaining
+    #[wasm_bindgen]
+    pub fn with_shape(mut self, shape: IconShape) -> Self {
+        self.shape = shape;
+        self
+    }
+
+    /// Set the generator function for the icon
+    ///
+    /// @param {GeneratorFunction} generator - The algorithm to use
+    /// @returns {IconConfigBuilder} The builder for method chaining
+    #[wasm_bindgen]
+    pub fn with_generator(mut self, generator: GeneratorFunction) -> Self {
+        self.generator = generator;
+        self
+    }
+
+    /// Set the color scheme for the icon
+    ///
+    /// @param {ColorScheme} color_scheme - The color scheme to use
+    /// @returns {IconConfigBuilder} The builder for method chaining
+    #[wasm_bindgen]
+    pub fn with_color_scheme(mut self, color_scheme: ColorScheme) -> Self {
+        self.color_scheme = color_scheme;
+        self
+    }
+
+    /// Build the final IconConfig object
+    ///
+    /// @returns {IconConfig} The configured IconConfig
+    #[wasm_bindgen]
+    pub fn build(self) -> IconConfig {
+        IconConfig {
+            size: self.size,
+            shape: self.shape,
+            generator: self.generator,
+            color_scheme: self.color_scheme,
         }
     }
 }

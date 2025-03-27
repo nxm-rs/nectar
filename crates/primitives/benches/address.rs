@@ -1,12 +1,12 @@
 #![allow(missing_docs)]
 use alloy_primitives::{B256, b256};
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use nectar_primitives::address::SwarmAddress;
+use nectar_primitives::SwarmAddress;
 use rand::prelude::*;
 
 pub fn address_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("address");
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Generate random addresses for benchmarking
     let addresses: Vec<SwarmAddress> = (0..1000)

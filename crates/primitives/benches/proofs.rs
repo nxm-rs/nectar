@@ -1,9 +1,8 @@
 #![allow(missing_docs)]
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use digest::Digest;
 use nectar_primitives::{
-    bmt::{BMTHasher, BmtProver},
-    constants::*,
+    MAX_CHUNK_SIZE,
+    bmt::{Hasher, Prover},
 };
 use rand::Rng;
 use std::time::Duration;
@@ -16,10 +15,8 @@ pub fn proofs(c: &mut Criterion) {
     group.sample_size(50);
 
     // Create test data
-    let data: Vec<u8> = (0..BMT_MAX_DATA_LENGTH)
-        .map(|_| rand::random::<u8>())
-        .collect();
-    let mut hasher = BMTHasher::new();
+    let data: Vec<u8> = (0..MAX_CHUNK_SIZE).map(|_| rand::random::<u8>()).collect();
+    let mut hasher = Hasher::new();
     hasher.set_span(data.len() as u64);
     hasher.update(&data);
     let root_hash = hasher.sum();
@@ -59,7 +56,7 @@ pub fn proofs(c: &mut Criterion) {
         let index = indexes[i];
         group.bench_with_input(BenchmarkId::new("verify_proof", index), &index, |b, _| {
             b.iter(|| {
-                let result = BMTHasher::verify_proof(proof, root_hash.as_slice())
+                let result = Hasher::verify_proof(proof, root_hash.as_slice())
                     .expect("Failed to verify proof");
                 assert!(result, "Verification failed");
             });
@@ -69,12 +66,12 @@ pub fn proofs(c: &mut Criterion) {
     // Benchmark proof generation and verification together
     group.bench_function("full_proof_cycle", |b| {
         b.iter(|| {
-            let index = rand::rng().random_range(0..BMT_BRANCHES);
+            let index = rand::rng().random_range(0..128);
             let proof = hasher
                 .generate_proof(&data, index)
                 .expect("Failed to generate proof");
-            let is_valid = BMTHasher::verify_proof(&proof, root_hash.as_slice())
-                .expect("Failed to verify proof");
+            let is_valid =
+                Hasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
             assert!(is_valid, "Verification failed");
         });
     });
@@ -87,17 +84,17 @@ pub fn proofs(c: &mut Criterion) {
             BenchmarkId::new("partial_data_proofs", size),
             &size,
             |b, _| {
-                let mut h = BMTHasher::new();
+                let mut h = Hasher::new();
                 h.set_span(size as u64);
                 h.update(partial_data);
                 let partial_root = h.sum();
 
                 b.iter(|| {
-                    let idx = rand::rng().random_range(0..size / SEGMENT_SIZE);
+                    let idx = rand::rng().random_range(0..size / 32);
                     let proof = h
                         .generate_proof(partial_data, idx)
                         .expect("Failed to generate proof");
-                    let is_valid = BMTHasher::verify_proof(&proof, partial_root.as_slice())
+                    let is_valid = Hasher::verify_proof(&proof, partial_root.as_slice())
                         .expect("Failed to verify proof");
                     assert!(is_valid, "Verification failed");
                 });

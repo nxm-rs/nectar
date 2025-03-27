@@ -10,13 +10,13 @@ repository.workspace = true
 [lints]
 workspace = true
 
-[features]
-default = ["std"]
-std = []
-
 [dependencies]
-## crypt
+## alloy crypto
 alloy-primitives.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+
+## rust crypto
 digest.workspace = true
 generic-array.workspace = true
 
@@ -25,11 +25,12 @@ bytes.workspace = true
 thiserror.workspace = true
 once_cell.workspace = true
 
-# Trait helpers
-dyn-clone.workspace = true
-
-# Synchronization
+# synchronization
 parking_lot = "0.12"
+
+# arbitrary
+arbitrary = { workspace = true, features = ["derive"], optional = true }
+rand = { workspace = true, optional = true }
 
 # Only for non-WASM targets - removed the optional flag so it's always included
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -42,12 +43,22 @@ js-sys.workspace = true
 getrandom.workspace = true
 
 [dev-dependencies]
-# For examples
-alloy-primitives.workspace = true
-# For benchmarks
+alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom"] }
+
+arbitrary = { workspace = true, features = ["derive"] }
 criterion.workspace = true
-tokio.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
 rand.workspace = true
+
+[features]
+default = ["std"]
+std = []
+arbitrary = [
+	"std",
+	"dep:rand",
+	"dep:arbitrary",
+]
 
 [[bench]]
 name = "primitives"
