@@ -8,9 +8,9 @@
     </head>
     <body>
         <main>
-            <h1>Binary Merkle Tree Hasher</h1>
+            <h1>Swarm Primitives Playground</h1>
             <p class="description">
-                This demo shows the BMT hashing functionality and icon
+                This demo shows the functionality covering BMT, chunks and icon
                 generation from the nectar-primitives crate.
             </p>
 
@@ -18,6 +18,9 @@
             <div class="tab-nav">
                 <button class="tab-button active" data-tab="bmt-hasher">
                     BMT Hasher
+                </button>
+                <button class="tab-button" data-tab="chunk-creator">
+                    Chunk Creator
                 </button>
                 <button class="tab-button" data-tab="icon-generator">
                     Icon Generator
@@ -442,6 +445,494 @@
                             class="benchmark-output"
                         ></div>
                     </div>
+                </div>
+                <!-- Chunk Creator Tab -->
+                <div id="chunk-creator" class="tab-pane">
+                    <h2>Chunk Creator & Analyzer</h2>
+                    <p>
+                        Create and analyze different types of chunks used in
+                        nectar's storage protocol.
+                    </p>
+
+                    <!-- Mode Selection -->
+                    <div class="mode-selector">
+                        <button id="create-mode-btn" class="mode-button active">
+                            Create Chunk
+                        </button>
+                        <button id="analyze-mode-btn" class="mode-button">
+                            Analyze Chunk
+                        </button>
+                    </div>
+
+                    <!-- Creation Mode -->
+                    <div id="chunk-create-mode" class="chunk-mode">
+                        <div class="chunk-type-selector">
+                            <div class="radio-option">
+                                <input
+                                    type="radio"
+                                    id="content-chunk-type"
+                                    name="chunk-type"
+                                    value="content"
+                                    checked
+                                />
+                                <label for="content-chunk-type"
+                                    >Content Chunk</label
+                                >
+                            </div>
+                            <div class="radio-option">
+                                <input
+                                    type="radio"
+                                    id="single-owner-chunk-type"
+                                    name="chunk-type"
+                                    value="single-owner"
+                                />
+                                <label for="single-owner-chunk-type"
+                                    >Single Owner Chunk</label
+                                >
+                            </div>
+                        </div>
+
+                        <!-- Content Chunk Form -->
+                        <div id="content-chunk-form" class="chunk-form">
+                            <div class="form-group">
+                                <label for="content-chunk-data"
+                                    >Chunk Data:</label
+                                >
+                                <div class="input-type-toggle">
+                                    <div
+                                        class="toggle-option active"
+                                        data-format="text"
+                                    >
+                                        Text
+                                    </div>
+                                    <div
+                                        class="toggle-option"
+                                        data-format="hex"
+                                    >
+                                        Hex
+                                    </div>
+                                </div>
+                                <textarea
+                                    id="content-chunk-data"
+                                    placeholder="Enter data to store in the chunk"
+                                ></textarea>
+                                <div class="input-info">
+                                    <span id="content-data-size">0</span> bytes
+                                    <span
+                                        class="warning"
+                                        id="content-data-warning"
+                                    ></span>
+                                </div>
+                            </div>
+
+                            <button
+                                id="create-content-chunk"
+                                class="primary-button"
+                            >
+                                Create Content Chunk
+                            </button>
+                        </div>
+
+                        <!-- Single Owner Chunk Form -->
+                        <div
+                            id="single-owner-chunk-form"
+                            class="chunk-form"
+                            style="display: none"
+                        >
+                            <div class="form-group">
+                                <label for="so-chunk-id"
+                                    >Chunk ID (32 bytes):</label
+                                >
+                                <div class="input-with-button">
+                                    <input
+                                        type="text"
+                                        id="so-chunk-id"
+                                        placeholder="Enter or generate a chunk ID (64 hex characters)"
+                                    />
+                                    <button
+                                        id="generate-chunk-id"
+                                        class="inline-button"
+                                    >
+                                        Generate
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="private-key"
+                                    >Private Key (32 bytes):</label
+                                >
+                                <div class="input-with-button">
+                                    <input
+                                        type="text"
+                                        id="private-key"
+                                        placeholder="Enter or generate a private key (64 hex characters)"
+                                    />
+                                    <button
+                                        id="generate-private-key"
+                                        class="inline-button"
+                                    >
+                                        Generate
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div
+                                class="form-group"
+                                id="owner-address-container"
+                                style="display: none"
+                            >
+                                <label>Owner Address:</label>
+                                <div
+                                    id="owner-address"
+                                    class="readonly-value"
+                                ></div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="so-chunk-data">Chunk Data:</label>
+                                <div class="input-type-toggle">
+                                    <div
+                                        class="toggle-option active"
+                                        data-format="text"
+                                    >
+                                        Text
+                                    </div>
+                                    <div
+                                        class="toggle-option"
+                                        data-format="hex"
+                                    >
+                                        Hex
+                                    </div>
+                                </div>
+                                <textarea
+                                    id="so-chunk-data"
+                                    placeholder="Enter data to store in the chunk"
+                                ></textarea>
+                                <div class="input-info">
+                                    <span id="so-data-size">0</span> bytes
+                                    <span
+                                        class="warning"
+                                        id="so-data-warning"
+                                    ></span>
+                                </div>
+                            </div>
+
+                            <button id="create-so-chunk" class="primary-button">
+                                Create Single Owner Chunk
+                            </button>
+                        </div>
+
+                        <!-- Creation Result -->
+                        <div
+                            id="chunk-creation-result"
+                            class="result-container"
+                            style="display: none"
+                        >
+                            <h3>Created Chunk</h3>
+
+                            <div class="output-grid">
+                                <div class="output-cell">
+                                    <div class="icon-preview-container">
+                                        <h4>Chunk Icon</h4>
+                                        <div id="created-chunk-icon"></div>
+                                    </div>
+                                </div>
+
+                                <div class="output-cell">
+                                    <div class="result-info">
+                                        <div class="result-field">
+                                            <label>Chunk Type:</label>
+                                            <div
+                                                id="result-chunk-type"
+                                                class="readonly-value"
+                                            ></div>
+                                        </div>
+
+                                        <div class="result-field">
+                                            <label>Chunk Address:</label>
+                                            <div
+                                                id="result-chunk-address"
+                                                class="readonly-value copy-enabled"
+                                            ></div>
+                                        </div>
+
+                                        <div
+                                            id="result-id-field"
+                                            class="result-field"
+                                            style="display: none"
+                                        >
+                                            <label>Chunk ID:</label>
+                                            <div
+                                                id="result-chunk-id"
+                                                class="readonly-value copy-enabled"
+                                            ></div>
+                                        </div>
+
+                                        <div
+                                            id="result-owner-field"
+                                            class="result-field"
+                                            style="display: none"
+                                        >
+                                            <label>Owner Address:</label>
+                                            <div
+                                                id="result-owner-address"
+                                                class="readonly-value copy-enabled"
+                                            ></div>
+                                        </div>
+
+                                        <div class="result-field">
+                                            <label>Data Size:</label>
+                                            <div
+                                                id="result-data-size"
+                                                class="readonly-value"
+                                            ></div>
+                                        </div>
+
+                                        <div class="result-field">
+                                            <label>Total Size:</label>
+                                            <div
+                                                id="result-total-size"
+                                                class="readonly-value"
+                                            ></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="result-actions">
+                                <button
+                                    id="copy-serialized-chunk"
+                                    class="action-button"
+                                >
+                                    Copy Serialized Chunk
+                                </button>
+                                <button
+                                    id="download-serialized-chunk"
+                                    class="action-button"
+                                >
+                                    Download Chunk
+                                </button>
+                                <button
+                                    id="create-new-chunk"
+                                    class="action-button"
+                                >
+                                    Create New Chunk
+                                </button>
+                            </div>
+
+                            <div class="serialized-data">
+                                <h4>Serialized Chunk Data (Hex)</h4>
+                                <pre id="serialized-chunk-data"></pre>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Analysis Mode -->
+                    <div
+                        id="chunk-analyze-mode"
+                        class="chunk-mode"
+                        style="display: none"
+                    >
+                        <div class="form-group">
+                            <label for="chunk-data-hex"
+                                >Serialized Chunk Data (hex):</label
+                            >
+                            <textarea
+                                id="chunk-data-hex"
+                                placeholder="Enter serialized chunk data as hex"
+                            ></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="expected-address"
+                                >Expected Address (hex):</label
+                            >
+                            <input
+                                type="text"
+                                id="expected-address"
+                                placeholder="Enter the expected chunk address (64 hex characters)"
+                            />
+                            <div class="input-info">
+                                <span class="info"
+                                    >The expected address is needed to verify
+                                    the chunk's authenticity</span
+                                >
+                            </div>
+                        </div>
+
+                        <button id="analyze-chunk-btn" class="primary-button">
+                            Analyze Chunk
+                        </button>
+
+                        <!-- Analysis Result -->
+                        <div
+                            id="chunk-analysis-result"
+                            class="result-container"
+                            style="display: none"
+                        >
+                            <div
+                                id="analysis-valid"
+                                class="analysis-status valid"
+                            >
+                                <h3>Valid Chunk Detected</h3>
+                            </div>
+                            <div
+                                id="analysis-invalid"
+                                class="analysis-status invalid"
+                                style="display: none"
+                            >
+                                <h3>Invalid Chunk</h3>
+                                <div
+                                    id="analysis-error"
+                                    class="error-message"
+                                ></div>
+                            </div>
+
+                            <div class="output-grid">
+                                <div class="output-cell">
+                                    <div class="icon-preview-container">
+                                        <h4>Chunk Icon</h4>
+                                        <div id="analyzed-chunk-icon"></div>
+                                    </div>
+                                </div>
+
+                                <div class="output-cell">
+                                    <div class="result-info">
+                                        <div class="result-field">
+                                            <label>Chunk Type:</label>
+                                            <div
+                                                id="analysis-chunk-type"
+                                                class="readonly-value"
+                                            ></div>
+                                        </div>
+
+                                        <div class="result-field">
+                                            <label>Chunk Address:</label>
+                                            <div
+                                                id="analysis-chunk-address"
+                                                class="readonly-value copy-enabled"
+                                            ></div>
+                                        </div>
+
+                                        <div
+                                            id="analysis-id-field"
+                                            class="result-field"
+                                            style="display: none"
+                                        >
+                                            <label>Chunk ID:</label>
+                                            <div
+                                                id="analysis-chunk-id"
+                                                class="readonly-value copy-enabled"
+                                            ></div>
+                                        </div>
+
+                                        <div
+                                            id="analysis-owner-field"
+                                            class="result-field"
+                                            style="display: none"
+                                        >
+                                            <label>Owner Address:</label>
+                                            <div
+                                                id="analysis-owner-address"
+                                                class="readonly-value copy-enabled"
+                                            ></div>
+                                        </div>
+
+                                        <div class="result-field">
+                                            <label>Data Size:</label>
+                                            <div
+                                                id="analysis-data-size"
+                                                class="readonly-value"
+                                            ></div>
+                                        </div>
+
+                                        <div class="result-field">
+                                            <label>Total Size:</label>
+                                            <div
+                                                id="analysis-total-size"
+                                                class="readonly-value"
+                                            ></div>
+                                        </div>
+
+                                        <div class="result-field">
+                                            <label>Chunk Data:</label>
+                                            <div
+                                                class="input-type-toggle small"
+                                            >
+                                                <div
+                                                    class="toggle-option active"
+                                                    data-format="hex"
+                                                    data-target="analysis-chunk-data"
+                                                >
+                                                    Hex
+                                                </div>
+                                                <div
+                                                    class="toggle-option"
+                                                    data-format="text"
+                                                    data-target="analysis-chunk-data"
+                                                >
+                                                    UTF-8
+                                                </div>
+                                            </div>
+                                            <pre
+                                                id="analysis-chunk-data-hex"
+                                                class="code-output"
+                                            ></pre>
+                                            <pre
+                                                id="analysis-chunk-data-text"
+                                                class="code-output"
+                                                style="display: none"
+                                            ></pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="result-actions">
+                                <button
+                                    id="copy-analyzed-data"
+                                    class="action-button"
+                                >
+                                    Copy Raw Data
+                                </button>
+                                <button
+                                    id="analyze-new-chunk"
+                                    class="action-button"
+                                >
+                                    Analyze New Chunk
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <details class="info-panel">
+                        <summary>About Chunks</summary>
+                        <div class="info-content">
+                            <h4>Content Chunks</h4>
+                            <p>
+                                Content chunks are simple content-addressed
+                                containers. Their address is derived directly
+                                from the binary Merkle tree (BMT) hash of their
+                                data, making them immutable and self-verifying.
+                            </p>
+
+                            <h4>Single Owner Chunks</h4>
+                            <p>
+                                Single owner chunks include a unique ID and are
+                                cryptographically signed by their owner. Their
+                                address is derived from both the ID and the
+                                owner's address, allowing for ownership
+                                verification and controlled updates.
+                            </p>
+
+                            <h4>Chunk Structure</h4>
+                            <pre>
+                Content Chunk:  [data]
+                Single Owner:   [ID (32 bytes)][signature (65 bytes)][span (8 bytes)][data]</pre
+                            >
+                        </div>
+                    </details>
                 </div>
             </div>
         </main>

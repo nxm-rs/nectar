@@ -25,7 +25,7 @@ pub struct Proof {
 
 impl Proof {
     /// Create a new BMT proof
-    pub fn new(
+    pub const fn new(
         segment_index: usize,
         segment: B256,
         proof_segments: Vec<B256>,
@@ -111,14 +111,13 @@ impl Prover for Hasher {
         }
 
         // Create segments from data, padding with zeros if needed
-        let mut segments = Vec::with_capacity(BRANCHES);
         let data_len = data.len();
 
         // Use platform-specific optimizations for segment generation
         #[cfg(not(target_arch = "wasm32"))]
-        {
+        let segments = {
             use rayon::prelude::*;
-            segments = (0..BRANCHES)
+            (0..BRANCHES)
                 .into_par_iter()
                 .map(|i| {
                     let start = i * SEGMENT_SIZE;
@@ -132,11 +131,12 @@ impl Prover for Hasher {
 
                     B256::from_slice(&segment)
                 })
-                .collect::<Vec<_>>();
-        }
+                .collect::<Vec<_>>()
+        };
 
         #[cfg(target_arch = "wasm32")]
-        {
+        let segments = {
+            let mut segs = Vec::with_capacity(BRANCHES);
             for i in 0..BRANCHES {
                 let start = i * SEGMENT_SIZE;
                 let mut segment = [0u8; SEGMENT_SIZE];
@@ -147,9 +147,11 @@ impl Prover for Hasher {
                     segment[..copy_len].copy_from_slice(&data[start..end]);
                 }
 
-                segments.push(B256::from_slice(&segment));
+                segs.push(B256::from_slice(&segment));
             }
-        }
+
+            segs
+        };
 
         // Get the segment being proven
         let segment = segments[segment_index];
@@ -178,7 +180,7 @@ impl Prover for Hasher {
             }
 
             // Compute the next level up in the tree
-            let mut next_level = Vec::with_capacity((current_level.len() + 1) / 2);
+            let mut next_level = Vec::with_capacity(current_level.len().div_ceil(2));
 
             for i in (0..current_level.len()).step_by(2) {
                 let left = &current_level[i];

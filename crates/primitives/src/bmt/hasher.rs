@@ -145,6 +145,7 @@ impl Hasher {
     }
 
     /// Sequential implementation for hash computation (always available)
+    #[cfg(target_arch = "wasm32")]
     #[inline(always)]
     fn hash_helper_sequential(&self, data: &[u8], length: usize) -> B256 {
         if length == SEGMENT_PAIR_LENGTH {

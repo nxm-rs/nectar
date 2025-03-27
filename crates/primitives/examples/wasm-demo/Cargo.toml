@@ -13,12 +13,14 @@ crate-type = ["cdylib", "rlib"]
 default = ["console_error_panic_hook"]
 
 [dependencies]
+bytes.workspace = true
 nectar-primitives.workspace = true
 digest.workspace = true
 wasm-bindgen.workspace = true
 js-sys.workspace = true
 console_error_panic_hook = { version = "0.1.7", optional = true }
 alloy-primitives.workspace = true
+alloy-signer-local.workspace = true
 getrandom = { version = "0.2.12", features = ["js"] }
 
 # Configure WASM output optimization

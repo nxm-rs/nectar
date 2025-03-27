@@ -657,6 +657,8 @@ name = "bmt-wasm-demo"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer-local",
+ "bytes",
  "console_error_panic_hook",
  "digest 0.10.7",
  "getrandom 0.2.15",

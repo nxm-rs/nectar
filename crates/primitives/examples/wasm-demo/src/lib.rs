@@ -1,5 +1,14 @@
-use alloy_primitives::{hex, Bytes, FixedBytes};
+//! WASM demo for BMT hasher functionality
+//!
+//! This module provides JavaScript-friendly wrappers around the BMT hasher.
+
+use std::ops::Deref;
+
+use alloy_primitives::{hex, Address, Keccak256, PrimitiveSignature, B256};
+use alloy_signer_local::PrivateKeySigner;
+use bytes::Bytes;
 use nectar_primitives::bmt::Hasher;
+use nectar_primitives::{Chunk, ChunkAddress, ChunkSerialization, ContentChunk, SingleOwnerChunk};
 use wasm_bindgen::prelude::*;
 
 // Add SVG generator modules
@@ -258,11 +267,11 @@ impl IconConfig {
 /// Data structure representing chunk data for icon generation
 #[wasm_bindgen]
 pub struct IconData {
-    address: FixedBytes<32>,
+    address: B256,
     chunk_type: u8,
     version: u8,
-    header: Bytes,
-    payload: Bytes,
+    header: Vec<u8>,
+    payload: Vec<u8>,
 }
 
 #[wasm_bindgen]
@@ -288,20 +297,16 @@ impl IconData {
             return Err(JsValue::from_str("Address must be exactly 32 bytes"));
         }
 
-        // Create FixedBytes<32> from bytes
-        let mut address = FixedBytes::<32>::default();
+        // Create B256 from bytes
+        let mut address = B256::default();
         address.copy_from_slice(address_bytes);
-
-        // Create Bytes from slices
-        let header = Bytes::copy_from_slice(header_bytes);
-        let payload = Bytes::copy_from_slice(payload_bytes);
 
         Ok(IconData {
             address,
             chunk_type,
             version,
-            header,
-            payload,
+            header: header_bytes.to_vec(),
+            payload: payload_bytes.to_vec(),
         })
     }
 
@@ -322,12 +327,12 @@ impl IconData {
 
     #[wasm_bindgen(getter)]
     pub fn header(&self) -> js_sys::Uint8Array {
-        js_sys::Uint8Array::from(self.header.as_ref())
+        js_sys::Uint8Array::from(self.header.as_slice())
     }
 
     #[wasm_bindgen(getter)]
     pub fn payload(&self) -> js_sys::Uint8Array {
-        js_sys::Uint8Array::from(self.payload.as_ref())
+        js_sys::Uint8Array::from(self.payload.as_slice())
     }
 }
 
@@ -501,4 +506,503 @@ impl IconConfigBuilder {
             color_scheme: self.color_scheme,
         }
     }
+}
+
+//------------------------------------------------------------------------------
+// Chunk Creation and Deserialization
+//------------------------------------------------------------------------------
+
+/// Represents the type of a chunk
+#[wasm_bindgen]
+#[derive(Clone, Copy)]
+pub enum ChunkType {
+    /// Content-addressed chunk (type 0)
+    Content = 0,
+    /// Single-owner chunk (type 1)
+    SingleOwner = 1,
+    /// Unknown chunk type
+    Unknown = 255,
+}
+
+/// Result of creating a ContentChunk
+#[wasm_bindgen]
+pub struct ContentChunkResult {
+    address: B256,
+    data: Vec<u8>,
+    serialized: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl ContentChunkResult {
+    #[wasm_bindgen(getter)]
+    pub fn address(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.address.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn address_hex(&self) -> String {
+        format!("0x{}", hex::encode(self.address.as_slice()))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn data(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.data.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn serialized(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.serialized.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn serialized_hex(&self) -> String {
+        format!("0x{}", hex::encode(&self.serialized))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn size(&self) -> usize {
+        self.serialized.len()
+    }
+}
+
+/// Result of creating a SingleOwnerChunk
+#[wasm_bindgen]
+pub struct SingleOwnerChunkResult {
+    address: B256,
+    id: B256,
+    owner: Address,
+    data: Vec<u8>,
+    serialized: Vec<u8>,
+    signature: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl SingleOwnerChunkResult {
+    #[wasm_bindgen(getter)]
+    pub fn address(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.address.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn address_hex(&self) -> String {
+        format!("0x{}", hex::encode(self.address.as_slice()))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn id(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.id.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn id_hex(&self) -> String {
+        format!("0x{}", hex::encode(self.id.as_slice()))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn owner(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.owner.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn owner_hex(&self) -> String {
+        format!("0x{}", hex::encode(self.owner.as_slice()))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn data(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.data.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn serialized(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.serialized.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn serialized_hex(&self) -> String {
+        format!("0x{}", hex::encode(&self.serialized))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn signature(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.signature.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn signature_hex(&self) -> String {
+        format!("0x{}", hex::encode(&self.signature))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn size(&self) -> usize {
+        self.serialized.len()
+    }
+}
+
+/// Result of parsing and analyzing a chunk
+#[wasm_bindgen]
+pub struct ChunkAnalysisResult {
+    is_valid: bool,
+    chunk_type: ChunkType,
+    address: B256,
+    data: Vec<u8>,
+    id: Option<B256>,
+    owner: Option<Address>,
+    signature: Option<Vec<u8>>,
+    error_message: Option<String>,
+}
+
+#[wasm_bindgen]
+impl ChunkAnalysisResult {
+    #[wasm_bindgen(getter)]
+    pub fn is_valid(&self) -> bool {
+        self.is_valid
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn chunk_type(&self) -> ChunkType {
+        self.chunk_type
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn address(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.address.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn address_hex(&self) -> String {
+        format!("0x{}", hex::encode(self.address.as_slice()))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn data(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.data.as_slice())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn has_id(&self) -> bool {
+        self.id.is_some()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn id(&self) -> Option<js_sys::Uint8Array> {
+        self.id
+            .as_ref()
+            .map(|id| js_sys::Uint8Array::from(id.as_slice()))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn id_hex(&self) -> Option<String> {
+        self.id
+            .as_ref()
+            .map(|id| format!("0x{}", hex::encode(id.as_slice())))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn has_owner(&self) -> bool {
+        self.owner.is_some()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn owner(&self) -> Option<js_sys::Uint8Array> {
+        self.owner
+            .as_ref()
+            .map(|owner| js_sys::Uint8Array::from(owner.as_slice()))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn owner_hex(&self) -> Option<String> {
+        self.owner
+            .as_ref()
+            .map(|owner| format!("0x{}", hex::encode(owner.as_slice())))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn has_signature(&self) -> bool {
+        self.signature.is_some()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn signature(&self) -> Option<js_sys::Uint8Array> {
+        self.signature
+            .as_ref()
+            .map(|sig| js_sys::Uint8Array::from(sig.as_slice()))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn signature_hex(&self) -> Option<String> {
+        self.signature
+            .as_ref()
+            .map(|sig| format!("0x{}", hex::encode(sig.as_slice())))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn has_error(&self) -> bool {
+        self.error_message.is_some()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn error_message(&self) -> Option<String> {
+        self.error_message.clone()
+    }
+}
+
+/// Create a ContentChunk from data
+///
+/// @param {Uint8Array} data - Data to include in the chunk
+/// @returns {ContentChunkResult} Result of the chunk creation
+#[wasm_bindgen]
+pub fn create_content_chunk(data: &[u8]) -> Result<ContentChunkResult, JsValue> {
+    set_panic_hook();
+
+    // Create the content chunk
+    let chunk = match ContentChunk::new(data.to_vec()) {
+        Ok(chunk) => chunk,
+        Err(e) => {
+            return Err(JsValue::from_str(&format!(
+                "Failed to create content chunk: {}",
+                e
+            )))
+        }
+    };
+
+    // Serialize the chunk - use the From trait
+    let serialized = Bytes::from(chunk.clone()).to_vec();
+
+    // Return the result
+    Ok(ContentChunkResult {
+        address: *chunk.address().deref(),
+        data: data.to_vec(),
+        serialized,
+    })
+}
+
+/// Create a new random private key for signing
+///
+/// @returns {Uint8Array} A random private key (32 bytes)
+#[wasm_bindgen]
+pub fn generate_random_private_key() -> js_sys::Uint8Array {
+    let signer = PrivateKeySigner::random();
+    let private_key = signer.to_bytes();
+    js_sys::Uint8Array::from(private_key.as_slice())
+}
+
+/// Get the address from a private key
+///
+/// @param {Uint8Array} private_key - Private key bytes
+/// @returns {Uint8Array} The corresponding address (20 bytes)
+#[wasm_bindgen]
+pub fn get_address_from_private_key(private_key: &[u8]) -> Result<js_sys::Uint8Array, JsValue> {
+    // Create signer from private key
+    let signer = match PrivateKeySigner::from_slice(private_key) {
+        Ok(signer) => signer,
+        Err(e) => return Err(JsValue::from_str(&format!("Invalid private key: {}", e))),
+    };
+
+    // Get the address
+    let address = signer.address();
+    Ok(js_sys::Uint8Array::from(address.as_slice()))
+}
+
+/// Create a SingleOwnerChunk from data and private key
+///
+/// @param {Uint8Array} id - Chunk ID (32 bytes)
+/// @param {Uint8Array} data - Data to include in the chunk
+/// @param {Uint8Array} private_key - Private key for signing
+/// @returns {SingleOwnerChunkResult} Result of the chunk creation
+#[wasm_bindgen]
+pub fn create_single_owner_chunk(
+    id: &[u8],
+    data: &[u8],
+    private_key: &[u8],
+) -> Result<SingleOwnerChunkResult, JsValue> {
+    set_panic_hook();
+
+    // Check ID length
+    if id.len() != 32 {
+        return Err(JsValue::from_str("ID must be exactly 32 bytes"));
+    }
+
+    // Create B256 from ID
+    let mut chunk_id = B256::default();
+    chunk_id.copy_from_slice(id);
+
+    // Create signer from private key
+    let signer = match PrivateKeySigner::from_slice(private_key) {
+        Ok(signer) => signer,
+        Err(e) => return Err(JsValue::from_str(&format!("Invalid private key: {}", e))),
+    };
+
+    // Create the single owner chunk
+    let chunk = match SingleOwnerChunk::new(chunk_id, data.to_vec(), &signer) {
+        Ok(chunk) => chunk,
+        Err(e) => {
+            return Err(JsValue::from_str(&format!(
+                "Failed to create single owner chunk: {}",
+                e
+            )))
+        }
+    };
+
+    // Get owner address
+    let owner = chunk.owner();
+
+    // Serialize the chunk - use the From trait
+    let serialized: Vec<u8> = Bytes::from(chunk.clone()).to_vec();
+
+    // Return the result
+    Ok(SingleOwnerChunkResult {
+        address: *chunk.address().deref(),
+        id: chunk_id,
+        owner,
+        data: data.to_vec(),
+        serialized,
+        signature: chunk.signature().as_bytes().to_vec(),
+    })
+}
+
+/// Generate a random chunk ID (32 bytes)
+///
+/// @returns {Uint8Array} A randomly generated 32-byte chunk ID
+#[wasm_bindgen]
+pub fn generate_random_chunk_id() -> js_sys::Uint8Array {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).expect("Failed to generate random bytes");
+    js_sys::Uint8Array::from(&bytes[..])
+}
+
+/// Analyze a chunk and determine its type and properties
+///
+/// @param {Uint8Array} chunk_data - Serialized chunk data
+/// @param {Uint8Array} expected_address - Expected address for verification (32 bytes)
+/// @returns {ChunkAnalysisResult} Analysis result
+#[wasm_bindgen]
+pub fn analyze_chunk(
+    chunk_data: &[u8],
+    expected_address: &[u8],
+) -> Result<ChunkAnalysisResult, JsValue> {
+    set_panic_hook();
+
+    // Check expected address length
+    if expected_address.len() != 32 {
+        return Err(JsValue::from_str(
+            "Expected address must be exactly 32 bytes",
+        ));
+    }
+
+    // Create ChunkAddress from expected address
+    let mut address_bytes = [0u8; 32];
+    address_bytes.copy_from_slice(expected_address);
+    let expected = ChunkAddress::new(address_bytes);
+
+    // Try to parse as ContentChunk
+    let content_result = ContentChunk::try_from(chunk_data);
+    let single_owner_result = SingleOwnerChunk::try_from(chunk_data);
+
+    // Prioritize any successful parse that matches the expected address
+    match (content_result, single_owner_result) {
+        (Ok(content_chunk), _) if content_chunk.address() == &expected => {
+            return Ok(ChunkAnalysisResult {
+                is_valid: true,
+                chunk_type: ChunkType::Content,
+                address: *content_chunk.address().deref(),
+                data: content_chunk.data().to_vec(),
+                id: None,
+                owner: None,
+                signature: None,
+                error_message: None,
+            });
+        }
+        (_, Ok(single_owner_chunk)) if single_owner_chunk.address() == &expected => {
+            return Ok(ChunkAnalysisResult {
+                is_valid: true,
+                chunk_type: ChunkType::SingleOwner,
+                address: *single_owner_chunk.address().deref(),
+                data: single_owner_chunk.data().to_vec(),
+                id: Some(single_owner_chunk.id()),
+                owner: Some(single_owner_chunk.owner()),
+                signature: Some(single_owner_chunk.signature().as_bytes().to_vec()),
+                error_message: None,
+            });
+        }
+        // Return any successful parse with address mismatch
+        (Ok(content_chunk), _) => {
+            return Ok(ChunkAnalysisResult {
+                is_valid: false,
+                chunk_type: ChunkType::Content,
+                address: *content_chunk.address().deref(),
+                data: content_chunk.data().to_vec(),
+                id: None,
+                owner: None,
+                signature: None,
+                error_message: Some(format!(
+                    "Content chunk address mismatch. Expected: 0x{}, Actual: 0x{}",
+                    hex::encode(expected.as_bytes()),
+                    hex::encode(content_chunk.address().as_bytes())
+                )),
+            });
+        }
+        (_, Ok(single_owner_chunk)) => {
+            return Ok(ChunkAnalysisResult {
+                is_valid: false,
+                chunk_type: ChunkType::SingleOwner,
+                address: *single_owner_chunk.address().deref(),
+                data: single_owner_chunk.data().to_vec(),
+                id: Some(single_owner_chunk.id()),
+                owner: Some(single_owner_chunk.owner()),
+                signature: Some(single_owner_chunk.signature().as_bytes().to_vec()),
+                error_message: Some(format!(
+                    "Single owner chunk address mismatch. Expected: 0x{}, Actual: 0x{}",
+                    hex::encode(expected.as_bytes()),
+                    hex::encode(single_owner_chunk.address().as_bytes())
+                )),
+            });
+        }
+        // Both failed to parse
+        (Err(e1), Err(e2)) => {
+            return Ok(ChunkAnalysisResult {
+                is_valid: false,
+                chunk_type: ChunkType::Unknown,
+                address: B256::default(),
+                data: chunk_data.to_vec(),
+                id: None,
+                owner: None,
+                signature: None,
+                error_message: Some(format!(
+                    "Failed to parse chunk: ContentChunk error: {}, SingleOwnerChunk error: {}",
+                    e1, e2
+                )),
+            });
+        }
+    }
+}
+
+/// Get SVG icon for a chunk address
+///
+/// @param {Uint8Array} address_bytes - Address bytes (32 bytes)
+/// @param {IconConfig} config - Configuration for the icon
+/// @returns {string} SVG content representing the address
+#[wasm_bindgen]
+pub fn generate_svg_for_address(
+    address_bytes: &[u8],
+    config: &IconConfig,
+) -> Result<String, JsValue> {
+    set_panic_hook();
+
+    // Check address length
+    if address_bytes.len() != 32 {
+        return Err(JsValue::from_str("Address must be exactly 32 bytes"));
+    }
+
+    // Create a very simple IconData with just the address
+    let icon_data = IconData::new(
+        address_bytes,
+        0,   // Default type
+        1,   // Default version
+        &[], // Empty header
+        &[], // Empty payload
+    )?;
+
+    // Generate the SVG
+    Ok(generate_svg_icon(&icon_data, config))
 }
