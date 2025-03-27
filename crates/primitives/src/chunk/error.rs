@@ -1,101 +1,62 @@
-//! Errors specific to chunk operations
-
-use std::fmt::Debug;
+use crate::SwarmAddress;
 use thiserror::Error;
 
-/// Result type specific to chunk operations
-pub type Result<T> = std::result::Result<T, ChunkError>;
+/// Result type for chunk operations
+pub(crate) type Result<T> = std::result::Result<T, ChunkError>;
 
 /// Errors specific to chunk operations
 #[derive(Error, Debug)]
 pub enum ChunkError {
-    /// Error when a chunk's size is invalid
-    #[error("Size error: {context} (size: {size}, limit: {limit})")]
-    Size {
-        /// Context description
-        context: &'static str,
-        /// Actual size
-        size: usize,
-        /// Size limit
-        limit: usize,
+    /// Chunk size is invalid
+    #[error("Invalid chunk size: {message} (expected: {expected}, got: {actual})")]
+    InvalidSize {
+        message: &'static str,
+        expected: usize,
+        actual: usize,
     },
 
-    /// Error when a chunk's format is invalid
+    /// Chunk format is invalid
     #[error("Invalid chunk format: {0}")]
-    Format(String),
+    InvalidFormat(String),
 
-    /// Error when a chunk's verification fails
-    #[error("Verification failed: {context} (expected: {expected:?}, got: {got:?})")]
-    Verification {
-        /// Context description
-        context: &'static str,
-        /// Expected value
-        expected: String,
-        /// Actual value
-        got: String,
+    /// Chunk address verification failed
+    #[error("Chunk address verification failed: expected {expected}, got {actual}")]
+    VerificationFailed {
+        expected: SwarmAddress,
+        actual: SwarmAddress,
     },
 
-    /// Error when a chunk type is unknown
-    #[error("Unknown chunk type: {0:#04x}")]
-    UnknownType(u8),
+    /// Signature errors from the crypto library
+    #[error("Signature error: {0}")]
+    Signature(#[from] alloy_primitives::SignatureError),
 
-    /// Error when a chunk type is invalid
-    #[error("Invalid chunk type: {0:#04x}, valid range for custom chunks is 0xE0-0xEF")]
-    InvalidType(u8),
+    /// Signer errors
+    #[error("Signer error: {0}")]
+    Signer(#[from] alloy_signer::Error),
 
-    /// Error when an operation is unsupported for a chunk type
-    #[error("Unsupported operation for chunk type: {0}")]
-    UnsupportedOperation(String),
-
-    /// Error when a required field is missing
-    #[error("Missing required field: {0}")]
-    MissingField(&'static str),
-
-    /// Error when chunk cannot be parsed
-    #[error("Parse error: {0}")]
-    Parse(String),
-
-    /// Registry error
-    #[error("Registry error: {0}")]
-    Registry(String),
+    /// Chunk signature is invalid
+    #[error("Invalid chunk signature: {0}")]
+    InvalidSignature(String),
 }
 
 impl ChunkError {
-    /// Create a new size error
-    pub fn size(context: &'static str, size: usize, limit: usize) -> Self {
-        Self::Size {
-            context,
-            size,
-            limit,
+    pub fn invalid_size(message: &'static str, expected: usize, actual: usize) -> Self {
+        Self::InvalidSize {
+            message,
+            expected,
+            actual,
         }
     }
 
-    /// Create a new format error
-    pub fn format<S: Into<String>>(msg: S) -> Self {
-        Self::Format(msg.into())
+    pub fn invalid_format<S: Into<String>>(msg: S) -> Self {
+        Self::InvalidFormat(msg.into())
     }
 
-    /// Create a new verification error
-    pub fn verification<T: Debug, U: Debug>(context: &'static str, expected: T, got: U) -> Self {
-        Self::Verification {
-            context,
-            expected: format!("{:?}", expected),
-            got: format!("{:?}", got),
-        }
+    pub fn verification_failed(expected: SwarmAddress, actual: SwarmAddress) -> Self {
+        Self::VerificationFailed { expected, actual }
     }
 
-    /// Create a new parse error
-    pub fn parse<S: Into<String>>(msg: S) -> Self {
-        Self::Parse(msg.into())
-    }
-
-    /// Create a new registry error
-    pub fn registry<S: Into<String>>(msg: S) -> Self {
-        Self::Registry(msg.into())
-    }
-
-    /// Create a new invalid type error for custom chunks
-    pub fn invalid_custom_type(type_id: u8) -> Self {
-        Self::InvalidType(type_id)
+    pub fn invalid_signature<S: Into<String>>(msg: S) -> Self {
+        Self::InvalidSignature(msg.into())
     }
 }

@@ -1,20 +1,49 @@
-//! Binary Merkle Tree (BMT) implementation for content addressing.
+//! Binary Merkle Tree (BMT) implementation
 //!
 //! This module provides an optimized implementation of a Binary Merkle Tree
 //! for hashing data in parallel and generating proofs of inclusion.
+//!
+//! ## Key Components
+//!
+//! - **Hasher**: Core BMT hashing functionality with span support
+//! - **Proof**: Inclusion proofs for efficient verification
+//! - **Prover**: Interface for generating and verifying proofs
+//!
+//! ## Example Usage
+//!
+//! ```
+//! use nectar_primitives::bmt::{Hasher, Prover};
+//!
+//! // Create a hasher and update with data
+//! let data = b"hello world";
+//! let mut hasher = Hasher::new();
+//! hasher.set_span(data.len() as u64);
+//! hasher.update(data);
+//!
+//! // Get the hash
+//! let hash = hasher.sum();
+//!
+//! // Generate a proof for the first segment
+//! let proof = hasher.generate_proof(data, 0).unwrap();
+//!
+//! // Verify the proof
+//! assert!(Hasher::verify_proof(&proof, hash.as_slice()).unwrap());
+//! ```
 
-pub mod constants;
-pub mod error;
-pub mod hasher;
-pub mod proof;
+mod constants;
+pub(crate) mod error;
+mod hasher;
+mod proof;
 
-pub use constants::*;
-pub use error::{DigestError, Result};
-pub use hasher::{BMTHasher, BMTHasherFactory};
-pub use proof::{BMT_PROOF_LENGTH, BMTProof, BmtProver};
+pub use constants::MAX_DATA_LENGTH;
+pub use hasher::{Hasher, HasherFactory};
+pub use proof::{Proof, Prover};
+
+// Re-export for convenience
+pub use crate::error::{PrimitivesError, Result};
 
 #[cfg(target_arch = "wasm32")]
-pub mod wasm;
+mod wasm;
 
 #[cfg(test)]
 mod tests;

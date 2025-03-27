@@ -12,6 +12,14 @@ import init, {
     GeneratorFunction,
     ColorScheme,
     IconData,
+    create_content_chunk,
+    generate_random_private_key,
+    get_address_from_private_key,
+    create_single_owner_chunk,
+    generate_random_chunk_id,
+    analyze_chunk,
+    generate_svg_for_address,
+    ChunkType,
 } from "./bmt-wasm-demo.js";
 
 // Initialize the WASM module
@@ -53,6 +61,9 @@ async function initApp() {
 
     // Setup benchmarks tab
     setupBenchmarks();
+
+    // Setup chunk creator tab
+    setupChunkCreator();
 }
 
 // Set up tab switching
@@ -599,5 +610,626 @@ function setupBenchmarks() {
     }
 }
 
+// Setup the chunk creator tab
+function setupChunkCreator() {
+    // Mode switching
+    const createModeBtn = document.getElementById("create-mode-btn");
+    const analyzeModeBtn = document.getElementById("analyze-mode-btn");
+    const createMode = document.getElementById("chunk-create-mode");
+    const analyzeMode = document.getElementById("chunk-analyze-mode");
+
+    createModeBtn.addEventListener("click", () => {
+        createModeBtn.classList.add("active");
+        analyzeModeBtn.classList.remove("active");
+        createMode.style.display = "block";
+        analyzeMode.style.display = "none";
+    });
+
+    analyzeModeBtn.addEventListener("click", () => {
+        analyzeModeBtn.classList.add("active");
+        createModeBtn.classList.remove("active");
+        analyzeMode.style.display = "block";
+        createMode.style.display = "none";
+    });
+
+    // Chunk type switching
+    const contentChunkType = document.getElementById("content-chunk-type");
+    const singleOwnerChunkType = document.getElementById(
+        "single-owner-chunk-type",
+    );
+    const contentChunkForm = document.getElementById("content-chunk-form");
+    const singleOwnerChunkForm = document.getElementById(
+        "single-owner-chunk-form",
+    );
+
+    contentChunkType.addEventListener("change", () => {
+        if (contentChunkType.checked) {
+            contentChunkForm.style.display = "block";
+            singleOwnerChunkForm.style.display = "none";
+        }
+    });
+
+    singleOwnerChunkType.addEventListener("change", () => {
+        if (singleOwnerChunkType.checked) {
+            singleOwnerChunkForm.style.display = "block";
+            contentChunkForm.style.display = "none";
+        }
+    });
+
+    // Input type toggle for content chunk
+    setupInputToggle("content-chunk-data");
+    setupInputToggle("so-chunk-data");
+
+    // Size counters
+    const contentChunkData = document.getElementById("content-chunk-data");
+    const contentDataSize = document.getElementById("content-data-size");
+    const contentDataWarning = document.getElementById("content-data-warning");
+
+    contentChunkData.addEventListener("input", () => {
+        updateDataSize(contentChunkData, contentDataSize, contentDataWarning);
+    });
+
+    const soChunkData = document.getElementById("so-chunk-data");
+    const soDataSize = document.getElementById("so-data-size");
+    const soDataWarning = document.getElementById("so-data-warning");
+
+    soChunkData.addEventListener("input", () => {
+        updateDataSize(soChunkData, soDataSize, soDataWarning);
+    });
+
+    // Random generators
+    const generateChunkId = document.getElementById("generate-chunk-id");
+    const soChunkId = document.getElementById("so-chunk-id");
+
+    generateChunkId.addEventListener("click", () => {
+        const randomId = generate_random_chunk_id();
+        soChunkId.value = "0x" + bytesToHex(randomId);
+    });
+
+    const generatePrivateKey = document.getElementById("generate-private-key");
+    const privateKey = document.getElementById("private-key");
+    const ownerAddressContainer = document.getElementById(
+        "owner-address-container",
+    );
+    const ownerAddress = document.getElementById("owner-address");
+
+    generatePrivateKey.addEventListener("click", () => {
+        const randomPk = generate_random_private_key();
+        privateKey.value = "0x" + bytesToHex(randomPk);
+        updateOwnerAddress();
+    });
+
+    privateKey.addEventListener("input", updateOwnerAddress);
+
+    function updateOwnerAddress() {
+        const pkValue = privateKey.value.trim();
+        if (pkValue.length === 66 || pkValue.length === 64) {
+            try {
+                const pkBytes = hexToBytes(pkValue);
+                const addressBytes = get_address_from_private_key(pkBytes);
+                ownerAddress.textContent = "0x" + bytesToHex(addressBytes);
+                ownerAddressContainer.style.display = "block";
+            } catch (error) {
+                ownerAddressContainer.style.display = "none";
+            }
+        } else {
+            ownerAddressContainer.style.display = "none";
+        }
+    }
+
+    // Create content chunk
+    const createContentChunkBtn = document.getElementById(
+        "create-content-chunk",
+    );
+    createContentChunkBtn.addEventListener("click", createContentChunk);
+
+    // Create single owner chunk
+    const createSoChunkBtn = document.getElementById("create-so-chunk");
+    createSoChunkBtn.addEventListener("click", createSingleOwnerChunk);
+
+    // Analyze chunk
+    const analyzeChunkBtn = document.getElementById("analyze-chunk-btn");
+    analyzeChunkBtn.addEventListener("click", analyzeChunk);
+
+    // Result actions
+    const copySerializedChunk = document.getElementById(
+        "copy-serialized-chunk",
+    );
+    copySerializedChunk.addEventListener("click", () => {
+        const serializedData = document.getElementById(
+            "serialized-chunk-data",
+        ).textContent;
+        navigator.clipboard.writeText(serializedData).then(() => {
+            copySerializedChunk.textContent = "Copied!";
+            setTimeout(() => {
+                copySerializedChunk.textContent = "Copy Serialized Chunk";
+            }, 2000);
+        });
+    });
+
+    const downloadSerializedChunk = document.getElementById(
+        "download-serialized-chunk",
+    );
+    downloadSerializedChunk.addEventListener("click", () => {
+        const serializedData = document.getElementById(
+            "serialized-chunk-data",
+        ).textContent;
+        const chunkType =
+            document.getElementById("result-chunk-type").textContent;
+        const fileName = `${chunkType.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}.hex`;
+
+        const blob = new Blob([serializedData], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    });
+
+    const createNewChunk = document.getElementById("create-new-chunk");
+    createNewChunk.addEventListener("click", () => {
+        document.getElementById("chunk-creation-result").style.display = "none";
+    });
+
+    const copyAnalyzedData = document.getElementById("copy-analyzed-data");
+    copyAnalyzedData.addEventListener("click", () => {
+        // Get address from analysis
+        const address = document.getElementById(
+            "analysis-chunk-address",
+        ).textContent;
+        navigator.clipboard.writeText(address).then(() => {
+            copyAnalyzedData.textContent = "Copied!";
+            setTimeout(() => {
+                copyAnalyzedData.textContent = "Copy Address";
+            }, 2000);
+        });
+    });
+
+    const analyzeNewChunk = document.getElementById("analyze-new-chunk");
+    analyzeNewChunk.addEventListener("click", () => {
+        document.getElementById("chunk-analysis-result").style.display = "none";
+        document.getElementById("chunk-data-hex").value = "";
+        document.getElementById("expected-address").value = "";
+    });
+
+    // Copy functionality for all copy-enabled elements
+    document.querySelectorAll(".copy-enabled").forEach((el) => {
+        el.addEventListener("click", function () {
+            navigator.clipboard.writeText(this.textContent).then(() => {
+                const originalText = this.textContent;
+                this.textContent = "Copied!";
+                setTimeout(() => {
+                    this.textContent = originalText;
+                }, 1000);
+            });
+        });
+    });
+}
+
+// Helper functions for chunk creation/analysis
+function setupInputToggle(inputId) {
+    const textarea = document.getElementById(inputId);
+    const toggleOptions =
+        textarea.parentElement.querySelectorAll(".toggle-option");
+
+    toggleOptions.forEach((option) => {
+        option.addEventListener("click", () => {
+            // Remove active class from all options
+            toggleOptions.forEach((opt) => opt.classList.remove("active"));
+            // Add active class to clicked option
+            option.classList.add("active");
+
+            // Convert data if needed
+            const format = option.getAttribute("data-format");
+            convertInputFormat(textarea, format);
+        });
+    });
+}
+
+function convertInputFormat(textarea, targetFormat) {
+    const currentText = textarea.value.trim();
+    if (!currentText) return;
+
+    const currentFormat = textarea.parentElement
+        .querySelector(".toggle-option.active")
+        .getAttribute("data-format");
+
+    // Only convert if changing formats
+    if (currentFormat !== targetFormat) {
+        try {
+            if (currentFormat === "text" && targetFormat === "hex") {
+                // Text to hex
+                const encoder = new TextEncoder();
+                const bytes = encoder.encode(currentText);
+                textarea.value = "0x" + bytesToHex(bytes);
+            } else if (currentFormat === "hex" && targetFormat === "text") {
+                // Hex to text
+                const bytes = hexToBytes(currentText);
+                const decoder = new TextDecoder();
+                textarea.value = decoder.decode(bytes);
+            }
+        } catch (error) {
+            // If conversion fails, show error and revert to original format
+            alert(
+                `Cannot convert the current input to ${targetFormat} format: ${error.message}`,
+            );
+            textarea.parentElement
+                .querySelector(`[data-format="${currentFormat}"]`)
+                .classList.add("active");
+            textarea.parentElement
+                .querySelector(`[data-format="${targetFormat}"]`)
+                .classList.remove("active");
+        }
+    }
+}
+
+function updateDataSize(textarea, sizeElement, warningElement) {
+    const text = textarea.value.trim();
+    let byteLength = 0;
+
+    const format = textarea.parentElement
+        .querySelector(".toggle-option.active")
+        .getAttribute("data-format");
+
+    if (format === "text") {
+        const encoder = new TextEncoder();
+        byteLength = encoder.encode(text).length;
+    } else if (format === "hex") {
+        try {
+            const bytes = hexToBytes(text);
+            byteLength = bytes.length;
+        } catch (error) {
+            warningElement.textContent = "Invalid hex format";
+            return;
+        }
+    }
+
+    sizeElement.textContent = byteLength;
+
+    // Check if size exceeds max
+    if (byteLength > 4096) {
+        warningElement.textContent =
+            "Warning: Exceeds maximum chunk size (4096 bytes)";
+    } else {
+        warningElement.textContent = "";
+    }
+}
+
+function hexToBytes(hexString) {
+    // Remove 0x prefix if present
+    hexString = hexString.startsWith("0x") ? hexString.slice(2) : hexString;
+
+    // Validate hex string
+    if (hexString.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hexString)) {
+        throw new Error("Invalid hex string");
+    }
+
+    const bytes = new Uint8Array(hexString.length / 2);
+    for (let i = 0; i < hexString.length; i += 2) {
+        bytes[i / 2] = parseInt(hexString.substr(i, 2), 16);
+    }
+
+    return bytes;
+}
+
+function getDataFromInput(inputElement) {
+    const text = inputElement.value.trim();
+    if (!text) {
+        throw new Error("Input data cannot be empty");
+    }
+
+    const format = inputElement.parentElement
+        .querySelector(".toggle-option.active")
+        .getAttribute("data-format");
+
+    if (format === "text") {
+        const encoder = new TextEncoder();
+        return encoder.encode(text);
+    } else if (format === "hex") {
+        return hexToBytes(text);
+    }
+}
+
+function createContentChunk() {
+    try {
+        const data = getDataFromInput(
+            document.getElementById("content-chunk-data"),
+        );
+
+        // Check size
+        if (data.length > 4096) {
+            alert("Data exceeds maximum chunk size (4096 bytes)");
+            return;
+        }
+
+        // Create the chunk
+        const result = create_content_chunk(data);
+
+        // Show result
+        displayContentChunkResult(result);
+    } catch (error) {
+        alert(`Error creating content chunk: ${error.message}`);
+    }
+}
+
+function createSingleOwnerChunk() {
+    try {
+        // Get ID
+        const idInput = document.getElementById("so-chunk-id").value.trim();
+        if (!idInput) {
+            alert("Chunk ID is required");
+            return;
+        }
+        const id = hexToBytes(idInput);
+        if (id.length !== 32) {
+            alert("Chunk ID must be exactly 32 bytes (64 hex characters)");
+            return;
+        }
+
+        // Get private key
+        const pkInput = document.getElementById("private-key").value.trim();
+        if (!pkInput) {
+            alert("Private key is required");
+            return;
+        }
+        const privateKey = hexToBytes(pkInput);
+        if (privateKey.length !== 32) {
+            alert("Private key must be exactly 32 bytes (64 hex characters)");
+            return;
+        }
+
+        // Get data
+        const data = getDataFromInput(document.getElementById("so-chunk-data"));
+
+        // Check size
+        if (data.length > 4096) {
+            alert("Data exceeds maximum chunk size (4096 bytes)");
+            return;
+        }
+
+        // Create the chunk
+        const result = create_single_owner_chunk(id, data, privateKey);
+
+        // Show result
+        displaySingleOwnerChunkResult(result);
+    } catch (error) {
+        alert(`Error creating single owner chunk: ${error.message}`);
+    }
+}
+
+function displayContentChunkResult(result) {
+    // Set result type
+    document.getElementById("result-chunk-type").textContent = "Content Chunk";
+
+    // Set address
+    document.getElementById("result-chunk-address").textContent =
+        result.address_hex;
+
+    // Hide ID and owner fields
+    document.getElementById("result-id-field").style.display = "none";
+    document.getElementById("result-owner-field").style.display = "none";
+
+    // Set sizes
+    document.getElementById("result-data-size").textContent =
+        `${result.data.length} bytes`;
+    document.getElementById("result-total-size").textContent =
+        `${result.size} bytes`;
+
+    // Set serialized data
+    document.getElementById("serialized-chunk-data").textContent =
+        result.serialized_hex;
+
+    // Generate icon
+    const iconConfig = new IconConfig(
+        200,
+        IconShape.Circle,
+        GeneratorFunction.Geometric,
+        ColorScheme.Vibrant,
+    );
+
+    const svgContent = generate_svg_for_address(result.address, iconConfig);
+    document.getElementById("created-chunk-icon").innerHTML = svgContent;
+
+    // Show the result container
+    document.getElementById("chunk-creation-result").style.display = "block";
+}
+
+function displaySingleOwnerChunkResult(result) {
+    // Set result type
+    document.getElementById("result-chunk-type").textContent =
+        "Single Owner Chunk";
+
+    // Set address
+    document.getElementById("result-chunk-address").textContent =
+        result.address_hex;
+
+    // Set ID and owner fields
+    document.getElementById("result-id-field").style.display = "block";
+    document.getElementById("result-chunk-id").textContent = result.id_hex;
+
+    document.getElementById("result-owner-field").style.display = "block";
+    document.getElementById("result-owner-address").textContent =
+        result.owner_hex;
+
+    // Set sizes
+    document.getElementById("result-data-size").textContent =
+        `${result.data.length} bytes`;
+    document.getElementById("result-total-size").textContent =
+        `${result.size} bytes`;
+
+    // Set serialized data
+    document.getElementById("serialized-chunk-data").textContent =
+        result.serialized_hex;
+
+    // Generate icon
+    const iconConfig = new IconConfig(
+        200,
+        IconShape.Circle,
+        GeneratorFunction.Geometric,
+        ColorScheme.Vibrant,
+    );
+
+    const svgContent = generate_svg_for_address(result.address, iconConfig);
+    document.getElementById("created-chunk-icon").innerHTML = svgContent;
+
+    // Show the result container
+    document.getElementById("chunk-creation-result").style.display = "block";
+}
+
+function analyzeChunk() {
+    try {
+        // Get the chunk data
+        const chunkHexInput = document
+            .getElementById("chunk-data-hex")
+            .value.trim();
+        if (!chunkHexInput) {
+            alert("Serialized chunk data is required");
+            return;
+        }
+        const chunkData = hexToBytes(chunkHexInput);
+
+        // Get the expected address
+        const addressInput = document
+            .getElementById("expected-address")
+            .value.trim();
+        if (!addressInput) {
+            alert("Expected address is required");
+            return;
+        }
+        const expectedAddress = hexToBytes(addressInput);
+        if (expectedAddress.length !== 32) {
+            alert(
+                "Expected address must be exactly 32 bytes (64 hex characters)",
+            );
+            return;
+        }
+
+        // Analyze the chunk
+        const result = analyze_chunk(chunkData, expectedAddress);
+
+        // Display the result
+        displayAnalysisResult(result);
+    } catch (error) {
+        alert(`Error analyzing chunk: ${error.message}`);
+    }
+}
+
+function displayAnalysisResult(result) {
+    // Set validity status
+    if (result.is_valid) {
+        document.getElementById("analysis-valid").style.display = "block";
+        document.getElementById("analysis-invalid").style.display = "none";
+    } else {
+        document.getElementById("analysis-valid").style.display = "none";
+        document.getElementById("analysis-invalid").style.display = "block";
+        document.getElementById("analysis-error").textContent =
+            result.error_message;
+    }
+
+    // Set chunk type
+    let typeText = "Unknown";
+    if (result.chunk_type === 0) {
+        typeText = "Content Chunk";
+    } else if (result.chunk_type === 1) {
+        typeText = "Single Owner Chunk";
+    }
+    document.getElementById("analysis-chunk-type").textContent = typeText;
+
+    // Set address
+    document.getElementById("analysis-chunk-address").textContent =
+        result.address_hex;
+
+    // Set ID and owner fields if available
+    if (result.has_id) {
+        document.getElementById("analysis-id-field").style.display = "block";
+        document.getElementById("analysis-chunk-id").textContent =
+            result.id_hex;
+    } else {
+        document.getElementById("analysis-id-field").style.display = "none";
+    }
+
+    if (result.has_owner) {
+        document.getElementById("analysis-owner-field").style.display = "block";
+        document.getElementById("analysis-owner-address").textContent =
+            result.owner_hex;
+    } else {
+        document.getElementById("analysis-owner-field").style.display = "none";
+    }
+
+    // Set data size
+    document.getElementById("analysis-data-size").textContent =
+        `${result.data.length} bytes`;
+
+    // Set total size
+    document.getElementById("analysis-total-size").textContent =
+        `${result.data.length + (result.has_id ? 32 : 0) + (result.has_signature ? 65 : 0) + 8} bytes`;
+
+    document.getElementById("analysis-chunk-data-hex").textContent =
+        "0x" + bytesToHex(result.data);
+
+    try {
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        document.getElementById("analysis-chunk-data-text").textContent =
+            decoder.decode(result.data);
+    } catch {
+        document.getElementById("analysis-chunk-data-text").textContent =
+            "⚠️ Cannot display as UTF-8: Invalid encoding";
+    }
+
+    // Setup the format toggle for analysis chunk data
+    setupAnalysisFormatToggle();
+
+    // Generate icon
+    const iconConfig = new IconConfig(
+        200,
+        IconShape.Circle,
+        GeneratorFunction.Geometric,
+        ColorScheme.Vibrant,
+    );
+
+    const svgContent = generate_svg_for_address(result.address, iconConfig);
+    document.getElementById("analyzed-chunk-icon").innerHTML = svgContent;
+
+    // Show the result container
+    document.getElementById("chunk-analysis-result").style.display = "block";
+}
+
 // Start the application when the page loads
 window.addEventListener("DOMContentLoaded", initApp);
+
+function setupAnalysisFormatToggle() {
+    const toggleOptions = document.querySelectorAll(
+        '[data-target="analysis-chunk-data"]',
+    );
+
+    toggleOptions.forEach((option) => {
+        option.addEventListener("click", () => {
+            // Remove active class from all options
+            toggleOptions.forEach((opt) => opt.classList.remove("active"));
+
+            // Add active class to clicked option
+            option.classList.add("active");
+
+            // Show/hide the appropriate content
+            const format = option.getAttribute("data-format");
+            if (format === "hex") {
+                document.getElementById(
+                    "analysis-chunk-data-hex",
+                ).style.display = "block";
+                document.getElementById(
+                    "analysis-chunk-data-text",
+                ).style.display = "none";
+            } else {
+                document.getElementById(
+                    "analysis-chunk-data-hex",
+                ).style.display = "none";
+                document.getElementById(
+                    "analysis-chunk-data-text",
+                ).style.display = "block";
+            }
+        });
+    });
+}

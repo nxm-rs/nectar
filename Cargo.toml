@@ -38,7 +38,10 @@ check.all_targets = true
 nectar-primitives = { path = "crates/primitives" }
 
 # crypt & hashing
-alloy-primitives = { version = "0.8.22", default-features = false }
+alloy-primitives = { version = "0.8.25" }
+alloy-signer = { version = "0.12.6", default-features = false }
+alloy-signer-local = { version = "0.12.6", default-features = false }
+
 digest = "0.10"
 generic-array = "0.14"
 
@@ -46,22 +49,20 @@ generic-array = "0.14"
 parking_lot = "0.12"
 
 # concurrency and parallelism
-rayon = { version = "1.10" }
+rayon = "1.10"
 
 # Core dependencies
-bytes = { version = "1.9.0", default-features = false }
+bytes = { version = "1.10", default-features = false }
 thiserror = { version = "2.0", default-features = false }
-once_cell = { version = "1.19", default-features = false, features = ["critical-section"] }
-
-# Trait helpers
-auto_impl = "1"
-dyn-clone = "1"
+once_cell = { version = "1.21", default-features = false, features = ["critical-section"] }
 
 # For tests and examples
+arbitrary = "1.4"
+criterion = { package = "codspeed-criterion-compat", version = "2.9.1" }
+proptest = "1"
+proptest-arbitrary-interop = "0.1"
+proptest-derive = "0.5"
 rand = "0.9"
-criterion = { package = "codspeed-criterion-compat", version = "2.7" }
-hex = "0.4.3"
-tokio = { version = "1", default-features = false, features = ["full"] }
 
 # wasm
 wasm-bindgen = "0.2"

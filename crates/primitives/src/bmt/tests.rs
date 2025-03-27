@@ -1,12 +1,14 @@
 //! Tests for the Binary Merkle Tree implementation.
 
+use crate::bmt::constants::PROOF_LENGTH;
+
 use super::*;
 use alloy_primitives::{
-    B256,
+    B256, FixedBytes,
     hex::{self, ToHexExt},
 };
 use digest::{Digest, FixedOutputReset};
-use proof::BmtProver;
+use proof::Prover;
 use rand::Rng;
 
 // Original tests from mod.rs updated for new API
@@ -14,7 +16,7 @@ use rand::Rng;
 fn test_concurrent_simple() {
     let data: [u8; 3] = [1, 2, 3];
 
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
     hasher.set_span(data.len() as u64);
 
     // Update with data
@@ -32,18 +34,16 @@ fn test_concurrent_simple() {
 #[test]
 fn test_concurrent_fullsize() {
     // Use a random seed for consistent results
-    let data: Vec<u8> = (0..BMT_MAX_DATA_LENGTH)
-        .map(|_| rand::random::<u8>())
-        .collect();
+    let data: Vec<u8> = (0..MAX_DATA_LENGTH).map(|_| rand::random::<u8>()).collect();
 
     // Hash with the new hasher
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
     hasher.set_span(data.len() as u64);
     hasher.update(&data);
     let result1 = hasher.sum();
 
     // Hash again - should get same result
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
     hasher.set_span(data.len() as u64);
     hasher.update(&data);
     let result2 = hasher.sum();
@@ -53,12 +53,12 @@ fn test_concurrent_fullsize() {
 
 #[test]
 fn test_hasher_empty_data() {
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
     hasher.set_span(0);
     let result = hasher.sum();
 
     // Create a second hasher to verify deterministic result for empty data
-    let mut hasher2 = BMTHasher::new();
+    let mut hasher2 = Hasher::new();
     hasher2.set_span(0);
     let result2 = hasher2.sum();
 
@@ -68,22 +68,20 @@ fn test_hasher_empty_data() {
 #[test]
 fn test_sync_hasher_correctness() {
     let mut rng = rand::rng();
-    let data: Vec<u8> = (0..BMT_MAX_DATA_LENGTH)
-        .map(|_| rand::random::<u8>())
-        .collect();
+    let data: Vec<u8> = (0..MAX_DATA_LENGTH).map(|_| rand::random::<u8>()).collect();
 
     // Test multiple sub-slices of the data
     let mut start = 0;
     while start < data.len() {
         let slice_len = std::cmp::min(1 + rng.random_range(0..=5), data.len() - start);
 
-        let mut hasher = BMTHasher::new();
+        let mut hasher = Hasher::new();
         hasher.set_span(slice_len as u64);
         hasher.update(&data[..slice_len]);
         let result = hasher.sum();
 
         // Verify the hash is consistent
-        let mut hasher2 = BMTHasher::new();
+        let mut hasher2 = Hasher::new();
         hasher2.set_span(slice_len as u64);
         hasher2.update(&data[..slice_len]);
         let result2 = hasher2.sum();
@@ -96,7 +94,7 @@ fn test_sync_hasher_correctness() {
 
 #[test]
 fn test_bmt_hasher_with_prefix() {
-    let mut hasher1 = BMTHasher::new();
+    let mut hasher1 = Hasher::new();
     hasher1.set_span(11);
     hasher1.prefix_with(b"prefix-");
 
@@ -105,7 +103,7 @@ fn test_bmt_hasher_with_prefix() {
     let result_with_prefix = hasher1.sum();
 
     // Create a new hasher without prefix
-    let mut hasher2 = BMTHasher::new();
+    let mut hasher2 = Hasher::new();
     hasher2.set_span(11);
     hasher2.update(data);
     let result_without_prefix = hasher2.sum();
@@ -116,21 +114,24 @@ fn test_bmt_hasher_with_prefix() {
 
 #[test]
 fn test_bmt_hasher_large_data() {
-    let mut hasher = BMTHasher::new();
-    hasher.set_span(BMT_MAX_DATA_LENGTH as u64);
+    let mut hasher = Hasher::new();
+    hasher.set_span(MAX_DATA_LENGTH as u64);
 
     // Create data exactly the size of BMT_MAX_DATA_LENGTH
-    let data = vec![0x42; BMT_MAX_DATA_LENGTH];
+    let data = vec![0x42; MAX_DATA_LENGTH];
     hasher.update(&data);
     let result = hasher.sum();
 
-    assert_eq!(result.as_slice().len(), HASH_SIZE);
+    assert_eq!(
+        result.as_slice().len(),
+        std::mem::size_of::<FixedBytes<32>>()
+    );
 }
 
 #[test]
 fn test_proof_generation_and_verification() {
     let data = b"hello world, this is a test for proof generation and verification";
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
 
     // Set the span and update the data
     hasher.set_span(data.len() as u64);
@@ -144,18 +145,18 @@ fn test_proof_generation_and_verification() {
 
     // Verify the proof
     let is_valid =
-        BMTHasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
+        Hasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
 
     assert!(is_valid, "Proof verification should succeed");
 }
 
 #[test]
 fn test_proof_correctness() {
-    let mut buf = vec![0u8; BMT_MAX_DATA_LENGTH];
+    let mut buf = vec![0u8; MAX_DATA_LENGTH];
     let data = b"hello world";
     buf[..data.len()].copy_from_slice(data);
 
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
     let span = buf.len() as u64;
     hasher.set_span(span);
     hasher.update(&buf);
@@ -169,7 +170,7 @@ fn test_proof_correctness() {
     // Verify the proof segments contain expected data
     assert_eq!(
         proof.proof_segments.len(),
-        BMT_PROOF_LENGTH,
+        PROOF_LENGTH,
         "Incorrect proof length"
     );
 
@@ -209,7 +210,7 @@ fn test_proof_correctness() {
 
     // Test proof verification
     let is_valid =
-        BMTHasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
+        Hasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
 
     assert!(is_valid, "Proof verification should succeed");
 
@@ -233,7 +234,7 @@ fn test_proof_correctness() {
         &rightmost_proof.proof_segments,
     );
 
-    let is_valid = BMTHasher::verify_proof(&rightmost_proof, root_hash.as_slice())
+    let is_valid = Hasher::verify_proof(&rightmost_proof, root_hash.as_slice())
         .expect("Failed to verify rightmost proof");
     assert!(is_valid, "Rightmost proof verification should succeed");
 
@@ -254,7 +255,7 @@ fn test_proof_correctness() {
 
     verify_segments(&expected_middle_segments, &middle_proof.proof_segments);
 
-    let is_valid = BMTHasher::verify_proof(&middle_proof, root_hash.as_slice())
+    let is_valid = Hasher::verify_proof(&middle_proof, root_hash.as_slice())
         .expect("Failed to verify middle proof");
     assert!(is_valid, "Middle proof verification should succeed");
 }
@@ -265,10 +266,10 @@ fn test_digest_trait_methods() {
     let data = b"test data";
 
     // Using static method
-    let hash1 = BMTHasher::digest(data);
+    let hash1 = Hasher::digest(data);
 
     // Using instance methods
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
     hasher.update(data);
     let hash2 = hasher.finalize_fixed_reset();
 
@@ -286,11 +287,11 @@ fn test_digest_trait_methods() {
 #[test]
 fn test_root_hash_calculation() {
     // This test is based on the proof.rs test_root_hash_calculation test
-    let mut buf = vec![0u8; BMT_MAX_DATA_LENGTH];
+    let mut buf = vec![0u8; MAX_DATA_LENGTH];
     let data = b"hello world";
     buf[..data.len()].copy_from_slice(data);
 
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
     hasher.set_span(buf.len() as u64);
     hasher.update(&buf);
     let expected_root_hash = hasher.sum();
@@ -301,7 +302,7 @@ fn test_root_hash_calculation() {
         .expect("Failed to generate proof");
 
     // Verify the proof against the root hash
-    let is_valid = BMTHasher::verify_proof(&proof, expected_root_hash.as_slice())
+    let is_valid = Hasher::verify_proof(&proof, expected_root_hash.as_slice())
         .expect("Failed to verify proof");
     assert!(is_valid, "Proof verification should succeed");
 }
@@ -309,10 +310,10 @@ fn test_root_hash_calculation() {
 #[test]
 fn test_proof() {
     // Initialize a buffer with random data
-    let mut buf = vec![0u8; BMT_MAX_DATA_LENGTH];
+    let mut buf = vec![0u8; MAX_DATA_LENGTH];
     rand::rng().fill(&mut buf[..]);
 
-    let mut hasher = BMTHasher::new();
+    let mut hasher = Hasher::new();
     hasher.set_span(buf.len() as u64);
     hasher.update(&buf);
     let root_hash = hasher.sum();
@@ -327,7 +328,7 @@ fn test_proof() {
 
         // Verify the proof
         let is_valid =
-            BMTHasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
+            Hasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
 
         assert!(
             is_valid,
@@ -339,8 +340,8 @@ fn test_proof() {
 
 #[test]
 fn test_excess_data_ignored() {
-    // Create data that is exactly BMT_MAX_DATA_LENGTH
-    let exact_data: Vec<u8> = (0..BMT_MAX_DATA_LENGTH).map(|i| (i % 256) as u8).collect();
+    // Create data that is exactly MAX_DATA_LENGTH
+    let exact_data: Vec<u8> = (0..MAX_DATA_LENGTH).map(|i| (i % 256) as u8).collect();
 
     // Create data that exceeds the maximum by 100 bytes
     let mut excess_data = exact_data.clone();
@@ -349,25 +350,25 @@ fn test_excess_data_ignored() {
     let excess_len = excess_data.len() as u64;
 
     // Hash with exact data (using excess length as span)
-    let mut hasher1 = BMTHasher::new();
+    let mut hasher1 = Hasher::new();
     hasher1.set_span(excess_len);
     hasher1.update(&exact_data);
     let result1 = hasher1.sum();
 
     // Hash with excess data
-    let mut hasher2 = BMTHasher::new();
+    let mut hasher2 = Hasher::new();
     hasher2.set_span(excess_len);
     hasher2.update(&excess_data);
     let result2 = hasher2.sum();
 
-    // Assert that only the first BMT_MAX_DATA_LENGTH bytes were considered
+    // Assert that only the first MAX_DATA_LENGTH bytes were considered
     assert_eq!(
         result1, result2,
         "Excess data should be ignored in hash calculation"
     );
 
     // Test incremental updates
-    let mut hasher3 = BMTHasher::new();
+    let mut hasher3 = Hasher::new();
     hasher3.set_span(exact_data.len() as u64);
 
     // Add exact data first
@@ -385,7 +386,7 @@ fn test_excess_data_ignored() {
     );
 
     // Test with Write trait
-    let mut hasher4 = BMTHasher::new();
+    let mut hasher4 = Hasher::new();
     hasher4.set_span(exact_data.len() as u64);
 
     // Write exact data

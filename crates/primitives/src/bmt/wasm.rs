@@ -1,24 +1,24 @@
-//! WASM bindings for BMT functionality.
+//! WASM bindings for Hasher functionality.
 //!
-//! This module provides JavaScript-friendly wrappers around BMT types.
+//! This module provides JavaScript-friendly wrappers around Hasher types.
 
-use super::{BMTHasher, BMTProof, BmtProver};
+use super::{Hasher, Proof, Prover};
 use crate::chunk::ChunkAddress;
 use alloy_primitives::B256;
 use digest::Digest;
 use js_sys::{Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 
-/// WASM-friendly wrapper for the BMTHasher
-#[wasm_bindgen(js_name = BMTHasher)]
-pub struct WasmBMTHasher(BMTHasher);
+/// WASM-friendly wrapper for the Hasher
+#[wasm_bindgen(js_name = Hasher)]
+pub struct WasmHasher(Hasher);
 
-#[wasm_bindgen(js_class = BMTHasher)]
-impl WasmBMTHasher {
-    /// Create a new BMT hasher
+#[wasm_bindgen(js_class = Hasher)]
+impl WasmHasher {
+    /// Create a new Hasher
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self(BMTHasher::new())
+        Self(Hasher::new())
     }
 
     /// Set the span of data to be hashed
@@ -49,47 +49,35 @@ impl WasmBMTHasher {
         result
     }
 
-    /// Calculate the chunk address for the given data
-    #[wasm_bindgen(js_name = chunkAddress)]
-    pub fn chunk_address(
-        &self,
-        data: &Uint8Array,
-    ) -> Result<crate::wasm::WasmChunkAddress, JsValue> {
-        match self.0.chunk_address(&data.to_vec()) {
-            Ok(addr) => Ok(crate::wasm::WasmChunkAddress(addr)),
-            Err(e) => Err(JsValue::from_str(&e.to_string())),
-        }
-    }
-
     /// Generate a proof for a specific segment
     #[wasm_bindgen(js_name = generateProof)]
     pub fn generate_proof(
         &self,
         data: &Uint8Array,
         segment_index: usize,
-    ) -> Result<WasmBMTProof, JsValue> {
+    ) -> Result<WasmProof, JsValue> {
         match self.0.generate_proof(&data.to_vec(), segment_index) {
-            Ok(proof) => Ok(WasmBMTProof(proof)),
+            Ok(proof) => Ok(WasmProof(proof)),
             Err(e) => Err(JsValue::from_str(&e.to_string())),
         }
     }
 
     /// Verify a proof against a root hash
-    #[wasm_bindgen(js_name = verifyProof, static_method_of = BMTHasher)]
-    pub fn verify_proof(proof: &WasmBMTProof, root_hash: &Uint8Array) -> Result<bool, JsValue> {
-        match BMTHasher::verify_proof(&proof.0, &root_hash.to_vec()) {
+    #[wasm_bindgen(js_name = verifyProof, static_method_of = Hasher)]
+    pub fn verify_proof(proof: &WasmProof, root_hash: &Uint8Array) -> Result<bool, JsValue> {
+        match Hasher::verify_proof(&proof.0, &root_hash.to_vec()) {
             Ok(result) => Ok(result),
             Err(e) => Err(JsValue::from_str(&e.to_string())),
         }
     }
 }
 
-/// WASM-friendly wrapper for BMT proofs
-#[wasm_bindgen(js_name = BMTProof)]
-pub struct WasmBMTProof(pub(crate) BMTProof);
+/// WASM-friendly wrapper for proofs
+#[wasm_bindgen(js_name = Proof)]
+pub struct WasmProof(pub(crate) Proof);
 
-#[wasm_bindgen(js_class = BMTProof)]
-impl WasmBMTProof {
+#[wasm_bindgen(js_class = Proof)]
+impl WasmProof {
     /// Get the segment index this proof is for
     #[wasm_bindgen(js_name = segmentIndex)]
     pub fn segment_index(&self) -> usize {

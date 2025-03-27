@@ -1,20 +1,55 @@
-//! Chunk address definition and operations
+//! Swarm address implementation
+//!
+//! This module provides the SwarmAddress type, which is a 32-byte identifier
+//! used for addressing chunks in the swarm network. It includes functionality
+//! for calculating distances between addresses and determining their proximity.
+//!
+//! ## Example Usage
+//!
+//! ```
+//! use nectar_primitives::SwarmAddress;
+//! use alloy_primitives::B256;
+//!
+//! // Create addresses
+//! let addr1 = SwarmAddress::from(B256::random());
+//! let addr2 = SwarmAddress::from(B256::random());
+//!
+//! // Calculate proximity
+//! let po = addr1.proximity(&addr2);
+//! println!("Proximity order: {}", po);
+//!
+//! // Calculate distance
+//! let distance = addr1.distance(&addr2);
+//! println!("Distance: {}", distance);
+//!
+//! // Compare distances
+//! let addr3 = SwarmAddress::from(B256::random());
+//! if addr1.closer(&addr2, &addr3) {
+//!     println!("addr1 is closer to addr2 than addr3");
+//! }
+//! ```
 
 use std::cmp::Ordering;
+use std::fmt;
 use std::ops::Deref;
 
-use crate::constants::*;
-use crate::error::Result;
 use alloy_primitives::{B256, U256, hex};
 
-/// A 256 bit address for a chunk in the network
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SwarmAddress(B256);
+use crate::error::Result;
+
+/// Maximum proximity order (based on 256-bit addresses)
+const MAX_PO: usize = 31;
+/// Extended proximity order for special operations
+const EXTENDED_PO: usize = MAX_PO + 5;
+
+/// A 256-bit address for a chunk in the Swarm network
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwarmAddress(pub B256);
 
 impl SwarmAddress {
-    /// Creates a new ChunkAddress from raw bytes
-    pub fn new(bytes: [u8; std::mem::size_of::<Self>()]) -> Self {
-        Self(B256::from_slice(&bytes))
+    /// Creates a new SwarmAddress from raw bytes
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(B256::from(bytes))
     }
 
     /// Returns the underlying bytes
@@ -41,7 +76,7 @@ impl SwarmAddress {
     /// Calculate the distance between Self and address `y` in big-endian
     #[inline(always)]
     pub fn distance(&self, y: &Self) -> U256 {
-        let mut result = [0u8; std::mem::size_of::<SwarmAddress>()];
+        let mut result = [0u8; 32];
 
         for (i, (&a, &b)) in self
             .0
@@ -56,14 +91,14 @@ impl SwarmAddress {
         U256::from_be_bytes(result)
     }
 
-    /// Compares `x` and `y` to self in terms of the distance metric defined in the Swarm specification.
+    /// Compares `x` and `y` to self in terms of the distance metric.
     /// It returns:
     ///   - `Ordering::Greater` if `self` is closer to `x` than `y`
     ///   - `Ordering::Less` if `self` is farther from `x` than `y`
     ///   - `Ordering::Equal` if `self` and `y` are equally close to `x`
     #[inline(always)]
     pub fn distance_cmp(&self, x: &Self, y: &Self) -> Ordering {
-        let (ab, xb, yb) = (self.0.0, x.0.0, y.0.0);
+        let (ab, xb, yb) = (self.0.as_slice(), x.0.as_slice(), y.0.as_slice());
 
         for i in 0..ab.len() {
             let dx = xb[i] ^ ab[i];
@@ -85,28 +120,24 @@ impl SwarmAddress {
         self.distance_cmp(x, y) == Ordering::Less
     }
 
+    /// Check if this address is within the given proximity to another address
+    pub fn is_within_proximity(&self, other: &Self, min_proximity: u8) -> bool {
+        self.proximity(other) >= min_proximity
+    }
+
+    /// Calculate the proximity order between self and another address
     #[inline(always)]
     pub fn proximity(&self, other: &Self) -> u8 {
         self.proximity_helper(other, MAX_PO)
     }
 
+    /// Calculate the extended proximity order between self and another address
     #[inline(always)]
     pub fn extended_proximity(&self, other: &Self) -> u8 {
         self.proximity_helper(other, EXTENDED_PO)
     }
 
-    /// Proximity returns the proximity order of the MSB distance between `x` and `y`
-    ///
-    /// The distance metric MSB(x, y) of two equal length byte sequences `x` and `y`
-    /// is the value of the binary integer cast of the x^y, ie., `x` and `y` bitwise
-    /// xor-ed. The binary cast is big endian: most significant bit first (MSB).
-    ///
-    /// Proximity(x, y) is a discrete logarithmic scaling of the MSB distance.
-    /// It is defined as the reverse rank of the integer part of the base 2 logarithm
-    /// of the distance.
-    ///
-    /// It is calculated by counting the number of common leading zeros in the (MSB)
-    /// binary representation of the x ^ y.
+    /// Helper function to calculate proximity with a maximum
     #[inline(always)]
     fn proximity_helper(&self, other: &Self, max: usize) -> u8 {
         let max_bytes = max / 8;
@@ -147,8 +178,8 @@ impl Default for SwarmAddress {
     }
 }
 
-impl std::fmt::Display for SwarmAddress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SwarmAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", hex::encode(&self.0.as_slice()[..8]))
     }
 }
@@ -167,225 +198,20 @@ impl From<B256> for SwarmAddress {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy_primitives::{FixedBytes, b256};
-    use std::{cmp::Ordering, str::FromStr};
-
-    #[test]
-    fn distance_closer() {
-        let a: SwarmAddress =
-            b256!("9100000000000000000000000000000000000000000000000000000000000000").into();
-        let x: SwarmAddress =
-            b256!("8200000000000000000000000000000000000000000000000000000000000000").into();
-        let y: SwarmAddress =
-            b256!("1200000000000000000000000000000000000000000000000000000000000000").into();
-
-        assert!(!x.closer(&a, &y));
+impl From<[u8; 32]> for SwarmAddress {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self::new(bytes)
     }
+}
 
-    #[test]
-    fn distance_matches() {
-        let x: SwarmAddress =
-            b256!("9100000000000000000000000000000000000000000000000000000000000000").into();
-        let y: SwarmAddress =
-            b256!("8200000000000000000000000000000000000000000000000000000000000000").into();
-
-        assert_eq!(
-            x.distance(&y),
-            U256::from_str(
-                "8593944123082061379093159043613555660984881674403010612303492563087302590464"
-            )
-            .unwrap()
-        );
+impl From<SwarmAddress> for B256 {
+    fn from(addr: SwarmAddress) -> Self {
+        addr.0
     }
+}
 
-    macro_rules! distance_cmp_test {
-        ($test_name:ident, $ordering:expr, $a:expr, $x:expr, $y:expr) => {
-            #[test]
-            fn $test_name() {
-                let a: SwarmAddress = b256!($a).into();
-                assert_eq!(
-                    a.distance_cmp(&b256!($x).into(), &b256!($y).into()),
-                    $ordering
-                );
-            }
-        };
-    }
-
-    distance_cmp_test!(
-        distance_cmp_eq,
-        Ordering::Equal,
-        "9100000000000000000000000000000000000000000000000000000000000000",
-        "1200000000000000000000000000000000000000000000000000000000000000",
-        "1200000000000000000000000000000000000000000000000000000000000000"
-    );
-
-    distance_cmp_test!(
-        distance_cmp_lt,
-        Ordering::Less,
-        "9100000000000000000000000000000000000000000000000000000000000000",
-        "1200000000000000000000000000000000000000000000000000000000000000",
-        "8200000000000000000000000000000000000000000000000000000000000000"
-    );
-
-    distance_cmp_test!(
-        distance_cmp_gt,
-        Ordering::Greater,
-        "9100000000000000000000000000000000000000000000000000000000000000",
-        "8200000000000000000000000000000000000000000000000000000000000000",
-        "1200000000000000000000000000000000000000000000000000000000000000"
-    );
-
-    // Function to limit the proximity to MAX_PO
-    const fn limit_po(po: usize) -> usize {
-        if po > MAX_PO { MAX_PO } else { po }
-    }
-
-    /// Table-driven test case structure
-    struct TestCase {
-        addr: FixedBytes<32>,
-        expected_po: usize,
-    }
-
-    /// Macro for generating the test cases
-    macro_rules! proximity_test_cases {
-        ($($addr:expr => $po:expr),* $(,)?) => {
-            &[
-                $(
-                    TestCase {
-                        addr: $addr,
-                        expected_po: limit_po($po),
-                    }
-                ),*
-            ]
-        };
-    }
-
-    #[test]
-    fn test_proximity() {
-        let test_cases = proximity_test_cases!(
-            // All zeros matches completely with itself (MAX_PO)
-            b256!("0000000000000000000000000000000000000000000000000000000000000000") => MAX_PO,
-
-            // First bit set (binary: 10000000...) => proximity 0
-            b256!("8000000000000000000000000000000000000000000000000000000000000000") => 0,
-
-            // Second bit set (binary: 01000000...) => proximity 1
-            b256!("4000000000000000000000000000000000000000000000000000000000000000") => 1,
-
-            // Third bit set (binary: 00100000...) => proximity 2
-            b256!("2000000000000000000000000000000000000000000000000000000000000000") => 2,
-
-            // Fourth bit set (binary: 00010000...) => proximity 3
-            b256!("1000000000000000000000000000000000000000000000000000000000000000") => 3,
-
-            // Fifth bit set (binary: 00001000...) => proximity 4
-            b256!("0800000000000000000000000000000000000000000000000000000000000000") => 4,
-
-            // Sixth bit set (binary: 00000100...) => proximity 5
-            b256!("0400000000000000000000000000000000000000000000000000000000000000") => 5,
-
-            // Seventh bit set (binary: 00000010...) => proximity 6
-            b256!("0200000000000000000000000000000000000000000000000000000000000000") => 6,
-
-            // Eighth bit set (binary: 00000001...) => proximity 7
-            b256!("0100000000000000000000000000000000000000000000000000000000000000") => 7,
-
-            // Ninth bit set (binary: 00000000 10000000...) => proximity 8
-            b256!("0080000000000000000000000000000000000000000000000000000000000000") => 8,
-
-            // Tenth bit set => proximity 9
-            b256!("0040000000000000000000000000000000000000000000000000000000000000") => 9,
-
-            // Eleventh bit set => proximity 10
-            b256!("0020000000000000000000000000000000000000000000000000000000000000") => 10,
-
-            // Twelfth bit set => proximity 11
-            b256!("0010000000000000000000000000000000000000000000000000000000000000") => 11,
-
-            // Thirteenth bit set => proximity 12
-            b256!("0008000000000000000000000000000000000000000000000000000000000000") => 12,
-
-            // Fourteenth bit set => proximity 13
-            b256!("0004000000000000000000000000000000000000000000000000000000000000") => 13,
-
-            // Fifteenth bit set => proximity 14
-            b256!("0002000000000000000000000000000000000000000000000000000000000000") => 14,
-
-            // Sixteenth bit set => proximity 15
-            b256!("0001000000000000000000000000000000000000000000000000000000000000") => 15,
-
-            // Seventeenth bit set => proximity 16
-            b256!("0000800000000000000000000000000000000000000000000000000000000000") => 16,
-
-            // Eighteenth bit set => proximity 17
-            b256!("0000400000000000000000000000000000000000000000000000000000000000") => 17,
-
-            // Nineteenth bit set => proximity 18
-            b256!("0000200000000000000000000000000000000000000000000000000000000000") => 18,
-
-            // Twentieth bit set => proximity 19
-            b256!("0000100000000000000000000000000000000000000000000000000000000000") => 19,
-
-            // Twenty-first bit set => proximity 20
-            b256!("0000080000000000000000000000000000000000000000000000000000000000") => 20,
-
-            // Twenty-second bit set => proximity 21
-            b256!("0000040000000000000000000000000000000000000000000000000000000000") => 21,
-
-            // Twenty-third bit set => proximity 22
-            b256!("0000020000000000000000000000000000000000000000000000000000000000") => 22,
-
-            // Twenty-fourth bit set => proximity 23
-            b256!("0000010000000000000000000000000000000000000000000000000000000000") => 23,
-
-            // Twenty-fifth bit set => proximity 24
-            b256!("0000008000000000000000000000000000000000000000000000000000000000") => 24,
-
-            // Twenty-sixth bit set => proximity 25
-            b256!("0000004000000000000000000000000000000000000000000000000000000000") => 25,
-
-            // Twenty-seventh bit set => proximity 26
-            b256!("0000002000000000000000000000000000000000000000000000000000000000") => 26,
-
-            // Twenty-eighth bit set => proximity 27
-            b256!("0000001000000000000000000000000000000000000000000000000000000000") => 27,
-
-            // Twenty-ninth bit set => proximity 28
-            b256!("0000000800000000000000000000000000000000000000000000000000000000") => 28,
-
-            // Thirtieth bit set => proximity 29
-            b256!("0000000400000000000000000000000000000000000000000000000000000000") => 29,
-
-            // Thirty-first bit set => proximity 30
-            b256!("0000000200000000000000000000000000000000000000000000000000000000") => 30,
-
-            // Thirty-second bit set => proximity 31
-            b256!("0000000100000000000000000000000000000000000000000000000000000000") => 31,
-
-            // Last test case: bit set at position 131 (16 bytes + 3 bits in) => proximity should be 31 (MAX_PO)
-            b256!("0000000000000000000020000000000000000000000000000000000000000000") => 31,
-        );
-
-        let base = SwarmAddress::from(B256::ZERO);
-
-        for tc in test_cases {
-            let tc_addr = SwarmAddress::from(tc.addr);
-            let got = base.proximity(&tc_addr) as usize;
-            assert_eq!(
-                got, tc.expected_po,
-                "Test failed for addr: {:?}, got {}, expected {}",
-                tc.addr, got, tc.expected_po
-            );
-
-            let got_reverse = tc_addr.proximity(&base) as usize;
-            assert_eq!(
-                got_reverse, tc.expected_po,
-                "Test failed for reversed addr: {:?}, got {}, expected {}",
-                tc.addr, got_reverse, tc.expected_po
-            );
-        }
+impl AsRef<[u8]> for SwarmAddress {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
     }
 }

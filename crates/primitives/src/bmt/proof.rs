@@ -1,12 +1,16 @@
-//! Proof related traits and structures for the Binary Merkle Tree.
+//! Proof-related traits and structures for the Binary Merkle Tree
+//!
+//! This module provides functionality for generating and verifying inclusion proofs
+//! for specific segments within a binary merkle tree.
 
 use alloy_primitives::{B256, Keccak256};
 
-use crate::bmt::{BMTHasher, constants::*, error::DigestError, error::Result};
+use crate::bmt::{Hasher, constants::*, error::BmtError};
+use crate::error::Result;
 
 /// Represents a proof for a specific segment in a Binary Merkle Tree
 #[derive(Clone, Debug)]
-pub struct BMTProof {
+pub struct Proof {
     /// The segment index this proof is for
     pub segment_index: usize,
     /// The segment data being proven
@@ -19,9 +23,9 @@ pub struct BMTProof {
     pub prefix: Option<Vec<u8>>,
 }
 
-impl BMTProof {
+impl Proof {
     /// Create a new BMT proof
-    pub fn new(
+    pub const fn new(
         segment_index: usize,
         segment: B256,
         proof_segments: Vec<B256>,
@@ -39,8 +43,10 @@ impl BMTProof {
 
     /// Verify this proof against a root hash
     pub fn verify(&self, root_hash: &[u8]) -> Result<bool> {
-        if self.proof_segments.len() != BMT_PROOF_LENGTH {
-            return Err(DigestError::invalid_proof("Invalid proof length"));
+        if self.proof_segments.len() != PROOF_LENGTH {
+            return Err(
+                BmtError::invalid_proof_length(PROOF_LENGTH, self.proof_segments.len()).into(),
+            );
         }
 
         // Start with the segment being proven
@@ -87,31 +93,31 @@ impl BMTProof {
 }
 
 /// Extension trait to add proof-related functionality to BMTHasher
-pub trait BmtProver {
+pub trait Prover {
     /// Generate a proof for a specific segment
-    fn generate_proof(&self, data: &[u8], segment_index: usize) -> Result<BMTProof>;
+    fn generate_proof(&self, data: &[u8], segment_index: usize) -> Result<Proof>;
 
     /// Verify a proof against a root hash
-    fn verify_proof(proof: &BMTProof, root_hash: &[u8]) -> Result<bool>;
+    fn verify_proof(proof: &Proof, root_hash: &[u8]) -> Result<bool>;
 }
 
-impl BmtProver for BMTHasher {
-    fn generate_proof(&self, data: &[u8], segment_index: usize) -> Result<BMTProof> {
-        if segment_index >= BMT_BRANCHES {
-            return Err(DigestError::invalid_proof(format!(
-                "Segment index {segment_index} out of bounds for BMT_BRANCHES"
-            )));
+impl Prover for Hasher {
+    fn generate_proof(&self, data: &[u8], segment_index: usize) -> Result<Proof> {
+        if segment_index >= BRANCHES {
+            return Err(self::BmtError::invalid_input_size(format!(
+                "Segment index {segment_index} out of bounds for BRANCHES"
+            ))
+            .into());
         }
 
         // Create segments from data, padding with zeros if needed
-        let mut segments = Vec::with_capacity(BMT_BRANCHES);
         let data_len = data.len();
 
         // Use platform-specific optimizations for segment generation
         #[cfg(not(target_arch = "wasm32"))]
-        {
+        let segments = {
             use rayon::prelude::*;
-            segments = (0..BMT_BRANCHES)
+            (0..BRANCHES)
                 .into_par_iter()
                 .map(|i| {
                     let start = i * SEGMENT_SIZE;
@@ -125,12 +131,13 @@ impl BmtProver for BMTHasher {
 
                     B256::from_slice(&segment)
                 })
-                .collect::<Vec<_>>();
-        }
+                .collect::<Vec<_>>()
+        };
 
         #[cfg(target_arch = "wasm32")]
-        {
-            for i in 0..BMT_BRANCHES {
+        let segments = {
+            let mut segs = Vec::with_capacity(BRANCHES);
+            for i in 0..BRANCHES {
                 let start = i * SEGMENT_SIZE;
                 let mut segment = [0u8; SEGMENT_SIZE];
 
@@ -140,22 +147,24 @@ impl BmtProver for BMTHasher {
                     segment[..copy_len].copy_from_slice(&data[start..end]);
                 }
 
-                segments.push(B256::from_slice(&segment));
+                segs.push(B256::from_slice(&segment));
             }
-        }
+
+            segs
+        };
 
         // Get the segment being proven
         let segment = segments[segment_index];
 
         // Generate proof segments
-        let mut proof_segments = Vec::with_capacity(BMT_PROOF_LENGTH);
+        let mut proof_segments = Vec::with_capacity(PROOF_LENGTH);
 
         // Build the Merkle tree level by level
         let mut current_level = segments;
         let mut current_index = segment_index;
 
         // Continue until we reach the root (or until we have BMT_PROOF_LENGTH segments)
-        while proof_segments.len() < BMT_PROOF_LENGTH {
+        while proof_segments.len() < PROOF_LENGTH {
             // Get sibling's index
             let sibling_index = if current_index % 2 == 0 {
                 current_index + 1
@@ -171,7 +180,7 @@ impl BmtProver for BMTHasher {
             }
 
             // Compute the next level up in the tree
-            let mut next_level = Vec::with_capacity((current_level.len() + 1) / 2);
+            let mut next_level = Vec::with_capacity(current_level.len().div_ceil(2));
 
             for i in (0..current_level.len()).step_by(2) {
                 let left = &current_level[i];
@@ -201,7 +210,7 @@ impl BmtProver for BMTHasher {
         }
 
         // Ensure we have exactly BMT_PROOF_LENGTH segments in our proof
-        while proof_segments.len() < BMT_PROOF_LENGTH {
+        while proof_segments.len() < PROOF_LENGTH {
             proof_segments.push(B256::ZERO);
         }
 
@@ -212,7 +221,7 @@ impl BmtProver for BMTHasher {
             None
         };
 
-        Ok(BMTProof::new(
+        Ok(Proof::new(
             segment_index,
             segment,
             proof_segments,
@@ -221,10 +230,7 @@ impl BmtProver for BMTHasher {
         ))
     }
 
-    fn verify_proof(proof: &BMTProof, root_hash: &[u8]) -> Result<bool> {
+    fn verify_proof(proof: &Proof, root_hash: &[u8]) -> Result<bool> {
         proof.verify(root_hash)
     }
 }
-
-/// Depth of the Binary Merkle Tree for proofs
-pub const BMT_PROOF_LENGTH: usize = BMT_DEPTH - 1;
