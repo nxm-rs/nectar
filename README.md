@@ -122,7 +122,7 @@ cargo bench
 
 ## License
 
-`nectar` is licensed under the MIT License. See [LICENSE](./LICENSE) for details.
+`nectar` is licensed under the AGPL License. See [LICENSE](./LICENSE) for details.
 
 ## Contributing
 
