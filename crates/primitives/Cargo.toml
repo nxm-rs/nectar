@@ -24,6 +24,7 @@ generic-array.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 once_cell.workspace = true
+serde = { workspace = true, optional = true }
 
 # synchronization
 parking_lot = "0.12"
@@ -56,6 +57,7 @@ rand.workspace = true
 [features]
 default = ["std"]
 std = []
+serde = ["dep:serde"]
 arbitrary = [
 	"std",
 	"dep:rand",
