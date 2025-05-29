@@ -3,9 +3,7 @@
 //! This module provides the implementation of single-owner chunks,
 //! which are chunks that include an owner identifier and signature.
 
-use alloy_primitives::{
-    Address, B256, FixedBytes, Keccak256, PrimitiveSignature, address, b256, hex,
-};
+use alloy_primitives::{Address, B256, FixedBytes, Keccak256, Signature, address, b256, hex};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use bytes::{Bytes, BytesMut};
@@ -53,12 +51,12 @@ pub struct SingleOwnerChunkMetadata {
     /// Unique identifier for this chunk
     id: B256,
     /// Digital signature of the chunk's ID and body hash
-    signature: PrimitiveSignature,
+    signature: Signature,
 }
 
 impl SingleOwnerChunkMetadata {
     /// Create a new metadata instance with the given ID and signature
-    pub fn new(id: B256, signature: PrimitiveSignature) -> Self {
+    pub fn new(id: B256, signature: Signature) -> Self {
         Self { id, signature }
     }
 
@@ -68,7 +66,7 @@ impl SingleOwnerChunkMetadata {
     }
 
     /// Get the signature of this chunk
-    pub fn signature(&self) -> &PrimitiveSignature {
+    pub fn signature(&self) -> &Signature {
         &self.signature
     }
 }
@@ -152,11 +150,7 @@ impl SingleOwnerChunk {
     /// # Returns
     ///
     /// A Result containing the new SingleOwnerChunk, or an error if creation fails.
-    pub fn with_signature(
-        id: B256,
-        signature: PrimitiveSignature,
-        data: impl Into<Bytes>,
-    ) -> Result<Self> {
+    pub fn with_signature(id: B256, signature: Signature, data: impl Into<Bytes>) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::default()
             .auto_from_data(data)?
             .with_id(id)
@@ -232,7 +226,7 @@ impl SingleOwnerChunk {
     }
 
     /// Get the signature of this chunk.
-    pub fn signature(&self) -> &PrimitiveSignature {
+    pub fn signature(&self) -> &Signature {
         &self.header.metadata.signature
     }
 }
@@ -314,7 +308,7 @@ impl TryFrom<Bytes> for SingleOwnerChunk {
 
         // Extract signature
         let sig_slice = &bytes.slice(ID_SIZE..ID_SIZE + SIGNATURE_SIZE);
-        let signature = PrimitiveSignature::from_raw(sig_slice).map_err(ChunkError::from)?;
+        let signature = Signature::from_raw(sig_slice).map_err(ChunkError::from)?;
 
         // Extract body
         let body_bytes = bytes.slice(ID_SIZE + SIGNATURE_SIZE..);
@@ -417,10 +411,7 @@ impl SingleOwnerChunkBuilderWithId {
     }
 
     /// Set a pre-computed signature.
-    pub fn with_signature(
-        self,
-        signature: PrimitiveSignature,
-    ) -> Result<SingleOwnerChunkBuilderReady> {
+    pub fn with_signature(self, signature: Signature) -> Result<SingleOwnerChunkBuilderReady> {
         Ok(SingleOwnerChunkBuilderReady(
             self.0.with_signature(signature)?,
         ))
@@ -471,7 +462,7 @@ struct SingleOwnerChunkBuilderImpl<S: BuilderState = Initial> {
     /// The ID to use for the chunk
     id: Option<B256>,
     /// The signature to use for the chunk
-    signature: Option<PrimitiveSignature>,
+    signature: Option<Signature>,
     /// Pre-computed address for the chunk
     address: Option<ChunkAddress>,
     /// Pre-computed owner for the chunk
@@ -582,7 +573,7 @@ impl SingleOwnerChunkBuilderImpl<WithId> {
     /// Set a pre-computed signature
     fn with_signature(
         mut self,
-        signature: PrimitiveSignature,
+        signature: Signature,
     ) -> Result<SingleOwnerChunkBuilderImpl<ReadyToBuild>> {
         self.signature = Some(signature);
 
@@ -807,7 +798,7 @@ mod tests {
         let sig = hex!(
             "5acd384febc133b7b245e5ddc62d82d2cded9182d2716126cd8844509af65a053deb418208027f548e3e88343af6f84a8772fb3cebc0a1833a0ea7ec0c1348311b"
         );
-        let signature = PrimitiveSignature::try_from(sig.as_slice()).unwrap();
+        let signature = Signature::try_from(sig.as_slice()).unwrap();
 
         let chunk = SingleOwnerChunkBuilderImpl::default()
             .auto_from_data(data.clone())
