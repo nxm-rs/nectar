@@ -4,11 +4,11 @@
 
 use std::ops::Deref;
 
-use alloy_primitives::{hex, Address, Keccak256, PrimitiveSignature, B256};
+use alloy_primitives::{hex, Address, B256};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use nectar_primitives::bmt::Hasher;
-use nectar_primitives::{Chunk, ChunkAddress, ChunkSerialization, ContentChunk, SingleOwnerChunk};
+use nectar_primitives::{Chunk, ChunkAddress, ContentChunk, SingleOwnerChunk};
 use wasm_bindgen::prelude::*;
 
 // Add SVG generator modules

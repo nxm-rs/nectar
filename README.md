@@ -1,7 +1,7 @@
 # nectar
 
-[![CI Status](https://github.com/nullisxyz/nectar/actions/workflows/unit.yml/badge.svg)](https://github.com/nullisxyz/nectar/actions/workflows/unit.yml)
-[![codecov](https://codecov.io/gh/nullisxyz/nectar/graph/badge.svg?token=wfOmWGcYv2)](https://codecov.io/gh/nullisxyz/nectar)
+[![CI Status](https://github.com/nxm-rs/nectar/actions/workflows/unit.yml/badge.svg)](https://github.com/nxm-rs/nectar/actions/workflows/unit.yml)
+[![codecov](https://codecov.io/gh/nxm-rs/nectar/graph/badge.svg?token=wfOmWGcYv2)](https://codecov.io/gh/nxm-rs/nectar)
 
 **The sweet essential primitives for building Ethereum Swarm applications**
 
@@ -9,7 +9,7 @@
 
 Just as nectar is essential for bees to produce honey, `nectar` provides the essential primitives for building applications on Ethereum Swarm. This crate contains the core data structures, cryptographic tools, and protocol implementations needed to interact with the Swarm network.
 
-Whether you're building a full node like [Vertex](https://github.com/nullisxyz/vertex), crafting developer tools, or creating your own Swarm-powered applications, `nectar` provides the building blocks you need to communicate with the hive.
+Whether you're building a full node like [Vertex](https://github.com/nxm-rs/vertex), crafting developer tools, or creating your own Swarm-powered applications, `nectar` provides the building blocks you need to communicate with the hive.
 
 ## Features
 
