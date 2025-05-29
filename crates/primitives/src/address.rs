@@ -35,6 +35,9 @@ use std::ops::Deref;
 
 use alloy_primitives::{B256, U256, hex};
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 use crate::error::Result;
 
 /// Maximum proximity order (based on 256-bit addresses)
@@ -44,6 +47,8 @@ const EXTENDED_PO: usize = MAX_PO + 5;
 
 /// A 256-bit address for a chunk in the Swarm network
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct SwarmAddress(pub B256);
 
 impl SwarmAddress {
