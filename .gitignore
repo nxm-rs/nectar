@@ -3,3 +3,6 @@ target/
 *.tar.gz
 .env
 cspell.json
+
+# Nix
+.direnv/
