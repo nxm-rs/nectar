@@ -36,14 +36,22 @@ check.all_targets = true
 [workspace.dependencies]
 # nectar crates
 nectar-primitives = { path = "crates/primitives" }
+nectar-swarms = { path = "crates/swarms" }
+nectar-postage = { path = "crates/postage" }
 
-# crypt & hashing
-alloy-primitives = { version = "1.1.2", default-features = false }
-alloy-signer = { version = "1.0.9", default-features = false }
-alloy-signer-local = { version = "1.0.9", default-features = false }
+# alloy
+alloy-primitives = { version = "1.5", default-features = false }
+alloy-chains = { version = "0.2", default-features = false }
+alloy-signer = { version = "1.4", default-features = false }
+alloy-signer-local = { version = "1.4", default-features = false }
 
+# hashing
 digest = "0.10"
 generic-array = "0.14"
+
+# enums
+strum = { version = "0.27", default-features = false, features = ["derive"] }
+num_enum = { version = "0.7", default-features = false }
 
 # sync
 parking_lot = "0.12"
@@ -52,7 +60,7 @@ parking_lot = "0.12"
 rayon = "1.10"
 
 # Core dependencies
-bytes = { version = "1.10", default-features = false }
+bytes = { version = "1.11", default-features = false }
 thiserror = { version = "2.0", default-features = false }
 once_cell = { version = "1.21", default-features = false, features = [
     "critical-section",

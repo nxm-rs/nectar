@@ -1,0 +1,34 @@
+[package]
+name = "nectar-swarms"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Canonical type definitions for Ethereum Swarm networks"
+keywords = ["swarm", "ethereum", "network", "no_std"]
+categories = ["no-std", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-chains = { workspace = true }
+strum = { workspace = true }
+num_enum = { workspace = true }
+
+# optional
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+proptest-arbitrary-interop = { workspace = true }
+
+[features]
+default = ["std"]
+std = ["strum/std", "alloy-chains/std", "serde?/std"]
+serde = ["dep:serde", "alloy-chains/serde"]
+arbitrary = ["alloy-chains/arbitrary"]

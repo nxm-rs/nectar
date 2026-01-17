@@ -1,0 +1,31 @@
+[package]
+name = "nectar-postage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Postage stamp primitives for Ethereum Swarm"
+keywords = ["swarm", "ethereum", "postage", "no_std"]
+categories = ["no-std", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives = { workspace = true }
+thiserror = { workspace = true }
+
+# optional
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[features]
+default = ["std"]
+std = ["alloy-primitives/std", "thiserror/std", "serde?/std"]
+serde = ["dep:serde", "alloy-primitives/serde"]
