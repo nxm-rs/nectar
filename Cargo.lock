@@ -1808,6 +1808,7 @@ name = "nectar-postage"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "nectar-primitives",
  "proptest",
  "serde",
  "thiserror",

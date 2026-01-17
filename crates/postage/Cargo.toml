@@ -16,6 +16,7 @@ categories = ["no-std", "data-structures"]
 workspace = true
 
 [dependencies]
+nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
 thiserror = { workspace = true }
 
@@ -27,5 +28,5 @@ proptest = { workspace = true }
 
 [features]
 default = ["std"]
-std = ["alloy-primitives/std", "thiserror/std", "serde?/std"]
-serde = ["dep:serde", "alloy-primitives/serde"]
+std = ["nectar-primitives/std", "alloy-primitives/std", "thiserror/std", "serde?/std"]
+serde = ["dep:serde", "nectar-primitives/serde", "alloy-primitives/serde"]
