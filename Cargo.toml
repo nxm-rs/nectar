@@ -61,6 +61,7 @@ rayon = "1.10"
 
 # Core dependencies
 bytes = { version = "1.11", default-features = false }
+byteorder = { version = "1.5", default-features = false }
 thiserror = { version = "2.0", default-features = false }
 once_cell = { version = "1.21", default-features = false, features = [
     "critical-section",
@@ -74,6 +75,7 @@ proptest = "1"
 proptest-arbitrary-interop = "0.1"
 proptest-derive = "0.5"
 rand = "0.9"
+tokio = { version = "1", features = ["rt", "macros"] }
 
 # wasm
 wasm-bindgen = "0.2"

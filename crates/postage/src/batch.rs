@@ -5,6 +5,46 @@ use alloy_primitives::{Address, B256};
 /// A 32-byte batch identifier.
 pub type BatchId = B256;
 
+/// Parameters for creating a new batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BatchParams {
+    /// The owner's Ethereum address.
+    pub owner: Address,
+    /// The depth of the batch (total capacity = 2^depth chunks).
+    pub depth: u8,
+    /// The bucket depth for collision bucket uniformity.
+    pub bucket_depth: u8,
+    /// Whether the batch is immutable.
+    ///
+    /// Immutable batches cannot be diluted (depth increased) and chunks cannot
+    /// be overwritten. Mutable batches allow writing new chunks to the same
+    /// bucket index with a later timestamp, replacing the previous chunk.
+    pub immutable: bool,
+    /// Initial amount to fund the batch.
+    pub amount: u128,
+}
+
+impl BatchParams {
+    /// Creates new batch parameters.
+    pub const fn new(owner: Address, depth: u8, bucket_depth: u8, amount: u128) -> Self {
+        Self {
+            owner,
+            depth,
+            bucket_depth,
+            immutable: false,
+            amount,
+        }
+    }
+
+    /// Sets the immutable flag.
+    #[must_use]
+    pub const fn immutable(mut self, immutable: bool) -> Self {
+        self.immutable = immutable;
+        self
+    }
+}
+
 /// A postage batch represents a prepaid storage allocation in the Swarm network.
 ///
 /// Batches are created by sending BZZ tokens to the postage stamp contract.
@@ -18,14 +58,18 @@ pub struct Batch {
     /// The normalized balance of the batch (value per chunk).
     value: u128,
     /// The block number when this batch was created.
-    block_created: Option<u64>,
+    start: u64,
     /// The Ethereum address of the batch owner.
     owner: Address,
     /// The depth of the batch, determining total capacity (2^depth chunks).
     depth: u8,
     /// The bucket depth for collision bucket uniformity.
     bucket_depth: u8,
-    /// Whether the batch is immutable (cannot be topped up).
+    /// Whether the batch is immutable.
+    ///
+    /// Immutable batches cannot be diluted (depth increased) and chunks cannot
+    /// be overwritten. Mutable batches allow writing new chunks to the same
+    /// bucket index with a later timestamp, replacing the previous chunk.
     immutable: bool,
 }
 
@@ -35,7 +79,7 @@ impl Batch {
     pub const fn new(
         id: BatchId,
         value: u128,
-        block_created: Option<u64>,
+        start: u64,
         owner: Address,
         depth: u8,
         bucket_depth: u8,
@@ -44,7 +88,7 @@ impl Batch {
         Self {
             id,
             value,
-            block_created,
+            start,
             owner,
             depth,
             bucket_depth,
@@ -66,8 +110,8 @@ impl Batch {
 
     /// Returns the block number when this batch was created.
     #[inline]
-    pub const fn block_created(&self) -> Option<u64> {
-        self.block_created
+    pub const fn start(&self) -> u64 {
+        self.start
     }
 
     /// Returns the owner's Ethereum address.
@@ -94,7 +138,9 @@ impl Batch {
 
     /// Returns whether this batch is immutable.
     ///
-    /// Immutable batches cannot be topped up with additional value.
+    /// Immutable batches cannot be diluted (depth increased) and chunks cannot
+    /// be overwritten. Mutable batches allow writing new chunks to the same
+    /// bucket index with a later timestamp, replacing the previous chunk.
     #[inline]
     pub const fn immutable(&self) -> bool {
         self.immutable
@@ -115,6 +161,30 @@ impl Batch {
     pub const fn bucket_count(&self) -> u32 {
         1u32 << self.bucket_depth
     }
+
+    /// Updates the batch value (for top-up operations).
+    #[inline]
+    pub fn set_value(&mut self, value: u128) {
+        self.value = value;
+    }
+
+    /// Updates the batch depth (for dilution operations).
+    #[inline]
+    pub fn set_depth(&mut self, depth: u8) {
+        self.depth = depth;
+    }
+
+    /// Checks if the batch has expired given the current chain state.
+    #[inline]
+    pub const fn is_expired(&self, total_amount: u128) -> bool {
+        self.value <= total_amount
+    }
+
+    /// Checks if the batch is usable (has enough confirmations).
+    #[inline]
+    pub const fn is_usable(&self, current_block: u64, threshold: u64) -> bool {
+        current_block >= self.start.saturating_add(threshold)
+    }
 }
 
 #[cfg(test)]
@@ -124,11 +194,11 @@ mod tests {
     #[test]
     fn test_batch_creation() {
         let id = B256::ZERO;
-        let batch = Batch::new(id, 1000, Some(100), Address::ZERO, 18, 16, false);
+        let batch = Batch::new(id, 1000, 100, Address::ZERO, 18, 16, false);
 
         assert_eq!(batch.id(), id);
         assert_eq!(batch.value(), 1000);
-        assert_eq!(batch.block_created(), Some(100));
+        assert_eq!(batch.start(), 100);
         assert_eq!(batch.owner(), Address::ZERO);
         assert_eq!(batch.depth(), 18);
         assert_eq!(batch.bucket_depth(), 16);
@@ -137,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_bucket_calculations() {
-        let batch = Batch::new(B256::ZERO, 0, None, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 18, 16, false);
 
         // 2^(18-16) = 2^2 = 4 chunks per bucket
         assert_eq!(batch.bucket_upper_bound(), 4);
@@ -146,8 +216,32 @@ mod tests {
     }
 
     #[test]
-    fn test_immutable_batch() {
-        let batch = Batch::new(B256::ZERO, 0, None, Address::ZERO, 17, 16, true);
-        assert!(batch.immutable());
+    fn test_batch_expiry() {
+        let batch = Batch::new(B256::ZERO, 1000, 0, Address::ZERO, 18, 16, false);
+
+        assert!(!batch.is_expired(999));
+        assert!(batch.is_expired(1000));
+        assert!(batch.is_expired(1001));
+    }
+
+    #[test]
+    fn test_batch_usability() {
+        let batch = Batch::new(B256::ZERO, 1000, 100, Address::ZERO, 18, 16, false);
+
+        assert!(!batch.is_usable(100, 10)); // Same block
+        assert!(!batch.is_usable(109, 10)); // Not enough confirmations
+        assert!(batch.is_usable(110, 10)); // Exactly threshold
+        assert!(batch.is_usable(111, 10)); // Past threshold
+    }
+
+    #[test]
+    fn test_batch_params_builder() {
+        let params = BatchParams::new(Address::ZERO, 20, 16, 1000).immutable(true);
+
+        assert_eq!(params.owner, Address::ZERO);
+        assert_eq!(params.depth, 20);
+        assert_eq!(params.bucket_depth, 16);
+        assert_eq!(params.amount, 1000);
+        assert!(params.immutable);
     }
 }

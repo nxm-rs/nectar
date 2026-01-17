@@ -1,52 +1,18 @@
 //! Postage stamp types.
 
-use crate::BatchId;
 use alloy_primitives::B256;
-use thiserror::Error;
+use byteorder::{BigEndian, ByteOrder};
+use nectar_primitives::SwarmAddress;
 
-/// The size of a marshalled stamp in bytes.
+use crate::{BatchId, StampError};
+
+/// The size of a serialized stamp in bytes.
 ///
 /// Layout: batch_id (32) + bucket (4) + index (4) + timestamp (8) + signature (65) = 113 bytes
 pub const STAMP_SIZE: usize = 113;
 
-/// A marshalled (serialized) postage stamp.
-pub type MarshalledStamp = [u8; STAMP_SIZE];
-
-/// Errors that can occur when working with stamps.
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub enum StampError {
-    /// The owner recovered from the signature doesn't match the expected owner.
-    #[error("owner mismatch: expected {expected}, got {actual}")]
-    OwnerMismatch {
-        /// The expected owner address.
-        expected: alloy_primitives::Address,
-        /// The actual owner recovered from the signature.
-        actual: alloy_primitives::Address,
-    },
-
-    /// The bucket index exceeds the maximum allowed for the batch depth.
-    #[error("invalid index: bucket index exceeds maximum")]
-    InvalidIndex,
-
-    /// The chunk address doesn't match the expected collision bucket.
-    #[error("bucket mismatch: chunk address doesn't match expected bucket")]
-    BucketMismatch,
-
-    /// The batch was not found in the store.
-    #[error("batch not found: {0}")]
-    BatchNotFound(BatchId),
-
-    /// Invalid stamp data (wrong size or format).
-    #[error("invalid stamp data: {0}")]
-    InvalidData(&'static str),
-
-    /// The batch bucket is full and cannot accept more chunks.
-    #[error("bucket full: bucket {bucket} has reached capacity")]
-    BucketFull {
-        /// The bucket that is full.
-        bucket: u32,
-    },
-}
+/// A serialized postage stamp as a fixed-size byte array.
+pub type StampBytes = [u8; STAMP_SIZE];
 
 /// A stamp index representing the position of a chunk within a batch.
 ///
@@ -157,7 +123,7 @@ impl From<StampIndex> for (u32, u32) {
 ///
 /// # Wire Format
 ///
-/// A marshalled stamp is 113 bytes:
+/// A serialized stamp is 113 bytes:
 /// - Batch ID: 32 bytes
 /// - Bucket (x): 4 bytes, big-endian
 /// - Index (y): 4 bytes, big-endian
@@ -247,22 +213,27 @@ impl Stamp {
     }
 
     /// Serializes the stamp to a 113-byte array.
-    pub fn marshal(&self) -> MarshalledStamp {
+    #[inline]
+    pub fn to_bytes(&self) -> StampBytes {
         let mut bytes = [0u8; STAMP_SIZE];
         bytes[..32].copy_from_slice(self.batch.as_slice());
-        bytes[32..36].copy_from_slice(&self.index.bucket().to_be_bytes());
-        bytes[36..40].copy_from_slice(&self.index.index().to_be_bytes());
-        bytes[40..48].copy_from_slice(&self.timestamp.to_be_bytes());
+        BigEndian::write_u32(&mut bytes[32..36], self.index.bucket());
+        BigEndian::write_u32(&mut bytes[36..40], self.index.index());
+        BigEndian::write_u64(&mut bytes[40..48], self.timestamp);
         bytes[48..STAMP_SIZE].copy_from_slice(&self.sig);
         bytes
     }
 
     /// Deserializes a stamp from a 113-byte array.
-    pub fn unmarshal(bytes: &MarshalledStamp) -> Self {
+    ///
+    /// This is infallible when given a fixed-size array because the layout is guaranteed.
+    #[inline]
+    pub fn from_bytes(bytes: &StampBytes) -> Self {
         let batch = B256::from_slice(&bytes[..32]);
-        let bucket = u32::from_be_bytes(bytes[32..36].try_into().unwrap());
-        let index = u32::from_be_bytes(bytes[36..40].try_into().unwrap());
-        let timestamp = u64::from_be_bytes(bytes[40..48].try_into().unwrap());
+        let bucket = BigEndian::read_u32(&bytes[32..36]);
+        let index = BigEndian::read_u32(&bytes[36..40]);
+        let timestamp = BigEndian::read_u64(&bytes[40..48]);
+
         let mut sig = [0u8; 65];
         sig.copy_from_slice(&bytes[48..STAMP_SIZE]);
 
@@ -277,37 +248,79 @@ impl Stamp {
     /// Attempts to deserialize a stamp from a byte slice.
     ///
     /// Returns an error if the slice is not exactly 113 bytes.
+    #[inline]
     pub fn try_from_slice(bytes: &[u8]) -> Result<Self, StampError> {
         if bytes.len() != STAMP_SIZE {
             return Err(StampError::InvalidData("stamp must be exactly 113 bytes"));
         }
 
-        let marshalled: &MarshalledStamp = bytes.try_into().unwrap();
-        Ok(Self::unmarshal(marshalled))
+        // Safety: we verified the length above, so this conversion is infallible
+        // Use explicit array construction to avoid unwrap
+        let mut stamp_bytes = [0u8; STAMP_SIZE];
+        stamp_bytes.copy_from_slice(bytes);
+        Ok(Self::from_bytes(&stamp_bytes))
     }
 }
 
-impl From<Stamp> for MarshalledStamp {
+/// The digest that must be signed to create a valid stamp.
+///
+/// The digest is computed as: `keccak256(chunk_address || batch_id || index || timestamp)`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StampDigest {
+    /// The chunk address being stamped.
+    pub chunk_address: SwarmAddress,
+    /// The batch ID.
+    pub batch_id: BatchId,
+    /// The stamp index (bucket and position).
+    pub index: StampIndex,
+    /// The timestamp.
+    pub timestamp: u64,
+}
+
+impl StampDigest {
+    /// Creates a new stamp digest.
+    #[inline]
+    pub const fn new(
+        chunk_address: SwarmAddress,
+        batch_id: BatchId,
+        index: StampIndex,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            chunk_address,
+            batch_id,
+            index,
+            timestamp,
+        }
+    }
+
+    /// Computes the 32-byte hash that must be signed.
+    ///
+    /// Format: `keccak256(chunk_address || batch_id || index_bytes || timestamp_bytes)`
+    pub fn to_prehash(&self) -> B256 {
+        use alloy_primitives::keccak256;
+
+        let mut data = [0u8; 32 + 32 + 8 + 8]; // 80 bytes
+        data[..32].copy_from_slice(self.chunk_address.as_bytes());
+        data[32..64].copy_from_slice(self.batch_id.as_slice());
+        data[64..72].copy_from_slice(&self.index.to_be_bytes());
+        data[72..80].copy_from_slice(&self.timestamp.to_be_bytes());
+
+        keccak256(data)
+    }
+}
+
+impl From<Stamp> for StampBytes {
+    #[inline]
     fn from(stamp: Stamp) -> Self {
-        stamp.marshal()
+        stamp.to_bytes()
     }
 }
 
-impl From<&Stamp> for MarshalledStamp {
-    fn from(stamp: &Stamp) -> Self {
-        stamp.marshal()
-    }
-}
-
-impl From<MarshalledStamp> for Stamp {
-    fn from(bytes: MarshalledStamp) -> Self {
-        Self::unmarshal(&bytes)
-    }
-}
-
-impl From<&MarshalledStamp> for Stamp {
-    fn from(bytes: &MarshalledStamp) -> Self {
-        Self::unmarshal(bytes)
+impl From<StampBytes> for Stamp {
+    #[inline]
+    fn from(bytes: StampBytes) -> Self {
+        Self::from_bytes(&bytes)
     }
 }
 
@@ -348,15 +361,15 @@ mod tests {
     }
 
     #[test]
-    fn test_stamp_marshal_unmarshal() {
+    fn test_stamp_roundtrip() {
         let batch = B256::ZERO;
         let sig = [0u8; 65];
         let stamp = Stamp::new(batch, 100, 50, 1234567890, sig);
 
-        let marshalled = stamp.marshal();
-        let unmarshalled = Stamp::unmarshal(&marshalled);
+        let bytes = stamp.to_bytes();
+        let restored = Stamp::from_bytes(&bytes);
 
-        assert_eq!(stamp, unmarshalled);
+        assert_eq!(stamp, restored);
     }
 
     #[test]
@@ -398,12 +411,10 @@ mod tests {
     fn test_from_conversions() {
         let stamp = Stamp::new(B256::ZERO, 1, 2, 3, [0u8; 65]);
 
-        let marshalled: MarshalledStamp = stamp.clone().into();
-        let back: Stamp = marshalled.into();
+        // From<Stamp> for StampBytes
+        let bytes: StampBytes = stamp.clone().into();
+        // From<StampBytes> for Stamp
+        let back: Stamp = bytes.into();
         assert_eq!(stamp, back);
-
-        let marshalled_ref: MarshalledStamp = (&stamp).into();
-        let back_ref: Stamp = (&marshalled_ref).into();
-        assert_eq!(stamp, back_ref);
     }
 }

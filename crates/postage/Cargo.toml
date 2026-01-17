@@ -18,15 +18,30 @@ workspace = true
 [dependencies]
 nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+byteorder = { workspace = true }
 thiserror = { workspace = true }
 
 # optional
 serde = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+criterion = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true }
+alloy-signer-local = { workspace = true }
+
+[[bench]]
+name = "stamp"
+harness = false
+required-features = ["parallel"]
 
 [features]
 default = ["std"]
 std = ["nectar-primitives/std", "alloy-primitives/std", "thiserror/std", "serde?/std"]
 serde = ["dep:serde", "nectar-primitives/serde", "alloy-primitives/serde"]
+local-signer = ["dep:alloy-signer-local", "std"]
+parallel = ["dep:rayon", "std"]
