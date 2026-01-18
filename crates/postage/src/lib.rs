@@ -20,8 +20,11 @@
 //!
 //! # Features
 //!
-//! - `std` (default): Enable standard library support, async traits, storage
+//! - `std` (default): Enable standard library support, BatchStore, BatchFactory
 //! - `serde`: Enable serde serialization/deserialization
+//! - `local-signer`: Enable local key signing for testing
+//! - `parallel`: Enable batch-collect parallel operations with rayon (sync)
+//! - `streaming`: Enable streaming parallel operations with tokio (async)
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -49,16 +52,22 @@ mod store;
 #[cfg(feature = "parallel")]
 pub mod parallel;
 
+// Streaming parallel operations (requires tokio)
+#[cfg(feature = "streaming")]
+pub mod streaming;
+
 // Core types
 pub use batch::{Batch, BatchId, BatchParams};
 pub use error::StampError;
 pub use stamp::{Stamp, StampBytes, StampDigest, StampIndex, STAMP_SIZE};
-pub use util::{calculate_bucket, ChainState};
-pub use validation::{BatchValidation, StampValidator};
+pub use util::{calculate_bucket, current_timestamp, ChainState};
+pub use validation::StampValidator;
+#[cfg(feature = "std")]
+pub use validation::StoreValidator;
 
 // Issuing
 pub use issuer::{MemoryIssuer, StampIssuer};
-pub use stamper::{BatchStamper, SignerError, StampSigner, Stamper};
+pub use stamper::{BatchStamper, StampSigner, Stamper};
 
 // Storage and factory (std only)
 #[cfg(feature = "std")]
@@ -67,3 +76,7 @@ pub use events::{BatchEvent, BatchEventHandler};
 pub use factory::{BatchFactory, CreateResult, MemoryBatchError, MemoryBatchFactory};
 #[cfg(feature = "std")]
 pub use store::{BatchStore, BatchStoreError, BatchStoreExt};
+
+// Re-export alloy-signer-local for convenience when local-signer feature is enabled
+#[cfg(feature = "local-signer")]
+pub use alloy_signer_local;

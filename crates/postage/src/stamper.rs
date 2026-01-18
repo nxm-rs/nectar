@@ -1,12 +1,9 @@
 //! Stamper trait and implementations for creating signed stamps.
 
-extern crate alloc;
-
-use alloc::vec::Vec;
 use alloy_primitives::B256;
 use alloy_signer::Signature;
 
-use crate::{calculate_bucket, Batch, Stamp, StampDigest, StampError, StampIndex};
+use crate::{current_timestamp, BatchId, Stamp, StampDigest, StampError};
 use nectar_primitives::SwarmAddress;
 
 /// A trait for signing stamp digests.
@@ -23,9 +20,6 @@ use nectar_primitives::SwarmAddress;
 /// Implementations should use alloy's `sign_message` (or `sign_message_sync`)
 /// rather than `sign_hash` to ensure compatibility.
 pub trait StampSigner {
-    /// The error type returned when signing fails.
-    type Error;
-
     /// Signs a stamp digest message synchronously using EIP-191 personal signing.
     ///
     /// The prehash is the keccak256 hash of the stamp digest data. This method
@@ -34,21 +28,8 @@ pub trait StampSigner {
     ///
     /// Use alloy's `SignerSync::sign_message_sync(prehash.as_slice())` for the
     /// implementation.
-    fn sign_message(&self, prehash: &B256) -> Result<Signature, Self::Error>;
+    fn sign_message(&self, prehash: &B256) -> Result<Signature, alloy_signer::Error>;
 }
-
-/// Error type for signing operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SignerError;
-
-impl core::fmt::Display for SignerError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "signing failed")
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for SignerError {}
 
 /// A trait for entities that can stamp chunks.
 ///
@@ -58,7 +39,7 @@ impl std::error::Error for SignerError {}
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage::{Stamper, Stamp, StampError};
+/// use nectar_postage::{Stamper, Stamp, StampError, BatchId};
 /// use nectar_primitives::SwarmAddress;
 ///
 /// struct MyStamper { /* ... */ }
@@ -70,9 +51,10 @@ impl std::error::Error for SignerError {}
 ///         // Implementation details...
 ///     }
 ///
-///     fn batch(&self) -> &Batch {
-///         // Return reference to the batch
+///     fn batch_id(&self) -> BatchId {
+///         // Return the batch ID
 ///     }
+///     // ... other methods
 /// }
 /// ```
 pub trait Stamper {
@@ -95,8 +77,8 @@ pub trait Stamper {
     /// - Any other implementation-specific error occurs
     fn stamp(&mut self, address: &SwarmAddress) -> Result<Stamp, Self::Error>;
 
-    /// Returns a reference to the underlying batch.
-    fn batch(&self) -> &Batch;
+    /// Returns the batch ID that stamps are issued for.
+    fn batch_id(&self) -> BatchId;
 
     /// Returns the current utilization of the most-used bucket.
     ///
@@ -117,32 +99,43 @@ pub trait Stamper {
     fn bucket_has_capacity(&self, bucket: u32) -> bool;
 }
 
-/// A stamper that uses a batch and tracks bucket indices.
+/// A stamper that combines an issuer (for bucket tracking) with a signer.
 ///
-/// This implementation tracks which indices have been used in each bucket
-/// and creates stamps with the appropriate index for each chunk address.
+/// This implementation delegates bucket/index tracking to a [`StampIssuer`]
+/// and handles the signing of stamps. This composition allows using different
+/// issuer implementations (e.g., `MemoryIssuer`, `ShardedIssuer`) with any signer.
+///
+/// # Example
+///
+/// ```ignore
+/// use nectar_postage::{BatchStamper, MemoryIssuer, Stamper};
+///
+/// let issuer = MemoryIssuer::from_batch(&batch);
+/// let mut stamper = BatchStamper::new(issuer, my_signer);
+/// let stamp = stamper.stamp(&chunk_address)?;
+/// ```
 #[derive(Debug, Clone)]
-pub struct BatchStamper<S> {
-    /// The batch to stamp with.
-    batch: Batch,
-    /// Current index for each bucket.
-    bucket_indices: Vec<u32>,
+pub struct BatchStamper<I, S> {
+    /// The issuer for tracking bucket utilization.
+    issuer: I,
     /// The signer used to sign stamps.
     signer: S,
-    /// Maximum utilization across all buckets.
-    max_utilization: u32,
 }
 
-impl<S> BatchStamper<S> {
-    /// Creates a new batch stamper.
-    pub fn new(batch: Batch, signer: S) -> Self {
-        let bucket_count = batch.bucket_count() as usize;
-        Self {
-            batch,
-            bucket_indices: alloc::vec![0u32; bucket_count],
-            signer,
-            max_utilization: 0,
-        }
+impl<I, S> BatchStamper<I, S> {
+    /// Creates a new batch stamper with the given issuer and signer.
+    pub fn new(issuer: I, signer: S) -> Self {
+        Self { issuer, signer }
+    }
+
+    /// Returns a reference to the issuer.
+    pub fn issuer(&self) -> &I {
+        &self.issuer
+    }
+
+    /// Returns a mutable reference to the issuer.
+    pub fn issuer_mut(&mut self) -> &mut I {
+        &mut self.issuer
     }
 
     /// Returns a reference to the signer.
@@ -155,42 +148,10 @@ impl<S> BatchStamper<S> {
         &mut self.signer
     }
 
-    /// Prepares a stamp for the given chunk address.
-    ///
-    /// This allocates an index and creates the digest, but does not sign it.
-    /// Use this for async signing flows.
-    pub fn prepare_stamp(
-        &mut self,
-        address: &SwarmAddress,
-        timestamp: u64,
-    ) -> Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.batch.bucket_depth());
-
-        // Get current index for this bucket
-        let current_index = self.bucket_indices[bucket as usize];
-
-        // Check if bucket is full
-        if current_index >= self.batch.bucket_upper_bound() {
-            return Err(StampError::BucketFull {
-                bucket,
-                capacity: self.batch.bucket_upper_bound(),
-            });
-        }
-
-        // Increment the bucket index
-        self.bucket_indices[bucket as usize] = current_index + 1;
-
-        // Update max utilization
-        if current_index + 1 > self.max_utilization {
-            self.max_utilization = current_index + 1;
-        }
-
-        let index = StampIndex::new(bucket, current_index);
-
-        Ok(StampDigest::new(*address, self.batch.id(), index, timestamp))
-    }
-
     /// Creates a stamp from a digest and signature.
+    ///
+    /// This is a utility function for converting an alloy `Signature` into
+    /// the 65-byte format used in stamps (r || s || v).
     #[inline]
     pub fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
         // Convert alloy Signature to 65-byte array (r || s || v)
@@ -207,68 +168,64 @@ impl<S> BatchStamper<S> {
     }
 }
 
-impl<S> Stamper for BatchStamper<S>
+impl<I, S> BatchStamper<I, S>
 where
-    S: StampSigner<Error = SignerError>,
+    I: crate::StampIssuer,
+{
+    /// Prepares a stamp for the given chunk address.
+    ///
+    /// This allocates an index from the issuer and creates the digest,
+    /// but does not sign it. Use this for async signing flows.
+    pub fn prepare_stamp(
+        &mut self,
+        address: &SwarmAddress,
+        timestamp: u64,
+    ) -> Result<StampDigest, StampError> {
+        self.issuer.prepare_stamp(address, timestamp)
+    }
+}
+
+impl<I, S> Stamper for BatchStamper<I, S>
+where
+    I: crate::StampIssuer,
+    S: StampSigner,
 {
     type Error = StampError;
 
     fn stamp(&mut self, address: &SwarmAddress) -> Result<Stamp, Self::Error> {
         let timestamp = current_timestamp();
-        let digest = self.prepare_stamp(address, timestamp)?;
+        let digest = self.issuer.prepare_stamp(address, timestamp)?;
         let prehash = digest.to_prehash();
 
-        let sig = self
-            .signer
-            .sign_message(&prehash)
-            .map_err(|_| StampError::SigningFailed("signer returned error"))?;
+        let sig = self.signer.sign_message(&prehash)?;
 
         Ok(Self::stamp_from_signature(&digest, sig))
     }
 
-    fn batch(&self) -> &Batch {
-        &self.batch
+    fn batch_id(&self) -> BatchId {
+        self.issuer.batch_id()
     }
 
     fn max_bucket_utilization(&self) -> u32 {
-        self.max_utilization
+        self.issuer.max_bucket_utilization()
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
-        if bucket as usize >= self.bucket_indices.len() {
-            return false;
-        }
-        self.bucket_indices[bucket as usize] < self.batch.bucket_upper_bound()
+        self.issuer.bucket_has_capacity(bucket)
     }
-}
-
-/// Returns the current timestamp in nanoseconds.
-#[cfg(feature = "std")]
-fn current_timestamp() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-}
-
-#[cfg(not(feature = "std"))]
-fn current_timestamp() -> u64 {
-    0 // In no_std, caller should provide timestamp via prepare_stamp
 }
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, U256};
+    use crate::{MemoryIssuer, StampIndex};
+    use alloy_primitives::U256;
 
     /// A mock signer for testing that creates deterministic signatures.
     struct MockSigner;
 
     impl StampSigner for MockSigner {
-        type Error = SignerError;
-
-        fn sign_message(&self, _prehash: &B256) -> Result<Signature, Self::Error> {
+        fn sign_message(&self, _prehash: &B256) -> Result<Signature, alloy_signer::Error> {
             // Create a dummy signature for testing
             Ok(Signature::new(U256::from(1), U256::from(2), false))
         }
@@ -276,8 +233,8 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_basic() {
-        let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 20, 16, false);
-        let mut stamper = BatchStamper::new(batch, MockSigner);
+        let issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+        let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         let address = SwarmAddress::new([0xAB; 32]);
         let stamp = stamper.stamp(&address).unwrap();
@@ -289,8 +246,8 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_increments_index() {
-        let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 20, 16, false);
-        let mut stamper = BatchStamper::new(batch, MockSigner);
+        let issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+        let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         // Use same address to hit same bucket
         let address = SwarmAddress::new([0xAB; 32]);
@@ -310,10 +267,10 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_bucket_full() {
-        // Create a batch with very small bucket capacity: depth=17, bucket_depth=16
+        // Create an issuer with very small bucket capacity: depth=17, bucket_depth=16
         // This gives 2^(17-16) = 2 slots per bucket
-        let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 17, 16, false);
-        let mut stamper = BatchStamper::new(batch, MockSigner);
+        let issuer = MemoryIssuer::new(B256::ZERO, 17, 16);
+        let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         let address = SwarmAddress::new([0xAB; 32]);
 
@@ -328,8 +285,8 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_max_utilization() {
-        let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 20, 16, false);
-        let mut stamper = BatchStamper::new(batch, MockSigner);
+        let issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+        let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         assert_eq!(stamper.max_bucket_utilization(), 0);
 

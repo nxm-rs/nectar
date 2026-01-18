@@ -32,7 +32,7 @@ use alloy_primitives::{Address, B256};
 use alloy_signer::Signature;
 use rayon::prelude::*;
 
-use crate::{calculate_bucket, BatchId, Stamp, StampDigest, StampError, StampIndex};
+use crate::{calculate_bucket, current_timestamp, BatchId, Stamp, StampDigest, StampError, StampIndex};
 use nectar_primitives::SwarmAddress;
 
 /// Number of shards for bucket partitioning.
@@ -269,7 +269,7 @@ unsafe impl Sync for ShardedIssuer {}
 unsafe impl Send for ShardedIssuer {}
 
 /// Result of a parallel stamp operation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StampResult {
     /// The chunk address that was stamped.
     pub address: SwarmAddress,
@@ -361,16 +361,6 @@ fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
     Stamp::with_index(digest.batch_id, digest.index, digest.timestamp, sig_bytes)
 }
 
-/// Returns the current timestamp in nanoseconds.
-#[inline]
-fn current_timestamp() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-}
-
 // =============================================================================
 // Parallel Verification
 // =============================================================================
@@ -411,15 +401,6 @@ impl std::fmt::Display for StampVerifyError {
 
 impl std::error::Error for StampVerifyError {}
 
-/// A stamp paired with its chunk address for verification.
-#[derive(Debug, Clone, Copy)]
-pub struct StampWithAddress<'a> {
-    /// The stamp to verify.
-    pub stamp: &'a Stamp,
-    /// The chunk address the stamp was created for.
-    pub address: &'a SwarmAddress,
-}
-
 /// Verifies multiple stamps in parallel.
 ///
 /// This function uses rayon to distribute verification across all available cores.
@@ -427,7 +408,7 @@ pub struct StampWithAddress<'a> {
 ///
 /// # Arguments
 ///
-/// * `stamps` - The stamps and their associated chunk addresses
+/// * `stamps` - Slice of `(stamp, address)` tuples to verify
 ///
 /// # Returns
 ///
@@ -436,22 +417,27 @@ pub struct StampWithAddress<'a> {
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage::parallel::{verify_stamps_parallel, StampWithAddress};
+/// use nectar_postage::parallel::verify_stamps_parallel;
 ///
-/// let stamps: Vec<StampWithAddress> = /* ... */;
-/// let results = verify_stamps_parallel(&stamps);
+/// let stamps: Vec<Stamp> = /* ... */;
+/// let addresses: Vec<SwarmAddress> = /* ... */;
+///
+/// // Create tuples of references
+/// let items: Vec<_> = stamps.iter().zip(addresses.iter()).collect();
+/// let results = verify_stamps_parallel(&items);
+///
 /// for result in results {
 ///     if let Ok(signer) = result.result {
 ///         println!("Stamp {} signed by {}", result.index, signer);
 ///     }
 /// }
 /// ```
-pub fn verify_stamps_parallel(stamps: &[StampWithAddress<'_>]) -> Vec<VerifyResult> {
+pub fn verify_stamps_parallel(stamps: &[(&Stamp, &SwarmAddress)]) -> Vec<VerifyResult> {
     stamps
         .par_iter()
         .enumerate()
-        .map(|(index, item)| {
-            let result = recover_stamp_signer(item.stamp, item.address);
+        .map(|(index, (stamp, address))| {
+            let result = recover_stamp_signer(stamp, address);
             VerifyResult { index, result }
         })
         .collect()
@@ -464,22 +450,22 @@ pub fn verify_stamps_parallel(stamps: &[StampWithAddress<'_>]) -> Vec<VerifyResu
 ///
 /// # Arguments
 ///
-/// * `stamps` - The stamps and their associated chunk addresses
+/// * `stamps` - Slice of `(stamp, address)` tuples to verify
 /// * `expected_owner` - The expected batch owner address
 ///
 /// # Returns
 ///
-/// A vector of verification results. Each result contains either `Ok(true)` if
-/// the stamp is valid and signed by the expected owner, or an error.
+/// A vector of verification results. Each result contains either the recovered
+/// address if the stamp is valid and signed by the expected owner, or an error.
 pub fn verify_stamps_parallel_with_owner(
-    stamps: &[StampWithAddress<'_>],
+    stamps: &[(&Stamp, &SwarmAddress)],
     expected_owner: Address,
 ) -> Vec<VerifyResult> {
     stamps
         .par_iter()
         .enumerate()
-        .map(|(index, item)| {
-            let result = verify_stamp_owner(item.stamp, item.address, expected_owner);
+        .map(|(index, (stamp, address))| {
+            let result = verify_stamp_owner(stamp, address, expected_owner);
             VerifyResult { index, result }
         })
         .collect()
@@ -601,9 +587,9 @@ mod tests {
 
         // Use sign_message_sync for EIP-191 compatibility with Go/bee
         let sign_fn = |prehash: &B256| -> Result<Signature, StampError> {
-            signer
+            Ok(signer
                 .sign_message_sync(prehash.as_slice())
-                .map_err(|_| StampError::SigningFailed("signing failed"))
+                .map_err(alloy_signer::Error::other)?)
         };
 
         let results = sign_stamps_parallel(&issuer, &sign_fn, &addresses);
@@ -626,9 +612,9 @@ mod tests {
 
         // Use sign_message_sync for EIP-191 compatibility with Go/bee
         let sign_fn = |prehash: &B256| -> Result<Signature, StampError> {
-            signer
+            Ok(signer
                 .sign_message_sync(prehash.as_slice())
-                .map_err(|_| StampError::SigningFailed("signing failed"))
+                .map_err(alloy_signer::Error::other)?)
         };
 
         let sign_results = sign_stamps_parallel(&issuer, &sign_fn, &addresses);
@@ -637,15 +623,8 @@ mod tests {
             .map(|r| r.result.as_ref().unwrap().clone())
             .collect();
 
-        // Verify stamps
-        let verify_input: Vec<_> = stamps
-            .iter()
-            .zip(addresses.iter())
-            .map(|(stamp, addr)| StampWithAddress {
-                stamp,
-                address: addr,
-            })
-            .collect();
+        // Verify stamps using tuple syntax
+        let verify_input: Vec<_> = stamps.iter().zip(addresses.iter()).collect();
 
         let verify_results = verify_stamps_parallel_with_owner(&verify_input, expected_owner);
 
@@ -666,18 +645,16 @@ mod tests {
 
         // Use sign_message_sync for EIP-191 compatibility with Go/bee
         let sign_fn = |prehash: &B256| -> Result<Signature, StampError> {
-            signer
+            Ok(signer
                 .sign_message_sync(prehash.as_slice())
-                .map_err(|_| StampError::SigningFailed("signing failed"))
+                .map_err(alloy_signer::Error::other)?)
         };
 
         let results = sign_stamps_parallel(&issuer, &sign_fn, &[address]);
         let stamp = results[0].result.as_ref().unwrap();
 
-        let verify_input = [StampWithAddress {
-            stamp,
-            address: &address,
-        }];
+        // Use tuple syntax
+        let verify_input = [(stamp, &address)];
 
         let verify_results = verify_stamps_parallel_with_owner(&verify_input, wrong_owner);
         assert!(matches!(

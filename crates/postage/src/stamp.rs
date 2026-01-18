@@ -1,10 +1,46 @@
 //! Postage stamp types.
 
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
+use alloy_signer::Signature;
 use byteorder::{BigEndian, ByteOrder};
 use nectar_primitives::SwarmAddress;
 
 use crate::{BatchId, StampError};
+
+/// Serde helpers for the 65-byte signature array.
+#[cfg(feature = "serde")]
+mod serde_sig {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// Serialize a 65-byte signature as a hex string.
+    pub(super) fn serialize<S: Serializer>(sig: &[u8; 65], serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            // Hex string for human-readable formats (JSON, TOML, etc.)
+            alloy_primitives::hex::encode_prefixed(sig).serialize(serializer)
+        } else {
+            // Raw bytes for binary formats
+            serializer.serialize_bytes(sig)
+        }
+    }
+
+    /// Deserialize a 65-byte signature from a hex string or bytes.
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 65], D::Error> {
+        use serde::de::Error;
+
+        if deserializer.is_human_readable() {
+            let s = String::deserialize(deserializer)?;
+            let bytes = alloy_primitives::hex::decode(&s).map_err(D::Error::custom)?;
+            bytes
+                .try_into()
+                .map_err(|_| D::Error::custom("expected 65 bytes for signature"))
+        } else {
+            let bytes = <Vec<u8>>::deserialize(deserializer)?;
+            bytes
+                .try_into()
+                .map_err(|_| D::Error::custom("expected 65 bytes for signature"))
+        }
+    }
+}
 
 /// The size of a serialized stamp in bytes.
 ///
@@ -139,6 +175,7 @@ pub struct Stamp {
     /// Timestamp when the stamp was created (nanoseconds since epoch).
     timestamp: u64,
     /// The signature proving ownership (65 bytes: r || s || v).
+    #[cfg_attr(feature = "serde", serde(with = "serde_sig"))]
     sig: [u8; 65],
 }
 
@@ -259,6 +296,77 @@ impl Stamp {
         let mut stamp_bytes = [0u8; STAMP_SIZE];
         stamp_bytes.copy_from_slice(bytes);
         Ok(Self::from_bytes(&stamp_bytes))
+    }
+
+    /// Recovers the signer address from this stamp using EIP-191 message recovery.
+    ///
+    /// This computes the stamp digest from the chunk address and stamp fields,
+    /// then recovers the Ethereum address that signed it.
+    ///
+    /// # Arguments
+    ///
+    /// * `chunk_address` - The address of the chunk this stamp is for
+    ///
+    /// # Returns
+    ///
+    /// The Ethereum address of the signer, or an error if recovery fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let stamp = Stamp::try_from_slice(&bytes)?;
+    /// let signer = stamp.recover_signer(&chunk_address)?;
+    /// println!("Stamp signed by: {}", signer);
+    /// ```
+    pub fn recover_signer(&self, chunk_address: &SwarmAddress) -> Result<Address, StampError> {
+        let digest = StampDigest::new(
+            *chunk_address,
+            self.batch,
+            self.index,
+            self.timestamp,
+        );
+        let prehash = digest.to_prehash();
+
+        // Signature::from_raw automatically handles v-value normalization
+        // (both 0/1 and 27/28 formats)
+        let sig = Signature::from_raw(&self.sig)
+            .map_err(|_| StampError::InvalidSignature)?;
+
+        // Use recover_address_from_msg for EIP-191 compatibility
+        sig.recover_address_from_msg(prehash.as_slice())
+            .map_err(|_| StampError::InvalidSignature)
+    }
+
+    /// Verifies this stamp was signed by the expected owner.
+    ///
+    /// This is a convenience method that calls [`recover_signer`](Self::recover_signer)
+    /// and compares the result to the expected owner address.
+    ///
+    /// # Arguments
+    ///
+    /// * `chunk_address` - The address of the chunk this stamp is for
+    /// * `owner` - The expected owner/signer address
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the stamp was signed by the expected owner,
+    /// or an error if signature recovery fails or the signer doesn't match.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let stamp = Stamp::try_from_slice(&bytes)?;
+    /// stamp.verify(&chunk_address, batch.owner())?;
+    /// ```
+    pub fn verify(&self, chunk_address: &SwarmAddress, owner: Address) -> Result<(), StampError> {
+        let recovered = self.recover_signer(chunk_address)?;
+        if recovered != owner {
+            return Err(StampError::OwnerMismatch {
+                expected: owner,
+                actual: recovered,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -416,5 +524,52 @@ mod tests {
         // From<StampBytes> for Stamp
         let back: Stamp = bytes.into();
         assert_eq!(stamp, back);
+    }
+
+    /// Test recover_signer using the Go interop test vector.
+    ///
+    /// This uses the same test data as stamper::tests::test_verify_go_created_stamp
+    /// to ensure the Stamp::recover_signer method works correctly.
+    #[test]
+    fn test_recover_signer() {
+        // Test vector from Go's TestGenerateInteropStamp
+        let chunk_addr_bytes =
+            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        let full_stamp_bytes = hex::decode(
+            "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
+        ).unwrap();
+        let expected_owner: Address = "8d3766440f0d7b949a5e32995d09619a7f86e632".parse().unwrap();
+
+        let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
+        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
+
+        // Test recover_signer
+        let recovered = stamp.recover_signer(&chunk_address).unwrap();
+        assert_eq!(recovered, expected_owner);
+    }
+
+    /// Test verify method using the Go interop test vector.
+    #[test]
+    fn test_verify() {
+        // Test vector from Go's TestGenerateInteropStamp
+        let chunk_addr_bytes =
+            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        let full_stamp_bytes = hex::decode(
+            "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
+        ).unwrap();
+        let expected_owner: Address = "8d3766440f0d7b949a5e32995d09619a7f86e632".parse().unwrap();
+        let wrong_owner: Address = "0000000000000000000000000000000000000001".parse().unwrap();
+
+        let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
+        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
+
+        // Verify with correct owner should succeed
+        assert!(stamp.verify(&chunk_address, expected_owner).is_ok());
+
+        // Verify with wrong owner should fail
+        let result = stamp.verify(&chunk_address, wrong_owner);
+        assert!(matches!(result, Err(StampError::OwnerMismatch { .. })));
     }
 }

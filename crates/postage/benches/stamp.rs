@@ -2,8 +2,9 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use nectar_postage::{
-    parallel::{sign_stamps_parallel, verify_stamps_parallel, ShardedIssuer, StampWithAddress},
-    Batch, BatchStamper, BatchValidation, SignerError, Stamp, StampBytes, StampDigest, StampError,
+    parallel::{sign_stamps_parallel, verify_stamps_parallel, ShardedIssuer},
+    streaming::{SignRequest, StreamVerifyError, VerifyRequest},
+    Batch, BatchStamper, MemoryIssuer, Stamp, StampBytes, StampDigest, StampError,
     StampIndex, StampSigner, Stamper,
 };
 use nectar_primitives::SwarmAddress;
@@ -11,6 +12,7 @@ use alloy_primitives::{Address, B256, U256};
 use alloy_signer::{Signature, SignerSync};
 use alloy_signer_local::PrivateKeySigner;
 use rand::Rng;
+use std::sync::Arc;
 
 /// Generate a random stamp for benchmarking.
 fn random_stamp() -> Stamp {
@@ -143,9 +145,7 @@ fn bench_stamp_digest_prehash(c: &mut Criterion) {
 struct MockSigner;
 
 impl StampSigner for MockSigner {
-    type Error = SignerError;
-
-    fn sign_message(&self, _prehash: &B256) -> Result<Signature, SignerError> {
+    fn sign_message(&self, _prehash: &B256) -> Result<Signature, alloy_signer::Error> {
         Ok(Signature::new(U256::from(1), U256::from(2), false))
     }
 }
@@ -155,8 +155,8 @@ fn bench_stamper_mock(c: &mut Criterion) {
 
     group.bench_function("single", |b| {
         b.iter(|| {
-            let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 24, 16, false);
-            let mut stamper = BatchStamper::new(batch, MockSigner);
+            let issuer = MemoryIssuer::new(B256::ZERO, 24, 16);
+            let mut stamper = BatchStamper::new(issuer, MockSigner);
             let address = random_address();
             black_box(stamper.stamp(black_box(&address)))
         })
@@ -167,8 +167,8 @@ fn bench_stamper_mock(c: &mut Criterion) {
 
     group.bench_function("throughput_1000", |b| {
         b.iter(|| {
-            let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 32, 16, false);
-            let mut stamper = BatchStamper::new(batch, MockSigner);
+            let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+            let mut stamper = BatchStamper::new(issuer, MockSigner);
             for addr in &addresses {
                 black_box(stamper.stamp(addr).unwrap());
             }
@@ -193,20 +193,16 @@ impl EcdsaSigner {
 }
 
 impl StampSigner for EcdsaSigner {
-    type Error = SignerError;
-
-    fn sign_message(&self, prehash: &B256) -> Result<Signature, SignerError> {
+    fn sign_message(&self, prehash: &B256) -> Result<Signature, alloy_signer::Error> {
         // Use sign_message_sync for EIP-191 compatibility with Go/bee
-        self.0.sign_message_sync(prehash.as_slice()).map_err(|_| SignerError)
+        self.0.sign_message_sync(prehash.as_slice())
     }
 }
 
 impl StampSigner for &EcdsaSigner {
-    type Error = SignerError;
-
-    fn sign_message(&self, prehash: &B256) -> Result<Signature, SignerError> {
+    fn sign_message(&self, prehash: &B256) -> Result<Signature, alloy_signer::Error> {
         // Use sign_message_sync for EIP-191 compatibility with Go/bee
-        self.0.sign_message_sync(prehash.as_slice()).map_err(|_| SignerError)
+        self.0.sign_message_sync(prehash.as_slice())
     }
 }
 
@@ -222,8 +218,8 @@ fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
 
     group.bench_function("single", |b| {
         b.iter(|| {
-            let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 24, 16, false);
-            let mut stamper = BatchStamper::new(batch, &signer);
+            let issuer = MemoryIssuer::new(B256::ZERO, 24, 16);
+            let mut stamper = BatchStamper::new(issuer, &signer);
             let address = random_address();
             black_box(stamper.stamp(black_box(&address)))
         })
@@ -233,8 +229,8 @@ fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
 
     group.bench_function("throughput_100", |b| {
         b.iter(|| {
-            let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 32, 16, false);
-            let mut stamper = BatchStamper::new(batch, &signer);
+            let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+            let mut stamper = BatchStamper::new(issuer, &signer);
             for addr in &addresses {
                 black_box(stamper.stamp(addr).unwrap());
             }
@@ -269,8 +265,8 @@ fn recover_stamp_signer(
 fn bench_ecdsa_verify_sequential(c: &mut Criterion) {
     let signer = EcdsaSigner::random();
     let expected_address = signer.0.address();
-    let batch = Batch::new(B256::ZERO, 0, 0, expected_address, 32, 16, false);
-    let mut stamper = BatchStamper::new(batch, &signer);
+    let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+    let mut stamper = BatchStamper::new(issuer, &signer);
 
     let single_addr = random_address();
     let single_stamp = stamper.stamp(&single_addr).unwrap();
@@ -318,9 +314,9 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
 
     // Use sign_message_sync for EIP-191 compatibility with Go/bee
     let sign_fn = |prehash: &B256| -> Result<Signature, StampError> {
-        signer
+        Ok(signer
             .sign_message_sync(prehash.as_slice())
-            .map_err(|_| StampError::SigningFailed("signing failed"))
+            .map_err(alloy_signer::Error::other)?)
     };
 
     let mut group = c.benchmark_group("ecdsa_sign_parallel");
@@ -346,13 +342,13 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
 
 fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
-    let expected_address = signer.address();
+    let _expected_address = signer.address();
 
     // Use sign_message_sync for EIP-191 compatibility with Go/bee
     let sign_fn = |prehash: &B256| -> Result<Signature, StampError> {
-        signer
+        Ok(signer
             .sign_message_sync(prehash.as_slice())
-            .map_err(|_| StampError::SigningFailed("signing failed"))
+            .map_err(alloy_signer::Error::other)?)
     };
 
     // Pre-generate 100 stamps for verification
@@ -379,10 +375,7 @@ fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     let verify_input_100: Vec<_> = stamps_100
         .iter()
         .zip(addresses_100.iter())
-        .map(|(stamp, addr)| StampWithAddress {
-            stamp,
-            address: addr,
-        })
+        .map(|(stamp, addr)| (stamp, addr))
         .collect();
 
     group.throughput(Throughput::Elements(100));
@@ -394,10 +387,7 @@ fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     let verify_input_1000: Vec<_> = stamps_1000
         .iter()
         .zip(addresses_1000.iter())
-        .map(|(stamp, addr)| StampWithAddress {
-            stamp,
-            address: addr,
-        })
+        .map(|(stamp, addr)| (stamp, addr))
         .collect();
 
     group.throughput(Throughput::Elements(1000));
@@ -418,20 +408,18 @@ fn bench_comparison(c: &mut Criterion) {
 
     // Use sign_message_sync for EIP-191 compatibility with Go/bee
     let sign_fn = |prehash: &B256| -> Result<Signature, StampError> {
-        signer
+        Ok(signer
             .sign_message_sync(prehash.as_slice())
-            .map_err(|_| StampError::SigningFailed("signing failed"))
+            .map_err(alloy_signer::Error::other)?)
     };
 
     // Wrapper to implement StampSigner with EIP-191 compatibility
     struct SignerWrapper<'a>(&'a PrivateKeySigner);
 
     impl StampSigner for SignerWrapper<'_> {
-        type Error = SignerError;
-
-        fn sign_message(&self, prehash: &B256) -> Result<Signature, SignerError> {
+        fn sign_message(&self, prehash: &B256) -> Result<Signature, alloy_signer::Error> {
             // Use sign_message_sync for EIP-191 compatibility with Go/bee
-            self.0.sign_message_sync(prehash.as_slice()).map_err(|_| SignerError)
+            self.0.sign_message_sync(prehash.as_slice())
         }
     }
 
@@ -441,8 +429,8 @@ fn bench_comparison(c: &mut Criterion) {
     // Sequential
     group.bench_function("sequential", |b| {
         b.iter(|| {
-            let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 32, 16, false);
-            let mut stamper = BatchStamper::new(batch, SignerWrapper(&signer));
+            let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+            let mut stamper = BatchStamper::new(issuer, SignerWrapper(&signer));
             for addr in &addresses {
                 black_box(stamper.stamp(addr).unwrap());
             }
@@ -486,14 +474,243 @@ fn bench_comparison(c: &mut Criterion) {
     let verify_input: Vec<_> = stamps
         .iter()
         .zip(addresses.iter())
-        .map(|(stamp, addr)| StampWithAddress {
-            stamp,
-            address: addr,
-        })
+        .map(|(stamp, addr)| (stamp, addr))
         .collect();
 
     group.bench_function("parallel", |b| {
         b.iter(|| black_box(verify_stamps_parallel(&verify_input)))
+    });
+
+    group.finish();
+}
+
+// =============================================================================
+// Streaming Benchmarks
+// =============================================================================
+
+/// Helper to run async streaming sign benchmark (hybrid: tokio + rayon)
+async fn run_streaming_sign(
+    signer: &Arc<PrivateKeySigner>,
+    addresses: &[SwarmAddress],
+    batch_size: usize,
+) -> Vec<Result<Stamp, StampError>> {
+    use nectar_postage::streaming::streaming_signer;
+
+    let signer_clone = Arc::clone(signer);
+    let sign_fn = Arc::new(move |prehash: &B256| -> Result<Signature, alloy_signer::Error> {
+        signer_clone.sign_message_sync(prehash.as_slice())
+    });
+    let issuer = Arc::new(ShardedIssuer::new(B256::ZERO, 32, 16));
+
+    // channel_size controls backpressure, batch_size controls rayon parallelism granularity
+    let tx = streaming_signer(issuer, sign_fn, 100, batch_size);
+
+    // Send all requests and collect response receivers
+    let mut receivers = Vec::with_capacity(addresses.len());
+    for addr in addresses.iter() {
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        tx.send(SignRequest {
+            address: *addr,
+            response: resp_tx,
+        })
+        .await
+        .unwrap();
+        receivers.push(resp_rx);
+    }
+    drop(tx);
+
+    // Collect all responses
+    let mut results = Vec::with_capacity(addresses.len());
+    for rx in receivers {
+        results.push(rx.await.unwrap());
+    }
+    results
+}
+
+/// Helper to run async streaming verify benchmark (hybrid: tokio + rayon)
+async fn run_streaming_verify(
+    stamps: &[(Stamp, SwarmAddress)],
+    batch_size: usize,
+) -> Vec<Result<Address, StreamVerifyError>> {
+    use nectar_postage::streaming::streaming_verifier;
+
+    // channel_size controls backpressure, batch_size controls rayon parallelism granularity
+    let tx = streaming_verifier(100, batch_size);
+
+    // Send all requests and collect response receivers
+    let mut receivers = Vec::with_capacity(stamps.len());
+    for (stamp, addr) in stamps.iter() {
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        tx.send(VerifyRequest {
+            stamp: stamp.clone(),
+            address: *addr,
+            response: resp_tx,
+        })
+        .await
+        .unwrap();
+        receivers.push(resp_rx);
+    }
+    drop(tx);
+
+    // Collect all responses
+    let mut results = Vec::with_capacity(stamps.len());
+    for rx in receivers {
+        results.push(rx.await.unwrap());
+    }
+    results
+}
+
+fn bench_streaming_sign(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let signer = Arc::new(PrivateKeySigner::random());
+    let addresses_1000: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
+
+    let mut group = c.benchmark_group("ecdsa_sign_streaming_hybrid");
+    group.throughput(Throughput::Elements(1000));
+
+    // 1000 stamps with batch_size=64 (rayon processes 64 at a time)
+    group.bench_function("throughput_1000_batch64", |b| {
+        b.iter(|| {
+            rt.block_on(run_streaming_sign(&signer, &addresses_1000, 64))
+        })
+    });
+
+    // 1000 stamps with batch_size=256
+    group.bench_function("throughput_1000_batch256", |b| {
+        b.iter(|| {
+            rt.block_on(run_streaming_sign(&signer, &addresses_1000, 256))
+        })
+    });
+
+    // 1000 stamps with batch_size=1000 (process all at once)
+    group.bench_function("throughput_1000_batch1000", |b| {
+        b.iter(|| {
+            rt.block_on(run_streaming_sign(&signer, &addresses_1000, 1000))
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_streaming_verify(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let signer = PrivateKeySigner::random();
+
+    // Use sign_message_sync for EIP-191 compatibility with Go/bee
+    let sign_fn = |prehash: &B256| -> Result<Signature, StampError> {
+        Ok(signer
+            .sign_message_sync(prehash.as_slice())
+            .map_err(alloy_signer::Error::other)?)
+    };
+
+    // Pre-generate stamps for verification
+    let addresses_1000: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
+    let issuer_1000 = ShardedIssuer::new(B256::ZERO, 32, 16);
+    let results_1000 = sign_stamps_parallel(&issuer_1000, &sign_fn, &addresses_1000);
+    let stamps_with_addrs: Vec<(Stamp, SwarmAddress)> = results_1000
+        .iter()
+        .zip(addresses_1000.iter())
+        .map(|(r, addr)| (r.result.as_ref().unwrap().clone(), *addr))
+        .collect();
+
+    let mut group = c.benchmark_group("ecdsa_verify_streaming_hybrid");
+    group.throughput(Throughput::Elements(1000));
+
+    // 1000 stamps with batch_size=64
+    group.bench_function("throughput_1000_batch64", |b| {
+        b.iter(|| {
+            rt.block_on(run_streaming_verify(&stamps_with_addrs, 64))
+        })
+    });
+
+    // 1000 stamps with batch_size=256
+    group.bench_function("throughput_1000_batch256", |b| {
+        b.iter(|| {
+            rt.block_on(run_streaming_verify(&stamps_with_addrs, 256))
+        })
+    });
+
+    // 1000 stamps with batch_size=1000
+    group.bench_function("throughput_1000_batch1000", |b| {
+        b.iter(|| {
+            rt.block_on(run_streaming_verify(&stamps_with_addrs, 1000))
+        })
+    });
+
+    group.finish();
+}
+
+/// Comparison benchmark: parallel (rayon-only) vs streaming (tokio+rayon hybrid)
+fn bench_parallel_vs_streaming(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let signer = Arc::new(PrivateKeySigner::random());
+    let addresses: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
+
+    // Use sign_message_sync for EIP-191 compatibility with Go/bee
+    let signer_for_parallel = Arc::clone(&signer);
+    let sign_fn = move |prehash: &B256| -> Result<Signature, StampError> {
+        Ok(signer_for_parallel
+            .sign_message_sync(prehash.as_slice())
+            .map_err(alloy_signer::Error::other)?)
+    };
+
+    let mut group = c.benchmark_group("sign_1000_parallel_vs_streaming");
+    group.throughput(Throughput::Elements(1000));
+
+    // Parallel (rayon-only, batch collect)
+    group.bench_function("parallel_rayon", |b| {
+        b.iter(|| {
+            let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
+            black_box(sign_stamps_parallel(&issuer, &sign_fn, &addresses))
+        })
+    });
+
+    // Streaming hybrid (tokio+rayon) with batch_size=256
+    group.bench_function("streaming_hybrid_batch256", |b| {
+        b.iter(|| {
+            rt.block_on(run_streaming_sign(&signer, &addresses, 256))
+        })
+    });
+
+    group.finish();
+
+    // Verification comparison
+    let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
+    let results = sign_stamps_parallel(&issuer, &sign_fn, &addresses);
+    let stamps_with_addrs: Vec<(Stamp, SwarmAddress)> = results
+        .iter()
+        .zip(addresses.iter())
+        .map(|(r, addr)| (r.result.as_ref().unwrap().clone(), *addr))
+        .collect();
+
+    // Also prepare for parallel verification
+    let verify_input: Vec<_> = stamps_with_addrs
+        .iter()
+        .map(|(stamp, addr)| (stamp, addr))
+        .collect();
+
+    let mut group = c.benchmark_group("verify_1000_parallel_vs_streaming");
+    group.throughput(Throughput::Elements(1000));
+
+    // Parallel (rayon-only)
+    group.bench_function("parallel_rayon", |b| {
+        b.iter(|| black_box(verify_stamps_parallel(&verify_input)))
+    });
+
+    // Streaming hybrid (tokio+rayon) with batch_size=256
+    group.bench_function("streaming_hybrid_batch256", |b| {
+        b.iter(|| {
+            rt.block_on(run_streaming_verify(&stamps_with_addrs, 256))
+        })
     });
 
     group.finish();
@@ -512,6 +729,9 @@ criterion_group!(
     bench_ecdsa_sign_parallel,
     bench_ecdsa_verify_parallel,
     bench_comparison,
+    bench_streaming_sign,
+    bench_streaming_verify,
+    bench_parallel_vs_streaming,
 );
 
 criterion_main!(benches);

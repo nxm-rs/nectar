@@ -2,6 +2,30 @@
 
 use nectar_primitives::SwarmAddress;
 
+/// Returns the current timestamp in nanoseconds since the Unix epoch.
+///
+/// This is used when creating stamps to record when they were issued.
+/// In `no_std` environments, this returns 0 and callers should provide
+/// timestamps via other means (e.g., `prepare_stamp` with explicit timestamp).
+#[cfg(feature = "std")]
+#[inline]
+pub fn current_timestamp() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+/// Returns 0 in `no_std` environments.
+///
+/// Callers should provide timestamps via other means when `std` is not available.
+#[cfg(not(feature = "std"))]
+#[inline]
+pub const fn current_timestamp() -> u64 {
+    0
+}
+
 /// Calculates which collision bucket a chunk belongs to based on its address.
 ///
 /// The bucket is determined by taking the first `bucket_depth` bits of the

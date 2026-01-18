@@ -1,6 +1,9 @@
 //! Postage batch types.
 
 use alloy_primitives::{Address, B256};
+use nectar_primitives::SwarmAddress;
+
+use crate::{calculate_bucket, StampError, StampIndex};
 
 /// A 32-byte batch identifier.
 pub type BatchId = B256;
@@ -184,6 +187,59 @@ impl Batch {
     #[inline]
     pub const fn is_usable(&self, current_block: u64, threshold: u64) -> bool {
         current_block >= self.start.saturating_add(threshold)
+    }
+
+    // =========================================================================
+    // Validation methods
+    // =========================================================================
+
+    /// Validates that an index is within the valid range for this batch.
+    ///
+    /// Checks that:
+    /// - The bucket is within the valid range (< bucket_count)
+    /// - The position within the bucket is within capacity (< bucket_upper_bound)
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the index is valid, or `Err(StampError::InvalidIndex)` otherwise.
+    pub fn validate_index(&self, index: &StampIndex) -> Result<(), StampError> {
+        // Check bucket is within range
+        if index.bucket() >= self.bucket_count() {
+            return Err(StampError::InvalidIndex);
+        }
+
+        // Check index is within bucket capacity
+        if index.index() >= self.bucket_upper_bound() {
+            return Err(StampError::InvalidIndex);
+        }
+
+        Ok(())
+    }
+
+    /// Calculates which bucket a chunk address belongs to.
+    ///
+    /// The bucket is determined by taking the first `bucket_depth` bits of the
+    /// chunk address, interpreted as a big-endian unsigned integer.
+    #[inline]
+    pub fn bucket_for_address(&self, address: &SwarmAddress) -> u32 {
+        calculate_bucket(address, self.bucket_depth)
+    }
+
+    /// Checks if a chunk address matches the expected bucket for a stamp index.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the bucket matches, or `Err(StampError::BucketMismatch)` otherwise.
+    pub fn validate_bucket(
+        &self,
+        index: &StampIndex,
+        address: &SwarmAddress,
+    ) -> Result<(), StampError> {
+        let expected_bucket = self.bucket_for_address(address);
+        if index.bucket() != expected_bucket {
+            return Err(StampError::BucketMismatch);
+        }
+        Ok(())
     }
 }
 

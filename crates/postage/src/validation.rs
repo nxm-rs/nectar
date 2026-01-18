@@ -1,7 +1,16 @@
 //! Stamp validation traits and utilities.
 
-use crate::{calculate_bucket, Batch, ChainState, Stamp, StampError, StampIndex};
+use crate::{ChainState, Stamp, StampError};
 use nectar_primitives::SwarmAddress;
+
+#[cfg(any(test, feature = "std"))]
+use crate::Batch;
+
+#[cfg(test)]
+use crate::StampIndex;
+
+#[cfg(feature = "std")]
+use crate::{BatchStore, BatchStoreExt};
 
 /// A trait for validating postage stamps.
 ///
@@ -75,43 +84,149 @@ pub trait StampValidator {
     }
 }
 
-/// Extension trait for [`Batch`] providing index validation utilities.
-pub trait BatchValidation {
-    /// Validates that an index is within the valid range for this batch.
-    fn validate_index(&self, index: &StampIndex) -> Result<(), StampError>;
+// Note: BatchValidation methods (validate_index, bucket_for_address, validate_bucket)
+// are now implemented directly on the Batch type in batch.rs for better ergonomics.
 
-    /// Calculates which bucket a chunk address belongs to.
-    fn bucket_for_address(&self, address: &SwarmAddress) -> u32;
+// =============================================================================
+// Store-based Validator
+// =============================================================================
 
-    /// Checks if a chunk address matches the expected bucket for a stamp index.
-    fn validate_bucket(&self, index: &StampIndex, address: &SwarmAddress) -> Result<(), StampError>;
+/// A validator that uses a [`BatchStore`] for validation.
+///
+/// This validator performs comprehensive validation:
+/// 1. Retrieves the batch from the store
+/// 2. Checks the batch is usable (enough confirmations)
+/// 3. Checks the batch is not expired
+/// 4. Validates the stamp index is within bounds
+/// 5. Validates the bucket matches the chunk address
+/// 6. Verifies the stamp signature matches the batch owner
+///
+/// # Example
+///
+/// ```ignore
+/// use nectar_postage::{StoreValidator, BatchStore};
+///
+/// let store = MyBatchStore::new();
+/// let validator = StoreValidator::new(store, 50); // 50 block confirmations
+///
+/// let result = validator.validate(&stamp, &address).await;
+/// ```
+#[derive(Debug)]
+#[cfg(feature = "std")]
+pub struct StoreValidator<S> {
+    store: S,
+    confirmation_threshold: u64,
 }
 
-impl BatchValidation for Batch {
-    fn validate_index(&self, index: &StampIndex) -> Result<(), StampError> {
-        // Check bucket is within range
-        if index.bucket() >= self.bucket_count() {
-            return Err(StampError::InvalidIndex);
+#[cfg(feature = "std")]
+impl<S> StoreValidator<S> {
+    /// Creates a new store validator.
+    ///
+    /// # Arguments
+    ///
+    /// * `store` - The batch store to use for lookups
+    /// * `confirmation_threshold` - Minimum block confirmations for a batch to be usable
+    pub fn new(store: S, confirmation_threshold: u64) -> Self {
+        Self {
+            store,
+            confirmation_threshold,
         }
+    }
 
-        // Check index is within bucket capacity
-        if index.index() >= self.bucket_upper_bound() {
-            return Err(StampError::InvalidIndex);
-        }
+    /// Returns a reference to the underlying store.
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    /// Returns the confirmation threshold.
+    pub fn confirmation_threshold(&self) -> u64 {
+        self.confirmation_threshold
+    }
+}
+
+#[cfg(feature = "std")]
+impl<S: BatchStore + Sync> StoreValidator<S> {
+    /// Validates a stamp asynchronously.
+    ///
+    /// This performs full validation including signature verification.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the stamp is valid, or a [`StampError`] describing the failure.
+    pub async fn validate(
+        &self,
+        stamp: &Stamp,
+        address: &SwarmAddress,
+    ) -> Result<(), StampError> {
+        // Get the batch and verify it's usable
+        let batch = self.get_batch_for_stamp(stamp).await?;
+
+        // Validate structure
+        self.validate_structure_with_batch(stamp, address, &batch)?;
+
+        // Verify signature
+        stamp.verify(address, batch.owner())?;
 
         Ok(())
     }
 
-    #[inline]
-    fn bucket_for_address(&self, address: &SwarmAddress) -> u32 {
-        calculate_bucket(address, self.bucket_depth())
+    /// Validates the structural properties without signature verification.
+    ///
+    /// This is faster than full validation when you only need to check
+    /// that the stamp references a valid batch and bucket.
+    pub async fn validate_structure(
+        &self,
+        stamp: &Stamp,
+        address: &SwarmAddress,
+    ) -> Result<(), StampError> {
+        let batch = self.get_batch_for_stamp(stamp).await?;
+        self.validate_structure_with_batch(stamp, address, &batch)
     }
 
-    fn validate_bucket(&self, index: &StampIndex, address: &SwarmAddress) -> Result<(), StampError> {
-        let expected_bucket = self.bucket_for_address(address);
-        if index.bucket() != expected_bucket {
-            return Err(StampError::BucketMismatch);
-        }
+    /// Gets and validates the batch for a stamp.
+    async fn get_batch_for_stamp(&self, stamp: &Stamp) -> Result<Batch, StampError> {
+        self.store
+            .get_usable(&stamp.batch(), self.confirmation_threshold)
+            .await
+            .map_err(|e| match e {
+                crate::BatchStoreError::NotFound(id) => StampError::BatchNotFound(id),
+                crate::BatchStoreError::NotUsable {
+                    created,
+                    current,
+                    threshold,
+                    ..
+                } => StampError::BatchNotUsable {
+                    created,
+                    current,
+                    threshold,
+                },
+                crate::BatchStoreError::Expired {
+                    value,
+                    total_amount,
+                    ..
+                } => StampError::BatchExpired {
+                    value,
+                    total_amount,
+                },
+                crate::BatchStoreError::Store(_) => {
+                    StampError::BatchNotFound(stamp.batch())
+                }
+            })
+    }
+
+    /// Validates structure given an already-retrieved batch.
+    fn validate_structure_with_batch(
+        &self,
+        stamp: &Stamp,
+        address: &SwarmAddress,
+        batch: &Batch,
+    ) -> Result<(), StampError> {
+        // Validate index bounds
+        batch.validate_index(&stamp.stamp_index())?;
+
+        // Validate bucket matches address
+        batch.validate_bucket(&stamp.stamp_index(), address)?;
+
         Ok(())
     }
 }

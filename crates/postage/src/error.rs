@@ -5,7 +5,7 @@ use alloy_primitives::Address;
 use thiserror::Error;
 
 /// Errors that can occur when working with stamps.
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub enum StampError {
     /// The owner recovered from the signature doesn't match the batch owner.
     #[error("owner mismatch: expected {expected}, got {actual}")]
@@ -66,6 +66,6 @@ pub enum StampError {
     InvalidSignature,
 
     /// Signing operation failed.
-    #[error("signing failed: {0}")]
-    SigningFailed(&'static str),
+    #[error(transparent)]
+    Signing(#[from] alloy_signer::Error),
 }

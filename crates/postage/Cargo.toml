@@ -26,22 +26,37 @@ thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["sync", "rt", "time"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 alloy-signer-local = { workspace = true }
 
 [[bench]]
 name = "stamp"
 harness = false
-required-features = ["parallel"]
+required-features = ["parallel", "streaming"]
 
 [features]
 default = ["std"]
+
+# Standard library support. Enables BatchStore, BatchFactory, and timestamp functions.
 std = ["nectar-primitives/std", "alloy-primitives/std", "thiserror/std", "serde?/std"]
+
+# Serialization support with serde.
 serde = ["dep:serde", "nectar-primitives/serde", "alloy-primitives/serde"]
+
+# Local key signing for testing and development.
 local-signer = ["dep:alloy-signer-local", "std"]
+
+# Batch-collect parallel operations using rayon (sync, CPU-bound).
+# Use this for simple cases where all results can fit in memory.
 parallel = ["dep:rayon", "std"]
+
+# Streaming parallel operations using tokio channels (async, IO-bound).
+# Use this for large datasets with backpressure support.
+# Requires parallel feature for ShardedIssuer.
+streaming = ["dep:tokio", "std", "parallel"]
