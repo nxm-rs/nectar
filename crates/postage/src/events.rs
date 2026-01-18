@@ -1,4 +1,8 @@
 //! Batch event types for monitoring blockchain events.
+//!
+//! This module provides types for handling postage batch events from the blockchain.
+//! Any node that maintains a batch store (for stamp validation) needs to handle
+//! these events to keep their batch state synchronized with on-chain state.
 
 use crate::{Batch, BatchId};
 
@@ -38,12 +42,12 @@ pub enum BatchEvent {
 
 impl BatchEvent {
     /// Returns the batch ID associated with this event.
-    pub fn batch_id(&self) -> BatchId {
+    pub const fn batch_id(&self) -> BatchId {
         match self {
-            BatchEvent::Created { batch } => batch.id(),
-            BatchEvent::TopUp { batch_id, .. } => *batch_id,
-            BatchEvent::DepthIncrease { batch_id, .. } => *batch_id,
-            BatchEvent::Expired { batch_id } => *batch_id,
+            Self::Created { batch } => batch.id(),
+            Self::TopUp { batch_id, .. } => *batch_id,
+            Self::DepthIncrease { batch_id, .. } => *batch_id,
+            Self::Expired { batch_id } => *batch_id,
         }
     }
 }
@@ -82,7 +86,15 @@ mod tests {
 
     #[test]
     fn test_batch_event_batch_id() {
-        let batch = Batch::new(B256::repeat_byte(1), 1000, 100, Address::ZERO, 20, 16, false);
+        let batch = Batch::new(
+            B256::repeat_byte(1),
+            1000,
+            100,
+            Address::ZERO,
+            20,
+            16,
+            false,
+        );
         let batch_id = batch.id();
 
         let created = BatchEvent::Created { batch };

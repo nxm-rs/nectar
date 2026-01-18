@@ -1,6 +1,6 @@
 //! Batch factory traits for creating batches.
 
-use crate::{Batch, BatchId, BatchParams};
+use nectar_postage::{Batch, BatchId, BatchParams};
 
 /// The result of creating a batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +82,7 @@ pub struct MemoryBatchFactory {
 
 impl MemoryBatchFactory {
     /// Creates a new memory batch factory.
-    pub fn new(current_block: u64) -> Self {
+    pub const fn new(current_block: u64) -> Self {
         Self {
             next_id: std::sync::atomic::AtomicU64::new(0),
             current_block,
@@ -90,7 +90,7 @@ impl MemoryBatchFactory {
     }
 
     /// Sets the current block number.
-    pub fn set_current_block(&mut self, block: u64) {
+    pub const fn set_current_block(&mut self, block: u64) {
         self.current_block = block;
     }
 
@@ -133,9 +133,9 @@ pub enum MemoryBatchError {
 impl std::fmt::Display for MemoryBatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MemoryBatchError::NotFound(id) => write!(f, "batch not found: {}", id),
-            MemoryBatchError::Immutable(id) => write!(f, "batch is immutable: {}", id),
-            MemoryBatchError::InvalidDepth {
+            Self::NotFound(id) => write!(f, "batch not found: {}", id),
+            Self::Immutable(id) => write!(f, "batch is immutable: {}", id),
+            Self::InvalidDepth {
                 batch_id,
                 current,
                 requested,
@@ -174,7 +174,6 @@ impl BatchFactory for MemoryBatchFactory {
 
     async fn top_up(&self, _batch_id: BatchId, _amount: u128) -> Result<u128, Self::Error> {
         // Memory factory doesn't track batches after creation
-        // In a real implementation, this would update the batch in storage
         Ok(0)
     }
 

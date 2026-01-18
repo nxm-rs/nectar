@@ -45,6 +45,9 @@ alloy-chains = { version = "0.2", default-features = false }
 alloy-signer = { version = "1.4", default-features = false }
 alloy-signer-local = { version = "1.4", default-features = false }
 
+# k256 with precomputed tables for faster ECDSA
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "precomputed-tables", "std"] }
+
 # hashing
 digest = "0.10"
 generic-array = "0.14"

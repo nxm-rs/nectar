@@ -1,6 +1,6 @@
 //! Stamp issuer trait for tracking bucket utilization.
 
-use crate::{BatchId, StampDigest, StampError, StampIndex};
+use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
 use nectar_primitives::SwarmAddress;
 
 /// A trait for managing stamp issuance within a batch.
@@ -18,7 +18,7 @@ use nectar_primitives::SwarmAddress;
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage::{StampIssuer, StampDigest, StampError};
+/// use nectar_postage_issuer::{StampIssuer, StampDigest, StampError};
 /// use nectar_primitives::SwarmAddress;
 ///
 /// struct MyIssuer { /* ... */ }
@@ -158,7 +158,7 @@ impl MemoryIssuer {
     }
 
     /// Creates a memory issuer from a batch.
-    pub fn from_batch(batch: &crate::Batch) -> Self {
+    pub fn from_batch(batch: &Batch) -> Self {
         Self::new(batch.id(), batch.depth(), batch.bucket_depth())
     }
 }
@@ -169,7 +169,7 @@ impl StampIssuer for MemoryIssuer {
         address: &SwarmAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        let bucket = crate::calculate_bucket(address, self.bucket_depth);
+        let bucket = calculate_bucket(address, self.bucket_depth);
         let bucket_idx = bucket as usize;
 
         // Get current index for this bucket
@@ -305,7 +305,13 @@ mod tests {
 
         // Third should fail
         let result = issuer.prepare_stamp(&address, 3);
-        assert!(matches!(result, Err(StampError::BucketFull { bucket: 0xABCD, capacity: 2 })));
+        assert!(matches!(
+            result,
+            Err(StampError::BucketFull {
+                bucket: 0xABCD,
+                capacity: 2
+            })
+        ));
     }
 
     #[test]

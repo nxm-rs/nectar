@@ -5,7 +5,7 @@ use alloy_primitives::Address;
 use thiserror::Error;
 
 /// Errors that can occur when working with stamps.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum StampError {
     /// The owner recovered from the signature doesn't match the batch owner.
     #[error("owner mismatch: expected {expected}, got {actual}")]
@@ -29,7 +29,9 @@ pub enum StampError {
     BatchNotFound(BatchId),
 
     /// The batch is not yet usable (needs more confirmations).
-    #[error("batch not usable: created at block {created}, current block {current}, need {threshold} confirmations")]
+    #[error(
+        "batch not usable: created at block {created}, current block {current}, need {threshold} confirmations"
+    )]
     BatchNotUsable {
         /// Block when batch was created.
         created: u64,
@@ -64,8 +66,4 @@ pub enum StampError {
     /// Signature verification failed.
     #[error("invalid signature")]
     InvalidSignature,
-
-    /// Signing operation failed.
-    #[error(transparent)]
-    Signing(#[from] alloy_signer::Error),
 }

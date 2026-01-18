@@ -1,6 +1,6 @@
 //! Stamp validation traits and utilities.
 
-use crate::{ChainState, Stamp, StampError};
+use crate::{PostageContext, Stamp, StampError};
 use nectar_primitives::SwarmAddress;
 
 #[cfg(any(test, feature = "std"))]
@@ -15,7 +15,7 @@ use crate::{BatchStore, BatchStoreExt};
 /// A trait for validating postage stamps.
 ///
 /// Implementations of this trait verify that stamps are valid for a given
-/// chunk address and chain state. Validation includes checking:
+/// chunk address and postage context. Validation includes checking:
 ///
 /// - The batch exists and is not expired
 /// - The stamp index is within valid bounds
@@ -25,7 +25,7 @@ use crate::{BatchStore, BatchStoreExt};
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage::{StampValidator, Stamp, ChainState};
+/// use nectar_postage::{StampValidator, Stamp, PostageContext};
 /// use nectar_primitives::SwarmAddress;
 ///
 /// struct MyValidator { /* ... */ }
@@ -33,7 +33,7 @@ use crate::{BatchStore, BatchStoreExt};
 /// impl StampValidator for MyValidator {
 ///     type Error = nectar_postage::StampError;
 ///
-///     fn validate(&self, stamp: &Stamp, address: &SwarmAddress, state: &ChainState) -> Result<(), Self::Error> {
+///     fn validate(&self, stamp: &Stamp, address: &SwarmAddress, state: &PostageContext) -> Result<(), Self::Error> {
 ///         // Validation logic...
 ///         Ok(())
 ///     }
@@ -49,7 +49,7 @@ pub trait StampValidator {
     ///
     /// * `stamp` - The stamp to validate
     /// * `address` - The address of the chunk being validated
-    /// * `state` - The current chain state for expiry checks
+    /// * `state` - The current postage context for expiry checks
     ///
     /// # Returns
     ///
@@ -58,7 +58,7 @@ pub trait StampValidator {
         &self,
         stamp: &Stamp,
         address: &SwarmAddress,
-        state: &ChainState,
+        state: &PostageContext,
     ) -> Result<(), Self::Error>;
 
     /// Validates only the structural properties of a stamp without signature verification.
@@ -78,7 +78,7 @@ pub trait StampValidator {
         &self,
         stamp: &Stamp,
         address: &SwarmAddress,
-        state: &ChainState,
+        state: &PostageContext,
     ) -> Result<(), Self::Error> {
         self.validate(stamp, address, state)
     }
@@ -126,7 +126,7 @@ impl<S> StoreValidator<S> {
     ///
     /// * `store` - The batch store to use for lookups
     /// * `confirmation_threshold` - Minimum block confirmations for a batch to be usable
-    pub fn new(store: S, confirmation_threshold: u64) -> Self {
+    pub const fn new(store: S, confirmation_threshold: u64) -> Self {
         Self {
             store,
             confirmation_threshold,
@@ -134,12 +134,12 @@ impl<S> StoreValidator<S> {
     }
 
     /// Returns a reference to the underlying store.
-    pub fn store(&self) -> &S {
+    pub const fn store(&self) -> &S {
         &self.store
     }
 
     /// Returns the confirmation threshold.
-    pub fn confirmation_threshold(&self) -> u64 {
+    pub const fn confirmation_threshold(&self) -> u64 {
         self.confirmation_threshold
     }
 }
@@ -153,11 +153,7 @@ impl<S: BatchStore + Sync> StoreValidator<S> {
     /// # Returns
     ///
     /// `Ok(())` if the stamp is valid, or a [`StampError`] describing the failure.
-    pub async fn validate(
-        &self,
-        stamp: &Stamp,
-        address: &SwarmAddress,
-    ) -> Result<(), StampError> {
+    pub async fn validate(&self, stamp: &Stamp, address: &SwarmAddress) -> Result<(), StampError> {
         // Get the batch and verify it's usable
         let batch = self.get_batch_for_stamp(stamp).await?;
 
@@ -208,9 +204,7 @@ impl<S: BatchStore + Sync> StoreValidator<S> {
                     value,
                     total_amount,
                 },
-                crate::BatchStoreError::Store(_) => {
-                    StampError::BatchNotFound(stamp.batch())
-                }
+                crate::BatchStoreError::Store(_) => StampError::BatchNotFound(stamp.batch()),
             })
     }
 

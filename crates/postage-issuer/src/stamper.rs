@@ -1,35 +1,21 @@
 //! Stamper trait and implementations for creating signed stamps.
+//!
+//! # EIP-191 Compatibility
+//!
+//! To be compatible with Go/bee implementations, stamps must be signed using
+//! EIP-191 personal message signing. The prehash (keccak256 of stamp data) is
+//! treated as the message, which gets prefixed with `"\x19Ethereum Signed Message:\n32"`.
+//!
+//! Use alloy's [`SignerSync`] trait with `sign_message_sync(prehash.as_slice())`
+//! rather than `sign_hash_sync` to ensure compatibility.
 
-use alloy_primitives::B256;
-use alloy_signer::Signature;
+use alloy_primitives::Signature;
+use alloy_signer::SignerSync;
 
-use crate::{current_timestamp, BatchId, Stamp, StampDigest, StampError};
+use crate::error::SigningError;
+use crate::StampIssuer;
+use nectar_postage::{BatchId, Stamp, StampDigest, StampError, current_timestamp};
 use nectar_primitives::SwarmAddress;
-
-/// A trait for signing stamp digests.
-///
-/// This trait abstracts over different signing mechanisms, allowing stamps
-/// to be created with hardware wallets, remote signers, or local keys.
-///
-/// # EIP-191 Compatibility
-///
-/// To be compatible with Go/bee implementations, stamps must be signed using
-/// EIP-191 personal message signing. The prehash (keccak256 of stamp data) is
-/// treated as the message, which gets prefixed with `"\x19Ethereum Signed Message:\n32"`.
-///
-/// Implementations should use alloy's `sign_message` (or `sign_message_sync`)
-/// rather than `sign_hash` to ensure compatibility.
-pub trait StampSigner {
-    /// Signs a stamp digest message synchronously using EIP-191 personal signing.
-    ///
-    /// The prehash is the keccak256 hash of the stamp digest data. This method
-    /// should apply EIP-191 message prefixing before signing to be compatible
-    /// with Go/bee implementations.
-    ///
-    /// Use alloy's `SignerSync::sign_message_sync(prehash.as_slice())` for the
-    /// implementation.
-    fn sign_message(&self, prehash: &B256) -> Result<Signature, alloy_signer::Error>;
-}
 
 /// A trait for entities that can stamp chunks.
 ///
@@ -39,7 +25,7 @@ pub trait StampSigner {
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage::{Stamper, Stamp, StampError, BatchId};
+/// use nectar_postage_issuer::{Stamper, Stamp, StampError, BatchId};
 /// use nectar_primitives::SwarmAddress;
 ///
 /// struct MyStamper { /* ... */ }
@@ -108,7 +94,7 @@ pub trait Stamper {
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage::{BatchStamper, MemoryIssuer, Stamper};
+/// use nectar_postage_issuer::{BatchStamper, MemoryIssuer, Stamper};
 ///
 /// let issuer = MemoryIssuer::from_batch(&batch);
 /// let mut stamper = BatchStamper::new(issuer, my_signer);
@@ -124,27 +110,27 @@ pub struct BatchStamper<I, S> {
 
 impl<I, S> BatchStamper<I, S> {
     /// Creates a new batch stamper with the given issuer and signer.
-    pub fn new(issuer: I, signer: S) -> Self {
+    pub const fn new(issuer: I, signer: S) -> Self {
         Self { issuer, signer }
     }
 
     /// Returns a reference to the issuer.
-    pub fn issuer(&self) -> &I {
+    pub const fn issuer(&self) -> &I {
         &self.issuer
     }
 
     /// Returns a mutable reference to the issuer.
-    pub fn issuer_mut(&mut self) -> &mut I {
+    pub const fn issuer_mut(&mut self) -> &mut I {
         &mut self.issuer
     }
 
     /// Returns a reference to the signer.
-    pub fn signer(&self) -> &S {
+    pub const fn signer(&self) -> &S {
         &self.signer
     }
 
     /// Returns a mutable reference to the signer.
-    pub fn signer_mut(&mut self) -> &mut S {
+    pub const fn signer_mut(&mut self) -> &mut S {
         &mut self.signer
     }
 
@@ -154,23 +140,14 @@ impl<I, S> BatchStamper<I, S> {
     /// the 65-byte format used in stamps (r || s || v).
     #[inline]
     pub fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
-        // Convert alloy Signature to 65-byte array (r || s || v)
-        let sig_bytes: [u8; 65] = {
-            let mut bytes = [0u8; 65];
-            bytes[..32].copy_from_slice(&sig.r().to_be_bytes::<32>());
-            bytes[32..64].copy_from_slice(&sig.s().to_be_bytes::<32>());
-            // v is y_parity as bool, convert to byte (0 or 1)
-            bytes[64] = sig.v() as u8;
-            bytes
-        };
-
-        Stamp::with_index(digest.batch_id, digest.index, digest.timestamp, sig_bytes)
+        // Signature is now stored directly in Stamp
+        Stamp::with_index(digest.batch_id, digest.index, digest.timestamp, sig)
     }
 }
 
 impl<I, S> BatchStamper<I, S>
 where
-    I: crate::StampIssuer,
+    I: StampIssuer,
 {
     /// Prepares a stamp for the given chunk address.
     ///
@@ -187,17 +164,17 @@ where
 
 impl<I, S> Stamper for BatchStamper<I, S>
 where
-    I: crate::StampIssuer,
-    S: StampSigner,
+    I: StampIssuer,
+    S: SignerSync,
 {
-    type Error = StampError;
+    type Error = SigningError;
 
     fn stamp(&mut self, address: &SwarmAddress) -> Result<Stamp, Self::Error> {
         let timestamp = current_timestamp();
         let digest = self.issuer.prepare_stamp(address, timestamp)?;
         let prehash = digest.to_prehash();
 
-        let sig = self.signer.sign_message(&prehash)?;
+        let sig = self.signer.sign_message_sync(prehash.as_slice())?;
 
         Ok(Self::stamp_from_signature(&digest, sig))
     }
@@ -218,16 +195,24 @@ where
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use crate::{MemoryIssuer, StampIndex};
-    use alloy_primitives::U256;
+    use alloy_primitives::{B256, Signature, U256};
+    use crate::MemoryIssuer;
+    use nectar_postage::StampIndex;
 
     /// A mock signer for testing that creates deterministic signatures.
     struct MockSigner;
 
-    impl StampSigner for MockSigner {
-        fn sign_message(&self, _prehash: &B256) -> Result<Signature, alloy_signer::Error> {
-            // Create a dummy signature for testing
+    impl SignerSync for MockSigner {
+        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
             Ok(Signature::new(U256::from(1), U256::from(2), false))
+        }
+
+        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+            Ok(Signature::new(U256::from(1), U256::from(2), false))
+        }
+
+        fn chain_id_sync(&self) -> Option<u64> {
+            None
         }
     }
 
@@ -267,6 +252,8 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_bucket_full() {
+        use crate::error::SigningError;
+
         // Create an issuer with very small bucket capacity: depth=17, bucket_depth=16
         // This gives 2^(17-16) = 2 slots per bucket
         let issuer = MemoryIssuer::new(B256::ZERO, 17, 16);
@@ -280,7 +267,10 @@ mod tests {
 
         // Third stamp should fail - bucket is full
         let result = stamper.stamp(&address);
-        assert!(matches!(result, Err(StampError::BucketFull { .. })));
+        assert!(matches!(
+            result,
+            Err(SigningError::Stamp(StampError::BucketFull { .. }))
+        ));
     }
 
     #[test]
@@ -314,24 +304,12 @@ mod tests {
     }
 
     /// Test EIP-191 signing interoperability.
-    ///
-    /// This test uses the exact test vector from bee's TestDefaultSignerDeterministic
-    /// in pkg/crypto/signer_test.go to verify that our signing produces identical
-    /// signatures.
-    ///
-    /// Test vector:
-    /// - Private key: 634fb5a872396d9693e5c9f9d7233cfa93f395c093371017ff44aa9ae6564cdd
-    /// - Message: 2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae
-    /// - Expected signature: 336d24afef78c5883b96ad9a62552a8db3d236105cb059ddd04dc49680869dc1
-    ///                       6234f6852c277087f025d4114c4fac6b40295ecffd1194a84cdb91bd57176949
-    ///                       1b
     #[test]
     fn test_eip191_signing_interop() {
         use alloy_primitives::hex;
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
 
-        // Test vector from Go/bee TestDefaultSignerDeterministic
         let privkey_bytes =
             hex::decode("634fb5a872396d9693e5c9f9d7233cfa93f395c093371017ff44aa9ae6564cdd")
                 .unwrap();
@@ -342,52 +320,38 @@ mod tests {
             "336d24afef78c5883b96ad9a62552a8db3d236105cb059ddd04dc49680869dc16234f6852c277087f025d4114c4fac6b40295ecffd1194a84cdb91bd571769491b"
         ).unwrap();
 
-        // Create signer from private key
         let signer = PrivateKeySigner::from_slice(&privkey_bytes).unwrap();
-
-        // Sign using EIP-191 message signing (same as Go's signer.Sign())
         let signature = signer.sign_message_sync(&message).unwrap();
 
-        // Convert to bytes in r || s || v format (same as Go)
         let mut sig_bytes = [0u8; 65];
         sig_bytes[..32].copy_from_slice(&signature.r().to_be_bytes::<32>());
         sig_bytes[32..64].copy_from_slice(&signature.s().to_be_bytes::<32>());
-        sig_bytes[64] = signature.v() as u8 + 27; // Go uses 27/28 for v, not 0/1
+        sig_bytes[64] = signature.v() as u8 + 27;
 
         assert_eq!(
             sig_bytes.as_slice(),
             expected_sig.as_slice(),
-            "Signature mismatch with Go/bee test vector.\nExpected: {}\nGot: {}",
-            hex::encode(&expected_sig),
-            hex::encode(&sig_bytes)
+            "Signature mismatch with Go/bee test vector"
         );
     }
 
     /// Test that signature recovery works correctly with EIP-191.
-    ///
-    /// This verifies that we can recover the signer address from a signature
-    /// created using EIP-191 message signing.
     #[test]
     fn test_eip191_recovery_interop() {
         use alloy_primitives::hex;
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
 
-        // Test vector from Go/bee TestDefaultSignerDeterministic
         let privkey_bytes =
             hex::decode("634fb5a872396d9693e5c9f9d7233cfa93f395c093371017ff44aa9ae6564cdd")
                 .unwrap();
         let message =
             hex::decode("2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae")
                 .unwrap();
-
-        // Expected Ethereum address for this private key (from Go test)
         let expected_address = "8d3766440f0d7b949a5e32995d09619a7f86e632";
 
         let signer = PrivateKeySigner::from_slice(&privkey_bytes).unwrap();
         let signature = signer.sign_message_sync(&message).unwrap();
-
-        // Recover address from signature using EIP-191
         let recovered = signature.recover_address_from_msg(&message).unwrap();
 
         assert_eq!(
@@ -395,27 +359,18 @@ mod tests {
             expected_address,
             "Recovered address mismatch"
         );
-        assert_eq!(recovered, signer.address(), "Recovered address should match signer address");
+        assert_eq!(
+            recovered,
+            signer.address(),
+            "Recovered address should match signer address"
+        );
     }
 
     /// Test verifying a stamp created by Go/bee in Rust.
-    ///
-    /// This test uses a stamp generated by Go's TestGenerateInteropStamp test
-    /// with fully deterministic values to verify cross-implementation compatibility.
-    ///
-    /// Test vector from Go:
-    /// - Private Key: 634fb5a872396d9693e5c9f9d7233cfa93f395c093371017ff44aa9ae6564cdd
-    /// - Owner Address: 8d3766440f0d7b949a5e32995d09619a7f86e632
-    /// - Chunk Address: 0000...0002
-    /// - Batch ID: 0000...0001
-    /// - Index: 0000000000000000 (bucket=0, index=0)
-    /// - Timestamp: 0000000000000003
     #[test]
     fn test_verify_go_created_stamp() {
-        use alloy_primitives::{hex, Address};
-        use alloy_signer::Signature;
+        use alloy_primitives::{Address, hex};
 
-        // Test vector generated by Go's TestGenerateInteropStamp
         let chunk_addr_bytes =
             hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
                 .unwrap();
@@ -427,25 +382,20 @@ mod tests {
             hex::decode("f4fe8b1b61d3ac2155c07fbfe445599a4119fbd29b1125b5ac0d06964f76ec20")
                 .unwrap();
 
-        // Parse the stamp
-        let stamp = crate::Stamp::try_from_slice(&full_stamp_bytes).unwrap();
+        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
 
-        // Verify stamp fields
-        assert_eq!(
-            hex::encode(stamp.batch().as_slice()),
-            "0000000000000000000000000000000000000000000000000000000000000001"
-        );
         assert_eq!(stamp.bucket(), 0);
         assert_eq!(stamp.index(), 0);
         assert_eq!(stamp.timestamp(), 3);
+        // Check v value - Go uses v=28 (0x1c) for odd y parity
+        // as_bytes()[64] gives us the raw v byte which should be 28 (0x1c)
+        assert_eq!(
+            stamp.signature().as_bytes()[64],
+            0x1c,
+            "Go uses v=28 (0x1c) for odd y parity"
+        );
 
-        // Verify the signature ends with 0x1c (28 in decimal, Go's v format)
-        assert_eq!(stamp.signature()[64], 0x1c, "Go uses v=28 (0x1c) for odd y parity");
-
-        // Create the chunk address
         let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
-
-        // Compute the digest (should match Go's digest)
         let digest = StampDigest::new(
             chunk_address,
             stamp.batch(),
@@ -460,23 +410,19 @@ mod tests {
             "Digest mismatch - Rust computed different prehash than Go"
         );
 
-        // Recover the signer from the Go-created signature using EIP-191
-        let sig = Signature::from_raw(stamp.signature()).expect("Failed to parse Go signature");
-        let recovered = sig
+        // stamp.signature() already returns &Signature
+        let recovered = stamp
+            .signature()
             .recover_address_from_msg(prehash.as_slice())
             .expect("Failed to recover address from Go signature");
 
         assert_eq!(
             hex::encode(recovered.as_slice()),
             expected_owner,
-            "Recovered owner address mismatch - Rust failed to verify Go stamp"
+            "Recovered owner address mismatch"
         );
 
-        // Also verify using the expected owner address directly
         let expected_owner_addr: Address = expected_owner.parse().unwrap();
-        assert_eq!(
-            recovered, expected_owner_addr,
-            "Recovered address should match expected owner"
-        );
+        assert_eq!(recovered, expected_owner_addr);
     }
 }

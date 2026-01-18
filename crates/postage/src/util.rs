@@ -58,14 +58,14 @@ pub fn calculate_bucket(address: &SwarmAddress, bucket_depth: u8) -> u32 {
     leading >> (32 - bucket_depth)
 }
 
-/// Represents the current blockchain state relevant to batch expiry calculations.
+/// Context for postage validation.
 ///
-/// The chain state is used to determine whether batches are expired or usable
-/// based on the current cumulative payout and block number.
+/// Contains the current state needed to determine whether batches are expired
+/// or usable. This data may come from a blockchain, database, or any other source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ChainState {
-    /// The current block number.
+pub struct PostageContext {
+    /// The current block number (or equivalent time reference).
     block: u64,
     /// The cumulative payout per chunk (total_amount in Bee terminology).
     ///
@@ -75,8 +75,8 @@ pub struct ChainState {
     total_amount: u128,
 }
 
-impl ChainState {
-    /// Creates a new chain state.
+impl PostageContext {
+    /// Creates a new postage context.
     #[inline]
     pub const fn new(block: u64, total_amount: u128) -> Self {
         Self {
@@ -99,13 +99,13 @@ impl ChainState {
 
     /// Updates the block number.
     #[inline]
-    pub fn set_block(&mut self, block: u64) {
+    pub const fn set_block(&mut self, block: u64) {
         self.block = block;
     }
 
     /// Updates the total amount.
     #[inline]
-    pub fn set_total_amount(&mut self, total_amount: u128) {
+    pub const fn set_total_amount(&mut self, total_amount: u128) {
         self.total_amount = total_amount;
     }
 }
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn test_chain_state() {
-        let mut state = ChainState::new(100, 5000);
+        let mut state = PostageContext::new(100, 5000);
 
         assert_eq!(state.block(), 100);
         assert_eq!(state.total_amount(), 5000);
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_chain_state_default() {
-        let state = ChainState::default();
+        let state = PostageContext::default();
         assert_eq!(state.block(), 0);
         assert_eq!(state.total_amount(), 0);
     }

@@ -1,6 +1,6 @@
 //! Batch storage traits for persisting batch data.
 
-use crate::{Batch, BatchId, ChainState};
+use crate::{Batch, BatchId, PostageContext};
 
 /// A trait for storing and retrieving batches.
 ///
@@ -43,15 +43,15 @@ pub trait BatchStore {
         id: &BatchId,
     ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send;
 
-    /// Returns the current chain state.
-    fn chain_state(
+    /// Returns the current postage context.
+    fn context(
         &self,
-    ) -> impl std::future::Future<Output = Result<ChainState, Self::Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<PostageContext, Self::Error>> + Send;
 
-    /// Updates the chain state.
-    fn set_chain_state(
+    /// Updates the postage context.
+    fn set_context(
         &self,
-        state: ChainState,
+        state: PostageContext,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
 
     /// Returns all batch IDs in the store.
@@ -81,7 +81,7 @@ pub trait BatchStoreExt: BatchStore + Sync {
                 .map_err(BatchStoreError::Store)?
                 .ok_or(BatchStoreError::NotFound(*id))?;
 
-            let state = self.chain_state().await.map_err(BatchStoreError::Store)?;
+            let state = self.context().await.map_err(BatchStoreError::Store)?;
 
             if !batch.is_usable(state.block(), confirmation_threshold) {
                 return Err(BatchStoreError::NotUsable {
@@ -140,8 +140,8 @@ pub enum BatchStoreError<E> {
 impl<E: std::fmt::Display> std::fmt::Display for BatchStoreError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BatchStoreError::NotFound(id) => write!(f, "batch not found: {}", id),
-            BatchStoreError::NotUsable {
+            Self::NotFound(id) => write!(f, "batch not found: {}", id),
+            Self::NotUsable {
                 batch_id,
                 created,
                 current,
@@ -151,7 +151,7 @@ impl<E: std::fmt::Display> std::fmt::Display for BatchStoreError<E> {
                 "batch {} not usable: created at block {}, current block {}, need {} confirmations",
                 batch_id, created, current, threshold
             ),
-            BatchStoreError::Expired {
+            Self::Expired {
                 batch_id,
                 value,
                 total_amount,
@@ -160,7 +160,7 @@ impl<E: std::fmt::Display> std::fmt::Display for BatchStoreError<E> {
                 "batch {} expired: value {} <= total_amount {}",
                 batch_id, value, total_amount
             ),
-            BatchStoreError::Store(e) => write!(f, "store error: {}", e),
+            Self::Store(e) => write!(f, "store error: {}", e),
         }
     }
 }
@@ -168,7 +168,7 @@ impl<E: std::fmt::Display> std::fmt::Display for BatchStoreError<E> {
 impl<E: std::error::Error + 'static> std::error::Error for BatchStoreError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            BatchStoreError::Store(e) => Some(e),
+            Self::Store(e) => Some(e),
             _ => None,
         }
     }

@@ -1,46 +1,11 @@
 //! Postage stamp types.
 
-use alloy_primitives::{Address, B256};
-use alloy_signer::Signature;
+use alloy_primitives::{Address, B256, Signature, eip191_hash_message};
+use alloy_signer::k256::ecdsa::VerifyingKey;
 use byteorder::{BigEndian, ByteOrder};
 use nectar_primitives::SwarmAddress;
 
 use crate::{BatchId, StampError};
-
-/// Serde helpers for the 65-byte signature array.
-#[cfg(feature = "serde")]
-mod serde_sig {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    /// Serialize a 65-byte signature as a hex string.
-    pub(super) fn serialize<S: Serializer>(sig: &[u8; 65], serializer: S) -> Result<S::Ok, S::Error> {
-        if serializer.is_human_readable() {
-            // Hex string for human-readable formats (JSON, TOML, etc.)
-            alloy_primitives::hex::encode_prefixed(sig).serialize(serializer)
-        } else {
-            // Raw bytes for binary formats
-            serializer.serialize_bytes(sig)
-        }
-    }
-
-    /// Deserialize a 65-byte signature from a hex string or bytes.
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 65], D::Error> {
-        use serde::de::Error;
-
-        if deserializer.is_human_readable() {
-            let s = String::deserialize(deserializer)?;
-            let bytes = alloy_primitives::hex::decode(&s).map_err(D::Error::custom)?;
-            bytes
-                .try_into()
-                .map_err(|_| D::Error::custom("expected 65 bytes for signature"))
-        } else {
-            let bytes = <Vec<u8>>::deserialize(deserializer)?;
-            bytes
-                .try_into()
-                .map_err(|_| D::Error::custom("expected 65 bytes for signature"))
-        }
-    }
-}
 
 /// The size of a serialized stamp in bytes.
 ///
@@ -174,20 +139,19 @@ pub struct Stamp {
     index: StampIndex,
     /// Timestamp when the stamp was created (nanoseconds since epoch).
     timestamp: u64,
-    /// The signature proving ownership (65 bytes: r || s || v).
-    #[cfg_attr(feature = "serde", serde(with = "serde_sig"))]
-    sig: [u8; 65],
+    /// The signature proving ownership.
+    sig: Signature,
 }
 
 impl Stamp {
     /// Creates a new stamp with the given parameters.
     #[inline]
-    pub const fn new(
+    pub fn new(
         batch: BatchId,
         bucket: u32,
         index: u32,
         timestamp: u64,
-        sig: [u8; 65],
+        sig: Signature,
     ) -> Self {
         Self {
             batch,
@@ -199,12 +163,7 @@ impl Stamp {
 
     /// Creates a new stamp from a stamp index.
     #[inline]
-    pub const fn with_index(
-        batch: BatchId,
-        index: StampIndex,
-        timestamp: u64,
-        sig: [u8; 65],
-    ) -> Self {
+    pub fn with_index(batch: BatchId, index: StampIndex, timestamp: u64, sig: Signature) -> Self {
         Self {
             batch,
             index,
@@ -245,7 +204,7 @@ impl Stamp {
 
     /// Returns the signature.
     #[inline]
-    pub const fn signature(&self) -> &[u8; 65] {
+    pub const fn signature(&self) -> &Signature {
         &self.sig
     }
 
@@ -257,45 +216,44 @@ impl Stamp {
         BigEndian::write_u32(&mut bytes[32..36], self.index.bucket());
         BigEndian::write_u32(&mut bytes[36..40], self.index.index());
         BigEndian::write_u64(&mut bytes[40..48], self.timestamp);
-        bytes[48..STAMP_SIZE].copy_from_slice(&self.sig);
+        bytes[48..STAMP_SIZE].copy_from_slice(&self.sig.as_bytes());
         bytes
     }
 
     /// Deserializes a stamp from a 113-byte array.
     ///
-    /// This is infallible when given a fixed-size array because the layout is guaranteed.
+    /// Returns an error if the signature bytes are invalid.
     #[inline]
-    pub fn from_bytes(bytes: &StampBytes) -> Self {
+    pub fn from_bytes(bytes: &StampBytes) -> Result<Self, StampError> {
         let batch = B256::from_slice(&bytes[..32]);
         let bucket = BigEndian::read_u32(&bytes[32..36]);
         let index = BigEndian::read_u32(&bytes[36..40]);
         let timestamp = BigEndian::read_u64(&bytes[40..48]);
 
-        let mut sig = [0u8; 65];
-        sig.copy_from_slice(&bytes[48..STAMP_SIZE]);
+        let sig =
+            Signature::from_raw(&bytes[48..STAMP_SIZE]).map_err(|_| StampError::InvalidSignature)?;
 
-        Self {
+        Ok(Self {
             batch,
             index: StampIndex::new(bucket, index),
             timestamp,
             sig,
-        }
+        })
     }
 
     /// Attempts to deserialize a stamp from a byte slice.
     ///
-    /// Returns an error if the slice is not exactly 113 bytes.
+    /// Returns an error if the slice is not exactly 113 bytes or if the signature is invalid.
     #[inline]
     pub fn try_from_slice(bytes: &[u8]) -> Result<Self, StampError> {
         if bytes.len() != STAMP_SIZE {
             return Err(StampError::InvalidData("stamp must be exactly 113 bytes"));
         }
 
-        // Safety: we verified the length above, so this conversion is infallible
-        // Use explicit array construction to avoid unwrap
+        // Safety: we verified the length above
         let mut stamp_bytes = [0u8; STAMP_SIZE];
         stamp_bytes.copy_from_slice(bytes);
-        Ok(Self::from_bytes(&stamp_bytes))
+        Self::from_bytes(&stamp_bytes)
     }
 
     /// Recovers the signer address from this stamp using EIP-191 message recovery.
@@ -319,21 +277,12 @@ impl Stamp {
     /// println!("Stamp signed by: {}", signer);
     /// ```
     pub fn recover_signer(&self, chunk_address: &SwarmAddress) -> Result<Address, StampError> {
-        let digest = StampDigest::new(
-            *chunk_address,
-            self.batch,
-            self.index,
-            self.timestamp,
-        );
+        let digest = StampDigest::new(*chunk_address, self.batch, self.index, self.timestamp);
         let prehash = digest.to_prehash();
 
-        // Signature::from_raw automatically handles v-value normalization
-        // (both 0/1 and 27/28 formats)
-        let sig = Signature::from_raw(&self.sig)
-            .map_err(|_| StampError::InvalidSignature)?;
-
         // Use recover_address_from_msg for EIP-191 compatibility
-        sig.recover_address_from_msg(prehash.as_slice())
+        self.sig
+            .recover_address_from_msg(prehash.as_slice())
             .map_err(|_| StampError::InvalidSignature)
     }
 
@@ -367,6 +316,108 @@ impl Stamp {
             });
         }
         Ok(())
+    }
+
+    /// Recovers the public key from this stamp.
+    ///
+    /// This is useful for caching the public key after the first verification
+    /// of a batch. Subsequent stamps from the same batch can then use
+    /// [`verify_with_pubkey`](Self::verify_with_pubkey) which is approximately
+    /// 10x faster than full signature recovery.
+    ///
+    /// # Arguments
+    ///
+    /// * `chunk_address` - The address of the chunk this stamp is for
+    ///
+    /// # Returns
+    ///
+    /// The public key of the signer, or an error if recovery fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // First stamp: recover public key and cache it
+    /// let pubkey = first_stamp.recover_pubkey(&first_chunk_address)?;
+    ///
+    /// // Subsequent stamps: fast verification with cached pubkey
+    /// for (stamp, addr) in remaining_stamps {
+    ///     stamp.verify_with_pubkey(&addr, &pubkey)?;
+    /// }
+    /// ```
+    pub fn recover_pubkey(&self, chunk_address: &SwarmAddress) -> Result<VerifyingKey, StampError> {
+        let digest = StampDigest::new(*chunk_address, self.batch, self.index, self.timestamp);
+        let prehash = digest.to_prehash();
+
+        // Compute EIP-191 message hash
+        let msg_hash = eip191_hash_message(prehash.as_slice());
+
+        // Convert to k256 signature (64-byte r||s)
+        let k256_sig = self
+            .sig
+            .to_k256()
+            .map_err(|_| StampError::InvalidSignature)?;
+
+        // Get recovery id from signature
+        let recovery_id = self.sig.recid();
+
+        // Recover the public key
+        VerifyingKey::recover_from_prehash(msg_hash.as_slice(), &k256_sig, recovery_id)
+            .map_err(|_| StampError::InvalidSignature)
+    }
+
+    /// Verifies this stamp using a known public key.
+    ///
+    /// This is approximately 10x faster than [`verify`](Self::verify) or
+    /// [`recover_signer`](Self::recover_signer) because it avoids the expensive
+    /// ECDSA public key recovery operation.
+    ///
+    /// Use this when you've already recovered the owner's public key from a
+    /// previous stamp in the same batch (via [`recover_pubkey`](Self::recover_pubkey)).
+    ///
+    /// # Arguments
+    ///
+    /// * `chunk_address` - The address of the chunk this stamp is for
+    /// * `pubkey` - The expected signer's public key (cached from previous recovery)
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the signature is valid for the given public key,
+    /// or an error if verification fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // First stamp: recover and cache the public key
+    /// let pubkey = first_stamp.recover_pubkey(&first_address)?;
+    /// let owner = alloy_signer::utils::public_key_to_address(&pubkey);
+    ///
+    /// // Fast verification for remaining stamps in the same batch
+    /// second_stamp.verify_with_pubkey(&second_address, &pubkey)?;
+    /// third_stamp.verify_with_pubkey(&third_address, &pubkey)?;
+    /// ```
+    pub fn verify_with_pubkey(
+        &self,
+        chunk_address: &SwarmAddress,
+        pubkey: &VerifyingKey,
+    ) -> Result<(), StampError> {
+        use alloy_signer::k256::ecdsa::signature::hazmat::PrehashVerifier;
+
+        let digest = StampDigest::new(*chunk_address, self.batch, self.index, self.timestamp);
+        let prehash = digest.to_prehash();
+
+        // Compute EIP-191 message hash
+        let msg_hash = eip191_hash_message(prehash.as_slice());
+
+        // Convert to k256 signature (64-byte r||s)
+        let k256_sig = self
+            .sig
+            .to_k256()
+            .map_err(|_| StampError::InvalidSignature)?;
+
+        // Verify the signature using prehash
+        pubkey
+            .verify_prehash(msg_hash.as_slice(), &k256_sig)
+            .map_err(|_| StampError::InvalidSignature)
     }
 }
 
@@ -425,9 +476,11 @@ impl From<Stamp> for StampBytes {
     }
 }
 
-impl From<StampBytes> for Stamp {
+impl TryFrom<StampBytes> for Stamp {
+    type Error = StampError;
+
     #[inline]
-    fn from(bytes: StampBytes) -> Self {
+    fn try_from(bytes: StampBytes) -> Result<Self, Self::Error> {
         Self::from_bytes(&bytes)
     }
 }
@@ -437,8 +490,7 @@ mod tests {
     use super::*;
     use alloy_primitives::hex;
 
-    const TEST_BATCH_ID: &str =
-        "c3387832bb1b88acbcd0ffdb65a08ef077d98c08d4bee576a72dbe3d36761369";
+    const TEST_BATCH_ID: &str = "c3387832bb1b88acbcd0ffdb65a08ef077d98c08d4bee576a72dbe3d36761369";
     const TEST_STAMP: &str = "c3387832bb1b88acbcd0ffdb65a08ef077d98c08d4bee576a72dbe3d367613690000cbe5000000000000018921ff0dbb29169df9e6364e26c6ca6b17745c10b9d6a36ea38e204f2e3cc64a8373c0661f5bb0a347c61d8d1689b0dcf8354117686a6a18d08cff927f526de5fc61b2b7491b";
 
     #[test]
@@ -471,11 +523,11 @@ mod tests {
     #[test]
     fn test_stamp_roundtrip() {
         let batch = B256::ZERO;
-        let sig = [0u8; 65];
+        let sig = Signature::test_signature();
         let stamp = Stamp::new(batch, 100, 50, 1234567890, sig);
 
         let bytes = stamp.to_bytes();
-        let restored = Stamp::from_bytes(&bytes);
+        let restored = Stamp::from_bytes(&bytes).unwrap();
 
         assert_eq!(stamp, restored);
     }
@@ -496,7 +548,8 @@ mod tests {
     fn test_stamp_with_index() {
         let batch = B256::ZERO;
         let idx = StampIndex::new(100, 50);
-        let stamp = Stamp::with_index(batch, idx, 1234567890, [0u8; 65]);
+        let sig = Signature::test_signature();
+        let stamp = Stamp::with_index(batch, idx, 1234567890, sig);
 
         assert_eq!(stamp.stamp_index(), idx);
         assert_eq!(stamp.bucket(), 100);
@@ -517,12 +570,13 @@ mod tests {
 
     #[test]
     fn test_from_conversions() {
-        let stamp = Stamp::new(B256::ZERO, 1, 2, 3, [0u8; 65]);
+        let sig = Signature::test_signature();
+        let stamp = Stamp::new(B256::ZERO, 1, 2, 3, sig);
 
         // From<Stamp> for StampBytes
         let bytes: StampBytes = stamp.clone().into();
-        // From<StampBytes> for Stamp
-        let back: Stamp = bytes.into();
+        // TryFrom<StampBytes> for Stamp
+        let back: Stamp = bytes.try_into().unwrap();
         assert_eq!(stamp, back);
     }
 
@@ -571,5 +625,94 @@ mod tests {
         // Verify with wrong owner should fail
         let result = stamp.verify(&chunk_address, wrong_owner);
         assert!(matches!(result, Err(StampError::OwnerMismatch { .. })));
+    }
+
+    /// Test recover_pubkey using the Go interop test vector.
+    #[test]
+    fn test_recover_pubkey() {
+        use alloy_signer::utils::public_key_to_address;
+
+        // Test vector from Go's TestGenerateInteropStamp
+        let chunk_addr_bytes =
+            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        let full_stamp_bytes = hex::decode(
+            "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
+        ).unwrap();
+        let expected_owner: Address = "8d3766440f0d7b949a5e32995d09619a7f86e632".parse().unwrap();
+
+        let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
+        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
+
+        // Test recover_pubkey
+        let pubkey = stamp.recover_pubkey(&chunk_address).unwrap();
+
+        // Convert to address and verify
+        let recovered_addr = public_key_to_address(&pubkey);
+        assert_eq!(recovered_addr, expected_owner);
+    }
+
+    /// Test verify_with_pubkey using the Go interop test vector.
+    #[test]
+    fn test_verify_with_pubkey() {
+        // Test vector from Go's TestGenerateInteropStamp
+        let chunk_addr_bytes =
+            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        let full_stamp_bytes = hex::decode(
+            "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
+        ).unwrap();
+
+        let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
+        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
+
+        // First recover the public key
+        let pubkey = stamp.recover_pubkey(&chunk_address).unwrap();
+
+        // Now verify using the cached pubkey
+        let result = stamp.verify_with_pubkey(&chunk_address, &pubkey);
+        assert!(result.is_ok());
+    }
+
+    /// Test that verify_with_pubkey fails with wrong pubkey.
+    #[test]
+    fn test_verify_with_wrong_pubkey() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+
+        // Create a stamp with one signer
+        let signer = PrivateKeySigner::random();
+        let chunk_address = SwarmAddress::new([0xAB; 32]);
+        let batch_id = B256::ZERO;
+        let index = StampIndex::new(0, 0);
+        let timestamp = 12345u64;
+
+        let digest = StampDigest::new(chunk_address, batch_id, index, timestamp);
+        let prehash = digest.to_prehash();
+
+        // sign_message_sync returns alloy_primitives::Signature directly
+        let sig = signer.sign_message_sync(prehash.as_slice()).unwrap();
+        let stamp = Stamp::with_index(batch_id, index, timestamp, sig);
+
+        // Get the correct pubkey
+        let correct_pubkey = stamp.recover_pubkey(&chunk_address).unwrap();
+
+        // Create a different signer for wrong pubkey
+        let wrong_signer = PrivateKeySigner::random();
+        let wrong_pubkey = wrong_signer.credential().verifying_key();
+
+        // Verify with correct pubkey should succeed
+        assert!(
+            stamp
+                .verify_with_pubkey(&chunk_address, &correct_pubkey)
+                .is_ok()
+        );
+
+        // Verify with wrong pubkey should fail
+        assert!(
+            stamp
+                .verify_with_pubkey(&chunk_address, wrong_pubkey)
+                .is_err()
+        );
     }
 }

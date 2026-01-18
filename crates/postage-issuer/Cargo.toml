@@ -1,5 +1,5 @@
 [package]
-name = "nectar-postage"
+name = "nectar-postage-issuer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,47 +8,48 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
-description = "Postage stamp primitives for Ethereum Swarm"
-keywords = ["swarm", "ethereum", "postage", "no_std"]
-categories = ["no-std", "data-structures"]
+description = "Postage stamp issuing and signing for Ethereum Swarm"
+keywords = ["swarm", "ethereum", "postage", "signing"]
+categories = ["cryptography", "data-structures"]
 
 [lints]
 workspace = true
 
 [dependencies]
+nectar-postage = { path = "../postage" }
 nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
-byteorder = { workspace = true }
 thiserror = { workspace = true }
-
-# k256 with precomputed tables for faster ECDSA verification
-k256 = { workspace = true }
 
 # optional
 serde = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 alloy-signer-local = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [[bench]]
-name = "verify"
+name = "sign"
 harness = false
 required-features = ["parallel"]
 
 [features]
 default = ["std"]
 
-# Standard library support. Enables BatchStore, BatchFactory, and timestamp functions.
-std = ["nectar-primitives/std", "alloy-primitives/std", "thiserror/std", "serde?/std"]
+# Standard library support
+std = ["nectar-postage/std"]
 
-# Serialization support with serde.
-serde = ["dep:serde", "nectar-primitives/serde", "alloy-primitives/serde"]
+# Serialization support with serde
+serde = ["dep:serde", "nectar-postage/serde"]
 
-# Parallel verification using rayon (sync, CPU-bound).
+# Local key signing for testing and development
+local-signer = ["dep:alloy-signer-local", "std"]
+
+# Parallel signing operations using rayon
 parallel = ["dep:rayon", "std"]

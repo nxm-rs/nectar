@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, B256};
 use nectar_primitives::SwarmAddress;
 
-use crate::{calculate_bucket, StampError, StampIndex};
+use crate::{StampError, StampIndex, calculate_bucket};
 
 /// A 32-byte batch identifier.
 pub type BatchId = B256;
@@ -167,13 +167,13 @@ impl Batch {
 
     /// Updates the batch value (for top-up operations).
     #[inline]
-    pub fn set_value(&mut self, value: u128) {
+    pub const fn set_value(&mut self, value: u128) {
         self.value = value;
     }
 
     /// Updates the batch depth (for dilution operations).
     #[inline]
-    pub fn set_depth(&mut self, depth: u8) {
+    pub const fn set_depth(&mut self, depth: u8) {
         self.depth = depth;
     }
 
@@ -202,7 +202,7 @@ impl Batch {
     /// # Returns
     ///
     /// `Ok(())` if the index is valid, or `Err(StampError::InvalidIndex)` otherwise.
-    pub fn validate_index(&self, index: &StampIndex) -> Result<(), StampError> {
+    pub const fn validate_index(&self, index: &StampIndex) -> Result<(), StampError> {
         // Check bucket is within range
         if index.bucket() >= self.bucket_count() {
             return Err(StampError::InvalidIndex);
