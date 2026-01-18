@@ -220,3 +220,10 @@ impl AsRef<[u8]> for SwarmAddress {
         self.as_bytes()
     }
 }
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for SwarmAddress {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self(B256::arbitrary(u)?))
+    }
+}

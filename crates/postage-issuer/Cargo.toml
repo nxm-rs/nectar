@@ -29,9 +29,11 @@ rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+proptest-arbitrary-interop = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
 alloy-signer-local = { workspace = true }
+alloy-primitives = { workspace = true, features = ["getrandom"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [[bench]]
@@ -53,3 +55,6 @@ local-signer = ["dep:alloy-signer-local", "std"]
 
 # Parallel signing operations using rayon
 parallel = ["dep:rayon", "std"]
+
+# Arbitrary trait implementations for property-based testing
+arbitrary = ["nectar-postage/arbitrary", "nectar-primitives/arbitrary"]

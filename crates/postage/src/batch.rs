@@ -243,6 +243,46 @@ impl Batch {
     }
 }
 
+// =============================================================================
+// Arbitrary implementations for property-based testing
+// =============================================================================
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for BatchParams {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Generate valid depth values (bucket_depth must be <= depth)
+        let depth: u8 = u.int_in_range(1..=32)?;
+        let bucket_depth: u8 = u.int_in_range(1..=depth)?;
+
+        Ok(Self {
+            owner: Address::arbitrary(u)?,
+            depth,
+            bucket_depth,
+            immutable: u.arbitrary()?,
+            amount: u.arbitrary()?,
+        })
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for Batch {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Generate valid depth values (bucket_depth must be <= depth)
+        let depth: u8 = u.int_in_range(1..=32)?;
+        let bucket_depth: u8 = u.int_in_range(1..=depth)?;
+
+        Ok(Self::new(
+            B256::arbitrary(u)?,
+            u.arbitrary()?,
+            u.arbitrary()?,
+            Address::arbitrary(u)?,
+            depth,
+            bucket_depth,
+            u.arbitrary()?,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

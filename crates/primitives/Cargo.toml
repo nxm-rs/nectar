@@ -62,6 +62,7 @@ arbitrary = [
 	"std",
 	"dep:rand",
 	"dep:arbitrary",
+	"alloy-primitives/arbitrary",
 ]
 
 [[bench]]

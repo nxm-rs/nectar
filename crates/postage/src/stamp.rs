@@ -485,6 +485,36 @@ impl TryFrom<StampBytes> for Stamp {
     }
 }
 
+// =============================================================================
+// Arbitrary implementations for property-based testing
+// =============================================================================
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for StampIndex {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self::new(u.arbitrary()?, u.arbitrary()?))
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for Stamp {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        use alloy_primitives::U256;
+
+        let batch: B256 = u.arbitrary()?;
+        let index = StampIndex::arbitrary(u)?;
+        let timestamp: u64 = u.arbitrary()?;
+
+        // Generate a valid signature (r, s must be non-zero for a valid ECDSA signature)
+        let r = U256::from_be_bytes(u.arbitrary::<[u8; 32]>()?);
+        let s = U256::from_be_bytes(u.arbitrary::<[u8; 32]>()?);
+        let v: bool = u.arbitrary()?;
+        let sig = Signature::new(r, s, v);
+
+        Ok(Self::with_index(batch, index, timestamp, sig))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

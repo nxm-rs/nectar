@@ -195,14 +195,6 @@ mod tests {
 
     use crate::{Stamp, StampIndex, current_timestamp};
 
-    fn random_address() -> SwarmAddress {
-        let mut bytes = [0u8; 32];
-        for b in &mut bytes {
-            *b = rand::random();
-        }
-        SwarmAddress::new(bytes)
-    }
-
     /// Creates a stamp for testing verification.
     fn create_test_stamp(
         signer: &PrivateKeySigner,
@@ -226,7 +218,7 @@ mod tests {
         let batch_id = B256::ZERO;
 
         // Create stamps
-        let addresses: Vec<_> = (0..50).map(|_| random_address()).collect();
+        let addresses: Vec<_> = (0..50).map(|_| SwarmAddress::from(B256::random())).collect();
         let stamps: Vec<_> = addresses
             .iter()
             .map(|addr| create_test_stamp(&signer, addr, batch_id))
@@ -249,7 +241,7 @@ mod tests {
         let wrong_owner = Address::repeat_byte(0xFF);
         let batch_id = B256::ZERO;
 
-        let address = random_address();
+        let address = SwarmAddress::from(B256::random());
         let stamp = create_test_stamp(&signer, &address, batch_id);
 
         // Use tuple syntax
@@ -268,7 +260,7 @@ mod tests {
         let expected_owner = signer.address();
         let batch_id = B256::ZERO;
 
-        let address = random_address();
+        let address = SwarmAddress::from(B256::random());
         let stamp = create_test_stamp(&signer, &address, batch_id);
 
         let verify_input = [(&stamp, &address)];
@@ -285,7 +277,7 @@ mod tests {
         let batch_id = B256::ZERO;
 
         // Create stamps
-        let addresses: Vec<_> = (0..50).map(|_| random_address()).collect();
+        let addresses: Vec<_> = (0..50).map(|_| SwarmAddress::from(B256::random())).collect();
         let stamps: Vec<_> = addresses
             .iter()
             .map(|addr| create_test_stamp(&signer, addr, batch_id))

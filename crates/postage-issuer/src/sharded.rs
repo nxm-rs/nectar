@@ -359,14 +359,6 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
-    fn random_address() -> SwarmAddress {
-        let mut bytes = [0u8; 32];
-        for b in &mut bytes {
-            *b = rand::random();
-        }
-        SwarmAddress::new(bytes)
-    }
-
     #[test]
     fn test_sharded_issuer_basic() {
         let issuer = ShardedIssuer::new(B256::ZERO, 20, 16);
@@ -381,7 +373,7 @@ mod tests {
     #[test]
     fn test_sharded_issuer_prepare_stamp() {
         let issuer = ShardedIssuer::new(B256::ZERO, 20, 16);
-        let address = random_address();
+        let address = SwarmAddress::from(B256::random());
 
         let digest = issuer.prepare_stamp(&address, 12345).unwrap();
 
@@ -404,7 +396,7 @@ mod tests {
                 let issuer = Arc::clone(&issuer);
                 thread::spawn(move || {
                     for _ in 0..stamps_per_thread {
-                        let addr = random_address();
+                        let addr = SwarmAddress::from(B256::random());
                         issuer.prepare_stamp(&addr, 0).unwrap();
                     }
                 })
@@ -429,7 +421,7 @@ mod tests {
         let issuer = ShardedIssuer::new(B256::ZERO, 24, 16);
         let signer = PrivateKeySigner::random();
 
-        let addresses: Vec<_> = (0..100).map(|_| random_address()).collect();
+        let addresses: Vec<_> = (0..100).map(|_| SwarmAddress::from(B256::random())).collect();
 
         let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
             Ok(signer
