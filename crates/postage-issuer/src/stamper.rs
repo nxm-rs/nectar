@@ -12,8 +12,8 @@
 use alloy_primitives::Signature;
 use alloy_signer::SignerSync;
 
-use crate::error::SigningError;
 use crate::StampIssuer;
+use crate::error::SigningError;
 use nectar_postage::{BatchId, Stamp, StampDigest, StampError, current_timestamp};
 use nectar_primitives::SwarmAddress;
 
@@ -195,8 +195,8 @@ where
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use alloy_primitives::{B256, Signature, U256};
     use crate::MemoryIssuer;
+    use alloy_primitives::{B256, Signature, U256};
     use nectar_postage::StampIndex;
 
     /// A mock signer for testing that creates deterministic signatures.

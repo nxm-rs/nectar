@@ -93,6 +93,7 @@ impl ContentChunk {
     /// # Returns
     ///
     /// A Result containing the new ContentChunk, or an error if creation fails.
+    #[must_use = "this returns a new chunk without modifying the input"]
     pub fn new(data: impl Into<Bytes>) -> Result<Self> {
         Ok(ContentChunkBuilderImpl::default()
             .auto_from_data(data)?
@@ -112,6 +113,7 @@ impl ContentChunk {
     /// # Returns
     ///
     /// A Result containing the new ContentChunk, or an error if creation fails.
+    #[must_use = "this returns a new chunk without modifying the input"]
     pub fn with_address(data: impl Into<Bytes>, address: ChunkAddress) -> Result<Self> {
         Ok(ContentChunkBuilderImpl::default()
             .auto_from_data(data)?
@@ -119,9 +121,31 @@ impl ContentChunk {
             .build())
     }
 
-    /// Create a builder for ContentChunk
-    pub fn builder() -> ContentChunkBuilder {
-        ContentChunkBuilder::default()
+    /// Create a ContentChunk from a pre-existing BmtBody.
+    ///
+    /// This is an advanced method for when you already have a BmtBody,
+    /// such as when reconstructing chunks from storage or building
+    /// intermediate nodes in a merkle tree.
+    #[must_use]
+    pub fn from_body(body: BmtBody) -> Self {
+        ContentChunk {
+            header: ContentChunkHeader::new(),
+            body,
+            address_cache: OnceCache::new(),
+        }
+    }
+
+    /// Create a ContentChunk from a pre-existing BmtBody with a known address.
+    ///
+    /// This is an advanced method for when you already have both the body
+    /// and know the chunk's address (e.g., when reconstructing from storage).
+    #[must_use]
+    pub fn from_body_with_address(body: BmtBody, address: ChunkAddress) -> Self {
+        ContentChunk {
+            header: ContentChunkHeader::new(),
+            body,
+            address_cache: OnceCache::with_value(address),
+        }
     }
 }
 
@@ -195,62 +219,12 @@ impl PartialEq for ContentChunk {
 
 impl Eq for ContentChunk {}
 
-// Public builder facade
-/// Builder for creating ContentChunk instances.
-///
-/// This builder provides a fluent interface for constructing content chunks
-/// with various configuration options.
-#[derive(Debug)]
-pub struct ContentChunkBuilder(ContentChunkBuilderImpl<Initial>);
-
-/// Final stage of the ContentChunk builder, ready to build the chunk.
-#[derive(Debug)]
-pub struct ContentChunkBuilderReady(ContentChunkBuilderImpl<ReadyToBuild>);
-
-impl Default for ContentChunkBuilder {
-    fn default() -> Self {
-        Self(ContentChunkBuilderImpl::default())
-    }
+impl super::chunk_type::ChunkType for ContentChunk {
+    const TYPE_ID: super::type_id::ChunkTypeId = super::type_id::ChunkTypeId::CONTENT;
+    const TYPE_NAME: &'static str = "content";
 }
 
-impl ContentChunkBuilder {
-    /// Initialize the builder with data using an automatically calculated span.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - The data to be stored in the chunk
-    ///
-    /// # Returns
-    ///
-    /// A builder in its final stage, ready to build the chunk.
-    pub fn auto_from_data(self, data: impl Into<Bytes>) -> Result<ContentChunkBuilderReady> {
-        Ok(ContentChunkBuilderReady(self.0.auto_from_data(data)?))
-    }
-
-    /// Initialize the builder with a specific BMT body.
-    ///
-    /// This is an advanced option for when you already have a BMT body.
-    pub fn with_body(self, body: BmtBody) -> ContentChunkBuilderReady {
-        ContentChunkBuilderReady(self.0.with_body(body))
-    }
-}
-
-impl ContentChunkBuilderReady {
-    /// Set a pre-computed address for the chunk.
-    ///
-    /// This is useful when you know the chunk's address in advance,
-    /// such as when reconstructing a chunk from storage.
-    pub fn with_address(self, address: ChunkAddress) -> Self {
-        ContentChunkBuilderReady(self.0.with_address(address))
-    }
-
-    /// Build the final ContentChunk.
-    pub fn build(self) -> ContentChunk {
-        self.0.build()
-    }
-}
-
-/// Builder state marker traits
+// Internal builder implementation
 trait BuilderState {}
 
 #[derive(Debug, Default)]
@@ -297,17 +271,6 @@ impl ContentChunkBuilderImpl<Initial> {
             _state: PhantomData,
         })
     }
-
-    /// Initialize with a specific body
-    fn with_body(mut self, body: BmtBody) -> ContentChunkBuilderImpl<ReadyToBuild> {
-        self.body = Some(body);
-
-        ContentChunkBuilderImpl {
-            body: self.body,
-            address: self.address,
-            _state: PhantomData,
-        }
-    }
 }
 
 impl ContentChunkBuilderImpl<ReadyToBuild> {
@@ -338,9 +301,7 @@ impl ContentChunkBuilderImpl<ReadyToBuild> {
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for ContentChunk {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(ContentChunkBuilder::default()
-            .with_body(BmtBody::arbitrary(u)?)
-            .build())
+        Ok(ContentChunk::from_body(BmtBody::arbitrary(u)?))
     }
 }
 
@@ -375,14 +336,18 @@ mod tests {
         }
 
         #[test]
-        fn test_builder_pattern(data in proptest::collection::vec(any::<u8>(), 0..MAX_CHUNK_SIZE)) {
-            let chunk = ContentChunk::builder()
-                .auto_from_data(data.clone())
-                .unwrap()
-                .build();
+        fn test_from_body(chunk in chunk_strategy()) {
+            // Test creating a chunk from an existing body via BmtBody
+            let body_data = chunk.data().clone();
+            let body_span = chunk.span();
 
-            prop_assert_eq!(chunk.data(), &data);
-            prop_assert_eq!(chunk.span(), data.len() as u64);
+            // Create a new chunk using from_body with a fresh BmtBody
+            let new_body = BmtBody::try_from(Bytes::from(chunk.clone())).unwrap();
+            let new_chunk = ContentChunk::from_body(new_body);
+
+            prop_assert_eq!(new_chunk.data(), &body_data);
+            prop_assert_eq!(new_chunk.span(), body_span);
+            prop_assert_eq!(new_chunk.address(), chunk.address());
         }
 
         #[test]

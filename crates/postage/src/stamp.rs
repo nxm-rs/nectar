@@ -146,13 +146,7 @@ pub struct Stamp {
 impl Stamp {
     /// Creates a new stamp with the given parameters.
     #[inline]
-    pub fn new(
-        batch: BatchId,
-        bucket: u32,
-        index: u32,
-        timestamp: u64,
-        sig: Signature,
-    ) -> Self {
+    pub fn new(batch: BatchId, bucket: u32, index: u32, timestamp: u64, sig: Signature) -> Self {
         Self {
             batch,
             index: StampIndex::new(bucket, index),
@@ -230,8 +224,8 @@ impl Stamp {
         let index = BigEndian::read_u32(&bytes[36..40]);
         let timestamp = BigEndian::read_u64(&bytes[40..48]);
 
-        let sig =
-            Signature::from_raw(&bytes[48..STAMP_SIZE]).map_err(|_| StampError::InvalidSignature)?;
+        let sig = Signature::from_raw(&bytes[48..STAMP_SIZE])
+            .map_err(|_| StampError::InvalidSignature)?;
 
         Ok(Self {
             batch,

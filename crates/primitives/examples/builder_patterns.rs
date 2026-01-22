@@ -70,7 +70,7 @@ fn single_owner_creation_methods(
     println!("  - ID: {}", alloy_primitives::hex::encode(&id[..8]));
     println!(
         "  - Owner: {}",
-        alloy_primitives::hex::encode(chunk.owner().as_slice())
+        alloy_primitives::hex::encode(chunk.owner()?.as_slice())
     );
 
     // With precomputed signature

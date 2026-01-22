@@ -4,6 +4,43 @@
 //! used for addressing chunks in the swarm network. It includes functionality
 //! for calculating distances between addresses and determining their proximity.
 //!
+//! ## Proximity Order (PO)
+//!
+//! Proximity order is a key concept in Kademlia-based routing. It measures
+//! how "close" two addresses are in the XOR metric space by counting the
+//! number of leading matching bits.
+//!
+//! ### Standard vs Extended Proximity
+//!
+//! - **Standard PO** (`MAX_PO = 31`): Used for most routing operations.
+//!   Returns a value 0-31, giving 32 Kademlia bins. The algorithm counts
+//!   leading matching bits up to 32 bits (4 bytes) and caps at 31.
+//!
+//! - **Extended PO** (`EXTENDED_PO = 36`): Used for Kademlia bin balancing.
+//!   When balancing bins, the algorithm needs finer granularity:
+//!   `po + BitSuffixLength + 1` where `BitSuffixLength = 4` (default in Bee).
+//!   For bin 31, this yields 31 + 4 + 1 = 36, hence `ExtendedPO = MaxPO + 5`.
+//!
+//! ### Compatibility with Bee
+//!
+//! This implementation matches Bee's `pkg/swarm/proximity.go` exactly:
+//!
+//! - `MaxPO = 31` and `ExtendedPO = 36` are identical to Bee
+//! - Both count leading matching BITS (not bytes)
+//! - Both cap at their respective maximum values
+//!
+//! The Go Bee implementation iterates bit-by-bit using `(oxo>>(7-j))&0x01`,
+//! returning `i*8 + j` (byte index * 8 + bit index). Our implementation
+//! uses `leading_zeros()` which is equivalent but more efficient.
+//!
+//! ### Distance vs Proximity
+//!
+//! - **Distance** (`distance()`): Returns the full 256-bit XOR distance as `U256`.
+//! - **Proximity** (`proximity()`): Returns a small integer (0-31) representing
+//!   the count of leading matching bits, capped at `MAX_PO`.
+//!
+//! Higher proximity = closer addresses = smaller XOR distance.
+//!
 //! ## Example Usage
 //!
 //! ```
@@ -28,6 +65,8 @@
 //!     println!("addr1 is closer to addr2 than addr3");
 //! }
 //! ```
+//!
+//! [`extended_proximity()`]: SwarmAddress::extended_proximity
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -40,13 +79,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
-/// Maximum proximity order (based on 256-bit addresses)
+/// Maximum proximity order for standard routing operations.
+///
+/// Value 31 gives 32 Kademlia bins (0-31). Matches Bee's `MaxPO`.
+/// The algorithm checks up to 4 bytes (32 bits) but caps the result at 31.
 const MAX_PO: usize = 31;
-/// Extended proximity order for special operations
+
+/// Extended proximity order for Kademlia bin balancing.
+///
+/// Value 36 = MaxPO (31) + BitSuffixLength (4) + 1. Used when the Kademlia
+/// bin balancing algorithm needs to check proximity at finer granularity
+/// than standard routing. Matches Bee's `ExtendedPO`.
 const EXTENDED_PO: usize = MAX_PO + 5;
 
 /// A 256-bit address for a chunk in the Swarm network
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct SwarmAddress(pub B256);
@@ -80,6 +127,7 @@ impl SwarmAddress {
 
     /// Calculate the distance between Self and address `y` in big-endian
     #[inline(always)]
+    #[must_use]
     pub fn distance(&self, y: &Self) -> U256 {
         let mut result = [0u8; 32];
 
@@ -96,12 +144,35 @@ impl SwarmAddress {
         U256::from_be_bytes(result)
     }
 
-    /// Compares `x` and `y` to self in terms of the distance metric.
-    /// It returns:
-    ///   - `Ordering::Greater` if `self` is closer to `x` than `y`
-    ///   - `Ordering::Less` if `self` is farther from `x` than `y`
-    ///   - `Ordering::Equal` if `self` and `y` are equally close to `x`
+    /// Compares addresses `x` and `y` by their distance from `self`.
+    ///
+    /// Returns:
+    /// - `Ordering::Less` if `x` is farther from `self` than `y` (i.e., `y` is closer)
+    /// - `Ordering::Greater` if `x` is closer to `self` than `y`
+    /// - `Ordering::Equal` if `x` and `y` are equidistant from `self`
+    ///
+    /// # Usage with `min_by`
+    ///
+    /// This comparator is designed for use with `Iterator::min_by` to find
+    /// the address closest to `self`:
+    ///
+    /// ```
+    /// # use nectar_primitives::SwarmAddress;
+    /// # use alloy_primitives::B256;
+    /// let target = SwarmAddress::zero();
+    /// let addresses = vec![
+    ///     SwarmAddress::from(B256::repeat_byte(0x01)),
+    ///     SwarmAddress::from(B256::repeat_byte(0x02)),
+    /// ];
+    /// let closest = addresses.iter().min_by(|a, b| target.distance_cmp(a, b));
+    /// ```
+    ///
+    /// Note: The ordering may seem inverted from intuition. `Greater` means `x`
+    /// is closer (smaller distance), because `min_by` selects the element for
+    /// which the comparator returns `Less` - and we want to select the one
+    /// that is NOT closer (i.e., has a larger distance), leaving the closest.
     #[inline(always)]
+    #[must_use]
     pub fn distance_cmp(&self, x: &Self, y: &Self) -> Ordering {
         let (ab, xb, yb) = (self.0.as_slice(), x.0.as_slice(), y.0.as_slice());
 
@@ -120,9 +191,13 @@ impl SwarmAddress {
         Ordering::Equal
     }
 
-    /// Determine if self is closer to `a` than `y`
+    /// Determine if `self` is closer to `x` than to `y`.
+    ///
+    /// Returns `true` if `distance(self, x) < distance(self, y)`.
+    #[must_use]
     pub fn closer(&self, x: &Self, y: &Self) -> bool {
-        self.distance_cmp(x, y) == Ordering::Less
+        // distance_cmp returns Greater when x is closer to self
+        self.distance_cmp(x, y) == Ordering::Greater
     }
 
     /// Check if this address is within the given proximity to another address
@@ -130,14 +205,28 @@ impl SwarmAddress {
         self.proximity(other) >= min_proximity
     }
 
-    /// Calculate the proximity order between self and another address
+    /// Calculate the proximity order between self and another address.
+    ///
+    /// Returns the number of leading bits that match between the two addresses,
+    /// capped at `MAX_PO` (31). Use this for standard Kademlia routing operations.
+    ///
+    /// For operations requiring finer granularity (like reserve sampling),
+    /// use [`extended_proximity()`](Self::extended_proximity) instead.
     #[inline(always)]
+    #[must_use]
     pub fn proximity(&self, other: &Self) -> u8 {
         self.proximity_helper(other, MAX_PO)
     }
 
-    /// Calculate the extended proximity order between self and another address
+    /// Calculate the extended proximity order between self and another address.
+    ///
+    /// Returns the number of leading bits that match between the two addresses,
+    /// capped at `EXTENDED_PO` (36). Use this for Kademlia bin balancing where
+    /// the algorithm checks `po + BitSuffixLength + 1` (up to 36 for bin 31).
+    ///
+    /// For standard routing operations, use [`proximity()`](Self::proximity) instead.
     #[inline(always)]
+    #[must_use]
     pub fn extended_proximity(&self, other: &Self) -> u8 {
         self.proximity_helper(other, EXTENDED_PO)
     }
@@ -218,6 +307,12 @@ impl From<SwarmAddress> for B256 {
 impl AsRef<[u8]> for SwarmAddress {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
+    }
+}
+
+impl From<SwarmAddress> for [u8; 32] {
+    fn from(addr: SwarmAddress) -> Self {
+        addr.0.into()
     }
 }
 

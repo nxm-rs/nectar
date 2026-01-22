@@ -218,7 +218,9 @@ mod tests {
         let batch_id = B256::ZERO;
 
         // Create stamps
-        let addresses: Vec<_> = (0..50).map(|_| SwarmAddress::from(B256::random())).collect();
+        let addresses: Vec<_> = (0..50)
+            .map(|_| SwarmAddress::from(B256::random()))
+            .collect();
         let stamps: Vec<_> = addresses
             .iter()
             .map(|addr| create_test_stamp(&signer, addr, batch_id))
@@ -277,7 +279,9 @@ mod tests {
         let batch_id = B256::ZERO;
 
         // Create stamps
-        let addresses: Vec<_> = (0..50).map(|_| SwarmAddress::from(B256::random())).collect();
+        let addresses: Vec<_> = (0..50)
+            .map(|_| SwarmAddress::from(B256::random()))
+            .collect();
         let stamps: Vec<_> = addresses
             .iter()
             .map(|addr| create_test_stamp(&signer, addr, batch_id))

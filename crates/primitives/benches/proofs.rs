@@ -54,12 +54,13 @@ pub fn proofs(c: &mut Criterion) {
     // Benchmark proof verification for different segment indexes
     for (i, proof) in proofs.iter().enumerate() {
         let index = indexes[i];
+        // Verify proof is valid before benchmarking
+        assert!(
+            Hasher::verify_proof(proof, root_hash.as_slice()).expect("Failed to verify proof"),
+            "Verification failed for index {index}"
+        );
         group.bench_with_input(BenchmarkId::new("verify_proof", index), &index, |b, _| {
-            b.iter(|| {
-                let result = Hasher::verify_proof(proof, root_hash.as_slice())
-                    .expect("Failed to verify proof");
-                assert!(result, "Verification failed");
-            });
+            b.iter(|| black_box(Hasher::verify_proof(proof, root_hash.as_slice())));
         });
     }
 
@@ -70,9 +71,7 @@ pub fn proofs(c: &mut Criterion) {
             let proof = hasher
                 .generate_proof(&data, index)
                 .expect("Failed to generate proof");
-            let is_valid =
-                Hasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
-            assert!(is_valid, "Verification failed");
+            black_box(Hasher::verify_proof(&proof, root_hash.as_slice()))
         });
     });
 
@@ -94,9 +93,7 @@ pub fn proofs(c: &mut Criterion) {
                     let proof = h
                         .generate_proof(partial_data, idx)
                         .expect("Failed to generate proof");
-                    let is_valid = Hasher::verify_proof(&proof, partial_root.as_slice())
-                        .expect("Failed to verify proof");
-                    assert!(is_valid, "Verification failed");
+                    black_box(Hasher::verify_proof(&proof, partial_root.as_slice()))
                 });
             },
         );

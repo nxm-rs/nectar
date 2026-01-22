@@ -421,7 +421,9 @@ mod tests {
         let issuer = ShardedIssuer::new(B256::ZERO, 24, 16);
         let signer = PrivateKeySigner::random();
 
-        let addresses: Vec<_> = (0..100).map(|_| SwarmAddress::from(B256::random())).collect();
+        let addresses: Vec<_> = (0..100)
+            .map(|_| SwarmAddress::from(B256::random()))
+            .collect();
 
         let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
             Ok(signer

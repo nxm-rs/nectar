@@ -845,7 +845,9 @@ pub fn create_single_owner_chunk(
     };
 
     // Get owner address
-    let owner = chunk.owner();
+    let owner = chunk
+        .owner()
+        .map_err(|e| JsValue::from_str(&format!("Failed to recover owner: {}", e)))?;
 
     // Serialize the chunk - use the From trait
     let serialized: Vec<u8> = Bytes::from(chunk.clone()).to_vec();
@@ -920,7 +922,7 @@ pub fn analyze_chunk(
                 address: *single_owner_chunk.address().deref(),
                 data: single_owner_chunk.data().to_vec(),
                 id: Some(single_owner_chunk.id()),
-                owner: Some(single_owner_chunk.owner()),
+                owner: single_owner_chunk.owner().ok(),
                 signature: Some(single_owner_chunk.signature().as_bytes().to_vec()),
                 error_message: None,
             });
@@ -949,7 +951,7 @@ pub fn analyze_chunk(
                 address: *single_owner_chunk.address().deref(),
                 data: single_owner_chunk.data().to_vec(),
                 id: Some(single_owner_chunk.id()),
-                owner: Some(single_owner_chunk.owner()),
+                owner: single_owner_chunk.owner().ok(),
                 signature: Some(single_owner_chunk.signature().as_bytes().to_vec()),
                 error_message: Some(format!(
                     "Single owner chunk address mismatch. Expected: 0x{}, Actual: 0x{}",

@@ -1,0 +1,32 @@
+[package]
+name = "nectar-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Swarm storage incentive contract bindings and addresses"
+keywords = ["swarm", "ethereum", "contracts", "no_std"]
+categories = ["no-std", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# alloy
+alloy-primitives = { workspace = true }
+alloy-sol-types = { workspace = true }
+
+# optional
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[features]
+default = ["std"]
+std = ["alloy-primitives/std", "alloy-sol-types/std", "serde?/std"]
+serde = ["dep:serde", "alloy-primitives/serde"]

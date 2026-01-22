@@ -172,7 +172,9 @@ fn recover_stamp_signer(
     let prehash = digest.to_prehash();
 
     // stamp.signature() now returns &Signature directly
-    stamp.signature().recover_address_from_msg(prehash.as_slice())
+    stamp
+        .signature()
+        .recover_address_from_msg(prehash.as_slice())
 }
 
 fn bench_ecdsa_verify_sequential(c: &mut Criterion) {

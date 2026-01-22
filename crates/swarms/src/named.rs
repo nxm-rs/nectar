@@ -5,14 +5,23 @@ use core::{cmp::Ordering, fmt};
 use num_enum::TryFromPrimitiveError;
 
 /// A named Swarm network.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[derive(strum::IntoStaticStr)]
-#[derive(strum::VariantNames)]
-#[derive(strum::VariantArray)]
-#[derive(strum::EnumString)]
-#[derive(strum::EnumIter)]
-#[derive(strum::EnumCount)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    strum::IntoStaticStr,
+    strum::VariantNames,
+    strum::VariantArray,
+    strum::EnumString,
+    strum::EnumIter,
+    strum::EnumCount,
+    num_enum::TryFromPrimitive,
+)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 #[strum(serialize_all = "kebab-case")]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]

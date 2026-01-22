@@ -76,3 +76,7 @@ harness = false
 [[bench]]
 name = "address"
 harness = false
+
+[[bench]]
+name = "bmt_bench"
+harness = false
