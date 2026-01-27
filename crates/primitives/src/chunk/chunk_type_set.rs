@@ -3,6 +3,10 @@
 //! This module provides the [`ChunkTypeSet`] trait for defining sets of supported
 //! chunk types at compile time, and [`StandardChunkSet`] as the default implementation.
 
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 use bytes::Bytes;
 
 use crate::error::Result;
@@ -64,6 +68,32 @@ pub trait ChunkTypeSet: Send + Sync + 'static {
     ///
     /// This returns a static slice for efficiency in const contexts.
     fn supported_types() -> &'static [ChunkTypeId];
+
+    /// Format the supported chunk types as a human-readable string.
+    ///
+    /// Returns a comma-separated list with abbreviations and hex codes,
+    /// e.g., "CAC (0x00), SOC (0x01)".
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
+    ///
+    /// let formatted = StandardChunkSet::format_supported_types();
+    /// assert!(formatted.contains("CAC"));
+    /// assert!(formatted.contains("SOC"));
+    /// ```
+    fn format_supported_types() -> String {
+        let types = Self::supported_types();
+        let names: Vec<_> = types
+            .iter()
+            .map(|t| {
+                let abbrev = t.abbreviation().unwrap_or("???");
+                alloc::format!("{} (0x{:02x})", abbrev, t.as_u8())
+            })
+            .collect();
+        names.join(", ")
+    }
 }
 
 /// Standard Swarm chunk type set.
@@ -172,6 +202,15 @@ mod tests {
         assert_eq!(types.len(), 2);
         assert!(types.contains(&ChunkTypeId::CONTENT));
         assert!(types.contains(&ChunkTypeId::SINGLE_OWNER));
+    }
+
+    #[test]
+    fn test_format_supported_types() {
+        let formatted = StandardChunkSet::format_supported_types();
+        assert_eq!(formatted, "CAC (0x00), SOC (0x01)");
+
+        let content_only = ContentOnlyChunkSet::format_supported_types();
+        assert_eq!(content_only, "CAC (0x00)");
     }
 
     #[test]

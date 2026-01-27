@@ -108,6 +108,28 @@ impl ChunkTypeId {
             _ => None,
         }
     }
+
+    /// Get the abbreviated name for known type IDs.
+    ///
+    /// Returns common abbreviations like "CAC" for content-addressed chunks
+    /// and "SOC" for single-owner chunks. Returns `None` for unknown or custom types.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nectar_primitives::ChunkTypeId;
+    ///
+    /// assert_eq!(ChunkTypeId::CONTENT.abbreviation(), Some("CAC"));
+    /// assert_eq!(ChunkTypeId::SINGLE_OWNER.abbreviation(), Some("SOC"));
+    /// assert_eq!(ChunkTypeId::custom(200).abbreviation(), None);
+    /// ```
+    pub const fn abbreviation(self) -> Option<&'static str> {
+        match self.0 {
+            0 => Some("CAC"),
+            1 => Some("SOC"),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Debug for ChunkTypeId {
@@ -183,6 +205,14 @@ mod tests {
         assert_eq!(ChunkTypeId::SINGLE_OWNER.name(), Some("single_owner"));
         assert_eq!(ChunkTypeId::new(50).name(), None);
         assert_eq!(ChunkTypeId::custom(200).name(), None);
+    }
+
+    #[test]
+    fn test_abbreviation() {
+        assert_eq!(ChunkTypeId::CONTENT.abbreviation(), Some("CAC"));
+        assert_eq!(ChunkTypeId::SINGLE_OWNER.abbreviation(), Some("SOC"));
+        assert_eq!(ChunkTypeId::new(50).abbreviation(), None);
+        assert_eq!(ChunkTypeId::custom(200).abbreviation(), None);
     }
 
     #[test]
