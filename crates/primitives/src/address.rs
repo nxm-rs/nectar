@@ -72,7 +72,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Deref;
 
-use alloy_primitives::{B256, U256, hex};
+use alloy_primitives::{B256, U256};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

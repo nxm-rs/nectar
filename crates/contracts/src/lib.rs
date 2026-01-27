@@ -318,7 +318,7 @@ pub mod mainnet {
 
     /// BZZ token (xBZZ on Gnosis Chain).
     pub const BZZ_TOKEN: Token =
-        Token::new(address!("2ac3c1d3e24b45c6c310534bc2dd84b5ed576335"), 0);
+        Token::new(address!("dBF3Ea6F5beE45c02255B2c26a16F300502F68da"), 0);
 
     /// Postage stamp contract.
     pub const POSTAGE_STAMP: PostageStamp = PostageStamp::new(
