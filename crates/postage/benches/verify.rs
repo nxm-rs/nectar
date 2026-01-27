@@ -55,9 +55,7 @@ fn create_signed_stamp(
     Stamp::with_index(batch_id, index, timestamp, sig)
 }
 
-// =============================================================================
 // Stamp Serialization Benchmarks
-// =============================================================================
 
 fn bench_stamp_roundtrip(c: &mut Criterion) {
     let stamp = random_stamp();
@@ -96,9 +94,7 @@ fn bench_stamp_throughput(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // StampIndex Benchmarks
-// =============================================================================
 
 fn bench_stamp_index_roundtrip(c: &mut Criterion) {
     let mut rng = rand::rng();
@@ -112,9 +108,7 @@ fn bench_stamp_index_roundtrip(c: &mut Criterion) {
     });
 }
 
-// =============================================================================
 // Validation Benchmarks
-// =============================================================================
 
 fn bench_validate_index(c: &mut Criterion) {
     let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 20, 16, false);
@@ -134,9 +128,7 @@ fn bench_validate_index(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Digest/Prehash Benchmarks
-// =============================================================================
 
 fn bench_stamp_digest_prehash(c: &mut Criterion) {
     let address = random_address();
@@ -153,9 +145,7 @@ fn bench_stamp_digest_prehash(c: &mut Criterion) {
     });
 }
 
-// =============================================================================
 // Sequential ECDSA Verification Benchmarks
-// =============================================================================
 
 /// Helper to recover address from a stamp signature.
 /// Uses EIP-191 message recovery for interoperability.
@@ -217,9 +207,7 @@ fn bench_ecdsa_verify_sequential(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Cached Public Key Verification Benchmarks
-// =============================================================================
 
 fn bench_ecdsa_verify_with_pubkey(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
@@ -257,9 +245,7 @@ fn bench_ecdsa_verify_with_pubkey(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Parallel ECDSA Verification Benchmarks
-// =============================================================================
 
 fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
@@ -308,9 +294,7 @@ fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Parallel Verification with Cached Pubkey
-// =============================================================================
 
 fn bench_ecdsa_verify_parallel_with_pubkey(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
@@ -372,9 +356,7 @@ fn bench_ecdsa_verify_parallel_with_pubkey(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Comparison: Recovery vs Cached Pubkey Verification
-// =============================================================================
 
 fn bench_verify_comparison(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();

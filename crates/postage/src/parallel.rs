@@ -20,9 +20,7 @@ use rayon::prelude::*;
 use crate::{Stamp, StampDigest, StampError};
 use nectar_primitives::SwarmAddress;
 
-// =============================================================================
 // Parallel Verification
-// =============================================================================
 
 /// Result of a stamp verification.
 #[derive(Debug, Clone)]

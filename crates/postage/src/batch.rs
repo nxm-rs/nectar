@@ -243,9 +243,7 @@ impl Batch {
     }
 }
 
-// =============================================================================
 // Arbitrary implementations for property-based testing
-// =============================================================================
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for BatchParams {

@@ -21,9 +21,7 @@ fn random_address() -> SwarmAddress {
     SwarmAddress::new(bytes)
 }
 
-// =============================================================================
 // Mock Signer (for measuring non-crypto overhead)
-// =============================================================================
 
 /// A mock signer for benchmarking that creates deterministic signatures.
 struct MockSigner;
@@ -70,9 +68,7 @@ fn bench_stamper_mock(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Sequential ECDSA Signing Benchmarks
-// =============================================================================
 
 fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
@@ -104,9 +100,7 @@ fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Parallel ECDSA Signing Benchmarks
-// =============================================================================
 
 fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
@@ -141,9 +135,7 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Comparison: Sequential vs Parallel Signing
-// =============================================================================
 
 fn bench_sign_comparison(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();

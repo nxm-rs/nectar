@@ -36,9 +36,7 @@
 use alloy_primitives::{Address, address};
 use alloy_sol_types::sol;
 
-// ============================================================================
 // Deployment Info Macro
-// ============================================================================
 
 /// Macro to define a contract deployment struct with address and block.
 macro_rules! define_deployment {
@@ -62,9 +60,7 @@ macro_rules! define_deployment {
     };
 }
 
-// ============================================================================
 // Deployment Information Types
-// ============================================================================
 
 define_deployment!(
     /// BZZ token deployment information.
@@ -101,9 +97,7 @@ define_deployment!(
     SwapPriceOracle
 );
 
-// ============================================================================
 // Token Interface
-// ============================================================================
 
 sol! {
     /// Standard ERC20 token interface.
@@ -124,9 +118,7 @@ sol! {
     }
 }
 
-// ============================================================================
 // Storage Incentive Contract Interfaces
-// ============================================================================
 
 sol! {
     /// Postage stamp contract interface.
@@ -226,9 +218,7 @@ sol! {
     }
 }
 
-// ============================================================================
 // Swap Contract Interfaces (Chequebook)
-// ============================================================================
 
 sol! {
     /// Chequebook contract interface (ERC20SimpleSwap).
@@ -308,9 +298,7 @@ sol! {
     }
 }
 
-// ============================================================================
 // Gnosis Chain Mainnet Deployments
-// ============================================================================
 
 /// Gnosis Chain mainnet contract deployments.
 pub mod mainnet {
@@ -357,9 +345,7 @@ pub mod mainnet {
     );
 }
 
-// ============================================================================
 // Sepolia Testnet Deployments
-// ============================================================================
 
 /// Sepolia testnet contract deployments.
 pub mod testnet {

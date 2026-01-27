@@ -479,9 +479,7 @@ impl TryFrom<StampBytes> for Stamp {
     }
 }
 
-// =============================================================================
 // Arbitrary implementations for property-based testing
-// =============================================================================
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for StampIndex {

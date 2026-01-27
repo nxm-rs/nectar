@@ -87,9 +87,7 @@ pub trait StampValidator {
 // Note: BatchValidation methods (validate_index, bucket_for_address, validate_bucket)
 // are now implemented directly on the Batch type in batch.rs for better ergonomics.
 
-// =============================================================================
 // Store-based Validator
-// =============================================================================
 
 /// A validator that uses a [`BatchStore`] for validation.
 ///
