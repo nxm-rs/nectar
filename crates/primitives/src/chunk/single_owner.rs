@@ -128,6 +128,7 @@ impl SingleOwnerChunk {
     /// # Returns
     ///
     /// A Result containing the new SingleOwnerChunk, or an error if creation fails.
+    #[must_use = "this returns a new chunk without modifying the input"]
     pub fn new(id: B256, data: impl Into<Bytes>, signer: &impl SignerSync) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::default()
             .auto_from_data(data)?
@@ -150,6 +151,7 @@ impl SingleOwnerChunk {
     /// # Returns
     ///
     /// A Result containing the new SingleOwnerChunk, or an error if creation fails.
+    #[must_use = "this returns a new chunk without modifying the input"]
     pub fn with_signature(id: B256, signature: Signature, data: impl Into<Bytes>) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::default()
             .auto_from_data(data)?
@@ -163,6 +165,7 @@ impl SingleOwnerChunk {
     /// # Arguments
     /// * `mined_byte` - The first byte of the chunk's ID.
     /// * `body` - The underlying BMT body containing the data and metadata.
+    #[must_use = "this returns a new chunk without modifying the input"]
     pub fn new_dispersed_replica(mined_byte: u8, body: BmtBody) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::default()
             .with_body(body)
@@ -170,18 +173,77 @@ impl SingleOwnerChunk {
             .build()
     }
 
+    /// Create a SingleOwnerChunk from pre-computed parts.
+    ///
+    /// This is an advanced method for reconstructing chunks from storage
+    /// when you have all the individual components.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The chunk's unique identifier.
+    /// * `signature` - The digital signature.
+    /// * `body` - The BMT body containing the data.
+    #[must_use]
+    pub fn from_parts(id: B256, signature: Signature, body: BmtBody) -> Self {
+        let metadata = SingleOwnerChunkMetadata::new(id, signature);
+        let header = SingleOwnerChunkHeader::new(metadata);
+
+        Self {
+            header,
+            body,
+            chunk_address_cache: OnceCache::new(),
+            owner_cache: OnceCache::new(),
+        }
+    }
+
+    /// Create a SingleOwnerChunk from pre-computed parts with cached address and owner.
+    ///
+    /// This is an advanced method for reconstructing chunks when you also know
+    /// the chunk address and owner address.
+    #[must_use]
+    pub fn from_parts_with_caches(
+        id: B256,
+        signature: Signature,
+        body: BmtBody,
+        address: ChunkAddress,
+        owner: Address,
+    ) -> Self {
+        let metadata = SingleOwnerChunkMetadata::new(id, signature);
+        let header = SingleOwnerChunkHeader::new(metadata);
+
+        Self {
+            header,
+            body,
+            chunk_address_cache: OnceCache::with_value(address),
+            owner_cache: OnceCache::with_value(owner),
+        }
+    }
+
     /// Get the owner's address, derived from the signature.
     ///
     /// This computes the owner's address by recovering it from the signature
-    /// and the signed data (the chunk's ID and body hash).
+    /// and the signed data (the chunk's ID and body hash). The result is cached
+    /// on success for subsequent calls.
     ///
     /// # Returns
     ///
-    /// The owner's address as a 20-byte fixed array.
-    pub fn owner(&self) -> Address {
-        *self
-            .owner_cache
-            .get_or_compute(|| self.calculate_owner().unwrap_or(Address::ZERO))
+    /// The owner's address as a 20-byte fixed array, or an error if signature
+    /// recovery fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChunkError::Signature` if the signature recovery fails.
+    pub fn owner(&self) -> error::Result<Address> {
+        // Check if we have a cached value
+        if let Some(addr) = self.owner_cache.get() {
+            return Ok(*addr);
+        }
+
+        // Compute and cache on success (don't cache failures)
+        let addr = self.calculate_owner()?;
+        // Try to set the cache; ignore if another thread beat us
+        let _ = self.owner_cache.try_set(addr);
+        Ok(addr)
     }
 
     /// Calculate the owner's address from the signature.
@@ -237,9 +299,12 @@ impl Chunk for SingleOwnerChunk {
     fn address(&self) -> &ChunkAddress {
         self.chunk_address_cache.get_or_compute(|| {
             // Compute address from id and owner
+            // Note: If owner recovery fails, we use Address::ZERO which will cause
+            // address verification to fail, which is the correct behavior.
+            let owner = self.owner().unwrap_or(Address::ZERO);
             let mut hasher = Keccak256::new();
             hasher.update(self.id());
-            hasher.update(self.owner());
+            hasher.update(owner);
 
             hasher.finalize().into()
         })
@@ -262,7 +327,8 @@ impl Chunk for SingleOwnerChunk {
 
         // At this point, the owner has been recovered. Now check if the owner
         // is the replica chunk owner, the ID must adhere to specific semantics.
-        if self.owner() == DISPERSED_REPLICA_OWNER && !self.is_valid_replica() {
+        let owner = self.owner()?;
+        if owner == DISPERSED_REPLICA_OWNER && !self.is_valid_replica() {
             return Err(error::ChunkError::invalid_format("invalid dispersed replica").into());
         }
 
@@ -337,105 +403,37 @@ impl TryFrom<&[u8]> for SingleOwnerChunk {
 
 impl fmt::Display for SingleOwnerChunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let owner_str = match self.owner() {
+            Ok(addr) => hex::encode(addr.as_slice()),
+            Err(_) => "invalid".to_string(),
+        };
         write!(
             f,
             "SingleOwnerChunk[id={}, owner={}]",
             hex::encode(&self.id()[..8]),
-            hex::encode(&self.owner()[..])
+            owner_str
         )
     }
 }
 
 impl PartialEq for SingleOwnerChunk {
     fn eq(&self, other: &Self) -> bool {
-        self.id() == other.id() && self.owner() == other.owner()
+        // If either owner computation fails, chunks are not equal
+        match (self.owner(), other.owner()) {
+            (Ok(a), Ok(b)) => self.id() == other.id() && a == b,
+            _ => false,
+        }
     }
 }
 
 impl Eq for SingleOwnerChunk {}
 
-/// Builder for creating SingleOwnerChunk instances.
-///
-/// This builder provides a fluent interface for constructing single-owner chunks
-/// with various configuration options.
-#[derive(Debug)]
-pub struct SingleOwnerChunkBuilder(SingleOwnerChunkBuilderImpl<Initial>);
-
-// Public builder facade - with data state
-/// Builder for SingleOwnerChunk with data set.
-#[derive(Debug)]
-pub struct SingleOwnerChunkBuilderWithData(SingleOwnerChunkBuilderImpl<WithData>);
-
-// Public builder facade - with ID state
-/// Builder for SingleOwnerChunk with data and ID set.
-#[derive(Debug)]
-pub struct SingleOwnerChunkBuilderWithId(SingleOwnerChunkBuilderImpl<WithId>);
-
-// Public builder facade - ready to build state
-/// Final stage of the SingleOwnerChunk builder, ready to build the chunk.
-#[derive(Debug)]
-pub struct SingleOwnerChunkBuilderReady(SingleOwnerChunkBuilderImpl<ReadyToBuild>);
-
-// Implement the public facades with simplified API
-impl Default for SingleOwnerChunkBuilder {
-    fn default() -> Self {
-        Self(SingleOwnerChunkBuilderImpl::default())
-    }
+impl super::chunk_type::ChunkType for SingleOwnerChunk {
+    const TYPE_ID: super::type_id::ChunkTypeId = super::type_id::ChunkTypeId::SINGLE_OWNER;
+    const TYPE_NAME: &'static str = "single_owner";
 }
 
-impl SingleOwnerChunkBuilder {
-    /// Initialize the builder with data using an automatically calculated span.
-    pub fn auto_from_data(self, data: impl Into<Bytes>) -> Result<SingleOwnerChunkBuilderWithData> {
-        Ok(SingleOwnerChunkBuilderWithData(
-            self.0.auto_from_data(data)?,
-        ))
-    }
-
-    /// Initialize the builder with a specific BMT body.
-    pub fn with_body(self, body: BmtBody) -> SingleOwnerChunkBuilderWithData {
-        SingleOwnerChunkBuilderWithData(self.0.with_body(body))
-    }
-}
-
-impl SingleOwnerChunkBuilderWithData {
-    /// Set the ID for this chunk.
-    pub fn with_id(self, id: B256) -> SingleOwnerChunkBuilderWithId {
-        SingleOwnerChunkBuilderWithId(self.0.with_id(id))
-    }
-}
-
-impl SingleOwnerChunkBuilderWithId {
-    /// Sign the chunk with the given signer.
-    pub fn with_signer(self, signer: &impl SignerSync) -> Result<SingleOwnerChunkBuilderReady> {
-        Ok(SingleOwnerChunkBuilderReady(self.0.with_signer(signer)?))
-    }
-
-    /// Set a pre-computed signature.
-    pub fn with_signature(self, signature: Signature) -> Result<SingleOwnerChunkBuilderReady> {
-        Ok(SingleOwnerChunkBuilderReady(
-            self.0.with_signature(signature)?,
-        ))
-    }
-}
-
-impl SingleOwnerChunkBuilderReady {
-    /// Set a pre-computed address for the chunk.
-    pub fn with_address(self, address: ChunkAddress) -> Self {
-        SingleOwnerChunkBuilderReady(self.0.with_address(address))
-    }
-
-    /// Set a pre-computed owner for the chunk.
-    pub fn with_owner(self, owner: Address) -> Self {
-        SingleOwnerChunkBuilderReady(self.0.with_owner(owner))
-    }
-
-    /// Build the final SingleOwnerChunk.
-    pub fn build(self) -> Result<SingleOwnerChunk> {
-        self.0.build()
-    }
-}
-
-/// Builder state marker traits
+// Internal builder state marker traits
 trait BuilderState {}
 
 #[derive(Debug, Default)]
@@ -463,10 +461,6 @@ struct SingleOwnerChunkBuilderImpl<S: BuilderState = Initial> {
     id: Option<B256>,
     /// The signature to use for the chunk
     signature: Option<Signature>,
-    /// Pre-computed address for the chunk
-    address: Option<ChunkAddress>,
-    /// Pre-computed owner for the chunk
-    owner: Option<Address>,
     /// Marker for the builder state
     _state: PhantomData<S>,
 }
@@ -477,8 +471,6 @@ impl Default for SingleOwnerChunkBuilderImpl<Initial> {
             body: None,
             id: None,
             signature: None,
-            address: None,
-            owner: None,
             _state: PhantomData,
         }
     }
@@ -497,8 +489,6 @@ impl SingleOwnerChunkBuilderImpl<Initial> {
             body: self.body,
             id: self.id,
             signature: self.signature,
-            address: self.address,
-            owner: self.owner,
             _state: PhantomData,
         })
     }
@@ -511,8 +501,6 @@ impl SingleOwnerChunkBuilderImpl<Initial> {
             body: self.body,
             id: self.id,
             signature: self.signature,
-            address: self.address,
-            owner: self.owner,
             _state: PhantomData,
         }
     }
@@ -527,8 +515,6 @@ impl SingleOwnerChunkBuilderImpl<WithData> {
             body: self.body,
             id: self.id,
             signature: self.signature,
-            address: self.address,
-            owner: self.owner,
             _state: PhantomData,
         }
     }
@@ -581,52 +567,19 @@ impl SingleOwnerChunkBuilderImpl<WithId> {
             body: self.body,
             id: self.id,
             signature: self.signature,
-            address: self.address,
-            owner: self.owner,
             _state: PhantomData,
         })
     }
 }
 
 impl SingleOwnerChunkBuilderImpl<ReadyToBuild> {
-    /// Set a pre-computed address for the chunk
-    fn with_address(mut self, address: ChunkAddress) -> Self {
-        self.address = Some(address);
-        self
-    }
-
-    /// Set a pre-computed owner for the chunk
-    fn with_owner(mut self, owner: Address) -> Self {
-        self.owner = Some(owner);
-        self
-    }
-
     /// Build the final SingleOwnerChunk
     fn build(self) -> Result<SingleOwnerChunk> {
         let body = self.body.unwrap();
         let id = self.id.unwrap();
         let signature = self.signature.unwrap();
 
-        // Create metadata and header
-        let metadata = SingleOwnerChunkMetadata::new(id, signature);
-        let header = SingleOwnerChunkHeader::new(metadata);
-
-        let chunk_address_cache = match self.address {
-            Some(addr) => OnceCache::with_value(addr),
-            None => OnceCache::new(),
-        };
-
-        let owner_cache = match self.owner {
-            Some(addr) => OnceCache::with_value(addr),
-            None => OnceCache::new(),
-        };
-
-        Ok(SingleOwnerChunk {
-            header,
-            body,
-            chunk_address_cache,
-            owner_cache,
-        })
+        Ok(SingleOwnerChunk::from_parts(id, signature, body))
     }
 }
 
@@ -637,7 +590,7 @@ impl<'a> arbitrary::Arbitrary<'a> for SingleOwnerChunk {
         let body = BmtBody::arbitrary(u)?;
         let signer = alloy_signer_local::PrivateKeySigner::random();
 
-        Ok(SingleOwnerChunkBuilder::default()
+        Ok(SingleOwnerChunkBuilderImpl::default()
             .with_body(body)
             .with_id(id)
             .with_signer(&signer)
@@ -681,7 +634,7 @@ mod tests {
             prop_assert_eq!(chunk.id(), decoded.id());
             prop_assert_eq!(chunk.signature(), decoded.signature());
             prop_assert_eq!(chunk.data(), decoded.data());
-            prop_assert_eq!(chunk.owner(), decoded.owner());
+            prop_assert_eq!(chunk.owner().unwrap(), decoded.owner().unwrap());
 
             // Test address verification
             let address = chunk.address();
@@ -695,7 +648,7 @@ mod tests {
             // Verify it's recognised as a dispersed replica
             prop_assert!(chunk.is_valid_replica());
             prop_assert_eq!(chunk.id()[0], first_byte);
-            prop_assert_eq!(chunk.owner(), DISPERSED_REPLICA_OWNER);
+            prop_assert_eq!(chunk.owner().unwrap(), DISPERSED_REPLICA_OWNER);
 
             // Verify chunk address
             prop_assert!(chunk.verify(chunk.address()).is_ok());
@@ -722,7 +675,7 @@ mod tests {
 
             prop_assert_eq!(chunk.id(), id);
             prop_assert_eq!(chunk.data(), &data);
-            prop_assert!(!chunk.owner().is_zero());
+            prop_assert!(!chunk.owner().unwrap().is_zero());
         }
 
         #[test]
@@ -766,7 +719,8 @@ mod tests {
 
             let modified_chunk = SingleOwnerChunk::try_from(modified_bytes.as_slice()).unwrap();
             prop_assert!(modified_chunk.verify(&original_address).is_err());
-            prop_assert!(modified_chunk.owner() == Address::ZERO);
+            // Owner recovery should fail for invalid signature
+            prop_assert!(modified_chunk.owner().is_err());
         }
 
         #[test]
@@ -815,7 +769,7 @@ mod tests {
 
         // Verify owner address matches expected
         let expected_owner = address!("8d3766440f0d7b949a5e32995d09619a7f86e632");
-        assert_eq!(chunk.owner(), expected_owner);
+        assert_eq!(chunk.owner().unwrap(), expected_owner);
     }
 
     fn get_test_chunk_data() -> Vec<u8> {
@@ -835,7 +789,7 @@ mod tests {
 
         // Verify expected owner
         let expected_owner = address!("8d3766440f0d7b949a5e32995d09619a7f86e632");
-        assert_eq!(chunk.owner(), expected_owner);
+        assert_eq!(chunk.owner().unwrap(), expected_owner);
 
         // Verify expected address
         let expected_address =

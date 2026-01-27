@@ -1,0 +1,61 @@
+[package]
+name = "nectar-postage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Postage stamp primitives for Ethereum Swarm"
+keywords = ["swarm", "ethereum", "postage", "no_std"]
+categories = ["no-std", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nectar-primitives = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+byteorder = { workspace = true }
+thiserror = { workspace = true }
+
+# k256 with precomputed tables for faster ECDSA verification
+k256 = { workspace = true }
+
+# optional
+serde = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+arbitrary = { workspace = true, features = ["derive"], optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+proptest-arbitrary-interop = { workspace = true }
+criterion = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+alloy-signer-local = { workspace = true }
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+arbitrary = { workspace = true, features = ["derive"] }
+
+[[bench]]
+name = "verify"
+harness = false
+required-features = ["parallel"]
+
+[features]
+default = ["std"]
+
+# Standard library support. Enables BatchStore, BatchFactory, and timestamp functions.
+std = ["nectar-primitives/std", "alloy-primitives/std", "thiserror/std", "serde?/std"]
+
+# Serialization support with serde.
+serde = ["dep:serde", "nectar-primitives/serde", "alloy-primitives/serde"]
+
+# Parallel verification using rayon (sync, CPU-bound).
+parallel = ["dep:rayon", "std"]
+
+# Arbitrary trait implementations for property-based testing.
+arbitrary = ["dep:arbitrary", "nectar-primitives/arbitrary", "alloy-primitives/arbitrary"]

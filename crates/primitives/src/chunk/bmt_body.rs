@@ -38,8 +38,8 @@ impl BmtBody {
         }
     }
 
-    /// Create a new builder for BMTBody
-    pub fn builder() -> BmtBodyBuilder<Initial> {
+    /// Create a new builder for BMTBody (crate-internal)
+    pub(crate) fn builder() -> BmtBodyBuilder<Initial> {
         BmtBodyBuilder::default()
     }
 
@@ -127,24 +127,24 @@ impl TryFrom<&[u8]> for BmtBody {
     }
 }
 
-/// Builder state marker traits
-pub trait BuilderState {}
+/// Builder state marker traits (crate-internal)
+pub(crate) trait BuilderState {}
 
 #[derive(Default, Debug)]
-pub struct Initial;
+pub(crate) struct Initial;
 impl BuilderState for Initial {}
 
 #[derive(Debug)]
-pub struct WithSpan;
+pub(crate) struct WithSpan;
 impl BuilderState for WithSpan {}
 
 #[derive(Debug)]
-pub struct ReadyToBuild;
+pub(crate) struct ReadyToBuild;
 impl BuilderState for ReadyToBuild {}
 
-/// Builder for BMTBody with type state pattern
+/// Builder for BMTBody with type state pattern (crate-internal)
 #[derive(Debug)]
-pub struct BmtBodyBuilder<S: BuilderState = Initial> {
+pub(crate) struct BmtBodyBuilder<S: BuilderState = Initial> {
     /// The span to use for the body
     span: Option<u64>,
     /// The data to use for the body
@@ -165,7 +165,7 @@ impl Default for BmtBodyBuilder<Initial> {
 
 impl BmtBodyBuilder<Initial> {
     /// Set the span for this body and transition to WithSpan state
-    pub fn with_span(mut self, span: u64) -> BmtBodyBuilder<WithSpan> {
+    pub(crate) fn with_span(mut self, span: u64) -> BmtBodyBuilder<WithSpan> {
         self.span = Some(span);
         BmtBodyBuilder {
             span: self.span,
@@ -175,13 +175,14 @@ impl BmtBodyBuilder<Initial> {
     }
 
     /// Initialize from data with automatically calculated span
-    pub fn auto_from_data(
+    pub(crate) fn auto_from_data(
         mut self,
         data: impl Into<Bytes>,
     ) -> Result<BmtBodyBuilder<ReadyToBuild>> {
         let data = validate_data(data)?;
-        self.data = Some(data.clone());
-        self.span = Some(data.len() as u64);
+        let len = data.len();
+        self.data = Some(data);
+        self.span = Some(len as u64);
 
         Ok(BmtBodyBuilder {
             span: self.span,
@@ -193,16 +194,20 @@ impl BmtBodyBuilder<Initial> {
 
 impl BmtBodyBuilder<WithSpan> {
     /// Set the data for this body and transition to ReadyToBuild state
-    pub fn with_data(mut self, data: impl Into<Bytes>) -> Result<BmtBodyBuilder<ReadyToBuild>> {
+    pub(crate) fn with_data(
+        mut self,
+        data: impl Into<Bytes>,
+    ) -> Result<BmtBodyBuilder<ReadyToBuild>> {
         let data = validate_data(data)?;
-        self.data = Some(data.clone());
+        let data_len = data.len();
+        self.data = Some(data);
 
         let span = self.span.unwrap();
-        if span <= MAX_DATA_LENGTH as u64 && data.len() != span as usize {
+        if span <= MAX_DATA_LENGTH as u64 && data_len != span as usize {
             return Err(ChunkError::invalid_size(
                 "span does not match data size",
                 span as usize,
-                data.len(),
+                data_len,
             )
             .into());
         }
@@ -217,7 +222,7 @@ impl BmtBodyBuilder<WithSpan> {
 
 impl BmtBodyBuilder<ReadyToBuild> {
     /// Build the final BMTBody
-    pub fn build(self) -> Result<BmtBody> {
+    pub(crate) fn build(self) -> Result<BmtBody> {
         // This is safe because it is only possible to get here with valid data and span
         Ok(BmtBody::new_unchecked(
             self.span.unwrap(),

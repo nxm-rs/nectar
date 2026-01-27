@@ -63,8 +63,8 @@ pub fn primitives(c: &mut Criterion) {
         b.iter(|| {
             hasher.set_span(4096);
             hasher.update(&fixed_data);
+            // finalize_reset() computes hash AND resets internal state
             black_box(hasher.finalize_reset());
-            // The hasher is automatically reset by finalize()
         });
     });
 
@@ -99,7 +99,6 @@ pub fn primitives(c: &mut Criterion) {
                         hasher.set_span(4096);
                         hasher.update(&fixed_data);
                         black_box(hasher.finalize_reset());
-                        // The hasher is automatically reset by finalize()
                     }
                 });
             },

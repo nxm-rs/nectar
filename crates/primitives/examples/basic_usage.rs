@@ -101,7 +101,7 @@ fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn st
     println!("  - Span: {}", chunk.span());
     println!(
         "  - Owner: {}",
-        alloy_primitives::hex::encode(chunk.owner().as_slice())
+        alloy_primitives::hex::encode(chunk.owner()?.as_slice())
     );
     println!("  - Address: {}", chunk.address());
 
@@ -115,7 +115,7 @@ fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn st
     println!("  - Address: {}", parsed.address());
     println!(
         "  - Owner: {}",
-        alloy_primitives::hex::encode(parsed.owner().as_slice())
+        alloy_primitives::hex::encode(parsed.owner()?.as_slice())
     );
 
     // There is no verify_signature method directly, but we can test verification indirectly
@@ -131,12 +131,12 @@ fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn st
     println!("  - Address: {}", chunk_with_sig.address());
     println!(
         "  - Owner: {}",
-        alloy_primitives::hex::encode(chunk_with_sig.owner().as_slice())
+        alloy_primitives::hex::encode(chunk_with_sig.owner()?.as_slice())
     );
 
     // Verify that both chunks have the same properties
     assert_eq!(chunk.address(), chunk_with_sig.address());
-    assert_eq!(chunk.owner(), chunk_with_sig.owner());
+    assert_eq!(chunk.owner()?, chunk_with_sig.owner()?);
     println!("Both chunks have identical properties \u{2705}");
 
     Ok(())

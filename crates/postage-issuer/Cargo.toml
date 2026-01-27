@@ -1,0 +1,60 @@
+[package]
+name = "nectar-postage-issuer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Postage stamp issuing and signing for Ethereum Swarm"
+keywords = ["swarm", "ethereum", "postage", "signing"]
+categories = ["cryptography", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nectar-postage = { path = "../postage" }
+nectar-primitives = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+thiserror = { workspace = true }
+
+# optional
+serde = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+proptest-arbitrary-interop = { workspace = true }
+criterion = { workspace = true }
+rand = { workspace = true }
+alloy-signer-local = { workspace = true }
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[bench]]
+name = "sign"
+harness = false
+required-features = ["parallel"]
+
+[features]
+default = ["std"]
+
+# Standard library support
+std = ["nectar-postage/std"]
+
+# Serialization support with serde
+serde = ["dep:serde", "nectar-postage/serde"]
+
+# Local key signing for testing and development
+local-signer = ["dep:alloy-signer-local", "std"]
+
+# Parallel signing operations using rayon
+parallel = ["dep:rayon", "std"]
+
+# Arbitrary trait implementations for property-based testing
+arbitrary = ["nectar-postage/arbitrary", "nectar-primitives/arbitrary"]

@@ -20,11 +20,9 @@
 //! let chunk = ContentChunk::new(b"Hello, world!".as_slice()).unwrap();
 //! let address = chunk.address();
 //!
-//! // Using builders for more complex scenarios
-//! let content = ContentChunk::builder()
-//!     .auto_from_data(b"Custom data".as_slice())
-//!     .unwrap()
-//!     .build();
+//! // Creating content chunks with pre-computed address (e.g., from storage)
+//! let address_copy = *address;
+//! let chunk2 = ContentChunk::with_address(b"Hello, world!".as_slice(), address_copy).unwrap();
 //!
 //! // Creating signed chunks
 //! let wallet = LocalSigner::random();
@@ -53,20 +51,19 @@ pub use bmt::{Hasher, HasherFactory, Proof, Prover};
 
 // Core chunk functionality
 pub use chunk::{
-    BmtChunk,
+    // Type system
+    AnyChunk,
     // Core traits
+    BmtChunk,
     Chunk,
     ChunkAddress,
     ChunkSerialization,
-
+    ChunkType,
+    ChunkTypeId,
+    ChunkTypeSet,
     // Concrete chunk types
     ContentChunk,
+    ContentOnlyChunkSet,
     SingleOwnerChunk,
-};
-
-// Builder types (facade for implementation)
-pub use chunk::{ContentChunkBuilder, ContentChunkBuilderReady};
-pub use chunk::{
-    SingleOwnerChunkBuilder, SingleOwnerChunkBuilderReady, SingleOwnerChunkBuilderWithData,
-    SingleOwnerChunkBuilderWithId,
+    StandardChunkSet,
 };

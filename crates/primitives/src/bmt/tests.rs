@@ -403,3 +403,52 @@ fn test_excess_data_ignored() {
         "Adding excess data via Write trait should not change the hash"
     );
 }
+
+#[test]
+fn test_write_returns_actual_bytes_written() {
+    use std::io::Write;
+
+    let mut hasher = Hasher::new();
+
+    // Fill buffer completely
+    let data = vec![0x42; MAX_DATA_LENGTH];
+    let written = hasher.write(&data).unwrap();
+    assert_eq!(
+        written, MAX_DATA_LENGTH,
+        "Should report all bytes written when buffer has space"
+    );
+
+    // Try to write more - should return 0 since buffer is full
+    let more = hasher.write(&[0xFF; 100]).unwrap();
+    assert_eq!(more, 0, "Should return 0 when buffer is full");
+
+    // Verify we can still compute the hash
+    hasher.set_span(MAX_DATA_LENGTH as u64);
+    let _hash = hasher.sum();
+
+    // Test partial write
+    let mut hasher2 = Hasher::new();
+
+    // Write less than full
+    let partial_data = vec![0x42; MAX_DATA_LENGTH - 50];
+    let written = hasher2.write(&partial_data).unwrap();
+    assert_eq!(
+        written,
+        MAX_DATA_LENGTH - 50,
+        "Should report all bytes written for partial fill"
+    );
+
+    // Write more than remaining space
+    let excess = hasher2.write(&[0xFF; 100]).unwrap();
+    assert_eq!(
+        excess, 50,
+        "Should only write bytes that fit in remaining space"
+    );
+
+    // Buffer should now be full
+    let final_write = hasher2.write(&[0xAA; 10]).unwrap();
+    assert_eq!(
+        final_write, 0,
+        "Should return 0 when buffer is already full"
+    );
+}

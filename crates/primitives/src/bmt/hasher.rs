@@ -8,13 +8,47 @@ use bytes::Bytes;
 use digest::{FixedOutput, FixedOutputReset, OutputSizeUser, Reset, Update};
 use generic_array::{GenericArray, typenum::U32};
 use std::io::{self, Write};
-use std::marker::PhantomData;
+use std::sync::LazyLock;
 
 // Use rayon for parallel processing on non-WASM platforms
 #[cfg(not(target_arch = "wasm32"))]
 use rayon;
 
 use super::constants::*;
+
+/// Number of levels in the zero-tree cache.
+/// Level 0 = hash of 64 zero bytes (SEGMENT_PAIR_LENGTH)
+/// Level 6 = hash of full 4096-byte zero tree
+const ZERO_TREE_LEVELS: usize = 7;
+
+/// Pre-computed hashes for zero-filled subtrees at each level.
+/// This optimization avoids recomputing hashes for all-zero portions of the buffer.
+///
+/// - Level 0: hash of 64 zero bytes (one segment pair)
+/// - Level 1: hash of two level-0 hashes (128 bytes of zeros)
+/// - Level 2: hash of two level-1 hashes (256 bytes of zeros)
+/// - Level 3: hash of two level-2 hashes (512 bytes of zeros)
+/// - Level 4: hash of two level-3 hashes (1024 bytes of zeros)
+/// - Level 5: hash of two level-4 hashes (2048 bytes of zeros)
+/// - Level 6: hash of two level-5 hashes (4096 bytes of zeros)
+static ZERO_HASHES: LazyLock<[B256; ZERO_TREE_LEVELS]> = LazyLock::new(|| {
+    let mut hashes = [B256::ZERO; ZERO_TREE_LEVELS];
+
+    // Level 0: hash of 64 zero bytes
+    let mut hasher = Keccak256::new();
+    hasher.update(&[0u8; SEGMENT_PAIR_LENGTH]);
+    hashes[0] = B256::from_slice(hasher.finalize().as_slice());
+
+    // Each subsequent level: hash of two copies of previous level's hash
+    for i in 1..ZERO_TREE_LEVELS {
+        let mut hasher = Keccak256::new();
+        hasher.update(hashes[i - 1].as_slice());
+        hasher.update(hashes[i - 1].as_slice());
+        hashes[i] = B256::from_slice(hasher.finalize().as_slice());
+    }
+
+    hashes
+});
 
 /// Reference implementation of a BMT hasher that uses Keccak256
 ///
@@ -26,7 +60,6 @@ pub struct Hasher {
     prefix: Option<Vec<u8>>,
     buffer: [u8; MAX_DATA_LENGTH],
     cursor: usize,
-    _marker: PhantomData<Keccak256>,
 }
 
 impl Default for Hasher {
@@ -48,7 +81,6 @@ impl Hasher {
             prefix: None,
             buffer: [0u8; MAX_DATA_LENGTH], // Pre-initialized with zeros
             cursor: 0,
-            _marker: PhantomData,
         }
     }
 
@@ -124,84 +156,131 @@ impl Hasher {
 
     /// Compute the BMT hash and return the result (non-destructive)
     #[inline]
+    #[must_use]
     pub fn sum(&self) -> B256 {
         self.finalize_with_prefix(self.hash_internal())
     }
 
     /// Hash data using a binary merkle tree (internal implementation)
+    ///
+    /// This uses an optimized algorithm that:
+    /// 1. Finds the smallest power-of-2 subtree containing all data
+    /// 2. Hashes only that subtree
+    /// 3. Iteratively combines with pre-computed zero hashes to reach the root
     #[inline(always)]
     fn hash_internal(&self) -> B256 {
-        // Use parallel hashing only when supported by the platform
+        // Special case: no data means entire tree is zeros
+        if self.cursor == 0 {
+            return ZERO_HASHES[ZERO_TREE_LEVELS - 1];
+        }
+
+        // Find the smallest power-of-2 subtree that contains all data
+        // Minimum is SEGMENT_PAIR_LENGTH (64 bytes), maximum is MAX_DATA_LENGTH (4096 bytes)
+        let effective_size = self
+            .cursor
+            .next_power_of_two()
+            .max(SEGMENT_PAIR_LENGTH)
+            .min(MAX_DATA_LENGTH);
+
+        // Hash only the effective subtree (which contains all actual data)
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.hash_helper_parallel(&self.buffer, MAX_DATA_LENGTH)
-        }
+        let mut result = self.hash_subtree_parallel(&self.buffer[..effective_size], effective_size);
 
-        // Use sequential hashing for WASM
         #[cfg(target_arch = "wasm32")]
-        {
-            self.hash_helper_sequential(&self.buffer, MAX_DATA_LENGTH)
-        }
-    }
+        let mut result =
+            self.hash_subtree_sequential(&self.buffer[..effective_size], effective_size);
 
-    /// Sequential implementation for hash computation (always available)
-    #[cfg(target_arch = "wasm32")]
-    #[inline(always)]
-    fn hash_helper_sequential(&self, data: &[u8], length: usize) -> B256 {
-        if length == SEGMENT_PAIR_LENGTH {
+        // Roll up with zero hashes until we reach the full tree size
+        let mut current_size = effective_size;
+        while current_size < MAX_DATA_LENGTH {
+            // The current result is a left child, combine with zero hash for right sibling
+            let sibling_level = Self::zero_tree_level(current_size);
             let mut hasher = Keccak256::new();
-            hasher.update(&data[..length]);
-            return B256::from_slice(hasher.finalize().as_slice());
+            hasher.update(result.as_slice());
+            hasher.update(ZERO_HASHES[sibling_level].as_slice());
+            result = B256::from_slice(hasher.finalize().as_slice());
+            current_size *= 2;
         }
 
-        let half = length / 2;
-
-        // Split data and hash both halves sequentially
-        let left = &data[..half];
-        let right = &data[half..];
-
-        let left_hash = self.hash_helper_sequential(left, half);
-        let right_hash = self.hash_helper_sequential(right, half);
-
-        // Create a new Keccak256 hasher for the parent node
-        let mut hasher = Keccak256::new();
-
-        // Update with both child hashes
-        hasher.update(left_hash.as_slice());
-        hasher.update(right_hash.as_slice());
-
-        // Return the hash
-        B256::from_slice(hasher.finalize().as_slice())
+        result
     }
 
-    /// Parallel implementation for hash computation (native environments)
+    /// Hash a subtree of exactly `length` bytes (must be power of 2, >= 64)
     #[cfg(not(target_arch = "wasm32"))]
     #[inline(always)]
-    fn hash_helper_parallel(&self, data: &[u8], length: usize) -> B256 {
+    fn hash_subtree_parallel(&self, data: &[u8], length: usize) -> B256 {
+        debug_assert!(length.is_power_of_two());
+        debug_assert!(length >= SEGMENT_PAIR_LENGTH);
+
         if length == SEGMENT_PAIR_LENGTH {
             let mut hasher = Keccak256::new();
-            hasher.update(&data[..length]);
+            hasher.update(data);
             return B256::from_slice(hasher.finalize().as_slice());
         }
 
         let half = length / 2;
-
-        // Split data and hash both halves in parallel
         let (left, right) = data.split_at(half);
-        let (left_hash, right_hash) = rayon::join(
-            || self.hash_helper_parallel(left, half),
-            || self.hash_helper_parallel(right, half),
-        );
 
-        // Create a new Keccak256 hasher for the parent node
+        // Check if right half is entirely beyond cursor (all zeros in buffer)
+        let (left_hash, right_hash) = if half >= self.cursor {
+            // Right side is all zeros
+            let left_hash = self.hash_subtree_parallel(left, half);
+            let right_hash = ZERO_HASHES[Self::zero_tree_level(half)];
+            (left_hash, right_hash)
+        } else {
+            // Both sides have data, use parallel execution
+            rayon::join(
+                || self.hash_subtree_parallel(left, half),
+                || self.hash_subtree_parallel(right, half),
+            )
+        };
+
         let mut hasher = Keccak256::new();
-
-        // Update with both child hashes
         hasher.update(left_hash.as_slice());
         hasher.update(right_hash.as_slice());
-
-        // Return the hash
         B256::from_slice(hasher.finalize().as_slice())
+    }
+
+    /// Hash a subtree of exactly `length` bytes (must be power of 2, >= 64) - sequential version
+    #[cfg(target_arch = "wasm32")]
+    #[inline(always)]
+    fn hash_subtree_sequential(&self, data: &[u8], length: usize) -> B256 {
+        debug_assert!(length.is_power_of_two());
+        debug_assert!(length >= SEGMENT_PAIR_LENGTH);
+
+        if length == SEGMENT_PAIR_LENGTH {
+            let mut hasher = Keccak256::new();
+            hasher.update(data);
+            return B256::from_slice(hasher.finalize().as_slice());
+        }
+
+        let half = length / 2;
+        let (left, right) = data.split_at(half);
+
+        // Check if right half is entirely beyond cursor (all zeros in buffer)
+        let (left_hash, right_hash) = if half >= self.cursor {
+            // Right side is all zeros
+            let left_hash = self.hash_subtree_sequential(left, half);
+            let right_hash = ZERO_HASHES[Self::zero_tree_level(half)];
+            (left_hash, right_hash)
+        } else {
+            let left_hash = self.hash_subtree_sequential(left, half);
+            let right_hash = self.hash_subtree_sequential(right, half);
+            (left_hash, right_hash)
+        };
+
+        let mut hasher = Keccak256::new();
+        hasher.update(left_hash.as_slice());
+        hasher.update(right_hash.as_slice());
+        B256::from_slice(hasher.finalize().as_slice())
+    }
+
+    /// Calculate the zero-tree level for a given subtree length.
+    /// Length must be a power of 2 between 64 and 4096.
+    #[inline(always)]
+    fn zero_tree_level(length: usize) -> usize {
+        // length = 64 * 2^level, so level = log2(length) - log2(64) = log2(length) - 6
+        length.trailing_zeros() as usize - 6
     }
 
     /// Finalize with span and optional prefix
@@ -235,6 +314,7 @@ impl Hasher {
 
     /// Get the current data as Bytes (immutable reference)
     #[inline]
+    #[must_use]
     pub fn data(&self) -> Bytes {
         if self.cursor == 0 {
             return Bytes::new();
@@ -295,9 +375,14 @@ impl Hasher {
 impl Write for Hasher {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        // Keep original behavior to ensure tests pass
-        self.update(buf);
-        Ok(buf.len())
+        // Correctly report actual bytes written per io::Write contract
+        let available = MAX_DATA_LENGTH - self.cursor;
+        let to_write = buf.len().min(available);
+        if to_write > 0 {
+            self.buffer[self.cursor..self.cursor + to_write].copy_from_slice(&buf[..to_write]);
+            self.cursor += to_write;
+        }
+        Ok(to_write)
     }
 
     #[inline]

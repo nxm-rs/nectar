@@ -1,6 +1,8 @@
 use crate::SwarmAddress;
 use thiserror::Error;
 
+use super::type_id::ChunkTypeId;
+
 /// Result type for chunk operations
 pub(crate) type Result<T> = std::result::Result<T, ChunkError>;
 
@@ -37,6 +39,10 @@ pub enum ChunkError {
     /// Chunk signature is invalid
     #[error("Invalid chunk signature: {0}")]
     InvalidSignature(String),
+
+    /// Unsupported chunk type
+    #[error("Unsupported chunk type: {0}")]
+    UnsupportedType(ChunkTypeId),
 }
 
 impl ChunkError {
@@ -58,5 +64,9 @@ impl ChunkError {
 
     pub fn invalid_signature<S: Into<String>>(msg: S) -> Self {
         Self::InvalidSignature(msg.into())
+    }
+
+    pub fn unsupported_type(type_id: ChunkTypeId) -> Self {
+        Self::UnsupportedType(type_id)
     }
 }

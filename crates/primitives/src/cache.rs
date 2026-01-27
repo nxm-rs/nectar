@@ -31,6 +31,16 @@ impl<T> OnceCache<T> {
         cache
     }
 
+    /// Get the cached value if it exists
+    pub(crate) fn get(&self) -> Option<&T> {
+        self.value.get()
+    }
+
+    /// Try to set the cached value, returning Ok if successful or Err if already set
+    pub(crate) fn try_set(&self, value: T) -> Result<(), T> {
+        self.value.set(value)
+    }
+
     /// Get the cached value, computing it if necessary
     pub(crate) fn get_or_compute<F>(&self, compute_fn: F) -> &T
     where
