@@ -274,7 +274,7 @@ impl Default for SwarmAddress {
 
 impl fmt::Display for SwarmAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(&self.0.as_slice()[..8]))
+        write!(f, "{}", self.0)
     }
 }
 
