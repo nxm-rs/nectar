@@ -43,7 +43,7 @@ pub mod error;
 pub use bmt::MAX_DATA_LENGTH as MAX_CHUNK_SIZE;
 
 // Re-export core types
-pub use address::SwarmAddress;
+pub use address::{SwarmAddress, MAX_PO};
 pub use error::{PrimitivesError, Result};
 
 // Core BMT functionality
