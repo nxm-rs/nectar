@@ -3,13 +3,13 @@
 [![CI Status](https://github.com/nxm-rs/nectar/actions/workflows/unit.yml/badge.svg)](https://github.com/nxm-rs/nectar/actions/workflows/unit.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-**Low-level Swarm primitives in Rust. The boring parts that make the magic happen.**
+**Low-level Swarm primitives in Rust. The tedious bits that make the magic happen.**
 
 ## What is nectar?
 
-The sweet stuff that makes the hive run. `nectar` provides the essential primitives for building applications on Ethereum Swarm - content addressing, chunk management, postage stamps, and all the cryptographic goodness you need to talk to the network.
+The sweet stuff that makes the hive run. `nectar` provides the essential primitives for building applications on Ethereum Swarm: content addressing, chunk management, postage stamps, and all the cryptographic goodness you need to talk to the network.
 
-Used by [Vertex](https://github.com/nxm-rs/vertex) (the Rust Swarm node) and available for anyone crazy enough to build their own Swarm-powered applications.
+Used by [Vertex](https://github.com/nxm-rs/vertex) (the Rust Swarm node) and available for anyone bold enough to build their own Swarm-powered applications.
 
 ## Crates
 
@@ -44,15 +44,15 @@ let address = chunk.address();
 
 ## Features
 
-- **Binary Merkle Tree (BMT)** - Blazing-fast content addressing with parallel Keccak256 hashing. Zero-tree optimizations for when your data is mostly nothing.
-- **Chunk Types** - Content chunks, single-owner chunks, and all the serialization you need
-- **Proof Generation** - Create and verify inclusion proofs for chunk segments
-- **Postage Stamps** - Create, verify, and manage postage stamps for network storage
-- **WASM Support** - Run in browsers because why not
+- **Binary Merkle Tree (BMT)**: High-performance content addressing with parallel Keccak256 hashing. Zero-tree optimisations for when your data is mostly nothing.
+- **Chunk Types**: Content chunks, single-owner chunks, and all the serialisation you need.
+- **Proof Generation**: Create and verify inclusion proofs for chunk segments.
+- **Postage Stamps**: Create, verify, and manage postage stamps for network storage.
+- **WASM Support**: Runs in browsers because why not.
 
 ## Performance
 
-BMT hashing is optimized for real-world workloads:
+BMT hashing is optimised for real-world workloads:
 
 | Data Size | Time |
 |-----------|------|
@@ -60,7 +60,7 @@ BMT hashing is optimized for real-world workloads:
 | 4096 bytes (full chunk) | ~23 µs |
 | All zeros (any size) | ~230 ns |
 
-Sequential processing for small data, parallel for full chunks. No rayon overhead where it doesn't help.
+Sequential processing for small data, parallel for full chunks. No rayon overhead where it does not help.
 
 ## Building
 
@@ -77,7 +77,7 @@ cd crates/primitives/examples/wasm-demo
 wasm-pack build --target web
 ```
 
-Then use it from JavaScript like a normal person:
+Then use it from JavaScript:
 
 ```javascript
 import init, { BMTHasher } from 'nectar-wasm';
@@ -93,12 +93,16 @@ const hash = hasher.sum();
 
 We welcome contributions. Please read the [CLA](./CLA.md) before submitting PRs.
 
-- Open an [issue](https://github.com/nxm-rs/nectar/issues) if something's broken
+- Open an [issue](https://github.com/nxm-rs/nectar/issues) if something is broken
 - Join the [Matrix space](https://matrix.to/#/#nexum:nxm.rs) to discuss development
 
-## License
+## Style Guide
 
-[AGPL-3.0-or-later](./LICENSE) - because we believe in sharing.
+All documentation and comments must use Oxford English (British spelling with -ize endings). No em dashes.
+
+## Licence
+
+[AGPL-3.0-or-later](./LICENSE): because we believe in sharing.
 
 ## Warning
 
