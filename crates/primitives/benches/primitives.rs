@@ -3,7 +3,7 @@ use alloy_primitives::keccak256;
 use bytes::BytesMut;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use digest::Digest;
-use nectar_primitives::bmt::Hasher;
+use nectar_primitives::DefaultHasher;
 use rand::prelude::*;
 
 pub fn primitives(c: &mut Criterion) {
@@ -23,7 +23,7 @@ pub fn primitives(c: &mut Criterion) {
     // Benchmark the BMT implementation (non-concurrent) on 4096 bytes
     group.bench_function("bmt_hash_4096", |b| {
         b.iter(|| {
-            let mut hasher = Hasher::new();
+            let mut hasher = DefaultHasher::new();
             hasher.set_span(4096);
             hasher.update(&random_data);
             black_box(hasher.sum());
@@ -36,7 +36,7 @@ pub fn primitives(c: &mut Criterion) {
         let data = vec![0x42; size];
         group.bench_with_input(BenchmarkId::new("bmt_by_size", size), &size, |b, &size| {
             b.iter(|| {
-                let mut hasher = Hasher::new();
+                let mut hasher = DefaultHasher::new();
                 hasher.set_span(size as u64);
                 hasher.update(&data);
                 black_box(hasher.finalize());
@@ -50,7 +50,7 @@ pub fn primitives(c: &mut Criterion) {
     // Benchmark with new hasher for each iteration (4096 bytes)
     group.bench_function("bmt_new_hasher_4096", |b| {
         b.iter(|| {
-            let mut hasher = Hasher::new();
+            let mut hasher = DefaultHasher::new();
             hasher.set_span(4096);
             hasher.update(&fixed_data);
             black_box(hasher.finalize());
@@ -59,7 +59,7 @@ pub fn primitives(c: &mut Criterion) {
 
     // Benchmark with reused hasher (4096 bytes)
     group.bench_function("bmt_reused_hasher_4096", |b| {
-        let mut hasher = Hasher::new();
+        let mut hasher = DefaultHasher::new();
         b.iter(|| {
             hasher.set_span(4096);
             hasher.update(&fixed_data);
@@ -79,7 +79,7 @@ pub fn primitives(c: &mut Criterion) {
             |b, &size| {
                 b.iter(|| {
                     for _ in 0..size {
-                        let mut hasher = Hasher::new();
+                        let mut hasher = DefaultHasher::new();
                         hasher.set_span(4096);
                         hasher.update(&fixed_data);
                         black_box(hasher.finalize());
@@ -93,7 +93,7 @@ pub fn primitives(c: &mut Criterion) {
             BenchmarkId::new("bmt_batch_reused_hasher", batch_size),
             &batch_size,
             |b, &size| {
-                let mut hasher = Hasher::new();
+                let mut hasher = DefaultHasher::new();
                 b.iter(|| {
                     for _ in 0..size {
                         hasher.set_span(4096);
@@ -109,7 +109,7 @@ pub fn primitives(c: &mut Criterion) {
             BenchmarkId::new("bmt_batch_streaming", batch_size),
             &batch_size,
             |b, &size| {
-                let mut hasher = Hasher::new();
+                let mut hasher = DefaultHasher::new();
                 // Simulate streaming by writing in chunks of 1024 bytes
                 let chunks = [
                     &fixed_data[0..1024],
@@ -134,7 +134,7 @@ pub fn primitives(c: &mut Criterion) {
     // Benchmark Write trait implementation efficiency
     group.bench_function("bmt_write_trait_4096", |b| {
         use std::io::Write;
-        let mut hasher = Hasher::new();
+        let mut hasher = DefaultHasher::new();
 
         b.iter(|| {
             hasher.set_span(4096);
@@ -147,7 +147,7 @@ pub fn primitives(c: &mut Criterion) {
     // Benchmark Write trait with streaming writes
     group.bench_function("bmt_write_streaming_4096", |b| {
         use std::io::Write;
-        let mut hasher = Hasher::new();
+        let mut hasher = DefaultHasher::new();
         let chunks = [
             &fixed_data[0..1024],
             &fixed_data[1024..2048],
@@ -171,7 +171,7 @@ pub fn primitives(c: &mut Criterion) {
         buffer.resize(4096, 0x42);
         let data = buffer.freeze();
 
-        let mut hasher = Hasher::new();
+        let mut hasher = DefaultHasher::new();
         b.iter(|| {
             hasher.set_span(4096);
             hasher.update(data.as_ref());

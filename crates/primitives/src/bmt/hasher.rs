@@ -144,6 +144,15 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         self.finalize_with_prefix(self.hash_internal())
     }
 
+    /// Check if a byte slice is all zeros.
+    /// Uses chunk-based iteration which LLVM optimizes to SIMD on supported platforms.
+    #[inline(always)]
+    fn is_all_zeros(data: &[u8]) -> bool {
+        // Fold with bitwise OR - any non-zero byte makes the result non-zero
+        // LLVM vectorizes this pattern into efficient SIMD code
+        data.iter().fold(0u8, |acc, &b| acc | b) == 0
+    }
+
     /// Hash data using a binary merkle tree (internal implementation)
     ///
     /// This uses an optimized algorithm that:
@@ -154,6 +163,12 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     fn hash_internal(&self) -> B256 {
         // Special case: no data means entire tree is zeros
         if self.cursor == 0 {
+            return ZERO_HASHES[ZERO_TREE_LEVELS - 1];
+        }
+
+        // Fast path: if all data is zeros, return pre-computed zero tree root
+        // This avoids hashing entirely when the input is all zeros
+        if Self::is_all_zeros(&self.buffer[..self.cursor]) {
             return ZERO_HASHES[ZERO_TREE_LEVELS - 1];
         }
 
@@ -188,12 +203,35 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     }
 
     /// Hash a subtree of exactly `length` bytes (must be power of 2, >= 64)
+    ///
+    /// For sizes < BODY_SIZE: uses sequential hashing (no rayon overhead).
+    /// For BODY_SIZE (4096): uses recursive parallel hashing for maximum throughput.
     #[cfg(not(target_arch = "wasm32"))]
     #[inline(always)]
     fn hash_subtree_parallel(&self, data: &[u8], length: usize) -> B256 {
         debug_assert!(length.is_power_of_two());
         debug_assert!(length >= SEGMENT_PAIR_LENGTH);
 
+        // For sizes < BODY_SIZE, use sequential (avoids rayon overhead for small/medium sizes)
+        if length < BODY_SIZE {
+            return self.hash_subtree_sequential(data, length);
+        }
+
+        // For BODY_SIZE (4096): use recursive parallel hashing
+        // Pass cursor as parameter to avoid self indirection in hot loop
+        Self::hash_subtree_recursive_parallel_inner(data, length, self.cursor)
+    }
+
+    /// Recursively hash a subtree using rayon for parallelism.
+    /// Only called for full BODY_SIZE chunks where parallelism pays off.
+    /// Takes cursor as parameter to avoid self indirection in recursive calls.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[inline(always)]
+    fn hash_subtree_recursive_parallel_inner(data: &[u8], length: usize, cursor: usize) -> B256 {
+        debug_assert!(length.is_power_of_two());
+        debug_assert!(length >= SEGMENT_PAIR_LENGTH);
+
+        // Base case: 64 bytes (one segment pair)
         if length == SEGMENT_PAIR_LENGTH {
             let mut hasher = Keccak256::new();
             hasher.update(data);
@@ -204,16 +242,19 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         let (left, right) = data.split_at(half);
 
         // Check if right half is entirely beyond cursor (all zeros in buffer)
-        let (left_hash, right_hash) = if half >= self.cursor {
-            // Right side is all zeros
-            let left_hash = self.hash_subtree_parallel(left, half);
+        // cursor is relative to the start of this subtree
+        let (left_hash, right_hash) = if half >= cursor {
+            // Right side is all zeros - compute left only, use precomputed right
+            let left_hash = Self::hash_subtree_recursive_parallel_inner(left, half, cursor);
             let right_hash = ZERO_HASHES[Self::zero_tree_level(half)];
             (left_hash, right_hash)
         } else {
             // Both sides have data, use parallel execution
+            // Left cursor is capped at half (can't exceed subtree size)
+            // Right cursor is adjusted by half (relative to right subtree start)
             rayon::join(
-                || self.hash_subtree_parallel(left, half),
-                || self.hash_subtree_parallel(right, half),
+                || Self::hash_subtree_recursive_parallel_inner(left, half, half),
+                || Self::hash_subtree_recursive_parallel_inner(right, half, cursor - half),
             )
         };
 
@@ -224,7 +265,6 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     }
 
     /// Hash a subtree of exactly `length` bytes (must be power of 2, >= 64) - sequential version
-    #[cfg(target_arch = "wasm32")]
     #[inline(always)]
     fn hash_subtree_sequential(&self, data: &[u8], length: usize) -> B256 {
         debug_assert!(length.is_power_of_two());

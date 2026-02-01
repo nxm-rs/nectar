@@ -1,9 +1,6 @@
 #![allow(missing_docs)]
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use nectar_primitives::{
-    MAX_CHUNK_SIZE,
-    bmt::{Hasher, Prover},
-};
+use nectar_primitives::{DEFAULT_BODY_SIZE, DefaultHasher, bmt::Prover};
 use rand::Rng;
 use std::time::Duration;
 
@@ -15,8 +12,10 @@ pub fn proofs(c: &mut Criterion) {
     group.sample_size(50);
 
     // Create test data
-    let data: Vec<u8> = (0..MAX_CHUNK_SIZE).map(|_| rand::random::<u8>()).collect();
-    let mut hasher = Hasher::new();
+    let data: Vec<u8> = (0..DEFAULT_BODY_SIZE)
+        .map(|_| rand::random::<u8>())
+        .collect();
+    let mut hasher = DefaultHasher::new();
     hasher.set_span(data.len() as u64);
     hasher.update(&data);
     let root_hash = hasher.sum();
@@ -56,11 +55,12 @@ pub fn proofs(c: &mut Criterion) {
         let index = indexes[i];
         // Verify proof is valid before benchmarking
         assert!(
-            Hasher::verify_proof(proof, root_hash.as_slice()).expect("Failed to verify proof"),
+            DefaultHasher::verify_proof(proof, root_hash.as_slice())
+                .expect("Failed to verify proof"),
             "Verification failed for index {index}"
         );
         group.bench_with_input(BenchmarkId::new("verify_proof", index), &index, |b, _| {
-            b.iter(|| black_box(Hasher::verify_proof(proof, root_hash.as_slice())));
+            b.iter(|| black_box(DefaultHasher::verify_proof(proof, root_hash.as_slice())));
         });
     }
 
@@ -71,7 +71,7 @@ pub fn proofs(c: &mut Criterion) {
             let proof = hasher
                 .generate_proof(&data, index)
                 .expect("Failed to generate proof");
-            black_box(Hasher::verify_proof(&proof, root_hash.as_slice()))
+            black_box(DefaultHasher::verify_proof(&proof, root_hash.as_slice()))
         });
     });
 
@@ -83,7 +83,7 @@ pub fn proofs(c: &mut Criterion) {
             BenchmarkId::new("partial_data_proofs", size),
             &size,
             |b, _| {
-                let mut h = Hasher::new();
+                let mut h = DefaultHasher::new();
                 h.set_span(size as u64);
                 h.update(partial_data);
                 let partial_root = h.sum();
@@ -93,7 +93,7 @@ pub fn proofs(c: &mut Criterion) {
                     let proof = h
                         .generate_proof(partial_data, idx)
                         .expect("Failed to generate proof");
-                    black_box(Hasher::verify_proof(&proof, partial_root.as_slice()))
+                    black_box(DefaultHasher::verify_proof(&proof, partial_root.as_slice()))
                 });
             },
         );

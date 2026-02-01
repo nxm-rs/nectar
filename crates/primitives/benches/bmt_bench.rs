@@ -5,21 +5,23 @@ use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rand::{RngCore, rng};
 
-use nectar_primitives::bmt::{Hasher, MAX_DATA_LENGTH, Prover};
-use nectar_primitives::chunk::{ContentChunk, SingleOwnerChunk};
+use nectar_primitives::bmt::Prover;
+use nectar_primitives::{
+    DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk,
+};
 
 fn bench_bmt_hash(c: &mut Criterion) {
     let mut group = c.benchmark_group("bmt_hash");
 
-    // Test different data sizes (max is MAX_DATA_LENGTH = 4096)
-    for size in [100, 1000, 2048, 4096].iter() {
+    // Test power-of-2 aligned sizes (BMT rounds up to these internally)
+    for size in [64, 128, 256, 512, 1024, 2048, 4096].iter() {
         // Generate random data
         let mut data = vec![0u8; *size];
         rng().fill_bytes(&mut data);
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &data, |b, data| {
             b.iter(|| {
-                let mut hasher = Hasher::new();
+                let mut hasher = DefaultHasher::new();
                 hasher.set_span(data.len() as u64);
                 hasher.update(data);
                 hasher.sum()
@@ -34,13 +36,13 @@ fn bench_content_chunk_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("content_chunk");
 
     // Test different data sizes
-    for size in [100, 1000, 4000].iter() {
+    for size in [128, 1024, 4096].iter() {
         // Generate random data
         let mut data = vec![0u8; *size];
         rng().fill_bytes(&mut data);
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &data, |b, data| {
-            b.iter(|| ContentChunk::new(data.clone()).unwrap());
+            b.iter(|| DefaultContentChunk::new(data.clone()).unwrap());
         });
     }
 
@@ -51,11 +53,11 @@ fn bench_bmt_proof(c: &mut Criterion) {
     let mut group = c.benchmark_group("bmt_proof");
 
     // Generate full-size data
-    let mut data = vec![0u8; MAX_DATA_LENGTH];
+    let mut data = vec![0u8; DEFAULT_BODY_SIZE];
     rng().fill_bytes(&mut data);
 
     // Create hasher and calculate root hash
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     hasher.set_span(data.len() as u64);
     hasher.update(&data);
     let root_hash = hasher.sum();
@@ -70,7 +72,7 @@ fn bench_bmt_proof(c: &mut Criterion) {
 
     // Benchmark proof verification
     group.bench_function("verify", |b| {
-        b.iter(|| Hasher::verify_proof(&proof, root_hash.as_slice()).unwrap());
+        b.iter(|| DefaultHasher::verify_proof(&proof, root_hash.as_slice()).unwrap());
     });
 
     group.finish();
@@ -80,13 +82,13 @@ fn bench_large_update(c: &mut Criterion) {
     let mut group = c.benchmark_group("bmt_update");
 
     // Generate full-size data
-    let mut data = vec![0u8; MAX_DATA_LENGTH];
+    let mut data = vec![0u8; DEFAULT_BODY_SIZE];
     rng().fill_bytes(&mut data);
 
     // Benchmark single large update
     group.bench_function("single_large", |b| {
         b.iter(|| {
-            let mut hasher = Hasher::new();
+            let mut hasher = DefaultHasher::new();
             hasher.set_span(data.len() as u64);
             hasher.update(&data);
             hasher.sum()
@@ -96,7 +98,7 @@ fn bench_large_update(c: &mut Criterion) {
     // Benchmark multiple small updates
     group.bench_function("multiple_small", |b| {
         b.iter(|| {
-            let mut hasher = Hasher::new();
+            let mut hasher = DefaultHasher::new();
             hasher.set_span(data.len() as u64);
 
             // Split data into 32 chunks
@@ -125,14 +127,14 @@ fn bench_single_owner_chunk_creation(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
 
     // Test different data sizes
-    for size in [100, 1000, 4000].iter() {
+    for size in [128, 1024, 4096].iter() {
         // Generate random data and ID
         let mut data = vec![0u8; *size];
         rng().fill_bytes(&mut data);
         let id = B256::random();
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &data, |b, data| {
-            b.iter(|| SingleOwnerChunk::new(id, data.clone(), &signer).unwrap());
+            b.iter(|| DefaultSingleOwnerChunk::new(id, data.clone(), &signer).unwrap());
         });
     }
 
@@ -145,32 +147,32 @@ fn bench_chunk_deserialization(c: &mut Criterion) {
     // Create test chunks for deserialization
     let signer = PrivateKeySigner::random();
 
-    for size in [100, 1000, 4000].iter() {
+    for size in [128, 1024, 4096].iter() {
         let mut data = vec![0u8; *size];
         rng().fill_bytes(&mut data);
 
         // Create content chunk and serialize
-        let content_chunk = ContentChunk::new(data.clone()).unwrap();
+        let content_chunk = DefaultContentChunk::new(data.clone()).unwrap();
         let content_bytes: Bytes = content_chunk.into();
 
         group.bench_with_input(
             BenchmarkId::new("content_chunk", size),
             &content_bytes,
             |b, bytes| {
-                b.iter(|| ContentChunk::try_from(bytes.clone()).unwrap());
+                b.iter(|| DefaultContentChunk::try_from(bytes.clone()).unwrap());
             },
         );
 
         // Create single-owner chunk and serialize
         let id = B256::random();
-        let soc = SingleOwnerChunk::new(id, data.clone(), &signer).unwrap();
+        let soc = DefaultSingleOwnerChunk::new(id, data.clone(), &signer).unwrap();
         let soc_bytes: Bytes = soc.into();
 
         group.bench_with_input(
             BenchmarkId::new("single_owner_chunk", size),
             &soc_bytes,
             |b, bytes| {
-                b.iter(|| SingleOwnerChunk::try_from(bytes.clone()).unwrap());
+                b.iter(|| DefaultSingleOwnerChunk::try_from(bytes.clone()).unwrap());
             },
         );
     }
@@ -179,27 +181,102 @@ fn bench_chunk_deserialization(c: &mut Criterion) {
 }
 
 fn bench_bmt_zero_tree_optimization(c: &mut Criterion) {
-    let mut group = c.benchmark_group("bmt_zero_tree");
+    // Test 1: Partial data - real zero tree optimization
+    // This tests when we have small amounts of data and the rest of the 4096-byte
+    // buffer is zeros, triggering the ZERO_HASHES rollup optimization
+    {
+        let mut group = c.benchmark_group("bmt_partial_data");
 
-    // Test small data sizes to verify zero-tree optimization benefit
-    // The optimization kicks in when large portions of the buffer are zeros
-    let sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096];
+        // Small data sizes within a 4096-byte buffer
+        let sizes = [32, 64, 128, 256, 512, 1024, 2048];
 
-    for &size in &sizes {
-        let mut data = vec![0u8; size];
-        rng().fill_bytes(&mut data);
+        for &size in &sizes {
+            let mut data = vec![0u8; size];
+            rng().fill_bytes(&mut data);
 
-        group.bench_with_input(BenchmarkId::from_parameter(size), &data, |b, data| {
-            b.iter(|| {
-                let mut hasher = Hasher::new();
-                hasher.set_span(data.len() as u64);
-                hasher.update(data);
-                hasher.sum()
+            group.bench_with_input(BenchmarkId::from_parameter(size), &data, |b, data| {
+                b.iter(|| {
+                    let mut hasher = DefaultHasher::new();
+                    hasher.set_span(data.len() as u64);
+                    hasher.update(data);
+                    hasher.sum()
+                });
             });
-        });
+        }
+
+        group.finish();
     }
 
-    group.finish();
+    // Test 2: All-zero data - tests instant lookup optimization
+    // When data is entirely zeros, the result should be a pre-computed lookup
+    {
+        let mut group = c.benchmark_group("bmt_all_zeros");
+
+        let sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096];
+
+        for &size in &sizes {
+            let data = vec![0u8; size]; // All zeros
+
+            group.bench_with_input(BenchmarkId::from_parameter(size), &data, |b, data| {
+                b.iter(|| {
+                    let mut hasher = DefaultHasher::new();
+                    hasher.set_span(data.len() as u64);
+                    hasher.update(data);
+                    hasher.sum()
+                });
+            });
+        }
+
+        group.finish();
+    }
+
+    // Test 3: Compare partial vs full data at same sizes
+    // Shows the benefit of zero tree optimization vs hashing full random data
+    {
+        let mut group = c.benchmark_group("bmt_zero_tree_benefit");
+
+        // Compare: 100 bytes of real data vs 4096 bytes of real data
+        // Power-of-2 aligned sizes for meaningful comparison
+        let partial_sizes = [128, 512, 1024, 2048];
+
+        for &size in &partial_sizes {
+            let mut partial_data = vec![0u8; size];
+            rng().fill_bytes(&mut partial_data);
+
+            let mut full_data = vec![0u8; DEFAULT_BODY_SIZE];
+            rng().fill_bytes(&mut full_data);
+
+            // Benchmark partial data (benefits from zero tree)
+            group.bench_with_input(
+                BenchmarkId::new("partial", size),
+                &partial_data,
+                |b, data| {
+                    b.iter(|| {
+                        let mut hasher = DefaultHasher::new();
+                        hasher.set_span(data.len() as u64);
+                        hasher.update(data);
+                        hasher.sum()
+                    });
+                },
+            );
+
+            // Benchmark full 4096 bytes for comparison
+            group.bench_with_input(
+                BenchmarkId::new("full_4096", size),
+                &full_data,
+                |b, data| {
+                    b.iter(|| {
+                        let mut hasher = DefaultHasher::new();
+                        hasher.set_span(data.len() as u64);
+                        hasher.update(data);
+                        hasher.sum()
+                    });
+                },
+            );
+        }
+
+        group.finish();
+    }
 }
 
 criterion_group!(
