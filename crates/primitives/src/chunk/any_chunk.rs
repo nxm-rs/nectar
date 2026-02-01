@@ -5,6 +5,7 @@
 
 use bytes::Bytes;
 
+use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::error::Result;
 
 use super::chunk_type::ChunkType;
@@ -13,7 +14,7 @@ use super::single_owner::SingleOwnerChunk;
 use super::traits::{Chunk, ChunkAddress};
 use super::type_id::ChunkTypeId;
 
-/// Type-erased chunk for runtime polymorphism.
+/// Type-erased chunk for runtime polymorphism with configurable body size.
 ///
 /// This enum provides dynamic dispatch for chunks without requiring object-safe traits.
 /// Use this when you need to store heterogeneous chunk types in collections or pass
@@ -42,11 +43,11 @@ use super::type_id::ChunkTypeId;
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub enum AnyChunk {
+pub enum AnyChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     /// A content-addressed chunk (CAC).
-    Content(ContentChunk),
+    Content(ContentChunk<BODY_SIZE>),
     /// A single-owner chunk (SOC).
-    SingleOwner(SingleOwnerChunk),
+    SingleOwner(SingleOwnerChunk<BODY_SIZE>),
     /// A custom chunk type (for extensibility).
     ///
     /// This variant allows storing chunks of types not known at compile time.
@@ -61,7 +62,7 @@ pub enum AnyChunk {
     },
 }
 
-impl AnyChunk {
+impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     /// Get the address of this chunk.
     pub fn address(&self) -> &ChunkAddress {
         match self {
@@ -156,7 +157,7 @@ impl AnyChunk {
     }
 
     /// Get a reference to the contained ContentChunk, if this is one.
-    pub fn as_content(&self) -> Option<&ContentChunk> {
+    pub fn as_content(&self) -> Option<&ContentChunk<BODY_SIZE>> {
         match self {
             Self::Content(c) => Some(c),
             _ => None,
@@ -164,7 +165,7 @@ impl AnyChunk {
     }
 
     /// Get a reference to the contained SingleOwnerChunk, if this is one.
-    pub fn as_single_owner(&self) -> Option<&SingleOwnerChunk> {
+    pub fn as_single_owner(&self) -> Option<&SingleOwnerChunk<BODY_SIZE>> {
         match self {
             Self::SingleOwner(c) => Some(c),
             _ => None,
@@ -172,7 +173,7 @@ impl AnyChunk {
     }
 
     /// Convert into the contained ContentChunk, if this is one.
-    pub fn into_content(self) -> Option<ContentChunk> {
+    pub fn into_content(self) -> Option<ContentChunk<BODY_SIZE>> {
         match self {
             Self::Content(c) => Some(c),
             _ => None,
@@ -180,7 +181,7 @@ impl AnyChunk {
     }
 
     /// Convert into the contained SingleOwnerChunk, if this is one.
-    pub fn into_single_owner(self) -> Option<SingleOwnerChunk> {
+    pub fn into_single_owner(self) -> Option<SingleOwnerChunk<BODY_SIZE>> {
         match self {
             Self::SingleOwner(c) => Some(c),
             _ => None,
@@ -188,14 +189,14 @@ impl AnyChunk {
     }
 }
 
-impl From<ContentChunk> for AnyChunk {
-    fn from(chunk: ContentChunk) -> Self {
+impl<const BODY_SIZE: usize> From<ContentChunk<BODY_SIZE>> for AnyChunk<BODY_SIZE> {
+    fn from(chunk: ContentChunk<BODY_SIZE>) -> Self {
         Self::Content(chunk)
     }
 }
 
-impl From<SingleOwnerChunk> for AnyChunk {
-    fn from(chunk: SingleOwnerChunk) -> Self {
+impl<const BODY_SIZE: usize> From<SingleOwnerChunk<BODY_SIZE>> for AnyChunk<BODY_SIZE> {
+    fn from(chunk: SingleOwnerChunk<BODY_SIZE>) -> Self {
         Self::SingleOwner(chunk)
     }
 }
@@ -205,12 +206,16 @@ mod tests {
     use super::super::traits::Chunk;
     use super::*;
 
+    type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
+    type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
+    type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
+
     #[test]
     fn test_content_chunk_conversion() {
-        let content = ContentChunk::new(&b"hello world"[..]).unwrap();
+        let content = DefaultContentChunk::new(&b"hello world"[..]).unwrap();
         let address = *content.address();
 
-        let any: AnyChunk = content.into();
+        let any: DefaultAnyChunk = content.into();
 
         assert!(any.is_content());
         assert!(!any.is_single_owner());
@@ -221,10 +226,10 @@ mod tests {
 
     #[test]
     fn test_as_content() {
-        let content = ContentChunk::new(&b"test data"[..]).unwrap();
+        let content = DefaultContentChunk::new(&b"test data"[..]).unwrap();
         let expected_addr = *content.address();
 
-        let any: AnyChunk = content.into();
+        let any: DefaultAnyChunk = content.into();
         let recovered = any.as_content().unwrap();
 
         assert_eq!(*recovered.address(), expected_addr);
@@ -232,10 +237,10 @@ mod tests {
 
     #[test]
     fn test_into_content() {
-        let content = ContentChunk::new(&b"test data"[..]).unwrap();
+        let content = DefaultContentChunk::new(&b"test data"[..]).unwrap();
         let expected_addr = *content.address();
 
-        let any: AnyChunk = content.into();
+        let any: DefaultAnyChunk = content.into();
         let recovered = any.into_content().unwrap();
 
         assert_eq!(*recovered.address(), expected_addr);
@@ -243,16 +248,16 @@ mod tests {
 
     #[test]
     fn test_is_methods() {
-        let content: AnyChunk = ContentChunk::new(&b"test"[..]).unwrap().into();
+        let content: DefaultAnyChunk = DefaultContentChunk::new(&b"test"[..]).unwrap().into();
 
-        assert!(content.is::<ContentChunk>());
-        assert!(!content.is::<SingleOwnerChunk>());
+        assert!(content.is::<DefaultContentChunk>());
+        assert!(!content.is::<DefaultSingleOwnerChunk>());
     }
 
     #[test]
     fn test_clone() {
-        let content = ContentChunk::new(&b"test"[..]).unwrap();
-        let any: AnyChunk = content.clone().into();
+        let content = DefaultContentChunk::new(&b"test"[..]).unwrap();
+        let any: DefaultAnyChunk = content.clone().into();
         let cloned = any.clone();
 
         assert_eq!(any.address(), cloned.address());

@@ -8,28 +8,21 @@ use std::marker::PhantomData;
 use std::sync::OnceLock;
 
 use crate::SwarmAddress;
-use crate::bmt::{Hasher, MAX_DATA_LENGTH};
+use crate::bmt::{DEFAULT_BODY_SIZE, Hasher};
 use crate::chunk::error::{self, ChunkError};
 use crate::error::{PrimitivesError, Result};
 
 const SPAN_SIZE: usize = std::mem::size_of::<u64>();
 
-/// A BMT body, which represents the data and metadata for a chunk.
-///
-/// This includes the span (size) of the data and the raw data itself.
-/// It forms the basis for both content-addressed and single-owner chunks.
+/// A BMT body with configurable maximum size.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct BmtBody {
-    /// The span of the BMT body (size of data in bytes)
+pub struct BmtBody<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     span: u64,
-    /// The raw data content
     data: Bytes,
-    /// Cache for the BMT hash
     cached_hash: OnceLock<SwarmAddress>,
 }
 
-impl BmtBody {
-    // Private constructor for internal use
+impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
     fn new_unchecked(span: u64, data: Bytes) -> Self {
         Self {
             span,
@@ -39,7 +32,7 @@ impl BmtBody {
     }
 
     /// Create a new builder for BMTBody (crate-internal)
-    pub(crate) fn builder() -> BmtBodyBuilder<Initial> {
+    pub(crate) fn builder() -> BmtBodyBuilder<BODY_SIZE, Initial> {
         BmtBodyBuilder::default()
     }
 
@@ -63,30 +56,28 @@ impl BmtBody {
         *self.cached_hash.get_or_init(|| self.calculate_hash())
     }
 
-    // Calculate the hash using the BMT hasher
     fn calculate_hash(&self) -> SwarmAddress {
-        let mut hasher = Hasher::new();
+        let mut hasher: Hasher<BODY_SIZE> = Hasher::new();
         hasher.set_span(self.span);
         hasher.update(self.data.as_ref());
         hasher.sum().into()
     }
 }
 
-/// Validates the data size and returns the data as Bytes.
-fn validate_data(data: impl Into<Bytes>) -> error::Result<Bytes> {
+fn validate_data<const BODY_SIZE: usize>(data: impl Into<Bytes>) -> error::Result<Bytes> {
     let data = data.into();
-    if data.len() > MAX_DATA_LENGTH {
+    if data.len() > BODY_SIZE {
         return Err(ChunkError::invalid_size(
             "data exceeds maximum chunk size",
-            MAX_DATA_LENGTH,
+            BODY_SIZE,
             data.len(),
         ));
     }
     Ok(data)
 }
 
-impl From<BmtBody> for Bytes {
-    fn from(body: BmtBody) -> Self {
+impl<const BODY_SIZE: usize> From<BmtBody<BODY_SIZE>> for Bytes {
+    fn from(body: BmtBody<BODY_SIZE>) -> Self {
         let mut bytes = BytesMut::with_capacity(body.size());
         bytes.extend(&body.span.to_le_bytes());
         bytes.extend(body.data());
@@ -94,7 +85,7 @@ impl From<BmtBody> for Bytes {
     }
 }
 
-impl TryFrom<Bytes> for BmtBody {
+impl<const BODY_SIZE: usize> TryFrom<Bytes> for BmtBody<BODY_SIZE> {
     type Error = PrimitivesError;
 
     fn try_from(mut buf: Bytes) -> Result<Self> {
@@ -107,19 +98,15 @@ impl TryFrom<Bytes> for BmtBody {
             .into());
         }
 
-        // Extract span bytes
         let span_bytes = buf.split_to(SPAN_SIZE);
-        // This is safe because we checked that the buffer has at least SPAN_SIZE bytes
         let span = u64::from_le_bytes(span_bytes.as_ref().try_into().unwrap());
-
-        // Remaining bytes are the data
         let data = buf;
 
         BmtBody::builder().with_span(span).with_data(data)?.build()
     }
 }
 
-impl TryFrom<&[u8]> for BmtBody {
+impl<const BODY_SIZE: usize> TryFrom<&[u8]> for BmtBody<BODY_SIZE> {
     type Error = PrimitivesError;
 
     fn try_from(buf: &[u8]) -> Result<Self> {
@@ -144,16 +131,13 @@ impl BuilderState for ReadyToBuild {}
 
 /// Builder for BMTBody with type state pattern (crate-internal)
 #[derive(Debug)]
-pub(crate) struct BmtBodyBuilder<S: BuilderState = Initial> {
-    /// The span to use for the body
+pub(crate) struct BmtBodyBuilder<const BODY_SIZE: usize, S: BuilderState = Initial> {
     span: Option<u64>,
-    /// The data to use for the body
     data: Option<Bytes>,
-    /// Marker for the builder state
     _state: PhantomData<S>,
 }
 
-impl Default for BmtBodyBuilder<Initial> {
+impl<const BODY_SIZE: usize> Default for BmtBodyBuilder<BODY_SIZE, Initial> {
     fn default() -> Self {
         Self {
             span: None,
@@ -163,9 +147,8 @@ impl Default for BmtBodyBuilder<Initial> {
     }
 }
 
-impl BmtBodyBuilder<Initial> {
-    /// Set the span for this body and transition to WithSpan state
-    pub(crate) fn with_span(mut self, span: u64) -> BmtBodyBuilder<WithSpan> {
+impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, Initial> {
+    pub(crate) fn with_span(mut self, span: u64) -> BmtBodyBuilder<BODY_SIZE, WithSpan> {
         self.span = Some(span);
         BmtBodyBuilder {
             span: self.span,
@@ -174,12 +157,11 @@ impl BmtBodyBuilder<Initial> {
         }
     }
 
-    /// Initialize from data with automatically calculated span
     pub(crate) fn auto_from_data(
         mut self,
         data: impl Into<Bytes>,
-    ) -> Result<BmtBodyBuilder<ReadyToBuild>> {
-        let data = validate_data(data)?;
+    ) -> Result<BmtBodyBuilder<BODY_SIZE, ReadyToBuild>> {
+        let data = validate_data::<BODY_SIZE>(data)?;
         let len = data.len();
         self.data = Some(data);
         self.span = Some(len as u64);
@@ -192,18 +174,17 @@ impl BmtBodyBuilder<Initial> {
     }
 }
 
-impl BmtBodyBuilder<WithSpan> {
-    /// Set the data for this body and transition to ReadyToBuild state
+impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, WithSpan> {
     pub(crate) fn with_data(
         mut self,
         data: impl Into<Bytes>,
-    ) -> Result<BmtBodyBuilder<ReadyToBuild>> {
-        let data = validate_data(data)?;
+    ) -> Result<BmtBodyBuilder<BODY_SIZE, ReadyToBuild>> {
+        let data = validate_data::<BODY_SIZE>(data)?;
         let data_len = data.len();
         self.data = Some(data);
 
         let span = self.span.unwrap();
-        if span <= MAX_DATA_LENGTH as u64 && data_len != span as usize {
+        if span <= BODY_SIZE as u64 && data_len != span as usize {
             return Err(ChunkError::invalid_size(
                 "span does not match data size",
                 span as usize,
@@ -220,10 +201,8 @@ impl BmtBodyBuilder<WithSpan> {
     }
 }
 
-impl BmtBodyBuilder<ReadyToBuild> {
-    /// Build the final BMTBody
-    pub(crate) fn build(self) -> Result<BmtBody> {
-        // This is safe because it is only possible to get here with valid data and span
+impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, ReadyToBuild> {
+    pub(crate) fn build(self) -> Result<BmtBody<BODY_SIZE>> {
         Ok(BmtBody::new_unchecked(
             self.span.unwrap(),
             self.data.unwrap(),
@@ -232,17 +211,14 @@ impl BmtBodyBuilder<ReadyToBuild> {
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for BmtBody {
+impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for BmtBody<BODY_SIZE> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // Generate a random span value
         let span = u64::arbitrary(u)?;
-
-        // Ensure data size does not exceed MAX_DATA_LENGTH
-        let data_len: usize = u.int_in_range(0..=MAX_DATA_LENGTH)?;
+        let data_len: usize = u.int_in_range(0..=BODY_SIZE)?;
         let mut buf = vec![0; data_len];
         u.fill_buffer(&mut buf)?;
 
-        Ok(BmtBodyBuilder::default()
+        Ok(BmtBodyBuilder::<BODY_SIZE, _>::default()
             .with_span(span)
             .with_data(buf)
             .unwrap()
@@ -257,35 +233,33 @@ mod tests {
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
 
-    // Define strategies for generating BMTBody using the Arbitrary implementation
-    fn bmt_body_strategy() -> impl Strategy<Value = BmtBody> {
-        arb::<BmtBody>()
+    type DefaultBmtBody = BmtBody<DEFAULT_BODY_SIZE>;
+
+    fn bmt_body_strategy() -> impl Strategy<Value = DefaultBmtBody> {
+        arb::<DefaultBmtBody>()
     }
 
-    fn create_bmt_body(span: u64, data: Vec<u8>) -> Result<BmtBody> {
-        BmtBody::builder().with_span(span).with_data(data)?.build()
+    fn create_bmt_body(span: u64, data: Vec<u8>) -> Result<DefaultBmtBody> {
+        DefaultBmtBody::builder()
+            .with_span(span)
+            .with_data(data)?
+            .build()
     }
 
     proptest! {
         #[test]
         fn test_bmt_body_properties(body in bmt_body_strategy()) {
-            // Test that span is within valid range
             prop_assert!(body.span() <= u64::MAX);
-
-            // Test that data size is within valid range
-            prop_assert!(body.data().len() <= MAX_DATA_LENGTH);
-
-            // Test that total size is correct
+            prop_assert!(body.data().len() <= DEFAULT_BODY_SIZE);
             prop_assert_eq!(body.size(), SPAN_SIZE + body.data().len());
 
-            // Test serialisation / deserialisation
             let bytes: Bytes = body.clone().into();
-            let decoded = BmtBody::try_from(bytes).unwrap();
+            let decoded = DefaultBmtBody::try_from(bytes).unwrap();
             prop_assert_eq!(body, decoded);
         }
 
         #[test]
-        fn test_bmt_body_size_validation(span in 0..=u64::MAX, data_len in MAX_DATA_LENGTH + 1..=MAX_DATA_LENGTH * 2) {
+        fn test_bmt_body_size_validation(span in 0..=u64::MAX, data_len in DEFAULT_BODY_SIZE + 1..=DEFAULT_BODY_SIZE * 2) {
             let data = vec![0; data_len];
             let result = create_bmt_body(span, data);
             assert!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))));
@@ -294,14 +268,14 @@ mod tests {
         #[test]
         fn test_bmt_body_builder_properties(
             span in 0..=u64::MAX,
-            data_len in 0..=MAX_DATA_LENGTH,
+            data_len in 0..=DEFAULT_BODY_SIZE,
         ) {
             let data = vec![0; data_len];
-            let builder = BmtBodyBuilder::default()
+            let builder = BmtBodyBuilder::<DEFAULT_BODY_SIZE, _>::default()
                 .with_span(span)
                 .with_data(data.clone())?;
 
-            let body: BmtBody = builder.build().unwrap();
+            let body = builder.build().unwrap();
             assert_eq!(body.span(), span);
             assert_eq!(body.data(), &data);
             prop_assert_eq!(body.size(), SPAN_SIZE + data.len());
@@ -309,15 +283,15 @@ mod tests {
 
         #[test]
         fn test_span_data_length_mismatch(
-            span in 0..=MAX_DATA_LENGTH as u64,
-            data_len in 0..=MAX_DATA_LENGTH,
+            span in 0..=DEFAULT_BODY_SIZE as u64,
+            data_len in 0..=DEFAULT_BODY_SIZE,
         ) {
             let data = vec![0; data_len];
-            let result = BmtBody::builder()
+            let result = DefaultBmtBody::builder()
                 .with_span(span)
                 .with_data(data.clone());
 
-            if span <= MAX_DATA_LENGTH as u64 && data.len() != span as usize {
+            if span <= DEFAULT_BODY_SIZE as u64 && data.len() != span as usize {
                 assert!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))));
             } else {
                 assert!(matches!(result, Ok(_)));
@@ -339,10 +313,10 @@ mod tests {
     #[test]
     fn test_bmt_body_from_bytes() {
         let mut input = Vec::new();
-        input.extend_from_slice(&5u64.to_le_bytes()); // Span
-        input.extend_from_slice(&[1, 2, 3, 4, 5]); // Data
+        input.extend_from_slice(&5u64.to_le_bytes());
+        input.extend_from_slice(&[1, 2, 3, 4, 5]);
 
-        let body = BmtBody::try_from(Bytes::from(input)).unwrap();
+        let body = DefaultBmtBody::try_from(Bytes::from(input)).unwrap();
         assert_eq!(body.span(), 5);
         assert_eq!(body.data(), &[1, 2, 3, 4, 5].as_slice());
     }
@@ -358,16 +332,16 @@ mod tests {
 
     #[test]
     fn test_size_validation() {
-        let result = BmtBody::builder()
+        let result = DefaultBmtBody::builder()
             .with_span(42)
-            .with_data(vec![0; MAX_DATA_LENGTH + 1]);
+            .with_data(vec![0; DEFAULT_BODY_SIZE + 1]);
 
         assert!(matches!(
             result,
             Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))
         ));
 
-        let result = BmtBody::try_from(vec![0; MAX_DATA_LENGTH + 9].as_slice());
+        let result = DefaultBmtBody::try_from(vec![0; DEFAULT_BODY_SIZE + 9].as_slice());
         assert!(matches!(
             result,
             Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))

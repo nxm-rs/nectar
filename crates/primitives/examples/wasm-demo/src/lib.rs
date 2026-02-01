@@ -7,8 +7,9 @@ use std::ops::Deref;
 use alloy_primitives::{hex, Address, B256};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
-use nectar_primitives::bmt::Hasher;
-use nectar_primitives::{Chunk, ChunkAddress, ContentChunk, SingleOwnerChunk};
+use nectar_primitives::{
+    Chunk, ChunkAddress, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk,
+};
 use wasm_bindgen::prelude::*;
 
 // Add SVG generator modules
@@ -56,7 +57,7 @@ pub fn calculate_bmt_hash(text: &str, span: u32) -> HashResult {
     set_panic_hook();
 
     // Create a BMT hasher
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
 
     // Set the specified span (convert to u64)
     hasher.set_span(span as u64);
@@ -99,7 +100,7 @@ pub fn benchmark_hash(size: u32, iterations: u32) -> f64 {
 
     // Run the hash multiple times
     for _ in 0..iterations {
-        let mut hasher = Hasher::new();
+        let mut hasher = DefaultHasher::new();
         hasher.set_span(size as u64);
         hasher.update(&data);
         let _result = hasher.sum();
@@ -144,7 +145,7 @@ pub fn benchmark_hash_with_random_data(data: &[u8], chunk_size: u32, iterations:
         let chunk = &data[offset..offset + chunk_size];
 
         // Create a new hasher and hash the chunk
-        let mut hasher = Hasher::new();
+        let mut hasher = DefaultHasher::new();
         hasher.set_span(chunk_size as u64);
         hasher.update(chunk);
         let _result = hasher.sum();
@@ -756,7 +757,7 @@ pub fn create_content_chunk(data: &[u8]) -> Result<ContentChunkResult, JsValue> 
     set_panic_hook();
 
     // Create the content chunk
-    let chunk = match ContentChunk::new(data.to_vec()) {
+    let chunk = match DefaultContentChunk::new(data.to_vec()) {
         Ok(chunk) => chunk,
         Err(e) => {
             return Err(JsValue::from_str(&format!(
@@ -834,7 +835,7 @@ pub fn create_single_owner_chunk(
     };
 
     // Create the single owner chunk
-    let chunk = match SingleOwnerChunk::new(chunk_id, data.to_vec(), &signer) {
+    let chunk = match DefaultSingleOwnerChunk::new(chunk_id, data.to_vec(), &signer) {
         Ok(chunk) => chunk,
         Err(e) => {
             return Err(JsValue::from_str(&format!(
@@ -898,8 +899,8 @@ pub fn analyze_chunk(
     let expected = ChunkAddress::new(address_bytes);
 
     // Try to parse as ContentChunk
-    let content_result = ContentChunk::try_from(chunk_data);
-    let single_owner_result = SingleOwnerChunk::try_from(chunk_data);
+    let content_result = DefaultContentChunk::try_from(chunk_data);
+    let single_owner_result = DefaultSingleOwnerChunk::try_from(chunk_data);
 
     // Prioritize any successful parse that matches the expected address
     match (content_result, single_owner_result) {

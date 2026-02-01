@@ -1,6 +1,6 @@
 //! Tests for the Binary Merkle Tree implementation.
 
-use crate::bmt::constants::PROOF_LENGTH;
+use crate::bmt::constants::{DEFAULT_BODY_SIZE, PROOF_LENGTH};
 
 use super::*;
 use alloy_primitives::{
@@ -11,12 +11,14 @@ use digest::{Digest, FixedOutputReset};
 use proof::Prover;
 use rand::Rng;
 
+type DefaultHasher = Hasher<DEFAULT_BODY_SIZE>;
+
 // Original tests from mod.rs updated for new API
 #[test]
 fn test_concurrent_simple() {
     let data: [u8; 3] = [1, 2, 3];
 
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     hasher.set_span(data.len() as u64);
 
     // Update with data
@@ -34,16 +36,18 @@ fn test_concurrent_simple() {
 #[test]
 fn test_concurrent_fullsize() {
     // Use a random seed for consistent results
-    let data: Vec<u8> = (0..MAX_DATA_LENGTH).map(|_| rand::random::<u8>()).collect();
+    let data: Vec<u8> = (0..DEFAULT_BODY_SIZE)
+        .map(|_| rand::random::<u8>())
+        .collect();
 
     // Hash with the new hasher
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     hasher.set_span(data.len() as u64);
     hasher.update(&data);
     let result1 = hasher.sum();
 
     // Hash again - should get same result
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     hasher.set_span(data.len() as u64);
     hasher.update(&data);
     let result2 = hasher.sum();
@@ -53,12 +57,12 @@ fn test_concurrent_fullsize() {
 
 #[test]
 fn test_hasher_empty_data() {
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     hasher.set_span(0);
     let result = hasher.sum();
 
     // Create a second hasher to verify deterministic result for empty data
-    let mut hasher2 = Hasher::new();
+    let mut hasher2 = DefaultHasher::new();
     hasher2.set_span(0);
     let result2 = hasher2.sum();
 
@@ -68,20 +72,22 @@ fn test_hasher_empty_data() {
 #[test]
 fn test_sync_hasher_correctness() {
     let mut rng = rand::rng();
-    let data: Vec<u8> = (0..MAX_DATA_LENGTH).map(|_| rand::random::<u8>()).collect();
+    let data: Vec<u8> = (0..DEFAULT_BODY_SIZE)
+        .map(|_| rand::random::<u8>())
+        .collect();
 
     // Test multiple sub-slices of the data
     let mut start = 0;
     while start < data.len() {
         let slice_len = std::cmp::min(1 + rng.random_range(0..=5), data.len() - start);
 
-        let mut hasher = Hasher::new();
+        let mut hasher = DefaultHasher::new();
         hasher.set_span(slice_len as u64);
         hasher.update(&data[..slice_len]);
         let result = hasher.sum();
 
         // Verify the hash is consistent
-        let mut hasher2 = Hasher::new();
+        let mut hasher2 = DefaultHasher::new();
         hasher2.set_span(slice_len as u64);
         hasher2.update(&data[..slice_len]);
         let result2 = hasher2.sum();
@@ -94,7 +100,7 @@ fn test_sync_hasher_correctness() {
 
 #[test]
 fn test_bmt_hasher_with_prefix() {
-    let mut hasher1 = Hasher::new();
+    let mut hasher1 = DefaultHasher::new();
     hasher1.set_span(11);
     hasher1.prefix_with(b"prefix-");
 
@@ -103,7 +109,7 @@ fn test_bmt_hasher_with_prefix() {
     let result_with_prefix = hasher1.sum();
 
     // Create a new hasher without prefix
-    let mut hasher2 = Hasher::new();
+    let mut hasher2 = DefaultHasher::new();
     hasher2.set_span(11);
     hasher2.update(data);
     let result_without_prefix = hasher2.sum();
@@ -114,11 +120,11 @@ fn test_bmt_hasher_with_prefix() {
 
 #[test]
 fn test_bmt_hasher_large_data() {
-    let mut hasher = Hasher::new();
-    hasher.set_span(MAX_DATA_LENGTH as u64);
+    let mut hasher = DefaultHasher::new();
+    hasher.set_span(DEFAULT_BODY_SIZE as u64);
 
-    // Create data exactly the size of BMT_MAX_DATA_LENGTH
-    let data = vec![0x42; MAX_DATA_LENGTH];
+    // Create data exactly the size of BMT_DEFAULT_BODY_SIZE
+    let data = vec![0x42; DEFAULT_BODY_SIZE];
     hasher.update(&data);
     let result = hasher.sum();
 
@@ -131,7 +137,7 @@ fn test_bmt_hasher_large_data() {
 #[test]
 fn test_proof_generation_and_verification() {
     let data = b"hello world, this is a test for proof generation and verification";
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
 
     // Set the span and update the data
     hasher.set_span(data.len() as u64);
@@ -145,18 +151,18 @@ fn test_proof_generation_and_verification() {
 
     // Verify the proof
     let is_valid =
-        Hasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
+        DefaultHasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
 
     assert!(is_valid, "Proof verification should succeed");
 }
 
 #[test]
 fn test_proof_correctness() {
-    let mut buf = vec![0u8; MAX_DATA_LENGTH];
+    let mut buf = vec![0u8; DEFAULT_BODY_SIZE];
     let data = b"hello world";
     buf[..data.len()].copy_from_slice(data);
 
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     let span = buf.len() as u64;
     hasher.set_span(span);
     hasher.update(&buf);
@@ -210,7 +216,7 @@ fn test_proof_correctness() {
 
     // Test proof verification
     let is_valid =
-        Hasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
+        DefaultHasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
 
     assert!(is_valid, "Proof verification should succeed");
 
@@ -234,7 +240,7 @@ fn test_proof_correctness() {
         &rightmost_proof.proof_segments,
     );
 
-    let is_valid = Hasher::verify_proof(&rightmost_proof, root_hash.as_slice())
+    let is_valid = DefaultHasher::verify_proof(&rightmost_proof, root_hash.as_slice())
         .expect("Failed to verify rightmost proof");
     assert!(is_valid, "Rightmost proof verification should succeed");
 
@@ -255,7 +261,7 @@ fn test_proof_correctness() {
 
     verify_segments(&expected_middle_segments, &middle_proof.proof_segments);
 
-    let is_valid = Hasher::verify_proof(&middle_proof, root_hash.as_slice())
+    let is_valid = DefaultHasher::verify_proof(&middle_proof, root_hash.as_slice())
         .expect("Failed to verify middle proof");
     assert!(is_valid, "Middle proof verification should succeed");
 }
@@ -266,10 +272,10 @@ fn test_digest_trait_methods() {
     let data = b"test data";
 
     // Using static method
-    let hash1 = Hasher::digest(data);
+    let hash1 = DefaultHasher::digest(data);
 
     // Using instance methods
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     hasher.update(data);
     let hash2 = hasher.finalize_fixed_reset();
 
@@ -287,11 +293,11 @@ fn test_digest_trait_methods() {
 #[test]
 fn test_root_hash_calculation() {
     // This test is based on the proof.rs test_root_hash_calculation test
-    let mut buf = vec![0u8; MAX_DATA_LENGTH];
+    let mut buf = vec![0u8; DEFAULT_BODY_SIZE];
     let data = b"hello world";
     buf[..data.len()].copy_from_slice(data);
 
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     hasher.set_span(buf.len() as u64);
     hasher.update(&buf);
     let expected_root_hash = hasher.sum();
@@ -302,7 +308,7 @@ fn test_root_hash_calculation() {
         .expect("Failed to generate proof");
 
     // Verify the proof against the root hash
-    let is_valid = Hasher::verify_proof(&proof, expected_root_hash.as_slice())
+    let is_valid = DefaultHasher::verify_proof(&proof, expected_root_hash.as_slice())
         .expect("Failed to verify proof");
     assert!(is_valid, "Proof verification should succeed");
 }
@@ -310,10 +316,10 @@ fn test_root_hash_calculation() {
 #[test]
 fn test_proof() {
     // Initialize a buffer with random data
-    let mut buf = vec![0u8; MAX_DATA_LENGTH];
+    let mut buf = vec![0u8; DEFAULT_BODY_SIZE];
     rand::rng().fill(&mut buf[..]);
 
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     hasher.set_span(buf.len() as u64);
     hasher.update(&buf);
     let root_hash = hasher.sum();
@@ -327,8 +333,8 @@ fn test_proof() {
             .expect("Failed to generate proof");
 
         // Verify the proof
-        let is_valid =
-            Hasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
+        let is_valid = DefaultHasher::verify_proof(&proof, root_hash.as_slice())
+            .expect("Failed to verify proof");
 
         assert!(
             is_valid,
@@ -340,8 +346,8 @@ fn test_proof() {
 
 #[test]
 fn test_excess_data_ignored() {
-    // Create data that is exactly MAX_DATA_LENGTH
-    let exact_data: Vec<u8> = (0..MAX_DATA_LENGTH).map(|i| (i % 256) as u8).collect();
+    // Create data that is exactly DEFAULT_BODY_SIZE
+    let exact_data: Vec<u8> = (0..DEFAULT_BODY_SIZE).map(|i| (i % 256) as u8).collect();
 
     // Create data that exceeds the maximum by 100 bytes
     let mut excess_data = exact_data.clone();
@@ -350,25 +356,25 @@ fn test_excess_data_ignored() {
     let excess_len = excess_data.len() as u64;
 
     // Hash with exact data (using excess length as span)
-    let mut hasher1 = Hasher::new();
+    let mut hasher1 = DefaultHasher::new();
     hasher1.set_span(excess_len);
     hasher1.update(&exact_data);
     let result1 = hasher1.sum();
 
     // Hash with excess data
-    let mut hasher2 = Hasher::new();
+    let mut hasher2 = DefaultHasher::new();
     hasher2.set_span(excess_len);
     hasher2.update(&excess_data);
     let result2 = hasher2.sum();
 
-    // Assert that only the first MAX_DATA_LENGTH bytes were considered
+    // Assert that only the first DEFAULT_BODY_SIZE bytes were considered
     assert_eq!(
         result1, result2,
         "Excess data should be ignored in hash calculation"
     );
 
     // Test incremental updates
-    let mut hasher3 = Hasher::new();
+    let mut hasher3 = DefaultHasher::new();
     hasher3.set_span(exact_data.len() as u64);
 
     // Add exact data first
@@ -386,7 +392,7 @@ fn test_excess_data_ignored() {
     );
 
     // Test with Write trait
-    let mut hasher4 = Hasher::new();
+    let mut hasher4 = DefaultHasher::new();
     hasher4.set_span(exact_data.len() as u64);
 
     // Write exact data
@@ -408,13 +414,13 @@ fn test_excess_data_ignored() {
 fn test_write_returns_actual_bytes_written() {
     use std::io::Write;
 
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
 
     // Fill buffer completely
-    let data = vec![0x42; MAX_DATA_LENGTH];
+    let data = vec![0x42; DEFAULT_BODY_SIZE];
     let written = hasher.write(&data).unwrap();
     assert_eq!(
-        written, MAX_DATA_LENGTH,
+        written, DEFAULT_BODY_SIZE,
         "Should report all bytes written when buffer has space"
     );
 
@@ -423,18 +429,18 @@ fn test_write_returns_actual_bytes_written() {
     assert_eq!(more, 0, "Should return 0 when buffer is full");
 
     // Verify we can still compute the hash
-    hasher.set_span(MAX_DATA_LENGTH as u64);
+    hasher.set_span(DEFAULT_BODY_SIZE as u64);
     let _hash = hasher.sum();
 
     // Test partial write
-    let mut hasher2 = Hasher::new();
+    let mut hasher2 = DefaultHasher::new();
 
     // Write less than full
-    let partial_data = vec![0x42; MAX_DATA_LENGTH - 50];
+    let partial_data = vec![0x42; DEFAULT_BODY_SIZE - 50];
     let written = hasher2.write(&partial_data).unwrap();
     assert_eq!(
         written,
-        MAX_DATA_LENGTH - 50,
+        DEFAULT_BODY_SIZE - 50,
         "Should report all bytes written for partial fill"
     );
 

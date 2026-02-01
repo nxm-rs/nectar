@@ -8,8 +8,9 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
 use bytes::Bytes;
 
-use nectar_primitives::bmt::{Hasher, Prover};
-use nectar_primitives::chunk::{BmtChunk, Chunk, ContentChunk, SingleOwnerChunk};
+use nectar_primitives::bmt::Prover;
+use nectar_primitives::chunk::{BmtChunk, Chunk};
+use nectar_primitives::{DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Nectar Primitives Example");
@@ -48,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn content_chunk_example() -> Result<(), Box<dyn std::error::Error>> {
     // Create a content-addressed chunk directly
     let data = b"This is a test of the content-addressed chunk system.".to_vec();
-    let chunk = ContentChunk::new(data)?;
+    let chunk = DefaultContentChunk::new(data)?;
 
     println!("Created content chunk:");
     println!("  - Data: \"{}\"", String::from_utf8_lossy(chunk.data()));
@@ -61,7 +62,7 @@ fn content_chunk_example() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nSerialized to {} bytes", bytes.len());
 
     // Deserialize
-    let parsed = ContentChunk::try_from(bytes)?;
+    let parsed = DefaultContentChunk::try_from(bytes)?;
     println!("Deserialized successfully:");
     println!("  - Address: {}", parsed.address());
 
@@ -72,7 +73,7 @@ fn content_chunk_example() -> Result<(), Box<dyn std::error::Error>> {
     // Create with a pre-computed address
     let address = *chunk.address(); // Pretend we know this in advance
     let data_copy = chunk.data().clone();
-    let chunk_with_address = ContentChunk::with_address(data_copy, address)?;
+    let chunk_with_address = DefaultContentChunk::with_address(data_copy, address)?;
     println!("\nCreated chunk with pre-computed address:");
     println!("  - Address: {}", chunk_with_address.address());
 
@@ -93,7 +94,7 @@ fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn st
 
     // Create a single-owner chunk
     let data = b"This chunk is owned by a specific account.".to_vec();
-    let chunk = SingleOwnerChunk::new(id, data, wallet)?;
+    let chunk = DefaultSingleOwnerChunk::new(id, data, wallet)?;
 
     println!("\nCreated single-owner chunk:");
     println!("  - Data: \"{}\"", String::from_utf8_lossy(chunk.data()));
@@ -110,7 +111,7 @@ fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn st
     println!("\nSerialized to {} bytes", bytes.len());
 
     // Deserialize
-    let parsed = SingleOwnerChunk::try_from(bytes)?;
+    let parsed = DefaultSingleOwnerChunk::try_from(bytes)?;
     println!("Deserialized successfully:");
     println!("  - Address: {}", parsed.address());
     println!(
@@ -126,7 +127,7 @@ fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn st
     // Create with signature
     let signature = *chunk.signature();
     let data_copy = chunk.data().clone();
-    let chunk_with_sig = SingleOwnerChunk::with_signature(id, signature, data_copy)?;
+    let chunk_with_sig = DefaultSingleOwnerChunk::with_signature(id, signature, data_copy)?;
     println!("\nCreated chunk with pre-computed signature:");
     println!("  - Address: {}", chunk_with_sig.address());
     println!(
@@ -145,12 +146,12 @@ fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn st
 fn deserialization_example() -> Result<(), Box<dyn std::error::Error>> {
     // Create chunks of both types
     let data1 = b"Example for deserialization".to_vec();
-    let content_chunk = ContentChunk::new(data1)?;
+    let content_chunk = DefaultContentChunk::new(data1)?;
 
     let wallet = LocalSigner::random();
     let id = B256::random();
     let data2 = b"Example owner chunk".to_vec();
-    let single_owner_chunk = SingleOwnerChunk::new(id, data2, &wallet)?;
+    let single_owner_chunk = DefaultSingleOwnerChunk::new(id, data2, &wallet)?;
 
     // Serialize
     let content_bytes = Bytes::from(content_chunk.clone());
@@ -161,8 +162,8 @@ fn deserialization_example() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Single-owner chunk: {} bytes", owner_bytes.len());
 
     // Deserialize manually by type
-    let deserialized1 = ContentChunk::try_from(content_bytes)?;
-    let deserialized2 = SingleOwnerChunk::try_from(owner_bytes)?;
+    let deserialized1 = DefaultContentChunk::try_from(content_bytes)?;
+    let deserialized2 = DefaultSingleOwnerChunk::try_from(owner_bytes)?;
 
     println!("\nDeserialized successfully:");
     println!("  - First chunk address: {}", deserialized1.address());
@@ -181,7 +182,7 @@ fn bmt_proof_example() -> Result<(), Box<dyn std::error::Error>> {
     let data = b"This is an example of BMT hashing and proof generation.";
 
     // Create a hasher and calculate the hash
-    let mut hasher = Hasher::new();
+    let mut hasher = DefaultHasher::new();
     hasher.set_span(data.len() as u64);
     hasher.update(data);
     let hash = hasher.sum();
@@ -199,7 +200,7 @@ fn bmt_proof_example() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Proof length: {} segments", proof.proof_segments.len());
 
     // Verify the proof
-    let is_valid = Hasher::verify_proof(&proof, hash.as_slice())?;
+    let is_valid = DefaultHasher::verify_proof(&proof, hash.as_slice())?;
     println!(
         "  - Proof verification: {}",
         if is_valid {

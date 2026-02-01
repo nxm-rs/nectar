@@ -82,15 +82,14 @@ use crate::error::Result;
 /// Maximum proximity order for standard routing operations.
 ///
 /// Value 31 gives 32 Kademlia bins (0-31). Matches Bee's `MaxPO`.
-/// The algorithm checks up to 4 bytes (32 bits) but caps the result at 31.
-const MAX_PO: usize = 31;
+pub const MAX_PO: u8 = 31;
 
 /// Extended proximity order for Kademlia bin balancing.
 ///
 /// Value 36 = MaxPO (31) + BitSuffixLength (4) + 1. Used when the Kademlia
 /// bin balancing algorithm needs to check proximity at finer granularity
 /// than standard routing. Matches Bee's `ExtendedPO`.
-const EXTENDED_PO: usize = MAX_PO + 5;
+pub const EXTENDED_PO: u8 = MAX_PO + 5;
 
 /// A 256-bit address for a chunk in the Swarm network
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -215,7 +214,7 @@ impl SwarmAddress {
     #[inline(always)]
     #[must_use]
     pub fn proximity(&self, other: &Self) -> u8 {
-        self.proximity_helper(other, MAX_PO)
+        self.proximity_helper(other, MAX_PO.into())
     }
 
     /// Calculate the extended proximity order between self and another address.
@@ -228,7 +227,7 @@ impl SwarmAddress {
     #[inline(always)]
     #[must_use]
     pub fn extended_proximity(&self, other: &Self) -> u8 {
-        self.proximity_helper(other, EXTENDED_PO)
+        self.proximity_helper(other, EXTENDED_PO.into())
     }
 
     /// Helper function to calculate proximity with a maximum

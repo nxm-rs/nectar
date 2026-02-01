@@ -8,22 +8,23 @@ use bytes::Bytes;
 use std::fmt;
 use std::marker::PhantomData;
 
+use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::cache::OnceCache;
 use crate::error::{PrimitivesError, Result};
 
 use super::bmt_body::BmtBody;
 use super::traits::{BmtChunk, Chunk, ChunkAddress, ChunkHeader, ChunkMetadata};
 
-/// A content-addressed chunk.
+/// A content-addressed chunk with configurable body size.
 ///
 /// This type represents a chunk of data whose address is derived from the hash
 /// of its contents. It is immutable once created.
 #[derive(Debug, Clone)]
-pub struct ContentChunk {
+pub struct ContentChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     /// The header containing type ID, version, and metadata
     header: ContentChunkHeader,
     /// The body of the chunk, containing the actual data
-    body: BmtBody,
+    body: BmtBody<BODY_SIZE>,
     /// Cache for the chunk's address
     address_cache: OnceCache<ChunkAddress>,
 }
@@ -81,7 +82,7 @@ impl ChunkHeader for ContentChunkHeader {
     }
 }
 
-impl ContentChunk {
+impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     /// Create a new content chunk with the given data.
     ///
     /// This function automatically calculates the span based on the data length.
@@ -95,7 +96,7 @@ impl ContentChunk {
     /// A Result containing the new ContentChunk, or an error if creation fails.
     #[must_use = "this returns a new chunk without modifying the input"]
     pub fn new(data: impl Into<Bytes>) -> Result<Self> {
-        Ok(ContentChunkBuilderImpl::default()
+        Ok(ContentChunkBuilderImpl::<BODY_SIZE, _>::default()
             .auto_from_data(data)?
             .build())
     }
@@ -115,7 +116,7 @@ impl ContentChunk {
     /// A Result containing the new ContentChunk, or an error if creation fails.
     #[must_use = "this returns a new chunk without modifying the input"]
     pub fn with_address(data: impl Into<Bytes>, address: ChunkAddress) -> Result<Self> {
-        Ok(ContentChunkBuilderImpl::default()
+        Ok(ContentChunkBuilderImpl::<BODY_SIZE, _>::default()
             .auto_from_data(data)?
             .with_address(address)
             .build())
@@ -127,7 +128,7 @@ impl ContentChunk {
     /// such as when reconstructing chunks from storage or building
     /// intermediate nodes in a merkle tree.
     #[must_use]
-    pub fn from_body(body: BmtBody) -> Self {
+    pub fn from_body(body: BmtBody<BODY_SIZE>) -> Self {
         ContentChunk {
             header: ContentChunkHeader::new(),
             body,
@@ -140,7 +141,7 @@ impl ContentChunk {
     /// This is an advanced method for when you already have both the body
     /// and know the chunk's address (e.g., when reconstructing from storage).
     #[must_use]
-    pub fn from_body_with_address(body: BmtBody, address: ChunkAddress) -> Self {
+    pub fn from_body_with_address(body: BmtBody<BODY_SIZE>, address: ChunkAddress) -> Self {
         ContentChunk {
             header: ContentChunkHeader::new(),
             body,
@@ -149,7 +150,7 @@ impl ContentChunk {
     }
 }
 
-impl Chunk for ContentChunk {
+impl<const BODY_SIZE: usize> Chunk for ContentChunk<BODY_SIZE> {
     type Header = ContentChunkHeader;
 
     fn address(&self) -> &ChunkAddress {
@@ -169,19 +170,19 @@ impl Chunk for ContentChunk {
     }
 }
 
-impl BmtChunk for ContentChunk {
+impl<const BODY_SIZE: usize> BmtChunk for ContentChunk<BODY_SIZE> {
     fn span(&self) -> u64 {
         self.body.span()
     }
 }
 
-impl From<ContentChunk> for Bytes {
-    fn from(chunk: ContentChunk) -> Self {
+impl<const BODY_SIZE: usize> From<ContentChunk<BODY_SIZE>> for Bytes {
+    fn from(chunk: ContentChunk<BODY_SIZE>) -> Self {
         chunk.body.into()
     }
 }
 
-impl TryFrom<Bytes> for ContentChunk {
+impl<const BODY_SIZE: usize> TryFrom<Bytes> for ContentChunk<BODY_SIZE> {
     type Error = PrimitivesError;
 
     fn try_from(bytes: Bytes) -> Result<Self> {
@@ -193,7 +194,7 @@ impl TryFrom<Bytes> for ContentChunk {
     }
 }
 
-impl TryFrom<&[u8]> for ContentChunk {
+impl<const BODY_SIZE: usize> TryFrom<&[u8]> for ContentChunk<BODY_SIZE> {
     type Error = PrimitivesError;
 
     fn try_from(bytes: &[u8]) -> Result<Self> {
@@ -201,7 +202,7 @@ impl TryFrom<&[u8]> for ContentChunk {
     }
 }
 
-impl fmt::Display for ContentChunk {
+impl<const BODY_SIZE: usize> fmt::Display for ContentChunk<BODY_SIZE> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -211,15 +212,15 @@ impl fmt::Display for ContentChunk {
     }
 }
 
-impl PartialEq for ContentChunk {
+impl<const BODY_SIZE: usize> PartialEq for ContentChunk<BODY_SIZE> {
     fn eq(&self, other: &Self) -> bool {
         self.address() == other.address()
     }
 }
 
-impl Eq for ContentChunk {}
+impl<const BODY_SIZE: usize> Eq for ContentChunk<BODY_SIZE> {}
 
-impl super::chunk_type::ChunkType for ContentChunk {
+impl<const BODY_SIZE: usize> super::chunk_type::ChunkType for ContentChunk<BODY_SIZE> {
     const TYPE_ID: super::type_id::ChunkTypeId = super::type_id::ChunkTypeId::CONTENT;
     const TYPE_NAME: &'static str = "content";
 }
@@ -237,16 +238,16 @@ impl BuilderState for ReadyToBuild {}
 
 /// Builder for ContentChunk with type state pattern
 #[derive(Debug)]
-struct ContentChunkBuilderImpl<S: BuilderState = Initial> {
+struct ContentChunkBuilderImpl<const BODY_SIZE: usize, S: BuilderState = Initial> {
     /// The body to use for the chunk
-    body: Option<BmtBody>,
+    body: Option<BmtBody<BODY_SIZE>>,
     /// Pre-computed address for the chunk
     address: Option<ChunkAddress>,
     /// Marker for the builder state
     _state: PhantomData<S>,
 }
 
-impl Default for ContentChunkBuilderImpl<Initial> {
+impl<const BODY_SIZE: usize> Default for ContentChunkBuilderImpl<BODY_SIZE, Initial> {
     fn default() -> Self {
         Self {
             body: None,
@@ -256,13 +257,15 @@ impl Default for ContentChunkBuilderImpl<Initial> {
     }
 }
 
-impl ContentChunkBuilderImpl<Initial> {
+impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, Initial> {
     /// Initialize from data with automatically calculated span
     fn auto_from_data(
         mut self,
         data: impl Into<Bytes>,
-    ) -> Result<ContentChunkBuilderImpl<ReadyToBuild>> {
-        let body = BmtBody::builder().auto_from_data(data)?.build()?;
+    ) -> Result<ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild>> {
+        let body = BmtBody::<BODY_SIZE>::builder()
+            .auto_from_data(data)?
+            .build()?;
         self.body = Some(body);
 
         Ok(ContentChunkBuilderImpl {
@@ -273,7 +276,7 @@ impl ContentChunkBuilderImpl<Initial> {
     }
 }
 
-impl ContentChunkBuilderImpl<ReadyToBuild> {
+impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild> {
     /// Set a pre-computed address for the chunk
     fn with_address(mut self, address: ChunkAddress) -> Self {
         self.address = Some(address);
@@ -281,7 +284,7 @@ impl ContentChunkBuilderImpl<ReadyToBuild> {
     }
 
     /// Build the final ContentChunk
-    fn build(self) -> ContentChunk {
+    fn build(self) -> ContentChunk<BODY_SIZE> {
         // This is safe as we have already checked that the body is set
         let body = self.body.unwrap();
 
@@ -299,24 +302,26 @@ impl ContentChunkBuilderImpl<ReadyToBuild> {
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for ContentChunk {
+impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for ContentChunk<BODY_SIZE> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(ContentChunk::from_body(BmtBody::arbitrary(u)?))
+        Ok(ContentChunk::from_body(BmtBody::<BODY_SIZE>::arbitrary(u)?))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{MAX_CHUNK_SIZE, chunk::error::ChunkError};
+    use crate::{DEFAULT_BODY_SIZE, chunk::error::ChunkError};
 
     use super::*;
     use alloy_primitives::b256;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
 
+    type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
+
     // Strategy for generating ContentChunk using the Arbitrary implementation
-    fn chunk_strategy() -> impl Strategy<Value = ContentChunk> {
-        arb::<ContentChunk>()
+    fn chunk_strategy() -> impl Strategy<Value = DefaultContentChunk> {
+        arb::<DefaultContentChunk>()
     }
 
     proptest! {
@@ -324,12 +329,12 @@ mod tests {
         fn test_chunk_properties(chunk in chunk_strategy()) {
             // Test basic properties
             prop_assert!(chunk.span() <= u64::MAX);
-            prop_assert!(chunk.data().len() <= MAX_CHUNK_SIZE);
+            prop_assert!(chunk.data().len() <= DEFAULT_BODY_SIZE);
             prop_assert_eq!(chunk.size(), 8 + chunk.data().len());
 
             // Test round-trip conversion
             let bytes: Bytes = chunk.clone().into();
-            let decoded = ContentChunk::try_from(bytes).unwrap();
+            let decoded = DefaultContentChunk::try_from(bytes).unwrap();
             prop_assert_eq!(chunk.address(), decoded.address());
             prop_assert_eq!(chunk.data(), decoded.data());
             prop_assert_eq!(chunk.span(), decoded.span());
@@ -342,8 +347,8 @@ mod tests {
             let body_span = chunk.span();
 
             // Create a new chunk using from_body with a fresh BmtBody
-            let new_body = BmtBody::try_from(Bytes::from(chunk.clone())).unwrap();
-            let new_chunk = ContentChunk::from_body(new_body);
+            let new_body = BmtBody::<DEFAULT_BODY_SIZE>::try_from(Bytes::from(chunk.clone())).unwrap();
+            let new_chunk = DefaultContentChunk::from_body(new_body);
 
             prop_assert_eq!(new_chunk.data(), &body_data);
             prop_assert_eq!(new_chunk.span(), body_span);
@@ -351,8 +356,8 @@ mod tests {
         }
 
         #[test]
-        fn test_new_content_chunk(data in proptest::collection::vec(any::<u8>(), 0..MAX_CHUNK_SIZE)) {
-            let chunk = ContentChunk::new(data.clone()).unwrap();
+        fn test_new_content_chunk(data in proptest::collection::vec(any::<u8>(), 0..DEFAULT_BODY_SIZE)) {
+            let chunk = DefaultContentChunk::new(data.clone()).unwrap();
 
             prop_assert_eq!(chunk.data(), &data);
             prop_assert_eq!(chunk.span(), data.len() as u64);
@@ -360,8 +365,8 @@ mod tests {
         }
 
         #[test]
-        fn test_chunk_size_validation(data in proptest::collection::vec(any::<u8>(), MAX_CHUNK_SIZE + 1..MAX_CHUNK_SIZE * 2)) {
-            let result = ContentChunk::new(data);
+        fn test_chunk_size_validation(data in proptest::collection::vec(any::<u8>(), DEFAULT_BODY_SIZE + 1..DEFAULT_BODY_SIZE * 2)) {
+            let result = DefaultContentChunk::new(data);
             prop_assert_eq!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))), true);
         }
 
@@ -369,7 +374,7 @@ mod tests {
         fn test_empty_and_edge_cases(size in 0usize..=10usize) {
             // Test with empty or small data
             let data = vec![0u8; size];
-            let chunk = ContentChunk::new(data.clone()).unwrap();
+            let chunk = DefaultContentChunk::new(data.clone()).unwrap();
 
             prop_assert_eq!(chunk.data().len(), size);
             prop_assert_eq!(chunk.span(), size as u64);
@@ -378,7 +383,7 @@ mod tests {
 
         #[test]
         fn test_deserialize_invalid_chunks(data in proptest::collection::vec(any::<u8>(), 0..8)) {
-            let result = ContentChunk::try_from(data.as_slice());
+            let result = DefaultContentChunk::try_from(data.as_slice());
             prop_assert_eq!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))), true);
         }
     }
@@ -388,7 +393,7 @@ mod tests {
         let data = b"greaterthanspan";
         let bmt_hash = b256!("27913f1bdb6e8e52cbd5a5fd4ab577c857287edf6969b41efe926b51de0f4f23");
 
-        let chunk = ContentChunk::new(data.to_vec()).unwrap();
+        let chunk = DefaultContentChunk::new(data.to_vec()).unwrap();
         assert_eq!(chunk.address().as_ref(), bmt_hash);
         assert_eq!(chunk.data(), data.as_slice());
     }
@@ -398,9 +403,12 @@ mod tests {
         let data = b"greaterthanspan";
         let bmt_hash = b256!("95022e6af5c6d6a564ee55a67f8455a3e18c511b5697c932d9e44f07f2fb8c53");
 
-        let chunk = ContentChunk::try_from(data.as_slice()).unwrap();
+        let chunk = DefaultContentChunk::try_from(data.as_slice()).unwrap();
         assert_eq!(chunk.address().as_ref(), bmt_hash);
-        assert_eq!(<ContentChunk as Into<Bytes>>::into(chunk), data.as_slice());
+        assert_eq!(
+            <DefaultContentChunk as Into<Bytes>>::into(chunk),
+            data.as_slice()
+        );
     }
 
     #[test]
@@ -410,12 +418,12 @@ mod tests {
         let expected_hash =
             b256!("2387e8e7d8a48c2a9339c97c1dc3461a9a7aa07e994c5cb8b38fd7c1b3e6ea48");
 
-        let chunk = ContentChunk::new(data).unwrap();
+        let chunk = DefaultContentChunk::new(data).unwrap();
         assert_eq!(chunk.address().as_ref(), expected_hash);
 
         // Test with "Digital Freedom Now"
         let data = b"Digital Freedom Now".to_vec();
-        let chunk = ContentChunk::new(data).unwrap();
+        let chunk = DefaultContentChunk::new(data).unwrap();
         assert!(chunk.address().as_ref() != ChunkAddress::default().as_ref()); // Ensure we get a non-zero hash
     }
 
@@ -425,7 +433,7 @@ mod tests {
         let mut data = vec![0u8; 8];
         data.copy_from_slice(&0u64.to_le_bytes());
 
-        let chunk = ContentChunk::try_from(data.as_slice()).unwrap();
+        let chunk = DefaultContentChunk::try_from(data.as_slice()).unwrap();
 
         assert_eq!(chunk.span(), 0);
         assert_eq!(chunk.data(), &[0u8; 0].as_slice());

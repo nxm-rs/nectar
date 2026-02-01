@@ -41,12 +41,12 @@ nectar-swarms = { path = "crates/swarms" }
 nectar-postage = { path = "crates/postage" }
 
 # alloy
-alloy-primitives = { version = "1.5.2", default-features = false }
-alloy-sol-types = { version = "1.5.2", default-features = false }
-alloy-contract = { version = "1.4.3", default-features = false }
-alloy-chains = { version = "0.2", default-features = false }
-alloy-signer = { version = "1.4.3", default-features = false }
-alloy-signer-local = { version = "1.4.3", default-features = false }
+alloy-primitives = { version = "1.5.4", default-features = false }
+alloy-sol-types = { version = "1.5.4", default-features = false }
+alloy-contract = { version = "1.5.2", default-features = false }
+alloy-chains = { version = "0.2.30", default-features = false }
+alloy-signer = { version = "1.5.2", default-features = false }
+alloy-signer-local = { version = "1.5.2", default-features = false }
 
 # k256 with precomputed tables for faster ECDSA
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "precomputed-tables", "std"] }
@@ -87,3 +87,5 @@ tokio = { version = "1", features = ["rt", "macros"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 getrandom = { version = "0.3", features = ["wasm_js"] }
+# getrandom 0.2 needed for transitive deps (rand_core 0.6 via k256/elliptic-curve)
+getrandom_02 = { package = "getrandom", version = "0.2", default-features = false, features = ["js"] }

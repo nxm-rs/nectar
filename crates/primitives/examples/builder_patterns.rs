@@ -7,7 +7,8 @@ use alloy_primitives::B256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
 
-use nectar_primitives::chunk::{BmtChunk, Chunk, ContentChunk, SingleOwnerChunk};
+use nectar_primitives::chunk::{BmtChunk, Chunk};
+use nectar_primitives::{DefaultContentChunk, DefaultSingleOwnerChunk};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Nectar Primitives - Creation Pattern Examples");
@@ -33,7 +34,7 @@ fn content_chunk_creation_methods() -> Result<(), Box<dyn std::error::Error>> {
     // Basic creation - automatic span
     println!("\n1. Simple creation");
     let data = b"Basic content chunk with auto-calculated span".to_vec();
-    let chunk = ContentChunk::new(data)?;
+    let chunk = DefaultContentChunk::new(data)?;
 
     println!("  - Created chunk with address: {}", chunk.address());
     println!("  - Span: {} bytes", chunk.span());
@@ -44,7 +45,7 @@ fn content_chunk_creation_methods() -> Result<(), Box<dyn std::error::Error>> {
     let precomputed_address = *chunk.address(); // Simulating a known address
     let data_copy = chunk.data().clone();
 
-    let chunk2 = ContentChunk::with_address(data_copy, precomputed_address)?;
+    let chunk2 = DefaultContentChunk::with_address(data_copy, precomputed_address)?;
 
     println!("  - Created chunk with address: {}", chunk2.address());
     assert_eq!(chunk.address(), chunk2.address());
@@ -64,7 +65,7 @@ fn single_owner_creation_methods(
     let id = B256::random();
     let data = b"Single owner chunk".to_vec();
 
-    let chunk = SingleOwnerChunk::new(id, data, wallet)?;
+    let chunk = DefaultSingleOwnerChunk::new(id, data, wallet)?;
 
     println!("  - Created chunk with address: {}", chunk.address());
     println!("  - ID: {}", alloy_primitives::hex::encode(&id[..8]));
@@ -78,7 +79,7 @@ fn single_owner_creation_methods(
     let signature = *chunk.signature();
     let data_copy = chunk.data().clone();
 
-    let chunk2 = SingleOwnerChunk::with_signature(id, signature, data_copy)?;
+    let chunk2 = DefaultSingleOwnerChunk::with_signature(id, signature, data_copy)?;
 
     println!("  - Created chunk with precomputed signature");
     println!("  - Address: {}", chunk2.address());
@@ -98,13 +99,14 @@ fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error:
     // Simulate stored chunk data
     let original_id = B256::random();
     let original_data = b"Original chunk data".to_vec();
-    let original_chunk = SingleOwnerChunk::new(original_id, original_data, wallet)?;
+    let original_chunk = DefaultSingleOwnerChunk::new(original_id, original_data, wallet)?;
     let stored_data = original_chunk.data().clone();
     let stored_id = original_chunk.id();
     let stored_signature = *original_chunk.signature();
 
     // Later, reconstruct the chunk from stored components
-    let reconstructed = SingleOwnerChunk::with_signature(stored_id, stored_signature, stored_data)?;
+    let reconstructed =
+        DefaultSingleOwnerChunk::with_signature(stored_id, stored_signature, stored_data)?;
 
     println!("  - Reconstructed chunk from stored components");
     println!("  - Original address: {}", original_chunk.address());
@@ -117,7 +119,7 @@ fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error:
 
     // First, create a normal content chunk
     let data1 = b"Test data for a content chunk".to_vec();
-    let content_chunk1 = ContentChunk::new(data1)?;
+    let content_chunk1 = DefaultContentChunk::new(data1)?;
     println!(
         "  - Normal content chunk address: {}",
         content_chunk1.address()
@@ -125,7 +127,7 @@ fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error:
 
     // Then, create one with the same content but different size
     let data2 = b"Test data for a content chunk with more content".to_vec();
-    let content_chunk2 = ContentChunk::new(data2)?;
+    let content_chunk2 = DefaultContentChunk::new(data2)?;
     println!(
         "  - Longer content chunk address: {}",
         content_chunk2.address()
@@ -143,7 +145,8 @@ fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error:
     println!("  - Verification successful ✅");
 
     // Verify a single-owner chunk's signature - verify against its own address
-    let owner_chunk = SingleOwnerChunk::new(B256::random(), b"Signed data".to_vec(), wallet)?;
+    let owner_chunk =
+        DefaultSingleOwnerChunk::new(B256::random(), b"Signed data".to_vec(), wallet)?;
     println!("  - Verifying signature on single-owner chunk");
     owner_chunk.verify(owner_chunk.address())?;
     println!("  - Signature verification successful ✅");

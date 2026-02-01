@@ -12,22 +12,22 @@
 //! ## Usage Examples
 //!
 //! ```
-//! use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk, SwarmAddress};
+//! use nectar_primitives::{Chunk, DefaultContentChunk, DefaultSingleOwnerChunk};
 //! use alloy_signer_local::LocalSigner;
 //! use alloy_primitives::FixedBytes;
 //!
 //! // Creating content chunks
-//! let chunk = ContentChunk::new(b"Hello, world!".as_slice()).unwrap();
+//! let chunk = DefaultContentChunk::new(b"Hello, world!".as_slice()).unwrap();
 //! let address = chunk.address();
 //!
 //! // Creating content chunks with pre-computed address (e.g., from storage)
 //! let address_copy = *address;
-//! let chunk2 = ContentChunk::with_address(b"Hello, world!".as_slice(), address_copy).unwrap();
+//! let chunk2 = DefaultContentChunk::with_address(b"Hello, world!".as_slice(), address_copy).unwrap();
 //!
 //! // Creating signed chunks
 //! let wallet = LocalSigner::random();
 //! let id = FixedBytes::random();
-//! let owner_chunk = SingleOwnerChunk::new(id, b"Signed data".as_slice(), &wallet).unwrap();
+//! let owner_chunk = DefaultSingleOwnerChunk::new(id, b"Signed data".as_slice(), &wallet).unwrap();
 //! ```
 
 // Re-export dependencies that are part of our public API
@@ -40,10 +40,10 @@ pub mod chunk;
 pub mod error;
 
 // Re-export core constants
-pub use bmt::MAX_DATA_LENGTH as MAX_CHUNK_SIZE;
+pub use bmt::DEFAULT_BODY_SIZE;
 
 // Re-export core types
-pub use address::SwarmAddress;
+pub use address::{MAX_PO, SwarmAddress};
 pub use error::{PrimitivesError, Result};
 
 // Core BMT functionality
@@ -67,3 +67,12 @@ pub use chunk::{
     SingleOwnerChunk,
     StandardChunkSet,
 };
+
+/// Default BMT hasher.
+pub type DefaultHasher = Hasher<DEFAULT_BODY_SIZE>;
+/// Default content-addressed chunk.
+pub type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
+/// Default single-owner chunk.
+pub type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
+/// Default polymorphic chunk.
+pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
