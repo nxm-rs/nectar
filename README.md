@@ -1,133 +1,105 @@
 # nectar
 
 [![CI Status](https://github.com/nxm-rs/nectar/actions/workflows/unit.yml/badge.svg)](https://github.com/nxm-rs/nectar/actions/workflows/unit.yml)
-[![codecov](https://codecov.io/gh/nxm-rs/nectar/graph/badge.svg?token=wfOmWGcYv2)](https://codecov.io/gh/nxm-rs/nectar)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-**The sweet essential primitives for building Ethereum Swarm applications**
+**Low-level Swarm primitives in Rust. The boring parts that make the magic happen.**
 
 ## What is nectar?
 
-Just as nectar is essential for bees to produce honey, `nectar` provides the essential primitives for building applications on Ethereum Swarm. This crate contains the core data structures, cryptographic tools, and protocol implementations needed to interact with the Swarm network.
+The sweet stuff that makes the hive run. `nectar` provides the essential primitives for building applications on Ethereum Swarm - content addressing, chunk management, postage stamps, and all the cryptographic goodness you need to talk to the network.
 
-Whether you're building a full node like [Vertex](https://github.com/nxm-rs/vertex), crafting developer tools, or creating your own Swarm-powered applications, `nectar` provides the building blocks you need to communicate with the hive.
+Used by [Vertex](https://github.com/nxm-rs/vertex) (the Rust Swarm node) and available for anyone crazy enough to build their own Swarm-powered applications.
 
-## Features
+## Crates
 
-- 🍯 **Binary Merkle Tree (BMT)** - High-performance content addressing with parallel processing
-- 🐝 **Chunk Management** - Core primitives for working with Swarm chunks
-- 🐝 **Proof Generation** - Create and verify inclusion proofs for chunk segments
-- 🍯 **WASM Support** - Run core functionality in browsers and other WASM environments
+| Crate | Description |
+|-------|-------------|
+| `nectar-primitives` | Binary Merkle Tree, chunks, proofs. The foundation. |
+| `nectar-contracts` | Contract bindings for on-chain Swarm interactions |
+| `nectar-postage` | Postage stamp handling and verification |
+| `nectar-postage-issuer` | High-performance stamp issuance with parallel signing |
+| `nectar-swarms` | Network identifiers (mainnet, testnet, etc.) |
 
-## Usage
-
-Add nectar to your `Cargo.toml`:
+## Quick Start
 
 ```toml
 [dependencies]
-nectar-primitives = "0.1.0"
+nectar-primitives = "0.1"
 ```
 
-### Basic Example
-
 ```rust
-use nectar_primitives::{bmt::BMTHasher, chunk::ChunkData};
-use bytes::Bytes;
+use nectar_primitives::{DefaultHasher, DefaultContentChunk};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create some data
-    let mut data = vec![0u8; 4096];
-    data[0..4].copy_from_slice(&1016u32.to_le_bytes()); // Prefix with span
-    let bytes = Bytes::from(data);
-
-    // Create a BMT hasher and compute the chunk address
-    let mut hasher = BMTHasher::new();
-    hasher.set_span(1016);
-    let address = hasher.chunk_address(&bytes)?;
-    println!("Calculated chunk address: {:?}", address);
-
-    // Create a chunk directly using ChunkData
-    let chunk = ChunkData::deserialize(bytes, false)?;
-    chunk.verify_integrity()?;
-
-    Ok(())
-}
-```
-
-## Architecture
-
-`nectar` is structured around several core components:
-
-- **BMT (Binary Merkle Tree)** - Optimized implementation of the Binary Merkle Tree for content addressing
-- **Chunk** - Core types for working with Swarm chunks
-- **Error Handling** - Comprehensive error types for robust error management
-
-### Binary Merkle Tree (BMT)
-
-The BMT implementation provides an optimized way to compute Swarm's content addressing function:
-
-```rust
-let mut hasher = BMTHasher::new();
+// Hash some data with the Binary Merkle Tree
+let mut hasher = DefaultHasher::new();
 hasher.set_span(data.len() as u64);
 hasher.update(&data);
 let root_hash = hasher.sum();
+
+// Create a content-addressed chunk
+let chunk = DefaultContentChunk::new(data)?;
+let address = chunk.address();
 ```
 
-It also supports proof generation and verification:
+## Features
 
-```rust
-// Generate proof for segment at index 0
-let proof = hasher.generate_proof(&data, 0)?;
+- **Binary Merkle Tree (BMT)** - Blazing-fast content addressing with parallel Keccak256 hashing. Zero-tree optimizations for when your data is mostly nothing.
+- **Chunk Types** - Content chunks, single-owner chunks, and all the serialization you need
+- **Proof Generation** - Create and verify inclusion proofs for chunk segments
+- **Postage Stamps** - Create, verify, and manage postage stamps for network storage
+- **WASM Support** - Run in browsers because why not
 
-// Verify the proof
-let is_valid = BMTHasher::verify_proof(&proof, root_hash.as_slice())?;
+## Performance
+
+BMT hashing is optimized for real-world workloads:
+
+| Data Size | Time |
+|-----------|------|
+| 64 bytes | ~1.7 µs |
+| 4096 bytes (full chunk) | ~23 µs |
+| All zeros (any size) | ~230 ns |
+
+Sequential processing for small data, parallel for full chunks. No rayon overhead where it doesn't help.
+
+## Building
+
+```bash
+cargo build           # Build everything
+cargo test            # Run tests
+cargo bench           # Run benchmarks (grab a coffee)
 ```
 
-## WebAssembly Support
+## WASM
 
-`nectar` includes WebAssembly bindings for use in browsers and other WASM environments. This allows you to use key functionality directly from JavaScript:
+```bash
+cd crates/primitives/examples/wasm-demo
+wasm-pack build --target web
+```
+
+Then use it from JavaScript like a normal person:
 
 ```javascript
 import init, { BMTHasher } from 'nectar-wasm';
 
 await init();
-
-// Create a hasher
 const hasher = new BMTHasher();
 hasher.set_span(data.length);
 hasher.update(new Uint8Array(data));
 const hash = hasher.sum();
 ```
 
-See the [WASM demo](./crates/primitives/examples/wasm-demo) for a complete example.
+## Contributing
 
-## Building and Testing
+We welcome contributions. Please read the [CLA](./CLA.md) before submitting PRs.
 
-To build the library:
-
-```sh
-cargo build
-```
-
-To run tests:
-
-```sh
-cargo test
-```
-
-To run benchmarks:
-
-```sh
-cargo bench
-```
+- Open an [issue](https://github.com/nxm-rs/nectar/issues) if something's broken
+- Join the [Matrix space](https://matrix.to/#/#nexum:nxm.rs) to discuss development
 
 ## License
 
-`nectar` is licensed under the AGPL License. See [LICENSE](./LICENSE) for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+[AGPL-3.0-or-later](./LICENSE) - because we believe in sharing.
 
 ## Warning
 
-This software is currently in development. While we strive to make this code as sweet as honey, bugs may still buzz around. Use at your own risk.
+This software is under active development. It works, but so did my first attempt at sourdough. Use accordingly.
