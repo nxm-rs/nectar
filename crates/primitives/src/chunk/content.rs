@@ -263,7 +263,9 @@ impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, Initial> {
         mut self,
         data: impl Into<Bytes>,
     ) -> Result<ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild>> {
-        let body = BmtBody::<BODY_SIZE>::builder().auto_from_data(data)?.build()?;
+        let body = BmtBody::<BODY_SIZE>::builder()
+            .auto_from_data(data)?
+            .build()?;
         self.body = Some(body);
 
         Ok(ContentChunkBuilderImpl {
@@ -403,7 +405,10 @@ mod tests {
 
         let chunk = DefaultContentChunk::try_from(data.as_slice()).unwrap();
         assert_eq!(chunk.address().as_ref(), bmt_hash);
-        assert_eq!(<DefaultContentChunk as Into<Bytes>>::into(chunk), data.as_slice());
+        assert_eq!(
+            <DefaultContentChunk as Into<Bytes>>::into(chunk),
+            data.as_slice()
+        );
     }
 
     #[test]

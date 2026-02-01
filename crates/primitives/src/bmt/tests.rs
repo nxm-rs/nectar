@@ -36,7 +36,9 @@ fn test_concurrent_simple() {
 #[test]
 fn test_concurrent_fullsize() {
     // Use a random seed for consistent results
-    let data: Vec<u8> = (0..DEFAULT_BODY_SIZE).map(|_| rand::random::<u8>()).collect();
+    let data: Vec<u8> = (0..DEFAULT_BODY_SIZE)
+        .map(|_| rand::random::<u8>())
+        .collect();
 
     // Hash with the new hasher
     let mut hasher = DefaultHasher::new();
@@ -70,7 +72,9 @@ fn test_hasher_empty_data() {
 #[test]
 fn test_sync_hasher_correctness() {
     let mut rng = rand::rng();
-    let data: Vec<u8> = (0..DEFAULT_BODY_SIZE).map(|_| rand::random::<u8>()).collect();
+    let data: Vec<u8> = (0..DEFAULT_BODY_SIZE)
+        .map(|_| rand::random::<u8>())
+        .collect();
 
     // Test multiple sub-slices of the data
     let mut start = 0;
@@ -329,8 +333,8 @@ fn test_proof() {
             .expect("Failed to generate proof");
 
         // Verify the proof
-        let is_valid =
-            DefaultHasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
+        let is_valid = DefaultHasher::verify_proof(&proof, root_hash.as_slice())
+            .expect("Failed to verify proof");
 
         assert!(
             is_valid,

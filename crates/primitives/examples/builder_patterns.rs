@@ -7,12 +7,8 @@ use alloy_primitives::B256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
 
-use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{BmtChunk, Chunk, ContentChunk, SingleOwnerChunk};
-
-// Type aliases for default body size
-type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
-type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
+use nectar_primitives::chunk::{BmtChunk, Chunk};
+use nectar_primitives::{DefaultContentChunk, DefaultSingleOwnerChunk};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Nectar Primitives - Creation Pattern Examples");
@@ -109,7 +105,8 @@ fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error:
     let stored_signature = *original_chunk.signature();
 
     // Later, reconstruct the chunk from stored components
-    let reconstructed = DefaultSingleOwnerChunk::with_signature(stored_id, stored_signature, stored_data)?;
+    let reconstructed =
+        DefaultSingleOwnerChunk::with_signature(stored_id, stored_signature, stored_data)?;
 
     println!("  - Reconstructed chunk from stored components");
     println!("  - Original address: {}", original_chunk.address());
@@ -148,7 +145,8 @@ fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error:
     println!("  - Verification successful ✅");
 
     // Verify a single-owner chunk's signature - verify against its own address
-    let owner_chunk = DefaultSingleOwnerChunk::new(B256::random(), b"Signed data".to_vec(), wallet)?;
+    let owner_chunk =
+        DefaultSingleOwnerChunk::new(B256::random(), b"Signed data".to_vec(), wallet)?;
     println!("  - Verifying signature on single-owner chunk");
     owner_chunk.verify(owner_chunk.address())?;
     println!("  - Signature verification successful ✅");

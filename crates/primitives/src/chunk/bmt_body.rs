@@ -240,7 +240,10 @@ mod tests {
     }
 
     fn create_bmt_body(span: u64, data: Vec<u8>) -> Result<DefaultBmtBody> {
-        DefaultBmtBody::builder().with_span(span).with_data(data)?.build()
+        DefaultBmtBody::builder()
+            .with_span(span)
+            .with_data(data)?
+            .build()
     }
 
     proptest! {

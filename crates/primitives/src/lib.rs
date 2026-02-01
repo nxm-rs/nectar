@@ -12,13 +12,9 @@
 //! ## Usage Examples
 //!
 //! ```
-//! use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk, SwarmAddress, DEFAULT_BODY_SIZE};
+//! use nectar_primitives::{Chunk, DefaultContentChunk, DefaultSingleOwnerChunk};
 //! use alloy_signer_local::LocalSigner;
 //! use alloy_primitives::FixedBytes;
-//!
-//! // Type aliases for default body size
-//! type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
-//! type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 //!
 //! // Creating content chunks
 //! let chunk = DefaultContentChunk::new(b"Hello, world!".as_slice()).unwrap();
@@ -47,7 +43,7 @@ pub mod error;
 pub use bmt::DEFAULT_BODY_SIZE;
 
 // Re-export core types
-pub use address::{SwarmAddress, MAX_PO};
+pub use address::{MAX_PO, SwarmAddress};
 pub use error::{PrimitivesError, Result};
 
 // Core BMT functionality
@@ -71,3 +67,12 @@ pub use chunk::{
     SingleOwnerChunk,
     StandardChunkSet,
 };
+
+/// Default BMT hasher.
+pub type DefaultHasher = Hasher<DEFAULT_BODY_SIZE>;
+/// Default content-addressed chunk.
+pub type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
+/// Default single-owner chunk.
+pub type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
+/// Default polymorphic chunk.
+pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;

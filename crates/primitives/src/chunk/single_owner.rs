@@ -483,7 +483,9 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, Initial> {
         mut self,
         data: impl Into<Bytes>,
     ) -> Result<SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData>> {
-        let body = BmtBody::<BODY_SIZE>::builder().auto_from_data(data)?.build()?;
+        let body = BmtBody::<BODY_SIZE>::builder()
+            .auto_from_data(data)?
+            .build()?;
         self.body = Some(body);
 
         Ok(SingleOwnerChunkBuilderImpl {
@@ -495,7 +497,10 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, Initial> {
     }
 
     /// Initialize with a specific body
-    fn with_body(mut self, body: BmtBody<BODY_SIZE>) -> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
+    fn with_body(
+        mut self,
+        body: BmtBody<BODY_SIZE>,
+    ) -> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
         self.body = Some(body);
 
         SingleOwnerChunkBuilderImpl {

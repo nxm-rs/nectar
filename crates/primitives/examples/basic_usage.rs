@@ -8,13 +8,9 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
 use bytes::Bytes;
 
-use nectar_primitives::bmt::{Hasher, Prover, DEFAULT_BODY_SIZE};
-use nectar_primitives::chunk::{BmtChunk, Chunk, ContentChunk, SingleOwnerChunk};
-
-// Type aliases for default body size
-type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
-type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
-type DefaultHasher = Hasher<DEFAULT_BODY_SIZE>;
+use nectar_primitives::bmt::Prover;
+use nectar_primitives::chunk::{BmtChunk, Chunk};
+use nectar_primitives::{DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Nectar Primitives Example");

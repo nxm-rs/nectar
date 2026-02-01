@@ -199,10 +199,22 @@ mod tests {
 
     #[test]
     fn test_standard_chunk_set_supports() {
-        assert!(<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::CONTENT));
-        assert!(<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::SINGLE_OWNER));
-        assert!(!<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::custom(100)));
-        assert!(!<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::new(50)));
+        assert!(
+            <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::CONTENT)
+        );
+        assert!(
+            <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(
+                ChunkTypeId::SINGLE_OWNER
+            )
+        );
+        assert!(
+            !<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::custom(
+                100
+            ))
+        );
+        assert!(
+            !<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::new(50))
+        );
     }
 
     #[test]
@@ -215,18 +227,32 @@ mod tests {
 
     #[test]
     fn test_format_supported_types() {
-        let formatted = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::format_supported_types();
+        let formatted =
+            <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::format_supported_types();
         assert_eq!(formatted, "CAC (0x00), SOC (0x01)");
 
-        let content_only = <ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::format_supported_types();
+        let content_only =
+            <ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::format_supported_types();
         assert_eq!(content_only, "CAC (0x00)");
     }
 
     #[test]
     fn test_content_only_chunk_set_supports() {
-        assert!(<ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::CONTENT));
-        assert!(!<ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::SINGLE_OWNER));
-        assert!(!<ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::custom(100)));
+        assert!(
+            <ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(
+                ChunkTypeId::CONTENT
+            )
+        );
+        assert!(
+            !<ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(
+                ChunkTypeId::SINGLE_OWNER
+            )
+        );
+        assert!(
+            !<ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(
+                ChunkTypeId::custom(100)
+            )
+        );
     }
 
     #[test]
@@ -236,7 +262,8 @@ mod tests {
         let bytes: Bytes = content.clone().into();
 
         // Deserialize through StandardChunkSet
-        let any_chunk = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::deserialize(&bytes).unwrap();
+        let any_chunk =
+            <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::deserialize(&bytes).unwrap();
 
         assert!(any_chunk.is_content());
         assert_eq!(*any_chunk.address(), *content.address());
