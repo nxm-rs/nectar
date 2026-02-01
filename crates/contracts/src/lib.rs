@@ -220,6 +220,40 @@ sol! {
 
 // Swap Contract Interfaces (Chequebook)
 
+#[cfg(feature = "serde")]
+sol! {
+    /// EIP-712 cheque struct for chequebook payments.
+    ///
+    /// This is the typed data structure used for signing cheques off-chain.
+    /// The EIP-712 domain uses:
+    /// - Name: "Chequebook"
+    /// - Version: "1.0"
+    /// - ChainId: network-specific (100 for Gnosis, 11155111 for Sepolia)
+    #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    struct Cheque {
+        address chequebook;
+        address beneficiary;
+        uint256 cumulativePayout;
+    }
+}
+
+#[cfg(not(feature = "serde"))]
+sol! {
+    /// EIP-712 cheque struct for chequebook payments.
+    ///
+    /// This is the typed data structure used for signing cheques off-chain.
+    /// The EIP-712 domain uses:
+    /// - Name: "Chequebook"
+    /// - Version: "1.0"
+    /// - ChainId: network-specific (100 for Gnosis, 11155111 for Sepolia)
+    #[derive(Debug, PartialEq, Eq)]
+    struct Cheque {
+        address chequebook;
+        address beneficiary;
+        uint256 cumulativePayout;
+    }
+}
+
 sol! {
     /// Chequebook contract interface (ERC20SimpleSwap).
     ///

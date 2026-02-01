@@ -9,6 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use bytes::Bytes;
 
+use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::error::Result;
 
 use super::any_chunk::AnyChunk;
@@ -17,7 +18,7 @@ use super::error::ChunkError;
 use super::single_owner::SingleOwnerChunk;
 use super::type_id::ChunkTypeId;
 
-/// Trait defining a set of supported chunk types.
+/// Trait defining a set of supported chunk types with configurable body size.
 ///
 /// This trait is implemented by marker types that define which chunk types
 /// a system supports. It enables compile-time configuration of valid chunk types
@@ -46,7 +47,13 @@ use super::type_id::ChunkTypeId;
 /// let types = StandardChunkSet::supported_types();
 /// assert_eq!(types.len(), 2);
 /// ```
-pub trait ChunkTypeSet: Send + Sync + 'static {
+pub trait ChunkTypeSet<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: Send + Sync + 'static {
+    /// The chunk body size in bytes for this set.
+    ///
+    /// This is exposed as an associated const so consumers can access the body size
+    /// at compile time through the type system.
+    const BODY_SIZE: usize = BODY_SIZE;
+
     /// Check if a chunk type ID is supported by this set.
     ///
     /// Returns `true` if chunks with the given type ID can be
@@ -62,7 +69,7 @@ pub trait ChunkTypeSet: Send + Sync + 'static {
     ///
     /// Returns [`ChunkError::UnsupportedType`] if the type ID is not in this set.
     /// May return other errors from the underlying chunk deserialization.
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk>;
+    fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>>;
 
     /// Get the list of all supported type IDs.
     ///
@@ -77,9 +84,9 @@ pub trait ChunkTypeSet: Send + Sync + 'static {
     /// # Example
     ///
     /// ```
-    /// use nectar_primitives::{ChunkTypeSet, StandardChunkSet};
+    /// use nectar_primitives::{ChunkTypeSet, StandardChunkSet, DEFAULT_BODY_SIZE};
     ///
-    /// let formatted = StandardChunkSet::format_supported_types();
+    /// let formatted = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::format_supported_types();
     /// assert!(formatted.contains("CAC"));
     /// assert!(formatted.contains("SOC"));
     /// ```
@@ -120,12 +127,12 @@ pub trait ChunkTypeSet: Send + Sync + 'static {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StandardChunkSet;
 
-impl ChunkTypeSet for StandardChunkSet {
+impl<const BODY_SIZE: usize> ChunkTypeSet<BODY_SIZE> for StandardChunkSet {
     fn supports(type_id: ChunkTypeId) -> bool {
         matches!(type_id, ChunkTypeId::CONTENT | ChunkTypeId::SINGLE_OWNER)
     }
 
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk> {
+    fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>> {
         if bytes.is_empty() {
             return Err(ChunkError::invalid_format("empty chunk data").into());
         }
@@ -141,12 +148,12 @@ impl ChunkTypeSet for StandardChunkSet {
         // This is a heuristic - in practice, callers should know the expected type.
 
         // Try as ContentChunk first
-        if let Ok(content) = ContentChunk::try_from(Bytes::copy_from_slice(bytes)) {
+        if let Ok(content) = ContentChunk::<BODY_SIZE>::try_from(Bytes::copy_from_slice(bytes)) {
             return Ok(AnyChunk::Content(content));
         }
 
         // Try as SingleOwnerChunk
-        if let Ok(soc) = SingleOwnerChunk::try_from(Bytes::copy_from_slice(bytes)) {
+        if let Ok(soc) = SingleOwnerChunk::<BODY_SIZE>::try_from(Bytes::copy_from_slice(bytes)) {
             return Ok(AnyChunk::SingleOwner(soc));
         }
 
@@ -165,17 +172,17 @@ impl ChunkTypeSet for StandardChunkSet {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ContentOnlyChunkSet;
 
-impl ChunkTypeSet for ContentOnlyChunkSet {
+impl<const BODY_SIZE: usize> ChunkTypeSet<BODY_SIZE> for ContentOnlyChunkSet {
     fn supports(type_id: ChunkTypeId) -> bool {
         type_id == ChunkTypeId::CONTENT
     }
 
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk> {
+    fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>> {
         if bytes.is_empty() {
             return Err(ChunkError::invalid_format("empty chunk data").into());
         }
 
-        ContentChunk::try_from(Bytes::copy_from_slice(bytes)).map(AnyChunk::Content)
+        ContentChunk::<BODY_SIZE>::try_from(Bytes::copy_from_slice(bytes)).map(AnyChunk::Content)
     }
 
     fn supported_types() -> &'static [ChunkTypeId] {
@@ -188,17 +195,19 @@ mod tests {
     use super::super::traits::Chunk;
     use super::*;
 
+    type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
+
     #[test]
     fn test_standard_chunk_set_supports() {
-        assert!(StandardChunkSet::supports(ChunkTypeId::CONTENT));
-        assert!(StandardChunkSet::supports(ChunkTypeId::SINGLE_OWNER));
-        assert!(!StandardChunkSet::supports(ChunkTypeId::custom(100)));
-        assert!(!StandardChunkSet::supports(ChunkTypeId::new(50)));
+        assert!(<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::CONTENT));
+        assert!(<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::SINGLE_OWNER));
+        assert!(!<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::custom(100)));
+        assert!(!<StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::new(50)));
     }
 
     #[test]
     fn test_standard_chunk_set_supported_types() {
-        let types = StandardChunkSet::supported_types();
+        let types = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supported_types();
         assert_eq!(types.len(), 2);
         assert!(types.contains(&ChunkTypeId::CONTENT));
         assert!(types.contains(&ChunkTypeId::SINGLE_OWNER));
@@ -206,28 +215,28 @@ mod tests {
 
     #[test]
     fn test_format_supported_types() {
-        let formatted = StandardChunkSet::format_supported_types();
+        let formatted = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::format_supported_types();
         assert_eq!(formatted, "CAC (0x00), SOC (0x01)");
 
-        let content_only = ContentOnlyChunkSet::format_supported_types();
+        let content_only = <ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::format_supported_types();
         assert_eq!(content_only, "CAC (0x00)");
     }
 
     #[test]
     fn test_content_only_chunk_set_supports() {
-        assert!(ContentOnlyChunkSet::supports(ChunkTypeId::CONTENT));
-        assert!(!ContentOnlyChunkSet::supports(ChunkTypeId::SINGLE_OWNER));
-        assert!(!ContentOnlyChunkSet::supports(ChunkTypeId::custom(100)));
+        assert!(<ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::CONTENT));
+        assert!(!<ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::SINGLE_OWNER));
+        assert!(!<ContentOnlyChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::supports(ChunkTypeId::custom(100)));
     }
 
     #[test]
     fn test_deserialize_content_chunk() {
         // Create a content chunk and serialize it
-        let content = ContentChunk::new(&b"hello world"[..]).unwrap();
+        let content = DefaultContentChunk::new(&b"hello world"[..]).unwrap();
         let bytes: Bytes = content.clone().into();
 
         // Deserialize through StandardChunkSet
-        let any_chunk = StandardChunkSet::deserialize(&bytes).unwrap();
+        let any_chunk = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::deserialize(&bytes).unwrap();
 
         assert!(any_chunk.is_content());
         assert_eq!(*any_chunk.address(), *content.address());
@@ -235,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_deserialize_empty_bytes_fails() {
-        let result = StandardChunkSet::deserialize(&[]);
+        let result = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::deserialize(&[]);
         assert!(result.is_err());
     }
 }

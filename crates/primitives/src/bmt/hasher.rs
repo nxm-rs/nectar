@@ -16,25 +16,14 @@ use rayon;
 
 use super::constants::*;
 
-/// Number of levels in the zero-tree cache.
-/// Level 0 = hash of 64 zero bytes (SEGMENT_PAIR_LENGTH)
-/// Level 6 = hash of full 4096-byte zero tree
-const ZERO_TREE_LEVELS: usize = 7;
+/// Number of zero tree levels for the default body size.
+const ZERO_TREE_LEVELS: usize = zero_tree_levels(DEFAULT_BODY_SIZE);
 
-/// Pre-computed hashes for zero-filled subtrees at each level.
-/// This optimization avoids recomputing hashes for all-zero portions of the buffer.
-///
-/// - Level 0: hash of 64 zero bytes (one segment pair)
-/// - Level 1: hash of two level-0 hashes (128 bytes of zeros)
-/// - Level 2: hash of two level-1 hashes (256 bytes of zeros)
-/// - Level 3: hash of two level-2 hashes (512 bytes of zeros)
-/// - Level 4: hash of two level-3 hashes (1024 bytes of zeros)
-/// - Level 5: hash of two level-4 hashes (2048 bytes of zeros)
-/// - Level 6: hash of two level-5 hashes (4096 bytes of zeros)
+/// Pre-computed zero hashes for the default body size tree.
 static ZERO_HASHES: LazyLock<[B256; ZERO_TREE_LEVELS]> = LazyLock::new(|| {
     let mut hashes = [B256::ZERO; ZERO_TREE_LEVELS];
 
-    // Level 0: hash of 64 zero bytes
+    // Level 0: hash of 64 zero bytes (one segment pair)
     let mut hasher = Keccak256::new();
     hasher.update(&[0u8; SEGMENT_PAIR_LENGTH]);
     hashes[0] = B256::from_slice(hasher.finalize().as_slice());
@@ -50,36 +39,30 @@ static ZERO_HASHES: LazyLock<[B256; ZERO_TREE_LEVELS]> = LazyLock::new(|| {
     hashes
 });
 
-/// Reference implementation of a BMT hasher that uses Keccak256
-///
-/// This implementation uses a fixed number of BMT branches (128) as defined by `BMT_BRANCHES`.
-/// The Binary Merkle Tree is structured to efficiently hash data in parallel when supported.
+/// BMT hasher with configurable body size.
 #[derive(Debug, Clone)]
-pub struct Hasher {
+pub struct Hasher<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     span: u64,
     prefix: Option<Vec<u8>>,
-    buffer: [u8; MAX_DATA_LENGTH],
+    buffer: [u8; BODY_SIZE],
     cursor: usize,
 }
 
-impl Default for Hasher {
+impl<const BODY_SIZE: usize> Default for Hasher<BODY_SIZE> {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Hasher {
-    /// Create a new BMT hasher with `BMT_BRANCHES` (128) branches
-    ///
-    /// The hasher is optimized for data sized in multiples of SEGMENT_SIZE,
-    /// with a maximum of BMT_BRANCHES * SEGMENT_SIZE bytes.
+impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
+    /// Create a new BMT hasher.
     #[inline]
     pub fn new() -> Self {
         Self {
             span: 0,
             prefix: None,
-            buffer: [0u8; MAX_DATA_LENGTH], // Pre-initialized with zeros
+            buffer: [0u8; BODY_SIZE],
             cursor: 0,
         }
     }
@@ -134,7 +117,7 @@ impl Hasher {
         }
 
         // Calculate how much data we can actually copy
-        let available_space = MAX_DATA_LENGTH - self.cursor;
+        let available_space = BODY_SIZE - self.cursor;
         let bytes_to_copy = data.len().min(available_space);
 
         if bytes_to_copy > 0 {
@@ -175,12 +158,11 @@ impl Hasher {
         }
 
         // Find the smallest power-of-2 subtree that contains all data
-        // Minimum is SEGMENT_PAIR_LENGTH (64 bytes), maximum is MAX_DATA_LENGTH (4096 bytes)
         let effective_size = self
             .cursor
             .next_power_of_two()
             .max(SEGMENT_PAIR_LENGTH)
-            .min(MAX_DATA_LENGTH);
+            .min(BODY_SIZE);
 
         // Hash only the effective subtree (which contains all actual data)
         #[cfg(not(target_arch = "wasm32"))]
@@ -192,7 +174,7 @@ impl Hasher {
 
         // Roll up with zero hashes until we reach the full tree size
         let mut current_size = effective_size;
-        while current_size < MAX_DATA_LENGTH {
+        while current_size < BODY_SIZE {
             // The current result is a left child, combine with zero hash for right sibling
             let sibling_level = Self::zero_tree_level(current_size);
             let mut hasher = Keccak256::new();
@@ -327,20 +309,20 @@ impl Hasher {
     /// Get segments for the current level of data
     #[inline]
     pub fn get_level_segments(&self, data: &[u8]) -> Vec<B256> {
-        // Use parallel processing only when available
+        let branches = branches_for_body_size(BODY_SIZE);
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             use rayon::prelude::*;
-            (0..BRANCHES)
+            (0..branches)
                 .into_par_iter()
                 .map(|i| self.compute_segment_hash(data, i))
                 .collect()
         }
 
-        // Sequential for WASM
         #[cfg(target_arch = "wasm32")]
         {
-            (0..BRANCHES)
+            (0..branches)
                 .map(|i| self.compute_segment_hash(data, i))
                 .collect()
         }
@@ -372,11 +354,10 @@ impl Hasher {
     }
 }
 
-impl Write for Hasher {
+impl<const BODY_SIZE: usize> Write for Hasher<BODY_SIZE> {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        // Correctly report actual bytes written per io::Write contract
-        let available = MAX_DATA_LENGTH - self.cursor;
+        let available = BODY_SIZE - self.cursor;
         let to_write = buf.len().min(available);
         if to_write > 0 {
             self.buffer[self.cursor..self.cursor + to_write].copy_from_slice(&buf[..to_write]);
@@ -387,70 +368,61 @@ impl Write for Hasher {
 
     #[inline]
     fn flush(&mut self) -> io::Result<()> {
-        // Nothing needs to be done for flush
         Ok(())
     }
 }
 
-// Implement the Digest trait methods to match the standard patterns
-impl OutputSizeUser for Hasher {
-    type OutputSize = U32; // 32-byte output size
+impl<const BODY_SIZE: usize> OutputSizeUser for Hasher<BODY_SIZE> {
+    type OutputSize = U32;
 }
 
-impl Update for Hasher {
+impl<const BODY_SIZE: usize> Update for Hasher<BODY_SIZE> {
     #[inline]
     fn update(&mut self, data: &[u8]) {
         self.update(data);
     }
 }
 
-impl Reset for Hasher {
+impl<const BODY_SIZE: usize> Reset for Hasher<BODY_SIZE> {
     #[inline]
     fn reset(&mut self) {
         self.reset_internal();
     }
 }
 
-impl FixedOutput for Hasher {
+impl<const BODY_SIZE: usize> FixedOutput for Hasher<BODY_SIZE> {
     #[inline]
     fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
-        // Just finalize without resetting
         let b256 = self.sum();
         out.copy_from_slice(b256.as_slice());
     }
 }
 
-impl FixedOutputReset for Hasher {
+impl<const BODY_SIZE: usize> FixedOutputReset for Hasher<BODY_SIZE> {
     #[inline]
     fn finalize_into_reset(&mut self, out: &mut GenericArray<u8, Self::OutputSize>) {
-        // Compute the hash
         let b256 = self.sum();
-
-        // Copy it to the output
         out.copy_from_slice(b256.as_slice());
-
-        // Reset the hasher
         self.reset_internal();
     }
 }
 
-// Make BMTHasher a valid hash function
-impl digest::HashMarker for Hasher {}
+impl<const BODY_SIZE: usize> digest::HashMarker for Hasher<BODY_SIZE> {}
 
-/// A factory that creates BmtHasher instances
+/// Factory for creating BMT hashers.
 #[derive(Debug, Default, Clone)]
-pub struct HasherFactory;
+pub struct HasherFactory<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>;
 
-impl HasherFactory {
-    /// Create a new factory for BmtHasher instances
+impl<const BODY_SIZE: usize> HasherFactory<BODY_SIZE> {
+    /// Create a new factory.
     #[inline]
     pub fn new() -> Self {
         Self
     }
 
-    /// Create a new BMT hasher
+    /// Create a new BMT hasher.
     #[inline]
-    pub fn create_hasher(&self) -> Hasher {
+    pub fn create_hasher(&self) -> Hasher<BODY_SIZE> {
         Hasher::new()
     }
 }

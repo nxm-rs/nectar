@@ -35,7 +35,7 @@ pub(crate) mod error;
 mod hasher;
 mod proof;
 
-pub use constants::MAX_DATA_LENGTH;
+pub use constants::DEFAULT_BODY_SIZE;
 pub use hasher::{Hasher, HasherFactory};
 pub use proof::{Proof, Prover};
 
