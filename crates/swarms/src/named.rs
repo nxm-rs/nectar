@@ -33,7 +33,7 @@ pub enum NamedSwarm {
     Mainnet = 1,
 
     /// Swarm testnet (network ID 10), running on Sepolia.
-    #[strum(to_string = "sepolia")]
+    #[strum(to_string = "testnet")]
     Testnet = 10,
 
     /// Development network (network ID 1337).
