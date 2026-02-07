@@ -38,6 +38,7 @@ pub mod bmt;
 mod cache;
 pub mod chunk;
 pub mod error;
+pub mod file;
 
 // Re-export core constants
 pub use bmt::DEFAULT_BODY_SIZE;
@@ -76,3 +77,14 @@ pub type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
 pub type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 /// Default polymorphic chunk.
 pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
+
+// File operations
+pub use file::{
+    ChunkGetter, ChunkSink, FileError, Joiner, MemorySink, Splitter, VecSink,
+    join, split, split_reader,
+};
+
+/// Default file splitter.
+pub type DefaultSplitter<S> = file::Splitter<S, DEFAULT_BODY_SIZE>;
+/// Default file joiner.
+pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
