@@ -1,18 +1,12 @@
-//! Chunk sink trait and implementations for storing produced chunks.
+//! Chunk storage implementations.
 
 use std::collections::HashMap;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{Chunk, ChunkAddress, ContentChunk};
 
-/// Receives chunks produced by the splitter.
-pub trait ChunkSink<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
-    /// Error type for sink operations.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Store a chunk.
-    fn put(&mut self, chunk: ContentChunk<BODY_SIZE>) -> Result<(), Self::Error>;
-}
+use super::traits::{ChunkGet, ChunkHas, ChunkPut};
+use super::error::FileError;
 
 /// In-memory chunk storage using a HashMap.
 #[derive(Debug, Clone)]
@@ -27,7 +21,7 @@ impl<const BODY_SIZE: usize> Default for MemorySink<BODY_SIZE> {
 }
 
 impl<const BODY_SIZE: usize> MemorySink<BODY_SIZE> {
-    /// Create a new empty memory sink.
+    /// Create an empty memory sink.
     pub fn new() -> Self {
         Self {
             chunks: HashMap::new(),
@@ -39,38 +33,61 @@ impl<const BODY_SIZE: usize> MemorySink<BODY_SIZE> {
         self.chunks.get(address)
     }
 
-    /// Check if a chunk exists.
-    pub fn contains(&self, address: &ChunkAddress) -> bool {
-        self.chunks.contains_key(address)
-    }
-
-    /// Get the number of stored chunks.
+    /// Number of stored chunks.
     pub fn len(&self) -> usize {
         self.chunks.len()
     }
 
-    /// Check if the sink is empty.
+    /// Whether the sink is empty.
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
 
-    /// Get all stored chunks.
+    /// Access all stored chunks.
     pub fn chunks(&self) -> &HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
         &self.chunks
     }
 
-    /// Consume the sink and return the chunks.
+    /// Consume the sink and return all chunks.
     pub fn into_chunks(self) -> HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
         self.chunks
     }
 }
 
-impl<const BODY_SIZE: usize> ChunkSink<BODY_SIZE> for MemorySink<BODY_SIZE> {
+impl<const BODY_SIZE: usize> ChunkPut<BODY_SIZE> for MemorySink<BODY_SIZE> {
     type Error = std::convert::Infallible;
 
     fn put(&mut self, chunk: ContentChunk<BODY_SIZE>) -> Result<(), Self::Error> {
         self.chunks.insert(*chunk.address(), chunk);
         Ok(())
+    }
+}
+
+impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for MemorySink<BODY_SIZE> {
+    type Error = FileError;
+
+    fn get(&self, address: &ChunkAddress) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
+        self.chunks
+            .get(address)
+            .cloned()
+            .ok_or_else(|| FileError::ChunkNotFound(*address))
+    }
+}
+
+impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for &MemorySink<BODY_SIZE> {
+    type Error = FileError;
+
+    fn get(&self, address: &ChunkAddress) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
+        self.chunks
+            .get(address)
+            .cloned()
+            .ok_or_else(|| FileError::ChunkNotFound(*address))
+    }
+}
+
+impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for MemorySink<BODY_SIZE> {
+    fn has(&self, address: &ChunkAddress) -> bool {
+        self.chunks.contains_key(address)
     }
 }
 
@@ -87,40 +104,40 @@ impl<const BODY_SIZE: usize> Default for VecSink<BODY_SIZE> {
 }
 
 impl<const BODY_SIZE: usize> VecSink<BODY_SIZE> {
-    /// Create a new empty vec sink.
+    /// Create an empty vec sink.
     pub fn new() -> Self {
         Self { chunks: Vec::new() }
     }
 
-    /// Create a new vec sink with pre-allocated capacity.
+    /// Create a vec sink with pre-allocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             chunks: Vec::with_capacity(capacity),
         }
     }
 
-    /// Get the number of stored chunks.
+    /// Number of stored chunks.
     pub fn len(&self) -> usize {
         self.chunks.len()
     }
 
-    /// Check if the sink is empty.
+    /// Whether the sink is empty.
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
 
-    /// Get all stored chunks.
+    /// Access stored chunks in insertion order.
     pub fn chunks(&self) -> &[ContentChunk<BODY_SIZE>] {
         &self.chunks
     }
 
-    /// Consume the sink and return the chunks.
+    /// Consume the sink and return all chunks.
     pub fn into_chunks(self) -> Vec<ContentChunk<BODY_SIZE>> {
         self.chunks
     }
 }
 
-impl<const BODY_SIZE: usize> ChunkSink<BODY_SIZE> for VecSink<BODY_SIZE> {
+impl<const BODY_SIZE: usize> ChunkPut<BODY_SIZE> for VecSink<BODY_SIZE> {
     type Error = std::convert::Infallible;
 
     fn put(&mut self, chunk: ContentChunk<BODY_SIZE>) -> Result<(), Self::Error> {
@@ -141,9 +158,9 @@ mod tests {
         let chunk = ContentChunk::new(b"hello".as_slice()).unwrap();
         let addr = *chunk.address();
 
-        sink.put(chunk.clone()).unwrap();
+        ChunkPut::put(&mut sink, chunk.clone()).unwrap();
         assert_eq!(sink.len(), 1);
-        assert!(sink.contains(&addr));
+        assert!(ChunkHas::has(&sink, &addr));
         assert_eq!(sink.get(&addr), Some(&chunk));
     }
 
@@ -155,8 +172,8 @@ mod tests {
         let chunk1 = ContentChunk::new(b"first".as_slice()).unwrap();
         let chunk2 = ContentChunk::new(b"second".as_slice()).unwrap();
 
-        sink.put(chunk1.clone()).unwrap();
-        sink.put(chunk2.clone()).unwrap();
+        ChunkPut::put(&mut sink, chunk1.clone()).unwrap();
+        ChunkPut::put(&mut sink, chunk2.clone()).unwrap();
 
         assert_eq!(sink.len(), 2);
         assert_eq!(sink.chunks()[0], chunk1);

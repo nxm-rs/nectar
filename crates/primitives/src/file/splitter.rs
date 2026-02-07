@@ -5,16 +5,17 @@ use std::io::{self, Write};
 
 use bytes::Bytes;
 
-use crate::bmt::DEFAULT_BODY_SIZE;
+use crate::bmt::{DEFAULT_BODY_SIZE, SPAN_SIZE};
 use crate::chunk::{Chunk, ChunkAddress, ContentChunk};
 
-use super::constants::{LEVEL_LIMIT, REF_SIZE, SPANS, SPAN_SIZE};
+use super::constants::{LEVEL_LIMIT, REF_SIZE, SPANS};
 use super::error::{FileError, Result};
-use super::sink::ChunkSink;
+use super::levels;
+use super::traits::ChunkPut;
 
 /// Splits data into BMT chunks, producing intermediate chunks for large files.
 ///
-/// The splitter uses a multi-level buffer to build the chunk tree:
+/// Uses a multi-level buffer to build the chunk tree:
 /// - Level 0: Raw file data (up to 4096 bytes per chunk)
 /// - Level 1+: Hash references (128 x 32-byte refs per chunk)
 ///
@@ -22,7 +23,7 @@ use super::sink::ChunkSink;
 /// finalize the tree and get the root address.
 pub struct Splitter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    S: ChunkSink<BODY_SIZE>,
+    S: ChunkPut<BODY_SIZE>,
 {
     sink: S,
     span_length: u64,
@@ -34,7 +35,7 @@ where
 
 impl<S, const BODY_SIZE: usize> fmt::Debug for Splitter<S, BODY_SIZE>
 where
-    S: ChunkSink<BODY_SIZE>,
+    S: ChunkPut<BODY_SIZE>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Splitter")
@@ -48,12 +49,10 @@ where
 
 impl<S, const BODY_SIZE: usize> Splitter<S, BODY_SIZE>
 where
-    S: ChunkSink<BODY_SIZE>,
+    S: ChunkPut<BODY_SIZE>,
 {
     /// Create a splitter for data of known size.
     pub fn new(sink: S, span_length: u64) -> Self {
-        // Buffer size: each level can hold one full chunk worth of data
-        // We allocate 2x to handle edge cases during finalization
         let buffer_size = (BODY_SIZE + SPAN_SIZE) * LEVEL_LIMIT * 2;
 
         Self {
@@ -66,22 +65,21 @@ where
         }
     }
 
-    /// Get the number of bytes written so far.
+    /// Bytes written so far.
     pub fn len(&self) -> u64 {
         self.length
     }
 
-    /// Check if any data has been written.
+    /// Whether any data has been written.
     pub fn is_empty(&self) -> bool {
         self.length == 0
     }
 
-    /// Get the declared span length.
+    /// Declared span length.
     pub fn span_length(&self) -> u64 {
         self.span_length
     }
 
-    /// Write data to a specific level's buffer.
     fn write_to_level(&mut self, level: usize, data: &[u8]) -> Result<()> {
         let start = self.cursors[level];
         let end = start + data.len();
@@ -89,32 +87,26 @@ where
         self.buffer[start..end].copy_from_slice(data);
         self.cursors[level] = end;
 
-        // Check if this level's buffer is full (reached chunk boundary)
         let level_start = self.cursors[level + 1];
         if self.cursors[level] - level_start == BODY_SIZE {
             let reference = self.sum_level(level)?;
             self.write_to_level(level + 1, &reference)?;
-            // Reset this level's cursor to next level's position
             self.cursors[level] = self.cursors[level + 1];
         }
 
         Ok(())
     }
 
-    /// Create a chunk from the current level's buffer and return its reference.
     fn sum_level(&mut self, level: usize) -> Result<[u8; REF_SIZE]> {
         self.sum_counts[level] += 1;
 
-        // Calculate span for this chunk
         let span_size = SPANS[level] * BODY_SIZE as u64;
         let span = (self.length - 1) % span_size + 1;
 
-        // Extract chunk data from buffer
         let level_start = self.cursors[level + 1];
         let level_end = self.cursors[level];
         let chunk_data = &self.buffer[level_start..level_end];
 
-        // Build chunk with span header
         let mut chunk_bytes = Vec::with_capacity(SPAN_SIZE + chunk_data.len());
         chunk_bytes.extend_from_slice(&span.to_le_bytes());
         chunk_bytes.extend_from_slice(chunk_data);
@@ -131,7 +123,6 @@ where
         Ok(address.into())
     }
 
-    /// Hash any remaining data at level 0 that doesn't fill a complete chunk.
     fn hash_unfinished(&mut self) -> Result<()> {
         if self.length % BODY_SIZE as u64 != 0 {
             let reference = self.sum_level(0)?;
@@ -143,23 +134,19 @@ where
         Ok(())
     }
 
-    /// Handle unbalanced tree: carry single refs up instead of wrapping.
     fn move_dangling_chunk(&mut self) -> Result<()> {
-        let target_level = super::constants::levels(self.length, BODY_SIZE);
+        let target_level = levels(self.length, BODY_SIZE);
 
         for i in 1..target_level {
-            // Check if there's a single dangling reference at this level
             if self.sum_counts[i] > 0 {
                 let prev_spans = SPANS[target_level - 1 - i] as i64;
                 if (self.sum_counts[i - 1] as i64) - prev_spans <= 1 {
-                    // Carry the reference to the next level without wrapping
                     self.cursors[i + 1] = self.cursors[i];
                     self.cursors[i] = self.cursors[i - 1];
                     continue;
                 }
             }
 
-            // Hash this level and write reference to next level
             let reference = self.sum_level(i)?;
             let next_cursor = self.cursors[i + 1];
             self.buffer[next_cursor..next_cursor + REF_SIZE].copy_from_slice(&reference);
@@ -170,7 +157,7 @@ where
         Ok(())
     }
 
-    /// Finalize the splitter and return the root address and sink.
+    /// Finalize and return the root address and sink.
     pub fn finish(mut self) -> Result<(ChunkAddress, S)> {
         if self.length != self.span_length {
             return Err(FileError::SpanMismatch {
@@ -179,7 +166,6 @@ where
             });
         }
 
-        // Handle empty file case
         if self.length == 0 {
             let chunk = ContentChunk::<BODY_SIZE>::new(Bytes::new()).map_err(|e| match e {
                 crate::error::PrimitivesError::Chunk(c) => FileError::Chunk(c),
@@ -193,14 +179,12 @@ where
         self.hash_unfinished()?;
         self.move_dangling_chunk()?;
 
-        // Root hash is in the first REF_SIZE bytes of the buffer
         let root_bytes: [u8; 32] = self.buffer[..REF_SIZE].try_into().unwrap();
         let root = ChunkAddress::from(root_bytes);
 
         Ok((root, self.sink))
     }
 
-    /// Write a single chunk's worth of data (internal helper).
     fn write_chunk(&mut self, data: &[u8]) -> Result<()> {
         debug_assert!(data.len() <= BODY_SIZE);
 
@@ -218,14 +202,13 @@ where
 
 impl<S, const BODY_SIZE: usize> Write for Splitter<S, BODY_SIZE>
 where
-    S: ChunkSink<BODY_SIZE>,
+    S: ChunkPut<BODY_SIZE>,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
 
-        // Write in chunk-sized pieces
         let mut written = 0;
         while written < buf.len() {
             let remaining = buf.len() - written;
@@ -255,7 +238,7 @@ mod tests {
     use super::*;
     use crate::file::sink::VecSink;
 
-    const REFS_PER_CHUNK: usize = DEFAULT_BODY_SIZE / REF_SIZE; // 128
+    const REFS_PER_CHUNK: usize = DEFAULT_BODY_SIZE / REF_SIZE;
 
     #[test]
     fn test_splitter_empty() {
@@ -263,7 +246,7 @@ mod tests {
         let splitter = Splitter::new(sink, 0);
 
         let (root, sink) = splitter.finish().unwrap();
-        assert_eq!(sink.len(), 1); // One empty chunk
+        assert_eq!(sink.len(), 1);
         assert!(!root.is_zero());
     }
 
@@ -302,14 +285,12 @@ mod tests {
         splitter.write_all(&data).unwrap();
         let (root, sink) = splitter.finish().unwrap();
 
-        // 2 data chunks + 1 intermediate
         assert_eq!(sink.len(), 3);
         assert!(!root.is_zero());
     }
 
     #[test]
     fn test_splitter_128_chunks_exact() {
-        // 128 data chunks = exactly fills one level-1 intermediate
         let data = vec![0xEF; DEFAULT_BODY_SIZE * REFS_PER_CHUNK];
         let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
         let mut splitter = Splitter::new(sink, data.len() as u64);
@@ -317,14 +298,12 @@ mod tests {
         splitter.write_all(&data).unwrap();
         let (root, sink) = splitter.finish().unwrap();
 
-        // 128 data chunks + 1 intermediate at level 1 + 1 root at level 2
         assert_eq!(sink.len(), REFS_PER_CHUNK + 2);
         assert!(!root.is_zero());
     }
 
     #[test]
     fn test_splitter_129_chunks() {
-        // 129 data chunks = overflows into level 2
         let data = vec![0x12; DEFAULT_BODY_SIZE * (REFS_PER_CHUNK + 1)];
         let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
         let mut splitter = Splitter::new(sink, data.len() as u64);
@@ -332,7 +311,6 @@ mod tests {
         splitter.write_all(&data).unwrap();
         let (root, sink) = splitter.finish().unwrap();
 
-        // 129 data chunks + 2 intermediate (one full at level 1, one partial at level 2)
         assert_eq!(sink.len(), REFS_PER_CHUNK + 1 + 2);
         assert!(!root.is_zero());
     }
@@ -343,13 +321,11 @@ mod tests {
         let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
         let mut splitter = Splitter::new(sink, data.len() as u64);
 
-        // Write in small chunks
         for chunk in data.chunks(100) {
             splitter.write_all(chunk).unwrap();
         }
         let (root, sink) = splitter.finish().unwrap();
 
-        // 3 data chunks + 1 intermediate
         assert_eq!(sink.len(), 4);
         assert!(!root.is_zero());
     }
@@ -358,7 +334,6 @@ mod tests {
     fn test_splitter_deterministic() {
         let data = vec![0x56; DEFAULT_BODY_SIZE * 3];
 
-        // Split twice with same data
         let (root1, _) = {
             let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
             let mut splitter = Splitter::new(sink, data.len() as u64);

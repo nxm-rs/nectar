@@ -80,9 +80,12 @@ pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
 
 // File operations
 pub use file::{
-    ChunkGetter, ChunkSink, FileError, Joiner, MemorySink, Splitter, VecSink,
-    join, split, split_reader,
+    ChunkGet, ChunkGetExt, ChunkHas, ChunkPut, ChunkPutExt, ChunkRange, FileError, Joiner,
+    MemorySink, ParallelJoiner, ParallelSplitter, ReadAt, SplitBuilder, Splitter, TreeParams,
+    VecSink, join, split, split_reader,
 };
+#[cfg(feature = "async")]
+pub use file::{AsyncChunkGet, AsyncChunkPut, AsyncJoiner, AsyncReadAt};
 
 /// Default file splitter.
 pub type DefaultSplitter<S> = file::Splitter<S, DEFAULT_BODY_SIZE>;

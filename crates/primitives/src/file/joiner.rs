@@ -4,35 +4,16 @@ use std::fmt;
 use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
+use crate::chunk::{BmtChunk, Chunk, ChunkAddress};
 
 use super::constants::{LEVEL_LIMIT, REF_SIZE, SPANS};
 use super::error::{FileError, Result};
-use super::sink::MemorySink;
-
-/// Retrieves chunks by address.
-pub trait ChunkGetter<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
-    /// Error type for getter operations.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Get a chunk by its address.
-    fn get(&self, address: &ChunkAddress) -> std::result::Result<ContentChunk<BODY_SIZE>, Self::Error>;
-}
-
-impl<const BODY_SIZE: usize> ChunkGetter<BODY_SIZE> for MemorySink<BODY_SIZE> {
-    type Error = FileError;
-
-    fn get(&self, address: &ChunkAddress) -> std::result::Result<ContentChunk<BODY_SIZE>, Self::Error> {
-        self.get(address)
-            .cloned()
-            .ok_or_else(|| FileError::ChunkNotFound(*address))
-    }
-}
+use super::traits::ChunkGet;
 
 /// Joins chunks back into file data.
 pub struct Joiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: ChunkGetter<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
 {
     getter: G,
     root: ChunkAddress,
@@ -42,7 +23,7 @@ where
 
 impl<G, const BODY_SIZE: usize> fmt::Debug for Joiner<G, BODY_SIZE>
 where
-    G: ChunkGetter<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Joiner")
@@ -55,7 +36,7 @@ where
 
 impl<G, const BODY_SIZE: usize> Joiner<G, BODY_SIZE>
 where
-    G: ChunkGetter<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
 {
     /// Create a joiner from a root address.
     pub fn new(getter: G, root: ChunkAddress) -> Result<Self> {
@@ -70,22 +51,21 @@ where
         })
     }
 
-    /// Get the total file size.
+    /// Total file size.
     pub fn size(&self) -> u64 {
         self.span
     }
 
-    /// Get the current read position.
+    /// Current read position.
     pub fn position(&self) -> u64 {
         self.position
     }
 
-    /// Get the root address.
+    /// Root address.
     pub fn root(&self) -> &ChunkAddress {
         &self.root
     }
 
-    /// Read data starting at an offset into the provided buffer.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<usize> {
         if offset >= self.span {
             return Ok(0);
@@ -100,7 +80,6 @@ where
         Ok(to_read)
     }
 
-    /// Recursively read data from the chunk tree.
     fn read_from_tree(
         &self,
         address: &ChunkAddress,
@@ -111,7 +90,6 @@ where
         let chunk = self.getter.get(address).map_err(FileError::getter)?;
         let chunk_data = chunk.data();
 
-        // If span fits in one chunk, this is a data chunk
         if span <= BODY_SIZE as u64 {
             let start = offset as usize;
             let end = start + buf.len();
@@ -119,7 +97,6 @@ where
             return Ok(());
         }
 
-        // This is an intermediate chunk containing references
         let refs_per_chunk = BODY_SIZE / REF_SIZE;
         let subspan = self.subspan_size(span);
 
@@ -127,11 +104,9 @@ where
         let mut current_offset = offset;
 
         while !remaining.is_empty() {
-            // Find which child contains the current offset
             let child_index = (current_offset / subspan) as usize;
             let child_offset = current_offset % subspan;
 
-            // Get child address from chunk data
             let ref_start = child_index * REF_SIZE;
             let ref_end = ref_start + REF_SIZE;
 
@@ -144,16 +119,13 @@ where
                 .map_err(|_| FileError::InvalidReference { level: 0 })?;
             let child_addr = ChunkAddress::from(child_addr_bytes);
 
-            // Calculate actual span for this child
             let child_span = if child_index == refs_per_chunk - 1 {
-                // Last child may have smaller span
                 let preceding = child_index as u64 * subspan;
                 span.saturating_sub(preceding)
             } else {
                 subspan.min(span - child_index as u64 * subspan)
             };
 
-            // How much can we read from this child?
             let available = (child_span - child_offset) as usize;
             let to_read = remaining.len().min(available);
 
@@ -171,9 +143,7 @@ where
         Ok(())
     }
 
-    /// Calculate the subspan size for children of a node with given span.
     fn subspan_size(&self, span: u64) -> u64 {
-        // Find the level where this span fits
         for i in 0..LEVEL_LIMIT {
             let level_span = SPANS[i] * BODY_SIZE as u64;
             if span <= level_span {
@@ -186,7 +156,7 @@ where
 
 impl<G, const BODY_SIZE: usize> Read for Joiner<G, BODY_SIZE>
 where
-    G: ChunkGetter<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let read = self
@@ -199,7 +169,7 @@ where
 
 impl<G, const BODY_SIZE: usize> Seek for Joiner<G, BODY_SIZE>
 where
-    G: ChunkGetter<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
 {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let new_pos = match pos {
@@ -223,13 +193,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::Splitter;
+    use crate::file::{MemorySink, Splitter};
     use std::io::Write;
 
     const REFS_PER_CHUNK: usize = DEFAULT_BODY_SIZE / REF_SIZE;
 
     fn split_and_store(data: &[u8]) -> (ChunkAddress, MemorySink) {
-        let sink = crate::file::MemorySink::new();
+        let sink = MemorySink::new();
         let mut splitter = Splitter::new(sink, data.len() as u64);
         splitter.write_all(data).unwrap();
         splitter.finish().unwrap()
@@ -329,23 +299,19 @@ mod tests {
         let (root, sink) = split_and_store(&data);
         let mut joiner = Joiner::new(sink, root).unwrap();
 
-        // Seek to middle of second chunk
         let offset = DEFAULT_BODY_SIZE + 100;
         joiner.seek(SeekFrom::Start(offset as u64)).unwrap();
         assert_eq!(joiner.position(), offset as u64);
 
-        // Read some data
         let mut buf = vec![0u8; 50];
         joiner.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, &data[offset..offset + 50]);
 
-        // Seek relative
         joiner.seek(SeekFrom::Current(-50)).unwrap();
         let mut buf2 = vec![0u8; 50];
         joiner.read_exact(&mut buf2).unwrap();
         assert_eq!(buf, buf2);
 
-        // Seek from end
         joiner.seek(SeekFrom::End(-100)).unwrap();
         let mut buf3 = vec![0u8; 100];
         joiner.read_exact(&mut buf3).unwrap();
@@ -360,7 +326,6 @@ mod tests {
         let (root, sink) = split_and_store(&data);
         let mut joiner = Joiner::new(sink, root).unwrap();
 
-        // Read in small chunks
         let mut recovered = Vec::new();
         let mut buf = [0u8; 100];
         loop {
@@ -379,11 +344,9 @@ mod tests {
         let (root, sink) = split_and_store(data);
         let mut joiner = Joiner::new(sink, root).unwrap();
 
-        // Read all data
         let mut buf = vec![0u8; data.len()];
         joiner.read_exact(&mut buf).unwrap();
 
-        // Further reads should return 0
         let mut buf2 = [0u8; 10];
         let n = joiner.read(&mut buf2).unwrap();
         assert_eq!(n, 0);
@@ -395,11 +358,9 @@ mod tests {
         let (root, sink) = split_and_store(data);
         let mut joiner = Joiner::new(sink, root).unwrap();
 
-        // Seek past end is allowed
         joiner.seek(SeekFrom::Start(1000)).unwrap();
         assert_eq!(joiner.position(), 1000);
 
-        // But read returns 0
         let mut buf = [0u8; 10];
         let n = joiner.read(&mut buf).unwrap();
         assert_eq!(n, 0);
@@ -411,7 +372,6 @@ mod tests {
         let (root, sink) = split_and_store(data);
         let mut joiner = Joiner::new(sink, root).unwrap();
 
-        // Seek to negative position is an error
         let result = joiner.seek(SeekFrom::Current(-100));
         assert!(result.is_err());
     }

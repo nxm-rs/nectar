@@ -20,22 +20,43 @@
 //! assert_eq!(recovered, data);
 //! ```
 
+mod builder;
 mod constants;
 pub mod error;
 mod joiner;
+#[cfg(feature = "async")]
+mod joiner_async;
+mod joiner_parallel;
+mod read_at;
 mod sink;
 mod splitter;
+mod splitter_parallel;
+pub mod traits;
+#[cfg(feature = "async")]
+pub mod traits_async;
+mod tree;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
 use crate::chunk::{ChunkAddress, ContentChunk};
 
-pub use constants::{LEVEL_LIMIT, REFS_PER_CHUNK, REF_SIZE, SPANS, SPAN_SIZE, levels, span_for_level};
+pub use builder::SplitBuilder;
 pub use error::FileError;
-pub use joiner::{ChunkGetter, Joiner};
-pub use sink::{ChunkSink, MemorySink, VecSink};
+pub use joiner::Joiner;
+#[cfg(feature = "async")]
+pub use joiner_async::AsyncJoiner;
+pub use joiner_parallel::ParallelJoiner;
+pub use read_at::ReadAt;
+pub use sink::{MemorySink, VecSink};
 pub use splitter::Splitter;
+pub use splitter_parallel::ParallelSplitter;
+pub use traits::{ChunkGet, ChunkHas, ChunkPut};
+#[cfg(feature = "async")]
+pub use traits_async::{AsyncChunkGet, AsyncChunkPut, AsyncReadAt};
+pub use tree::{ChunkRange, TreeParams};
+
+// Extension traits are defined below, after all types are available
 
 /// Split data into chunks, returning root address and chunk list.
 pub fn split<const BODY_SIZE: usize>(
@@ -58,7 +79,7 @@ pub fn split_reader<R, S, const BODY_SIZE: usize>(
 ) -> error::Result<(ChunkAddress, S)>
 where
     R: Read,
-    S: ChunkSink<BODY_SIZE>,
+    S: ChunkPut<BODY_SIZE>,
 {
     let mut splitter = Splitter::new(sink, size);
     std::io::copy(&mut reader, &mut splitter).map_err(|e| FileError::Sink(Box::new(e)))?;
@@ -71,7 +92,7 @@ pub fn join<G, const BODY_SIZE: usize>(
     root: ChunkAddress,
 ) -> error::Result<Vec<u8>>
 where
-    G: ChunkGetter<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
 {
     let mut joiner = Joiner::new(getter, root)?;
     let mut data = vec![0u8; joiner.size() as usize];
@@ -81,7 +102,7 @@ where
     Ok(data)
 }
 
-impl<const BODY_SIZE: usize> ChunkGetter<BODY_SIZE> for HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
+impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
     type Error = FileError;
 
     fn get(&self, address: &ChunkAddress) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
@@ -91,7 +112,7 @@ impl<const BODY_SIZE: usize> ChunkGetter<BODY_SIZE> for HashMap<ChunkAddress, Co
     }
 }
 
-impl<const BODY_SIZE: usize> ChunkGetter<BODY_SIZE> for &HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
+impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for &HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
     type Error = FileError;
 
     fn get(&self, address: &ChunkAddress) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
@@ -100,6 +121,68 @@ impl<const BODY_SIZE: usize> ChunkGetter<BODY_SIZE> for &HashMap<ChunkAddress, C
             .ok_or_else(|| FileError::ChunkNotFound(*address))
     }
 }
+
+impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
+    fn has(&self, address: &ChunkAddress) -> bool {
+        self.contains_key(address)
+    }
+}
+
+impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for &HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
+    fn has(&self, address: &ChunkAddress) -> bool {
+        self.contains_key(address)
+    }
+}
+
+/// Calculate tree depth for a given file size.
+pub(crate) fn levels(length: u64, chunk_size: usize) -> usize {
+    use constants::REF_SIZE;
+
+    if length == 0 {
+        return 0;
+    }
+
+    let section_size = REF_SIZE as u64;
+    let branches = (chunk_size / REF_SIZE) as u64;
+
+    if length <= section_size * branches {
+        return 1;
+    }
+
+    let chunks = (length - 1) / section_size;
+    (chunks as f64).log(branches as f64) as usize + 1
+}
+
+/// Extension methods for chunk getters.
+pub trait ChunkGetExt<const BODY_SIZE: usize>: ChunkGet<BODY_SIZE> {
+    /// Create a joiner for reading file data.
+    fn joiner(self, root: ChunkAddress) -> error::Result<Joiner<Self, BODY_SIZE>>
+    where
+        Self: Sized,
+    {
+        Joiner::new(self, root)
+    }
+
+    /// Read entire file into memory.
+    fn read_file(self, root: ChunkAddress) -> error::Result<Vec<u8>>
+    where
+        Self: Sized,
+    {
+        join(self, root)
+    }
+}
+
+impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where T: ChunkGet<BODY_SIZE> {}
+
+/// Extension methods for chunk putters.
+pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> + Sized {
+    /// Create a splitter for writing file data.
+    fn splitter(self, size: u64) -> Splitter<Self, BODY_SIZE> {
+        Splitter::new(self, size)
+    }
+}
+
+impl<T, const BODY_SIZE: usize> ChunkPutExt<BODY_SIZE> for T where T: ChunkPut<BODY_SIZE> {}
 
 #[cfg(test)]
 mod tests;

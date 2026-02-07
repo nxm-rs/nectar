@@ -1,0 +1,309 @@
+//! Tree structure calculations for parallel file operations.
+
+use super::constants::{LEVEL_LIMIT, REFS_PER_CHUNK, SPANS};
+use crate::bmt::DEFAULT_BODY_SIZE;
+
+/// Tree structure for a file of known size.
+///
+/// Pre-computes chunk counts and spans for efficient parallel operations.
+#[derive(Debug, Clone, Copy)]
+pub struct TreeParams<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
+    size: u64,
+    depth: usize,
+    data_chunks: u64,
+}
+
+impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
+    /// Create tree parameters for a file of given size.
+    pub fn new(size: u64) -> Self {
+        let (depth, data_chunks) = if size == 0 {
+            (1, 1) // Empty file still produces one chunk
+        } else {
+            let data_chunks = (size + BODY_SIZE as u64 - 1) / BODY_SIZE as u64;
+            let depth = Self::calculate_depth(data_chunks);
+            (depth, data_chunks)
+        };
+
+        Self {
+            size,
+            depth,
+            data_chunks,
+        }
+    }
+
+    /// File size in bytes.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Tree depth (1 = single chunk, 2 = one intermediate level, etc.).
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Number of data chunks (level 0).
+    pub fn data_chunks(&self) -> u64 {
+        self.data_chunks
+    }
+
+    /// Total chunks across all levels.
+    pub fn total_chunks(&self) -> u64 {
+        let mut total = self.data_chunks;
+        let mut chunks_at_level = self.data_chunks;
+
+        while chunks_at_level > 1 {
+            chunks_at_level = (chunks_at_level + REFS_PER_CHUNK as u64 - 1) / REFS_PER_CHUNK as u64;
+            total += chunks_at_level;
+        }
+
+        total
+    }
+
+    /// Chunks at a specific level.
+    pub fn chunks_at_level(&self, level: usize) -> u64 {
+        if level >= self.depth {
+            return 0;
+        }
+        if level == 0 {
+            return self.data_chunks;
+        }
+
+        let mut chunks = self.data_chunks;
+        for _ in 0..level {
+            chunks = (chunks + REFS_PER_CHUNK as u64 - 1) / REFS_PER_CHUNK as u64;
+        }
+        chunks
+    }
+
+    /// Span for a chunk at given level and index.
+    pub fn span_at(&self, level: usize, index: u64) -> u64 {
+        let max_span = SPANS[level] * BODY_SIZE as u64;
+        let chunks_at_level = self.chunks_at_level(level);
+
+        if index + 1 == chunks_at_level {
+            // Last chunk may have smaller span
+            let preceding = index * max_span;
+            let level_total = self.level_span(level);
+            level_total.saturating_sub(preceding)
+        } else {
+            max_span
+        }
+    }
+
+    /// Total bytes covered by chunks at this level.
+    fn level_span(&self, level: usize) -> u64 {
+        if level == 0 {
+            self.size
+        } else {
+            // Each level covers same total size, represented differently
+            self.size
+        }
+    }
+
+    /// Byte offset for start of chunk at level 0.
+    pub fn chunk_offset(&self, chunk_index: u64) -> u64 {
+        chunk_index * BODY_SIZE as u64
+    }
+
+    /// Byte range covered by a data chunk.
+    pub fn chunk_range(&self, chunk_index: u64) -> (u64, u64) {
+        let start = self.chunk_offset(chunk_index);
+        let end = (start + BODY_SIZE as u64).min(self.size);
+        (start, end)
+    }
+
+    /// Calculate required data chunks for a byte range.
+    pub fn chunks_for_range(&self, offset: u64, len: u64) -> ChunkRange {
+        if len == 0 || offset >= self.size {
+            return ChunkRange {
+                start: 0,
+                end: 0,
+            };
+        }
+
+        let end_offset = (offset + len).min(self.size);
+        let start_chunk = offset / BODY_SIZE as u64;
+        let end_chunk = (end_offset + BODY_SIZE as u64 - 1) / BODY_SIZE as u64;
+
+        ChunkRange {
+            start: start_chunk,
+            end: end_chunk.min(self.data_chunks),
+        }
+    }
+
+    fn calculate_depth(data_chunks: u64) -> usize {
+        if data_chunks <= 1 {
+            return 1;
+        }
+
+        let mut depth = 1;
+        let mut chunks = data_chunks;
+        while chunks > 1 {
+            chunks = (chunks + REFS_PER_CHUNK as u64 - 1) / REFS_PER_CHUNK as u64;
+            depth += 1;
+        }
+        depth.min(LEVEL_LIMIT)
+    }
+}
+
+/// Range of chunk indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkRange {
+    /// First chunk index (inclusive).
+    pub start: u64,
+    /// Last chunk index (exclusive).
+    pub end: u64,
+}
+
+impl ChunkRange {
+    /// Number of chunks in range.
+    pub fn len(&self) -> u64 {
+        self.end.saturating_sub(self.start)
+    }
+
+    /// Whether the range is empty.
+    pub fn is_empty(&self) -> bool {
+        self.start >= self.end
+    }
+
+    /// Iterate over chunk indices.
+    pub fn iter(&self) -> impl Iterator<Item = u64> {
+        self.start..self.end
+    }
+}
+
+/// Calculate subspan size for children of a node with given span.
+pub fn subspan_size<const BODY_SIZE: usize>(span: u64) -> u64 {
+    for i in 0..LEVEL_LIMIT {
+        let level_span = SPANS[i] * BODY_SIZE as u64;
+        if span <= level_span {
+            return if i == 0 {
+                BODY_SIZE as u64
+            } else {
+                SPANS[i - 1] * BODY_SIZE as u64
+            };
+        }
+    }
+    SPANS[LEVEL_LIMIT - 2] * BODY_SIZE as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tree_params_empty() {
+        let tree = TreeParams::<DEFAULT_BODY_SIZE>::new(0);
+        assert_eq!(tree.size(), 0);
+        assert_eq!(tree.depth(), 1);
+        assert_eq!(tree.data_chunks(), 1);
+        assert_eq!(tree.total_chunks(), 1);
+    }
+
+    #[test]
+    fn test_tree_params_single_chunk() {
+        let tree = TreeParams::<DEFAULT_BODY_SIZE>::new(100);
+        assert_eq!(tree.depth(), 1);
+        assert_eq!(tree.data_chunks(), 1);
+        assert_eq!(tree.total_chunks(), 1);
+        assert_eq!(tree.chunks_at_level(0), 1);
+        assert_eq!(tree.chunks_at_level(1), 0);
+    }
+
+    #[test]
+    fn test_tree_params_two_chunks() {
+        let tree = TreeParams::<DEFAULT_BODY_SIZE>::new(DEFAULT_BODY_SIZE as u64 + 1);
+        assert_eq!(tree.depth(), 2);
+        assert_eq!(tree.data_chunks(), 2);
+        assert_eq!(tree.total_chunks(), 3); // 2 data + 1 intermediate
+        assert_eq!(tree.chunks_at_level(0), 2);
+        assert_eq!(tree.chunks_at_level(1), 1);
+    }
+
+    #[test]
+    fn test_tree_params_128_chunks() {
+        let size = DEFAULT_BODY_SIZE as u64 * 128;
+        let tree = TreeParams::<DEFAULT_BODY_SIZE>::new(size);
+        assert_eq!(tree.depth(), 2);
+        assert_eq!(tree.data_chunks(), 128);
+        assert_eq!(tree.chunks_at_level(0), 128);
+        assert_eq!(tree.chunks_at_level(1), 1);
+    }
+
+    #[test]
+    fn test_tree_params_129_chunks() {
+        let size = DEFAULT_BODY_SIZE as u64 * 129;
+        let tree = TreeParams::<DEFAULT_BODY_SIZE>::new(size);
+        assert_eq!(tree.depth(), 3);
+        assert_eq!(tree.data_chunks(), 129);
+        assert_eq!(tree.chunks_at_level(0), 129);
+        assert_eq!(tree.chunks_at_level(1), 2);
+        assert_eq!(tree.chunks_at_level(2), 1);
+    }
+
+    #[test]
+    fn test_chunk_range() {
+        let tree = TreeParams::<DEFAULT_BODY_SIZE>::new(10000);
+
+        // First chunk
+        let (start, end) = tree.chunk_range(0);
+        assert_eq!(start, 0);
+        assert_eq!(end, 4096);
+
+        // Second chunk
+        let (start, end) = tree.chunk_range(1);
+        assert_eq!(start, 4096);
+        assert_eq!(end, 8192);
+
+        // Last partial chunk
+        let (start, end) = tree.chunk_range(2);
+        assert_eq!(start, 8192);
+        assert_eq!(end, 10000);
+    }
+
+    #[test]
+    fn test_chunks_for_range() {
+        let tree = TreeParams::<DEFAULT_BODY_SIZE>::new(10000);
+
+        // Read from start
+        let range = tree.chunks_for_range(0, 100);
+        assert_eq!(range.start, 0);
+        assert_eq!(range.end, 1);
+        assert_eq!(range.len(), 1);
+
+        // Read spanning chunks
+        let range = tree.chunks_for_range(4000, 200);
+        assert_eq!(range.start, 0);
+        assert_eq!(range.end, 2);
+        assert_eq!(range.len(), 2);
+
+        // Read at end
+        let range = tree.chunks_for_range(9000, 1000);
+        assert_eq!(range.start, 2);
+        assert_eq!(range.end, 3);
+    }
+
+    #[test]
+    fn test_span_at() {
+        let size = DEFAULT_BODY_SIZE as u64 * 3;
+        let tree = TreeParams::<DEFAULT_BODY_SIZE>::new(size);
+
+        // Full chunks have full span
+        assert_eq!(tree.span_at(0, 0), DEFAULT_BODY_SIZE as u64);
+        assert_eq!(tree.span_at(0, 1), DEFAULT_BODY_SIZE as u64);
+        assert_eq!(tree.span_at(0, 2), DEFAULT_BODY_SIZE as u64);
+    }
+
+    #[test]
+    fn test_subspan_size() {
+        // Single chunk span -> subspan is chunk size
+        assert_eq!(subspan_size::<DEFAULT_BODY_SIZE>(4096), 4096);
+
+        // Two chunk span -> subspan is chunk size
+        assert_eq!(subspan_size::<DEFAULT_BODY_SIZE>(8000), 4096);
+
+        // Large span -> subspan is previous level
+        let large_span = 128 * DEFAULT_BODY_SIZE as u64 + 1;
+        assert_eq!(subspan_size::<DEFAULT_BODY_SIZE>(large_span), 128 * 4096);
+    }
+}
