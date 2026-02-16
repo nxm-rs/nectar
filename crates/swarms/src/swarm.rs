@@ -45,7 +45,7 @@ impl From<u64> for Swarm {
 }
 
 impl TryFrom<Swarm> for NamedSwarm {
-    type Error = <NamedSwarm as TryFrom<u64>>::Error;
+    type Error = <Self as TryFrom<u64>>::Error;
 
     #[inline]
     fn try_from(swarm: Swarm) -> Result<Self, Self::Error> {
@@ -61,11 +61,8 @@ impl FromStr for Swarm {
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Ok(swarm) = NamedSwarm::from_str(s) {
-            Ok(Self::from_named(swarm))
-        } else {
-            s.parse::<u64>().map(Self::from_id)
-        }
+        NamedSwarm::from_str(s)
+            .map_or_else(|_| s.parse::<u64>().map(Self::from_id), |swarm| Ok(Self::from_named(swarm)))
     }
 }
 
@@ -158,11 +155,8 @@ impl Swarm {
     /// If the ID corresponds to a known [`NamedSwarm`], it will be converted.
     #[inline]
     pub fn from_id(id: u64) -> Self {
-        if let Ok(named) = NamedSwarm::try_from(id) {
-            Self::from_named(named)
-        } else {
-            Self::from_id_unchecked(id)
-        }
+        NamedSwarm::try_from(id)
+            .map_or_else(|_| Self::from_id_unchecked(id), Self::from_named)
     }
 
     /// Creates a new [`Swarm`] from the given ID, without checking if an associated

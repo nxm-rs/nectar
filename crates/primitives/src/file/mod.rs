@@ -55,6 +55,7 @@ pub use traits::{ChunkGet, ChunkHas, ChunkPut};
 #[cfg(feature = "async")]
 pub use traits_async::{AsyncChunkGet, AsyncChunkPut, AsyncReadAt};
 pub use tree::{ChunkRange, TreeParams};
+pub(crate) use tree::subspan_size;
 
 // Extension traits are defined below, after all types are available
 

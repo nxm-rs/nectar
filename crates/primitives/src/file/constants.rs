@@ -1,22 +1,19 @@
 //! Constants for file splitting and joining.
 
-use crate::bmt::DEFAULT_BODY_SIZE;
+use crate::bmt::{BRANCHES, HASH_SIZE};
 
 /// Maximum tree depth (supports up to 128^8 * 4096 bytes ≈ 295 exabytes).
-pub const LEVEL_LIMIT: usize = 9;
+pub(crate) const LEVEL_LIMIT: usize = 9;
 
-/// Size of a chunk reference (hash).
-pub const REF_SIZE: usize = 32;
+/// Size of a chunk reference (hash). Same as bmt::HASH_SIZE.
+pub(crate) const REF_SIZE: usize = HASH_SIZE;
 
-/// Span header size in bytes.
-pub const SPAN_SIZE: usize = 8;
-
-/// Number of references per intermediate chunk.
-pub const REFS_PER_CHUNK: usize = DEFAULT_BODY_SIZE / REF_SIZE; // 128
+/// Number of references per intermediate chunk. Same as bmt::BRANCHES.
+pub(crate) const REFS_PER_CHUNK: usize = BRANCHES;
 
 /// Span multipliers per level.
 /// SPANS[i] = 128^i, representing how many level-0 refs each level-i ref covers.
-pub static SPANS: [u64; LEVEL_LIMIT] = compute_spans();
+pub(crate) static SPANS: [u64; LEVEL_LIMIT] = compute_spans();
 
 const fn compute_spans() -> [u64; LEVEL_LIMIT] {
     let mut spans = [0u64; LEVEL_LIMIT];
@@ -30,34 +27,17 @@ const fn compute_spans() -> [u64; LEVEL_LIMIT] {
     spans
 }
 
-/// Calculate tree depth for a given file size.
-/// Returns the level of the root hash (1-indexed, 0 for empty).
-pub fn levels(length: u64, chunk_size: usize) -> usize {
-    if length == 0 {
-        return 0;
-    }
-
-    let section_size = REF_SIZE as u64;
-    let branches = (chunk_size / REF_SIZE) as u64;
-
-    if length <= section_size * branches {
-        return 1;
-    }
-
-    let chunks = (length - 1) / section_size;
-    (chunks as f64).log(branches as f64) as usize + 1
-}
-
-/// Calculate span for a chunk at a given level and file position.
-/// This is the amount of original file data the chunk represents.
-pub fn span_for_level(level: usize, position: u64, chunk_size: usize) -> u64 {
-    let span_size = SPANS[level] * chunk_size as u64;
-    (position - 1) % span_size + 1
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bmt::DEFAULT_BODY_SIZE;
+    use crate::file::levels;
+
+    /// Calculate span for a chunk at a given level and file position.
+    fn span_for_level(level: usize, position: u64, chunk_size: usize) -> u64 {
+        let span_size = SPANS[level] * chunk_size as u64;
+        (position - 1) % span_size + 1
+    }
 
     #[test]
     fn test_spans_values() {

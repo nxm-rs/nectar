@@ -237,7 +237,8 @@ fn bench_ecdsa_verify_with_pubkey(c: &mut Criterion) {
     group.bench_function("throughput_100_cached", |b| {
         b.iter(|| {
             for (stamp, addr) in stamps.iter().zip(addresses.iter()) {
-                black_box(stamp.verify_with_pubkey(addr, &pubkey).unwrap());
+                let _: () = stamp.verify_with_pubkey(addr, &pubkey).unwrap();
+                black_box(());
             }
         })
     });
@@ -271,7 +272,6 @@ fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     let verify_input_100: Vec<_> = stamps_100
         .iter()
         .zip(addresses_100.iter())
-        .map(|(stamp, addr)| (stamp, addr))
         .collect();
 
     group.throughput(Throughput::Elements(100));
@@ -283,7 +283,6 @@ fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     let verify_input_1000: Vec<_> = stamps_1000
         .iter()
         .zip(addresses_1000.iter())
-        .map(|(stamp, addr)| (stamp, addr))
         .collect();
 
     group.throughput(Throughput::Elements(1000));
@@ -323,7 +322,6 @@ fn bench_ecdsa_verify_parallel_with_pubkey(c: &mut Criterion) {
     let verify_input_100: Vec<_> = stamps_100
         .iter()
         .zip(addresses_100.iter())
-        .map(|(stamp, addr)| (stamp, addr))
         .collect();
 
     group.throughput(Throughput::Elements(100));
@@ -340,7 +338,6 @@ fn bench_ecdsa_verify_parallel_with_pubkey(c: &mut Criterion) {
     let verify_input_1000: Vec<_> = stamps_1000
         .iter()
         .zip(addresses_1000.iter())
-        .map(|(stamp, addr)| (stamp, addr))
         .collect();
 
     group.throughput(Throughput::Elements(1000));
@@ -390,7 +387,8 @@ fn bench_verify_comparison(c: &mut Criterion) {
     group.bench_function("sequential_cached", |b| {
         b.iter(|| {
             for (addr, stamp) in addresses.iter().zip(stamps.iter()) {
-                black_box(stamp.verify_with_pubkey(addr, &pubkey).unwrap());
+                let _: () = stamp.verify_with_pubkey(addr, &pubkey).unwrap();
+                black_box(());
             }
         })
     });
@@ -399,7 +397,6 @@ fn bench_verify_comparison(c: &mut Criterion) {
     let verify_input: Vec<_> = stamps
         .iter()
         .zip(addresses.iter())
-        .map(|(stamp, addr)| (stamp, addr))
         .collect();
 
     group.bench_function("parallel_recovery", |b| {

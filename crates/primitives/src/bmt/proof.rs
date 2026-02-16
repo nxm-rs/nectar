@@ -58,7 +58,7 @@ impl Proof {
             let mut hasher = Keccak256::new();
 
             // Order matters - left then right
-            if current_index % 2 == 0 {
+            if current_index.is_multiple_of(2) {
                 hasher.update(current_hash.as_slice());
                 hasher.update(proof_segment.as_slice());
             } else {
@@ -166,7 +166,7 @@ impl Prover for Hasher {
         // Continue until we reach the root (or until we have BMT_PROOF_LENGTH segments)
         while proof_segments.len() < PROOF_LENGTH {
             // Get sibling's index
-            let sibling_index = if current_index % 2 == 0 {
+            let sibling_index = if current_index.is_multiple_of(2) {
                 current_index + 1
             } else {
                 current_index - 1

@@ -25,7 +25,7 @@ static ZERO_HASHES: LazyLock<[B256; ZERO_TREE_LEVELS]> = LazyLock::new(|| {
 
     // Level 0: hash of 64 zero bytes (one segment pair)
     let mut hasher = Keccak256::new();
-    hasher.update(&[0u8; SEGMENT_PAIR_LENGTH]);
+    hasher.update([0u8; SEGMENT_PAIR_LENGTH]);
     hashes[0] = B256::from_slice(hasher.finalize().as_slice());
 
     // Each subsequent level: hash of two copies of previous level's hash
@@ -58,7 +58,7 @@ impl<const BODY_SIZE: usize> Default for Hasher<BODY_SIZE> {
 impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     /// Create a new BMT hasher.
     #[inline]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             span: 0,
             prefix: None,
@@ -69,13 +69,13 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
 
     /// Set the span of data to be hashed
     #[inline]
-    pub fn set_span(&mut self, span: u64) {
+    pub const fn set_span(&mut self, span: u64) {
         self.span = span;
     }
 
     /// Get the current span
     #[inline(always)]
-    pub fn span(&self) -> u64 {
+    pub const fn span(&self) -> u64 {
         self.span
     }
 
@@ -93,19 +93,19 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
 
     /// Get the current cursor position
     #[inline(always)]
-    pub fn position(&self) -> usize {
+    pub const fn position(&self) -> usize {
         self.cursor
     }
 
     /// Get the amount of data currently in the buffer
     #[inline(always)]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.cursor
     }
 
     /// Check if the buffer is empty
     #[inline(always)]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.cursor == 0
     }
 
@@ -130,7 +130,8 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         }
     }
 
-    /// Compute the BMT hash and return as SwarmAddress (non-destructive)
+    /// Compute the BMT hash and write to output buffer.
+    #[allow(clippy::should_implement_trait)] // BMT hash, not std::hash::Hash
     #[inline]
     pub fn hash(&self, out: &mut [u8]) {
         let hash = self.sum();
@@ -300,7 +301,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     /// Calculate the zero-tree level for a given subtree length.
     /// Length must be a power of 2 between 64 and 4096.
     #[inline(always)]
-    fn zero_tree_level(length: usize) -> usize {
+    const fn zero_tree_level(length: usize) -> usize {
         // length = 64 * 2^level, so level = log2(length) - log2(64) = log2(length) - 6
         length.trailing_zeros() as usize - 6
     }
@@ -327,7 +328,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
 
     /// Reset the hasher's internal state
     #[inline(always)]
-    fn reset_internal(&mut self) {
+    const fn reset_internal(&mut self) {
         // Simply reset cursor - no need to clear the buffer as it will be overwritten
         self.cursor = 0;
         self.span = 0;
@@ -387,7 +388,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
             }
         } else {
             // Empty segment (all zeros)
-            hasher.update(&[0u8; SEGMENT_SIZE]);
+            hasher.update([0u8; SEGMENT_SIZE]);
         }
 
         B256::from_slice(hasher.finalize().as_slice())
@@ -456,13 +457,13 @@ pub struct HasherFactory<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>;
 impl<const BODY_SIZE: usize> HasherFactory<BODY_SIZE> {
     /// Create a new factory.
     #[inline]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
     /// Create a new BMT hasher.
     #[inline]
-    pub fn create_hasher(&self) -> Hasher<BODY_SIZE> {
+    pub const fn create_hasher(&self) -> Hasher<BODY_SIZE> {
         Hasher::new()
     }
 }

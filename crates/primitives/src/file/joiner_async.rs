@@ -1,21 +1,18 @@
 //! Async joiner with concurrent chunk prefetching.
 
 use std::collections::HashMap;
-use std::io;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::stream::{self, Stream, StreamExt};
-use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
 
-use super::constants::{LEVEL_LIMIT, REF_SIZE, SPANS};
+use super::constants::REF_SIZE;
 use super::error::{FileError, Result};
+use super::subspan_size;
 use super::traits_async::AsyncChunkGet;
 use super::tree::TreeParams;
 
@@ -30,6 +27,20 @@ where
     position: u64,
     tree: TreeParams<BODY_SIZE>,
     concurrency: usize,
+}
+
+impl<G, const BODY_SIZE: usize> std::fmt::Debug for AsyncJoiner<G, BODY_SIZE>
+where
+    G: AsyncChunkGet<BODY_SIZE>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncJoiner")
+            .field("root", &self.root)
+            .field("span", &self.span)
+            .field("position", &self.position)
+            .field("concurrency", &self.concurrency)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<G, const BODY_SIZE: usize> AsyncJoiner<G, BODY_SIZE>
@@ -59,17 +70,17 @@ where
     }
 
     /// Total file size.
-    pub fn size(&self) -> u64 {
+    pub const fn size(&self) -> u64 {
         self.span
     }
 
     /// Current read position.
-    pub fn position(&self) -> u64 {
+    pub const fn position(&self) -> u64 {
         self.position
     }
 
     /// Root address.
-    pub fn root(&self) -> &ChunkAddress {
+    pub const fn root(&self) -> &ChunkAddress {
         &self.root
     }
 
@@ -360,20 +371,6 @@ where
                 .await
         })
     }
-}
-
-fn subspan_size<const BODY_SIZE: usize>(span: u64) -> u64 {
-    for i in 0..LEVEL_LIMIT {
-        let level_span = SPANS[i] * BODY_SIZE as u64;
-        if span <= level_span {
-            return if i == 0 {
-                BODY_SIZE as u64
-            } else {
-                SPANS[i - 1] * BODY_SIZE as u64
-            };
-        }
-    }
-    SPANS[LEVEL_LIMIT - 2] * BODY_SIZE as u64
 }
 
 #[cfg(test)]

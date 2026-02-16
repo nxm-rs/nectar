@@ -15,14 +15,16 @@
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use alloy_primitives::B256;
-use alloy_signer::Signature;
-use nectar_postage::{
-    Batch, BatchId, Stamp, StampDigest, StampError, StampIndex, calculate_bucket, current_timestamp,
-};
+use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
 use nectar_primitives::SwarmAddress;
 
-use crate::error::SigningError;
+#[cfg(feature = "parallel")]
+use {
+    alloy_primitives::B256,
+    alloy_signer::Signature,
+    crate::error::SigningError,
+    nectar_postage::{Stamp, current_timestamp},
+};
 
 /// Number of shards for bucket partitioning.
 /// Must be a power of 2 for efficient bucket-to-shard mapping.
@@ -215,53 +217,50 @@ impl ShardedIssuer {
         Ok(StampDigest::new(*address, self.batch_id, index, timestamp))
     }
 
-    /// Returns the batch ID.
+    /// Batch ID.
     pub const fn batch_id(&self) -> BatchId {
         self.batch_id
     }
 
-    /// Returns the batch depth.
+    /// Batch depth.
     pub const fn batch_depth(&self) -> u8 {
         self.depth
     }
 
-    /// Returns the bucket depth.
+    /// Bucket depth.
     pub const fn bucket_depth(&self) -> u8 {
         self.bucket_depth
     }
 
-    /// Returns the maximum bucket utilization observed.
+    /// Maximum bucket utilization observed across all buckets.
     pub fn max_bucket_utilization(&self) -> u32 {
         self.max_utilization.load(Ordering::Relaxed)
     }
 
-    /// Returns the utilization of a specific bucket.
+    /// Current utilization of a specific bucket.
     pub fn bucket_utilization(&self, bucket: u32) -> u32 {
         let shard_idx = self.shard_index(bucket);
         self.shards[shard_idx].utilization(bucket)
     }
 
-    /// Returns the total number of stamps issued.
+    /// Total stamps issued.
     pub fn stamps_issued(&self) -> u64 {
         self.stamps_issued.load(Ordering::Relaxed)
     }
 
-    /// Returns the bucket capacity.
+    /// Bucket capacity.
     pub const fn bucket_capacity(&self) -> u32 {
         self.bucket_capacity
     }
 
-    /// Returns the number of shards.
+    /// Number of shards.
     pub const fn shard_count(&self) -> usize {
         self.shards.len()
     }
 }
 
-// SAFETY: ShardedIssuer uses atomic operations for all mutable state
-unsafe impl Sync for ShardedIssuer {}
-unsafe impl Send for ShardedIssuer {}
-
 /// Result of a parallel stamp operation.
+#[cfg(feature = "parallel")]
 #[derive(Debug)]
 pub struct StampResult {
     /// The chunk address that was stamped.
@@ -348,7 +347,7 @@ where
 /// Creates a stamp from a digest and signature.
 #[cfg(feature = "parallel")]
 #[inline]
-fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
+const fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
     // Signature is now stored directly in Stamp
     Stamp::with_index(digest.batch_id, digest.index, digest.timestamp, sig)
 }
@@ -356,8 +355,7 @@ fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_signer::SignerSync;
-    use alloy_signer_local::PrivateKeySigner;
+    use alloy_primitives::B256;
 
     #[test]
     fn test_sharded_issuer_basic() {
@@ -416,6 +414,8 @@ mod tests {
     #[cfg(feature = "parallel")]
     #[test]
     fn test_parallel_signing() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
         use crate::error::SigningError;
 
         let issuer = ShardedIssuer::new(B256::ZERO, 24, 16);

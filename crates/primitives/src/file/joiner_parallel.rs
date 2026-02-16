@@ -7,7 +7,8 @@ use rayon::prelude::*;
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
 
-use super::constants::{LEVEL_LIMIT, REF_SIZE, SPANS};
+use super::constants::REF_SIZE;
+use super::subspan_size;
 use super::error::{FileError, Result};
 use super::traits::ChunkGet;
 use super::tree::TreeParams;
@@ -24,6 +25,18 @@ where
     root: ChunkAddress,
     span: u64,
     tree: TreeParams<BODY_SIZE>,
+}
+
+impl<G, const BODY_SIZE: usize> std::fmt::Debug for ParallelJoiner<G, BODY_SIZE>
+where
+    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelJoiner")
+            .field("root", &self.root)
+            .field("span", &self.span)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<G, const BODY_SIZE: usize> ParallelJoiner<G, BODY_SIZE>
@@ -45,12 +58,12 @@ where
     }
 
     /// Total file size.
-    pub fn size(&self) -> u64 {
+    pub const fn size(&self) -> u64 {
         self.span
     }
 
     /// Root address.
-    pub fn root(&self) -> &ChunkAddress {
+    pub const fn root(&self) -> &ChunkAddress {
         &self.root
     }
 
@@ -196,20 +209,6 @@ where
 
         self.traverse_to_data_chunk(&child_addr, child_span, child_offset)
     }
-}
-
-fn subspan_size<const BODY_SIZE: usize>(span: u64) -> u64 {
-    for i in 0..LEVEL_LIMIT {
-        let level_span = SPANS[i] * BODY_SIZE as u64;
-        if span <= level_span {
-            return if i == 0 {
-                BODY_SIZE as u64
-            } else {
-                SPANS[i - 1] * BODY_SIZE as u64
-            };
-        }
-    }
-    SPANS[LEVEL_LIMIT - 2] * BODY_SIZE as u64
 }
 
 #[cfg(test)]

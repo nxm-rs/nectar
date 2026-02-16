@@ -66,17 +66,17 @@ where
     }
 
     /// Bytes written so far.
-    pub fn len(&self) -> u64 {
+    pub const fn len(&self) -> u64 {
         self.length
     }
 
     /// Whether any data has been written.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.length == 0
     }
 
     /// Declared span length.
-    pub fn span_length(&self) -> u64 {
+    pub const fn span_length(&self) -> u64 {
         self.span_length
     }
 
@@ -124,7 +124,7 @@ where
     }
 
     fn hash_unfinished(&mut self) -> Result<()> {
-        if self.length % BODY_SIZE as u64 != 0 {
+        if !self.length.is_multiple_of(BODY_SIZE as u64) {
             let reference = self.sum_level(0)?;
             let next_cursor = self.cursors[1];
             self.buffer[next_cursor..next_cursor + REF_SIZE].copy_from_slice(&reference);
@@ -138,13 +138,22 @@ where
         let target_level = levels(self.length, BODY_SIZE);
 
         for i in 1..target_level {
-            if self.sum_counts[i] > 0 {
-                let prev_spans = SPANS[target_level - 1 - i] as i64;
-                if (self.sum_counts[i - 1] as i64) - prev_spans <= 1 {
-                    self.cursors[i + 1] = self.cursors[i];
-                    self.cursors[i] = self.cursors[i - 1];
-                    continue;
-                }
+            let level_start = self.cursors[i + 1];
+            let level_end = self.cursors[i];
+
+            // Nothing to hash at this level - buffer is empty
+            if level_end == level_start {
+                continue;
+            }
+
+            let refs_at_level = (level_end - level_start) / REF_SIZE;
+
+            // Single reference: carry up without wrapping (dangling chunk optimization)
+            // This matches the parallel splitter's behavior
+            if refs_at_level == 1 {
+                self.cursors[i + 1] = level_end;
+                self.cursors[i] = level_end;
+                continue;
             }
 
             let reference = self.sum_level(i)?;
@@ -221,7 +230,7 @@ where
 
             let data = &buf[written..written + to_write];
             self.write_chunk(data)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             written += to_write;
         }
 
@@ -298,7 +307,8 @@ mod tests {
         splitter.write_all(&data).unwrap();
         let (root, sink) = splitter.finish().unwrap();
 
-        assert_eq!(sink.len(), REFS_PER_CHUNK + 2);
+        // 128 data chunks + 1 intermediate (which is the root) = 129
+        assert_eq!(sink.len(), REFS_PER_CHUNK + 1);
         assert!(!root.is_zero());
     }
 
@@ -369,5 +379,61 @@ mod tests {
         let result = splitter.finish();
 
         assert!(matches!(result, Err(FileError::SpanMismatch { .. })));
+    }
+
+    #[test]
+    fn test_splitter_256_chunks_matches_parallel() {
+        use crate::file::{join, ParallelSplitter, MemorySink};
+
+        // 256 data chunks - this is the edge case that was causing hash mismatches
+        let data = vec![0xAB; DEFAULT_BODY_SIZE * 256];
+
+        // Sequential
+        let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(sink, data.len() as u64);
+        splitter.write_all(&data).unwrap();
+        let (seq_root, seq_sink) = splitter.finish().unwrap();
+
+        // Parallel
+        let par_sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let par_splitter = ParallelSplitter::new(par_sink);
+        let par_root = par_splitter.split(&data).unwrap();
+        let par_sink = par_splitter.into_sink();
+
+        // Root hashes must match
+        assert_eq!(seq_root, par_root, "Root hash mismatch between sequential and parallel");
+
+        // Chunk counts must match (256 data + 2 intermediate + 1 root = 259)
+        assert_eq!(seq_sink.len(), par_sink.len(), "Chunk count mismatch");
+
+        // Verify round-trip works
+        let recovered = join(&seq_sink, seq_root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn test_splitter_128_chunks_matches_parallel() {
+        use crate::file::{join, ParallelSplitter, MemorySink};
+
+        // Exactly 128 data chunks - another edge case
+        let data = vec![0xCD; DEFAULT_BODY_SIZE * REFS_PER_CHUNK];
+
+        // Sequential
+        let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(sink, data.len() as u64);
+        splitter.write_all(&data).unwrap();
+        let (seq_root, seq_sink) = splitter.finish().unwrap();
+
+        // Parallel
+        let par_sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let par_splitter = ParallelSplitter::new(par_sink);
+        let par_root = par_splitter.split(&data).unwrap();
+        let par_sink = par_splitter.into_sink();
+
+        assert_eq!(seq_root, par_root, "Root hash mismatch for 128 chunks");
+        assert_eq!(seq_sink.len(), par_sink.len(), "Chunk count mismatch for 128 chunks");
+
+        let recovered = join(&seq_sink, seq_root).unwrap();
+        assert_eq!(recovered, data);
     }
 }

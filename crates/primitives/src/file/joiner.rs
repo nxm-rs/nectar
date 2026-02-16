@@ -52,17 +52,17 @@ where
     }
 
     /// Total file size.
-    pub fn size(&self) -> u64 {
+    pub const fn size(&self) -> u64 {
         self.span
     }
 
     /// Current read position.
-    pub fn position(&self) -> u64 {
+    pub const fn position(&self) -> u64 {
         self.position
     }
 
     /// Root address.
-    pub fn root(&self) -> &ChunkAddress {
+    pub const fn root(&self) -> &ChunkAddress {
         &self.root
     }
 
@@ -161,7 +161,7 @@ where
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let read = self
             .read_at(buf, self.position)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         self.position += read as u64;
         Ok(read)
     }

@@ -19,7 +19,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
         let (depth, data_chunks) = if size == 0 {
             (1, 1) // Empty file still produces one chunk
         } else {
-            let data_chunks = (size + BODY_SIZE as u64 - 1) / BODY_SIZE as u64;
+            let data_chunks = size.div_ceil(BODY_SIZE as u64);
             let depth = Self::calculate_depth(data_chunks);
             (depth, data_chunks)
         };
@@ -32,27 +32,27 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// File size in bytes.
-    pub fn size(&self) -> u64 {
+    pub const fn size(&self) -> u64 {
         self.size
     }
 
     /// Tree depth (1 = single chunk, 2 = one intermediate level, etc.).
-    pub fn depth(&self) -> usize {
+    pub const fn depth(&self) -> usize {
         self.depth
     }
 
     /// Number of data chunks (level 0).
-    pub fn data_chunks(&self) -> u64 {
+    pub const fn data_chunks(&self) -> u64 {
         self.data_chunks
     }
 
     /// Total chunks across all levels.
-    pub fn total_chunks(&self) -> u64 {
+    pub const fn total_chunks(&self) -> u64 {
         let mut total = self.data_chunks;
         let mut chunks_at_level = self.data_chunks;
 
         while chunks_at_level > 1 {
-            chunks_at_level = (chunks_at_level + REFS_PER_CHUNK as u64 - 1) / REFS_PER_CHUNK as u64;
+            chunks_at_level = chunks_at_level.div_ceil(REFS_PER_CHUNK as u64);
             total += chunks_at_level;
         }
 
@@ -70,7 +70,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
 
         let mut chunks = self.data_chunks;
         for _ in 0..level {
-            chunks = (chunks + REFS_PER_CHUNK as u64 - 1) / REFS_PER_CHUNK as u64;
+            chunks = chunks.div_ceil(REFS_PER_CHUNK as u64);
         }
         chunks
     }
@@ -91,7 +91,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// Total bytes covered by chunks at this level.
-    fn level_span(&self, level: usize) -> u64 {
+    const fn level_span(&self, level: usize) -> u64 {
         if level == 0 {
             self.size
         } else {
@@ -101,7 +101,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// Byte offset for start of chunk at level 0.
-    pub fn chunk_offset(&self, chunk_index: u64) -> u64 {
+    pub const fn chunk_offset(&self, chunk_index: u64) -> u64 {
         chunk_index * BODY_SIZE as u64
     }
 
@@ -123,7 +123,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
 
         let end_offset = (offset + len).min(self.size);
         let start_chunk = offset / BODY_SIZE as u64;
-        let end_chunk = (end_offset + BODY_SIZE as u64 - 1) / BODY_SIZE as u64;
+        let end_chunk = end_offset.div_ceil(BODY_SIZE as u64);
 
         ChunkRange {
             start: start_chunk,
@@ -139,7 +139,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
         let mut depth = 1;
         let mut chunks = data_chunks;
         while chunks > 1 {
-            chunks = (chunks + REFS_PER_CHUNK as u64 - 1) / REFS_PER_CHUNK as u64;
+            chunks = chunks.div_ceil(REFS_PER_CHUNK as u64);
             depth += 1;
         }
         depth.min(LEVEL_LIMIT)
@@ -157,12 +157,12 @@ pub struct ChunkRange {
 
 impl ChunkRange {
     /// Number of chunks in range.
-    pub fn len(&self) -> u64 {
+    pub const fn len(&self) -> u64 {
         self.end.saturating_sub(self.start)
     }
 
     /// Whether the range is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.start >= self.end
     }
 
@@ -173,7 +173,7 @@ impl ChunkRange {
 }
 
 /// Calculate subspan size for children of a node with given span.
-pub fn subspan_size<const BODY_SIZE: usize>(span: u64) -> u64 {
+pub(crate) fn subspan_size<const BODY_SIZE: usize>(span: u64) -> u64 {
     for i in 0..LEVEL_LIMIT {
         let level_span = SPANS[i] * BODY_SIZE as u64;
         if span <= level_span {

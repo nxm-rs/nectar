@@ -25,7 +25,7 @@ impl BmtError {
         Self::InvalidInputSize(msg.into())
     }
 
-    pub fn invalid_proof_length(expected: usize, actual: usize) -> Self {
+    pub const fn invalid_proof_length(expected: usize, actual: usize) -> Self {
         Self::InvalidProofLength { expected, actual }
     }
 

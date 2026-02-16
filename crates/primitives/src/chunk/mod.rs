@@ -26,6 +26,9 @@ mod single_owner;
 mod traits;
 mod type_id;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 // Re-export the core traits
 pub use traits::{BmtChunk, Chunk, ChunkAddress, ChunkHeader, ChunkMetadata, ChunkSerialization};
 

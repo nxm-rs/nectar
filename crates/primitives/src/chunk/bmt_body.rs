@@ -8,11 +8,9 @@ use std::marker::PhantomData;
 use std::sync::OnceLock;
 
 use crate::SwarmAddress;
-use crate::bmt::{DEFAULT_BODY_SIZE, Hasher};
+use crate::bmt::{DEFAULT_BODY_SIZE, Hasher, SPAN_SIZE};
 use crate::chunk::error::{self, ChunkError};
 use crate::error::{PrimitivesError, Result};
-
-const SPAN_SIZE: usize = std::mem::size_of::<u64>();
 
 /// A BMT body with configurable maximum size.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -23,7 +21,7 @@ pub struct BmtBody<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
 }
 
 impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
-    fn new_unchecked(span: u64, data: Bytes) -> Self {
+    const fn new_unchecked(span: u64, data: Bytes) -> Self {
         Self {
             span,
             data,
@@ -37,17 +35,17 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
     }
 
     /// Get the span of this body
-    pub fn span(&self) -> u64 {
+    pub const fn span(&self) -> u64 {
         self.span
     }
 
     /// Get the data of this body
-    pub fn data(&self) -> &Bytes {
+    pub const fn data(&self) -> &Bytes {
         &self.data
     }
 
     /// Get the size of this body in bytes
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         SPAN_SIZE + self.data.len()
     }
 
@@ -102,7 +100,7 @@ impl<const BODY_SIZE: usize> TryFrom<Bytes> for BmtBody<BODY_SIZE> {
         let span = u64::from_le_bytes(span_bytes.as_ref().try_into().unwrap());
         let data = buf;
 
-        BmtBody::builder().with_span(span).with_data(data)?.build()
+        Self::builder().with_span(span).with_data(data)?.build()
     }
 }
 
@@ -249,7 +247,6 @@ mod tests {
     proptest! {
         #[test]
         fn test_bmt_body_properties(body in bmt_body_strategy()) {
-            prop_assert!(body.span() <= u64::MAX);
             prop_assert!(body.data().len() <= DEFAULT_BODY_SIZE);
             prop_assert_eq!(body.size(), SPAN_SIZE + body.data().len());
 
@@ -294,7 +291,7 @@ mod tests {
             if span <= DEFAULT_BODY_SIZE as u64 && data.len() != span as usize {
                 assert!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))));
             } else {
-                assert!(matches!(result, Ok(_)));
+                assert!(result.is_ok());
             }
         }
     }

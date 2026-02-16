@@ -41,6 +41,11 @@ name = "sign"
 harness = false
 required-features = ["parallel"]
 
+[[bench]]
+name = "upload_pipeline"
+harness = false
+required-features = ["parallel"]
+
 [features]
 default = ["std"]
 

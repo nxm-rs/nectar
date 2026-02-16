@@ -40,6 +40,9 @@ pub mod chunk;
 pub mod error;
 pub mod file;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 // Re-export core constants
 pub use bmt::DEFAULT_BODY_SIZE;
 

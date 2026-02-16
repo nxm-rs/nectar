@@ -49,7 +49,7 @@ pub struct ContentChunkHeader {
 
 impl ContentChunkHeader {
     /// Create a new header with default metadata
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             metadata: ContentChunkMetadata,
         }
@@ -128,8 +128,8 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     /// such as when reconstructing chunks from storage or building
     /// intermediate nodes in a merkle tree.
     #[must_use]
-    pub fn from_body(body: BmtBody<BODY_SIZE>) -> Self {
-        ContentChunk {
+    pub const fn from_body(body: BmtBody<BODY_SIZE>) -> Self {
+        Self {
             header: ContentChunkHeader::new(),
             body,
             address_cache: OnceCache::new(),
@@ -142,7 +142,7 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     /// and know the chunk's address (e.g., when reconstructing from storage).
     #[must_use]
     pub fn from_body_with_address(body: BmtBody<BODY_SIZE>, address: ChunkAddress) -> Self {
-        ContentChunk {
+        Self {
             header: ContentChunkHeader::new(),
             body,
             address_cache: OnceCache::with_value(address),
@@ -278,7 +278,7 @@ impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, Initial> {
 
 impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild> {
     /// Set a pre-computed address for the chunk
-    fn with_address(mut self, address: ChunkAddress) -> Self {
+    const fn with_address(mut self, address: ChunkAddress) -> Self {
         self.address = Some(address);
         self
     }
@@ -288,10 +288,9 @@ impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild> {
         // This is safe as we have already checked that the body is set
         let body = self.body.unwrap();
 
-        let address_cache = match self.address {
-            Some(addr) => OnceCache::with_value(addr),
-            None => OnceCache::new(),
-        };
+        let address_cache = self
+            .address
+            .map_or_else(OnceCache::new, OnceCache::with_value);
 
         ContentChunk {
             header: ContentChunkHeader::new(),
@@ -304,7 +303,7 @@ impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild> {
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for ContentChunk<BODY_SIZE> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(ContentChunk::from_body(BmtBody::<BODY_SIZE>::arbitrary(u)?))
+        Ok(Self::from_body(BmtBody::<BODY_SIZE>::arbitrary(u)?))
     }
 }
 
@@ -328,7 +327,6 @@ mod tests {
         #[test]
         fn test_chunk_properties(chunk in chunk_strategy()) {
             // Test basic properties
-            prop_assert!(chunk.span() <= u64::MAX);
             prop_assert!(chunk.data().len() <= DEFAULT_BODY_SIZE);
             prop_assert_eq!(chunk.size(), 8 + chunk.data().len());
 
@@ -374,7 +372,7 @@ mod tests {
         fn test_empty_and_edge_cases(size in 0usize..=10usize) {
             // Test with empty or small data
             let data = vec![0u8; size];
-            let chunk = DefaultContentChunk::new(data.clone()).unwrap();
+            let chunk = DefaultContentChunk::new(data).unwrap();
 
             prop_assert_eq!(chunk.data().len(), size);
             prop_assert_eq!(chunk.span(), size as u64);

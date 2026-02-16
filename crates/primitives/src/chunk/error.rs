@@ -46,7 +46,7 @@ pub enum ChunkError {
 }
 
 impl ChunkError {
-    pub fn invalid_size(message: &'static str, expected: usize, actual: usize) -> Self {
+    pub const fn invalid_size(message: &'static str, expected: usize, actual: usize) -> Self {
         Self::InvalidSize {
             message,
             expected,
@@ -58,7 +58,7 @@ impl ChunkError {
         Self::InvalidFormat(msg.into())
     }
 
-    pub fn verification_failed(expected: SwarmAddress, actual: SwarmAddress) -> Self {
+    pub const fn verification_failed(expected: SwarmAddress, actual: SwarmAddress) -> Self {
         Self::VerificationFailed { expected, actual }
     }
 
@@ -66,7 +66,7 @@ impl ChunkError {
         Self::InvalidSignature(msg.into())
     }
 
-    pub fn unsupported_type(type_id: ChunkTypeId) -> Self {
+    pub const fn unsupported_type(type_id: ChunkTypeId) -> Self {
         Self::UnsupportedType(type_id)
     }
 }

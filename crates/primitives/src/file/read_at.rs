@@ -43,7 +43,7 @@ impl ReadAt for Vec<u8> {
     }
 
     fn len(&self) -> u64 {
-        Vec::len(self) as u64
+        Self::len(self) as u64
     }
 }
 
@@ -53,7 +53,7 @@ impl ReadAt for Bytes {
     }
 
     fn len(&self) -> u64 {
-        Bytes::len(self) as u64
+        Self::len(self) as u64
     }
 }
 

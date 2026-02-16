@@ -25,12 +25,21 @@ where
     sink: Mutex<S>,
 }
 
+impl<S, const BODY_SIZE: usize> std::fmt::Debug for ParallelSplitter<S, BODY_SIZE>
+where
+    S: ChunkPut<BODY_SIZE> + Send,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelSplitter").finish_non_exhaustive()
+    }
+}
+
 impl<S, const BODY_SIZE: usize> ParallelSplitter<S, BODY_SIZE>
 where
     S: ChunkPut<BODY_SIZE> + Send,
 {
     /// Create a parallel splitter with the given chunk sink.
-    pub fn new(sink: S) -> Self {
+    pub const fn new(sink: S) -> Self {
         Self {
             sink: Mutex::new(sink),
         }
@@ -137,7 +146,8 @@ where
         level: usize,
         total_size: u64,
     ) -> Result<Vec<ChunkAddress>> {
-        let chunks_at_level = (addrs.len() + REFS_PER_CHUNK - 1) / REFS_PER_CHUNK;
+        let chunks_at_level = addrs.len().div_ceil(REFS_PER_CHUNK);
+
 
         // Build intermediate chunks in parallel
         let results: Vec<Result<ChunkAddress>> = (0..chunks_at_level)

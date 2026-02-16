@@ -44,7 +44,7 @@ impl<const BODY_SIZE: usize> MemorySink<BODY_SIZE> {
     }
 
     /// Access all stored chunks.
-    pub fn chunks(&self) -> &HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
+    pub const fn chunks(&self) -> &HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
         &self.chunks
     }
 
@@ -105,7 +105,7 @@ impl<const BODY_SIZE: usize> Default for VecSink<BODY_SIZE> {
 
 impl<const BODY_SIZE: usize> VecSink<BODY_SIZE> {
     /// Create an empty vec sink.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { chunks: Vec::new() }
     }
 
@@ -117,12 +117,12 @@ impl<const BODY_SIZE: usize> VecSink<BODY_SIZE> {
     }
 
     /// Number of stored chunks.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.chunks.len()
     }
 
     /// Whether the sink is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
 
