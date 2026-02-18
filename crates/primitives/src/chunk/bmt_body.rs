@@ -211,8 +211,19 @@ impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, ReadyToBuild> {
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for BmtBody<BODY_SIZE> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let span = u64::arbitrary(u)?;
-        let data_len: usize = u.int_in_range(0..=BODY_SIZE)?;
+        // Decide whether to generate a leaf chunk (span == data_len) or an
+        // intermediate chunk (span > BODY_SIZE, full body).
+        let is_leaf: bool = u.arbitrary()?;
+
+        let (span, data_len) = if is_leaf {
+            let data_len: usize = u.int_in_range(0..=BODY_SIZE)?;
+            (data_len as u64, data_len)
+        } else {
+            // Intermediate node: span exceeds BODY_SIZE, body is always full.
+            let span = u.int_in_range(BODY_SIZE as u64 + 1..=u64::MAX)?;
+            (span, BODY_SIZE)
+        };
+
         let mut buf = vec![0; data_len];
         u.fill_buffer(&mut buf)?;
 
