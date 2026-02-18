@@ -1,3 +1,9 @@
+<!--
+  Serve with cross-origin isolation headers (required for SharedArrayBuffer):
+    wasm-serve www/          (alias available in `nix develop .#wasm`)
+  Or manually:
+    miniserve --header "Cross-Origin-Opener-Policy:same-origin" --header "Cross-Origin-Embedder-Policy:require-corp" -p 8080 www/
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>

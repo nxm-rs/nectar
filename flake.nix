@@ -40,6 +40,7 @@
             rustNightly
             wasm-pack
             wasm-bindgen-cli
+            miniserve
             pkg-config
             openssl
             openssl.dev
@@ -63,6 +64,7 @@
             rustNightly
             wasm-pack
             wasm-bindgen-cli
+            miniserve
             pkg-config
             openssl
             openssl.dev
@@ -75,6 +77,10 @@
           # Required for wasm-bindgen-rayon (SharedArrayBuffer + atomics)
           # See: https://github.com/RReverser/wasm-bindgen-rayon
           RUSTFLAGS = "-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--max-memory=1073741824 -C link-arg=--import-memory -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base";
+
+          shellHook = ''
+            alias wasm-serve='miniserve --header "Cross-Origin-Opener-Policy:same-origin" --header "Cross-Origin-Embedder-Policy:require-corp" -p 8080'
+          '';
         };
       }
     );
