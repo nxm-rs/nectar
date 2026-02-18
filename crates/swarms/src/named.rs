@@ -195,7 +195,7 @@ mod tests {
     fn test_partial_eq_ord_u64() {
         assert!(NamedSwarm::Mainnet == 1u64);
         assert!(NamedSwarm::Testnet == 10u64);
-        assert!(!(NamedSwarm::Mainnet == 2u64));
+        assert!((NamedSwarm::Mainnet != 2u64));
 
         assert!(NamedSwarm::Mainnet < 2u64);
         assert!(NamedSwarm::Testnet > 9u64);

@@ -98,13 +98,22 @@ pub const EXTENDED_PO: u8 = MAX_PO + 5;
 pub struct SwarmAddress(pub B256);
 
 impl SwarmAddress {
+    /// Creates an address with only the first byte set, rest zeros.
+    ///
+    /// The first byte controls proximity order (leading bits determine PO).
+    pub const fn with_first_byte(byte: u8) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[0] = byte;
+        Self(B256::new(bytes))
+    }
+
     /// Creates a new SwarmAddress from raw bytes
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(B256::from(bytes))
     }
 
     /// Returns the underlying bytes
-    pub fn as_bytes(&self) -> &[u8] {
+    pub const fn as_bytes(&self) -> &[u8] {
         self.0.as_slice()
     }
 
@@ -120,7 +129,7 @@ impl SwarmAddress {
     }
 
     /// Create a new zero-filled address
-    pub fn zero() -> Self {
+    pub const fn zero() -> Self {
         Self(B256::ZERO)
     }
 

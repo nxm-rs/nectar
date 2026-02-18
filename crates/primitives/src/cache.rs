@@ -17,7 +17,7 @@ pub(crate) struct OnceCache<T> {
 
 impl<T> OnceCache<T> {
     /// Create a new empty cache
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             value: OnceLock::new(),
         }
@@ -58,10 +58,8 @@ impl<T> Default for OnceCache<T> {
 
 impl<T: Clone> Clone for OnceCache<T> {
     fn clone(&self) -> Self {
-        if let Some(value) = self.value.get() {
-            Self::with_value(value.clone())
-        } else {
-            Self::new()
-        }
+        self.value
+            .get()
+            .map_or_else(Self::new, |value| Self::with_value(value.clone()))
     }
 }

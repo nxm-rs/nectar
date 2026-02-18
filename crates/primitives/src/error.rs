@@ -56,6 +56,10 @@ pub enum PrimitivesError {
     #[error(transparent)]
     Chunk(#[from] crate::chunk::error::ChunkError),
 
+    /// Errors from file operations
+    #[error(transparent)]
+    File(#[from] crate::file::error::FileError),
+
     /// Input/output errors
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

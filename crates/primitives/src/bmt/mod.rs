@@ -35,7 +35,7 @@ pub(crate) mod error;
 mod hasher;
 mod proof;
 
-pub use constants::DEFAULT_BODY_SIZE;
+pub use constants::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE};
 pub use hasher::{Hasher, HasherFactory};
 pub use proof::{Proof, Prover};
 
@@ -43,7 +43,7 @@ pub use proof::{Proof, Prover};
 pub use crate::error::{PrimitivesError, Result};
 
 #[cfg(target_arch = "wasm32")]
-mod wasm;
+pub mod wasm;
 
 #[cfg(test)]
 mod tests;

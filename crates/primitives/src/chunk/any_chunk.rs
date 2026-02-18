@@ -82,7 +82,7 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     }
 
     /// Get the type ID of this chunk.
-    pub fn type_id(&self) -> ChunkTypeId {
+    pub const fn type_id(&self) -> ChunkTypeId {
         match self {
             Self::Content(_) => ChunkTypeId::CONTENT,
             Self::SingleOwner(_) => ChunkTypeId::SINGLE_OWNER,
@@ -142,22 +142,22 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     }
 
     /// Check if this is a content chunk.
-    pub fn is_content(&self) -> bool {
+    pub const fn is_content(&self) -> bool {
         matches!(self, Self::Content(_))
     }
 
     /// Check if this is a single-owner chunk.
-    pub fn is_single_owner(&self) -> bool {
+    pub const fn is_single_owner(&self) -> bool {
         matches!(self, Self::SingleOwner(_))
     }
 
     /// Check if this is a custom chunk type.
-    pub fn is_custom(&self) -> bool {
+    pub const fn is_custom(&self) -> bool {
         matches!(self, Self::Custom { .. })
     }
 
     /// Get a reference to the contained ContentChunk, if this is one.
-    pub fn as_content(&self) -> Option<&ContentChunk<BODY_SIZE>> {
+    pub const fn as_content(&self) -> Option<&ContentChunk<BODY_SIZE>> {
         match self {
             Self::Content(c) => Some(c),
             _ => None,
@@ -165,7 +165,7 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     }
 
     /// Get a reference to the contained SingleOwnerChunk, if this is one.
-    pub fn as_single_owner(&self) -> Option<&SingleOwnerChunk<BODY_SIZE>> {
+    pub const fn as_single_owner(&self) -> Option<&SingleOwnerChunk<BODY_SIZE>> {
         match self {
             Self::SingleOwner(c) => Some(c),
             _ => None,
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_clone() {
         let content = DefaultContentChunk::new(&b"test"[..]).unwrap();
-        let any: DefaultAnyChunk = content.clone().into();
+        let any: DefaultAnyChunk = content.into();
         let cloned = any.clone();
 
         assert_eq!(any.address(), cloned.address());

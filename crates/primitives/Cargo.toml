@@ -29,19 +29,26 @@ serde = { workspace = true, optional = true }
 # synchronization
 parking_lot = "0.12"
 
+# async support
+tokio = { workspace = true, features = ["io-util"], optional = true }
+futures = { workspace = true, optional = true }
+
 # arbitrary
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 rand = { workspace = true, optional = true }
 
-# Only for non-WASM targets - removed the optional flag so it's always included
+# rayon for parallelism (works on both native and WASM via wasm-bindgen-rayon)
+rayon.workspace = true
+
+# Only for non-WASM targets
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
-rayon.workspace = true
 
 # Only for WASM-specific targets
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 alloy-primitives.workspace = true
 wasm-bindgen.workspace = true
+wasm-bindgen-rayon = "1.3"
 js-sys.workspace = true
 getrandom.workspace = true
 getrandom_02.workspace = true
@@ -65,6 +72,7 @@ arbitrary = [
 	"dep:arbitrary",
 	"alloy-primitives/arbitrary",
 ]
+async = ["dep:tokio", "dep:futures"]
 
 [[bench]]
 name = "primitives"
@@ -80,4 +88,8 @@ harness = false
 
 [[bench]]
 name = "bmt_bench"
+harness = false
+
+[[bench]]
+name = "file_bench"
 harness = false

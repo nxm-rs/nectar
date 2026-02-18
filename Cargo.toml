@@ -39,6 +39,7 @@ nectar-contracts = { path = "crates/contracts" }
 nectar-primitives = { path = "crates/primitives" }
 nectar-swarms = { path = "crates/swarms" }
 nectar-postage = { path = "crates/postage" }
+nectar-postage-issuer = { path = "crates/postage-issuer" }
 
 # alloy
 alloy-primitives = { version = "1.5.4", default-features = false }
@@ -82,10 +83,13 @@ proptest-arbitrary-interop = "0.1"
 proptest-derive = "0.5"
 rand = "0.9"
 tokio = { version = "1", features = ["rt", "macros"] }
+futures = "0.3"
 
 # wasm
 wasm-bindgen = "0.2"
+wasm-bindgen-rayon = "1.3"
 js-sys = "0.3"
+console_error_panic_hook = "0.1"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 # getrandom 0.2 needed for transitive deps (rand_core 0.6 via k256/elliptic-curve)
 getrandom_02 = { package = "getrandom", version = "0.2", default-features = false, features = ["js"] }

@@ -139,7 +139,7 @@ impl<I, S> BatchStamper<I, S> {
     /// This is a utility function for converting an alloy `Signature` into
     /// the 65-byte format used in stamps (r || s || v).
     #[inline]
-    pub fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
+    pub const fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
         // Signature is now stored directly in Stamp
         Stamp::with_index(digest.batch_id, digest.index, digest.timestamp, sig)
     }

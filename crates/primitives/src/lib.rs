@@ -38,6 +38,10 @@ pub mod bmt;
 mod cache;
 pub mod chunk;
 pub mod error;
+pub mod file;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 // Re-export core constants
 pub use bmt::DEFAULT_BODY_SIZE;
@@ -76,3 +80,17 @@ pub type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
 pub type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 /// Default polymorphic chunk.
 pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
+
+// File operations
+pub use file::{
+    ChunkGet, ChunkGetExt, ChunkHas, ChunkPut, ChunkPutExt, ChunkRange, FileError, Joiner,
+    MemorySink, ParallelJoiner, ParallelSplitter, ReadAt, SplitBuilder, Splitter, TreeParams,
+    VecSink, join, split, split_reader,
+};
+#[cfg(feature = "async")]
+pub use file::{AsyncChunkGet, AsyncChunkPut, AsyncJoiner, AsyncReadAt};
+
+/// Default file splitter.
+pub type DefaultSplitter<S> = file::Splitter<S, DEFAULT_BODY_SIZE>;
+/// Default file joiner.
+pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
