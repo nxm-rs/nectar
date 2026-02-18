@@ -1,3 +1,5 @@
+import { startWorkers } from './snippets/wasm-bindgen-rayon-38edf6e439f6d70d/src/workerHelpers.js';
+
 /**
  * Result of parsing and analyzing a chunk
  */
@@ -203,6 +205,75 @@ export const ColorScheme = Object.freeze({
      */
     Complementary: 3, "3": "Complementary",
 });
+
+/**
+ * WASM-friendly wrapper for ContentChunk.
+ */
+export class ContentChunk {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(ContentChunk.prototype);
+        obj.__wbg_ptr = ptr;
+        ContentChunkFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        ContentChunkFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_contentchunk_free(ptr, 0);
+    }
+    /**
+     * Get the chunk's content address (32 bytes).
+     * @returns {Uint8Array}
+     */
+    address() {
+        const ret = wasm.contentchunk_address(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Get the chunk's data (without span header).
+     * @returns {Uint8Array}
+     */
+    data() {
+        const ret = wasm.contentchunk_data(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Create a new content chunk from data.
+     * @param {Uint8Array} data
+     */
+    constructor(data) {
+        const ret = wasm.contentchunk_new(data);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0] >>> 0;
+        ContentChunkFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Get the serialized chunk (span + data).
+     * @returns {Uint8Array}
+     */
+    serialize() {
+        const ret = wasm.contentchunk_serialize(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Get the span (data size this chunk represents).
+     * @returns {bigint}
+     */
+    span() {
+        const ret = wasm.contentchunk_span(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+}
+if (Symbol.dispose) ContentChunk.prototype[Symbol.dispose] = ContentChunk.prototype.free;
 
 /**
  * Result of creating a ContentChunk
@@ -917,6 +988,71 @@ export class SingleOwnerChunkResult {
 if (Symbol.dispose) SingleOwnerChunkResult.prototype[Symbol.dispose] = SingleOwnerChunkResult.prototype.free;
 
 /**
+ * Result of splitting a file into chunks.
+ */
+export class SplitResult {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(SplitResult.prototype);
+        obj.__wbg_ptr = ptr;
+        SplitResultFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        SplitResultFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_splitresult_free(ptr, 0);
+    }
+    /**
+     * Get all chunk addresses as an array of Uint8Array.
+     * @returns {Array<any>}
+     */
+    addresses() {
+        const ret = wasm.splitresult_addresses(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Get the number of chunks generated.
+     * @returns {number}
+     */
+    get chunkCount() {
+        const ret = wasm.splitresult_chunkCount(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Get all chunks as an array of WasmContentChunk.
+     * @returns {Array<any>}
+     */
+    chunks() {
+        const ret = wasm.splitresult_chunks(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Get a chunk by index.
+     * @param {number} index
+     * @returns {ContentChunk | undefined}
+     */
+    getChunk(index) {
+        const ret = wasm.splitresult_getChunk(this.__wbg_ptr, index);
+        return ret === 0 ? undefined : ContentChunk.__wrap(ret);
+    }
+    /**
+     * Get the root address (32 bytes).
+     * @returns {Uint8Array}
+     */
+    get rootAddress() {
+        const ret = wasm.splitresult_rootAddress(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) SplitResult.prototype[Symbol.dispose] = SplitResult.prototype.free;
+
+/**
  * Analyze a chunk and determine its type and properties
  *
  * @param {Uint8Array} chunk_data - Serialized chunk data
@@ -988,6 +1124,19 @@ export function calculate_bmt_hash(text, span) {
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.calculate_bmt_hash(ptr0, len0, span);
     return HashResult.__wrap(ret);
+}
+
+/**
+ * Create a chunk from raw span + data bytes (as stored/transmitted).
+ * @param {Uint8Array} bytes
+ * @returns {ContentChunk}
+ */
+export function chunkFromBytes(bytes) {
+    const ret = wasm.chunkFromBytes(bytes);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ContentChunk.__wrap(ret[0]);
 }
 
 /**
@@ -1170,6 +1319,18 @@ export function generate_svg_icon(data, config) {
 }
 
 /**
+ * BMT constants for JavaScript use.
+ * @returns {any}
+ */
+export function getConstants() {
+    const ret = wasm.getConstants();
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Get the address from a private key
  *
  * @param {Uint8Array} private_key - Private key bytes
@@ -1206,7 +1367,92 @@ export function get_library_info() {
     }
 }
 
-function __wbg_get_imports() {
+/**
+ * Hash a single chunk of data and return the 32-byte address.
+ *
+ * Useful for parallel hashing in web workers.
+ * @param {Uint8Array} data
+ * @param {bigint} span
+ * @returns {Uint8Array}
+ */
+export function hashChunkData(data, span) {
+    const ret = wasm.hashChunkData(data, span);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * @param {number} num_threads
+ * @returns {Promise<any>}
+ */
+export function initThreadPool(num_threads) {
+    const ret = wasm.initThreadPool(num_threads);
+    return ret;
+}
+
+/**
+ * Split data into BMT chunks.
+ *
+ * Returns a SplitResult containing the root address and all generated chunks.
+ * @param {Uint8Array} data
+ * @returns {SplitResult}
+ */
+export function splitFile(data) {
+    const ret = wasm.splitFile(data);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return SplitResult.__wrap(ret[0]);
+}
+
+export class wbg_rayon_PoolBuilder {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(wbg_rayon_PoolBuilder.prototype);
+        obj.__wbg_ptr = ptr;
+        wbg_rayon_PoolBuilderFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        wbg_rayon_PoolBuilderFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wbg_rayon_poolbuilder_free(ptr, 0);
+    }
+    build() {
+        wasm.wbg_rayon_poolbuilder_build(this.__wbg_ptr);
+    }
+    /**
+     * @returns {number}
+     */
+    numThreads() {
+        const ret = wasm.wbg_rayon_poolbuilder_numThreads(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    receiver() {
+        const ret = wasm.wbg_rayon_poolbuilder_receiver(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+}
+if (Symbol.dispose) wbg_rayon_PoolBuilder.prototype[Symbol.dispose] = wbg_rayon_PoolBuilder.prototype.free;
+
+/**
+ * @param {number} receiver
+ */
+export function wbg_rayon_start_worker(receiver) {
+    wasm.wbg_rayon_start_worker(receiver);
+}
+
+function __wbg_get_imports(memory) {
     const import0 = {
         __proto__: null,
         __wbg___wbindgen_is_function_0095a73b8b156f76: function(arg0) {
@@ -1226,6 +1472,14 @@ function __wbg_get_imports() {
             const ret = arg0 === undefined;
             return ret;
         },
+        __wbg___wbindgen_memory_bd1fbcf21fbef3c8: function() {
+            const ret = wasm.memory;
+            return ret;
+        },
+        __wbg___wbindgen_module_f6b8052d79c1cc16: function() {
+            const ret = wasmModule;
+            return ret;
+        },
         __wbg___wbindgen_throw_be289d5034ed271b: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
@@ -1237,6 +1491,10 @@ function __wbg_get_imports() {
             const ret = arg0.call(arg1, arg2);
             return ret;
         }, arguments); },
+        __wbg_contentchunk_new: function(arg0) {
+            const ret = ContentChunk.__wrap(arg0);
+            return ret;
+        },
         __wbg_crypto_86f2631e91b51511: function(arg0) {
             const ret = arg0.crypto;
             return ret;
@@ -1255,12 +1513,26 @@ function __wbg_get_imports() {
         __wbg_getRandomValues_b3f15fcbfabb0f8b: function() { return handleError(function (arg0, arg1) {
             arg0.getRandomValues(arg1);
         }, arguments); },
+        __wbg_instanceof_Window_ed49b2db8df90359: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof Window;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
         __wbg_length_32ed9a279acd054c: function(arg0) {
             const ret = arg0.length;
             return ret;
         },
         __wbg_msCrypto_d562bbe83e0d4b91: function(arg0) {
             const ret = arg0.msCrypto;
+            return ret;
+        },
+        __wbg_new_361308b2356cecd0: function() {
+            const ret = new Object();
             return ret;
         },
         __wbg_new_3eb36ae241fe6f44: function() {
@@ -1309,6 +1581,10 @@ function __wbg_get_imports() {
             const ret = module.require;
             return ret;
         }, arguments); },
+        __wbg_set_6cb8631f80447a67: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = Reflect.set(arg0, arg1, arg2);
+            return ret;
+        }, arguments); },
         __wbg_set_cc56eefd2dd91957: function(arg0, arg1, arg2) {
             arg0.set(getArrayU8FromWasm0(arg1, arg2));
         },
@@ -1318,6 +1594,10 @@ function __wbg_get_imports() {
             const len1 = WASM_VECTOR_LEN;
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+        },
+        __wbg_startWorkers_2ca11761e08ff5d5: function(arg0, arg1, arg2) {
+            const ret = startWorkers(arg0, arg1, wbg_rayon_PoolBuilder.__wrap(arg2));
+            return ret;
         },
         __wbg_static_accessor_GLOBAL_12837167ad935116: function() {
             const ret = typeof global === 'undefined' ? null : global;
@@ -1343,12 +1623,17 @@ function __wbg_get_imports() {
             const ret = arg0.versions;
             return ret;
         },
-        __wbindgen_cast_0000000000000001: function(arg0, arg1) {
+        __wbindgen_cast_0000000000000001: function(arg0) {
+            // Cast intrinsic for `F64 -> Externref`.
+            const ret = arg0;
+            return ret;
+        },
+        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Ref(Slice(U8)) -> NamedExternref("Uint8Array")`.
             const ret = getArrayU8FromWasm0(arg0, arg1);
             return ret;
         },
-        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
+        __wbindgen_cast_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
             return ret;
@@ -1362,6 +1647,7 @@ function __wbg_get_imports() {
             table.set(offset + 2, true);
             table.set(offset + 3, false);
         },
+        memory: memory || new WebAssembly.Memory({initial:18,maximum:16384,shared:true}),
     };
     return {
         __proto__: null,
@@ -1372,6 +1658,9 @@ function __wbg_get_imports() {
 const ChunkAnalysisResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_chunkanalysisresult_free(ptr >>> 0, 1));
+const ContentChunkFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_contentchunk_free(ptr >>> 0, 1));
 const ContentChunkResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_contentchunkresult_free(ptr >>> 0, 1));
@@ -1396,6 +1685,12 @@ const ProofFinalization = (typeof FinalizationRegistry === 'undefined')
 const SingleOwnerChunkResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_singleownerchunkresult_free(ptr >>> 0, 1));
+const SplitResultFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_splitresult_free(ptr >>> 0, 1));
+const wbg_rayon_PoolBuilderFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wbg_rayon_poolbuilder_free(ptr >>> 0, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
@@ -1416,7 +1711,7 @@ function getArrayU8FromWasm0(ptr, len) {
 
 let cachedDataViewMemory0 = null;
 function getDataViewMemory0() {
-    if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || (cachedDataViewMemory0.buffer.detached === undefined && cachedDataViewMemory0.buffer !== wasm.memory.buffer)) {
+    if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer !== wasm.memory.buffer) {
         cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
     }
     return cachedDataViewMemory0;
@@ -1429,7 +1724,7 @@ function getStringFromWasm0(ptr, len) {
 
 let cachedUint8ArrayMemory0 = null;
 function getUint8ArrayMemory0() {
-    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
+    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.buffer !== wasm.memory.buffer) {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
@@ -1498,8 +1793,9 @@ function takeFromExternrefTable0(idx) {
     return value;
 }
 
-let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
-cachedTextDecoder.decode();
+let cachedTextDecoder = (typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }) : undefined);
+if (cachedTextDecoder) cachedTextDecoder.decode();
+
 const MAX_SAFARI_DECODE_BYTES = 2146435072;
 let numBytesDecoded = 0;
 function decodeText(ptr, len) {
@@ -1509,12 +1805,12 @@ function decodeText(ptr, len) {
         cachedTextDecoder.decode();
         numBytesDecoded = len;
     }
-    return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
+    return cachedTextDecoder.decode(getUint8ArrayMemory0().slice(ptr, ptr + len));
 }
 
-const cachedTextEncoder = new TextEncoder();
+const cachedTextEncoder = (typeof TextEncoder !== 'undefined' ? new TextEncoder() : undefined);
 
-if (!('encodeInto' in cachedTextEncoder)) {
+if (cachedTextEncoder) {
     cachedTextEncoder.encodeInto = function (arg, view) {
         const buf = cachedTextEncoder.encode(arg);
         view.set(buf);
@@ -1528,12 +1824,15 @@ if (!('encodeInto' in cachedTextEncoder)) {
 let WASM_VECTOR_LEN = 0;
 
 let wasmModule, wasm;
-function __wbg_finalize_init(instance, module) {
+function __wbg_finalize_init(instance, module, thread_stack_size) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
     cachedUint8ArrayMemory0 = null;
-    wasm.__wbindgen_start();
+    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) {
+        throw 'invalid stack size';
+    }
+    wasm.__wbindgen_start(thread_stack_size);
     return wasm;
 }
 
@@ -1572,33 +1871,33 @@ async function __wbg_load(module, imports) {
     }
 }
 
-function initSync(module) {
+function initSync(module, memory) {
     if (wasm !== undefined) return wasm;
 
-
+    let thread_stack_size
     if (module !== undefined) {
         if (Object.getPrototypeOf(module) === Object.prototype) {
-            ({module} = module)
+            ({module, memory, thread_stack_size} = module)
         } else {
             console.warn('using deprecated parameters for `initSync()`; pass a single object instead')
         }
     }
 
-    const imports = __wbg_get_imports();
+    const imports = __wbg_get_imports(memory);
     if (!(module instanceof WebAssembly.Module)) {
         module = new WebAssembly.Module(module);
     }
     const instance = new WebAssembly.Instance(module, imports);
-    return __wbg_finalize_init(instance, module);
+    return __wbg_finalize_init(instance, module, thread_stack_size);
 }
 
-async function __wbg_init(module_or_path) {
+async function __wbg_init(module_or_path, memory) {
     if (wasm !== undefined) return wasm;
 
-
+    let thread_stack_size
     if (module_or_path !== undefined) {
         if (Object.getPrototypeOf(module_or_path) === Object.prototype) {
-            ({module_or_path} = module_or_path)
+            ({module_or_path, memory, thread_stack_size} = module_or_path)
         } else {
             console.warn('using deprecated parameters for the initialization function; pass a single object instead')
         }
@@ -1607,7 +1906,7 @@ async function __wbg_init(module_or_path) {
     if (module_or_path === undefined) {
         module_or_path = new URL('bmt-wasm-demo_bg.wasm', import.meta.url);
     }
-    const imports = __wbg_get_imports();
+    const imports = __wbg_get_imports(memory);
 
     if (typeof module_or_path === 'string' || (typeof Request === 'function' && module_or_path instanceof Request) || (typeof URL === 'function' && module_or_path instanceof URL)) {
         module_or_path = fetch(module_or_path);
@@ -1615,7 +1914,7 @@ async function __wbg_init(module_or_path) {
 
     const { instance, module } = await __wbg_load(await module_or_path, imports);
 
-    return __wbg_finalize_init(instance, module);
+    return __wbg_finalize_init(instance, module, thread_stack_size);
 }
 
 export { initSync, __wbg_init as default };
