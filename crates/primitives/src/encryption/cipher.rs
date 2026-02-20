@@ -7,21 +7,27 @@ use alloy_primitives::Keccak256;
 use super::KEY_SIZE;
 use super::key::EncryptionKey;
 
-/// Derive the keystream block for a given counter value.
+/// Precompute the hasher state with the key absorbed.
 ///
-/// Applies two rounds of Keccak-256:
-///   round1 = Keccak256(key || LE32(counter))
-///   round2 = Keccak256(round1)
+/// Each segment key derivation hashes `key || LE32(counter)`. Since the key
+/// is constant across all segments, we absorb it once and clone per segment.
 #[inline]
-fn derive_segment_key(key: &EncryptionKey, counter: u32) -> [u8; 32] {
-    let mut hasher = Keccak256::new();
-    hasher.update(<EncryptionKey as AsRef<[u8]>>::as_ref(key));
-    hasher.update(counter.to_le_bytes());
-    let ctr_hash = hasher.finalize();
+fn key_state(key: &EncryptionKey) -> Keccak256 {
+    let mut h = Keccak256::new();
+    h.update(<EncryptionKey as AsRef<[u8]>>::as_ref(key));
+    h
+}
 
-    let mut hasher = Keccak256::new();
-    hasher.update(ctr_hash.as_slice());
-    hasher.finalize().into()
+/// Derive keystream block: `Keccak256(Keccak256(key || LE32(counter)))`.
+#[inline]
+fn derive_segment_key(key_state: &Keccak256, counter: u32) -> [u8; 32] {
+    let mut h1 = key_state.clone();
+    h1.update(counter.to_le_bytes());
+    let round1 = h1.finalize();
+
+    let mut h2 = Keccak256::new();
+    h2.update(round1.as_slice());
+    h2.finalize().into()
 }
 
 /// XOR `input` with the Keccak-256 CTR keystream, writing to `output`.
@@ -34,11 +40,28 @@ fn derive_segment_key(key: &EncryptionKey, counter: u32) -> [u8; 32] {
 #[inline]
 pub fn transcrypt(key: &EncryptionKey, init_ctr: u32, input: &[u8], output: &mut [u8]) {
     debug_assert!(output.len() >= input.len());
+    let ks = key_state(key);
     for (i, block) in input.chunks(KEY_SIZE).enumerate() {
-        let segment_key = derive_segment_key(key, init_ctr.wrapping_add(i as u32));
-        let start = i * KEY_SIZE;
+        let seg = derive_segment_key(&ks, init_ctr.wrapping_add(i as u32));
+        let out = &mut output[i * KEY_SIZE..];
         for (j, &byte) in block.iter().enumerate() {
-            output[start + j] = byte ^ segment_key[j];
+            out[j] = byte ^ seg[j];
+        }
+    }
+}
+
+/// XOR `data` with the Keccak-256 CTR keystream in place.
+///
+/// Equivalent to `transcrypt` but operates on a single mutable buffer,
+/// avoiding a separate output allocation.
+#[inline]
+pub fn transcrypt_in_place(key: &EncryptionKey, init_ctr: u32, data: &mut [u8]) {
+    let ks = key_state(key);
+    for (i, block_start) in (0..data.len()).step_by(KEY_SIZE).enumerate() {
+        let seg = derive_segment_key(&ks, init_ctr.wrapping_add(i as u32));
+        let block_end = (block_start + KEY_SIZE).min(data.len());
+        for j in 0..(block_end - block_start) {
+            data[block_start + j] ^= seg[j];
         }
     }
 }
@@ -65,6 +88,20 @@ mod tests {
     }
 
     #[test]
+    fn go_test_vector_in_place() {
+        let key_hex = "8abf1502f557f15026716030fb6384792583daf39608a3cd02ff2f47e9bc6e49";
+        let key_bytes: [u8; 32] = hex::decode(key_hex).unwrap().try_into().unwrap();
+        let key = EncryptionKey::from(key_bytes);
+
+        let mut data = [0u8; 4096];
+        transcrypt_in_place(&key, 0, &mut data);
+
+        let expected_hex = include_str!("testdata/go_vector_4096.hex");
+        let expected = hex::decode(expected_hex.trim()).unwrap();
+        assert_eq!(data.as_slice(), expected.as_slice());
+    }
+
+    #[test]
     fn symmetry() {
         let key = EncryptionKey::from([0x42; 32]);
         let plaintext = b"hello world, this is a test!!!!!"; // 32 bytes
@@ -76,6 +113,33 @@ mod tests {
 
         transcrypt(&key, 0, &ciphertext, &mut recovered);
         assert_eq!(&recovered[..], plaintext);
+    }
+
+    #[test]
+    fn in_place_symmetry() {
+        let key = EncryptionKey::from([0x42; 32]);
+        let original = *b"hello world, this is a test!!!!!";
+        let mut data = original;
+
+        transcrypt_in_place(&key, 0, &mut data);
+        assert_ne!(data, original);
+
+        transcrypt_in_place(&key, 0, &mut data);
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn in_place_matches_transcrypt() {
+        let key = EncryptionKey::from([0xbb; 32]);
+        let input = [0x77u8; 256];
+
+        let mut via_transcrypt = [0u8; 256];
+        transcrypt(&key, 3, &input, &mut via_transcrypt);
+
+        let mut via_in_place = input;
+        transcrypt_in_place(&key, 3, &mut via_in_place);
+
+        assert_eq!(via_transcrypt, via_in_place);
     }
 
     #[test]
