@@ -39,6 +39,7 @@ mod cache;
 pub mod chunk;
 pub mod error;
 pub mod file;
+pub mod store;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -81,14 +82,21 @@ pub type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 /// Default polymorphic chunk.
 pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
 
-// File operations
-pub use file::{
-    ChunkGet, ChunkGetExt, ChunkHas, ChunkPut, ChunkPutExt, ChunkRange, FileError, Joiner,
-    MemorySink, ParallelJoiner, ParallelSplitter, ReadAt, SplitBuilder, Splitter, TreeParams,
-    VecSink, join, split, split_reader,
+// Chunk storage (raw + typed)
+pub use store::{
+    ChunkGet, ChunkGetter, ChunkHas, ChunkPut, ChunkPutter, ChunkStore, ChunkStoreError,
+    MemorySink, MockChunkStore, VecSink,
 };
 #[cfg(feature = "async")]
-pub use file::{AsyncChunkGet, AsyncChunkPut, AsyncJoiner, AsyncReadAt};
+pub use store::{AsyncChunkGet, AsyncChunkGetter, AsyncChunkPut, AsyncChunkPutter, AsyncChunkStore};
+
+// File operations (algorithms only)
+pub use file::{
+    ChunkGetExt, ChunkPutExt, ChunkRange, FileError, Joiner, ParallelJoiner, ParallelSplitter,
+    ReadAt, SplitBuilder, Splitter, TreeParams, join, split, split_reader,
+};
+#[cfg(feature = "async")]
+pub use file::{AsyncJoiner, AsyncReadAt};
 
 /// Default file splitter.
 pub type DefaultSplitter<S> = file::Splitter<S, DEFAULT_BODY_SIZE>;

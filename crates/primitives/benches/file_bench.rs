@@ -9,7 +9,8 @@ use std::io::Write;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use rand::{RngCore, rng};
 
-use nectar_primitives::file::{ParallelSplitter, Splitter, VecSink};
+use nectar_primitives::file::{ParallelSplitter, Splitter};
+use nectar_primitives::store::VecSink;
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
 /// File sizes to benchmark, covering typical use cases.

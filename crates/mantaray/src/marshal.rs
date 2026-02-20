@@ -1,12 +1,6 @@
 //! Binary serialisation for mantaray nodes (v0.1 and v0.2).
 
-extern crate alloc;
-
-use alloc::collections::BTreeMap;
-use alloc::string::ToString;
-#[allow(unused_imports)]
-use alloc::vec;
-use alloc::vec::Vec;
+use std::collections::BTreeMap;
 
 use crate::error::{MantarayError, Result};
 use crate::node::{Fork, Node};

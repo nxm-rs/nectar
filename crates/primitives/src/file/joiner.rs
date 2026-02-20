@@ -8,7 +8,7 @@ use crate::chunk::{BmtChunk, Chunk, ChunkAddress};
 
 use super::constants::{LEVEL_LIMIT, REF_SIZE, SPANS};
 use super::error::{FileError, Result};
-use super::traits::ChunkGet;
+use crate::store::ChunkGet;
 
 /// Joins chunks back into file data.
 pub struct Joiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
@@ -193,7 +193,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{MemorySink, Splitter};
+    use crate::file::Splitter;
+    use crate::store::MemorySink;
     use std::io::Write;
 
     const REFS_PER_CHUNK: usize = DEFAULT_BODY_SIZE / REF_SIZE;

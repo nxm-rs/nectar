@@ -8,7 +8,8 @@ use std::io::Write;
 use alloy_primitives::hex;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::file::{Splitter, VecSink};
+use crate::file::Splitter;
+use crate::store::VecSink;
 
 const CHUNK_SIZE: usize = DEFAULT_BODY_SIZE;
 

@@ -20,7 +20,8 @@ use nectar_postage_issuer::{
     BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
 use nectar_primitives::chunk::Chunk;
-use nectar_primitives::file::{ParallelSplitter, Splitter, VecSink};
+use nectar_primitives::file::{ParallelSplitter, Splitter};
+use nectar_primitives::store::VecSink;
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
 /// File sizes to benchmark, representing realistic upload scenarios.

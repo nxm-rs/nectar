@@ -3,9 +3,8 @@
 use std::collections::BTreeMap;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nectar_mantaray::{Entry, Manifest};
+use nectar_mantaray::{Entry, Manifest, MockChunkStore};
 use nectar_mantaray::node::Node;
-use nectar_mantaray::persist::MockStore;
 
 /// Create a 32-byte entry from a path, left-padded with zeroes.
 fn make_entry(path: &[u8]) -> Vec<u8> {
@@ -282,11 +281,11 @@ fn bench_save_load(c: &mut Criterion) {
     group.bench_function("save_spa_trie", |b| {
         b.iter_batched(
             || {
-                let store = MockStore::new();
+                let store = MockChunkStore::new();
                 let n = build_spa_trie();
                 (n, store)
             },
-            |(mut n, store): (Node, MockStore)| {
+            |(mut n, store): (Node, MockChunkStore)| {
                 n.save(&store).unwrap();
                 (n, store)
             },
@@ -295,7 +294,7 @@ fn bench_save_load(c: &mut Criterion) {
     });
 
     group.bench_function("load_spa_trie", |b| {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut n = build_spa_trie();
         n.save(&store).unwrap();
         let ref_ = n.reference().to_vec();
@@ -310,11 +309,11 @@ fn bench_save_load(c: &mut Criterion) {
     group.bench_function("save_load_roundtrip", |b| {
         b.iter_batched(
             || {
-                let store = MockStore::new();
+                let store = MockChunkStore::new();
                 let n = build_spa_trie();
                 (n, store)
             },
-            |(mut n, store): (Node, MockStore)| {
+            |(mut n, store): (Node, MockChunkStore)| {
                 n.save(&store).unwrap();
                 let mut n2 = Node::from_reference(n.reference());
                 n2.load(Some(&store)).unwrap();
@@ -332,7 +331,7 @@ fn bench_full_workflow(c: &mut Criterion) {
 
     group.bench_function("add_save_load_lookup", |b| {
         b.iter(|| {
-            let store = MockStore::new();
+            let store = MockChunkStore::new();
             let mut n = build_spa_trie();
 
             // save
@@ -378,7 +377,7 @@ fn bench_iter(c: &mut Criterion) {
 
     // In-memory iteration (no save/load)
     group.bench_function("spa_trie_in_memory", |b| {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
         for &p in paths {
             let mut v = p.as_bytes().to_vec();
@@ -407,7 +406,7 @@ fn bench_iter(c: &mut Criterion) {
 
     // Lazy iteration after save/load (exercises storage loading)
     group.bench_function("spa_trie_lazy", |b| {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
         for &p in paths {
             let mut v = p.as_bytes().to_vec();
@@ -439,7 +438,7 @@ fn bench_iter(c: &mut Criterion) {
 
     // Compare with entries() (walk-based collection)
     group.bench_function("entries_spa_trie", |b| {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
         for &p in paths {
             let mut v = p.as_bytes().to_vec();

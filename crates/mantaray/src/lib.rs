@@ -24,8 +24,8 @@
 //! Configure index and error documents for Swarm-hosted websites:
 //!
 //! ```no_run
-//! # use nectar_mantaray::{Manifest, Entry, metadata, persist::MockStore};
-//! # let store = MockStore::new();
+//! # use nectar_mantaray::{Manifest, Entry, metadata, MockChunkStore};
+//! # let store = MockChunkStore::new();
 //! # let mut manifest = Manifest::new(&store, false);
 //! manifest.set_index_document("index.html").unwrap();
 //! manifest.set_error_document("404.html").unwrap();
@@ -40,22 +40,20 @@
 //! assert_eq!(metadata::CONTENT_TYPE, "Content-Type");
 //! ```
 
-#![cfg_attr(not(feature = "std"), no_std)]
+use std::collections::BTreeMap;
 
-extern crate alloc;
-
-use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::vec::Vec;
 pub mod error;
 pub mod marshal;
 pub mod node;
-pub mod persist;
 pub mod walker;
 
 pub use error::{MantarayError, Result};
 pub use node::{Fork, Node};
-pub use persist::{MantarayLoader, MantaraySaver, MantarayStore, MockStore};
+
+// Re-export storage traits from primitives.
+pub use nectar_primitives::store::{
+    ChunkGetter, ChunkPutter, ChunkStore, ChunkStoreError, MockChunkStore,
+};
 
 /// Well-known metadata keys matching Go bee's `pkg/manifest/manifest.go`.
 pub mod metadata {
@@ -198,14 +196,14 @@ impl<S> Manifest<S> {
     }
 }
 
-impl<S: MantarayLoader> Manifest<S> {
+impl<S: ChunkGetter> Manifest<S> {
     /// Add a path and entry to the manifest.
     pub fn add(&mut self, path: &str, entry: Entry) -> Result<()> {
         self.trie.add(
             path.as_bytes(),
             &entry.reference,
             entry.metadata,
-            Some(&self.store as &dyn MantarayLoader),
+            Some(&self.store as &dyn ChunkGetter),
         )
     }
 
@@ -213,7 +211,7 @@ impl<S: MantarayLoader> Manifest<S> {
     pub fn remove(&mut self, path: &str) -> Result<()> {
         self.trie.remove(
             path.as_bytes(),
-            Some(&self.store as &dyn MantarayLoader),
+            Some(&self.store as &dyn ChunkGetter),
         )
     }
 
@@ -221,7 +219,7 @@ impl<S: MantarayLoader> Manifest<S> {
     pub fn lookup(&mut self, path: &str) -> Result<Entry> {
         let node = self.trie.lookup_node(
             path.as_bytes(),
-            Some(&self.store as &dyn MantarayLoader),
+            Some(&self.store as &dyn ChunkGetter),
         )?;
 
         if !node.is_value() {
@@ -239,7 +237,7 @@ impl<S: MantarayLoader> Manifest<S> {
     pub fn has_prefix(&mut self, prefix: &str) -> Result<bool> {
         self.trie.has_prefix(
             prefix.as_bytes(),
-            Some(&self.store as &dyn MantarayLoader),
+            Some(&self.store as &dyn ChunkGetter),
         )
     }
 
@@ -248,13 +246,13 @@ impl<S: MantarayLoader> Manifest<S> {
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        self.trie.walk(Some(&self.store as &dyn MantarayLoader), f)
+        self.trie.walk(Some(&self.store as &dyn ChunkGetter), f)
     }
 
     /// Collect all value entries from the manifest.
     pub fn entries(&mut self) -> Result<Vec<Entry>> {
         let mut result = Vec::new();
-        self.trie.walk(Some(&self.store as &dyn MantarayLoader), &mut |path, node| {
+        self.trie.walk(Some(&self.store as &dyn ChunkGetter), &mut |path, node| {
             if node.is_value() {
                 result.push(Entry {
                     path: path.to_vec(),
@@ -297,7 +295,7 @@ impl<S: MantarayLoader> Manifest<S> {
         F: FnMut(&[u8]) -> Result<()>,
     {
         self.trie
-            .walk(Some(&self.store as &dyn MantarayLoader), &mut |_path, node| {
+            .walk(Some(&self.store as &dyn ChunkGetter), &mut |_path, node| {
                 let node_ref = node.reference();
                 if !node_ref.is_empty() {
                     f(node_ref)?;
@@ -326,7 +324,7 @@ impl<S: MantarayLoader> Manifest<S> {
             .trie
             .lookup_node(
                 metadata::ROOT_PATH.as_bytes(),
-                Some(&self.store as &dyn MantarayLoader),
+                Some(&self.store as &dyn ChunkGetter),
             )
             .map_or_else(|_| BTreeMap::new(), |node| node.metadata().clone());
         meta.insert(key.into(), value.into());
@@ -334,14 +332,14 @@ impl<S: MantarayLoader> Manifest<S> {
             metadata::ROOT_PATH.as_bytes(),
             &[],
             meta,
-            Some(&self.store as &dyn MantarayLoader),
+            Some(&self.store as &dyn ChunkGetter),
         )
     }
 
     fn get_root_metadata(&mut self, key: &str) -> Result<Option<String>> {
         match self.trie.lookup_node(
             metadata::ROOT_PATH.as_bytes(),
-            Some(&self.store as &dyn MantarayLoader),
+            Some(&self.store as &dyn ChunkGetter),
         ) {
             Ok(node) => Ok(node.metadata().get(key).cloned()),
             Err(MantarayError::NoForkFound { .. }) => Ok(None),
@@ -350,7 +348,7 @@ impl<S: MantarayLoader> Manifest<S> {
     }
 }
 
-impl<S: MantarayLoader + MantaraySaver> Manifest<S> {
+impl<S: ChunkStore> Manifest<S> {
     /// Persist the manifest trie to storage, returning the root reference.
     pub fn save(&mut self) -> Result<Vec<u8>> {
         self.trie.save(&self.store)?;
@@ -388,7 +386,7 @@ struct IterFrame {
     key_idx: usize,
 }
 
-impl<'a, S: MantarayLoader> ManifestIter<'a, S> {
+impl<'a, S: ChunkGetter> ManifestIter<'a, S> {
     const fn new(trie: &'a mut Node, store: &'a S) -> Self {
         Self {
             trie,
@@ -399,7 +397,7 @@ impl<'a, S: MantarayLoader> ManifestIter<'a, S> {
     }
 }
 
-impl<S: MantarayLoader> Iterator for ManifestIter<'_, S> {
+impl<S: ChunkGetter> Iterator for ManifestIter<'_, S> {
     type Item = Result<Entry>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -408,7 +406,7 @@ impl<S: MantarayLoader> Iterator for ManifestIter<'_, S> {
                 self.root_visited = true;
 
                 if self.trie.forks.is_empty() {
-                    if let Err(e) = self.trie.load(Some(self.store as &dyn MantarayLoader)) {
+                    if let Err(e) = self.trie.load(Some(self.store as &dyn ChunkGetter)) {
                         return Some(Err(e));
                     }
                 }
@@ -470,7 +468,7 @@ impl<S: MantarayLoader> Iterator for ManifestIter<'_, S> {
 
                 let child = &mut fork.node;
                 if child.forks.is_empty() {
-                    if let Err(e) = child.load(Some(self.store as &dyn MantarayLoader)) {
+                    if let Err(e) = child.load(Some(self.store as &dyn ChunkGetter)) {
                         return Some(Err(e));
                     }
                 }
@@ -503,7 +501,7 @@ impl<S: MantarayLoader> Iterator for ManifestIter<'_, S> {
     }
 }
 
-impl<'a, S: MantarayLoader> IntoIterator for &'a mut Manifest<S> {
+impl<'a, S: ChunkGetter> IntoIterator for &'a mut Manifest<S> {
     type Item = Result<Entry>;
     type IntoIter = ManifestIter<'a, S>;
 
@@ -524,7 +522,7 @@ mod tests {
 
     #[test]
     fn persist_idempotence() {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
 
         let mut m = Manifest::new(&store, false);
 
@@ -559,7 +557,7 @@ mod tests {
 
     #[test]
     fn manifest_entries() {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
 
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
@@ -616,7 +614,7 @@ mod tests {
 
     #[test]
     fn website_document_helpers() {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
 
         // Add a dummy entry so the root "/" path has an entry
@@ -635,7 +633,7 @@ mod tests {
 
     #[test]
     fn website_document_helpers_merge_metadata() {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
 
         // Set index first
@@ -649,7 +647,7 @@ mod tests {
 
     #[test]
     fn website_document_helpers_none_when_missing() {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
 
         assert_eq!(m.index_document().unwrap(), None);
@@ -658,7 +656,7 @@ mod tests {
 
     #[test]
     fn iterate_addresses_yields_all_refs() {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
 
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
@@ -672,7 +670,7 @@ mod tests {
         let root_ref = m.reference().to_vec();
 
         let mut m2 = Manifest::new_manifest_reference(&root_ref, &store);
-        let mut addresses = alloc::vec::Vec::new();
+        let mut addresses = Vec::new();
         m2.iterate_addresses(|addr| {
             addresses.push(addr.to_vec());
             Ok(())
@@ -695,12 +693,12 @@ mod tests {
 
     #[test]
     fn partial_update_workflow() {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
 
         // Build a manifest with 100 entries
         for i in 0..100u32 {
-            let path = alloc::format!("dir{}/file{}.txt", i / 10, i);
+            let path = format!("dir{}/file{}.txt", i / 10, i);
             let mut v = vec![0u8; 28];
             v.extend_from_slice(&i.to_be_bytes());
             m.add(&path, Entry::new(v)).unwrap();
@@ -724,7 +722,7 @@ mod tests {
 
         // Other entries should be intact
         for i in 1..100u32 {
-            let path = alloc::format!("dir{}/file{}.txt", i / 10, i);
+            let path = format!("dir{}/file{}.txt", i / 10, i);
             let entry = m.lookup(&path).unwrap();
             let mut expected = vec![0u8; 28];
             expected.extend_from_slice(&i.to_be_bytes());
@@ -734,7 +732,7 @@ mod tests {
 
     #[test]
     fn into_iterator() {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
 
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
@@ -744,7 +742,7 @@ mod tests {
             m.add(path, Entry::new(v)).unwrap();
         }
 
-        let mut all_entries = alloc::vec::Vec::new();
+        let mut all_entries = Vec::new();
         for result in &mut m {
             all_entries.push(result.unwrap());
         }
@@ -760,7 +758,7 @@ mod tests {
 
     #[test]
     fn manifest_iter_lazy() {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         let mut m = Manifest::new(&store, false);
 
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];

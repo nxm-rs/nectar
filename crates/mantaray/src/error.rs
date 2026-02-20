@@ -1,11 +1,9 @@
 //! Error types for mantaray operations.
 
-extern crate alloc;
-
-use alloc::string::String;
+use crate::ChunkStoreError;
 
 /// Result type alias for mantaray operations.
-pub type Result<T> = core::result::Result<T, MantarayError>;
+pub type Result<T> = std::result::Result<T, MantarayError>;
 
 /// Errors that can occur during mantaray trie operations.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
@@ -96,13 +94,10 @@ pub enum MantarayError {
         /// Description of the error.
         message: String,
     },
-    /// No loader was provided for a load operation.
-    #[error("no loader provided")]
-    NoLoader,
     /// Node has not been saved yet (reference is empty).
     #[error("missing reference")]
     MissingReference,
-    /// Storage backend error.
-    #[error("storage error: {0}")]
-    StorageError(String),
+    /// Chunk store error.
+    #[error(transparent)]
+    Store(#[from] ChunkStoreError),
 }

@@ -9,7 +9,7 @@ use super::error::Result;
 use super::read_at::ReadAt;
 use super::splitter::Splitter;
 use super::splitter_parallel::ParallelSplitter;
-use super::traits::ChunkPut;
+use crate::store::ChunkPut;
 
 /// Builder for configuring split operations.
 #[derive(Debug)]
@@ -96,7 +96,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{join, MemorySink, VecSink};
+    use crate::file::join;
+    use crate::store::{MemorySink, VecSink};
 
     #[test]
     fn test_builder_split_bytes() {

@@ -2,14 +2,10 @@
 
 #[cfg(test)]
 mod tests {
-    extern crate alloc;
-
-    use alloc::collections::BTreeMap;
-    use alloc::vec;
-    use alloc::vec::Vec;
+    use std::collections::BTreeMap;
 
     use crate::node::Node;
-    use crate::persist::MockStore;
+    use crate::MockChunkStore;
 
     fn make_entry(s: &[u8]) -> Vec<u8> {
         let mut entry = vec![0u8; 32 - s.len()];
@@ -176,7 +172,7 @@ mod tests {
             n.add(path, &entry, BTreeMap::new(), None).unwrap();
         }
 
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         n.save(&store).unwrap();
 
         let mut n2 = Node::from_reference(n.reference());

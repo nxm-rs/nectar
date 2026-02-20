@@ -1,4 +1,4 @@
-//! Storage traits for chunk operations.
+//! Typed chunk storage traits.
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{ChunkAddress, ContentChunk};

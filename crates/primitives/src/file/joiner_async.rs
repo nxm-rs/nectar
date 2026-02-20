@@ -13,8 +13,8 @@ use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
 use super::constants::REF_SIZE;
 use super::error::{FileError, Result};
 use super::subspan_size;
-use super::traits_async::AsyncChunkGet;
 use super::tree::TreeParams;
+use crate::store::AsyncChunkGet;
 
 /// Async joiner with concurrent chunk prefetching.
 pub struct AsyncJoiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>

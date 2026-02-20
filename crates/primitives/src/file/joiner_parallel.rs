@@ -10,8 +10,8 @@ use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
 use super::constants::REF_SIZE;
 use super::subspan_size;
 use super::error::{FileError, Result};
-use super::traits::ChunkGet;
 use super::tree::TreeParams;
+use crate::store::ChunkGet;
 
 /// Parallel joiner that batch-fetches required chunks.
 ///

@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 alloy-primitives = { workspace = true, features = ["map"] }
+nectar-primitives = { workspace = true }
 thiserror.workspace = true
 serde_json.workspace = true
 rand = { workspace = true, optional = true }
@@ -31,5 +32,5 @@ harness = false
 
 [features]
 default = ["std"]
-std = ["alloy-primitives/std", "thiserror/std", "serde_json/std", "rand"]
+std = ["alloy-primitives/std", "thiserror/std", "serde_json/std", "rand", "nectar-primitives/std"]
 serde = ["dep:serde", "alloy-primitives/serde"]

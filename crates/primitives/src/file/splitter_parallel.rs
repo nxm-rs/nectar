@@ -11,8 +11,8 @@ use crate::chunk::{Chunk, ChunkAddress, ContentChunk};
 use super::constants::{REFS_PER_CHUNK, SPANS};
 use super::error::{FileError, Result};
 use super::read_at::ReadAt;
-use super::traits::ChunkPut;
 use super::tree::TreeParams;
+use crate::store::ChunkPut;
 
 /// Parallel file splitter using random-access data sources.
 ///
@@ -217,7 +217,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{join, split, MemorySink, VecSink};
+    use crate::file::{join, split};
+    use crate::store::{MemorySink, VecSink};
 
     #[test]
     fn test_parallel_splitter_empty() {

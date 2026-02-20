@@ -11,7 +11,7 @@ use crate::chunk::{Chunk, ChunkAddress, ContentChunk};
 use super::constants::{LEVEL_LIMIT, REF_SIZE, SPANS};
 use super::error::{FileError, Result};
 use super::levels;
-use super::traits::ChunkPut;
+use crate::store::ChunkPut;
 
 /// Splits data into BMT chunks, producing intermediate chunks for large files.
 ///
@@ -245,7 +245,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::sink::VecSink;
+    use crate::store::VecSink;
 
     const REFS_PER_CHUNK: usize = DEFAULT_BODY_SIZE / REF_SIZE;
 
@@ -383,7 +383,8 @@ mod tests {
 
     #[test]
     fn test_splitter_256_chunks_matches_parallel() {
-        use crate::file::{join, ParallelSplitter, MemorySink};
+        use crate::file::{join, ParallelSplitter};
+        use crate::store::MemorySink;
 
         // 256 data chunks - this is the edge case that was causing hash mismatches
         let data = vec![0xAB; DEFAULT_BODY_SIZE * 256];
@@ -413,7 +414,8 @@ mod tests {
 
     #[test]
     fn test_splitter_128_chunks_matches_parallel() {
-        use crate::file::{join, ParallelSplitter, MemorySink};
+        use crate::file::{join, ParallelSplitter};
+        use crate::store::MemorySink;
 
         // Exactly 128 data chunks - another edge case
         let data = vec![0xCD; DEFAULT_BODY_SIZE * REFS_PER_CHUNK];

@@ -7,7 +7,8 @@
 //! # Example
 //!
 //! ```
-//! use nectar_primitives::file::{split, join, MemorySink};
+//! use nectar_primitives::file::{split, join};
+//! use nectar_primitives::store::MemorySink;
 //! use nectar_primitives::{Chunk, DEFAULT_BODY_SIZE};
 //!
 //! let data = b"Hello, Swarm!";
@@ -28,10 +29,8 @@ mod joiner;
 mod joiner_async;
 mod joiner_parallel;
 mod read_at;
-mod sink;
 mod splitter;
 mod splitter_parallel;
-pub mod traits;
 #[cfg(feature = "async")]
 pub mod traits_async;
 mod tree;
@@ -40,6 +39,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 
 use crate::chunk::{ChunkAddress, ContentChunk};
+use crate::store::{ChunkGet, ChunkHas, ChunkPut};
 
 pub use builder::SplitBuilder;
 pub use error::FileError;
@@ -48,12 +48,10 @@ pub use joiner::Joiner;
 pub use joiner_async::AsyncJoiner;
 pub use joiner_parallel::ParallelJoiner;
 pub use read_at::ReadAt;
-pub use sink::{MemorySink, VecSink};
 pub use splitter::Splitter;
 pub use splitter_parallel::ParallelSplitter;
-pub use traits::{ChunkGet, ChunkHas, ChunkPut};
 #[cfg(feature = "async")]
-pub use traits_async::{AsyncChunkGet, AsyncChunkPut, AsyncReadAt};
+pub use traits_async::AsyncReadAt;
 pub use tree::{ChunkRange, TreeParams};
 pub(crate) use tree::subspan_size;
 
@@ -63,7 +61,7 @@ pub(crate) use tree::subspan_size;
 pub fn split<const BODY_SIZE: usize>(
     data: &[u8],
 ) -> error::Result<(ChunkAddress, Vec<ContentChunk<BODY_SIZE>>)> {
-    let sink = VecSink::<BODY_SIZE>::new();
+    let sink = crate::store::VecSink::<BODY_SIZE>::new();
     let mut splitter = Splitter::new(sink, data.len() as u64);
     splitter
         .write_all(data)

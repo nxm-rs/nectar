@@ -1,18 +1,15 @@
 //! Node and Fork types for the mantaray trie.
 
-extern crate alloc;
+use std::collections::BTreeMap;
 
-use alloc::collections::BTreeMap;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 use alloy_primitives::hex;
+use nectar_primitives::ChunkAddress;
 
 use crate::error::{MantarayError, Result};
-use crate::persist::{MantarayLoader, MantaraySaver};
 use crate::{
-    NODE_OBFUSCATION_KEY_SIZE, NODE_PREFIX_MAX_SIZE, NT_EDGE, NT_MASK, NT_VALUE,
-    NT_WITH_METADATA, NT_WITH_PATH_SEPARATOR, PATH_SEPARATOR,
+    ChunkGetter, ChunkPutter, ChunkStoreError, NODE_OBFUSCATION_KEY_SIZE, NODE_PREFIX_MAX_SIZE,
+    NT_EDGE, NT_MASK, NT_VALUE, NT_WITH_METADATA, NT_WITH_PATH_SEPARATOR, PATH_SEPARATOR,
+    keccak256,
 };
 
 /// A node in the mantaray trie.
@@ -63,6 +60,16 @@ impl Fork {
 /// Return the length of the common prefix of two byte slices.
 fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+}
+
+/// Convert a reference byte slice to a `ChunkAddress`.
+///
+/// Takes the first 32 bytes of the reference. Panics if reference is shorter
+/// than 32 bytes (caller must ensure this).
+fn ref_to_address(reference: &[u8]) -> ChunkAddress {
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&reference[..32]);
+    ChunkAddress::from(bytes)
 }
 
 impl Node {
@@ -177,13 +184,14 @@ impl Node {
     }
 
     /// Load this node from storage if it has a reference but no forks loaded.
-    pub fn load(&mut self, loader: Option<&dyn MantarayLoader>) -> Result<()> {
+    pub fn load(&mut self, loader: Option<&dyn ChunkGetter>) -> Result<()> {
         if self.reference.is_empty() {
             return Ok(());
         }
 
-        let loader = loader.ok_or(MantarayError::NoLoader)?;
-        let mut data = loader.load(&self.reference)?;
+        let loader = loader.ok_or_else(|| ChunkStoreError::Other("no loader provided".into()))?;
+        let address = ref_to_address(&self.reference);
+        let mut data = loader.get(&address)?;
         self.unmarshal_binary(&mut data)
     }
 
@@ -191,7 +199,7 @@ impl Node {
     pub fn lookup_node(
         &mut self,
         path: &[u8],
-        loader: Option<&dyn MantarayLoader>,
+        loader: Option<&dyn ChunkGetter>,
     ) -> Result<&mut Self> {
         if self.forks.is_empty() {
             self.load(loader)?;
@@ -222,7 +230,7 @@ impl Node {
     pub fn lookup(
         &mut self,
         path: &[u8],
-        loader: Option<&dyn MantarayLoader>,
+        loader: Option<&dyn ChunkGetter>,
     ) -> Result<&[u8]> {
         let node = self.lookup_node(path, loader)?;
         if !node.is_value() && !path.is_empty() {
@@ -239,7 +247,7 @@ impl Node {
         path: &[u8],
         entry: &[u8],
         metadata: BTreeMap<String, String>,
-        loader: Option<&dyn MantarayLoader>,
+        loader: Option<&dyn ChunkGetter>,
     ) -> Result<()> {
         if self.ref_bytes_size == 0 {
             if entry.len() > 256 {
@@ -371,7 +379,7 @@ impl Node {
     pub fn remove(
         &mut self,
         path: &[u8],
-        loader: Option<&dyn MantarayLoader>,
+        loader: Option<&dyn ChunkGetter>,
     ) -> Result<()> {
         if path.is_empty() {
             return Err(MantarayError::EmptyPath);
@@ -419,7 +427,7 @@ impl Node {
     pub fn has_prefix(
         &mut self,
         path: &[u8],
-        loader: Option<&dyn MantarayLoader>,
+        loader: Option<&dyn ChunkGetter>,
     ) -> Result<bool> {
         if path.is_empty() {
             return Ok(true);
@@ -448,7 +456,7 @@ impl Node {
     }
 
     /// Recursively save this node and all children to storage.
-    pub fn save(&mut self, saver: &dyn MantaraySaver) -> Result<()> {
+    pub fn save(&mut self, saver: &dyn ChunkPutter) -> Result<()> {
         if !self.reference.is_empty() {
             return Ok(());
         }
@@ -458,14 +466,17 @@ impl Node {
         }
 
         let data = self.marshal_binary()?;
-        self.reference = saver.save(&data)?;
+        // TODO: address computation moves to chunk type when encrypted chunks land
+        let address = ChunkAddress::from(keccak256(&data));
+        saver.put(&address, &data)?;
+        self.reference = address.as_slice().to_vec();
         self.forks.clear();
 
         Ok(())
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
-    pub fn walk<F>(&mut self, loader: Option<&dyn MantarayLoader>, f: &mut F) -> Result<()>
+    pub fn walk<F>(&mut self, loader: Option<&dyn ChunkGetter>, f: &mut F) -> Result<()>
     where
         F: FnMut(&[u8], &Self) -> Result<()>,
     {
@@ -476,7 +487,7 @@ impl Node {
     pub fn walk_node<F>(
         &mut self,
         root: &[u8],
-        loader: Option<&dyn MantarayLoader>,
+        loader: Option<&dyn ChunkGetter>,
         f: &mut F,
     ) -> Result<()>
     where
@@ -494,7 +505,7 @@ impl Node {
 fn walk_inner<F>(
     path: &[u8],
     node: &mut Node,
-    loader: Option<&dyn MantarayLoader>,
+    loader: Option<&dyn ChunkGetter>,
     f: &mut F,
 ) -> Result<()>
 where
@@ -521,7 +532,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persist::MockStore;
+    use crate::MockChunkStore;
 
     struct TestCase {
         _name: &'static str,
@@ -770,7 +781,7 @@ mod tests {
             n.add(c.as_bytes(), &e, BTreeMap::new(), None).unwrap();
         }
 
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
         n.save(&store).unwrap();
 
         let mut n2 = Node::from_reference(&n.reference);
@@ -872,7 +883,7 @@ mod tests {
     // Tests save->reload->remove->save->reload->verify-removed cycle.
 
     fn run_persist_remove(tc: RemoveTestCase) {
-        let store = MockStore::new();
+        let store = MockChunkStore::new();
 
         // add entries and persist
         let mut n = Node::default();
