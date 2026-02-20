@@ -55,6 +55,10 @@ pub enum FileError {
     /// Underlying chunk error.
     #[error("chunk error: {0}")]
     Chunk(#[from] crate::chunk::error::ChunkError),
+
+    /// Encryption error.
+    #[error("encryption error: {0}")]
+    Encryption(#[from] crate::chunk::encryption::EncryptionError),
 }
 
 impl FileError {

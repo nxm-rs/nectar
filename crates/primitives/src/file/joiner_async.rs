@@ -1,6 +1,6 @@
 //! Async joiner with concurrent chunk prefetching.
 
-use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -8,33 +8,47 @@ use futures::future::BoxFuture;
 use futures::stream::{self, Stream, StreamExt};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
+use crate::chunk::ChunkAddress;
 
-use super::constants::REF_SIZE;
 use super::error::{FileError, Result};
-use super::subspan_size;
+use super::mode::{JoinMode, PlainMode};
 use super::tree::TreeParams;
 use crate::store::AsyncChunkGet;
 
-/// Async joiner with concurrent chunk prefetching.
-pub struct AsyncJoiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
+#[cfg(feature = "encryption")]
+use super::mode::EncryptedMode;
+
+/// Generic async joiner parameterized by chunk mode.
+pub struct GenericAsyncJoiner<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
     G: AsyncChunkGet<BODY_SIZE>,
 {
     getter: Arc<G>,
     root: ChunkAddress,
+    context: M::JoinerContext,
     span: u64,
     position: u64,
     tree: TreeParams<BODY_SIZE>,
     concurrency: usize,
+    _mode: PhantomData<M>,
 }
 
-impl<G, const BODY_SIZE: usize> std::fmt::Debug for AsyncJoiner<G, BODY_SIZE>
+/// Plain (unencrypted) async joiner.
+pub type AsyncJoiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericAsyncJoiner<G, PlainMode, BODY_SIZE>;
+
+/// Encrypted async joiner.
+#[cfg(feature = "encryption")]
+pub type EncryptedAsyncJoiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericAsyncJoiner<G, EncryptedMode, BODY_SIZE>;
+
+impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for GenericAsyncJoiner<G, M, BODY_SIZE>
 where
     G: AsyncChunkGet<BODY_SIZE>,
+    M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AsyncJoiner")
+        f.debug_struct("GenericAsyncJoiner")
             .field("root", &self.root)
             .field("span", &self.span)
             .field("position", &self.position)
@@ -43,23 +57,27 @@ where
     }
 }
 
-impl<G, const BODY_SIZE: usize> AsyncJoiner<G, BODY_SIZE>
+impl<G, M, const BODY_SIZE: usize> GenericAsyncJoiner<G, M, BODY_SIZE>
 where
     G: AsyncChunkGet<BODY_SIZE>,
+    M: JoinMode + Send + Sync,
 {
-    /// Create an async joiner from a root address.
-    pub async fn new(getter: G, root: ChunkAddress) -> Result<Self> {
-        let root_chunk = getter.get(&root).await.map_err(FileError::getter)?;
-        let span = root_chunk.span();
+    /// Create an async joiner from a root reference.
+    pub async fn new(getter: G, input: M::RootRef) -> Result<Self> {
+        let addr = M::root_address(&input);
+        let root_chunk = getter.get(&addr).await.map_err(FileError::getter)?;
+        let (root, span, context) = M::init_from_chunk::<BODY_SIZE>(input, root_chunk)?;
         let tree = TreeParams::<BODY_SIZE>::new(span);
 
         Ok(Self {
             getter: Arc::new(getter),
             root,
+            context,
             span,
             position: 0,
             tree,
             concurrency: 8,
+            _mode: PhantomData,
         })
     }
 
@@ -103,31 +121,42 @@ where
         // Calculate required data chunks
         let chunk_range = self.tree.chunks_for_range(offset, actual_len as u64);
 
-        // Collect addresses and fetch concurrently
-        let data_addrs = self.collect_data_chunk_addrs(&chunk_range).await?;
+        // Collect addresses/contexts and fetch concurrently
+        let data_refs = self.collect_data_chunk_refs(&chunk_range).await?;
 
-        // Fetch all data chunks concurrently
+        // Compute spans for each data chunk
+        let data_spans: Vec<u64> = chunk_range
+            .iter()
+            .map(|idx| {
+                let (s, e) = self.tree.chunk_range(idx);
+                e - s
+            })
+            .collect();
+
+        // Fetch and decode all data chunks concurrently
         let getter = Arc::clone(&self.getter);
-        let chunks: HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> = stream::iter(data_addrs.iter())
-            .map(|addr| {
+        let bodies: Vec<Bytes> = stream::iter(data_refs.iter().zip(data_spans.iter()))
+            .map(|((addr, ctx), span)| {
                 let getter = Arc::clone(&getter);
                 let addr = *addr;
+                let ctx = ctx.clone();
+                let span = *span;
                 async move {
                     let chunk = getter.get(&addr).await.map_err(FileError::getter)?;
-                    Ok::<_, FileError>((addr, chunk))
+                    M::decode_body::<BODY_SIZE>(chunk, &ctx, span)
                 }
             })
             .buffer_unordered(self.concurrency)
             .collect::<Vec<_>>()
             .await
             .into_iter()
-            .collect::<Result<HashMap<_, _>>>()?;
+            .collect::<Result<Vec<_>>>()?;
 
         // Assemble result
         let mut result = vec![0u8; actual_len];
         let mut result_offset = 0;
 
-        for chunk_idx in chunk_range.iter() {
+        for (i, chunk_idx) in chunk_range.iter().enumerate() {
             let (chunk_start, chunk_end) = self.tree.chunk_range(chunk_idx);
             let chunk_data_len = (chunk_end - chunk_start) as usize;
 
@@ -144,13 +173,10 @@ where
             };
 
             let bytes_to_copy = read_end - read_start;
-
-            let addr = data_addrs[(chunk_idx - chunk_range.start) as usize];
-            let chunk = chunks.get(&addr).ok_or(FileError::ChunkNotFound(addr))?;
-            let data = chunk.data();
+            let body = &bodies[i];
 
             result[result_offset..result_offset + bytes_to_copy]
-                .copy_from_slice(&data[read_start..read_end]);
+                .copy_from_slice(&body[read_start..read_end]);
             result_offset += bytes_to_copy;
         }
 
@@ -168,27 +194,30 @@ where
         let span = self.span;
         let getter = self.getter;
         let root = self.root;
+        let context = self.context;
         let tree = self.tree;
 
         stream::unfold(0u64, move |offset| {
             let getter = Arc::clone(&getter);
-            let tree = tree;
+            let context = context.clone();
             async move {
                 if offset >= span {
                     return None;
                 }
 
                 let len = (span - offset).min(chunk_size as u64) as usize;
-                let joiner = AsyncJoinerInternal {
+                let internal = AsyncJoinerInternal::<G, M, BODY_SIZE> {
                     getter,
                     root,
+                    context: context.clone(),
                     span,
                     tree,
+                    _mode: PhantomData,
                 };
 
-                match joiner.read_range_internal(offset, len).await {
+                match internal.read_range_internal(offset, len).await {
                     Ok(data) => Some((Ok(Bytes::from(data)), offset + len as u64)),
-                    Err(e) => Some((Err(e), span)), // End stream on error
+                    Err(e) => Some((Err(e), span)),
                 }
             }
         })
@@ -196,63 +225,64 @@ where
 
     async fn read_single_chunk(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
         let chunk = self.getter.get(&self.root).await.map_err(FileError::getter)?;
-        let data = chunk.data();
+        let body = M::decode_body::<BODY_SIZE>(chunk, &self.context, self.span)?;
         let start = offset as usize;
         let end = start + len;
-        Ok(data[start..end].to_vec())
+        Ok(body[start..end].to_vec())
     }
 
-    async fn collect_data_chunk_addrs(
+    async fn collect_data_chunk_refs(
         &self,
         chunk_range: &super::tree::ChunkRange,
-    ) -> Result<Vec<ChunkAddress>> {
-        let mut addrs = Vec::with_capacity(chunk_range.len() as usize);
+    ) -> Result<Vec<(ChunkAddress, M::JoinerContext)>> {
+        let mut refs = Vec::with_capacity(chunk_range.len() as usize);
 
         for chunk_idx in chunk_range.iter() {
-            let addr = self.find_data_chunk_addr(chunk_idx).await?;
-            addrs.push(addr);
+            let r = self.find_data_chunk_ref(chunk_idx).await?;
+            refs.push(r);
         }
 
-        Ok(addrs)
+        Ok(refs)
     }
 
-    async fn find_data_chunk_addr(&self, data_chunk_idx: u64) -> Result<ChunkAddress> {
+    async fn find_data_chunk_ref(
+        &self,
+        data_chunk_idx: u64,
+    ) -> Result<(ChunkAddress, M::JoinerContext)> {
         let offset = data_chunk_idx * BODY_SIZE as u64;
-        self.traverse_to_data_chunk(&self.root, self.span, offset)
+        self.traverse_to_data_chunk(&self.root, &self.context, self.span, offset)
             .await
     }
 
     fn traverse_to_data_chunk<'a>(
         &'a self,
         addr: &'a ChunkAddress,
+        context: &'a M::JoinerContext,
         span: u64,
         offset: u64,
-    ) -> BoxFuture<'a, Result<ChunkAddress>> {
+    ) -> BoxFuture<'a, Result<(ChunkAddress, M::JoinerContext)>> {
         Box::pin(async move {
             if span <= BODY_SIZE as u64 {
-                return Ok(*addr);
+                return Ok((*addr, context.clone()));
             }
 
             let chunk = self.getter.get(addr).await.map_err(FileError::getter)?;
-            let chunk_data = chunk.data();
+            let body = M::decode_body::<BODY_SIZE>(chunk, context, span)?;
 
-            let subspan = subspan_size::<BODY_SIZE>(span);
+            let subspan = M::subspan_size::<BODY_SIZE>(span);
             let child_index = (offset / subspan) as usize;
             let child_offset = offset % subspan;
 
-            let ref_start = child_index * REF_SIZE;
-            let ref_end = ref_start + REF_SIZE;
+            let ref_start = child_index * M::REF_SIZE;
+            let ref_end = ref_start + M::REF_SIZE;
 
-            if ref_end > chunk_data.len() {
+            if ref_end > body.len() {
                 return Err(FileError::InvalidReference { level: 0 });
             }
 
-            let child_addr_bytes: [u8; 32] = chunk_data[ref_start..ref_end]
-                .try_into()
-                .map_err(|_| FileError::InvalidReference { level: 0 })?;
-            let child_addr = ChunkAddress::from(child_addr_bytes);
+            let (child_addr, child_context) = M::parse_child_ref(&body, ref_start)?;
 
-            let refs_per_chunk = BODY_SIZE / REF_SIZE;
+            let refs_per_chunk = M::refs_per_chunk(BODY_SIZE);
             let child_span = if child_index == refs_per_chunk - 1 {
                 let preceding = child_index as u64 * subspan;
                 span.saturating_sub(preceding)
@@ -260,34 +290,37 @@ where
                 subspan.min(span - child_index as u64 * subspan)
             };
 
-            self.traverse_to_data_chunk(&child_addr, child_span, child_offset)
+            self.traverse_to_data_chunk(&child_addr, &child_context, child_span, child_offset)
                 .await
         })
     }
 }
 
 /// Internal helper for stream.
-struct AsyncJoinerInternal<G, const BODY_SIZE: usize>
+struct AsyncJoinerInternal<G, M: JoinMode, const BODY_SIZE: usize>
 where
     G: AsyncChunkGet<BODY_SIZE>,
 {
     getter: Arc<G>,
     root: ChunkAddress,
+    context: M::JoinerContext,
     span: u64,
     tree: TreeParams<BODY_SIZE>,
+    _mode: PhantomData<M>,
 }
 
-impl<G, const BODY_SIZE: usize> AsyncJoinerInternal<G, BODY_SIZE>
+impl<G, M, const BODY_SIZE: usize> AsyncJoinerInternal<G, M, BODY_SIZE>
 where
     G: AsyncChunkGet<BODY_SIZE>,
+    M: JoinMode + Send + Sync,
 {
     async fn read_range_internal(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
         if self.span <= BODY_SIZE as u64 {
             let chunk = self.getter.get(&self.root).await.map_err(FileError::getter)?;
-            let data = chunk.data();
+            let body = M::decode_body::<BODY_SIZE>(chunk, &self.context, self.span)?;
             let start = offset as usize;
             let end = start + len;
-            return Ok(data[start..end].to_vec());
+            return Ok(body[start..end].to_vec());
         }
 
         let chunk_range = self.tree.chunks_for_range(offset, len as u64);
@@ -295,11 +328,13 @@ where
         let mut result_offset = 0;
 
         for chunk_idx in chunk_range.iter() {
-            let addr = self.find_data_chunk_addr(chunk_idx).await?;
-            let chunk = self.getter.get(&addr).await.map_err(FileError::getter)?;
-            let data = chunk.data();
-
+            let (addr, ctx) = self.find_data_chunk_ref(chunk_idx).await?;
             let (chunk_start, chunk_end) = self.tree.chunk_range(chunk_idx);
+            let data_span = chunk_end - chunk_start;
+
+            let chunk = self.getter.get(&addr).await.map_err(FileError::getter)?;
+            let body = M::decode_body::<BODY_SIZE>(chunk, &ctx, data_span)?;
+
             let chunk_data_len = (chunk_end - chunk_start) as usize;
 
             let read_start = if chunk_start < offset {
@@ -316,50 +351,51 @@ where
 
             let bytes_to_copy = read_end - read_start;
             result[result_offset..result_offset + bytes_to_copy]
-                .copy_from_slice(&data[read_start..read_end]);
+                .copy_from_slice(&body[read_start..read_end]);
             result_offset += bytes_to_copy;
         }
 
         Ok(result)
     }
 
-    async fn find_data_chunk_addr(&self, data_chunk_idx: u64) -> Result<ChunkAddress> {
+    async fn find_data_chunk_ref(
+        &self,
+        data_chunk_idx: u64,
+    ) -> Result<(ChunkAddress, M::JoinerContext)> {
         let offset = data_chunk_idx * BODY_SIZE as u64;
-        self.traverse_to_data_chunk(&self.root, self.span, offset)
+        self.traverse_to_data_chunk(&self.root, &self.context, self.span, offset)
             .await
     }
 
     fn traverse_to_data_chunk<'a>(
         &'a self,
         addr: &'a ChunkAddress,
+        context: &'a M::JoinerContext,
         span: u64,
         offset: u64,
-    ) -> BoxFuture<'a, Result<ChunkAddress>> {
+    ) -> BoxFuture<'a, Result<(ChunkAddress, M::JoinerContext)>> {
         Box::pin(async move {
             if span <= BODY_SIZE as u64 {
-                return Ok(*addr);
+                return Ok((*addr, context.clone()));
             }
 
             let chunk = self.getter.get(addr).await.map_err(FileError::getter)?;
-            let chunk_data = chunk.data();
+            let body = M::decode_body::<BODY_SIZE>(chunk, context, span)?;
 
-            let subspan = subspan_size::<BODY_SIZE>(span);
+            let subspan = M::subspan_size::<BODY_SIZE>(span);
             let child_index = (offset / subspan) as usize;
             let child_offset = offset % subspan;
 
-            let ref_start = child_index * REF_SIZE;
-            let ref_end = ref_start + REF_SIZE;
+            let ref_start = child_index * M::REF_SIZE;
+            let ref_end = ref_start + M::REF_SIZE;
 
-            if ref_end > chunk_data.len() {
+            if ref_end > body.len() {
                 return Err(FileError::InvalidReference { level: 0 });
             }
 
-            let child_addr_bytes: [u8; 32] = chunk_data[ref_start..ref_end]
-                .try_into()
-                .map_err(|_| FileError::InvalidReference { level: 0 })?;
-            let child_addr = ChunkAddress::from(child_addr_bytes);
+            let (child_addr, child_context) = M::parse_child_ref(&body, ref_start)?;
 
-            let refs_per_chunk = BODY_SIZE / REF_SIZE;
+            let refs_per_chunk = M::refs_per_chunk(BODY_SIZE);
             let child_span = if child_index == refs_per_chunk - 1 {
                 let preceding = child_index as u64 * subspan;
                 span.saturating_sub(preceding)
@@ -367,7 +403,7 @@ where
                 subspan.min(span - child_index as u64 * subspan)
             };
 
-            self.traverse_to_data_chunk(&child_addr, child_span, child_offset)
+            self.traverse_to_data_chunk(&child_addr, &child_context, child_span, child_offset)
                 .await
         })
     }
@@ -376,6 +412,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunk::{Chunk, ContentChunk};
     use crate::file::split;
     use std::collections::HashMap as StdHashMap;
 
@@ -448,5 +485,63 @@ mod tests {
         }
 
         assert_eq!(recovered, data);
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use super::*;
+        use crate::file::split_encrypted;
+
+        fn encrypted_split_and_store(
+            data: &[u8],
+        ) -> (
+            crate::chunk::encryption::EncryptedChunkRef,
+            TestStore,
+        ) {
+            let (root_ref, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+            let store: StdHashMap<ChunkAddress, ContentChunk> =
+                chunks.into_iter().map(|c| (*c.address(), c)).collect();
+            (root_ref, TestStore { chunks: store })
+        }
+
+        #[tokio::test]
+        async fn test_encrypted_async_joiner_small() {
+            let data = b"hello world";
+            let (root_ref, store) = encrypted_split_and_store(data);
+
+            let joiner = EncryptedAsyncJoiner::new(store, root_ref).await.unwrap();
+            let result = joiner.read_all().await.unwrap();
+
+            assert_eq!(result, data);
+        }
+
+        #[tokio::test]
+        async fn test_encrypted_async_joiner_two_chunks() {
+            let data: Vec<u8> =
+                (0..DEFAULT_BODY_SIZE + 100).map(|i| (i % 256) as u8).collect();
+            let (root_ref, store) = encrypted_split_and_store(&data);
+
+            let joiner = EncryptedAsyncJoiner::new(store, root_ref).await.unwrap();
+            let result = joiner.read_all().await.unwrap();
+
+            assert_eq!(result, data);
+        }
+
+        #[tokio::test]
+        async fn test_encrypted_async_joiner_stream() {
+            let data: Vec<u8> =
+                (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
+            let (root_ref, store) = encrypted_split_and_store(&data);
+
+            let joiner = EncryptedAsyncJoiner::new(store, root_ref).await.unwrap();
+            let chunks: Vec<Result<Bytes>> = joiner.into_stream().collect().await;
+
+            let mut recovered = Vec::new();
+            for chunk in chunks {
+                recovered.extend_from_slice(&chunk.unwrap());
+            }
+
+            assert_eq!(recovered, data);
+        }
     }
 }

@@ -75,6 +75,73 @@ impl ChunkRef {
     }
 }
 
+/// An encrypted chunk reference: 32-byte address + 32-byte decryption key.
+///
+/// Unlike [`ChunkRef`] which is an enum, this type statically guarantees
+/// the reference is encrypted, eliminating runtime variant checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncryptedChunkRef {
+    /// Chunk address (BMT hash of ciphertext).
+    pub address: ChunkAddress,
+    /// Decryption key.
+    pub key: EncryptionKey,
+}
+
+impl EncryptedChunkRef {
+    /// Serialized size (always 64 bytes).
+    pub const SIZE: usize = ADDRESS_SIZE + KEY_SIZE;
+
+    /// Write the reference into `buf`. Panics if `buf` is too small.
+    pub fn write_to(&self, buf: &mut [u8]) {
+        buf[..ADDRESS_SIZE].copy_from_slice(self.address.as_bytes());
+        buf[ADDRESS_SIZE..Self::SIZE]
+            .copy_from_slice(<EncryptionKey as AsRef<[u8]>>::as_ref(&self.key));
+    }
+
+    /// Serialize to a new `Vec<u8>`.
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut buf = vec![0u8; Self::SIZE];
+        self.write_to(&mut buf);
+        buf
+    }
+}
+
+impl From<EncryptedChunkRef> for ChunkRef {
+    fn from(enc: EncryptedChunkRef) -> Self {
+        Self::Encrypted {
+            address: enc.address,
+            key: enc.key,
+        }
+    }
+}
+
+impl TryFrom<ChunkRef> for EncryptedChunkRef {
+    type Error = EncryptionError;
+
+    fn try_from(chunk_ref: ChunkRef) -> Result<Self, Self::Error> {
+        match chunk_ref {
+            ChunkRef::Encrypted { address, key } => Ok(Self { address, key }),
+            ChunkRef::Plain(_) => Err(EncryptionError::InvalidReferenceLength {
+                len: ADDRESS_SIZE,
+            }),
+        }
+    }
+}
+
+impl TryFrom<&[u8]> for EncryptedChunkRef {
+    type Error = EncryptionError;
+
+    fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+        if slice.len() != Self::SIZE {
+            return Err(EncryptionError::InvalidReferenceLength { len: slice.len() });
+        }
+        let addr = ChunkAddress::from_slice(&slice[..ADDRESS_SIZE])
+            .expect("slice length already verified as 32");
+        let key = EncryptionKey::try_from(&slice[ADDRESS_SIZE..])?;
+        Ok(Self { address: addr, key })
+    }
+}
+
 impl From<ChunkAddress> for ChunkRef {
     fn from(addr: ChunkAddress) -> Self {
         Self::Plain(addr)

@@ -2,7 +2,7 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use rand::{RngCore, rng};
 
-use nectar_primitives::encryption::{self, EncryptionKey, transcrypt, transcrypt_in_place};
+use nectar_primitives::chunk::encryption::{self, EncryptionKey, transcrypt, transcrypt_in_place};
 use nectar_primitives::{DEFAULT_BODY_SIZE, bmt::SPAN_SIZE};
 
 fn bench_transcrypt(c: &mut Criterion) {

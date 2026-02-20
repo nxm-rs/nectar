@@ -12,7 +12,7 @@ pub use chunk::{decrypt_chunk_data, decrypt_chunk_into};
 pub use chunk::encrypt_chunk;
 pub use error::EncryptionError;
 pub use key::EncryptionKey;
-pub use reference::ChunkRef;
+pub use reference::{ChunkRef, EncryptedChunkRef};
 
 /// Encryption key size in bytes.
 pub const KEY_SIZE: usize = 32;

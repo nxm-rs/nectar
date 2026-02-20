@@ -28,6 +28,7 @@ mod joiner;
 #[cfg(feature = "async")]
 mod joiner_async;
 mod joiner_parallel;
+pub(crate) mod mode;
 mod read_at;
 mod splitter;
 mod splitter_parallel;
@@ -39,21 +40,29 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 
 use crate::chunk::{ChunkAddress, ContentChunk};
+use crate::chunk::encryption::EncryptedChunkRef;
 use crate::store::{ChunkGet, ChunkHas, ChunkPut};
 
 pub use builder::SplitBuilder;
 pub use error::FileError;
-pub use joiner::Joiner;
+pub use joiner::{EncryptedJoiner, Joiner};
 #[cfg(feature = "async")]
 pub use joiner_async::AsyncJoiner;
+#[cfg(all(feature = "async", feature = "encryption"))]
+pub use joiner_async::EncryptedAsyncJoiner;
 pub use joiner_parallel::ParallelJoiner;
+#[cfg(feature = "encryption")]
+pub use joiner_parallel::EncryptedParallelJoiner;
 pub use read_at::ReadAt;
 pub use splitter::Splitter;
+#[cfg(feature = "encryption")]
+pub use splitter::EncryptedSplitter;
 pub use splitter_parallel::ParallelSplitter;
+#[cfg(feature = "encryption")]
+pub use splitter_parallel::EncryptedParallelSplitter;
 #[cfg(feature = "async")]
 pub use traits_async::AsyncReadAt;
 pub use tree::{ChunkRange, TreeParams};
-pub(crate) use tree::subspan_size;
 
 // Extension traits are defined below, after all types are available
 
@@ -101,6 +110,36 @@ where
     Ok(data)
 }
 
+/// Split data into encrypted chunks, returning root reference and chunk list.
+#[cfg(feature = "encryption")]
+pub fn split_encrypted<const BODY_SIZE: usize>(
+    data: &[u8],
+) -> error::Result<(EncryptedChunkRef, Vec<ContentChunk<BODY_SIZE>>)> {
+    let sink = crate::store::VecSink::<BODY_SIZE>::new();
+    let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+    splitter
+        .write_all(data)
+        .map_err(|e| FileError::Sink(Box::new(e)))?;
+    let (root_ref, sink) = splitter.finish()?;
+    Ok((root_ref, sink.into_chunks()))
+}
+
+/// Join encrypted chunks into a byte vector.
+pub fn join_encrypted<G, const BODY_SIZE: usize>(
+    getter: G,
+    root_ref: EncryptedChunkRef,
+) -> error::Result<Vec<u8>>
+where
+    G: ChunkGet<BODY_SIZE>,
+{
+    let mut joiner = EncryptedJoiner::new(getter, root_ref)?;
+    let mut data = vec![0u8; joiner.size() as usize];
+    joiner
+        .read_exact(&mut data)
+        .map_err(|e| FileError::Getter(Box::new(e)))?;
+    Ok(data)
+}
+
 impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
     type Error = FileError;
 
@@ -133,23 +172,10 @@ impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for &HashMap<ChunkAddress, Cont
     }
 }
 
-/// Calculate tree depth for a given file size.
+/// Calculate tree depth for a given file size (plain mode).
+#[cfg(test)]
 pub(crate) fn levels(length: u64, chunk_size: usize) -> usize {
-    use constants::REF_SIZE;
-
-    if length == 0 {
-        return 0;
-    }
-
-    let section_size = REF_SIZE as u64;
-    let branches = (chunk_size / REF_SIZE) as u64;
-
-    if length <= section_size * branches {
-        return 1;
-    }
-
-    let chunks = (length - 1) / section_size;
-    (chunks as f64).log(branches as f64) as usize + 1
+    constants::tree_depth(length, chunk_size, constants::REF_SIZE)
 }
 
 /// Extension methods for chunk getters.

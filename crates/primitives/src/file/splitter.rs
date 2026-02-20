@@ -2,26 +2,27 @@
 
 use std::fmt;
 use std::io::{self, Write};
-
-use bytes::Bytes;
+use std::marker::PhantomData;
 
 use crate::bmt::{DEFAULT_BODY_SIZE, SPAN_SIZE};
-use crate::chunk::{Chunk, ChunkAddress, ContentChunk};
 
-use super::constants::{LEVEL_LIMIT, REF_SIZE, SPANS};
+use super::constants::LEVEL_LIMIT;
 use super::error::{FileError, Result};
-use super::levels;
+use super::mode::{PlainMode, SplitMode};
 use crate::store::ChunkPut;
 
-/// Splits data into BMT chunks, producing intermediate chunks for large files.
+#[cfg(feature = "encryption")]
+use super::mode::EncryptedMode;
+
+/// Generic splitter parameterized by chunk mode.
 ///
 /// Uses a multi-level buffer to build the chunk tree:
-/// - Level 0: Raw file data (up to 4096 bytes per chunk)
-/// - Level 1+: Hash references (128 x 32-byte refs per chunk)
+/// - Level 0: Raw file data (up to BODY_SIZE bytes per chunk)
+/// - Level 1+: References (M::REF_SIZE bytes each per chunk)
 ///
 /// Chunks are emitted to the sink as buffers fill. Call `finish()` to
-/// finalize the tree and get the root address.
-pub struct Splitter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
+/// finalize the tree and get the root reference.
+pub struct GenericSplitter<S, M: SplitMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
     S: ChunkPut<BODY_SIZE>,
 {
@@ -31,14 +32,25 @@ where
     sum_counts: [usize; LEVEL_LIMIT],
     cursors: [usize; LEVEL_LIMIT],
     buffer: Vec<u8>,
+    _mode: PhantomData<M>,
 }
 
-impl<S, const BODY_SIZE: usize> fmt::Debug for Splitter<S, BODY_SIZE>
+/// Plain (unencrypted) file splitter.
+pub type Splitter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericSplitter<S, PlainMode, BODY_SIZE>;
+
+/// Encrypted file splitter.
+#[cfg(feature = "encryption")]
+pub type EncryptedSplitter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericSplitter<S, EncryptedMode, BODY_SIZE>;
+
+impl<S, M, const BODY_SIZE: usize> fmt::Debug for GenericSplitter<S, M, BODY_SIZE>
 where
     S: ChunkPut<BODY_SIZE>,
+    M: SplitMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Splitter")
+        f.debug_struct("GenericSplitter")
             .field("span_length", &self.span_length)
             .field("length", &self.length)
             .field("sum_counts", &self.sum_counts)
@@ -47,9 +59,10 @@ where
     }
 }
 
-impl<S, const BODY_SIZE: usize> Splitter<S, BODY_SIZE>
+impl<S, M, const BODY_SIZE: usize> GenericSplitter<S, M, BODY_SIZE>
 where
     S: ChunkPut<BODY_SIZE>,
+    M: SplitMode,
 {
     /// Create a splitter for data of known size.
     pub fn new(sink: S, span_length: u64) -> Self {
@@ -62,6 +75,7 @@ where
             sum_counts: [0; LEVEL_LIMIT],
             cursors: [0; LEVEL_LIMIT],
             buffer: vec![0u8; buffer_size],
+            _mode: PhantomData,
         }
     }
 
@@ -90,17 +104,22 @@ where
         let level_start = self.cursors[level + 1];
         if self.cursors[level] - level_start == BODY_SIZE {
             let reference = self.sum_level(level)?;
-            self.write_to_level(level + 1, &reference)?;
+            let ref_bytes = reference.as_ref();
+            // Must copy to stack to avoid borrow conflict
+            let mut tmp = M::empty_ref();
+            tmp.as_mut().copy_from_slice(ref_bytes);
+            self.write_to_level(level + 1, tmp.as_ref())?;
             self.cursors[level] = self.cursors[level + 1];
         }
 
         Ok(())
     }
 
-    fn sum_level(&mut self, level: usize) -> Result<[u8; REF_SIZE]> {
+    fn sum_level(&mut self, level: usize) -> Result<M::RefBytes> {
         self.sum_counts[level] += 1;
 
-        let span_size = SPANS[level] * BODY_SIZE as u64;
+        let spans = M::spans();
+        let span_size = spans[level] * BODY_SIZE as u64;
         let span = (self.length - 1) % span_size + 1;
 
         let level_start = self.cursors[level + 1];
@@ -111,45 +130,36 @@ where
         chunk_bytes.extend_from_slice(&span.to_le_bytes());
         chunk_bytes.extend_from_slice(chunk_data);
 
-        let chunk = ContentChunk::<BODY_SIZE>::try_from(Bytes::from(chunk_bytes))
-            .map_err(|e| match e {
-                crate::error::PrimitivesError::Chunk(c) => FileError::Chunk(c),
-                other => FileError::Sink(Box::new(other)),
-            })?;
-        let address = *chunk.address();
-
-        self.sink.put(chunk).map_err(FileError::sink)?;
-
-        Ok(address.into())
+        M::process_chunk::<BODY_SIZE, S>(&chunk_bytes, &mut self.sink)
     }
 
     fn hash_unfinished(&mut self) -> Result<()> {
         if !self.length.is_multiple_of(BODY_SIZE as u64) {
             let reference = self.sum_level(0)?;
+            let ref_bytes = reference.as_ref();
             let next_cursor = self.cursors[1];
-            self.buffer[next_cursor..next_cursor + REF_SIZE].copy_from_slice(&reference);
-            self.cursors[1] += REF_SIZE;
+            self.buffer[next_cursor..next_cursor + M::REF_SIZE]
+                .copy_from_slice(ref_bytes);
+            self.cursors[1] += M::REF_SIZE;
             self.cursors[0] = self.cursors[1];
         }
         Ok(())
     }
 
     fn move_dangling_chunk(&mut self) -> Result<()> {
-        let target_level = levels(self.length, BODY_SIZE);
+        let target_level = M::levels(self.length, BODY_SIZE);
 
         for i in 1..target_level {
             let level_start = self.cursors[i + 1];
             let level_end = self.cursors[i];
 
-            // Nothing to hash at this level - buffer is empty
             if level_end == level_start {
                 continue;
             }
 
-            let refs_at_level = (level_end - level_start) / REF_SIZE;
+            let refs_at_level = (level_end - level_start) / M::REF_SIZE;
 
             // Single reference: carry up without wrapping (dangling chunk optimization)
-            // This matches the parallel splitter's behavior
             if refs_at_level == 1 {
                 self.cursors[i + 1] = level_end;
                 self.cursors[i] = level_end;
@@ -157,17 +167,19 @@ where
             }
 
             let reference = self.sum_level(i)?;
+            let ref_bytes = reference.as_ref();
             let next_cursor = self.cursors[i + 1];
-            self.buffer[next_cursor..next_cursor + REF_SIZE].copy_from_slice(&reference);
-            self.cursors[i + 1] += REF_SIZE;
+            self.buffer[next_cursor..next_cursor + M::REF_SIZE]
+                .copy_from_slice(ref_bytes);
+            self.cursors[i + 1] += M::REF_SIZE;
             self.cursors[i] = self.cursors[i + 1];
         }
 
         Ok(())
     }
 
-    /// Finalize and return the root address and sink.
-    pub fn finish(mut self) -> Result<(ChunkAddress, S)> {
+    /// Finalize and return the root reference and sink.
+    pub fn finish(mut self) -> Result<(M::RootRef, S)> {
         if self.length != self.span_length {
             return Err(FileError::SpanMismatch {
                 expected: self.span_length,
@@ -176,21 +188,14 @@ where
         }
 
         if self.length == 0 {
-            let chunk = ContentChunk::<BODY_SIZE>::new(Bytes::new()).map_err(|e| match e {
-                crate::error::PrimitivesError::Chunk(c) => FileError::Chunk(c),
-                other => FileError::Sink(Box::new(other)),
-            })?;
-            let address = *chunk.address();
-            self.sink.put(chunk).map_err(FileError::sink)?;
-            return Ok((address, self.sink));
+            let root = M::process_empty::<BODY_SIZE, S>(&mut self.sink)?;
+            return Ok((root, self.sink));
         }
 
         self.hash_unfinished()?;
         self.move_dangling_chunk()?;
 
-        let root_bytes: [u8; 32] = self.buffer[..REF_SIZE].try_into().unwrap();
-        let root = ChunkAddress::from(root_bytes);
-
+        let root = M::extract_root(&self.buffer);
         Ok((root, self.sink))
     }
 
@@ -209,9 +214,10 @@ where
     }
 }
 
-impl<S, const BODY_SIZE: usize> Write for Splitter<S, BODY_SIZE>
+impl<S, M, const BODY_SIZE: usize> Write for GenericSplitter<S, M, BODY_SIZE>
 where
     S: ChunkPut<BODY_SIZE>,
+    M: SplitMode,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
@@ -229,8 +235,7 @@ where
             }
 
             let data = &buf[written..written + to_write];
-            self.write_chunk(data)
-                .map_err(io::Error::other)?;
+            self.write_chunk(data).map_err(io::Error::other)?;
             written += to_write;
         }
 
@@ -246,6 +251,8 @@ where
 mod tests {
     use super::*;
     use crate::store::VecSink;
+
+    use super::super::constants::REF_SIZE;
 
     const REFS_PER_CHUNK: usize = DEFAULT_BODY_SIZE / REF_SIZE;
 
@@ -437,5 +444,130 @@ mod tests {
 
         let recovered = join(&seq_sink, seq_root).unwrap();
         assert_eq!(recovered, data);
+    }
+
+    // Encrypted splitter tests
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use super::*;
+        use super::super::super::constants::ENCRYPTED_REFS_PER_CHUNK;
+
+        const ENC_REFS_PER_CHUNK: usize = ENCRYPTED_REFS_PER_CHUNK;
+
+        #[test]
+        fn test_encrypted_splitter_empty() {
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedSplitter::new(sink, 0);
+
+            let (root_ref, sink) = splitter.finish().unwrap();
+
+            assert_eq!(sink.len(), 1);
+        }
+
+        #[test]
+        fn test_encrypted_splitter_small() {
+            let data = b"hello world";
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+
+            splitter.write_all(data).unwrap();
+            let (root_ref, sink) = splitter.finish().unwrap();
+
+            assert_eq!(root_ref.to_vec().len(), 64);
+            assert_eq!(sink.len(), 1);
+        }
+
+        #[test]
+        fn test_encrypted_splitter_exact_chunk() {
+            let data = vec![0xAB; DEFAULT_BODY_SIZE];
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+
+            splitter.write_all(&data).unwrap();
+            let (root_ref, sink) = splitter.finish().unwrap();
+
+
+            assert_eq!(sink.len(), 1);
+        }
+
+        #[test]
+        fn test_encrypted_splitter_two_chunks() {
+            let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+
+            splitter.write_all(&data).unwrap();
+            let (root_ref, sink) = splitter.finish().unwrap();
+
+
+            // 2 data chunks + 1 intermediate = 3
+            assert_eq!(sink.len(), 3);
+        }
+
+        #[test]
+        fn test_encrypted_splitter_64_chunks() {
+            // 64 data chunks fills one encrypted intermediate chunk exactly
+            let data = vec![0xEF; DEFAULT_BODY_SIZE * ENC_REFS_PER_CHUNK];
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+
+            splitter.write_all(&data).unwrap();
+            let (root_ref, sink) = splitter.finish().unwrap();
+
+
+            // 64 data chunks + 1 intermediate = 65
+            assert_eq!(sink.len(), ENC_REFS_PER_CHUNK + 1);
+        }
+
+        #[test]
+        fn test_encrypted_splitter_65_chunks() {
+            // 65 data chunks overflows one encrypted intermediate -> level 2
+            let data = vec![0x12; DEFAULT_BODY_SIZE * (ENC_REFS_PER_CHUNK + 1)];
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+
+            splitter.write_all(&data).unwrap();
+            let (root_ref, sink) = splitter.finish().unwrap();
+
+
+            assert_eq!(sink.len(), ENC_REFS_PER_CHUNK + 1 + 2);
+        }
+
+        #[test]
+        fn test_encrypted_splitter_write_past_span() {
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::<_, DEFAULT_BODY_SIZE>::new(sink, 10);
+
+            let result = splitter.write_all(b"this is more than 10 bytes");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_encrypted_splitter_span_mismatch() {
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::<_, DEFAULT_BODY_SIZE>::new(sink, 100);
+
+            splitter.write_all(b"short").unwrap();
+            let result = splitter.finish();
+
+            assert!(matches!(result, Err(FileError::SpanMismatch { .. })));
+        }
+
+        #[test]
+        fn test_encrypted_differs_from_plaintext() {
+            let data = b"test data for encryption comparison";
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = Splitter::new(sink, data.len() as u64);
+            splitter.write_all(data).unwrap();
+            let (plain_root, _) = splitter.finish().unwrap();
+
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let mut enc_splitter = EncryptedSplitter::new(sink, data.len() as u64);
+            enc_splitter.write_all(data).unwrap();
+            let (enc_root, _) = enc_splitter.finish().unwrap();
+
+            // Encrypted root address must differ from plain root
+            assert_ne!(enc_root.address, plain_root);
+        }
     }
 }

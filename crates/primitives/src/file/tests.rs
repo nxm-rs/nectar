@@ -171,3 +171,144 @@ fn test_go_vector_19_64mb() {
 fn test_go_vector_20_64mb_plus_32() {
     run_vector_test(LARGE_TEST_VECTORS[1].0, LARGE_TEST_VECTORS[1].1);
 }
+
+// Encrypted round-trip tests (matching Bee's TestEncryptDecrypt sizes)
+#[cfg(feature = "encryption")]
+mod encrypted {
+    use std::collections::HashMap;
+
+    use crate::bmt::DEFAULT_BODY_SIZE;
+    use crate::chunk::{Chunk, ContentChunk};
+    use crate::file::{join_encrypted, split_encrypted};
+
+    /// Sizes matching Bee's TestEncryptDecrypt test suite.
+    const TEST_SIZES: &[usize] = &[
+        0,
+        10,
+        100,
+        1000,
+        4095,
+        4096,
+        4097,
+        4096 * 2,
+        4096 * 64,
+        4096 * 64 + 1,
+        4096 * 65,
+        1_000_000,
+    ];
+
+    fn run_encrypted_roundtrip(size: usize) {
+        let data: Vec<u8> = (0..size).map(|i| (i % 255) as u8).collect();
+
+        let (root_ref, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+
+        assert_eq!(root_ref.to_vec().len(), 64, "Root ref must be 64 bytes for size {size}");
+
+        // Build HashMap store from chunks
+        let store: HashMap<_, _> = chunks
+            .into_iter()
+            .map(|c| (*c.address(), c))
+            .collect::<HashMap<_, ContentChunk<DEFAULT_BODY_SIZE>>>();
+
+        let recovered = join_encrypted(&store, root_ref).unwrap();
+        assert_eq!(
+            recovered, data,
+            "Round-trip failed for size {size}"
+        );
+    }
+
+    #[test]
+    fn encrypted_roundtrip_empty() {
+        run_encrypted_roundtrip(0);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_10_bytes() {
+        run_encrypted_roundtrip(10);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_100_bytes() {
+        run_encrypted_roundtrip(100);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_1000_bytes() {
+        run_encrypted_roundtrip(1000);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_4095_bytes() {
+        run_encrypted_roundtrip(4095);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_4096_bytes() {
+        run_encrypted_roundtrip(4096);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_4097_bytes() {
+        run_encrypted_roundtrip(4097);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_two_chunks() {
+        run_encrypted_roundtrip(4096 * 2);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_64_chunks() {
+        run_encrypted_roundtrip(4096 * 64);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_64_chunks_plus_1() {
+        run_encrypted_roundtrip(4096 * 64 + 1);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_65_chunks() {
+        run_encrypted_roundtrip(4096 * 65);
+    }
+
+    #[test]
+    fn encrypted_roundtrip_1mb() {
+        run_encrypted_roundtrip(1_000_000);
+    }
+
+    #[test]
+    fn encrypted_all_test_sizes() {
+        for &size in TEST_SIZES {
+            run_encrypted_roundtrip(size);
+        }
+    }
+
+    #[test]
+    fn encrypted_chunk_count_single() {
+        // Single chunk file: 1 encrypted chunk stored
+        let data = b"small data";
+        let (_, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn encrypted_chunk_count_two_data() {
+        // 4097 bytes → 2 data chunks + 1 intermediate = 3
+        let data = vec![0xAB; 4097];
+        let (_, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        assert_eq!(chunks.len(), 3);
+    }
+
+    #[test]
+    fn encrypted_nondeterministic() {
+        // Two encryptions of the same data produce different ciphertexts
+        // (different random keys each time)
+        let data = b"test determinism";
+        let (ref1, _) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (ref2, _) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+
+        // Root addresses differ because encryption keys are random
+        assert_ne!(ref1.address, ref2.address);
+    }
+}

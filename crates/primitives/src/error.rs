@@ -66,7 +66,7 @@ pub enum PrimitivesError {
 
     /// Errors from encryption operations
     #[error(transparent)]
-    Encryption(#[from] crate::encryption::EncryptionError),
+    Encryption(#[from] crate::chunk::encryption::EncryptionError),
 
     /// Input/output errors
     #[error("I/O error: {0}")]

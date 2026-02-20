@@ -21,6 +21,7 @@ mod bmt_body;
 mod chunk_type;
 mod chunk_type_set;
 mod content;
+pub mod encryption;
 pub(crate) mod error;
 mod single_owner;
 mod traits;

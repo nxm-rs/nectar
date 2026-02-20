@@ -1,19 +1,27 @@
 //! Tree structure calculations for parallel file operations.
 
-use super::constants::{LEVEL_LIMIT, REFS_PER_CHUNK, SPANS};
+use super::constants::{LEVEL_LIMIT, REF_SIZE};
 use crate::bmt::DEFAULT_BODY_SIZE;
 
 /// Tree structure for a file of known size.
 ///
 /// Pre-computes chunk counts and spans for efficient parallel operations.
+/// The `REF_SIZE` parameter controls the branching factor (`BODY_SIZE / REF_SIZE`):
+/// - Plain mode: `REF_SIZE = 32` → 128 branches
+/// - Encrypted mode: `REF_SIZE = 64` → 64 branches
 #[derive(Debug, Clone, Copy)]
-pub struct TreeParams<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
+pub struct TreeParams<
+    const BODY_SIZE: usize = DEFAULT_BODY_SIZE,
+    const RS: usize = REF_SIZE,
+> {
     size: u64,
     depth: usize,
     data_chunks: u64,
 }
 
-impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
+impl<const BODY_SIZE: usize, const RS: usize> TreeParams<BODY_SIZE, RS> {
+    const BRANCHES: usize = BODY_SIZE / RS;
+
     /// Create tree parameters for a file of given size.
     pub fn new(size: u64) -> Self {
         let (depth, data_chunks) = if size == 0 {
@@ -52,7 +60,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
         let mut chunks_at_level = self.data_chunks;
 
         while chunks_at_level > 1 {
-            chunks_at_level = chunks_at_level.div_ceil(REFS_PER_CHUNK as u64);
+            chunks_at_level = chunks_at_level.div_ceil(Self::BRANCHES as u64);
             total += chunks_at_level;
         }
 
@@ -70,14 +78,15 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
 
         let mut chunks = self.data_chunks;
         for _ in 0..level {
-            chunks = chunks.div_ceil(REFS_PER_CHUNK as u64);
+            chunks = chunks.div_ceil(Self::BRANCHES as u64);
         }
         chunks
     }
 
     /// Span for a chunk at given level and index.
     pub fn span_at(&self, level: usize, index: u64) -> u64 {
-        let max_span = SPANS[level] * BODY_SIZE as u64;
+        let spans = super::constants::compute_spans_inline(Self::BRANCHES);
+        let max_span = spans[level] * BODY_SIZE as u64;
         let chunks_at_level = self.chunks_at_level(level);
 
         if index + 1 == chunks_at_level {
@@ -91,13 +100,8 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// Total bytes covered by chunks at this level.
-    const fn level_span(&self, level: usize) -> u64 {
-        if level == 0 {
-            self.size
-        } else {
-            // Each level covers same total size, represented differently
-            self.size
-        }
+    const fn level_span(&self, _level: usize) -> u64 {
+        self.size
     }
 
     /// Byte offset for start of chunk at level 0.
@@ -139,7 +143,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
         let mut depth = 1;
         let mut chunks = data_chunks;
         while chunks > 1 {
-            chunks = chunks.div_ceil(REFS_PER_CHUNK as u64);
+            chunks = chunks.div_ceil(Self::BRANCHES as u64);
             depth += 1;
         }
         depth.min(LEVEL_LIMIT)
@@ -172,19 +176,11 @@ impl ChunkRange {
     }
 }
 
-/// Calculate subspan size for children of a node with given span.
-pub(crate) fn subspan_size<const BODY_SIZE: usize>(span: u64) -> u64 {
-    for i in 0..LEVEL_LIMIT {
-        let level_span = SPANS[i] * BODY_SIZE as u64;
-        if span <= level_span {
-            return if i == 0 {
-                BODY_SIZE as u64
-            } else {
-                SPANS[i - 1] * BODY_SIZE as u64
-            };
-        }
-    }
-    SPANS[LEVEL_LIMIT - 2] * BODY_SIZE as u64
+/// Calculate subspan size for children of a node with given span (plain mode).
+#[cfg(test)]
+fn subspan_size<const BODY_SIZE: usize>(span: u64) -> u64 {
+    use super::constants::SPANS;
+    super::constants::subspan_for_spans::<BODY_SIZE>(span, &SPANS)
 }
 
 #[cfg(test)]
@@ -305,5 +301,27 @@ mod tests {
         // Large span -> subspan is previous level
         let large_span = 128 * DEFAULT_BODY_SIZE as u64 + 1;
         assert_eq!(subspan_size::<DEFAULT_BODY_SIZE>(large_span), 128 * 4096);
+    }
+
+    #[test]
+    fn test_encrypted_tree_params() {
+        use super::super::constants::ENCRYPTED_REF_SIZE;
+
+        // 64 data chunks fills one encrypted intermediate exactly
+        let size = DEFAULT_BODY_SIZE as u64 * 64;
+        let tree = TreeParams::<DEFAULT_BODY_SIZE, ENCRYPTED_REF_SIZE>::new(size);
+        assert_eq!(tree.depth(), 2); // 64 chunks / 64 branches = 1 intermediate
+        assert_eq!(tree.data_chunks(), 64);
+        assert_eq!(tree.chunks_at_level(0), 64);
+        assert_eq!(tree.chunks_at_level(1), 1);
+        assert_eq!(tree.total_chunks(), 65);
+
+        // 65 data chunks needs a third level
+        let size2 = DEFAULT_BODY_SIZE as u64 * 65;
+        let tree2 = TreeParams::<DEFAULT_BODY_SIZE, ENCRYPTED_REF_SIZE>::new(size2);
+        assert_eq!(tree2.depth(), 3);
+        assert_eq!(tree2.chunks_at_level(0), 65);
+        assert_eq!(tree2.chunks_at_level(1), 2);
+        assert_eq!(tree2.chunks_at_level(2), 1);
     }
 }

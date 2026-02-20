@@ -2,31 +2,43 @@
 
 use std::fmt;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::marker::PhantomData;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::{BmtChunk, Chunk, ChunkAddress};
+use crate::chunk::ChunkAddress;
 
-use super::constants::{LEVEL_LIMIT, REF_SIZE, SPANS};
 use super::error::{FileError, Result};
+use super::mode::{EncryptedMode, JoinMode, PlainMode};
 use crate::store::ChunkGet;
 
-/// Joins chunks back into file data.
-pub struct Joiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
+/// Generic joiner parameterized by chunk mode.
+pub struct GenericJoiner<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
     G: ChunkGet<BODY_SIZE>,
 {
     getter: G,
     root: ChunkAddress,
+    context: M::JoinerContext,
     span: u64,
     position: u64,
+    _mode: PhantomData<M>,
 }
 
-impl<G, const BODY_SIZE: usize> fmt::Debug for Joiner<G, BODY_SIZE>
+/// Plain (unencrypted) file joiner.
+pub type Joiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericJoiner<G, PlainMode, BODY_SIZE>;
+
+/// Encrypted file joiner.
+pub type EncryptedJoiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericJoiner<G, EncryptedMode, BODY_SIZE>;
+
+impl<G, M, const BODY_SIZE: usize> fmt::Debug for GenericJoiner<G, M, BODY_SIZE>
 where
     G: ChunkGet<BODY_SIZE>,
+    M: JoinMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Joiner")
+        f.debug_struct("GenericJoiner")
             .field("root", &self.root)
             .field("span", &self.span)
             .field("position", &self.position)
@@ -34,20 +46,22 @@ where
     }
 }
 
-impl<G, const BODY_SIZE: usize> Joiner<G, BODY_SIZE>
+impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
     G: ChunkGet<BODY_SIZE>,
+    M: JoinMode,
 {
-    /// Create a joiner from a root address.
-    pub fn new(getter: G, root: ChunkAddress) -> Result<Self> {
-        let root_chunk = getter.get(&root).map_err(FileError::getter)?;
-        let span = root_chunk.span();
+    /// Create a joiner from a root reference.
+    pub fn new(getter: G, input: M::RootRef) -> Result<Self> {
+        let (root, span, context) = M::joiner_init::<BODY_SIZE, G>(&getter, input)?;
 
         Ok(Self {
             getter,
             root,
+            context,
             span,
             position: 0,
+            _mode: PhantomData,
         })
     }
 
@@ -76,29 +90,35 @@ where
             return Ok(0);
         }
 
-        self.read_from_tree(&self.root, self.span, offset, &mut buf[..to_read])?;
+        self.read_from_tree(
+            &self.root,
+            &self.context,
+            self.span,
+            offset,
+            &mut buf[..to_read],
+        )?;
         Ok(to_read)
     }
 
     fn read_from_tree(
         &self,
         address: &ChunkAddress,
+        context: &M::JoinerContext,
         span: u64,
         offset: u64,
         buf: &mut [u8],
     ) -> Result<()> {
-        let chunk = self.getter.get(address).map_err(FileError::getter)?;
-        let chunk_data = chunk.data();
+        let body = M::read_chunk_body::<BODY_SIZE, G>(&self.getter, address, context, span)?;
 
         if span <= BODY_SIZE as u64 {
             let start = offset as usize;
             let end = start + buf.len();
-            buf.copy_from_slice(&chunk_data[start..end]);
+            buf.copy_from_slice(&body[start..end]);
             return Ok(());
         }
 
-        let refs_per_chunk = BODY_SIZE / REF_SIZE;
-        let subspan = self.subspan_size(span);
+        let refs_per_chunk = M::refs_per_chunk(BODY_SIZE);
+        let subspan = M::subspan_size::<BODY_SIZE>(span);
 
         let mut remaining = buf;
         let mut current_offset = offset;
@@ -107,17 +127,14 @@ where
             let child_index = (current_offset / subspan) as usize;
             let child_offset = current_offset % subspan;
 
-            let ref_start = child_index * REF_SIZE;
-            let ref_end = ref_start + REF_SIZE;
+            let ref_start = child_index * M::REF_SIZE;
+            let ref_end = ref_start + M::REF_SIZE;
 
-            if ref_end > chunk_data.len() {
+            if ref_end > body.len() {
                 return Err(FileError::InvalidReference { level: 0 });
             }
 
-            let child_addr_bytes: [u8; 32] = chunk_data[ref_start..ref_end]
-                .try_into()
-                .map_err(|_| FileError::InvalidReference { level: 0 })?;
-            let child_addr = ChunkAddress::from(child_addr_bytes);
+            let (child_addr, child_context) = M::parse_child_ref(&body, ref_start)?;
 
             let child_span = if child_index == refs_per_chunk - 1 {
                 let preceding = child_index as u64 * subspan;
@@ -131,6 +148,7 @@ where
 
             self.read_from_tree(
                 &child_addr,
+                &child_context,
                 child_span,
                 child_offset,
                 &mut remaining[..to_read],
@@ -142,21 +160,12 @@ where
 
         Ok(())
     }
-
-    fn subspan_size(&self, span: u64) -> u64 {
-        for i in 0..LEVEL_LIMIT {
-            let level_span = SPANS[i] * BODY_SIZE as u64;
-            if span <= level_span {
-                return if i == 0 { 1 } else { SPANS[i - 1] * BODY_SIZE as u64 };
-            }
-        }
-        SPANS[LEVEL_LIMIT - 2] * BODY_SIZE as u64
-    }
 }
 
-impl<G, const BODY_SIZE: usize> Read for Joiner<G, BODY_SIZE>
+impl<G, M, const BODY_SIZE: usize> Read for GenericJoiner<G, M, BODY_SIZE>
 where
     G: ChunkGet<BODY_SIZE>,
+    M: JoinMode,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let read = self
@@ -167,9 +176,10 @@ where
     }
 }
 
-impl<G, const BODY_SIZE: usize> Seek for Joiner<G, BODY_SIZE>
+impl<G, M, const BODY_SIZE: usize> Seek for GenericJoiner<G, M, BODY_SIZE>
 where
     G: ChunkGet<BODY_SIZE>,
+    M: JoinMode,
 {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let new_pos = match pos {
@@ -196,6 +206,8 @@ mod tests {
     use crate::file::Splitter;
     use crate::store::MemorySink;
     use std::io::Write;
+
+    use super::super::constants::REF_SIZE;
 
     const REFS_PER_CHUNK: usize = DEFAULT_BODY_SIZE / REF_SIZE;
 
@@ -375,5 +387,95 @@ mod tests {
 
         let result = joiner.seek(SeekFrom::Current(-100));
         assert!(result.is_err());
+    }
+
+    // Encrypted joiner tests
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use super::*;
+        use crate::chunk::encryption::EncryptedChunkRef;
+        use crate::file::EncryptedSplitter;
+
+        fn encrypted_split_and_store(data: &[u8]) -> (EncryptedChunkRef, MemorySink) {
+            let sink = MemorySink::new();
+            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+            splitter.write_all(data).unwrap();
+            splitter.finish().unwrap()
+        }
+
+        #[test]
+        fn test_encrypted_joiner_empty() {
+            let (root_ref, sink) = encrypted_split_and_store(b"");
+            let mut joiner = EncryptedJoiner::new(sink, root_ref).unwrap();
+
+            assert_eq!(joiner.size(), 0);
+
+            let mut buf = [0u8; 10];
+            let read = joiner.read(&mut buf).unwrap();
+            assert_eq!(read, 0);
+        }
+
+        #[test]
+        fn test_encrypted_joiner_small() {
+            let data = b"hello world";
+            let (root_ref, sink) = encrypted_split_and_store(data);
+            let mut joiner = EncryptedJoiner::new(sink, root_ref).unwrap();
+
+            assert_eq!(joiner.size(), data.len() as u64);
+
+            let mut buf = vec![0u8; data.len()];
+            joiner.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, data);
+        }
+
+        #[test]
+        fn test_encrypted_joiner_exact_chunk() {
+            let data = vec![0xAB; DEFAULT_BODY_SIZE];
+            let (root_ref, sink) = encrypted_split_and_store(&data);
+            let mut joiner = EncryptedJoiner::new(sink, root_ref).unwrap();
+
+            let mut recovered = vec![0u8; data.len()];
+            joiner.read_exact(&mut recovered).unwrap();
+            assert_eq!(recovered, data);
+        }
+
+        #[test]
+        fn test_encrypted_joiner_two_chunks() {
+            let data: Vec<u8> =
+                (0..DEFAULT_BODY_SIZE + 100).map(|i| (i % 256) as u8).collect();
+            let (root_ref, sink) = encrypted_split_and_store(&data);
+            let mut joiner = EncryptedJoiner::new(sink, root_ref).unwrap();
+
+            assert_eq!(joiner.size(), data.len() as u64);
+
+            let mut buf = vec![0u8; data.len()];
+            joiner.read_exact(&mut buf).unwrap();
+            assert_eq!(buf, data);
+        }
+
+        #[test]
+        fn test_encrypted_joiner_seek() {
+            let data = b"hello encrypted world";
+            let (root_ref, sink) = encrypted_split_and_store(data);
+            let mut joiner = EncryptedJoiner::new(sink, root_ref).unwrap();
+
+            joiner.seek(SeekFrom::Start(6)).unwrap();
+
+            let mut buf = vec![0u8; 9]; // "encrypted"
+            joiner.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"encrypted");
+        }
+
+        #[test]
+        fn test_encrypted_joiner_seek_past_end() {
+            let data = b"test data";
+            let (root_ref, sink) = encrypted_split_and_store(data);
+            let mut joiner = EncryptedJoiner::new(sink, root_ref).unwrap();
+
+            joiner.seek(SeekFrom::Start(1000)).unwrap();
+            let mut buf = [0u8; 10];
+            let n = joiner.read(&mut buf).unwrap();
+            assert_eq!(n, 0);
+        }
     }
 }
