@@ -37,6 +37,7 @@ pub mod address;
 pub mod bmt;
 mod cache;
 pub mod chunk;
+pub mod encryption;
 pub mod error;
 pub mod file;
 pub mod store;
@@ -46,6 +47,9 @@ pub mod wasm;
 
 // Re-export core constants
 pub use bmt::DEFAULT_BODY_SIZE;
+
+// Re-export core encryption types
+pub use encryption::{ChunkRef, EncryptionKey};
 
 // Re-export core types
 pub use address::{MAX_PO, SwarmAddress};
