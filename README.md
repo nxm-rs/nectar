@@ -16,6 +16,7 @@ Used by [Vertex](https://github.com/nxm-rs/vertex) (the Rust Swarm node) and ava
 | Crate | Description |
 |-------|-------------|
 | `nectar-primitives` | Binary Merkle Tree, chunks, proofs. The foundation. |
+| `nectar-mantaray` | Mantaray manifest trie for path-to-reference mapping |
 | `nectar-contracts` | Contract bindings for on-chain Swarm interactions |
 | `nectar-postage` | Postage stamp handling and verification |
 | `nectar-postage-issuer` | High-performance stamp issuance with parallel signing |

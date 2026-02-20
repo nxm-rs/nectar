@@ -1,80 +1,15 @@
 //! Tree traversal for mantaray nodes.
 
-extern crate alloc;
-
-use alloc::vec::Vec;
-
-use crate::error::Result;
-use crate::node::Node;
-use crate::persist::MantarayLoader;
-
-/// Walk the trie depth-first starting from a sub-path, calling `f` for each node.
-///
-/// Looks up the node at `root` first, then walks the subtree rooted there.
-/// This matches Go bee's `WalkNode` method.
-pub fn walk_node<F>(
-    node: &mut Node,
-    root: &[u8],
-    loader: Option<&dyn MantarayLoader>,
-    f: &mut F,
-) -> Result<()>
-where
-    F: FnMut(&[u8], &Node) -> Result<()>,
-{
-    if root.is_empty() {
-        return walk_inner(&[], node, loader, f);
-    }
-
-    let target = node.lookup_node(root, loader)?;
-    walk_inner(root, target, loader, f)
-}
-
-/// Walk the trie depth-first, calling `f` for each node with its accumulated path.
-pub fn walk<F>(
-    node: &mut Node,
-    loader: Option<&dyn MantarayLoader>,
-    f: &mut F,
-) -> Result<()>
-where
-    F: FnMut(&[u8], &Node) -> Result<()>,
-{
-    walk_inner(&[], node, loader, f)
-}
-
-fn walk_inner<F>(
-    path: &[u8],
-    node: &mut Node,
-    loader: Option<&dyn MantarayLoader>,
-    f: &mut F,
-) -> Result<()>
-where
-    F: FnMut(&[u8], &Node) -> Result<()>,
-{
-    if node.forks.is_empty() {
-        node.load(loader)?;
-    }
-
-    f(path, node)?;
-
-    // collect keys to avoid borrow conflict
-    let keys: Vec<u8> = node.forks.keys().copied().collect();
-    for key in keys {
-        let fork = node.forks.get_mut(&key).expect("key from iterator");
-        let mut next_path = path.to_vec();
-        next_path.extend_from_slice(&fork.prefix);
-        walk_inner(&next_path, &mut fork.node, loader, f)?;
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
     use alloc::collections::BTreeMap;
     use alloc::vec;
+    use alloc::vec::Vec;
 
-    use super::*;
-    use crate::persist::MockStoreCell;
+    use crate::node::Node;
+    use crate::persist::MockStore;
 
     fn make_entry(s: &[u8]) -> Vec<u8> {
         let mut entry = vec![0u8; 32 - s.len()];
@@ -94,8 +29,8 @@ mod tests {
         }
 
         let mut visited: Vec<(Vec<u8>, bool)> = Vec::new();
-        walk(&mut root, None, &mut |path, node| {
-            visited.push((path.to_vec(), node.is_value_type()));
+        root.walk(None, &mut |path, node| {
+            visited.push((path.to_vec(), node.is_value()));
             Ok(())
         })
         .unwrap();
@@ -114,7 +49,6 @@ mod tests {
     // --- Go bee compatibility: TestWalkNode with exact traversal order ---
 
     /// Replicates the Go bee walker test with exact expected walk order.
-    /// Uses `walk_node` with empty root, matching Go's `n.WalkNode(ctx, []byte{}, nil, walker)`.
     #[test]
     fn walk_node_exact_order() {
         let to_add: &[&[u8]] = &[
@@ -150,7 +84,7 @@ mod tests {
         }
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
-        walk_node(&mut n, b"", None, &mut |path, _node| {
+        n.walk_node(b"", None, &mut |path, _node| {
             walked.push(path.to_vec());
             Ok(())
         })
@@ -192,7 +126,7 @@ mod tests {
         }
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
-        walk_node(&mut n, b"img/", None, &mut |path, _node| {
+        n.walk_node(b"img/", None, &mut |path, _node| {
             walked.push(path.to_vec());
             Ok(())
         })
@@ -242,13 +176,13 @@ mod tests {
             n.add(path, &entry, BTreeMap::new(), None).unwrap();
         }
 
-        let store = MockStoreCell::new();
+        let store = MockStore::new();
         n.save(&store).unwrap();
 
-        let mut n2 = Node::new_node_ref(&n.ref_);
+        let mut n2 = Node::from_reference(n.reference());
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
-        walk_node(&mut n2, b"", Some(&store), &mut |path, _node| {
+        n2.walk_node(b"", Some(&store), &mut |path, _node| {
             walked.push(path.to_vec());
             Ok(())
         })

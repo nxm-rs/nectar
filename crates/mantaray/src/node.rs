@@ -16,69 +16,124 @@ use crate::{
 };
 
 /// A node in the mantaray trie.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Node {
     /// Bitfield encoding the node kind (value, edge, path-separator, metadata).
-    pub node_type: u8,
+    pub(crate) node_type: u8,
     /// Size of references in bytes (typically 32 or 64 for encrypted).
-    pub ref_bytes_size: u32,
+    pub(crate) ref_bytes_size: u32,
     /// XOR obfuscation key for binary serialisation.
-    pub obfuscation_key: Vec<u8>,
+    pub(crate) obfuscation_key: Vec<u8>,
     /// Content-addressed reference for this node (empty if not yet persisted).
-    pub ref_: Vec<u8>,
+    pub(crate) reference: Vec<u8>,
     /// The entry data stored at this node (the chunk reference this path maps to).
-    pub entry: Vec<u8>,
+    pub(crate) entry: Vec<u8>,
     /// Metadata key-value pairs attached to this node.
-    pub metadata: BTreeMap<String, String>,
+    pub(crate) metadata: BTreeMap<String, String>,
     /// Child forks keyed by the first byte of their prefix.
-    pub forks: BTreeMap<u8, Fork>,
+    pub(crate) forks: BTreeMap<u8, Fork>,
 }
 
 /// A fork in the mantaray trie, consisting of a prefix and a child node.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Fork {
     /// The prefix bytes for this fork edge.
-    pub prefix: Vec<u8>,
+    pub(crate) prefix: Vec<u8>,
     /// The child node.
-    pub node: Node,
+    pub(crate) node: Node,
 }
 
-/// Return the common prefix of two byte slices.
-fn common(a: &[u8], b: &[u8]) -> Vec<u8> {
-    let len = a.len().min(b.len());
-    let mut i = 0;
-    while i < len && a[i] == b[i] {
-        i += 1;
+impl Fork {
+    /// The prefix bytes for this fork edge.
+    pub fn prefix(&self) -> &[u8] {
+        &self.prefix
     }
-    a[..i].to_vec()
+
+    /// The child node.
+    pub const fn node(&self) -> &Node {
+        &self.node
+    }
+
+    /// Mutable access to the child node.
+    pub const fn node_mut(&mut self) -> &mut Node {
+        &mut self.node
+    }
+}
+
+/// Return the length of the common prefix of two byte slices.
+fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
+    a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
 impl Node {
-    /// Create a node that references persisted data.
-    pub fn new_node_ref(ref_: &[u8]) -> Self {
+    /// Create a new node with a zeroed obfuscation key (unencrypted).
+    pub fn new_unencrypted() -> Self {
         Self {
-            ref_: ref_.to_vec(),
+            obfuscation_key: vec![0u8; NODE_OBFUSCATION_KEY_SIZE],
             ..Default::default()
         }
     }
 
+    /// Create a node that references persisted data.
+    pub fn from_reference(reference: &[u8]) -> Self {
+        Self {
+            reference: reference.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    /// The entry data stored at this node.
+    pub fn entry(&self) -> &[u8] {
+        &self.entry
+    }
+
+    /// Metadata key-value pairs attached to this node.
+    pub const fn metadata(&self) -> &BTreeMap<String, String> {
+        &self.metadata
+    }
+
+    /// Content-addressed reference for this node.
+    pub fn reference(&self) -> &[u8] {
+        &self.reference
+    }
+
+    /// Child forks keyed by the first byte of their prefix.
+    pub const fn forks(&self) -> &BTreeMap<u8, Fork> {
+        &self.forks
+    }
+
+    /// Mutable access to child forks.
+    pub const fn forks_mut(&mut self) -> &mut BTreeMap<u8, Fork> {
+        &mut self.forks
+    }
+
+    /// XOR obfuscation key for binary serialisation.
+    pub fn obfuscation_key(&self) -> &[u8] {
+        &self.obfuscation_key
+    }
+
+    /// Set the content-addressed reference for this node.
+    pub fn set_reference(&mut self, reference: Vec<u8>) {
+        self.reference = reference;
+    }
+
     /// Returns true if this node contains an entry (is a value node).
-    pub const fn is_value_type(&self) -> bool {
+    pub const fn is_value(&self) -> bool {
         (self.node_type & NT_VALUE) == NT_VALUE
     }
 
     /// Returns true if this node has child forks.
-    pub const fn is_edge_type(&self) -> bool {
+    pub const fn is_edge(&self) -> bool {
         (self.node_type & NT_EDGE) == NT_EDGE
     }
 
     /// Returns true if the node path contains a separator character.
-    pub const fn is_with_path_separator_type(&self) -> bool {
+    pub const fn is_with_path_separator(&self) -> bool {
         (self.node_type & NT_WITH_PATH_SEPARATOR) == NT_WITH_PATH_SEPARATOR
     }
 
     /// Returns true if this node carries metadata.
-    pub const fn is_with_metadata_type(&self) -> bool {
+    pub const fn is_with_metadata(&self) -> bool {
         (self.node_type & NT_WITH_METADATA) == NT_WITH_METADATA
     }
 
@@ -123,12 +178,12 @@ impl Node {
 
     /// Load this node from storage if it has a reference but no forks loaded.
     pub fn load(&mut self, loader: Option<&dyn MantarayLoader>) -> Result<()> {
-        if self.ref_.is_empty() {
+        if self.reference.is_empty() {
             return Ok(());
         }
 
         let loader = loader.ok_or(MantarayError::NoLoader)?;
-        let mut data = loader.load(&self.ref_)?;
+        let mut data = loader.load(&self.reference)?;
         self.unmarshal_binary(&mut data)
     }
 
@@ -149,16 +204,16 @@ impl Node {
         let first = path[0];
         let fork = self.forks.get_mut(&first).ok_or_else(|| {
             MantarayError::NoForkFound {
-                ref_hex: hex::encode(&self.ref_),
+                ref_hex: hex::encode(&self.reference),
             }
         })?;
 
-        let c = common(&fork.prefix, path);
-        if c.len() == fork.prefix.len() {
-            fork.node.lookup_node(&path[c.len()..], loader)
+        let c = common_prefix_len(&fork.prefix, path);
+        if c == fork.prefix.len() {
+            fork.node.lookup_node(&path[c..], loader)
         } else {
             Err(MantarayError::NoForkFound {
-                ref_hex: hex::encode(&self.ref_),
+                ref_hex: hex::encode(&self.reference),
             })
         }
     }
@@ -170,9 +225,9 @@ impl Node {
         loader: Option<&dyn MantarayLoader>,
     ) -> Result<&[u8]> {
         let node = self.lookup_node(path, loader)?;
-        if !node.is_value_type() && !path.is_empty() {
+        if !node.is_value() && !path.is_empty() {
             return Err(MantarayError::NoEntryFound {
-                ref_hex: hex::encode(&node.ref_),
+                ref_hex: hex::encode(&node.reference),
             });
         }
         Ok(node.entry.as_slice())
@@ -213,14 +268,14 @@ impl Node {
                 self.make_with_metadata();
             }
 
-            self.ref_ = vec![];
+            self.reference = vec![];
             return Ok(());
         }
 
         // load forks if needed
         if self.forks.is_empty() {
             self.load(loader)?;
-            self.ref_ = vec![];
+            self.reference = vec![];
         }
 
         if !self.forks.contains_key(&path[0]) {
@@ -268,8 +323,8 @@ impl Node {
 
         // existing fork — need to split or extend
         let fork = self.forks.get(&path[0]).expect("checked above");
-        let c = common(&fork.prefix, path);
-        let rest = fork.prefix[c.len()..].to_vec();
+        let c = common_prefix_len(&fork.prefix, path);
+        let rest = fork.prefix[c..].to_vec();
         let mut nn = fork.node.clone();
 
         if !rest.is_empty() {
@@ -292,18 +347,18 @@ impl Node {
             );
             nn.make_edge();
 
-            if c.len() == path.len() {
+            if c == path.len() {
                 nn.make_value();
             }
         }
 
         nn.update_is_with_path_separator(path);
-        nn.add(&path[c.len()..], entry, metadata, loader)?;
+        nn.add(&path[c..], entry, metadata, loader)?;
 
         self.forks.insert(
             path[0],
             Fork {
-                prefix: c,
+                prefix: fork.prefix[..c].to_vec(),
                 node: nn,
             },
         );
@@ -332,7 +387,7 @@ impl Node {
         let prefix = match self.forks.get(&first) {
             Some(f) => f.prefix.clone(),
             None => {
-                self.ref_ = vec![];
+                self.reference = vec![];
                 return Err(MantarayError::PathPrefixNotFound {
                     prefix: String::from_utf8_lossy(&[first]).to_string(),
                 });
@@ -340,7 +395,7 @@ impl Node {
         };
 
         if !path.starts_with(&prefix) {
-            self.ref_ = vec![];
+            self.reference = vec![];
             return Err(MantarayError::PathPrefixNotFound {
                 prefix: String::from_utf8_lossy(path).to_string(),
             });
@@ -355,8 +410,8 @@ impl Node {
             fork.node.remove(rest, loader)
         };
 
-        // Always clear ref_ so the node gets re-saved (matches Go's defer pattern)
-        self.ref_ = vec![];
+        // Always clear reference so the node gets re-saved (matches Go's defer pattern)
+        self.reference = vec![];
         result
     }
 
@@ -379,10 +434,10 @@ impl Node {
             None => return Ok(false),
         };
 
-        let c = common(&fork.prefix, path);
+        let c = common_prefix_len(&fork.prefix, path);
 
-        if c.len() == fork.prefix.len() {
-            return fork.node.has_prefix(&path[c.len()..], loader);
+        if c == fork.prefix.len() {
+            return fork.node.has_prefix(&path[c..], loader);
         }
 
         if fork.prefix.starts_with(path) {
@@ -394,7 +449,7 @@ impl Node {
 
     /// Recursively save this node and all children to storage.
     pub fn save(&mut self, saver: &dyn MantaraySaver) -> Result<()> {
-        if !self.ref_.is_empty() {
+        if !self.reference.is_empty() {
             return Ok(());
         }
 
@@ -403,17 +458,70 @@ impl Node {
         }
 
         let data = self.marshal_binary()?;
-        self.ref_ = saver.save(&data)?;
+        self.reference = saver.save(&data)?;
         self.forks.clear();
 
         Ok(())
     }
+
+    /// Walk all nodes depth-first, calling `f` for each node with its path.
+    pub fn walk<F>(&mut self, loader: Option<&dyn MantarayLoader>, f: &mut F) -> Result<()>
+    where
+        F: FnMut(&[u8], &Self) -> Result<()>,
+    {
+        walk_inner(&[], self, loader, f)
+    }
+
+    /// Walk the subtree at `root`, calling `f` for each node.
+    pub fn walk_node<F>(
+        &mut self,
+        root: &[u8],
+        loader: Option<&dyn MantarayLoader>,
+        f: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[u8], &Self) -> Result<()>,
+    {
+        if root.is_empty() {
+            return walk_inner(&[], self, loader, f);
+        }
+
+        let target = self.lookup_node(root, loader)?;
+        walk_inner(root, target, loader, f)
+    }
+}
+
+fn walk_inner<F>(
+    path: &[u8],
+    node: &mut Node,
+    loader: Option<&dyn MantarayLoader>,
+    f: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&[u8], &Node) -> Result<()>,
+{
+    if node.forks.is_empty() {
+        node.load(loader)?;
+    }
+
+    f(path, node)?;
+
+    // collect keys to avoid borrow conflict
+    let keys: Vec<u8> = node.forks.keys().copied().collect();
+    for key in keys {
+        let fork = node.forks.get_mut(&key).expect("key from iterator");
+        let mut next_path = path.to_vec();
+        next_path.extend_from_slice(&fork.prefix);
+        walk_inner(&next_path, &mut fork.node, loader, f)?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persist::MockStoreCell;
+    use crate::persist::MockStore;
 
     struct TestCase {
         _name: &'static str,
@@ -618,8 +726,8 @@ mod tests {
 
             for &d in items.iter().take(i) {
                 let node = n.lookup_node(d.as_bytes(), None).unwrap();
-                assert!(node.is_value_type());
-                assert_eq!(node.entry, make_entry(d));
+                assert!(node.is_value());
+                assert_eq!(node.entry(), make_entry(d));
             }
         }
     }
@@ -662,15 +770,15 @@ mod tests {
             n.add(c.as_bytes(), &e, BTreeMap::new(), None).unwrap();
         }
 
-        let store = MockStoreCell::new();
+        let store = MockStore::new();
         n.save(&store).unwrap();
 
-        let mut n2 = Node::new_node_ref(&n.ref_);
+        let mut n2 = Node::from_reference(&n.reference);
 
         for &d in items {
             let node = n2.lookup_node(d.as_bytes(), Some(&store)).unwrap();
-            assert!(node.is_value_type());
-            assert_eq!(node.entry, make_entry(d));
+            assert!(node.is_value());
+            assert_eq!(node.entry(), make_entry(d));
         }
     }
 
@@ -761,10 +869,10 @@ mod tests {
     }
 
     // --- Go bee compatibility: TestPersistRemove ---
-    // Tests save→reload→remove→save→reload→verify-removed cycle.
+    // Tests save->reload->remove->save->reload->verify-removed cycle.
 
     fn run_persist_remove(tc: RemoveTestCase) {
-        let store = MockStoreCell::new();
+        let store = MockStore::new();
 
         // add entries and persist
         let mut n = Node::default();
@@ -774,18 +882,18 @@ mod tests {
                 .unwrap();
         }
         n.save(&store).unwrap();
-        let ref_ = n.ref_.clone();
+        let ref_ = n.reference.clone();
 
         // reload and remove
-        let mut nn = Node::new_node_ref(&ref_);
+        let mut nn = Node::from_reference(&ref_);
         for path in &tc.remove {
             nn.remove(path.as_bytes(), Some(&store)).unwrap();
         }
         nn.save(&store).unwrap();
-        let ref2 = nn.ref_.clone();
+        let ref2 = nn.reference.clone();
 
         // reload and verify removed paths are gone
-        let mut nnn = Node::new_node_ref(&ref2);
+        let mut nnn = Node::from_reference(&ref2);
         for path in &tc.remove {
             let result = nnn.lookup_node(path.as_bytes(), Some(&store));
             assert!(result.is_err(), "expected removed path '{path}' to be not found");

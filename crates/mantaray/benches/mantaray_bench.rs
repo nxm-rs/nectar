@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use nectar_mantaray::{Entry, Manifest};
 use nectar_mantaray::node::Node;
-use nectar_mantaray::persist::MockStoreCell;
-use nectar_mantaray::{walk, walk_node};
+use nectar_mantaray::persist::MockStore;
 
 /// Create a 32-byte entry from a path, left-padded with zeroes.
 fn make_entry(path: &[u8]) -> Vec<u8> {
@@ -30,8 +30,7 @@ fn build_spa_trie() -> Node {
         b"js/app.js.map",
         b"js/app.js",
     ];
-    let mut n = Node::default();
-    n.obfuscation_key = vec![0u8; 32];
+    let mut n = Node::new_unencrypted();
     for &p in paths {
         let e = make_entry(p);
         n.add(p, &e, BTreeMap::new(), None).unwrap();
@@ -41,8 +40,7 @@ fn build_spa_trie() -> Node {
 
 /// Build a trie with many paths for larger-scale benchmarks.
 fn build_large_trie(count: usize) -> Node {
-    let mut n = Node::default();
-    n.obfuscation_key = vec![0u8; 32];
+    let mut n = Node::new_unencrypted();
     for i in 0..count {
         let path = format!("dir{}/subdir{}/file{}.dat", i / 100, i / 10, i);
         let e = make_entry(path.as_bytes());
@@ -67,8 +65,7 @@ fn bench_add(c: &mut Criterion) {
 
     group.bench_function("8_paths", |b| {
         b.iter(|| {
-            let mut n = Node::default();
-            n.obfuscation_key = vec![0u8; 32];
+            let mut n = Node::new_unencrypted();
             for &p in paths {
                 let e = make_entry(p);
                 n.add(p, &e, BTreeMap::new(), None).unwrap();
@@ -88,8 +85,7 @@ fn bench_add(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("paths", count), &entries, |b, entries| {
             b.iter(|| {
-                let mut n = Node::default();
-                n.obfuscation_key = vec![0u8; 32];
+                let mut n = Node::new_unencrypted();
                 for (path, entry) in entries {
                     n.add(path, entry, BTreeMap::new(), None).unwrap();
                 }
@@ -183,13 +179,13 @@ fn bench_marshal(c: &mut Criterion) {
 
 /// Recursively assign deterministic references to all forks.
 fn assign_refs(node: &mut Node, counter: &mut u32) {
-    for fork in node.forks.values_mut() {
+    for fork in node.forks_mut().values_mut() {
         let mut ref_ = vec![0u8; 32];
         let bytes = counter.to_be_bytes();
         ref_[28..].copy_from_slice(&bytes);
-        fork.node.ref_ = ref_;
+        fork.node_mut().set_reference(ref_);
         *counter += 1;
-        assign_refs(&mut fork.node, counter);
+        assign_refs(fork.node_mut(), counter);
     }
 }
 
@@ -221,7 +217,7 @@ fn bench_walk(c: &mut Criterion) {
         let mut n = build_spa_trie();
         b.iter(|| {
             let mut count = 0u32;
-            walk(&mut n, None, &mut |_path, _node| {
+            n.walk(None, &mut |_path, _node| {
                 count += 1;
                 Ok(())
             })
@@ -235,7 +231,7 @@ fn bench_walk(c: &mut Criterion) {
             let mut n = build_large_trie(count);
             b.iter(|| {
                 let mut visited = 0u32;
-                walk(&mut n, None, &mut |_path, _node| {
+                n.walk(None, &mut |_path, _node| {
                     visited += 1;
                     Ok(())
                 })
@@ -256,7 +252,7 @@ fn bench_walk_node(c: &mut Criterion) {
     group.bench_function("from_root", |b| {
         b.iter(|| {
             let mut count = 0u32;
-            walk_node(&mut n, b"", None, &mut |_path, _node| {
+            n.walk_node(b"", None, &mut |_path, _node| {
                 count += 1;
                 Ok(())
             })
@@ -268,7 +264,7 @@ fn bench_walk_node(c: &mut Criterion) {
     group.bench_function("from_subtree", |b| {
         b.iter(|| {
             let mut count = 0u32;
-            walk_node(&mut n, b"js/", None, &mut |_path, _node| {
+            n.walk_node(b"js/", None, &mut |_path, _node| {
                 count += 1;
                 Ok(())
             })
@@ -286,11 +282,11 @@ fn bench_save_load(c: &mut Criterion) {
     group.bench_function("save_spa_trie", |b| {
         b.iter_batched(
             || {
-                let store = MockStoreCell::new();
+                let store = MockStore::new();
                 let n = build_spa_trie();
                 (n, store)
             },
-            |(mut n, store)| {
+            |(mut n, store): (Node, MockStore)| {
                 n.save(&store).unwrap();
                 (n, store)
             },
@@ -299,13 +295,13 @@ fn bench_save_load(c: &mut Criterion) {
     });
 
     group.bench_function("load_spa_trie", |b| {
-        let store = MockStoreCell::new();
+        let store = MockStore::new();
         let mut n = build_spa_trie();
         n.save(&store).unwrap();
-        let ref_ = n.ref_.clone();
+        let ref_ = n.reference().to_vec();
 
         b.iter(|| {
-            let mut node = Node::new_node_ref(&ref_);
+            let mut node = Node::from_reference(&ref_);
             node.load(Some(&store)).unwrap();
             node
         });
@@ -314,13 +310,13 @@ fn bench_save_load(c: &mut Criterion) {
     group.bench_function("save_load_roundtrip", |b| {
         b.iter_batched(
             || {
-                let store = MockStoreCell::new();
+                let store = MockStore::new();
                 let n = build_spa_trie();
                 (n, store)
             },
-            |(mut n, store)| {
+            |(mut n, store): (Node, MockStore)| {
                 n.save(&store).unwrap();
-                let mut n2 = Node::new_node_ref(&n.ref_);
+                let mut n2 = Node::from_reference(n.reference());
                 n2.load(Some(&store)).unwrap();
                 n2
             },
@@ -336,15 +332,15 @@ fn bench_full_workflow(c: &mut Criterion) {
 
     group.bench_function("add_save_load_lookup", |b| {
         b.iter(|| {
-            let store = MockStoreCell::new();
+            let store = MockStore::new();
             let mut n = build_spa_trie();
 
             // save
             n.save(&store).unwrap();
-            let ref_ = n.ref_.clone();
+            let ref_ = n.reference().to_vec();
 
             // load into fresh node
-            let mut n2 = Node::new_node_ref(&ref_);
+            let mut n2 = Node::from_reference(&ref_);
 
             // lookup all paths
             let paths: &[&[u8]] = &[
@@ -363,6 +359,111 @@ fn bench_full_workflow(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_iter(c: &mut Criterion) {
+    let mut group = c.benchmark_group("iter");
+
+    let paths: &[&str] = &[
+        "css/",
+        "css/app.css",
+        "favicon.ico",
+        "img/",
+        "img/logo.png",
+        "index.html",
+        "js/",
+        "js/chunk-vendors.js.map",
+        "js/chunk-vendors.js",
+        "js/app.js.map",
+        "js/app.js",
+    ];
+
+    // In-memory iteration (no save/load)
+    group.bench_function("spa_trie_in_memory", |b| {
+        let store = MockStore::new();
+        let mut m = Manifest::new(&store, false);
+        for &p in paths {
+            let mut v = p.as_bytes().to_vec();
+            v.resize(32, 0);
+            m.add(
+                p,
+                Entry {
+                    path: p.as_bytes().to_vec(),
+                    reference: v,
+                    metadata: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        }
+
+        b.iter(|| {
+            let mut count = 0u32;
+            let mut iter = m.iter();
+            while let Some(result) = iter.next() {
+                result.unwrap();
+                count += 1;
+            }
+            count
+        });
+    });
+
+    // Lazy iteration after save/load (exercises storage loading)
+    group.bench_function("spa_trie_lazy", |b| {
+        let store = MockStore::new();
+        let mut m = Manifest::new(&store, false);
+        for &p in paths {
+            let mut v = p.as_bytes().to_vec();
+            v.resize(32, 0);
+            m.add(
+                p,
+                Entry {
+                    path: p.as_bytes().to_vec(),
+                    reference: v,
+                    metadata: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        }
+        m.save().unwrap();
+        let root_ref = m.reference().to_vec();
+
+        b.iter(|| {
+            let mut m2 = Manifest::new_manifest_reference(&root_ref, &store);
+            let mut count = 0u32;
+            let mut iter = m2.iter();
+            while let Some(result) = iter.next() {
+                result.unwrap();
+                count += 1;
+            }
+            count
+        });
+    });
+
+    // Compare with entries() (walk-based collection)
+    group.bench_function("entries_spa_trie", |b| {
+        let store = MockStore::new();
+        let mut m = Manifest::new(&store, false);
+        for &p in paths {
+            let mut v = p.as_bytes().to_vec();
+            v.resize(32, 0);
+            m.add(
+                p,
+                Entry {
+                    path: p.as_bytes().to_vec(),
+                    reference: v,
+                    metadata: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        }
+
+        b.iter(|| {
+            let entries = m.entries().unwrap();
+            entries.len()
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_add,
@@ -375,5 +476,6 @@ criterion_group!(
     bench_walk_node,
     bench_save_load,
     bench_full_workflow,
+    bench_iter,
 );
 criterion_main!(benches);

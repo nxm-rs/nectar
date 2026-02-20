@@ -4,9 +4,9 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::string::ToString;
+#[allow(unused_imports)]
 use alloc::vec;
 use alloc::vec::Vec;
-use alloy_primitives::hex;
 
 use crate::error::{MantarayError, Result};
 use crate::node::{Fork, Node};
@@ -16,12 +16,17 @@ use crate::{
     NT_WITH_METADATA, VERSION_HASH_SIZE,
 };
 
-// pre-calculated keccak256 hash of "mantaray:0.1"
-const VERSION_HASH_01: &str =
-    "025184789d63635766d78c41900196b57d7400875ebe4d9b5d1e76bd9652a9b7";
-// pre-calculated keccak256 hash of "mantaray:0.2"
-const VERSION_HASH_02: &str =
-    "5768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f7b";
+// pre-calculated keccak256 hashes as const byte arrays (no runtime hex::decode)
+const VERSION_HASH_01_BYTES: [u8; 32] = [
+    0x02, 0x51, 0x84, 0x78, 0x9d, 0x63, 0x63, 0x57, 0x66, 0xd7, 0x8c, 0x41, 0x90, 0x01, 0x96,
+    0xb5, 0x7d, 0x74, 0x00, 0x87, 0x5e, 0xbe, 0x4d, 0x9b, 0x5d, 0x1e, 0x76, 0xbd, 0x96, 0x52,
+    0xa9, 0xb7,
+];
+const VERSION_HASH_02_BYTES: [u8; 32] = [
+    0x57, 0x68, 0xb3, 0xb6, 0xa7, 0xdb, 0x56, 0xd2, 0x1d, 0x1a, 0xbf, 0xf4, 0x0d, 0x41, 0xce,
+    0xbf, 0xc8, 0x34, 0x48, 0xfe, 0xd8, 0xd7, 0xe9, 0xb0, 0x6e, 0xc0, 0xd3, 0xb0, 0x73, 0xf2,
+    0x8f, 0x7b,
+];
 
 #[cfg(test)]
 const VERSION_STRING_01: &str = "mantaray:0.1";
@@ -58,18 +63,32 @@ impl BitField {
     }
 }
 
-/// XOR encrypt/decrypt data with a repeating key.
+/// XOR encrypt/decrypt data in-place with a repeating key.
+pub(crate) fn encrypt_decrypt_in_place(data: &mut [u8], key: &[u8]) {
+    let key_len = key.len();
+    for (i, byte) in data.iter_mut().enumerate() {
+        *byte ^= key[i % key_len];
+    }
+}
+
+/// XOR encrypt/decrypt data with a repeating key, returning a new Vec.
+#[cfg(test)]
 pub(crate) fn encrypt_decrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
+    let key_len = key.len();
     data.iter()
         .enumerate()
-        .map(|(i, byte)| byte ^ key[i % key.len()])
+        .map(|(i, byte)| byte ^ key[i % key_len])
         .collect()
 }
 
 impl Node {
     /// Serialise this node to its binary representation (v0.2 format).
     pub fn marshal_binary(&self) -> Result<Vec<u8>> {
-        let mut header = vec![0u8; NODE_HEADER_SIZE];
+        // Pre-allocate: header + entry(32) + bitfield(32) + estimated fork data
+        let estimated =
+            NODE_HEADER_SIZE + 32 + 32 + self.forks.len() * (NODE_FORK_PRE_REFERENCE_SIZE + 32);
+        let mut data = Vec::with_capacity(estimated);
+        data.resize(NODE_HEADER_SIZE, 0);
 
         // generate or use existing obfuscation key
         let obfuscation_key = if self.obfuscation_key.is_empty() {
@@ -87,17 +106,13 @@ impl Node {
             self.obfuscation_key.clone()
         };
 
-        header[..NODE_OBFUSCATION_KEY_SIZE].copy_from_slice(&obfuscation_key);
+        data[..NODE_OBFUSCATION_KEY_SIZE].copy_from_slice(&obfuscation_key);
 
-        let version_hash_bytes =
-            hex::decode(VERSION_HASH_02).expect("VERSION_HASH_02 is valid hex");
-        header[NODE_OBFUSCATION_KEY_SIZE..NODE_OBFUSCATION_KEY_SIZE + VERSION_HASH_SIZE]
-            .copy_from_slice(&version_hash_bytes[..VERSION_HASH_SIZE]);
+        // use pre-computed const version hash (no hex::decode allocation)
+        data[NODE_OBFUSCATION_KEY_SIZE..NODE_OBFUSCATION_KEY_SIZE + VERSION_HASH_SIZE]
+            .copy_from_slice(&VERSION_HASH_02_BYTES[..VERSION_HASH_SIZE]);
 
-        header[NODE_OBFUSCATION_KEY_SIZE + VERSION_HASH_SIZE] =
-            self.ref_bytes_size as u8;
-
-        let mut data = header;
+        data[NODE_OBFUSCATION_KEY_SIZE + VERSION_HASH_SIZE] = self.ref_bytes_size as u8;
 
         // append entry (or 32 zero bytes if empty)
         if self.entry.is_empty() {
@@ -115,12 +130,11 @@ impl Node {
 
         // append forks in sorted order
         for fork in self.forks.values() {
-            data.extend_from_slice(&fork.marshal_binary()?);
+            fork.marshal_binary_into(&mut data)?;
         }
 
-        // XOR-encrypt everything after the obfuscation key
-        let encrypted = encrypt_decrypt(&data[NODE_OBFUSCATION_KEY_SIZE..], &obfuscation_key);
-        data[NODE_OBFUSCATION_KEY_SIZE..].copy_from_slice(&encrypted);
+        // XOR-encrypt everything after the obfuscation key in-place
+        encrypt_decrypt_in_place(&mut data[NODE_OBFUSCATION_KEY_SIZE..], &obfuscation_key);
 
         Ok(data)
     }
@@ -133,19 +147,16 @@ impl Node {
 
         self.obfuscation_key = data[..NODE_OBFUSCATION_KEY_SIZE].to_vec();
 
-        // decrypt
-        let decrypted = encrypt_decrypt(&data[NODE_OBFUSCATION_KEY_SIZE..], &self.obfuscation_key);
-        data[NODE_OBFUSCATION_KEY_SIZE..].copy_from_slice(&decrypted);
+        // decrypt in-place (no allocation)
+        encrypt_decrypt_in_place(&mut data[NODE_OBFUSCATION_KEY_SIZE..], &self.obfuscation_key);
 
         let version_hash =
             &data[NODE_OBFUSCATION_KEY_SIZE..NODE_OBFUSCATION_KEY_SIZE + VERSION_HASH_SIZE];
 
-        let hash_01 = hex::decode(VERSION_HASH_01).expect("VERSION_HASH_01 is valid hex");
-        let hash_02 = hex::decode(VERSION_HASH_02).expect("VERSION_HASH_02 is valid hex");
-
-        if version_hash == &hash_01[..VERSION_HASH_SIZE] {
+        // compare against pre-computed const byte arrays (no hex::decode)
+        if version_hash == &VERSION_HASH_01_BYTES[..VERSION_HASH_SIZE] {
             self.unmarshal_v01(data)
-        } else if version_hash == &hash_02[..VERSION_HASH_SIZE] {
+        } else if version_hash == &VERSION_HASH_02_BYTES[..VERSION_HASH_SIZE] {
             self.unmarshal_v02(data)
         } else {
             Err(MantarayError::InvalidVersionHash)
@@ -173,7 +184,7 @@ impl Node {
                 }
 
                 let mut fork = Fork::default();
-                fork.unmarshal_binary(&mut data[offset..end].to_vec())?;
+                fork.unmarshal_binary(&data[offset..end])?;
                 self.forks.insert(b, fork);
                 offset = end;
             }
@@ -190,7 +201,7 @@ impl Node {
         let mut offset = NODE_HEADER_SIZE + ref_bytes_size;
 
         // deduce edge type from index
-        if data[offset..offset + 32].iter().any(|&b| b != 0) && !self.is_edge_type() {
+        if data[offset..offset + 32].iter().any(|&b| b != 0) && !self.is_edge() {
             self.make_edge();
         }
 
@@ -245,9 +256,8 @@ impl Node {
                         });
                     }
 
-                    let mut fork_data = data[offset..offset + node_fork_size].to_vec();
                     fork.unmarshal_binary_v02(
-                        &mut fork_data,
+                        &data[offset..offset + node_fork_size],
                         ref_bytes_size,
                         metadata_bytes_size,
                     )?;
@@ -260,8 +270,7 @@ impl Node {
                         });
                     }
 
-                    let mut fork_data = data[offset..offset + node_fork_size].to_vec();
-                    fork.unmarshal_binary(&mut fork_data)?;
+                    fork.unmarshal_binary(&data[offset..offset + node_fork_size])?;
                 }
 
                 self.forks.insert(b, fork);
@@ -276,7 +285,14 @@ impl Node {
 impl Fork {
     /// Serialise this fork to its binary representation.
     pub fn marshal_binary(&self) -> Result<Vec<u8>> {
-        let r = &self.node.ref_;
+        let mut data = Vec::with_capacity(NODE_FORK_PRE_REFERENCE_SIZE + self.node.reference.len());
+        self.marshal_binary_into(&mut data)?;
+        Ok(data)
+    }
+
+    /// Serialise this fork, appending to an existing buffer (avoids intermediate allocation).
+    fn marshal_binary_into(&self, data: &mut Vec<u8>) -> Result<()> {
+        let r = &self.node.reference;
         if r.len() > 256 {
             return Err(MantarayError::RefTooLong {
                 max: 256,
@@ -284,18 +300,17 @@ impl Fork {
             });
         }
 
-        let mut data = Vec::new();
-
         data.push(self.node.node_type);
         data.push(self.prefix.len() as u8);
 
-        let mut prefix = self.prefix.clone();
-        prefix.resize(NODE_PREFIX_MAX_SIZE, 0);
-        data.extend_from_slice(&prefix);
+        // write prefix padded to NODE_PREFIX_MAX_SIZE without allocating
+        let mut prefix_buf = [0u8; NODE_PREFIX_MAX_SIZE];
+        prefix_buf[..self.prefix.len()].copy_from_slice(&self.prefix);
+        data.extend_from_slice(&prefix_buf);
 
         data.extend_from_slice(r);
 
-        if self.node.is_with_metadata_type() {
+        if self.node.is_with_metadata() {
             let mut metadata_json =
                 serde_json::to_string(&self.node.metadata)
                     .map_err(|e| MantarayError::InvalidMetadata {
@@ -329,11 +344,11 @@ impl Fork {
             data.extend_from_slice(&metadata_json);
         }
 
-        Ok(data)
+        Ok(())
     }
 
     /// Deserialise a fork from v0.1 format binary data.
-    pub fn unmarshal_binary(&mut self, data: &mut [u8]) -> Result<()> {
+    pub fn unmarshal_binary(&mut self, data: &[u8]) -> Result<()> {
         let node_type = data[0];
         let prefix_length = data[1] as usize;
 
@@ -345,7 +360,7 @@ impl Fork {
         }
 
         self.prefix = data[NODE_FORK_HEADER_SIZE..NODE_FORK_HEADER_SIZE + prefix_length].to_vec();
-        self.node = Node::new_node_ref(&data[NODE_FORK_PRE_REFERENCE_SIZE..]);
+        self.node = Node::from_reference(&data[NODE_FORK_PRE_REFERENCE_SIZE..]);
         self.node.node_type = node_type;
 
         Ok(())
@@ -354,7 +369,7 @@ impl Fork {
     /// Deserialise a fork from v0.2 format binary data (with metadata support).
     pub fn unmarshal_binary_v02(
         &mut self,
-        data: &mut [u8],
+        data: &[u8],
         ref_bytes_size: usize,
         metadata_bytes_size: usize,
     ) -> Result<()> {
@@ -369,7 +384,7 @@ impl Fork {
         }
 
         self.prefix = data[NODE_FORK_HEADER_SIZE..NODE_FORK_HEADER_SIZE + prefix_length].to_vec();
-        self.node = Node::new_node_ref(
+        self.node = Node::from_reference(
             &data[NODE_FORK_PRE_REFERENCE_SIZE..NODE_FORK_PRE_REFERENCE_SIZE + ref_bytes_size],
         );
         self.node.node_type = node_type;
@@ -392,6 +407,7 @@ impl Fork {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::hex;
     use crate::keccak256;
 
     const TEST_MARSHAL_OUTPUT_01: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950ac787fbce1061870e8d34e0a638bc7e812c7ca4ebd31d626a572ba47b06f6952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64950fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
@@ -431,16 +447,16 @@ mod tests {
     #[test]
     fn version_hash_01() {
         assert_eq!(
-            keccak256(VERSION_STRING_01.as_bytes()).to_vec(),
-            hex::decode(VERSION_HASH_01).unwrap()
+            keccak256(VERSION_STRING_01.as_bytes()),
+            VERSION_HASH_01_BYTES,
         );
     }
 
     #[test]
     fn version_hash_02() {
         assert_eq!(
-            keccak256(VERSION_STRING_02.as_bytes()).to_vec(),
-            hex::decode(VERSION_HASH_02).unwrap()
+            keccak256(VERSION_STRING_02.as_bytes()),
+            VERSION_HASH_02_BYTES,
         );
     }
 
@@ -453,15 +469,15 @@ mod tests {
 
         let expect_encrypted_bytes =
             hex::decode(&TEST_MARSHAL_OUTPUT_01[128..192]).unwrap();
-        let expect_bytes = encrypt_decrypt(&expect_encrypted_bytes, &n.obfuscation_key);
+        let expect_bytes = encrypt_decrypt(&expect_encrypted_bytes, n.obfuscation_key());
 
-        assert_eq!(n.entry, expect_bytes);
-        assert_eq!(test_entries().len(), n.forks.len());
+        assert_eq!(n.entry(), expect_bytes);
+        assert_eq!(test_entries().len(), n.forks().len());
 
         for entry in test_entries() {
             let key = entry.path.as_bytes()[0];
-            assert!(n.forks.contains_key(&key));
-            assert_eq!(n.forks[&key].prefix, entry.path.as_bytes());
+            assert!(n.forks().contains_key(&key));
+            assert_eq!(n.forks()[&key].prefix(), entry.path.as_bytes());
         }
     }
 
@@ -474,18 +490,18 @@ mod tests {
 
         let expect_encrypted_bytes =
             hex::decode(&TEST_MARSHAL_OUTPUT_02[128..192]).unwrap();
-        let expect_bytes = encrypt_decrypt(&expect_encrypted_bytes, &n.obfuscation_key);
+        let expect_bytes = encrypt_decrypt(&expect_encrypted_bytes, n.obfuscation_key());
 
-        assert_eq!(n.entry, expect_bytes);
-        assert_eq!(test_entries().len(), n.forks.len());
+        assert_eq!(n.entry(), expect_bytes);
+        assert_eq!(test_entries().len(), n.forks().len());
 
         for entry in test_entries() {
             let key = entry.path.as_bytes()[0];
-            assert!(n.forks.contains_key(&key));
-            assert_eq!(n.forks[&key].prefix, entry.path.as_bytes());
+            assert!(n.forks().contains_key(&key));
+            assert_eq!(n.forks()[&key].prefix(), entry.path.as_bytes());
 
             if !entry.metadata.is_empty() {
-                assert_eq!(n.forks[&key].node.metadata, entry.metadata);
+                assert_eq!(n.forks()[&key].node().metadata(), &entry.metadata);
             }
         }
     }
@@ -563,9 +579,7 @@ mod tests {
     /// Marshal then unmarshal round-trip preserves entries and metadata.
     #[test]
     fn marshal_unmarshal_round_trip() {
-        let mut n = Node::default();
-        // use zero obfuscation key for determinism
-        n.obfuscation_key = vec![0u8; crate::NODE_OBFUSCATION_KEY_SIZE];
+        let mut n = Node::new_unencrypted();
 
         for entry in test_entries() {
             let path = entry.path.as_bytes();
@@ -584,7 +598,7 @@ mod tests {
         for fork in n.forks.values_mut() {
             let mut ref_ = vec![0u8; 32];
             ref_[31] = counter;
-            fork.node.ref_ = ref_;
+            fork.node.reference = ref_;
             counter += 1;
         }
 
@@ -594,15 +608,15 @@ mod tests {
         n2.unmarshal_binary(&mut data).unwrap();
 
         // Root has no entry; marshal writes zero bytes, unmarshal reads them back
-        assert!(n2.entry.iter().all(|&b| b == 0));
-        assert_eq!(n.forks.len(), n2.forks.len());
+        assert!(n2.entry().iter().all(|&b| b == 0));
+        assert_eq!(n.forks().len(), n2.forks().len());
 
         for entry in test_entries() {
             let key = entry.path.as_bytes()[0];
-            assert!(n2.forks.contains_key(&key));
-            assert_eq!(n2.forks[&key].prefix, entry.path.as_bytes());
+            assert!(n2.forks().contains_key(&key));
+            assert_eq!(n2.forks()[&key].prefix(), entry.path.as_bytes());
             if !entry.metadata.is_empty() {
-                assert_eq!(n2.forks[&key].node.metadata, entry.metadata);
+                assert_eq!(n2.forks()[&key].node().metadata(), &entry.metadata);
             }
         }
     }
