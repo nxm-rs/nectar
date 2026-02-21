@@ -19,14 +19,26 @@
 //! 4. After save, child forks are dropped from memory.
 //! 5. The next operation lazily reloads from the new state.
 //!
+//! # Unified Store
+//!
+//! Manifest operations use the typed chunk store traits from `nectar_primitives`:
+//! [`ChunkGet`] for loading and [`ChunkPut`] for saving. This means a single
+//! [`MemorySink`] can hold both file chunks and manifest trie nodes.
+//!
+//! ```no_run
+//! # use nectar_mantaray::{DefaultManifest, Entry, DefaultMemorySink};
+//! let store = DefaultMemorySink::new();
+//! let mut manifest: DefaultManifest<_> = DefaultManifest::new(store, false);
+//! ```
+//!
 //! # Website Manifests
 //!
 //! Configure index and error documents for Swarm-hosted websites:
 //!
 //! ```no_run
-//! # use nectar_mantaray::{Manifest, Entry, metadata, MockChunkStore};
-//! # let store = MockChunkStore::new();
-//! # let mut manifest = Manifest::new(&store, false);
+//! # use nectar_mantaray::{Manifest, Entry, metadata, DefaultMemorySink};
+//! # let store = DefaultMemorySink::new();
+//! # let mut manifest = Manifest::new(store, false);
 //! manifest.set_index_document("index.html").unwrap();
 //! manifest.set_error_document("404.html").unwrap();
 //! ```
@@ -42,6 +54,9 @@
 
 use std::collections::BTreeMap;
 
+use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+use nectar_primitives::store::{ChunkGet, ChunkPut};
+
 pub mod error;
 pub mod marshal;
 pub mod node;
@@ -50,10 +65,12 @@ pub mod walker;
 pub use error::{MantarayError, Result};
 pub use node::{Fork, Node};
 
-// Re-export storage traits from primitives.
-pub use nectar_primitives::store::{
-    ChunkGetter, ChunkPutter, ChunkStore, ChunkStoreError, MockChunkStore,
-};
+// Re-export typed storage traits from primitives.
+pub use nectar_primitives::store::{ChunkHas, MemorySink};
+pub use nectar_primitives::DefaultMemorySink;
+
+/// Default manifest type using [`DEFAULT_BODY_SIZE`].
+pub type DefaultManifest<S> = Manifest<S, DEFAULT_BODY_SIZE>;
 
 /// Well-known metadata keys matching Go bee's `pkg/manifest/manifest.go`.
 pub mod metadata {
@@ -147,16 +164,36 @@ impl Entry {
     pub fn filename(&self) -> Option<&str> {
         self.metadata.get(metadata::FILENAME).map(|s| s.as_str())
     }
+
+    /// Path as a UTF-8 string. Returns `""` if the path is not valid UTF-8.
+    pub fn path_str(&self) -> &str {
+        std::str::from_utf8(&self.path).unwrap_or("")
+    }
+
+    /// Reference as a chunk address. Returns `None` if reference is too short.
+    pub fn address(&self) -> Option<nectar_primitives::ChunkAddress> {
+        if self.reference.len() >= 32 {
+            nectar_primitives::ChunkAddress::from_slice(&self.reference[..32]).ok()
+        } else {
+            None
+        }
+    }
+
+    /// Reference as an encrypted chunk ref. Returns `None` if reference is not 64 bytes.
+    #[cfg(feature = "encryption")]
+    pub fn encrypted_ref(&self) -> Option<nectar_primitives::EncryptedChunkRef> {
+        nectar_primitives::EncryptedChunkRef::try_from(self.reference.as_slice()).ok()
+    }
 }
 
-/// High-level mantaray manifest backed by a storage backend.
+/// High-level mantaray manifest backed by a typed chunk store.
 #[derive(Debug)]
-pub struct Manifest<S> {
+pub struct Manifest<S, const BS: usize = DEFAULT_BODY_SIZE> {
     trie: Node,
     store: S,
 }
 
-impl<S> Manifest<S> {
+impl<S, const BS: usize> Manifest<S, BS> {
     /// Create a new manifest. If `encrypted` is false, the obfuscation key is zeroed.
     pub fn new(store: S, encrypted: bool) -> Self {
         let trie = if encrypted {
@@ -173,6 +210,19 @@ impl<S> Manifest<S> {
             trie: Node::from_reference(reference),
             store,
         }
+    }
+
+    /// Load a manifest from storage by its root chunk address.
+    pub fn open(root: nectar_primitives::ChunkAddress, store: S) -> Self {
+        Self {
+            trie: Node::from_reference(root.as_bytes()),
+            store,
+        }
+    }
+
+    /// Access the underlying chunk store.
+    pub fn store(&self) -> &S {
+        &self.store
     }
 
     /// Access the root trie node.
@@ -196,31 +246,28 @@ impl<S> Manifest<S> {
     }
 }
 
-impl<S: ChunkGetter> Manifest<S> {
+impl<S: ChunkGet<BS>, const BS: usize> Manifest<S, BS> {
     /// Add a path and entry to the manifest.
     pub fn add(&mut self, path: &str, entry: Entry) -> Result<()> {
-        self.trie.add(
+        self.trie.add::<S, BS>(
             path.as_bytes(),
             &entry.reference,
             entry.metadata,
-            Some(&self.store as &dyn ChunkGetter),
+            Some(&self.store),
         )
     }
 
     /// Remove a path from the manifest.
     pub fn remove(&mut self, path: &str) -> Result<()> {
-        self.trie.remove(
-            path.as_bytes(),
-            Some(&self.store as &dyn ChunkGetter),
-        )
+        self.trie
+            .remove::<S, BS>(path.as_bytes(), Some(&self.store))
     }
 
     /// Look up a path in the manifest.
     pub fn lookup(&mut self, path: &str) -> Result<Entry> {
-        let node = self.trie.lookup_node(
-            path.as_bytes(),
-            Some(&self.store as &dyn ChunkGetter),
-        )?;
+        let node = self
+            .trie
+            .lookup_node::<S, BS>(path.as_bytes(), Some(&self.store))?;
 
         if !node.is_value() {
             return Err(MantarayError::NotValueType);
@@ -235,10 +282,8 @@ impl<S: ChunkGetter> Manifest<S> {
 
     /// Test whether the manifest contains a prefix.
     pub fn has_prefix(&mut self, prefix: &str) -> Result<bool> {
-        self.trie.has_prefix(
-            prefix.as_bytes(),
-            Some(&self.store as &dyn ChunkGetter),
-        )
+        self.trie
+            .has_prefix::<S, BS>(prefix.as_bytes(), Some(&self.store))
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
@@ -246,22 +291,23 @@ impl<S: ChunkGetter> Manifest<S> {
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        self.trie.walk(Some(&self.store as &dyn ChunkGetter), f)
+        self.trie.walk::<S, BS, _>(Some(&self.store), f)
     }
 
     /// Collect all value entries from the manifest.
     pub fn entries(&mut self) -> Result<Vec<Entry>> {
         let mut result = Vec::new();
-        self.trie.walk(Some(&self.store as &dyn ChunkGetter), &mut |path, node| {
-            if node.is_value() {
-                result.push(Entry {
-                    path: path.to_vec(),
-                    reference: node.entry().to_vec(),
-                    metadata: node.metadata().clone(),
-                });
-            }
-            Ok(())
-        })?;
+        self.trie
+            .walk::<S, BS, _>(Some(&self.store), &mut |path, node| {
+                if node.is_value() {
+                    result.push(Entry {
+                        path: path.to_vec(),
+                        reference: node.entry().to_vec(),
+                        metadata: node.metadata().clone(),
+                    });
+                }
+                Ok(())
+            })?;
         Ok(result)
     }
 
@@ -295,7 +341,7 @@ impl<S: ChunkGetter> Manifest<S> {
         F: FnMut(&[u8]) -> Result<()>,
     {
         self.trie
-            .walk(Some(&self.store as &dyn ChunkGetter), &mut |_path, node| {
+            .walk::<S, BS, _>(Some(&self.store), &mut |_path, node| {
                 let node_ref = node.reference();
                 if !node_ref.is_empty() {
                     f(node_ref)?;
@@ -314,7 +360,7 @@ impl<S: ChunkGetter> Manifest<S> {
     ///
     /// Nodes are loaded from storage on demand, so the entire trie does not
     /// need to be in memory at once.
-    pub const fn iter(&mut self) -> ManifestIter<'_, S> {
+    pub const fn iter(&mut self) -> ManifestIter<'_, S, BS> {
         ManifestIter::new(&mut self.trie, &self.store)
     }
 
@@ -322,25 +368,22 @@ impl<S: ChunkGetter> Manifest<S> {
         // Try to preserve existing root metadata
         let mut meta = self
             .trie
-            .lookup_node(
-                metadata::ROOT_PATH.as_bytes(),
-                Some(&self.store as &dyn ChunkGetter),
-            )
+            .lookup_node::<S, BS>(metadata::ROOT_PATH.as_bytes(), Some(&self.store))
             .map_or_else(|_| BTreeMap::new(), |node| node.metadata().clone());
         meta.insert(key.into(), value.into());
-        self.trie.add(
+        self.trie.add::<S, BS>(
             metadata::ROOT_PATH.as_bytes(),
             &[],
             meta,
-            Some(&self.store as &dyn ChunkGetter),
+            Some(&self.store),
         )
     }
 
     fn get_root_metadata(&mut self, key: &str) -> Result<Option<String>> {
-        match self.trie.lookup_node(
-            metadata::ROOT_PATH.as_bytes(),
-            Some(&self.store as &dyn ChunkGetter),
-        ) {
+        match self
+            .trie
+            .lookup_node::<S, BS>(metadata::ROOT_PATH.as_bytes(), Some(&self.store))
+        {
             Ok(node) => Ok(node.metadata().get(key).cloned()),
             Err(MantarayError::NoForkFound { .. }) => Ok(None),
             Err(e) => Err(e),
@@ -348,10 +391,10 @@ impl<S: ChunkGetter> Manifest<S> {
     }
 }
 
-impl<S: ChunkStore> Manifest<S> {
+impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, BS> {
     /// Persist the manifest trie to storage, returning the root reference.
     pub fn save(&mut self) -> Result<Vec<u8>> {
-        self.trie.save(&self.store)?;
+        self.trie.save::<S, BS>(&mut self.store)?;
         Ok(self.trie.reference().to_vec())
     }
 }
@@ -367,7 +410,7 @@ impl<S: ChunkStore> Manifest<S> {
 /// keeping the implementation fully safe. The overhead is O(depth) per step,
 /// which is negligible for typical manifest depths of 3–5.
 #[derive(Debug)]
-pub struct ManifestIter<'a, S> {
+pub struct ManifestIter<'a, S, const BS: usize = DEFAULT_BODY_SIZE> {
     trie: &'a mut Node,
     store: &'a S,
     stack: Vec<IterFrame>,
@@ -386,7 +429,7 @@ struct IterFrame {
     key_idx: usize,
 }
 
-impl<'a, S: ChunkGetter> ManifestIter<'a, S> {
+impl<'a, S: ChunkGet<BS>, const BS: usize> ManifestIter<'a, S, BS> {
     const fn new(trie: &'a mut Node, store: &'a S) -> Self {
         Self {
             trie,
@@ -397,7 +440,7 @@ impl<'a, S: ChunkGetter> ManifestIter<'a, S> {
     }
 }
 
-impl<S: ChunkGetter> Iterator for ManifestIter<'_, S> {
+impl<S: ChunkGet<BS>, const BS: usize> Iterator for ManifestIter<'_, S, BS> {
     type Item = Result<Entry>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -406,7 +449,7 @@ impl<S: ChunkGetter> Iterator for ManifestIter<'_, S> {
                 self.root_visited = true;
 
                 if self.trie.forks.is_empty() {
-                    if let Err(e) = self.trie.load(Some(self.store as &dyn ChunkGetter)) {
+                    if let Err(e) = self.trie.load::<S, BS>(Some(self.store)) {
                         return Some(Err(e));
                     }
                 }
@@ -468,7 +511,7 @@ impl<S: ChunkGetter> Iterator for ManifestIter<'_, S> {
 
                 let child = &mut fork.node;
                 if child.forks.is_empty() {
-                    if let Err(e) = child.load(Some(self.store as &dyn ChunkGetter)) {
+                    if let Err(e) = child.load::<S, BS>(Some(self.store)) {
                         return Some(Err(e));
                     }
                 }
@@ -501,9 +544,9 @@ impl<S: ChunkGetter> Iterator for ManifestIter<'_, S> {
     }
 }
 
-impl<'a, S: ChunkGetter> IntoIterator for &'a mut Manifest<S> {
+impl<'a, S: ChunkGet<BS>, const BS: usize> IntoIterator for &'a mut Manifest<S, BS> {
     type Item = Result<Entry>;
-    type IntoIter = ManifestIter<'a, S>;
+    type IntoIter = ManifestIter<'a, S, BS>;
 
     fn into_iter(self) -> Self::IntoIter {
         ManifestIter::new(&mut self.trie, &self.store)
@@ -519,12 +562,16 @@ pub fn keccak256(data: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+    use nectar_primitives::store::MemorySink;
+
+    type Store = MemorySink<DEFAULT_BODY_SIZE>;
 
     #[test]
     fn persist_idempotence() {
-        let store = MockChunkStore::new();
+        let store = Store::new();
 
-        let mut m = Manifest::new(&store, false);
+        let mut m = Manifest::new(store, false);
 
         let paths = &[
             "aa", "b", "aaaaaa", "aaaaab", "abbbb", "abbba", "bbbbba", "bbbaaa", "bbbaab",
@@ -557,8 +604,8 @@ mod tests {
 
     #[test]
     fn manifest_entries() {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
 
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &path in paths {
@@ -614,15 +661,11 @@ mod tests {
 
     #[test]
     fn website_document_helpers() {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
 
         // Add a dummy entry so the root "/" path has an entry
-        m.add(
-            "/",
-            Entry::new(vec![0u8; 32]),
-        )
-        .unwrap();
+        m.add("/", Entry::new(vec![0u8; 32])).unwrap();
 
         m.set_index_document("index.html").unwrap();
         m.set_error_document("404.html").unwrap();
@@ -633,8 +676,8 @@ mod tests {
 
     #[test]
     fn website_document_helpers_merge_metadata() {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
 
         // Set index first
         m.set_index_document("index.html").unwrap();
@@ -647,8 +690,8 @@ mod tests {
 
     #[test]
     fn website_document_helpers_none_when_missing() {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
 
         assert_eq!(m.index_document().unwrap(), None);
         assert_eq!(m.error_document().unwrap(), None);
@@ -656,8 +699,8 @@ mod tests {
 
     #[test]
     fn iterate_addresses_yields_all_refs() {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
 
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &path in paths {
@@ -669,7 +712,8 @@ mod tests {
         m.save().unwrap();
         let root_ref = m.reference().to_vec();
 
-        let mut m2 = Manifest::new_manifest_reference(&root_ref, &store);
+        let (_, store) = m.into_parts();
+        let mut m2 = Manifest::new_manifest_reference(&root_ref, store);
         let mut addresses = Vec::new();
         m2.iterate_addresses(|addr| {
             addresses.push(addr.to_vec());
@@ -693,8 +737,8 @@ mod tests {
 
     #[test]
     fn partial_update_workflow() {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
 
         // Build a manifest with 100 entries
         for i in 0..100u32 {
@@ -732,8 +776,8 @@ mod tests {
 
     #[test]
     fn into_iterator() {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
 
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &path in paths {
@@ -758,8 +802,8 @@ mod tests {
 
     #[test]
     fn manifest_iter_lazy() {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
 
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &path in paths {
@@ -780,7 +824,8 @@ mod tests {
         m.save().unwrap();
         let root_ref = m.reference().to_vec();
 
-        let mut m2 = Manifest::new_manifest_reference(&root_ref, &store);
+        let (_, store) = m.into_parts();
+        let mut m2 = Manifest::new_manifest_reference(&root_ref, store);
 
         let mut visited = Vec::new();
         while let Some(result) = m2.iter().next() {
@@ -792,7 +837,8 @@ mod tests {
         assert_eq!(visited.len(), 1);
 
         // Full iteration
-        let mut m3 = Manifest::new_manifest_reference(&root_ref, &store);
+        let (_, store) = m2.into_parts();
+        let mut m3 = Manifest::new_manifest_reference(&root_ref, store);
         let mut all_entries = Vec::new();
         let mut iter = m3.iter();
         while let Some(result) = iter.next() {

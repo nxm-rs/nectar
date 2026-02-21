@@ -4,7 +4,7 @@ use std::io::SeekFrom;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use futures::stream::{self, Stream, StreamExt};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
@@ -266,12 +266,133 @@ where
         })
     }
 
+    /// Convert into an `AsyncRead` reader.
+    pub fn into_reader(self) -> AsyncJoinerReader<G, M, BODY_SIZE> {
+        AsyncJoinerReader {
+            joiner: self,
+            buffer: Bytes::new(),
+            future: None,
+        }
+    }
+
     async fn read_single_chunk(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
         let chunk = self.getter.get(&self.root).await.map_err(FileError::getter)?;
         let body = M::decode_body::<BODY_SIZE>(chunk, &self.context, self.span)?;
         let start = offset as usize;
         let end = start + len;
         Ok(body[start..end].to_vec())
+    }
+}
+
+/// Wrapper providing `tokio::io::AsyncRead` over an `AsyncJoiner`.
+///
+/// Created via [`GenericAsyncJoiner::into_reader`].
+pub struct AsyncJoinerReader<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
+where
+    G: AsyncChunkGet<BODY_SIZE>,
+{
+    joiner: GenericAsyncJoiner<G, M, BODY_SIZE>,
+    buffer: Bytes,
+    #[allow(clippy::type_complexity)]
+    future: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>>,
+}
+
+impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for AsyncJoinerReader<G, M, BODY_SIZE>
+where
+    G: AsyncChunkGet<BODY_SIZE>,
+    M: JoinMode,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncJoinerReader")
+            .field("joiner", &self.joiner)
+            .field("buffer_len", &self.buffer.len())
+            .field("has_pending_future", &self.future.is_some())
+            .finish()
+    }
+}
+
+// Safety: AsyncJoinerReader contains no self-referential data.
+// The boxed future is heap-allocated and all other fields are plain data.
+impl<G: AsyncChunkGet<BODY_SIZE>, M: JoinMode, const BODY_SIZE: usize> Unpin
+    for AsyncJoinerReader<G, M, BODY_SIZE>
+{
+}
+
+impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncRead for AsyncJoinerReader<G, M, BODY_SIZE>
+where
+    G: AsyncChunkGet<BODY_SIZE> + 'static,
+    M: JoinMode + Send + Sync + 'static,
+{
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+
+        let this = self.get_mut();
+
+        // Drain any leftover buffer first
+        if !this.buffer.is_empty() {
+            let to_copy = this.buffer.len().min(buf.remaining());
+            buf.put_slice(&this.buffer[..to_copy]);
+            this.buffer.advance(to_copy);
+            return Poll::Ready(Ok(()));
+        }
+
+        // EOF check
+        if this.joiner.position >= this.joiner.span {
+            return Poll::Ready(Ok(()));
+        }
+
+        // Create a future for the next read if we don't have one
+        if this.future.is_none() {
+            let position = this.joiner.position;
+            let remaining = (this.joiner.span - position) as usize;
+            let read_len = remaining.min(BODY_SIZE);
+            let getter = Arc::clone(&this.joiner.getter);
+            let root = this.joiner.root;
+            let context = this.joiner.context.clone();
+            let span = this.joiner.span;
+            let tree = this.joiner.tree;
+            let concurrency = this.joiner.concurrency;
+
+            let fut = async move {
+                let joiner = GenericAsyncJoiner::<G, M, BODY_SIZE> {
+                    getter,
+                    root,
+                    context,
+                    span,
+                    tree,
+                    position: 0,
+                    concurrency,
+                    _mode: PhantomData,
+                };
+                joiner.read_range(position, read_len).await
+            };
+            this.future = Some(Box::pin(fut));
+        }
+
+        // Poll the future
+        let fut = this.future.as_mut().unwrap();
+        match fut.as_mut().poll(cx) {
+            Poll::Ready(Ok(data)) => {
+                this.future = None;
+                let bytes = Bytes::from(data);
+                this.joiner.position += bytes.len() as u64;
+                let to_copy = bytes.len().min(buf.remaining());
+                buf.put_slice(&bytes[..to_copy]);
+                if to_copy < bytes.len() {
+                    this.buffer = bytes.slice(to_copy..);
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(e)) => {
+                this.future = None;
+                Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -383,6 +504,34 @@ mod tests {
             recovered.extend_from_slice(&chunk.unwrap());
         }
         assert_eq!(recovered, data);
+    }
+
+    #[tokio::test]
+    async fn test_async_reader_small() {
+        use tokio::io::AsyncReadExt;
+
+        let data = b"hello world";
+        let (root, store) = split_and_store(data);
+
+        let joiner = AsyncJoiner::new(store, root).await.unwrap();
+        let mut reader = joiner.into_reader();
+        let mut result = Vec::new();
+        reader.read_to_end(&mut result).await.unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[tokio::test]
+    async fn test_async_reader_multi_chunk() {
+        use tokio::io::AsyncReadExt;
+
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123).map(|i| (i % 256) as u8).collect();
+        let (root, store) = split_and_store(&data);
+
+        let joiner = AsyncJoiner::new(store, root).await.unwrap();
+        let mut reader = joiner.into_reader();
+        let mut result = Vec::new();
+        reader.read_to_end(&mut result).await.unwrap();
+        assert_eq!(result, data);
     }
 
     #[cfg(feature = "encryption")]

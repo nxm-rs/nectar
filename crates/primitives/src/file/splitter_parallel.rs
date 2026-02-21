@@ -331,7 +331,7 @@ mod tests {
     #[cfg(feature = "encryption")]
     mod encrypted {
         use super::*;
-        use crate::file::{join_encrypted, split_encrypted, EncryptedParallelSplitter};
+        use crate::file::{join, split_encrypted, EncryptedParallelSplitter};
         use crate::store::MemorySink;
 
         #[test]
@@ -358,7 +358,7 @@ mod tests {
 
             assert_eq!(sink.len(), 1);
 
-            let recovered = join_encrypted(&sink, root_ref).unwrap();
+            let recovered = join(&sink, root_ref).unwrap();
             assert_eq!(recovered, data);
         }
 
@@ -373,7 +373,7 @@ mod tests {
 
             assert_eq!(sink.len(), 3);
 
-            let recovered = join_encrypted(&sink, root_ref).unwrap();
+            let recovered = join(&sink, root_ref).unwrap();
             assert_eq!(recovered, data);
         }
 
@@ -396,14 +396,14 @@ mod tests {
             assert_eq!(par_sink.len(), seq_chunks.len());
 
             // Both must round-trip correctly
-            let par_recovered = join_encrypted(&par_sink, par_ref).unwrap();
+            let par_recovered = join(&par_sink, par_ref).unwrap();
             assert_eq!(par_recovered, data);
 
             use std::collections::HashMap;
             use crate::chunk::Chunk;
             let seq_store: HashMap<_, _> =
                 seq_chunks.into_iter().map(|c| (*c.address(), c)).collect();
-            let seq_recovered = join_encrypted(&seq_store, seq_ref).unwrap();
+            let seq_recovered = join(&seq_store, seq_ref).unwrap();
             assert_eq!(seq_recovered, data);
         }
 

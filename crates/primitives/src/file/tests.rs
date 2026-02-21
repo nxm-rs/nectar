@@ -179,7 +179,7 @@ mod encrypted {
 
     use crate::bmt::DEFAULT_BODY_SIZE;
     use crate::chunk::{Chunk, ContentChunk};
-    use crate::file::{join_encrypted, split_encrypted};
+    use crate::file::{join, split_encrypted};
 
     /// Sizes matching Bee's TestEncryptDecrypt test suite.
     const TEST_SIZES: &[usize] = &[
@@ -210,7 +210,7 @@ mod encrypted {
             .map(|c| (*c.address(), c))
             .collect::<HashMap<_, ContentChunk<DEFAULT_BODY_SIZE>>>();
 
-        let recovered = join_encrypted(&store, root_ref).unwrap();
+        let recovered = join(&store, root_ref).unwrap();
         assert_eq!(
             recovered, data,
             "Round-trip failed for size {size}"
@@ -310,5 +310,107 @@ mod encrypted {
 
         // Root addresses differ because encryption keys are random
         assert_ne!(ref1.address, ref2.address);
+    }
+}
+
+mod split_ext {
+    use crate::file::{ChunkGetExt, SplitExt};
+    use crate::store::MemorySink;
+    use crate::bmt::DEFAULT_BODY_SIZE;
+
+    #[test]
+    fn split_ext_slice() {
+        let data = b"hello";
+        let (root, store) = data.as_slice().split_and_store().unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn split_ext_vec() {
+        let data = vec![0xAB; 8192];
+        let (root, store) = data.split_and_store().unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn split_ext_bytes() {
+        let data = bytes::Bytes::from_static(b"bytes data");
+        let (root, store) = data.split_and_store().unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn split_ext_into_sink() {
+        let data = b"into sink test";
+        let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let (root, store) = data.as_slice().split_into(sink).unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use crate::file::{ChunkGetExt, SplitExt};
+
+        #[test]
+        fn split_ext_encrypted_roundtrip() {
+            let data = b"secret extension trait data";
+            let (enc_ref, store) = data.as_slice().split_encrypted_and_store().unwrap();
+            let recovered = store.read_file(enc_ref).unwrap();
+            assert_eq!(recovered, data);
+        }
+    }
+}
+
+mod write_file_ext {
+    use crate::file::{ChunkGetExt, ChunkPutExt};
+    use crate::store::MemorySink;
+    use crate::bmt::DEFAULT_BODY_SIZE;
+
+    #[test]
+    fn write_file_roundtrip() {
+        let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let addr = store.write_file(b"hello swarm").unwrap();
+        let recovered = store.read_file(addr).unwrap();
+        assert_eq!(recovered, b"hello swarm");
+    }
+
+    #[test]
+    fn write_file_large() {
+        let data = vec![0xAB; 8192];
+        let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let addr = store.write_file(&data).unwrap();
+        let recovered = store.read_file(addr).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn writer_roundtrip() {
+        use std::io::Write;
+        let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let data = b"streaming via writer";
+        let mut writer = store.writer(data.len() as u64);
+        writer.write_all(data).unwrap();
+        let (root, _) = writer.finish().unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use crate::file::{ChunkGetExt, ChunkPutExt};
+        use crate::store::MemorySink;
+        use crate::bmt::DEFAULT_BODY_SIZE;
+
+        #[test]
+        fn write_encrypted_file_roundtrip() {
+            let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+            let enc_ref = store.write_encrypted_file(b"secret data").unwrap();
+            let recovered = store.read_file(enc_ref).unwrap();
+            assert_eq!(recovered, b"secret data");
+        }
     }
 }

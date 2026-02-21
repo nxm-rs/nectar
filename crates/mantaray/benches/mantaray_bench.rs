@@ -3,8 +3,11 @@
 use std::collections::BTreeMap;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nectar_mantaray::{Entry, Manifest, MockChunkStore};
+use nectar_mantaray::{Entry, Manifest, MemorySink};
 use nectar_mantaray::node::Node;
+use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+
+type Store = MemorySink<DEFAULT_BODY_SIZE>;
 
 /// Create a 32-byte entry from a path, left-padded with zeroes.
 fn make_entry(path: &[u8]) -> Vec<u8> {
@@ -32,7 +35,8 @@ fn build_spa_trie() -> Node {
     let mut n = Node::new_unencrypted();
     for &p in paths {
         let e = make_entry(p);
-        n.add(p, &e, BTreeMap::new(), None).unwrap();
+        n.add::<Store, { DEFAULT_BODY_SIZE }>(p, &e, BTreeMap::new(), None)
+            .unwrap();
     }
     n
 }
@@ -43,7 +47,8 @@ fn build_large_trie(count: usize) -> Node {
     for i in 0..count {
         let path = format!("dir{}/subdir{}/file{}.dat", i / 100, i / 10, i);
         let e = make_entry(path.as_bytes());
-        n.add(path.as_bytes(), &e, BTreeMap::new(), None).unwrap();
+        n.add::<Store, { DEFAULT_BODY_SIZE }>(path.as_bytes(), &e, BTreeMap::new(), None)
+            .unwrap();
     }
     n
 }
@@ -67,7 +72,8 @@ fn bench_add(c: &mut Criterion) {
             let mut n = Node::new_unencrypted();
             for &p in paths {
                 let e = make_entry(p);
-                n.add(p, &e, BTreeMap::new(), None).unwrap();
+                n.add::<Store, { DEFAULT_BODY_SIZE }>(p, &e, BTreeMap::new(), None)
+                    .unwrap();
             }
             n
         });
@@ -86,7 +92,8 @@ fn bench_add(c: &mut Criterion) {
             b.iter(|| {
                 let mut n = Node::new_unencrypted();
                 for (path, entry) in entries {
-                    n.add(path, entry, BTreeMap::new(), None).unwrap();
+                    n.add::<Store, { DEFAULT_BODY_SIZE }>(path, entry, BTreeMap::new(), None)
+                        .unwrap();
                 }
                 n
             });
@@ -103,14 +110,18 @@ fn bench_lookup(c: &mut Criterion) {
 
     group.bench_function("existing_path", |b| {
         b.iter(|| {
-            let r = n.lookup(b"js/app.js", None).unwrap();
+            let r = n
+                .lookup::<Store, { DEFAULT_BODY_SIZE }>(b"js/app.js", None)
+                .unwrap();
             r.len()
         });
     });
 
     group.bench_function("root_path", |b| {
         b.iter(|| {
-            let r = n.lookup(b"", None).unwrap();
+            let r = n
+                .lookup::<Store, { DEFAULT_BODY_SIZE }>(b"", None)
+                .unwrap();
             r.len()
         });
     });
@@ -120,7 +131,9 @@ fn bench_lookup(c: &mut Criterion) {
 
     group.bench_function("500_paths_deep", |b| {
         b.iter(|| {
-            let r = large.lookup(b"dir4/subdir49/file499.dat", None).unwrap();
+            let r = large
+                .lookup::<Store, { DEFAULT_BODY_SIZE }>(b"dir4/subdir49/file499.dat", None)
+                .unwrap();
             r.len()
         });
     });
@@ -135,7 +148,8 @@ fn bench_remove(c: &mut Criterion) {
         b.iter_batched(
             build_spa_trie,
             |mut n| {
-                n.remove(b"js/app.js", None).unwrap();
+                n.remove::<Store, { DEFAULT_BODY_SIZE }>(b"js/app.js", None)
+                    .unwrap();
                 n
             },
             criterion::BatchSize::SmallInput,
@@ -151,11 +165,17 @@ fn bench_has_prefix(c: &mut Criterion) {
     let mut n = build_spa_trie();
 
     group.bench_function("existing_prefix", |b| {
-        b.iter(|| n.has_prefix(b"js/", None).unwrap());
+        b.iter(|| {
+            n.has_prefix::<Store, { DEFAULT_BODY_SIZE }>(b"js/", None)
+                .unwrap()
+        });
     });
 
     group.bench_function("missing_prefix", |b| {
-        b.iter(|| n.has_prefix(b"nonexistent/", None).unwrap());
+        b.iter(|| {
+            n.has_prefix::<Store, { DEFAULT_BODY_SIZE }>(b"nonexistent/", None)
+                .unwrap()
+        });
     });
 
     group.finish();
@@ -216,7 +236,7 @@ fn bench_walk(c: &mut Criterion) {
         let mut n = build_spa_trie();
         b.iter(|| {
             let mut count = 0u32;
-            n.walk(None, &mut |_path, _node| {
+            n.walk::<Store, { DEFAULT_BODY_SIZE }, _>(None, &mut |_path, _node| {
                 count += 1;
                 Ok(())
             })
@@ -230,7 +250,7 @@ fn bench_walk(c: &mut Criterion) {
             let mut n = build_large_trie(count);
             b.iter(|| {
                 let mut visited = 0u32;
-                n.walk(None, &mut |_path, _node| {
+                n.walk::<Store, { DEFAULT_BODY_SIZE }, _>(None, &mut |_path, _node| {
                     visited += 1;
                     Ok(())
                 })
@@ -251,7 +271,7 @@ fn bench_walk_node(c: &mut Criterion) {
     group.bench_function("from_root", |b| {
         b.iter(|| {
             let mut count = 0u32;
-            n.walk_node(b"", None, &mut |_path, _node| {
+            n.walk_node::<Store, { DEFAULT_BODY_SIZE }, _>(b"", None, &mut |_path, _node| {
                 count += 1;
                 Ok(())
             })
@@ -263,7 +283,7 @@ fn bench_walk_node(c: &mut Criterion) {
     group.bench_function("from_subtree", |b| {
         b.iter(|| {
             let mut count = 0u32;
-            n.walk_node(b"js/", None, &mut |_path, _node| {
+            n.walk_node::<Store, { DEFAULT_BODY_SIZE }, _>(b"js/", None, &mut |_path, _node| {
                 count += 1;
                 Ok(())
             })
@@ -281,12 +301,12 @@ fn bench_save_load(c: &mut Criterion) {
     group.bench_function("save_spa_trie", |b| {
         b.iter_batched(
             || {
-                let store = MockChunkStore::new();
+                let store = Store::new();
                 let n = build_spa_trie();
                 (n, store)
             },
-            |(mut n, store): (Node, MockChunkStore)| {
-                n.save(&store).unwrap();
+            |(mut n, mut store): (Node, Store)| {
+                n.save(&mut store).unwrap();
                 (n, store)
             },
             criterion::BatchSize::SmallInput,
@@ -294,9 +314,9 @@ fn bench_save_load(c: &mut Criterion) {
     });
 
     group.bench_function("load_spa_trie", |b| {
-        let store = MockChunkStore::new();
+        let mut store = Store::new();
         let mut n = build_spa_trie();
-        n.save(&store).unwrap();
+        n.save(&mut store).unwrap();
         let ref_ = n.reference().to_vec();
 
         b.iter(|| {
@@ -309,12 +329,12 @@ fn bench_save_load(c: &mut Criterion) {
     group.bench_function("save_load_roundtrip", |b| {
         b.iter_batched(
             || {
-                let store = MockChunkStore::new();
+                let store = Store::new();
                 let n = build_spa_trie();
                 (n, store)
             },
-            |(mut n, store): (Node, MockChunkStore)| {
-                n.save(&store).unwrap();
+            |(mut n, mut store): (Node, Store)| {
+                n.save(&mut store).unwrap();
                 let mut n2 = Node::from_reference(n.reference());
                 n2.load(Some(&store)).unwrap();
                 n2
@@ -331,11 +351,11 @@ fn bench_full_workflow(c: &mut Criterion) {
 
     group.bench_function("add_save_load_lookup", |b| {
         b.iter(|| {
-            let store = MockChunkStore::new();
+            let mut store = Store::new();
             let mut n = build_spa_trie();
 
             // save
-            n.save(&store).unwrap();
+            n.save(&mut store).unwrap();
             let ref_ = n.reference().to_vec();
 
             // load into fresh node
@@ -377,8 +397,8 @@ fn bench_iter(c: &mut Criterion) {
 
     // In-memory iteration (no save/load)
     group.bench_function("spa_trie_in_memory", |b| {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
         for &p in paths {
             let mut v = p.as_bytes().to_vec();
             v.resize(32, 0);
@@ -406,8 +426,8 @@ fn bench_iter(c: &mut Criterion) {
 
     // Lazy iteration after save/load (exercises storage loading)
     group.bench_function("spa_trie_lazy", |b| {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
         for &p in paths {
             let mut v = p.as_bytes().to_vec();
             v.resize(32, 0);
@@ -423,9 +443,10 @@ fn bench_iter(c: &mut Criterion) {
         }
         m.save().unwrap();
         let root_ref = m.reference().to_vec();
+        let (_, store) = m.into_parts();
 
         b.iter(|| {
-            let mut m2 = Manifest::new_manifest_reference(&root_ref, &store);
+            let mut m2 = Manifest::new_manifest_reference(&root_ref, store.clone());
             let mut count = 0u32;
             let mut iter = m2.iter();
             while let Some(result) = iter.next() {
@@ -438,8 +459,8 @@ fn bench_iter(c: &mut Criterion) {
 
     // Compare with entries() (walk-based collection)
     group.bench_function("entries_spa_trie", |b| {
-        let store = MockChunkStore::new();
-        let mut m = Manifest::new(&store, false);
+        let store = Store::new();
+        let mut m = Manifest::new(store, false);
         for &p in paths {
             let mut v = p.as_bytes().to_vec();
             v.resize(32, 0);

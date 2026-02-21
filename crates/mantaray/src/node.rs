@@ -3,13 +3,14 @@
 use std::collections::BTreeMap;
 
 use alloy_primitives::hex;
-use nectar_primitives::ChunkAddress;
+use bytes::Bytes;
+use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
+use nectar_primitives::store::{ChunkGet, ChunkPut};
 
 use crate::error::{MantarayError, Result};
 use crate::{
-    ChunkGetter, ChunkPutter, ChunkStoreError, NODE_OBFUSCATION_KEY_SIZE, NODE_PREFIX_MAX_SIZE,
-    NT_EDGE, NT_MASK, NT_VALUE, NT_WITH_METADATA, NT_WITH_PATH_SEPARATOR, PATH_SEPARATOR,
-    keccak256,
+    NODE_OBFUSCATION_KEY_SIZE, NODE_PREFIX_MAX_SIZE, NT_EDGE, NT_MASK, NT_VALUE, NT_WITH_METADATA,
+    NT_WITH_PATH_SEPARATOR, PATH_SEPARATOR,
 };
 
 /// A node in the mantaray trie.
@@ -184,22 +185,27 @@ impl Node {
     }
 
     /// Load this node from storage if it has a reference but no forks loaded.
-    pub fn load(&mut self, loader: Option<&dyn ChunkGetter>) -> Result<()> {
+    pub fn load<S: ChunkGet<BS>, const BS: usize>(&mut self, loader: Option<&S>) -> Result<()> {
         if self.reference.is_empty() {
             return Ok(());
         }
 
-        let loader = loader.ok_or_else(|| ChunkStoreError::Other("no loader provided".into()))?;
+        let loader = loader.ok_or_else(|| MantarayError::StoreGet {
+            message: "no loader provided".into(),
+        })?;
         let address = ref_to_address(&self.reference);
-        let mut data = loader.get(&address)?;
+        let chunk = loader.get(&address).map_err(|e| MantarayError::StoreGet {
+            message: e.to_string(),
+        })?;
+        let mut data = chunk.data().to_vec();
         self.unmarshal_binary(&mut data)
     }
 
     /// Look up the node at the given path, loading from storage as needed.
-    pub fn lookup_node(
+    pub fn lookup_node<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
-        loader: Option<&dyn ChunkGetter>,
+        loader: Option<&S>,
     ) -> Result<&mut Self> {
         if self.forks.is_empty() {
             self.load(loader)?;
@@ -227,10 +233,10 @@ impl Node {
     }
 
     /// Look up the entry bytes at the given path.
-    pub fn lookup(
+    pub fn lookup<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
-        loader: Option<&dyn ChunkGetter>,
+        loader: Option<&S>,
     ) -> Result<&[u8]> {
         let node = self.lookup_node(path, loader)?;
         if !node.is_value() && !path.is_empty() {
@@ -242,12 +248,12 @@ impl Node {
     }
 
     /// Add an entry at the given path with optional metadata.
-    pub fn add(
+    pub fn add<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         entry: &[u8],
         metadata: BTreeMap<String, String>,
-        loader: Option<&dyn ChunkGetter>,
+        loader: Option<&S>,
     ) -> Result<()> {
         if self.ref_bytes_size == 0 {
             if entry.len() > 256 {
@@ -376,10 +382,10 @@ impl Node {
     }
 
     /// Remove the entry at the given path.
-    pub fn remove(
+    pub fn remove<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
-        loader: Option<&dyn ChunkGetter>,
+        loader: Option<&S>,
     ) -> Result<()> {
         if path.is_empty() {
             return Err(MantarayError::EmptyPath);
@@ -424,10 +430,10 @@ impl Node {
     }
 
     /// Test whether a prefix exists in the trie.
-    pub fn has_prefix(
+    pub fn has_prefix<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
-        loader: Option<&dyn ChunkGetter>,
+        loader: Option<&S>,
     ) -> Result<bool> {
         if path.is_empty() {
             return Ok(true);
@@ -456,7 +462,9 @@ impl Node {
     }
 
     /// Recursively save this node and all children to storage.
-    pub fn save(&mut self, saver: &dyn ChunkPutter) -> Result<()> {
+    ///
+    /// Uses BMT content-addressing via `ContentChunk` for Go Bee compatibility.
+    pub fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, saver: &mut S) -> Result<()> {
         if !self.reference.is_empty() {
             return Ok(());
         }
@@ -466,9 +474,15 @@ impl Node {
         }
 
         let data = self.marshal_binary()?;
-        // TODO: address computation moves to chunk type when encrypted chunks land
-        let address = ChunkAddress::from(keccak256(&data));
-        saver.put(&address, &data)?;
+        let chunk = ContentChunk::<BS>::new(Bytes::from(data)).map_err(|e| {
+            MantarayError::ChunkError {
+                message: e.to_string(),
+            }
+        })?;
+        let address = *chunk.address();
+        saver.put(chunk).map_err(|e| MantarayError::StorePut {
+            message: e.to_string(),
+        })?;
         self.reference = address.as_slice().to_vec();
         self.forks.clear();
 
@@ -476,7 +490,11 @@ impl Node {
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
-    pub fn walk<F>(&mut self, loader: Option<&dyn ChunkGetter>, f: &mut F) -> Result<()>
+    pub fn walk<S: ChunkGet<BS>, const BS: usize, F>(
+        &mut self,
+        loader: Option<&S>,
+        f: &mut F,
+    ) -> Result<()>
     where
         F: FnMut(&[u8], &Self) -> Result<()>,
     {
@@ -484,10 +502,10 @@ impl Node {
     }
 
     /// Walk the subtree at `root`, calling `f` for each node.
-    pub fn walk_node<F>(
+    pub fn walk_node<S: ChunkGet<BS>, const BS: usize, F>(
         &mut self,
         root: &[u8],
-        loader: Option<&dyn ChunkGetter>,
+        loader: Option<&S>,
         f: &mut F,
     ) -> Result<()>
     where
@@ -502,10 +520,10 @@ impl Node {
     }
 }
 
-fn walk_inner<F>(
+fn walk_inner<S: ChunkGet<BS>, const BS: usize, F>(
     path: &[u8],
     node: &mut Node,
-    loader: Option<&dyn ChunkGetter>,
+    loader: Option<&S>,
     f: &mut F,
 ) -> Result<()>
 where
@@ -532,7 +550,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MockChunkStore;
+    use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+    use nectar_primitives::store::MemorySink;
 
     struct TestCase {
         _name: &'static str,
@@ -706,10 +725,13 @@ mod tests {
         entry
     }
 
+    // Type alias for no-loader calls — we need to specify the generic params.
+    type NoLoader = MemorySink;
+
     #[test]
     fn nil_path() {
         let mut n = Node::default();
-        assert!(n.lookup(b"", None).is_ok());
+        assert!(n.lookup::<NoLoader, { DEFAULT_BODY_SIZE }>(b"", None).is_ok());
     }
 
     #[test]
@@ -719,10 +741,13 @@ mod tests {
 
         for (i, c) in items.iter().enumerate() {
             let e = make_entry(c);
-            n.add(c.as_bytes(), &e, BTreeMap::new(), None).unwrap();
+            n.add::<NoLoader, { DEFAULT_BODY_SIZE }>(c.as_bytes(), &e, BTreeMap::new(), None)
+                .unwrap();
 
             for &d in items.iter().take(i) {
-                let r = n.lookup(d.as_bytes(), None).unwrap();
+                let r = n
+                    .lookup::<NoLoader, { DEFAULT_BODY_SIZE }>(d.as_bytes(), None)
+                    .unwrap();
                 assert_eq!(r, make_entry(d));
             }
         }
@@ -733,10 +758,13 @@ mod tests {
 
         for (i, c) in items.iter().enumerate() {
             let e = make_entry(c);
-            n.add(c.as_bytes(), &e, BTreeMap::new(), None).unwrap();
+            n.add::<NoLoader, { DEFAULT_BODY_SIZE }>(c.as_bytes(), &e, BTreeMap::new(), None)
+                .unwrap();
 
             for &d in items.iter().take(i) {
-                let node = n.lookup_node(d.as_bytes(), None).unwrap();
+                let node = n
+                    .lookup_node::<NoLoader, { DEFAULT_BODY_SIZE }>(d.as_bytes(), None)
+                    .unwrap();
                 assert!(node.is_value());
                 assert_eq!(node.entry(), make_entry(d));
             }
@@ -778,16 +806,19 @@ mod tests {
 
         for c in items {
             let e = make_entry(c);
-            n.add(c.as_bytes(), &e, BTreeMap::new(), None).unwrap();
+            n.add::<MemorySink, { DEFAULT_BODY_SIZE }>(c.as_bytes(), &e, BTreeMap::new(), None)
+                .unwrap();
         }
 
-        let store = MockChunkStore::new();
-        n.save(&store).unwrap();
+        let mut store = MemorySink::<{ DEFAULT_BODY_SIZE }>::new();
+        n.save(&mut store).unwrap();
 
         let mut n2 = Node::from_reference(&n.reference);
 
         for &d in items {
-            let node = n2.lookup_node(d.as_bytes(), Some(&store)).unwrap();
+            let node = n2
+                .lookup_node(d.as_bytes(), Some(&store))
+                .unwrap();
             assert!(node.is_value());
             assert_eq!(node.entry(), make_entry(d));
         }
@@ -828,18 +859,28 @@ mod tests {
 
         for (i, c) in tc.items.iter().enumerate() {
             let e = make_entry(&c.path);
-            n.add(c.path.as_bytes(), &e, c.metadata.clone(), None)
-                .unwrap();
+            n.add::<NoLoader, { DEFAULT_BODY_SIZE }>(
+                c.path.as_bytes(),
+                &e,
+                c.metadata.clone(),
+                None,
+            )
+            .unwrap();
 
             for item in tc.items.iter().take(i) {
-                let r = n.lookup(item.path.as_bytes(), None).unwrap();
+                let r = n
+                    .lookup::<NoLoader, { DEFAULT_BODY_SIZE }>(item.path.as_bytes(), None)
+                    .unwrap();
                 assert_eq!(r, make_entry(&item.path));
             }
         }
 
         for c in &tc.remove {
-            n.remove(c.as_bytes(), None).unwrap();
-            assert!(n.lookup(c.as_bytes(), None).is_err());
+            n.remove::<NoLoader, { DEFAULT_BODY_SIZE }>(c.as_bytes(), None)
+                .unwrap();
+            assert!(n
+                .lookup::<NoLoader, { DEFAULT_BODY_SIZE }>(c.as_bytes(), None)
+                .is_err());
         }
     }
 
@@ -858,12 +899,14 @@ mod tests {
 
         for c in &tc.paths {
             let e = make_entry(c);
-            n.add(c.as_bytes(), &e, BTreeMap::default(), None).unwrap();
+            n.add::<NoLoader, { DEFAULT_BODY_SIZE }>(c.as_bytes(), &e, BTreeMap::default(), None)
+                .unwrap();
         }
 
         for (i, test_prefix) in tc.test_paths.iter().enumerate() {
             assert_eq!(
-                n.has_prefix(test_prefix.as_bytes(), None).unwrap(),
+                n.has_prefix::<NoLoader, { DEFAULT_BODY_SIZE }>(test_prefix.as_bytes(), None)
+                    .unwrap(),
                 tc.should_exist[i],
             );
         }
@@ -883,7 +926,7 @@ mod tests {
     // Tests save->reload->remove->save->reload->verify-removed cycle.
 
     fn run_persist_remove(tc: RemoveTestCase) {
-        let store = MockChunkStore::new();
+        let mut store = MemorySink::<{ DEFAULT_BODY_SIZE }>::new();
 
         // add entries and persist
         let mut n = Node::default();
@@ -892,7 +935,7 @@ mod tests {
             n.add(c.path.as_bytes(), &e, c.metadata.clone(), Some(&store))
                 .unwrap();
         }
-        n.save(&store).unwrap();
+        n.save(&mut store).unwrap();
         let ref_ = n.reference.clone();
 
         // reload and remove
@@ -900,7 +943,7 @@ mod tests {
         for path in &tc.remove {
             nn.remove(path.as_bytes(), Some(&store)).unwrap();
         }
-        nn.save(&store).unwrap();
+        nn.save(&mut store).unwrap();
         let ref2 = nn.reference.clone();
 
         // reload and verify removed paths are gone

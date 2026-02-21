@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{Chunk, ChunkAddress, ContentChunk};
 
-use super::raw::ChunkStoreError;
+use super::ChunkStoreError;
 use super::typed::{ChunkGet, ChunkHas, ChunkPut};
 
 /// In-memory chunk storage using a HashMap.
@@ -92,6 +92,54 @@ impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for &MemorySink<BODY_SIZE> {
 impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for MemorySink<BODY_SIZE> {
     fn has(&self, address: &ChunkAddress) -> bool {
         self.chunks.contains_key(address)
+    }
+}
+
+// Async impls for MemorySink — trivially wraps the sync ChunkGet.
+
+#[cfg(feature = "async")]
+impl<const BODY_SIZE: usize> super::typed_async::AsyncChunkGet<BODY_SIZE>
+    for MemorySink<BODY_SIZE>
+{
+    type Error = ChunkStoreError;
+
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
+        <Self as ChunkGet<BODY_SIZE>>::get(self, address)
+    }
+}
+
+#[cfg(feature = "async")]
+impl<const BODY_SIZE: usize> super::typed_async::AsyncChunkGet<BODY_SIZE>
+    for &MemorySink<BODY_SIZE>
+{
+    type Error = ChunkStoreError;
+
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
+        <Self as ChunkGet<BODY_SIZE>>::get(self, address)
+    }
+}
+
+#[cfg(feature = "async")]
+impl<const BODY_SIZE: usize> super::typed_async::AsyncChunkGet<BODY_SIZE>
+    for std::collections::HashMap<ChunkAddress, ContentChunk<BODY_SIZE>>
+{
+    type Error = ChunkStoreError;
+
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
+        self.get(address)
+            .cloned()
+            .ok_or_else(|| ChunkStoreError::NotFound {
+                address_hex: format!("{address}"),
+            })
     }
 }
 

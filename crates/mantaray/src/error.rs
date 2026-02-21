@@ -1,7 +1,5 @@
 //! Error types for mantaray operations.
 
-use crate::ChunkStoreError;
-
 /// Result type alias for mantaray operations.
 pub type Result<T> = std::result::Result<T, MantarayError>;
 
@@ -97,7 +95,22 @@ pub enum MantarayError {
     /// Node has not been saved yet (reference is empty).
     #[error("missing reference")]
     MissingReference,
-    /// Chunk store error.
-    #[error(transparent)]
-    Store(#[from] ChunkStoreError),
+    /// Error creating a chunk (e.g. data too large for BMT body).
+    #[error("chunk error: {message}")]
+    ChunkError {
+        /// Description of the error.
+        message: String,
+    },
+    /// Error from the typed chunk store during get operations.
+    #[error("store get error: {message}")]
+    StoreGet {
+        /// Description of the error.
+        message: String,
+    },
+    /// Error from the typed chunk store during put operations.
+    #[error("store put error: {message}")]
+    StorePut {
+        /// Description of the error.
+        message: String,
+    },
 }

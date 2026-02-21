@@ -84,34 +84,32 @@ pub type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
 pub type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 /// Default polymorphic chunk.
 pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
+/// Default in-memory chunk store.
+pub type DefaultMemorySink = MemorySink<DEFAULT_BODY_SIZE>;
+/// Default Vec-based chunk sink.
+pub type DefaultVecSink = VecSink<DEFAULT_BODY_SIZE>;
 
-// Chunk storage (raw + typed)
-pub use store::{
-    ChunkGet, ChunkGetter, ChunkHas, ChunkPut, ChunkPutter, ChunkStore, ChunkStoreError,
-    MemorySink, MockChunkStore, VecSink,
-};
+// Chunk storage (typed)
+pub use store::{ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemorySink, VecSink};
 #[cfg(feature = "async")]
-pub use store::{AsyncChunkGet, AsyncChunkGetter, AsyncChunkPut, AsyncChunkPutter, AsyncChunkStore};
+pub use store::{AsyncChunkGet, AsyncChunkPut};
 
 // File operations (algorithms only)
 pub use file::{
-    ChunkGetExt, ChunkPutExt, ChunkRange, FileError, Joiner, ParallelSplitter, ReadAt,
-    SplitBuilder, Splitter, TreeParams, join, split, split_reader,
+    ChunkGetExt, ChunkPutExt, ChunkRange, FileError, GenericJoiner, JoinRef, Joiner,
+    ParallelSplitter, ReadAt, SplitExt, Splitter, TreeParams, join, split, split_reader,
 };
 #[cfg(feature = "encryption")]
-pub use file::{EncryptedJoiner, EncryptedSplitter, join_encrypted, split_encrypted};
+pub use file::{EncryptedJoiner, EncryptedParallelSplitter, EncryptedSplitter, split_encrypted};
 #[cfg(feature = "async")]
-pub use file::{AsyncJoiner, AsyncReadAt, AsyncChunkGetExt, join_async};
+pub use file::{AsyncChunkGetExt, AsyncJoiner, AsyncJoinerReader, GenericAsyncJoiner, AsyncReadAt, join_async};
 #[cfg(all(feature = "async", feature = "encryption"))]
-pub use file::{EncryptedAsyncJoiner, join_encrypted_async};
+pub use file::EncryptedAsyncJoiner;
 
 /// Default file splitter.
 pub type DefaultSplitter<S> = file::Splitter<S, DEFAULT_BODY_SIZE>;
 /// Default file joiner.
 pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
-/// Default encrypted file splitter.
-#[cfg(feature = "encryption")]
-pub type DefaultEncryptedSplitter<S> = file::EncryptedSplitter<S, DEFAULT_BODY_SIZE>;
 /// Default encrypted file joiner.
 #[cfg(feature = "encryption")]
 pub type DefaultEncryptedJoiner<G> = file::EncryptedJoiner<G, DEFAULT_BODY_SIZE>;

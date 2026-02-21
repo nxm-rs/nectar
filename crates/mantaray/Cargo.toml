@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 alloy-primitives = { workspace = true, features = ["map"] }
+bytes.workspace = true
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
 serde_json.workspace = true
@@ -34,3 +35,4 @@ harness = false
 default = ["std"]
 std = ["alloy-primitives/std", "thiserror/std", "serde_json/std", "rand", "nectar-primitives/std"]
 serde = ["dep:serde", "alloy-primitives/serde"]
+encryption = ["nectar-primitives/encryption"]

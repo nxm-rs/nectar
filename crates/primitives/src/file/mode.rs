@@ -24,6 +24,7 @@ fn chunk_creation_error(e: crate::error::PrimitivesError) -> FileError {
 
 /// Joiner-side chunk mode operations.
 pub trait JoinMode: Sized + 'static {
+    /// Size of a single reference in bytes (32 plain, 64 encrypted).
     const REF_SIZE: usize;
 
     /// Root reference type: `ChunkAddress` (plain) or `EncryptedChunkRef` (encrypted).
@@ -32,18 +33,22 @@ pub trait JoinMode: Sized + 'static {
     /// Per-chunk context carried through tree traversal: `()` (plain) or `EncryptionKey`.
     type JoinerContext: Clone + Debug + Send + Sync;
 
+    /// Pre-computed span table for this mode.
     fn spans() -> &'static [u64; LEVEL_LIMIT];
 
+    /// Number of child references per intermediate chunk.
     #[inline]
     fn refs_per_chunk(body_size: usize) -> usize {
         body_size / Self::REF_SIZE
     }
 
+    /// Tree depth for the given file length.
     #[inline]
     fn levels(length: u64, chunk_size: usize) -> usize {
         super::constants::tree_depth(length, chunk_size, Self::REF_SIZE)
     }
 
+    /// Subspan size for a given parent span.
     #[inline]
     fn subspan_size<const BS: usize>(span: u64) -> u64 {
         super::constants::subspan_for_spans::<BS>(span, Self::spans())

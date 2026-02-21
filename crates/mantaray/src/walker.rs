@@ -4,8 +4,12 @@
 mod tests {
     use std::collections::BTreeMap;
 
+    use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+    use nectar_primitives::store::MemorySink;
+
     use crate::node::Node;
-    use crate::MockChunkStore;
+
+    type Store = MemorySink<DEFAULT_BODY_SIZE>;
 
     fn make_entry(s: &[u8]) -> Vec<u8> {
         let mut entry = vec![0u8; 32 - s.len()];
@@ -20,12 +24,12 @@ mod tests {
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &p in paths {
             let entry = make_entry(p.as_bytes());
-            root.add(p.as_bytes(), &entry, BTreeMap::new(), None)
+            root.add::<Store, { DEFAULT_BODY_SIZE }>(p.as_bytes(), &entry, BTreeMap::new(), None)
                 .unwrap();
         }
 
         let mut visited: Vec<(Vec<u8>, bool)> = Vec::new();
-        root.walk(None, &mut |path, node| {
+        root.walk::<Store, { DEFAULT_BODY_SIZE }, _>(None, &mut |path, node| {
             visited.push((path.to_vec(), node.is_value()));
             Ok(())
         })
@@ -76,11 +80,12 @@ mod tests {
         let mut n = Node::default();
         for &path in to_add {
             let entry = make_entry(path);
-            n.add(path, &entry, BTreeMap::new(), None).unwrap();
+            n.add::<Store, { DEFAULT_BODY_SIZE }>(path, &entry, BTreeMap::new(), None)
+                .unwrap();
         }
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
-        n.walk_node(b"", None, &mut |path, _node| {
+        n.walk_node::<Store, { DEFAULT_BODY_SIZE }, _>(b"", None, &mut |path, _node| {
             walked.push(path.to_vec());
             Ok(())
         })
@@ -118,11 +123,12 @@ mod tests {
         let mut n = Node::default();
         for &path in to_add {
             let entry = make_entry(path);
-            n.add(path, &entry, BTreeMap::new(), None).unwrap();
+            n.add::<Store, { DEFAULT_BODY_SIZE }>(path, &entry, BTreeMap::new(), None)
+                .unwrap();
         }
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
-        n.walk_node(b"img/", None, &mut |path, _node| {
+        n.walk_node::<Store, { DEFAULT_BODY_SIZE }, _>(b"img/", None, &mut |path, _node| {
             walked.push(path.to_vec());
             Ok(())
         })
@@ -136,7 +142,7 @@ mod tests {
         assert!(!walked.iter().any(|p| p == b"robots.txt"));
     }
 
-    /// Same as above but with save/load through a mock store,
+    /// Same as above but with save/load through a store,
     /// matching Go's "with load save" walker test variant.
     #[test]
     fn walk_node_exact_order_with_load_save() {
@@ -169,11 +175,12 @@ mod tests {
         let mut n = Node::default();
         for &path in to_add {
             let entry = make_entry(path);
-            n.add(path, &entry, BTreeMap::new(), None).unwrap();
+            n.add::<Store, { DEFAULT_BODY_SIZE }>(path, &entry, BTreeMap::new(), None)
+                .unwrap();
         }
 
-        let store = MockChunkStore::new();
-        n.save(&store).unwrap();
+        let mut store = Store::new();
+        n.save(&mut store).unwrap();
 
         let mut n2 = Node::from_reference(n.reference());
 
