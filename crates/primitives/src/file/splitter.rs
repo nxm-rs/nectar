@@ -459,7 +459,7 @@ mod tests {
             let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
             let splitter = EncryptedSplitter::new(sink, 0);
 
-            let (root_ref, sink) = splitter.finish().unwrap();
+            let (_root_ref, sink) = splitter.finish().unwrap();
 
             assert_eq!(sink.len(), 1);
         }
@@ -484,8 +484,7 @@ mod tests {
             let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
 
             splitter.write_all(&data).unwrap();
-            let (root_ref, sink) = splitter.finish().unwrap();
-
+            let (_root_ref, sink) = splitter.finish().unwrap();
 
             assert_eq!(sink.len(), 1);
         }
@@ -497,8 +496,7 @@ mod tests {
             let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
 
             splitter.write_all(&data).unwrap();
-            let (root_ref, sink) = splitter.finish().unwrap();
-
+            let (_root_ref, sink) = splitter.finish().unwrap();
 
             // 2 data chunks + 1 intermediate = 3
             assert_eq!(sink.len(), 3);
@@ -512,8 +510,7 @@ mod tests {
             let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
 
             splitter.write_all(&data).unwrap();
-            let (root_ref, sink) = splitter.finish().unwrap();
-
+            let (_root_ref, sink) = splitter.finish().unwrap();
 
             // 64 data chunks + 1 intermediate = 65
             assert_eq!(sink.len(), ENC_REFS_PER_CHUNK + 1);
@@ -527,8 +524,7 @@ mod tests {
             let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
 
             splitter.write_all(&data).unwrap();
-            let (root_ref, sink) = splitter.finish().unwrap();
-
+            let (_root_ref, sink) = splitter.finish().unwrap();
 
             assert_eq!(sink.len(), ENC_REFS_PER_CHUNK + 1 + 2);
         }

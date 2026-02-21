@@ -46,6 +46,17 @@ pub trait JoinMode: Sized + 'static {
         super::constants::subspan_for_spans::<BS>(span, Self::spans())
     }
 
+    /// Compute the span covered by a child at `child_index` within a parent of `parent_span`.
+    fn child_span<const BS: usize>(parent_span: u64, subspan: u64, child_index: usize) -> u64 {
+        let refs_per_chunk = Self::refs_per_chunk(BS);
+        if child_index == refs_per_chunk - 1 {
+            let preceding = child_index as u64 * subspan;
+            parent_span.saturating_sub(preceding)
+        } else {
+            subspan.min(parent_span - child_index as u64 * subspan)
+        }
+    }
+
     /// Extract the chunk address from a root reference (for fetching).
     fn root_address(input: &Self::RootRef) -> ChunkAddress;
 

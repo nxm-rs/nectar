@@ -44,6 +44,8 @@ use crate::chunk::encryption::EncryptedChunkRef;
 use crate::store::{ChunkGet, ChunkHas, ChunkPut};
 
 pub use builder::SplitBuilder;
+#[cfg(feature = "encryption")]
+pub use builder::EncryptedSplitBuilder;
 pub use error::FileError;
 pub use joiner::{EncryptedJoiner, Joiner};
 #[cfg(feature = "async")]
@@ -140,6 +142,52 @@ where
     Ok(data)
 }
 
+/// Split data into chunks using parallel processing.
+pub fn split_parallel<const BODY_SIZE: usize>(
+    data: &[u8],
+) -> error::Result<(ChunkAddress, Vec<ContentChunk<BODY_SIZE>>)> {
+    let sink = crate::store::VecSink::<BODY_SIZE>::new();
+    let splitter = ParallelSplitter::new(sink);
+    let root = splitter.split(&data)?;
+    Ok((root, splitter.into_sink().into_chunks()))
+}
+
+/// Split data into encrypted chunks using parallel processing.
+#[cfg(feature = "encryption")]
+pub fn split_encrypted_parallel<const BODY_SIZE: usize>(
+    data: &[u8],
+) -> error::Result<(EncryptedChunkRef, Vec<ContentChunk<BODY_SIZE>>)> {
+    let sink = crate::store::VecSink::<BODY_SIZE>::new();
+    let splitter = EncryptedParallelSplitter::new(sink);
+    let root_ref = splitter.split(&data)?;
+    Ok((root_ref, splitter.into_sink().into_chunks()))
+}
+
+/// Join chunks into a byte vector using parallel chunk fetching.
+pub fn join_parallel<G, const BODY_SIZE: usize>(
+    getter: G,
+    root: ChunkAddress,
+) -> error::Result<Vec<u8>>
+where
+    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+{
+    let joiner = ParallelJoiner::new(getter, root)?;
+    joiner.read_all()
+}
+
+/// Join encrypted chunks into a byte vector using parallel chunk fetching.
+#[cfg(feature = "encryption")]
+pub fn join_encrypted_parallel<G, const BODY_SIZE: usize>(
+    getter: G,
+    root_ref: EncryptedChunkRef,
+) -> error::Result<Vec<u8>>
+where
+    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+{
+    let joiner = EncryptedParallelJoiner::new(getter, root_ref)?;
+    joiner.read_all()
+}
+
 impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
     type Error = FileError;
 
@@ -195,6 +243,27 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: ChunkGet<BODY_SIZE> {
     {
         join(self, root)
     }
+
+    /// Create an encrypted joiner for reading encrypted file data.
+    #[cfg(feature = "encryption")]
+    fn encrypted_joiner(
+        self,
+        root_ref: EncryptedChunkRef,
+    ) -> error::Result<EncryptedJoiner<Self, BODY_SIZE>>
+    where
+        Self: Sized,
+    {
+        EncryptedJoiner::new(self, root_ref)
+    }
+
+    /// Read entire encrypted file into memory.
+    #[cfg(feature = "encryption")]
+    fn read_encrypted_file(self, root_ref: EncryptedChunkRef) -> error::Result<Vec<u8>>
+    where
+        Self: Sized,
+    {
+        join_encrypted(self, root_ref)
+    }
 }
 
 impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where T: ChunkGet<BODY_SIZE> {}
@@ -204,6 +273,12 @@ pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> + Sized {
     /// Create a splitter for writing file data.
     fn splitter(self, size: u64) -> Splitter<Self, BODY_SIZE> {
         Splitter::new(self, size)
+    }
+
+    /// Create an encrypted splitter for writing encrypted file data.
+    #[cfg(feature = "encryption")]
+    fn encrypted_splitter(self, size: u64) -> EncryptedSplitter<Self, BODY_SIZE> {
+        EncryptedSplitter::new(self, size)
     }
 }
 

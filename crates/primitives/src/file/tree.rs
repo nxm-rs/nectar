@@ -176,6 +176,48 @@ impl ChunkRange {
     }
 }
 
+/// Assemble decoded chunk bodies into a contiguous output buffer.
+///
+/// Given a set of chunk bodies corresponding to `chunk_range`, copies the
+/// relevant byte slices into a single output buffer accounting for partial
+/// reads at the start/end of the range.
+pub(crate) fn assemble_range<const BODY_SIZE: usize>(
+    tree: &TreeParams<BODY_SIZE>,
+    offset: u64,
+    actual_len: usize,
+    chunk_range: &ChunkRange,
+    bodies: &[bytes::Bytes],
+) -> Vec<u8> {
+    let mut result = vec![0u8; actual_len];
+    let mut result_offset = 0;
+
+    for (i, chunk_idx) in chunk_range.iter().enumerate() {
+        let (chunk_start, chunk_end) = tree.chunk_range(chunk_idx);
+        let chunk_data_len = (chunk_end - chunk_start) as usize;
+
+        let read_start = if chunk_start < offset {
+            (offset - chunk_start) as usize
+        } else {
+            0
+        };
+
+        let read_end = if chunk_end > offset + actual_len as u64 {
+            chunk_data_len - ((chunk_end - offset - actual_len as u64) as usize)
+        } else {
+            chunk_data_len
+        };
+
+        let bytes_to_copy = read_end - read_start;
+        let body = &bodies[i];
+
+        result[result_offset..result_offset + bytes_to_copy]
+            .copy_from_slice(&body[read_start..read_end]);
+        result_offset += bytes_to_copy;
+    }
+
+    result
+}
+
 /// Calculate subspan size for children of a node with given span (plain mode).
 #[cfg(test)]
 fn subspan_size<const BODY_SIZE: usize>(span: u64) -> u64 {

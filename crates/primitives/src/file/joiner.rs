@@ -117,7 +117,6 @@ where
             return Ok(());
         }
 
-        let refs_per_chunk = M::refs_per_chunk(BODY_SIZE);
         let subspan = M::subspan_size::<BODY_SIZE>(span);
 
         let mut remaining = buf;
@@ -135,13 +134,7 @@ where
             }
 
             let (child_addr, child_context) = M::parse_child_ref(&body, ref_start)?;
-
-            let child_span = if child_index == refs_per_chunk - 1 {
-                let preceding = child_index as u64 * subspan;
-                span.saturating_sub(preceding)
-            } else {
-                subspan.min(span - child_index as u64 * subspan)
-            };
+            let child_span = M::child_span::<BODY_SIZE>(span, subspan, child_index);
 
             let available = (child_span - child_offset) as usize;
             let to_read = remaining.len().min(available);
