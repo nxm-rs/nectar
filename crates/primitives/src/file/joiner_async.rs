@@ -1,16 +1,17 @@
-//! Async joiner with concurrent chunk prefetching.
+//! Async joiner with BFS expansion and concurrent chunk fetching.
 
+use std::io::SeekFrom;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures::future::BoxFuture;
 use futures::stream::{self, Stream, StreamExt};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::ChunkAddress;
 
 use super::error::{FileError, Result};
+use super::frontier::{expand_frontier_async, read_subtree_bodies_async};
 use super::mode::{JoinMode, PlainMode};
 use super::tree::TreeParams;
 use crate::store::AsyncChunkGet;
@@ -18,8 +19,8 @@ use crate::store::AsyncChunkGet;
 #[cfg(feature = "encryption")]
 use super::mode::EncryptedMode;
 
-/// Core state and tree-traversal logic shared by the joiner and its stream.
-struct JoinerCore<G, M: JoinMode, const BODY_SIZE: usize>
+/// Generic async joiner parameterized by chunk mode.
+pub struct GenericAsyncJoiner<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
     G: AsyncChunkGet<BODY_SIZE>,
 {
@@ -28,122 +29,9 @@ where
     context: M::JoinerContext,
     span: u64,
     tree: TreeParams<BODY_SIZE>,
-    _mode: PhantomData<M>,
-}
-
-impl<G, M, const BODY_SIZE: usize> JoinerCore<G, M, BODY_SIZE>
-where
-    G: AsyncChunkGet<BODY_SIZE>,
-    M: JoinMode + Send + Sync,
-{
-    async fn read_single_chunk(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let chunk = self.getter.get(&self.root).await.map_err(FileError::getter)?;
-        let body = M::decode_body::<BODY_SIZE>(chunk, &self.context, self.span)?;
-        let start = offset as usize;
-        let end = start + len;
-        Ok(body[start..end].to_vec())
-    }
-
-    async fn collect_data_chunk_refs(
-        &self,
-        chunk_range: &super::tree::ChunkRange,
-    ) -> Result<Vec<(ChunkAddress, M::JoinerContext)>> {
-        let mut refs = Vec::with_capacity(chunk_range.len() as usize);
-        for chunk_idx in chunk_range.iter() {
-            let r = self.find_data_chunk_ref(chunk_idx).await?;
-            refs.push(r);
-        }
-        Ok(refs)
-    }
-
-    async fn find_data_chunk_ref(
-        &self,
-        data_chunk_idx: u64,
-    ) -> Result<(ChunkAddress, M::JoinerContext)> {
-        let offset = data_chunk_idx * BODY_SIZE as u64;
-        self.traverse_to_data_chunk(&self.root, &self.context, self.span, offset)
-            .await
-    }
-
-    fn traverse_to_data_chunk<'a>(
-        &'a self,
-        addr: &'a ChunkAddress,
-        context: &'a M::JoinerContext,
-        span: u64,
-        offset: u64,
-    ) -> BoxFuture<'a, Result<(ChunkAddress, M::JoinerContext)>> {
-        Box::pin(async move {
-            if span <= BODY_SIZE as u64 {
-                return Ok((*addr, context.clone()));
-            }
-
-            let chunk = self.getter.get(addr).await.map_err(FileError::getter)?;
-            let body = M::decode_body::<BODY_SIZE>(chunk, context, span)?;
-
-            let subspan = M::subspan_size::<BODY_SIZE>(span);
-            let child_index = (offset / subspan) as usize;
-            let child_offset = offset % subspan;
-
-            let ref_start = child_index * M::REF_SIZE;
-            let ref_end = ref_start + M::REF_SIZE;
-
-            if ref_end > body.len() {
-                return Err(FileError::InvalidReference { level: 0 });
-            }
-
-            let (child_addr, child_context) = M::parse_child_ref(&body, ref_start)?;
-            let child_span = M::child_span::<BODY_SIZE>(span, subspan, child_index);
-
-            self.traverse_to_data_chunk(&child_addr, &child_context, child_span, child_offset)
-                .await
-        })
-    }
-
-    /// Sequential range read used by the stream.
-    async fn read_range(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
-        if offset >= self.span {
-            return Ok(Vec::new());
-        }
-
-        let actual_len = len.min((self.span - offset) as usize);
-        if actual_len == 0 {
-            return Ok(Vec::new());
-        }
-
-        if self.span <= BODY_SIZE as u64 {
-            return self.read_single_chunk(offset, actual_len).await;
-        }
-
-        let chunk_range = self.tree.chunks_for_range(offset, actual_len as u64);
-        let mut bodies = Vec::with_capacity(chunk_range.len() as usize);
-        for chunk_idx in chunk_range.iter() {
-            let (addr, ctx) = self.find_data_chunk_ref(chunk_idx).await?;
-            let (chunk_start, chunk_end) = self.tree.chunk_range(chunk_idx);
-            let data_span = chunk_end - chunk_start;
-
-            let chunk = self.getter.get(&addr).await.map_err(FileError::getter)?;
-            let body = M::decode_body::<BODY_SIZE>(chunk, &ctx, data_span)?;
-            bodies.push(body);
-        }
-
-        Ok(super::tree::assemble_range(
-            &self.tree,
-            offset,
-            actual_len,
-            &chunk_range,
-            &bodies,
-        ))
-    }
-}
-
-/// Generic async joiner parameterized by chunk mode.
-pub struct GenericAsyncJoiner<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
-where
-    G: AsyncChunkGet<BODY_SIZE>,
-{
-    core: Arc<JoinerCore<G, M, BODY_SIZE>>,
     position: u64,
     concurrency: usize,
+    _mode: PhantomData<M>,
 }
 
 /// Plain (unencrypted) async joiner.
@@ -162,8 +50,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GenericAsyncJoiner")
-            .field("root", &self.core.root)
-            .field("span", &self.core.span)
+            .field("root", &self.root)
+            .field("span", &self.span)
             .field("position", &self.position)
             .field("concurrency", &self.concurrency)
             .finish_non_exhaustive()
@@ -183,16 +71,14 @@ where
         let tree = TreeParams::<BODY_SIZE>::new(span);
 
         Ok(Self {
-            core: Arc::new(JoinerCore {
-                getter: Arc::new(getter),
-                root,
-                context,
-                span,
-                tree,
-                _mode: PhantomData,
-            }),
+            getter: Arc::new(getter),
+            root,
+            context,
+            span,
+            tree,
             position: 0,
             concurrency: 8,
+            _mode: PhantomData,
         })
     }
 
@@ -203,72 +89,71 @@ where
     }
 
     /// Total file size.
+    #[inline]
     pub fn size(&self) -> u64 {
-        self.core.span
+        self.span
     }
 
     /// Current read position.
+    #[inline]
     pub const fn position(&self) -> u64 {
         self.position
     }
 
     /// Root address.
+    #[inline]
     pub fn root(&self) -> &ChunkAddress {
-        &self.core.root
+        &self.root
     }
 
-    /// Read a range of bytes with concurrent fetching.
+    /// Read a range of bytes with concurrent fetching via BFS expansion.
     pub async fn read_range(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
-        if offset >= self.core.span {
+        if offset >= self.span {
             return Ok(Vec::new());
         }
 
-        let actual_len = len.min((self.core.span - offset) as usize);
+        let actual_len = len.min((self.span - offset) as usize);
         if actual_len == 0 {
             return Ok(Vec::new());
         }
 
-        // For small files, just use simple fetch
-        if self.core.span <= BODY_SIZE as u64 {
-            return self.core.read_single_chunk(offset, actual_len).await;
+        if self.span <= BODY_SIZE as u64 {
+            return self.read_single_chunk(offset, actual_len).await;
         }
 
-        // Calculate required data chunks
-        let chunk_range = self.core.tree.chunks_for_range(offset, actual_len as u64);
+        let chunk_range = self.tree.chunks_for_range(offset, actual_len as u64);
 
-        // Collect addresses/contexts and fetch concurrently
-        let data_refs = self.core.collect_data_chunk_refs(&chunk_range).await?;
+        let subtrees = expand_frontier_async::<G, M, BODY_SIZE>(
+            &*self.getter,
+            &self.root,
+            &self.context,
+            self.span,
+            &chunk_range,
+            self.concurrency * 2,
+        )
+        .await?;
 
-        // Compute spans for each data chunk
-        let data_spans: Vec<u64> = chunk_range
-            .iter()
-            .map(|idx| {
-                let (s, e) = self.core.tree.chunk_range(idx);
-                e - s
-            })
-            .collect();
-
-        // Fetch and decode all data chunks concurrently
-        let getter = Arc::clone(&self.core.getter);
-        let bodies: Vec<Bytes> = stream::iter(data_refs.iter().zip(data_spans.iter()))
-            .map(|((addr, ctx), span)| {
+        let getter = Arc::clone(&self.getter);
+        let bodies: Vec<Bytes> = stream::iter(subtrees.into_iter())
+            .map(|st| {
                 let getter = Arc::clone(&getter);
-                let addr = *addr;
-                let ctx = ctx.clone();
-                let span = *span;
+                let chunk_range = chunk_range;
                 async move {
-                    let chunk = getter.get(&addr).await.map_err(FileError::getter)?;
-                    M::decode_body::<BODY_SIZE>(chunk, &ctx, span)
+                    read_subtree_bodies_async::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range)
+                        .await
                 }
             })
-            .buffer_unordered(self.concurrency)
+            .buffered(self.concurrency)
             .collect::<Vec<_>>()
             .await
             .into_iter()
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<Vec<Bytes>>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
 
         Ok(super::tree::assemble_range(
-            &self.core.tree,
+            &self.tree,
             offset,
             actual_len,
             &chunk_range,
@@ -278,29 +163,115 @@ where
 
     /// Read entire file into memory.
     pub async fn read_all(&self) -> Result<Vec<u8>> {
-        self.read_range(0, self.core.span as usize).await
+        self.read_range(0, self.span as usize).await
+    }
+
+    /// Update read position (synchronous — just updates internal state).
+    pub fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let new_pos = match pos {
+            SeekFrom::Start(offset) => offset as i64,
+            SeekFrom::End(offset) => self.span as i64 + offset,
+            SeekFrom::Current(offset) => self.position as i64 + offset,
+        };
+
+        if new_pos < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek to negative position",
+            ));
+        }
+
+        self.position = new_pos as u64;
+        Ok(self.position)
     }
 
     /// Convert into a stream of chunks.
     pub fn into_stream(self) -> impl Stream<Item = Result<Bytes>> {
         let chunk_size = BODY_SIZE;
-        let span = self.core.span;
-        let core = self.core;
+        let span = self.span;
+        let getter = self.getter;
+        let root = self.root;
+        let context = self.context;
+        let tree = self.tree;
+        let concurrency = self.concurrency;
 
         stream::unfold(0u64, move |offset| {
-            let core = Arc::clone(&core);
+            let getter = Arc::clone(&getter);
+            let root = root;
+            let context = context.clone();
+            let tree = tree;
             async move {
                 if offset >= span {
                     return None;
                 }
 
                 let len = (span - offset).min(chunk_size as u64) as usize;
-                match core.read_range(offset, len).await {
-                    Ok(data) => Some((Ok(Bytes::from(data)), offset + len as u64)),
-                    Err(e) => Some((Err(e), span)),
+                let actual_len = len.min((span - offset) as usize);
+
+                if span <= chunk_size as u64 {
+                    // Single-chunk file
+                    let chunk = match getter.get(&root).await {
+                        Ok(c) => c,
+                        Err(e) => return Some((Err(FileError::getter(e)), span)),
+                    };
+                    let body = match M::decode_body::<BODY_SIZE>(chunk, &context, span) {
+                        Ok(b) => b,
+                        Err(e) => return Some((Err(e), span)),
+                    };
+                    let start = offset as usize;
+                    let end = start + actual_len;
+                    return Some((Ok(Bytes::from(body[start..end].to_vec())), offset + len as u64));
                 }
+
+                let chunk_range = tree.chunks_for_range(offset, actual_len as u64);
+
+                let subtrees = match expand_frontier_async::<G, M, BODY_SIZE>(
+                    &*getter, &root, &context, span, &chunk_range, concurrency * 2,
+                )
+                .await
+                {
+                    Ok(st) => st,
+                    Err(e) => return Some((Err(e), span)),
+                };
+
+                let bodies: Vec<Result<Vec<Bytes>>> = {
+                    let getter2 = Arc::clone(&getter);
+                    stream::iter(subtrees.into_iter())
+                        .map(|st| {
+                            let getter = Arc::clone(&getter2);
+                            let chunk_range = chunk_range;
+                            async move {
+                                read_subtree_bodies_async::<G, M, BODY_SIZE>(
+                                    &*getter, &st, &chunk_range,
+                                )
+                                .await
+                            }
+                        })
+                        .buffered(concurrency)
+                        .collect()
+                        .await
+                };
+
+                let flat_bodies: Vec<Bytes> = match bodies
+                    .into_iter()
+                    .collect::<Result<Vec<Vec<Bytes>>>>()
+                {
+                    Ok(vv) => vv.into_iter().flatten().collect(),
+                    Err(e) => return Some((Err(e), span)),
+                };
+
+                let data = super::tree::assemble_range(&tree, offset, actual_len, &chunk_range, &flat_bodies);
+                Some((Ok(Bytes::from(data)), offset + len as u64))
             }
         })
+    }
+
+    async fn read_single_chunk(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let chunk = self.getter.get(&self.root).await.map_err(FileError::getter)?;
+        let body = M::decode_body::<BODY_SIZE>(chunk, &self.context, self.span)?;
+        let start = offset as usize;
+        let end = start + len;
+        Ok(body[start..end].to_vec())
     }
 }
 
@@ -340,7 +311,6 @@ mod tests {
 
         let joiner = AsyncJoiner::new(store, root).await.unwrap();
         let result = joiner.read_all().await.unwrap();
-
         assert_eq!(result, data);
     }
 
@@ -351,7 +321,6 @@ mod tests {
 
         let joiner = AsyncJoiner::new(store, root).await.unwrap();
         let result = joiner.read_range(6, 5).await.unwrap();
-
         assert_eq!(result, b"world");
     }
 
@@ -362,8 +331,43 @@ mod tests {
 
         let joiner = AsyncJoiner::new(store, root).await.unwrap();
         let result = joiner.read_all().await.unwrap();
-
         assert_eq!(result, data);
+    }
+
+    #[tokio::test]
+    async fn test_async_joiner_128_chunks() {
+        let data: Vec<u8> =
+            (0..DEFAULT_BODY_SIZE * 128).map(|i| (i % 256) as u8).collect();
+        let (root, store) = split_and_store(&data);
+
+        let joiner = AsyncJoiner::new(store, root).await.unwrap();
+        let result = joiner.read_all().await.unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[tokio::test]
+    async fn test_async_joiner_range_spanning_chunks() {
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
+        let (root, store) = split_and_store(&data);
+
+        let joiner = AsyncJoiner::new(store, root).await.unwrap();
+        let start = DEFAULT_BODY_SIZE - 50;
+        let len = 100;
+        let result = joiner.read_range(start as u64, len).await.unwrap();
+        assert_eq!(result, &data[start..start + len]);
+    }
+
+    #[tokio::test]
+    async fn test_async_joiner_seek() {
+        let data = b"hello world";
+        let (root, store) = split_and_store(data);
+
+        let mut joiner = AsyncJoiner::new(store, root).await.unwrap();
+        joiner.seek(SeekFrom::Start(6)).unwrap();
+        assert_eq!(joiner.position(), 6);
+
+        let result = joiner.read_range(joiner.position(), 5).await.unwrap();
+        assert_eq!(result, b"world");
     }
 
     #[tokio::test]
@@ -378,7 +382,6 @@ mod tests {
         for chunk in chunks {
             recovered.extend_from_slice(&chunk.unwrap());
         }
-
         assert_eq!(recovered, data);
     }
 
@@ -406,7 +409,6 @@ mod tests {
 
             let joiner = EncryptedAsyncJoiner::new(store, root_ref).await.unwrap();
             let result = joiner.read_all().await.unwrap();
-
             assert_eq!(result, data);
         }
 
@@ -418,7 +420,17 @@ mod tests {
 
             let joiner = EncryptedAsyncJoiner::new(store, root_ref).await.unwrap();
             let result = joiner.read_all().await.unwrap();
+            assert_eq!(result, data);
+        }
 
+        #[tokio::test]
+        async fn test_encrypted_async_joiner_128_chunks() {
+            let data: Vec<u8> =
+                (0..DEFAULT_BODY_SIZE * 128).map(|i| (i % 256) as u8).collect();
+            let (root_ref, store) = encrypted_split_and_store(&data);
+
+            let joiner = EncryptedAsyncJoiner::new(store, root_ref).await.unwrap();
+            let result = joiner.read_all().await.unwrap();
             assert_eq!(result, data);
         }
 
@@ -435,8 +447,18 @@ mod tests {
             for chunk in chunks {
                 recovered.extend_from_slice(&chunk.unwrap());
             }
-
             assert_eq!(recovered, data);
+        }
+
+        #[tokio::test]
+        async fn test_encrypted_async_joiner_seek() {
+            let data = b"hello encrypted world";
+            let (root_ref, store) = encrypted_split_and_store(data);
+
+            let mut joiner = EncryptedAsyncJoiner::new(store, root_ref).await.unwrap();
+            joiner.seek(SeekFrom::Start(6)).unwrap();
+            let result = joiner.read_range(joiner.position(), 9).await.unwrap();
+            assert_eq!(result, b"encrypted");
         }
     }
 }

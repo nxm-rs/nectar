@@ -2,7 +2,7 @@
 //!
 //! This module provides streaming file operations using BMT chunks:
 //! - [`Splitter`]: Splits data into chunks, producing intermediate chunks as needed
-//! - [`Joiner`]: Reconstructs data from a root chunk address
+//! - [`Joiner`]: Reconstructs data from a root chunk address (always parallel)
 //!
 //! # Example
 //!
@@ -24,10 +24,10 @@
 mod builder;
 mod constants;
 pub mod error;
+mod frontier;
 mod joiner;
 #[cfg(feature = "async")]
 mod joiner_async;
-mod joiner_parallel;
 pub(crate) mod mode;
 mod read_at;
 mod splitter;
@@ -37,9 +37,10 @@ pub mod traits_async;
 mod tree;
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
 
 use crate::chunk::{ChunkAddress, ContentChunk};
+#[cfg(feature = "encryption")]
 use crate::chunk::encryption::EncryptedChunkRef;
 use crate::store::{ChunkGet, ChunkHas, ChunkPut};
 
@@ -47,14 +48,13 @@ pub use builder::SplitBuilder;
 #[cfg(feature = "encryption")]
 pub use builder::EncryptedSplitBuilder;
 pub use error::FileError;
-pub use joiner::{EncryptedJoiner, Joiner};
+pub use joiner::Joiner;
+#[cfg(feature = "encryption")]
+pub use joiner::EncryptedJoiner;
 #[cfg(feature = "async")]
 pub use joiner_async::AsyncJoiner;
 #[cfg(all(feature = "async", feature = "encryption"))]
 pub use joiner_async::EncryptedAsyncJoiner;
-pub use joiner_parallel::ParallelJoiner;
-#[cfg(feature = "encryption")]
-pub use joiner_parallel::EncryptedParallelJoiner;
 pub use read_at::ReadAt;
 pub use splitter::Splitter;
 #[cfg(feature = "encryption")]
@@ -65,8 +65,6 @@ pub use splitter_parallel::EncryptedParallelSplitter;
 #[cfg(feature = "async")]
 pub use traits_async::AsyncReadAt;
 pub use tree::{ChunkRange, TreeParams};
-
-// Extension traits are defined below, after all types are available
 
 /// Split data into chunks, returning root address and chunk list.
 pub fn split<const BODY_SIZE: usize>(
@@ -88,7 +86,7 @@ pub fn split_reader<R, S, const BODY_SIZE: usize>(
     sink: S,
 ) -> error::Result<(ChunkAddress, S)>
 where
-    R: Read,
+    R: std::io::Read,
     S: ChunkPut<BODY_SIZE>,
 {
     let mut splitter = Splitter::new(sink, size);
@@ -102,14 +100,9 @@ pub fn join<G, const BODY_SIZE: usize>(
     root: ChunkAddress,
 ) -> error::Result<Vec<u8>>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
 {
-    let mut joiner = Joiner::new(getter, root)?;
-    let mut data = vec![0u8; joiner.size() as usize];
-    joiner
-        .read_exact(&mut data)
-        .map_err(|e| FileError::Getter(Box::new(e)))?;
-    Ok(data)
+    Joiner::new(getter, root)?.read_all()
 }
 
 /// Split data into encrypted chunks, returning root reference and chunk list.
@@ -127,19 +120,15 @@ pub fn split_encrypted<const BODY_SIZE: usize>(
 }
 
 /// Join encrypted chunks into a byte vector.
+#[cfg(feature = "encryption")]
 pub fn join_encrypted<G, const BODY_SIZE: usize>(
     getter: G,
     root_ref: EncryptedChunkRef,
 ) -> error::Result<Vec<u8>>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
 {
-    let mut joiner = EncryptedJoiner::new(getter, root_ref)?;
-    let mut data = vec![0u8; joiner.size() as usize];
-    joiner
-        .read_exact(&mut data)
-        .map_err(|e| FileError::Getter(Box::new(e)))?;
-    Ok(data)
+    EncryptedJoiner::new(getter, root_ref)?.read_all()
 }
 
 /// Split data into chunks using parallel processing.
@@ -163,29 +152,31 @@ pub fn split_encrypted_parallel<const BODY_SIZE: usize>(
     Ok((root_ref, splitter.into_sink().into_chunks()))
 }
 
-/// Join chunks into a byte vector using parallel chunk fetching.
-pub fn join_parallel<G, const BODY_SIZE: usize>(
+/// Join chunks into a byte vector using async concurrent fetching.
+#[cfg(feature = "async")]
+pub async fn join_async<G, const BODY_SIZE: usize>(
     getter: G,
     root: ChunkAddress,
 ) -> error::Result<Vec<u8>>
 where
-    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+    G: crate::store::AsyncChunkGet<BODY_SIZE>,
 {
-    let joiner = ParallelJoiner::new(getter, root)?;
-    joiner.read_all()
+    AsyncJoiner::new(getter, root).await?.read_all().await
 }
 
-/// Join encrypted chunks into a byte vector using parallel chunk fetching.
-#[cfg(feature = "encryption")]
-pub fn join_encrypted_parallel<G, const BODY_SIZE: usize>(
+/// Join encrypted chunks into a byte vector using async concurrent fetching.
+#[cfg(all(feature = "async", feature = "encryption"))]
+pub async fn join_encrypted_async<G, const BODY_SIZE: usize>(
     getter: G,
     root_ref: EncryptedChunkRef,
 ) -> error::Result<Vec<u8>>
 where
-    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+    G: crate::store::AsyncChunkGet<BODY_SIZE>,
 {
-    let joiner = EncryptedParallelJoiner::new(getter, root_ref)?;
-    joiner.read_all()
+    EncryptedAsyncJoiner::new(getter, root_ref)
+        .await?
+        .read_all()
+        .await
 }
 
 impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
@@ -231,7 +222,7 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: ChunkGet<BODY_SIZE> {
     /// Create a joiner for reading file data.
     fn joiner(self, root: ChunkAddress) -> error::Result<Joiner<Self, BODY_SIZE>>
     where
-        Self: Sized,
+        Self: Clone + Send + Sync + Sized,
     {
         Joiner::new(self, root)
     }
@@ -239,7 +230,7 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: ChunkGet<BODY_SIZE> {
     /// Read entire file into memory.
     fn read_file(self, root: ChunkAddress) -> error::Result<Vec<u8>>
     where
-        Self: Sized,
+        Self: Clone + Send + Sync + Sized,
     {
         join(self, root)
     }
@@ -251,7 +242,7 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: ChunkGet<BODY_SIZE> {
         root_ref: EncryptedChunkRef,
     ) -> error::Result<EncryptedJoiner<Self, BODY_SIZE>>
     where
-        Self: Sized,
+        Self: Clone + Send + Sync + Sized,
     {
         EncryptedJoiner::new(self, root_ref)
     }
@@ -260,13 +251,69 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: ChunkGet<BODY_SIZE> {
     #[cfg(feature = "encryption")]
     fn read_encrypted_file(self, root_ref: EncryptedChunkRef) -> error::Result<Vec<u8>>
     where
-        Self: Sized,
+        Self: Clone + Send + Sync + Sized,
     {
         join_encrypted(self, root_ref)
     }
 }
 
 impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where T: ChunkGet<BODY_SIZE> {}
+
+/// Extension methods for async chunk getters.
+#[cfg(feature = "async")]
+pub trait AsyncChunkGetExt<const BODY_SIZE: usize>: crate::store::AsyncChunkGet<BODY_SIZE> {
+    /// Create an async joiner for reading file data.
+    fn async_joiner(
+        self,
+        root: ChunkAddress,
+    ) -> impl std::future::Future<Output = error::Result<AsyncJoiner<Self, BODY_SIZE>>> + Send
+    where
+        Self: Sized,
+    {
+        AsyncJoiner::new(self, root)
+    }
+
+    /// Read entire file into memory asynchronously.
+    fn read_file_async(
+        self,
+        root: ChunkAddress,
+    ) -> impl std::future::Future<Output = error::Result<Vec<u8>>> + Send
+    where
+        Self: Sized,
+    {
+        join_async(self, root)
+    }
+
+    /// Create an encrypted async joiner.
+    #[cfg(feature = "encryption")]
+    fn encrypted_async_joiner(
+        self,
+        root_ref: EncryptedChunkRef,
+    ) -> impl std::future::Future<Output = error::Result<EncryptedAsyncJoiner<Self, BODY_SIZE>>> + Send
+    where
+        Self: Sized,
+    {
+        EncryptedAsyncJoiner::new(self, root_ref)
+    }
+
+    /// Read entire encrypted file into memory asynchronously.
+    #[cfg(feature = "encryption")]
+    fn read_encrypted_file_async(
+        self,
+        root_ref: EncryptedChunkRef,
+    ) -> impl std::future::Future<Output = error::Result<Vec<u8>>> + Send
+    where
+        Self: Sized,
+    {
+        join_encrypted_async(self, root_ref)
+    }
+}
+
+#[cfg(feature = "async")]
+impl<T, const BODY_SIZE: usize> AsyncChunkGetExt<BODY_SIZE> for T where
+    T: crate::store::AsyncChunkGet<BODY_SIZE>
+{
+}
 
 /// Extension methods for chunk putters.
 pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> + Sized {

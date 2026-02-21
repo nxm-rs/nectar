@@ -64,6 +64,7 @@ pub(crate) fn tree_depth(length: u64, chunk_size: usize, ref_size: usize) -> usi
 
 /// Calculate subspan size for children of a node with given span, using the
 /// provided span multiplier table.
+#[inline]
 pub(crate) fn subspan_for_spans<const BODY_SIZE: usize>(
     span: u64,
     spans: &[u64; LEVEL_LIMIT],

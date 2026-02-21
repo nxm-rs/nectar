@@ -34,19 +34,23 @@ pub trait JoinMode: Sized + 'static {
 
     fn spans() -> &'static [u64; LEVEL_LIMIT];
 
+    #[inline]
     fn refs_per_chunk(body_size: usize) -> usize {
         body_size / Self::REF_SIZE
     }
 
+    #[inline]
     fn levels(length: u64, chunk_size: usize) -> usize {
         super::constants::tree_depth(length, chunk_size, Self::REF_SIZE)
     }
 
+    #[inline]
     fn subspan_size<const BS: usize>(span: u64) -> u64 {
         super::constants::subspan_for_spans::<BS>(span, Self::spans())
     }
 
     /// Compute the span covered by a child at `child_index` within a parent of `parent_span`.
+    #[inline]
     fn child_span<const BS: usize>(parent_span: u64, subspan: u64, child_index: usize) -> u64 {
         let refs_per_chunk = Self::refs_per_chunk(BS);
         if child_index == refs_per_chunk - 1 {
@@ -84,6 +88,7 @@ pub trait JoinMode: Sized + 'static {
     }
 
     /// Read chunk body at address with context. Returns body bytes (after decryption if needed).
+    #[inline]
     fn read_chunk_body<const BS: usize, G: ChunkGet<BS>>(
         getter: &G,
         address: &ChunkAddress,
@@ -144,6 +149,7 @@ impl JoinMode for PlainMode {
         &SPANS
     }
 
+    #[inline]
     fn root_address(input: &ChunkAddress) -> ChunkAddress {
         *input
     }
@@ -156,6 +162,7 @@ impl JoinMode for PlainMode {
         Ok((root, span, ()))
     }
 
+    #[inline]
     fn decode_body<const BS: usize>(
         chunk: ContentChunk<BS>,
         _context: &(),
@@ -164,6 +171,7 @@ impl JoinMode for PlainMode {
         Ok(chunk.data().clone())
     }
 
+    #[inline]
     fn parse_child_ref(
         body: &[u8],
         ref_start: usize,

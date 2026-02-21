@@ -8,8 +8,8 @@ use rand::{RngCore, rng};
 use nectar_primitives::chunk::encryption::{self, EncryptionKey, transcrypt, transcrypt_in_place};
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
 use nectar_primitives::file::{
-    EncryptedJoiner, EncryptedParallelJoiner, EncryptedParallelSplitter, EncryptedSplitter,
-    ParallelJoiner, ParallelSplitter, Splitter, split, split_encrypted,
+    EncryptedJoiner, EncryptedParallelSplitter, EncryptedSplitter, Joiner, ParallelSplitter,
+    Splitter, split, split_encrypted,
 };
 use nectar_primitives::store::{MemorySink, VecSink};
 use nectar_primitives::{DEFAULT_BODY_SIZE, bmt::SPAN_SIZE};
@@ -232,34 +232,8 @@ fn bench_encrypted_parallel_splitter(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_encrypted_joiner_sequential(c: &mut Criterion) {
-    let mut group = c.benchmark_group("encrypted_join_sequential");
-
-    for &(size, name) in SIZES {
-        let data = random_data(size);
-        let (root_ref, store) = encrypted_split_to_store(&data);
-
-        group.throughput(Throughput::Bytes(size));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(name),
-            &root_ref,
-            |b, root_ref| {
-                b.iter(|| {
-                    let mut joiner =
-                        EncryptedJoiner::new(store.clone(), root_ref.clone()).unwrap();
-                    let mut recovered = vec![0u8; size as usize];
-                    std::io::Read::read_exact(&mut joiner, &mut recovered).unwrap();
-                    black_box(recovered)
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
-fn bench_encrypted_joiner_parallel(c: &mut Criterion) {
-    let mut group = c.benchmark_group("encrypted_join_parallel");
+fn bench_encrypted_joiner(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encrypted_join");
 
     for &(size, name) in SIZES {
         let data = random_data(size);
@@ -272,7 +246,7 @@ fn bench_encrypted_joiner_parallel(c: &mut Criterion) {
             |b, root_ref| {
                 b.iter(|| {
                     let joiner =
-                        EncryptedParallelJoiner::new(store.clone(), root_ref.clone()).unwrap();
+                        EncryptedJoiner::new(store.clone(), root_ref.clone()).unwrap();
                     black_box(joiner.read_all().unwrap())
                 });
             },
@@ -363,7 +337,7 @@ fn bench_plain_vs_encrypted_join(c: &mut Criterion) {
             &root,
             |b, root| {
                 b.iter(|| {
-                    let joiner = ParallelJoiner::new(store.clone(), *root).unwrap();
+                    let joiner = Joiner::new(store.clone(), *root).unwrap();
                     black_box(joiner.read_all().unwrap())
                 });
             },
@@ -375,7 +349,7 @@ fn bench_plain_vs_encrypted_join(c: &mut Criterion) {
             |b, root_ref| {
                 b.iter(|| {
                     let joiner =
-                        EncryptedParallelJoiner::new(enc_store.clone(), root_ref.clone()).unwrap();
+                        EncryptedJoiner::new(enc_store.clone(), root_ref.clone()).unwrap();
                     black_box(joiner.read_all().unwrap())
                 });
             },
@@ -407,10 +381,8 @@ fn bench_encrypted_roundtrip(c: &mut Criterion) {
             |b, data| {
                 b.iter(|| {
                     let (root_ref, store) = encrypted_split_to_store(data);
-                    let mut joiner = EncryptedJoiner::new(store, root_ref).unwrap();
-                    let mut recovered = vec![0u8; size as usize];
-                    std::io::Read::read_exact(&mut joiner, &mut recovered).unwrap();
-                    black_box(recovered)
+                    let joiner = EncryptedJoiner::new(store, root_ref).unwrap();
+                    black_box(joiner.read_all().unwrap())
                 });
             },
         );
@@ -425,7 +397,7 @@ fn bench_encrypted_roundtrip(c: &mut Criterion) {
                     let root_ref = splitter.split(data).unwrap();
                     let store = splitter.into_sink();
                     let joiner =
-                        EncryptedParallelJoiner::new(store, root_ref).unwrap();
+                        EncryptedJoiner::new(store, root_ref).unwrap();
                     black_box(joiner.read_all().unwrap())
                 });
             },
@@ -444,8 +416,7 @@ criterion_group!(
     bench_decrypt_chunk_into,
     bench_encrypted_sequential_splitter,
     bench_encrypted_parallel_splitter,
-    bench_encrypted_joiner_sequential,
-    bench_encrypted_joiner_parallel,
+    bench_encrypted_joiner,
     bench_plain_vs_encrypted_split,
     bench_plain_vs_encrypted_join,
     bench_encrypted_roundtrip,

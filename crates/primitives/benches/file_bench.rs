@@ -12,7 +12,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use rand::{RngCore, rng};
 
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
-use nectar_primitives::file::{Joiner, ParallelJoiner, ParallelSplitter, Splitter, split};
+use nectar_primitives::file::{Joiner, ParallelSplitter, Splitter, split};
 use nectar_primitives::store::{MemorySink, VecSink};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
@@ -175,8 +175,8 @@ fn bench_incremental_writes(c: &mut Criterion) {
 // Joiner benchmarks
 // ---------------------------------------------------------------------------
 
-fn bench_joiner_sequential(c: &mut Criterion) {
-    let mut group = c.benchmark_group("file_join_sequential");
+fn bench_joiner(c: &mut Criterion) {
+    let mut group = c.benchmark_group("file_join");
 
     for &(size, name) in SIZES {
         let data = random_data(size);
@@ -185,68 +185,10 @@ fn bench_joiner_sequential(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &root, |b, root| {
             b.iter(|| {
-                let mut joiner = Joiner::new(store.clone(), *root).unwrap();
-                let mut recovered = vec![0u8; size as usize];
-                std::io::Read::read_exact(&mut joiner, &mut recovered).unwrap();
-                black_box(recovered)
-            });
-        });
-    }
-
-    group.finish();
-}
-
-fn bench_joiner_parallel(c: &mut Criterion) {
-    let mut group = c.benchmark_group("file_join_parallel");
-
-    for &(size, name) in SIZES {
-        let data = random_data(size);
-        let (root, store) = split_to_store(&data);
-
-        group.throughput(Throughput::Bytes(size));
-        group.bench_with_input(BenchmarkId::from_parameter(name), &root, |b, root| {
-            b.iter(|| {
-                let joiner = ParallelJoiner::new(store.clone(), *root).unwrap();
+                let joiner = Joiner::new(store.clone(), *root).unwrap();
                 black_box(joiner.read_all().unwrap())
             });
         });
-    }
-
-    group.finish();
-}
-
-fn bench_joiner_comparison(c: &mut Criterion) {
-    let mut group = c.benchmark_group("file_join_comparison");
-
-    for &(size, name) in COMPARISON_SIZES {
-        let data = random_data(size);
-        let (root, store) = split_to_store(&data);
-
-        group.throughput(Throughput::Bytes(size));
-
-        group.bench_with_input(
-            BenchmarkId::new("sequential", name),
-            &root,
-            |b, root| {
-                b.iter(|| {
-                    let mut joiner = Joiner::new(store.clone(), *root).unwrap();
-                    let mut recovered = vec![0u8; size as usize];
-                    std::io::Read::read_exact(&mut joiner, &mut recovered).unwrap();
-                    black_box(recovered)
-                });
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("parallel", name),
-            &root,
-            |b, root| {
-                b.iter(|| {
-                    let joiner = ParallelJoiner::new(store.clone(), *root).unwrap();
-                    black_box(joiner.read_all().unwrap())
-                });
-            },
-        );
     }
 
     group.finish();
@@ -272,21 +214,19 @@ fn bench_roundtrip(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
 
         group.bench_with_input(
-            BenchmarkId::new("sequential", name),
+            BenchmarkId::new("sequential_split", name),
             &data,
             |b, data| {
                 b.iter(|| {
                     let (root, store) = split_to_store(data);
-                    let mut joiner = Joiner::new(store, root).unwrap();
-                    let mut recovered = vec![0u8; size as usize];
-                    std::io::Read::read_exact(&mut joiner, &mut recovered).unwrap();
-                    black_box(recovered)
+                    let joiner = Joiner::new(store, root).unwrap();
+                    black_box(joiner.read_all().unwrap())
                 });
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("parallel", name),
+            BenchmarkId::new("parallel_split", name),
             &data,
             |b, data| {
                 b.iter(|| {
@@ -294,7 +234,7 @@ fn bench_roundtrip(c: &mut Criterion) {
                     let splitter = ParallelSplitter::new(sink);
                     let root = splitter.split(data).unwrap();
                     let store = splitter.into_sink();
-                    let joiner = ParallelJoiner::new(store, root).unwrap();
+                    let joiner = Joiner::new(store, root).unwrap();
                     black_box(joiner.read_all().unwrap())
                 });
             },
@@ -310,9 +250,7 @@ criterion_group!(
     bench_parallel_splitter,
     bench_splitter_comparison,
     bench_incremental_writes,
-    bench_joiner_sequential,
-    bench_joiner_parallel,
-    bench_joiner_comparison,
+    bench_joiner,
     bench_roundtrip,
 );
 criterion_main!(benches);

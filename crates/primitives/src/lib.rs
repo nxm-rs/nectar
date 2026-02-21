@@ -95,14 +95,15 @@ pub use store::{AsyncChunkGet, AsyncChunkGetter, AsyncChunkPut, AsyncChunkPutter
 
 // File operations (algorithms only)
 pub use file::{
-    ChunkGetExt, ChunkPutExt, ChunkRange, EncryptedJoiner, FileError, Joiner, ParallelJoiner,
-    ParallelSplitter, ReadAt, SplitBuilder, Splitter, TreeParams, join, join_encrypted, split,
-    split_reader,
+    ChunkGetExt, ChunkPutExt, ChunkRange, FileError, Joiner, ParallelSplitter, ReadAt,
+    SplitBuilder, Splitter, TreeParams, join, split, split_reader,
 };
 #[cfg(feature = "encryption")]
-pub use file::{EncryptedSplitter, split_encrypted};
+pub use file::{EncryptedJoiner, EncryptedSplitter, join_encrypted, split_encrypted};
 #[cfg(feature = "async")]
-pub use file::{AsyncJoiner, AsyncReadAt};
+pub use file::{AsyncJoiner, AsyncReadAt, AsyncChunkGetExt, join_async};
+#[cfg(all(feature = "async", feature = "encryption"))]
+pub use file::{EncryptedAsyncJoiner, join_encrypted_async};
 
 /// Default file splitter.
 pub type DefaultSplitter<S> = file::Splitter<S, DEFAULT_BODY_SIZE>;
@@ -112,4 +113,5 @@ pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
 #[cfg(feature = "encryption")]
 pub type DefaultEncryptedSplitter<S> = file::EncryptedSplitter<S, DEFAULT_BODY_SIZE>;
 /// Default encrypted file joiner.
+#[cfg(feature = "encryption")]
 pub type DefaultEncryptedJoiner<G> = file::EncryptedJoiner<G, DEFAULT_BODY_SIZE>;
