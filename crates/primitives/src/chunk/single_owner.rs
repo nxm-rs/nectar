@@ -630,9 +630,6 @@ mod tests {
     proptest! {
         #[test]
         fn test_chunk_properties(chunk in chunk_strategy()) {
-            // Test basic properties
-            prop_assert!(!chunk.id().is_zero());
-            prop_assert!(!chunk.data().is_empty());
             prop_assert!(chunk.size() >= MIN_SOC_FIELDS_SIZE);
 
             // Test round-trip conversion

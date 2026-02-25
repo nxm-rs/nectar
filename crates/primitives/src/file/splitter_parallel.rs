@@ -1,52 +1,71 @@
 //! Parallel file splitter using random-access data sources.
 
+use std::marker::PhantomData;
 use std::sync::Mutex;
 
-use bytes::Bytes;
 use rayon::prelude::*;
 
-use crate::bmt::{DEFAULT_BODY_SIZE, SPAN_SIZE};
-use crate::chunk::{Chunk, ChunkAddress, ContentChunk};
+use crate::bmt::DEFAULT_BODY_SIZE;
+use crate::chunk::ContentChunk;
 
-use super::constants::{REFS_PER_CHUNK, SPANS};
+use super::constants::{LEVEL_LIMIT, compute_spans_inline};
 use super::error::{FileError, Result};
+use super::mode::{PlainMode, SplitMode};
 use super::read_at::ReadAt;
-use super::traits::ChunkPut;
 use super::tree::TreeParams;
+use crate::store::ChunkPut;
+
+#[cfg(feature = "encryption")]
+use super::mode::EncryptedMode;
 
 /// Parallel file splitter using random-access data sources.
 ///
 /// Splits files by reading chunks at known offsets in parallel,
 /// then building intermediate levels.
-pub struct ParallelSplitter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
+pub struct GenericParallelSplitter<S, M: SplitMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
     S: ChunkPut<BODY_SIZE> + Send,
 {
     sink: Mutex<S>,
+    _mode: PhantomData<M>,
 }
 
-impl<S, const BODY_SIZE: usize> std::fmt::Debug for ParallelSplitter<S, BODY_SIZE>
+/// Plain (unencrypted) parallel splitter.
+pub type ParallelSplitter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericParallelSplitter<S, PlainMode, BODY_SIZE>;
+
+/// Encrypted parallel splitter.
+#[cfg(feature = "encryption")]
+pub type EncryptedParallelSplitter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericParallelSplitter<S, EncryptedMode, BODY_SIZE>;
+
+impl<S, M, const BODY_SIZE: usize> std::fmt::Debug for GenericParallelSplitter<S, M, BODY_SIZE>
 where
     S: ChunkPut<BODY_SIZE> + Send,
+    M: SplitMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ParallelSplitter").finish_non_exhaustive()
+        f.debug_struct("GenericParallelSplitter")
+            .finish_non_exhaustive()
     }
 }
 
-impl<S, const BODY_SIZE: usize> ParallelSplitter<S, BODY_SIZE>
+impl<S, M, const BODY_SIZE: usize> GenericParallelSplitter<S, M, BODY_SIZE>
 where
     S: ChunkPut<BODY_SIZE> + Send,
+    M: SplitMode + Send + Sync,
 {
     /// Create a parallel splitter with the given chunk sink.
     pub const fn new(sink: S) -> Self {
         Self {
             sink: Mutex::new(sink),
+            _mode: PhantomData,
         }
     }
 
     /// Split data from a random-access source.
-    pub fn split<R: ReadAt + Sync>(&self, source: &R) -> Result<ChunkAddress> {
+    pub fn split<R: ReadAt + Sync>(&self, source: &R) -> Result<M::RootRef> {
+        const { super::constants::assert_valid_body_size::<BODY_SIZE>() };
         let size = source.len();
         let tree = TreeParams::<BODY_SIZE>::new(size);
 
@@ -54,161 +73,129 @@ where
             return self.handle_empty();
         }
 
+        let spans = compute_spans_inline(BODY_SIZE / M::REF_SIZE);
+
         // Level 0: Create data chunks in parallel
-        let level0_addrs = self.create_data_chunks(source, &tree)?;
+        let level0_refs = self.create_data_chunks(source, &tree)?;
 
         // Build intermediate levels
-        self.build_intermediate_levels(level0_addrs, size)
+        self.build_intermediate_levels(level0_refs, size, &spans)
     }
 
     /// Consume the splitter and return the sink.
     pub fn into_sink(self) -> S {
-        self.sink.into_inner().unwrap()
+        self.sink.into_inner().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn handle_empty(&self) -> Result<ChunkAddress> {
-        let chunk = ContentChunk::<BODY_SIZE>::new(Bytes::new()).map_err(|e| match e {
-            crate::error::PrimitivesError::Chunk(c) => FileError::Chunk(c),
-            other => FileError::Sink(Box::new(other)),
-        })?;
-        let address = *chunk.address();
-        self.put_chunk(chunk)?;
-        Ok(address)
+    fn handle_empty(&self) -> Result<M::RootRef> {
+        let mut sink = self.sink.lock().map_err(|e| FileError::Sink(Box::new(std::io::Error::other(e.to_string()))))?;
+        M::process_empty::<BODY_SIZE, S>(&mut *sink)
     }
 
     fn create_data_chunks<R: ReadAt + Sync>(
         &self,
         source: &R,
         tree: &TreeParams<BODY_SIZE>,
-    ) -> Result<Vec<ChunkAddress>> {
+    ) -> Result<Vec<M::RefBytes>> {
         let data_chunks = tree.data_chunks();
         let size = tree.size();
 
-        // Parallel chunk creation
-        let results: Vec<Result<ChunkAddress>> = (0..data_chunks)
+        let results: Vec<Result<M::RefBytes>> = (0..data_chunks)
             .into_par_iter()
             .map(|i| {
                 let offset = i * BODY_SIZE as u64;
                 let chunk_size = ((size - offset) as usize).min(BODY_SIZE);
 
-                // Read chunk data
                 let mut buf = vec![0u8; chunk_size];
                 source
                     .read_at(offset, &mut buf)
                     .map_err(|e| FileError::Sink(Box::new(e)))?;
 
-                // Calculate span for this chunk
                 let span = if i + 1 == data_chunks {
-                    size - offset // Last chunk
+                    size - offset
                 } else {
                     BODY_SIZE as u64
                 };
 
-                // Create chunk with span header
-                let mut chunk_bytes = Vec::with_capacity(SPAN_SIZE + chunk_size);
-                chunk_bytes.extend_from_slice(&span.to_le_bytes());
-                chunk_bytes.extend_from_slice(&buf);
+                let chunk_bytes =
+                    super::helpers::build_intermediate_payload(span, &buf);
 
-                let chunk = ContentChunk::<BODY_SIZE>::try_from(Bytes::from(chunk_bytes))
-                    .map_err(|e| match e {
-                        crate::error::PrimitivesError::Chunk(c) => FileError::Chunk(c),
-                        other => FileError::Sink(Box::new(other)),
-                    })?;
-
-                let address = *chunk.address();
+                let (chunk, ref_bytes) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
                 self.put_chunk(chunk)?;
-                Ok(address)
+                Ok(ref_bytes)
             })
             .collect();
 
-        // Collect results, propagating any errors
         results.into_iter().collect()
     }
 
     fn build_intermediate_levels(
         &self,
-        mut addrs: Vec<ChunkAddress>,
+        mut refs: Vec<M::RefBytes>,
         total_size: u64,
-    ) -> Result<ChunkAddress> {
+        spans: &[u64; LEVEL_LIMIT],
+    ) -> Result<M::RootRef> {
         let mut level = 1;
 
-        while addrs.len() > 1 {
-            addrs = self.build_level(&addrs, level, total_size)?;
+        while refs.len() > 1 {
+            refs = self.build_level(&refs, level, total_size, spans)?;
             level += 1;
         }
 
-        Ok(addrs.into_iter().next().unwrap())
+        // Extract root reference from the single remaining ref
+        M::extract_root(refs[0].as_ref())
     }
 
     fn build_level(
         &self,
-        addrs: &[ChunkAddress],
+        refs: &[M::RefBytes],
         level: usize,
         total_size: u64,
-    ) -> Result<Vec<ChunkAddress>> {
-        let chunks_at_level = addrs.len().div_ceil(REFS_PER_CHUNK);
+        spans: &[u64; LEVEL_LIMIT],
+    ) -> Result<Vec<M::RefBytes>> {
+        let refs_per_chunk = M::refs_per_chunk(BODY_SIZE);
+        let chunks_at_level = refs.len().div_ceil(refs_per_chunk);
+        let max_span = spans[level] * BODY_SIZE as u64;
 
-
-        // Build intermediate chunks in parallel
-        let results: Vec<Result<ChunkAddress>> = (0..chunks_at_level)
+        let results: Vec<Result<M::RefBytes>> = (0..chunks_at_level)
             .into_par_iter()
             .map(|i| {
-                let start = i * REFS_PER_CHUNK;
-                let end = (start + REFS_PER_CHUNK).min(addrs.len());
-                let refs = &addrs[start..end];
+                let start = i * refs_per_chunk;
+                let end = (start + refs_per_chunk).min(refs.len());
+                let child_refs = &refs[start..end];
 
                 // Single reference: carry up without wrapping (dangling chunk optimization)
-                if refs.len() == 1 {
-                    return Ok(refs[0]);
+                if child_refs.len() == 1 {
+                    return Ok(child_refs[0].clone());
                 }
 
-                // Calculate span for this intermediate chunk
-                let span = self.calculate_intermediate_span(level, i, chunks_at_level, total_size);
+                let span = if i + 1 == chunks_at_level {
+                    total_size.saturating_sub(i as u64 * max_span)
+                } else {
+                    max_span
+                };
 
-                // Build chunk data from references
-                let mut chunk_bytes = Vec::with_capacity(SPAN_SIZE + refs.len() * 32);
-                chunk_bytes.extend_from_slice(&span.to_le_bytes());
-                for addr in refs {
-                    chunk_bytes.extend_from_slice(addr.as_ref());
-                }
+                let ref_data: Vec<u8> = child_refs
+                    .iter()
+                    .flat_map(|r| r.as_ref())
+                    .copied()
+                    .collect();
+                let chunk_bytes =
+                    super::helpers::build_intermediate_payload(span, &ref_data);
 
-                let chunk = ContentChunk::<BODY_SIZE>::try_from(Bytes::from(chunk_bytes))
-                    .map_err(|e| match e {
-                        crate::error::PrimitivesError::Chunk(c) => FileError::Chunk(c),
-                        other => FileError::Sink(Box::new(other)),
-                    })?;
-
-                let address = *chunk.address();
+                let (chunk, ref_bytes) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
                 self.put_chunk(chunk)?;
-                Ok(address)
+                Ok(ref_bytes)
             })
             .collect();
 
         results.into_iter().collect()
     }
 
-    fn calculate_intermediate_span(
-        &self,
-        level: usize,
-        chunk_index: usize,
-        chunks_at_level: usize,
-        total_size: u64,
-    ) -> u64 {
-        let max_span = SPANS[level] * BODY_SIZE as u64;
-
-        if chunk_index + 1 == chunks_at_level {
-            // Last chunk at this level
-            let preceding = chunk_index as u64 * max_span;
-            total_size.saturating_sub(preceding)
-        } else {
-            max_span
-        }
-    }
-
     fn put_chunk(&self, chunk: ContentChunk<BODY_SIZE>) -> Result<()> {
         self.sink
             .lock()
-            .unwrap()
+            .map_err(|e| FileError::Sink(Box::new(std::io::Error::other(e.to_string()))))?
             .put(chunk)
             .map_err(FileError::sink)
     }
@@ -217,7 +204,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{join, split, MemorySink, VecSink};
+    use crate::file::{join, split};
+    use crate::store::{MemorySink, VecSink};
 
     #[test]
     fn test_parallel_splitter_empty() {
@@ -330,5 +318,100 @@ mod tests {
 
         let recovered = join(&sink, root).unwrap();
         assert_eq!(recovered, data);
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use super::*;
+        use crate::file::{join, split_encrypted, EncryptedParallelSplitter};
+        use crate::store::MemorySink;
+
+        #[test]
+        fn test_encrypted_parallel_splitter_empty() {
+            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedParallelSplitter::new(sink);
+
+            let data: &[u8] = &[];
+            let root_ref = splitter.split(&data).unwrap();
+            let sink = splitter.into_sink();
+
+            assert_eq!(sink.len(), 1);
+            assert_eq!(Vec::from(&root_ref).len(), 64);
+        }
+
+        #[test]
+        fn test_encrypted_parallel_splitter_small() {
+            let data = b"hello world";
+            let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedParallelSplitter::new(sink);
+
+            let root_ref = splitter.split(&data.as_slice()).unwrap();
+            let sink = splitter.into_sink();
+
+            assert_eq!(sink.len(), 1);
+
+            let recovered = join(&sink, root_ref).unwrap();
+            assert_eq!(recovered, data);
+        }
+
+        #[test]
+        fn test_encrypted_parallel_splitter_two_chunks() {
+            let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
+            let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedParallelSplitter::new(sink);
+
+            let root_ref = splitter.split(&data.as_slice()).unwrap();
+            let sink = splitter.into_sink();
+
+            assert_eq!(sink.len(), 3);
+
+            let recovered = join(&sink, root_ref).unwrap();
+            assert_eq!(recovered, data);
+        }
+
+        #[test]
+        fn test_encrypted_parallel_matches_sequential() {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 123)
+                .map(|i| (i % 256) as u8)
+                .collect();
+
+            // Parallel encrypted split
+            let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedParallelSplitter::new(sink);
+            let par_ref = splitter.split(&data.as_slice()).unwrap();
+            let par_sink = splitter.into_sink();
+
+            // Sequential encrypted split
+            let (seq_ref, seq_chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+
+            // Chunk counts must match
+            assert_eq!(par_sink.len(), seq_chunks.len());
+
+            // Both must round-trip correctly
+            let par_recovered = join(&par_sink, par_ref).unwrap();
+            assert_eq!(par_recovered, data);
+
+            use std::collections::HashMap;
+            use crate::chunk::Chunk;
+            let seq_store: HashMap<_, _> =
+                seq_chunks.into_iter().map(|c| (*c.address(), c)).collect();
+            let seq_recovered = join(&seq_store, seq_ref).unwrap();
+            assert_eq!(seq_recovered, data);
+        }
+
+        #[test]
+        fn test_encrypted_parallel_nondeterministic() {
+            let data = b"test determinism";
+            let sink1 = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let splitter1 = EncryptedParallelSplitter::new(sink1);
+            let ref1 = splitter1.split(&data.as_slice()).unwrap();
+
+            let sink2 = VecSink::<DEFAULT_BODY_SIZE>::new();
+            let splitter2 = EncryptedParallelSplitter::new(sink2);
+            let ref2 = splitter2.split(&data.as_slice()).unwrap();
+
+            // Different random keys each time
+            assert_ne!(ref1.address(), ref2.address());
+        }
     }
 }

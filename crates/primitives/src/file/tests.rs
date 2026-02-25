@@ -8,7 +8,8 @@ use std::io::Write;
 use alloy_primitives::hex;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::file::{Splitter, VecSink};
+use crate::file::Splitter;
+use crate::store::VecSink;
 
 const CHUNK_SIZE: usize = DEFAULT_BODY_SIZE;
 
@@ -63,110 +64,207 @@ fn run_vector_test(size: usize, expected_hex: &str) {
 }
 
 #[test]
-fn test_go_vector_0_31_bytes() {
-    run_vector_test(TEST_VECTORS[0].0, TEST_VECTORS[0].1);
+fn test_go_vectors() {
+    for (i, &(size, expected)) in TEST_VECTORS.iter().enumerate() {
+        run_vector_test(size, expected);
+        eprintln!("  vector {i}: {size} bytes OK");
+    }
 }
 
-#[test]
-fn test_go_vector_1_32_bytes() {
-    run_vector_test(TEST_VECTORS[1].0, TEST_VECTORS[1].1);
-}
-
-#[test]
-fn test_go_vector_2_33_bytes() {
-    run_vector_test(TEST_VECTORS[2].0, TEST_VECTORS[2].1);
-}
-
-#[test]
-fn test_go_vector_3_63_bytes() {
-    run_vector_test(TEST_VECTORS[3].0, TEST_VECTORS[3].1);
-}
-
-#[test]
-fn test_go_vector_4_64_bytes() {
-    run_vector_test(TEST_VECTORS[4].0, TEST_VECTORS[4].1);
-}
-
-#[test]
-fn test_go_vector_5_65_bytes() {
-    run_vector_test(TEST_VECTORS[5].0, TEST_VECTORS[5].1);
-}
-
-#[test]
-fn test_go_vector_6_one_chunk() {
-    run_vector_test(TEST_VECTORS[6].0, TEST_VECTORS[6].1);
-}
-
-#[test]
-fn test_go_vector_7_chunk_plus_31() {
-    run_vector_test(TEST_VECTORS[7].0, TEST_VECTORS[7].1);
-}
-
-#[test]
-fn test_go_vector_8_chunk_plus_32() {
-    run_vector_test(TEST_VECTORS[8].0, TEST_VECTORS[8].1);
-}
-
-#[test]
-fn test_go_vector_9_chunk_plus_63() {
-    run_vector_test(TEST_VECTORS[9].0, TEST_VECTORS[9].1);
-}
-
-#[test]
-fn test_go_vector_10_chunk_plus_64() {
-    run_vector_test(TEST_VECTORS[10].0, TEST_VECTORS[10].1);
-}
-
-#[test]
-fn test_go_vector_11_two_chunks() {
-    run_vector_test(TEST_VECTORS[11].0, TEST_VECTORS[11].1);
-}
-
-#[test]
-fn test_go_vector_12_two_chunks_plus_32() {
-    run_vector_test(TEST_VECTORS[12].0, TEST_VECTORS[12].1);
-}
-
-#[test]
-fn test_go_vector_13_128_chunks() {
-    run_vector_test(TEST_VECTORS[13].0, TEST_VECTORS[13].1);
-}
-
-#[test]
-fn test_go_vector_14_128_chunks_plus_31() {
-    run_vector_test(TEST_VECTORS[14].0, TEST_VECTORS[14].1);
-}
-
-#[test]
-fn test_go_vector_15_128_chunks_plus_32() {
-    run_vector_test(TEST_VECTORS[15].0, TEST_VECTORS[15].1);
-}
-
-#[test]
-fn test_go_vector_16_128_chunks_plus_64() {
-    run_vector_test(TEST_VECTORS[16].0, TEST_VECTORS[16].1);
-}
-
-#[test]
-fn test_go_vector_17_129_chunks() {
-    run_vector_test(TEST_VECTORS[17].0, TEST_VECTORS[17].1);
-}
-
-#[test]
-fn test_go_vector_18_130_chunks() {
-    run_vector_test(TEST_VECTORS[18].0, TEST_VECTORS[18].1);
-}
-
-/// 64MB file - run with: cargo test --ignored
+/// 64MB+ files - run with: cargo test --ignored
 #[test]
 #[ignore]
-fn test_go_vector_19_64mb() {
-    run_vector_test(LARGE_TEST_VECTORS[0].0, LARGE_TEST_VECTORS[0].1);
+fn test_go_vectors_large() {
+    for (i, &(size, expected)) in LARGE_TEST_VECTORS.iter().enumerate() {
+        run_vector_test(size, expected);
+        eprintln!("  large vector {i}: {size} bytes OK");
+    }
 }
 
-/// 64MB + 32 bytes - run with: cargo test --ignored
-#[test]
-#[ignore]
-fn test_go_vector_20_64mb_plus_32() {
-    run_vector_test(LARGE_TEST_VECTORS[1].0, LARGE_TEST_VECTORS[1].1);
+// Encrypted round-trip tests (matching Bee's TestEncryptDecrypt sizes)
+#[cfg(feature = "encryption")]
+mod encrypted {
+    use std::collections::HashMap;
+
+    use crate::bmt::DEFAULT_BODY_SIZE;
+    use crate::chunk::{Chunk, ContentChunk};
+    use crate::file::{join, split_encrypted};
+
+    /// Sizes matching Bee's TestEncryptDecrypt test suite.
+    const TEST_SIZES: &[usize] = &[
+        0,
+        10,
+        100,
+        1000,
+        4095,
+        4096,
+        4097,
+        4096 * 2,
+        4096 * 64,
+        4096 * 64 + 1,
+        4096 * 65,
+        1_000_000,
+    ];
+
+    fn run_encrypted_roundtrip(size: usize) {
+        let data: Vec<u8> = (0..size).map(|i| (i % 255) as u8).collect();
+
+        let (root_ref, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+
+        assert_eq!(Vec::from(&root_ref).len(), 64, "Root ref must be 64 bytes for size {size}");
+
+        // Build HashMap store from chunks
+        let store: HashMap<_, _> = chunks
+            .into_iter()
+            .map(|c| (*c.address(), c))
+            .collect::<HashMap<_, ContentChunk<DEFAULT_BODY_SIZE>>>();
+
+        let recovered = join(&store, root_ref).unwrap();
+        assert_eq!(
+            recovered, data,
+            "Round-trip failed for size {size}"
+        );
+    }
+
+    #[test]
+    fn encrypted_roundtrip_all_sizes() {
+        for &size in TEST_SIZES {
+            run_encrypted_roundtrip(size);
+            eprintln!("  encrypted roundtrip: {size} bytes OK");
+        }
+    }
+
+    #[test]
+    fn encrypted_chunk_count_single() {
+        // Single chunk file: 1 encrypted chunk stored
+        let data = b"small data";
+        let (_, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn encrypted_chunk_count_two_data() {
+        // 4097 bytes → 2 data chunks + 1 intermediate = 3
+        let data = vec![0xAB; 4097];
+        let (_, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        assert_eq!(chunks.len(), 3);
+    }
+
+    #[test]
+    fn encrypted_nondeterministic() {
+        // Two encryptions of the same data produce different ciphertexts
+        // (different random keys each time)
+        let data = b"test determinism";
+        let (ref1, _) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (ref2, _) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+
+        // Root addresses differ because encryption keys are random
+        assert_ne!(ref1.address(), ref2.address());
+    }
+}
+
+mod split_source_tests {
+    use crate::file::{ChunkGetExt, split_source, split_source_into};
+    use crate::store::MemorySink;
+    use crate::bmt::DEFAULT_BODY_SIZE;
+
+    type Store = MemorySink<DEFAULT_BODY_SIZE>;
+
+    #[test]
+    fn split_source_slice() {
+        let data = b"hello";
+        let (root, store) = split_source::<_, DEFAULT_BODY_SIZE>(data.as_slice()).unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn split_source_vec() {
+        let data = vec![0xAB; 8192];
+        let (root, store) = split_source::<_, DEFAULT_BODY_SIZE>(data.as_slice()).unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn split_source_bytes() {
+        let data = bytes::Bytes::from_static(b"bytes data");
+        let (root, store) = split_source::<_, DEFAULT_BODY_SIZE>(&data).unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn split_source_into_sink() {
+        let data = b"into sink test";
+        let sink = Store::new();
+        let (root, store) = split_source_into::<_, _, DEFAULT_BODY_SIZE>(data.as_slice(), sink).unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use crate::file::{ChunkGetExt, split_source_encrypted};
+        use crate::bmt::DEFAULT_BODY_SIZE;
+
+        #[test]
+        fn split_source_encrypted_roundtrip() {
+            let data = b"secret extension trait data";
+            let (enc_ref, store) =
+                split_source_encrypted::<_, DEFAULT_BODY_SIZE>(data.as_slice()).unwrap();
+            let recovered = store.read_file(enc_ref).unwrap();
+            assert_eq!(recovered, data);
+        }
+    }
+}
+
+mod write_file_ext {
+    use crate::file::{ChunkGetExt, ChunkPutExt};
+    use crate::store::MemorySink;
+    use crate::bmt::DEFAULT_BODY_SIZE;
+
+    #[test]
+    fn write_file_roundtrip() {
+        let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let addr = store.write_file(b"hello swarm").unwrap();
+        let recovered = store.read_file(addr).unwrap();
+        assert_eq!(recovered, b"hello swarm");
+    }
+
+    #[test]
+    fn write_file_large() {
+        let data = vec![0xAB; 8192];
+        let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let addr = store.write_file(&data).unwrap();
+        let recovered = store.read_file(addr).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn writer_roundtrip() {
+        use std::io::Write;
+        let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let data = b"streaming via writer";
+        let mut writer = store.writer(data.len() as u64);
+        writer.write_all(data).unwrap();
+        let (root, _) = writer.finish().unwrap();
+        let recovered = store.read_file(root).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use crate::file::{ChunkGetExt, ChunkPutExt};
+        use crate::store::MemorySink;
+        use crate::bmt::DEFAULT_BODY_SIZE;
+
+        #[test]
+        fn write_encrypted_file_roundtrip() {
+            let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+            let enc_ref = store.write_encrypted_file(b"secret data").unwrap();
+            let recovered = store.read_file(enc_ref).unwrap();
+            assert_eq!(recovered, b"secret data");
+        }
+    }
 }

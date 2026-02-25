@@ -1,12 +1,12 @@
-//! Chunk storage implementations.
+//! Typed chunk storage implementations.
 
 use std::collections::HashMap;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{Chunk, ChunkAddress, ContentChunk};
 
-use super::traits::{ChunkGet, ChunkHas, ChunkPut};
-use super::error::FileError;
+use super::ChunkStoreError;
+use super::typed::{ChunkGet, ChunkHas, ChunkPut};
 
 /// In-memory chunk storage using a HashMap.
 #[derive(Debug, Clone)]
@@ -64,30 +64,37 @@ impl<const BODY_SIZE: usize> ChunkPut<BODY_SIZE> for MemorySink<BODY_SIZE> {
 }
 
 impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for MemorySink<BODY_SIZE> {
-    type Error = FileError;
+    type Error = ChunkStoreError;
 
     fn get(&self, address: &ChunkAddress) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
         self.chunks
             .get(address)
             .cloned()
-            .ok_or_else(|| FileError::ChunkNotFound(*address))
-    }
-}
-
-impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for &MemorySink<BODY_SIZE> {
-    type Error = FileError;
-
-    fn get(&self, address: &ChunkAddress) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
-        self.chunks
-            .get(address)
-            .cloned()
-            .ok_or_else(|| FileError::ChunkNotFound(*address))
+            .ok_or_else(|| ChunkStoreError::not_found(address))
     }
 }
 
 impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for MemorySink<BODY_SIZE> {
     fn has(&self, address: &ChunkAddress) -> bool {
         self.chunks.contains_key(address)
+    }
+}
+
+// --- ChunkGet / ChunkHas impls for HashMap ---
+
+impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
+    type Error = ChunkStoreError;
+
+    fn get(&self, address: &ChunkAddress) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
+        self.get(address)
+            .cloned()
+            .ok_or_else(|| ChunkStoreError::not_found(address))
+    }
+}
+
+impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for HashMap<ChunkAddress, ContentChunk<BODY_SIZE>> {
+    fn has(&self, address: &ChunkAddress) -> bool {
+        self.contains_key(address)
     }
 }
 

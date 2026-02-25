@@ -55,6 +55,17 @@ pub enum FileError {
     /// Underlying chunk error.
     #[error("chunk error: {0}")]
     Chunk(#[from] crate::chunk::error::ChunkError),
+
+    /// Encryption error.
+    #[error("encryption error: {0}")]
+    Encryption(#[from] crate::chunk::encryption::EncryptionError),
+
+    /// Invalid entry reference length (expected 32 or 64 bytes).
+    #[error("invalid entry reference length: {len} (expected 32 or 64)")]
+    InvalidEntryRef {
+        /// Actual byte length of the reference.
+        len: usize,
+    },
 }
 
 impl FileError {

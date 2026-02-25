@@ -1,0 +1,36 @@
+//! XOR obfuscation key for mantaray node serialisation.
+
+/// 32-byte XOR obfuscation key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObfuscationKey([u8; 32]);
+
+impl ObfuscationKey {
+    /// All-zero key (no obfuscation).
+    pub const ZERO: Self = Self([0u8; 32]);
+
+    /// Raw bytes of the key.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Generate a random obfuscation key.
+    #[cfg(feature = "std")]
+    pub fn generate() -> Self {
+        use rand::Rng;
+        let mut bytes = [0u8; 32];
+        rand::rng().fill(&mut bytes);
+        Self(bytes)
+    }
+}
+
+impl From<[u8; 32]> for ObfuscationKey {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl Default for ObfuscationKey {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}

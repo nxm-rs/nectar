@@ -150,6 +150,49 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     }
 }
 
+/// Result of encrypting a content chunk.
+#[cfg(feature = "encryption")]
+#[derive(Debug, Clone)]
+pub struct EncryptedContentChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
+    /// The encrypted chunk (ciphertext hashed to a new address).
+    pub chunk: ContentChunk<BODY_SIZE>,
+    /// The encrypted reference (address + decryption key).
+    pub encrypted_ref: super::encryption::EncryptedChunkRef,
+}
+
+#[cfg(feature = "encryption")]
+impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
+    /// Encrypt this chunk, returning the encrypted chunk and its reference.
+    ///
+    /// The returned `EncryptedContentChunk` contains:
+    /// - `chunk`: a new `ContentChunk` whose data is the ciphertext
+    /// - `encrypted_ref`: the 64-byte reference (new address + decryption key)
+    ///
+    /// ```
+    /// # use nectar_primitives::{Chunk, ContentChunk};
+    /// # use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+    /// let chunk = ContentChunk::<DEFAULT_BODY_SIZE>::new(b"secret data".to_vec()).unwrap();
+    /// let encrypted = chunk.encrypt().unwrap();
+    ///
+    /// // The encrypted chunk has a different address
+    /// assert_ne!(chunk.address(), encrypted.chunk.address());
+    /// ```
+    pub fn encrypt(&self) -> Result<EncryptedContentChunk<BODY_SIZE>> {
+        let raw: Bytes = self.clone().into(); // span || data
+        let (key, ciphertext) = super::encryption::encrypt_chunk::<BODY_SIZE>(&raw)?;
+        // try_from parses as span || data, matching the encrypted layout
+        let encrypted_chunk = Self::try_from(Bytes::from(ciphertext))?;
+        let encrypted_ref = super::encryption::EncryptedChunkRef::new(
+            *encrypted_chunk.address(),
+            key,
+        );
+        Ok(EncryptedContentChunk {
+            chunk: encrypted_chunk,
+            encrypted_ref,
+        })
+    }
+}
+
 impl<const BODY_SIZE: usize> Chunk for ContentChunk<BODY_SIZE> {
     type Header = ContentChunkHeader;
 

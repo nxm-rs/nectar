@@ -26,6 +26,10 @@ thiserror.workspace = true
 once_cell.workspace = true
 serde = { workspace = true, optional = true }
 
+# key material protection
+subtle.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
+
 # synchronization
 parking_lot = "0.12"
 
@@ -72,6 +76,7 @@ arbitrary = [
 	"dep:arbitrary",
 	"alloy-primitives/arbitrary",
 ]
+encryption = ["dep:rand"]
 async = ["dep:tokio", "dep:futures"]
 
 [[bench]]
@@ -93,3 +98,8 @@ harness = false
 [[bench]]
 name = "file_bench"
 harness = false
+
+[[bench]]
+name = "encryption_bench"
+harness = false
+required-features = ["encryption"]
