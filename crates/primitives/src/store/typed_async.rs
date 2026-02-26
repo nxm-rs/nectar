@@ -72,17 +72,17 @@ pub trait AsyncChunkPut<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: Send + Sync
 
 /// Adapter that wraps a sync `ChunkPut` in a `Mutex` to implement `AsyncChunkPut`.
 #[derive(Debug)]
-pub struct AsyncChunkPutAdapter<T>(std::sync::Mutex<T>);
+pub struct AsyncChunkPutAdapter<T>(parking_lot::Mutex<T>);
 
 impl<T> AsyncChunkPutAdapter<T> {
     /// Wrap a sync `ChunkPut` for use in async contexts.
     pub fn new(inner: T) -> Self {
-        Self(std::sync::Mutex::new(inner))
+        Self(parking_lot::Mutex::new(inner))
     }
 
     /// Consume the adapter and return the inner store.
     pub fn into_inner(self) -> T {
-        self.0.into_inner().expect("mutex not poisoned")
+        self.0.into_inner()
     }
 }
 
@@ -94,7 +94,7 @@ where
     type Error = T::Error;
 
     async fn put(&self, chunk: ContentChunk<BODY_SIZE>) -> Result<(), Self::Error> {
-        self.0.lock().expect("mutex not poisoned").put(chunk)
+        self.0.lock().put(chunk)
     }
 }
 

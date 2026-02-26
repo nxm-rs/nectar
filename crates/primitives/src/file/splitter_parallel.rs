@@ -1,7 +1,8 @@
 //! Parallel file splitter using random-access data sources.
 
 use std::marker::PhantomData;
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 use rayon::prelude::*;
 
@@ -84,11 +85,11 @@ where
 
     /// Consume the splitter and return the sink.
     pub fn into_sink(self) -> S {
-        self.sink.into_inner().unwrap_or_else(|e| e.into_inner())
+        self.sink.into_inner()
     }
 
     fn handle_empty(&self) -> Result<M::RootRef> {
-        let mut sink = self.sink.lock().map_err(|e| FileError::Sink(Box::new(std::io::Error::other(e.to_string()))))?;
+        let mut sink = self.sink.lock();
         M::process_empty::<BODY_SIZE, S>(&mut *sink)
     }
 
@@ -193,11 +194,7 @@ where
     }
 
     fn put_chunk(&self, chunk: ContentChunk<BODY_SIZE>) -> Result<()> {
-        self.sink
-            .lock()
-            .map_err(|e| FileError::Sink(Box::new(std::io::Error::other(e.to_string()))))?
-            .put(chunk)
-            .map_err(FileError::sink)
+        self.sink.lock().put(chunk).map_err(FileError::sink)
     }
 }
 
