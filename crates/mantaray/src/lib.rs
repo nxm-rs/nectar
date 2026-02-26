@@ -69,7 +69,7 @@ pub mod obfuscation;
 pub use error::{MantarayError, Result};
 pub use manifest_ref::ManifestRef;
 pub use mode::NodeEntry;
-pub use node::{Fork, Node, NodeType};
+pub use node::{Fork, Node, NodeType, Prefix};
 pub use obfuscation::ObfuscationKey;
 
 // Re-export typed storage traits from primitives.

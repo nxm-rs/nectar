@@ -5,11 +5,76 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
 use nectar_primitives::store::{ChunkGet, ChunkPut};
-
 use crate::error::{MantarayError, Result};
 use crate::mode::NodeEntry;
 use crate::obfuscation::ObfuscationKey;
 use crate::{NODE_PREFIX_MAX_SIZE, PATH_SEPARATOR};
+
+/// Inline-only byte buffer for fork prefixes (max 30 bytes).
+///
+/// Always stores data inline — no heap allocation, no branching.
+/// 31 bytes total (1 len + 30 data).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Prefix {
+    len: u8,
+    data: [u8; NODE_PREFIX_MAX_SIZE],
+}
+
+impl Prefix {
+    /// Create an empty prefix.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            len: 0,
+            data: [0u8; NODE_PREFIX_MAX_SIZE],
+        }
+    }
+
+    /// Create a prefix from a byte slice. Panics if `src.len() > 30`.
+    #[inline]
+    pub fn from_slice(src: &[u8]) -> Self {
+        debug_assert!(src.len() <= NODE_PREFIX_MAX_SIZE);
+        let mut data = [0u8; NODE_PREFIX_MAX_SIZE];
+        data[..src.len()].copy_from_slice(src);
+        Self {
+            len: src.len() as u8,
+            data,
+        }
+    }
+
+    /// Returns the prefix length in bytes.
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Returns true if the prefix is empty.
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns the full 30-byte backing array (zero-padded beyond `len`).
+    #[inline]
+    pub const fn padded_bytes(&self) -> &[u8; NODE_PREFIX_MAX_SIZE] {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for Prefix {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        &self.data[..self.len as usize]
+    }
+}
+
+impl std::fmt::Debug for Prefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Prefix({:?})", &**self)
+    }
+}
 
 bitflags::bitflags! {
     /// Bitflags encoding the kind of a mantaray node.
@@ -62,8 +127,8 @@ impl<E: NodeEntry> Default for Node<E> {
 /// A fork in the mantaray trie, consisting of a prefix and a child node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fork<E: NodeEntry = ChunkAddress> {
-    /// The prefix bytes for this fork edge.
-    pub(crate) prefix: Vec<u8>,
+    /// Inline-only prefix (max 30 bytes). No heap allocation, no branching.
+    pub(crate) prefix: Prefix,
     /// The child node.
     pub(crate) node: Node<E>,
 }
@@ -71,7 +136,7 @@ pub struct Fork<E: NodeEntry = ChunkAddress> {
 impl<E: NodeEntry> Default for Fork<E> {
     fn default() -> Self {
         Self {
-            prefix: Vec::new(),
+            prefix: Prefix::new(),
             node: Node::default(),
         }
     }
@@ -327,7 +392,7 @@ impl<E: NodeEntry> Node<E> {
                 self.forks.insert(
                     path[0],
                     Fork {
-                        prefix: prefix.to_vec(),
+                        prefix: Prefix::from_slice(prefix),
                         node: nn,
                     },
                 );
@@ -346,7 +411,7 @@ impl<E: NodeEntry> Node<E> {
             self.forks.insert(
                 path[0],
                 Fork {
-                    prefix: path.to_vec(),
+                    prefix: Prefix::from_slice(path),
                     node: nn,
                 },
             );
@@ -357,8 +422,8 @@ impl<E: NodeEntry> Node<E> {
         // existing fork — need to split or extend
         let fork = self.forks.get(&path[0]).expect("checked above");
         let c = common_prefix_len(&fork.prefix, path);
-        let rest = fork.prefix[c..].to_vec();
-        let common_prefix = fork.prefix[..c].to_vec();
+        let rest = Prefix::from_slice(&fork.prefix[c..]);
+        let common_prefix = Prefix::from_slice(&fork.prefix[..c]);
 
         // Take ownership — avoids cloning the entire node subtree
         let old_fork = self.forks.remove(&path[0]).expect("checked above");

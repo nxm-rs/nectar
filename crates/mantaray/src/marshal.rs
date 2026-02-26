@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::error::{MantarayError, Result};
 use crate::mode::NodeEntry;
-use crate::node::{Fork, Node, NodeType};
+use crate::node::{Fork, Node, NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 use crate::{
     NODE_FORK_HEADER_SIZE, NODE_FORK_METADATA_BYTES_SIZE, NODE_FORK_PRE_REFERENCE_SIZE,
@@ -287,7 +287,7 @@ fn unmarshal_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 }
 
 /// Parse and validate fork header. Returns (node_type, prefix).
-fn parse_fork_header(data: &[u8]) -> Result<(NodeType, Vec<u8>)> {
+fn parse_fork_header(data: &[u8]) -> Result<(NodeType, Prefix)> {
     let node_type = NodeType::from_bits_truncate(data[0]);
     let prefix_length = data[1] as usize;
     if prefix_length == 0 || prefix_length > NODE_PREFIX_MAX_SIZE {
@@ -296,7 +296,7 @@ fn parse_fork_header(data: &[u8]) -> Result<(NodeType, Vec<u8>)> {
             actual: prefix_length,
         });
     }
-    let prefix = data[NODE_FORK_HEADER_SIZE..NODE_FORK_HEADER_SIZE + prefix_length].to_vec();
+    let prefix = Prefix::from_slice(&data[NODE_FORK_HEADER_SIZE..NODE_FORK_HEADER_SIZE + prefix_length]);
     Ok((node_type, prefix))
 }
 
@@ -317,10 +317,8 @@ impl<E: NodeEntry> Fork<E> {
         data.push(self.node.node_type.bits());
         data.push(self.prefix.len() as u8);
 
-        // write prefix padded to NODE_PREFIX_MAX_SIZE without allocating
-        let mut prefix_buf = [0u8; NODE_PREFIX_MAX_SIZE];
-        prefix_buf[..self.prefix.len()].copy_from_slice(&self.prefix);
-        data.extend_from_slice(&prefix_buf);
+        // write prefix padded to NODE_PREFIX_MAX_SIZE — Prefix is already zero-padded
+        data.extend_from_slice(self.prefix.padded_bytes());
 
         // Write E::SIZE bytes for the reference (chunk address + zero padding)
         if let Some(addr) = &self.node.reference {
