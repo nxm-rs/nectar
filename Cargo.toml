@@ -95,5 +95,9 @@ console_error_panic_hook = "0.1"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 # getrandom 0.2 needed for transitive deps (rand_core 0.6 via k256/elliptic-curve)
 getrandom_02 = { package = "getrandom", version = "0.2", default-features = false, features = ["js"] }
+bitflags = { version = "2", default-features = false }
 subtle = "2"
 zeroize = "1"
+
+[profile.release]
+lto = "thin"

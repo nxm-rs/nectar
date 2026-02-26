@@ -7,41 +7,51 @@ use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
 use nectar_primitives::store::{ChunkGet, ChunkPut};
 
 use crate::error::{MantarayError, Result};
+use crate::mode::NodeEntry;
 use crate::obfuscation::ObfuscationKey;
-use crate::{
-    NODE_PREFIX_MAX_SIZE, NT_EDGE, NT_VALUE, NT_WITH_METADATA,
-    NT_WITH_PATH_SEPARATOR, PATH_SEPARATOR,
-};
+use crate::{NODE_PREFIX_MAX_SIZE, PATH_SEPARATOR};
+
+bitflags::bitflags! {
+    /// Bitflags encoding the kind of a mantaray node.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct NodeType: u8 {
+        /// Node stores a value (has an entry).
+        const VALUE = 2;
+        /// Node has child forks.
+        const EDGE = 4;
+        /// Path contains a "/" separator.
+        const PATH_SEPARATOR = 8;
+        /// Node has metadata key-value pairs.
+        const METADATA = 16;
+    }
+}
 
 /// A node in the mantaray trie.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Node {
-    /// Bitfield encoding the node kind (value, edge, path-separator, metadata).
-    pub(crate) node_type: u8,
-    /// Size of references in bytes (typically 32 or 64 for encrypted).
-    pub(crate) ref_bytes_size: u32,
+pub struct Node<E: NodeEntry = ChunkAddress> {
+    /// Bitflags encoding the node kind (value, edge, path-separator, metadata).
+    pub(crate) node_type: NodeType,
     /// XOR obfuscation key for binary serialisation.
     pub(crate) obfuscation_key: ObfuscationKey,
     /// Content-addressed reference for this node (None if not yet persisted).
     pub(crate) reference: Option<ChunkAddress>,
-    /// The entry data stored at this node (the chunk reference this path maps to).
-    pub(crate) entry: Vec<u8>,
+    /// The typed entry stored at this node (the chunk reference this path maps to).
+    pub(crate) entry: Option<E>,
     /// Metadata key-value pairs attached to this node.
     pub(crate) metadata: BTreeMap<String, String>,
     /// Child forks keyed by the first byte of their prefix.
-    pub(crate) forks: BTreeMap<u8, Fork>,
+    pub(crate) forks: BTreeMap<u8, Fork<E>>,
     /// Whether this node's forks have been loaded from storage.
     pub(crate) loaded: bool,
 }
 
-impl Default for Node {
+impl<E: NodeEntry> Default for Node<E> {
     fn default() -> Self {
         Self {
-            node_type: 0,
-            ref_bytes_size: 0,
+            node_type: NodeType::empty(),
             obfuscation_key: ObfuscationKey::ZERO,
             reference: None,
-            entry: Vec::new(),
+            entry: None,
             metadata: BTreeMap::new(),
             forks: BTreeMap::new(),
             loaded: false,
@@ -50,27 +60,36 @@ impl Default for Node {
 }
 
 /// A fork in the mantaray trie, consisting of a prefix and a child node.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Fork {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fork<E: NodeEntry = ChunkAddress> {
     /// The prefix bytes for this fork edge.
     pub(crate) prefix: Vec<u8>,
     /// The child node.
-    pub(crate) node: Node,
+    pub(crate) node: Node<E>,
 }
 
-impl Fork {
+impl<E: NodeEntry> Default for Fork<E> {
+    fn default() -> Self {
+        Self {
+            prefix: Vec::new(),
+            node: Node::default(),
+        }
+    }
+}
+
+impl<E: NodeEntry> Fork<E> {
     /// The prefix bytes for this fork edge.
     pub fn prefix(&self) -> &[u8] {
         &self.prefix
     }
 
     /// The child node.
-    pub const fn node(&self) -> &Node {
+    pub const fn node(&self) -> &Node<E> {
         &self.node
     }
 
     /// Mutable access to the child node.
-    pub const fn node_mut(&mut self) -> &mut Node {
+    pub const fn node_mut(&mut self) -> &mut Node<E> {
         &mut self.node
     }
 }
@@ -80,33 +99,7 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
-
-/// Generate `is_*`, `make_*`, and optional `make_not_*` flag methods on `Node`.
-macro_rules! node_flag_methods {
-    ($(
-        $flag:expr,
-        is = ($is_vis:vis, $is_name:ident),
-        set = ($set_vis:vis, $set_name:ident)
-        $(, clear = ($clr_vis:vis, $clr_name:ident))?
-    );+ $(;)?) => {$(
-        #[doc = concat!("Check if the `", stringify!($is_name), "` flag is set.")]
-        $is_vis const fn $is_name(&self) -> bool {
-            (self.node_type & $flag) == $flag
-        }
-        #[doc = concat!("Set the `", stringify!($set_name), "` flag.")]
-        $set_vis const fn $set_name(&mut self) {
-            self.node_type |= $flag;
-        }
-        $(
-            #[doc = concat!("Clear the `", stringify!($clr_name), "` flag.")]
-            $clr_vis const fn $clr_name(&mut self) {
-                self.node_type &= !$flag;
-            }
-        )?
-    )+};
-}
-
-impl Node {
+impl<E: NodeEntry> Node<E> {
     /// Create a new node with a zeroed obfuscation key (unencrypted).
     pub fn new_unencrypted() -> Self {
         Self {
@@ -123,9 +116,9 @@ impl Node {
         }
     }
 
-    /// The entry data stored at this node.
-    pub fn entry(&self) -> &[u8] {
-        &self.entry
+    /// The typed entry stored at this node.
+    pub fn entry(&self) -> Option<&E> {
+        self.entry.as_ref()
     }
 
     /// Metadata key-value pairs attached to this node.
@@ -144,12 +137,12 @@ impl Node {
     }
 
     /// Child forks keyed by the first byte of their prefix.
-    pub const fn forks(&self) -> &BTreeMap<u8, Fork> {
+    pub const fn forks(&self) -> &BTreeMap<u8, Fork<E>> {
         &self.forks
     }
 
     /// Mutable access to child forks.
-    pub const fn forks_mut(&mut self) -> &mut BTreeMap<u8, Fork> {
+    pub const fn forks_mut(&mut self) -> &mut BTreeMap<u8, Fork<E>> {
         &mut self.forks
     }
 
@@ -163,33 +156,52 @@ impl Node {
         self.reference = Some(reference);
     }
 
-    node_flag_methods! {
-        NT_VALUE,
-            is  = (pub, is_value),
-            set = (pub(crate), make_value);
-        NT_EDGE,
-            is  = (pub, is_edge),
-            set = (pub(crate), make_edge);
-        NT_WITH_PATH_SEPARATOR,
-            is    = (pub, is_with_path_separator),
-            set   = (, make_with_path_separator),
-            clear = (, make_not_with_path_separator);
-        NT_WITH_METADATA,
-            is  = (pub, is_with_metadata),
-            set = (pub(crate), make_with_metadata);
+    /// Check if the node has a value (entry).
+    pub const fn is_value(&self) -> bool {
+        self.node_type.contains(NodeType::VALUE)
+    }
+
+    /// Set the value flag.
+    pub(crate) const fn make_value(&mut self) {
+        self.node_type = self.node_type.union(NodeType::VALUE);
+    }
+
+    /// Check if the node has child forks.
+    pub const fn is_edge(&self) -> bool {
+        self.node_type.contains(NodeType::EDGE)
+    }
+
+    /// Set the edge flag.
+    pub(crate) const fn make_edge(&mut self) {
+        self.node_type = self.node_type.union(NodeType::EDGE);
+    }
+
+    /// Check if the path contains a separator.
+    pub const fn is_with_path_separator(&self) -> bool {
+        self.node_type.contains(NodeType::PATH_SEPARATOR)
+    }
+
+    /// Check if the node has metadata.
+    pub const fn is_with_metadata(&self) -> bool {
+        self.node_type.contains(NodeType::METADATA)
+    }
+
+    /// Set the metadata flag.
+    pub(crate) const fn make_with_metadata(&mut self) {
+        self.node_type = self.node_type.union(NodeType::METADATA);
     }
 
     #[cfg(test)]
     pub(crate) const fn make_not_value(&mut self) {
-        self.node_type &= !NT_VALUE;
+        self.node_type = self.node_type.difference(NodeType::VALUE);
     }
 
     fn update_is_with_path_separator(&mut self, path: &[u8]) {
         let sep = PATH_SEPARATOR.as_bytes()[0];
         if path.iter().skip(1).any(|&b| b == sep) {
-            self.make_with_path_separator();
+            self.node_type = self.node_type.union(NodeType::PATH_SEPARATOR);
         } else {
-            self.make_not_with_path_separator();
+            self.node_type = self.node_type.difference(NodeType::PATH_SEPARATOR);
         }
     }
 
@@ -219,10 +231,10 @@ impl Node {
         let chunk = loader.get(&address).map_err(|e| MantarayError::StoreGet {
             source: std::sync::Arc::new(e),
         })?;
-        let mut loaded = Node::try_from(chunk.data().as_ref())?;
+        let mut loaded = Node::<E>::try_from(chunk.data().as_ref())?;
         loaded.reference = Some(address);
         // Preserve fields that live in the parent's fork data, not in this node's chunk:
-        // node_type flags (NT_VALUE, NT_WITH_METADATA, etc.) and metadata key-value pairs.
+        // node_type flags and metadata key-value pairs.
         loaded.node_type |= self.node_type;
         loaded.metadata = core::mem::take(&mut self.metadata);
         *self = loaded;
@@ -258,49 +270,32 @@ impl Node {
         }
     }
 
-    /// Look up the entry bytes at the given path, loading from storage as needed.
+    /// Look up the entry at the given path, loading from storage as needed.
     pub fn lookup_with_loader<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         loader: &S,
-    ) -> Result<&[u8]> {
+    ) -> Result<Option<&E>> {
         let node = self.lookup_node_with_loader(path, loader)?;
         if !node.is_value() && !path.is_empty() {
             return Err(MantarayError::NoEntryFound {
                 reference: node.reference,
             });
         }
-        Ok(node.entry.as_slice())
+        Ok(node.entry.as_ref())
     }
 
     /// Add an entry at the given path with optional metadata, loading from storage as needed.
     pub(crate) fn add_with_loader<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
-        entry: &[u8],
+        entry: Option<E>,
         metadata: BTreeMap<String, String>,
         loader: &S,
     ) -> Result<()> {
-        if self.ref_bytes_size == 0 {
-            if entry.len() > 256 {
-                return Err(MantarayError::EntryTooLarge {
-                    size: entry.len(),
-                    max: 256,
-                });
-            }
-            if !entry.is_empty() {
-                self.ref_bytes_size = entry.len() as u32;
-            }
-        } else if !entry.is_empty() && entry.len() != self.ref_bytes_size as usize {
-            return Err(MantarayError::EntrySizeMismatch {
-                expected: self.ref_bytes_size as usize,
-                actual: entry.len(),
-            });
-        }
-
         // empty path — set this node as a value
         if path.is_empty() {
-            self.entry = entry.to_vec();
+            self.entry = entry;
             self.make_value();
 
             if !metadata.is_empty() {
@@ -322,7 +317,6 @@ impl Node {
             // no existing fork for this byte — create a new one
             let mut nn = Self {
                 obfuscation_key: self.obfuscation_key,
-                ref_bytes_size: self.ref_bytes_size,
                 ..Default::default()
             };
 
@@ -341,7 +335,7 @@ impl Node {
                 return Ok(());
             }
 
-            nn.entry = entry.to_vec();
+            nn.entry = entry;
             if !metadata.is_empty() {
                 nn.metadata = metadata;
                 nn.make_with_metadata();
@@ -375,7 +369,6 @@ impl Node {
             // split: create intermediate node
             let mut intermediate = Self {
                 obfuscation_key: self.obfuscation_key,
-                ref_bytes_size: self.ref_bytes_size,
                 ..Default::default()
             };
 
@@ -513,7 +506,8 @@ impl Node {
     where
         F: FnMut(&[u8], &Self) -> Result<()>,
     {
-        walk_inner(&[], self, loader, f)
+        let mut path_buf = Vec::new();
+        walk_inner(&mut path_buf, self, loader, f)
     }
 
     /// Walk the subtree at `root`, calling `f` for each node.
@@ -526,27 +520,28 @@ impl Node {
     where
         F: FnMut(&[u8], &Self) -> Result<()>,
     {
+        let mut path_buf = root.to_vec();
         if root.is_empty() {
-            return walk_inner(&[], self, loader, f);
+            return walk_inner(&mut path_buf, self, loader, f);
         }
 
         let target = self.lookup_node_with_loader(root, loader)?;
-        walk_inner(root, target, loader, f)
+        walk_inner(&mut path_buf, target, loader, f)
     }
 }
 
-fn walk_inner<S: ChunkGet<BS>, const BS: usize, F>(
-    path: &[u8],
-    node: &mut Node,
+fn walk_inner<E: NodeEntry, S: ChunkGet<BS>, const BS: usize, F>(
+    path_buf: &mut Vec<u8>,
+    node: &mut Node<E>,
     loader: &S,
     f: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(&[u8], &Node) -> Result<()>,
+    F: FnMut(&[u8], &Node<E>) -> Result<()>,
 {
     node.ensure_loaded(loader)?;
 
-    f(path, node)?;
+    f(path_buf, node)?;
 
     // collect keys to avoid borrow conflict
     let keys: Vec<u8> = node.forks.keys().copied().collect();
@@ -554,9 +549,10 @@ where
         let fork = node.forks.get_mut(&key).ok_or_else(|| MantarayError::NoForkFound {
             reference: node.reference,
         })?;
-        let mut next_path = path.to_vec();
-        next_path.extend_from_slice(&fork.prefix);
-        walk_inner(&next_path, &mut fork.node, loader, f)?;
+        let prev_len = path_buf.len();
+        path_buf.extend_from_slice(&fork.prefix);
+        walk_inner(path_buf, &mut fork.node, loader, f)?;
+        path_buf.truncate(prev_len);
     }
 
     Ok(())
@@ -735,13 +731,22 @@ mod tests {
     const NL: NullLoader = NullLoader;
     const BS: usize = DEFAULT_BODY_SIZE;
 
+    /// Create a 32-byte ChunkAddress from a string, left-padded with zeroes.
+    fn make_entry(s: &str) -> ChunkAddress {
+        let bytes = s.as_bytes();
+        let mut buf = [0u8; 32];
+        let start = 32 - bytes.len();
+        buf[start..].copy_from_slice(bytes);
+        ChunkAddress::from(buf)
+    }
+
     /// In-memory add: delegates to `add_with_loader` with NullLoader.
-    fn node_add(n: &mut Node, path: &[u8], entry: &[u8], meta: BTreeMap<String, String>) {
-        n.add_with_loader::<NullLoader, BS>(path, entry, meta, &NL).unwrap();
+    fn node_add(n: &mut Node, path: &[u8], entry: ChunkAddress, meta: BTreeMap<String, String>) {
+        n.add_with_loader::<NullLoader, BS>(path, Some(entry), meta, &NL).unwrap();
     }
 
     /// In-memory lookup: delegates to `lookup_with_loader` with NullLoader.
-    fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<&'n [u8]> {
+    fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<Option<&'n ChunkAddress>> {
         n.lookup_with_loader::<NullLoader, BS>(path, &NL)
     }
 
@@ -776,14 +781,6 @@ mod tests {
         n.walk_node_with_loader::<NullLoader, BS, _>(root, &NL, f)
     }
 
-    /// Create a 32-byte entry from a string, left-padded with zeroes.
-    fn make_entry(s: &str) -> Vec<u8> {
-        let bytes = s.as_bytes();
-        let mut entry = vec![0u8; 32 - bytes.len()];
-        entry.extend_from_slice(bytes);
-        entry
-    }
-
     #[test]
     fn nil_path() {
         let mut n = Node::default();
@@ -797,11 +794,11 @@ mod tests {
 
         for (i, c) in items.iter().enumerate() {
             let e = make_entry(c);
-            node_add(&mut n, c.as_bytes(), &e, BTreeMap::new());
+            node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
 
             for &d in items.iter().take(i) {
                 let r = node_lookup(&mut n, d.as_bytes()).unwrap();
-                assert_eq!(r, make_entry(d));
+                assert_eq!(r, Some(&make_entry(d)));
             }
         }
     }
@@ -811,12 +808,12 @@ mod tests {
 
         for (i, c) in items.iter().enumerate() {
             let e = make_entry(c);
-            node_add(&mut n, c.as_bytes(), &e, BTreeMap::new());
+            node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
 
             for &d in items.iter().take(i) {
                 let node = node_lookup_node(&mut n, d.as_bytes()).unwrap();
                 assert!(node.is_value());
-                assert_eq!(node.entry(), make_entry(d));
+                assert_eq!(node.entry(), Some(&make_entry(d)));
             }
         }
     }
@@ -856,20 +853,20 @@ mod tests {
 
         for c in items {
             let e = make_entry(c);
-            node_add(&mut n, c.as_bytes(), &e, BTreeMap::new());
+            node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
         }
 
         let mut store = MemorySink::<{ DEFAULT_BODY_SIZE }>::new();
         n.save(&mut store).unwrap();
 
-        let mut n2 = Node::from_reference(n.reference.unwrap());
+        let mut n2: Node = Node::from_reference(n.reference.unwrap());
 
         for &d in items {
             let node = n2
                 .lookup_node_with_loader(d.as_bytes(), &store)
                 .unwrap();
             assert!(node.is_value());
-            assert_eq!(node.entry(), make_entry(d));
+            assert_eq!(node.entry(), Some(&make_entry(d)));
         }
     }
 
@@ -908,11 +905,11 @@ mod tests {
 
         for (i, c) in tc.items.iter().enumerate() {
             let e = make_entry(&c.path);
-            node_add(&mut n, c.path.as_bytes(), &e, c.metadata.clone());
+            node_add(&mut n, c.path.as_bytes(), e, c.metadata.clone());
 
             for item in tc.items.iter().take(i) {
                 let r = node_lookup(&mut n, item.path.as_bytes()).unwrap();
-                assert_eq!(r, make_entry(&item.path));
+                assert_eq!(r, Some(&make_entry(&item.path)));
             }
         }
 
@@ -937,7 +934,7 @@ mod tests {
 
         for c in &tc.paths {
             let e = make_entry(c);
-            node_add(&mut n, c.as_bytes(), &e, BTreeMap::default());
+            node_add(&mut n, c.as_bytes(), e, BTreeMap::default());
         }
 
         for (i, test_prefix) in tc.test_paths.iter().enumerate() {
@@ -968,14 +965,14 @@ mod tests {
         let mut n = Node::default();
         for c in &tc.items {
             let e = make_entry(&c.path);
-            n.add_with_loader(c.path.as_bytes(), &e, c.metadata.clone(), &store)
+            n.add_with_loader(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)
                 .unwrap();
         }
         n.save(&mut store).unwrap();
         let ref_ = n.reference.unwrap();
 
         // reload and remove
-        let mut nn = Node::from_reference(ref_);
+        let mut nn: Node = Node::from_reference(ref_);
         for path in &tc.remove {
             nn.remove_with_loader(path.as_bytes(), &store).unwrap();
         }
@@ -983,7 +980,7 @@ mod tests {
         let ref2 = nn.reference.unwrap();
 
         // reload and verify removed paths are gone
-        let mut nnn = Node::from_reference(ref2);
+        let mut nnn: Node = Node::from_reference(ref2);
         for path in &tc.remove {
             let result = nnn.lookup_node_with_loader(path.as_bytes(), &store);
             assert!(result.is_err(), "expected removed path '{path}' to be not found");
@@ -1002,10 +999,11 @@ mod tests {
 
     // --- Walker tests (Go bee compatibility) ---
 
-    fn make_entry_bytes(s: &[u8]) -> Vec<u8> {
-        let mut entry = vec![0u8; 32 - s.len()];
-        entry.extend_from_slice(s);
-        entry
+    fn make_entry_bytes(s: &[u8]) -> ChunkAddress {
+        let mut buf = [0u8; 32];
+        let start = 32 - s.len();
+        buf[start..].copy_from_slice(s);
+        ChunkAddress::from(buf)
     }
 
     #[test]
@@ -1015,7 +1013,7 @@ mod tests {
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &p in paths {
             let entry = make_entry_bytes(p.as_bytes());
-            node_add(&mut root, p.as_bytes(), &entry, BTreeMap::new());
+            node_add(&mut root, p.as_bytes(), entry, BTreeMap::new());
         }
 
         let mut visited: Vec<(Vec<u8>, bool)> = Vec::new();
@@ -1066,7 +1064,7 @@ mod tests {
         let mut n = Node::default();
         for &path in to_add {
             let entry = make_entry_bytes(path);
-            node_add(&mut n, path, &entry, BTreeMap::new());
+            node_add(&mut n, path, entry, BTreeMap::new());
         }
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
@@ -1107,7 +1105,7 @@ mod tests {
         let mut n = Node::default();
         for &path in to_add {
             let entry = make_entry_bytes(path);
-            node_add(&mut n, path, &entry, BTreeMap::new());
+            node_add(&mut n, path, entry, BTreeMap::new());
         }
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
@@ -1154,13 +1152,13 @@ mod tests {
         let mut n = Node::default();
         for &path in to_add {
             let entry = make_entry_bytes(path);
-            node_add(&mut n, path, &entry, BTreeMap::new());
+            node_add(&mut n, path, entry, BTreeMap::new());
         }
 
         let mut store = MemorySink::<{ DEFAULT_BODY_SIZE }>::new();
         n.save(&mut store).unwrap();
 
-        let mut n2 = Node::from_reference(n.reference.unwrap());
+        let mut n2: Node = Node::from_reference(n.reference.unwrap());
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
         n2.walk_node_with_loader(b"", &store, &mut |path: &[u8], _node: &Node| {

@@ -194,7 +194,7 @@ fn bench_unmarshal(c: &mut Criterion) {
     let data = Vec::<u8>::try_from(&n).unwrap();
 
     group.bench_function("spa_trie", |b| {
-        b.iter(|| Node::try_from(data.as_slice()).unwrap());
+        b.iter(|| Node::<nectar_primitives::chunk::ChunkAddress>::try_from(data.as_slice()).unwrap());
     });
 
     group.finish();

@@ -1984,6 +1984,7 @@ name = "nectar-mantaray"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "bitflags",
  "bytes",
  "codspeed-criterion-compat",
  "nectar-primitives",

@@ -53,10 +53,10 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::marker::PhantomData;
 
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::file::EntryRef;
 use nectar_primitives::store::{ChunkGet, ChunkPut};
 
 pub mod error;
@@ -68,28 +68,24 @@ pub mod obfuscation;
 
 pub use error::{MantarayError, Result};
 pub use manifest_ref::ManifestRef;
-pub use mode::{ManifestMode, Plain};
-#[cfg(feature = "encryption")]
-pub use mode::Encrypted;
-pub use node::{Fork, Node};
+pub use mode::NodeEntry;
+pub use node::{Fork, Node, NodeType};
 pub use obfuscation::ObfuscationKey;
-
-// Re-export EntryRef from primitives.
-pub use nectar_primitives::file::EntryRef;
 
 // Re-export typed storage traits from primitives.
 pub use nectar_primitives::store::{ChunkHas, MemorySink};
 pub use nectar_primitives::DefaultMemorySink;
 
-/// Default manifest type using [`DEFAULT_BODY_SIZE`] and [`Plain`] mode.
+/// Default manifest type using [`DEFAULT_BODY_SIZE`] and plain mode.
 pub type DefaultManifest<S> = PlainManifest<S, DEFAULT_BODY_SIZE>;
 
 /// Plain manifest: 32-byte refs, no obfuscation.
-pub type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = Manifest<S, Plain, BS>;
+pub type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = Manifest<S, ChunkAddress, BS>;
 
 /// Encrypted manifest: 64-byte refs, random obfuscation key.
 #[cfg(feature = "encryption")]
-pub type EncryptedManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = Manifest<S, Encrypted, BS>;
+pub type EncryptedManifest<S, const BS: usize = DEFAULT_BODY_SIZE> =
+    Manifest<S, nectar_primitives::EncryptedChunkRef, BS>;
 
 /// Well-known metadata keys matching Go bee's `pkg/manifest/manifest.go`.
 pub mod metadata {
@@ -125,12 +121,6 @@ const NODE_FORK_HEADER_SIZE: usize = NODE_FORK_TYPE_BYTES_SIZE + NODE_FORK_PREFI
 const NODE_FORK_PRE_REFERENCE_SIZE: usize = 32;
 const NODE_PREFIX_MAX_SIZE: usize = NODE_FORK_PRE_REFERENCE_SIZE - NODE_FORK_HEADER_SIZE;
 const NODE_FORK_METADATA_BYTES_SIZE: usize = 2;
-
-// Node type flags.
-const NT_VALUE: u8 = 2;
-const NT_EDGE: u8 = 4;
-const NT_WITH_PATH_SEPARATOR: u8 = 8;
-const NT_WITH_METADATA: u8 = 16;
 
 /// A manifest entry: a path, typed reference, and optional metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -210,17 +200,20 @@ impl Entry {
 
     /// Reconstruct an `Entry` from a trie node and its accumulated path.
     ///
-    /// The path is passed separately because it is accumulated during trie
-    /// traversal, not stored on the node itself.
-    pub(crate) fn from_node(path: &[u8], node: &Node) -> Result<Self> {
-        let raw_ref = node.entry();
-        let reference = if raw_ref.is_empty() {
-            None
-        } else {
-            Some(EntryRef::try_from_bytes(raw_ref).map_err(|_| MantarayError::EntrySizeMismatch {
-                expected: 32,
-                actual: raw_ref.len(),
-            })?)
+    /// Converts the typed `Option<&E>` entry to an `Option<EntryRef>` via
+    /// serialization, keeping `Entry` non-generic for the public API.
+    pub(crate) fn from_node<E: NodeEntry>(path: &[u8], node: &Node<E>) -> Result<Self> {
+        let reference = match node.entry() {
+            Some(e) => {
+                let bytes = e.to_bytes();
+                Some(EntryRef::try_from_bytes(&bytes).map_err(|_| {
+                    MantarayError::EntrySizeMismatch {
+                        expected: E::SIZE,
+                        actual: bytes.len(),
+                    }
+                })?)
+            }
+            None => None,
         };
         let metadata = if node.metadata().is_empty() {
             BTreeMap::new()
@@ -250,77 +243,72 @@ impl From<nectar_primitives::EncryptedChunkRef> for Entry {
 
 /// High-level mantaray manifest backed by a typed chunk store.
 ///
-/// The mode parameter `M` determines:
+/// The entry type parameter `E` determines:
 /// - What reference types `add()` accepts (compile-time enforcement)
-/// - What `save()` returns
-/// - The ref_bytes_size (32 for plain, 64 for encrypted)
+/// - The reference byte size via `E::SIZE`
+/// - What `save()` returns (specialized per entry type)
 #[derive(Debug)]
-pub struct Manifest<S, M: ManifestMode = Plain, const BS: usize = DEFAULT_BODY_SIZE> {
-    trie: Node,
+pub struct Manifest<S, E: NodeEntry = ChunkAddress, const BS: usize = DEFAULT_BODY_SIZE> {
+    trie: Node<E>,
     store: S,
-    _mode: PhantomData<M>,
 }
 
 // --- Plain-mode constructors ---
 
-impl<S, const BS: usize> Manifest<S, Plain, BS> {
+impl<S, const BS: usize> Manifest<S, ChunkAddress, BS> {
     /// Create a new plain manifest (no obfuscation, 32-byte refs).
     pub fn new(store: S) -> Self {
-        let mut trie = Node::new_unencrypted();
-        trie.ref_bytes_size = Plain::REF_BYTES_SIZE as u32;
-        Self { trie, store, _mode: PhantomData }
+        let trie = Node::new_unencrypted();
+        Self { trie, store }
     }
 
     /// Load a plain manifest from storage by its root chunk address.
     pub fn open(root: ChunkAddress, store: S) -> Self {
-        let mut trie = Node::from_reference(root);
-        trie.ref_bytes_size = Plain::REF_BYTES_SIZE as u32;
-        Self { trie, store, _mode: PhantomData }
+        let trie = Node::from_reference(root);
+        Self { trie, store }
     }
 }
 
 // --- Encrypted-mode constructors ---
 
 #[cfg(feature = "encryption")]
-impl<S, const BS: usize> Manifest<S, Encrypted, BS> {
+impl<S, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
     /// Create a new encrypted manifest (random obfuscation key, 64-byte refs).
     pub fn new_encrypted(store: S) -> Self {
         let mut trie = Node::default();
-        trie.ref_bytes_size = Encrypted::REF_BYTES_SIZE as u32;
         trie.obfuscation_key = ObfuscationKey::generate();
-        Self { trie, store, _mode: PhantomData }
+        Self { trie, store }
     }
 
     /// Load an encrypted manifest from storage by its manifest reference.
     pub fn open_encrypted(root: ManifestRef, store: S) -> Self {
         let (addr, key) = root.into_parts();
         let mut trie = Node::from_reference(addr);
-        trie.ref_bytes_size = Encrypted::REF_BYTES_SIZE as u32;
         trie.obfuscation_key = key;
-        Self { trie, store, _mode: PhantomData }
+        Self { trie, store }
     }
 }
 
-// --- Mode-agnostic methods ---
+// --- Entry-type-agnostic methods ---
 
-impl<S, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
+impl<S, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     /// Access the underlying chunk store.
     pub const fn store(&self) -> &S {
         &self.store
     }
 
     /// Access the root trie node.
-    pub const fn root(&self) -> &Node {
+    pub const fn root(&self) -> &Node<E> {
         &self.trie
     }
 
     /// Mutable access to the root trie node.
-    pub const fn root_mut(&mut self) -> &mut Node {
+    pub const fn root_mut(&mut self) -> &mut Node<E> {
         &mut self.trie
     }
 
     /// Consume the manifest and return its parts.
-    pub fn into_parts(self) -> (Node, S) {
+    pub fn into_parts(self) -> (Node<E>, S) {
         (self.trie, self.store)
     }
 
@@ -330,14 +318,13 @@ impl<S, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
     }
 }
 
-impl<S: ChunkGet<BS>, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
-    /// Add a path with a typed reference (compile-time enforced by mode).
-    pub fn add(&mut self, path: &str, reference: impl Into<M::Ref>) -> Result<()> {
-        let entry_ref: EntryRef = reference.into().into();
-        let ref_bytes = Vec::from(&entry_ref);
+impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
+    /// Add a path with a typed reference (compile-time enforced by entry type).
+    pub fn add(&mut self, path: &str, reference: impl Into<E>) -> Result<()> {
+        let entry = reference.into();
         self.trie.add_with_loader::<S, BS>(
             path.as_bytes(),
-            &ref_bytes,
+            Some(entry),
             BTreeMap::new(),
             &self.store,
         )
@@ -347,14 +334,13 @@ impl<S: ChunkGet<BS>, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
     pub fn add_with_metadata(
         &mut self,
         path: &str,
-        reference: impl Into<M::Ref>,
+        reference: impl Into<E>,
         metadata: BTreeMap<String, String>,
     ) -> Result<()> {
-        let entry_ref: EntryRef = reference.into().into();
-        let ref_bytes = Vec::from(&entry_ref);
+        let entry = reference.into();
         self.trie.add_with_loader::<S, BS>(
             path.as_bytes(),
-            &ref_bytes,
+            Some(entry),
             metadata,
             &self.store,
         )
@@ -362,10 +348,16 @@ impl<S: ChunkGet<BS>, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
 
     /// Add a path with a pre-built [`Entry`] (metadata + reference).
     pub fn add_entry(&mut self, path: &str, entry: Entry) -> Result<()> {
-        let ref_bytes = entry.reference.as_ref().map_or_else(Vec::new, Vec::from);
+        let e = match entry.reference {
+            Some(r) => {
+                let bytes = Vec::from(&r);
+                Some(E::try_from_bytes(&bytes)?)
+            }
+            None => None,
+        };
         self.trie.add_with_loader::<S, BS>(
             path.as_bytes(),
-            &ref_bytes,
+            e,
             entry.metadata,
             &self.store,
         )
@@ -399,7 +391,7 @@ impl<S: ChunkGet<BS>, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
     /// Walk all nodes depth-first, calling `f` for each node with its path.
     pub fn walk<F>(&mut self, f: &mut F) -> Result<()>
     where
-        F: FnMut(&[u8], &Node) -> Result<()>,
+        F: FnMut(&[u8], &Node<E>) -> Result<()>,
     {
         self.trie.walk_with_loader::<S, BS, _>(&self.store, f)
     }
@@ -446,9 +438,11 @@ impl<S: ChunkGet<BS>, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
                 f(addr.as_bytes())?;
             }
 
-            let entry_ref = node.entry();
-            if node.is_value() && !entry_ref.is_empty() && entry_ref.iter().any(|&b| b != 0) {
-                f(entry_ref)?;
+            if let Some(entry) = node.entry() {
+                if node.is_value() {
+                    let entry_bytes = entry.to_bytes();
+                    f(&entry_bytes)?;
+                }
             }
 
             Ok(())
@@ -459,7 +453,7 @@ impl<S: ChunkGet<BS>, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
     ///
     /// Nodes are loaded from storage on demand, so the entire trie does not
     /// need to be in memory at once.
-    pub const fn iter(&mut self) -> ManifestIter<'_, S, BS> {
+    pub const fn iter(&mut self) -> ManifestIter<'_, S, E, BS> {
         ManifestIter::new(&mut self.trie, &self.store)
     }
 
@@ -482,7 +476,7 @@ impl<S: ChunkGet<BS>, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
                 meta.insert(key.into(), value.into());
                 self.trie.add_with_loader::<S, BS>(
                     metadata::ROOT_PATH.as_bytes(),
-                    &[],
+                    None,
                     meta,
                     &self.store,
                 )
@@ -505,7 +499,7 @@ impl<S: ChunkGet<BS>, M: ManifestMode, const BS: usize> Manifest<S, M, BS> {
 
 // --- Mode-specific save() ---
 
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, Plain, BS> {
+impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkAddress, BS> {
     /// Persist the plain manifest trie to storage, returning the root chunk address.
     pub fn save(&mut self) -> Result<ChunkAddress> {
         self.trie.save::<S, BS>(&mut self.store)?;
@@ -514,7 +508,9 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, Plain, BS> {
 }
 
 #[cfg(feature = "encryption")]
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, Encrypted, BS> {
+impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
+    Manifest<S, nectar_primitives::EncryptedChunkRef, BS>
+{
     /// Persist the encrypted manifest trie, returning a [`ManifestRef`].
     pub fn save(&mut self) -> Result<ManifestRef> {
         self.trie.save::<S, BS>(&mut self.store)?;
@@ -532,16 +528,16 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, Encrypted, BS>
 /// the trie is exclusively borrowed (`&'a mut Node`) for the iterator's
 /// lifetime, and `BTreeMap` values are stable (we never insert into or remove
 /// from a parent's fork map during iteration).
-pub struct ManifestIter<'a, S, const BS: usize = DEFAULT_BODY_SIZE> {
-    trie: &'a mut Node,
+pub struct ManifestIter<'a, S, E: NodeEntry = ChunkAddress, const BS: usize = DEFAULT_BODY_SIZE> {
+    trie: &'a mut Node<E>,
     store: &'a S,
-    stack: Vec<IterFrame>,
+    stack: Vec<IterFrame<E>>,
     /// Running path buffer — extended when pushing frames, truncated when popping.
     path_buf: Vec<u8>,
     root_visited: bool,
 }
 
-impl<S, const BS: usize> std::fmt::Debug for ManifestIter<'_, S, BS> {
+impl<S, E: NodeEntry, const BS: usize> std::fmt::Debug for ManifestIter<'_, S, E, BS> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ManifestIter")
             .field("stack_depth", &self.stack.len())
@@ -550,14 +546,14 @@ impl<S, const BS: usize> std::fmt::Debug for ManifestIter<'_, S, BS> {
     }
 }
 
-struct IterFrame {
+struct IterFrame<E: NodeEntry> {
     /// Pointer to the node at this stack level.
     ///
     /// # Safety
     /// Valid for the iterator's `'a` lifetime. Points into the exclusively
     /// borrowed trie. Derived from `&mut Node` references obtained via
     /// `BTreeMap::get_mut`, whose values are stable across unrelated mutations.
-    node: *mut Node,
+    node: *mut Node<E>,
     /// Length of `path_buf` before this frame's prefix was appended.
     path_len_before: usize,
     /// This node's sorted fork keys.
@@ -566,8 +562,8 @@ struct IterFrame {
     key_idx: usize,
 }
 
-impl<'a, S: ChunkGet<BS>, const BS: usize> ManifestIter<'a, S, BS> {
-    const fn new(trie: &'a mut Node, store: &'a S) -> Self {
+impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, BS> {
+    const fn new(trie: &'a mut Node<E>, store: &'a S) -> Self {
         Self {
             trie,
             store,
@@ -578,7 +574,7 @@ impl<'a, S: ChunkGet<BS>, const BS: usize> ManifestIter<'a, S, BS> {
     }
 }
 
-impl<S: ChunkGet<BS>, const BS: usize> Iterator for ManifestIter<'_, S, BS> {
+impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIter<'_, S, E, BS> {
     type Item = Result<Entry>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -603,7 +599,7 @@ impl<S: ChunkGet<BS>, const BS: usize> Iterator for ManifestIter<'_, S, BS> {
                 };
 
                 self.stack.push(IterFrame {
-                    node: self.trie as *mut Node,
+                    node: self.trie as *mut Node<E>,
                     path_len_before: 0,
                     keys,
                     key_idx: 0,
@@ -646,7 +642,7 @@ impl<S: ChunkGet<BS>, const BS: usize> Iterator for ManifestIter<'_, S, BS> {
                 }
             };
 
-            let child = &mut fork.node as *mut Node;
+            let child = &mut fork.node as *mut Node<E>;
 
             // SAFETY: child is a descendant of the exclusively borrowed trie.
             let child_ref = unsafe { &mut *child };
@@ -680,9 +676,9 @@ impl<S: ChunkGet<BS>, const BS: usize> Iterator for ManifestIter<'_, S, BS> {
     }
 }
 
-impl<'a, S: ChunkGet<BS>, M: ManifestMode, const BS: usize> IntoIterator for &'a mut Manifest<S, M, BS> {
+impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> IntoIterator for &'a mut Manifest<S, E, BS> {
     type Item = Result<Entry>;
-    type IntoIter = ManifestIter<'a, S, BS>;
+    type IntoIter = ManifestIter<'a, S, E, BS>;
 
     fn into_iter(self) -> Self::IntoIter {
         ManifestIter::new(&mut self.trie, &self.store)

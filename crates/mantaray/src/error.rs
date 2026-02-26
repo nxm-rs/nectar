@@ -26,14 +26,6 @@ pub enum MantarayError {
         /// Reference of the node.
         reference: Option<ChunkAddress>,
     },
-    /// Entry exceeds maximum allowed size.
-    #[error("entry too large: {size} > {max}")]
-    EntryTooLarge {
-        /// Actual size of the entry.
-        size: usize,
-        /// Maximum allowed size.
-        max: usize,
-    },
     /// Entry size does not match expected reference byte size.
     #[error("entry size mismatch: expected {expected}, got {actual}")]
     EntrySizeMismatch {
