@@ -517,8 +517,6 @@ mod tests {
         }
     }
 
-    // --- Go bee compatibility: Test_UnmarshalBinary edge cases ---
-
     #[test]
     fn unmarshal_nil_input() {
         let result = Node::<ChunkAddress>::try_from([].as_slice());
@@ -539,7 +537,7 @@ mod tests {
         assert!(matches!(result, Err(MantarayError::InvalidVersionHash)));
     }
 
-    /// Go bee test vector: valid manifest with correct metadata size (93 bytes).
+    /// Test vector: valid manifest with correct metadata size (93 bytes).
     /// This is a v0.2 manifest with zero obfuscation key, a single fork at '/',
     /// and website-index-document metadata.
     #[test]
@@ -550,7 +548,7 @@ mod tests {
         assert!(Node::<ChunkAddress>::try_from(data.as_slice()).is_ok());
     }
 
-    /// Go bee test vector: metadata size field says 89 but actual content needs 93.
+    /// Test vector: metadata size field says 89 but actual content needs 93.
     /// Should fail because there aren't enough bytes for the declared metadata.
     #[test]
     fn unmarshal_invalid_manifest_size_89() {
@@ -560,7 +558,7 @@ mod tests {
         assert!(Node::<ChunkAddress>::try_from(data.as_slice()).is_err());
     }
 
-    /// Go bee test vector: metadata size field says 95 but actual content is 93.
+    /// Test vector: metadata size field says 95 but actual content is 93.
     /// Should fail because the size exceeds available bytes.
     #[test]
     fn unmarshal_invalid_manifest_size_95() {
@@ -570,7 +568,7 @@ mod tests {
         assert!(Node::<ChunkAddress>::try_from(data.as_slice()).is_err());
     }
 
-    /// Go bee test vector: metadata size field says 96 but actual content is 93.
+    /// Test vector: metadata size field says 96 but actual content is 93.
     /// Should fail because the size exceeds available bytes.
     #[test]
     fn unmarshal_invalid_manifest_size_96() {

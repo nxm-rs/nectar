@@ -1,6 +1,6 @@
 //! Keccak-256 counter-mode stream cipher.
 //!
-//! Binary-compatible with the Go Bee implementation in `pkg/encryption/`.
+//! Binary-compatible with the Swarm reference implementation.
 
 use alloy_primitives::Keccak256;
 
@@ -81,8 +81,7 @@ pub fn transcrypt_in_place(key: &EncryptionKey, init_ctr: u32, data: &mut [u8]) 
 mod tests {
     use super::*;
 
-    /// Test vector from Go: key=8abf1502..., 4096 zero bytes, init_ctr=0.
-    /// Verifies binary compatibility with `bee/pkg/encryption/encryption_test.go`.
+    /// Test vector: key=8abf1502..., 4096 zero bytes, init_ctr=0.
     #[test]
     fn go_test_vector() {
         let key_hex = "8abf1502f557f15026716030fb6384792583daf39608a3cd02ff2f47e9bc6e49";

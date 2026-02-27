@@ -87,7 +87,7 @@ pub type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = Manifest<S, Chu
 pub type EncryptedManifest<S, const BS: usize = DEFAULT_BODY_SIZE> =
     Manifest<S, nectar_primitives::EncryptedChunkRef, BS>;
 
-/// Well-known metadata keys matching Go bee's `pkg/manifest/manifest.go`.
+/// Well-known metadata keys for manifest entries.
 pub mod metadata {
     /// Root path for manifest-level metadata.
     pub const ROOT_PATH: &str = "/";
@@ -253,8 +253,6 @@ pub struct Manifest<S, E: NodeEntry = ChunkAddress, const BS: usize = DEFAULT_BO
     store: S,
 }
 
-// --- Plain-mode constructors ---
-
 impl<S, const BS: usize> Manifest<S, ChunkAddress, BS> {
     /// Create a new plain manifest (no obfuscation, 32-byte refs).
     pub fn new(store: S) -> Self {
@@ -268,8 +266,6 @@ impl<S, const BS: usize> Manifest<S, ChunkAddress, BS> {
         Self { trie, store }
     }
 }
-
-// --- Encrypted-mode constructors ---
 
 #[cfg(feature = "encryption")]
 impl<S, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
@@ -288,8 +284,6 @@ impl<S, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
         Self { trie, store }
     }
 }
-
-// --- Entry-type-agnostic methods ---
 
 impl<S, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     /// Access the underlying chunk store.
@@ -426,9 +420,8 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
 
     /// Walk all nodes, yielding both node references and entry references.
     ///
-    /// This is useful for garbage collection and pinning — it enumerates every
-    /// chunk address the manifest depends on. Matches Go bee's
-    /// `IterateAddresses` in `pkg/manifest/mantaray.go`.
+    /// This is useful for garbage collection and pinning: it enumerates every
+    /// chunk address the manifest depends on.
     pub fn iterate_addresses<F>(&mut self, mut f: F) -> Result<()>
     where
         F: FnMut(&[u8]) -> Result<()>,
@@ -496,8 +489,6 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
         }
     }
 }
-
-// --- Mode-specific save() ---
 
 impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkAddress, BS> {
     /// Persist the plain manifest trie to storage, returning the root chunk address.

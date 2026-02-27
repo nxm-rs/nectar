@@ -539,7 +539,7 @@ impl<E: NodeEntry> Node<E> {
 
     /// Recursively save this node and all children to storage.
     ///
-    /// Uses BMT content-addressing via `ContentChunk` for Go Bee compatibility.
+    /// Uses BMT content-addressing via `ContentChunk`.
     pub fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, saver: &mut S) -> Result<()> {
         if self.reference.is_some() {
             return Ok(());
@@ -1020,7 +1020,6 @@ mod tests {
         run_has_prefix(has_prefix_test_case_data()[1].clone());
     }
 
-    // --- Go bee compatibility: TestPersistRemove ---
     // Tests save->reload->remove->save->reload->verify-removed cycle.
 
     fn run_persist_remove(tc: RemoveTestCase) {
@@ -1061,8 +1060,6 @@ mod tests {
     fn persist_remove_nested_prefix() {
         run_persist_remove(remove_test_case_data()[1].clone());
     }
-
-    // --- Walker tests (Go bee compatibility) ---
 
     fn make_entry_bytes(s: &[u8]) -> ChunkAddress {
         let mut buf = [0u8; 32];

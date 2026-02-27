@@ -277,8 +277,8 @@ pub struct StampResult {
 /// # EIP-191 Compatibility
 ///
 /// The signer function receives the prehash (32-byte keccak256 of stamp data)
-/// and should sign it using EIP-191 personal message signing to be compatible
-/// with Go/bee implementations. Use `SignerSync::sign_message_sync(prehash.as_slice())`.
+/// and should sign it using EIP-191 personal message signing. Use
+/// `SignerSync::sign_message_sync(prehash.as_slice())`.
 ///
 /// # Arguments
 ///
@@ -299,7 +299,7 @@ pub struct StampResult {
 ///
 /// let issuer = ShardedIssuer::new(B256::ZERO, 20, 16);
 /// let addresses: Vec<SwarmAddress> = /* ... */;
-/// // Use sign_message_sync for EIP-191 compatibility with Go/bee
+/// // Use sign_message_sync for EIP-191 compatibility
 /// let signer_fn = |prehash: &B256| signer.sign_message_sync(prehash.as_slice());
 /// let results = sign_stamps_parallel(&issuer, &signer_fn, &addresses);
 /// ```

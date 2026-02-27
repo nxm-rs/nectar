@@ -99,8 +99,6 @@ pub use splitter_parallel::EncryptedParallelSplitter;
 pub use traits_async::AsyncReadAt;
 pub use tree::{ChunkRange, TreeParams};
 
-// --- JoinRef: sealed trait mapping reference types to join modes ---
-
 mod join_ref_sealed {
     pub trait Sealed {}
     impl Sealed for crate::ChunkAddress {}
@@ -134,8 +132,6 @@ impl JoinRef for EncryptedChunkRef {
         self
     }
 }
-
-// --- Seek helper ---
 
 /// Resolve a `SeekFrom` position to an absolute byte offset.
 pub(crate) fn resolve_seek_position(
@@ -179,8 +175,6 @@ pub(crate) fn resolve_seek_position(
 
     Ok(new_pos as u64)
 }
-
-// --- Free functions ---
 
 /// Split data into chunks, returning root address and chunk store.
 pub fn split<const BODY_SIZE: usize>(
@@ -254,8 +248,6 @@ where
 pub(crate) fn levels(length: u64, chunk_size: usize) -> usize {
     constants::tree_depth(length, chunk_size, constants::REF_SIZE)
 }
-
-// --- Extension traits ---
 
 /// Extension methods for chunk getters.
 ///

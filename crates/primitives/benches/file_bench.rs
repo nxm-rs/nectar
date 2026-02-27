@@ -49,10 +49,6 @@ fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>
     (root, store.into_chunks())
 }
 
-// ---------------------------------------------------------------------------
-// Splitting benchmarks
-// ---------------------------------------------------------------------------
-
 fn bench_sequential_splitter(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_split_sequential");
 
@@ -169,10 +165,6 @@ fn bench_incremental_writes(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// Joiner benchmarks
-// ---------------------------------------------------------------------------
-
 fn bench_joiner(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_join");
 
@@ -191,10 +183,6 @@ fn bench_joiner(c: &mut Criterion) {
 
     group.finish();
 }
-
-// ---------------------------------------------------------------------------
-// Round-trip benchmarks (split + join)
-// ---------------------------------------------------------------------------
 
 fn bench_roundtrip(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_roundtrip");

@@ -146,10 +146,6 @@ fn bench_decrypt_chunk_into(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// Encrypted file splitting benchmarks
-// ---------------------------------------------------------------------------
-
 /// File sizes for encrypted benchmarks.
 const SIZES: &[(u64, &str)] = &[
     (4 * 1024, "4KB"),

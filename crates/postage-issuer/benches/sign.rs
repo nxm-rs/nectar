@@ -107,7 +107,7 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     let addresses_100: Vec<SwarmAddress> = (0..100).map(|_| random_address()).collect();
     let addresses_1000: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
 
-    // Use sign_message_sync for EIP-191 compatibility with Go/bee
+    // Use sign_message_sync for EIP-191 compatibility
     let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
         Ok(signer
             .sign_message_sync(prehash.as_slice())
@@ -141,7 +141,7 @@ fn bench_sign_comparison(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
     let addresses: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
 
-    // Use sign_message_sync for EIP-191 compatibility with Go/bee
+    // Use sign_message_sync for EIP-191 compatibility
     let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
         Ok(signer
             .sign_message_sync(prehash.as_slice())

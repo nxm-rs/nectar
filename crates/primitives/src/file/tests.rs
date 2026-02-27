@@ -1,7 +1,6 @@
 //! Integration tests for file splitting and joining.
 //!
-//! Includes cross-validation with Go implementation test vectors from
-//! bee/pkg/file/testing/vector.go
+//! Includes cross-validation with reference implementation test vectors.
 
 use std::io::Write;
 
@@ -13,12 +12,12 @@ use crate::store::MemoryStore;
 
 const CHUNK_SIZE: usize = DEFAULT_BODY_SIZE;
 
-/// Generate sequential bytes like go-mockbytes with modulus 255.
+/// Generate sequential bytes with modulus 255.
 fn sequential_bytes(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i % 255) as u8).collect()
 }
 
-/// Test vectors from bee/pkg/file/testing/vector.go
+/// Reference test vectors for file splitting.
 const TEST_VECTORS: &[(usize, &str)] = &[
     (31, "ece86edb20669cc60d142789d464d57bdf5e33cb789d443f608cbd81cfa5697d"),                      // 0
     (32, "0be77f0bb7abc9cd0abed640ee29849a3072ccfd1020019fe03658c38f087e02"),                      // 1
@@ -81,13 +80,13 @@ fn test_go_vectors_large() {
     }
 }
 
-// Encrypted round-trip tests (matching Bee's TestEncryptDecrypt sizes)
+// Encrypted round-trip tests
 #[cfg(feature = "encryption")]
 mod encrypted {
     use crate::bmt::DEFAULT_BODY_SIZE;
     use crate::file::{join, split_encrypted};
 
-    /// Sizes matching Bee's TestEncryptDecrypt test suite.
+    /// Test sizes covering various boundary conditions.
     const TEST_SIZES: &[usize] = &[
         0,
         10,

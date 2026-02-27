@@ -80,8 +80,6 @@ impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for MemoryStore<BODY_SIZE> {
     }
 }
 
-// --- ChunkGet / ChunkHas impls for HashMap ---
-
 impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for HashMap<ChunkAddress, AnyChunk<BODY_SIZE>> {
     type Error = ChunkStoreError;
 

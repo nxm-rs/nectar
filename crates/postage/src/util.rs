@@ -67,7 +67,7 @@ pub fn calculate_bucket(address: &SwarmAddress, bucket_depth: u8) -> u32 {
 pub struct PostageContext {
     /// The current block number (or equivalent time reference).
     block: u64,
-    /// The cumulative payout per chunk (total_amount in Bee terminology).
+    /// The cumulative payout per chunk.
     ///
     /// This represents the total amount that has been distributed to storage providers
     /// per chunk up to this point. A batch expires when its value (balance per chunk)
