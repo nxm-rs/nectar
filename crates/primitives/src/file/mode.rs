@@ -18,7 +18,7 @@ use super::error::{FileError, Result};
 fn chunk_creation_error(e: crate::error::PrimitivesError) -> FileError {
     match e {
         crate::error::PrimitivesError::Chunk(c) => FileError::Chunk(c),
-        other => FileError::Sink(Box::new(other)),
+        other => FileError::Store(Box::new(other)),
     }
 }
 
@@ -31,10 +31,10 @@ fn create_chunk<const BS: usize>(data: Bytes) -> Result<ContentChunk<BS>> {
 /// Store a chunk and return its address (derived from the chunk).
 fn store_chunk<const BS: usize, S: ChunkPut<BS>>(
     chunk: ContentChunk<BS>,
-    sink: &mut S,
+    store: &mut S,
 ) -> Result<ChunkAddress> {
     let address = *chunk.address();
-    sink.put(chunk).map_err(FileError::sink)?;
+    store.put(chunk.into()).map_err(FileError::store)?;
     Ok(address)
 }
 
@@ -109,7 +109,10 @@ pub(crate) fn joiner_init<M: JoinMode, G: ChunkGet<BS>, const BS: usize>(
     input: M::RootRef,
 ) -> Result<(ChunkAddress, u64, M::JoinerContext)> {
     let addr = M::root_address(&input);
-    let chunk = getter.get(&addr).map_err(FileError::getter)?;
+    let any = getter.get(&addr).map_err(FileError::getter)?;
+    let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
+        type_name: "non-content",
+    })?;
     M::init_from_chunk::<BS>(input, chunk)
 }
 
@@ -121,7 +124,10 @@ pub(crate) fn read_chunk_body<M: JoinMode, G: ChunkGet<BS>, const BS: usize>(
     context: &M::JoinerContext,
     span: u64,
 ) -> Result<Bytes> {
-    let chunk = getter.get(address).map_err(FileError::getter)?;
+    let any = getter.get(address).map_err(FileError::getter)?;
+    let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
+        type_name: "non-content",
+    })?;
     M::decode_body::<BS>(chunk, context, span)
 }
 
@@ -139,7 +145,10 @@ pub(crate) async fn read_chunk_body_async<
 ) -> Result<Bytes> {
     let address = *address;
     let context = context.clone();
-    let chunk = getter.get(&address).await.map_err(FileError::getter)?;
+    let any = getter.get(&address).await.map_err(FileError::getter)?;
+    let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
+        type_name: "non-content",
+    })?;
     M::decode_body::<BS>(chunk, &context, span)
 }
 
@@ -159,15 +168,15 @@ pub trait SplitMode: JoinMode {
     #[inline]
     fn process_chunk<const BS: usize, S: ChunkPut<BS>>(
         data: Vec<u8>,
-        sink: &mut S,
+        store: &mut S,
     ) -> Result<Self::RefBytes> {
         let (chunk, ref_bytes) = Self::prepare_chunk::<BS>(data)?;
-        sink.put(chunk).map_err(FileError::sink)?;
+        store.put(chunk.into()).map_err(FileError::store)?;
         Ok(ref_bytes)
     }
 
     /// Process empty file, store chunk, return root ref.
-    fn process_empty<const BS: usize, S: ChunkPut<BS>>(sink: &mut S) -> Result<Self::RootRef>;
+    fn process_empty<const BS: usize, S: ChunkPut<BS>>(store: &mut S) -> Result<Self::RootRef>;
 
     /// Extract root reference from top of buffer.
     fn extract_root(buffer: &[u8]) -> Result<Self::RootRef>;
@@ -230,12 +239,12 @@ impl SplitMode for PlainMode {
     }
 
     fn process_empty<const BS: usize, S: ChunkPut<BS>>(
-        sink: &mut S,
+        store: &mut S,
     ) -> Result<ChunkAddress> {
         // Use `new` (not `try_from`) because Bytes::new() is raw content,
         // not pre-formatted span+body data.
         let chunk = ContentChunk::<BS>::new(Bytes::new()).map_err(chunk_creation_error)?;
-        store_chunk::<BS, S>(chunk, sink)
+        store_chunk::<BS, S>(chunk, store)
     }
 
     fn extract_root(buffer: &[u8]) -> Result<ChunkAddress> {
@@ -333,14 +342,14 @@ impl SplitMode for EncryptedMode {
     }
 
     fn process_empty<const BS: usize, S: ChunkPut<BS>>(
-        sink: &mut S,
+        store: &mut S,
     ) -> Result<EncryptedChunkRef> {
         use crate::chunk::encryption::encrypt_chunk;
 
         let chunk_bytes = 0u64.to_le_bytes().to_vec();
         let (key, ciphertext) = encrypt_chunk::<BS>(&chunk_bytes)?;
         let chunk = create_chunk::<BS>(Bytes::from(ciphertext))?;
-        let address = store_chunk::<BS, S>(chunk, sink)?;
+        let address = store_chunk::<BS, S>(chunk, store)?;
         Ok(EncryptedChunkRef::new(address, key))
     }
 

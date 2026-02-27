@@ -103,6 +103,9 @@ where
 
         let addr = M::root_address(&input);
         let root_chunk = getter.get(&addr).await.map_err(FileError::getter)?;
+        let root_chunk = root_chunk.into_content().ok_or(FileError::InvalidChunkType {
+            type_name: "non-content",
+        })?;
         let (root, span, context) = M::init_from_chunk::<BODY_SIZE>(input, root_chunk)?;
         let tree = TreeParams::<BODY_SIZE>::new(span);
 
@@ -189,6 +192,9 @@ where
             ReadRangeCheck::Empty => return Ok(Vec::new()),
             ReadRangeCheck::SingleChunk { offset, actual_len } => {
                 let chunk = getter.get(root).await.map_err(FileError::getter)?;
+                let chunk = chunk.into_content().ok_or(FileError::InvalidChunkType {
+                    type_name: "non-content",
+                })?;
                 let body = M::decode_body::<BODY_SIZE>(chunk, context, span)?;
                 let start = offset as usize;
                 let end = start + actual_len;
@@ -417,15 +423,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::{Chunk, ContentChunk};
+    use crate::chunk::AnyChunk;
     use crate::file::split;
     use std::collections::HashMap;
 
-    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, ContentChunk>) {
-        let (root, chunks) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
-        let store: HashMap<ChunkAddress, ContentChunk> =
-            chunks.into_iter().map(|c| (*c.address(), c)).collect();
-        (root, store)
+    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
+        let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
+        (root, store.into_chunks())
     }
 
     // --- Generated shared tests (async variants) ---
@@ -530,12 +534,10 @@ mod tests {
             data: &[u8],
         ) -> (
             crate::chunk::encryption::EncryptedChunkRef,
-            HashMap<ChunkAddress, ContentChunk>,
+            HashMap<ChunkAddress, AnyChunk>,
         ) {
-            let (root_ref, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
-            let store: HashMap<ChunkAddress, ContentChunk> =
-                chunks.into_iter().map(|c| (*c.address(), c)).collect();
-            (root_ref, store)
+            let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+            (root_ref, store.into_chunks())
         }
 
         // --- Generated shared tests (async variants) ---

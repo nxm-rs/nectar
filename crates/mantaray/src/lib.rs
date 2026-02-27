@@ -23,11 +23,11 @@
 //!
 //! Manifest operations use the typed chunk store traits from `nectar_primitives`:
 //! [`ChunkGet`] for loading and [`ChunkPut`] for saving. This means a single
-//! [`MemorySink`] can hold both file chunks and manifest trie nodes.
+//! [`MemoryStore`] can hold both file chunks and manifest trie nodes.
 //!
 //! ```no_run
-//! # use nectar_mantaray::{PlainManifest, Entry, DefaultMemorySink};
-//! let store = DefaultMemorySink::new();
+//! # use nectar_mantaray::{PlainManifest, Entry, DefaultMemoryStore};
+//! let store = DefaultMemoryStore::new();
 //! let mut manifest: PlainManifest<_> = PlainManifest::new(store);
 //! ```
 //!
@@ -36,8 +36,8 @@
 //! Configure index and error documents for Swarm-hosted websites:
 //!
 //! ```no_run
-//! # use nectar_mantaray::{PlainManifest, Entry, metadata, DefaultMemorySink};
-//! # let store = DefaultMemorySink::new();
+//! # use nectar_mantaray::{PlainManifest, Entry, metadata, DefaultMemoryStore};
+//! # let store = DefaultMemoryStore::new();
 //! # let mut manifest = PlainManifest::new(store);
 //! manifest.set_index_document("index.html").unwrap();
 //! manifest.set_error_document("404.html").unwrap();
@@ -73,8 +73,8 @@ pub use node::{Fork, Node, NodeType, Prefix};
 pub use obfuscation::ObfuscationKey;
 
 // Re-export typed storage traits from primitives.
-pub use nectar_primitives::store::{ChunkHas, MemorySink};
-pub use nectar_primitives::DefaultMemorySink;
+pub use nectar_primitives::store::{ChunkHas, MemoryStore};
+pub use nectar_primitives::DefaultMemoryStore;
 
 /// Default manifest type using [`DEFAULT_BODY_SIZE`] and plain mode.
 pub type DefaultManifest<S> = PlainManifest<S, DEFAULT_BODY_SIZE>;
@@ -696,9 +696,9 @@ pub(crate) fn keccak256(data: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-    use nectar_primitives::store::MemorySink;
+    use nectar_primitives::store::MemoryStore;
 
-    type Store = MemorySink<DEFAULT_BODY_SIZE>;
+    type Store = MemoryStore<DEFAULT_BODY_SIZE>;
 
     /// Create a ChunkAddress from a string, right-padded with zeroes.
     fn make_addr(s: &str) -> ChunkAddress {
@@ -810,9 +810,7 @@ mod tests {
         let store = Store::new();
         let mut m = PlainManifest::new(store);
 
-        // Set index first
         m.set_index_document("index.html").unwrap();
-        // Set error — should merge, not replace
         m.set_error_document("404.html").unwrap();
 
         assert_eq!(m.index_document().unwrap(), Some("index.html".to_string()));
@@ -850,10 +848,8 @@ mod tests {
         })
         .unwrap();
 
-        // Should have both node refs (trie chunks) and entry refs (content chunks)
         assert!(!addresses.is_empty());
 
-        // All entry references should be present
         for &path in paths {
             let expected = make_addr(path);
             assert!(
@@ -881,14 +877,11 @@ mod tests {
         m.add("dir0/file0.txt", updated_addr).unwrap();
         let root_ref_2 = m.save().unwrap();
 
-        // Root reference should have changed
         assert_ne!(root_ref_1, root_ref_2);
 
-        // Updated entry should have new value
         let entry = m.lookup("dir0/file0.txt").unwrap();
         assert_eq!(entry.address(), Some(&updated_addr));
 
-        // Other entries should be intact
         for i in 1..100u32 {
             let path = format!("dir{}/file{}.txt", i / 10, i);
             let entry = m.lookup(&path).unwrap();

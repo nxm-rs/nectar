@@ -8,7 +8,7 @@
 ///
 /// The calling module must define:
 /// ```ignore
-/// fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, ContentChunk>);
+/// fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>);
 /// ```
 macro_rules! generate_plain_joiner_tests {
     ($test_attr:meta, $Joiner:ident, [$($async_fn:tt)*], [$($aw:tt)*]) => {
@@ -112,7 +112,7 @@ macro_rules! generate_plain_joiner_tests {
 /// The calling module must define:
 /// ```ignore
 /// fn encrypted_split_and_store(data: &[u8])
-///     -> (EncryptedChunkRef, HashMap<ChunkAddress, ContentChunk>);
+///     -> (EncryptedChunkRef, HashMap<ChunkAddress, AnyChunk>);
 /// ```
 macro_rules! generate_encrypted_joiner_tests {
     ($test_attr:meta, $Joiner:ident, [$($async_fn:tt)*], [$($aw:tt)*]) => {

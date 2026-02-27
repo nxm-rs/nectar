@@ -4,11 +4,11 @@ use nectar_mantaray::PlainManifest;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::file::{join, split_reader};
-use nectar_primitives::store::MemorySink;
+use nectar_primitives::store::MemoryStore;
 
-type Store = MemorySink<DEFAULT_BODY_SIZE>;
+type Store = MemoryStore<DEFAULT_BODY_SIZE>;
 
-/// Split files into a MemorySink, create a manifest in the same store,
+/// Split files into a MemoryStore, create a manifest in the same store,
 /// then verify lookup and round-trip.
 #[test]
 fn unified_store_workflow() {
@@ -134,7 +134,7 @@ fn iterator_yields_all_entries() {
 /// Ergonomic API: write_file/read_file, PlainManifest::open, Entry convenience methods.
 #[test]
 fn ergonomic_api_workflow() {
-    use nectar_mantaray::DefaultMemorySink;
+    use nectar_mantaray::DefaultMemoryStore;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
     use nectar_primitives::file::{ChunkGetExt, split_source_into};
 
@@ -142,7 +142,7 @@ fn ergonomic_api_workflow() {
     let (root_a, store) =
         split_source_into::<_, _, DEFAULT_BODY_SIZE>(
             b"file A contents".as_slice(),
-            DefaultMemorySink::new(),
+            DefaultMemoryStore::new(),
         )
         .unwrap();
     let (root_b, store) =
@@ -195,7 +195,6 @@ fn ergonomic_api_workflow() {
         // address() extracts ChunkAddress from reference
         let addr = entry.address().expect("32-byte reference yields address");
 
-        // Use manifest.store() to read the file
         let data = manifest2.store().read_file(*addr).unwrap();
         if path == "a.txt" {
             assert_eq!(data, b"file A contents");

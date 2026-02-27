@@ -9,7 +9,7 @@ use alloy_primitives::hex;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::file::Splitter;
-use crate::store::VecSink;
+use crate::store::MemoryStore;
 
 const CHUNK_SIZE: usize = DEFAULT_BODY_SIZE;
 
@@ -50,8 +50,8 @@ const LARGE_TEST_VECTORS: &[(usize, &str)] = &[
 fn run_vector_test(size: usize, expected_hex: &str) {
     let data = sequential_bytes(size);
 
-    let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-    let mut splitter = Splitter::new(sink, data.len() as u64);
+    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+    let mut splitter = Splitter::new(store, data.len() as u64);
     splitter.write_all(&data).unwrap();
     let (root, _) = splitter.finish().unwrap();
 
@@ -84,10 +84,7 @@ fn test_go_vectors_large() {
 // Encrypted round-trip tests (matching Bee's TestEncryptDecrypt sizes)
 #[cfg(feature = "encryption")]
 mod encrypted {
-    use std::collections::HashMap;
-
     use crate::bmt::DEFAULT_BODY_SIZE;
-    use crate::chunk::{Chunk, ContentChunk};
     use crate::file::{join, split_encrypted};
 
     /// Sizes matching Bee's TestEncryptDecrypt test suite.
@@ -109,15 +106,9 @@ mod encrypted {
     fn run_encrypted_roundtrip(size: usize) {
         let data: Vec<u8> = (0..size).map(|i| (i % 255) as u8).collect();
 
-        let (root_ref, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
 
         assert_eq!(Vec::from(&root_ref).len(), 64, "Root ref must be 64 bytes for size {size}");
-
-        // Build HashMap store from chunks
-        let store: HashMap<_, _> = chunks
-            .into_iter()
-            .map(|c| (*c.address(), c))
-            .collect::<HashMap<_, ContentChunk<DEFAULT_BODY_SIZE>>>();
 
         let recovered = join(&store, root_ref).unwrap();
         assert_eq!(
@@ -138,16 +129,16 @@ mod encrypted {
     fn encrypted_chunk_count_single() {
         // Single chunk file: 1 encrypted chunk stored
         let data = b"small data";
-        let (_, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
-        assert_eq!(chunks.len(), 1);
+        let (_, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        assert_eq!(store.len(), 1);
     }
 
     #[test]
     fn encrypted_chunk_count_two_data() {
         // 4097 bytes → 2 data chunks + 1 intermediate = 3
         let data = vec![0xAB; 4097];
-        let (_, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
-        assert_eq!(chunks.len(), 3);
+        let (_, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        assert_eq!(store.len(), 3);
     }
 
     #[test]
@@ -165,10 +156,10 @@ mod encrypted {
 
 mod split_source_tests {
     use crate::file::{ChunkGetExt, split_source, split_source_into};
-    use crate::store::MemorySink;
+    use crate::store::MemoryStore;
     use crate::bmt::DEFAULT_BODY_SIZE;
 
-    type Store = MemorySink<DEFAULT_BODY_SIZE>;
+    type Store = MemoryStore<DEFAULT_BODY_SIZE>;
 
     #[test]
     fn split_source_slice() {
@@ -195,10 +186,10 @@ mod split_source_tests {
     }
 
     #[test]
-    fn split_source_into_sink() {
-        let data = b"into sink test";
-        let sink = Store::new();
-        let (root, store) = split_source_into::<_, _, DEFAULT_BODY_SIZE>(data.as_slice(), sink).unwrap();
+    fn split_source_into_store() {
+        let data = b"into store test";
+        let store = Store::new();
+        let (root, store) = split_source_into::<_, _, DEFAULT_BODY_SIZE>(data.as_slice(), store).unwrap();
         let recovered = store.read_file(root).unwrap();
         assert_eq!(recovered, data);
     }
@@ -221,12 +212,12 @@ mod split_source_tests {
 
 mod write_file_ext {
     use crate::file::{ChunkGetExt, ChunkPutExt};
-    use crate::store::MemorySink;
+    use crate::store::MemoryStore;
     use crate::bmt::DEFAULT_BODY_SIZE;
 
     #[test]
     fn write_file_roundtrip() {
-        let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let addr = store.write_file(b"hello swarm").unwrap();
         let recovered = store.read_file(addr).unwrap();
         assert_eq!(recovered, b"hello swarm");
@@ -235,7 +226,7 @@ mod write_file_ext {
     #[test]
     fn write_file_large() {
         let data = vec![0xAB; 8192];
-        let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let addr = store.write_file(&data).unwrap();
         let recovered = store.read_file(addr).unwrap();
         assert_eq!(recovered, data);
@@ -244,7 +235,7 @@ mod write_file_ext {
     #[test]
     fn writer_roundtrip() {
         use std::io::Write;
-        let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+        let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let data = b"streaming via writer";
         let mut writer = store.writer(data.len() as u64);
         writer.write_all(data).unwrap();
@@ -256,12 +247,12 @@ mod write_file_ext {
     #[cfg(feature = "encryption")]
     mod encrypted {
         use crate::file::{ChunkGetExt, ChunkPutExt};
-        use crate::store::MemorySink;
+        use crate::store::MemoryStore;
         use crate::bmt::DEFAULT_BODY_SIZE;
 
         #[test]
         fn write_encrypted_file_roundtrip() {
-            let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+            let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
             let enc_ref = store.write_encrypted_file(b"secret data").unwrap();
             let recovered = store.read_file(enc_ref).unwrap();
             assert_eq!(recovered, b"secret data");

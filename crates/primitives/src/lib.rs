@@ -87,12 +87,10 @@ pub type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 /// Default polymorphic chunk.
 pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
 /// Default in-memory chunk store.
-pub type DefaultMemorySink = MemorySink<DEFAULT_BODY_SIZE>;
-/// Default Vec-based chunk sink.
-pub type DefaultVecSink = VecSink<DEFAULT_BODY_SIZE>;
+pub type DefaultMemoryStore = MemoryStore<DEFAULT_BODY_SIZE>;
 
 // Chunk storage (typed)
-pub use store::{ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemorySink, VecSink};
+pub use store::{ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore};
 #[cfg(feature = "async")]
 pub use store::{AsyncChunkGet, AsyncChunkHas, AsyncChunkPut, AsyncChunkPutAdapter};
 

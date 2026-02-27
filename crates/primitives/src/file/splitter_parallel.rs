@@ -27,7 +27,7 @@ pub struct GenericParallelSplitter<S, M: SplitMode, const BODY_SIZE: usize = DEF
 where
     S: ChunkPut<BODY_SIZE> + Send,
 {
-    sink: Mutex<S>,
+    store: Mutex<S>,
     _mode: PhantomData<M>,
 }
 
@@ -56,10 +56,10 @@ where
     S: ChunkPut<BODY_SIZE> + Send,
     M: SplitMode + Send + Sync,
 {
-    /// Create a parallel splitter with the given chunk sink.
-    pub const fn new(sink: S) -> Self {
+    /// Create a parallel splitter with the given chunk store.
+    pub const fn new(store: S) -> Self {
         Self {
-            sink: Mutex::new(sink),
+            store: Mutex::new(store),
             _mode: PhantomData,
         }
     }
@@ -83,14 +83,14 @@ where
         self.build_intermediate_levels(level0_refs, size, &spans)
     }
 
-    /// Consume the splitter and return the sink.
-    pub fn into_sink(self) -> S {
-        self.sink.into_inner()
+    /// Consume the splitter and return the store.
+    pub fn into_store(self) -> S {
+        self.store.into_inner()
     }
 
     fn handle_empty(&self) -> Result<M::RootRef> {
-        let mut sink = self.sink.lock();
-        M::process_empty::<BODY_SIZE, S>(&mut *sink)
+        let mut store = self.store.lock();
+        M::process_empty::<BODY_SIZE, S>(&mut *store)
     }
 
     fn create_data_chunks<R: ReadAt + Sync>(
@@ -110,7 +110,7 @@ where
                 let mut buf = vec![0u8; chunk_size];
                 source
                     .read_at(offset, &mut buf)
-                    .map_err(|e| FileError::Sink(Box::new(e)))?;
+                    .map_err(|e| FileError::Store(Box::new(e)))?;
 
                 let span = if i + 1 == data_chunks {
                     size - offset
@@ -194,7 +194,7 @@ where
     }
 
     fn put_chunk(&self, chunk: ContentChunk<BODY_SIZE>) -> Result<()> {
-        self.sink.lock().put(chunk).map_err(FileError::sink)
+        self.store.lock().put(chunk.into()).map_err(FileError::store)
     }
 }
 
@@ -202,18 +202,18 @@ where
 mod tests {
     use super::*;
     use crate::file::{join, split};
-    use crate::store::{MemorySink, VecSink};
+    use crate::store::MemoryStore;
 
     #[test]
     fn test_parallel_splitter_empty() {
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let splitter = ParallelSplitter::new(sink);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let splitter = ParallelSplitter::new(store);
 
         let data: &[u8] = &[];
         let root = splitter.split(&data).unwrap();
-        let sink = splitter.into_sink();
+        let store = splitter.into_store();
 
-        assert_eq!(sink.len(), 1);
+        assert_eq!(store.len(), 1);
         assert!(!root.is_zero());
 
         // Compare with sequential
@@ -224,13 +224,13 @@ mod tests {
     #[test]
     fn test_parallel_splitter_small() {
         let data = b"hello world";
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let splitter = ParallelSplitter::new(sink);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let splitter = ParallelSplitter::new(store);
 
         let root = splitter.split(&data.as_slice()).unwrap();
-        let sink = splitter.into_sink();
+        let store = splitter.into_store();
 
-        assert_eq!(sink.len(), 1);
+        assert_eq!(store.len(), 1);
 
         // Compare with sequential
         let (seq_root, _) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
@@ -240,8 +240,8 @@ mod tests {
     #[test]
     fn test_parallel_splitter_exact_chunk() {
         let data = vec![0xAB; DEFAULT_BODY_SIZE];
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let splitter = ParallelSplitter::new(sink);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let splitter = ParallelSplitter::new(store);
 
         let root = splitter.split(&data.as_slice()).unwrap();
 
@@ -252,13 +252,13 @@ mod tests {
     #[test]
     fn test_parallel_splitter_two_chunks() {
         let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let splitter = ParallelSplitter::new(sink);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let splitter = ParallelSplitter::new(store);
 
         let root = splitter.split(&data.as_slice()).unwrap();
-        let sink = splitter.into_sink();
+        let store = splitter.into_store();
 
-        assert_eq!(sink.len(), 3); // 2 data + 1 intermediate
+        assert_eq!(store.len(), 3); // 2 data + 1 intermediate
 
         let (seq_root, _) = split::<DEFAULT_BODY_SIZE>(&data).unwrap();
         assert_eq!(root, seq_root);
@@ -267,34 +267,34 @@ mod tests {
     #[test]
     fn test_parallel_splitter_128_chunks() {
         let data = vec![0xEF; DEFAULT_BODY_SIZE * 128];
-        let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-        let splitter = ParallelSplitter::new(sink);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let splitter = ParallelSplitter::new(store);
 
         let root = splitter.split(&data.as_slice()).unwrap();
-        let sink = splitter.into_sink();
+        let store = splitter.into_store();
 
         let (seq_root, _) = split::<DEFAULT_BODY_SIZE>(&data).unwrap();
         assert_eq!(root, seq_root);
 
         // Verify round-trip
-        let recovered = join(&sink, root).unwrap();
+        let recovered = join(&store, root).unwrap();
         assert_eq!(recovered, data);
     }
 
     #[test]
     fn test_parallel_splitter_129_chunks() {
         let data = vec![0x12; DEFAULT_BODY_SIZE * 129];
-        let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-        let splitter = ParallelSplitter::new(sink);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let splitter = ParallelSplitter::new(store);
 
         let root = splitter.split(&data.as_slice()).unwrap();
-        let sink = splitter.into_sink();
+        let store = splitter.into_store();
 
         let (seq_root, _) = split::<DEFAULT_BODY_SIZE>(&data).unwrap();
         assert_eq!(root, seq_root);
 
         // Verify round-trip
-        let recovered = join(&sink, root).unwrap();
+        let recovered = join(&store, root).unwrap();
         assert_eq!(recovered, data);
     }
 
@@ -304,16 +304,16 @@ mod tests {
             .map(|i| (i % 256) as u8)
             .collect();
 
-        let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-        let splitter = ParallelSplitter::new(sink);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let splitter = ParallelSplitter::new(store);
 
         let root = splitter.split(&data.as_slice()).unwrap();
-        let sink = splitter.into_sink();
+        let store = splitter.into_store();
 
         let (seq_root, _) = split::<DEFAULT_BODY_SIZE>(&data).unwrap();
         assert_eq!(root, seq_root);
 
-        let recovered = join(&sink, root).unwrap();
+        let recovered = join(&store, root).unwrap();
         assert_eq!(recovered, data);
     }
 
@@ -321,48 +321,48 @@ mod tests {
     mod encrypted {
         use super::*;
         use crate::file::{join, split_encrypted, EncryptedParallelSplitter};
-        use crate::store::MemorySink;
+        use crate::store::MemoryStore;
 
         #[test]
         fn test_encrypted_parallel_splitter_empty() {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let splitter = EncryptedParallelSplitter::new(sink);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedParallelSplitter::new(store);
 
             let data: &[u8] = &[];
             let root_ref = splitter.split(&data).unwrap();
-            let sink = splitter.into_sink();
+            let store = splitter.into_store();
 
-            assert_eq!(sink.len(), 1);
+            assert_eq!(store.len(), 1);
             assert_eq!(Vec::from(&root_ref).len(), 64);
         }
 
         #[test]
         fn test_encrypted_parallel_splitter_small() {
             let data = b"hello world";
-            let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-            let splitter = EncryptedParallelSplitter::new(sink);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedParallelSplitter::new(store);
 
             let root_ref = splitter.split(&data.as_slice()).unwrap();
-            let sink = splitter.into_sink();
+            let store = splitter.into_store();
 
-            assert_eq!(sink.len(), 1);
+            assert_eq!(store.len(), 1);
 
-            let recovered = join(&sink, root_ref).unwrap();
+            let recovered = join(&store, root_ref).unwrap();
             assert_eq!(recovered, data);
         }
 
         #[test]
         fn test_encrypted_parallel_splitter_two_chunks() {
             let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
-            let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-            let splitter = EncryptedParallelSplitter::new(sink);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedParallelSplitter::new(store);
 
             let root_ref = splitter.split(&data.as_slice()).unwrap();
-            let sink = splitter.into_sink();
+            let store = splitter.into_store();
 
-            assert_eq!(sink.len(), 3);
+            assert_eq!(store.len(), 3);
 
-            let recovered = join(&sink, root_ref).unwrap();
+            let recovered = join(&store, root_ref).unwrap();
             assert_eq!(recovered, data);
         }
 
@@ -373,25 +373,18 @@ mod tests {
                 .collect();
 
             // Parallel encrypted split
-            let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-            let splitter = EncryptedParallelSplitter::new(sink);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedParallelSplitter::new(store);
             let par_ref = splitter.split(&data.as_slice()).unwrap();
-            let par_sink = splitter.into_sink();
+            let par_store = splitter.into_store();
 
-            // Sequential encrypted split
-            let (seq_ref, seq_chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+            let (seq_ref, seq_store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
 
-            // Chunk counts must match
-            assert_eq!(par_sink.len(), seq_chunks.len());
+            assert_eq!(par_store.len(), seq_store.len());
 
-            // Both must round-trip correctly
-            let par_recovered = join(&par_sink, par_ref).unwrap();
+            let par_recovered = join(&par_store, par_ref).unwrap();
             assert_eq!(par_recovered, data);
 
-            use std::collections::HashMap;
-            use crate::chunk::Chunk;
-            let seq_store: HashMap<_, _> =
-                seq_chunks.into_iter().map(|c| (*c.address(), c)).collect();
             let seq_recovered = join(&seq_store, seq_ref).unwrap();
             assert_eq!(seq_recovered, data);
         }
@@ -399,12 +392,12 @@ mod tests {
         #[test]
         fn test_encrypted_parallel_nondeterministic() {
             let data = b"test determinism";
-            let sink1 = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let splitter1 = EncryptedParallelSplitter::new(sink1);
+            let store1 = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter1 = EncryptedParallelSplitter::new(store1);
             let ref1 = splitter1.split(&data.as_slice()).unwrap();
 
-            let sink2 = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let splitter2 = EncryptedParallelSplitter::new(sink2);
+            let store2 = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter2 = EncryptedParallelSplitter::new(store2);
             let ref2 = splitter2.split(&data.as_slice()).unwrap();
 
             // Different random keys each time

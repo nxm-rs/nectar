@@ -201,6 +201,14 @@ impl<const BODY_SIZE: usize> From<SingleOwnerChunk<BODY_SIZE>> for AnyChunk<BODY
     }
 }
 
+impl<const BODY_SIZE: usize> PartialEq for AnyChunk<BODY_SIZE> {
+    fn eq(&self, other: &Self) -> bool {
+        self.address() == other.address()
+    }
+}
+
+impl<const BODY_SIZE: usize> Eq for AnyChunk<BODY_SIZE> {}
+
 #[cfg(test)]
 mod tests {
     use super::super::traits::Chunk;

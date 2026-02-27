@@ -19,9 +19,8 @@ use rand::{RngCore, rng};
 use nectar_postage_issuer::{
     BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
-use nectar_primitives::chunk::Chunk;
 use nectar_primitives::file::{ParallelSplitter, Splitter};
-use nectar_primitives::store::VecSink;
+use nectar_primitives::store::MemoryStore;
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
 /// File sizes to benchmark, representing realistic upload scenarios.
@@ -64,19 +63,19 @@ fn bench_pipeline_mock_sequential(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Split file into chunks
-                let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                let mut splitter = Splitter::new(sink, data.len() as u64);
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let mut splitter = Splitter::new(store, data.len() as u64);
                 splitter.write_all(data).unwrap();
-                let (root, sink) = splitter.finish().unwrap();
+                let (root, store) = splitter.finish().unwrap();
 
                 // Stamp each chunk
                 let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
                 let mut stamper = BatchStamper::new(issuer, MockSigner);
 
-                let chunks = sink.into_chunks();
+                let chunks = store.into_chunks();
                 let stamps: Vec<_> = chunks
-                    .iter()
-                    .map(|chunk| stamper.stamp(chunk.address()).unwrap())
+                    .keys()
+                    .map(|addr| stamper.stamp(addr).unwrap())
                     .collect();
 
                 black_box((root, stamps))
@@ -99,19 +98,19 @@ fn bench_pipeline_mock_parallel_split(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Parallel split
-                let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                let splitter = ParallelSplitter::new(sink);
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let splitter = ParallelSplitter::new(store);
                 let root = splitter.split(data).unwrap();
-                let sink = splitter.into_sink();
+                let store = splitter.into_store();
 
                 // Stamp each chunk (sequential)
                 let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
                 let mut stamper = BatchStamper::new(issuer, MockSigner);
 
-                let chunks = sink.into_chunks();
+                let chunks = store.into_chunks();
                 let stamps: Vec<_> = chunks
-                    .iter()
-                    .map(|chunk| stamper.stamp(chunk.address()).unwrap())
+                    .keys()
+                    .map(|addr| stamper.stamp(addr).unwrap())
                     .collect();
 
                 black_box((root, stamps))
@@ -138,19 +137,19 @@ fn bench_pipeline_ecdsa_sequential(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Split file into chunks
-                let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                let mut splitter = Splitter::new(sink, data.len() as u64);
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let mut splitter = Splitter::new(store, data.len() as u64);
                 splitter.write_all(data).unwrap();
-                let (root, sink) = splitter.finish().unwrap();
+                let (root, store) = splitter.finish().unwrap();
 
                 // Stamp each chunk with real signatures
                 let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
                 let mut stamper = BatchStamper::new(issuer, &signer);
 
-                let chunks = sink.into_chunks();
+                let chunks = store.into_chunks();
                 let stamps: Vec<_> = chunks
-                    .iter()
-                    .map(|chunk| stamper.stamp(chunk.address()).unwrap())
+                    .keys()
+                    .map(|addr| stamper.stamp(addr).unwrap())
                     .collect();
 
                 black_box((root, stamps))
@@ -183,14 +182,14 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Parallel split
-                let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                let splitter = ParallelSplitter::new(sink);
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let splitter = ParallelSplitter::new(store);
                 let root = splitter.split(data).unwrap();
-                let sink = splitter.into_sink();
+                let store = splitter.into_store();
 
                 // Collect addresses for parallel signing
-                let chunks = sink.into_chunks();
-                let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
+                let chunks = store.into_chunks();
+                let addresses: Vec<_> = chunks.keys().copied().collect();
 
                 // Parallel stamp signing
                 let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
@@ -224,18 +223,18 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     // Fully sequential
     group.bench_function("sequential", |b| {
         b.iter(|| {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = Splitter::new(store, data.len() as u64);
             splitter.write_all(&data).unwrap();
-            let (root, sink) = splitter.finish().unwrap();
+            let (root, store) = splitter.finish().unwrap();
 
             let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
 
-            let chunks = sink.into_chunks();
+            let chunks = store.into_chunks();
             let stamps: Vec<_> = chunks
-                .iter()
-                .map(|chunk| stamper.stamp(chunk.address()).unwrap())
+                .keys()
+                .map(|addr| stamper.stamp(addr).unwrap())
                 .collect();
 
             black_box((root, stamps))
@@ -245,18 +244,18 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     // Parallel split only
     group.bench_function("parallel_split", |b| {
         b.iter(|| {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let splitter = ParallelSplitter::new(sink);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter = ParallelSplitter::new(store);
             let root = splitter.split(&data).unwrap();
-            let sink = splitter.into_sink();
+            let store = splitter.into_store();
 
             let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
 
-            let chunks = sink.into_chunks();
+            let chunks = store.into_chunks();
             let stamps: Vec<_> = chunks
-                .iter()
-                .map(|chunk| stamper.stamp(chunk.address()).unwrap())
+                .keys()
+                .map(|addr| stamper.stamp(addr).unwrap())
                 .collect();
 
             black_box((root, stamps))
@@ -266,13 +265,13 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     // Fully parallel
     group.bench_function("fully_parallel", |b| {
         b.iter(|| {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let splitter = ParallelSplitter::new(sink);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter = ParallelSplitter::new(store);
             let root = splitter.split(&data).unwrap();
-            let sink = splitter.into_sink();
+            let store = splitter.into_store();
 
-            let chunks = sink.into_chunks();
-            let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
+            let chunks = store.into_chunks();
+            let addresses: Vec<_> = chunks.keys().copied().collect();
 
             let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
             let stamps = sign_stamps_parallel(&issuer, &sign_fn, &addresses);
@@ -298,8 +297,8 @@ fn bench_pipeline_stages(c: &mut Criterion) {
     // Stage 1: Split only (sequential)
     group.bench_function("1_split_sequential", |b| {
         b.iter(|| {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = Splitter::new(store, data.len() as u64);
             splitter.write_all(&data).unwrap();
             black_box(splitter.finish().unwrap())
         });
@@ -308,20 +307,20 @@ fn bench_pipeline_stages(c: &mut Criterion) {
     // Stage 1: Split only (parallel)
     group.bench_function("1_split_parallel", |b| {
         b.iter(|| {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let splitter = ParallelSplitter::new(sink);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter = ParallelSplitter::new(store);
             let root = splitter.split(&data).unwrap();
-            black_box((root, splitter.into_sink()))
+            black_box((root, splitter.into_store()))
         });
     });
 
     // Pre-split for stamp benchmarks
-    let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-    let mut splitter = Splitter::new(sink, data.len() as u64);
+    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+    let mut splitter = Splitter::new(store, data.len() as u64);
     splitter.write_all(&data).unwrap();
-    let (_, sink) = splitter.finish().unwrap();
-    let chunks = sink.into_chunks();
-    let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
+    let (_, store) = splitter.finish().unwrap();
+    let chunks = store.into_chunks();
+    let addresses: Vec<_> = chunks.keys().copied().collect();
     let num_chunks = addresses.len();
 
     group.throughput(Throughput::Elements(num_chunks as u64));

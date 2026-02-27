@@ -20,13 +20,13 @@ use super::mode::EncryptedMode;
 /// - Level 0: Raw file data (up to BODY_SIZE bytes per chunk)
 /// - Level 1+: References (M::REF_SIZE bytes each per chunk)
 ///
-/// Chunks are emitted to the sink as buffers fill. Call `finish()` to
+/// Chunks are emitted to the store as buffers fill. Call `finish()` to
 /// finalize the tree and get the root reference.
 pub struct GenericSplitter<S, M: SplitMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
     S: ChunkPut<BODY_SIZE>,
 {
-    sink: S,
+    store: S,
     span_length: u64,
     length: u64,
     sum_counts: [usize; LEVEL_LIMIT],
@@ -66,14 +66,14 @@ where
     M: SplitMode,
 {
     /// Create a splitter for data of known size.
-    pub fn new(sink: S, span_length: u64) -> Self {
+    pub fn new(store: S, span_length: u64) -> Self {
         const { super::constants::assert_valid_body_size::<BODY_SIZE>() };
 
         // Double LEVEL_LIMIT for ping-pong buffering: one level builds while the prior flushes.
         let buffer_size = (BODY_SIZE + SPAN_SIZE) * LEVEL_LIMIT * 2;
 
         Self {
-            sink,
+            store,
             span_length,
             length: 0,
             sum_counts: [0; LEVEL_LIMIT],
@@ -128,7 +128,7 @@ where
 
         let chunk_bytes = super::helpers::build_intermediate_payload(span, chunk_data);
 
-        M::process_chunk::<BODY_SIZE, S>(chunk_bytes, &mut self.sink)
+        M::process_chunk::<BODY_SIZE, S>(chunk_bytes, &mut self.store)
     }
 
     fn hash_unfinished(&mut self) -> Result<()> {
@@ -174,7 +174,7 @@ where
         Ok(())
     }
 
-    /// Finalize and return the root reference and sink.
+    /// Finalize and return the root reference and store.
     pub fn finish(mut self) -> Result<(M::RootRef, S)> {
         if self.length != self.span_length {
             return Err(FileError::SpanMismatch {
@@ -184,15 +184,15 @@ where
         }
 
         if self.length == 0 {
-            let root = M::process_empty::<BODY_SIZE, S>(&mut self.sink)?;
-            return Ok((root, self.sink));
+            let root = M::process_empty::<BODY_SIZE, S>(&mut self.store)?;
+            return Ok((root, self.store));
         }
 
         self.hash_unfinished()?;
         self.move_dangling_chunk()?;
 
         let root = M::extract_root(&self.buffer)?;
-        Ok((root, self.sink))
+        Ok((root, self.store))
     }
 
     fn write_chunk(&mut self, data: &[u8]) -> Result<()> {
@@ -246,7 +246,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::VecSink;
+    use crate::store::MemoryStore;
 
     use super::super::constants::REF_SIZE;
 
@@ -254,92 +254,95 @@ mod tests {
 
     #[test]
     fn test_splitter_empty() {
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let splitter = Splitter::new(sink, 0);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let splitter = Splitter::new(store, 0);
 
-        let (root, sink) = splitter.finish().unwrap();
-        assert_eq!(sink.len(), 1);
+        let (root, store) = splitter.finish().unwrap();
+        assert_eq!(store.len(), 1);
         assert!(!root.is_zero());
     }
 
     #[test]
     fn test_splitter_small() {
         let data = b"hello world";
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, data.len() as u64);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, data.len() as u64);
 
         splitter.write_all(data).unwrap();
-        let (root, sink) = splitter.finish().unwrap();
+        let (root, store) = splitter.finish().unwrap();
 
-        assert_eq!(sink.len(), 1);
+        assert_eq!(store.len(), 1);
         assert!(!root.is_zero());
     }
 
     #[test]
     fn test_splitter_exact_chunk() {
         let data = vec![0xAB; DEFAULT_BODY_SIZE];
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, data.len() as u64);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, data.len() as u64);
 
         splitter.write_all(&data).unwrap();
-        let (root, sink) = splitter.finish().unwrap();
+        let (root, store) = splitter.finish().unwrap();
 
-        assert_eq!(sink.len(), 1);
+        assert_eq!(store.len(), 1);
         assert!(!root.is_zero());
     }
 
     #[test]
     fn test_splitter_two_chunks() {
         let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, data.len() as u64);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, data.len() as u64);
 
         splitter.write_all(&data).unwrap();
-        let (root, sink) = splitter.finish().unwrap();
+        let (root, store) = splitter.finish().unwrap();
 
-        assert_eq!(sink.len(), 3);
+        assert_eq!(store.len(), 3);
         assert!(!root.is_zero());
     }
 
     #[test]
     fn test_splitter_128_chunks_exact() {
-        let data = vec![0xEF; DEFAULT_BODY_SIZE * REFS_PER_CHUNK];
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, data.len() as u64);
+        let mut data = vec![0u8; DEFAULT_BODY_SIZE * REFS_PER_CHUNK];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut data);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, data.len() as u64);
 
         splitter.write_all(&data).unwrap();
-        let (root, sink) = splitter.finish().unwrap();
+        let (root, store) = splitter.finish().unwrap();
 
         // 128 data chunks + 1 intermediate (which is the root) = 129
-        assert_eq!(sink.len(), REFS_PER_CHUNK + 1);
+        assert_eq!(store.len(), REFS_PER_CHUNK + 1);
         assert!(!root.is_zero());
     }
 
     #[test]
     fn test_splitter_129_chunks() {
-        let data = vec![0x12; DEFAULT_BODY_SIZE * (REFS_PER_CHUNK + 1)];
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, data.len() as u64);
+        let mut data = vec![0u8; DEFAULT_BODY_SIZE * (REFS_PER_CHUNK + 1)];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut data);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, data.len() as u64);
 
         splitter.write_all(&data).unwrap();
-        let (root, sink) = splitter.finish().unwrap();
+        let (root, store) = splitter.finish().unwrap();
 
-        assert_eq!(sink.len(), REFS_PER_CHUNK + 1 + 2);
+        assert_eq!(store.len(), REFS_PER_CHUNK + 1 + 2);
         assert!(!root.is_zero());
     }
 
     #[test]
     fn test_splitter_incremental_writes() {
-        let data = vec![0x34; DEFAULT_BODY_SIZE * 2 + 100];
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, data.len() as u64);
+        let mut data = vec![0u8; DEFAULT_BODY_SIZE * 2 + 100];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut data);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, data.len() as u64);
 
         for chunk in data.chunks(100) {
             splitter.write_all(chunk).unwrap();
         }
-        let (root, sink) = splitter.finish().unwrap();
+        let (root, store) = splitter.finish().unwrap();
 
-        assert_eq!(sink.len(), 4);
+        assert_eq!(store.len(), 4);
         assert!(!root.is_zero());
     }
 
@@ -348,15 +351,15 @@ mod tests {
         let data = vec![0x56; DEFAULT_BODY_SIZE * 3];
 
         let (root1, _) = {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = Splitter::new(store, data.len() as u64);
             splitter.write_all(&data).unwrap();
             splitter.finish().unwrap()
         };
 
         let (root2, _) = {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = Splitter::new(store, data.len() as u64);
             splitter.write_all(&data).unwrap();
             splitter.finish().unwrap()
         };
@@ -366,8 +369,8 @@ mod tests {
 
     #[test]
     fn test_splitter_write_past_span() {
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, 10);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, 10);
 
         let result = splitter.write_all(b"this is more than 10 bytes");
         assert!(result.is_err());
@@ -375,8 +378,8 @@ mod tests {
 
     #[test]
     fn test_splitter_span_mismatch() {
-        let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, 100);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, 100);
 
         splitter.write_all(b"short").unwrap();
         let result = splitter.finish();
@@ -387,58 +390,58 @@ mod tests {
     #[test]
     fn test_splitter_256_chunks_matches_parallel() {
         use crate::file::{join, ParallelSplitter};
-        use crate::store::MemorySink;
+        use crate::store::MemoryStore;
 
         // 256 data chunks - this is the edge case that was causing hash mismatches
         let data = vec![0xAB; DEFAULT_BODY_SIZE * 256];
 
         // Sequential
-        let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, data.len() as u64);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, data.len() as u64);
         splitter.write_all(&data).unwrap();
-        let (seq_root, seq_sink) = splitter.finish().unwrap();
+        let (seq_root, seq_store) = splitter.finish().unwrap();
 
         // Parallel
-        let par_sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-        let par_splitter = ParallelSplitter::new(par_sink);
+        let par_store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let par_splitter = ParallelSplitter::new(par_store);
         let par_root = par_splitter.split(&data).unwrap();
-        let par_sink = par_splitter.into_sink();
+        let par_store = par_splitter.into_store();
 
         // Root hashes must match
         assert_eq!(seq_root, par_root, "Root hash mismatch between sequential and parallel");
 
         // Chunk counts must match (256 data + 2 intermediate + 1 root = 259)
-        assert_eq!(seq_sink.len(), par_sink.len(), "Chunk count mismatch");
+        assert_eq!(seq_store.len(), par_store.len(), "Chunk count mismatch");
 
         // Verify round-trip works
-        let recovered = join(&seq_sink, seq_root).unwrap();
+        let recovered = join(&seq_store, seq_root).unwrap();
         assert_eq!(recovered, data);
     }
 
     #[test]
     fn test_splitter_128_chunks_matches_parallel() {
         use crate::file::{join, ParallelSplitter};
-        use crate::store::MemorySink;
+        use crate::store::MemoryStore;
 
         // Exactly 128 data chunks - another edge case
         let data = vec![0xCD; DEFAULT_BODY_SIZE * REFS_PER_CHUNK];
 
         // Sequential
-        let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-        let mut splitter = Splitter::new(sink, data.len() as u64);
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let mut splitter = Splitter::new(store, data.len() as u64);
         splitter.write_all(&data).unwrap();
-        let (seq_root, seq_sink) = splitter.finish().unwrap();
+        let (seq_root, seq_store) = splitter.finish().unwrap();
 
         // Parallel
-        let par_sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-        let par_splitter = ParallelSplitter::new(par_sink);
+        let par_store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let par_splitter = ParallelSplitter::new(par_store);
         let par_root = par_splitter.split(&data).unwrap();
-        let par_sink = par_splitter.into_sink();
+        let par_store = par_splitter.into_store();
 
         assert_eq!(seq_root, par_root, "Root hash mismatch for 128 chunks");
-        assert_eq!(seq_sink.len(), par_sink.len(), "Chunk count mismatch for 128 chunks");
+        assert_eq!(seq_store.len(), par_store.len(), "Chunk count mismatch for 128 chunks");
 
-        let recovered = join(&seq_sink, seq_root).unwrap();
+        let recovered = join(&seq_store, seq_root).unwrap();
         assert_eq!(recovered, data);
     }
 
@@ -452,83 +455,83 @@ mod tests {
 
         #[test]
         fn test_encrypted_splitter_empty() {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let splitter = EncryptedSplitter::new(sink, 0);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let splitter = EncryptedSplitter::new(store, 0);
 
-            let (_root_ref, sink) = splitter.finish().unwrap();
+            let (_root_ref, store) = splitter.finish().unwrap();
 
-            assert_eq!(sink.len(), 1);
+            assert_eq!(store.len(), 1);
         }
 
         #[test]
         fn test_encrypted_splitter_small() {
             let data = b"hello world";
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(store, data.len() as u64);
 
             splitter.write_all(data).unwrap();
-            let (root_ref, sink) = splitter.finish().unwrap();
+            let (root_ref, store) = splitter.finish().unwrap();
 
             assert_eq!(Vec::from(&root_ref).len(), 64);
-            assert_eq!(sink.len(), 1);
+            assert_eq!(store.len(), 1);
         }
 
         #[test]
         fn test_encrypted_splitter_exact_chunk() {
             let data = vec![0xAB; DEFAULT_BODY_SIZE];
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(store, data.len() as u64);
 
             splitter.write_all(&data).unwrap();
-            let (_root_ref, sink) = splitter.finish().unwrap();
+            let (_root_ref, store) = splitter.finish().unwrap();
 
-            assert_eq!(sink.len(), 1);
+            assert_eq!(store.len(), 1);
         }
 
         #[test]
         fn test_encrypted_splitter_two_chunks() {
             let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(store, data.len() as u64);
 
             splitter.write_all(&data).unwrap();
-            let (_root_ref, sink) = splitter.finish().unwrap();
+            let (_root_ref, store) = splitter.finish().unwrap();
 
             // 2 data chunks + 1 intermediate = 3
-            assert_eq!(sink.len(), 3);
+            assert_eq!(store.len(), 3);
         }
 
         #[test]
         fn test_encrypted_splitter_64_chunks() {
             // 64 data chunks fills one encrypted intermediate chunk exactly
             let data = vec![0xEF; DEFAULT_BODY_SIZE * ENC_REFS_PER_CHUNK];
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(store, data.len() as u64);
 
             splitter.write_all(&data).unwrap();
-            let (_root_ref, sink) = splitter.finish().unwrap();
+            let (_root_ref, store) = splitter.finish().unwrap();
 
             // 64 data chunks + 1 intermediate = 65
-            assert_eq!(sink.len(), ENC_REFS_PER_CHUNK + 1);
+            assert_eq!(store.len(), ENC_REFS_PER_CHUNK + 1);
         }
 
         #[test]
         fn test_encrypted_splitter_65_chunks() {
             // 65 data chunks overflows one encrypted intermediate -> level 2
             let data = vec![0x12; DEFAULT_BODY_SIZE * (ENC_REFS_PER_CHUNK + 1)];
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::new(store, data.len() as u64);
 
             splitter.write_all(&data).unwrap();
-            let (_root_ref, sink) = splitter.finish().unwrap();
+            let (_root_ref, store) = splitter.finish().unwrap();
 
-            assert_eq!(sink.len(), ENC_REFS_PER_CHUNK + 1 + 2);
+            assert_eq!(store.len(), ENC_REFS_PER_CHUNK + 1 + 2);
         }
 
         #[test]
         fn test_encrypted_splitter_write_past_span() {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = EncryptedSplitter::<_, DEFAULT_BODY_SIZE>::new(sink, 10);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::<_, DEFAULT_BODY_SIZE>::new(store, 10);
 
             let result = splitter.write_all(b"this is more than 10 bytes");
             assert!(result.is_err());
@@ -536,8 +539,8 @@ mod tests {
 
         #[test]
         fn test_encrypted_splitter_span_mismatch() {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = EncryptedSplitter::<_, DEFAULT_BODY_SIZE>::new(sink, 100);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = EncryptedSplitter::<_, DEFAULT_BODY_SIZE>::new(store, 100);
 
             splitter.write_all(b"short").unwrap();
             let result = splitter.finish();
@@ -548,17 +551,16 @@ mod tests {
         #[test]
         fn test_encrypted_differs_from_plaintext() {
             let data = b"test data for encryption comparison";
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = Splitter::new(store, data.len() as u64);
             splitter.write_all(data).unwrap();
             let (plain_root, _) = splitter.finish().unwrap();
 
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut enc_splitter = EncryptedSplitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut enc_splitter = EncryptedSplitter::new(store, data.len() as u64);
             enc_splitter.write_all(data).unwrap();
             let (enc_root, _) = enc_splitter.finish().unwrap();
 
-            // Encrypted root address must differ from plain root
             assert_ne!(enc_root.address(), &plain_root);
         }
     }

@@ -300,16 +300,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::{Chunk, ContentChunk};
+    use crate::chunk::AnyChunk;
     use crate::file::split;
     use std::collections::HashMap;
     use std::io::{Read, Seek};
 
-    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, ContentChunk>) {
-        let (root, chunks) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
-        let store: HashMap<ChunkAddress, ContentChunk> =
-            chunks.into_iter().map(|c| (*c.address(), c)).collect();
-        (root, store)
+    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
+        let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
+        (root, store.into_chunks())
     }
 
     // --- Generated shared tests (sync variants) ---
@@ -475,11 +473,9 @@ mod tests {
 
         fn encrypted_split_and_store(
             data: &[u8],
-        ) -> (EncryptedChunkRef, HashMap<ChunkAddress, ContentChunk>) {
-            let (root_ref, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
-            let store: HashMap<ChunkAddress, ContentChunk> =
-                chunks.into_iter().map(|c| (*c.address(), c)).collect();
-            (root_ref, store)
+        ) -> (EncryptedChunkRef, HashMap<ChunkAddress, AnyChunk>) {
+            let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+            (root_ref, store.into_chunks())
         }
 
         // --- Generated shared tests (sync variants) ---

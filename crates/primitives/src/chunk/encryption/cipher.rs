@@ -191,7 +191,6 @@ mod tests {
         transcrypt(&key, 0, &input, &mut out_ctr0).unwrap();
         transcrypt(&key, 5, &input, &mut out_ctr5).unwrap();
 
-        // Different init_ctr must produce different keystream
         assert_ne!(out_ctr0, out_ctr5);
     }
 

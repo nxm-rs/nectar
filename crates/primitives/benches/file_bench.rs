@@ -11,9 +11,9 @@ use std::io::Write;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use rand::{RngCore, rng};
 
-use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
+use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
 use nectar_primitives::file::{Joiner, ParallelSplitter, Splitter, split};
-use nectar_primitives::store::{MemorySink, VecSink};
+use nectar_primitives::store::MemoryStore;
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
 /// File sizes to benchmark, covering typical use cases.
@@ -44,11 +44,9 @@ fn random_data(size: u64) -> Vec<u8> {
     data
 }
 
-fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, ContentChunk>) {
-    let (root, chunks) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
-    let store: HashMap<ChunkAddress, ContentChunk> =
-        chunks.into_iter().map(|c| (*c.address(), c)).collect();
-    (root, store)
+fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
+    let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
+    (root, store.into_chunks())
 }
 
 // ---------------------------------------------------------------------------
@@ -64,8 +62,8 @@ fn bench_sequential_splitter(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
-                let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                let mut splitter = Splitter::new(sink, data.len() as u64);
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let mut splitter = Splitter::new(store, data.len() as u64);
                 splitter.write_all(data).unwrap();
                 black_box(splitter.finish().unwrap())
             });
@@ -84,10 +82,10 @@ fn bench_parallel_splitter(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
-                let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                let splitter = ParallelSplitter::new(sink);
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let splitter = ParallelSplitter::new(store);
                 let root = splitter.split(data).unwrap();
-                black_box((root, splitter.into_sink()))
+                black_box((root, splitter.into_store()))
             });
         });
     }
@@ -108,8 +106,8 @@ fn bench_splitter_comparison(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                    let mut splitter = Splitter::new(sink, data.len() as u64);
+                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                    let mut splitter = Splitter::new(store, data.len() as u64);
                     splitter.write_all(data).unwrap();
                     black_box(splitter.finish().unwrap())
                 });
@@ -118,10 +116,10 @@ fn bench_splitter_comparison(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("parallel", name), &data, |b, data| {
             b.iter(|| {
-                let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                let splitter = ParallelSplitter::new(sink);
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let splitter = ParallelSplitter::new(store);
                 let root = splitter.split(data).unwrap();
-                black_box((root, splitter.into_sink()))
+                black_box((root, splitter.into_store()))
             });
         });
     }
@@ -139,8 +137,8 @@ fn bench_incremental_writes(c: &mut Criterion) {
 
     group.bench_function("single_write", |b| {
         b.iter(|| {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = Splitter::new(store, data.len() as u64);
             splitter.write_all(&data).unwrap();
             black_box(splitter.finish().unwrap())
         });
@@ -148,8 +146,8 @@ fn bench_incremental_writes(c: &mut Criterion) {
 
     group.bench_function("4kb_chunks", |b| {
         b.iter(|| {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = Splitter::new(store, data.len() as u64);
             for chunk in data.chunks(4096) {
                 splitter.write_all(chunk).unwrap();
             }
@@ -159,8 +157,8 @@ fn bench_incremental_writes(c: &mut Criterion) {
 
     group.bench_function("64kb_chunks", |b| {
         b.iter(|| {
-            let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(sink, data.len() as u64);
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let mut splitter = Splitter::new(store, data.len() as u64);
             for chunk in data.chunks(65536) {
                 splitter.write_all(chunk).unwrap();
             }
@@ -230,10 +228,10 @@ fn bench_roundtrip(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-                    let splitter = ParallelSplitter::new(sink);
+                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                    let splitter = ParallelSplitter::new(store);
                     let root = splitter.split(data).unwrap();
-                    let store = splitter.into_sink();
+                    let store = splitter.into_store();
                     let joiner = Joiner::new(store, root).unwrap();
                     black_box(joiner.read_all().unwrap())
                 });

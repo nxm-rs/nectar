@@ -6,12 +6,12 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use rand::{RngCore, rng};
 
 use nectar_primitives::chunk::encryption::{self, EncryptionKey, transcrypt, transcrypt_in_place};
-use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
+use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
 use nectar_primitives::file::{
     EncryptedJoiner, EncryptedParallelSplitter, EncryptedSplitter, Joiner, ParallelSplitter,
     Splitter, split, split_encrypted,
 };
-use nectar_primitives::store::{MemorySink, VecSink};
+use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{DEFAULT_BODY_SIZE, bmt::SPAN_SIZE};
 
 fn bench_transcrypt(c: &mut Criterion) {
@@ -173,23 +173,19 @@ fn random_data(size: u64) -> Vec<u8> {
     data
 }
 
-fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, ContentChunk>) {
-    let (root, chunks) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
-    let store: HashMap<ChunkAddress, ContentChunk> =
-        chunks.into_iter().map(|c| (*c.address(), c)).collect();
-    (root, store)
+fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
+    let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
+    (root, store.into_chunks())
 }
 
 fn encrypted_split_to_store(
     data: &[u8],
 ) -> (
     encryption::EncryptedChunkRef,
-    HashMap<ChunkAddress, ContentChunk>,
+    HashMap<ChunkAddress, AnyChunk>,
 ) {
-    let (root_ref, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
-    let store: HashMap<ChunkAddress, ContentChunk> =
-        chunks.into_iter().map(|c| (*c.address(), c)).collect();
-    (root_ref, store)
+    let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+    (root_ref, store.into_chunks())
 }
 
 fn bench_encrypted_sequential_splitter(c: &mut Criterion) {
@@ -201,8 +197,8 @@ fn bench_encrypted_sequential_splitter(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
-                let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let mut splitter = EncryptedSplitter::new(store, data.len() as u64);
                 splitter.write_all(data).unwrap();
                 black_box(splitter.finish().unwrap())
             });
@@ -221,10 +217,10 @@ fn bench_encrypted_parallel_splitter(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
-                let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                let splitter = EncryptedParallelSplitter::new(sink);
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let splitter = EncryptedParallelSplitter::new(store);
                 let root_ref = splitter.split(data).unwrap();
-                black_box((root_ref, splitter.into_sink()))
+                black_box((root_ref, splitter.into_store()))
             });
         });
     }
@@ -270,8 +266,8 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                    let mut splitter = Splitter::new(sink, data.len() as u64);
+                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                    let mut splitter = Splitter::new(store, data.len() as u64);
                     splitter.write_all(data).unwrap();
                     black_box(splitter.finish().unwrap())
                 });
@@ -283,8 +279,8 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                    let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                    let mut splitter = EncryptedSplitter::new(store, data.len() as u64);
                     splitter.write_all(data).unwrap();
                     black_box(splitter.finish().unwrap())
                 });
@@ -296,10 +292,10 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                    let splitter = ParallelSplitter::new(sink);
+                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                    let splitter = ParallelSplitter::new(store);
                     let root = splitter.split(data).unwrap();
-                    black_box((root, splitter.into_sink()))
+                    black_box((root, splitter.into_store()))
                 });
             },
         );
@@ -309,10 +305,10 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let sink = VecSink::<DEFAULT_BODY_SIZE>::new();
-                    let splitter = EncryptedParallelSplitter::new(sink);
+                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                    let splitter = EncryptedParallelSplitter::new(store);
                     let root_ref = splitter.split(data).unwrap();
-                    black_box((root_ref, splitter.into_sink()))
+                    black_box((root_ref, splitter.into_store()))
                 });
             },
         );
@@ -392,10 +388,10 @@ fn bench_encrypted_roundtrip(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let sink = MemorySink::<DEFAULT_BODY_SIZE>::new();
-                    let splitter = EncryptedParallelSplitter::new(sink);
+                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                    let splitter = EncryptedParallelSplitter::new(store);
                     let root_ref = splitter.split(data).unwrap();
-                    let store = splitter.into_sink();
+                    let store = splitter.into_store();
                     let joiner =
                         EncryptedJoiner::new(store, root_ref).unwrap();
                     black_box(joiner.read_all().unwrap())

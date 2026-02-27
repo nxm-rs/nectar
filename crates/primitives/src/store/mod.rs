@@ -7,18 +7,18 @@
 //!   `ChunkHas + Send + Sync` to `AsyncChunkHas`, so sync stores work in async
 //!   code without manual wrapping. `AsyncChunkPutAdapter` bridges the put path.
 
-mod sink;
+mod memory;
 mod typed;
 #[cfg(feature = "async")]
 mod typed_async;
 
-pub use sink::{MemorySink, VecSink};
+pub use memory::MemoryStore;
 pub use typed::{ChunkGet, ChunkHas, ChunkPut};
 #[cfg(feature = "async")]
 pub use typed_async::{AsyncChunkGet, AsyncChunkHas, AsyncChunkPut, AsyncChunkPutAdapter};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::{ChunkAddress, ContentChunk};
+use crate::chunk::{AnyChunk, ChunkAddress};
 
 /// Errors from chunk storage operations.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -53,7 +53,7 @@ pub struct NullLoader<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>;
 impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for NullLoader<BODY_SIZE> {
     type Error = ChunkStoreError;
 
-    fn get(&self, address: &ChunkAddress) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
+    fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
         Err(ChunkStoreError::not_found(address))
     }
 }

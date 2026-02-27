@@ -552,7 +552,7 @@ impl<E: NodeEntry> Node<E> {
         let data = Vec::<u8>::try_from(&*self)?;
         let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
         let address = *chunk.address();
-        saver.put(chunk).map_err(|e| MantarayError::StorePut {
+        saver.put(chunk.into()).map_err(|e| MantarayError::StorePut {
             source: std::sync::Arc::new(e),
         })?;
         self.reference = Some(address);
@@ -627,7 +627,7 @@ where
 mod tests {
     use super::*;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-    use nectar_primitives::store::{MemorySink, NullLoader};
+    use nectar_primitives::store::{MemoryStore, NullLoader};
 
     struct TestCase {
         _name: &'static str,
@@ -921,7 +921,7 @@ mod tests {
             node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
         }
 
-        let mut store = MemorySink::<{ DEFAULT_BODY_SIZE }>::new();
+        let mut store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
         n.save(&mut store).unwrap();
 
         let mut n2: Node = Node::from_reference(n.reference.unwrap());
@@ -1024,7 +1024,7 @@ mod tests {
     // Tests save->reload->remove->save->reload->verify-removed cycle.
 
     fn run_persist_remove(tc: RemoveTestCase) {
-        let mut store = MemorySink::<{ DEFAULT_BODY_SIZE }>::new();
+        let mut store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
 
         // add entries and persist
         let mut n = Node::default();
@@ -1220,7 +1220,7 @@ mod tests {
             node_add(&mut n, path, entry, BTreeMap::new());
         }
 
-        let mut store = MemorySink::<{ DEFAULT_BODY_SIZE }>::new();
+        let mut store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
         n.save(&mut store).unwrap();
 
         let mut n2: Node = Node::from_reference(n.reference.unwrap());

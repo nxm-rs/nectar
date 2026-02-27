@@ -1,4 +1,5 @@
 target/
+benchmarks/
 **/*.rs.bk
 *.tar.gz
 .env

@@ -6,10 +6,10 @@
 //!
 //! ```
 //! use nectar_primitives::file::{ChunkGetExt, ChunkPutExt};
-//! use nectar_primitives::store::MemorySink;
+//! use nectar_primitives::store::MemoryStore;
 //! use nectar_primitives::DEFAULT_BODY_SIZE;
 //!
-//! let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+//! let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
 //! let addr = store.write_file(b"hello swarm").unwrap();
 //! let data = store.read_file(addr).unwrap();
 //! assert_eq!(data, b"hello swarm");
@@ -31,13 +31,10 @@
 //!
 //! ```
 //! use nectar_primitives::file::{split, join};
-//! use nectar_primitives::{Chunk, DEFAULT_BODY_SIZE};
+//! use nectar_primitives::DEFAULT_BODY_SIZE;
 //!
 //! let data = b"Hello, Swarm!";
-//! let (root, chunks) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
-//!
-//! use std::collections::HashMap;
-//! let store: HashMap<_, _> = chunks.iter().map(|c| (*c.address(), c.clone())).collect();
+//! let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
 //! let recovered = join(&store, root).unwrap();
 //! assert_eq!(recovered, data);
 //! ```
@@ -47,13 +44,10 @@
 //! ```
 //! # #[cfg(feature = "encryption")] {
 //! use nectar_primitives::file::{split_encrypted, join};
-//! use nectar_primitives::{Chunk, DEFAULT_BODY_SIZE};
-//! use std::collections::HashMap;
+//! use nectar_primitives::DEFAULT_BODY_SIZE;
 //!
 //! let data = b"secret data";
-//! let (root_ref, chunks) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
-//!
-//! let store: HashMap<_, _> = chunks.iter().map(|c| (*c.address(), c.clone())).collect();
+//! let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
 //! let recovered = join(&store, root_ref).unwrap();
 //! assert_eq!(recovered, data);
 //! # }
@@ -80,7 +74,7 @@ mod tree;
 
 use std::io::Write;
 
-use crate::chunk::{ChunkAddress, ContentChunk};
+use crate::chunk::ChunkAddress;
 #[cfg(feature = "encryption")]
 use crate::chunk::encryption::EncryptedChunkRef;
 use crate::store::{ChunkGet, ChunkPut};
@@ -188,46 +182,46 @@ pub(crate) fn resolve_seek_position(
 
 // --- Free functions ---
 
-/// Split data into chunks, returning root address and chunk list.
+/// Split data into chunks, returning root address and chunk store.
 pub fn split<const BODY_SIZE: usize>(
     data: &[u8],
-) -> error::Result<(ChunkAddress, Vec<ContentChunk<BODY_SIZE>>)> {
-    let sink = crate::store::VecSink::<BODY_SIZE>::new();
-    let mut splitter = Splitter::new(sink, data.len() as u64);
+) -> error::Result<(ChunkAddress, crate::store::MemoryStore<BODY_SIZE>)> {
+    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
+    let mut splitter = Splitter::new(store, data.len() as u64);
     splitter
         .write_all(data)
-        .map_err(|e| FileError::Sink(Box::new(e)))?;
-    let (root, sink) = splitter.finish()?;
-    Ok((root, sink.into_chunks()))
+        .map_err(|e| FileError::Store(Box::new(e)))?;
+    let (root, store) = splitter.finish()?;
+    Ok((root, store))
 }
 
 /// Split data from a reader into chunks.
 pub fn split_reader<R, S, const BODY_SIZE: usize>(
     mut reader: R,
     size: u64,
-    sink: S,
+    store: S,
 ) -> error::Result<(ChunkAddress, S)>
 where
     R: std::io::Read,
     S: ChunkPut<BODY_SIZE>,
 {
-    let mut splitter = Splitter::new(sink, size);
-    std::io::copy(&mut reader, &mut splitter).map_err(|e| FileError::Sink(Box::new(e)))?;
+    let mut splitter = Splitter::new(store, size);
+    std::io::copy(&mut reader, &mut splitter).map_err(|e| FileError::Store(Box::new(e)))?;
     splitter.finish()
 }
 
-/// Split data into encrypted chunks, returning root reference and chunk list.
+/// Split data into encrypted chunks, returning root reference and chunk store.
 #[cfg(feature = "encryption")]
 pub fn split_encrypted<const BODY_SIZE: usize>(
     data: &[u8],
-) -> error::Result<(EncryptedChunkRef, Vec<ContentChunk<BODY_SIZE>>)> {
-    let sink = crate::store::VecSink::<BODY_SIZE>::new();
-    let mut splitter = EncryptedSplitter::new(sink, data.len() as u64);
+) -> error::Result<(EncryptedChunkRef, crate::store::MemoryStore<BODY_SIZE>)> {
+    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
+    let mut splitter = EncryptedSplitter::new(store, data.len() as u64);
     splitter
         .write_all(data)
-        .map_err(|e| FileError::Sink(Box::new(e)))?;
-    let (root_ref, sink) = splitter.finish()?;
-    Ok((root_ref, sink.into_chunks()))
+        .map_err(|e| FileError::Store(Box::new(e)))?;
+    let (root_ref, store) = splitter.finish()?;
+    Ok((root_ref, store))
 }
 
 /// Join chunks into a byte vector. Dispatches plain/encrypted via [`JoinRef`].
@@ -270,10 +264,10 @@ pub(crate) fn levels(length: u64, chunk_size: usize) -> usize {
 ///
 /// ```
 /// use nectar_primitives::file::{ChunkPutExt, ChunkGetExt};
-/// use nectar_primitives::store::MemorySink;
+/// use nectar_primitives::store::MemoryStore;
 /// use nectar_primitives::DEFAULT_BODY_SIZE;
 ///
-/// let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+/// let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
 /// let addr = store.write_file(b"hello swarm").unwrap();
 /// let recovered = store.read_file(addr).unwrap();
 /// assert_eq!(recovered, b"hello swarm");
@@ -341,12 +335,12 @@ impl<T, const BODY_SIZE: usize> AsyncChunkGetExt<BODY_SIZE> for T where
 ///
 /// ```
 /// use nectar_primitives::file::{ChunkPutExt, ChunkGetExt};
-/// use nectar_primitives::store::MemorySink;
+/// use nectar_primitives::store::MemoryStore;
 /// use nectar_primitives::DEFAULT_BODY_SIZE;
 /// use std::io::Write;
 ///
 /// // Filesystem-style write/read
-/// let mut store = MemorySink::<DEFAULT_BODY_SIZE>::new();
+/// let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
 /// let addr = store.write_file(b"hello").unwrap();
 ///
 /// // Streaming write via std::io::Write
@@ -393,11 +387,11 @@ pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> {
 
 impl<T, const BODY_SIZE: usize> ChunkPutExt<BODY_SIZE> for T where T: ChunkPut<BODY_SIZE> {}
 
-/// Split a `ReadAt` source into chunks stored in a [`MemorySink`](crate::store::MemorySink).
+/// Split a `ReadAt` source into chunks stored in a [`MemoryStore`](crate::store::MemoryStore).
 ///
 /// ```
 /// use nectar_primitives::file::{split_source, ChunkGetExt};
-/// use nectar_primitives::store::MemorySink;
+/// use nectar_primitives::store::MemoryStore;
 /// use nectar_primitives::DEFAULT_BODY_SIZE;
 ///
 /// let data = b"Hello, Swarm!";
@@ -407,43 +401,43 @@ impl<T, const BODY_SIZE: usize> ChunkPutExt<BODY_SIZE> for T where T: ChunkPut<B
 /// ```
 pub fn split_source<R: ReadAt + Sync, const BODY_SIZE: usize>(
     source: R,
-) -> error::Result<(ChunkAddress, crate::store::MemorySink<BODY_SIZE>)> {
-    let sink = crate::store::MemorySink::<BODY_SIZE>::new();
-    let splitter = ParallelSplitter::new(sink);
+) -> error::Result<(ChunkAddress, crate::store::MemoryStore<BODY_SIZE>)> {
+    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
+    let splitter = ParallelSplitter::new(store);
     let root = splitter.split(&source)?;
-    Ok((root, splitter.into_sink()))
+    Ok((root, splitter.into_store()))
 }
 
-/// Split a `ReadAt` source into chunks stored in the provided sink.
+/// Split a `ReadAt` source into chunks stored in the provided store.
 pub fn split_source_into<R: ReadAt + Sync, S: ChunkPut<BODY_SIZE> + Send, const BODY_SIZE: usize>(
     source: R,
-    sink: S,
+    store: S,
 ) -> error::Result<(ChunkAddress, S)> {
-    let splitter = ParallelSplitter::new(sink);
+    let splitter = ParallelSplitter::new(store);
     let root = splitter.split(&source)?;
-    Ok((root, splitter.into_sink()))
+    Ok((root, splitter.into_store()))
 }
 
-/// Split a `ReadAt` source into encrypted chunks stored in a [`MemorySink`](crate::store::MemorySink).
+/// Split a `ReadAt` source into encrypted chunks stored in a [`MemoryStore`](crate::store::MemoryStore).
 #[cfg(feature = "encryption")]
 pub fn split_source_encrypted<R: ReadAt + Sync, const BODY_SIZE: usize>(
     source: R,
-) -> error::Result<(EncryptedChunkRef, crate::store::MemorySink<BODY_SIZE>)> {
-    let sink = crate::store::MemorySink::<BODY_SIZE>::new();
-    let splitter = EncryptedParallelSplitter::new(sink);
+) -> error::Result<(EncryptedChunkRef, crate::store::MemoryStore<BODY_SIZE>)> {
+    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
+    let splitter = EncryptedParallelSplitter::new(store);
     let root_ref = splitter.split(&source)?;
-    Ok((root_ref, splitter.into_sink()))
+    Ok((root_ref, splitter.into_store()))
 }
 
-/// Split a `ReadAt` source into encrypted chunks stored in the provided sink.
+/// Split a `ReadAt` source into encrypted chunks stored in the provided store.
 #[cfg(feature = "encryption")]
 pub fn split_source_encrypted_into<R: ReadAt + Sync, S: ChunkPut<BODY_SIZE> + Send, const BODY_SIZE: usize>(
     source: R,
-    sink: S,
+    store: S,
 ) -> error::Result<(EncryptedChunkRef, S)> {
-    let splitter = EncryptedParallelSplitter::new(sink);
+    let splitter = EncryptedParallelSplitter::new(store);
     let root_ref = splitter.split(&source)?;
-    Ok((root_ref, splitter.into_sink()))
+    Ok((root_ref, splitter.into_store()))
 }
 
 #[cfg(test)]

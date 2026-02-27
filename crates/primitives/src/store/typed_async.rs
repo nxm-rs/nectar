@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::{ChunkAddress, ContentChunk};
+use crate::chunk::{AnyChunk, ChunkAddress};
 
 /// Async chunk retrieval.
 pub trait AsyncChunkGet<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: Send + Sync {
@@ -14,7 +14,7 @@ pub trait AsyncChunkGet<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: Send + Sync
     fn get(
         &self,
         address: &ChunkAddress,
-    ) -> impl Future<Output = Result<ContentChunk<BODY_SIZE>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<AnyChunk<BODY_SIZE>, Self::Error>> + Send;
 }
 
 /// Blanket impl: any sync `ChunkGet` type that is `Send + Sync` automatically
@@ -30,7 +30,7 @@ where
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<ContentChunk<BODY_SIZE>, Self::Error> {
+    ) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
         <Self as super::typed::ChunkGet<BODY_SIZE>>::get(self, address)
     }
 }
@@ -66,7 +66,7 @@ pub trait AsyncChunkPut<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: Send + Sync
     /// Store a chunk.
     fn put(
         &self,
-        chunk: ContentChunk<BODY_SIZE>,
+        chunk: AnyChunk<BODY_SIZE>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
@@ -93,11 +93,7 @@ where
 {
     type Error = T::Error;
 
-    async fn put(&self, chunk: ContentChunk<BODY_SIZE>) -> Result<(), Self::Error> {
+    async fn put(&self, chunk: AnyChunk<BODY_SIZE>) -> Result<(), Self::Error> {
         self.0.lock().put(chunk)
     }
 }
-
-// Cannot provide a blanket impl `AsyncChunkPut for T where T: ChunkPut` because
-// `ChunkPut::put` takes `&mut self` while `AsyncChunkPut::put` takes `&self`.
-// Use `AsyncChunkPutAdapter` to bridge the two.

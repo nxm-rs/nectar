@@ -1,5 +1,6 @@
 //! WASM bindings for Chunk functionality.
 
+use super::any_chunk::AnyChunk;
 use super::content::ContentChunk;
 use super::traits::{BmtChunk, Chunk};
 use crate::bmt::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE};
@@ -57,7 +58,7 @@ impl WasmContentChunk {
 #[wasm_bindgen(js_name = SplitResult)]
 pub struct WasmSplitResult {
     root: [u8; 32],
-    chunks: Vec<ContentChunk<DEFAULT_BODY_SIZE>>,
+    chunks: Vec<AnyChunk<DEFAULT_BODY_SIZE>>,
 }
 
 #[wasm_bindgen(js_class = SplitResult)]
@@ -81,7 +82,9 @@ impl WasmSplitResult {
     pub fn chunks(&self) -> Array {
         let arr = Array::new();
         for chunk in &self.chunks {
-            arr.push(&WasmContentChunk(chunk.clone()).into());
+            if let Some(content) = chunk.as_content() {
+                arr.push(&WasmContentChunk(content.clone()).into());
+            }
         }
         arr
     }
@@ -89,7 +92,11 @@ impl WasmSplitResult {
     /// Get a chunk by index.
     #[wasm_bindgen(js_name = getChunk)]
     pub fn get_chunk(&self, index: usize) -> Option<WasmContentChunk> {
-        self.chunks.get(index).cloned().map(WasmContentChunk)
+        self.chunks
+            .get(index)
+            .and_then(|c| c.as_content())
+            .cloned()
+            .map(WasmContentChunk)
     }
 
     /// Get all chunk addresses as an array of Uint8Array.
@@ -111,12 +118,12 @@ impl WasmSplitResult {
 #[wasm_bindgen(js_name = splitFile)]
 pub fn split_file(data: &Uint8Array) -> Result<WasmSplitResult, JsValue> {
     let bytes = data.to_vec();
-    let (root, chunks) =
+    let (root, store) =
         crate::file::split::<DEFAULT_BODY_SIZE>(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     Ok(WasmSplitResult {
         root: root.into(),
-        chunks,
+        chunks: store.into_chunks().into_values().collect(),
     })
 }
 
