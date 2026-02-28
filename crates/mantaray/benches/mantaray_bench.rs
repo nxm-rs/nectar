@@ -162,8 +162,8 @@ fn bench_has_prefix(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_marshal(c: &mut Criterion) {
-    let mut group = c.benchmark_group("marshal");
+fn bench_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encode");
 
     // Build a trie via PlainManifest, save to get references assigned, reload.
     let mut m = build_spa_manifest();
@@ -181,10 +181,10 @@ fn bench_marshal(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_unmarshal(c: &mut Criterion) {
-    let mut group = c.benchmark_group("unmarshal");
+fn bench_decode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decode");
 
-    // Build trie via PlainManifest, save, marshal to get binary data.
+    // Build trie via PlainManifest, save, encode to get binary data.
     let mut m = build_spa_manifest();
     let root_ref = m.save().unwrap();
     let (_, store) = m.into_parts();
@@ -356,8 +356,8 @@ criterion_group!(
     bench_lookup,
     bench_remove,
     bench_has_prefix,
-    bench_marshal,
-    bench_unmarshal,
+    bench_encode,
+    bench_decode,
     bench_walk,
     bench_save_load,
     bench_full_workflow,

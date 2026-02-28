@@ -60,7 +60,7 @@ pub mod entry;
 pub mod error;
 pub mod manifest;
 pub mod manifest_ref;
-pub mod marshal;
+pub mod codec;
 pub mod mode;
 pub mod node;
 pub mod obfuscation;

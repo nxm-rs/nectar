@@ -5,6 +5,9 @@
 pub struct ObfuscationKey([u8; 32]);
 
 impl ObfuscationKey {
+    /// Size of the obfuscation key in bytes.
+    pub const SIZE: usize = size_of::<Self>();
+
     /// All-zero key (no obfuscation).
     pub const ZERO: Self = Self([0u8; 32]);
 

@@ -8,7 +8,7 @@ use nectar_primitives::store::{ChunkGet, ChunkPut};
 use crate::error::{MantarayError, Result};
 use crate::mode::NodeEntry;
 use crate::obfuscation::ObfuscationKey;
-use crate::{NODE_PREFIX_MAX_SIZE, PATH_SEPARATOR};
+use crate::{PREFIX_MAX_LEN, PATH_SEPARATOR};
 
 /// Inline-only byte buffer for fork prefixes (max 30 bytes).
 ///
@@ -17,24 +17,27 @@ use crate::{NODE_PREFIX_MAX_SIZE, PATH_SEPARATOR};
 #[derive(Clone, PartialEq, Eq)]
 pub struct Prefix {
     len: u8,
-    data: [u8; NODE_PREFIX_MAX_SIZE],
+    data: [u8; PREFIX_MAX_LEN],
 }
 
 impl Prefix {
+    /// Maximum prefix length in bytes (constrained by the fork pre-reference region).
+    pub const MAX_LEN: usize = PREFIX_MAX_LEN;
+
     /// Create an empty prefix.
     #[inline]
     pub const fn new() -> Self {
         Self {
             len: 0,
-            data: [0u8; NODE_PREFIX_MAX_SIZE],
+            data: [0u8; PREFIX_MAX_LEN],
         }
     }
 
     /// Create a prefix from a byte slice. Panics if `src.len() > 30`.
     #[inline]
     pub fn from_slice(src: &[u8]) -> Self {
-        debug_assert!(src.len() <= NODE_PREFIX_MAX_SIZE);
-        let mut data = [0u8; NODE_PREFIX_MAX_SIZE];
+        debug_assert!(src.len() <= PREFIX_MAX_LEN);
+        let mut data = [0u8; PREFIX_MAX_LEN];
         data[..src.len()].copy_from_slice(src);
         Self {
             len: src.len() as u8,
@@ -56,7 +59,7 @@ impl Prefix {
 
     /// Returns the full 30-byte backing array (zero-padded beyond `len`).
     #[inline]
-    pub const fn padded_bytes(&self) -> &[u8; NODE_PREFIX_MAX_SIZE] {
+    pub const fn padded_bytes(&self) -> &[u8; PREFIX_MAX_LEN] {
         &self.data
     }
 }
@@ -385,8 +388,8 @@ impl<E: NodeEntry> Node<E> {
                 ..Default::default()
             };
 
-            if path.len() > NODE_PREFIX_MAX_SIZE {
-                let (prefix, rest) = path.split_at(NODE_PREFIX_MAX_SIZE);
+            if path.len() > PREFIX_MAX_LEN {
+                let (prefix, rest) = path.split_at(PREFIX_MAX_LEN);
                 nn.add_with_loader(rest, entry, metadata, loader)?;
                 nn.update_is_with_path_separator(prefix);
                 self.forks.insert(

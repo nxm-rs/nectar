@@ -21,19 +21,5 @@ pub mod metadata {
 // Path separator used in Swarm manifests.
 pub(crate) const PATH_SEPARATOR: &str = "/";
 
-// Node header field sizes.
-pub(crate) const NODE_OBFUSCATION_KEY_SIZE: usize = 32;
-pub(crate) const VERSION_HASH_SIZE: usize = 31;
-pub(crate) const NODE_REF_BYTES_SIZE: usize = 1;
-pub(crate) const NODE_HEADER_SIZE: usize =
-    NODE_OBFUSCATION_KEY_SIZE + VERSION_HASH_SIZE + NODE_REF_BYTES_SIZE;
-
-// Fork layout constants.
-pub(crate) const NODE_FORK_TYPE_BYTES_SIZE: usize = 1;
-pub(crate) const NODE_FORK_PREFIX_BYTES_SIZE: usize = 1;
-pub(crate) const NODE_FORK_HEADER_SIZE: usize =
-    NODE_FORK_TYPE_BYTES_SIZE + NODE_FORK_PREFIX_BYTES_SIZE;
-pub(crate) const NODE_FORK_PRE_REFERENCE_SIZE: usize = 32;
-pub(crate) const NODE_PREFIX_MAX_SIZE: usize =
-    NODE_FORK_PRE_REFERENCE_SIZE - NODE_FORK_HEADER_SIZE;
-pub(crate) const NODE_FORK_METADATA_BYTES_SIZE: usize = 2;
+// Maximum prefix length in a fork (constrained by the 32-byte pre-reference region).
+pub(crate) const PREFIX_MAX_LEN: usize = 30;
