@@ -632,7 +632,7 @@ mod tests {
                 buf[32 - len..].copy_from_slice(&path[..len]);
                 ChunkAddress::from(buf)
             };
-            n.add_with_loader::<nectar_primitives::store::NullLoader, { nectar_primitives::bmt::DEFAULT_BODY_SIZE }>(
+            n.add::<nectar_primitives::store::NullLoader, { nectar_primitives::bmt::DEFAULT_BODY_SIZE }>(
                 path, Some(e), entry.metadata, &nectar_primitives::store::NullLoader,
             )
             .unwrap();

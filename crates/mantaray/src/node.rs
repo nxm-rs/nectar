@@ -210,7 +210,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Mutable access to child forks.
-    pub const fn forks_mut(&mut self) -> &mut BTreeMap<u8, Fork<E>> {
+    pub(crate) const fn forks_mut(&mut self) -> &mut BTreeMap<u8, Fork<E>> {
         &mut self.forks
     }
 
@@ -220,7 +220,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Set the content-addressed reference for this node.
-    pub const fn set_reference(&mut self, reference: ChunkAddress) {
+    pub(crate) const fn set_reference(&mut self, reference: ChunkAddress) {
         self.reference = Some(reference);
     }
 
@@ -279,15 +279,15 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Load forks from storage if the node hasn't been loaded yet.
-    fn ensure_loaded<S: ChunkGet<BS>, const BS: usize>(&mut self, loader: &S) -> Result<()> {
+    fn ensure_loaded<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
         if !self.loaded {
-            self.load_from(loader)?;
+            self.load(store)?;
         }
         Ok(())
     }
 
     /// Load this node from storage by its reference.
-    pub fn load_from<S: ChunkGet<BS>, const BS: usize>(&mut self, loader: &S) -> Result<()> {
+    pub(crate) fn load<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
         let address = match self.reference {
             Some(addr) => addr,
             None => {
@@ -296,7 +296,7 @@ impl<E: NodeEntry> Node<E> {
             }
         };
 
-        let chunk = loader.get(&address).map_err(|e| MantarayError::StoreGet {
+        let chunk = store.get(&address).map_err(|e| MantarayError::StoreGet {
             source: std::sync::Arc::new(e),
         })?;
         let mut loaded = Node::<E>::try_from(chunk.data().as_ref())?;
@@ -310,12 +310,12 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Look up the node at the given path, loading from storage as needed.
-    pub(crate) fn lookup_node_with_loader<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn lookup_node<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
-        loader: &S,
+        store: &S,
     ) -> Result<&mut Self> {
-        self.ensure_loaded(loader)?;
+        self.ensure_loaded(store)?;
 
         if path.is_empty() {
             return Ok(self);
@@ -330,7 +330,7 @@ impl<E: NodeEntry> Node<E> {
 
         let c = common_prefix_len(&fork.prefix, path);
         if c == fork.prefix.len() {
-            fork.node.lookup_node_with_loader(&path[c..], loader)
+            fork.node.lookup_node(&path[c..], store)
         } else {
             Err(MantarayError::NoForkFound {
                 reference: self.reference,
@@ -339,12 +339,12 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Look up the entry at the given path, loading from storage as needed.
-    pub fn lookup_with_loader<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn lookup<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
-        loader: &S,
+        store: &S,
     ) -> Result<Option<&E>> {
-        let node = self.lookup_node_with_loader(path, loader)?;
+        let node = self.lookup_node(path, store)?;
         if !node.is_value() && !path.is_empty() {
             return Err(MantarayError::NoEntryFound {
                 reference: node.reference,
@@ -354,12 +354,12 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Add an entry at the given path with optional metadata, loading from storage as needed.
-    pub(crate) fn add_with_loader<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn add<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         entry: Option<E>,
         metadata: BTreeMap<String, String>,
-        loader: &S,
+        store: &S,
     ) -> Result<()> {
         // empty path — set this node as a value
         if path.is_empty() {
@@ -377,7 +377,7 @@ impl<E: NodeEntry> Node<E> {
 
         // load forks if needed
         if !self.loaded {
-            self.load_from(loader)?;
+            self.load(store)?;
             self.mark_dirty();
         }
 
@@ -390,7 +390,7 @@ impl<E: NodeEntry> Node<E> {
 
             if path.len() > PREFIX_MAX_LEN {
                 let (prefix, rest) = path.split_at(PREFIX_MAX_LEN);
-                nn.add_with_loader(rest, entry, metadata, loader)?;
+                nn.add(rest, entry, metadata, store)?;
                 nn.update_is_with_path_separator(prefix);
                 self.forks.insert(
                     path[0],
@@ -452,7 +452,7 @@ impl<E: NodeEntry> Node<E> {
         };
 
         nn.update_is_with_path_separator(path);
-        nn.add_with_loader(&path[c..], entry, metadata, loader)?;
+        nn.add(&path[c..], entry, metadata, store)?;
 
         self.forks.insert(
             path[0],
@@ -467,16 +467,16 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Remove the entry at the given path, loading from storage as needed.
-    pub(crate) fn remove_with_loader<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn remove<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
-        loader: &S,
+        store: &S,
     ) -> Result<()> {
         if path.is_empty() {
             return Err(MantarayError::EmptyPath);
         }
 
-        self.ensure_loaded(loader)?;
+        self.ensure_loaded(store)?;
 
         let first = path[0];
 
@@ -502,7 +502,7 @@ impl<E: NodeEntry> Node<E> {
             Ok(())
         } else {
             let fork = self.forks.get_mut(&first).expect("checked above");
-            fork.node.remove_with_loader(rest, loader)
+            fork.node.remove(rest, store)
         };
 
         // Always clear reference so the node gets re-saved (matches Go's defer pattern)
@@ -511,16 +511,16 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Test whether a prefix exists in the trie, loading from storage as needed.
-    pub(crate) fn has_prefix_with_loader<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn has_prefix<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
-        loader: &S,
+        store: &S,
     ) -> Result<bool> {
         if path.is_empty() {
             return Ok(true);
         }
 
-        self.ensure_loaded(loader)?;
+        self.ensure_loaded(store)?;
 
         let fork = match self.forks.get_mut(&path[0]) {
             Some(f) => f,
@@ -530,7 +530,7 @@ impl<E: NodeEntry> Node<E> {
         let c = common_prefix_len(&fork.prefix, path);
 
         if c == fork.prefix.len() {
-            return fork.node.has_prefix_with_loader(&path[c..], loader);
+            return fork.node.has_prefix(&path[c..], store);
         }
 
         if fork.prefix.starts_with(path) {
@@ -543,19 +543,19 @@ impl<E: NodeEntry> Node<E> {
     /// Recursively save this node and all children to storage.
     ///
     /// Uses BMT content-addressing via `ContentChunk`.
-    pub fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, saver: &mut S) -> Result<()> {
+    pub(crate) fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, store: &mut S) -> Result<()> {
         if self.reference.is_some() {
             return Ok(());
         }
 
         for fork in self.forks.values_mut() {
-            fork.node.save(saver)?;
+            fork.node.save(store)?;
         }
 
         let data = Vec::<u8>::try_from(&*self)?;
         let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
         let address = *chunk.address();
-        saver.put(chunk.into()).map_err(|e| MantarayError::StorePut {
+        store.put(chunk.into()).map_err(|e| MantarayError::StorePut {
             source: std::sync::Arc::new(e),
         })?;
         self.reference = Some(address);
@@ -566,23 +566,23 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
-    pub(crate) fn walk_with_loader<S: ChunkGet<BS>, const BS: usize, F>(
+    pub(crate) fn walk<S: ChunkGet<BS>, const BS: usize, F>(
         &mut self,
-        loader: &S,
+        store: &S,
         f: &mut F,
     ) -> Result<()>
     where
         F: FnMut(&[u8], &Self) -> Result<()>,
     {
         let mut path_buf = Vec::new();
-        walk_inner(&mut path_buf, self, loader, f)
+        walk_inner(&mut path_buf, self, store, f)
     }
 
     /// Walk the subtree at `root`, calling `f` for each node.
-    pub fn walk_node_with_loader<S: ChunkGet<BS>, const BS: usize, F>(
+    pub(crate) fn walk_from<S: ChunkGet<BS>, const BS: usize, F>(
         &mut self,
         root: &[u8],
-        loader: &S,
+        store: &S,
         f: &mut F,
     ) -> Result<()>
     where
@@ -590,24 +590,24 @@ impl<E: NodeEntry> Node<E> {
     {
         let mut path_buf = root.to_vec();
         if root.is_empty() {
-            return walk_inner(&mut path_buf, self, loader, f);
+            return walk_inner(&mut path_buf, self, store, f);
         }
 
-        let target = self.lookup_node_with_loader(root, loader)?;
-        walk_inner(&mut path_buf, target, loader, f)
+        let target = self.lookup_node(root, store)?;
+        walk_inner(&mut path_buf, target, store, f)
     }
 }
 
 fn walk_inner<E: NodeEntry, S: ChunkGet<BS>, const BS: usize, F>(
     path_buf: &mut Vec<u8>,
     node: &mut Node<E>,
-    loader: &S,
+    store: &S,
     f: &mut F,
 ) -> Result<()>
 where
     F: FnMut(&[u8], &Node<E>) -> Result<()>,
 {
-    node.ensure_loaded(loader)?;
+    node.ensure_loaded(store)?;
 
     f(path_buf, node)?;
 
@@ -619,7 +619,7 @@ where
         })?;
         let prev_len = path_buf.len();
         path_buf.extend_from_slice(&fork.prefix);
-        walk_inner(path_buf, &mut fork.node, loader, f)?;
+        walk_inner(path_buf, &mut fork.node, store, f)?;
         path_buf.truncate(prev_len);
     }
 
@@ -808,45 +808,45 @@ mod tests {
         ChunkAddress::from(buf)
     }
 
-    /// In-memory add: delegates to `add_with_loader` with NullLoader.
+    /// In-memory add: delegates to `add` with NullLoader.
     fn node_add(n: &mut Node, path: &[u8], entry: ChunkAddress, meta: BTreeMap<String, String>) {
-        n.add_with_loader::<NullLoader, BS>(path, Some(entry), meta, &NL).unwrap();
+        n.add::<NullLoader, BS>(path, Some(entry), meta, &NL).unwrap();
     }
 
-    /// In-memory lookup: delegates to `lookup_with_loader` with NullLoader.
+    /// In-memory lookup: delegates to `lookup` with NullLoader.
     fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<Option<&'n ChunkAddress>> {
-        n.lookup_with_loader::<NullLoader, BS>(path, &NL)
+        n.lookup::<NullLoader, BS>(path, &NL)
     }
 
-    /// In-memory lookup_node: delegates to `lookup_node_with_loader` with NullLoader.
+    /// In-memory lookup_node: delegates to `lookup_node` with NullLoader.
     fn node_lookup_node<'n>(n: &'n mut Node, path: &[u8]) -> Result<&'n mut Node> {
-        n.lookup_node_with_loader::<NullLoader, BS>(path, &NL)
+        n.lookup_node::<NullLoader, BS>(path, &NL)
     }
 
-    /// In-memory remove: delegates to `remove_with_loader` with NullLoader.
+    /// In-memory remove: delegates to `remove` with NullLoader.
     fn node_remove(n: &mut Node, path: &[u8]) -> Result<()> {
-        n.remove_with_loader::<NullLoader, BS>(path, &NL)
+        n.remove::<NullLoader, BS>(path, &NL)
     }
 
-    /// In-memory has_prefix: delegates to `has_prefix_with_loader` with NullLoader.
+    /// In-memory has_prefix: delegates to `has_prefix` with NullLoader.
     fn node_has_prefix(n: &mut Node, path: &[u8]) -> Result<bool> {
-        n.has_prefix_with_loader::<NullLoader, BS>(path, &NL)
+        n.has_prefix::<NullLoader, BS>(path, &NL)
     }
 
-    /// In-memory walk: delegates to `walk_with_loader` with NullLoader.
+    /// In-memory walk: delegates to `walk` with NullLoader.
     fn node_walk<F>(n: &mut Node, f: &mut F) -> Result<()>
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        n.walk_with_loader::<NullLoader, BS, _>(&NL, f)
+        n.walk::<NullLoader, BS, _>(&NL, f)
     }
 
-    /// In-memory walk_node: delegates to `walk_node_with_loader` with NullLoader.
+    /// In-memory walk_node: delegates to `walk_from` with NullLoader.
     fn node_walk_node<F>(n: &mut Node, root: &[u8], f: &mut F) -> Result<()>
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        n.walk_node_with_loader::<NullLoader, BS, _>(root, &NL, f)
+        n.walk_from::<NullLoader, BS, _>(root, &NL, f)
     }
 
     #[test]
@@ -931,7 +931,7 @@ mod tests {
 
         for &d in items {
             let node = n2
-                .lookup_node_with_loader(d.as_bytes(), &store)
+                .lookup_node(d.as_bytes(), &store)
                 .unwrap();
             assert!(node.is_value());
             assert_eq!(node.entry(), Some(&make_entry(d)));
@@ -1032,7 +1032,7 @@ mod tests {
         let mut n = Node::default();
         for c in &tc.items {
             let e = make_entry(&c.path);
-            n.add_with_loader(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)
+            n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)
                 .unwrap();
         }
         n.save(&mut store).unwrap();
@@ -1041,7 +1041,7 @@ mod tests {
         // reload and remove
         let mut nn: Node = Node::from_reference(ref_);
         for path in &tc.remove {
-            nn.remove_with_loader(path.as_bytes(), &store).unwrap();
+            nn.remove(path.as_bytes(), &store).unwrap();
         }
         nn.save(&mut store).unwrap();
         let ref2 = nn.reference.unwrap();
@@ -1049,7 +1049,7 @@ mod tests {
         // reload and verify removed paths are gone
         let mut nnn: Node = Node::from_reference(ref2);
         for path in &tc.remove {
-            let result = nnn.lookup_node_with_loader(path.as_bytes(), &store);
+            let result = nnn.lookup_node(path.as_bytes(), &store);
             assert!(result.is_err(), "expected removed path '{path}' to be not found");
         }
     }
@@ -1226,7 +1226,7 @@ mod tests {
         let mut n2: Node = Node::from_reference(n.reference.unwrap());
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
-        n2.walk_node_with_loader(b"", &store, &mut |path: &[u8], _node: &Node| {
+        n2.walk_from(b"", &store, &mut |path: &[u8], _node: &Node| {
             walked.push(path.to_vec());
             Ok(())
         })

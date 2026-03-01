@@ -87,7 +87,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     /// Add a path with a typed reference (compile-time enforced by entry type).
     pub fn add(&mut self, path: &str, reference: impl Into<E>) -> Result<()> {
         let entry = reference.into();
-        self.trie.add_with_loader::<S, BS>(
+        self.trie.add::<S, BS>(
             path.as_bytes(),
             Some(entry),
             BTreeMap::new(),
@@ -103,7 +103,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
         metadata: BTreeMap<String, String>,
     ) -> Result<()> {
         let entry = reference.into();
-        self.trie.add_with_loader::<S, BS>(
+        self.trie.add::<S, BS>(
             path.as_bytes(),
             Some(entry),
             metadata,
@@ -120,7 +120,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
             }
             None => None,
         };
-        self.trie.add_with_loader::<S, BS>(
+        self.trie.add::<S, BS>(
             path.as_bytes(),
             e,
             entry.metadata,
@@ -131,14 +131,14 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     /// Remove a path from the manifest.
     pub fn remove(&mut self, path: &str) -> Result<()> {
         self.trie
-            .remove_with_loader::<S, BS>(path.as_bytes(), &self.store)
+            .remove::<S, BS>(path.as_bytes(), &self.store)
     }
 
     /// Look up a path in the manifest.
     pub fn lookup(&mut self, path: &str) -> Result<Entry> {
         let node = self
             .trie
-            .lookup_node_with_loader::<S, BS>(path.as_bytes(), &self.store)?;
+            .lookup_node::<S, BS>(path.as_bytes(), &self.store)?;
 
         if !node.is_value() {
             return Err(MantarayError::NotValueType);
@@ -150,7 +150,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     /// Test whether the manifest contains a prefix.
     pub fn has_prefix(&mut self, prefix: &str) -> Result<bool> {
         self.trie
-            .has_prefix_with_loader::<S, BS>(prefix.as_bytes(), &self.store)
+            .has_prefix::<S, BS>(prefix.as_bytes(), &self.store)
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
@@ -158,7 +158,15 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     where
         F: FnMut(&[u8], &Node<E>) -> Result<()>,
     {
-        self.trie.walk_with_loader::<S, BS, _>(&self.store, f)
+        self.trie.walk::<S, BS, _>(&self.store, f)
+    }
+
+    /// Walk the subtree rooted at `root`, calling `f` for each node with its path.
+    pub fn walk_from<F>(&mut self, root: &str, f: &mut F) -> Result<()>
+    where
+        F: FnMut(&[u8], &Node<E>) -> Result<()>,
+    {
+        self.trie.walk_from::<S, BS, _>(root.as_bytes(), &self.store, f)
     }
 
     /// Collect all value entries from the manifest.
@@ -225,7 +233,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
         // Ensure the root path node exists.
         match self
             .trie
-            .lookup_node_with_loader::<S, BS>(metadata::ROOT_PATH.as_bytes(), &self.store)
+            .lookup_node::<S, BS>(metadata::ROOT_PATH.as_bytes(), &self.store)
         {
             Ok(node) => {
                 // Node exists — mutate metadata in place (no clone).
@@ -238,7 +246,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
                 // Root path doesn't exist yet — create it with the metadata.
                 let mut meta = BTreeMap::new();
                 meta.insert(key.into(), value.into());
-                self.trie.add_with_loader::<S, BS>(
+                self.trie.add::<S, BS>(
                     metadata::ROOT_PATH.as_bytes(),
                     None,
                     meta,
@@ -252,7 +260,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     fn get_root_metadata(&mut self, key: &str) -> Result<Option<String>> {
         match self
             .trie
-            .lookup_node_with_loader::<S, BS>(metadata::ROOT_PATH.as_bytes(), &self.store)
+            .lookup_node::<S, BS>(metadata::ROOT_PATH.as_bytes(), &self.store)
         {
             Ok(node) => Ok(node.metadata().get(key).cloned()),
             Err(MantarayError::NoForkFound { .. }) => Ok(None),
@@ -345,7 +353,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIter<'
                 self.root_visited = true;
 
                 if !self.trie.loaded {
-                    if let Err(e) = self.trie.load_from::<S, BS>(self.store) {
+                    if let Err(e) = self.trie.load::<S, BS>(self.store) {
                         return Some(Err(e));
                     }
                 }
@@ -409,7 +417,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIter<'
             // SAFETY: child is a descendant of the exclusively borrowed trie.
             let child_ref = unsafe { &mut *child };
             if !child_ref.loaded {
-                if let Err(e) = child_ref.load_from::<S, BS>(self.store) {
+                if let Err(e) = child_ref.load::<S, BS>(self.store) {
                     return Some(Err(e));
                 }
             }
