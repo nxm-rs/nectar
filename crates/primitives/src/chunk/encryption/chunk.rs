@@ -14,7 +14,7 @@ const fn span_ctr(body_size: usize) -> u32 {
     (body_size / EncryptionKey::SIZE) as u32
 }
 
-/// Encrypt chunk data (span + body), returning the key and ciphertext.
+/// Encrypt chunk data (span + body) with the given key, returning ciphertext.
 ///
 /// The output is always `SPAN_SIZE + BODY_SIZE` bytes: the span is encrypted
 /// with `init_ctr = BODY_SIZE / EncryptionKey::SIZE`, and the data is encrypted with
@@ -22,9 +22,10 @@ const fn span_ctr(body_size: usize) -> u32 {
 ///
 /// `chunk_data` must be `SPAN_SIZE..=SPAN_SIZE + BODY_SIZE` bytes.
 #[cfg(feature = "encryption")]
-pub fn encrypt_chunk<const BODY_SIZE: usize>(
+pub(crate) fn encrypt_chunk<const BODY_SIZE: usize>(
     chunk_data: &[u8],
-) -> Result<(EncryptionKey, Vec<u8>), EncryptionError> {
+    key: &EncryptionKey,
+) -> Result<Vec<u8>, EncryptionError> {
     if chunk_data.len() < SPAN_SIZE {
         return Err(EncryptionError::DataTooShort {
             len: chunk_data.len(),
@@ -38,17 +39,16 @@ pub fn encrypt_chunk<const BODY_SIZE: usize>(
         });
     }
 
-    let key = EncryptionKey::generate();
     let span = &chunk_data[..SPAN_SIZE];
     let data = &chunk_data[SPAN_SIZE..];
 
     let mut output = vec![0u8; SPAN_SIZE + BODY_SIZE];
 
     // Encrypt span with init_ctr = BODY_SIZE / EncryptionKey::SIZE (128 for default 4096)
-    transcrypt(&key, span_ctr(BODY_SIZE), span, &mut output[..SPAN_SIZE])?;
+    transcrypt(key, span_ctr(BODY_SIZE), span, &mut output[..SPAN_SIZE])?;
 
     // Encrypt data with init_ctr = 0
-    transcrypt(&key, 0, data, &mut output[SPAN_SIZE..])?;
+    transcrypt(key, 0, data, &mut output[SPAN_SIZE..])?;
 
     // Fill padding beyond actual data with random bytes
     let padding_start = SPAN_SIZE + data.len();
@@ -57,14 +57,14 @@ pub fn encrypt_chunk<const BODY_SIZE: usize>(
         rand::rng().fill(&mut output[padding_start..]);
     }
 
-    Ok((key, output))
+    Ok(output)
 }
 
 /// Decrypt encrypted chunk data, returning `span || data[..data_length]`.
 ///
 /// `encrypted_data` must be exactly `SPAN_SIZE + BODY_SIZE` bytes.
 /// `data_length` specifies the actual data length (excluding padding).
-pub fn decrypt_chunk_data<const BODY_SIZE: usize>(
+pub(crate) fn decrypt_chunk_data<const BODY_SIZE: usize>(
     encrypted_data: &[u8],
     key: &EncryptionKey,
     data_length: usize,
@@ -78,7 +78,7 @@ pub fn decrypt_chunk_data<const BODY_SIZE: usize>(
 ///
 /// `output` must be at least `SPAN_SIZE + data_length` bytes.
 /// `encrypted_data` must be exactly `SPAN_SIZE + BODY_SIZE` bytes.
-pub fn decrypt_chunk_into<const BODY_SIZE: usize>(
+pub(crate) fn decrypt_chunk_into<const BODY_SIZE: usize>(
     encrypted_data: &[u8],
     key: &EncryptionKey,
     data_length: usize,
@@ -140,7 +140,8 @@ mod tests {
             *byte = (i % 256) as u8;
         }
 
-        let (key, encrypted) = encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data).unwrap();
+        let key = EncryptionKey::generate();
+        let encrypted = encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data, &key).unwrap();
         assert_eq!(encrypted.len(), SPAN_SIZE + DEFAULT_BODY_SIZE);
         assert_ne!(&encrypted[..], &chunk_data[..]);
 
@@ -159,7 +160,8 @@ mod tests {
             *byte = (i * 7 % 256) as u8;
         }
 
-        let (key, encrypted) = encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data).unwrap();
+        let key = EncryptionKey::generate();
+        let encrypted = encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data, &key).unwrap();
         assert_eq!(encrypted.len(), SPAN_SIZE + DEFAULT_BODY_SIZE);
 
         let decrypted =
@@ -171,7 +173,8 @@ mod tests {
     #[test]
     fn roundtrip_span_only() {
         let chunk_data = 0u64.to_le_bytes().to_vec();
-        let (key, encrypted) = encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data).unwrap();
+        let key = EncryptionKey::generate();
+        let encrypted = encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data, &key).unwrap();
         assert_eq!(encrypted.len(), SPAN_SIZE + DEFAULT_BODY_SIZE);
 
         let decrypted = decrypt_chunk_data::<DEFAULT_BODY_SIZE>(&encrypted, &key, 0).unwrap();
@@ -188,7 +191,8 @@ mod tests {
             *byte = (i % 256) as u8;
         }
 
-        let (key, encrypted) = encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data).unwrap();
+        let key = EncryptionKey::generate();
+        let encrypted = encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data, &key).unwrap();
 
         // Decrypt into a pre-allocated buffer
         let mut buf = vec![0u8; SPAN_SIZE + data_len];
@@ -196,18 +200,16 @@ mod tests {
         assert_eq!(buf, chunk_data);
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn encrypt_too_short() {
         let short = [0u8; 4];
-        #[cfg(feature = "encryption")]
-        {
-            let err = encrypt_chunk::<DEFAULT_BODY_SIZE>(&short).unwrap_err();
-            assert!(matches!(
-                err,
-                EncryptionError::DataTooShort { len: 4, min: 8 }
-            ));
-        }
-        let _ = short;
+        let key = EncryptionKey::generate();
+        let err = encrypt_chunk::<DEFAULT_BODY_SIZE>(&short, &key).unwrap_err();
+        assert!(matches!(
+            err,
+            EncryptionError::DataTooShort { len: 4, min: 8 }
+        ));
     }
 
     #[test]

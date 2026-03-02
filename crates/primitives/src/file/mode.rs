@@ -332,7 +332,8 @@ impl SplitMode for EncryptedMode {
     ) -> Result<(ContentChunk<BS>, [u8; ENCRYPTED_REF_SIZE])> {
         use crate::chunk::encryption::encrypt_chunk;
 
-        let (key, ciphertext) = encrypt_chunk::<BS>(&data)?;
+        let key = EncryptionKey::generate();
+        let ciphertext = encrypt_chunk::<BS>(&data, &key)?;
         let chunk = create_chunk::<BS>(Bytes::from(ciphertext))?;
 
         let mut ref_bytes = [0u8; ENCRYPTED_REF_SIZE];
@@ -346,8 +347,9 @@ impl SplitMode for EncryptedMode {
     ) -> Result<EncryptedChunkRef> {
         use crate::chunk::encryption::encrypt_chunk;
 
+        let key = EncryptionKey::generate();
         let chunk_bytes = 0u64.to_le_bytes().to_vec();
-        let (key, ciphertext) = encrypt_chunk::<BS>(&chunk_bytes)?;
+        let ciphertext = encrypt_chunk::<BS>(&chunk_bytes, &key)?;
         let chunk = create_chunk::<BS>(Bytes::from(ciphertext))?;
         let address = store_chunk::<BS, S>(chunk, store)?;
         Ok(EncryptedChunkRef::new(address, key))

@@ -43,4 +43,6 @@ pub use type_id::ChunkTypeId;
 pub use content::ContentChunk;
 #[cfg(feature = "encryption")]
 pub use content::EncryptedContentChunk;
+#[cfg(feature = "encryption")]
+pub use encryption::ChunkEncrypt;
 pub use single_owner::SingleOwnerChunk;

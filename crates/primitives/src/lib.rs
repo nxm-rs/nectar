@@ -50,7 +50,7 @@ pub use bmt::DEFAULT_BODY_SIZE;
 // Re-export core encryption types
 pub use chunk::encryption::{EncryptedChunkRef, EncryptionKey};
 #[cfg(feature = "encryption")]
-pub use chunk::EncryptedContentChunk;
+pub use chunk::{ChunkEncrypt, EncryptedContentChunk};
 
 // Re-export core types
 pub use address::{MAX_PO, SwarmAddress};

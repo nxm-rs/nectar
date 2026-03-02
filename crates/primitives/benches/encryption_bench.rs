@@ -5,14 +5,14 @@ use std::io::Write;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use rand::{RngCore, rng};
 
-use nectar_primitives::chunk::encryption::{self, EncryptionKey, transcrypt, transcrypt_in_place};
+use nectar_primitives::chunk::encryption::{self, ChunkEncrypt, EncryptionKey, transcrypt, transcrypt_in_place};
 use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
 use nectar_primitives::file::{
     EncryptedJoiner, EncryptedParallelSplitter, EncryptedSplitter, Joiner, ParallelSplitter,
     Splitter, split, split_encrypted,
 };
 use nectar_primitives::store::MemoryStore;
-use nectar_primitives::{DEFAULT_BODY_SIZE, bmt::SPAN_SIZE};
+use nectar_primitives::{ContentChunk, DEFAULT_BODY_SIZE};
 
 fn bench_transcrypt(c: &mut Criterion) {
     let mut group = c.benchmark_group("transcrypt");
@@ -60,18 +60,19 @@ fn bench_encrypt_chunk(c: &mut Criterion) {
     let mut group = c.benchmark_group("encrypt_chunk");
 
     for &data_size in &[0, 100, 1024, 4096] {
-        let mut chunk_data = vec![0u8; SPAN_SIZE + data_size];
-        chunk_data[..SPAN_SIZE].copy_from_slice(&(data_size as u64).to_le_bytes());
+        let mut data = vec![0u8; data_size];
         if data_size > 0 {
-            rng().fill_bytes(&mut chunk_data[SPAN_SIZE..]);
+            rng().fill_bytes(&mut data);
         }
+        let chunk = ContentChunk::<DEFAULT_BODY_SIZE>::new(data).unwrap();
+        let key = EncryptionKey::generate();
 
         group.bench_with_input(
             BenchmarkId::new("data_bytes", data_size),
-            &chunk_data,
-            |b, chunk_data| {
+            &chunk,
+            |b, chunk| {
                 b.iter(|| {
-                    black_box(encryption::encrypt_chunk::<DEFAULT_BODY_SIZE>(chunk_data).unwrap());
+                    black_box(chunk.encrypt_with(&key).unwrap());
                 });
             },
         );
@@ -84,60 +85,19 @@ fn bench_decrypt_chunk(c: &mut Criterion) {
     let mut group = c.benchmark_group("decrypt_chunk");
 
     for &data_size in &[0, 100, 1024, 4096] {
-        let mut chunk_data = vec![0u8; SPAN_SIZE + data_size];
-        chunk_data[..SPAN_SIZE].copy_from_slice(&(data_size as u64).to_le_bytes());
+        let mut data = vec![0u8; data_size];
         if data_size > 0 {
-            rng().fill_bytes(&mut chunk_data[SPAN_SIZE..]);
+            rng().fill_bytes(&mut data);
         }
-
-        let (key, encrypted) =
-            encryption::encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data).unwrap();
+        let chunk = ContentChunk::<DEFAULT_BODY_SIZE>::new(data).unwrap();
+        let encrypted = chunk.encrypt().unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("data_bytes", data_size),
             &encrypted,
             |b, encrypted| {
                 b.iter(|| {
-                    black_box(
-                        encryption::decrypt_chunk_data::<DEFAULT_BODY_SIZE>(
-                            encrypted, &key, data_size,
-                        )
-                        .unwrap(),
-                    );
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
-fn bench_decrypt_chunk_into(c: &mut Criterion) {
-    let mut group = c.benchmark_group("decrypt_chunk_into");
-
-    for &data_size in &[0, 100, 1024, 4096] {
-        let mut chunk_data = vec![0u8; SPAN_SIZE + data_size];
-        chunk_data[..SPAN_SIZE].copy_from_slice(&(data_size as u64).to_le_bytes());
-        if data_size > 0 {
-            rng().fill_bytes(&mut chunk_data[SPAN_SIZE..]);
-        }
-
-        let (key, encrypted) =
-            encryption::encrypt_chunk::<DEFAULT_BODY_SIZE>(&chunk_data).unwrap();
-
-        // Pre-allocate the output buffer (measured separately from decrypt)
-        let mut output = vec![0u8; SPAN_SIZE + data_size];
-
-        group.bench_with_input(
-            BenchmarkId::new("data_bytes", data_size),
-            &encrypted,
-            |b, encrypted| {
-                b.iter(|| {
-                    encryption::decrypt_chunk_into::<DEFAULT_BODY_SIZE>(
-                        encrypted, &key, data_size, &mut output,
-                    )
-                    .unwrap();
-                    black_box(&output);
+                    black_box(encrypted.decrypt().unwrap());
                 });
             },
         );
@@ -405,7 +365,6 @@ criterion_group!(
     bench_transcrypt_in_place,
     bench_encrypt_chunk,
     bench_decrypt_chunk,
-    bench_decrypt_chunk_into,
     bench_encrypted_sequential_splitter,
     bench_encrypted_parallel_splitter,
     bench_encrypted_joiner,

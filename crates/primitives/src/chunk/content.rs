@@ -154,15 +154,57 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
 #[cfg(feature = "encryption")]
 #[derive(Debug, Clone)]
 pub struct EncryptedContentChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
-    /// The encrypted chunk (ciphertext hashed to a new address).
-    pub chunk: ContentChunk<BODY_SIZE>,
-    /// The encrypted reference (address + decryption key).
-    pub encrypted_ref: super::encryption::EncryptedChunkRef,
+    chunk: ContentChunk<BODY_SIZE>,
+    encrypted_ref: super::encryption::EncryptedChunkRef,
 }
 
 #[cfg(feature = "encryption")]
-impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
-    /// Encrypt this chunk, returning the encrypted chunk and its reference.
+impl<const BODY_SIZE: usize> EncryptedContentChunk<BODY_SIZE> {
+    /// The encrypted chunk (ciphertext hashed to a new address).
+    pub fn chunk(&self) -> &ContentChunk<BODY_SIZE> {
+        &self.chunk
+    }
+
+    /// The encrypted reference (address + decryption key).
+    pub fn encrypted_ref(&self) -> &super::encryption::EncryptedChunkRef {
+        &self.encrypted_ref
+    }
+
+    /// Consume and return (chunk, encrypted_ref).
+    pub fn into_parts(
+        self,
+    ) -> (
+        ContentChunk<BODY_SIZE>,
+        super::encryption::EncryptedChunkRef,
+    ) {
+        (self.chunk, self.encrypted_ref)
+    }
+
+    /// Decrypt back to a plaintext `ContentChunk`.
+    pub fn decrypt(&self) -> Result<ContentChunk<BODY_SIZE>> {
+        use crate::bmt::SPAN_SIZE;
+        use super::encryption::transcrypt;
+
+        let encrypted_data: Bytes = self.chunk.clone().into();
+        let key = self.encrypted_ref.key();
+
+        // Decrypt the span to learn the original data length
+        let span_ctr = (BODY_SIZE / super::encryption::EncryptionKey::SIZE) as u32;
+        let mut span_buf = [0u8; SPAN_SIZE];
+        transcrypt(key, span_ctr, &encrypted_data[..SPAN_SIZE], &mut span_buf)?;
+        let data_length = u64::from_le_bytes(span_buf) as usize;
+
+        let decrypted =
+            super::encryption::decrypt_chunk_data::<BODY_SIZE>(&encrypted_data, key, data_length)?;
+        ContentChunk::try_from(Bytes::from(decrypted))
+    }
+}
+
+#[cfg(feature = "encryption")]
+impl<const BODY_SIZE: usize> super::encryption::ChunkEncrypt for ContentChunk<BODY_SIZE> {
+    type Encrypted = EncryptedContentChunk<BODY_SIZE>;
+
+    /// Encrypt this chunk with a caller-provided key.
     ///
     /// The returned `EncryptedContentChunk` contains:
     /// - `chunk`: a new `ContentChunk` whose data is the ciphertext
@@ -170,27 +212,31 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     ///
     /// ```
     /// # use nectar_primitives::{Chunk, ContentChunk};
+    /// # use nectar_primitives::chunk::encryption::{ChunkEncrypt, EncryptionKey};
     /// # use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
     /// let chunk = ContentChunk::<DEFAULT_BODY_SIZE>::new(b"secret data".to_vec()).unwrap();
     /// let encrypted = chunk.encrypt().unwrap();
     ///
     /// // The encrypted chunk has a different address
-    /// assert_ne!(chunk.address(), encrypted.chunk.address());
+    /// assert_ne!(chunk.address(), encrypted.chunk().address());
     /// ```
-    pub fn encrypt(&self) -> Result<EncryptedContentChunk<BODY_SIZE>> {
+    fn encrypt_with(
+        &self,
+        key: &super::encryption::EncryptionKey,
+    ) -> Result<EncryptedContentChunk<BODY_SIZE>> {
         let raw: Bytes = self.clone().into(); // span || data
-        let (key, ciphertext) = super::encryption::encrypt_chunk::<BODY_SIZE>(&raw)?;
-        // try_from parses as span || data, matching the encrypted layout
+        let ciphertext = super::encryption::encrypt_chunk::<BODY_SIZE>(&raw, key)?;
         let encrypted_chunk = Self::try_from(Bytes::from(ciphertext))?;
         let encrypted_ref = super::encryption::EncryptedChunkRef::new(
             *encrypted_chunk.address(),
-            key,
+            key.clone(),
         );
         Ok(EncryptedContentChunk {
             chunk: encrypted_chunk,
             encrypted_ref,
         })
     }
+    // encrypt() uses default impl — generates random key, calls encrypt_with()
 }
 
 impl<const BODY_SIZE: usize> Chunk for ContentChunk<BODY_SIZE> {
