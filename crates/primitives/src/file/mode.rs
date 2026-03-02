@@ -366,7 +366,7 @@ fn decrypt_span<const BODY_SIZE: usize>(
     encrypted_data: &[u8],
     key: &EncryptionKey,
 ) -> Result<[u8; SPAN_SIZE]> {
-    use crate::chunk::encryption::{KEY_SIZE, transcrypt};
+    use crate::chunk::encryption::transcrypt;
 
     let expected_len = SPAN_SIZE + BODY_SIZE;
     if encrypted_data.len() != expected_len {
@@ -378,7 +378,7 @@ fn decrypt_span<const BODY_SIZE: usize>(
         ));
     }
 
-    let span_ctr = (BODY_SIZE / KEY_SIZE) as u32;
+    let span_ctr = (BODY_SIZE / EncryptionKey::SIZE) as u32;
     let mut span_buf = [0u8; SPAN_SIZE];
     transcrypt(key, span_ctr, &encrypted_data[..SPAN_SIZE], &mut span_buf)
         .map_err(FileError::Encryption)?;

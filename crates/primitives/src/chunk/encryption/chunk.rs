@@ -8,17 +8,16 @@ use crate::bmt::SPAN_SIZE;
 use super::cipher::transcrypt;
 use super::error::EncryptionError;
 use super::key::EncryptionKey;
-use super::KEY_SIZE;
 
-/// Span encryption counter: `BODY_SIZE / KEY_SIZE` (128 for default 4096).
+/// Span encryption counter: `BODY_SIZE / EncryptionKey::SIZE` (128 for default 4096).
 const fn span_ctr(body_size: usize) -> u32 {
-    (body_size / KEY_SIZE) as u32
+    (body_size / EncryptionKey::SIZE) as u32
 }
 
 /// Encrypt chunk data (span + body), returning the key and ciphertext.
 ///
 /// The output is always `SPAN_SIZE + BODY_SIZE` bytes: the span is encrypted
-/// with `init_ctr = BODY_SIZE / KEY_SIZE`, and the data is encrypted with
+/// with `init_ctr = BODY_SIZE / EncryptionKey::SIZE`, and the data is encrypted with
 /// `init_ctr = 0` and padded to `BODY_SIZE` with random bytes.
 ///
 /// `chunk_data` must be `SPAN_SIZE..=SPAN_SIZE + BODY_SIZE` bytes.
@@ -45,7 +44,7 @@ pub fn encrypt_chunk<const BODY_SIZE: usize>(
 
     let mut output = vec![0u8; SPAN_SIZE + BODY_SIZE];
 
-    // Encrypt span with init_ctr = BODY_SIZE / KEY_SIZE (128 for default 4096)
+    // Encrypt span with init_ctr = BODY_SIZE / EncryptionKey::SIZE (128 for default 4096)
     transcrypt(&key, span_ctr(BODY_SIZE), span, &mut output[..SPAN_SIZE])?;
 
     // Encrypt data with init_ctr = 0
@@ -230,7 +229,7 @@ mod tests {
         transcrypt(&key, 0, &span, &mut with_data_ctr).unwrap();
         transcrypt(
             &key,
-            (DEFAULT_BODY_SIZE / KEY_SIZE) as u32,
+            (DEFAULT_BODY_SIZE / EncryptionKey::SIZE) as u32,
             &span,
             &mut with_span_ctr,
         )

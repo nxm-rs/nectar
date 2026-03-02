@@ -4,7 +4,6 @@
 
 use alloy_primitives::Keccak256;
 
-use super::KEY_SIZE;
 use super::error::EncryptionError;
 use super::key::EncryptionKey;
 
@@ -35,7 +34,7 @@ fn derive_segment_key(key_state: &Keccak256, counter: u32) -> [u8; 32] {
 #[inline]
 fn apply_keystream(key: &EncryptionKey, init_ctr: u32, data: &mut [u8]) {
     let ks = key_state(key);
-    for (i, chunk) in data.chunks_mut(KEY_SIZE).enumerate() {
+    for (i, chunk) in data.chunks_mut(EncryptionKey::SIZE).enumerate() {
         let seg = derive_segment_key(&ks, init_ctr.wrapping_add(i as u32));
         for (j, byte) in chunk.iter_mut().enumerate() {
             *byte ^= seg[j];
@@ -161,8 +160,8 @@ mod tests {
 
         // Encrypt each 32-byte segment separately with incrementing counter
         let mut segmented = [0u8; 128];
-        for (i, chunk) in input.chunks(KEY_SIZE).enumerate() {
-            transcrypt(&key, i as u32, chunk, &mut segmented[i * KEY_SIZE..]).unwrap();
+        for (i, chunk) in input.chunks(EncryptionKey::SIZE).enumerate() {
+            transcrypt(&key, i as u32, chunk, &mut segmented[i * EncryptionKey::SIZE..]).unwrap();
         }
         assert_eq!(whole, segmented);
     }

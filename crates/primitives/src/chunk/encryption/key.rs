@@ -1,11 +1,12 @@
 //! Encryption key type.
 
+use std::mem::size_of;
+
 use alloy_primitives::B256;
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::error::EncryptionError;
-use super::KEY_SIZE;
 
 /// 32-byte encryption key for chunk encryption.
 ///
@@ -13,7 +14,7 @@ use super::KEY_SIZE;
 /// implemented to prevent implicit unzeroed copies on the stack.
 /// Equality is constant-time via `subtle::ConstantTimeEq`.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct EncryptionKey([u8; KEY_SIZE]);
+pub struct EncryptionKey([u8; size_of::<B256>()]);
 
 impl ConstantTimeEq for EncryptionKey {
     fn ct_eq(&self, other: &Self) -> subtle::Choice {
@@ -30,8 +31,11 @@ impl PartialEq for EncryptionKey {
 impl Eq for EncryptionKey {}
 
 impl EncryptionKey {
+    /// Byte length of an encryption key.
+    pub const SIZE: usize = size_of::<B256>();
+
     /// Access the raw key bytes.
-    pub const fn as_bytes(&self) -> &[u8; KEY_SIZE] {
+    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
         &self.0
     }
 
@@ -43,8 +47,8 @@ impl EncryptionKey {
     }
 }
 
-impl From<[u8; KEY_SIZE]> for EncryptionKey {
-    fn from(bytes: [u8; KEY_SIZE]) -> Self {
+impl From<[u8; EncryptionKey::SIZE]> for EncryptionKey {
+    fn from(bytes: [u8; EncryptionKey::SIZE]) -> Self {
         Self(bytes)
     }
 }
@@ -55,8 +59,8 @@ impl From<B256> for EncryptionKey {
     }
 }
 
-impl AsRef<[u8; KEY_SIZE]> for EncryptionKey {
-    fn as_ref(&self) -> &[u8; KEY_SIZE] {
+impl AsRef<[u8; EncryptionKey::SIZE]> for EncryptionKey {
+    fn as_ref(&self) -> &[u8; EncryptionKey::SIZE] {
         &self.0
     }
 }
@@ -71,10 +75,10 @@ impl TryFrom<&[u8]> for EncryptionKey {
     type Error = EncryptionError;
 
     fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
-        if slice.len() != KEY_SIZE {
+        if slice.len() != Self::SIZE {
             return Err(EncryptionError::InvalidKeyLength { len: slice.len() });
         }
-        let mut bytes = [0u8; KEY_SIZE];
+        let mut bytes = [0u8; Self::SIZE];
         bytes.copy_from_slice(slice);
         Ok(Self(bytes))
     }
@@ -97,7 +101,7 @@ mod tests {
 
     #[test]
     fn from_bytes_roundtrip() {
-        let bytes = [42u8; KEY_SIZE];
+        let bytes = [42u8; EncryptionKey::SIZE];
         let key = EncryptionKey::from(bytes);
         assert_eq!(key.as_bytes(), &bytes);
     }
@@ -106,14 +110,14 @@ mod tests {
     fn from_b256() {
         let b = B256::repeat_byte(0xab);
         let key = EncryptionKey::from(b);
-        assert_eq!(<EncryptionKey as AsRef<[u8; KEY_SIZE]>>::as_ref(&key), &[0xab; KEY_SIZE]);
+        assert_eq!(<EncryptionKey as AsRef<[u8; EncryptionKey::SIZE]>>::as_ref(&key), &[0xab; EncryptionKey::SIZE]);
     }
 
     #[test]
     fn try_from_slice_valid() {
-        let slice = [7u8; KEY_SIZE];
+        let slice = [7u8; EncryptionKey::SIZE];
         let key = EncryptionKey::try_from(slice.as_slice()).unwrap();
-        assert_eq!(<EncryptionKey as AsRef<[u8; KEY_SIZE]>>::as_ref(&key), &slice);
+        assert_eq!(<EncryptionKey as AsRef<[u8; EncryptionKey::SIZE]>>::as_ref(&key), &slice);
     }
 
     #[test]
@@ -141,9 +145,9 @@ mod tests {
 
     #[test]
     fn constant_time_equality() {
-        let k1 = EncryptionKey::from([0x42; KEY_SIZE]);
-        let k2 = EncryptionKey::from([0x42; KEY_SIZE]);
-        let k3 = EncryptionKey::from([0x43; KEY_SIZE]);
+        let k1 = EncryptionKey::from([0x42; EncryptionKey::SIZE]);
+        let k2 = EncryptionKey::from([0x42; EncryptionKey::SIZE]);
+        let k3 = EncryptionKey::from([0x43; EncryptionKey::SIZE]);
         assert_eq!(k1, k2);
         assert_ne!(k1, k3);
     }

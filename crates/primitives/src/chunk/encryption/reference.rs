@@ -1,12 +1,11 @@
 //! Chunk reference types for encrypted chunks.
 
+use std::mem::size_of;
+
 use crate::chunk::ChunkAddress;
 
 use super::error::EncryptionError;
 use super::key::EncryptionKey;
-use super::KEY_SIZE;
-
-const ADDRESS_SIZE: usize = 32;
 
 /// An encrypted chunk reference: 32-byte address + 32-byte decryption key.
 ///
@@ -19,8 +18,8 @@ pub struct EncryptedChunkRef {
 }
 
 impl EncryptedChunkRef {
-    /// Serialized size (always 64 bytes).
-    pub const SIZE: usize = ADDRESS_SIZE + KEY_SIZE;
+    /// Serialized size: address + decryption key.
+    pub const SIZE: usize = size_of::<ChunkAddress>() + EncryptionKey::SIZE;
 
     /// Create a new encrypted chunk reference.
     pub fn new(address: ChunkAddress, key: EncryptionKey) -> Self {
@@ -44,8 +43,8 @@ impl EncryptedChunkRef {
 
     /// Write the reference into `buf`. Panics if `buf` is too small.
     pub fn write_to(&self, buf: &mut [u8]) {
-        buf[..ADDRESS_SIZE].copy_from_slice(self.address.as_bytes());
-        buf[ADDRESS_SIZE..Self::SIZE]
+        buf[..size_of::<ChunkAddress>()].copy_from_slice(self.address.as_bytes());
+        buf[size_of::<ChunkAddress>()..Self::SIZE]
             .copy_from_slice(self.key.as_bytes());
     }
 }
@@ -80,9 +79,9 @@ impl TryFrom<&[u8]> for EncryptedChunkRef {
         if slice.len() != Self::SIZE {
             return Err(EncryptionError::InvalidReferenceLength { len: slice.len() });
         }
-        let addr = ChunkAddress::from_slice(&slice[..ADDRESS_SIZE])
+        let addr = ChunkAddress::from_slice(&slice[..size_of::<ChunkAddress>()])
             .map_err(|_| EncryptionError::InvalidReferenceLength { len: slice.len() })?;
-        let key = EncryptionKey::try_from(&slice[ADDRESS_SIZE..])?;
+        let key = EncryptionKey::try_from(&slice[size_of::<ChunkAddress>()..])?;
         Ok(Self { address: addr, key })
     }
 }

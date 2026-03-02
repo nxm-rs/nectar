@@ -39,7 +39,7 @@ const fn compute_spans(branches: usize) -> [u64; LEVEL_LIMIT] {
 }
 
 /// Size of an encrypted chunk reference (address + decryption key).
-pub(crate) const ENCRYPTED_REF_SIZE: usize = 64;
+pub(crate) const ENCRYPTED_REF_SIZE: usize = crate::chunk::encryption::EncryptedChunkRef::SIZE;
 
 /// Compute span multipliers for an arbitrary branching factor.
 /// Used by `TreeParams` which derives its branching factor from const generics,
