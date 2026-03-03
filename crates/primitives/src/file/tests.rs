@@ -7,7 +7,7 @@ use std::io::Write;
 use alloy_primitives::hex;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::file::Splitter;
+use crate::file::SyncSplitter;
 use crate::store::MemoryStore;
 
 const CHUNK_SIZE: usize = DEFAULT_BODY_SIZE;
@@ -50,7 +50,7 @@ fn run_vector_test(size: usize, expected_hex: &str) {
     let data = sequential_bytes(size);
 
     let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-    let mut splitter = Splitter::new(store, data.len() as u64);
+    let mut splitter = SyncSplitter::new(store, data.len() as u64);
     splitter.write_all(&data).unwrap();
     let (root, _) = splitter.finish().unwrap();
 
@@ -84,7 +84,7 @@ fn test_go_vectors_large() {
 #[cfg(feature = "encryption")]
 mod encrypted {
     use crate::bmt::DEFAULT_BODY_SIZE;
-    use crate::file::{join, split_encrypted};
+    use crate::file::{sync_join, sync_split_encrypted};
 
     /// Test sizes covering various boundary conditions.
     const TEST_SIZES: &[usize] = &[
@@ -105,11 +105,11 @@ mod encrypted {
     fn run_encrypted_roundtrip(size: usize) {
         let data: Vec<u8> = (0..size).map(|i| (i % 255) as u8).collect();
 
-        let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        let (root_ref, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
 
         assert_eq!(Vec::from(&root_ref).len(), 64, "Root ref must be 64 bytes for size {size}");
 
-        let recovered = join(&store, root_ref).unwrap();
+        let recovered = sync_join(&store, root_ref).unwrap();
         assert_eq!(
             recovered, data,
             "Round-trip failed for size {size}"
@@ -128,7 +128,7 @@ mod encrypted {
     fn encrypted_chunk_count_single() {
         // Single chunk file: 1 encrypted chunk stored
         let data = b"small data";
-        let (_, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (_, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
         assert_eq!(store.len(), 1);
     }
 
@@ -136,7 +136,7 @@ mod encrypted {
     fn encrypted_chunk_count_two_data() {
         // 4097 bytes → 2 data chunks + 1 intermediate = 3
         let data = vec![0xAB; 4097];
-        let (_, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        let (_, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
         assert_eq!(store.len(), 3);
     }
 
@@ -145,67 +145,11 @@ mod encrypted {
         // Two encryptions of the same data produce different ciphertexts
         // (different random keys each time)
         let data = b"test determinism";
-        let (ref1, _) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
-        let (ref2, _) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (ref1, _) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (ref2, _) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
 
         // Root addresses differ because encryption keys are random
         assert_ne!(ref1.address(), ref2.address());
-    }
-}
-
-mod split_source_tests {
-    use crate::file::{SyncChunkGetExt, split_source, split_source_into};
-    use crate::store::MemoryStore;
-    use crate::bmt::DEFAULT_BODY_SIZE;
-
-    type Store = MemoryStore<DEFAULT_BODY_SIZE>;
-
-    #[test]
-    fn split_source_slice() {
-        let data = b"hello";
-        let (root, store) = split_source::<_, DEFAULT_BODY_SIZE>(data.as_slice()).unwrap();
-        let recovered = store.read_file(root).unwrap();
-        assert_eq!(recovered, data);
-    }
-
-    #[test]
-    fn split_source_vec() {
-        let data = vec![0xAB; 8192];
-        let (root, store) = split_source::<_, DEFAULT_BODY_SIZE>(data.as_slice()).unwrap();
-        let recovered = store.read_file(root).unwrap();
-        assert_eq!(recovered, data);
-    }
-
-    #[test]
-    fn split_source_bytes() {
-        let data = bytes::Bytes::from_static(b"bytes data");
-        let (root, store) = split_source::<_, DEFAULT_BODY_SIZE>(&data).unwrap();
-        let recovered = store.read_file(root).unwrap();
-        assert_eq!(recovered, data);
-    }
-
-    #[test]
-    fn split_source_into_store() {
-        let data = b"into store test";
-        let store = Store::new();
-        let (root, store) = split_source_into::<_, _, DEFAULT_BODY_SIZE>(data.as_slice(), store).unwrap();
-        let recovered = store.read_file(root).unwrap();
-        assert_eq!(recovered, data);
-    }
-
-    #[cfg(feature = "encryption")]
-    mod encrypted {
-        use crate::file::{SyncChunkGetExt, split_source_encrypted};
-        use crate::bmt::DEFAULT_BODY_SIZE;
-
-        #[test]
-        fn split_source_encrypted_roundtrip() {
-            let data = b"secret extension trait data";
-            let (enc_ref, store) =
-                split_source_encrypted::<_, DEFAULT_BODY_SIZE>(data.as_slice()).unwrap();
-            let recovered = store.read_file(enc_ref).unwrap();
-            assert_eq!(recovered, data);
-        }
     }
 }
 

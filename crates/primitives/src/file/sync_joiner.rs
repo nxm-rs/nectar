@@ -385,18 +385,6 @@ mod tests {
     }
 
     #[test]
-    fn test_joiner_seek_end() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
-        let (root, store) = split_and_store(&data);
-        let mut joiner = SyncJoiner::new(store, root).unwrap();
-
-        joiner.seek(SeekFrom::End(-100)).unwrap();
-        let mut buf = vec![0u8; 100];
-        joiner.read_exact(&mut buf).unwrap();
-        assert_eq!(&buf, &data[data.len() - 100..]);
-    }
-
-    #[test]
     fn test_joiner_seek_negative() {
         let data = b"test data";
         let (root, store) = split_and_store(data);
@@ -404,31 +392,6 @@ mod tests {
 
         let result = joiner.seek(SeekFrom::Current(-100));
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_joiner_seek_back_and_forth() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
-        let (root, store) = split_and_store(&data);
-        let mut joiner = SyncJoiner::new(store, root).unwrap();
-
-        // Read from middle
-        joiner.seek(SeekFrom::Start(DEFAULT_BODY_SIZE as u64)).unwrap();
-        let mut buf1 = vec![0u8; 100];
-        joiner.read_exact(&mut buf1).unwrap();
-        assert_eq!(&buf1, &data[DEFAULT_BODY_SIZE..DEFAULT_BODY_SIZE + 100]);
-
-        // Seek back to start
-        joiner.seek(SeekFrom::Start(0)).unwrap();
-        let mut buf2 = vec![0u8; 100];
-        joiner.read_exact(&mut buf2).unwrap();
-        assert_eq!(&buf2, &data[..100]);
-
-        // Seek to near-end
-        joiner.seek(SeekFrom::End(-50)).unwrap();
-        let mut buf3 = vec![0u8; 50];
-        joiner.read_exact(&mut buf3).unwrap();
-        assert_eq!(&buf3, &data[data.len() - 50..]);
     }
 
     #[test]

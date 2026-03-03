@@ -19,7 +19,7 @@ use rand::{RngCore, rng};
 use nectar_postage_issuer::{
     BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
-use nectar_primitives::file::{ParallelSplitter, Splitter};
+use nectar_primitives::file::{SyncParallelSplitter, SyncSplitter};
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
@@ -64,7 +64,7 @@ fn bench_pipeline_mock_sequential(c: &mut Criterion) {
             b.iter(|| {
                 // Split file into chunks
                 let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let mut splitter = Splitter::new(store, data.len() as u64);
+                let mut splitter = SyncSplitter::new(store, data.len() as u64);
                 splitter.write_all(data).unwrap();
                 let (root, store) = splitter.finish().unwrap();
 
@@ -99,7 +99,7 @@ fn bench_pipeline_mock_parallel_split(c: &mut Criterion) {
             b.iter(|| {
                 // Parallel split
                 let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let splitter = ParallelSplitter::new(store);
+                let splitter = SyncParallelSplitter::new(store);
                 let root = splitter.split(data).unwrap();
                 let store = splitter.into_store();
 
@@ -138,7 +138,7 @@ fn bench_pipeline_ecdsa_sequential(c: &mut Criterion) {
             b.iter(|| {
                 // Split file into chunks
                 let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let mut splitter = Splitter::new(store, data.len() as u64);
+                let mut splitter = SyncSplitter::new(store, data.len() as u64);
                 splitter.write_all(data).unwrap();
                 let (root, store) = splitter.finish().unwrap();
 
@@ -183,7 +183,7 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
             b.iter(|| {
                 // Parallel split
                 let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let splitter = ParallelSplitter::new(store);
+                let splitter = SyncParallelSplitter::new(store);
                 let root = splitter.split(data).unwrap();
                 let store = splitter.into_store();
 
@@ -224,7 +224,7 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     group.bench_function("sequential", |b| {
         b.iter(|| {
             let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(store, data.len() as u64);
+            let mut splitter = SyncSplitter::new(store, data.len() as u64);
             splitter.write_all(&data).unwrap();
             let (root, store) = splitter.finish().unwrap();
 
@@ -245,7 +245,7 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     group.bench_function("parallel_split", |b| {
         b.iter(|| {
             let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter = ParallelSplitter::new(store);
+            let splitter = SyncParallelSplitter::new(store);
             let root = splitter.split(&data).unwrap();
             let store = splitter.into_store();
 
@@ -266,7 +266,7 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     group.bench_function("fully_parallel", |b| {
         b.iter(|| {
             let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter = ParallelSplitter::new(store);
+            let splitter = SyncParallelSplitter::new(store);
             let root = splitter.split(&data).unwrap();
             let store = splitter.into_store();
 
@@ -298,7 +298,7 @@ fn bench_pipeline_stages(c: &mut Criterion) {
     group.bench_function("1_split_sequential", |b| {
         b.iter(|| {
             let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = Splitter::new(store, data.len() as u64);
+            let mut splitter = SyncSplitter::new(store, data.len() as u64);
             splitter.write_all(&data).unwrap();
             black_box(splitter.finish().unwrap())
         });
@@ -308,7 +308,7 @@ fn bench_pipeline_stages(c: &mut Criterion) {
     group.bench_function("1_split_parallel", |b| {
         b.iter(|| {
             let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter = ParallelSplitter::new(store);
+            let splitter = SyncParallelSplitter::new(store);
             let root = splitter.split(&data).unwrap();
             black_box((root, splitter.into_store()))
         });
@@ -316,7 +316,7 @@ fn bench_pipeline_stages(c: &mut Criterion) {
 
     // Pre-split for stamp benchmarks
     let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-    let mut splitter = Splitter::new(store, data.len() as u64);
+    let mut splitter = SyncSplitter::new(store, data.len() as u64);
     splitter.write_all(&data).unwrap();
     let (_, store) = splitter.finish().unwrap();
     let chunks = store.into_chunks();

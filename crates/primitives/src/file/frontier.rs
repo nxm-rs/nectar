@@ -143,62 +143,6 @@ impl<M: JoinMode, const BS: usize> BfsExpander<M, BS> {
     }
 }
 
-// Sync/async dispatch macros — the single source of truth for the BFS and DFS
-// algorithms. Only the chunk-read call differs between sync and async.
-
-/// Dispatch a chunk body read. Sync calls `read_chunk_body`, async calls
-/// `read_chunk_body_async` with `.await`.
-macro_rules! read_body {
-    (sync, $getter:expr, $addr:expr, $ctx:expr, $span:expr) => {
-        super::mode::read_chunk_body::<M, G, BS>($getter, $addr, $ctx, $span)
-    };
-    (async_mode, $getter:expr, $addr:expr, $ctx:expr, $span:expr) => {
-        super::mode::read_chunk_body_async::<M, G, BS>($getter, $addr, $ctx, $span).await
-    };
-}
-
-/// Shared BFS expansion loop body.
-macro_rules! expand_frontier_body {
-    ($mode:ident, $getter:expr, $root:expr, $context:expr, $span:expr,
-     $chunk_range:expr, $target_subtrees:expr) => {{
-        if $chunk_range.is_empty() {
-            return Ok(Vec::new());
-        }
-        let Some(mut bfs) =
-            BfsExpander::<M, BS>::new($root, $context, $span, $chunk_range, $target_subtrees)
-        else {
-            return Ok(vec![frontier_seed::<M>($root, $context, $span)]);
-        };
-        loop {
-            let indices = bfs.nodes_to_expand();
-            let mut bodies = Vec::with_capacity(indices.len());
-            for &i in &indices {
-                let n = &bfs.frontier[i];
-                bodies.push(read_body!($mode, $getter, &n.addr, &n.context, n.span)?);
-            }
-            if !bfs.advance(&indices, &bodies)? {
-                break;
-            }
-        }
-        Ok(bfs.into_frontier())
-    }};
-}
-
-/// Iterative DFS subtree body collection (async only — sync uses recursive descent).
-#[cfg(feature = "async")]
-macro_rules! read_subtree_bodies_body {
-    ($mode:ident, $getter:expr, $node:expr, $chunk_range:expr) => {{
-        let mut out = Vec::new();
-        let mut stack = vec![$node.clone()];
-        while let Some(current) = stack.pop() {
-            let body =
-                read_body!($mode, $getter, &current.addr, &current.context, current.span)?;
-            dispatch_body::<M, BS>(body, &current, $chunk_range, &mut out, &mut stack)?;
-        }
-        Ok(out)
-    }};
-}
-
 // Sync implementations
 
 /// BFS expansion with span-threshold balancing for parallel work distribution.
@@ -218,7 +162,28 @@ where
     G: SyncChunkGet<BS>,
     M: JoinMode,
 {
-    expand_frontier_body!(sync, getter, root, context, span, chunk_range, target_subtrees)
+    if chunk_range.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(mut bfs) =
+        BfsExpander::<M, BS>::new(root, context, span, chunk_range, target_subtrees)
+    else {
+        return Ok(vec![frontier_seed::<M>(root, context, span)]);
+    };
+    loop {
+        let indices = bfs.nodes_to_expand();
+        let mut bodies = Vec::with_capacity(indices.len());
+        for &i in &indices {
+            let n = &bfs.frontier[i];
+            bodies.push(
+                super::mode::read_chunk_body::<M, G, BS>(getter, &n.addr, &n.context, n.span)?
+            );
+        }
+        if !bfs.advance(&indices, &bodies)? {
+            break;
+        }
+    }
+    Ok(bfs.into_frontier())
 }
 
 /// Recursive descent within a subtree, collecting leaf bodies into `out`.
@@ -252,7 +217,6 @@ where
 ///
 /// See [`expand_frontier`] for the algorithm. The async variant fetches all
 /// expandable nodes within a BFS level concurrently using buffered streams.
-#[cfg(feature = "async")]
 pub(crate) async fn expand_frontier_async<G, M, const BS: usize>(
     getter: &G,
     root: &ChunkAddress,
@@ -305,7 +269,6 @@ where
 }
 
 /// Async iterative DFS descent within a subtree, collecting leaf bodies.
-#[cfg(feature = "async")]
 pub(crate) async fn read_subtree_bodies_async<G, M, const BS: usize>(
     getter: &G,
     node: &SubtreeNode<M>,
@@ -315,34 +278,19 @@ where
     G: crate::store::ChunkGet<BS>,
     M: JoinMode + Send + Sync,
 {
-    read_subtree_bodies_body!(async_mode, getter, node, chunk_range)
-}
-
-// Shared helpers
-
-/// Whether a subtree node is a leaf (its body is file data, not references).
-#[cfg(feature = "async")]
-#[inline]
-fn is_leaf<const BS: usize>(span: u64) -> bool {
-    span <= BS as u64
-}
-
-/// Dispatch a decoded body: leaf → push to output, intermediate → push children to stack.
-#[cfg(feature = "async")]
-fn dispatch_body<M: JoinMode, const BS: usize>(
-    body: Bytes,
-    node: &SubtreeNode<M>,
-    chunk_range: &ChunkRange,
-    out: &mut Vec<Bytes>,
-    stack: &mut Vec<SubtreeNode<M>>,
-) -> Result<()> {
-    if is_leaf::<BS>(node.span) {
-        out.push(body);
-    } else {
-        let children = overlapping_children::<M, BS>(&body, node, chunk_range)?;
-        // Reverse so left-most child is popped first (preserves left-to-right order).
-        stack.extend(children.into_iter().rev());
+    let mut out = Vec::new();
+    let mut stack = vec![node.clone()];
+    while let Some(current) = stack.pop() {
+        let body = super::mode::read_chunk_body_async::<M, G, BS>(
+            getter, &current.addr, &current.context, current.span,
+        ).await?;
+        if current.span <= BS as u64 {
+            out.push(body);
+        } else {
+            let children = overlapping_children::<M, BS>(&body, &current, chunk_range)?;
+            stack.extend(children.into_iter().rev());
+        }
     }
-    Ok(())
+    Ok(out)
 }
 

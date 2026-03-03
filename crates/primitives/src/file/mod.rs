@@ -50,6 +50,9 @@ mod helpers;
 #[cfg(test)]
 #[macro_use]
 mod joiner_tests;
+#[cfg(test)]
+#[macro_use]
+mod splitter_tests;
 mod joiner;
 pub mod mode;
 mod sync_joiner;
@@ -125,40 +128,16 @@ pub(crate) fn resolve_seek_position(
     current: u64,
     span: u64,
 ) -> std::io::Result<u64> {
+    use std::io::{Error, ErrorKind::InvalidInput, SeekFrom};
+    let to_i64 = |v: u64, msg: &str| i64::try_from(v).map_err(|_| Error::new(InvalidInput, msg));
     let new_pos = match pos {
-        std::io::SeekFrom::Start(offset) => i64::try_from(offset).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "seek offset exceeds i64::MAX",
-            )
-        })?,
-        std::io::SeekFrom::End(offset) => {
-            let span_i64 = i64::try_from(span).map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "file span exceeds i64::MAX",
-                )
-            })?;
-            span_i64 + offset
-        }
-        std::io::SeekFrom::Current(offset) => {
-            let current_i64 = i64::try_from(current).map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "current position exceeds i64::MAX",
-                )
-            })?;
-            current_i64 + offset
-        }
+        SeekFrom::Start(off) => to_i64(off, "seek offset exceeds i64::MAX")?,
+        SeekFrom::End(off) => to_i64(span, "file span exceeds i64::MAX")? + off,
+        SeekFrom::Current(off) => to_i64(current, "current position exceeds i64::MAX")? + off,
     };
-
     if new_pos < 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "seek to negative position",
-        ));
+        return Err(Error::new(InvalidInput, "seek to negative position"));
     }
-
     Ok(new_pos as u64)
 }
 

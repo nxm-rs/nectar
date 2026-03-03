@@ -104,6 +104,39 @@ macro_rules! generate_plain_joiner_tests {
             let result = joiner.read_range(joiner.position(), 10) $(.$aw)* .unwrap();
             assert!(result.is_empty());
         }
+
+        #[$test_attr]
+        $($async_fn)* fn test_joiner_seek_back_and_forth() {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
+            let (root, store) = split_and_store(&data);
+            let mut joiner = $Joiner::new(store, root) $(.$aw)* .unwrap();
+
+            // Read from middle
+            joiner.seek(std::io::SeekFrom::Start(DEFAULT_BODY_SIZE as u64)).unwrap();
+            let buf1 = joiner.read_range(joiner.position(), 100) $(.$aw)* .unwrap();
+            assert_eq!(&buf1, &data[DEFAULT_BODY_SIZE..DEFAULT_BODY_SIZE + 100]);
+
+            // Seek back to start
+            joiner.seek(std::io::SeekFrom::Start(0)).unwrap();
+            let buf2 = joiner.read_range(joiner.position(), 100) $(.$aw)* .unwrap();
+            assert_eq!(&buf2, &data[..100]);
+
+            // Seek to near-end
+            joiner.seek(std::io::SeekFrom::End(-50)).unwrap();
+            let buf3 = joiner.read_range(joiner.position(), 50) $(.$aw)* .unwrap();
+            assert_eq!(&buf3, &data[data.len() - 50..]);
+        }
+
+        #[$test_attr]
+        $($async_fn)* fn test_joiner_seek_end() {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
+            let (root, store) = split_and_store(&data);
+            let mut joiner = $Joiner::new(store, root) $(.$aw)* .unwrap();
+
+            joiner.seek(std::io::SeekFrom::End(-100)).unwrap();
+            let buf = joiner.read_range(joiner.position(), 100) $(.$aw)* .unwrap();
+            assert_eq!(&buf, &data[data.len() - 100..]);
+        }
     };
 }
 

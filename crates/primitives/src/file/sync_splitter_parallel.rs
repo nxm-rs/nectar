@@ -198,102 +198,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{sync_join, sync_split};
+    use crate::file::sync_join;
     use crate::store::MemoryStore;
 
-    #[test]
-    fn test_parallel_splitter_empty() {
+    fn split_and_store(data: &[u8]) -> (crate::chunk::ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>) {
         let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let splitter = SyncParallelSplitter::new(store);
-
-        let data: &[u8] = &[];
         let root = splitter.split(&data).unwrap();
         let store = splitter.into_store();
-
-        assert_eq!(store.len(), 1);
-        assert!(!root.is_zero());
-
-        // Compare with sequential
-        let (seq_root, _) = sync_split::<DEFAULT_BODY_SIZE>(&[]).unwrap();
-        assert_eq!(root, seq_root);
+        (root, store)
     }
 
-    #[test]
-    fn test_parallel_splitter_small() {
-        let data = b"hello world";
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-        let splitter = SyncParallelSplitter::new(store);
-
-        let root = splitter.split(&data.as_slice()).unwrap();
-        let store = splitter.into_store();
-
-        assert_eq!(store.len(), 1);
-
-        // Compare with sequential
-        let (seq_root, _) = sync_split::<DEFAULT_BODY_SIZE>(data).unwrap();
-        assert_eq!(root, seq_root);
-    }
-
-    #[test]
-    fn test_parallel_splitter_exact_chunk() {
-        let data = vec![0xAB; DEFAULT_BODY_SIZE];
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-        let splitter = SyncParallelSplitter::new(store);
-
-        let root = splitter.split(&data.as_slice()).unwrap();
-
-        let (seq_root, _) = sync_split::<DEFAULT_BODY_SIZE>(&data).unwrap();
-        assert_eq!(root, seq_root);
-    }
-
-    #[test]
-    fn test_parallel_splitter_two_chunks() {
-        let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-        let splitter = SyncParallelSplitter::new(store);
-
-        let root = splitter.split(&data.as_slice()).unwrap();
-        let store = splitter.into_store();
-
-        assert_eq!(store.len(), 3); // 2 data + 1 intermediate
-
-        let (seq_root, _) = sync_split::<DEFAULT_BODY_SIZE>(&data).unwrap();
-        assert_eq!(root, seq_root);
-    }
-
-    #[test]
-    fn test_parallel_splitter_128_chunks() {
-        let data = vec![0xEF; DEFAULT_BODY_SIZE * 128];
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-        let splitter = SyncParallelSplitter::new(store);
-
-        let root = splitter.split(&data.as_slice()).unwrap();
-        let store = splitter.into_store();
-
-        let (seq_root, _) = sync_split::<DEFAULT_BODY_SIZE>(&data).unwrap();
-        assert_eq!(root, seq_root);
-
-        // Verify round-trip
-        let recovered = sync_join(&store, root).unwrap();
-        assert_eq!(recovered, data);
-    }
-
-    #[test]
-    fn test_parallel_splitter_129_chunks() {
-        let data = vec![0x12; DEFAULT_BODY_SIZE * 129];
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-        let splitter = SyncParallelSplitter::new(store);
-
-        let root = splitter.split(&data.as_slice()).unwrap();
-        let store = splitter.into_store();
-
-        let (seq_root, _) = sync_split::<DEFAULT_BODY_SIZE>(&data).unwrap();
-        assert_eq!(root, seq_root);
-
-        // Verify round-trip
-        let recovered = sync_join(&store, root).unwrap();
-        assert_eq!(recovered, data);
-    }
+    generate_plain_splitter_tests!(split_and_store);
 
     #[test]
     fn test_parallel_splitter_varying_data() {
@@ -301,13 +217,9 @@ mod tests {
             .map(|i| (i % 256) as u8)
             .collect();
 
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-        let splitter = SyncParallelSplitter::new(store);
+        let (root, store) = split_and_store(&data);
 
-        let root = splitter.split(&data.as_slice()).unwrap();
-        let store = splitter.into_store();
-
-        let (seq_root, _) = sync_split::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        let (seq_root, _) = crate::file::sync_split::<DEFAULT_BODY_SIZE>(&data).unwrap();
         assert_eq!(root, seq_root);
 
         let recovered = sync_join(&store, root).unwrap();
@@ -320,48 +232,17 @@ mod tests {
         use crate::file::{sync_join, sync_split_encrypted, EncryptedSyncParallelSplitter};
         use crate::store::MemoryStore;
 
-        #[test]
-        fn test_encrypted_parallel_splitter_empty() {
+        fn encrypted_split_and_store(
+            data: &[u8],
+        ) -> (crate::chunk::encryption::EncryptedChunkRef, MemoryStore<DEFAULT_BODY_SIZE>) {
             let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
             let splitter = EncryptedSyncParallelSplitter::new(store);
-
-            let data: &[u8] = &[];
             let root_ref = splitter.split(&data).unwrap();
             let store = splitter.into_store();
-
-            assert_eq!(store.len(), 1);
-            assert_eq!(Vec::from(&root_ref).len(), 64);
+            (root_ref, store)
         }
 
-        #[test]
-        fn test_encrypted_parallel_splitter_small() {
-            let data = b"hello world";
-            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter = EncryptedSyncParallelSplitter::new(store);
-
-            let root_ref = splitter.split(&data.as_slice()).unwrap();
-            let store = splitter.into_store();
-
-            assert_eq!(store.len(), 1);
-
-            let recovered = sync_join(&store, root_ref).unwrap();
-            assert_eq!(recovered, data);
-        }
-
-        #[test]
-        fn test_encrypted_parallel_splitter_two_chunks() {
-            let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
-            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter = EncryptedSyncParallelSplitter::new(store);
-
-            let root_ref = splitter.split(&data.as_slice()).unwrap();
-            let store = splitter.into_store();
-
-            assert_eq!(store.len(), 3);
-
-            let recovered = sync_join(&store, root_ref).unwrap();
-            assert_eq!(recovered, data);
-        }
+        generate_encrypted_splitter_tests!(encrypted_split_and_store);
 
         #[test]
         fn test_encrypted_parallel_matches_sequential() {
@@ -369,12 +250,7 @@ mod tests {
                 .map(|i| (i % 256) as u8)
                 .collect();
 
-            // Parallel encrypted split
-            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter = EncryptedSyncParallelSplitter::new(store);
-            let par_ref = splitter.split(&data.as_slice()).unwrap();
-            let par_store = splitter.into_store();
-
+            let (par_ref, par_store) = encrypted_split_and_store(&data);
             let (seq_ref, seq_store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
 
             assert_eq!(par_store.len(), seq_store.len());
@@ -389,13 +265,8 @@ mod tests {
         #[test]
         fn test_encrypted_parallel_nondeterministic() {
             let data = b"test determinism";
-            let store1 = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter1 = EncryptedSyncParallelSplitter::new(store1);
-            let ref1 = splitter1.split(&data.as_slice()).unwrap();
-
-            let store2 = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter2 = EncryptedSyncParallelSplitter::new(store2);
-            let ref2 = splitter2.split(&data.as_slice()).unwrap();
+            let (ref1, _) = encrypted_split_and_store(data);
+            let (ref2, _) = encrypted_split_and_store(data);
 
             // Different random keys each time
             assert_ne!(ref1.address(), ref2.address());

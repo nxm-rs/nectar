@@ -34,8 +34,8 @@ zeroize = { workspace = true, features = ["derive"] }
 parking_lot = "0.12"
 
 # async support
+futures.workspace = true
 tokio = { workspace = true, features = ["io-util"], optional = true }
-futures = { workspace = true, optional = true }
 
 # arbitrary
 arbitrary = { workspace = true, features = ["derive"], optional = true }
@@ -77,7 +77,7 @@ arbitrary = [
 	"alloy-primitives/arbitrary",
 ]
 encryption = ["dep:rand"]
-async = ["dep:tokio", "dep:futures"]
+tokio = ["dep:tokio"]
 
 [[bench]]
 name = "primitives"

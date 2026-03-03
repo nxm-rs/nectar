@@ -26,7 +26,7 @@ use nectar_postage::{Stamp, STAMP_SIZE};
 use nectar_postage_issuer::{BatchStamper, MemoryIssuer, StampIssuer};
 use nectar_primitives::bmt::{Hasher, Prover, BRANCHES, DEFAULT_BODY_SIZE, SPAN_SIZE};
 use nectar_primitives::chunk::AnyChunk;
-use nectar_primitives::file::{self, ParallelSplitter};
+use nectar_primitives::file::{self, SyncParallelSplitter};
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::SwarmAddress;
 use rayon::prelude::*;
@@ -212,7 +212,7 @@ fn build_split_result(
 pub fn split_file_sequential(data: &Uint8Array) -> Result<JsValue, JsValue> {
     let bytes = data.to_vec();
     let (root, store) =
-        file::split::<DEFAULT_BODY_SIZE>(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        file::sync_split::<DEFAULT_BODY_SIZE>(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
     let chunks: Vec<_> = store.into_chunks().into_values().collect();
 
     build_split_result(root.as_slice(), &chunks)
@@ -226,7 +226,7 @@ pub fn split_file_parallel(data: &Uint8Array) -> Result<JsValue, JsValue> {
     let bytes = data.to_vec();
 
     let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-    let splitter = ParallelSplitter::new(store);
+    let splitter = SyncParallelSplitter::new(store);
 
     let root = splitter
         .split(&bytes)
@@ -385,7 +385,7 @@ pub fn split_and_stamp_sequential(data: &Uint8Array) -> Result<JsValue, JsValue>
     // Split file (timed)
     let split_start = now();
     let (root, store) =
-        file::split::<DEFAULT_BODY_SIZE>(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        file::sync_split::<DEFAULT_BODY_SIZE>(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
     let chunks: Vec<_> = store.into_chunks().into_values().collect();
     let split_time = now() - split_start;
 
@@ -438,7 +438,7 @@ pub fn split_and_stamp_parallel(data: &Uint8Array) -> Result<JsValue, JsValue> {
     // Use parallel splitter (timed)
     let split_start = now();
     let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-    let splitter = ParallelSplitter::new(store);
+    let splitter = SyncParallelSplitter::new(store);
 
     let root = splitter
         .split(&bytes)

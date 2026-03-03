@@ -3,7 +3,7 @@
 use nectar_mantaray::PlainManifest;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::file::{join, split_reader};
+use nectar_primitives::file::{SyncChunkPutExt, sync_join};
 use nectar_primitives::store::MemoryStore;
 
 type Store = MemoryStore<DEFAULT_BODY_SIZE>;
@@ -15,8 +15,8 @@ fn unified_store_workflow() {
     let store = Store::new();
 
     // Split files into the store
-    let (root_a, store) = split_reader(b"file A contents".as_slice(), 15, store).unwrap();
-    let (root_b, store) = split_reader(b"file B contents".as_slice(), 15, store).unwrap();
+    let root_a = store.write_file(b"file A contents").unwrap();
+    let root_b = store.write_file(b"file B contents").unwrap();
 
     let files_chunk_count = store.len();
     assert!(files_chunk_count > 0);
@@ -56,10 +56,10 @@ fn unified_store_workflow() {
     assert_eq!(entry_b.address(), Some(&root_b));
 
     // Verify file data round-trip through the same store
-    let recovered_a = join(&store, root_a).unwrap();
+    let recovered_a = sync_join(&store, root_a).unwrap();
     assert_eq!(recovered_a, b"file A contents");
 
-    let recovered_b = join(&store, root_b).unwrap();
+    let recovered_b = sync_join(&store, root_b).unwrap();
     assert_eq!(recovered_b, b"file B contents");
 }
 
@@ -135,22 +135,13 @@ fn iterator_yields_all_entries() {
 #[test]
 fn ergonomic_api_workflow() {
     use nectar_mantaray::DefaultMemoryStore;
-    use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-    use nectar_primitives::file::{SyncChunkGetExt, split_source_into};
+    use nectar_primitives::file::{SyncChunkGetExt, SyncChunkPutExt};
 
-    // Split files using free functions
-    let (root_a, store) =
-        split_source_into::<_, _, DEFAULT_BODY_SIZE>(
-            b"file A contents".as_slice(),
-            DefaultMemoryStore::new(),
-        )
-        .unwrap();
-    let (root_b, store) =
-        split_source_into::<_, _, DEFAULT_BODY_SIZE>(
-            b"file B contents".as_slice(),
-            store,
-        )
-        .unwrap();
+    let store = DefaultMemoryStore::new();
+
+    // Split files using extension trait
+    let root_a = store.write_file(b"file A contents").unwrap();
+    let root_b = store.write_file(b"file B contents").unwrap();
 
     // Create manifest in the same store
     let mut manifest = PlainManifest::new(store);
