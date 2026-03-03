@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::store::{ChunkGet, ChunkPut};
+use nectar_primitives::store::{SyncChunkGet, SyncChunkPut};
 
 use crate::entry::Entry;
 use crate::mode::NodeEntry;
@@ -83,7 +83,7 @@ impl<S, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     }
 }
 
-impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
+impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     /// Add a path with a typed reference (compile-time enforced by entry type).
     pub fn add(&mut self, path: &str, reference: impl Into<E>) -> Result<()> {
         let entry = reference.into();
@@ -269,21 +269,21 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     }
 }
 
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkAddress, BS> {
+impl<S: SyncChunkGet<BS> + SyncChunkPut<BS>, const BS: usize> Manifest<S, ChunkAddress, BS> {
     /// Persist the plain manifest trie to storage, returning the root chunk address.
     pub fn save(&mut self) -> Result<ChunkAddress> {
-        self.trie.save::<S, BS>(&mut self.store)?;
+        self.trie.save::<S, BS>(&self.store)?;
         Ok(*self.trie.reference().ok_or(MantarayError::MissingReference)?)
     }
 }
 
 #[cfg(feature = "encryption")]
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
+impl<S: SyncChunkGet<BS> + SyncChunkPut<BS>, const BS: usize>
     Manifest<S, nectar_primitives::EncryptedChunkRef, BS>
 {
     /// Persist the encrypted manifest trie, returning a [`ManifestRef`](crate::ManifestRef).
     pub fn save(&mut self) -> Result<crate::ManifestRef> {
-        self.trie.save::<S, BS>(&mut self.store)?;
+        self.trie.save::<S, BS>(&self.store)?;
         let addr = *self.trie.reference().ok_or(MantarayError::MissingReference)?;
         Ok(crate::ManifestRef::new(addr, self.trie.obfuscation_key))
     }
@@ -332,7 +332,7 @@ struct IterFrame<E: NodeEntry> {
     key_idx: usize,
 }
 
-impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, BS> {
+impl<'a, S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, BS> {
     pub(crate) const fn new(trie: &'a mut Node<E>, store: &'a S) -> Self {
         Self {
             trie,
@@ -344,7 +344,7 @@ impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, 
     }
 }
 
-impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIter<'_, S, E, BS> {
+impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIter<'_, S, E, BS> {
     type Item = Result<Entry>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -446,7 +446,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIter<'
     }
 }
 
-impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> IntoIterator
+impl<'a, S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> IntoIterator
     for &'a mut Manifest<S, E, BS>
 {
     type Item = Result<Entry>;

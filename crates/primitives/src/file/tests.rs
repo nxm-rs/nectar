@@ -154,7 +154,7 @@ mod encrypted {
 }
 
 mod split_source_tests {
-    use crate::file::{ChunkGetExt, split_source, split_source_into};
+    use crate::file::{SyncChunkGetExt, split_source, split_source_into};
     use crate::store::MemoryStore;
     use crate::bmt::DEFAULT_BODY_SIZE;
 
@@ -195,7 +195,7 @@ mod split_source_tests {
 
     #[cfg(feature = "encryption")]
     mod encrypted {
-        use crate::file::{ChunkGetExt, split_source_encrypted};
+        use crate::file::{SyncChunkGetExt, split_source_encrypted};
         use crate::bmt::DEFAULT_BODY_SIZE;
 
         #[test]
@@ -210,13 +210,13 @@ mod split_source_tests {
 }
 
 mod write_file_ext {
-    use crate::file::{ChunkGetExt, ChunkPutExt};
+    use crate::file::{SyncChunkGetExt, SyncChunkPutExt};
     use crate::store::MemoryStore;
     use crate::bmt::DEFAULT_BODY_SIZE;
 
     #[test]
     fn write_file_roundtrip() {
-        let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let addr = store.write_file(b"hello swarm").unwrap();
         let recovered = store.read_file(addr).unwrap();
         assert_eq!(recovered, b"hello swarm");
@@ -225,7 +225,7 @@ mod write_file_ext {
     #[test]
     fn write_file_large() {
         let data = vec![0xAB; 8192];
-        let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let addr = store.write_file(&data).unwrap();
         let recovered = store.read_file(addr).unwrap();
         assert_eq!(recovered, data);
@@ -234,7 +234,7 @@ mod write_file_ext {
     #[test]
     fn writer_roundtrip() {
         use std::io::Write;
-        let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let data = b"streaming via writer";
         let mut writer = store.writer(data.len() as u64);
         writer.write_all(data).unwrap();
@@ -245,13 +245,13 @@ mod write_file_ext {
 
     #[cfg(feature = "encryption")]
     mod encrypted {
-        use crate::file::{ChunkGetExt, ChunkPutExt};
+        use crate::file::{SyncChunkGetExt, SyncChunkPutExt};
         use crate::store::MemoryStore;
         use crate::bmt::DEFAULT_BODY_SIZE;
 
         #[test]
         fn write_encrypted_file_roundtrip() {
-            let mut store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
             let enc_ref = store.write_encrypted_file(b"secret data").unwrap();
             let recovered = store.read_file(enc_ref).unwrap();
             assert_eq!(recovered, b"secret data");

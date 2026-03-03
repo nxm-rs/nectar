@@ -2,8 +2,6 @@
 
 use std::marker::PhantomData;
 
-use parking_lot::Mutex;
-
 use rayon::prelude::*;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
@@ -14,7 +12,7 @@ use super::error::{FileError, Result};
 use super::mode::{PlainMode, SplitMode};
 use super::read_at::ReadAt;
 use super::tree::TreeParams;
-use crate::store::ChunkPut;
+use crate::store::SyncChunkPut;
 
 #[cfg(feature = "encryption")]
 use super::mode::EncryptedMode;
@@ -25,9 +23,9 @@ use super::mode::EncryptedMode;
 /// then building intermediate levels.
 pub struct GenericParallelSplitter<S, M: SplitMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    S: ChunkPut<BODY_SIZE> + Send,
+    S: SyncChunkPut<BODY_SIZE> + Send + Sync,
 {
-    store: Mutex<S>,
+    store: S,
     _mode: PhantomData<M>,
 }
 
@@ -42,7 +40,7 @@ pub type EncryptedParallelSplitter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE
 
 impl<S, M, const BODY_SIZE: usize> std::fmt::Debug for GenericParallelSplitter<S, M, BODY_SIZE>
 where
-    S: ChunkPut<BODY_SIZE> + Send,
+    S: SyncChunkPut<BODY_SIZE> + Send + Sync,
     M: SplitMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -53,13 +51,13 @@ where
 
 impl<S, M, const BODY_SIZE: usize> GenericParallelSplitter<S, M, BODY_SIZE>
 where
-    S: ChunkPut<BODY_SIZE> + Send,
+    S: SyncChunkPut<BODY_SIZE> + Send + Sync,
     M: SplitMode + Send + Sync,
 {
     /// Create a parallel splitter with the given chunk store.
     pub const fn new(store: S) -> Self {
         Self {
-            store: Mutex::new(store),
+            store,
             _mode: PhantomData,
         }
     }
@@ -85,12 +83,11 @@ where
 
     /// Consume the splitter and return the store.
     pub fn into_store(self) -> S {
-        self.store.into_inner()
+        self.store
     }
 
     fn handle_empty(&self) -> Result<M::RootRef> {
-        let mut store = self.store.lock();
-        M::process_empty::<BODY_SIZE, S>(&mut *store)
+        M::process_empty::<BODY_SIZE, S>(&self.store)
     }
 
     fn create_data_chunks<R: ReadAt + Sync>(
@@ -194,7 +191,7 @@ where
     }
 
     fn put_chunk(&self, chunk: ContentChunk<BODY_SIZE>) -> Result<()> {
-        self.store.lock().put(chunk.into()).map_err(FileError::store)
+        self.store.put(chunk.into()).map_err(FileError::store)
     }
 }
 

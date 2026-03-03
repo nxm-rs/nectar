@@ -136,7 +136,7 @@ fn iterator_yields_all_entries() {
 fn ergonomic_api_workflow() {
     use nectar_mantaray::DefaultMemoryStore;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-    use nectar_primitives::file::{ChunkGetExt, split_source_into};
+    use nectar_primitives::file::{SyncChunkGetExt, split_source_into};
 
     // Split files using free functions
     let (root_a, store) =

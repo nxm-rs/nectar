@@ -89,15 +89,16 @@ pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
 /// Default in-memory chunk store.
 pub type DefaultMemoryStore = MemoryStore<DEFAULT_BODY_SIZE>;
 
-// Chunk storage (typed)
-pub use store::{ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore};
-#[cfg(feature = "async")]
-pub use store::{AsyncChunkGet, AsyncChunkHas, AsyncChunkPut, AsyncChunkPutAdapter};
+// Chunk storage traits
+pub use store::{
+    ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, SyncChunkGet, SyncChunkHas,
+    SyncChunkPut,
+};
 
 // File operations (algorithms only)
 pub use file::{
-    ChunkGetExt, ChunkPutExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef, Joiner,
-    ParallelSplitter, ReadAt, Splitter, TreeParams, join, split, split_reader,
+    SyncChunkGetExt, SyncChunkPutExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef,
+    Joiner, ParallelSplitter, ReadAt, Splitter, TreeParams, join, split, split_reader,
     split_source, split_source_into,
 };
 #[cfg(feature = "encryption")]
@@ -106,7 +107,7 @@ pub use file::{
     split_source_encrypted, split_source_encrypted_into,
 };
 #[cfg(feature = "async")]
-pub use file::{AsyncChunkGetExt, AsyncJoiner, AsyncJoinerReader, GenericAsyncJoiner, AsyncReadAt, join_async};
+pub use file::{ChunkGetExt, AsyncJoiner, AsyncJoinerReader, GenericAsyncJoiner, AsyncReadAt, join_async};
 #[cfg(all(feature = "async", feature = "encryption"))]
 pub use file::EncryptedAsyncJoiner;
 

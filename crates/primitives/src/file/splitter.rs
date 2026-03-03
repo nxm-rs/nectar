@@ -9,7 +9,7 @@ use crate::bmt::{DEFAULT_BODY_SIZE, SPAN_SIZE};
 use super::constants::{LEVEL_LIMIT, compute_spans_inline};
 use super::error::{FileError, Result};
 use super::mode::{PlainMode, SplitMode};
-use crate::store::ChunkPut;
+use crate::store::SyncChunkPut;
 
 #[cfg(feature = "encryption")]
 use super::mode::EncryptedMode;
@@ -24,7 +24,7 @@ use super::mode::EncryptedMode;
 /// finalize the tree and get the root reference.
 pub struct GenericSplitter<S, M: SplitMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    S: ChunkPut<BODY_SIZE>,
+    S: SyncChunkPut<BODY_SIZE>,
 {
     store: S,
     span_length: u64,
@@ -47,7 +47,7 @@ pub type EncryptedSplitter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
 
 impl<S, M, const BODY_SIZE: usize> fmt::Debug for GenericSplitter<S, M, BODY_SIZE>
 where
-    S: ChunkPut<BODY_SIZE>,
+    S: SyncChunkPut<BODY_SIZE>,
     M: SplitMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -62,7 +62,7 @@ where
 
 impl<S, M, const BODY_SIZE: usize> GenericSplitter<S, M, BODY_SIZE>
 where
-    S: ChunkPut<BODY_SIZE>,
+    S: SyncChunkPut<BODY_SIZE>,
     M: SplitMode,
 {
     /// Create a splitter for data of known size.
@@ -128,7 +128,7 @@ where
 
         let chunk_bytes = super::helpers::build_intermediate_payload(span, chunk_data);
 
-        M::process_chunk::<BODY_SIZE, S>(chunk_bytes, &mut self.store)
+        M::process_chunk::<BODY_SIZE, S>(chunk_bytes, &self.store)
     }
 
     fn hash_unfinished(&mut self) -> Result<()> {
@@ -184,7 +184,7 @@ where
         }
 
         if self.length == 0 {
-            let root = M::process_empty::<BODY_SIZE, S>(&mut self.store)?;
+            let root = M::process_empty::<BODY_SIZE, S>(&self.store)?;
             return Ok((root, self.store));
         }
 
@@ -212,7 +212,7 @@ where
 
 impl<S, M, const BODY_SIZE: usize> Write for GenericSplitter<S, M, BODY_SIZE>
 where
-    S: ChunkPut<BODY_SIZE>,
+    S: SyncChunkPut<BODY_SIZE>,
     M: SplitMode,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {

@@ -17,7 +17,7 @@ use super::error::{FileError, Result};
 use super::frontier::{SubtreeNode, expand_frontier_async, read_subtree_bodies_async};
 use super::mode::{JoinMode, PlainMode};
 use super::tree::{ChunkRange, TreeParams};
-use crate::store::AsyncChunkGet;
+use crate::store::ChunkGet;
 
 #[cfg(feature = "encryption")]
 use super::mode::EncryptedMode;
@@ -25,7 +25,7 @@ use super::mode::EncryptedMode;
 /// Generic async joiner parameterized by chunk mode.
 pub struct GenericAsyncJoiner<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: AsyncChunkGet<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
 {
     getter: Arc<G>,
     root: ChunkAddress,
@@ -50,7 +50,7 @@ pub type EncryptedAsyncJoiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
 
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for GenericAsyncJoiner<G, M, BODY_SIZE>
 where
-    G: AsyncChunkGet<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -71,7 +71,7 @@ async fn collect_subtree_bodies_async<G, M, const BODY_SIZE: usize>(
     concurrency: usize,
 ) -> Result<Vec<Bytes>>
 where
-    G: AsyncChunkGet<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
     M: JoinMode + Send + Sync,
 {
     let bodies: Vec<Bytes> = stream::iter(subtrees)
@@ -94,7 +94,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> GenericAsyncJoiner<G, M, BODY_SIZE>
 where
-    G: AsyncChunkGet<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
     M: JoinMode + Send + Sync,
 {
     /// Create an async joiner from a root reference.
@@ -296,7 +296,7 @@ where
 /// Created via [`GenericAsyncJoiner::into_reader`].
 pub struct AsyncJoinerReader<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: AsyncChunkGet<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
 {
     joiner: GenericAsyncJoiner<G, M, BODY_SIZE>,
     buffer: Bytes,
@@ -306,7 +306,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for AsyncJoinerReader<G, M, BODY_SIZE>
 where
-    G: AsyncChunkGet<BODY_SIZE>,
+    G: ChunkGet<BODY_SIZE>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -320,14 +320,14 @@ where
 
 // Safety: AsyncJoinerReader contains no self-referential data.
 // The boxed future is heap-allocated and all other fields are plain data.
-impl<G: AsyncChunkGet<BODY_SIZE>, M: JoinMode, const BODY_SIZE: usize> Unpin
+impl<G: ChunkGet<BODY_SIZE>, M: JoinMode, const BODY_SIZE: usize> Unpin
     for AsyncJoinerReader<G, M, BODY_SIZE>
 {
 }
 
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncRead for AsyncJoinerReader<G, M, BODY_SIZE>
 where
-    G: AsyncChunkGet<BODY_SIZE> + 'static,
+    G: ChunkGet<BODY_SIZE> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     fn poll_read(
@@ -400,7 +400,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncSeek for AsyncJoinerReader<G, M, BODY_SIZE>
 where
-    G: AsyncChunkGet<BODY_SIZE> + 'static,
+    G: ChunkGet<BODY_SIZE> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     fn start_seek(self: std::pin::Pin<&mut Self>, pos: SeekFrom) -> std::io::Result<()> {

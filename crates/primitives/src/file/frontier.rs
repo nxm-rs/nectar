@@ -7,7 +7,7 @@ use crate::chunk::ChunkAddress;
 use super::error::Result;
 use super::mode::JoinMode;
 use super::tree::ChunkRange;
-use crate::store::ChunkGet;
+use crate::store::SyncChunkGet;
 
 /// A subtree root in the BFS frontier.
 pub(crate) struct SubtreeNode<M: JoinMode> {
@@ -215,7 +215,7 @@ pub(crate) fn expand_frontier<G, M, const BS: usize>(
     target_subtrees: usize,
 ) -> Result<Vec<SubtreeNode<M>>>
 where
-    G: ChunkGet<BS>,
+    G: SyncChunkGet<BS>,
     M: JoinMode,
 {
     expand_frontier_body!(sync, getter, root, context, span, chunk_range, target_subtrees)
@@ -229,7 +229,7 @@ pub(crate) fn read_subtree_bodies<G, M, const BS: usize>(
     out: &mut Vec<Bytes>,
 ) -> Result<()>
 where
-    G: ChunkGet<BS>,
+    G: SyncChunkGet<BS>,
     M: JoinMode,
 {
     let body = super::mode::read_chunk_body::<M, G, BS>(getter, &node.addr, &node.context, node.span)?;
@@ -262,7 +262,7 @@ pub(crate) async fn expand_frontier_async<G, M, const BS: usize>(
     target_subtrees: usize,
 ) -> Result<Vec<SubtreeNode<M>>>
 where
-    G: crate::store::AsyncChunkGet<BS>,
+    G: crate::store::ChunkGet<BS>,
     M: JoinMode + Send + Sync,
 {
     use futures::stream::{self, StreamExt};
@@ -312,7 +312,7 @@ pub(crate) async fn read_subtree_bodies_async<G, M, const BS: usize>(
     chunk_range: &ChunkRange,
 ) -> Result<Vec<Bytes>>
 where
-    G: crate::store::AsyncChunkGet<BS>,
+    G: crate::store::ChunkGet<BS>,
     M: JoinMode + Send + Sync,
 {
     read_subtree_bodies_body!(async_mode, getter, node, chunk_range)

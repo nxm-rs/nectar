@@ -7,7 +7,7 @@ use bytes::Bytes;
 use crate::bmt::SPAN_SIZE;
 use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey, decrypt_chunk_data};
 use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
-use crate::store::{ChunkGet, ChunkPut};
+use crate::store::{SyncChunkGet, SyncChunkPut};
 
 use super::constants::{
     ENCRYPTED_REF_SIZE, REF_SIZE, compute_spans_inline, subspan_for_spans,
@@ -29,9 +29,9 @@ fn create_chunk<const BS: usize>(data: Bytes) -> Result<ContentChunk<BS>> {
 }
 
 /// Store a chunk and return its address (derived from the chunk).
-fn store_chunk<const BS: usize, S: ChunkPut<BS>>(
+fn store_chunk<const BS: usize, S: SyncChunkPut<BS>>(
     chunk: ContentChunk<BS>,
-    store: &mut S,
+    store: &S,
 ) -> Result<ChunkAddress> {
     let address = *chunk.address();
     store.put(chunk.into()).map_err(FileError::store)?;
@@ -104,7 +104,7 @@ pub trait JoinMode: Sized + 'static {
 }
 
 /// Initialize joiner: fetch root chunk, extract span and context.
-pub(crate) fn joiner_init<M: JoinMode, G: ChunkGet<BS>, const BS: usize>(
+pub(crate) fn joiner_init<M: JoinMode, G: SyncChunkGet<BS>, const BS: usize>(
     getter: &G,
     input: M::RootRef,
 ) -> Result<(ChunkAddress, u64, M::JoinerContext)> {
@@ -118,7 +118,7 @@ pub(crate) fn joiner_init<M: JoinMode, G: ChunkGet<BS>, const BS: usize>(
 
 /// Read chunk body at address with context. Returns body bytes (after decryption if needed).
 #[inline]
-pub(crate) fn read_chunk_body<M: JoinMode, G: ChunkGet<BS>, const BS: usize>(
+pub(crate) fn read_chunk_body<M: JoinMode, G: SyncChunkGet<BS>, const BS: usize>(
     getter: &G,
     address: &ChunkAddress,
     context: &M::JoinerContext,
@@ -135,7 +135,7 @@ pub(crate) fn read_chunk_body<M: JoinMode, G: ChunkGet<BS>, const BS: usize>(
 #[cfg(feature = "async")]
 pub(crate) async fn read_chunk_body_async<
     M: JoinMode + Send + Sync,
-    G: crate::store::AsyncChunkGet<BS>,
+    G: crate::store::ChunkGet<BS>,
     const BS: usize,
 >(
     getter: &G,
@@ -166,9 +166,9 @@ pub trait SplitMode: JoinMode {
     /// Process chunk data (span + body), store it, return reference bytes.
     /// Takes ownership of the payload to avoid an extra allocation.
     #[inline]
-    fn process_chunk<const BS: usize, S: ChunkPut<BS>>(
+    fn process_chunk<const BS: usize, S: SyncChunkPut<BS>>(
         data: Vec<u8>,
-        store: &mut S,
+        store: &S,
     ) -> Result<Self::RefBytes> {
         let (chunk, ref_bytes) = Self::prepare_chunk::<BS>(data)?;
         store.put(chunk.into()).map_err(FileError::store)?;
@@ -176,7 +176,7 @@ pub trait SplitMode: JoinMode {
     }
 
     /// Process empty file, store chunk, return root ref.
-    fn process_empty<const BS: usize, S: ChunkPut<BS>>(store: &mut S) -> Result<Self::RootRef>;
+    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(store: &S) -> Result<Self::RootRef>;
 
     /// Extract root reference from top of buffer.
     fn extract_root(buffer: &[u8]) -> Result<Self::RootRef>;
@@ -238,8 +238,8 @@ impl SplitMode for PlainMode {
         Ok((chunk, ref_bytes))
     }
 
-    fn process_empty<const BS: usize, S: ChunkPut<BS>>(
-        store: &mut S,
+    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(
+        store: &S,
     ) -> Result<ChunkAddress> {
         // Use `new` (not `try_from`) because Bytes::new() is raw content,
         // not pre-formatted span+body data.
@@ -342,8 +342,8 @@ impl SplitMode for EncryptedMode {
         Ok((chunk, ref_bytes))
     }
 
-    fn process_empty<const BS: usize, S: ChunkPut<BS>>(
-        store: &mut S,
+    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(
+        store: &S,
     ) -> Result<EncryptedChunkRef> {
         use crate::chunk::encryption::encrypt_chunk;
 

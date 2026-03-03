@@ -1,21 +1,17 @@
 //! Chunk storage traits and implementations.
 //!
-//! Sync and async traits are separate by design:
-//! - `ChunkPut(&mut self)` vs `AsyncChunkPut(&self)` — async contexts need shared
-//!   ownership, so the async trait uses interior mutability instead of `&mut self`.
-//! - Blanket impls bridge `ChunkGet + Send + Sync` to `AsyncChunkGet` and
-//!   `ChunkHas + Send + Sync` to `AsyncChunkHas`, so sync stores work in async
-//!   code without manual wrapping. `AsyncChunkPutAdapter` bridges the put path.
+//! Async traits (`ChunkGet`, `ChunkPut`, `ChunkHas`) are the primary API.
+//! Sync traits (`SyncChunkGet`, `SyncChunkPut`, `SyncChunkHas`) are helpers
+//! for CPU-bound paths (splitter, mantaray). Blanket impls bridge sync → async
+//! automatically for types that are `Send + Sync`.
 
 mod memory;
 mod typed;
-#[cfg(feature = "async")]
-mod typed_async;
 
 pub use memory::MemoryStore;
-pub use typed::{ChunkGet, ChunkHas, ChunkPut};
-#[cfg(feature = "async")]
-pub use typed_async::{AsyncChunkGet, AsyncChunkHas, AsyncChunkPut, AsyncChunkPutAdapter};
+pub use typed::{
+    ChunkGet, ChunkHas, ChunkPut, SyncChunkGet, SyncChunkHas, SyncChunkPut,
+};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{AnyChunk, ChunkAddress};
@@ -50,7 +46,7 @@ impl ChunkStoreError {
 #[derive(Debug)]
 pub struct NullLoader<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>;
 
-impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for NullLoader<BODY_SIZE> {
+impl<const BODY_SIZE: usize> SyncChunkGet<BODY_SIZE> for NullLoader<BODY_SIZE> {
     type Error = ChunkStoreError;
 
     fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {

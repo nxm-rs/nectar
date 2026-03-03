@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
-use nectar_primitives::store::{ChunkGet, ChunkPut};
+use nectar_primitives::store::{SyncChunkGet, SyncChunkPut};
 use crate::error::{MantarayError, Result};
 use crate::mode::NodeEntry;
 use crate::obfuscation::ObfuscationKey;
@@ -279,7 +279,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Load forks from storage if the node hasn't been loaded yet.
-    fn ensure_loaded<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
+    fn ensure_loaded<S: SyncChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
         if !self.loaded {
             self.load(store)?;
         }
@@ -287,7 +287,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Load this node from storage by its reference.
-    pub(crate) fn load<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
+    pub(crate) fn load<S: SyncChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
         let address = match self.reference {
             Some(addr) => addr,
             None => {
@@ -310,7 +310,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Look up the node at the given path, loading from storage as needed.
-    pub(crate) fn lookup_node<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn lookup_node<S: SyncChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -339,7 +339,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Look up the entry at the given path, loading from storage as needed.
-    pub(crate) fn lookup<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn lookup<S: SyncChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -354,7 +354,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Add an entry at the given path with optional metadata, loading from storage as needed.
-    pub(crate) fn add<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn add<S: SyncChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         entry: Option<E>,
@@ -467,7 +467,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Remove the entry at the given path, loading from storage as needed.
-    pub(crate) fn remove<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn remove<S: SyncChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -511,7 +511,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Test whether a prefix exists in the trie, loading from storage as needed.
-    pub(crate) fn has_prefix<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn has_prefix<S: SyncChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -543,7 +543,7 @@ impl<E: NodeEntry> Node<E> {
     /// Recursively save this node and all children to storage.
     ///
     /// Uses BMT content-addressing via `ContentChunk`.
-    pub(crate) fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, store: &mut S) -> Result<()> {
+    pub(crate) fn save<S: SyncChunkPut<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
         if self.reference.is_some() {
             return Ok(());
         }
@@ -566,7 +566,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
-    pub(crate) fn walk<S: ChunkGet<BS>, const BS: usize, F>(
+    pub(crate) fn walk<S: SyncChunkGet<BS>, const BS: usize, F>(
         &mut self,
         store: &S,
         f: &mut F,
@@ -579,7 +579,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Walk the subtree at `root`, calling `f` for each node.
-    pub(crate) fn walk_from<S: ChunkGet<BS>, const BS: usize, F>(
+    pub(crate) fn walk_from<S: SyncChunkGet<BS>, const BS: usize, F>(
         &mut self,
         root: &[u8],
         store: &S,
@@ -598,7 +598,7 @@ impl<E: NodeEntry> Node<E> {
     }
 }
 
-fn walk_inner<E: NodeEntry, S: ChunkGet<BS>, const BS: usize, F>(
+fn walk_inner<E: NodeEntry, S: SyncChunkGet<BS>, const BS: usize, F>(
     path_buf: &mut Vec<u8>,
     node: &mut Node<E>,
     store: &S,
@@ -924,8 +924,8 @@ mod tests {
             node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
         }
 
-        let mut store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
-        n.save(&mut store).unwrap();
+        let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
+        n.save(&store).unwrap();
 
         let mut n2: Node = Node::from_reference(n.reference.unwrap());
 
@@ -1026,7 +1026,7 @@ mod tests {
     // Tests save->reload->remove->save->reload->verify-removed cycle.
 
     fn run_persist_remove(tc: RemoveTestCase) {
-        let mut store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
+        let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
 
         // add entries and persist
         let mut n = Node::default();
@@ -1035,7 +1035,7 @@ mod tests {
             n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)
                 .unwrap();
         }
-        n.save(&mut store).unwrap();
+        n.save(&store).unwrap();
         let ref_ = n.reference.unwrap();
 
         // reload and remove
@@ -1043,7 +1043,7 @@ mod tests {
         for path in &tc.remove {
             nn.remove(path.as_bytes(), &store).unwrap();
         }
-        nn.save(&mut store).unwrap();
+        nn.save(&store).unwrap();
         let ref2 = nn.reference.unwrap();
 
         // reload and verify removed paths are gone
@@ -1220,8 +1220,8 @@ mod tests {
             node_add(&mut n, path, entry, BTreeMap::new());
         }
 
-        let mut store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
-        n.save(&mut store).unwrap();
+        let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
+        n.save(&store).unwrap();
 
         let mut n2: Node = Node::from_reference(n.reference.unwrap());
 

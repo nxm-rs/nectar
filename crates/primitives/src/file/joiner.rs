@@ -17,7 +17,7 @@ use super::error::Result;
 use super::frontier::{SubtreeNode, expand_frontier, read_subtree_bodies};
 use super::mode::{JoinMode, PlainMode};
 use super::tree::{ChunkRange, TreeParams};
-use crate::store::ChunkGet;
+use crate::store::SyncChunkGet;
 
 #[cfg(feature = "encryption")]
 use super::mode::EncryptedMode;
@@ -29,7 +29,7 @@ use super::mode::EncryptedMode;
 /// for bounded-memory streaming.
 pub struct GenericJoiner<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+    G: SyncChunkGet<BODY_SIZE> + Clone + Send + Sync,
 {
     getter: G,
     root: ChunkAddress,
@@ -60,7 +60,7 @@ pub type EncryptedJoiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
 
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for GenericJoiner<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+    G: SyncChunkGet<BODY_SIZE> + Clone + Send + Sync,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -74,7 +74,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+    G: SyncChunkGet<BODY_SIZE> + Clone + Send + Sync,
     M: JoinMode + Send + Sync,
 {
     /// Create a joiner from a root reference.
@@ -253,7 +253,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> io::Read for GenericJoiner<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+    G: SyncChunkGet<BODY_SIZE> + Clone + Send + Sync,
     M: JoinMode + Send + Sync,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -281,7 +281,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> io::Seek for GenericJoiner<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + Clone + Send + Sync,
+    G: SyncChunkGet<BODY_SIZE> + Clone + Send + Sync,
     M: JoinMode + Send + Sync,
 {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
