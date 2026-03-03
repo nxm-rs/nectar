@@ -119,7 +119,7 @@ impl WasmSplitResult {
 pub fn split_file(data: &Uint8Array) -> Result<WasmSplitResult, JsValue> {
     let bytes = data.to_vec();
     let (root, store) =
-        crate::file::split::<DEFAULT_BODY_SIZE>(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        crate::file::sync_split::<DEFAULT_BODY_SIZE>(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     Ok(WasmSplitResult {
         root: root.into(),

@@ -1,6 +1,7 @@
 //! File splitting and joining for arbitrary-size data.
 //!
-//! Standard traits: `Joiner` implements `Read + Seek`, `Splitter` implements `Write`.
+//! Async is the primary API. `SyncJoiner` implements `Read + Seek`, `SyncSplitter`
+//! implements `Write`.
 //!
 //! # Store-centric API (extension traits)
 //!
@@ -15,27 +16,15 @@
 //! assert_eq!(data, b"hello swarm");
 //! ```
 //!
-//! # Data-centric API (free functions)
+//! # Free function API
 //!
 //! ```
-//! use nectar_primitives::file::{split_source, SyncChunkGetExt};
+//! use nectar_primitives::file::{sync_split, sync_join};
 //! use nectar_primitives::DEFAULT_BODY_SIZE;
 //!
 //! let data = b"Hello, Swarm!";
-//! let (root, store) = split_source::<_, DEFAULT_BODY_SIZE>(data.as_slice()).unwrap();
-//! let recovered = store.read_file(root).unwrap();
-//! assert_eq!(recovered, data);
-//! ```
-//!
-//! # Free function API (custom `BODY_SIZE`)
-//!
-//! ```
-//! use nectar_primitives::file::{split, join};
-//! use nectar_primitives::DEFAULT_BODY_SIZE;
-//!
-//! let data = b"Hello, Swarm!";
-//! let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
-//! let recovered = join(&store, root).unwrap();
+//! let (root, store) = sync_split::<DEFAULT_BODY_SIZE>(data).unwrap();
+//! let recovered = sync_join(&store, root).unwrap();
 //! assert_eq!(recovered, data);
 //! ```
 //!
@@ -43,12 +32,12 @@
 //!
 //! ```
 //! # #[cfg(feature = "encryption")] {
-//! use nectar_primitives::file::{split_encrypted, join};
+//! use nectar_primitives::file::{sync_split_encrypted, sync_join};
 //! use nectar_primitives::DEFAULT_BODY_SIZE;
 //!
 //! let data = b"secret data";
-//! let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
-//! let recovered = join(&store, root_ref).unwrap();
+//! let (root_ref, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+//! let recovered = sync_join(&store, root_ref).unwrap();
 //! assert_eq!(recovered, data);
 //! # }
 //! ```
@@ -62,41 +51,38 @@ mod helpers;
 #[macro_use]
 mod joiner_tests;
 mod joiner;
-#[cfg(feature = "async")]
-mod joiner_async;
 pub mod mode;
-mod read_at;
-mod splitter;
-mod splitter_parallel;
-#[cfg(feature = "async")]
-pub mod traits_async;
+mod sync_joiner;
+mod sync_read_at;
+mod sync_splitter;
+mod sync_splitter_parallel;
 mod tree;
-
-use std::io::Write;
 
 use crate::chunk::ChunkAddress;
 #[cfg(feature = "encryption")]
 use crate::chunk::encryption::EncryptedChunkRef;
 use crate::store::{SyncChunkGet, SyncChunkPut};
 
-pub use entry_ref::EntryRef;
-pub use error::FileError;
+// Async (primary) re-exports
 pub use joiner::{GenericJoiner, Joiner};
 #[cfg(feature = "encryption")]
 pub use joiner::EncryptedJoiner;
-#[cfg(feature = "async")]
-pub use joiner_async::{AsyncJoiner, AsyncJoinerReader, GenericAsyncJoiner};
-#[cfg(all(feature = "async", feature = "encryption"))]
-pub use joiner_async::EncryptedAsyncJoiner;
-pub use read_at::ReadAt;
-pub use splitter::Splitter;
+#[cfg(feature = "tokio")]
+pub use joiner::JoinerReader;
+// Sync (secondary) re-exports
+pub use sync_joiner::{GenericSyncJoiner, SyncJoiner};
 #[cfg(feature = "encryption")]
-pub use splitter::EncryptedSplitter;
-pub use splitter_parallel::ParallelSplitter;
+pub use sync_joiner::EncryptedSyncJoiner;
+pub use sync_read_at::SyncReadAt;
+pub use sync_splitter::SyncSplitter;
 #[cfg(feature = "encryption")]
-pub use splitter_parallel::EncryptedParallelSplitter;
-#[cfg(feature = "async")]
-pub use traits_async::AsyncReadAt;
+pub use sync_splitter::EncryptedSyncSplitter;
+pub use sync_splitter_parallel::SyncParallelSplitter;
+#[cfg(feature = "encryption")]
+pub use sync_splitter_parallel::EncryptedSyncParallelSplitter;
+
+pub use entry_ref::EntryRef;
+pub use error::FileError;
 pub use tree::{ChunkRange, TreeParams};
 
 mod join_ref_sealed {
@@ -176,60 +162,10 @@ pub(crate) fn resolve_seek_position(
     Ok(new_pos as u64)
 }
 
-/// Split data into chunks, returning root address and chunk store.
-pub fn split<const BODY_SIZE: usize>(
-    data: &[u8],
-) -> error::Result<(ChunkAddress, crate::store::MemoryStore<BODY_SIZE>)> {
-    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
-    let mut splitter = Splitter::new(store, data.len() as u64);
-    splitter
-        .write_all(data)
-        .map_err(|e| FileError::Store(Box::new(e)))?;
-    let (root, store) = splitter.finish()?;
-    Ok((root, store))
-}
-
-/// Split data from a reader into chunks.
-pub fn split_reader<R, S, const BODY_SIZE: usize>(
-    mut reader: R,
-    size: u64,
-    store: S,
-) -> error::Result<(ChunkAddress, S)>
-where
-    R: std::io::Read,
-    S: SyncChunkPut<BODY_SIZE>,
-{
-    let mut splitter = Splitter::new(store, size);
-    std::io::copy(&mut reader, &mut splitter).map_err(|e| FileError::Store(Box::new(e)))?;
-    splitter.finish()
-}
-
-/// Split data into encrypted chunks, returning root reference and chunk store.
-#[cfg(feature = "encryption")]
-pub fn split_encrypted<const BODY_SIZE: usize>(
-    data: &[u8],
-) -> error::Result<(EncryptedChunkRef, crate::store::MemoryStore<BODY_SIZE>)> {
-    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
-    let mut splitter = EncryptedSplitter::new(store, data.len() as u64);
-    splitter
-        .write_all(data)
-        .map_err(|e| FileError::Store(Box::new(e)))?;
-    let (root_ref, store) = splitter.finish()?;
-    Ok((root_ref, store))
-}
-
-/// Join chunks into a byte vector. Dispatches plain/encrypted via [`JoinRef`].
-pub fn join<R, G, const BODY_SIZE: usize>(getter: G, root: R) -> error::Result<Vec<u8>>
-where
-    R: JoinRef,
-    G: SyncChunkGet<BODY_SIZE> + Clone + Send + Sync,
-{
-    GenericJoiner::<G, R::Mode, BODY_SIZE>::new(getter, root.into_root_ref())?.read_all()
-}
+// ---- Primary async API ----
 
 /// Join chunks asynchronously. Dispatches plain/encrypted via [`JoinRef`].
-#[cfg(feature = "async")]
-pub async fn join_async<R, G, const BODY_SIZE: usize>(
+pub async fn join<R, G, const BODY_SIZE: usize>(
     getter: G,
     root: R,
 ) -> error::Result<Vec<u8>>
@@ -237,16 +173,84 @@ where
     R: JoinRef,
     G: crate::store::ChunkGet<BODY_SIZE>,
 {
-    GenericAsyncJoiner::<G, R::Mode, BODY_SIZE>::new(getter, root.into_root_ref())
+    GenericJoiner::<G, R::Mode, BODY_SIZE>::new(getter, root.into_root_ref())
         .await?
         .read_all()
         .await
+}
+
+// ---- Secondary sync API ----
+
+/// Split data into chunks synchronously, returning root address and chunk store.
+///
+/// Uses `SyncParallelSplitter` for best performance on in-memory data.
+pub fn sync_split<const BODY_SIZE: usize>(
+    data: &[u8],
+) -> error::Result<(ChunkAddress, crate::store::MemoryStore<BODY_SIZE>)> {
+    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
+    let splitter = SyncParallelSplitter::new(store);
+    let root = splitter.split(&data)?;
+    Ok((root, splitter.into_store()))
+}
+
+/// Split data into encrypted chunks synchronously.
+#[cfg(feature = "encryption")]
+pub fn sync_split_encrypted<const BODY_SIZE: usize>(
+    data: &[u8],
+) -> error::Result<(EncryptedChunkRef, crate::store::MemoryStore<BODY_SIZE>)> {
+    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
+    let splitter = EncryptedSyncParallelSplitter::new(store);
+    let root_ref = splitter.split(&data)?;
+    Ok((root_ref, splitter.into_store()))
+}
+
+/// Join chunks synchronously. Dispatches plain/encrypted via [`JoinRef`].
+pub fn sync_join<R, G, const BODY_SIZE: usize>(getter: G, root: R) -> error::Result<Vec<u8>>
+where
+    R: JoinRef,
+    G: SyncChunkGet<BODY_SIZE> + Clone + Send + Sync,
+{
+    GenericSyncJoiner::<G, R::Mode, BODY_SIZE>::new(getter, root.into_root_ref())?.read_all()
 }
 
 /// Calculate tree depth for a given file size (plain mode).
 #[cfg(test)]
 pub(crate) fn levels(length: u64, chunk_size: usize) -> usize {
     constants::tree_depth(length, chunk_size, constants::REF_SIZE)
+}
+
+// ---- Extension traits ----
+
+/// Extension methods for async chunk getters.
+///
+/// Uses [`JoinRef`] for unified plain/encrypted dispatch.
+pub trait ChunkGetExt<const BODY_SIZE: usize>: crate::store::ChunkGet<BODY_SIZE> {
+    /// Open a file for async reading.
+    fn joiner<R: JoinRef>(
+        self,
+        root: R,
+    ) -> impl std::future::Future<Output = error::Result<GenericJoiner<Self, R::Mode, BODY_SIZE>>> + Send
+    where
+        Self: Sized + Clone + Send + Sync + 'static,
+    {
+        GenericJoiner::new(self, root.into_root_ref())
+    }
+
+    /// Read entire file into memory asynchronously.
+    fn read_file<R: JoinRef>(
+        self,
+        root: R,
+    ) -> impl std::future::Future<Output = error::Result<Vec<u8>>> + Send
+    where
+        Self: Sized + Clone + Send + Sync + 'static,
+    {
+        join(self, root)
+    }
+}
+
+impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where
+    T: crate::store::ChunkGet<BODY_SIZE>
+{
 }
 
 /// Extension methods for sync chunk getters.
@@ -269,11 +273,11 @@ pub trait SyncChunkGetExt<const BODY_SIZE: usize>: SyncChunkGet<BODY_SIZE> {
     fn joiner<R: JoinRef>(
         self,
         root: R,
-    ) -> error::Result<GenericJoiner<Self, R::Mode, BODY_SIZE>>
+    ) -> error::Result<GenericSyncJoiner<Self, R::Mode, BODY_SIZE>>
     where
         Self: Clone + Send + Sync + Sized,
     {
-        GenericJoiner::new(self, root.into_root_ref())
+        GenericSyncJoiner::new(self, root.into_root_ref())
     }
 
     /// Read entire file into memory (like `fs::read`).
@@ -281,45 +285,11 @@ pub trait SyncChunkGetExt<const BODY_SIZE: usize>: SyncChunkGet<BODY_SIZE> {
     where
         Self: Clone + Send + Sync + Sized,
     {
-        join(self, root)
+        sync_join(self, root)
     }
 }
 
 impl<T, const BODY_SIZE: usize> SyncChunkGetExt<BODY_SIZE> for T where T: SyncChunkGet<BODY_SIZE> {}
-
-/// Extension methods for async chunk getters.
-///
-/// Uses [`JoinRef`] for unified plain/encrypted dispatch.
-#[cfg(feature = "async")]
-pub trait ChunkGetExt<const BODY_SIZE: usize>: crate::store::ChunkGet<BODY_SIZE> {
-    /// Open a file for async reading.
-    fn async_joiner<R: JoinRef>(
-        self,
-        root: R,
-    ) -> impl std::future::Future<Output = error::Result<GenericAsyncJoiner<Self, R::Mode, BODY_SIZE>>> + Send
-    where
-        Self: Sized + Clone + Send + Sync + 'static,
-    {
-        GenericAsyncJoiner::new(self, root.into_root_ref())
-    }
-
-    /// Read entire file into memory asynchronously.
-    fn read_file_async<R: JoinRef>(
-        self,
-        root: R,
-    ) -> impl std::future::Future<Output = error::Result<Vec<u8>>> + Send
-    where
-        Self: Sized + Clone + Send + Sync + 'static,
-    {
-        join_async(self, root)
-    }
-}
-
-#[cfg(feature = "async")]
-impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where
-    T: crate::store::ChunkGet<BODY_SIZE>
-{
-}
 
 /// Extension methods for sync chunk putters.
 ///
@@ -341,22 +311,22 @@ impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where
 /// let (root, _) = writer.finish().unwrap();
 /// ```
 pub trait SyncChunkPutExt<const BODY_SIZE: usize>: SyncChunkPut<BODY_SIZE> {
-    /// Create a writer for streaming data. Returns a `Splitter` implementing `Write`.
+    /// Create a writer for streaming data. Returns a `SyncSplitter` implementing `Write`.
     /// Call `.finish()` on the returned writer to get the root address.
-    fn writer(&self, size: u64) -> Splitter<&Self, BODY_SIZE>
+    fn writer(&self, size: u64) -> SyncSplitter<&Self, BODY_SIZE>
     where
         Self: Sized,
     {
-        Splitter::new(self, size)
+        SyncSplitter::new(self, size)
     }
 
-    /// Create an encrypted writer. Returns an `EncryptedSplitter` implementing `Write`.
+    /// Create an encrypted writer. Returns an `EncryptedSyncSplitter` implementing `Write`.
     #[cfg(feature = "encryption")]
-    fn encrypted_writer(&self, size: u64) -> EncryptedSplitter<&Self, BODY_SIZE>
+    fn encrypted_writer(&self, size: u64) -> EncryptedSyncSplitter<&Self, BODY_SIZE>
     where
         Self: Sized,
     {
-        EncryptedSplitter::new(self, size)
+        EncryptedSyncSplitter::new(self, size)
     }
 
     /// Write file data into the store (like `fs::write`).
@@ -364,7 +334,7 @@ pub trait SyncChunkPutExt<const BODY_SIZE: usize>: SyncChunkPut<BODY_SIZE> {
     where
         Self: Send + Sync + Sized,
     {
-        ParallelSplitter::<&Self, BODY_SIZE>::new(self).split(&data)
+        SyncParallelSplitter::<&Self, BODY_SIZE>::new(self).split(&data)
     }
 
     /// Write encrypted file data into the store.
@@ -373,64 +343,11 @@ pub trait SyncChunkPutExt<const BODY_SIZE: usize>: SyncChunkPut<BODY_SIZE> {
     where
         Self: Send + Sync + Sized,
     {
-        EncryptedParallelSplitter::<&Self, BODY_SIZE>::new(self).split(&data)
+        EncryptedSyncParallelSplitter::<&Self, BODY_SIZE>::new(self).split(&data)
     }
 }
 
 impl<T, const BODY_SIZE: usize> SyncChunkPutExt<BODY_SIZE> for T where T: SyncChunkPut<BODY_SIZE> {}
-
-/// Split a `ReadAt` source into chunks stored in a [`MemoryStore`](crate::store::MemoryStore).
-///
-/// ```
-/// use nectar_primitives::file::{split_source, SyncChunkGetExt};
-/// use nectar_primitives::store::MemoryStore;
-/// use nectar_primitives::DEFAULT_BODY_SIZE;
-///
-/// let data = b"Hello, Swarm!";
-/// let (root, store) = split_source::<_, DEFAULT_BODY_SIZE>(data.as_slice()).unwrap();
-/// let recovered = store.read_file(root).unwrap();
-/// assert_eq!(recovered, data);
-/// ```
-pub fn split_source<R: ReadAt + Sync, const BODY_SIZE: usize>(
-    source: R,
-) -> error::Result<(ChunkAddress, crate::store::MemoryStore<BODY_SIZE>)> {
-    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
-    let splitter = ParallelSplitter::new(store);
-    let root = splitter.split(&source)?;
-    Ok((root, splitter.into_store()))
-}
-
-/// Split a `ReadAt` source into chunks stored in the provided store.
-pub fn split_source_into<R: ReadAt + Sync, S: SyncChunkPut<BODY_SIZE> + Send + Sync, const BODY_SIZE: usize>(
-    source: R,
-    store: S,
-) -> error::Result<(ChunkAddress, S)> {
-    let splitter = ParallelSplitter::new(store);
-    let root = splitter.split(&source)?;
-    Ok((root, splitter.into_store()))
-}
-
-/// Split a `ReadAt` source into encrypted chunks stored in a [`MemoryStore`](crate::store::MemoryStore).
-#[cfg(feature = "encryption")]
-pub fn split_source_encrypted<R: ReadAt + Sync, const BODY_SIZE: usize>(
-    source: R,
-) -> error::Result<(EncryptedChunkRef, crate::store::MemoryStore<BODY_SIZE>)> {
-    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
-    let splitter = EncryptedParallelSplitter::new(store);
-    let root_ref = splitter.split(&source)?;
-    Ok((root_ref, splitter.into_store()))
-}
-
-/// Split a `ReadAt` source into encrypted chunks stored in the provided store.
-#[cfg(feature = "encryption")]
-pub fn split_source_encrypted_into<R: ReadAt + Sync, S: SyncChunkPut<BODY_SIZE> + Send + Sync, const BODY_SIZE: usize>(
-    source: R,
-    store: S,
-) -> error::Result<(EncryptedChunkRef, S)> {
-    let splitter = EncryptedParallelSplitter::new(store);
-    let root_ref = splitter.split(&source)?;
-    Ok((root_ref, splitter.into_store()))
-}
 
 #[cfg(test)]
 mod tests;

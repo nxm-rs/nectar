@@ -116,6 +116,23 @@ pub(crate) fn joiner_init<M: JoinMode, G: SyncChunkGet<BS>, const BS: usize>(
     M::init_from_chunk::<BS>(input, chunk)
 }
 
+/// Async variant of [`joiner_init`]: fetch root chunk, extract span and context.
+pub(crate) async fn joiner_init_async<
+    M: JoinMode + Send + Sync,
+    G: crate::store::ChunkGet<BS>,
+    const BS: usize,
+>(
+    getter: &G,
+    input: M::RootRef,
+) -> Result<(ChunkAddress, u64, M::JoinerContext)> {
+    let addr = M::root_address(&input);
+    let any = getter.get(&addr).await.map_err(FileError::getter)?;
+    let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
+        type_name: "non-content",
+    })?;
+    M::init_from_chunk::<BS>(input, chunk)
+}
+
 /// Read chunk body at address with context. Returns body bytes (after decryption if needed).
 #[inline]
 pub(crate) fn read_chunk_body<M: JoinMode, G: SyncChunkGet<BS>, const BS: usize>(
@@ -132,7 +149,6 @@ pub(crate) fn read_chunk_body<M: JoinMode, G: SyncChunkGet<BS>, const BS: usize>
 }
 
 /// Async variant of [`read_chunk_body`].
-#[cfg(feature = "async")]
 pub(crate) async fn read_chunk_body_async<
     M: JoinMode + Send + Sync,
     G: crate::store::ChunkGet<BS>,

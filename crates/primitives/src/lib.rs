@@ -95,26 +95,33 @@ pub use store::{
     SyncChunkPut,
 };
 
-// File operations (algorithms only)
+// File operations — async (primary)
 pub use file::{
-    SyncChunkGetExt, SyncChunkPutExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef,
-    Joiner, ParallelSplitter, ReadAt, Splitter, TreeParams, join, split, split_reader,
-    split_source, split_source_into,
+    ChunkGetExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef,
+    Joiner, TreeParams, join,
 };
 #[cfg(feature = "encryption")]
-pub use file::{
-    EncryptedJoiner, EncryptedParallelSplitter, EncryptedSplitter, split_encrypted,
-    split_source_encrypted, split_source_encrypted_into,
-};
-#[cfg(feature = "async")]
-pub use file::{ChunkGetExt, AsyncJoiner, AsyncJoinerReader, GenericAsyncJoiner, AsyncReadAt, join_async};
-#[cfg(all(feature = "async", feature = "encryption"))]
-pub use file::EncryptedAsyncJoiner;
+pub use file::EncryptedJoiner;
+#[cfg(feature = "tokio")]
+pub use file::JoinerReader;
 
-/// Default file splitter.
-pub type DefaultSplitter<S> = file::Splitter<S, DEFAULT_BODY_SIZE>;
-/// Default file joiner.
-pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
-/// Default encrypted file joiner.
+// File operations — sync (secondary)
+pub use file::{
+    GenericSyncJoiner, SyncChunkGetExt, SyncChunkPutExt, SyncJoiner, SyncParallelSplitter,
+    SyncReadAt, SyncSplitter, sync_join, sync_split,
+};
 #[cfg(feature = "encryption")]
-pub type DefaultEncryptedJoiner<G> = file::EncryptedJoiner<G, DEFAULT_BODY_SIZE>;
+pub use file::{
+    EncryptedSyncJoiner, EncryptedSyncParallelSplitter, EncryptedSyncSplitter,
+    sync_split_encrypted,
+};
+
+/// Default sync file splitter.
+pub type DefaultSyncSplitter<S> = file::SyncSplitter<S, DEFAULT_BODY_SIZE>;
+/// Default async file joiner.
+pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
+/// Default sync file joiner.
+pub type DefaultSyncJoiner<G> = file::SyncJoiner<G, DEFAULT_BODY_SIZE>;
+/// Default encrypted sync file joiner.
+#[cfg(feature = "encryption")]
+pub type DefaultEncryptedSyncJoiner<G> = file::EncryptedSyncJoiner<G, DEFAULT_BODY_SIZE>;
