@@ -21,6 +21,7 @@ mod bmt_body;
 mod chunk_type;
 mod chunk_type_set;
 mod content;
+pub mod encryption;
 pub(crate) mod error;
 mod single_owner;
 mod traits;
@@ -40,4 +41,8 @@ pub use type_id::ChunkTypeId;
 
 // Re-export the concrete chunk types
 pub use content::ContentChunk;
+#[cfg(feature = "encryption")]
+pub use content::EncryptedContentChunk;
+#[cfg(feature = "encryption")]
+pub use encryption::ChunkEncrypt;
 pub use single_owner::SingleOwnerChunk;

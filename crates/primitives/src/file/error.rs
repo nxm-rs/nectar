@@ -24,9 +24,9 @@ pub enum FileError {
         actual: usize,
     },
 
-    /// Chunk sink failed to store a chunk.
-    #[error("sink error: {0}")]
-    Sink(Box<dyn std::error::Error + Send + Sync>),
+    /// Chunk store failed to store a chunk.
+    #[error("store error: {0}")]
+    Store(Box<dyn std::error::Error + Send + Sync>),
 
     /// Chunk getter failed to retrieve a chunk.
     #[error("getter error: {0}")]
@@ -55,12 +55,30 @@ pub enum FileError {
     /// Underlying chunk error.
     #[error("chunk error: {0}")]
     Chunk(#[from] crate::chunk::error::ChunkError),
+
+    /// Encryption error.
+    #[error("encryption error: {0}")]
+    Encryption(#[from] crate::chunk::encryption::EncryptionError),
+
+    /// Invalid entry reference length (expected 32 or 64 bytes).
+    #[error("invalid entry reference length: {len} (expected 32 or 64)")]
+    InvalidEntryRef {
+        /// Actual byte length of the reference.
+        len: usize,
+    },
+
+    /// Expected a content chunk but got a different chunk type.
+    #[error("expected content chunk, got {type_name}")]
+    InvalidChunkType {
+        /// Name of the chunk type that was received.
+        type_name: &'static str,
+    },
 }
 
 impl FileError {
-    /// Create a sink error from any error type.
-    pub fn sink<E: std::error::Error + Send + Sync + 'static>(err: E) -> Self {
-        Self::Sink(Box::new(err))
+    /// Create a store error from any error type.
+    pub fn store<E: std::error::Error + Send + Sync + 'static>(err: E) -> Self {
+        Self::Store(Box::new(err))
     }
 
     /// Create a getter error from any error type.

@@ -18,20 +18,16 @@
 //!
 //! - **Extended PO** (`EXTENDED_PO = 36`): Used for Kademlia bin balancing.
 //!   When balancing bins, the algorithm needs finer granularity:
-//!   `po + BitSuffixLength + 1` where `BitSuffixLength = 4` (default in Bee).
+//!   `po + BitSuffixLength + 1` where `BitSuffixLength = 4`.
 //!   For bin 31, this yields 31 + 4 + 1 = 36, hence `ExtendedPO = MaxPO + 5`.
 //!
-//! ### Compatibility with Bee
+//! ### Compatibility
 //!
-//! This implementation matches Bee's `pkg/swarm/proximity.go` exactly:
+//! This implementation matches the Swarm reference implementation exactly:
 //!
-//! - `MaxPO = 31` and `ExtendedPO = 36` are identical to Bee
-//! - Both count leading matching BITS (not bytes)
-//! - Both cap at their respective maximum values
-//!
-//! The Go Bee implementation iterates bit-by-bit using `(oxo>>(7-j))&0x01`,
-//! returning `i*8 + j` (byte index * 8 + bit index). Our implementation
-//! uses `leading_zeros()` which is equivalent but more efficient.
+//! - `MaxPO = 31` and `ExtendedPO = 36`
+//! - Counts leading matching BITS (not bytes)
+//! - Caps at the respective maximum values
 //!
 //! ### Distance vs Proximity
 //!
@@ -81,14 +77,14 @@ use crate::error::Result;
 
 /// Maximum proximity order for standard routing operations.
 ///
-/// Value 31 gives 32 Kademlia bins (0-31). Matches Bee's `MaxPO`.
+/// Value 31 gives 32 Kademlia bins (0-31).
 pub const MAX_PO: u8 = 31;
 
 /// Extended proximity order for Kademlia bin balancing.
 ///
 /// Value 36 = MaxPO (31) + BitSuffixLength (4) + 1. Used when the Kademlia
 /// bin balancing algorithm needs to check proximity at finer granularity
-/// than standard routing. Matches Bee's `ExtendedPO`.
+/// than standard routing.
 pub const EXTENDED_PO: u8 = MAX_PO + 5;
 
 /// A 256-bit address for a chunk in the Swarm network

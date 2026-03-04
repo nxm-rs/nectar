@@ -39,12 +39,18 @@ mod cache;
 pub mod chunk;
 pub mod error;
 pub mod file;
+pub mod store;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
 // Re-export core constants
 pub use bmt::DEFAULT_BODY_SIZE;
+
+// Re-export core encryption types
+pub use chunk::encryption::{EncryptedChunkRef, EncryptionKey};
+#[cfg(feature = "encryption")]
+pub use chunk::{ChunkEncrypt, EncryptedContentChunk};
 
 // Re-export core types
 pub use address::{MAX_PO, SwarmAddress};
@@ -80,17 +86,40 @@ pub type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
 pub type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 /// Default polymorphic chunk.
 pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
+/// Default in-memory chunk store.
+pub type DefaultMemoryStore = MemoryStore<DEFAULT_BODY_SIZE>;
 
-// File operations
-pub use file::{
-    ChunkGet, ChunkGetExt, ChunkHas, ChunkPut, ChunkPutExt, ChunkRange, FileError, Joiner,
-    MemorySink, ParallelJoiner, ParallelSplitter, ReadAt, SplitBuilder, Splitter, TreeParams,
-    VecSink, join, split, split_reader,
+// Chunk storage traits
+pub use store::{
+    ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, SyncChunkGet, SyncChunkHas,
+    SyncChunkPut,
 };
-#[cfg(feature = "async")]
-pub use file::{AsyncChunkGet, AsyncChunkPut, AsyncJoiner, AsyncReadAt};
 
-/// Default file splitter.
-pub type DefaultSplitter<S> = file::Splitter<S, DEFAULT_BODY_SIZE>;
-/// Default file joiner.
+// File operations — async (primary)
+#[cfg(feature = "encryption")]
+pub use file::EncryptedJoiner;
+#[cfg(feature = "tokio")]
+pub use file::JoinerReader;
+pub use file::{
+    ChunkGetExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef, Joiner, TreeParams, join,
+};
+
+// File operations — sync (secondary)
+#[cfg(feature = "encryption")]
+pub use file::{
+    EncryptedSyncJoiner, EncryptedSyncParallelSplitter, EncryptedSyncSplitter, sync_split_encrypted,
+};
+pub use file::{
+    GenericSyncJoiner, SyncChunkGetExt, SyncChunkPutExt, SyncJoiner, SyncParallelSplitter,
+    SyncReadAt, SyncSplitter, sync_join, sync_split,
+};
+
+/// Default sync file splitter.
+pub type DefaultSyncSplitter<S> = file::SyncSplitter<S, DEFAULT_BODY_SIZE>;
+/// Default async file joiner.
 pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
+/// Default sync file joiner.
+pub type DefaultSyncJoiner<G> = file::SyncJoiner<G, DEFAULT_BODY_SIZE>;
+/// Default encrypted sync file joiner.
+#[cfg(feature = "encryption")]
+pub type DefaultEncryptedSyncJoiner<G> = file::EncryptedSyncJoiner<G, DEFAULT_BODY_SIZE>;

@@ -36,6 +36,7 @@ check.all_targets = true
 [workspace.dependencies]
 # nectar crates
 nectar-contracts = { path = "crates/contracts" }
+nectar-mantaray = { path = "crates/mantaray" }
 nectar-primitives = { path = "crates/primitives" }
 nectar-swarms = { path = "crates/swarms" }
 nectar-postage = { path = "crates/postage" }
@@ -74,6 +75,7 @@ once_cell = { version = "1.21", default-features = false, features = [
     "critical-section",
 ] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
 # For tests and examples
 arbitrary = "1.4"
@@ -93,3 +95,9 @@ console_error_panic_hook = "0.1"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 # getrandom 0.2 needed for transitive deps (rand_core 0.6 via k256/elliptic-curve)
 getrandom_02 = { package = "getrandom", version = "0.2", default-features = false, features = ["js"] }
+bitflags = { version = "2", default-features = false }
+subtle = "2"
+zeroize = "1"
+
+[profile.release]
+lto = "thin"

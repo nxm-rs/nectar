@@ -26,12 +26,16 @@ thiserror.workspace = true
 once_cell.workspace = true
 serde = { workspace = true, optional = true }
 
+# key material protection
+subtle.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
+
 # synchronization
 parking_lot = "0.12"
 
 # async support
+futures.workspace = true
 tokio = { workspace = true, features = ["io-util"], optional = true }
-futures = { workspace = true, optional = true }
 
 # arbitrary
 arbitrary = { workspace = true, features = ["derive"], optional = true }
@@ -72,7 +76,8 @@ arbitrary = [
 	"dep:arbitrary",
 	"alloy-primitives/arbitrary",
 ]
-async = ["dep:tokio", "dep:futures"]
+encryption = ["dep:rand"]
+tokio = ["dep:tokio"]
 
 [[bench]]
 name = "primitives"
@@ -93,3 +98,8 @@ harness = false
 [[bench]]
 name = "file_bench"
 harness = false
+
+[[bench]]
+name = "encryption_bench"
+harness = false
+required-features = ["encryption"]

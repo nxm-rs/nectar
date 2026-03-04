@@ -2,12 +2,12 @@
 //!
 //! # EIP-191 Compatibility
 //!
-//! To be compatible with Go/bee implementations, stamps must be signed using
-//! EIP-191 personal message signing. The prehash (keccak256 of stamp data) is
-//! treated as the message, which gets prefixed with `"\x19Ethereum Signed Message:\n32"`.
+//! Stamps are signed using EIP-191 personal message signing. The prehash
+//! (keccak256 of stamp data) is treated as the message, which gets prefixed
+//! with `"\x19Ethereum Signed Message:\n32"`.
 //!
 //! Use alloy's [`SignerSync`] trait with `sign_message_sync(prehash.as_slice())`
-//! rather than `sign_hash_sync` to ensure compatibility.
+//! rather than `sign_hash_sync`.
 
 use alloy_primitives::Signature;
 use alloy_signer::SignerSync;
@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(
             sig_bytes.as_slice(),
             expected_sig.as_slice(),
-            "Signature mismatch with Go/bee test vector"
+            "Signature mismatch with test vector"
         );
     }
 
@@ -366,7 +366,7 @@ mod tests {
         );
     }
 
-    /// Test verifying a stamp created by Go/bee in Rust.
+    /// Test verifying a stamp from a reference implementation test vector.
     #[test]
     fn test_verify_go_created_stamp() {
         use alloy_primitives::{Address, hex};
