@@ -55,12 +55,12 @@
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
 
+pub mod codec;
 mod constants;
 pub mod entry;
 pub mod error;
 pub mod manifest;
 pub mod manifest_ref;
-pub mod codec;
 pub mod mode;
 pub mod node;
 pub mod obfuscation;
@@ -79,8 +79,8 @@ pub use node::{Fork, Node, NodeType, Prefix};
 pub use obfuscation::ObfuscationKey;
 
 // Re-export typed storage traits from primitives.
-pub use nectar_primitives::store::{SyncChunkHas, MemoryStore};
 pub use nectar_primitives::DefaultMemoryStore;
+pub use nectar_primitives::store::{MemoryStore, SyncChunkHas};
 
 /// Default manifest type using [`DEFAULT_BODY_SIZE`] and plain mode.
 pub type DefaultManifest<S> = PlainManifest<S, DEFAULT_BODY_SIZE>;

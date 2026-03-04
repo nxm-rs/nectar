@@ -110,14 +110,20 @@ mod tests {
     fn from_b256() {
         let b = B256::repeat_byte(0xab);
         let key = EncryptionKey::from(b);
-        assert_eq!(<EncryptionKey as AsRef<[u8; EncryptionKey::SIZE]>>::as_ref(&key), &[0xab; EncryptionKey::SIZE]);
+        assert_eq!(
+            <EncryptionKey as AsRef<[u8; EncryptionKey::SIZE]>>::as_ref(&key),
+            &[0xab; EncryptionKey::SIZE]
+        );
     }
 
     #[test]
     fn try_from_slice_valid() {
         let slice = [7u8; EncryptionKey::SIZE];
         let key = EncryptionKey::try_from(slice.as_slice()).unwrap();
-        assert_eq!(<EncryptionKey as AsRef<[u8; EncryptionKey::SIZE]>>::as_ref(&key), &slice);
+        assert_eq!(
+            <EncryptionKey as AsRef<[u8; EncryptionKey::SIZE]>>::as_ref(&key),
+            &slice
+        );
     }
 
     #[test]
@@ -129,7 +135,10 @@ mod tests {
 
     #[test]
     fn debug_shows_hex_prefix() {
-        let key = EncryptionKey::from([0xab, 0xcd, 0xef, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let key = EncryptionKey::from([
+            0xab, 0xcd, 0xef, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ]);
         let dbg = format!("{:?}", key);
         assert!(dbg.contains("abcdef01"));
     }

@@ -7,7 +7,7 @@ use nectar_primitives::file::EntryRef;
 
 use crate::mode::NodeEntry;
 use crate::node::Node;
-use crate::{metadata, MantarayError, Result};
+use crate::{MantarayError, Result, metadata};
 
 /// A manifest entry: a path, typed reference, and optional metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -54,8 +54,7 @@ impl Entry {
 
     /// Set the filename metadata.
     pub fn with_filename(mut self, name: &str) -> Self {
-        self.metadata
-            .insert(metadata::FILENAME.into(), name.into());
+        self.metadata.insert(metadata::FILENAME.into(), name.into());
         self
     }
 
@@ -67,7 +66,9 @@ impl Entry {
 
     /// Get the content type metadata value, if present.
     pub fn content_type(&self) -> Option<&str> {
-        self.metadata.get(metadata::CONTENT_TYPE).map(|s| s.as_str())
+        self.metadata
+            .get(metadata::CONTENT_TYPE)
+            .map(|s| s.as_str())
     }
 
     /// Get the filename metadata value, if present.

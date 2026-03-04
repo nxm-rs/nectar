@@ -69,12 +69,7 @@ fn entries_round_trip() {
     let store = Store::new();
     let mut manifest = PlainManifest::new(store);
 
-    let paths = &[
-        "index.html",
-        "css/style.css",
-        "js/app.js",
-        "img/logo.png",
-    ];
+    let paths = &["index.html", "css/style.css", "js/app.js", "img/logo.png"];
 
     for &path in paths {
         let addr = make_addr(path);
@@ -82,7 +77,11 @@ fn entries_round_trip() {
             .add_with_metadata(
                 path,
                 addr,
-                [("Content-Type".to_string(), "application/octet-stream".to_string())].into(),
+                [(
+                    "Content-Type".to_string(),
+                    "application/octet-stream".to_string(),
+                )]
+                .into(),
             )
             .unwrap();
     }
@@ -168,10 +167,7 @@ fn ergonomic_api_workflow() {
     let mut manifest2 = PlainManifest::open(root_addr, store);
 
     // Iterate entries using convenience methods
-    let entries: Vec<_> = manifest2
-        .iter()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let entries: Vec<_> = manifest2.iter().collect::<Result<Vec<_>, _>>().unwrap();
 
     assert_eq!(entries.len(), 2);
 

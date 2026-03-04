@@ -55,7 +55,12 @@ where
 
         let ref_start = i * M::REF_SIZE;
         let (addr, context) = M::parse_child_ref(body, ref_start)?;
-        children.push(SubtreeNode { addr, context, span, byte_offset });
+        children.push(SubtreeNode {
+            addr,
+            context,
+            span,
+            byte_offset,
+        });
     }
 
     Ok(children)
@@ -126,9 +131,11 @@ impl<M: JoinMode, const BS: usize> BfsExpander<M, BS> {
         let mut body_idx = 0;
         for (i, node) in self.frontier.iter().enumerate() {
             if body_idx < expand_indices.len() && expand_indices[body_idx] == i {
-                self.next.extend(
-                    overlapping_children::<M, BS>(&bodies[body_idx], node, &self.chunk_range)?,
-                );
+                self.next.extend(overlapping_children::<M, BS>(
+                    &bodies[body_idx],
+                    node,
+                    &self.chunk_range,
+                )?);
                 body_idx += 1;
             } else {
                 self.next.push(node.clone());
@@ -175,9 +182,9 @@ where
         let mut bodies = Vec::with_capacity(indices.len());
         for &i in &indices {
             let n = &bfs.frontier[i];
-            bodies.push(
-                super::mode::read_chunk_body::<M, G, BS>(getter, &n.addr, &n.context, n.span)?
-            );
+            bodies.push(super::mode::read_chunk_body::<M, G, BS>(
+                getter, &n.addr, &n.context, n.span,
+            )?);
         }
         if !bfs.advance(&indices, &bodies)? {
             break;
@@ -197,7 +204,8 @@ where
     G: SyncChunkGet<BS>,
     M: JoinMode,
 {
-    let body = super::mode::read_chunk_body::<M, G, BS>(getter, &node.addr, &node.context, node.span)?;
+    let body =
+        super::mode::read_chunk_body::<M, G, BS>(getter, &node.addr, &node.context, node.span)?;
 
     if node.span <= BS as u64 {
         out.push(body);
@@ -282,8 +290,12 @@ where
     let mut stack = vec![node.clone()];
     while let Some(current) = stack.pop() {
         let body = super::mode::read_chunk_body_async::<M, G, BS>(
-            getter, &current.addr, &current.context, current.span,
-        ).await?;
+            getter,
+            &current.addr,
+            &current.context,
+            current.span,
+        )
+        .await?;
         if current.span <= BS as u64 {
             out.push(body);
         } else {
@@ -293,4 +305,3 @@ where
     }
     Ok(out)
 }
-

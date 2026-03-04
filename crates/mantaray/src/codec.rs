@@ -92,7 +92,6 @@ fn xor_in_place(data: &mut [u8], key: &[u8]) {
     }
 }
 
-
 impl<E: NodeEntry> TryFrom<&Node<E>> for Vec<u8> {
     type Error = MantarayError;
 
@@ -105,8 +104,10 @@ impl<E: NodeEntry> TryFrom<&Node<E>> for Vec<u8> {
 fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
     let ref_size = E::SIZE;
     // Pre-allocate: header + entry + bitfield(32) + estimated fork data
-    let estimated =
-        NodeHeader::SIZE + ref_size + 32 + node.forks.len() * (ForkHeader::PRE_REFERENCE_SIZE + ref_size);
+    let estimated = NodeHeader::SIZE
+        + ref_size
+        + 32
+        + node.forks.len() * (ForkHeader::PRE_REFERENCE_SIZE + ref_size);
     let mut data = Vec::with_capacity(estimated);
     data.resize(NodeHeader::SIZE, 0);
 
@@ -162,10 +163,13 @@ impl<E: NodeEntry> TryFrom<&[u8]> for Node<E> {
         let obfuscation_key = ObfuscationKey::from(key_bytes);
 
         // decrypt in-place
-        xor_in_place(&mut data[ObfuscationKey::SIZE..], obfuscation_key.as_bytes());
+        xor_in_place(
+            &mut data[ObfuscationKey::SIZE..],
+            obfuscation_key.as_bytes(),
+        );
 
-        let version_hash =
-            &data[NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + VersionHash::SIZE];
+        let version_hash = &data
+            [NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + VersionHash::SIZE];
 
         let mut node = match VersionHash::from_bytes(version_hash) {
             Some(VersionHash::V01) => decode_v01::<E>(&data)?,
@@ -270,11 +274,15 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 
             if fork_node_type.contains(NodeType::METADATA) {
                 if data.len()
-                    < offset + ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size
+                    < offset
+                        + ForkHeader::PRE_REFERENCE_SIZE
+                        + ref_bytes_size
                         + ForkHeader::METADATA_LEN_SIZE
                 {
                     return Err(MantarayError::InsufficientForkBytes {
-                        expected: offset + ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size
+                        expected: offset
+                            + ForkHeader::PRE_REFERENCE_SIZE
+                            + ref_bytes_size
                             + ForkHeader::METADATA_LEN_SIZE,
                         actual: data.len(),
                         byte_index: b as usize,
@@ -339,7 +347,9 @@ fn parse_fork_header(data: &[u8]) -> Result<(NodeType, Prefix)> {
             actual: prefix_length,
         });
     }
-    let prefix = Prefix::from_slice(&data[ForkHeader::PREFIX_OFFSET..ForkHeader::PREFIX_OFFSET + prefix_length]);
+    let prefix = Prefix::from_slice(
+        &data[ForkHeader::PREFIX_OFFSET..ForkHeader::PREFIX_OFFSET + prefix_length],
+    );
     Ok((node_type, prefix))
 }
 
@@ -374,12 +384,11 @@ impl<E: NodeEntry> Fork<E> {
         }
 
         if self.node.is_with_metadata() {
-            let mut metadata_json =
-                serde_json::to_string(&self.node.metadata)
-                    .map_err(|e| MantarayError::InvalidMetadata {
-                        message: e.to_string(),
-                    })?
-                    .into_bytes();
+            let mut metadata_json = serde_json::to_string(&self.node.metadata)
+                .map_err(|e| MantarayError::InvalidMetadata {
+                    message: e.to_string(),
+                })?
+                .into_bytes();
 
             let metadata_bytes_size_with_header =
                 metadata_json.len() + ForkHeader::METADATA_LEN_SIZE;
@@ -388,7 +397,11 @@ impl<E: NodeEntry> Fork<E> {
                 ObfuscationKey::SIZE - metadata_bytes_size_with_header
             } else if metadata_bytes_size_with_header > ObfuscationKey::SIZE {
                 let rem = metadata_bytes_size_with_header % ObfuscationKey::SIZE;
-                if rem == 0 { 0 } else { ObfuscationKey::SIZE - rem }
+                if rem == 0 {
+                    0
+                } else {
+                    ObfuscationKey::SIZE - rem
+                }
             } else {
                 0
             };

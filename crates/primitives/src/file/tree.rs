@@ -121,10 +121,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     /// Calculate required data chunks for a byte range.
     pub fn chunks_for_range(&self, offset: u64, len: u64) -> ChunkRange {
         if len == 0 || offset >= self.size {
-            return ChunkRange {
-                start: 0,
-                end: 0,
-            };
+            return ChunkRange { start: 0, end: 0 };
         }
 
         let end_offset = (offset + len).min(self.size);

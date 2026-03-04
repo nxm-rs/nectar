@@ -29,16 +29,10 @@ pub(crate) fn validate_read_range<const BODY_SIZE: usize>(
     }
 
     if span <= BODY_SIZE as u64 {
-        return ReadRangeCheck::SingleChunk {
-            offset,
-            actual_len,
-        };
+        return ReadRangeCheck::SingleChunk { offset, actual_len };
     }
 
-    ReadRangeCheck::MultiChunk {
-        offset,
-        actual_len,
-    }
+    ReadRangeCheck::MultiChunk { offset, actual_len }
 }
 
 /// Build an intermediate chunk payload: span (LE u64) prepended to reference data.

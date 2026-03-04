@@ -143,7 +143,9 @@ mod tests {
     use super::*;
     use crate::store::MemoryStore;
 
-    fn split_and_store(data: &[u8]) -> (crate::chunk::ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>) {
+    fn split_and_store(
+        data: &[u8],
+    ) -> (crate::chunk::ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>) {
         let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let mut splitter = SyncSplitter::new(store, data.len() as u64);
         splitter.write_all(data).unwrap();
@@ -215,7 +217,10 @@ mod tests {
 
         fn encrypted_split_and_store(
             data: &[u8],
-        ) -> (crate::chunk::encryption::EncryptedChunkRef, MemoryStore<DEFAULT_BODY_SIZE>) {
+        ) -> (
+            crate::chunk::encryption::EncryptedChunkRef,
+            MemoryStore<DEFAULT_BODY_SIZE>,
+        ) {
             let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
             let mut splitter = EncryptedSyncSplitter::new(store, data.len() as u64);
             splitter.write_all(data).unwrap();

@@ -146,7 +146,13 @@ pub struct Stamp {
 impl Stamp {
     /// Creates a new stamp with the given parameters.
     #[inline]
-    pub const fn new(batch: BatchId, bucket: u32, index: u32, timestamp: u64, sig: Signature) -> Self {
+    pub const fn new(
+        batch: BatchId,
+        bucket: u32,
+        index: u32,
+        timestamp: u64,
+        sig: Signature,
+    ) -> Self {
         Self {
             batch,
             index: StampIndex::new(bucket, index),
@@ -157,7 +163,12 @@ impl Stamp {
 
     /// Creates a new stamp from a stamp index.
     #[inline]
-    pub const fn with_index(batch: BatchId, index: StampIndex, timestamp: u64, sig: Signature) -> Self {
+    pub const fn with_index(
+        batch: BatchId,
+        index: StampIndex,
+        timestamp: u64,
+        sig: Signature,
+    ) -> Self {
         Self {
             batch,
             index,

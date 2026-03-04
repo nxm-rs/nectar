@@ -1,8 +1,8 @@
 #![allow(missing_docs)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nectar_mantaray::{PlainManifest, MemoryStore};
 use nectar_mantaray::node::Node;
+use nectar_mantaray::{MemoryStore, PlainManifest};
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
 
@@ -194,7 +194,9 @@ fn bench_decode(c: &mut Criterion) {
     let data = Vec::<u8>::try_from(&n).unwrap();
 
     group.bench_function("spa_trie", |b| {
-        b.iter(|| Node::<nectar_primitives::chunk::ChunkAddress>::try_from(data.as_slice()).unwrap());
+        b.iter(|| {
+            Node::<nectar_primitives::chunk::ChunkAddress>::try_from(data.as_slice()).unwrap()
+        });
     });
 
     group.finish();

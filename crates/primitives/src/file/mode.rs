@@ -9,9 +9,7 @@ use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey, decrypt_chunk_d
 use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
 use crate::store::{SyncChunkGet, SyncChunkPut};
 
-use super::constants::{
-    ENCRYPTED_REF_SIZE, REF_SIZE, compute_spans_inline, subspan_for_spans,
-};
+use super::constants::{ENCRYPTED_REF_SIZE, REF_SIZE, compute_spans_inline, subspan_for_spans};
 use super::error::{FileError, Result};
 
 /// Convert a `PrimitivesError` from chunk creation into a `FileError`.
@@ -175,9 +173,7 @@ pub trait SplitMode: JoinMode {
 
     /// Prepare chunk data (span + body) for storage, returning chunk and reference bytes.
     /// Takes ownership of the payload to avoid an extra allocation.
-    fn prepare_chunk<const BS: usize>(
-        data: Vec<u8>,
-    ) -> Result<(ContentChunk<BS>, Self::RefBytes)>;
+    fn prepare_chunk<const BS: usize>(data: Vec<u8>) -> Result<(ContentChunk<BS>, Self::RefBytes)>;
 
     /// Process chunk data (span + body), store it, return reference bytes.
     /// Takes ownership of the payload to avoid an extra allocation.
@@ -230,10 +226,7 @@ impl JoinMode for PlainMode {
     }
 
     #[inline]
-    fn parse_child_ref(
-        body: &[u8],
-        ref_start: usize,
-    ) -> Result<(ChunkAddress, ())> {
+    fn parse_child_ref(body: &[u8], ref_start: usize) -> Result<(ChunkAddress, ())> {
         let ref_end = ref_start + REF_SIZE;
         let child_addr_bytes: [u8; 32] = body[ref_start..ref_end]
             .try_into()
@@ -246,17 +239,13 @@ impl SplitMode for PlainMode {
     type RefBytes = [u8; REF_SIZE];
 
     #[inline]
-    fn prepare_chunk<const BS: usize>(
-        data: Vec<u8>,
-    ) -> Result<(ContentChunk<BS>, [u8; REF_SIZE])> {
+    fn prepare_chunk<const BS: usize>(data: Vec<u8>) -> Result<(ContentChunk<BS>, [u8; REF_SIZE])> {
         let chunk = create_chunk::<BS>(Bytes::from(data))?;
         let ref_bytes = (*chunk.address()).into();
         Ok((chunk, ref_bytes))
     }
 
-    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(
-        store: &S,
-    ) -> Result<ChunkAddress> {
+    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(store: &S) -> Result<ChunkAddress> {
         // Use `new` (not `try_from`) because Bytes::new() is raw content,
         // not pre-formatted span+body data.
         let chunk = ContentChunk::<BS>::new(Bytes::new()).map_err(chunk_creation_error)?;
@@ -264,7 +253,8 @@ impl SplitMode for PlainMode {
     }
 
     fn extract_root(buffer: &[u8]) -> Result<ChunkAddress> {
-        let root_bytes: [u8; 32] = buffer.get(..REF_SIZE)
+        let root_bytes: [u8; 32] = buffer
+            .get(..REF_SIZE)
             .and_then(|s| s.try_into().ok())
             .ok_or(FileError::InvalidReference { level: 0 })?;
         Ok(ChunkAddress::from(root_bytes))
@@ -326,10 +316,7 @@ impl JoinMode for EncryptedMode {
         Ok(Bytes::from(decrypted).slice(SPAN_SIZE..))
     }
 
-    fn parse_child_ref(
-        body: &[u8],
-        ref_start: usize,
-    ) -> Result<(ChunkAddress, EncryptionKey)> {
+    fn parse_child_ref(body: &[u8], ref_start: usize) -> Result<(ChunkAddress, EncryptionKey)> {
         let ref_end = ref_start + ENCRYPTED_REF_SIZE;
         let child_addr_bytes: [u8; 32] = body[ref_start..ref_start + 32]
             .try_into()
@@ -358,9 +345,7 @@ impl SplitMode for EncryptedMode {
         Ok((chunk, ref_bytes))
     }
 
-    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(
-        store: &S,
-    ) -> Result<EncryptedChunkRef> {
+    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(store: &S) -> Result<EncryptedChunkRef> {
         use crate::chunk::encryption::encrypt_chunk;
 
         let key = EncryptionKey::generate();
@@ -372,7 +357,8 @@ impl SplitMode for EncryptedMode {
     }
 
     fn extract_root(buffer: &[u8]) -> Result<EncryptedChunkRef> {
-        let root_ref_bytes = buffer.get(..ENCRYPTED_REF_SIZE)
+        let root_ref_bytes = buffer
+            .get(..ENCRYPTED_REF_SIZE)
             .ok_or(FileError::InvalidReference { level: 0 })?;
         EncryptedChunkRef::try_from(root_ref_bytes)
             .map_err(|_| FileError::InvalidReference { level: 0 })

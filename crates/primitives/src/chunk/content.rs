@@ -182,8 +182,8 @@ impl<const BODY_SIZE: usize> EncryptedContentChunk<BODY_SIZE> {
 
     /// Decrypt back to a plaintext `ContentChunk`.
     pub fn decrypt(&self) -> Result<ContentChunk<BODY_SIZE>> {
-        use crate::bmt::SPAN_SIZE;
         use super::encryption::transcrypt;
+        use crate::bmt::SPAN_SIZE;
 
         let encrypted_data: Bytes = self.chunk.clone().into();
         let key = self.encrypted_ref.key();
@@ -227,10 +227,8 @@ impl<const BODY_SIZE: usize> super::encryption::ChunkEncrypt for ContentChunk<BO
         let raw: Bytes = self.clone().into(); // span || data
         let ciphertext = super::encryption::encrypt_chunk::<BODY_SIZE>(&raw, key)?;
         let encrypted_chunk = Self::try_from(Bytes::from(ciphertext))?;
-        let encrypted_ref = super::encryption::EncryptedChunkRef::new(
-            *encrypted_chunk.address(),
-            key.clone(),
-        );
+        let encrypted_ref =
+            super::encryption::EncryptedChunkRef::new(*encrypted_chunk.address(), key.clone());
         Ok(EncryptedContentChunk {
             chunk: encrypted_chunk,
             encrypted_ref,

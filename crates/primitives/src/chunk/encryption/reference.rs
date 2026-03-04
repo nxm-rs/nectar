@@ -44,8 +44,7 @@ impl EncryptedChunkRef {
     /// Write the reference into `buf`. Panics if `buf` is too small.
     pub fn write_to(&self, buf: &mut [u8]) {
         buf[..size_of::<ChunkAddress>()].copy_from_slice(self.address.as_bytes());
-        buf[size_of::<ChunkAddress>()..Self::SIZE]
-            .copy_from_slice(self.key.as_bytes());
+        buf[size_of::<ChunkAddress>()..Self::SIZE].copy_from_slice(self.key.as_bytes());
     }
 }
 

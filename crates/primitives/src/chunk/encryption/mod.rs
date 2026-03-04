@@ -1,15 +1,15 @@
 //! Chunk encryption using Keccak-256 counter-mode cipher.
 
-mod cipher;
 mod chunk;
+mod cipher;
 mod error;
 mod key;
 mod reference;
 
-pub use cipher::{transcrypt, transcrypt_in_place};
 pub(crate) use chunk::decrypt_chunk_data;
 #[cfg(feature = "encryption")]
 pub(crate) use chunk::encrypt_chunk;
+pub use cipher::{transcrypt, transcrypt_in_place};
 pub use error::EncryptionError;
 pub use key::EncryptionKey;
 pub use reference::EncryptedChunkRef;

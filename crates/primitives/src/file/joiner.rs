@@ -110,7 +110,12 @@ where
         let target = DEFAULT_ASYNC_CONCURRENCY * 2;
         let full_range = tree.chunks_for_range(0, span);
         let subtrees = expand_frontier_async::<G, M, BODY_SIZE>(
-            &getter, &root, &context, span, &full_range, target,
+            &getter,
+            &root,
+            &context,
+            span,
+            &full_range,
+            target,
         )
         .await?;
 
@@ -208,8 +213,7 @@ where
         let relevant: Vec<_> = subtrees
             .iter()
             .filter(|st| {
-                st.byte_offset < range_end_byte
-                    && st.byte_offset + st.span > range_start_byte
+                st.byte_offset < range_end_byte && st.byte_offset + st.span > range_start_byte
             })
             .cloned()
             .collect();
@@ -223,7 +227,11 @@ where
         .await?;
 
         Ok(super::tree::assemble_range(
-            &tree, offset, actual_len, &chunk_range, &bodies,
+            &tree,
+            offset,
+            actual_len,
+            &chunk_range,
+            &bodies,
         ))
     }
 
@@ -258,10 +266,8 @@ where
 
                 // Fetch the next subtree's leaf bodies.
                 let st = state.subtrees.next()?;
-                match read_subtree_bodies_async::<G, M, BODY_SIZE>(
-                    &*getter, &st, &chunk_range,
-                )
-                .await
+                match read_subtree_bodies_async::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range)
+                    .await
                 {
                     Ok(bodies) => {
                         let mut iter = bodies.into_iter();
@@ -370,8 +376,15 @@ where
 
             let fut = async move {
                 GenericJoiner::<G, M, BODY_SIZE>::read_range_with(
-                    &getter, &subtrees, &root, &context, span, tree, concurrency,
-                    position, read_len,
+                    &getter,
+                    &subtrees,
+                    &root,
+                    &context,
+                    span,
+                    tree,
+                    concurrency,
+                    position,
+                    read_len,
                 )
                 .await
             };
@@ -443,7 +456,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_joiner_stream() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
+            .map(|i| (i % 256) as u8)
+            .collect();
         let (root, store) = split_and_store(&data);
 
         let joiner = Joiner::new(store, root).await.unwrap();
@@ -476,7 +491,9 @@ mod tests {
     async fn test_async_reader_multi_chunk() {
         use tokio::io::AsyncReadExt;
 
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123).map(|i| (i % 256) as u8).collect();
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
+            .map(|i| (i % 256) as u8)
+            .collect();
         let (root, store) = split_and_store(&data);
 
         let joiner = Joiner::new(store, root).await.unwrap();
@@ -508,14 +525,19 @@ mod tests {
     async fn test_async_reader_seek_back_and_forth() {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
+            .map(|i| (i % 256) as u8)
+            .collect();
         let (root, store) = split_and_store(&data);
 
         let joiner = Joiner::new(store, root).await.unwrap();
         let mut reader = joiner.into_reader();
 
         // Read from middle
-        reader.seek(SeekFrom::Start(DEFAULT_BODY_SIZE as u64)).await.unwrap();
+        reader
+            .seek(SeekFrom::Start(DEFAULT_BODY_SIZE as u64))
+            .await
+            .unwrap();
         let mut buf1 = vec![0u8; 100];
         reader.read_exact(&mut buf1).await.unwrap();
         assert_eq!(&buf1, &data[DEFAULT_BODY_SIZE..DEFAULT_BODY_SIZE + 100]);
@@ -555,8 +577,9 @@ mod tests {
 
         #[tokio::test]
         async fn test_encrypted_async_joiner_stream() {
-            let data: Vec<u8> =
-                (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
+                .map(|i| (i % 256) as u8)
+                .collect();
             let (root_ref, store) = encrypted_split_and_store(&data);
 
             let joiner = EncryptedJoiner::new(store, root_ref).await.unwrap();

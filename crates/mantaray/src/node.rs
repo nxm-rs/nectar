@@ -2,13 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use bytes::Bytes;
-use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
-use nectar_primitives::store::{SyncChunkGet, SyncChunkPut};
 use crate::error::{MantarayError, Result};
 use crate::mode::NodeEntry;
 use crate::obfuscation::ObfuscationKey;
-use crate::{PREFIX_MAX_LEN, PATH_SEPARATOR};
+use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
+use bytes::Bytes;
+use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
+use nectar_primitives::store::{SyncChunkGet, SyncChunkPut};
 
 /// Inline-only byte buffer for fork prefixes (max 30 bytes).
 ///
@@ -322,11 +322,12 @@ impl<E: NodeEntry> Node<E> {
         }
 
         let first = path[0];
-        let fork = self.forks.get_mut(&first).ok_or_else(|| {
-            MantarayError::NoForkFound {
+        let fork = self
+            .forks
+            .get_mut(&first)
+            .ok_or_else(|| MantarayError::NoForkFound {
                 reference: self.reference,
-            }
-        })?;
+            })?;
 
         let c = common_prefix_len(&fork.prefix, path);
         if c == fork.prefix.len() {
@@ -442,7 +443,13 @@ impl<E: NodeEntry> Node<E> {
 
             let mut old_fork_node = old_fork.node;
             old_fork_node.update_is_with_path_separator(&rest);
-            intermediate.forks.insert(rest[0], Fork { prefix: rest, node: old_fork_node });
+            intermediate.forks.insert(
+                rest[0],
+                Fork {
+                    prefix: rest,
+                    node: old_fork_node,
+                },
+            );
             intermediate.make_edge();
 
             if c == path.len() {
@@ -555,9 +562,11 @@ impl<E: NodeEntry> Node<E> {
         let data = Vec::<u8>::try_from(&*self)?;
         let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
         let address = *chunk.address();
-        store.put(chunk.into()).map_err(|e| MantarayError::StorePut {
-            source: std::sync::Arc::new(e),
-        })?;
+        store
+            .put(chunk.into())
+            .map_err(|e| MantarayError::StorePut {
+                source: std::sync::Arc::new(e),
+            })?;
         self.reference = Some(address);
         self.forks.clear();
         self.loaded = false;
@@ -614,9 +623,12 @@ where
     // collect keys to avoid borrow conflict
     let keys: Vec<u8> = node.forks.keys().copied().collect();
     for key in keys {
-        let fork = node.forks.get_mut(&key).ok_or_else(|| MantarayError::NoForkFound {
-            reference: node.reference,
-        })?;
+        let fork = node
+            .forks
+            .get_mut(&key)
+            .ok_or_else(|| MantarayError::NoForkFound {
+                reference: node.reference,
+            })?;
         let prev_len = path_buf.len();
         path_buf.extend_from_slice(&fork.prefix);
         walk_inner(path_buf, &mut fork.node, store, f)?;
@@ -717,10 +729,8 @@ mod tests {
                 items: vec![
                     RemoveTestCaseItem {
                         path: "/".to_string(),
-                        metadata: serde_json::from_str(
-                            r#"{"index-document": "index.html"}"#,
-                        )
-                        .unwrap(),
+                        metadata: serde_json::from_str(r#"{"index-document": "index.html"}"#)
+                            .unwrap(),
                     },
                     RemoveTestCaseItem {
                         path: "index.html".to_string(),
@@ -810,7 +820,8 @@ mod tests {
 
     /// In-memory add: delegates to `add` with NullLoader.
     fn node_add(n: &mut Node, path: &[u8], entry: ChunkAddress, meta: BTreeMap<String, String>) {
-        n.add::<NullLoader, BS>(path, Some(entry), meta, &NL).unwrap();
+        n.add::<NullLoader, BS>(path, Some(entry), meta, &NL)
+            .unwrap();
     }
 
     /// In-memory lookup: delegates to `lookup` with NullLoader.
@@ -930,9 +941,7 @@ mod tests {
         let mut n2: Node = Node::from_reference(n.reference.unwrap());
 
         for &d in items {
-            let node = n2
-                .lookup_node(d.as_bytes(), &store)
-                .unwrap();
+            let node = n2.lookup_node(d.as_bytes(), &store).unwrap();
             assert!(node.is_value());
             assert_eq!(node.entry(), Some(&make_entry(d)));
         }
@@ -1050,7 +1059,10 @@ mod tests {
         let mut nnn: Node = Node::from_reference(ref2);
         for path in &tc.remove {
             let result = nnn.lookup_node(path.as_bytes(), &store);
-            assert!(result.is_err(), "expected removed path '{path}' to be not found");
+            assert!(
+                result.is_err(),
+                "expected removed path '{path}' to be not found"
+            );
         }
     }
 
@@ -1160,12 +1172,7 @@ mod tests {
 
     #[test]
     fn walk_node_from_subtree() {
-        let to_add: &[&[u8]] = &[
-            b"index.html",
-            b"img/1.png",
-            b"img/2.png",
-            b"robots.txt",
-        ];
+        let to_add: &[&[u8]] = &[b"index.html", b"img/1.png", b"img/2.png", b"robots.txt"];
 
         let mut n = Node::default();
         for &path in to_add {

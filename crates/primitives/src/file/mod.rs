@@ -67,22 +67,22 @@ use crate::chunk::encryption::EncryptedChunkRef;
 use crate::store::{SyncChunkGet, SyncChunkPut};
 
 // Async (primary) re-exports
-pub use joiner::{GenericJoiner, Joiner};
 #[cfg(feature = "encryption")]
 pub use joiner::EncryptedJoiner;
 #[cfg(feature = "tokio")]
 pub use joiner::JoinerReader;
+pub use joiner::{GenericJoiner, Joiner};
 // Sync (secondary) re-exports
-pub use sync_joiner::{GenericSyncJoiner, SyncJoiner};
 #[cfg(feature = "encryption")]
 pub use sync_joiner::EncryptedSyncJoiner;
+pub use sync_joiner::{GenericSyncJoiner, SyncJoiner};
 pub use sync_read_at::SyncReadAt;
-pub use sync_splitter::SyncSplitter;
 #[cfg(feature = "encryption")]
 pub use sync_splitter::EncryptedSyncSplitter;
-pub use sync_splitter_parallel::SyncParallelSplitter;
+pub use sync_splitter::SyncSplitter;
 #[cfg(feature = "encryption")]
 pub use sync_splitter_parallel::EncryptedSyncParallelSplitter;
+pub use sync_splitter_parallel::SyncParallelSplitter;
 
 pub use entry_ref::EntryRef;
 pub use error::FileError;
@@ -144,10 +144,7 @@ pub(crate) fn resolve_seek_position(
 // ---- Primary async API ----
 
 /// Join chunks asynchronously. Dispatches plain/encrypted via [`JoinRef`].
-pub async fn join<R, G, const BODY_SIZE: usize>(
-    getter: G,
-    root: R,
-) -> error::Result<Vec<u8>>
+pub async fn join<R, G, const BODY_SIZE: usize>(getter: G, root: R) -> error::Result<Vec<u8>>
 where
     R: JoinRef,
     G: crate::store::ChunkGet<BODY_SIZE>,

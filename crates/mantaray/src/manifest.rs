@@ -9,7 +9,7 @@ use nectar_primitives::store::{SyncChunkGet, SyncChunkPut};
 use crate::entry::Entry;
 use crate::mode::NodeEntry;
 use crate::node::Node;
-use crate::{metadata, MantarayError, Result};
+use crate::{MantarayError, Result, metadata};
 
 /// High-level mantaray manifest backed by a typed chunk store.
 ///
@@ -87,12 +87,8 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     /// Add a path with a typed reference (compile-time enforced by entry type).
     pub fn add(&mut self, path: &str, reference: impl Into<E>) -> Result<()> {
         let entry = reference.into();
-        self.trie.add::<S, BS>(
-            path.as_bytes(),
-            Some(entry),
-            BTreeMap::new(),
-            &self.store,
-        )
+        self.trie
+            .add::<S, BS>(path.as_bytes(), Some(entry), BTreeMap::new(), &self.store)
     }
 
     /// Add a path with a typed reference and metadata.
@@ -103,12 +99,8 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
         metadata: BTreeMap<String, String>,
     ) -> Result<()> {
         let entry = reference.into();
-        self.trie.add::<S, BS>(
-            path.as_bytes(),
-            Some(entry),
-            metadata,
-            &self.store,
-        )
+        self.trie
+            .add::<S, BS>(path.as_bytes(), Some(entry), metadata, &self.store)
     }
 
     /// Add a path with a pre-built [`Entry`] (metadata + reference).
@@ -120,18 +112,13 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
             }
             None => None,
         };
-        self.trie.add::<S, BS>(
-            path.as_bytes(),
-            e,
-            entry.metadata,
-            &self.store,
-        )
+        self.trie
+            .add::<S, BS>(path.as_bytes(), e, entry.metadata, &self.store)
     }
 
     /// Remove a path from the manifest.
     pub fn remove(&mut self, path: &str) -> Result<()> {
-        self.trie
-            .remove::<S, BS>(path.as_bytes(), &self.store)
+        self.trie.remove::<S, BS>(path.as_bytes(), &self.store)
     }
 
     /// Look up a path in the manifest.
@@ -166,7 +153,8 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     where
         F: FnMut(&[u8], &Node<E>) -> Result<()>,
     {
-        self.trie.walk_from::<S, BS, _>(root.as_bytes(), &self.store, f)
+        self.trie
+            .walk_from::<S, BS, _>(root.as_bytes(), &self.store, f)
     }
 
     /// Collect all value entries from the manifest.
@@ -246,12 +234,8 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
                 // Root path doesn't exist yet — create it with the metadata.
                 let mut meta = BTreeMap::new();
                 meta.insert(key.into(), value.into());
-                self.trie.add::<S, BS>(
-                    metadata::ROOT_PATH.as_bytes(),
-                    None,
-                    meta,
-                    &self.store,
-                )
+                self.trie
+                    .add::<S, BS>(metadata::ROOT_PATH.as_bytes(), None, meta, &self.store)
             }
             Err(e) => Err(e),
         }
@@ -273,7 +257,10 @@ impl<S: SyncChunkGet<BS> + SyncChunkPut<BS>, const BS: usize> Manifest<S, ChunkA
     /// Persist the plain manifest trie to storage, returning the root chunk address.
     pub fn save(&mut self) -> Result<ChunkAddress> {
         self.trie.save::<S, BS>(&self.store)?;
-        Ok(*self.trie.reference().ok_or(MantarayError::MissingReference)?)
+        Ok(*self
+            .trie
+            .reference()
+            .ok_or(MantarayError::MissingReference)?)
     }
 }
 
@@ -284,7 +271,10 @@ impl<S: SyncChunkGet<BS> + SyncChunkPut<BS>, const BS: usize>
     /// Persist the encrypted manifest trie, returning a [`ManifestRef`](crate::ManifestRef).
     pub fn save(&mut self) -> Result<crate::ManifestRef> {
         self.trie.save::<S, BS>(&self.store)?;
-        let addr = *self.trie.reference().ok_or(MantarayError::MissingReference)?;
+        let addr = *self
+            .trie
+            .reference()
+            .ok_or(MantarayError::MissingReference)?;
         Ok(crate::ManifestRef::new(addr, self.trie.obfuscation_key))
     }
 }
@@ -382,11 +372,7 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIt
             }
 
             // Pop exhausted frames, truncating path_buf as we go.
-            while self
-                .stack
-                .last()
-                .is_some_and(|f| f.key_idx >= f.keys.len())
-            {
+            while self.stack.last().is_some_and(|f| f.key_idx >= f.keys.len()) {
                 let frame = self.stack.pop().unwrap();
                 self.path_buf.truncate(frame.path_len_before);
             }
@@ -408,7 +394,7 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIt
                 None => {
                     return Some(Err(MantarayError::NoForkFound {
                         reference: parent.reference,
-                    }))
+                    }));
                 }
             };
 
@@ -626,7 +612,11 @@ mod tests {
             let path = format!("dir{}/file{}.txt", i / 10, i);
             let entry = m.lookup(&path).unwrap();
             let expected = make_addr_u32(i);
-            assert_eq!(entry.address(), Some(&expected), "entry at {path} was corrupted");
+            assert_eq!(
+                entry.address(),
+                Some(&expected),
+                "entry at {path} was corrupted"
+            );
         }
     }
 

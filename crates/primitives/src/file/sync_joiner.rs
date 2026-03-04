@@ -88,7 +88,12 @@ where
         let target = rayon::current_num_threads().max(1) * 2;
         let full_range = tree.chunks_for_range(0, span);
         let subtrees = expand_frontier::<G, M, BODY_SIZE>(
-            &getter, &root, &context, span, &full_range, target,
+            &getter,
+            &root,
+            &context,
+            span,
+            &full_range,
+            target,
         )?;
 
         Ok(Self {
@@ -138,8 +143,7 @@ where
                 let range_start_byte = chunk_range.start * BODY_SIZE as u64;
                 let range_end_byte = chunk_range.end * BODY_SIZE as u64;
 
-                let bodies =
-                    self.collect_bodies(&chunk_range, range_start_byte, range_end_byte)?;
+                let bodies = self.collect_bodies(&chunk_range, range_start_byte, range_end_byte)?;
 
                 Ok(super::tree::assemble_range(
                     &self.tree,
@@ -169,8 +173,7 @@ where
             .subtrees
             .par_iter()
             .filter(|st| {
-                st.byte_offset < range_end_byte
-                    && st.byte_offset + st.span > range_start_byte
+                st.byte_offset < range_end_byte && st.byte_offset + st.span > range_start_byte
             })
             .map(|st| {
                 let mut bodies = Vec::with_capacity((st.span as usize / BODY_SIZE).max(1));
@@ -183,8 +186,12 @@ where
     }
 
     fn read_single_chunk(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let body =
-            super::mode::read_chunk_body::<M, G, BODY_SIZE>(&self.getter, &self.root, &self.context, self.span)?;
+        let body = super::mode::read_chunk_body::<M, G, BODY_SIZE>(
+            &self.getter,
+            &self.root,
+            &self.context,
+            self.span,
+        )?;
         let start = offset as usize;
         let end = start + len;
         Ok(body[start..end].to_vec())
@@ -214,9 +221,7 @@ where
             .par_iter()
             .map(|st| {
                 let mut bodies = Vec::with_capacity((st.span as usize / BODY_SIZE).max(1));
-                read_subtree_bodies::<G, M, BODY_SIZE>(
-                    getter, st, &chunk_range, &mut bodies,
-                )?;
+                read_subtree_bodies::<G, M, BODY_SIZE>(getter, st, &chunk_range, &mut bodies)?;
                 Ok(bodies)
             })
             .collect::<Result<Vec<Vec<Bytes>>>>()?;
@@ -317,7 +322,9 @@ mod tests {
 
     #[test]
     fn test_joiner_streaming() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 500).map(|i| (i % 256) as u8).collect();
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 500)
+            .map(|i| (i % 256) as u8)
+            .collect();
         let (root, store) = split_and_store(&data);
 
         let mut joiner = SyncJoiner::new(store, root).unwrap();
@@ -329,8 +336,9 @@ mod tests {
     #[test]
     fn test_joiner_small_buffer_streaming() {
         let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
-        let data: Vec<u8> =
-            (0..DEFAULT_BODY_SIZE * refs_per_chunk).map(|i| (i % 256) as u8).collect();
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * refs_per_chunk)
+            .map(|i| (i % 256) as u8)
+            .collect();
         let (root, store) = split_and_store(&data);
 
         let mut joiner = SyncJoiner::new(store, root).unwrap();
@@ -366,7 +374,9 @@ mod tests {
 
     #[test]
     fn test_joiner_seek_current() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
+            .map(|i| (i % 256) as u8)
+            .collect();
         let (root, store) = split_and_store(&data);
         let mut joiner = SyncJoiner::new(store, root).unwrap();
 
@@ -448,8 +458,9 @@ mod tests {
 
         #[test]
         fn test_encrypted_joiner_streaming() {
-            let data: Vec<u8> =
-                (0..DEFAULT_BODY_SIZE * 65).map(|i| (i % 256) as u8).collect();
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 65)
+                .map(|i| (i % 256) as u8)
+                .collect();
             let (root_ref, store) = encrypted_split_and_store(&data);
 
             let mut joiner = EncryptedSyncJoiner::new(store, root_ref).unwrap();
@@ -460,8 +471,9 @@ mod tests {
 
         #[test]
         fn test_encrypted_joiner_small_buffer_streaming() {
-            let data: Vec<u8> =
-                (0..DEFAULT_BODY_SIZE * 128).map(|i| (i % 256) as u8).collect();
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 128)
+                .map(|i| (i % 256) as u8)
+                .collect();
             let (root_ref, store) = encrypted_split_and_store(&data);
 
             let mut joiner = EncryptedSyncJoiner::new(store, root_ref).unwrap();
@@ -479,13 +491,16 @@ mod tests {
 
         #[test]
         fn test_encrypted_joiner_seek_back_and_forth() {
-            let data: Vec<u8> =
-                (0..DEFAULT_BODY_SIZE * 3).map(|i| (i % 256) as u8).collect();
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
+                .map(|i| (i % 256) as u8)
+                .collect();
             let (root_ref, store) = encrypted_split_and_store(&data);
             let mut joiner = EncryptedSyncJoiner::new(store, root_ref).unwrap();
 
             // Read from middle
-            joiner.seek(SeekFrom::Start(DEFAULT_BODY_SIZE as u64)).unwrap();
+            joiner
+                .seek(SeekFrom::Start(DEFAULT_BODY_SIZE as u64))
+                .unwrap();
             let mut buf1 = vec![0u8; 100];
             joiner.read_exact(&mut buf1).unwrap();
             assert_eq!(&buf1, &data[DEFAULT_BODY_SIZE..DEFAULT_BODY_SIZE + 100]);

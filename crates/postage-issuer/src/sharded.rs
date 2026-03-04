@@ -20,9 +20,9 @@ use nectar_primitives::SwarmAddress;
 
 #[cfg(feature = "parallel")]
 use {
+    crate::error::SigningError,
     alloy_primitives::B256,
     alloy_signer::Signature,
-    crate::error::SigningError,
     nectar_postage::{Stamp, current_timestamp},
 };
 
@@ -414,9 +414,9 @@ mod tests {
     #[cfg(feature = "parallel")]
     #[test]
     fn test_parallel_signing() {
+        use crate::error::SigningError;
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
-        use crate::error::SigningError;
 
         let issuer = ShardedIssuer::new(B256::ZERO, 24, 16);
         let signer = PrivateKeySigner::random();

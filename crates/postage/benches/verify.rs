@@ -269,10 +269,7 @@ fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     let mut group = c.benchmark_group("ecdsa_verify_parallel");
 
     // 100 stamps
-    let verify_input_100: Vec<_> = stamps_100
-        .iter()
-        .zip(addresses_100.iter())
-        .collect();
+    let verify_input_100: Vec<_> = stamps_100.iter().zip(addresses_100.iter()).collect();
 
     group.throughput(Throughput::Elements(100));
     group.bench_function("throughput_100", |b| {
@@ -280,10 +277,7 @@ fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     });
 
     // 1000 stamps
-    let verify_input_1000: Vec<_> = stamps_1000
-        .iter()
-        .zip(addresses_1000.iter())
-        .collect();
+    let verify_input_1000: Vec<_> = stamps_1000.iter().zip(addresses_1000.iter()).collect();
 
     group.throughput(Throughput::Elements(1000));
     group.bench_function("throughput_1000", |b| {
@@ -319,10 +313,7 @@ fn bench_ecdsa_verify_parallel_with_pubkey(c: &mut Criterion) {
     let mut group = c.benchmark_group("ecdsa_verify_parallel_cached");
 
     // 100 stamps with cached pubkey
-    let verify_input_100: Vec<_> = stamps_100
-        .iter()
-        .zip(addresses_100.iter())
-        .collect();
+    let verify_input_100: Vec<_> = stamps_100.iter().zip(addresses_100.iter()).collect();
 
     group.throughput(Throughput::Elements(100));
     group.bench_function("throughput_100", |b| {
@@ -335,10 +326,7 @@ fn bench_ecdsa_verify_parallel_with_pubkey(c: &mut Criterion) {
     });
 
     // 1000 stamps with cached pubkey
-    let verify_input_1000: Vec<_> = stamps_1000
-        .iter()
-        .zip(addresses_1000.iter())
-        .collect();
+    let verify_input_1000: Vec<_> = stamps_1000.iter().zip(addresses_1000.iter()).collect();
 
     group.throughput(Throughput::Elements(1000));
     group.bench_function("throughput_1000", |b| {
@@ -394,10 +382,7 @@ fn bench_verify_comparison(c: &mut Criterion) {
     });
 
     // Parallel with full recovery
-    let verify_input: Vec<_> = stamps
-        .iter()
-        .zip(addresses.iter())
-        .collect();
+    let verify_input: Vec<_> = stamps.iter().zip(addresses.iter()).collect();
 
     group.bench_function("parallel_recovery", |b| {
         b.iter(|| black_box(verify_stamps_parallel(&verify_input)))

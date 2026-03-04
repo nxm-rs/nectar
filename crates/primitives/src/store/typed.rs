@@ -36,30 +36,42 @@ pub trait SyncChunkHas<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
 
 impl<T: SyncChunkPut<BS>, const BS: usize> SyncChunkPut<BS> for &T {
     type Error = T::Error;
-    fn put(&self, chunk: AnyChunk<BS>) -> Result<(), Self::Error> { (**self).put(chunk) }
+    fn put(&self, chunk: AnyChunk<BS>) -> Result<(), Self::Error> {
+        (**self).put(chunk)
+    }
 }
 
 impl<T: SyncChunkPut<BS>, const BS: usize> SyncChunkPut<BS> for &mut T {
     type Error = T::Error;
-    fn put(&self, chunk: AnyChunk<BS>) -> Result<(), Self::Error> { (**self).put(chunk) }
+    fn put(&self, chunk: AnyChunk<BS>) -> Result<(), Self::Error> {
+        (**self).put(chunk)
+    }
 }
 
 impl<T: SyncChunkGet<BS>, const BS: usize> SyncChunkGet<BS> for &T {
     type Error = T::Error;
-    fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BS>, Self::Error> { (**self).get(address) }
+    fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BS>, Self::Error> {
+        (**self).get(address)
+    }
 }
 
 impl<T: SyncChunkGet<BS>, const BS: usize> SyncChunkGet<BS> for &mut T {
     type Error = T::Error;
-    fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BS>, Self::Error> { (**self).get(address) }
+    fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BS>, Self::Error> {
+        (**self).get(address)
+    }
 }
 
 impl<T: SyncChunkHas<BS>, const BS: usize> SyncChunkHas<BS> for &T {
-    fn has(&self, address: &ChunkAddress) -> bool { (**self).has(address) }
+    fn has(&self, address: &ChunkAddress) -> bool {
+        (**self).has(address)
+    }
 }
 
 impl<T: SyncChunkHas<BS>, const BS: usize> SyncChunkHas<BS> for &mut T {
-    fn has(&self, address: &ChunkAddress) -> bool { (**self).has(address) }
+    fn has(&self, address: &ChunkAddress) -> bool {
+        (**self).has(address)
+    }
 }
 
 /// Async chunk retrieval (primary API).
@@ -93,10 +105,7 @@ where
 /// Async chunk existence check (primary API).
 pub trait ChunkHas<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: Send + Sync {
     /// Check if a chunk exists.
-    fn has(
-        &self,
-        address: &ChunkAddress,
-    ) -> impl Future<Output = bool> + Send;
+    fn has(&self, address: &ChunkAddress) -> impl Future<Output = bool> + Send;
 }
 
 impl<T, const BS: usize> ChunkHas<BS> for T

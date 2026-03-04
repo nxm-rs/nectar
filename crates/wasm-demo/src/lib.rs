@@ -22,13 +22,13 @@ use alloy_primitives::B256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use js_sys::{Array, Date, Object, Uint8Array};
-use nectar_postage::{Stamp, STAMP_SIZE};
+use nectar_postage::{STAMP_SIZE, Stamp};
 use nectar_postage_issuer::{BatchStamper, MemoryIssuer, StampIssuer};
-use nectar_primitives::bmt::{Hasher, Prover, BRANCHES, DEFAULT_BODY_SIZE, SPAN_SIZE};
+use nectar_primitives::SwarmAddress;
+use nectar_primitives::bmt::{BRANCHES, DEFAULT_BODY_SIZE, Hasher, Prover, SPAN_SIZE};
 use nectar_primitives::chunk::AnyChunk;
 use nectar_primitives::file::{self, SyncParallelSplitter};
 use nectar_primitives::store::MemoryStore;
-use nectar_primitives::SwarmAddress;
 use rayon::prelude::*;
 use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
@@ -132,7 +132,9 @@ pub fn hash_chunk_batch(chunks: &Array) -> Result<Array, JsValue> {
         let span = js_sys::Reflect::get(&chunk_obj, &"span".into())?;
 
         let data_array: Uint8Array = data.dyn_into()?;
-        let span_val: f64 = span.as_f64().ok_or_else(|| JsValue::from_str("Invalid span"))?;
+        let span_val: f64 = span
+            .as_f64()
+            .ok_or_else(|| JsValue::from_str("Invalid span"))?;
 
         let hash = hash_chunk(&data_array, span_val as u64)?;
         results.push(&hash);
@@ -211,8 +213,8 @@ fn build_split_result(
 #[wasm_bindgen(js_name = splitFileSequential)]
 pub fn split_file_sequential(data: &Uint8Array) -> Result<JsValue, JsValue> {
     let bytes = data.to_vec();
-    let (root, store) =
-        file::sync_split::<DEFAULT_BODY_SIZE>(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let (root, store) = file::sync_split::<DEFAULT_BODY_SIZE>(&bytes)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let chunks: Vec<_> = store.into_chunks().into_values().collect();
 
     build_split_result(root.as_slice(), &chunks)
@@ -249,8 +251,16 @@ pub fn calculate_tree_params(size: u64) -> Result<JsValue, JsValue> {
     let tree = file::TreeParams::<DEFAULT_BODY_SIZE>::new(size);
 
     let result = Object::new();
-    js_sys::Reflect::set(&result, &"dataChunks".into(), &JsValue::from(tree.data_chunks()))?;
-    js_sys::Reflect::set(&result, &"totalChunks".into(), &JsValue::from(tree.total_chunks()))?;
+    js_sys::Reflect::set(
+        &result,
+        &"dataChunks".into(),
+        &JsValue::from(tree.data_chunks()),
+    )?;
+    js_sys::Reflect::set(
+        &result,
+        &"totalChunks".into(),
+        &JsValue::from(tree.total_chunks()),
+    )?;
     js_sys::Reflect::set(&result, &"depth".into(), &JsValue::from(tree.depth()))?;
 
     // Calculate offsets for data chunks
@@ -293,7 +303,11 @@ pub fn generate_proof(data: &Uint8Array, segment_index: usize) -> Result<JsValue
 
     let result = Object::new();
 
-    js_sys::Reflect::set(&result, &"segmentIndex".into(), &JsValue::from(proof.segment_index))?;
+    js_sys::Reflect::set(
+        &result,
+        &"segmentIndex".into(),
+        &JsValue::from(proof.segment_index),
+    )?;
 
     let segment = Uint8Array::new_with_length(32);
     segment.copy_from(proof.segment.as_slice());
@@ -384,8 +398,8 @@ pub fn split_and_stamp_sequential(data: &Uint8Array) -> Result<JsValue, JsValue>
 
     // Split file (timed)
     let split_start = now();
-    let (root, store) =
-        file::sync_split::<DEFAULT_BODY_SIZE>(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let (root, store) = file::sync_split::<DEFAULT_BODY_SIZE>(&bytes)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let chunks: Vec<_> = store.into_chunks().into_values().collect();
     let split_time = now() - split_start;
 
@@ -412,12 +426,20 @@ pub fn split_and_stamp_sequential(data: &Uint8Array) -> Result<JsValue, JsValue>
             .sign_message_sync(prehash.as_slice())
             .map_err(|e| JsValue::from_str(&format!("Signing failed: {e}")))?;
 
-        let stamp = BatchStamper::<MemoryIssuer, PrivateKeySigner>::stamp_from_signature(&digest, sig);
+        let stamp =
+            BatchStamper::<MemoryIssuer, PrivateKeySigner>::stamp_from_signature(&digest, sig);
         stamps.push(stamp);
     }
     let stamp_time = now() - stamp_start;
 
-    build_stamp_result(root.as_slice(), &chunks, &stamps, signer_address.as_slice(), split_time, stamp_time)
+    build_stamp_result(
+        root.as_slice(),
+        &chunks,
+        &stamps,
+        signer_address.as_slice(),
+        split_time,
+        stamp_time,
+    )
 }
 
 /// Split file and stamp all chunks in parallel using rayon.
@@ -491,7 +513,14 @@ pub fn split_and_stamp_parallel(data: &Uint8Array) -> Result<JsValue, JsValue> {
     let stamps = stamps.map_err(|e| JsValue::from_str(&e))?;
     let stamp_time = now() - stamp_start;
 
-    build_stamp_result(root.as_slice(), &chunks, &stamps, signer_address.as_slice(), split_time, stamp_time)
+    build_stamp_result(
+        root.as_slice(),
+        &chunks,
+        &stamps,
+        signer_address.as_slice(),
+        split_time,
+        stamp_time,
+    )
 }
 
 /// Helper to build the JS result object for stamping functions.

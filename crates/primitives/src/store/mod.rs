@@ -9,9 +9,7 @@ mod memory;
 mod typed;
 
 pub use memory::MemoryStore;
-pub use typed::{
-    ChunkGet, ChunkHas, ChunkPut, SyncChunkGet, SyncChunkHas, SyncChunkPut,
-};
+pub use typed::{ChunkGet, ChunkHas, ChunkPut, SyncChunkGet, SyncChunkHas, SyncChunkPut};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{AnyChunk, ChunkAddress};

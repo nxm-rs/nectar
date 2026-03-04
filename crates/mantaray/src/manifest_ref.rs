@@ -14,7 +14,10 @@ pub struct ManifestRef {
 impl ManifestRef {
     /// Create a new manifest reference.
     pub const fn new(address: ChunkAddress, obfuscation_key: ObfuscationKey) -> Self {
-        Self { address, obfuscation_key }
+        Self {
+            address,
+            obfuscation_key,
+        }
     }
 
     /// The root chunk address.

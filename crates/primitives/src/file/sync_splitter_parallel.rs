@@ -115,8 +115,7 @@ where
                     BODY_SIZE as u64
                 };
 
-                let chunk_bytes =
-                    super::helpers::build_intermediate_payload(span, &buf);
+                let chunk_bytes = super::helpers::build_intermediate_payload(span, &buf);
 
                 let (chunk, ref_bytes) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
                 self.put_chunk(chunk)?;
@@ -178,8 +177,7 @@ where
                     .flat_map(|r| r.as_ref())
                     .copied()
                     .collect();
-                let chunk_bytes =
-                    super::helpers::build_intermediate_payload(span, &ref_data);
+                let chunk_bytes = super::helpers::build_intermediate_payload(span, &ref_data);
 
                 let (chunk, ref_bytes) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
                 self.put_chunk(chunk)?;
@@ -201,7 +199,9 @@ mod tests {
     use crate::file::sync_join;
     use crate::store::MemoryStore;
 
-    fn split_and_store(data: &[u8]) -> (crate::chunk::ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>) {
+    fn split_and_store(
+        data: &[u8],
+    ) -> (crate::chunk::ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>) {
         let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let splitter = SyncParallelSplitter::new(store);
         let root = splitter.split(&data).unwrap();
@@ -229,12 +229,15 @@ mod tests {
     #[cfg(feature = "encryption")]
     mod encrypted {
         use super::*;
-        use crate::file::{sync_join, sync_split_encrypted, EncryptedSyncParallelSplitter};
+        use crate::file::{EncryptedSyncParallelSplitter, sync_join, sync_split_encrypted};
         use crate::store::MemoryStore;
 
         fn encrypted_split_and_store(
             data: &[u8],
-        ) -> (crate::chunk::encryption::EncryptedChunkRef, MemoryStore<DEFAULT_BODY_SIZE>) {
+        ) -> (
+            crate::chunk::encryption::EncryptedChunkRef,
+            MemoryStore<DEFAULT_BODY_SIZE>,
+        ) {
             let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
             let splitter = EncryptedSyncParallelSplitter::new(store);
             let root_ref = splitter.split(&data).unwrap();

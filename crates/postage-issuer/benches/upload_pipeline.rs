@@ -19,17 +19,17 @@ use rand::{RngCore, rng};
 use nectar_postage_issuer::{
     BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
+use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::file::{SyncParallelSplitter, SyncSplitter};
 use nectar_primitives::store::MemoryStore;
-use nectar_primitives::DEFAULT_BODY_SIZE;
 
 /// File sizes to benchmark, representing realistic upload scenarios.
 const SIZES: &[(u64, &str)] = &[
-    (64 * 1024, "64KB"),               // Small document
-    (256 * 1024, "256KB"),             // Medium document
-    (1024 * 1024, "1MB"),              // Typical file
-    (4 * 1024 * 1024, "4MB"),          // Large file
-    (16 * 1024 * 1024, "16MB"),        // Very large file
+    (64 * 1024, "64KB"),        // Small document
+    (256 * 1024, "256KB"),      // Medium document
+    (1024 * 1024, "1MB"),       // Typical file
+    (4 * 1024 * 1024, "4MB"),   // Large file
+    (16 * 1024 * 1024, "16MB"), // Very large file
 ];
 
 /// Mock signer for isolating non-crypto overhead.

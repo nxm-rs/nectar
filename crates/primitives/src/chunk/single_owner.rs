@@ -404,9 +404,10 @@ impl<const BODY_SIZE: usize> TryFrom<&[u8]> for SingleOwnerChunk<BODY_SIZE> {
 
 impl<const BODY_SIZE: usize> fmt::Display for SingleOwnerChunk<BODY_SIZE> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let owner_str = self
-            .owner()
-            .map_or_else(|_| "invalid".to_string(), |addr| hex::encode(addr.as_slice()));
+        let owner_str = self.owner().map_or_else(
+            |_| "invalid".to_string(),
+            |addr| hex::encode(addr.as_slice()),
+        );
         write!(
             f,
             "SingleOwnerChunk[id={}, owner={}]",

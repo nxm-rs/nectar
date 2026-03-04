@@ -11,10 +11,10 @@ use std::io::Write;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use rand::{RngCore, rng};
 
+use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
 use nectar_primitives::file::{SyncJoiner, SyncParallelSplitter, SyncSplitter, sync_split};
 use nectar_primitives::store::MemoryStore;
-use nectar_primitives::DEFAULT_BODY_SIZE;
 
 /// File sizes to benchmark, covering typical use cases.
 const SIZES: &[(u64, &str)] = &[
@@ -22,9 +22,9 @@ const SIZES: &[(u64, &str)] = &[
     (32 * 1024, "32KB"),                      // Few chunks
     (256 * 1024, "256KB"),                    // Document size
     (1024 * 1024, "1MB"),                     // Small file
-    (4 * 1024 * 1024, "4MB"),                // Medium file
-    (16 * 1024 * 1024, "16MB"),              // Large file
-    (64 * 1024 * 1024, "64MB"),              // Very large file
+    (4 * 1024 * 1024, "4MB"),                 // Medium file
+    (16 * 1024 * 1024, "16MB"),               // Large file
+    (64 * 1024 * 1024, "64MB"),               // Very large file
     (128 * DEFAULT_BODY_SIZE as u64, "128c"), // Exactly 128 chunks (tree boundary)
     (129 * DEFAULT_BODY_SIZE as u64, "129c"), // Just past tree boundary
 ];
@@ -100,18 +100,14 @@ fn bench_splitter_comparison(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(size));
 
-        group.bench_with_input(
-            BenchmarkId::new("streaming", name),
-            &data,
-            |b, data| {
-                b.iter(|| {
-                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                    let mut splitter = SyncSplitter::new(store, data.len() as u64);
-                    splitter.write_all(data).unwrap();
-                    black_box(splitter.finish().unwrap())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("streaming", name), &data, |b, data| {
+            b.iter(|| {
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let mut splitter = SyncSplitter::new(store, data.len() as u64);
+                splitter.write_all(data).unwrap();
+                black_box(splitter.finish().unwrap())
+            });
+        });
 
         group.bench_with_input(BenchmarkId::new("direct", name), &data, |b, data| {
             b.iter(|| {
@@ -215,20 +211,16 @@ fn bench_roundtrip(c: &mut Criterion) {
             },
         );
 
-        group.bench_with_input(
-            BenchmarkId::new("direct_split", name),
-            &data,
-            |b, data| {
-                b.iter(|| {
-                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                    let splitter = SyncParallelSplitter::new(store);
-                    let root = splitter.split(data).unwrap();
-                    let store = splitter.into_store();
-                    let joiner = SyncJoiner::new(store, root).unwrap();
-                    black_box(joiner.read_all().unwrap())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("direct_split", name), &data, |b, data| {
+            b.iter(|| {
+                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+                let splitter = SyncParallelSplitter::new(store);
+                let root = splitter.split(data).unwrap();
+                let store = splitter.into_store();
+                let joiner = SyncJoiner::new(store, root).unwrap();
+                black_box(joiner.read_all().unwrap())
+            });
+        });
     }
 
     group.finish();

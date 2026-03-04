@@ -904,18 +904,16 @@ pub fn analyze_chunk(
 
     // Prioritize any successful parse that matches the expected address
     match (content_result, single_owner_result) {
-        (Ok(content_chunk), _) if content_chunk.address() == &expected => {
-            Ok(ChunkAnalysisResult {
-                is_valid: true,
-                chunk_type: ChunkType::Content,
-                address: *content_chunk.address().deref(),
-                data: content_chunk.data().to_vec(),
-                id: None,
-                owner: None,
-                signature: None,
-                error_message: None,
-            })
-        }
+        (Ok(content_chunk), _) if content_chunk.address() == &expected => Ok(ChunkAnalysisResult {
+            is_valid: true,
+            chunk_type: ChunkType::Content,
+            address: *content_chunk.address().deref(),
+            data: content_chunk.data().to_vec(),
+            id: None,
+            owner: None,
+            signature: None,
+            error_message: None,
+        }),
         (_, Ok(single_owner_chunk)) if single_owner_chunk.address() == &expected => {
             Ok(ChunkAnalysisResult {
                 is_valid: true,
@@ -929,54 +927,48 @@ pub fn analyze_chunk(
             })
         }
         // Return any successful parse with address mismatch
-        (Ok(content_chunk), _) => {
-            Ok(ChunkAnalysisResult {
-                is_valid: false,
-                chunk_type: ChunkType::Content,
-                address: *content_chunk.address().deref(),
-                data: content_chunk.data().to_vec(),
-                id: None,
-                owner: None,
-                signature: None,
-                error_message: Some(format!(
-                    "Content chunk address mismatch. Expected: 0x{}, Actual: 0x{}",
-                    hex::encode(expected.as_bytes()),
-                    hex::encode(content_chunk.address().as_bytes())
-                )),
-            })
-        }
-        (_, Ok(single_owner_chunk)) => {
-            Ok(ChunkAnalysisResult {
-                is_valid: false,
-                chunk_type: ChunkType::SingleOwner,
-                address: *single_owner_chunk.address().deref(),
-                data: single_owner_chunk.data().to_vec(),
-                id: Some(single_owner_chunk.id()),
-                owner: single_owner_chunk.owner().ok(),
-                signature: Some(single_owner_chunk.signature().as_bytes().to_vec()),
-                error_message: Some(format!(
-                    "Single owner chunk address mismatch. Expected: 0x{}, Actual: 0x{}",
-                    hex::encode(expected.as_bytes()),
-                    hex::encode(single_owner_chunk.address().as_bytes())
-                )),
-            })
-        }
+        (Ok(content_chunk), _) => Ok(ChunkAnalysisResult {
+            is_valid: false,
+            chunk_type: ChunkType::Content,
+            address: *content_chunk.address().deref(),
+            data: content_chunk.data().to_vec(),
+            id: None,
+            owner: None,
+            signature: None,
+            error_message: Some(format!(
+                "Content chunk address mismatch. Expected: 0x{}, Actual: 0x{}",
+                hex::encode(expected.as_bytes()),
+                hex::encode(content_chunk.address().as_bytes())
+            )),
+        }),
+        (_, Ok(single_owner_chunk)) => Ok(ChunkAnalysisResult {
+            is_valid: false,
+            chunk_type: ChunkType::SingleOwner,
+            address: *single_owner_chunk.address().deref(),
+            data: single_owner_chunk.data().to_vec(),
+            id: Some(single_owner_chunk.id()),
+            owner: single_owner_chunk.owner().ok(),
+            signature: Some(single_owner_chunk.signature().as_bytes().to_vec()),
+            error_message: Some(format!(
+                "Single owner chunk address mismatch. Expected: 0x{}, Actual: 0x{}",
+                hex::encode(expected.as_bytes()),
+                hex::encode(single_owner_chunk.address().as_bytes())
+            )),
+        }),
         // Both failed to parse
-        (Err(e1), Err(e2)) => {
-            Ok(ChunkAnalysisResult {
-                is_valid: false,
-                chunk_type: ChunkType::Unknown,
-                address: B256::default(),
-                data: chunk_data.to_vec(),
-                id: None,
-                owner: None,
-                signature: None,
-                error_message: Some(format!(
-                    "Failed to parse chunk: ContentChunk error: {}, SingleOwnerChunk error: {}",
-                    e1, e2
-                )),
-            })
-        }
+        (Err(e1), Err(e2)) => Ok(ChunkAnalysisResult {
+            is_valid: false,
+            chunk_type: ChunkType::Unknown,
+            address: B256::default(),
+            data: chunk_data.to_vec(),
+            id: None,
+            owner: None,
+            signature: None,
+            error_message: Some(format!(
+                "Failed to parse chunk: ContentChunk error: {}, SingleOwnerChunk error: {}",
+                e1, e2
+            )),
+        }),
     }
 }
 

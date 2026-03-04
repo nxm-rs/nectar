@@ -161,7 +161,13 @@ mod tests {
         // Encrypt each 32-byte segment separately with incrementing counter
         let mut segmented = [0u8; 128];
         for (i, chunk) in input.chunks(EncryptionKey::SIZE).enumerate() {
-            transcrypt(&key, i as u32, chunk, &mut segmented[i * EncryptionKey::SIZE..]).unwrap();
+            transcrypt(
+                &key,
+                i as u32,
+                chunk,
+                &mut segmented[i * EncryptionKey::SIZE..],
+            )
+            .unwrap();
         }
         assert_eq!(whole, segmented);
     }
@@ -200,9 +206,7 @@ mod tests {
             }
             (0..s.len())
                 .step_by(2)
-                .map(|i| {
-                    u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string())
-                })
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string()))
                 .collect()
         }
     }

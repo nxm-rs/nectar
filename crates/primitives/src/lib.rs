@@ -96,24 +96,22 @@ pub use store::{
 };
 
 // File operations — async (primary)
-pub use file::{
-    ChunkGetExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef,
-    Joiner, TreeParams, join,
-};
 #[cfg(feature = "encryption")]
 pub use file::EncryptedJoiner;
 #[cfg(feature = "tokio")]
 pub use file::JoinerReader;
+pub use file::{
+    ChunkGetExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef, Joiner, TreeParams, join,
+};
 
 // File operations — sync (secondary)
+#[cfg(feature = "encryption")]
+pub use file::{
+    EncryptedSyncJoiner, EncryptedSyncParallelSplitter, EncryptedSyncSplitter, sync_split_encrypted,
+};
 pub use file::{
     GenericSyncJoiner, SyncChunkGetExt, SyncChunkPutExt, SyncJoiner, SyncParallelSplitter,
     SyncReadAt, SyncSplitter, sync_join, sync_split,
-};
-#[cfg(feature = "encryption")]
-pub use file::{
-    EncryptedSyncJoiner, EncryptedSyncParallelSplitter, EncryptedSyncSplitter,
-    sync_split_encrypted,
 };
 
 /// Default sync file splitter.
