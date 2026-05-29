@@ -17,21 +17,21 @@ jobs:
 
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
             - name: Install Rust nightly
-              uses: dtolnay/rust-toolchain@nightly
+              uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2  # nightly
               with:
                   targets: wasm32-unknown-unknown
                   components: rust-src
 
             - name: Cache Rust dependencies
-              uses: Swatinem/rust-cache@v2
+              uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
               with:
                   shared-key: "wasm-demo"
 
             - name: Install Trunk
-              uses: jetli/trunk-action@v0.4.0
+              uses: jetli/trunk-action@1346cc09eace4beb84e403e199a471346d4684c9  # v0.5.1
               with:
                   version: "latest"
 
@@ -41,7 +41,7 @@ jobs:
                   RUSTUP_TOOLCHAIN=nightly trunk build --release --public-url /nectar/
 
             - name: Deploy to GitHub Pages
-              uses: JamesIves/github-pages-deploy-action@v4
+              uses: JamesIves/github-pages-deploy-action@d92aa235d04922e8f08b40ce78cc5442fcfbfa2f  # v4.8.0
               with:
                   folder: crates/primitives/examples/wasm-demo/dist
                   branch: gh-pages
