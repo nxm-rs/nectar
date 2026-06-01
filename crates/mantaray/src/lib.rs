@@ -51,6 +51,15 @@
 //! use nectar_mantaray::metadata;
 //! assert_eq!(metadata::CONTENT_TYPE, "Content-Type");
 //! ```
+//!
+//! # Upstream-bug workarounds
+//!
+//! Code that exists solely to tolerate a defect in an upstream reference
+//! implementation is tagged with a grep-able `BEE-WORKAROUND(bee#NNNN)`
+//! comment. When the upstream fix lands and downstream consumers have
+//! upgraded past the buggy releases, every site tagged with that issue
+//! number should be removed. Run `git grep -n BEE-WORKAROUND` to enumerate
+//! them.
 
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;

@@ -183,8 +183,59 @@ impl<E: NodeEntry> TryFrom<&[u8]> for Node<E> {
     }
 }
 
+// ┌─────────────────────────── HAZMAT ───────────────────────────┐
+// │ BEE-WORKAROUND(bee#5483): bee's mantaray writer occasionally  │
+// │ emits a node with `ref_size = 0` (the byte at header offset  │
+// │ 63) for entry-less terminal nodes. This is not spec-legal:  │
+// │ the spec doc (bee/pkg/manifest/mantaray/docs/format/node.md) │
+// │ and every reference impl (bee, mantaray-js, nectar) treat    │
+// │ `ref_size` as a single uniform width in {32, 64} governing   │
+// │ both the entry slot and every fork ref slot. mantaray-js     │
+// │ documents the bee artifact with an explicit FIXME: "in Bee,  │
+// │ if one uploads a file on the bzz endpoint, the node under    │
+// │ `/` gets 0 refsize."                                         │
+// │                                                              │
+// │ Remove `decode_empty_terminal_node` and the two call-sites   │
+// │ guarded by `BEE-WORKAROUND(bee#5483)` once the upstream bee   │
+// │ fix lands and downstream consumers have upgraded past the    │
+// │ buggy releases.                                              │
+// └──────────────────────────────────────────────────────────────┘
+
+/// Decode a `ref_size = 0` node as the empty terminal node that bee intends
+/// it to mean.
+///
+/// Accepts this wire shape only when the forks bitfield is also empty. A
+/// `ref_size = 0` node with non-empty forks is unrecoverable by any
+/// implementation (fork refs would have zero width), so we reject it as
+/// malformed rather than silently dropping forks the way bee's v0.2 decoder
+/// does (`bee/pkg/manifest/mantaray/marshal.go:285-287`).
+///
+/// See the HAZMAT block above for the full context.
+fn decode_empty_terminal_node<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
+    let bitfield_start = NodeHeader::SIZE;
+    let bitfield_end = bitfield_start + 32;
+    if data.len() < bitfield_end {
+        return Err(MantarayError::DataTooShort);
+    }
+    if data[bitfield_start..bitfield_end].iter().any(|&b| b != 0) {
+        return Err(MantarayError::EntrySizeMismatch {
+            expected: E::SIZE,
+            actual: 0,
+        });
+    }
+    Ok(Node {
+        entry: None,
+        forks: BTreeMap::new(),
+        ..Default::default()
+    })
+}
+
 fn decode_v01<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
     let ref_bytes_size = data[NodeHeader::REF_SIZE_OFFSET] as usize;
+    // BEE-WORKAROUND(bee#5483): see HAZMAT block above `decode_empty_terminal_node`.
+    if ref_bytes_size == 0 {
+        return decode_empty_terminal_node::<E>(data);
+    }
     if ref_bytes_size != E::SIZE {
         return Err(MantarayError::EntrySizeMismatch {
             expected: E::SIZE,
@@ -231,6 +282,10 @@ fn decode_v01<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 
 fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
     let ref_bytes_size = data[NodeHeader::REF_SIZE_OFFSET] as usize;
+    // BEE-WORKAROUND(bee#5483): see HAZMAT block above `decode_empty_terminal_node`.
+    if ref_bytes_size == 0 {
+        return decode_empty_terminal_node::<E>(data);
+    }
     if ref_bytes_size != E::SIZE {
         return Err(MantarayError::EntrySizeMismatch {
             expected: E::SIZE,
@@ -630,6 +685,86 @@ mod tests {
             "00000000000000000000000000000000000000000000000000000000000000005768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f200000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000016012f0000000000000000000000000000000000000000000000000000000000e87f95c3d081c4fede769b6c69e27b435e525cbd25c6715c607e7c531e32963900607b22776562736974652d696e6465782d646f63756d656e74223a2233356561656538316262363338303436393965633637316265323736326465626665346662643330636461646139303232393239646131613965366134366436227d0a"
         ).unwrap();
         assert!(Node::<ChunkAddress>::try_from(data.as_slice()).is_err());
+    }
+
+    /// BEE-WORKAROUND(bee#5483): bee occasionally emits nodes with
+    /// `ref_size = 0` for entry-less terminal nodes (mantaray-js FIXME:
+    /// "in Bee, if one uploads a file on the bzz endpoint, the node under
+    /// `/` gets 0 refsize"). Tolerate this wire shape only when the forks
+    /// bitfield is also empty.
+    #[test]
+    fn decode_bee_legacy_ref_size_zero_empty_node() {
+        // v0.2 layout: 32 obfuscation key zeros || 31 version hash || ref_size=0 || 32 index zeros = 96 bytes
+        let mut data = vec![0u8; 96];
+        data[ObfuscationKey::SIZE
+            ..ObfuscationKey::SIZE + VersionHash::SIZE]
+            .copy_from_slice(VersionHash::V02.as_bytes());
+        // ref_size at offset 63 is left as 0; index (offset 64..96) is all zero.
+
+        let n = Node::<ChunkAddress>::try_from(data.as_slice())
+            .expect("ref_size=0 with empty forks should decode as terminal node");
+        assert!(n.entry().is_none());
+        assert!(n.forks().is_empty());
+    }
+
+    /// BEE-WORKAROUND(bee#5483): a `ref_size = 0` node with a non-empty forks
+    /// bitfield is unrecoverable by any reference implementation (fork refs
+    /// would have zero width). Reject as malformed rather than silently
+    /// dropping forks the way bee's v0.2 decoder does.
+    #[test]
+    fn decode_bee_legacy_ref_size_zero_with_forks_is_rejected() {
+        let mut data = vec![0u8; 96];
+        data[ObfuscationKey::SIZE
+            ..ObfuscationKey::SIZE + VersionHash::SIZE]
+            .copy_from_slice(VersionHash::V02.as_bytes());
+        // ref_size = 0 (offset 63 already zero), but flip one bit in the index.
+        data[NodeHeader::SIZE] = 0x01;
+
+        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        assert!(matches!(
+            result,
+            Err(MantarayError::EntrySizeMismatch {
+                expected: 32,
+                actual: 0
+            })
+        ));
+    }
+
+    /// BEE-WORKAROUND(bee#5483): same as above but for v0.1; both decoders
+    /// must apply the same rule.
+    #[test]
+    fn decode_bee_legacy_ref_size_zero_v01_empty_node() {
+        let mut data = vec![0u8; 96];
+        data[ObfuscationKey::SIZE
+            ..ObfuscationKey::SIZE + VersionHash::SIZE]
+            .copy_from_slice(VersionHash::V01.as_bytes());
+
+        let n = Node::<ChunkAddress>::try_from(data.as_slice())
+            .expect("v0.1 ref_size=0 with empty forks should decode as terminal node");
+        assert!(n.entry().is_none());
+        assert!(n.forks().is_empty());
+    }
+
+    /// Pin nectar's encoder behaviour: even for an entry-less node, it must
+    /// emit `ref_size = E::SIZE`, never `0`. Spec-correct, matches bee's
+    /// "valid manifest" test fixture, matches mantaray-js. Emitting 0 would
+    /// reproduce the bee bug rather than fix it.
+    #[test]
+    fn encoder_never_emits_ref_size_zero_for_entryless_node() {
+        let n = Node::<ChunkAddress>::new_unencrypted();
+        let encoded = Vec::<u8>::try_from(&n).unwrap();
+
+        // Decrypt (obfuscation key is all-zero for `new_unencrypted`, so XOR
+        // is a no-op, but go through the motions for clarity).
+        let mut decoded = encoded.clone();
+        let key = decoded[..ObfuscationKey::SIZE].to_vec();
+        xor_in_place(&mut decoded[ObfuscationKey::SIZE..], &key);
+
+        assert_eq!(
+            decoded[NodeHeader::REF_SIZE_OFFSET] as usize,
+            <ChunkAddress as NodeEntry>::SIZE,
+            "encoder must emit ref_size = E::SIZE, not 0; spec requires uniform reference width"
+        );
     }
 
     /// Encode-decode round-trip preserves entries and metadata.
