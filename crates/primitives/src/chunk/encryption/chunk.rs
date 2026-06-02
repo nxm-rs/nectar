@@ -53,7 +53,7 @@ pub(crate) fn encrypt_chunk<const BODY_SIZE: usize>(
     // Fill padding beyond actual data with random bytes
     let padding_start = SPAN_SIZE + data.len();
     if padding_start < output.len() {
-        use rand::Rng;
+        use rand::RngExt;
         rand::rng().fill(&mut output[padding_start..]);
     }
 

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use rand::{RngCore, rng};
+use rand::{Rng, rng};
 
 use nectar_primitives::chunk::encryption::{
     self, ChunkEncrypt, EncryptionKey, transcrypt, transcrypt_in_place,

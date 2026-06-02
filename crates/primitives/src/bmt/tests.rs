@@ -9,7 +9,7 @@ use alloy_primitives::{
 };
 use digest::{Digest, FixedOutputReset};
 use proof::Prover;
-use rand::Rng;
+use rand::RngExt;
 
 type DefaultHasher = Hasher<DEFAULT_BODY_SIZE>;
 

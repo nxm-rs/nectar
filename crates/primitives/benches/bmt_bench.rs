@@ -3,7 +3,7 @@ use alloy_primitives::B256;
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use rand::{RngCore, rng};
+use rand::{Rng, rng};
 
 use nectar_primitives::bmt::Prover;
 use nectar_primitives::{

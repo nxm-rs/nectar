@@ -6,7 +6,7 @@
 use alloy_primitives::{B256, Keccak256};
 use bytes::Bytes;
 use digest::{FixedOutput, FixedOutputReset, OutputSizeUser, Reset, Update};
-use generic_array::{GenericArray, typenum::U32};
+use hybrid_array::{Array, sizes::U32};
 use std::io::{self, Write};
 use std::sync::LazyLock;
 
@@ -433,7 +433,7 @@ impl<const BODY_SIZE: usize> Reset for Hasher<BODY_SIZE> {
 
 impl<const BODY_SIZE: usize> FixedOutput for Hasher<BODY_SIZE> {
     #[inline]
-    fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
+    fn finalize_into(self, out: &mut Array<u8, Self::OutputSize>) {
         let b256 = self.sum();
         out.copy_from_slice(b256.as_slice());
     }
@@ -441,7 +441,7 @@ impl<const BODY_SIZE: usize> FixedOutput for Hasher<BODY_SIZE> {
 
 impl<const BODY_SIZE: usize> FixedOutputReset for Hasher<BODY_SIZE> {
     #[inline]
-    fn finalize_into_reset(&mut self, out: &mut GenericArray<u8, Self::OutputSize>) {
+    fn finalize_into_reset(&mut self, out: &mut Array<u8, Self::OutputSize>) {
         let b256 = self.sum();
         out.copy_from_slice(b256.as_slice());
         self.reset_internal();

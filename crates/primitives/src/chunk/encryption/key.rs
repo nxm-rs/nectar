@@ -42,7 +42,7 @@ impl EncryptionKey {
     /// Generate a random encryption key.
     #[cfg(feature = "encryption")]
     pub fn generate() -> Self {
-        use rand::Rng;
+        use rand::RngExt;
         Self(rand::rng().random())
     }
 }
