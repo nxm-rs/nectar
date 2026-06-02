@@ -43,22 +43,22 @@ nectar-postage = { path = "crates/postage" }
 nectar-postage-issuer = { path = "crates/postage-issuer" }
 
 # alloy
-alloy-primitives = { version = "1.5.4", default-features = false }
-alloy-sol-types = { version = "1.5.4", default-features = false }
-alloy-contract = { version = "1.5.2", default-features = false }
+alloy-primitives = { version = "1.6", default-features = false }
+alloy-sol-types = { version = "1.6", default-features = false }
+alloy-contract = { version = "2.0", default-features = false }
 alloy-chains = { version = "0.2.30", default-features = false }
-alloy-signer = { version = "1.5.2", default-features = false }
-alloy-signer-local = { version = "1.5.2", default-features = false }
+alloy-signer = { version = "2.0", default-features = false }
+alloy-signer-local = { version = "2.0", default-features = false }
 
 # k256 with precomputed tables for faster ECDSA
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "precomputed-tables", "std"] }
 
 # hashing
-digest = "0.10"
-generic-array = "0.14"
+digest = "0.11"
+hybrid-array = { version = "0.4", features = ["extra-sizes"] }
 
 # enums
-strum = { version = "0.27", default-features = false, features = ["derive"] }
+strum = { version = "0.28", default-features = false, features = ["derive"] }
 num_enum = { version = "0.7", default-features = false }
 
 # sync
@@ -83,7 +83,7 @@ criterion = { package = "codspeed-criterion-compat", version = "2.10.1" }
 proptest = "1"
 proptest-arbitrary-interop = "0.1"
 proptest-derive = "0.5"
-rand = "0.9"
+rand = "0.10"
 tokio = { version = "1", features = ["rt", "macros"] }
 futures = "0.3"
 

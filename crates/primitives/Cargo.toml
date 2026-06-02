@@ -18,7 +18,7 @@ alloy-signer-local.workspace = true
 
 ## rust crypto
 digest.workspace = true
-generic-array.workspace = true
+hybrid-array.workspace = true
 
 # Core dependencies
 bytes.workspace = true

@@ -42,7 +42,7 @@ macro_rules! generate_plain_splitter_tests {
         #[test]
         fn test_splitter_128_chunks() {
             let mut data = vec![0u8; DEFAULT_BODY_SIZE * REFS_PER_CHUNK];
-            rand::RngCore::fill_bytes(&mut rand::rng(), &mut data);
+            rand::RngExt::fill(&mut rand::rng(), &mut data);
             let (root, store) = $split_fn(&data);
             assert_eq!(store.len(), REFS_PER_CHUNK + 1);
             assert!(!root.is_zero());
@@ -51,7 +51,7 @@ macro_rules! generate_plain_splitter_tests {
         #[test]
         fn test_splitter_129_chunks() {
             let mut data = vec![0u8; DEFAULT_BODY_SIZE * (REFS_PER_CHUNK + 1)];
-            rand::RngCore::fill_bytes(&mut rand::rng(), &mut data);
+            rand::RngExt::fill(&mut rand::rng(), &mut data);
             let (root, store) = $split_fn(&data);
             assert_eq!(store.len(), REFS_PER_CHUNK + 1 + 2);
             assert!(!root.is_zero());

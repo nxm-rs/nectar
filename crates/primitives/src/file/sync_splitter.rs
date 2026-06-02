@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn test_splitter_incremental_writes() {
         let mut data = vec![0u8; DEFAULT_BODY_SIZE * 2 + 100];
-        rand::RngCore::fill_bytes(&mut rand::rng(), &mut data);
+        rand::RngExt::fill(&mut rand::rng(), &mut data);
         let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let mut splitter = SyncSplitter::new(store, data.len() as u64);
 
