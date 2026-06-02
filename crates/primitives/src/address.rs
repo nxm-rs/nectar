@@ -74,6 +74,7 @@ use alloy_primitives::{B256, U256};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::{Bin, ProximityOrder};
 
 /// Maximum proximity order for standard routing operations.
 ///
@@ -205,7 +206,7 @@ impl SwarmAddress {
     }
 
     /// Check if this address is within the given proximity to another address
-    pub fn is_within_proximity(&self, other: &Self, min_proximity: u8) -> bool {
+    pub fn is_within_proximity(&self, other: &Self, min_proximity: ProximityOrder) -> bool {
         self.proximity(other) >= min_proximity
     }
 
@@ -218,8 +219,9 @@ impl SwarmAddress {
     /// use [`extended_proximity()`](Self::extended_proximity) instead.
     #[inline(always)]
     #[must_use]
-    pub fn proximity(&self, other: &Self) -> u8 {
-        self.proximity_helper(other, MAX_PO.into())
+    pub fn proximity(&self, other: &Self) -> ProximityOrder {
+        // `proximity_helper` is bounded by MAX_PO, so the cast is sound.
+        ProximityOrder::new_unchecked(self.proximity_helper(other, MAX_PO.into()))
     }
 
     /// Calculate the extended proximity order between self and another address.
@@ -228,11 +230,35 @@ impl SwarmAddress {
     /// capped at `EXTENDED_PO` (36). Use this for Kademlia bin balancing where
     /// the algorithm checks `po + BitSuffixLength + 1` (up to 36 for bin 31).
     ///
-    /// For standard routing operations, use [`proximity()`](Self::proximity) instead.
+    /// Returns a raw `u8` because the extended range exceeds `ProximityOrder`'s
+    /// invariant (`0..=MAX_PO`). For standard routing, use
+    /// [`proximity()`](Self::proximity) instead.
     #[inline(always)]
     #[must_use]
     pub fn extended_proximity(&self, other: &Self) -> u8 {
         self.proximity_helper(other, EXTENDED_PO.into())
+    }
+
+    /// XOR distance - bitwise XOR of the two 32-byte addresses as a new
+    /// [`SwarmAddress`]. Useful when callers want the raw distance bytes
+    /// (e.g. for content-routing bias) rather than the proximity-order metric.
+    #[inline(always)]
+    #[must_use]
+    pub fn xor(&self, other: &Self) -> Self {
+        let mut out = [0u8; 32];
+        for (i, (a, b)) in self.0.as_slice().iter().zip(other.0.as_slice()).enumerate() {
+            out[i] = a ^ b;
+        }
+        Self(B256::from(out))
+    }
+
+    /// Kademlia bin index of `self` relative to `anchor` - semantic alias for
+    /// `Bin::from(self.proximity(anchor))`. The routing-table convention is
+    /// "the bin a peer occupies is its proximity order to our own overlay".
+    #[inline(always)]
+    #[must_use]
+    pub fn bin(&self, anchor: &Self) -> Bin {
+        Bin::from(self.proximity(anchor))
     }
 
     /// Helper function to calculate proximity with a maximum
