@@ -34,12 +34,21 @@
 pub use bytes;
 
 pub mod address;
+pub mod bin;
 pub mod bmt;
 mod cache;
 pub mod chunk;
 pub mod error;
 pub mod file;
+pub mod neighborhood_depth;
+pub mod network_id;
+pub mod nonce;
+pub mod overlay;
+pub mod proximity_order;
+pub mod signing;
+pub mod spec;
 pub mod store;
+pub mod timestamp;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -53,8 +62,16 @@ pub use chunk::encryption::{EncryptedChunkRef, EncryptionKey};
 pub use chunk::{ChunkEncrypt, EncryptedContentChunk};
 
 // Re-export core types
-pub use address::{MAX_PO, SwarmAddress};
+pub use address::{EXTENDED_PO, MAX_PO, SwarmAddress};
+pub use bin::{Bin, BinError};
 pub use error::{PrimitivesError, Result};
+pub use neighborhood_depth::recompute_neighborhood_depth;
+pub use network_id::NetworkId;
+pub use nonce::Nonce;
+pub use overlay::compute_overlay;
+pub use proximity_order::{ProximityOrder, ProximityOrderError};
+pub use spec::{MAINNET, StaticSpec, SwarmSpec, TESTNET};
+pub use timestamp::{Timestamp, TimestampError};
 
 // Core BMT functionality
 pub use bmt::{Hasher, HasherFactory, Proof, Prover};

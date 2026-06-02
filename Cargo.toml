@@ -57,6 +57,9 @@ k256 = { version = "0.13", default-features = false, features = ["ecdsa", "preco
 digest = "0.11"
 hybrid-array = { version = "0.4", features = ["extra-sizes"] }
 
+# derive macros
+derive_more = { version = "2.1", default-features = false, features = ["display", "from", "into", "as_ref"] }
+
 # enums
 strum = { version = "0.28", default-features = false, features = ["derive"] }
 num_enum = { version = "0.7", default-features = false }
