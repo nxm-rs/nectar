@@ -1,0 +1,13 @@
+# cargo-audit configuration
+# https://rustsec.org/
+
+[advisories]
+# Ignored advisories - build-time only dependencies that don't affect runtime
+ignore = [
+    # proc-macro-error2 is unmaintained but pulled in by alloy-sol-macro &
+    # alloy-sol-macro-expander as a compile-time proc-macro dependency. The latest
+    # alloy-core (1.6.0) and its main branch still depend on it, so there is no
+    # upstream version to bump to. Build-time only, never shipped in the binary or
+    # wasm artifact, no runtime reachability.
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained - via alloy-sol-macro-expander
+]
