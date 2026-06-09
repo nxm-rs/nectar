@@ -2,12 +2,31 @@
 # https://rustsec.org/
 
 [advisories]
-# Ignored advisories - build-time only dependencies that don't affect runtime
+# Every entry below is a build-time-only, transitive dependency pulled in
+# through the alloy stack. None of them are direct nectar dependencies, and
+# none are reachable at runtime or in the shipped wasm artifact. They are
+# kept here (rather than removed) because there is no released upstream
+# version that drops them yet. Each ignore links the upstream tracking issue
+# so it can be revisited once alloy publishes a release with the fix.
 ignore = [
+    # derivative is unmaintained. It is an *optional* dependency of `ruint`
+    # (via `ark-ff`) that is never enabled by the feature set alloy-primitives
+    # requests, so it is not in the resolved build graph at all; it only
+    # appears in Cargo.lock. cargo-audit scans the whole lockfile, which is
+    # why it surfaces here. Tracking: nxm-rs/nectar#19.
+    "RUSTSEC-2024-0388", # derivative unmaintained - optional ark-ff dep of ruint, not in build graph
+
+    # paste is unmaintained (archived by its author). It is a compile-time
+    # proc-macro dependency of alloy-sol-macro-input / syn-solidity. The latest
+    # released alloy-core (1.6.0) still depends on it; the drop to a maintained
+    # alternative only exists on alloy-core's unreleased main branch. Build-time
+    # only, never shipped. Tracking: nxm-rs/nectar#20.
+    "RUSTSEC-2024-0436", # paste unmaintained - via alloy-sol-macro-input / syn-solidity
+
     # proc-macro-error2 is unmaintained but pulled in by alloy-sol-macro &
     # alloy-sol-macro-expander as a compile-time proc-macro dependency. The latest
-    # alloy-core (1.6.0) and its main branch still depend on it, so there is no
-    # upstream version to bump to. Build-time only, never shipped in the binary or
-    # wasm artifact, no runtime reachability.
+    # released alloy-core (1.6.0) still depends on it; main has migrated to
+    # proc-macro-error3 but there is no released version to bump to. Build-time
+    # only, never shipped in the binary or wasm artifact, no runtime reachability.
     "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained - via alloy-sol-macro-expander
 ]

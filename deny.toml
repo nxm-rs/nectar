@@ -1,0 +1,59 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Scope: advisory hygiene ahead of a crates.io publish. The ignore list mirrors
+# .cargo/audit.toml so `cargo audit` and `cargo deny check advisories` agree.
+
+[advisories]
+# Fail on any advisory that is not explicitly ignored below.
+yanked = "deny"
+ignore = [
+    # All three entries are build-time-only, transitive dependencies pulled in
+    # through the alloy stack. None are direct nectar dependencies, none are
+    # reachable at runtime or in the shipped wasm artifact, and none have a
+    # released upstream version that drops them yet. Revisit on each alloy bump.
+
+    # derivative unmaintained. Optional ark-ff dep of ruint, not enabled by the
+    # feature set alloy-primitives requests, so not in the resolved build graph.
+    # Tracking: nxm-rs/nectar#19.
+    "RUSTSEC-2024-0388",
+
+    # paste unmaintained (archived). Compile-time proc-macro dep of
+    # alloy-sol-macro-input / syn-solidity. Latest released alloy-core (1.6.0)
+    # still depends on it. Tracking: nxm-rs/nectar#20.
+    "RUSTSEC-2024-0436",
+
+    # proc-macro-error2 unmaintained. Compile-time proc-macro dep of
+    # alloy-sol-macro / alloy-sol-macro-expander. alloy-core main has migrated to
+    # proc-macro-error3 but there is no released version to bump to.
+    "RUSTSEC-2026-0173",
+]
+
+[bans]
+# Duplicate-version warnings are informational only. The duplicate rand /
+# getrandom / strum graphs come from the alloy + proptest stacks and are out of
+# scope for advisory hygiene.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[licenses]
+# nectar is AGPL-3.0-or-later; its dependency tree is the usual permissive mix.
+allow = [
+    "AGPL-3.0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "allow"
