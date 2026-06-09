@@ -5,6 +5,7 @@ version = "0.1.0"
 edition = "2021"
 description = "WASM demo for BMT hasher"
 license = "AGPL-3.0-or-later"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

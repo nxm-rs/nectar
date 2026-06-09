@@ -9,6 +9,8 @@ homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
 description = "Postage stamp issuing and signing for Ethereum Swarm"
+documentation = "https://docs.rs/nectar-postage-issuer"
+readme = "README.md"
 keywords = ["swarm", "ethereum", "postage", "signing"]
 categories = ["cryptography", "data-structures"]
 
@@ -16,7 +18,7 @@ categories = ["cryptography", "data-structures"]
 workspace = true
 
 [dependencies]
-nectar-postage = { path = "../postage" }
+nectar-postage = { workspace = true }
 nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
@@ -63,3 +65,7 @@ parallel = ["dep:rayon", "std"]
 
 # Arbitrary trait implementations for property-based testing
 arbitrary = ["nectar-postage/arbitrary", "nectar-primitives/arbitrary"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

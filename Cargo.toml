@@ -9,7 +9,7 @@ rust-version = "1.87"
 authors = ["Nexum Contributors"]
 license = "AGPL-3.0-or-later"
 homepage = "https://nxm-rs.github.io/nectar"
-repository = "https://nxm-rs.github.io/nectar"
+repository = "https://github.com/nxm-rs/nectar"
 exclude = ["benches/", "tests/"]
 
 [workspace.lints.rust]
@@ -35,12 +35,12 @@ check.all_targets = true
 
 [workspace.dependencies]
 # nectar crates
-nectar-contracts = { path = "crates/contracts" }
-nectar-mantaray = { path = "crates/mantaray" }
-nectar-primitives = { path = "crates/primitives" }
-nectar-swarms = { path = "crates/swarms" }
-nectar-postage = { path = "crates/postage" }
-nectar-postage-issuer = { path = "crates/postage-issuer" }
+nectar-contracts = { version = "0.1.0", path = "crates/contracts" }
+nectar-mantaray = { version = "0.1.0", path = "crates/mantaray" }
+nectar-primitives = { version = "0.1.0", path = "crates/primitives" }
+nectar-swarms = { version = "0.1.0", path = "crates/swarms" }
+nectar-postage = { version = "0.1.0", path = "crates/postage" }
+nectar-postage-issuer = { version = "0.1.0", path = "crates/postage-issuer" }
 
 # alloy
 alloy-primitives = { version = "1.6", default-features = false }

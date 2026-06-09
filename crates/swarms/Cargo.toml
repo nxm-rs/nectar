@@ -9,6 +9,8 @@ homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
 description = "Canonical type definitions for Ethereum Swarm networks"
+documentation = "https://docs.rs/nectar-swarms"
+readme = "README.md"
 keywords = ["swarm", "ethereum", "network", "no_std"]
 categories = ["no-std", "data-structures"]
 
@@ -32,3 +34,7 @@ default = ["std"]
 std = ["strum/std", "alloy-chains/std", "serde?/std"]
 serde = ["dep:serde", "alloy-chains/serde"]
 arbitrary = ["alloy-chains/arbitrary"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
