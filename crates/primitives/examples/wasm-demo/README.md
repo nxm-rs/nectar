@@ -41,6 +41,17 @@ trunk build --release
 
 The compiled files will be in the `dist` directory, ready for deployment to any static hosting service.
 
+### Cross-origin isolation (SharedArrayBuffer)
+
+The demo links nectar-primitives with wasm-bindgen-rayon for parallel BMT hashing, so the wasm module imports a shared memory and needs `SharedArrayBuffer`. Browsers only expose `SharedArrayBuffer` in a cross-origin-isolated context, which requires these response headers:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+When you control the server, send those headers directly (for example `trunk serve` configured with them, or `miniserve --header ...`). Static hosts such as GitHub Pages cannot set custom response headers, so the demo ships `coi-serviceworker.min.js`, which registers a service worker that injects the headers and reloads once to enter an isolated context. It is loaded first in `index.html` so it runs before the wasm bootstrap.
+
 ## How It Works
 
 1. **BMT Hasher Tab**: Calculate BMT hashes of text input with real-time visualization

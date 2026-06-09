@@ -98,6 +98,9 @@ console_error_panic_hook = "0.1"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 # getrandom 0.2 needed for transitive deps (rand_core 0.6 via k256/elliptic-curve)
 getrandom_02 = { package = "getrandom", version = "0.2", default-features = false, features = ["js"] }
+# getrandom 0.4 needed for alloy-primitives 1.x random helpers on wasm; the
+# "wasm_js" feature selects the browser backend so B256::random links on wasm32.
+getrandom_04 = { package = "getrandom", version = "0.4", default-features = false, features = ["wasm_js"] }
 bitflags = { version = "2", default-features = false }
 subtle = "2"
 zeroize = "1"

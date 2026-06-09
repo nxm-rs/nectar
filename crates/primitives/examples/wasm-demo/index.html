@@ -3,6 +3,17 @@
     <head>
         <meta charset="utf-8" />
         <title>BMT Hasher Demo</title>
+        <!--
+            The demo compiles nectar-primitives with wasm-bindgen-rayon, so the
+            wasm module imports a shared memory and needs SharedArrayBuffer.
+            That requires a cross-origin-isolated context (COOP/COEP), which
+            GitHub Pages cannot send as response headers. coi-serviceworker
+            registers a service worker that injects those headers locally and
+            reloads once, enabling SharedArrayBuffer on static hosts. It must
+            run before the wasm bootstrap, so it is loaded first here.
+        -->
+        <link data-trunk rel="copy-file" href="coi-serviceworker.min.js" />
+        <script src="coi-serviceworker.min.js"></script>
         <link data-trunk rel="css" href="styles.css" />
         <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="0" />
     </head>
