@@ -7,6 +7,10 @@ description = "WASM demo for BMT hasher"
 license = "AGPL-3.0-or-later"
 publish = false
 
+# Demo crate: never published and excluded from `cargo release`.
+[package.metadata.release]
+release = false
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
