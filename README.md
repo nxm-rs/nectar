@@ -22,7 +22,6 @@ Looking for the org overview? See **[github.com/nxm-rs](https://github.com/nxm-r
 | **[`nectar-postage-issuer`](./crates/postage-issuer)** | High-performance stamp issuance with parallel signing |
 | **[`nectar-contracts`](./crates/contracts)** | Contract bindings for on-chain Swarm interactions |
 | **[`nectar-swarms`](./crates/swarms)** | Network identifiers (mainnet, testnet, etc.) |
-| **[`wasm-demo`](./crates/wasm-demo)** | In-browser demo of the primitives compiled to WASM |
 
 ---
 
