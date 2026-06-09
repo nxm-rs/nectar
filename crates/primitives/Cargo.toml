@@ -3,9 +3,16 @@ name = "nectar-primitives"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
+exclude.workspace = true
+description = "Core primitives for Ethereum Swarm: chunks, addresses, and binary merkle trees"
+documentation = "https://docs.rs/nectar-primitives"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "chunk", "bmt", "storage"]
+categories = ["data-structures", "cryptography"]
 
 [lints]
 workspace = true
@@ -106,3 +113,7 @@ harness = false
 name = "encryption_bench"
 harness = false
 required-features = ["encryption"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

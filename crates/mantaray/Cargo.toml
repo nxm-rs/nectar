@@ -3,10 +3,14 @@ name = "nectar-mantaray"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
+exclude.workspace = true
 description = "Mantaray manifest trie for Ethereum Swarm"
+documentation = "https://docs.rs/nectar-mantaray"
+readme = "README.md"
 keywords = ["swarm", "ethereum", "manifest", "mantaray", "trie"]
 categories = ["data-structures"]
 
@@ -37,3 +41,7 @@ default = ["std"]
 std = ["alloy-primitives/std", "thiserror/std", "serde_json/std", "rand", "nectar-primitives/std"]
 serde = ["dep:serde", "alloy-primitives/serde"]
 encryption = ["nectar-primitives/encryption"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

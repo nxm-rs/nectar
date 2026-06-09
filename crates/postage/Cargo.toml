@@ -9,6 +9,8 @@ homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
 description = "Postage stamp primitives for Ethereum Swarm"
+documentation = "https://docs.rs/nectar-postage"
+readme = "README.md"
 keywords = ["swarm", "ethereum", "postage", "no_std"]
 categories = ["no-std", "data-structures"]
 
@@ -59,3 +61,7 @@ parallel = ["dep:rayon", "std"]
 
 # Arbitrary trait implementations for property-based testing.
 arbitrary = ["dep:arbitrary", "nectar-primitives/arbitrary", "alloy-primitives/arbitrary"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
