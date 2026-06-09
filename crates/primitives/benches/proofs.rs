@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use nectar_primitives::{DEFAULT_BODY_SIZE, DefaultHasher, bmt::Prover};
-use rand::Rng;
+use rand::RngExt;
 use std::time::Duration;
 
 pub fn proofs(c: &mut Criterion) {

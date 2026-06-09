@@ -2,6 +2,7 @@
 //!
 //! This benchmark file focuses on stamp issuing and signing operations,
 //! suitable for CLI tools (like dipper) that create stamps.
+#![allow(missing_docs)]
 
 use alloy_primitives::{B256, Signature, U256};
 use alloy_signer::SignerSync;
@@ -11,7 +12,7 @@ use nectar_postage_issuer::{
     BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
 use nectar_primitives::SwarmAddress;
-use rand::Rng;
+use rand::RngExt;
 
 /// Generate a random SwarmAddress for benchmarking.
 fn random_address() -> SwarmAddress {
