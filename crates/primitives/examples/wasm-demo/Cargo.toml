@@ -24,7 +24,6 @@ alloy-primitives.workspace = true
 alloy-signer-local.workspace = true
 getrandom = { version = "0.2.12", features = ["js"] }
 
-# Configure WASM output optimization
-[profile.release]
-opt-level = "s"
-lto = true
+# WASM output size is optimized by the workspace-root [profile.release]; cargo
+# ignores [profile.*] defined in non-root workspace members and warns about it,
+# so there is intentionally no per-package release profile here.
