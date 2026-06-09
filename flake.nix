@@ -44,6 +44,12 @@
             pkg-config
             openssl
             openssl.dev
+            # Release tooling: cut releases (cargo-release), generate the
+            # changelog (git-cliff), and run the pre-release advisory checks.
+            cargo-release
+            git-cliff
+            cargo-deny
+            cargo-audit
           ];
 
           OPENSSL_DIR = "${pkgs.openssl.dev}";

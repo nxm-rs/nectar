@@ -6,7 +6,7 @@
 
 Used by [`nxm-rs/vertex`](https://github.com/nxm-rs/vertex) (the Rust Swarm node) and available for anyone building Swarm-powered Rust applications who'd rather import a vetted primitives crate than re-implement the wire format.
 
-> **Pre-release.** Published on crates.io at `0.x`; APIs may shift between minor versions until `1.0`.
+> **Pre-release.** Published on crates.io; APIs may shift between minor versions until `1.0`.
 
 Looking for the org overview? See **[github.com/nxm-rs](https://github.com/nxm-rs)**.
 
@@ -27,9 +27,8 @@ Looking for the org overview? See **[github.com/nxm-rs](https://github.com/nxm-r
 
 ## Quick start
 
-```toml
-[dependencies]
-nectar-primitives = "0.1"
+```sh
+cargo add nectar-primitives
 ```
 
 ```rust
