@@ -93,10 +93,10 @@ mod tests {
         let net = NetworkId::MAINNET;
         let nonce = Nonce::new([0xbb; 32]);
         let ts = Timestamp::from(0x0102_0304_0506_0708_i64);
-        let cb = Some(address!("00112233445566778899aabbccddeeff00112233"));
+        let cb = address!("00112233445566778899aabbccddeeff00112233");
         let underlay = b"\x01\x02\x03";
 
-        let buf = sign_data(underlay, &overlay, net, &nonce, ts, cb.as_ref());
+        let buf = sign_data(underlay, &overlay, net, &nonce, ts, Some(&cb));
 
         assert_eq!(&buf[0..14], b"bee-handshake-");
         assert_eq!(&buf[14..17], b"\x01\x02\x03");
@@ -107,7 +107,7 @@ mod tests {
             &buf[89..97],
             &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
         );
-        assert_eq!(&buf[97..117], cb.unwrap().as_slice());
+        assert_eq!(&buf[97..117], cb.as_slice());
         assert_eq!(buf.len(), 117);
     }
 

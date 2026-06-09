@@ -178,6 +178,10 @@ where
     }
 
     /// Shared read-range implementation used by both `read_range` and `poll_read`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal helper threading already-decomposed reader state from two call sites"
+    )]
     async fn read_range_with(
         getter: &Arc<G>,
         subtrees: &[SubtreeNode<M>],

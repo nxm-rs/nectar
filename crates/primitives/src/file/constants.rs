@@ -10,7 +10,7 @@ const fn compute_level_limit(branches: usize, body_size: usize) -> usize {
     // For branches=128 (7 bits), body_size=4096 (12 bits): (64-12)/7 + 1 = 8.4 → 9
     let body_bits = body_size.trailing_zeros() as usize;
     let branch_bits = branches.trailing_zeros() as usize;
-    (64 - body_bits + branch_bits - 1) / branch_bits + 1
+    (64 - body_bits).div_ceil(branch_bits) + 1
 }
 
 /// Maximum tree depth (derived from BRANCHES and DEFAULT_BODY_SIZE).
@@ -66,7 +66,7 @@ pub(crate) const fn tree_depth(length: u64, chunk_size: usize, ref_size: usize) 
     let branches = (chunk_size / ref_size) as u64;
 
     // div_ceil(length, chunk_size)
-    let data_chunks = (length + chunk_size as u64 - 1) / chunk_size as u64;
+    let data_chunks = length.div_ceil(chunk_size as u64);
     if data_chunks <= 1 {
         return 1;
     }
@@ -74,7 +74,7 @@ pub(crate) const fn tree_depth(length: u64, chunk_size: usize, ref_size: usize) 
     let mut depth = 1;
     let mut chunks = data_chunks;
     while chunks > 1 {
-        chunks = (chunks + branches - 1) / branches;
+        chunks = chunks.div_ceil(branches);
         depth += 1;
     }
     depth

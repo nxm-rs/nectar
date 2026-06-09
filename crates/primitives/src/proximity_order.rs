@@ -14,10 +14,7 @@ use serde::{Deserialize, Serialize};
 /// Distinguished from [`Bin`](crate::Bin) at the type level even though they
 /// share a representation. PO is the metric, Bin is the routing-table slot.
 #[repr(transparent)]
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
-    Display, Into,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, Into)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 #[display("po={_0}")]
@@ -99,7 +96,10 @@ mod tests {
     #[test]
     fn new_out_of_range_errs() {
         let err = ProximityOrder::new(MAX_PO + 1).unwrap_err();
-        assert!(matches!(err, ProximityOrderError::OutOfRange { raw: 32, max: 31 }));
+        assert!(matches!(
+            err,
+            ProximityOrderError::OutOfRange { raw: 32, max: 31 }
+        ));
     }
 
     #[test]

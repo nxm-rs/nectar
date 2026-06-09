@@ -14,10 +14,7 @@ use derive_more::{Display, From, Into};
 use serde::{Deserialize, Serialize};
 
 /// Swarm network identifier (u64 wire-compatible with bee).
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
-    Display, From, Into,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 #[display("{_0}")]
@@ -75,7 +72,13 @@ mod tests {
     #[test]
     fn le_be_byte_distinction() {
         let id = NetworkId::new(0x0102_0304_0506_0708);
-        assert_eq!(id.to_le_bytes(), [0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
-        assert_eq!(id.to_be_bytes(), [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        assert_eq!(
+            id.to_le_bytes(),
+            [0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]
+        );
+        assert_eq!(
+            id.to_be_bytes(),
+            [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
     }
 }

@@ -2,6 +2,7 @@
 //!
 //! This benchmark file focuses on verification-only operations, suitable for
 //! node/vertex use cases that primarily verify stamps rather than create them.
+#![allow(missing_docs)]
 
 use alloy_primitives::{Address, B256, Signature};
 use alloy_signer::SignerSync;
@@ -12,7 +13,7 @@ use nectar_postage::{
     parallel::{verify_stamps_parallel, verify_stamps_parallel_with_pubkey},
 };
 use nectar_primitives::SwarmAddress;
-use rand::Rng;
+use rand::RngExt;
 
 /// Generate a random stamp for benchmarking.
 fn random_stamp() -> Stamp {

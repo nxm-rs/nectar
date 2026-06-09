@@ -33,9 +33,9 @@ impl VersionHash {
     }
 
     fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes == &Self::V01_BYTES {
+        if bytes == Self::V01_BYTES {
             Some(Self::V01)
-        } else if bytes == &Self::V02_BYTES {
+        } else if bytes == Self::V02_BYTES {
             Some(Self::V02)
         } else {
             None
@@ -696,8 +696,7 @@ mod tests {
     fn decode_bee_legacy_ref_size_zero_empty_node() {
         // v0.2 layout: 32 obfuscation key zeros || 31 version hash || ref_size=0 || 32 index zeros = 96 bytes
         let mut data = vec![0u8; 96];
-        data[ObfuscationKey::SIZE
-            ..ObfuscationKey::SIZE + VersionHash::SIZE]
+        data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + VersionHash::SIZE]
             .copy_from_slice(VersionHash::V02.as_bytes());
         // ref_size at offset 63 is left as 0; index (offset 64..96) is all zero.
 
@@ -714,8 +713,7 @@ mod tests {
     #[test]
     fn decode_bee_legacy_ref_size_zero_with_forks_is_rejected() {
         let mut data = vec![0u8; 96];
-        data[ObfuscationKey::SIZE
-            ..ObfuscationKey::SIZE + VersionHash::SIZE]
+        data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + VersionHash::SIZE]
             .copy_from_slice(VersionHash::V02.as_bytes());
         // ref_size = 0 (offset 63 already zero), but flip one bit in the index.
         data[NodeHeader::SIZE] = 0x01;
@@ -735,8 +733,7 @@ mod tests {
     #[test]
     fn decode_bee_legacy_ref_size_zero_v01_empty_node() {
         let mut data = vec![0u8; 96];
-        data[ObfuscationKey::SIZE
-            ..ObfuscationKey::SIZE + VersionHash::SIZE]
+        data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + VersionHash::SIZE]
             .copy_from_slice(VersionHash::V01.as_bytes());
 
         let n = Node::<ChunkAddress>::try_from(data.as_slice())
@@ -756,7 +753,7 @@ mod tests {
 
         // Decrypt (obfuscation key is all-zero for `new_unencrypted`, so XOR
         // is a no-op, but go through the motions for clarity).
-        let mut decoded = encoded.clone();
+        let mut decoded = encoded;
         let key = decoded[..ObfuscationKey::SIZE].to_vec();
         xor_in_place(&mut decoded[ObfuscationKey::SIZE..], &key);
 

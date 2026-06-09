@@ -31,7 +31,7 @@ impl ManifestRef {
     }
 
     /// Consume into (address, obfuscation_key).
-    pub fn into_parts(self) -> (ChunkAddress, ObfuscationKey) {
+    pub const fn into_parts(self) -> (ChunkAddress, ObfuscationKey) {
         (self.address, self.obfuscation_key)
     }
 }

@@ -161,12 +161,12 @@ pub struct EncryptedContentChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
 #[cfg(feature = "encryption")]
 impl<const BODY_SIZE: usize> EncryptedContentChunk<BODY_SIZE> {
     /// The encrypted chunk (ciphertext hashed to a new address).
-    pub fn chunk(&self) -> &ContentChunk<BODY_SIZE> {
+    pub const fn chunk(&self) -> &ContentChunk<BODY_SIZE> {
         &self.chunk
     }
 
     /// The encrypted reference (address + decryption key).
-    pub fn encrypted_ref(&self) -> &super::encryption::EncryptedChunkRef {
+    pub const fn encrypted_ref(&self) -> &super::encryption::EncryptedChunkRef {
         &self.encrypted_ref
     }
 

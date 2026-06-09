@@ -103,10 +103,7 @@ mod tests {
 
     #[test]
     fn empty_table_depth_is_zero() {
-        assert_eq!(
-            recompute_neighborhood_depth(&[0u8; 32], 8, 2),
-            Bin::ZERO
-        );
+        assert_eq!(recompute_neighborhood_depth(&[0u8; 32], 8, 2), Bin::ZERO);
     }
 
     #[test]

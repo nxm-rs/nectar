@@ -42,8 +42,10 @@ impl<S, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
     /// Create a new encrypted manifest (random obfuscation key, 64-byte refs).
     pub fn new_encrypted(store: S) -> Self {
         use crate::obfuscation::ObfuscationKey;
-        let mut trie = Node::default();
-        trie.obfuscation_key = ObfuscationKey::generate();
+        let trie = Node {
+            obfuscation_key: ObfuscationKey::generate(),
+            ..Node::default()
+        };
         Self { trie, store }
     }
 
@@ -198,11 +200,11 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
                 f(addr.as_bytes())?;
             }
 
-            if let Some(entry) = node.entry() {
-                if node.is_value() {
-                    let entry_bytes = entry.to_bytes();
-                    f(&entry_bytes)?;
-                }
+            if let Some(entry) = node.entry()
+                && node.is_value()
+            {
+                let entry_bytes = entry.to_bytes();
+                f(&entry_bytes)?;
             }
 
             Ok(())
@@ -342,10 +344,10 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIt
             if !self.root_visited {
                 self.root_visited = true;
 
-                if !self.trie.loaded {
-                    if let Err(e) = self.trie.load::<S, BS>(self.store) {
-                        return Some(Err(e));
-                    }
+                if !self.trie.loaded
+                    && let Err(e) = self.trie.load::<S, BS>(self.store)
+                {
+                    return Some(Err(e));
                 }
 
                 let keys: Vec<u8> = self.trie.forks.keys().copied().collect();
@@ -402,10 +404,10 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIt
 
             // SAFETY: child is a descendant of the exclusively borrowed trie.
             let child_ref = unsafe { &mut *child };
-            if !child_ref.loaded {
-                if let Err(e) = child_ref.load::<S, BS>(self.store) {
-                    return Some(Err(e));
-                }
+            if !child_ref.loaded
+                && let Err(e) = child_ref.load::<S, BS>(self.store)
+            {
+                return Some(Err(e));
             }
 
             let child_keys: Vec<u8> = child_ref.forks.keys().copied().collect();

@@ -58,7 +58,7 @@ impl NodeEntry for nectar_primitives::EncryptedChunkRef {
     const SIZE: usize = 64;
 
     fn address(&self) -> &ChunkAddress {
-        nectar_primitives::EncryptedChunkRef::address(self)
+        Self::address(self)
     }
 
     fn to_bytes(&self) -> Vec<u8> {

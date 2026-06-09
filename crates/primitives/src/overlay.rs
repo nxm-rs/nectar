@@ -7,7 +7,7 @@
 
 use alloy_primitives::{Address, Keccak256};
 
-use crate::{Nonce, NetworkId, SwarmAddress};
+use crate::{NetworkId, Nonce, SwarmAddress};
 
 /// Compute the Swarm overlay address from `eth_addr`, `network_id`, `nonce`.
 ///

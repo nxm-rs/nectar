@@ -11,10 +11,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// Unix-seconds timestamp (signed, matching bee's `int64`).
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
-    Display, From, Into,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 #[display("{_0}")]
@@ -77,8 +74,7 @@ impl Timestamp {
     /// difference must be `<= window.as_secs()`.
     pub fn skew_check(self, local: Self, window: Duration) -> Result<(), TimestampError> {
         let drift = self.0.saturating_sub(local.0);
-        let window_secs = i64::try_from(window.as_secs())
-            .unwrap_or(i64::MAX);
+        let window_secs = i64::try_from(window.as_secs()).unwrap_or(i64::MAX);
         if drift.unsigned_abs() <= window_secs.unsigned_abs() {
             Ok(())
         } else {

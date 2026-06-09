@@ -38,7 +38,7 @@ impl EntryRef {
     }
 
     /// The chunk address (first 32 bytes of any reference).
-    pub fn address(&self) -> &ChunkAddress {
+    pub const fn address(&self) -> &ChunkAddress {
         match self {
             Self::Plain(addr) => addr,
             #[cfg(feature = "encryption")]
@@ -65,7 +65,7 @@ impl From<&EntryRef> for Vec<u8> {
         match entry_ref {
             EntryRef::Plain(addr) => addr.as_bytes().to_vec(),
             #[cfg(feature = "encryption")]
-            EntryRef::Encrypted(enc) => Vec::from(enc),
+            EntryRef::Encrypted(enc) => Self::from(enc),
         }
     }
 }
