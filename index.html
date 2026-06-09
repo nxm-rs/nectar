@@ -3,6 +3,17 @@
     <head>
         <meta charset="utf-8" />
         <title>BMT Hasher Demo</title>
+        <!--
+            The demo compiles nectar-primitives with wasm-bindgen-rayon, so the
+            wasm module imports a shared memory and needs SharedArrayBuffer.
+            That requires a cross-origin-isolated context (COOP/COEP), which
+            GitHub Pages cannot send as response headers. coi-serviceworker
+            registers a service worker that injects those headers locally and
+            reloads once, enabling SharedArrayBuffer on static hosts. It must
+            run before the wasm bootstrap, so it is loaded first here.
+        -->
+        
+        <script src="coi-serviceworker.min.js"></script>
         <link rel="stylesheet" href="/nectar/styles.css" integrity="sha384-EnLXN2qlrRASfFA2tUS9BA5lLlnXytYCRRjpWV1SSbdlEnME5gR8JhMWhwojR69h"/>
         
 <script type="module">
@@ -16,7 +27,7 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
-    <link rel="modulepreload" href="/nectar/bmt-wasm-demo.js" crossorigin="anonymous" integrity="sha384-6LgpFdRzF2pBhYoqJ8RvmeE+YbL9GcxwQ+CPU9+TaZjC4oNqZ0HsnAjBPQAt7Qv3"><link rel="modulepreload" href="/nectar/snippets/wasm-bindgen-rayon-38edf6e439f6d70d/src/workerHelpers.js" crossorigin="anonymous" integrity="sha384-3s0MWA9vhgXDjgFOVO8CT5AbloikT3xbSXAo4dGJdYOg0HOC8D+EMRgMnDYtbyVv"><link rel="preload" href="/nectar/bmt-wasm-demo_bg.wasm" crossorigin="anonymous" integrity="sha384-3T/jwKeMaqvernbLfqF56DzXY4LTYad65I4v0XAQGpI6XNn34ElzJsXEDQF36qVR" as="fetch" type="application/wasm"></head>
+    <link rel="modulepreload" href="/nectar/bmt-wasm-demo.js" crossorigin="anonymous" integrity="sha384-/U/wk720nw+c4O/uHYo5hNNc4MkkE7eneExQSq2PRdfD6YDRJKknMClMI+5LQYWq"><link rel="modulepreload" href="/nectar/snippets/wasm-bindgen-rayon-38edf6e439f6d70d/src/workerHelpers.js" crossorigin="anonymous" integrity="sha384-3s0MWA9vhgXDjgFOVO8CT5AbloikT3xbSXAo4dGJdYOg0HOC8D+EMRgMnDYtbyVv"><link rel="preload" href="/nectar/bmt-wasm-demo_bg.wasm" crossorigin="anonymous" integrity="sha384-sUdkZOfLsDLeeJPbQ3UDFdEAKpKTU6Y9fvpwaxrbyxFLSpYS6TUojnX6uQkLjf+n" as="fetch" type="application/wasm"></head>
     <body>
         <main>
             <h1>Swarm Primitives Playground</h1>
