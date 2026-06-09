@@ -12,9 +12,9 @@ This example demonstrates the BMT (Binary Merkle Tree) hasher and SVG icon gener
 
 ### Prerequisites
 
-- [Rust](https://www.rust-lang.org/tools/install) (1.85.0 or later recommended)
+- [Rust](https://www.rust-lang.org/tools/install) nightly with the `rust-src` component. Threaded wasm needs `-Z build-std`, which is nightly-only. `rust-toolchain.toml` pins this for you.
 - [Trunk](https://trunkrs.dev/) - A WASM application bundler for Rust
-- WebAssembly target: `rustup target add wasm32-unknown-unknown`
+- WebAssembly target: `rustup target add wasm32-unknown-unknown` (or `rustup component add rust-src --toolchain nightly` plus the target)
 
 ### Quick Start
 
@@ -40,6 +40,12 @@ trunk build --release
 ```
 
 The compiled files will be in the `dist` directory, ready for deployment to any static hosting service.
+
+### Threaded wasm build configuration
+
+The demo links nectar-primitives with `wasm-bindgen-rayon` for parallel BMT hashing, so it is built as a threaded wasm module. `.cargo/config.toml` enables the required `atomics`, `bulk-memory` and `mutable-globals` target features, builds `std` from source via `-Z build-std`, and exports the symbols wasm-bindgen's threading transform needs.
+
+One of those exports is `__heap_base`. Recent LLD releases stopped keeping `__heap_base` as an exported symbol by default, which made wasm-bindgen fail with `failed to prepare module for threading: failed to find __heap_base for injecting thread id` on newer nightly toolchains while older nightlies still worked. The config exports `__heap_base` (and `__data_end`) explicitly so the threaded build stays green across toolchain bumps. Keep these exports if you upgrade the toolchain.
 
 ### Cross-origin isolation (SharedArrayBuffer)
 
