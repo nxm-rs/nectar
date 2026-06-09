@@ -71,12 +71,12 @@ where
     }
 
     /// Bytes written so far.
-    pub fn len(&self) -> u64 {
+    pub const fn len(&self) -> u64 {
         self.buffer.len() as u64
     }
 
     /// Whether any data has been written.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 

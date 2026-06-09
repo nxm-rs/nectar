@@ -16,10 +16,7 @@ use serde::{Deserialize, Serialize};
 /// Persistent nodes (storers, bootnodes) keep the nonce stable across restarts
 /// so their overlay address is stable. Ephemeral nodes (clients) may rotate
 /// the nonce per run.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
-    Display, From, Into, AsRef,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into, AsRef)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 #[display("{_0}")]

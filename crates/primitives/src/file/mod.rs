@@ -191,7 +191,7 @@ where
 
 /// Calculate tree depth for a given file size (plain mode).
 #[cfg(test)]
-pub(crate) fn levels(length: u64, chunk_size: usize) -> usize {
+pub(crate) const fn levels(length: u64, chunk_size: usize) -> usize {
     constants::tree_depth(length, chunk_size, constants::REF_SIZE)
 }
 

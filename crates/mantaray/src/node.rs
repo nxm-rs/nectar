@@ -20,6 +20,13 @@ pub struct Prefix {
     data: [u8; PREFIX_MAX_LEN],
 }
 
+impl Default for Prefix {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Prefix {
     /// Maximum prefix length in bytes (constrained by the fork pre-reference region).
     pub const MAX_LEN: usize = PREFIX_MAX_LEN;
@@ -185,7 +192,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// The typed entry stored at this node.
-    pub fn entry(&self) -> Option<&E> {
+    pub const fn entry(&self) -> Option<&E> {
         self.entry.as_ref()
     }
 
@@ -195,7 +202,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Mutable access to metadata for in-place modification.
-    pub(crate) fn metadata_mut(&mut self) -> &mut BTreeMap<String, String> {
+    pub(crate) const fn metadata_mut(&mut self) -> &mut BTreeMap<String, String> {
         &mut self.metadata
     }
 
@@ -209,19 +216,9 @@ impl<E: NodeEntry> Node<E> {
         &self.forks
     }
 
-    /// Mutable access to child forks.
-    pub(crate) const fn forks_mut(&mut self) -> &mut BTreeMap<u8, Fork<E>> {
-        &mut self.forks
-    }
-
     /// XOR obfuscation key for binary serialisation.
-    pub fn obfuscation_key(&self) -> &ObfuscationKey {
+    pub const fn obfuscation_key(&self) -> &ObfuscationKey {
         &self.obfuscation_key
-    }
-
-    /// Set the content-addressed reference for this node.
-    pub(crate) const fn set_reference(&mut self, reference: ChunkAddress) {
-        self.reference = Some(reference);
     }
 
     /// Check if the node has a value (entry).
@@ -259,11 +256,6 @@ impl<E: NodeEntry> Node<E> {
         self.node_type = self.node_type.union(NodeType::METADATA);
     }
 
-    #[cfg(test)]
-    pub(crate) const fn make_not_value(&mut self) {
-        self.node_type = self.node_type.difference(NodeType::VALUE);
-    }
-
     fn update_is_with_path_separator(&mut self, path: &[u8]) {
         let sep = PATH_SEPARATOR.as_bytes()[0];
         if path.iter().skip(1).any(|&b| b == sep) {
@@ -274,7 +266,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Clear persisted reference, marking this node for re-serialization on next save.
-    pub(crate) fn mark_dirty(&mut self) {
+    pub(crate) const fn mark_dirty(&mut self) {
         self.reference = None;
     }
 
@@ -299,7 +291,7 @@ impl<E: NodeEntry> Node<E> {
         let chunk = store.get(&address).map_err(|e| MantarayError::StoreGet {
             source: std::sync::Arc::new(e),
         })?;
-        let mut loaded = Node::<E>::try_from(chunk.data().as_ref())?;
+        let mut loaded = Self::try_from(chunk.data().as_ref())?;
         loaded.reference = Some(address);
         // Preserve fields that live in the parent's fork data, not in this node's chunk:
         // node_type flags and metadata key-value pairs.
@@ -340,6 +332,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Look up the entry at the given path, loading from storage as needed.
+    #[cfg(test)]
     pub(crate) fn lookup<S: SyncChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],

@@ -47,8 +47,8 @@ impl EncryptionKey {
     }
 }
 
-impl From<[u8; EncryptionKey::SIZE]> for EncryptionKey {
-    fn from(bytes: [u8; EncryptionKey::SIZE]) -> Self {
+impl From<[u8; Self::SIZE]> for EncryptionKey {
+    fn from(bytes: [u8; Self::SIZE]) -> Self {
         Self(bytes)
     }
 }
@@ -59,8 +59,8 @@ impl From<B256> for EncryptionKey {
     }
 }
 
-impl AsRef<[u8; EncryptionKey::SIZE]> for EncryptionKey {
-    fn as_ref(&self) -> &[u8; EncryptionKey::SIZE] {
+impl AsRef<[u8; Self::SIZE]> for EncryptionKey {
+    fn as_ref(&self) -> &[u8; Self::SIZE] {
         &self.0
     }
 }

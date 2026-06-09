@@ -22,17 +22,17 @@ impl EncryptedChunkRef {
     pub const SIZE: usize = size_of::<ChunkAddress>() + EncryptionKey::SIZE;
 
     /// Create a new encrypted chunk reference.
-    pub fn new(address: ChunkAddress, key: EncryptionKey) -> Self {
+    pub const fn new(address: ChunkAddress, key: EncryptionKey) -> Self {
         Self { address, key }
     }
 
     /// Chunk address (BMT hash of ciphertext).
-    pub fn address(&self) -> &ChunkAddress {
+    pub const fn address(&self) -> &ChunkAddress {
         &self.address
     }
 
     /// Decryption key.
-    pub fn key(&self) -> &EncryptionKey {
+    pub const fn key(&self) -> &EncryptionKey {
         &self.key
     }
 
@@ -64,7 +64,7 @@ impl From<EncryptedChunkRef> for [u8; EncryptedChunkRef::SIZE] {
 
 impl From<&EncryptedChunkRef> for Vec<u8> {
     fn from(r: &EncryptedChunkRef) -> Self {
-        let mut v = Vec::with_capacity(EncryptedChunkRef::SIZE);
+        let mut v = Self::with_capacity(EncryptedChunkRef::SIZE);
         v.extend_from_slice(r.address.as_bytes());
         v.extend_from_slice(r.key.as_bytes());
         v

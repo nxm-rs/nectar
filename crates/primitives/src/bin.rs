@@ -13,10 +13,7 @@ use serde::{Deserialize, Serialize};
 
 /// Typed Kademlia bin index, `0..=MAX_PO` (= 0..=31).
 #[repr(transparent)]
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
-    Display, Into,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, Into)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 #[display("bin={_0}")]
