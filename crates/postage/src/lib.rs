@@ -3,7 +3,8 @@
 //! This crate provides the core types and traits for postage stamps in the Swarm network.
 //! It is optimized for verification use cases (such as `vertex` nodes).
 //!
-//! For stamp issuing and signing, use the [`nectar-postage-issuer`] crate.
+//! For stamp issuing and signing, use the
+//! [`nectar-postage-issuer`](https://docs.rs/nectar-postage-issuer) crate.
 //!
 //! # Core Types
 //!
@@ -28,7 +29,7 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // k256 is a dependency only to enable the precomputed-tables feature for faster ECDSA
 #[cfg(not(test))]

@@ -67,7 +67,7 @@ pub trait ChunkTypeSet<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: Send + Sync 
     ///
     /// # Errors
     ///
-    /// Returns [`ChunkError::UnsupportedType`] if the type ID is not in this set.
+    /// Returns `ChunkError::UnsupportedType` if the type ID is not in this set.
     /// May return other errors from the underlying chunk deserialization.
     fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>>;
 

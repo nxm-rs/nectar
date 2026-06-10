@@ -3,7 +3,8 @@
 //! This crate provides the issuing and signing functionality for postage stamps,
 //! designed for use by CLI tools (like `dipper`) that create and sign stamps.
 //!
-//! For verification-only use cases (like `vertex` nodes), use [`nectar-postage`] directly.
+//! For verification-only use cases (like `vertex` nodes), use
+//! [`nectar-postage`](nectar_postage) directly.
 //!
 //! # Features
 //!

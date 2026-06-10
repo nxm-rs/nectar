@@ -22,7 +22,8 @@
 //! # Unified Store
 //!
 //! Manifest operations use the typed chunk store traits from `nectar_primitives`:
-//! [`SyncChunkGet`] for loading and [`SyncChunkPut`] for saving. This means a single
+//! [`SyncChunkGet`](nectar_primitives::store::SyncChunkGet) for loading and
+//! [`SyncChunkPut`](nectar_primitives::store::SyncChunkPut) for saving. This means a single
 //! [`MemoryStore`] can hold both file chunks and manifest trie nodes.
 //!
 //! ```no_run

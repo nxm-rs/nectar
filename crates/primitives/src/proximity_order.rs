@@ -1,6 +1,6 @@
 //! Typed Kademlia proximity order (PO) in the range `0..=MAX_PO`.
 //!
-//! See [`MAX_PO`](crate::MAX_PO) for the standard cap (31) and
+//! See [`MAX_PO`] for the standard cap (31) and
 //! [`address`](crate::address) for the derivation from two [`SwarmAddress`es](crate::SwarmAddress).
 
 use crate::MAX_PO;
@@ -25,12 +25,12 @@ pub struct ProximityOrder(u8);
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ProximityOrderError {
-    /// Value exceeded [`MAX_PO`](crate::MAX_PO).
+    /// Value exceeded [`MAX_PO`].
     #[error("proximity order {raw} exceeds MAX_PO ({max})")]
     OutOfRange {
         /// The rejected value.
         raw: u8,
-        /// The maximum permitted value ([`MAX_PO`](crate::MAX_PO)).
+        /// The maximum permitted value ([`MAX_PO`]).
         max: u8,
     },
 }
@@ -39,7 +39,7 @@ impl ProximityOrder {
     /// The smallest proximity order.
     pub const MIN: Self = Self(0);
 
-    /// The largest proximity order ([`MAX_PO`](crate::MAX_PO) = 31).
+    /// The largest proximity order ([`MAX_PO`] = 31).
     pub const MAX: Self = Self(MAX_PO);
 
     /// Construct without bounds checking. Caller must ensure `raw <= MAX_PO`.

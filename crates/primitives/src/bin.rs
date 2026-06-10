@@ -2,7 +2,7 @@
 //!
 //! A [`Bin`] is a routing-table slot keyed by the proximity order between an
 //! anchor address (e.g. our own overlay) and a peer's overlay. Distinguished
-//! from [`ProximityOrder`](crate::ProximityOrder) at the type level even
+//! from [`ProximityOrder`] at the type level even
 //! though they share a representation. PO is the metric, Bin is the slot.
 
 use crate::{MAX_PO, ProximityOrder};
@@ -24,7 +24,7 @@ pub struct Bin(u8);
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum BinError {
-    /// Value exceeded [`MAX_PO`](crate::MAX_PO).
+    /// Value exceeded [`MAX_PO`].
     #[error("bin index {raw} exceeds MAX_PO ({max})")]
     OutOfRange {
         /// The rejected value.
@@ -38,7 +38,7 @@ impl Bin {
     /// The first (shallowest) bin.
     pub const ZERO: Self = Self(0);
 
-    /// The deepest bin ([`MAX_PO`](crate::MAX_PO) = 31).
+    /// The deepest bin ([`MAX_PO`] = 31).
     pub const MAX: Self = Self(MAX_PO);
 
     /// The number of bins in the routing table (`MAX_PO + 1` = 32).
