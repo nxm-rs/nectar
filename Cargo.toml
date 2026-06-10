@@ -3,7 +3,7 @@ members = ["crates/*", "crates/**/examples/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.92"
 authors = ["Nexum Contributors"]
@@ -35,12 +35,12 @@ check.all_targets = true
 
 [workspace.dependencies]
 # nectar crates
-nectar-contracts = { version = "0.1.0", path = "crates/contracts" }
-nectar-mantaray = { version = "0.1.0", path = "crates/mantaray" }
-nectar-primitives = { version = "0.1.0", path = "crates/primitives" }
-nectar-swarms = { version = "0.1.0", path = "crates/swarms" }
-nectar-postage = { version = "0.1.0", path = "crates/postage" }
-nectar-postage-issuer = { version = "0.1.0", path = "crates/postage-issuer" }
+nectar-contracts = { version = "0.1.1", path = "crates/contracts" }
+nectar-mantaray = { version = "0.1.1", path = "crates/mantaray" }
+nectar-primitives = { version = "0.1.1", path = "crates/primitives" }
+nectar-swarms = { version = "0.1.1", path = "crates/swarms" }
+nectar-postage = { version = "0.1.1", path = "crates/postage" }
+nectar-postage-issuer = { version = "0.1.1", path = "crates/postage-issuer" }
 
 # alloy
 alloy-primitives = { version = "1.6", default-features = false }
