@@ -30,7 +30,7 @@ pre-release-commit-message = "chore(release): {{version}}"
 # Tag once for the whole workspace instead of one tag per crate, named `vX.Y.Z`.
 tag-prefix = ""
 tag-name = "v{{version}}"
-tag-message = "chore(release): {{prefix}}{{version}}"
+tag-message = "chore(release): {{version}}"
 
 # Regenerate the changelog from conventional commits via git-cliff before the
 # release commit is created. The hook runs once per crate; the `WORKSPACE_ROOT`
@@ -42,7 +42,7 @@ pre-release-hook = [
     "-c",
     '''
     set -euo pipefail
-    cmd=(git-cliff --config "$WORKSPACE_ROOT/cliff.toml" --workdir "$WORKSPACE_ROOT" --tag "{{version}}" --output "$WORKSPACE_ROOT/CHANGELOG.md")
+    cmd=(git-cliff --config "$WORKSPACE_ROOT/cliff.toml" --repository "$WORKSPACE_ROOT" --tag "{{version}}" --output "$WORKSPACE_ROOT/CHANGELOG.md")
     if [ "${DRY_RUN:-false}" = "true" ]; then
         echo "dry run: skipping changelog regeneration: ${cmd[*]}" >&2
     else
