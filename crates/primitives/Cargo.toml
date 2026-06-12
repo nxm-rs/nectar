@@ -43,6 +43,9 @@ zeroize = { workspace = true, features = ["derive"] }
 # synchronization
 parking_lot = "0.12"
 
+# wall clock: std::time on native, browser clock on wasm32 (see Timestamp::now)
+web-time.workspace = true
+
 # async support
 futures.workspace = true
 tokio = { workspace = true, features = ["io-util"], optional = true }

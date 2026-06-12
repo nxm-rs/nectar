@@ -55,11 +55,15 @@ impl Timestamp {
 
     /// Capture the current wall-clock time as a [`Timestamp`].
     ///
+    /// The clock comes from `web-time`, which is `std::time` on native targets
+    /// and the browser clock on `wasm32`, so this runs on every supported
+    /// target instead of panicking through the std unsupported-platform stub.
+    ///
     /// Panics only if the system clock is set before the unix epoch, which
     /// would already break far more than this primitive. Pre-1970 callers
     /// can construct via [`Self::from_seconds`] manually.
     pub fn now() -> Self {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use web_time::{SystemTime, UNIX_EPOCH};
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock set before unix epoch")
