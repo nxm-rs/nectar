@@ -29,7 +29,7 @@ Per-bucket counters are encoded with a patched frame-of-reference scheme:
 - A `width` `w` (0..=32): each bucket's delta `count - base` is stored as a `w`-bit value.
 - An **exception list** (at most 128 entries) of `(bucket: u32, count: u32)` pairs for outlier buckets whose delta does not fit in `w` bits. Exceptions store the absolute count; their packed `w`-bit slot is filled with all one bits and ignored on decode.
 
-The canonical encoder picks `base = min(counts)` and the smallest `w` such that at most 128 buckets overflow. Because `w` tracks the bulk of the distribution rather than the maximum, a single hot bucket cannot inflate the table. For uniform uploads (the economically rational case) counters are binomially concentrated, so `w` stays small: a half-full depth-24 batch needs `w = 7` (15 chunks total) where raw u32 counters would take 256 KiB.
+The canonical encoder picks `base = min(counts)` and the width minimizing the encoded byte size (packed bits, plus 8 bytes per exception, plus 32 bytes per leaf digest when the table is not inline), breaking ties toward the smaller width, subject to at most 128 exceptions. Decoders accept any structurally valid `(base, w, exceptions)`, so this policy can evolve without a format change. Because `w` tracks the bulk of the distribution rather than the maximum, a single hot bucket cannot inflate the table. For uniform uploads (the economically rational case) counters are binomially concentrated, so `w` stays small: a half-full depth-24 batch needs `w = 7` (15 chunks total) where raw u32 counters would take 256 KiB.
 
 ### Root payload
 
@@ -60,6 +60,44 @@ The root is the commit point: leaf digests bind the exact leaf bytes, so a reade
 ### Leaf payloads
 
 With `w > 0`, each leaf holds `B = floor(32768 / w)` buckets' deltas, MSB-first bit packed; leaf `n` covers buckets `[(n-1) * B, min(n * B, 2^u))`. The final byte of a leaf is zero-padded. `L = ceil(2^u / B)`.
+
+### Worked example
+
+A complete root payload, byte for byte, so the record structure can be reasoned about. This exact vector is pinned by `tests/vector.rs`, so the documentation cannot drift from the implementation.
+
+Scenario: batch id `0x42` repeated, owner `0x11` repeated, depth 12, bucket depth 8 (256 buckets of 16 slots). Counters follow the pattern `count(b) = 3 + (b mod 4)`, except bucket 200 (0xc8) which is completely full at 16. Persisting allocates the snapshot's own root chunk a slot: its address hashes into bucket 41 (0x29), bumping that counter from 4 to 5 and `total_issued` to 1166.
+
+The encoder picks `base = 3` and `w = 2` (deltas 0..=3 cover every bucket except the hot one, which becomes the single exception: 1 exception at 8 bytes beats widening 256 buckets to 4 bits). The packed table is 64 bytes and fits inline, so the whole snapshot is one 142-byte chunk:
+
+```
+offset  bytes                            field
+0x00    53425531                         magic "SBU1"
+0x04    4242..42 (32 bytes)              batch id
+0x24    0c                               batch depth 12
+0x25    08                               bucket depth 8
+0x26    00                               flags
+0x27    02                               delta width w = 2
+0x28    0000000000000001                 sequence 1
+0x30    000000000000048e                 total issued 1166
+0x38    00000003                         base 3
+0x3c    0001                             allocated count A = 1
+0x3e    0000                             leaf count L = 0 (inline)
+0x40    0001                             exception count E = 1
+0x42    000000c8 00000010                exception: bucket 200, count 16
+0x4a    00000004                         slot of snapshot chunk 0: index 4
+0x4e    1b1b1b1b1b1b1b1b1b1b 2b 1b..1b   packed deltas, 64 bytes
+0x80    db 1b1b1b1b1b1b1b1b1b1b1b1b1b
+```
+
+The packed section reads MSB first, two bits per bucket, four buckets per byte. Three byte values appear:
+
+- `1b = 00 01 10 11`: deltas 0,1,2,3, the background `b mod 4` pattern (counts 3,4,5,6).
+- `2b = 00 10 10 11` at offset 0x58 (buckets 40..43): bucket 41 reads delta 2 instead of 1, the root chunk's own stamp, recorded by the snapshot in the batch it is stored in.
+- `db = 11 01 10 11` at offset 0x80 (buckets 200..203): bucket 200 carries the all-ones exception filler; its real count (16) lives in the exception entry above.
+
+To recover the table: `count(b) = 3 + packed_delta(b)` for every bucket, then overlay `count(200) = 16`. The reader checks the sum against `total issued` (1165 from counters present before persist, plus 1 for the root's own stamp) and knows from the slot section that stamp index `(bucket 41, index 4)` belongs to the snapshot itself and must never be reused for another chunk.
+
+At mainnet scale (`u = 16`) the same structure splits: the packed table no longer fits inline, so the root carries keccak digests of leaf chunks instead, each leaf holding `floor(32768 / w)` buckets' deltas of the same bitstream.
 
 ### Self-accounting and bounded recursion
 
