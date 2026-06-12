@@ -1,7 +1,12 @@
-//! Golden vector pinning the worked example in `README.md`.
+//! Golden vectors pinning the worked examples in `README.md`.
 //!
-//! If this test fails, the wire format changed: either revert the change or
-//! bump the format version in the magic and update the README example.
+//! If a test here fails, the wire format changed: either revert the change
+//! or bump the format version in the magic and update the README examples.
+//!
+//! The multi-leaf vector pins only the root payload bytes: the root carries
+//! the keccak digest of every leaf, so any change to leaf encoding fails the
+//! root comparison and the assemble round-trip. Pinning the root pins the
+//! entire snapshot.
 
 use alloy_primitives::{Address, B256, hex};
 use nectar_postage::calculate_bucket;
@@ -45,5 +50,59 @@ fn readme_worked_example_vector() {
     // And the vector decodes back to the same snapshot.
     let root = RootInfo::parse(&hex::decode(ROOT_PAYLOAD_HEX).unwrap()).unwrap();
     let recovered = root.assemble(&[] as &[&[u8]]).unwrap();
+    assert_eq!(recovered, snapshot);
+}
+
+/// The root payload of the README large-batch example: depth 29, bucket
+/// depth 16 (65536 buckets of 8192 slots), counts `100 + (b mod 50)` with
+/// bucket 0x1234 at 5000 and bucket 0xCBE5 full at 8192, after one persist
+/// by owner `0x11..11` of batch `0x42..42`. The encoder picks base 100 and
+/// width 6, so the table spans 13 leaves and the snapshot self-allocates 14
+/// slots (root plus leaves) before reaching its fixed point.
+const LARGE_ROOT_PAYLOAD_HEX: &str = "5342553142424242424242424242424242424242424242424242424242424242424242421d100006000000000000000100000000007cb19900000064000e000d000200001234000013880000cbe500002000000000690000007d00000091000000880000007a000000760000006e00000079000000810000006c0000007d000000910000007a0000006b9c8de349a3c4b573d45db35c3585fcbe2e2c20d999ee2a5ead8c1600b5a5428a645b990e3f426220eda38496a262f6968b8a4d42f7becb602c51576f19112fe9fb1f9017218e72abf21947cb3290726dd5129c47e50562a22dfcaa64340dd76d5bb4cba42453e6cb20f8c1c0892bf2bf4873bd3b4850787f171952b662346708660c94f587fa4516af6eb9b083513f245d9bd9fc0559f48356021e51892201fb197b58a495d1305292904a61906b02e37e68101e3657b4e2ff9661d705a004c36ebbe152c039d8887c067cc8fa86636c62afc5f21cd8ca1afc4f546e77882de86c3e8248ce84ffd4c440f28c638007df05e9ea75a713a308e7ba48e6066903c88e6e5e60e48477ca6202b2333d5c06968f67baae3c03105bbb4a7a8491b04ce6f5c8fc3151cdfbc3136e8f0adac485df7ae4d866e1cce1cd1aa0d1cbbf33f19bf28b0420c19fcadaf197e1eaff36f8151ec107d59ad4e6d3a4cf1492a77828991d9c30151c90772df348891a627fa9a5046919dba774e2a388819e9e11aba2c68724aa66f7e98c8ec09b71685da6a49cf173a390ac1662a9e120712062d20fb8";
+
+#[test]
+fn readme_large_batch_multi_leaf_vector() {
+    let batch_id = B256::repeat_byte(0x42);
+    let owner = Address::repeat_byte(0x11);
+    let mut counts: Vec<u32> = (0..65536u32).map(|b| 100 + (b % 50)).collect();
+    counts[0x1234] = 5000;
+    counts[0xCBE5] = 8192;
+    let table = UsageTable::from_counts(batch_id, 29, 16, counts).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let plan = snapshot.plan_persist(&owner).unwrap();
+
+    // One root plus 13 leaves; the snapshot allocated a slot for each.
+    assert_eq!(plan.chunks.len(), 14);
+    assert_eq!(snapshot.allocated_slots().len(), 14);
+    assert_eq!(snapshot.table().total_issued(), 8_171_929);
+
+    // The root's own slot is the watermark of its bucket at allocation
+    // time: bucket 0x296d held 100 + (0x296d mod 50) = 105 stamps.
+    assert_eq!(calculate_bucket(&plan.chunks[0].address, 16), 0x296d);
+    assert_eq!(snapshot.allocated_slots()[0], 105);
+
+    // Width 6 packs floor(32768 / 6) = 5461 buckets per leaf: twelve full
+    // 4096-byte leaves and a final 3-byte leaf holding the last 4 buckets.
+    let leaf_lens: Vec<usize> = plan.chunks[1..].iter().map(|c| c.payload.len()).collect();
+    assert_eq!(leaf_lens[..12], [4096; 12]);
+    assert_eq!(leaf_lens[12], 3);
+
+    // Leaf 0 opens with deltas 0,1,2,3,... at 6 bits MSB-first; the last
+    // leaf holds deltas 32,33,34,35 in exactly 24 bits.
+    assert_eq!(
+        hex::encode(&plan.chunks[1].payload[..8]),
+        "0010831051872092"
+    );
+    assert_eq!(hex::encode(&plan.chunks[13].payload), "8218a3");
+
+    // The exact root bytes; the embedded digests pin every leaf payload.
+    assert_eq!(hex::encode(&plan.chunks[0].payload), LARGE_ROOT_PAYLOAD_HEX);
+
+    // Round-trip through parse and digest-verified assembly.
+    let root = RootInfo::parse(&hex::decode(LARGE_ROOT_PAYLOAD_HEX).unwrap()).unwrap();
+    assert_eq!(root.leaf_count(), 13);
+    let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| &c.payload).collect();
+    let recovered = root.assemble(&leaves).unwrap();
     assert_eq!(recovered, snapshot);
 }

@@ -97,7 +97,30 @@ The packed section reads MSB first, two bits per bucket, four buckets per byte. 
 
 To recover the table: `count(b) = 3 + packed_delta(b)` for every bucket, then overlay `count(200) = 16`. The reader checks the sum against `total issued` (1165 from counters present before persist, plus 1 for the root's own stamp) and knows from the slot section that stamp index `(bucket 41, index 4)` belongs to the snapshot itself and must never be reused for another chunk.
 
-At mainnet scale (`u = 16`) the same structure splits: the packed table no longer fits inline, so the root carries keccak digests of leaf chunks instead, each leaf holding `floor(32768 / w)` buckets' deltas of the same bitstream.
+### Worked example, large batch (multi-leaf)
+
+At mainnet scale (`u = 16`) the packed table no longer fits inline, so the root carries keccak digests of leaf chunks instead. The second vector in `tests/vector.rs` pins this shape: batch depth 29, bucket depth 16 (65536 buckets of 8192 slots), counts `100 + (b mod 50)`, with bucket 0x1234 at 5000 and bucket 0xCBE5 completely full at 8192.
+
+The encoder picks `base = 100` and `w = 6` (the two hot buckets become the exception list rather than forcing 13-bit counters on all 65536 buckets). The snapshot is 14 chunks, and its 554-byte root reads:
+
+```
+offset  size  field
+0x000   66    header: magic, batch id, depth 1d, bucket depth 10, w = 06,
+              sequence 1, total issued 0x7cb199 (8171929), base 0x64 (100),
+              A = 14, L = 13, E = 2
+0x042   16    exceptions: (0x1234, 5000), (0xcbe5, 8192)
+0x052   56    14 slot entries: 105, 125, 145, ... the within-bucket index
+              each snapshot chunk occupies, root first
+0x08a   416   13 keccak digests, one per leaf payload
+```
+
+Each leaf is a plain slice of the same delta bitstream: `floor(32768 / 6) = 5461` buckets per leaf, so twelve full 4096-byte leaves and a final 3-byte leaf carrying the last 4 buckets (24 bits exactly). Leaf 0 opens `00 10 83 10 51 87 20 92`, which is just deltas 0,1,2,3,... at 6 bits MSB-first; the hot buckets sit in leaves 0 and 9 as all-ones filler.
+
+Points worth reasoning from this vector:
+
+- The root's own slot is 105: the watermark of its (hash-determined) bucket at allocation time, `100 + (0x296d mod 50)`. Snapshot slots are ordinary stamps drawn from the same counters they record.
+- Pinning the root pins everything: the digests bind every leaf byte, so a reader holding the root either reconstructs this exact table or fails with a digest mismatch. There is no version skew across the 14 chunks.
+- `total issued` (8171929) equals the counter sum including the 14 stamps the snapshot spent on itself: state storage costs 14 slots out of 2^29, about 0.0000026%.
 
 ### Self-accounting and bounded recursion
 
