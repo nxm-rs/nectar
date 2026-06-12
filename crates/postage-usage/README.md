@@ -71,6 +71,14 @@ Worst case the snapshot costs 65 slots out of at least `2^17`: under 0.05% of ca
 
 Dilution doubles `2^(d-u)` but changes no counter. The new depth is written to the root header on the next persist; leaf bytes are untouched. `w` grows only if and when the counter spread grows, one leaf at a time, with new leaf chunks allocating their single slot on first appearance. Nothing is reserved ahead of time.
 
+### Mutable batches and slot reuse
+
+The methodology distinguishes three kinds of reuse:
+
+- **Fresh issuance** (mutable and immutable batches): counters track the never-used watermark per bucket. The snapshot's own chunks draw their slots from the same counter, so they sit below the watermark forever; normal stamping cannot collide with them by construction.
+- **Same-address re-stamping** (the snapshot itself, feeds): same address, same slot, newer timestamp replaces the payload in place, for both batch types. For user-owned single-owner chunks no local state is needed: the live chunk's stamp is stored with it on the network, so the slot to reuse is recoverable by fetching the current version.
+- **Cross-address slot reuse** (mutable batches only): re-stamping a slot with a *different* chunk evicts whatever held it. The format intentionally does not track which chunk occupies which slot (that would cost 32 bytes per stamp ever issued), so reuse policy belongs to the caller, with one absolute rule: the slots recorded in the root's allocated section hold the usage data itself and must never be reassigned. `Snapshot::reserved_stamp_indices` / `Snapshot::is_reserved` expose that list to overwrite tooling. The list never shrinks, covering leaf chunks even after a smaller re-encoding stops referencing them, because their previous versions still occupy their slots. A managed free-list of deliberately released slots is a candidate format extension (the flags byte and version magic exist for it) and is out of scope for version 1.
+
 ### Concurrency
 
 The format is single-writer. Counters are monotone, so the elementwise maximum of two divergent tables is a well-defined join and is provided as a recovery primitive (`merge_max`), but it cannot retroactively resolve two writers having issued the same index; true multi-writer coordination is out of scope for version 1. The `sequence` field makes divergence detectable: readers take the higher sequence, and equal sequences with different content signal a conflict.

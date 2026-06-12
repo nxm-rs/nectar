@@ -110,6 +110,37 @@ impl Snapshot {
         &self.slots
     }
 
+    /// Returns the stamp indices occupied by the snapshot's own chunks for a
+    /// batch owned by `owner`, in chunk-index order.
+    ///
+    /// On a mutable batch any slot may be deliberately re-stamped with a
+    /// different chunk and a newer timestamp, evicting the chunk that held
+    /// it. The indices returned here hold the usage data itself and must
+    /// never be reused for another chunk. Fresh issuance cannot collide with
+    /// them (they sit below the per-bucket counter watermark); only
+    /// deliberate slot-reuse tooling needs to consult this list. It covers
+    /// every chunk ever allocated, including leaves a smaller re-encoding no
+    /// longer references, since their previous versions still occupy their
+    /// slots on the network.
+    pub fn reserved_stamp_indices(&self, owner: &Address) -> Vec<StampIndex> {
+        let batch_id = self.table.batch_id();
+        let bucket_depth = self.table.bucket_depth();
+        self.slots
+            .iter()
+            .enumerate()
+            .map(|(index, &slot)| {
+                let address = usage_chunk_address(&batch_id, owner, index as u16);
+                StampIndex::new(calculate_bucket(&address, bucket_depth), slot)
+            })
+            .collect()
+    }
+
+    /// Returns whether a stamp index is occupied by one of the snapshot's
+    /// own chunks and therefore must not be reused for another chunk.
+    pub fn is_reserved(&self, owner: &Address, index: StampIndex) -> bool {
+        self.reserved_stamp_indices(owner).contains(&index)
+    }
+
     /// Encodes the snapshot with its current sequence number.
     ///
     /// Fails if the snapshot has never been persisted (no slot is allocated
