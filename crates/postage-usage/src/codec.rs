@@ -145,6 +145,42 @@ const fn padding_is_zero(buf: &[u8], bit_len: usize) -> bool {
     true
 }
 
+/// Picks the encoding width minimizing the encoded byte size: packed bits
+/// plus 8 bytes per exception, plus 32 bytes per leaf digest when the table
+/// does not inline. Ties break toward the smaller width. Returns `None` when
+/// no width fits, which cannot happen within the supported geometry.
+fn select_width(counts: &[u32], base: u32, buckets: usize, allocated: usize) -> Option<u8> {
+    // histogram[n] counts deltas whose minimal representation is n bits, so
+    // the exception count at width w is the histogram tail above w.
+    let mut histogram = [0usize; 33];
+    for &count in counts {
+        let delta = count - base;
+        histogram[(32 - delta.leading_zeros()) as usize] += 1;
+    }
+
+    let mut best: Option<(u8, usize)> = None;
+    for width in 0..=MAX_WIDTH {
+        let exceptions: usize = histogram[width as usize + 1..].iter().sum();
+        if exceptions > MAX_EXCEPTIONS {
+            continue;
+        }
+        let fixed = ROOT_HEADER_SIZE + 8 * exceptions + 4 * allocated;
+        let packed = packed_len(buckets, width);
+        let mut cost = 8 * exceptions + packed;
+        if fixed + packed > MAX_PAYLOAD_SIZE {
+            let leaves = leaf_count(buckets, width);
+            if fixed + 32 * leaves > MAX_PAYLOAD_SIZE {
+                continue;
+            }
+            cost += 32 * leaves;
+        }
+        if best.is_none_or(|(_, c)| cost < c) {
+            best = Some((width, cost));
+        }
+    }
+    best.map(|(width, _)| width)
+}
+
 /// Encodes a snapshot into its root and leaf payloads.
 pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result<Encoded> {
     if slots.is_empty() {
@@ -155,33 +191,26 @@ pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result
     let base = table.min_count();
     let allocated = slots.len();
 
-    for width in 0..=MAX_WIDTH {
+    // Unreachable for supported geometry: at width 32 there are no
+    // exceptions and the leaf table always fits in the root.
+    let width = select_width(counts, base, buckets, allocated)
+        .ok_or(UsageError::Malformed("no encoding fits the root chunk"))?;
+
+    {
         let limit = delta_limit(width);
-        let mut exceptions: Vec<(u32, u32)> = Vec::new();
-        let mut overflowed = false;
-        for (bucket, &count) in counts.iter().enumerate() {
-            if u64::from(count - base) > limit {
-                if exceptions.len() == MAX_EXCEPTIONS {
-                    overflowed = true;
-                    break;
-                }
-                exceptions.push((bucket as u32, count));
-            }
-        }
-        if overflowed {
-            continue;
-        }
+        let exceptions: Vec<(u32, u32)> = counts
+            .iter()
+            .enumerate()
+            .filter(|&(_, &count)| u64::from(count - base) > limit)
+            .map(|(bucket, &count)| (bucket as u32, count))
+            .collect();
 
         let fixed = ROOT_HEADER_SIZE + 8 * exceptions.len() + 4 * allocated;
         let inline_len = packed_len(buckets, width);
         let (leaves, inline) = if fixed + inline_len <= MAX_PAYLOAD_SIZE {
             (0usize, true)
         } else {
-            let leaves = leaf_count(buckets, width);
-            if fixed + 32 * leaves > MAX_PAYLOAD_SIZE {
-                continue;
-            }
-            (leaves, false)
+            (leaf_count(buckets, width), false)
         };
 
         let mut leaf_payloads = Vec::with_capacity(leaves);
@@ -229,15 +258,11 @@ pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result
             }
         }
 
-        return Ok(Encoded {
+        Ok(Encoded {
             root: Bytes::from(root),
             leaves: leaf_payloads,
-        });
+        })
     }
-
-    // Unreachable for supported geometry: at width 32 there are no
-    // exceptions and the leaf table always fits in the root.
-    Err(UsageError::Malformed("no encoding fits the root chunk"))
 }
 
 fn read_u16(buf: &[u8], offset: usize) -> u16 {
