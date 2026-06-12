@@ -10,7 +10,7 @@ use nectar_primitives::SwarmAddress;
 #[cfg(feature = "std")]
 #[inline]
 pub fn current_timestamp() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)

@@ -3,7 +3,7 @@ members = ["crates/*", "crates/**/examples/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.92"
 authors = ["Nexum Contributors"]
@@ -35,12 +35,12 @@ check.all_targets = true
 
 [workspace.dependencies]
 # nectar crates
-nectar-contracts = { version = "0.1.1", path = "crates/contracts" }
-nectar-mantaray = { version = "0.1.1", path = "crates/mantaray" }
-nectar-primitives = { version = "0.1.1", path = "crates/primitives" }
-nectar-swarms = { version = "0.1.1", path = "crates/swarms" }
-nectar-postage = { version = "0.1.1", path = "crates/postage" }
-nectar-postage-issuer = { version = "0.1.1", path = "crates/postage-issuer" }
+nectar-contracts = { version = "0.2.0", path = "crates/contracts" }
+nectar-mantaray = { version = "0.2.0", path = "crates/mantaray" }
+nectar-primitives = { version = "0.2.0", path = "crates/primitives" }
+nectar-swarms = { version = "0.2.0", path = "crates/swarms" }
+nectar-postage = { version = "0.2.0", path = "crates/postage" }
+nectar-postage-issuer = { version = "0.2.0", path = "crates/postage-issuer" }
 
 # alloy
 alloy-primitives = { version = "1.6", default-features = false }
@@ -66,6 +66,12 @@ num_enum = { version = "0.7", default-features = false }
 
 # sync
 parking_lot = "0.12"
+
+# time: drop-in std::time on native, browser clock on wasm32. Unifies the
+# wall-clock surface so primitives that capture the current time (timestamps,
+# stamp issuance) link and run on wasm32-unknown-unknown instead of panicking
+# through the std unsupported-platform stub.
+web-time = "1.1"
 
 # concurrency and parallelism
 rayon = "1.10"

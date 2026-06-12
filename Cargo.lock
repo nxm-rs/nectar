@@ -2051,7 +2051,7 @@ checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
 name = "nectar-contracts"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "nectar-mantaray"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "alloy-primitives",
  "bitflags",
@@ -2076,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "nectar-postage"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -2093,11 +2093,12 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "web-time",
 ]
 
 [[package]]
 name = "nectar-postage-issuer"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -2116,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "nectar-primitives"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -2144,12 +2145,13 @@ dependencies = [
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-rayon",
+ "web-time",
  "zeroize",
 ]
 
 [[package]]
 name = "nectar-swarms"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "alloy-chains",
  "num_enum",
@@ -3592,6 +3594,16 @@ name = "web-sys"
 version = "0.3.99"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d621441cfc37b84979402712047321980c178f299193a3589d05b99e8763436"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
