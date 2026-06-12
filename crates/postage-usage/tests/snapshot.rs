@@ -242,6 +242,33 @@ fn corruption_is_rejected() {
 }
 
 #[test]
+fn reserved_indices_match_planned_stamps_and_guard_reuse() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = synthetic_counts(buckets, 10, 15);
+    let table = UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+
+    let reserved = snapshot.reserved_stamp_indices(&owner());
+    assert_eq!(reserved.len(), plan.chunks.len());
+    for chunk in &plan.chunks {
+        assert!(reserved.contains(&chunk.stamp_index));
+        assert!(snapshot.is_reserved(&owner(), chunk.stamp_index));
+        // Fresh issuance in the same bucket hands out the watermark, which
+        // is above every reserved slot in that bucket.
+        let bucket = chunk.stamp_index.bucket();
+        let fresh = snapshot.table().count(bucket).unwrap();
+        assert!(fresh > chunk.stamp_index.index());
+        assert!(!snapshot.is_reserved(&owner(), nectar_postage::StampIndex::new(bucket, fresh)));
+    }
+
+    // The reserved list survives decode: it is derived from the root's
+    // allocated slots section.
+    let recovered = roundtrip(&plan);
+    assert_eq!(recovered.reserved_stamp_indices(&owner()), reserved);
+}
+
+#[test]
 fn encode_requires_an_allocated_root() {
     let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH).unwrap();
     let snapshot = Snapshot::new(table);
