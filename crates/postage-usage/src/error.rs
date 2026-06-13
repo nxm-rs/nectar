@@ -63,6 +63,21 @@ pub enum UsageError {
     #[error("operands describe different batches")]
     BatchMismatch,
 
+    /// `merge_max` was called with a mutable table on either side. A ring
+    /// cursor is not monotone (it falls on wrap), so the elementwise maximum
+    /// is not a valid join; mutable divergence is resolved by sequence.
+    #[error("merge_max is not defined for mutable batches")]
+    MutableMerge,
+
+    /// A mutable bucket has no free ring slot because every slot is reserved
+    /// by the snapshot's own chunks. The batch geometry forbids this, so it
+    /// signals an internal inconsistency rather than an expected condition.
+    #[error("mutable bucket {bucket} has no free ring slot")]
+    RingExhausted {
+        /// The exhausted bucket.
+        bucket: u32,
+    },
+
     /// A within-bucket slot index is outside the bucket capacity.
     #[error("slot {slot} exceeds bucket capacity {capacity}")]
     InvalidSlot {

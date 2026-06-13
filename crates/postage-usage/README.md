@@ -39,10 +39,10 @@ The canonical encoder picks `base = min(counts)` and the width minimizing the en
 | 4 | 32 | batch id |
 | 36 | 1 | batch depth `d` |
 | 37 | 1 | bucket depth `u` (<= 16, `d - u` <= 31) |
-| 38 | 1 | flags (must be zero) |
+| 38 | 1 | flags (bit 0: mutable batch; all other bits must be zero) |
 | 39 | 1 | delta width `w` (<= 32) |
 | 40 | 8 | sequence (monotone persist counter) |
-| 48 | 8 | total stamps issued (must equal the counter sum) |
+| 48 | 8 | counter sum (immutable: lifetime stamps issued; mutable: a checksum over the cursors; must equal the sum of the decoded counters either way) |
 | 56 | 4 | base |
 | 60 | 2 | allocated count `A` (snapshot chunks ever allocated, >= leaf_count + 1) |
 | 62 | 2 | leaf count `L` |
@@ -132,21 +132,38 @@ Worst case the snapshot costs 65 slots out of at least `2^17`: under 0.05% of ca
 
 Dilution doubles `2^(d-u)` but changes no counter. The new depth is written to the root header on the next persist; leaf bytes are untouched. `w` grows only if and when the counter spread grows, one leaf at a time, with new leaf chunks allocating their single slot on first appearance. Nothing is reserved ahead of time.
 
-### Mutable batches and slot reuse
+### Immutable batches
 
-The methodology distinguishes three kinds of reuse:
+The default, and the simplest case. Each counter is a monotone fill watermark: `count(b)` is the next unused index in bucket `b`, and issuing a stamp returns `count(b)` then increments it. A bucket is full at `2^(d-u)` and issuance there fails rather than overwriting. The snapshot's own chunks draw their slots from the same watermark, so they sit below every future watermark forever: fresh issuance cannot collide with them by construction. The counter sum is the lifetime stamp count, dilution changes no counter, and `merge_max` is a valid join (counters only ever rise).
 
-- **Fresh issuance** (mutable and immutable batches): counters track the never-used watermark per bucket. The snapshot's own chunks draw their slots from the same counter, so they sit below the watermark forever; normal stamping cannot collide with them by construction.
-- **Same-address re-stamping** (the snapshot itself, feeds): same address, same slot, newer timestamp replaces the payload in place, for both batch types. For user-owned single-owner chunks no local state is needed: the live chunk's stamp is stored with it on the network, so the slot to reuse is recoverable by fetching the current version.
-- **Cross-address slot reuse** (mutable batches only): re-stamping a slot with a *different* chunk evicts whatever held it. The format intentionally does not track which chunk occupies which slot (that would cost 32 bytes per stamp ever issued), so reuse policy belongs to the caller, with one absolute rule: the slots recorded in the root's allocated section hold the usage data itself and must never be reassigned. `Snapshot::reserved_stamp_indices` / `Snapshot::is_reserved` expose that list to overwrite tooling. The list never shrinks, covering leaf chunks even after a smaller re-encoding stops referencing them, because their previous versions still occupy their slots. A managed free-list of deliberately released slots is a candidate format extension (the flags byte and version magic exist for it) and is out of scope for version 1.
+### Mutable batches
+
+A mutable batch is a per-bucket ring buffer: once a bucket fills, the issuer wraps its cursor back to `0` and overwrites the oldest chunk, so the bucket churns instead of rejecting. The snapshot models this by reinterpreting each counter as a **ring cursor** in `[0, 2^(d-u)]`: the next index to write, wrapping at capacity. Writing at the cursor evicts the chunk currently in that slot, which is the oldest live chunk because writes advance in cursor order; the monotone stamp timestamp is what authorizes the network to replace the evicted chunk's stamp at that `(bucket, index)`. Position selects the victim, the timestamp makes the overwrite valid on the wire.
+
+Flags byte bit 0 marks the snapshot mutable, so a reader interprets the counters as cursors rather than fills. A reader that predates the flag rejects the snapshot (any nonzero flag byte is rejected), so a mutable snapshot is never silently misread as an immutable one.
+
+Two consequences follow for the snapshot's own chunks:
+
+- **Reserved slots are carved out of the ring.** A snapshot chunk sits at a fixed index but is re-stamped with a fresh timestamp on every persist, so a naive position-based FIFO would treat it as the oldest slot and evict the very data that records the batch state. The cursor therefore skips every index in the root's allocated section: a bucket holding `r` reserved slots is a ring of length `2^(d-u) - r`. This promotes `Snapshot::reserved_stamp_indices` / `Snapshot::is_reserved` from advisory hints to an invariant enforced inside issuance. At minimum depth (`d - u = 1`, two slots per bucket) a bucket containing a reserved slot is a one-deep ring that churns on every write; the geometry still permits it.
+- **`merge_max` is immutable-only.** A cursor is not monotone (it falls on wrap), so two divergent copies cannot be reconciled by elementwise maximum. `merge_max` rejects mutable tables. Mutable divergence is a genuine conflict, surfaced by the `sequence` number, not silently joined.
+
+The counter sum is read accordingly. For an immutable batch it is the lifetime stamp count and the decoder checks it exactly. For a mutable batch the cursors sum to nothing semantic (a wrapped bucket is fully occupied yet its cursor may be small), so the field is a deterministic checksum over the cursor table: the decoder still recomputes and verifies it, catching corruption, but it is not a utilization figure. Exact per-bucket occupancy for a wrapped bucket is the full capacity; surfacing it precisely would need one saturated bit per bucket and is a candidate v1.x extension.
+
+Dilution is still free. Raising the depth enlarges every ring without touching a cursor: a bucket that had wrapped simply gains headroom above its current cursor and stops evicting until it fills again. No counter changes and no leaf byte changes, exactly as for immutable batches. Storing the cursor rather than a lifetime count is what buys this: a lifetime count would have to be remapped modulo the new capacity on every dilution.
+
+Recovery is cursor-only. As with the reference issuer, the snapshot records where each bucket's cursor points, not which chunk occupies which slot (tracking that would cost a hash per live stamp). Recovering a mutable batch on a new machine restores correct issuance order and protects the metadata slots; it does not enumerate live content. A managed free-list of deliberately released slots remains a candidate format extension (the flags byte and version magic exist for it) and is out of scope for version 1.
+
+### Same-address re-stamping
+
+For both batch types, re-publishing the same address with the same slot and a newer timestamp replaces the payload in place (the snapshot's own chunks, and feeds, rely on this). For user-owned single-owner chunks no local state is needed: the live chunk's stamp is stored with it on the network, so the slot to reuse is recoverable by fetching the current version.
 
 ### Concurrency
 
-The format is single-writer. Counters are monotone, so the elementwise maximum of two divergent tables is a well-defined join and is provided as a recovery primitive (`merge_max`), but it cannot retroactively resolve two writers having issued the same index; true multi-writer coordination is out of scope for version 1. The `sequence` field makes divergence detectable: readers take the higher sequence, and equal sequences with different content signal a conflict.
+The format is single-writer. On an immutable batch counters are monotone, so the elementwise maximum of two divergent tables is a well-defined join and is provided as a recovery primitive (`merge_max`); it still cannot retroactively resolve two writers having issued the same index, and true multi-writer coordination is out of scope for version 1. On a mutable batch the counters are wrapping cursors and have no monotone join, so `merge_max` rejects mutable tables and divergence must be resolved by sequence. The `sequence` field makes divergence detectable for both: readers take the higher sequence, and equal sequences with different content signal a conflict.
 
 ## Crate layout
 
-- `UsageTable`: in-memory counters plus batch geometry; implements slot assignment, dilution, and `merge_max`. With the `issuer` feature it implements `nectar_postage_issuer::StampIssuer`, so it drops into `BatchStamper` directly.
+- `UsageTable`: in-memory counters plus batch geometry; implements slot assignment, dilution, and `merge_max` (immutable only). A table can be immutable (monotone fill watermarks) or mutable (wrapping ring cursors that skip the snapshot's reserved slots). With the `issuer` feature it implements `nectar_postage_issuer::StampIssuer`, so it drops into `BatchStamper` directly; the same table instance must back both content stamping and snapshot allocation so their slots never collide.
 - `Snapshot`: a `UsageTable` plus persistence state (sequence, allocated snapshot-chunk slots).
 - `Snapshot::plan_persist`: runs the self-accounting fixed point and returns the payloads, SOC ids, and stamp indices to publish.
 - `RootInfo::parse` / `RootInfo::assemble`: two-phase decode with full structural validation and digest verification.
