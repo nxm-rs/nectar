@@ -26,31 +26,18 @@ pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()>
 
 /// Per-bucket slot counters for a postage batch.
 ///
-/// Tracks, for each of the `2^bucket_depth` collision buckets, the state
-/// needed to issue collision-free stamps into its `2^(depth - bucket_depth)`
-/// storage slots.
+/// For each of the `2^bucket_depth` collision buckets, tracks the state needed
+/// to issue collision-free stamps into its `2^(depth - bucket_depth)` slots.
 ///
-/// A table is either *immutable* or *mutable*:
-///
-/// - **Immutable** (the default, [`new`](Self::new) / [`from_counts`](Self::from_counts)):
-///   `counts[b]` is a monotone fill watermark, the next unused within-bucket
-///   index. Issuance returns the watermark and advances it; a full bucket
-///   fails rather than overwriting.
+/// - **Immutable** ([`new`](Self::new) / [`from_counts`](Self::from_counts)):
+///   `counts[b]` is a monotone fill watermark, the next unused index; issuance
+///   advances it and a full bucket fails rather than overwriting.
 /// - **Mutable** ([`new_mutable`](Self::new_mutable) /
-///   [`from_counts_mutable`](Self::from_counts_mutable)): `counts[b]` is a
-///   ring cursor in `[0, capacity]`, the next index to write. When the cursor
-///   reaches capacity it wraps to `0`, re-emitting low indices, so a full
-///   bucket churns rather than failing. The cursor skips any index reserved
-///   by the snapshot's own chunks (see [`set_reserved`](Self::set_reserved)),
-///   so re-stamping the snapshot never evicts the data that records the
-///   batch state.
-///
-/// In both modes [`total_issued`](Self::total_issued) equals the sum of the
-/// counters. For an immutable batch that is the lifetime stamp count; for a
-/// mutable batch the cursors carry no lifetime semantics and the sum is only
-/// a deterministic checksum / occupancy proxy (a wrapped bucket is fully
-/// occupied yet its cursor may be small). No lifetime-per-bucket count is
-/// retained.
+///   [`from_counts_mutable`](Self::from_counts_mutable)): `counts[b]` is a ring
+///   cursor in `[0, capacity]` that wraps at capacity, so a full bucket churns
+///   instead of failing. The cursor skips the snapshot's reserved slots
+///   (installed via [`Snapshot`](crate::Snapshot)) so issuance never evicts the
+///   data that records the batch state.
 #[derive(Debug, Clone)]
 pub struct UsageTable {
     pub(crate) batch_id: BatchId,
@@ -58,19 +45,13 @@ pub struct UsageTable {
     pub(crate) bucket_depth: u8,
     pub(crate) counts: Vec<u32>,
     pub(crate) issued: u64,
-    /// Whether this table is a mutable ring (true) or an immutable fill
-    /// watermark (false).
+    /// Whether this table is a mutable ring (true) or immutable fill watermark
+    /// (false).
     pub(crate) mutable: bool,
-    /// Within-bucket slots reserved by the snapshot's own chunks, as
-    /// `(bucket, index)` pairs. Consulted only by the mutable issuance path,
-    /// which skips them so re-stamping the snapshot never evicts its own
-    /// data. Empty (and ignored) for immutable tables.
-    ///
-    /// This is a derived cache: it is recomputed from the snapshot's owner and
-    /// allocated slots, and a table decoded from the wire carries an empty set
-    /// until [`set_reserved`](Self::set_reserved) installs it. It is therefore
-    /// excluded from equality, so a recovered snapshot compares equal to the
-    /// one it was decoded from regardless of sync state.
+    /// `(bucket, index)` slots reserved by the snapshot's own chunks, which the
+    /// mutable issuance path skips. A derived cache (recomputed from owner and
+    /// allocated slots, empty until [`set_reserved`](Self::set_reserved)
+    /// installs it), so it is excluded from equality.
     pub(crate) reserved: BTreeSet<(u32, u32)>,
 }
 
@@ -93,15 +74,12 @@ impl UsageTable {
         Self::new_with_mode(batch_id, depth, bucket_depth, false)
     }
 
-    /// Creates an empty mutable (ring-cursor) table for a batch with the given
-    /// geometry.
+    /// Creates an empty mutable (ring-cursor) table.
     ///
-    /// The table issues stamps as a per-bucket ring buffer: once a bucket
-    /// fills, issuance wraps back to index `0`. Before issuing content stamps
-    /// the caller must install the snapshot's reserved slots via
-    /// [`set_reserved`](Self::set_reserved) (the [`Snapshot`](crate::Snapshot)
-    /// content-issuance entry points do this automatically), so the ring never
-    /// evicts the snapshot's own chunks.
+    /// Issuance is a per-bucket ring: once a bucket fills it wraps to index `0`.
+    /// Install the snapshot's reserved slots through the
+    /// [`Snapshot`](crate::Snapshot) entry points before issuing content, so the
+    /// ring never evicts the snapshot's own chunks.
     pub fn new_mutable(batch_id: BatchId, depth: u8, bucket_depth: u8) -> Result<Self> {
         Self::new_with_mode(batch_id, depth, bucket_depth, true)
     }
@@ -137,12 +115,9 @@ impl UsageTable {
         Self::from_counts_with_mode(batch_id, depth, bucket_depth, counts, false)
     }
 
-    /// Creates a mutable (ring-cursor) table from existing cursors.
-    ///
-    /// `counts` must hold exactly `2^bucket_depth` entries, each a ring cursor
-    /// in `[0, capacity]`. As with [`new_mutable`](Self::new_mutable), install
-    /// the snapshot's reserved slots via [`set_reserved`](Self::set_reserved)
-    /// before issuing content stamps.
+    /// Creates a mutable (ring-cursor) table from existing cursors, each in
+    /// `[0, capacity]`. As with [`new_mutable`](Self::new_mutable), install the
+    /// reserved slots via [`Snapshot`](crate::Snapshot) before issuing.
     pub fn from_counts_mutable(
         batch_id: BatchId,
         depth: u8,
@@ -201,16 +176,11 @@ impl UsageTable {
         self.mutable
     }
 
-    /// Installs the set of within-bucket slots reserved by the snapshot's own
-    /// chunks, as `(bucket, index)` pairs. Replaces any previously installed
-    /// set.
-    ///
-    /// The mutable issuance path skips these slots so re-stamping the snapshot
-    /// never evicts the data that records the batch state. This is a no-op on
-    /// the issuance behaviour of an immutable table (which never consults the
-    /// reserved set), but the [`Snapshot`](crate::Snapshot) installs it
-    /// regardless so that a table recovered from the wire becomes owner-aware
-    /// before any mutable content issuance.
+    /// Installs the `(bucket, index)` slots reserved by the snapshot's own
+    /// chunks, replacing any previous set. The mutable issuance path skips them;
+    /// immutable issuance ignores the set. [`Snapshot`](crate::Snapshot) installs
+    /// it so a table recovered from the wire becomes owner-aware before any
+    /// mutable issuance.
     pub(crate) fn set_reserved(&mut self, reserved: impl IntoIterator<Item = (u32, u32)>) {
         self.reserved = reserved.into_iter().collect();
     }
@@ -242,11 +212,10 @@ impl UsageTable {
 
     /// Returns the sum of the per-bucket counters.
     ///
-    /// For an immutable table this is the lifetime count of stamps issued. For
-    /// a mutable table the counters are ring cursors, so the sum is a
-    /// deterministic checksum / occupancy proxy rather than a lifetime count
-    /// (a wrapped bucket is fully occupied yet its cursor may be small). The
-    /// codec writes and verifies this value as a checksum in both modes.
+    /// Immutable: the lifetime count of stamps issued. Mutable: the counters are
+    /// ring cursors, so this is a deterministic checksum, not a lifetime count
+    /// (a wrapped bucket is full yet its cursor may be small). The codec writes
+    /// and verifies it as a checksum in both modes.
     pub const fn total_issued(&self) -> u64 {
         self.issued
     }
@@ -281,15 +250,11 @@ impl UsageTable {
 
     /// Assigns the next slot in a bucket and returns its index.
     ///
-    /// For an immutable table this is the monotone fill watermark: it returns
-    /// `counts[bucket]`, advances it, and fails with
-    /// [`BucketFull`](UsageError::BucketFull) at capacity.
-    ///
-    /// For a mutable table this advances a ring cursor, wrapping at capacity
-    /// and skipping any slot reserved by the snapshot's own chunks. It never
-    /// returns `BucketFull`; if every slot in the bucket were reserved (which
-    /// the geometry forbids) it returns
-    /// [`RingExhausted`](UsageError::RingExhausted).
+    /// Immutable: the monotone fill watermark, failing with
+    /// [`BucketFull`](UsageError::BucketFull) at capacity. Mutable: a ring cursor
+    /// that wraps at capacity and skips reserved slots, never returning
+    /// `BucketFull` (it returns [`RingExhausted`](UsageError::RingExhausted) only
+    /// if every slot is reserved, which the geometry forbids).
     pub fn record(&mut self, bucket: u32) -> Result<u32> {
         let capacity = self.bucket_capacity();
         if bucket as usize >= self.counts.len() {
@@ -365,18 +330,15 @@ impl UsageTable {
         Ok(())
     }
 
-    /// Merges another table into this one by taking the elementwise maximum
-    /// of the counters and the maximum depth.
+    /// Merges another table into this one by taking the elementwise maximum of
+    /// the counters and the maximum depth.
     ///
-    /// Defined for immutable tables only. Immutable counters are monotone, so
-    /// the elementwise maximum is a well-defined join for recovering from
-    /// divergent copies of the same table. It cannot undo two writers having
-    /// issued the same index; see the crate documentation.
-    ///
-    /// Rejects with [`MutableMerge`](UsageError::MutableMerge) if either table
-    /// is mutable: a ring cursor falls on wrap, so it is not monotone and has
-    /// no maximum-based join. Mutable divergence is a genuine conflict,
-    /// surfaced by the snapshot sequence number rather than silently joined.
+    /// Immutable only: monotone counters make the elementwise maximum a
+    /// well-defined join for reconciling divergent copies (it cannot undo two
+    /// writers issuing the same index). Rejects with
+    /// [`MutableMerge`](UsageError::MutableMerge) if either table is mutable: a
+    /// ring cursor falls on wrap, so it has no maximum-based join, and mutable
+    /// divergence is a conflict surfaced by the snapshot sequence number.
     pub fn merge_max(&mut self, other: &Self) -> Result<()> {
         if self.mutable || other.mutable {
             return Err(UsageError::MutableMerge);

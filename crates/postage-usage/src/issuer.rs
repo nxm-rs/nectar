@@ -62,16 +62,13 @@ impl StampIssuer for UsageTable {
     }
 }
 
-/// A [`StampIssuer`] that stamps content chunks through a [`Snapshot`]'s table,
-/// so content stamping and snapshot allocation share one table and their slots
-/// provably never collide.
+/// A [`StampIssuer`] that stamps content through a [`Snapshot`]'s table, so
+/// content stamping and snapshot allocation share one table and never collide.
 ///
-/// Unlike stamping a bare [`UsageTable`], this adapter is owner-aware: on a
-/// mutable batch it skips the snapshot's reserved slots, so the ring never
-/// evicts the chunks that record the batch state. It owns the snapshot by
-/// value so it drops directly into `BatchStamper::new`. Recover the snapshot
-/// afterwards with [`into_snapshot`](Self::into_snapshot), for example to plan
-/// the next persist.
+/// Owner-aware, unlike stamping a bare [`UsageTable`]: on a mutable batch it
+/// skips the reserved slots so the ring never evicts the batch-state chunks. It
+/// owns the snapshot by value to drop into `BatchStamper::new`; recover it with
+/// [`into_snapshot`](Self::into_snapshot).
 #[derive(Debug, Clone)]
 pub struct SnapshotIssuer {
     snapshot: Snapshot,
