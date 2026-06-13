@@ -106,3 +106,36 @@ fn readme_large_batch_multi_leaf_vector() {
     let recovered = root.assemble(&leaves).unwrap();
     assert_eq!(recovered, snapshot);
 }
+
+/// A byte-exact mutable vector: identical geometry and cursors to the first
+/// (immutable) worked example, but constructed mutable. Only the flags byte
+/// differs, so this pins both the flag (0x01) and the mutable round-trip.
+const MUTABLE_ROOT_PAYLOAD_HEX: &str = "5342553142424242424242424242424242424242424242424242424242424242424242420c0801020000000000000001000000000000048e00000003000100000001000000c800000010000000041b1b1b1b1b1b1b1b1b1b2b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1bdb1b1b1b1b1b1b1b1b1b1b1b1b1b";
+
+#[test]
+fn mutable_vector_flags_byte_and_round_trip() {
+    let batch_id = B256::repeat_byte(0x42);
+    let owner = Address::repeat_byte(0x11);
+    let mut counts: Vec<u32> = (0..256u32).map(|b| 3 + (b & 3)).collect();
+    counts[200] = 16;
+    let table = UsageTable::from_counts_mutable(batch_id, 12, 8, counts).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let plan = snapshot.plan_persist(&owner).unwrap();
+
+    // Same self-allocation as the immutable vector: bucket 41, slot 4.
+    assert_eq!(calculate_bucket(&plan.chunks[0].address, 8), 41);
+    assert_eq!(snapshot.allocated_slots(), &[4]);
+
+    // Exactly one byte differs from the immutable vector: the flags byte.
+    assert_eq!(plan.chunks.len(), 1);
+    let bytes = plan.chunks[0].payload.clone();
+    assert_eq!(bytes[38], 0x01, "mutable flag must be set");
+    assert_eq!(hex::encode(&bytes), MUTABLE_ROOT_PAYLOAD_HEX);
+
+    // It decodes back as mutable to the same snapshot.
+    let root = RootInfo::parse(&hex::decode(MUTABLE_ROOT_PAYLOAD_HEX).unwrap()).unwrap();
+    assert!(root.is_mutable());
+    let recovered = root.assemble(&[] as &[&[u8]]).unwrap();
+    assert!(recovered.table().is_mutable());
+    assert_eq!(recovered, snapshot);
+}

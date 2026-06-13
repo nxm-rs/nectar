@@ -144,7 +144,7 @@ fn dilution_changes_no_leaf_bytes() {
     let mut snapshot = Snapshot::new(table);
     let before = snapshot.plan_persist(&owner()).unwrap();
 
-    snapshot.table_mut().dilute(24).unwrap();
+    snapshot.dilute(24).unwrap();
     let after = snapshot.plan_persist(&owner()).unwrap();
 
     assert_eq!(before.chunks.len(), after.chunks.len());
@@ -273,4 +273,130 @@ fn encode_requires_an_allocated_root() {
     let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH).unwrap();
     let snapshot = Snapshot::new(table);
     assert!(snapshot.encode().is_err());
+}
+
+#[test]
+fn mutable_round_trips_and_decodes_as_mutable() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = synthetic_counts(buckets, 10, 15);
+    let table = UsageTable::from_counts_mutable(batch_id(), 22, BUCKET_DEPTH, counts).unwrap();
+    assert!(table.is_mutable());
+    let mut snapshot = Snapshot::new(table);
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+
+    // The flags byte marks the snapshot mutable.
+    let root = RootInfo::parse(&plan.chunks[0].payload).unwrap();
+    assert!(root.is_mutable());
+
+    let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| &c.payload).collect();
+    let mut recovered = root.assemble(&leaves).unwrap();
+    assert!(recovered.table().is_mutable());
+    // Equality ignores the reserved cache, so a freshly decoded (un-synced)
+    // mutable snapshot still compares equal to its source.
+    assert_eq!(recovered, snapshot);
+
+    // After syncing, it remains equal and is reserved-aware.
+    recovered.sync_reserved(&owner());
+    assert_eq!(recovered, snapshot);
+}
+
+#[test]
+fn mutable_dilution_changes_no_cursor_or_leaf_bytes() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = synthetic_counts(buckets, 5, 7);
+    let table = UsageTable::from_counts_mutable(batch_id(), 20, BUCKET_DEPTH, counts).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let before = snapshot.plan_persist(&owner()).unwrap();
+    let cursors_before = snapshot.table().counts().to_vec();
+
+    snapshot.dilute(24).unwrap();
+    assert_eq!(
+        snapshot.table().counts(),
+        cursors_before.as_slice(),
+        "dilution must not move any cursor"
+    );
+
+    let after = snapshot.plan_persist(&owner()).unwrap();
+    assert_eq!(before.chunks.len(), after.chunks.len());
+    for (a, b) in before.chunks[1..].iter().zip(after.chunks[1..].iter()) {
+        assert_eq!(a.payload, b.payload, "leaf bytes must survive dilution");
+    }
+    let recovered = roundtrip(&after);
+    assert_eq!(recovered.table().depth(), 24);
+    assert_eq!(recovered, snapshot);
+}
+
+#[test]
+fn merge_max_rejects_mutable() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let mut a = UsageTable::from_counts_mutable(
+        batch_id(),
+        20,
+        BUCKET_DEPTH,
+        synthetic_counts(buckets, 1, 2),
+    )
+    .unwrap();
+    let b = UsageTable::from_counts(
+        batch_id(),
+        20,
+        BUCKET_DEPTH,
+        synthetic_counts(buckets, 1, 2),
+    )
+    .unwrap();
+    assert_eq!(a.merge_max(&b), Err(UsageError::MutableMerge));
+}
+
+#[test]
+fn decoded_mutable_requires_sync_reserved_before_issuing() {
+    // A small geometry where the root's bucket is a shallow ring, so an
+    // un-synced ring cursor would re-emit the reserved slot quickly.
+    let depth = 18; // capacity 4 per bucket
+    let buckets = 1usize << BUCKET_DEPTH;
+    // Fill the table close to full so cursors wrap fast.
+    let counts = vec![3u32; buckets];
+    let table = UsageTable::from_counts_mutable(batch_id(), depth, BUCKET_DEPTH, counts).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let reserved = snapshot.reserved_stamp_indices(&owner());
+
+    // Recover the snapshot from the wire; it is NOT reserved-aware yet.
+    let recovered = roundtrip(&plan);
+    let root_index = reserved[0];
+
+    // The owner-aware content path syncs internally, so it never re-emits a
+    // reserved slot even though it churns the ring repeatedly.
+    let mut issuing = recovered;
+    // Find a content address that maps to the root's reserved bucket.
+    let bucket = root_index.bucket();
+    let content = address_in_bucket(bucket);
+    assert_eq!(calculate_bucket(&content, BUCKET_DEPTH), bucket);
+    for _ in 0..32 {
+        let index = issuing.record_address(&owner(), &content).unwrap();
+        assert_ne!(
+            index, root_index,
+            "the reserved root slot must never be re-emitted"
+        );
+    }
+    // The reserved slot value is intact in the table view.
+    assert!(issuing.is_reserved(&owner(), root_index));
+}
+
+/// Returns a chunk address whose top `BUCKET_DEPTH` bits select `bucket`.
+fn address_in_bucket(bucket: u32) -> nectar_primitives::SwarmAddress {
+    let mut bytes = [0u8; 32];
+    // bucket occupies the most-significant BUCKET_DEPTH (=16) bits.
+    bytes[0] = (bucket >> 8) as u8;
+    bytes[1] = bucket as u8;
+    nectar_primitives::SwarmAddress::new(bytes)
+}
+
+/// The `raw-table` escape hatch still exposes direct table mutation when
+/// explicitly opted into.
+#[cfg(feature = "raw-table")]
+#[test]
+fn raw_table_mut_allows_direct_recording() {
+    let mut snapshot = Snapshot::new(UsageTable::new(batch_id(), 20, BUCKET_DEPTH).unwrap());
+    let index = snapshot.table_mut().record(7).unwrap();
+    assert_eq!(index, 0);
+    assert_eq!(snapshot.table().count(7).unwrap(), 1);
 }

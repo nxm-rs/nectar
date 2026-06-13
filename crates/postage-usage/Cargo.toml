@@ -45,6 +45,12 @@ issuer = ["dep:nectar-postage-issuer", "std"]
 # Turns persist plans into signed single-owner chunks and stamps.
 seal = ["dep:alloy-signer", "std"]
 
+# Exposes `Snapshot::table_mut` for raw mutable access to the underlying
+# `UsageTable`. An escape hatch that bypasses the reserved-aware issuance path,
+# so it can overwrite the snapshot's own slots on a mutable batch; prefer
+# `Snapshot::record_address`, `Snapshot::into_issuer`, or `Snapshot::dilute`.
+raw-table = []
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

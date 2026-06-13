@@ -43,6 +43,7 @@ pub struct RootInfo {
     batch_id: BatchId,
     depth: u8,
     bucket_depth: u8,
+    mutable: bool,
     width: u8,
     sequence: u64,
     total_issued: u64,
@@ -235,7 +236,8 @@ pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result
         root.extend_from_slice(table.batch_id().as_slice());
         root.push(table.depth());
         root.push(table.bucket_depth());
-        root.push(0); // flags
+        // flags: bit 0 marks a mutable (ring-cursor) batch.
+        root.push(if table.is_mutable() { 1 } else { 0 });
         root.push(width);
         root.extend_from_slice(&sequence.to_be_bytes());
         root.extend_from_slice(&table.total_issued().to_be_bytes());
@@ -293,9 +295,13 @@ impl RootInfo {
         let depth = payload[36];
         let bucket_depth = payload[37];
         validate_geometry(depth, bucket_depth)?;
-        if payload[38] != 0 {
+        let flags = payload[38];
+        // Only bit 0 (mutable) is defined; any other bit set is rejected so a
+        // future flag is never silently ignored by an older reader.
+        if flags & !0x01 != 0 {
             return Err(UsageError::Malformed("unsupported flags"));
         }
+        let mutable = flags & 0x01 == 1;
         let width = payload[39];
         if width > MAX_WIDTH {
             return Err(UsageError::Malformed("delta width exceeds 32"));
@@ -397,6 +403,7 @@ impl RootInfo {
             batch_id,
             depth,
             bucket_depth,
+            mutable,
             width,
             sequence,
             total_issued,
@@ -410,6 +417,11 @@ impl RootInfo {
     /// Returns the batch id.
     pub const fn batch_id(&self) -> BatchId {
         self.batch_id
+    }
+
+    /// Returns whether the snapshot describes a mutable (ring-cursor) batch.
+    pub const fn is_mutable(&self) -> bool {
+        self.mutable
     }
 
     /// Returns the batch depth.
@@ -553,7 +565,22 @@ impl RootInfo {
             });
         }
 
-        let table = UsageTable::from_counts(self.batch_id, self.depth, self.bucket_depth, counts)?;
+        // Reconstruct the table in its original mode. The sum check above
+        // validates the counters in both modes (a checksum for mutable).
+        //
+        // A mutable table recovered here is NOT yet reserved-aware: the
+        // decoder has the batch id and the allocated slots but not the owner
+        // address, so it cannot map a reserved slot to its bucket (that needs
+        // the single-owner chunk address, which depends on the owner). The
+        // holder must call [`Snapshot::sync_reserved`](crate::Snapshot::sync_reserved)
+        // (or use the owner-aware content-issuance entry points, which sync
+        // internally) before issuing any content stamp on a recovered mutable
+        // snapshot.
+        let table = if self.mutable {
+            UsageTable::from_counts_mutable(self.batch_id, self.depth, self.bucket_depth, counts)?
+        } else {
+            UsageTable::from_counts(self.batch_id, self.depth, self.bucket_depth, counts)?
+        };
         Snapshot::from_parts(table, self.sequence, self.slots)
     }
 }
@@ -597,5 +624,34 @@ mod tests {
         assert!(padding_is_zero(&[0b1010_0000], 3));
         assert!(!padding_is_zero(&[0b1011_0000], 3));
         assert!(padding_is_zero(&[0xff], 8));
+    }
+
+    #[test]
+    fn flags_bit0_is_mutable_other_bits_rejected() {
+        use alloy_primitives::B256;
+
+        // Build a minimal valid mutable root: width 0, one slot, no exceptions.
+        let table = UsageTable::new_mutable(B256::repeat_byte(0x42), 20, 16).unwrap();
+        let encoded = encode(&table, 1, &[0]).unwrap();
+        let mut root = encoded.root.to_vec();
+        assert_eq!(root[38], 0x01, "mutable flag must be set");
+
+        let info = RootInfo::parse(&root).unwrap();
+        assert!(info.is_mutable());
+
+        // Any reserved flag bit is rejected.
+        for bit in 1..8u8 {
+            let mut bad = root.clone();
+            bad[38] = 1 << bit;
+            assert_eq!(
+                RootInfo::parse(&bad),
+                Err(UsageError::Malformed("unsupported flags"))
+            );
+        }
+
+        // Clearing bit 0 yields an immutable snapshot.
+        root[38] = 0x00;
+        let info = RootInfo::parse(&root).unwrap();
+        assert!(!info.is_mutable());
     }
 }

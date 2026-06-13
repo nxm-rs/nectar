@@ -30,14 +30,15 @@
 //!
 //! ```
 //! use alloy_primitives::{Address, B256};
-//! use nectar_postage_usage::{RootInfo, Snapshot, UsageTable};
+//! use nectar_postage_usage::{RootInfo, Snapshot, SwarmAddress, UsageTable};
 //!
 //! let batch_id = B256::repeat_byte(0x42);
 //! let owner = Address::repeat_byte(0x11);
 //!
-//! // Record uploads, then plan a persist.
+//! // Record an uploaded chunk against the shared table, then plan a persist.
 //! let mut snapshot = Snapshot::new(UsageTable::new(batch_id, 20, 16).unwrap());
-//! snapshot.table_mut().record(7).unwrap();
+//! let address = SwarmAddress::from(B256::repeat_byte(0x99));
+//! snapshot.record_address(&owner, &address).unwrap();
 //! let plan = snapshot.plan_persist(&owner).unwrap();
 //!
 //! // Publish each plan chunk as a single-owner chunk stamped with
@@ -68,12 +69,16 @@ pub use error::UsageError;
 pub use snapshot::{PersistPlan, PlannedChunk, Snapshot};
 pub use table::UsageTable;
 
+#[cfg(feature = "issuer")]
+pub use issuer::SnapshotIssuer;
+
 #[cfg(feature = "seal")]
 pub use seal::{SealError, SealedChunk, seal_plan};
 
+pub use nectar_primitives::SwarmAddress;
+
 use alloy_primitives::{Address, B256, Keccak256};
 use nectar_postage::BatchId;
-use nectar_primitives::SwarmAddress;
 
 /// Result alias for this crate.
 pub type Result<T> = core::result::Result<T, UsageError>;
