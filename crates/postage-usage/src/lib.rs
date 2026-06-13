@@ -1,28 +1,24 @@
 //! Self-hosted postage batch utilization snapshots.
 //!
-//! Issuing postage stamps requires per-bucket counters so that every stamp
-//! assigns a fresh storage slot. This crate serializes those counters into a
-//! compact snapshot designed to live *inside the batch it describes*, as
-//! single-owner chunks at addresses derivable from the batch id and owner
-//! alone. A user can then recover their issuer state on any machine from
-//! nothing but their key and batch id, instead of being chained to a
-//! node-local store.
+//! Issuing postage stamps requires per-bucket counters so every stamp assigns a
+//! fresh storage slot. This crate serializes those counters into a compact
+//! snapshot stored *inside the batch it describes*, as single-owner chunks at
+//! addresses derived from the batch id and owner alone, so a user can recover
+//! their issuer state on any machine from just their key and batch id.
 //!
 //! # Layout
 //!
 //! Snapshot chunk `n` has single-owner chunk id
-//! `keccak256("swarm-batch-usage" || batch_id || u16_be(n))` and is owned and
-//! stamped by the batch owner. Chunk 0 is the root; it commits to the batch
-//! geometry, a sequence number, the slots occupied by the snapshot chunks
-//! themselves, and the digests of the leaf chunks holding the counter table.
-//! Because chunk ids never change, every snapshot chunk occupies exactly one
-//! storage slot for the lifetime of the batch: re-publishing the same address
-//! with the same stamp index and a newer timestamp overwrites in place.
+//! `keccak256("swarm-batch-usage" || batch_id || u16_be(n))`, owned and stamped
+//! by the batch owner. Chunk 0 is the root: it commits to the batch geometry, a
+//! sequence number, the slots the snapshot chunks occupy, and the digests of the
+//! leaf chunks holding the counter table. Chunk ids never change, so each
+//! snapshot chunk occupies one storage slot for the life of the batch (a newer
+//! timestamp at the same address and stamp index overwrites in place).
 //!
-//! Counters are stored with patched frame-of-reference packing: a `base`, a
-//! per-snapshot bit width sized to the *spread* of the counters (not the
-//! batch depth), and an exception list for outliers. Batch dilution changes
-//! no counter and no leaf byte; the structure only grows when the data does.
+//! Counters use patched frame-of-reference packing sized to the *spread* of the
+//! counters, not the batch depth. A table is immutable (monotone fill
+//! watermarks) or mutable (wrapping ring cursors); see [`UsageTable`].
 //!
 //! See `README.md` for the full format specification.
 //!
