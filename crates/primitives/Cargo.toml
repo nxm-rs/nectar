@@ -65,7 +65,12 @@ alloy-primitives = { workspace = true, features = ["asm-keccak", "getrandom"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 alloy-primitives = { workspace = true, features = ["getrandom"] }
 wasm-bindgen.workspace = true
-wasm-bindgen-rayon = "1.3"
+# Gated behind the `wasm-threads` feature (default-off). Its presence forces
+# wasm-bindgen's threads transform, which requires a SharedArrayBuffer memory
+# (and thus COOP/COEP cross-origin isolation on the hosting page). Omitting it
+# yields a wasm that needs no shared memory; the plain `rayon` usage elsewhere
+# then runs inline (no thread pool) on wasm.
+wasm-bindgen-rayon = { version = "1.3", optional = true }
 js-sys.workspace = true
 getrandom.workspace = true
 getrandom_02.workspace = true
@@ -85,6 +90,14 @@ rand.workspace = true
 [features]
 default = ["std"]
 std = []
+# WASM thread pool via wasm-bindgen-rayon. OFF by default so the default wasm
+# build needs no SharedArrayBuffer / cross-origin isolation — letting it run on
+# hosts that can't set COOP/COEP (e.g. the eth.limo ENS gateway). Enable it
+# (`--features wasm-threads`) for the threaded build (faster BMT hashing, but
+# requires shared memory). Must stay out of `default`: dependents pull this
+# crate with default features, so a default-on threads feature would be forced
+# on transitively and couldn't be opted out.
+wasm-threads = ["dep:wasm-bindgen-rayon"]
 serde = ["dep:serde"]
 arbitrary = [
 	"std",
