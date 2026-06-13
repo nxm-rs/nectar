@@ -1,0 +1,56 @@
+[package]
+name = "nectar-postage-usage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Self-hosted postage batch utilization snapshots for Ethereum Swarm"
+documentation = "https://docs.rs/nectar-postage-usage"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "postage", "no_std"]
+categories = ["no-std", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nectar-postage = { workspace = true }
+nectar-primitives = { workspace = true }
+alloy-primitives = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+
+# optional
+nectar-postage-issuer = { workspace = true, optional = true }
+alloy-signer = { workspace = true, optional = true }
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+alloy-signer-local = { workspace = true }
+
+[features]
+default = ["std"]
+
+# Standard library support.
+std = ["nectar-postage/std", "alloy-primitives/std", "thiserror/std"]
+
+# Implements `nectar_postage_issuer::StampIssuer` for `UsageTable` so it can
+# back a `BatchStamper` directly. Implies `std` via the issuer crate.
+issuer = ["dep:nectar-postage-issuer", "std"]
+
+# Turns persist plans into signed single-owner chunks and stamps.
+seal = ["dep:alloy-signer", "std"]
+
+# Exposes `Snapshot::table_mut` for raw mutable access to the underlying
+# `UsageTable`. An escape hatch that bypasses the reserved-aware issuance path,
+# so it can overwrite the snapshot's own slots on a mutable batch; prefer
+# `Snapshot::record_address`, `Snapshot::into_issuer`, or `Snapshot::dilute`.
+raw-table = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

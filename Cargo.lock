@@ -2116,6 +2116,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-postage-usage"
+version = "0.2.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "bytes",
+ "nectar-postage",
+ "nectar-postage-issuer",
+ "nectar-primitives",
+ "thiserror",
+]
+
+[[package]]
 name = "nectar-primitives"
 version = "0.2.0"
 dependencies = [
