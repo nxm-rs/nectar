@@ -184,6 +184,31 @@ impl ShardedIssuer {
         }
     }
 
+    /// Applies an on-chain dilution, growing the per-bucket capacity without
+    /// moving any watermark.
+    ///
+    /// The new depth must not decrease. Counters are untouched; only the
+    /// capacity that bounds them grows, so the next stamp in a previously full
+    /// bucket succeeds. This mirrors [`MemoryIssuer::dilute`](crate::MemoryIssuer::dilute)
+    /// for the parallel issuer and is the prerequisite for topping up a batch in
+    /// place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IssuerError::DepthDecrease`] if `new_depth` is below the current
+    /// depth.
+    pub const fn dilute(&mut self, new_depth: u8) -> Result<(), IssuerError> {
+        if new_depth < self.depth {
+            return Err(IssuerError::DepthDecrease {
+                current: self.depth,
+                requested: new_depth,
+            });
+        }
+        self.depth = new_depth;
+        self.bucket_capacity = 1u32 << (new_depth - self.bucket_depth);
+        Ok(())
+    }
+
     /// Maps a bucket to its shard index.
     #[inline]
     const fn shard_index(&self, bucket: u32) -> usize {
@@ -415,6 +440,34 @@ mod tests {
         assert_eq!(digest.batch_id, B256::ZERO);
         assert_eq!(digest.timestamp, 12345);
         assert_eq!(issuer.stamps_issued(), 1);
+    }
+
+    #[test]
+    fn test_sharded_issuer_dilute_grows_capacity_only() {
+        // depth=17, bucket_depth=16 gives 2 slots per bucket.
+        let mut issuer = ShardedIssuer::new(B256::ZERO, 17, 16);
+        let address = SwarmAddress::from(B256::repeat_byte(0xAB));
+        let bucket = calculate_bucket(&address, 16);
+
+        issuer.prepare_stamp(&address, 1).unwrap();
+        issuer.prepare_stamp(&address, 2).unwrap();
+        assert!(issuer.prepare_stamp(&address, 3).is_err());
+
+        issuer.dilute(18).unwrap();
+        assert_eq!(issuer.bucket_capacity(), 4);
+        assert_eq!(issuer.batch_depth(), 18);
+        // The watermark is unchanged, so the next slot is 2.
+        let d = issuer.prepare_stamp(&address, 4).unwrap();
+        assert_eq!(d.index.index(), 2);
+        assert_eq!(issuer.bucket_utilization(bucket), 3);
+
+        assert!(matches!(
+            issuer.dilute(17),
+            Err(IssuerError::DepthDecrease {
+                current: 18,
+                requested: 17
+            })
+        ));
     }
 
     #[test]

@@ -20,6 +20,15 @@ pub enum IssuerError {
     )]
     ImmutableNotSupported,
 
+    /// Dilution may only increase the batch depth.
+    #[error("batch depth may not decrease ({current} -> {requested})")]
+    DepthDecrease {
+        /// The current depth.
+        current: u8,
+        /// The requested depth.
+        requested: u8,
+    },
+
     /// A ring bucket had no unprotected slot to issue.
     ///
     /// Every slot in the bucket is reserved, so the ring cannot advance without
