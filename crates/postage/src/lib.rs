@@ -19,6 +19,7 @@
 //!
 //! - [`StampValidator`]: Validate stamps against batches
 //! - [`BatchStore`]: Persist and retrieve batches (requires `std`)
+//! - [`SnapshotStore`]: Cache recovered issuer snapshot state by batch id (requires `std`)
 //! - [`BatchEventHandler`]: Handle batch events from the blockchain (requires `std`)
 //!
 //! # Features
@@ -45,6 +46,8 @@ mod validation;
 #[cfg(feature = "std")]
 mod events;
 #[cfg(feature = "std")]
+mod snapshot_store;
+#[cfg(feature = "std")]
 mod store;
 
 // Parallel verification (requires rayon)
@@ -63,6 +66,8 @@ pub use validation::StoreValidator;
 // Storage and events (std only)
 #[cfg(feature = "std")]
 pub use events::{BatchEvent, BatchEventHandler};
+#[cfg(feature = "std")]
+pub use snapshot_store::SnapshotStore;
 #[cfg(feature = "std")]
 pub use store::{BatchStore, BatchStoreError, BatchStoreExt};
 
