@@ -6,7 +6,7 @@
 use alloy_primitives::{Address, B256};
 use nectar_postage::{StampIndex, calculate_bucket};
 use nectar_postage_issuer::StampIssuer;
-use nectar_postage_usage::{Mutability, Snapshot, SnapshotIssuer, UsageTable};
+use nectar_postage_usage::{Mutability, PublishedSequence, Snapshot, SnapshotIssuer, UsageTable};
 use nectar_primitives::SwarmAddress;
 
 const BUCKET_DEPTH: u8 = 16;
@@ -68,7 +68,11 @@ fn shared_table_immutable_never_collides_with_reserved_slots() {
     let mut snapshot = Snapshot::new(table);
 
     // Persist once, recording the snapshot's own reserved slots.
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     let reserved = snapshot.reserved_stamp_indices(&owner());
 
     // Stamp content through the SAME table; collect every issued index.
@@ -95,7 +99,11 @@ fn shared_table_mutable_skips_reserved_across_wraps() {
     assert!(table.is_mutable());
     let mut snapshot = Snapshot::new(table);
 
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     let reserved = snapshot.reserved_stamp_indices(&owner());
 
     // For each reserved bucket, churn the ring many times; the reserved slot
@@ -146,7 +154,11 @@ fn sole_issuance_path_cannot_evict_snapshot_slots() {
     // first so the snapshot reserves its own slots, then issue through the
     // issuer alone.
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     let reserved = snapshot.reserved_stamp_indices(&owner());
     assert!(
         !reserved.is_empty(),
@@ -226,7 +238,11 @@ fn snapshot_issuer_adapter_drives_a_batch_stamper_path() {
 
     let table = UsageTable::new(batch_id, 20, BUCKET_DEPTH, Mutability::Mutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    snapshot.plan_persist(&owner).unwrap();
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner)
+        .unwrap();
     let reserved = snapshot.reserved_stamp_indices(&owner);
 
     // The adapter owns the snapshot and drops into BatchStamper by value.

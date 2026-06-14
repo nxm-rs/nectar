@@ -11,7 +11,8 @@
 use alloy_primitives::{Address, B256, hex};
 use nectar_postage::calculate_bucket;
 use nectar_postage_usage::{
-    Mutability, RootInfo, Snapshot, UsageTable, usage_chunk_address, usage_chunk_id,
+    Mutability, PublishedSequence, RootInfo, Snapshot, UsageTable, usage_chunk_address,
+    usage_chunk_id,
 };
 
 /// The full root payload from the README worked example: depth 12, bucket
@@ -30,7 +31,11 @@ fn readme_worked_example_vector() {
     counts[200] = 16;
     let table = UsageTable::from_counts(batch_id, 12, 8, counts, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner)
+        .unwrap();
 
     // Deterministic addressing.
     assert_eq!(hex::encode(usage_chunk_id(&batch_id, 0)), ROOT_ID_HEX);
@@ -72,7 +77,11 @@ fn readme_large_batch_multi_leaf_vector() {
     counts[0xCBE5] = 8192;
     let table = UsageTable::from_counts(batch_id, 29, 16, counts, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner)
+        .unwrap();
 
     // One root plus 13 leaves; the snapshot allocated a slot for each.
     assert_eq!(plan.chunks.len(), 14);
@@ -122,7 +131,11 @@ fn mutable_vector_flags_byte_and_round_trip() {
     counts[200] = 16;
     let table = UsageTable::from_counts(batch_id, 12, 8, counts, Mutability::Mutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner)
+        .unwrap();
 
     // Same self-allocation as the immutable vector: bucket 41, slot 4.
     assert_eq!(calculate_bucket(&plan.chunks[0].address, 8), 41);

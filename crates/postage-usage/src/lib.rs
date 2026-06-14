@@ -26,7 +26,9 @@
 //!
 //! ```
 //! use alloy_primitives::{Address, B256};
-//! use nectar_postage_usage::{Mutability, RootInfo, Snapshot, SwarmAddress, UsageTable};
+//! use nectar_postage_usage::{
+//!     Mutability, PublishedSequence, RootInfo, Snapshot, SwarmAddress, UsageTable,
+//! };
 //!
 //! let batch_id = B256::repeat_byte(0x42);
 //! let owner = Address::repeat_byte(0x11);
@@ -37,7 +39,13 @@
 //! let mut snapshot = Snapshot::new(table);
 //! let address = SwarmAddress::from(B256::repeat_byte(0x99));
 //! snapshot.issuer(owner).record_address(&address).unwrap();
-//! let plan = snapshot.plan_persist(&owner).unwrap();
+//! // This table is fresh and was never published, so the live network read
+//! // returns no root chunk and the floor is `NONE`.
+//! let plan = snapshot
+//!     .revalidate(PublishedSequence::NONE)
+//!     .unwrap()
+//!     .plan_persist(&owner)
+//!     .unwrap();
 //!
 //! // Publish each plan chunk as a single-owner chunk stamped with
 //! // `plan.chunks[n].stamp_index`. Reading back:
@@ -69,18 +77,21 @@
 //! table that [`Snapshot::new`] would accept. No public API hands out an owned
 //! [`UsageTable`] taken from a recovered snapshot.
 //!
-//! Two residual paths to a sequence-0 persist are deliberately *not* closed here,
-//! because they are protocol-level rather than in-memory representability
-//! concerns, and are enforced at persist time by the network-validation wave
-//! (nectar issue #65). First, the public table constructors ([`UsageTable::new`]
+//! Two residual paths to a sequence-0 persist are protocol-level rather than
+//! in-memory representability concerns, so the type guards here do not close
+//! them; the [`PublishedSequence`] floor on [`Snapshot::revalidate`] does
+//! (nectar issue #70). First, the public table constructors ([`UsageTable::new`]
 //! and friends) must keep minting a fresh table for a genuinely new batch, so a
-//! forged fresh table persisted at sequence 0 is caught at persist time, not by
-//! the type system here. Second, the reserve overwrites a snapshot chunk by stamp
+//! forged fresh table persisted at sequence 0 is caught by the floor, not by the
+//! type system here. Second, the reserve overwrites a snapshot chunk by stamp
 //! timestamp rather than by snapshot sequence, so full cross-version monotonicity
 //! against the *published* sequence needs a compare-and-swap against the live
-//! root chunk, which also lands under issue #65. This crate closes the in-memory
-//! representability of the downgrade; it does not claim to make every persist-time
-//! downgrade impossible.
+//! root chunk. The floor precondition implemented on [`Snapshot::revalidate`]
+//! supplies exactly that compare-and-swap: the consumer reads the published
+//! sequence from the live root chunk, hands it in as the floor, and a persist
+//! whose next sequence does not strictly exceed it is rejected. This crate closes
+//! the in-memory representability of the downgrade, and the floor closes the
+//! persist-time downgrade.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
@@ -99,7 +110,9 @@ mod seal;
 
 pub use codec::{Encoded, RootInfo};
 pub use error::UsageError;
-pub use snapshot::{Issuer, PersistPlan, PlannedChunk, Snapshot, SnapshotParts};
+pub use snapshot::{
+    Issuer, PersistPlan, PlannedChunk, PublishedSequence, Snapshot, SnapshotParts, Validated,
+};
 pub use table::{Mutability, TableView, UsageTable};
 
 #[cfg(feature = "issuer")]
