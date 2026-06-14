@@ -47,6 +47,10 @@ issuer = ["std"]
 # Turns persist plans into signed single-owner chunks and stamps.
 seal = ["dep:alloy-signer", "std"]
 
+[[example]]
+name = "roam_between_machines"
+required-features = ["seal"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

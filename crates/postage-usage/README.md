@@ -13,6 +13,25 @@ This crate defines a snapshot format for that state which is:
 - **Predictably addressed.** Chunk `n` of the snapshot has SOC id `keccak256("swarm-batch-usage" || batch_id || u16_be(n))` and owner equal to the batch owner. Anyone holding the batch id and owner address can locate, fetch, and verify the state. A user can roam between machines with nothing but their key and batch id.
 - **Dilution-proof.** Increasing batch depth does not change any counter, any chunk boundary, or any byte of the leaf payloads. The structure grows only when the data does, so no slots are reserved up front for growth that may never happen.
 
+## Choosing an issuance path
+
+Where the issuer counters live depends on the batch and on whether you want them stored on the network. Pick the row that matches your batch and tracking model:
+
+| Batch | Counters tracked | Issuance path |
+|---|---|---|
+| Immutable | Self-hosted (inside the batch) | Fill watermark. `Snapshot` over a `UsageTable::new(.., Mutability::Immutable)`; issue through `Snapshot::issuer`. |
+| Mutable | Self-hosted (inside the batch) | Ring cursor. `Snapshot` over a mutable `UsageTable`; issue through `Snapshot::issuer`, which carves out the snapshot's own reserved slots. |
+| Mutable | External (tracked outside the batch) | `nectar_postage_issuer::RingIssuer::external`. No usage state is stored in the batch, so there is nothing for this crate to persist; use it when the cursor lives in your own store. |
+
+Self-hosted usage state, immutable or mutable, goes through this crate's `Snapshot`: that is the whole point, the state roams with the batch. Reach for `RingIssuer::external` only when the mutable issuance is tracked outside the batch and you do not want a self-hosted snapshot.
+
+## Persistence cadence
+
+The snapshot in memory is the only durable record of counter advances since the last persist. Issuing a stamp advances a counter; if the process exits before the next persist, those advances are lost, and re-issuing the same index silently overwrites data on a mutable batch (or is rejected on an immutable one). So:
+
+- **Persist after a batch of issuance, and always before dropping the snapshot.** Batch the writes, then `revalidate` -> `plan_persist` -> `seal_plan` -> upload. The cadence is yours to tune (every N stamps, every T seconds), but a snapshot must never be dropped while `Snapshot::is_dirty` is true without a final persist.
+- **Read the published-sequence floor live every time.** The floor handed to `Snapshot::revalidate` must come from a fresh network read of the live root chunk (parse it with `RootInfo::parse` and take `PublishedSequence::from(&root)`), never from a cache and never from the snapshot being persisted. A stale floor is exactly the value the floor exists to defeat; caching it reopens the downgrade window it closes.
+
 ## Why this works on the network
 
 Snapshot chunks are SOCs whose ids, and therefore addresses, never change. The Swarm reserve allows a chunk with the same address and the same stamp index to be overwritten by a version carrying a newer stamp timestamp, regardless of batch mutability, replacing the SOC payload in place. Consequently each snapshot chunk consumes **exactly one storage slot for the lifetime of the batch**, no matter how many times the state is updated. The slot is assigned on first allocation, recorded in the root chunk, and reused for every subsequent persist.
