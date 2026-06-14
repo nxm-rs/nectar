@@ -141,7 +141,7 @@ pub struct ShardedRingIssuer<R = Unreserved> {
     shard_mask: u32,
     /// Bits to shift a bucket by to obtain its shard index.
     shard_shift: u32,
-    /// Maximum utilisation observed, guarded for cross-shard aggregation.
+    /// Maximum utilization observed, guarded for cross-shard aggregation.
     max_utilization: Mutex<u32>,
     /// Total stamps issued, guarded for cross-shard aggregation.
     stamps_issued: Mutex<u64>,
@@ -287,7 +287,7 @@ impl<R: Reservation> ShardedRingIssuer<R> {
             let mut max = self
                 .max_utilization
                 .lock()
-                .expect("max utilisation lock poisoned");
+                .expect("max utilization lock poisoned");
             if fill > *max {
                 *max = fill;
             }
@@ -322,19 +322,19 @@ impl<R: Reservation> ShardedRingIssuer<R> {
         self.shards.len()
     }
 
-    /// Returns the current utilisation of a specific bucket, saturating at the
+    /// Returns the current utilization of a specific bucket, saturating at the
     /// bucket capacity once the ring has wrapped.
     pub fn bucket_utilization(&self, bucket: u32) -> u32 {
         let shard = &self.shards[self.shard_index(bucket)];
         shard.utilization(bucket, self.bucket_capacity)
     }
 
-    /// Returns the maximum bucket utilisation observed across all buckets.
+    /// Returns the maximum bucket utilization observed across all buckets.
     pub fn max_bucket_utilization(&self) -> u32 {
         *self
             .max_utilization
             .lock()
-            .expect("max utilisation lock poisoned")
+            .expect("max utilization lock poisoned")
     }
 
     /// Returns the total number of stamps issued.

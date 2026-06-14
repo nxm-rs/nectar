@@ -146,10 +146,10 @@ pub struct RingIssuer<R = Unreserved> {
     /// Whether each bucket has been written to capacity at least once.
     ///
     /// Once the cursor wraps it can no longer tell a saturated bucket apart
-    /// from an empty one, so this tracks saturation to report utilisation
+    /// from an empty one, so this tracks saturation to report utilization
     /// honestly.
     saturated: Vec<bool>,
-    /// Maximum utilisation observed across all buckets.
+    /// Maximum utilization observed across all buckets.
     max_utilization: u32,
     /// Total stamps issued.
     stamps_issued: u64,
@@ -228,7 +228,7 @@ impl<R: Reservation> RingIssuer<R> {
     /// Returns the number of distinct slots written in a bucket.
     ///
     /// This saturates at the bucket capacity, so a wrapped ring reports the
-    /// bucket as full rather than counting overwrites as fresh utilisation.
+    /// bucket as full rather than counting overwrites as fresh utilization.
     fn bucket_fill(&self, bucket_idx: usize) -> u32 {
         if self.saturated[bucket_idx] {
             self.bucket_capacity
@@ -498,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn ring_reports_utilisation_and_capacity_honestly() {
+    fn ring_reports_utilization_and_capacity_honestly() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
         let batch = mutable_batch(17, 16);
         let mut issuer = RingIssuer::external(&batch).unwrap();
@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(issuer.max_bucket_utilization(), 2);
 
         // Issuance still succeeds despite the bucket reporting no capacity, and
-        // utilisation saturates rather than counting overwrites.
+        // utilization saturates rather than counting overwrites.
         issuer.prepare_ring_stamp(&address, 3).unwrap();
         assert_eq!(issuer.bucket_utilization(bucket), 2);
         assert_eq!(issuer.max_bucket_utilization(), 2);
