@@ -289,14 +289,11 @@ fn mutable_round_trips_and_decodes_as_mutable() {
     assert!(root.is_mutable());
 
     let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| &c.payload).collect();
-    let mut recovered = root.assemble(&leaves).unwrap();
+    let recovered = root.assemble(&leaves).unwrap();
     assert!(recovered.table().is_mutable());
-    // Equality ignores the reserved cache, so a freshly decoded (un-synced)
-    // mutable snapshot still compares equal to its source.
-    assert_eq!(recovered, snapshot);
-
-    // After syncing, it remains equal and is reserved-aware.
-    recovered.sync_reserved(&owner());
+    // A recovered mutable snapshot is inert (no reserved state on the table), and
+    // its reserved slots are installed only when an issuer is obtained, so it
+    // compares equal to its source by counters and geometry alone.
     assert_eq!(recovered, snapshot);
 }
 
@@ -329,7 +326,7 @@ fn mutable_dilution_changes_no_cursor_or_leaf_bytes() {
 #[test]
 fn merge_max_rejects_mutable() {
     let buckets = 1usize << BUCKET_DEPTH;
-    let mut a = UsageTable::from_counts_mutable(
+    let a = UsageTable::from_counts_mutable(
         batch_id(),
         20,
         BUCKET_DEPTH,
@@ -343,13 +340,15 @@ fn merge_max_rejects_mutable() {
         synthetic_counts(buckets, 1, 2),
     )
     .unwrap();
-    assert_eq!(a.merge_max(&b), Err(UsageError::MutableMerge));
+    // merge_max is exposed on the snapshot now; a mutable table is rejected.
+    let mut snapshot = Snapshot::new(a);
+    assert_eq!(snapshot.merge_max(&b), Err(UsageError::MutableMerge));
 }
 
 #[test]
-fn decoded_mutable_requires_sync_reserved_before_issuing() {
-    // A small geometry where the root's bucket is a shallow ring, so an
-    // un-synced ring cursor would re-emit the reserved slot quickly.
+fn recovered_mutable_issues_reserved_aware_through_the_handle() {
+    // A small geometry where the root's bucket is a shallow ring, so a
+    // reserved-blind ring cursor would re-emit the reserved slot quickly.
     let depth = 18; // capacity 4 per bucket
     let buckets = 1usize << BUCKET_DEPTH;
     // Fill the table close to full so cursors wrap fast.
@@ -359,26 +358,130 @@ fn decoded_mutable_requires_sync_reserved_before_issuing() {
     let plan = snapshot.plan_persist(&owner()).unwrap();
     let reserved = snapshot.reserved_stamp_indices(&owner());
 
-    // Recover the snapshot from the wire; it is NOT reserved-aware yet.
-    let recovered = roundtrip(&plan);
+    // Recover the snapshot from the wire. It carries no reserved state; the
+    // issuing handle installs it at construction, so the only counter-advance
+    // path is reserved-aware from the very first write.
+    let mut issuing = roundtrip(&plan);
     let root_index = reserved[0];
 
-    // The owner-aware content path syncs internally, so it never re-emits a
-    // reserved slot even though it churns the ring repeatedly.
-    let mut issuing = recovered;
     // Find a content address that maps to the root's reserved bucket.
     let bucket = root_index.bucket();
     let content = address_in_bucket(bucket);
     assert_eq!(calculate_bucket(&content, BUCKET_DEPTH), bucket);
     for _ in 0..32 {
-        let index = issuing.record_address(&owner(), &content).unwrap();
+        let index = issuing.issuer(owner()).record_address(&content).unwrap();
         assert_ne!(
             index, root_index,
             "the reserved root slot must never be re-emitted"
         );
     }
-    // The reserved slot value is intact in the table view.
+    // The reserved slot value is intact in the snapshot view.
     assert!(issuing.is_reserved(&owner(), root_index));
+}
+
+#[test]
+fn extract_then_rebuild_preserves_sequence_and_slots() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = synthetic_counts(buckets, 10, 15);
+    let table = UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts).unwrap();
+    let mut snapshot = Snapshot::new(table);
+
+    // Persist a few times so the sequence climbs above 0 and slots are allocated.
+    snapshot.plan_persist(&owner()).unwrap();
+    snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let sequence = snapshot.sequence();
+    let slots = snapshot.allocated_slots().to_vec();
+    assert_eq!(sequence, 3);
+    assert!(!slots.is_empty());
+
+    // Extracting and rebuilding through the opaque parts preserves the sequence
+    // and the allocated slots: there is no safe route that resets them to a
+    // fresh sequence-0 snapshot.
+    let parts = snapshot.clone().into_parts();
+    assert_eq!(parts.sequence(), sequence);
+    assert_eq!(parts.allocated_slots(), slots.as_slice());
+    let rebuilt = Snapshot::from_parts(parts).unwrap();
+    assert_eq!(rebuilt.sequence(), sequence);
+    assert_eq!(rebuilt.allocated_slots(), slots.as_slice());
+    assert_eq!(rebuilt, snapshot);
+
+    // The next persist from the rebuilt snapshot strictly advances the sequence
+    // and keeps the metadata slots stable, exactly as it would from the original.
+    let mut rebuilt = rebuilt;
+    let next = rebuilt.plan_persist(&owner()).unwrap();
+    assert_eq!(next.sequence, sequence + 1);
+    assert_eq!(rebuilt.allocated_slots(), slots.as_slice());
+    // Stamp indices for the metadata chunks are unchanged across the rebuild.
+    for (a, b) in plan.chunks.iter().zip(next.chunks.iter()) {
+        assert_eq!(a.stamp_index, b.stamp_index);
+        assert_eq!(a.address, b.address);
+    }
+}
+
+#[test]
+fn recovered_snapshot_rebuilds_through_from_parts_without_regressing() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = synthetic_counts(buckets, 64, 63);
+    let table = UsageTable::from_counts(batch_id(), 24, BUCKET_DEPTH, counts).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+
+    // Recover from the wire, then round-trip through the opaque parts. The
+    // sequence and slots survive both hops.
+    let recovered = roundtrip(&plan);
+    assert_eq!(recovered.sequence(), snapshot.sequence());
+    let rebuilt = Snapshot::from_parts(recovered.into_parts()).unwrap();
+    assert_eq!(rebuilt.sequence(), snapshot.sequence());
+    assert_eq!(rebuilt.allocated_slots(), snapshot.allocated_slots());
+}
+
+#[test]
+fn table_view_exposes_counts_and_geometry_without_yielding_an_owned_table() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let mut counts = synthetic_counts(buckets, 64, 63);
+    counts[7] = 200;
+    let table = UsageTable::from_counts(batch_id(), 24, BUCKET_DEPTH, counts.clone()).unwrap();
+    let issued = table.total_issued();
+    let mut snapshot = Snapshot::new(table);
+    snapshot.plan_persist(&owner()).unwrap();
+
+    // Recover from the wire so the assertions run against a view of a recovered
+    // snapshot, exactly the case the clone-path closure protects.
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let recovered = roundtrip(&plan);
+    let view = recovered.table();
+
+    // Geometry getters.
+    assert_eq!(view.batch_id(), batch_id());
+    assert_eq!(view.depth(), 24);
+    assert_eq!(view.bucket_depth(), BUCKET_DEPTH);
+    assert_eq!(view.bucket_count(), buckets as u32);
+    assert_eq!(view.bucket_capacity(), 1u32 << (24 - BUCKET_DEPTH));
+    assert_eq!(view.total_capacity(), 1u64 << 24);
+    assert!(!view.is_mutable());
+
+    // Counter getters. The snapshot's own chunks bumped a few buckets above the
+    // synthetic counts, so total_issued only grew.
+    assert!(view.total_issued() >= issued);
+    assert_eq!(view.count(7).unwrap(), 200);
+    assert_eq!(view.counts().len(), buckets);
+    assert_eq!(view.max_count(), 200);
+    assert_eq!(
+        view.min_count(),
+        recovered.table().counts().iter().copied().min().unwrap()
+    );
+    assert!(
+        view.count(buckets as u32).is_err(),
+        "out-of-range bucket errors"
+    );
+    assert!(view.has_capacity(7).unwrap());
+
+    // The view is Copy, so a caller can take a cheap second window, but cloning it
+    // yields another view, never an owned UsageTable that Snapshot::new accepts.
+    let second = view;
+    assert_eq!(second.depth(), view.depth());
 }
 
 /// Returns a chunk address whose top `BUCKET_DEPTH` bits select `bucket`.
@@ -388,15 +491,4 @@ fn address_in_bucket(bucket: u32) -> nectar_primitives::SwarmAddress {
     bytes[0] = (bucket >> 8) as u8;
     bytes[1] = bucket as u8;
     nectar_primitives::SwarmAddress::new(bytes)
-}
-
-/// The `raw-table` escape hatch still exposes direct table mutation when
-/// explicitly opted into.
-#[cfg(feature = "raw-table")]
-#[test]
-fn raw_table_mut_allows_direct_recording() {
-    let mut snapshot = Snapshot::new(UsageTable::new(batch_id(), 20, BUCKET_DEPTH).unwrap());
-    let index = snapshot.table_mut().record(7).unwrap();
-    assert_eq!(index, 0);
-    assert_eq!(snapshot.table().count(7).unwrap(), 1);
 }

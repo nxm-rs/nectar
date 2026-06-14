@@ -568,20 +568,20 @@ impl RootInfo {
         // Reconstruct the table in its original mode. The sum check above
         // validates the counters in both modes (a checksum for mutable).
         //
-        // A mutable table recovered here is NOT yet reserved-aware: the
-        // decoder has the batch id and the allocated slots but not the owner
-        // address, so it cannot map a reserved slot to its bucket (that needs
-        // the single-owner chunk address, which depends on the owner). The
-        // holder must call [`Snapshot::sync_reserved`](crate::Snapshot::sync_reserved)
-        // (or use the owner-aware content-issuance entry points, which sync
-        // internally) before issuing any content stamp on a recovered mutable
-        // snapshot.
+        // A mutable table recovered here carries no reserved state: the decoder
+        // has the batch id and the allocated slots but not the owner address, so
+        // it cannot map a reserved slot to its bucket (that needs the
+        // single-owner chunk address, which depends on the owner). The reserved
+        // set is installed from the owner when the holder obtains an
+        // [`Issuer`](crate::Issuer) through [`Snapshot::issuer`](crate::Snapshot::issuer),
+        // which is the only counter-advance path, so issuance on a recovered
+        // mutable snapshot is reserved-aware by construction.
         let table = if self.mutable {
             UsageTable::from_counts_mutable(self.batch_id, self.depth, self.bucket_depth, counts)?
         } else {
             UsageTable::from_counts(self.batch_id, self.depth, self.bucket_depth, counts)?
         };
-        Snapshot::from_parts(table, self.sequence, self.slots)
+        Snapshot::from_parts(Snapshot::recovered_parts(table, self.sequence, self.slots)?)
     }
 }
 

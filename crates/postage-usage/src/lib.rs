@@ -31,10 +31,11 @@
 //! let batch_id = B256::repeat_byte(0x42);
 //! let owner = Address::repeat_byte(0x11);
 //!
-//! // Record an uploaded chunk against the shared table, then plan a persist.
+//! // Issue a stamp for an uploaded chunk through the snapshot's issuing handle,
+//! // then plan a persist.
 //! let mut snapshot = Snapshot::new(UsageTable::new(batch_id, 20, 16).unwrap());
 //! let address = SwarmAddress::from(B256::repeat_byte(0x99));
-//! snapshot.record_address(&owner, &address).unwrap();
+//! snapshot.issuer(owner).record_address(&address).unwrap();
 //! let plan = snapshot.plan_persist(&owner).unwrap();
 //!
 //! // Publish each plan chunk as a single-owner chunk stamped with
@@ -44,6 +45,41 @@
 //! let recovered = root.assemble(&leaves).unwrap();
 //! assert_eq!(recovered, snapshot);
 //! ```
+//!
+//! # Recovery
+//!
+//! [`Snapshot::new`] is for a genuinely fresh, never-persisted table: it starts
+//! the persist history at sequence 0 with no allocated slots. Recovered or
+//! extracted state must never go through it, because resetting the sequence to 0
+//! and dropping the slots would downgrade the version at the snapshot's own chunk
+//! addresses and re-allocate colliding slots, overwriting a newer persisted
+//! version in place. Recovered state round-trips through [`Snapshot::from_parts`]
+//! instead, which keeps the table, sequence, and slots bound together;
+//! [`RootInfo::assemble`] uses it when decoding from the network, and
+//! [`Snapshot::into_parts`] yields the same indivisible [`SnapshotParts`] value
+//! when extracting state from a live snapshot.
+//!
+//! Both in-memory downgrade routes off a recovered or extracted snapshot are
+//! closed. The move route is closed because [`SnapshotParts`] holds its table
+//! privately and never yields it by value. The clone route is closed because
+//! [`Snapshot::table`] and [`SnapshotParts::table`] return a borrowed
+//! [`TableView`] that exposes only read getters and does not deref to the
+//! table, so cloning or copying it yields another borrowed view, never an owned
+//! table that [`Snapshot::new`] would accept. No public API hands out an owned
+//! [`UsageTable`] taken from a recovered snapshot.
+//!
+//! Two residual paths to a sequence-0 persist are deliberately *not* closed here,
+//! because they are protocol-level rather than in-memory representability
+//! concerns, and are enforced at persist time by the network-validation wave
+//! (nectar issue #65). First, the public table constructors ([`UsageTable::new`]
+//! and friends) must keep minting a fresh table for a genuinely new batch, so a
+//! forged fresh table persisted at sequence 0 is caught at persist time, not by
+//! the type system here. Second, the reserve overwrites a snapshot chunk by stamp
+//! timestamp rather than by snapshot sequence, so full cross-version monotonicity
+//! against the *published* sequence needs a compare-and-swap against the live
+//! root chunk, which also lands under issue #65. This crate closes the in-memory
+//! representability of the downgrade; it does not claim to make every persist-time
+//! downgrade impossible.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
@@ -62,8 +98,8 @@ mod seal;
 
 pub use codec::{Encoded, RootInfo};
 pub use error::UsageError;
-pub use snapshot::{PersistPlan, PlannedChunk, Snapshot};
-pub use table::UsageTable;
+pub use snapshot::{Issuer, PersistPlan, PlannedChunk, Snapshot, SnapshotParts};
+pub use table::{TableView, UsageTable};
 
 #[cfg(feature = "issuer")]
 pub use issuer::SnapshotIssuer;

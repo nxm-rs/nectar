@@ -1,13 +1,13 @@
-//! [`StampIssuer`] implementations so a [`UsageTable`] or a [`Snapshot`] can
-//! back a `BatchStamper` directly.
+//! A [`StampIssuer`] that stamps content through a [`Snapshot`], the single
+//! owner-aware issuance path so a snapshot can back a `BatchStamper` directly.
 
 use alloy_primitives::Address;
-use nectar_postage::{BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
+use nectar_postage::{BatchId, StampDigest, StampError};
 use nectar_postage_issuer::StampIssuer;
 use nectar_primitives::SwarmAddress;
 
+use crate::Snapshot;
 use crate::error::UsageError;
-use crate::{Snapshot, UsageTable};
 
 /// Maps a usage table error onto a stamp issuer error.
 const fn map_usage_error(err: UsageError) -> StampError {
@@ -17,57 +17,13 @@ const fn map_usage_error(err: UsageError) -> StampError {
     }
 }
 
-impl StampIssuer for UsageTable {
-    fn prepare_stamp(
-        &mut self,
-        address: &SwarmAddress,
-        timestamp: u64,
-    ) -> core::result::Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.bucket_depth);
-        let index = self.record(bucket).map_err(map_usage_error)?;
-        Ok(StampDigest::new(
-            *address,
-            self.batch_id,
-            StampIndex::new(bucket, index),
-            timestamp,
-        ))
-    }
-
-    fn batch_id(&self) -> BatchId {
-        self.batch_id
-    }
-
-    fn batch_depth(&self) -> u8 {
-        self.depth
-    }
-
-    fn bucket_depth(&self) -> u8 {
-        self.bucket_depth
-    }
-
-    fn max_bucket_utilization(&self) -> u32 {
-        self.max_count()
-    }
-
-    fn bucket_utilization(&self, bucket: u32) -> u32 {
-        self.count(bucket).unwrap_or(0)
-    }
-
-    fn bucket_has_capacity(&self, bucket: u32) -> bool {
-        self.has_capacity(bucket).unwrap_or(false)
-    }
-
-    fn stamps_issued(&self) -> u64 {
-        self.issued
-    }
-}
-
 /// A [`StampIssuer`] that stamps content through a [`Snapshot`]'s table, so
 /// content stamping and snapshot allocation share one table and never collide.
 ///
-/// Owner-aware, unlike stamping a bare [`UsageTable`]: on a mutable batch it
-/// skips the reserved slots so the ring never evicts the batch-state chunks. It
-/// owns the snapshot by value to drop into `BatchStamper::new`; recover it with
+/// It issues through the snapshot's reserved-aware
+/// [`Issuer`](crate::Issuer): on a mutable batch the ring skips the reserved
+/// slots so it never evicts the batch-state chunks. It owns the snapshot by
+/// value to drop into `BatchStamper::new`; recover it with
 /// [`into_snapshot`](Self::into_snapshot).
 #[derive(Debug, Clone)]
 pub struct SnapshotIssuer {
@@ -111,44 +67,48 @@ impl StampIssuer for SnapshotIssuer {
     ) -> core::result::Result<StampDigest, StampError> {
         let index = self
             .snapshot
-            .record_address(&self.owner, address)
+            .record_address(self.owner, address)
             .map_err(map_usage_error)?;
         Ok(StampDigest::new(
             *address,
-            self.snapshot.table().batch_id(),
+            self.snapshot.table_ref().batch_id(),
             index,
             timestamp,
         ))
     }
 
     fn batch_id(&self) -> BatchId {
-        self.snapshot.table().batch_id()
+        self.snapshot.table_ref().batch_id()
     }
 
     fn batch_depth(&self) -> u8 {
-        self.snapshot.table().depth()
+        self.snapshot.table_ref().depth()
     }
 
     fn bucket_depth(&self) -> u8 {
-        self.snapshot.table().bucket_depth()
+        self.snapshot.table_ref().bucket_depth()
     }
 
     fn max_bucket_utilization(&self) -> u32 {
-        self.snapshot.table().max_count()
+        self.snapshot.table_ref().max_count()
     }
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
-        self.snapshot.table().count(bucket).unwrap_or(0)
+        self.snapshot.table_ref().count(bucket).unwrap_or(0)
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
         // A mutable ring always has a slot (it wraps); an immutable bucket has
         // capacity until its watermark reaches the bound.
-        self.snapshot.table().is_mutable()
-            || self.snapshot.table().has_capacity(bucket).unwrap_or(false)
+        self.snapshot.table_ref().is_mutable()
+            || self
+                .snapshot
+                .table_ref()
+                .has_capacity(bucket)
+                .unwrap_or(false)
     }
 
     fn stamps_issued(&self) -> u64 {
-        self.snapshot.table().total_issued()
+        self.snapshot.table_ref().total_issued()
     }
 }
