@@ -26,14 +26,15 @@
 //!
 //! ```
 //! use alloy_primitives::{Address, B256};
-//! use nectar_postage_usage::{RootInfo, Snapshot, SwarmAddress, UsageTable};
+//! use nectar_postage_usage::{Mutability, RootInfo, Snapshot, SwarmAddress, UsageTable};
 //!
 //! let batch_id = B256::repeat_byte(0x42);
 //! let owner = Address::repeat_byte(0x11);
 //!
 //! // Issue a stamp for an uploaded chunk through the snapshot's issuing handle,
 //! // then plan a persist.
-//! let mut snapshot = Snapshot::new(UsageTable::new(batch_id, 20, 16).unwrap());
+//! let table = UsageTable::new(batch_id, 20, 16, Mutability::Immutable).unwrap();
+//! let mut snapshot = Snapshot::new(table);
 //! let address = SwarmAddress::from(B256::repeat_byte(0x99));
 //! snapshot.issuer(owner).record_address(&address).unwrap();
 //! let plan = snapshot.plan_persist(&owner).unwrap();
@@ -99,7 +100,7 @@ mod seal;
 pub use codec::{Encoded, RootInfo};
 pub use error::UsageError;
 pub use snapshot::{Issuer, PersistPlan, PlannedChunk, Snapshot, SnapshotParts};
-pub use table::{TableView, UsageTable};
+pub use table::{Mutability, TableView, UsageTable};
 
 #[cfg(feature = "issuer")]
 pub use issuer::SnapshotIssuer;
@@ -109,8 +110,12 @@ pub use seal::{SealError, SealedChunk, seal_plan};
 
 pub use nectar_primitives::SwarmAddress;
 
+/// Postage types re-exported so a downstream caller naming
+/// [`PlannedChunk::stamp_index`] or calling [`UsageTable::from_batch`] does not
+/// need a direct `nectar-postage` dependency.
+pub use nectar_postage::{Batch, BatchId, StampIndex};
+
 use alloy_primitives::{Address, B256, Keccak256};
-use nectar_postage::BatchId;
 
 /// Result alias for this crate.
 pub type Result<T> = core::result::Result<T, UsageError>;

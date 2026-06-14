@@ -10,7 +10,9 @@
 
 use alloy_primitives::{Address, B256, hex};
 use nectar_postage::calculate_bucket;
-use nectar_postage_usage::{RootInfo, Snapshot, UsageTable, usage_chunk_address, usage_chunk_id};
+use nectar_postage_usage::{
+    Mutability, RootInfo, Snapshot, UsageTable, usage_chunk_address, usage_chunk_id,
+};
 
 /// The full root payload from the README worked example: depth 12, bucket
 /// depth 8, counts `3 + (b mod 4)` with bucket 200 full at 16, after one
@@ -26,7 +28,7 @@ fn readme_worked_example_vector() {
     let owner = Address::repeat_byte(0x11);
     let mut counts: Vec<u32> = (0..256u32).map(|b| 3 + (b & 3)).collect();
     counts[200] = 16;
-    let table = UsageTable::from_counts(batch_id, 12, 8, counts).unwrap();
+    let table = UsageTable::from_counts(batch_id, 12, 8, counts, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot.plan_persist(&owner).unwrap();
 
@@ -68,7 +70,7 @@ fn readme_large_batch_multi_leaf_vector() {
     let mut counts: Vec<u32> = (0..65536u32).map(|b| 100 + (b % 50)).collect();
     counts[0x1234] = 5000;
     counts[0xCBE5] = 8192;
-    let table = UsageTable::from_counts(batch_id, 29, 16, counts).unwrap();
+    let table = UsageTable::from_counts(batch_id, 29, 16, counts, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot.plan_persist(&owner).unwrap();
 
@@ -118,7 +120,7 @@ fn mutable_vector_flags_byte_and_round_trip() {
     let owner = Address::repeat_byte(0x11);
     let mut counts: Vec<u32> = (0..256u32).map(|b| 3 + (b & 3)).collect();
     counts[200] = 16;
-    let table = UsageTable::from_counts_mutable(batch_id, 12, 8, counts).unwrap();
+    let table = UsageTable::from_counts(batch_id, 12, 8, counts, Mutability::Mutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot.plan_persist(&owner).unwrap();
 
