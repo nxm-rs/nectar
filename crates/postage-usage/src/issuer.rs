@@ -71,40 +71,44 @@ impl StampIssuer for SnapshotIssuer {
             .map_err(map_usage_error)?;
         Ok(StampDigest::new(
             *address,
-            self.snapshot.table().batch_id(),
+            self.snapshot.table_ref().batch_id(),
             index,
             timestamp,
         ))
     }
 
     fn batch_id(&self) -> BatchId {
-        self.snapshot.table().batch_id()
+        self.snapshot.table_ref().batch_id()
     }
 
     fn batch_depth(&self) -> u8 {
-        self.snapshot.table().depth()
+        self.snapshot.table_ref().depth()
     }
 
     fn bucket_depth(&self) -> u8 {
-        self.snapshot.table().bucket_depth()
+        self.snapshot.table_ref().bucket_depth()
     }
 
     fn max_bucket_utilization(&self) -> u32 {
-        self.snapshot.table().max_count()
+        self.snapshot.table_ref().max_count()
     }
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
-        self.snapshot.table().count(bucket).unwrap_or(0)
+        self.snapshot.table_ref().count(bucket).unwrap_or(0)
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
         // A mutable ring always has a slot (it wraps); an immutable bucket has
         // capacity until its watermark reaches the bound.
-        self.snapshot.table().is_mutable()
-            || self.snapshot.table().has_capacity(bucket).unwrap_or(false)
+        self.snapshot.table_ref().is_mutable()
+            || self
+                .snapshot
+                .table_ref()
+                .has_capacity(bucket)
+                .unwrap_or(false)
     }
 
     fn stamps_issued(&self) -> u64 {
-        self.snapshot.table().total_issued()
+        self.snapshot.table_ref().total_issued()
     }
 }

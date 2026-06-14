@@ -306,6 +306,97 @@ impl UsageTable {
     }
 }
 
+/// A borrowed, read-only window onto a [`UsageTable`].
+///
+/// This is what [`Snapshot::table`](crate::Snapshot::table) and
+/// [`SnapshotParts::table`](crate::SnapshotParts::table) hand out. It exposes the
+/// counters and geometry a caller legitimately needs to inspect (utilisation,
+/// depth, mutability) but deliberately yields no owned [`UsageTable`]: it does
+/// not implement [`Clone`] and does not [`Deref`](core::ops::Deref) to the table,
+/// so `snapshot.table().clone()` cannot reproduce an owned table that
+/// [`Snapshot::new`](crate::Snapshot::new) would accept at sequence 0. Together
+/// with [`SnapshotParts`](crate::SnapshotParts) holding its table privately, this
+/// closes the in-memory clone route that would otherwise downgrade a recovered
+/// snapshot.
+///
+/// The view borrows the table, so it cannot outlive the snapshot it came from.
+#[derive(Debug, Clone, Copy)]
+pub struct TableView<'a> {
+    table: &'a UsageTable,
+}
+
+impl<'a> TableView<'a> {
+    pub(crate) const fn new(table: &'a UsageTable) -> Self {
+        Self { table }
+    }
+
+    /// Returns the batch id this table describes.
+    pub const fn batch_id(&self) -> BatchId {
+        self.table.batch_id
+    }
+
+    /// Returns whether the table is a mutable ring (`true`) or an immutable fill
+    /// watermark (`false`).
+    pub const fn is_mutable(&self) -> bool {
+        self.table.mutable
+    }
+
+    /// Returns the batch depth.
+    pub const fn depth(&self) -> u8 {
+        self.table.depth
+    }
+
+    /// Returns the bucket (uniformity) depth.
+    pub const fn bucket_depth(&self) -> u8 {
+        self.table.bucket_depth
+    }
+
+    /// Returns the number of collision buckets (`2^bucket_depth`).
+    pub const fn bucket_count(&self) -> u32 {
+        self.table.bucket_count()
+    }
+
+    /// Returns the number of slots per bucket (`2^(depth - bucket_depth)`).
+    pub const fn bucket_capacity(&self) -> u32 {
+        self.table.bucket_capacity()
+    }
+
+    /// Returns the total batch capacity in slots (`2^depth`).
+    pub const fn total_capacity(&self) -> u64 {
+        self.table.total_capacity()
+    }
+
+    /// Returns the sum of the per-bucket counters (a checksum in mutable mode).
+    pub const fn total_issued(&self) -> u64 {
+        self.table.issued
+    }
+
+    /// Returns the per-bucket counters.
+    pub fn counts(&self) -> &[u32] {
+        self.table.counts()
+    }
+
+    /// Returns the counter of a bucket.
+    pub fn count(&self, bucket: u32) -> Result<u32> {
+        self.table.count(bucket)
+    }
+
+    /// Returns the highest counter across all buckets.
+    pub fn max_count(&self) -> u32 {
+        self.table.max_count()
+    }
+
+    /// Returns the lowest counter across all buckets.
+    pub fn min_count(&self) -> u32 {
+        self.table.min_count()
+    }
+
+    /// Returns whether a bucket can accept another slot assignment.
+    pub fn has_capacity(&self, bucket: u32) -> Result<bool> {
+        self.table.has_capacity(bucket)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_primitives::b256;

@@ -57,8 +57,29 @@
 //! instead, which keeps the table, sequence, and slots bound together;
 //! [`RootInfo::assemble`] uses it when decoding from the network, and
 //! [`Snapshot::into_parts`] yields the same indivisible [`SnapshotParts`] value
-//! when extracting state from a live snapshot. The bare table is never handed out
-//! on its own, so a recovered table cannot reach [`Snapshot::new`] in safe code.
+//! when extracting state from a live snapshot.
+//!
+//! Both in-memory downgrade routes off a recovered or extracted snapshot are
+//! closed. The move route is closed because [`SnapshotParts`] holds its table
+//! privately and never yields it by value. The clone route is closed because
+//! [`Snapshot::table`] and [`SnapshotParts::table`] return a borrowed
+//! [`TableView`], which is not [`Clone`]-to-owned and does not deref to the
+//! table, so `snapshot.table().clone()` cannot reproduce an owned table that
+//! [`Snapshot::new`] would accept. No public API hands out an owned
+//! [`UsageTable`] taken from a recovered snapshot.
+//!
+//! Two residual paths to a sequence-0 persist are deliberately *not* closed here,
+//! because they are protocol-level rather than in-memory representability
+//! concerns, and are enforced at persist time by the network-validation wave
+//! (nectar issue #65). First, the public table constructors ([`UsageTable::new`]
+//! and friends) must keep minting a fresh table for a genuinely new batch, so a
+//! forged fresh table persisted at sequence 0 is caught at persist time, not by
+//! the type system here. Second, the reserve overwrites a snapshot chunk by stamp
+//! timestamp rather than by snapshot sequence, so full cross-version monotonicity
+//! against the *published* sequence needs a compare-and-swap against the live
+//! root chunk, which also lands under issue #65. This crate closes the in-memory
+//! representability of the downgrade; it does not claim to make every persist-time
+//! downgrade impossible.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
@@ -78,7 +99,7 @@ mod seal;
 pub use codec::{Encoded, RootInfo};
 pub use error::UsageError;
 pub use snapshot::{Issuer, PersistPlan, PlannedChunk, Snapshot, SnapshotParts};
-pub use table::UsageTable;
+pub use table::{TableView, UsageTable};
 
 #[cfg(feature = "issuer")]
 pub use issuer::SnapshotIssuer;

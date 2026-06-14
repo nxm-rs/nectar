@@ -9,7 +9,7 @@ use nectar_postage::{BatchId, StampIndex, calculate_bucket};
 use nectar_primitives::SwarmAddress;
 
 use crate::codec::{self, Encoded};
-use crate::table::UsageTable;
+use crate::table::{TableView, UsageTable};
 use crate::{Result, UsageError, usage_chunk_address, usage_chunk_id};
 
 /// A [`UsageTable`] together with the state needed to persist it inside its
@@ -48,14 +48,16 @@ pub struct PlannedChunk {
 /// they can never be split.
 ///
 /// This is the *only* value [`Snapshot::from_parts`] accepts and the *only*
-/// thing [`Snapshot::into_parts`] hands out. It deliberately exposes no way to
-/// take the bare table out: were the table extractable on its own it could be
-/// fed to [`Snapshot::new`], which resets the sequence to 0 and drops the
-/// allocated slots, downgrading a recovered snapshot and overwriting a newer
-/// persisted version in place at the same metadata chunk addresses. Keeping the
-/// three bound together makes that downgrade unrepresentable in safe code: a
-/// recovered snapshot can only round-trip through [`from_parts`](Snapshot::from_parts),
-/// which preserves the sequence and slots.
+/// thing [`Snapshot::into_parts`] hands out. It exposes no way to obtain an owned
+/// table: the table is held privately and surfaced only as a borrowed
+/// [`TableView`], which is not [`Clone`]-to-owned. Were an owned table reachable
+/// on its own, by move or by clone, it could be fed to [`Snapshot::new`], which
+/// resets the sequence to 0 and drops the allocated slots, downgrading a
+/// recovered snapshot and overwriting a newer persisted version in place at the
+/// same metadata chunk addresses. Keeping the three bound together, with only a
+/// borrowed view out, makes that in-memory downgrade unrepresentable in safe
+/// code: a recovered snapshot can only round-trip through
+/// [`from_parts`](Snapshot::from_parts), which preserves the sequence and slots.
 ///
 /// The accessors are read-only and for inspection only (logging a recovered
 /// sequence, say); rebuilding a usable snapshot goes through
@@ -69,11 +71,14 @@ pub struct SnapshotParts {
 }
 
 impl SnapshotParts {
-    /// Returns the inert usage table by reference. There is deliberately no
-    /// by-value accessor: an owned bare table could be passed to
-    /// [`Snapshot::new`] and reset to sequence 0.
-    pub const fn table(&self) -> &UsageTable {
-        &self.table
+    /// Returns a borrowed, read-only [`TableView`] onto the inert usage table.
+    ///
+    /// There is deliberately no owned-table accessor, and the view is neither
+    /// [`Clone`]-to-owned nor a [`Deref`](core::ops::Deref) to the table: an owned
+    /// bare table could be passed to [`Snapshot::new`] and reset to sequence 0, so
+    /// `parts.table().clone()` must not yield one.
+    pub const fn table(&self) -> TableView<'_> {
+        TableView::new(&self.table)
     }
 
     /// Returns the persist sequence carried by these parts.
@@ -113,8 +118,20 @@ impl Snapshot {
     /// addresses and re-allocate colliding slots, overwriting a newer persisted
     /// version in place. Recovered or extracted state round-trips through
     /// [`from_parts`](Self::from_parts), which preserves the sequence and slots;
-    /// the type system enforces this because [`into_parts`](Self::into_parts)
-    /// never hands out the bare table that `new` would accept.
+    /// the type system keeps recovered state away from this path because neither
+    /// [`into_parts`](Self::into_parts) nor [`table`](Self::table) hands out an
+    /// owned table, by move or by clone, that `new` would accept.
+    ///
+    /// Two residual ways to reach a sequence-0 persist are out of this type's
+    /// scope and are enforced at persist time by the network-validation wave
+    /// (nectar issue #65), not here. First, the public constructors
+    /// ([`UsageTable::new`] and friends) legitimately mint a fresh table for a
+    /// genuinely new batch, so a forged fresh table persisted at sequence 0 is a
+    /// protocol-level concern, not an in-memory representability bug. Second, the
+    /// reserve overwrites a snapshot chunk by stamp timestamp rather than by
+    /// snapshot sequence, so full cross-version monotonicity against the
+    /// *published* sequence needs a compare-and-swap against the live root chunk.
+    /// Both land at persist time under issue #65.
     pub const fn new(table: UsageTable) -> Self {
         Self {
             table,
@@ -180,8 +197,24 @@ impl Snapshot {
         })
     }
 
-    /// Returns the usage table.
-    pub const fn table(&self) -> &UsageTable {
+    /// Returns a borrowed, read-only [`TableView`] onto the usage table.
+    ///
+    /// The view exposes the counters and geometry a caller needs to inspect, but
+    /// yields no owned [`UsageTable`]: it is neither [`Clone`]-to-owned nor a
+    /// [`Deref`](core::ops::Deref) to the table, so `snapshot.table().clone()`
+    /// cannot reproduce an owned table that [`new`](Self::new) would accept at
+    /// sequence 0. This closes the in-memory clone route that would otherwise
+    /// downgrade a recovered snapshot.
+    pub const fn table(&self) -> TableView<'_> {
+        TableView::new(&self.table)
+    }
+
+    /// Returns the inner [`UsageTable`] by reference, for crate-internal callers
+    /// that need the table type itself (the codec and the issuance handles).
+    /// Never exposed publicly: a public `&UsageTable` would let
+    /// `snapshot.table().clone()` reproduce an owned table for
+    /// [`new`](Self::new).
+    pub(crate) const fn table_ref(&self) -> &UsageTable {
         &self.table
     }
 
@@ -207,10 +240,11 @@ impl Snapshot {
     ///
     /// The three are returned as one indivisible value precisely so the
     /// persistence state can never be silently dropped on the way out. The parts
-    /// expose no by-value table accessor, so the only thing you can do with them
-    /// is inspect them or rebuild through [`from_parts`](Self::from_parts), which
-    /// preserves the sequence and slots. There is no route back to a fresh
-    /// sequence-0 snapshot from extracted state.
+    /// expose no owned-table accessor, only a borrowed [`TableView`], so the only
+    /// thing you can do with them is inspect them or rebuild through
+    /// [`from_parts`](Self::from_parts), which preserves the sequence and slots.
+    /// No in-memory route, by move or by clone, leads back from extracted state to
+    /// a fresh sequence-0 snapshot.
     ///
     /// The old `into_table` accessor that handed out the table alone is gone, and
     /// `into_parts` no longer yields a bare table either, so downgrading a
@@ -226,9 +260,9 @@ impl Snapshot {
     /// let table = snapshot.into_table();
     /// ```
     ///
-    /// The downgrade path the gate found no longer type-checks: the parts hand out
-    /// only a `&UsageTable`, never an owned one, so it cannot be moved into
-    /// `Snapshot::new`:
+    /// The move path the gate found no longer type-checks: the parts hold the
+    /// table privately and surface it only through a borrowed [`TableView`], never
+    /// an owned table, so it cannot be moved into `Snapshot::new`:
     ///
     /// ```compile_fail
     /// use alloy_primitives::{Address, B256};
@@ -237,10 +271,25 @@ impl Snapshot {
     /// let owner = Address::repeat_byte(0x11);
     /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16).unwrap());
     /// let parts = snapshot.into_parts();
-    /// // `parts.table` is private and only `&UsageTable` is exposed, so a fresh
+    /// // `parts.table` is private and only a `TableView` is exposed, so a fresh
     /// // sequence-0 snapshot cannot be rebuilt from extracted state.
     /// let mut reset = Snapshot::new(parts.table);
     /// reset.plan_persist(&owner).unwrap();
+    /// ```
+    ///
+    /// The clone path is closed too: [`table`](Self::table) yields a borrowed
+    /// [`TableView`], which is not [`Clone`]-to-owned and does not deref to the
+    /// table, so `snapshot.table().clone()` cannot reproduce an owned
+    /// [`UsageTable`] for `Snapshot::new`:
+    ///
+    /// ```compile_fail
+    /// use alloy_primitives::B256;
+    /// use nectar_postage_usage::{Snapshot, UsageTable};
+    ///
+    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16).unwrap());
+    /// // `table()` returns a `TableView`; cloning it yields another view, not a
+    /// // `UsageTable`, so this does not type-check.
+    /// let reset = Snapshot::new(snapshot.table().clone());
     /// ```
     #[must_use = "the parts carry the recovered sequence and slots; dropping them discards that state"]
     pub fn into_parts(self) -> SnapshotParts {
@@ -534,26 +583,26 @@ impl Issuer<'_> {
 
     /// Returns the counter of a bucket.
     pub fn count(&self, bucket: u32) -> Result<u32> {
-        self.snapshot.table().count(bucket)
+        self.snapshot.table_ref().count(bucket)
     }
 
     /// Returns the highest counter across all buckets.
     pub fn max_count(&self) -> u32 {
-        self.snapshot.table().max_count()
+        self.snapshot.table_ref().max_count()
     }
 
     /// Returns whether the bound batch is a mutable ring.
     pub const fn is_mutable(&self) -> bool {
-        self.snapshot.table().is_mutable()
+        self.snapshot.table_ref().is_mutable()
     }
 
     /// Returns whether a bucket can accept another slot assignment.
     pub fn has_capacity(&self, bucket: u32) -> Result<bool> {
-        self.snapshot.table().has_capacity(bucket)
+        self.snapshot.table_ref().has_capacity(bucket)
     }
 
     /// Returns the running issued total (a checksum in mutable mode).
     pub const fn stamps_issued(&self) -> u64 {
-        self.snapshot.table().total_issued()
+        self.snapshot.table_ref().total_issued()
     }
 }

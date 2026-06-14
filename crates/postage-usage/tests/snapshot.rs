@@ -437,6 +437,53 @@ fn recovered_snapshot_rebuilds_through_from_parts_without_regressing() {
     assert_eq!(rebuilt.allocated_slots(), snapshot.allocated_slots());
 }
 
+#[test]
+fn table_view_exposes_counts_and_geometry_without_yielding_an_owned_table() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let mut counts = synthetic_counts(buckets, 64, 63);
+    counts[7] = 200;
+    let table = UsageTable::from_counts(batch_id(), 24, BUCKET_DEPTH, counts.clone()).unwrap();
+    let issued = table.total_issued();
+    let mut snapshot = Snapshot::new(table);
+    snapshot.plan_persist(&owner()).unwrap();
+
+    // Recover from the wire so the assertions run against a view of a recovered
+    // snapshot, exactly the case the clone-path closure protects.
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let recovered = roundtrip(&plan);
+    let view = recovered.table();
+
+    // Geometry getters.
+    assert_eq!(view.batch_id(), batch_id());
+    assert_eq!(view.depth(), 24);
+    assert_eq!(view.bucket_depth(), BUCKET_DEPTH);
+    assert_eq!(view.bucket_count(), buckets as u32);
+    assert_eq!(view.bucket_capacity(), 1u32 << (24 - BUCKET_DEPTH));
+    assert_eq!(view.total_capacity(), 1u64 << 24);
+    assert!(!view.is_mutable());
+
+    // Counter getters. The snapshot's own chunks bumped a few buckets above the
+    // synthetic counts, so total_issued only grew.
+    assert!(view.total_issued() >= issued);
+    assert_eq!(view.count(7).unwrap(), 200);
+    assert_eq!(view.counts().len(), buckets);
+    assert_eq!(view.max_count(), 200);
+    assert_eq!(
+        view.min_count(),
+        recovered.table().counts().iter().copied().min().unwrap()
+    );
+    assert!(
+        view.count(buckets as u32).is_err(),
+        "out-of-range bucket errors"
+    );
+    assert!(view.has_capacity(7).unwrap());
+
+    // The view is Copy, so a caller can take a cheap second window, but cloning it
+    // yields another view, never an owned UsageTable that Snapshot::new accepts.
+    let second = view;
+    assert_eq!(second.depth(), view.depth());
+}
+
 /// Returns a chunk address whose top `BUCKET_DEPTH` bits select `bucket`.
 fn address_in_bucket(bucket: u32) -> nectar_primitives::SwarmAddress {
     let mut bytes = [0u8; 32];
