@@ -72,6 +72,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+mod counter;
 mod error;
 mod factory;
 mod issuer;
@@ -85,6 +86,9 @@ pub use nectar_postage::*;
 
 // Errors (override nectar_postage::StampError with our own that includes signing)
 pub use error::{IssuerError, SigningError};
+
+// The shared per-bucket counter table behind every issuer and the snapshot.
+pub use counter::{CounterError, CounterMode, CounterTable};
 
 // Issuing
 pub use issuer::{MemoryIssuer, StampIssuer};

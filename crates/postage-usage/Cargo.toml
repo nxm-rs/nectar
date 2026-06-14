@@ -19,13 +19,13 @@ workspace = true
 
 [dependencies]
 nectar-postage = { workspace = true }
+nectar-postage-issuer = { workspace = true }
 nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 
 # optional
-nectar-postage-issuer = { workspace = true, optional = true }
 alloy-signer = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -36,12 +36,13 @@ alloy-signer-local = { workspace = true }
 default = ["std"]
 
 # Standard library support.
-std = ["nectar-postage/std", "alloy-primitives/std", "thiserror/std"]
+std = ["nectar-postage/std", "nectar-postage-issuer/std", "alloy-primitives/std", "thiserror/std"]
 
 # Implements `nectar_postage_issuer::StampIssuer` for `SnapshotIssuer` so a
-# snapshot can back a `BatchStamper` directly. Implies `std` via the issuer
-# crate.
-issuer = ["dep:nectar-postage-issuer", "std"]
+# snapshot can back a `BatchStamper` directly. The shared counter table that
+# backs every usage table already comes from the issuer crate; this feature adds
+# the `StampIssuer` adapter on top.
+issuer = ["std"]
 
 # Turns persist plans into signed single-owner chunks and stamps.
 seal = ["dep:alloy-signer", "std"]
