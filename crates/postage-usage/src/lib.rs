@@ -31,10 +31,11 @@
 //! let batch_id = B256::repeat_byte(0x42);
 //! let owner = Address::repeat_byte(0x11);
 //!
-//! // Record an uploaded chunk against the shared table, then plan a persist.
+//! // Issue a stamp for an uploaded chunk through the snapshot's issuing handle,
+//! // then plan a persist.
 //! let mut snapshot = Snapshot::new(UsageTable::new(batch_id, 20, 16).unwrap());
 //! let address = SwarmAddress::from(B256::repeat_byte(0x99));
-//! snapshot.record_address(&owner, &address).unwrap();
+//! snapshot.issuer(owner).record_address(&address).unwrap();
 //! let plan = snapshot.plan_persist(&owner).unwrap();
 //!
 //! // Publish each plan chunk as a single-owner chunk stamped with
@@ -62,7 +63,7 @@ mod seal;
 
 pub use codec::{Encoded, RootInfo};
 pub use error::UsageError;
-pub use snapshot::{PersistPlan, PlannedChunk, Snapshot};
+pub use snapshot::{Issuer, PersistPlan, PlannedChunk, Snapshot};
 pub use table::UsageTable;
 
 #[cfg(feature = "issuer")]

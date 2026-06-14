@@ -13,8 +13,11 @@ fn sealed_chunks_and_stamps_verify() {
     let owner = signer.address();
     let batch_id = B256::repeat_byte(0x42);
 
-    let mut table = UsageTable::new(batch_id, 20, 16).unwrap();
-    table.record(123).unwrap();
+    // Seed one stamp in bucket 123 via the inert constructor; the table itself
+    // has no record path.
+    let mut counts = vec![0u32; 1usize << 16];
+    counts[123] = 1;
+    let table = UsageTable::from_counts(batch_id, 20, 16, counts).unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot.plan_persist(&owner).unwrap();
 

@@ -20,10 +20,10 @@ const fn map_usage_error(err: UsageError) -> StampError {
 /// A [`StampIssuer`] that stamps content through a [`Snapshot`]'s table, so
 /// content stamping and snapshot allocation share one table and never collide.
 ///
-/// Owner-aware, unlike stamping a bare [`UsageTable`](crate::UsageTable): on a
-/// mutable batch it
-/// skips the reserved slots so the ring never evicts the batch-state chunks. It
-/// owns the snapshot by value to drop into `BatchStamper::new`; recover it with
+/// It issues through the snapshot's reserved-aware
+/// [`Issuer`](crate::Issuer): on a mutable batch the ring skips the reserved
+/// slots so it never evicts the batch-state chunks. It owns the snapshot by
+/// value to drop into `BatchStamper::new`; recover it with
 /// [`into_snapshot`](Self::into_snapshot).
 #[derive(Debug, Clone)]
 pub struct SnapshotIssuer {
@@ -67,7 +67,7 @@ impl StampIssuer for SnapshotIssuer {
     ) -> core::result::Result<StampDigest, StampError> {
         let index = self
             .snapshot
-            .record_address(&self.owner, address)
+            .record_address(self.owner, address)
             .map_err(map_usage_error)?;
         Ok(StampDigest::new(
             *address,

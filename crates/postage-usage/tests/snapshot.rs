@@ -289,14 +289,11 @@ fn mutable_round_trips_and_decodes_as_mutable() {
     assert!(root.is_mutable());
 
     let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| &c.payload).collect();
-    let mut recovered = root.assemble(&leaves).unwrap();
+    let recovered = root.assemble(&leaves).unwrap();
     assert!(recovered.table().is_mutable());
-    // Equality ignores the reserved cache, so a freshly decoded (un-synced)
-    // mutable snapshot still compares equal to its source.
-    assert_eq!(recovered, snapshot);
-
-    // After syncing, it remains equal and is reserved-aware.
-    recovered.sync_reserved(&owner());
+    // A recovered mutable snapshot is inert (no reserved state on the table), and
+    // its reserved slots are installed only when an issuer is obtained, so it
+    // compares equal to its source by counters and geometry alone.
     assert_eq!(recovered, snapshot);
 }
 
@@ -329,7 +326,7 @@ fn mutable_dilution_changes_no_cursor_or_leaf_bytes() {
 #[test]
 fn merge_max_rejects_mutable() {
     let buckets = 1usize << BUCKET_DEPTH;
-    let mut a = UsageTable::from_counts_mutable(
+    let a = UsageTable::from_counts_mutable(
         batch_id(),
         20,
         BUCKET_DEPTH,
@@ -343,13 +340,15 @@ fn merge_max_rejects_mutable() {
         synthetic_counts(buckets, 1, 2),
     )
     .unwrap();
-    assert_eq!(a.merge_max(&b), Err(UsageError::MutableMerge));
+    // merge_max is exposed on the snapshot now; a mutable table is rejected.
+    let mut snapshot = Snapshot::new(a);
+    assert_eq!(snapshot.merge_max(&b), Err(UsageError::MutableMerge));
 }
 
 #[test]
-fn decoded_mutable_requires_sync_reserved_before_issuing() {
-    // A small geometry where the root's bucket is a shallow ring, so an
-    // un-synced ring cursor would re-emit the reserved slot quickly.
+fn recovered_mutable_issues_reserved_aware_through_the_handle() {
+    // A small geometry where the root's bucket is a shallow ring, so a
+    // reserved-blind ring cursor would re-emit the reserved slot quickly.
     let depth = 18; // capacity 4 per bucket
     let buckets = 1usize << BUCKET_DEPTH;
     // Fill the table close to full so cursors wrap fast.
@@ -359,25 +358,24 @@ fn decoded_mutable_requires_sync_reserved_before_issuing() {
     let plan = snapshot.plan_persist(&owner()).unwrap();
     let reserved = snapshot.reserved_stamp_indices(&owner());
 
-    // Recover the snapshot from the wire; it is NOT reserved-aware yet.
-    let recovered = roundtrip(&plan);
+    // Recover the snapshot from the wire. It carries no reserved state; the
+    // issuing handle installs it at construction, so the only counter-advance
+    // path is reserved-aware from the very first write.
+    let mut issuing = roundtrip(&plan);
     let root_index = reserved[0];
 
-    // The owner-aware content path syncs internally, so it never re-emits a
-    // reserved slot even though it churns the ring repeatedly.
-    let mut issuing = recovered;
     // Find a content address that maps to the root's reserved bucket.
     let bucket = root_index.bucket();
     let content = address_in_bucket(bucket);
     assert_eq!(calculate_bucket(&content, BUCKET_DEPTH), bucket);
     for _ in 0..32 {
-        let index = issuing.record_address(&owner(), &content).unwrap();
+        let index = issuing.issuer(owner()).record_address(&content).unwrap();
         assert_ne!(
             index, root_index,
             "the reserved root slot must never be re-emitted"
         );
     }
-    // The reserved slot value is intact in the table view.
+    // The reserved slot value is intact in the snapshot view.
     assert!(issuing.is_reserved(&owner(), root_index));
 }
 

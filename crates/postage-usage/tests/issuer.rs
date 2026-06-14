@@ -74,7 +74,7 @@ fn shared_table_immutable_never_collides_with_reserved_slots() {
         let bucket = chunk.stamp_index.bucket();
         for salt in 0..20u8 {
             let addr = content_address(bucket, salt);
-            let index = snapshot.record_address(&owner(), &addr).unwrap();
+            let index = snapshot.issuer(owner()).record_address(&addr).unwrap();
             assert!(
                 !reserved.contains(&index),
                 "content stamp collided with a reserved snapshot slot"
@@ -107,7 +107,7 @@ fn shared_table_mutable_skips_reserved_across_wraps() {
         for salt in 0..200u8 {
             let addr = content_address(bucket, salt);
             assert_eq!(calculate_bucket(&addr, BUCKET_DEPTH), bucket);
-            let index = snapshot.record_address(&owner(), &addr).unwrap();
+            let index = snapshot.issuer(owner()).record_address(&addr).unwrap();
             assert!(
                 !reserved_here.contains(&index),
                 "mutable content stamp re-emitted a reserved slot after wrap"

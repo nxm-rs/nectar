@@ -1,11 +1,9 @@
 //! In-memory per-bucket slot counters for a postage batch.
 
-use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use nectar_postage::{BatchId, StampIndex, calculate_bucket};
-use nectar_primitives::SwarmAddress;
+use nectar_postage::BatchId;
 
 use crate::{MAX_BUCKET_DEPTH, MAX_COUNTER_BITS, Result, UsageError};
 
@@ -26,8 +24,13 @@ pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()>
 
 /// Per-bucket slot counters for a postage batch.
 ///
-/// For each of the `2^bucket_depth` collision buckets, tracks the state needed
-/// to issue collision-free stamps into its `2^(depth - bucket_depth)` slots.
+/// For each of the `2^bucket_depth` collision buckets, this records the state
+/// needed to issue collision-free stamps into its `2^(depth - bucket_depth)`
+/// slots. The table is an inert counters-and-geometry value: it has no method
+/// that advances a counter. Issuance happens only through
+/// [`Snapshot::issuer`](crate::Snapshot::issuer), which installs the reserved
+/// slots first, so a bare table can never evict the chunks that record the
+/// batch state.
 ///
 /// - **Immutable** ([`new`](Self::new) / [`from_counts`](Self::from_counts)):
 ///   `counts[b]` is a monotone fill watermark, the next unused index; issuance
@@ -35,9 +38,31 @@ pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()>
 /// - **Mutable** ([`new_mutable`](Self::new_mutable) /
 ///   [`from_counts_mutable`](Self::from_counts_mutable)): `counts[b]` is a ring
 ///   cursor in `[0, capacity]` that wraps at capacity, so a full bucket churns
-///   instead of failing. The cursor skips the snapshot's reserved slots
-///   (installed via [`Snapshot`](crate::Snapshot)) so issuance never evicts the
-///   data that records the batch state.
+///   instead of failing. The reserved slots that the ring skips live on the
+///   issuing handle, not the table, so they cannot be lost when the table is
+///   moved.
+///
+/// A bare table cannot issue: it has no reserved-blind `record` mutator, so
+/// counter advances that skip reserved installation are a compile error, not a
+/// runtime check.
+///
+/// ```compile_fail
+/// use alloy_primitives::B256;
+/// use nectar_postage_usage::UsageTable;
+///
+/// let mut table = UsageTable::new_mutable(B256::repeat_byte(0x42), 18, 16).unwrap();
+/// // `record` no longer exists on the inert table.
+/// table.record(7).unwrap();
+/// ```
+///
+/// ```compile_fail
+/// use alloy_primitives::B256;
+/// use nectar_postage_usage::{SwarmAddress, UsageTable};
+///
+/// let mut table = UsageTable::new_mutable(B256::repeat_byte(0x42), 18, 16).unwrap();
+/// // `record_address` no longer exists on the inert table.
+/// table.record_address(&SwarmAddress::from(B256::repeat_byte(0x99))).unwrap();
+/// ```
 #[derive(Debug, Clone)]
 pub struct UsageTable {
     pub(crate) batch_id: BatchId,
@@ -48,11 +73,6 @@ pub struct UsageTable {
     /// Whether this table is a mutable ring (true) or immutable fill watermark
     /// (false).
     pub(crate) mutable: bool,
-    /// `(bucket, index)` slots reserved by the snapshot's own chunks, which the
-    /// mutable issuance path skips. A derived cache (recomputed from owner and
-    /// allocated slots, empty until [`set_reserved`](Self::set_reserved)
-    /// installs it), so it is excluded from equality.
-    pub(crate) reserved: BTreeSet<(u32, u32)>,
 }
 
 impl PartialEq for UsageTable {
@@ -77,8 +97,8 @@ impl UsageTable {
     /// Creates an empty mutable (ring-cursor) table.
     ///
     /// Issuance is a per-bucket ring: once a bucket fills it wraps to index `0`.
-    /// Install the snapshot's reserved slots through the
-    /// [`Snapshot`](crate::Snapshot) entry points before issuing content, so the
+    /// The ring skips the snapshot's reserved slots, which are installed onto the
+    /// issuing handle by [`Snapshot::issuer`](crate::Snapshot::issuer), so the
     /// ring never evicts the snapshot's own chunks.
     pub fn new_mutable(batch_id: BatchId, depth: u8, bucket_depth: u8) -> Result<Self> {
         Self::new_with_mode(batch_id, depth, bucket_depth, true)
@@ -98,7 +118,6 @@ impl UsageTable {
             counts: vec![0; 1usize << bucket_depth],
             issued: 0,
             mutable,
-            reserved: BTreeSet::new(),
         })
     }
 
@@ -116,8 +135,9 @@ impl UsageTable {
     }
 
     /// Creates a mutable (ring-cursor) table from existing cursors, each in
-    /// `[0, capacity]`. As with [`new_mutable`](Self::new_mutable), install the
-    /// reserved slots via [`Snapshot`](crate::Snapshot) before issuing.
+    /// `[0, capacity]`. As with [`new_mutable`](Self::new_mutable), the reserved
+    /// slots are installed by [`Snapshot::issuer`](crate::Snapshot::issuer)
+    /// before issuing.
     pub fn from_counts_mutable(
         batch_id: BatchId,
         depth: u8,
@@ -161,7 +181,6 @@ impl UsageTable {
             counts,
             issued,
             mutable,
-            reserved: BTreeSet::new(),
         })
     }
 
@@ -174,15 +193,6 @@ impl UsageTable {
     /// fill watermark (`false`).
     pub const fn is_mutable(&self) -> bool {
         self.mutable
-    }
-
-    /// Installs the `(bucket, index)` slots reserved by the snapshot's own
-    /// chunks, replacing any previous set. The mutable issuance path skips them;
-    /// immutable issuance ignores the set. [`Snapshot`](crate::Snapshot) installs
-    /// it so a table recovered from the wire becomes owner-aware before any
-    /// mutable issuance.
-    pub(crate) fn set_reserved(&mut self, reserved: impl IntoIterator<Item = (u32, u32)>) {
-        self.reserved = reserved.into_iter().collect();
     }
 
     /// Returns the batch depth.
@@ -248,77 +258,12 @@ impl UsageTable {
         Ok(self.count(bucket)? < self.bucket_capacity())
     }
 
-    /// Assigns the next slot in a bucket and returns its index.
-    ///
-    /// Immutable: the monotone fill watermark, failing with
-    /// [`BucketFull`](UsageError::BucketFull) at capacity. Mutable: a ring cursor
-    /// that wraps at capacity and skips reserved slots, never returning
-    /// `BucketFull` (it returns [`RingExhausted`](UsageError::RingExhausted) only
-    /// if every slot is reserved, which the geometry forbids).
-    pub fn record(&mut self, bucket: u32) -> Result<u32> {
-        let capacity = self.bucket_capacity();
-        if bucket as usize >= self.counts.len() {
-            return Err(UsageError::InvalidBucket { bucket });
-        }
-        if self.mutable {
-            return self.record_mutable(bucket, capacity);
-        }
-        let count = &mut self.counts[bucket as usize];
-        if *count >= capacity {
-            return Err(UsageError::BucketFull { bucket, capacity });
-        }
-        let index = *count;
-        *count += 1;
-        self.issued += 1;
-        Ok(index)
-    }
-
-    /// Advances a mutable ring cursor, skipping reserved slots and wrapping at
-    /// capacity. `capacity >= 1` always holds for supported geometry.
-    fn record_mutable(&mut self, bucket: u32, capacity: u32) -> Result<u32> {
-        let old_cursor = self.counts[bucket as usize];
-        // Start at the cursor; a cursor equal to capacity means "wrap on the
-        // next write", resetting to 0 when the bucket bound is reached.
-        let mut candidate = if old_cursor >= capacity {
-            0
-        } else {
-            old_cursor
-        };
-        // Skip reserved slots, wrapping. Bounded by `capacity` steps: if every
-        // slot is reserved we fail rather than loop.
-        let mut steps = 0u32;
-        while self.reserved.contains(&(bucket, candidate)) {
-            candidate = (candidate + 1) % capacity;
-            steps += 1;
-            if steps >= capacity {
-                return Err(UsageError::RingExhausted { bucket });
-            }
-        }
-        let index = candidate;
-        // The new cursor points just past the slot we returned. Storing
-        // `capacity` (rather than wrapping to 0 here) defers the wrap to the
-        // next write, keeping the cursor in [0, capacity] as on the wire.
-        let new_cursor = index + 1;
-        self.counts[bucket as usize] = new_cursor;
-        // Keep issued == sum(counts): fold in the signed delta (it decreases
-        // on wrap, when new_cursor < old_cursor).
-        self.issued = self.issued - u64::from(old_cursor) + u64::from(new_cursor);
-        Ok(index)
-    }
-
-    /// Assigns the next unused slot for a chunk address and returns the
-    /// resulting stamp index.
-    pub fn record_address(&mut self, address: &SwarmAddress) -> Result<StampIndex> {
-        let bucket = calculate_bucket(address, self.bucket_depth);
-        let index = self.record(bucket)?;
-        Ok(StampIndex::new(bucket, index))
-    }
-
     /// Increases the batch depth after an on-chain dilution.
     ///
     /// Counters are unchanged; only the per-bucket capacity grows. The new
     /// depth must not decrease and must stay within the supported geometry.
-    pub fn dilute(&mut self, new_depth: u8) -> Result<()> {
+    /// Exposed to callers through [`Snapshot::dilute`](crate::Snapshot::dilute).
+    pub(crate) fn dilute(&mut self, new_depth: u8) -> Result<()> {
         if new_depth < self.depth {
             return Err(UsageError::DepthDecrease {
                 current: self.depth,
@@ -339,7 +284,9 @@ impl UsageTable {
     /// [`MutableMerge`](UsageError::MutableMerge) if either table is mutable: a
     /// ring cursor falls on wrap, so it has no maximum-based join, and mutable
     /// divergence is a conflict surfaced by the snapshot sequence number.
-    pub fn merge_max(&mut self, other: &Self) -> Result<()> {
+    /// Exposed to callers through
+    /// [`Snapshot::merge_max`](crate::Snapshot::merge_max).
+    pub(crate) fn merge_max(&mut self, other: &Self) -> Result<()> {
         if self.mutable || other.mutable {
             return Err(UsageError::MutableMerge);
         }
@@ -380,27 +327,32 @@ mod tests {
     }
 
     #[test]
-    fn record_assigns_sequential_indices() {
-        let mut table = UsageTable::new(batch_id(), 17, 16).unwrap();
+    fn from_counts_sums_issued_and_rejects_overflow() {
+        let mut counts = vec![0u32; 1usize << 16];
+        counts[7] = 2;
+        let table = UsageTable::from_counts(batch_id(), 17, 16, counts).unwrap();
         assert_eq!(table.bucket_capacity(), 2);
-        assert_eq!(table.record(7).unwrap(), 0);
-        assert_eq!(table.record(7).unwrap(), 1);
-        assert_eq!(
-            table.record(7),
-            Err(UsageError::BucketFull {
-                bucket: 7,
-                capacity: 2
-            })
-        );
         assert_eq!(table.total_issued(), 2);
         assert_eq!(table.max_count(), 2);
         assert_eq!(table.min_count(), 0);
+
+        let mut over = vec![0u32; 1usize << 16];
+        over[7] = 3; // capacity is 2
+        assert_eq!(
+            UsageTable::from_counts(batch_id(), 17, 16, over),
+            Err(UsageError::CounterOverflow {
+                bucket: 7,
+                count: 3,
+                capacity: 2
+            })
+        );
     }
 
     #[test]
     fn dilute_grows_capacity_only() {
-        let mut table = UsageTable::new(batch_id(), 17, 16).unwrap();
-        table.record(0).unwrap();
+        let mut counts = vec![0u32; 1usize << 16];
+        counts[0] = 1;
+        let mut table = UsageTable::from_counts(batch_id(), 17, 16, counts).unwrap();
         table.dilute(18).unwrap();
         assert_eq!(table.bucket_capacity(), 4);
         assert_eq!(table.count(0).unwrap(), 1);
@@ -415,12 +367,13 @@ mod tests {
 
     #[test]
     fn merge_takes_elementwise_max() {
-        let mut a = UsageTable::new(batch_id(), 18, 16).unwrap();
-        let mut b = UsageTable::new(batch_id(), 19, 16).unwrap();
-        a.record(0).unwrap();
-        a.record(0).unwrap();
-        b.record(0).unwrap();
-        b.record(1).unwrap();
+        let mut counts_a = vec![0u32; 1usize << 16];
+        counts_a[0] = 2;
+        let mut counts_b = vec![0u32; 1usize << 16];
+        counts_b[0] = 1;
+        counts_b[1] = 1;
+        let mut a = UsageTable::from_counts(batch_id(), 18, 16, counts_a).unwrap();
+        let b = UsageTable::from_counts(batch_id(), 19, 16, counts_b).unwrap();
         a.merge_max(&b).unwrap();
         assert_eq!(a.depth(), 19);
         assert_eq!(a.count(0).unwrap(), 2);
@@ -429,61 +382,13 @@ mod tests {
     }
 
     #[test]
-    fn mutable_ring_wraps_instead_of_failing() {
-        // Capacity 2 per bucket.
-        let mut table = UsageTable::new_mutable(batch_id(), 17, 16).unwrap();
-        assert!(table.is_mutable());
-        assert_eq!(table.bucket_capacity(), 2);
-        assert_eq!(table.record(7).unwrap(), 0);
-        assert_eq!(table.record(7).unwrap(), 1);
-        // The ring wraps rather than returning BucketFull.
-        assert_eq!(table.record(7).unwrap(), 0);
-        assert_eq!(table.record(7).unwrap(), 1);
-        assert_eq!(table.record(7).unwrap(), 0);
-        // issued == sum(counts) at all times; cursor sits at 1 -> sum 1.
-        let sum: u64 = table.counts().iter().map(|&c| u64::from(c)).sum();
-        assert_eq!(table.total_issued(), sum);
-    }
-
-    #[test]
-    fn mutable_record_skips_reserved_slots() {
-        // Capacity 4 per bucket; reserve slot 1 in bucket 3.
-        let mut table = UsageTable::new_mutable(batch_id(), 18, 16).unwrap();
-        table.set_reserved([(3u32, 1u32)]);
-        // Cursor starts at 0: 0, skip 1 -> 2, 3, wrap skip 1 (cursor at 0) ...
-        assert_eq!(table.record(3).unwrap(), 0);
-        assert_eq!(table.record(3).unwrap(), 2);
-        assert_eq!(table.record(3).unwrap(), 3);
-        // Cursor now 4 -> wraps to 0, then 2, 3, ... reserved slot never emitted.
-        assert_eq!(table.record(3).unwrap(), 0);
-        assert_eq!(table.record(3).unwrap(), 2);
-        for _ in 0..50 {
-            assert_ne!(
-                table.record(3).unwrap(),
-                1,
-                "reserved slot must never be emitted"
-            );
-        }
-    }
-
-    #[test]
-    fn mutable_dilute_changes_no_cursor() {
-        let mut table = UsageTable::new_mutable(batch_id(), 17, 16).unwrap();
-        table.record(0).unwrap();
-        table.record(0).unwrap();
-        let before: Vec<u32> = table.counts().to_vec();
-        table.dilute(20).unwrap();
-        assert_eq!(table.bucket_capacity(), 16);
-        assert_eq!(table.counts(), before.as_slice());
-    }
-
-    #[test]
     fn merge_max_rejects_mutable() {
-        let mut a = UsageTable::new_mutable(batch_id(), 18, 16).unwrap();
-        let b = UsageTable::new(batch_id(), 18, 16).unwrap();
+        let zero = || vec![0u32; 1usize << 16];
+        let mut a = UsageTable::from_counts_mutable(batch_id(), 18, 16, zero()).unwrap();
+        let b = UsageTable::from_counts(batch_id(), 18, 16, zero()).unwrap();
         assert_eq!(a.merge_max(&b), Err(UsageError::MutableMerge));
-        let mut c = UsageTable::new(batch_id(), 18, 16).unwrap();
-        let d = UsageTable::new_mutable(batch_id(), 18, 16).unwrap();
+        let mut c = UsageTable::from_counts(batch_id(), 18, 16, zero()).unwrap();
+        let d = UsageTable::from_counts_mutable(batch_id(), 18, 16, zero()).unwrap();
         assert_eq!(c.merge_max(&d), Err(UsageError::MutableMerge));
     }
 }
