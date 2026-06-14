@@ -50,7 +50,7 @@ pub struct PlannedChunk {
 /// This is the *only* value [`Snapshot::from_parts`] accepts and the *only*
 /// thing [`Snapshot::into_parts`] hands out. It exposes no way to obtain an owned
 /// table: the table is held privately and surfaced only as a borrowed
-/// [`TableView`], which is not [`Clone`]-to-owned. Were an owned table reachable
+/// [`TableView`] that exposes only read getters. Were an owned table reachable
 /// on its own, by move or by clone, it could be fed to [`Snapshot::new`], which
 /// resets the sequence to 0 and drops the allocated slots, downgrading a
 /// recovered snapshot and overwriting a newer persisted version in place at the
@@ -200,11 +200,11 @@ impl Snapshot {
     /// Returns a borrowed, read-only [`TableView`] onto the usage table.
     ///
     /// The view exposes the counters and geometry a caller needs to inspect, but
-    /// yields no owned [`UsageTable`]: it is neither [`Clone`]-to-owned nor a
-    /// [`Deref`](core::ops::Deref) to the table, so `snapshot.table().clone()`
-    /// cannot reproduce an owned table that [`new`](Self::new) would accept at
-    /// sequence 0. This closes the in-memory clone route that would otherwise
-    /// downgrade a recovered snapshot.
+    /// yields no owned [`UsageTable`]: it only borrows the table and does not
+    /// [`Deref`](core::ops::Deref) to it, so cloning or copying the view yields
+    /// another borrowed view, never an owned table that [`new`](Self::new) would
+    /// accept at sequence 0. This closes the in-memory clone route that would
+    /// otherwise downgrade a recovered snapshot.
     pub const fn table(&self) -> TableView<'_> {
         TableView::new(&self.table)
     }
@@ -278,8 +278,8 @@ impl Snapshot {
     /// ```
     ///
     /// The clone path is closed too: [`table`](Self::table) yields a borrowed
-    /// [`TableView`], which is not [`Clone`]-to-owned and does not deref to the
-    /// table, so `snapshot.table().clone()` cannot reproduce an owned
+    /// [`TableView`] that only borrows the table and does not deref to it, so
+    /// cloning or copying the view yields another borrowed view, never an owned
     /// [`UsageTable`] for `Snapshot::new`:
     ///
     /// ```compile_fail

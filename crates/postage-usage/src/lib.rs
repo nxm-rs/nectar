@@ -63,9 +63,9 @@
 //! closed. The move route is closed because [`SnapshotParts`] holds its table
 //! privately and never yields it by value. The clone route is closed because
 //! [`Snapshot::table`] and [`SnapshotParts::table`] return a borrowed
-//! [`TableView`], which is not [`Clone`]-to-owned and does not deref to the
-//! table, so `snapshot.table().clone()` cannot reproduce an owned table that
-//! [`Snapshot::new`] would accept. No public API hands out an owned
+//! [`TableView`] that exposes only read getters and does not deref to the
+//! table, so cloning or copying it yields another borrowed view, never an owned
+//! table that [`Snapshot::new`] would accept. No public API hands out an owned
 //! [`UsageTable`] taken from a recovered snapshot.
 //!
 //! Two residual paths to a sequence-0 persist are deliberately *not* closed here,

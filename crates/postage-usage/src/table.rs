@@ -311,9 +311,9 @@ impl UsageTable {
 /// This is what [`Snapshot::table`](crate::Snapshot::table) and
 /// [`SnapshotParts::table`](crate::SnapshotParts::table) hand out. It exposes the
 /// counters and geometry a caller legitimately needs to inspect (utilisation,
-/// depth, mutability) but deliberately yields no owned [`UsageTable`]: it does
-/// not implement [`Clone`] and does not [`Deref`](core::ops::Deref) to the table,
-/// so `snapshot.table().clone()` cannot reproduce an owned table that
+/// depth, mutability) but deliberately yields no owned [`UsageTable`]: it only
+/// borrows the table and does not [`Deref`](core::ops::Deref) to it, so cloning
+/// or copying the view produces another borrowed view, never an owned table that
 /// [`Snapshot::new`](crate::Snapshot::new) would accept at sequence 0. Together
 /// with [`SnapshotParts`](crate::SnapshotParts) holding its table privately, this
 /// closes the in-memory clone route that would otherwise downgrade a recovered
