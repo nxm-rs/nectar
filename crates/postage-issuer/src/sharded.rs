@@ -15,6 +15,7 @@
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use crate::error::IssuerError;
 use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
 use nectar_primitives::SwarmAddress;
 
@@ -165,8 +166,22 @@ impl ShardedIssuer {
     }
 
     /// Creates a sharded issuer from a batch.
-    pub fn from_batch(batch: &Batch) -> Self {
-        Self::new(batch.id(), batch.depth(), batch.bucket_depth())
+    ///
+    /// Immutable batches yield a fill-only issuer. Mutable batches are refused
+    /// with [`IssuerError::MutableNotSupported`], matching
+    /// [`MemoryIssuer::from_batch`](crate::MemoryIssuer::from_batch), so a ring
+    /// is never produced by accident. Overwrite-aware parallel issuance must be
+    /// requested by name through
+    /// [`ShardedRingIssuer::external`](crate::ShardedRingIssuer::external) for
+    /// external tracking, or
+    /// [`ShardedRingIssuer::reserved`](crate::ShardedRingIssuer::reserved) for
+    /// self-hosting, where the protected slots come from `nectar-postage-usage`.
+    pub fn from_batch(batch: &Batch) -> Result<Self, IssuerError> {
+        if batch.immutable() {
+            Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))
+        } else {
+            Err(IssuerError::MutableNotSupported)
+        }
     }
 
     /// Maps a bucket to its shard index.
@@ -356,6 +371,28 @@ const fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
 mod tests {
     use super::*;
     use alloy_primitives::B256;
+
+    #[test]
+    fn test_sharded_issuer_from_batch_mutable_refused() {
+        use nectar_postage::Batch;
+
+        // The parallel constructor refuses a mutable batch for the same reason
+        // as MemoryIssuer: a reserved-blind ring would silently overwrite a
+        // self-hosted snapshot's own chunks.
+        let mutable = Batch::new(B256::ZERO, 0, 0, Default::default(), 20, 16, false);
+        assert!(matches!(
+            ShardedIssuer::from_batch(&mutable),
+            Err(IssuerError::MutableNotSupported)
+        ));
+    }
+
+    #[test]
+    fn test_sharded_issuer_from_batch_immutable_ok() {
+        use nectar_postage::Batch;
+
+        let immutable = Batch::new(B256::ZERO, 0, 0, Default::default(), 20, 16, true);
+        assert!(ShardedIssuer::from_batch(&immutable).is_ok());
+    }
 
     #[test]
     fn test_sharded_issuer_basic() {

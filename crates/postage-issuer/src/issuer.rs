@@ -1,5 +1,6 @@
 //! Stamp issuer trait for tracking bucket utilization.
 
+use crate::error::IssuerError;
 use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
 use nectar_primitives::SwarmAddress;
 
@@ -125,6 +126,12 @@ pub trait StampIssuer {
 /// This implementation stores bucket indices in a vector and is suitable
 /// for most use cases where the issuer state doesn't need to persist
 /// across restarts.
+///
+/// Issuance is fill-only: every slot is written at most once and the bucket is
+/// refused with [`StampError::BucketFull`] once full. Mutable, overwrite-aware
+/// issuance is intentionally absent from this crate; it requires reserved-slot
+/// awareness that lives in `nectar-postage-usage`. See the crate-root
+/// documentation for the steer toward `Snapshot::issuer` / `SnapshotIssuer`.
 #[derive(Debug, Clone)]
 pub struct MemoryIssuer {
     /// The batch ID.
@@ -133,7 +140,9 @@ pub struct MemoryIssuer {
     depth: u8,
     /// The bucket depth.
     bucket_depth: u8,
-    /// Current index for each bucket.
+    /// Next slot to write for each bucket.
+    ///
+    /// This watermark is monotonic and never reaches the capacity.
     bucket_indices: alloc::vec::Vec<u32>,
     /// Maximum utilization across all buckets.
     max_utilization: u32,
@@ -144,7 +153,7 @@ pub struct MemoryIssuer {
 extern crate alloc;
 
 impl MemoryIssuer {
-    /// Creates a new memory issuer for the given batch.
+    /// Creates a new fill-only memory issuer for the given batch geometry.
     pub fn new(batch_id: BatchId, depth: u8, bucket_depth: u8) -> Self {
         let bucket_count = 1usize << bucket_depth;
         Self {
@@ -158,8 +167,20 @@ impl MemoryIssuer {
     }
 
     /// Creates a memory issuer from a batch.
-    pub fn from_batch(batch: &Batch) -> Self {
-        Self::new(batch.id(), batch.depth(), batch.bucket_depth())
+    ///
+    /// Immutable batches yield a fill-only issuer identical to
+    /// [`MemoryIssuer::new`] for the same geometry. Mutable batches are refused
+    /// with [`IssuerError::MutableNotSupported`] so a ring is never produced by
+    /// accident: overwrite-aware issuance must be requested by name through
+    /// [`RingIssuer::external`](crate::RingIssuer::external) for external
+    /// tracking, or [`RingIssuer::reserved`](crate::RingIssuer::reserved) for
+    /// self-hosting, where the protected slots come from `nectar-postage-usage`.
+    pub fn from_batch(batch: &Batch) -> Result<Self, IssuerError> {
+        if batch.immutable() {
+            Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))
+        } else {
+            Err(IssuerError::MutableNotSupported)
+        }
     }
 }
 
@@ -172,28 +193,27 @@ impl StampIssuer for MemoryIssuer {
         let bucket = calculate_bucket(address, self.bucket_depth);
         let bucket_idx = bucket as usize;
 
-        // Get current index for this bucket
-        let current_index = self.bucket_indices[bucket_idx];
-
-        // Check if bucket is full
         let bucket_capacity = 1u32 << (self.depth - self.bucket_depth);
-        if current_index >= bucket_capacity {
+
+        // The next unused slot in this bucket.
+        let position = self.bucket_indices[bucket_idx];
+
+        if position >= bucket_capacity {
             return Err(StampError::BucketFull {
                 bucket,
                 capacity: bucket_capacity,
             });
         }
+        self.bucket_indices[bucket_idx] = position + 1;
 
-        // Increment the bucket index
-        self.bucket_indices[bucket_idx] = current_index + 1;
         self.stamps_issued += 1;
 
-        // Update max utilization
-        if current_index + 1 > self.max_utilization {
-            self.max_utilization = current_index + 1;
+        // Update max utilization from the monotone fill of this bucket.
+        if self.bucket_indices[bucket_idx] > self.max_utilization {
+            self.max_utilization = self.bucket_indices[bucket_idx];
         }
 
-        let index = StampIndex::new(bucket, current_index);
+        let index = StampIndex::new(bucket, position);
 
         Ok(StampDigest::new(*address, self.batch_id, index, timestamp))
     }
@@ -215,10 +235,11 @@ impl StampIssuer for MemoryIssuer {
     }
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
-        self.bucket_indices
-            .get(bucket as usize)
-            .copied()
-            .unwrap_or(0)
+        let bucket_idx = bucket as usize;
+        if bucket_idx >= self.bucket_indices.len() {
+            return 0;
+        }
+        self.bucket_indices[bucket_idx]
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
@@ -366,5 +387,50 @@ mod tests {
 
         // 3/4 = 0.75
         assert!(issuer.is_near_capacity(0.75));
+    }
+
+    #[test]
+    fn test_memory_issuer_from_batch_mutable_refused() {
+        use nectar_postage::Batch;
+
+        // A mutable batch must never yield an issuer: the obvious constructor
+        // refuses it instead of handing back a reserved-blind ring that would
+        // silently overwrite a self-hosted snapshot's own chunks.
+        let mutable = Batch::new(B256::ZERO, 0, 0, Default::default(), 20, 16, false);
+
+        assert!(matches!(
+            MemoryIssuer::from_batch(&mutable),
+            Err(IssuerError::MutableNotSupported)
+        ));
+    }
+
+    #[test]
+    fn test_memory_issuer_from_batch_immutable_parity_with_new() {
+        use nectar_postage::Batch;
+
+        // An immutable batch yields a fill-only issuer byte-for-byte identical
+        // to `new` for the same geometry: same indices and the same digest.
+        let batch_id = B256::from([0x11u8; 32]);
+        let immutable = Batch::new(batch_id, 0, 0, Default::default(), 17, 16, true);
+
+        let mut from_batch = MemoryIssuer::from_batch(&immutable).unwrap();
+        let mut from_new = MemoryIssuer::new(batch_id, 17, 16);
+
+        for ts in 0..2u64 {
+            for leading in [0xCBE5u16, 0x0001, 0xABCD] {
+                let address = test_address(leading);
+                let a = from_batch.prepare_stamp(&address, ts).unwrap();
+                let b = from_new.prepare_stamp(&address, ts).unwrap();
+                assert_eq!(a.index.bucket(), b.index.bucket());
+                assert_eq!(a.index.index(), b.index.index());
+                assert_eq!(a.to_prehash(), b.to_prehash());
+            }
+        }
+
+        assert_eq!(
+            from_batch.max_bucket_utilization(),
+            from_new.max_bucket_utilization()
+        );
+        assert_eq!(from_batch.stamps_issued(), from_new.stamps_issued());
     }
 }
