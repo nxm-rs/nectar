@@ -10,8 +10,9 @@
 //! crate. Reserved-aware mutable issuance lives in `nectar-postage-usage` via
 //! `Snapshot::issuer` / `SnapshotIssuer`, which knows the owner's reserved
 //! slots and skips them; a ring here would be reserved-blind and silently evict
-//! a self-hosted snapshot's own chunks. [`MemoryIssuer::from_batch`] therefore
-//! refuses a mutable batch with [`IssuerError::MutableNotSupported`].
+//! a self-hosted snapshot's own chunks. Both [`MemoryIssuer::from_batch`] and
+//! [`ShardedIssuer::from_batch`] therefore refuse a mutable batch with
+//! [`IssuerError::MutableNotSupported`].
 //!
 //! # Features
 //!

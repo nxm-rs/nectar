@@ -172,8 +172,8 @@ impl MemoryIssuer {
     /// [`MemoryIssuer::new`] for the same geometry. Mutable batches are refused
     /// with [`IssuerError::MutableNotSupported`]: overwrite-aware issuance needs
     /// reserved-slot awareness that this primitive issuer cannot provide, so a
-    /// mutable batch must be stamped through
-    /// [`nectar_postage_usage::Snapshot::issuer`] / `SnapshotIssuer` instead.
+    /// mutable batch must be stamped through the owner-aware
+    /// `nectar_postage_usage::Snapshot::issuer` / `SnapshotIssuer` instead.
     pub fn from_batch(batch: &Batch) -> Result<Self, IssuerError> {
         if batch.immutable() {
             Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))
