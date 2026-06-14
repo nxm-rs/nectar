@@ -104,6 +104,39 @@ pub enum UsageError {
     #[error("malformed snapshot: {0}")]
     Malformed(&'static str),
 
+    /// A decoded snapshot names an exception bucket outside the table's bucket
+    /// range. The decode counterpart of [`InvalidBucket`](Self::InvalidBucket):
+    /// the fetched bytes are corrupt, not a caller input that can be adjusted.
+    #[error("corrupt snapshot: bucket {bucket} out of range")]
+    CorruptBucket {
+        /// The offending bucket index.
+        bucket: u32,
+    },
+
+    /// A decoded snapshot carries a counter past the per-bucket slot capacity.
+    /// The decode counterpart of [`CounterOverflow`](Self::CounterOverflow): the
+    /// fetched bytes are corrupt, not a caller input that can be adjusted.
+    #[error("corrupt snapshot: counter {count} for bucket {bucket} exceeds capacity {capacity}")]
+    CorruptCounter {
+        /// The offending bucket.
+        bucket: u32,
+        /// The counter value.
+        count: u32,
+        /// The bucket capacity.
+        capacity: u32,
+    },
+
+    /// A decoded snapshot names a within-bucket slot outside the bucket
+    /// capacity. The decode counterpart of [`InvalidSlot`](Self::InvalidSlot):
+    /// the fetched bytes are corrupt, not a caller input that can be adjusted.
+    #[error("corrupt snapshot: slot {slot} exceeds bucket capacity {capacity}")]
+    CorruptSlot {
+        /// The offending slot index.
+        slot: u32,
+        /// The bucket capacity.
+        capacity: u32,
+    },
+
     /// A leaf payload does not match the digest committed in the root.
     #[error("leaf {index} digest mismatch")]
     LeafDigestMismatch {
@@ -153,6 +186,34 @@ pub enum UsageError {
 }
 
 impl UsageError {
+    /// Reclassifies a caller-input range error raised on the decode path as its
+    /// corruption counterpart, leaving every other variant untouched.
+    ///
+    /// [`InvalidBucket`](Self::InvalidBucket), [`CounterOverflow`](Self::CounterOverflow)
+    /// and [`InvalidSlot`](Self::InvalidSlot) are dual-use: a direct caller that
+    /// supplies bad parts gets the caller-input variant (recoverable), but the
+    /// same check reached through [`RootInfo::assemble`](crate::RootInfo::assemble)
+    /// means the fetched bytes are corrupt. The codec maps the latter through
+    /// here so the static taxonomy stays correct: the decode path yields
+    /// [`CorruptBucket`](Self::CorruptBucket), [`CorruptCounter`](Self::CorruptCounter)
+    /// or [`CorruptSlot`](Self::CorruptSlot), all in the corruption set.
+    pub(crate) const fn into_corruption(self) -> Self {
+        match self {
+            Self::InvalidBucket { bucket } => Self::CorruptBucket { bucket },
+            Self::CounterOverflow {
+                bucket,
+                count,
+                capacity,
+            } => Self::CorruptCounter {
+                bucket,
+                count,
+                capacity,
+            },
+            Self::InvalidSlot { slot, capacity } => Self::CorruptSlot { slot, capacity },
+            other => other,
+        }
+    }
+
     /// Returns whether the error means the bytes a decode was handed are bad or
     /// stale: the snapshot the network served cannot be trusted as a faithful
     /// copy of what was published.
@@ -168,9 +229,11 @@ impl UsageError {
     ///
     /// The set is the decode-time integrity failures: [`BadMagic`](Self::BadMagic),
     /// [`Malformed`](Self::Malformed), [`LeafDigestMismatch`](Self::LeafDigestMismatch),
-    /// [`IssuedMismatch`](Self::IssuedMismatch), and the length and count
-    /// mismatches [`PayloadLength`](Self::PayloadLength),
-    /// [`LeafLength`](Self::LeafLength), and [`LeafCount`](Self::LeafCount).
+    /// [`IssuedMismatch`](Self::IssuedMismatch), the length and count mismatches
+    /// [`PayloadLength`](Self::PayloadLength), [`LeafLength`](Self::LeafLength) and
+    /// [`LeafCount`](Self::LeafCount), and the decode counterparts of the dual-use
+    /// range errors [`CorruptBucket`](Self::CorruptBucket),
+    /// [`CorruptCounter`](Self::CorruptCounter) and [`CorruptSlot`](Self::CorruptSlot).
     pub const fn is_corruption(&self) -> bool {
         match self {
             // Corruption: the fetched bytes are bad or stale.
@@ -180,7 +243,10 @@ impl UsageError {
             | Self::IssuedMismatch { .. }
             | Self::PayloadLength { .. }
             | Self::LeafLength { .. }
-            | Self::LeafCount { .. } => true,
+            | Self::LeafCount { .. }
+            | Self::CorruptBucket { .. }
+            | Self::CorruptCounter { .. }
+            | Self::CorruptSlot { .. } => true,
 
             // Caller-fixable or expected control flow, and the internal-invariant
             // bug: none of these say the fetched bytes are corrupt.
@@ -215,7 +281,11 @@ impl UsageError {
     ///   a wrong counter vector length ([`CounterLength`](Self::CounterLength)),
     ///   an out-of-range bucket ([`InvalidBucket`](Self::InvalidBucket)) or slot
     ///   ([`InvalidSlot`](Self::InvalidSlot)), or a counter past capacity
-    ///   ([`CounterOverflow`](Self::CounterOverflow)).
+    ///   ([`CounterOverflow`](Self::CounterOverflow)). These three are raised only
+    ///   on the caller-input paths ([`UsageTable::from_counts`](crate::UsageTable::from_counts),
+    ///   a direct [`Snapshot::from_parts`](crate::Snapshot::from_parts) caller, the
+    ///   record paths); the same checks reached through the decode path surface as
+    ///   the corruption counterparts below instead.
     /// - **Corruption** (`false`): the fetched bytes are bad or stale; see
     ///   [`is_corruption`](Self::is_corruption). The caller cannot fix the input,
     ///   only refetch or abandon the version.
@@ -245,7 +315,10 @@ impl UsageError {
             | Self::IssuedMismatch { .. }
             | Self::PayloadLength { .. }
             | Self::LeafLength { .. }
-            | Self::LeafCount { .. } => false,
+            | Self::LeafCount { .. }
+            | Self::CorruptBucket { .. }
+            | Self::CorruptCounter { .. }
+            | Self::CorruptSlot { .. } => false,
 
             // Internal invariant: a bug to report, not a recoverable condition.
             Self::RingExhausted { .. } => false,
@@ -341,6 +414,16 @@ mod tests {
             },
             UsageError::BadMagic,
             UsageError::Malformed("x"),
+            UsageError::CorruptBucket { bucket: 0 },
+            UsageError::CorruptCounter {
+                bucket: 0,
+                count: 0,
+                capacity: 0,
+            },
+            UsageError::CorruptSlot {
+                slot: 0,
+                capacity: 0,
+            },
             UsageError::LeafDigestMismatch { index: 0 },
             UsageError::LeafLength {
                 index: 0,
@@ -366,7 +449,10 @@ mod tests {
                 | UsageError::IssuedMismatch { .. }
                 | UsageError::PayloadLength { .. }
                 | UsageError::LeafLength { .. }
-                | UsageError::LeafCount { .. } => {
+                | UsageError::LeafCount { .. }
+                | UsageError::CorruptBucket { .. }
+                | UsageError::CorruptCounter { .. }
+                | UsageError::CorruptSlot { .. } => {
                     assert!(err.is_corruption() && !err.is_recoverable());
                 }
                 UsageError::BucketFull { .. }
