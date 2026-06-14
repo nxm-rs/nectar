@@ -581,7 +581,7 @@ impl RootInfo {
         } else {
             UsageTable::from_counts(self.batch_id, self.depth, self.bucket_depth, counts)?
         };
-        Snapshot::from_parts(table, self.sequence, self.slots)
+        Snapshot::from_parts(Snapshot::recovered_parts(table, self.sequence, self.slots)?)
     }
 }
 

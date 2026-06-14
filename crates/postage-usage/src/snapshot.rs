@@ -43,6 +43,51 @@ pub struct PlannedChunk {
     pub newly_allocated: bool,
 }
 
+/// The opaque, indivisible parts of a recovered or extracted [`Snapshot`]: its
+/// inert table, its persist sequence, and its allocated slots, kept together so
+/// they can never be split.
+///
+/// This is the *only* value [`Snapshot::from_parts`] accepts and the *only*
+/// thing [`Snapshot::into_parts`] hands out. It deliberately exposes no way to
+/// take the bare table out: were the table extractable on its own it could be
+/// fed to [`Snapshot::new`], which resets the sequence to 0 and drops the
+/// allocated slots, downgrading a recovered snapshot and overwriting a newer
+/// persisted version in place at the same metadata chunk addresses. Keeping the
+/// three bound together makes that downgrade unrepresentable in safe code: a
+/// recovered snapshot can only round-trip through [`from_parts`](Snapshot::from_parts),
+/// which preserves the sequence and slots.
+///
+/// The accessors are read-only and for inspection only (logging a recovered
+/// sequence, say); rebuilding a usable snapshot goes through
+/// [`from_parts`](Snapshot::from_parts).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "dropping the parts discards the recovered sequence and slots; rebuild with Snapshot::from_parts"]
+pub struct SnapshotParts {
+    table: UsageTable,
+    sequence: u64,
+    slots: Vec<u32>,
+}
+
+impl SnapshotParts {
+    /// Returns the inert usage table by reference. There is deliberately no
+    /// by-value accessor: an owned bare table could be passed to
+    /// [`Snapshot::new`] and reset to sequence 0.
+    pub const fn table(&self) -> &UsageTable {
+        &self.table
+    }
+
+    /// Returns the persist sequence carried by these parts.
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the within-bucket slots allocated to the snapshot's own chunks,
+    /// in chunk-index order (entry 0 is the root's own slot).
+    pub fn allocated_slots(&self) -> &[u32] {
+        &self.slots
+    }
+}
+
 /// The output of [`Snapshot::plan_persist`]: every chunk of the snapshot in
 /// chunk-index order, ready to be signed, stamped, and published.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +103,18 @@ pub struct PersistPlan {
 }
 
 impl Snapshot {
-    /// Wraps a table that has never been persisted.
+    /// Wraps a table that has never been persisted, starting a fresh persist
+    /// history at sequence 0 with no allocated slots.
+    ///
+    /// This is correct *only* for a genuinely new, never-persisted table. Never
+    /// feed it a table recovered from the network or extracted from an existing
+    /// snapshot: that resets the sequence to 0 and drops the recovered slots,
+    /// which would regress the version at the snapshot's metadata chunk
+    /// addresses and re-allocate colliding slots, overwriting a newer persisted
+    /// version in place. Recovered or extracted state round-trips through
+    /// [`from_parts`](Self::from_parts), which preserves the sequence and slots;
+    /// the type system enforces this because [`into_parts`](Self::into_parts)
+    /// never hands out the bare table that `new` would accept.
     pub const fn new(table: UsageTable) -> Self {
         Self {
             table,
@@ -67,14 +123,10 @@ impl Snapshot {
         }
     }
 
-    /// Reconstructs a snapshot from its parts.
-    ///
-    /// The reconstructed snapshot is inert: it carries no issuing state, so a
-    /// mutable batch recovered this way cannot evict its own chunks. The reserved
-    /// slots are mapped from the owner and installed automatically the moment you
-    /// obtain an [`Issuer`] through [`issuer`](Self::issuer), which is the only
-    /// way to advance a counter. Immutable batches issue without reserved state.
-    pub fn from_parts(table: UsageTable, sequence: u64, slots: Vec<u32>) -> Result<Self> {
+    /// Validates the slots of a table/sequence/slots triple against the table
+    /// geometry, the shared check behind [`from_parts`](Self::from_parts) and
+    /// the codec's recovery path.
+    pub(crate) fn validate_parts(table: &UsageTable, slots: &[u32]) -> Result<()> {
         let capacity = table.bucket_capacity();
         if slots.len() > u16::MAX as usize {
             return Err(UsageError::Malformed("too many allocated chunks"));
@@ -82,6 +134,45 @@ impl Snapshot {
         if let Some(&slot) = slots.iter().find(|&&slot| slot >= capacity) {
             return Err(UsageError::InvalidSlot { slot, capacity });
         }
+        Ok(())
+    }
+
+    /// Builds the opaque [`SnapshotParts`] from a recovered table, sequence, and
+    /// slots, for the codec's decode path. Crate-internal: external callers reach
+    /// recovery through [`RootInfo::assemble`](crate::RootInfo::assemble), which
+    /// flows through here, or through [`into_parts`](Self::into_parts).
+    pub(crate) fn recovered_parts(
+        table: UsageTable,
+        sequence: u64,
+        slots: Vec<u32>,
+    ) -> Result<SnapshotParts> {
+        Self::validate_parts(&table, &slots)?;
+        Ok(SnapshotParts {
+            table,
+            sequence,
+            slots,
+        })
+    }
+
+    /// Reconstructs a snapshot from its opaque [`SnapshotParts`], the only safe
+    /// route back from recovered or extracted state.
+    ///
+    /// The parts carry the table, the persist sequence, and the allocated slots
+    /// together, so reconstruction always preserves the sequence and slots: there
+    /// is no way to silently downgrade to sequence 0 the way feeding a bare table
+    /// to [`new`](Self::new) would. The reconstructed snapshot is inert: it carries
+    /// no issuing state, so a mutable batch recovered this way cannot evict its own
+    /// chunks. The reserved slots are mapped from the owner and installed
+    /// automatically the moment you obtain an [`Issuer`] through
+    /// [`issuer`](Self::issuer), which is the only way to advance a counter.
+    /// Immutable batches issue without reserved state.
+    pub fn from_parts(parts: SnapshotParts) -> Result<Self> {
+        let SnapshotParts {
+            table,
+            sequence,
+            slots,
+        } = parts;
+        Self::validate_parts(&table, &slots)?;
         Ok(Self {
             table,
             sequence,
@@ -111,16 +202,20 @@ impl Snapshot {
         self.table.merge_max(other)
     }
 
-    /// Consumes the snapshot and returns its parts: the inert usage table, the
-    /// sequence number, and the allocated slots.
+    /// Consumes the snapshot and returns its opaque [`SnapshotParts`]: the inert
+    /// usage table, the sequence number, and the allocated slots, bound together.
     ///
-    /// Returns all three together so the persistence state can never be silently
-    /// dropped on the way out (dropping the sequence would let a later persist
-    /// emit a stale version, and dropping the slots would let it re-allocate
-    /// colliding slots). Rebuild with [`from_parts`](Self::from_parts).
+    /// The three are returned as one indivisible value precisely so the
+    /// persistence state can never be silently dropped on the way out. The parts
+    /// expose no by-value table accessor, so the only thing you can do with them
+    /// is inspect them or rebuild through [`from_parts`](Self::from_parts), which
+    /// preserves the sequence and slots. There is no route back to a fresh
+    /// sequence-0 snapshot from extracted state.
     ///
-    /// The old `into_table` accessor that handed out the table alone is gone, so
-    /// dropping the sequence and slots on the way out is a compile error:
+    /// The old `into_table` accessor that handed out the table alone is gone, and
+    /// `into_parts` no longer yields a bare table either, so downgrading a
+    /// recovered snapshot to sequence 0 through [`new`](Self::new) is a compile
+    /// error:
     ///
     /// ```compile_fail
     /// use alloy_primitives::B256;
@@ -130,8 +225,30 @@ impl Snapshot {
     /// // `into_table` no longer exists; only `into_parts` can consume a snapshot.
     /// let table = snapshot.into_table();
     /// ```
-    pub fn into_parts(self) -> (UsageTable, u64, Vec<u32>) {
-        (self.table, self.sequence, self.slots)
+    ///
+    /// The downgrade path the gate found no longer type-checks: the parts hand out
+    /// only a `&UsageTable`, never an owned one, so it cannot be moved into
+    /// `Snapshot::new`:
+    ///
+    /// ```compile_fail
+    /// use alloy_primitives::{Address, B256};
+    /// use nectar_postage_usage::{Snapshot, UsageTable};
+    ///
+    /// let owner = Address::repeat_byte(0x11);
+    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16).unwrap());
+    /// let parts = snapshot.into_parts();
+    /// // `parts.table` is private and only `&UsageTable` is exposed, so a fresh
+    /// // sequence-0 snapshot cannot be rebuilt from extracted state.
+    /// let mut reset = Snapshot::new(parts.table);
+    /// reset.plan_persist(&owner).unwrap();
+    /// ```
+    #[must_use = "the parts carry the recovered sequence and slots; dropping them discards that state"]
+    pub fn into_parts(self) -> SnapshotParts {
+        SnapshotParts {
+            table: self.table,
+            sequence: self.sequence,
+            slots: self.slots,
+        }
     }
 
     /// Returns the sequence number of the last planned persist (0 if never
@@ -314,7 +431,15 @@ impl Snapshot {
     /// (such as a full bucket on first allocation) the snapshot is unchanged.
     pub fn plan_persist(&mut self, owner: &Address) -> Result<PersistPlan> {
         let mut work = self.clone();
-        work.sequence += 1;
+        // Defence in depth behind the structural guard: the emitted sequence
+        // must strictly exceed the current one so a persist can never regress
+        // the version at the snapshot's metadata chunk addresses. The only way
+        // `self.sequence + 1` fails to advance is a `u64` wrap at the maximum,
+        // which we reject rather than fold back to 0.
+        work.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(UsageError::Malformed("persist sequence would overflow"))?;
 
         let batch_id = work.table.batch_id();
         let bucket_depth = work.table.bucket_depth();

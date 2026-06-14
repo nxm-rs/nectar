@@ -161,6 +161,10 @@ For both batch types, re-publishing the same address with the same slot and a ne
 
 The format is single-writer. On an immutable batch counters are monotone, so the elementwise maximum of two divergent tables is a well-defined join and is provided as a recovery primitive (`merge_max`); it still cannot retroactively resolve two writers having issued the same index, and true multi-writer coordination is out of scope for version 1. On a mutable batch the counters are wrapping cursors and have no monotone join, so `merge_max` rejects mutable tables and divergence must be resolved by sequence. The `sequence` field makes divergence detectable for both: readers take the higher sequence, and equal sequences with different content signal a conflict.
 
+### Recovery and the sequence
+
+A recovered snapshot carries a sequence and a set of allocated slots that a fresh persist must preserve. Rebuild recovered or extracted state only through `Snapshot::from_parts`, which keeps the table, the sequence, and the slots bound together. `RootInfo::assemble` does this for you when decoding from the network, and `Snapshot::into_parts` returns the same indivisible `SnapshotParts` value when you extract state from a live snapshot. `Snapshot::new` is for a genuinely fresh, never-persisted table only: it starts the history at sequence 0 with no slots, so handing it a recovered table would downgrade the version at the snapshot's own chunk addresses and re-allocate colliding slots, overwriting a newer persisted version in place. The API makes that misuse impossible rather than merely discouraged: `SnapshotParts` hands out only a borrowed table, never an owned one, so a recovered table can never reach `Snapshot::new`.
+
 ## Crate layout
 
 - `UsageTable`: in-memory counters plus batch geometry; implements slot assignment, dilution, and `merge_max` (immutable only). A table can be immutable (monotone fill watermarks) or mutable (wrapping ring cursors that skip the snapshot's reserved slots).

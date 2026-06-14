@@ -379,6 +379,64 @@ fn recovered_mutable_issues_reserved_aware_through_the_handle() {
     assert!(issuing.is_reserved(&owner(), root_index));
 }
 
+#[test]
+fn extract_then_rebuild_preserves_sequence_and_slots() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = synthetic_counts(buckets, 10, 15);
+    let table = UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts).unwrap();
+    let mut snapshot = Snapshot::new(table);
+
+    // Persist a few times so the sequence climbs above 0 and slots are allocated.
+    snapshot.plan_persist(&owner()).unwrap();
+    snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let sequence = snapshot.sequence();
+    let slots = snapshot.allocated_slots().to_vec();
+    assert_eq!(sequence, 3);
+    assert!(!slots.is_empty());
+
+    // Extracting and rebuilding through the opaque parts preserves the sequence
+    // and the allocated slots: there is no safe route that resets them to a
+    // fresh sequence-0 snapshot.
+    let parts = snapshot.clone().into_parts();
+    assert_eq!(parts.sequence(), sequence);
+    assert_eq!(parts.allocated_slots(), slots.as_slice());
+    let rebuilt = Snapshot::from_parts(parts).unwrap();
+    assert_eq!(rebuilt.sequence(), sequence);
+    assert_eq!(rebuilt.allocated_slots(), slots.as_slice());
+    assert_eq!(rebuilt, snapshot);
+
+    // The next persist from the rebuilt snapshot strictly advances the sequence
+    // and keeps the metadata slots stable, exactly as it would from the original.
+    let mut rebuilt = rebuilt;
+    let next = rebuilt.plan_persist(&owner()).unwrap();
+    assert_eq!(next.sequence, sequence + 1);
+    assert_eq!(rebuilt.allocated_slots(), slots.as_slice());
+    // Stamp indices for the metadata chunks are unchanged across the rebuild.
+    for (a, b) in plan.chunks.iter().zip(next.chunks.iter()) {
+        assert_eq!(a.stamp_index, b.stamp_index);
+        assert_eq!(a.address, b.address);
+    }
+}
+
+#[test]
+fn recovered_snapshot_rebuilds_through_from_parts_without_regressing() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = synthetic_counts(buckets, 64, 63);
+    let table = UsageTable::from_counts(batch_id(), 24, BUCKET_DEPTH, counts).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+
+    // Recover from the wire, then round-trip through the opaque parts. The
+    // sequence and slots survive both hops.
+    let recovered = roundtrip(&plan);
+    assert_eq!(recovered.sequence(), snapshot.sequence());
+    let rebuilt = Snapshot::from_parts(recovered.into_parts()).unwrap();
+    assert_eq!(rebuilt.sequence(), snapshot.sequence());
+    assert_eq!(rebuilt.allocated_slots(), snapshot.allocated_slots());
+}
+
 /// Returns a chunk address whose top `BUCKET_DEPTH` bits select `bucket`.
 fn address_in_bucket(bucket: u32) -> nectar_primitives::SwarmAddress {
     let mut bytes = [0u8; 32];

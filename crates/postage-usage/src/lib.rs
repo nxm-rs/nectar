@@ -45,6 +45,20 @@
 //! let recovered = root.assemble(&leaves).unwrap();
 //! assert_eq!(recovered, snapshot);
 //! ```
+//!
+//! # Recovery
+//!
+//! [`Snapshot::new`] is for a genuinely fresh, never-persisted table: it starts
+//! the persist history at sequence 0 with no allocated slots. Recovered or
+//! extracted state must never go through it, because resetting the sequence to 0
+//! and dropping the slots would downgrade the version at the snapshot's own chunk
+//! addresses and re-allocate colliding slots, overwriting a newer persisted
+//! version in place. Recovered state round-trips through [`Snapshot::from_parts`]
+//! instead, which keeps the table, sequence, and slots bound together;
+//! [`RootInfo::assemble`] uses it when decoding from the network, and
+//! [`Snapshot::into_parts`] yields the same indivisible [`SnapshotParts`] value
+//! when extracting state from a live snapshot. The bare table is never handed out
+//! on its own, so a recovered table cannot reach [`Snapshot::new`] in safe code.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
@@ -63,7 +77,7 @@ mod seal;
 
 pub use codec::{Encoded, RootInfo};
 pub use error::UsageError;
-pub use snapshot::{Issuer, PersistPlan, PlannedChunk, Snapshot};
+pub use snapshot::{Issuer, PersistPlan, PlannedChunk, Snapshot, SnapshotParts};
 pub use table::UsageTable;
 
 #[cfg(feature = "issuer")]
