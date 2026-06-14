@@ -363,13 +363,6 @@ fn reserved_indices_match_planned_stamps_and_guard_reuse() {
 }
 
 #[test]
-fn encode_requires_an_allocated_root() {
-    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
-    let snapshot = Snapshot::new(table);
-    assert!(snapshot.encode().is_err());
-}
-
-#[test]
 fn mutable_round_trips_and_decodes_as_mutable() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 10, 15);
@@ -641,6 +634,218 @@ fn table_view_exposes_counts_and_geometry_without_yielding_an_owned_table() {
     // yields another view, never an owned UsageTable that Snapshot::new accepts.
     let second = view;
     assert_eq!(second.depth(), view.depth());
+}
+
+/// Issuance since the last persist makes a snapshot dirty; persisting clears it.
+/// `stamps_since_persist` counts the unpersisted stamps in immutable mode.
+#[test]
+fn is_dirty_and_stamps_since_persist_track_unpersisted_issuance() {
+    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
+
+    // A fresh snapshot that has issued nothing is clean.
+    assert!(!snapshot.is_dirty());
+    assert_eq!(snapshot.stamps_since_persist(), Some(0));
+
+    // Issuing makes it dirty before any persist.
+    let address = address_in_bucket(0x1234);
+    snapshot.issuer(owner()).record_address(&address).unwrap();
+    snapshot.issuer(owner()).record_address(&address).unwrap();
+    assert!(snapshot.is_dirty());
+    assert_eq!(snapshot.stamps_since_persist(), Some(2));
+
+    // Persisting clears the dirty flag and resets the count, even though the
+    // persist itself issues stamps for the snapshot's own chunks.
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    assert!(!snapshot.is_dirty());
+    assert_eq!(snapshot.stamps_since_persist(), Some(0));
+
+    // Further issuance makes it dirty again, counted from the persist baseline.
+    snapshot.issuer(owner()).record_address(&address).unwrap();
+    assert!(snapshot.is_dirty());
+    assert_eq!(snapshot.stamps_since_persist(), Some(1));
+
+    // Another persist clears it again.
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    assert!(!snapshot.is_dirty());
+    assert_eq!(snapshot.stamps_since_persist(), Some(0));
+}
+
+/// A mutable snapshot has no well-defined unpersisted count (the ring sum is a
+/// checksum), so `stamps_since_persist` is `None`, but `is_dirty` still flips on
+/// ring churn and clears on persist.
+#[test]
+fn mutable_is_dirty_tracks_churn_but_count_is_none() {
+    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Mutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    assert!(snapshot.table().is_mutable());
+
+    assert!(!snapshot.is_dirty());
+    assert_eq!(snapshot.stamps_since_persist(), None);
+
+    snapshot
+        .issuer(owner())
+        .record_address(&address_in_bucket(0x1234))
+        .unwrap();
+    assert!(snapshot.is_dirty());
+    assert_eq!(snapshot.stamps_since_persist(), None);
+
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    assert!(!snapshot.is_dirty());
+}
+
+/// On a mutable ring whose cursor has reached the bucket bound, the next content
+/// write wraps onto a previously-used slot; `will_wrap` predicts it and
+/// `record_address_reporting_wrap` reports it. The signal fires at the wrap
+/// boundary (the cursor sitting at capacity), once per ring cycle: a wrap resets
+/// the cursor low, so the next overwrite is flagged again only once the cursor
+/// climbs back to the bound. An immutable bucket never wraps.
+#[test]
+fn mutable_ring_wrap_is_signalled() {
+    // Capacity 2 per bucket; fill the target bucket so the next write wraps.
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = vec![0u32; buckets];
+    let table =
+        UsageTable::from_counts(batch_id(), 17, BUCKET_DEPTH, counts, Mutability::Mutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let capacity = snapshot.table().bucket_capacity();
+    assert_eq!(capacity, 2);
+
+    // Pick a content bucket clear of the snapshot's reserved slots.
+    let content = address_in_bucket(0x1234);
+    let bucket = calculate_bucket(&content, BUCKET_DEPTH);
+
+    let mut issuer = snapshot.issuer(owner());
+
+    // Fill the bucket to its bound: each fresh slot reports no wrap, and the
+    // cursor only reaches the wrap boundary on the last fill.
+    for slot in 0..capacity {
+        assert!(
+            !issuer.will_wrap(bucket).unwrap(),
+            "fresh slot {slot} is not a wrap"
+        );
+        let (_, wrapped) = issuer.record_address_reporting_wrap(&content).unwrap();
+        assert!(!wrapped, "filling fresh slot {slot} does not wrap");
+    }
+
+    // The cursor now sits at the bound: the next write wraps onto a used slot.
+    assert!(issuer.will_wrap(bucket).unwrap());
+    let (_, wrapped) = issuer.record_address_reporting_wrap(&content).unwrap();
+    assert!(wrapped, "the ring wrapped onto a previously-used slot");
+
+    // The wrap reset the cursor below the bound, so immediately overwriting is
+    // not re-flagged until the cursor climbs back; a full further cycle returns
+    // to the boundary and the wrap fires once more.
+    assert!(!issuer.will_wrap(bucket).unwrap());
+    for _ in 1..capacity {
+        let (_, wrapped) = issuer.record_address_reporting_wrap(&content).unwrap();
+        assert!(!wrapped);
+    }
+    assert!(
+        issuer.will_wrap(bucket).unwrap(),
+        "back at the bound after a full cycle"
+    );
+    assert!(issuer.record_address_reporting_wrap(&content).unwrap().1);
+}
+
+/// An immutable bucket never wraps: `will_wrap` is always false, and a full
+/// bucket fails rather than overwriting, so no eviction is ever signalled.
+#[test]
+fn immutable_never_wraps() {
+    let table = UsageTable::new(batch_id(), 17, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let content = address_in_bucket(0x1234);
+    let bucket = calculate_bucket(&content, BUCKET_DEPTH);
+
+    let mut issuer = snapshot.issuer(owner());
+    assert!(!issuer.will_wrap(bucket).unwrap());
+    // Capacity is 2; fill it.
+    assert!(!issuer.record_address_reporting_wrap(&content).unwrap().1);
+    assert!(!issuer.record_address_reporting_wrap(&content).unwrap().1);
+    // Full now: will_wrap stays false (immutable does not overwrite) and the
+    // next write fails instead.
+    assert!(!issuer.will_wrap(bucket).unwrap());
+    assert!(issuer.record_address(&content).is_err());
+}
+
+/// A steady-state persist (no new slot to allocate) changes only the sequence:
+/// the counter table and the allocated slots are byte-identical before and
+/// after, which is the observable signature of the no-clone fast path. A persist
+/// that must allocate is exercised by the dilution and growth tests elsewhere.
+#[test]
+fn steady_state_persist_changes_only_the_sequence() {
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = synthetic_counts(buckets, 10, 15);
+    let table =
+        UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts, Mutability::Immutable)
+            .unwrap();
+    let mut snapshot = Snapshot::new(table);
+
+    // First persist allocates the snapshot's own slots.
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    let counts_before = snapshot.table().counts().to_vec();
+    let slots_before = snapshot.allocated_slots().to_vec();
+    let issued_before = snapshot.table().total_issued();
+    let sequence_before = snapshot.sequence();
+
+    // The second persist is steady state: nothing to allocate, so the table is
+    // untouched and only the sequence advances.
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    assert_eq!(snapshot.table().counts(), counts_before.as_slice());
+    assert_eq!(snapshot.allocated_slots(), slots_before.as_slice());
+    assert_eq!(snapshot.table().total_issued(), issued_before);
+    assert_eq!(snapshot.sequence(), sequence_before + 1);
+}
+
+/// A persist that fails mid-allocation leaves the snapshot wholly unchanged: the
+/// clone-on-allocation path preserves rollback. A bucket pinned at capacity on a
+/// fresh table makes the very first (root) allocation fail.
+#[test]
+fn failed_allocation_rolls_back_the_snapshot() {
+    // Capacity 1 per bucket; fill every bucket so the root's own allocation
+    // immediately hits a full bucket.
+    let buckets = 1usize << BUCKET_DEPTH;
+    let counts = vec![1u32; buckets];
+    let table =
+        UsageTable::from_counts(batch_id(), 16, BUCKET_DEPTH, counts, Mutability::Immutable)
+            .unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let counts_before = snapshot.table().counts().to_vec();
+    let issued_before = snapshot.table().total_issued();
+
+    let err = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap_err();
+    assert!(matches!(err, UsageError::BucketFull { .. }));
+
+    // The snapshot is untouched: no slot allocated, no counter moved, sequence
+    // still zero.
+    assert_eq!(snapshot.sequence(), 0);
+    assert!(snapshot.allocated_slots().is_empty());
+    assert_eq!(snapshot.table().counts(), counts_before.as_slice());
+    assert_eq!(snapshot.table().total_issued(), issued_before);
 }
 
 /// Returns a chunk address whose top `BUCKET_DEPTH` bits select `bucket`.

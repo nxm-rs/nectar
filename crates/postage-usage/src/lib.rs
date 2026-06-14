@@ -108,7 +108,7 @@ mod issuer;
 #[cfg(feature = "seal")]
 mod seal;
 
-pub use codec::{Encoded, RootInfo};
+pub use codec::RootInfo;
 pub use error::UsageError;
 pub use snapshot::{
     Issuer, PersistPlan, PlannedChunk, PublishedSequence, Snapshot, SnapshotParts, Validated,
