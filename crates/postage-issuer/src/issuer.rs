@@ -1,5 +1,6 @@
 //! Stamp issuer trait for tracking bucket utilization.
 
+use crate::counter::{CounterMode, CounterTable};
 use crate::error::IssuerError;
 use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
 use nectar_primitives::SwarmAddress;
@@ -92,8 +93,16 @@ pub trait StampIssuer {
     /// `false` if the bucket is full.
     fn bucket_has_capacity(&self, bucket: u32) -> bool;
 
-    /// Returns the total number of stamps issued.
-    fn stamps_issued(&self) -> u64;
+    /// Returns the lifetime number of stamps issued, if the issuer tracks one.
+    ///
+    /// A fill issuer tracks a true monotone count and returns `Some`. A mutable
+    /// ring issuer that keeps only a wrapping cursor has no lifetime count to
+    /// give and returns `None` rather than forwarding a checksum sum as if it
+    /// were a count: a wrapped bucket is full, yet the sum of its cursors does
+    /// not count the overwrites. Read saturation through
+    /// [`max_bucket_utilization`](Self::max_bucket_utilization) instead, which is
+    /// honest in both modes.
+    fn stamps_issued(&self) -> Option<u64>;
 
     /// Returns the total capacity of the batch (2^depth).
     fn total_capacity(&self) -> u64 {
@@ -136,34 +145,40 @@ pub trait StampIssuer {
 pub struct MemoryIssuer {
     /// The batch ID.
     batch_id: BatchId,
-    /// The batch depth.
-    depth: u8,
-    /// The bucket depth.
-    bucket_depth: u8,
-    /// Next slot to write for each bucket.
-    ///
-    /// This watermark is monotonic and never reaches the capacity.
-    bucket_indices: alloc::vec::Vec<u32>,
-    /// Maximum utilization across all buckets.
-    max_utilization: u32,
-    /// Total stamps issued.
-    stamps_issued: u64,
+    /// The shared per-bucket fill watermarks. `counts[b]` is the next unused
+    /// slot, monotone and never above the capacity.
+    counters: CounterTable,
 }
-
-extern crate alloc;
 
 impl MemoryIssuer {
     /// Creates a new fill-only memory issuer for the given batch geometry.
     pub fn new(batch_id: BatchId, depth: u8, bucket_depth: u8) -> Self {
-        let bucket_count = 1usize << bucket_depth;
         Self {
             batch_id,
-            depth,
-            bucket_depth,
-            bucket_indices: alloc::vec![0u32; bucket_count],
-            max_utilization: 0,
-            stamps_issued: 0,
+            counters: CounterTable::new(depth, bucket_depth, CounterMode::Fill),
         }
+    }
+
+    /// Applies an on-chain dilution, growing the per-bucket capacity without
+    /// moving any watermark.
+    ///
+    /// The new depth must not decrease. Diluting later is the prerequisite for
+    /// topping up a batch in place, so this mirrors the snapshot's dilution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IssuerError::DepthDecrease`] if `new_depth` is below the current
+    /// depth.
+    pub const fn dilute(&mut self, new_depth: u8) -> Result<(), IssuerError> {
+        let current = self.counters.depth();
+        if new_depth < current {
+            return Err(IssuerError::DepthDecrease {
+                current,
+                requested: new_depth,
+            });
+        }
+        self.counters.set_depth(new_depth);
+        Ok(())
     }
 
     /// Creates a memory issuer from a batch.
@@ -190,28 +205,19 @@ impl StampIssuer for MemoryIssuer {
         address: &SwarmAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.bucket_depth);
-        let bucket_idx = bucket as usize;
-
-        let bucket_capacity = 1u32 << (self.depth - self.bucket_depth);
-
-        // The next unused slot in this bucket.
-        let position = self.bucket_indices[bucket_idx];
-
-        if position >= bucket_capacity {
-            return Err(StampError::BucketFull {
-                bucket,
-                capacity: bucket_capacity,
-            });
-        }
-        self.bucket_indices[bucket_idx] = position + 1;
-
-        self.stamps_issued += 1;
-
-        // Update max utilization from the monotone fill of this bucket.
-        if self.bucket_indices[bucket_idx] > self.max_utilization {
-            self.max_utilization = self.bucket_indices[bucket_idx];
-        }
+        let bucket = calculate_bucket(address, self.counters.bucket_depth());
+        // Fill mode ignores the predicate; a monotone watermark never lands on a
+        // reserved slot.
+        let position =
+            self.counters
+                .record(bucket, |_| false)
+                .map_err(|err| StampError::BucketFull {
+                    bucket,
+                    capacity: match err {
+                        crate::counter::CounterError::BucketFull { capacity, .. } => capacity,
+                        _ => self.counters.bucket_capacity(),
+                    },
+                })?;
 
         let index = StampIndex::new(bucket, position);
 
@@ -223,36 +229,30 @@ impl StampIssuer for MemoryIssuer {
     }
 
     fn batch_depth(&self) -> u8 {
-        self.depth
+        self.counters.depth()
     }
 
     fn bucket_depth(&self) -> u8 {
-        self.bucket_depth
+        self.counters.bucket_depth()
     }
 
     fn max_bucket_utilization(&self) -> u32 {
-        self.max_utilization
+        // Fill watermarks are monotone, so the current maximum is the historical
+        // maximum.
+        self.counters.max_count()
     }
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
-        let bucket_idx = bucket as usize;
-        if bucket_idx >= self.bucket_indices.len() {
-            return 0;
-        }
-        self.bucket_indices[bucket_idx]
+        self.counters.count(bucket).unwrap_or(0)
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
-        let bucket_idx = bucket as usize;
-        if bucket_idx >= self.bucket_indices.len() {
-            return false;
-        }
-        let bucket_capacity = 1u32 << (self.depth - self.bucket_depth);
-        self.bucket_indices[bucket_idx] < bucket_capacity
+        self.counters.has_capacity(bucket).unwrap_or(false)
     }
 
-    fn stamps_issued(&self) -> u64 {
-        self.stamps_issued
+    fn stamps_issued(&self) -> Option<u64> {
+        // Fill issuance is monotone, so the counter sum is the lifetime count.
+        Some(self.counters.total_issued())
     }
 }
 
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(issuer.batch_depth(), 20);
         assert_eq!(issuer.bucket_depth(), 16);
         assert_eq!(issuer.max_bucket_utilization(), 0);
-        assert_eq!(issuer.stamps_issued(), 0);
+        assert_eq!(issuer.stamps_issued(), Some(0));
         assert_eq!(issuer.bucket_count(), 65536);
         assert_eq!(issuer.bucket_capacity(), 16);
     }
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(digest.index.bucket(), 0xCBE5);
         assert_eq!(digest.index.index(), 0);
         assert_eq!(digest.timestamp, 12345);
-        assert_eq!(issuer.stamps_issued(), 1);
+        assert_eq!(issuer.stamps_issued(), Some(1));
         assert_eq!(issuer.max_bucket_utilization(), 1);
     }
 
@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(d1.index.index(), 0);
         assert_eq!(d2.index.index(), 1);
         assert_eq!(d3.index.index(), 2);
-        assert_eq!(issuer.stamps_issued(), 3);
+        assert_eq!(issuer.stamps_issued(), Some(3));
     }
 
     #[test]
@@ -432,5 +432,34 @@ mod tests {
             from_new.max_bucket_utilization()
         );
         assert_eq!(from_batch.stamps_issued(), from_new.stamps_issued());
+    }
+
+    #[test]
+    fn test_memory_issuer_dilute_grows_capacity_only() {
+        // depth=17, bucket_depth=16 gives 2 slots per bucket.
+        let mut issuer = MemoryIssuer::new(B256::ZERO, 17, 16);
+        let address = test_address(0xABCD);
+
+        // Fill the bucket, then a dilution to depth 18 (4 slots) reopens it
+        // without moving the existing watermark.
+        issuer.prepare_stamp(&address, 1).unwrap();
+        issuer.prepare_stamp(&address, 2).unwrap();
+        assert!(issuer.prepare_stamp(&address, 3).is_err());
+
+        issuer.dilute(18).unwrap();
+        assert_eq!(issuer.bucket_capacity(), 4);
+        // The watermark is unchanged, so the next slot is 2, not 0.
+        let d = issuer.prepare_stamp(&address, 4).unwrap();
+        assert_eq!(d.index.index(), 2);
+        assert_eq!(issuer.stamps_issued(), Some(3));
+
+        // Dilution may never decrease the depth.
+        assert!(matches!(
+            issuer.dilute(17),
+            Err(IssuerError::DepthDecrease {
+                current: 18,
+                requested: 17
+            })
+        ));
     }
 }

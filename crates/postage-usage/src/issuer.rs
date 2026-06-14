@@ -108,7 +108,15 @@ impl StampIssuer for SnapshotIssuer {
                 .unwrap_or(false)
     }
 
-    fn stamps_issued(&self) -> u64 {
-        self.snapshot.table_ref().total_issued()
+    fn stamps_issued(&self) -> Option<u64> {
+        // Immutable issuance is monotone, so the counter sum is the lifetime
+        // count. A mutable ring keeps only a wrapping cursor whose sum is a
+        // checksum, so there is no lifetime count to give: return `None` rather
+        // than forwarding the checksum as if it were a count.
+        if self.snapshot.table_ref().is_mutable() {
+            None
+        } else {
+            Some(self.snapshot.table_ref().total_issued())
+        }
     }
 }

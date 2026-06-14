@@ -46,7 +46,8 @@ fn snapshot_issuer_issues_sequential_indices() {
     assert_eq!(StampIssuer::batch_id(&issuer), batch_id);
     assert_eq!(issuer.batch_depth(), 18);
     assert_eq!(StampIssuer::bucket_depth(&issuer), BUCKET_DEPTH);
-    assert_eq!(issuer.stamps_issued(), 2);
+    // An immutable snapshot tracks a true monotone count.
+    assert_eq!(issuer.stamps_issued(), Some(2));
     assert_eq!(issuer.max_bucket_utilization(), 2);
     assert_eq!(issuer.bucket_utilization(0xCBCB), 2);
     assert!(issuer.bucket_has_capacity(0xCBCB));
@@ -174,6 +175,41 @@ fn sole_issuance_path_cannot_evict_snapshot_slots() {
     for index in &reserved {
         assert!(snapshot.is_reserved(&owner(), *index));
     }
+}
+
+/// Both crates advance counters through the one shared table, so a snapshot's
+/// immutable issuance and a standalone `MemoryIssuer` over the same geometry
+/// assign byte-identical slots for the same addresses. If `record_bucket` still
+/// hand-rolled its own watermark this parity would be a coincidence; with the
+/// delegation it is structural.
+#[test]
+fn shared_counter_table_backs_both_crates_identically() {
+    use nectar_postage_issuer::MemoryIssuer;
+
+    let batch_id = B256::repeat_byte(0x42);
+    // A fresh, never-persisted snapshot reserves no slots, so its fill watermark
+    // advances exactly like a bare MemoryIssuer.
+    let table = UsageTable::new(batch_id, 20, BUCKET_DEPTH).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let mut memory = MemoryIssuer::new(batch_id, 20, BUCKET_DEPTH);
+
+    for bucket in [0x0001u32, 0x0001, 0xCBE5, 0x0001, 0xCBE5] {
+        for salt in 0..3u8 {
+            let addr = content_address(bucket, salt);
+            let from_snapshot = snapshot.issuer(owner()).record_address(&addr).unwrap();
+            let from_memory = memory.prepare_stamp(&addr, 0).unwrap().index;
+            assert_eq!(
+                from_snapshot, from_memory,
+                "snapshot and MemoryIssuer diverged; they no longer share one table"
+            );
+        }
+    }
+
+    // The shared counter sum is the lifetime count in immutable mode for both.
+    assert_eq!(
+        snapshot.table().total_issued(),
+        memory.stamps_issued().unwrap()
+    );
 }
 
 #[test]

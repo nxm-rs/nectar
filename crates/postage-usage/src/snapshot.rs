@@ -371,50 +371,14 @@ impl Snapshot {
         bucket: u32,
         reserved: &BTreeSet<(u32, u32)>,
     ) -> Result<u32> {
-        let table = &mut self.table;
-        let capacity = table.bucket_capacity();
-        if bucket as usize >= table.counts.len() {
-            return Err(UsageError::InvalidBucket { bucket });
-        }
-        if !table.mutable {
-            let count = &mut table.counts[bucket as usize];
-            if *count >= capacity {
-                return Err(UsageError::BucketFull { bucket, capacity });
-            }
-            let index = *count;
-            *count += 1;
-            table.issued += 1;
-            return Ok(index);
-        }
-
-        let old_cursor = table.counts[bucket as usize];
-        // Start at the cursor; a cursor equal to capacity means "wrap on the
-        // next write", resetting to 0 when the bucket bound is reached.
-        let mut candidate = if old_cursor >= capacity {
-            0
-        } else {
-            old_cursor
-        };
-        // Skip reserved slots, wrapping. Bounded by `capacity` steps: if every
-        // slot is reserved we fail rather than loop.
-        let mut steps = 0u32;
-        while reserved.contains(&(bucket, candidate)) {
-            candidate = (candidate + 1) % capacity;
-            steps += 1;
-            if steps >= capacity {
-                return Err(UsageError::RingExhausted { bucket });
-            }
-        }
-        let index = candidate;
-        // The new cursor points just past the slot we returned. Storing
-        // `capacity` (rather than wrapping to 0 here) defers the wrap to the
-        // next write, keeping the cursor in [0, capacity] as on the wire.
-        let new_cursor = index + 1;
-        table.counts[bucket as usize] = new_cursor;
-        // Keep issued == sum(counts): fold in the signed delta (it decreases
-        // on wrap, when new_cursor < old_cursor).
-        table.issued = table.issued - u64::from(old_cursor) + u64::from(new_cursor);
-        Ok(index)
+        // Both branches (fill watermark and reserved-aware ring) live in the
+        // shared counter table now. The reserved set is mapped into the table's
+        // per-slot protection predicate so a ring never re-emits a slot held by
+        // the snapshot's own chunks.
+        self.table
+            .counters_mut()
+            .record(bucket, |slot| reserved.contains(&(bucket, slot)))
+            .map_err(crate::table::map_counter_error)
     }
 
     /// Returns an issuing handle bound to `owner`, the only way to advance a
@@ -601,8 +565,25 @@ impl Issuer<'_> {
         self.snapshot.table_ref().has_capacity(bucket)
     }
 
-    /// Returns the running issued total (a checksum in mutable mode).
-    pub const fn stamps_issued(&self) -> u64 {
+    /// Returns the lifetime number of stamps issued, if one is well-defined.
+    ///
+    /// Immutable: the monotone counter sum is the lifetime count, returned as
+    /// `Some`. Mutable: the counters are ring cursors whose sum is a checksum,
+    /// not a lifetime count (a wrapped bucket is full yet its cursor may be
+    /// small), so this returns `None` rather than passing the checksum off as a
+    /// count. Read the checksum itself through [`checksum`](Self::checksum).
+    pub const fn stamps_issued(&self) -> Option<u64> {
+        if self.snapshot.table_ref().is_mutable() {
+            None
+        } else {
+            Some(self.snapshot.table_ref().total_issued())
+        }
+    }
+
+    /// Returns the counter sum the snapshot serialises and re-checks: the
+    /// lifetime stamp count in immutable mode, a deterministic checksum in
+    /// mutable mode.
+    pub const fn checksum(&self) -> u64 {
         self.snapshot.table_ref().total_issued()
     }
 }

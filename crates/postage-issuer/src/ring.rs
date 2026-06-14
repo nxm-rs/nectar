@@ -34,6 +34,7 @@ use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calcul
 use nectar_primitives::SwarmAddress;
 
 use crate::StampIssuer;
+use crate::counter::{CounterError, CounterMode, CounterTable};
 use crate::error::IssuerError;
 
 mod sealed {
@@ -135,23 +136,21 @@ impl Reservation for Reserved {
 pub struct RingIssuer<R = Unreserved> {
     /// The batch ID.
     batch_id: BatchId,
-    /// The batch depth.
-    depth: u8,
-    /// The bucket depth.
-    bucket_depth: u8,
-    /// The bucket capacity, `2^(depth - bucket_depth)`.
-    bucket_capacity: u32,
-    /// Ring cursor for each bucket. Wraps modulo the bucket capacity.
-    cursors: Vec<u32>,
+    /// The shared per-bucket ring cursors, in the `[0, capacity]` deferred-wrap
+    /// representation. `counts[b] == capacity` means "wrap on the next write".
+    counters: CounterTable,
     /// Whether each bucket has been written to capacity at least once.
     ///
-    /// Once the cursor wraps it can no longer tell a saturated bucket apart
-    /// from an empty one, so this tracks saturation to report utilization
-    /// honestly.
+    /// The wire representation defers each wrap, so once a bucket has wrapped its
+    /// cursor falls back into `[0, capacity)` and no longer marks saturation on
+    /// its own. This in-memory latch records it so utilization is reported
+    /// honestly; it is never serialised.
     saturated: Vec<bool>,
-    /// Maximum utilization observed across all buckets.
+    /// Maximum utilization observed across all buckets, latched so a wrapped ring
+    /// reports its peak rather than the live cursor.
     max_utilization: u32,
-    /// Total stamps issued.
+    /// Lifetime stamps issued, a true monotone count of issuance calls (not the
+    /// counter sum, which a ring would undercount on wrap).
     stamps_issued: u64,
     /// The reservation policy.
     reservation: R,
@@ -214,10 +213,7 @@ impl<R: Reservation> RingIssuer<R> {
         let bucket_count = 1usize << bucket_depth;
         Self {
             batch_id,
-            depth,
-            bucket_depth,
-            bucket_capacity: 1u32 << (depth - bucket_depth),
-            cursors: alloc::vec![0u32; bucket_count],
+            counters: CounterTable::new(depth, bucket_depth, CounterMode::Ring),
             saturated: alloc::vec![false; bucket_count],
             max_utilization: 0,
             stamps_issued: 0,
@@ -231,40 +227,39 @@ impl<R: Reservation> RingIssuer<R> {
     /// bucket as full rather than counting overwrites as fresh utilization.
     fn bucket_fill(&self, bucket_idx: usize) -> u32 {
         if self.saturated[bucket_idx] {
-            self.bucket_capacity
+            self.counters.bucket_capacity()
         } else {
-            self.cursors[bucket_idx]
+            self.counters.counts()[bucket_idx]
         }
     }
 
-    /// Advances the cursor for `bucket` to the next unprotected slot, returning
-    /// the slot to emit.
+    /// Advances the cursor for `bucket` to the next unprotected slot through the
+    /// shared counter table, returning the slot to emit.
     ///
-    /// The cursor starts at its current position and walks forward, wrapping at
-    /// the bucket capacity and marking the bucket saturated on each wrap. Up to
-    /// `bucket_capacity` slots are inspected; if every slot is protected the
-    /// bucket has no issuable slot and [`IssuerError::RingExhausted`] is
-    /// returned rather than emitting a protected slot.
+    /// The shared table holds the cursor in the `[0, capacity]` deferred-wrap
+    /// representation and skips the reserved slots. Saturation is latched here
+    /// from the post-advance cursor: a cursor that reaches the capacity has just
+    /// written the bucket's last fresh slot. If every slot is protected the table
+    /// returns [`CounterError::RingExhausted`], mapped to
+    /// [`IssuerError::RingExhausted`].
     fn next_slot(&mut self, bucket: u32) -> Result<u32, IssuerError> {
-        let bucket_idx = bucket as usize;
-        for _ in 0..self.bucket_capacity {
-            let position = self.cursors[bucket_idx];
-
-            // Advance the cursor, wrapping at the bucket capacity and marking
-            // saturation on each wrap.
-            let next = position + 1;
-            if next >= self.bucket_capacity {
-                self.saturated[bucket_idx] = true;
-                self.cursors[bucket_idx] = 0;
-            } else {
-                self.cursors[bucket_idx] = next;
-            }
-
-            if !self.reservation.is_protected(bucket, position) {
-                return Ok(position);
-            }
+        let reservation = &self.reservation;
+        let position = self
+            .counters
+            .record(bucket, |slot| reservation.is_protected(bucket, slot))
+            .map_err(|err| match err {
+                CounterError::RingExhausted { bucket } => IssuerError::RingExhausted { bucket },
+                CounterError::InvalidBucket { bucket } => IssuerError::RingExhausted { bucket },
+                // Ring mode never reports BucketFull, and construction errors
+                // cannot arise from `record`.
+                _ => IssuerError::RingExhausted { bucket },
+            })?;
+        // A cursor sitting at the capacity has just filled the bucket's last
+        // fresh slot, so the bucket is saturated from here on.
+        if self.counters.count(bucket).unwrap_or(0) == self.counters.bucket_capacity() {
+            self.saturated[bucket as usize] = true;
         }
-        Err(IssuerError::RingExhausted { bucket })
+        Ok(position)
     }
 
     /// Prepares a stamp digest for the given chunk address.
@@ -282,7 +277,7 @@ impl<R: Reservation> RingIssuer<R> {
         address: &SwarmAddress,
         timestamp: u64,
     ) -> Result<StampDigest, IssuerError> {
-        let bucket = calculate_bucket(address, self.bucket_depth);
+        let bucket = calculate_bucket(address, self.counters.bucket_depth());
         let position = self.next_slot(bucket)?;
 
         self.stamps_issued += 1;
@@ -298,7 +293,7 @@ impl<R: Reservation> RingIssuer<R> {
 
     /// Returns the bucket capacity, `2^(depth - bucket_depth)`.
     pub const fn bucket_capacity(&self) -> u32 {
-        self.bucket_capacity
+        self.counters.bucket_capacity()
     }
 
     /// Returns a reference to the reservation policy.
@@ -321,7 +316,7 @@ impl<R: Reservation> StampIssuer for RingIssuer<R> {
             .map_err(|err| match err {
                 IssuerError::RingExhausted { bucket } => StampError::BucketFull {
                     bucket,
-                    capacity: self.bucket_capacity,
+                    capacity: self.counters.bucket_capacity(),
                 },
                 // `prepare_ring_stamp` only ever yields RingExhausted.
                 _ => unreachable!("ring issuance only fails with RingExhausted"),
@@ -333,11 +328,11 @@ impl<R: Reservation> StampIssuer for RingIssuer<R> {
     }
 
     fn batch_depth(&self) -> u8 {
-        self.depth
+        self.counters.depth()
     }
 
     fn bucket_depth(&self) -> u8 {
-        self.bucket_depth
+        self.counters.bucket_depth()
     }
 
     fn max_bucket_utilization(&self) -> u32 {
@@ -346,7 +341,7 @@ impl<R: Reservation> StampIssuer for RingIssuer<R> {
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
         let bucket_idx = bucket as usize;
-        if bucket_idx >= self.cursors.len() {
+        if bucket_idx >= self.counters.counts().len() {
             return 0;
         }
         self.bucket_fill(bucket_idx)
@@ -354,17 +349,19 @@ impl<R: Reservation> StampIssuer for RingIssuer<R> {
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
         let bucket_idx = bucket as usize;
-        if bucket_idx >= self.cursors.len() {
+        if bucket_idx >= self.counters.counts().len() {
             return false;
         }
         // Report honestly whether a fresh, never-written slot remains. A ring
         // that has wrapped reports no spare capacity even though issuance into
         // it still succeeds by overwriting an earlier chunk.
-        self.bucket_fill(bucket_idx) < self.bucket_capacity
+        self.bucket_fill(bucket_idx) < self.counters.bucket_capacity()
     }
 
-    fn stamps_issued(&self) -> u64 {
-        self.stamps_issued
+    fn stamps_issued(&self) -> Option<u64> {
+        // A standalone ring keeps a true monotone issuance count, so it can be
+        // honest here even though its counter sum would undercount on wrap.
+        Some(self.stamps_issued)
     }
 }
 
@@ -424,7 +421,7 @@ mod tests {
         let d3 = issuer.prepare_ring_stamp(&address, 4).unwrap();
         assert_eq!(d3.index.index(), 1);
 
-        assert_eq!(issuer.stamps_issued(), 4);
+        assert_eq!(issuer.stamps_issued(), Some(4));
     }
 
     #[test]
@@ -439,7 +436,7 @@ mod tests {
             let digest = issuer.prepare_ring_stamp(&address, ts).unwrap();
             assert!(digest.index.index() < 4, "index escaped bucket capacity");
         }
-        assert_eq!(issuer.stamps_issued(), 100);
+        assert_eq!(issuer.stamps_issued(), Some(100));
     }
 
     #[test]
