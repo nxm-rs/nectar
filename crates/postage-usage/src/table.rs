@@ -94,7 +94,7 @@ pub struct UsageTable {
     pub(crate) batch_id: BatchId,
     /// The shared per-bucket counter table. It holds the counters, the issued
     /// sum, the geometry, and the fill-or-ring mode, in the same `[0, capacity]`
-    /// representation the wire format serialises. The snapshot wraps this table
+    /// representation the wire format serializes. The snapshot wraps this table
     /// rather than carrying its own copy of the counter logic.
     pub(crate) counters: CounterTable,
 }
@@ -310,7 +310,7 @@ impl UsageTable {
 ///
 /// This is what [`Snapshot::table`](crate::Snapshot::table) and
 /// [`SnapshotParts::table`](crate::SnapshotParts::table) hand out. It exposes the
-/// counters and geometry a caller legitimately needs to inspect (utilisation,
+/// counters and geometry a caller legitimately needs to inspect (utilization,
 /// depth, mutability) but deliberately yields no owned [`UsageTable`]: it only
 /// borrows the table and does not [`Deref`](core::ops::Deref) to it, so cloning
 /// or copying the view produces another borrowed view, never an owned table that

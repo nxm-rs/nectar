@@ -390,7 +390,7 @@ impl Snapshot {
     /// [`RootInfo::assemble`](crate::RootInfo::assemble). It borrows the snapshot
     /// mutably, so [`into_parts`](Self::into_parts) and
     /// [`plan_persist`](Self::plan_persist) cannot run while issuance is live,
-    /// which serialises persisting against issuing.
+    /// which serializes persisting against issuing.
     ///
     /// This single method is the issuance chokepoint. A future network-validation
     /// gate (nectar issue #65) lands here as one precondition, not a cross-cutting
@@ -580,7 +580,7 @@ impl Issuer<'_> {
         }
     }
 
-    /// Returns the counter sum the snapshot serialises and re-checks: the
+    /// Returns the counter sum the snapshot serializes and re-checks: the
     /// lifetime stamp count in immutable mode, a deterministic checksum in
     /// mutable mode.
     pub const fn checksum(&self) -> u64 {

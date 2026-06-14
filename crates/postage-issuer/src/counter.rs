@@ -10,7 +10,7 @@
 //! # Representation
 //!
 //! `counts[b]` lives in `[0, capacity]` in both modes and is the value the
-//! `nectar-postage-usage` wire format serialises verbatim:
+//! `nectar-postage-usage` wire format serializes verbatim:
 //!
 //! - [`CounterMode::Fill`]: `counts[b]` is a monotone fill watermark, the next
 //!   unused slot. Issuance returns the watermark and advances it; a full bucket

@@ -144,7 +144,7 @@ pub struct RingIssuer<R = Unreserved> {
     /// The wire representation defers each wrap, so once a bucket has wrapped its
     /// cursor falls back into `[0, capacity)` and no longer marks saturation on
     /// its own. This in-memory latch records it so utilization is reported
-    /// honestly; it is never serialised.
+    /// honestly; it is never serialized.
     saturated: Vec<bool>,
     /// Maximum utilization observed across all buckets, latched so a wrapped ring
     /// reports its peak rather than the live cursor.
