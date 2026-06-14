@@ -8,9 +8,48 @@ use bytes::Bytes;
 use nectar_postage::{Batch, BatchId, StampIndex, calculate_bucket};
 use nectar_primitives::SwarmAddress;
 
-use crate::codec::{self, Encoded};
+use crate::codec::{self, Encoded, RootInfo};
 use crate::table::{TableView, UsageTable};
 use crate::{Result, UsageError, usage_chunk_address, usage_chunk_id};
+
+/// The published persist sequence at a snapshot's root chunk address, the floor
+/// a planned persist must strictly exceed.
+///
+/// This value MUST be derived from a *live* network read of the published root
+/// single-owner chunk: fetch the chunk at
+/// [`usage_chunk_address`](crate::usage_chunk_address)`(batch_id, owner, 0)`,
+/// parse it with [`RootInfo::parse`](crate::RootInfo::parse), and read its
+/// [`sequence`](crate::RootInfo::sequence). It must never be taken from a cache
+/// nor from the snapshot being persisted: those are exactly the stale values the
+/// floor exists to defeat. The type cannot prove freshness on its own; it only
+/// makes the precondition legible at the call site and makes the
+/// [`NONE`](Self::NONE) bypass auditable.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PublishedSequence(u64);
+
+impl PublishedSequence {
+    /// The floor when the consumer has confirmed, via a live network read, that
+    /// no published root chunk exists at this `batch_id` + `owner` + index-0
+    /// address (a genuinely new batch). The first legitimate persist emits
+    /// sequence 1, and `1 > 0` clears this floor.
+    pub const NONE: Self = Self(0);
+
+    /// Wraps a published sequence read live from the network.
+    pub const fn new(published: u64) -> Self {
+        Self(published)
+    }
+
+    /// Returns the wrapped published sequence.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<&RootInfo> for PublishedSequence {
+    fn from(r: &RootInfo) -> Self {
+        Self(r.sequence())
+    }
+}
 
 /// A [`UsageTable`] together with the state needed to persist it inside its
 /// own batch: a monotone sequence number and the within-bucket slots
@@ -93,7 +132,7 @@ impl SnapshotParts {
     }
 }
 
-/// The output of [`Snapshot::plan_persist`]: every chunk of the snapshot in
+/// The output of [`Validated::plan_persist`]: every chunk of the snapshot in
 /// chunk-index order, ready to be signed, stamped, and published.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistPlan {
@@ -123,15 +162,16 @@ impl Snapshot {
     /// owned table, by move or by clone, that `new` would accept.
     ///
     /// Two residual ways to reach a sequence-0 persist are out of this type's
-    /// scope and are enforced at persist time by the network-validation wave
-    /// (nectar issue #65), not here. First, the public constructors
+    /// scope and are enforced by [`Snapshot::revalidate`]'s [`PublishedSequence`]
+    /// floor (nectar issue #70), not here. First, the public constructors
     /// ([`UsageTable::new`] and friends) legitimately mint a fresh table for a
     /// genuinely new batch, so a forged fresh table persisted at sequence 0 is a
     /// protocol-level concern, not an in-memory representability bug. Second, the
     /// reserve overwrites a snapshot chunk by stamp timestamp rather than by
     /// snapshot sequence, so full cross-version monotonicity against the
     /// *published* sequence needs a compare-and-swap against the live root chunk.
-    /// Both land at persist time under issue #65.
+    /// Both are enforced by [`Snapshot::revalidate`]'s [`PublishedSequence`]
+    /// floor.
     pub const fn new(table: UsageTable) -> Self {
         Self {
             table,
@@ -283,10 +323,13 @@ impl Snapshot {
     /// let owner = Address::repeat_byte(0x11);
     /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap());
     /// let parts = snapshot.into_parts();
-    /// // `parts.table` is private and only a `TableView` is exposed, so a fresh
-    /// // sequence-0 snapshot cannot be rebuilt from extracted state.
+    /// // The move/clone guard is what fails here: `parts.table` is private and
+    /// // only a `TableView` is exposed, so `Snapshot::new(parts.table)` cannot
+    /// // rebuild a fresh sequence-0 snapshot from extracted state. The persist
+    /// // path below is shown only to reference the real call; it is never
+    /// // reached because the line above does not type-check.
     /// let mut reset = Snapshot::new(parts.table);
-    /// reset.plan_persist(&owner).unwrap();
+    /// reset.revalidate(nectar_postage_usage::PublishedSequence::NONE).unwrap().plan_persist(&owner).unwrap();
     /// ```
     ///
     /// The clone path is closed too: [`table`](Self::table) yields a borrowed
@@ -360,7 +403,7 @@ impl Snapshot {
     /// [`Issuer`] constructor; content issuance reaches it only through
     /// [`issuer`](Self::issuer), which installs the set before any write.
     ///
-    /// [`plan_persist`]: Self::plan_persist
+    /// [`plan_persist`]: Validated::plan_persist
     pub(crate) fn reserved_slots(&self, owner: &Address) -> BTreeSet<(u32, u32)> {
         self.reserved_stamp_indices(owner)
             .into_iter()
@@ -373,7 +416,7 @@ impl Snapshot {
     ///
     /// The sole counter-advance primitive, shared by content issuance (through
     /// [`Issuer`]) and snapshot-chunk allocation (through
-    /// [`plan_persist`](Self::plan_persist)). Immutable: a monotone fill watermark
+    /// [`plan_persist`](Validated::plan_persist)). Immutable: a monotone fill watermark
     /// that fails with [`BucketFull`](UsageError::BucketFull) at capacity. Mutable:
     /// a ring cursor that wraps at capacity and skips `reserved`, never returning
     /// `BucketFull` (it returns [`RingExhausted`](UsageError::RingExhausted) only
@@ -401,13 +444,15 @@ impl Snapshot {
     /// a snapshot recovered through [`from_parts`](Self::from_parts) or
     /// [`RootInfo::assemble`](crate::RootInfo::assemble). It borrows the snapshot
     /// mutably, so [`into_parts`](Self::into_parts) and
-    /// [`plan_persist`](Self::plan_persist) cannot run while issuance is live,
+    /// [`revalidate`](Self::revalidate) cannot run while issuance is live,
     /// which serializes persisting against issuing.
     ///
-    /// This single method is the issuance chokepoint. A future network-validation
-    /// gate (nectar issue #65) lands here as one precondition, not a cross-cutting
-    /// audit: a `from_cache` constructor would mark the snapshot unvalidated and
-    /// this method would refuse to issue until `revalidate` clears it.
+    /// This single method is the issuance chokepoint. Issuance still flows
+    /// through here, while the network-validation gate (nectar issue #70) guards
+    /// *persistence*: [`revalidate`](Self::revalidate) checks the planned
+    /// sequence against a [`PublishedSequence`] floor and is the only route to a
+    /// [`PersistPlan`], so a snapshot can issue but cannot persist without first
+    /// clearing the floor.
     pub fn issuer(&mut self, owner: Address) -> Issuer<'_> {
         let reserved = self.reserved_slots(&owner);
         Issuer {
@@ -440,12 +485,65 @@ impl Snapshot {
 
     /// Encodes the snapshot with its current sequence number.
     ///
-    /// Fails if the snapshot has never been persisted (no slot is allocated
-    /// for the root); use [`plan_persist`](Self::plan_persist) instead.
+    /// Fails if the snapshot has never been persisted (no slot is allocated for
+    /// the root); use [`revalidate`](Self::revalidate) then
+    /// [`plan_persist`](Validated::plan_persist) instead.
     pub fn encode(&self) -> Result<Encoded> {
         codec::encode(&self.table, self.sequence, &self.slots)
     }
 
+    /// Admits the snapshot to persistence against a published floor read live
+    /// from the network, returning a [`Validated`] handle that can mint a
+    /// [`PersistPlan`].
+    ///
+    /// `floor` is the [`PublishedSequence`] the consumer read from the live root
+    /// chunk (or [`PublishedSequence::NONE`] for a genuinely new batch). The next
+    /// sequence (`self.sequence() + 1`) must strictly exceed it, otherwise this
+    /// returns [`StaleSequence`](UsageError::StaleSequence): a fresh-construction
+    /// snapshot (sequence 0, next 1) is rejected once the published floor is at
+    /// least 1, and a stale recovered snapshot (cached sequence `R`) is rejected
+    /// unless `R + 1` exceeds the floor. A `u64` wrap at the maximum surfaces as
+    /// [`Malformed`](UsageError::Malformed) overflow rather than a stale error.
+    ///
+    /// The returned handle borrows `&mut self`, so issuance (which also takes
+    /// `&mut self` through [`issuer`](Self::issuer)) and validation cannot be
+    /// live at once and the admission ticket cannot outlive a concurrent
+    /// mutation. The floor is captured here, so keep the
+    /// `revalidate` -> [`plan_persist`](Validated::plan_persist) window tight:
+    /// the network floor may advance afterwards.
+    pub fn revalidate(&mut self, floor: PublishedSequence) -> Result<Validated<'_>> {
+        let next = self
+            .sequence
+            .checked_add(1)
+            .ok_or(UsageError::Malformed("persist sequence would overflow"))?;
+        if next <= floor.get() {
+            return Err(UsageError::StaleSequence {
+                next,
+                floor: floor.get(),
+            });
+        }
+        Ok(Validated {
+            snapshot: self,
+            floor: floor.get(),
+        })
+    }
+}
+
+/// A snapshot admitted to persistence: its next sequence has been checked to
+/// strictly exceed a published floor the consumer read from the live network.
+/// The only type that can mint a [`PersistPlan`]. Not publicly constructible;
+/// obtain one via [`Snapshot::revalidate`]. Short-lived admission ticket, not a
+/// durable capability: keep the
+/// [`revalidate`](Snapshot::revalidate) -> [`plan_persist`](Self::plan_persist)
+/// window tight, since the floor is captured at revalidate time and the network
+/// floor may advance afterwards.
+#[derive(Debug)]
+pub struct Validated<'s> {
+    snapshot: &'s mut Snapshot,
+    floor: u64,
+}
+
+impl Validated<'_> {
     /// Plans the next persist: bumps the sequence, allocates a slot for any
     /// snapshot chunk that lacks one (folding those stamps into the table), and
     /// encodes.
@@ -455,22 +553,32 @@ impl Snapshot {
     /// allocate nothing. `owner` fixes the snapshot chunk addresses. On error
     /// (such as a full bucket on first allocation) the snapshot is unchanged.
     pub fn plan_persist(&mut self, owner: &Address) -> Result<PersistPlan> {
-        let mut work = self.clone();
+        let mut work = self.snapshot.clone();
         // Defence in depth behind the structural guard: the emitted sequence
         // must strictly exceed the current one so a persist can never regress
         // the version at the snapshot's metadata chunk addresses. The only way
-        // `self.sequence + 1` fails to advance is a `u64` wrap at the maximum,
-        // which we reject rather than fold back to 0.
+        // `self.snapshot.sequence + 1` fails to advance is a `u64` wrap at the
+        // maximum, which we reject rather than fold back to 0.
         work.sequence = self
+            .snapshot
             .sequence
             .checked_add(1)
             .ok_or(UsageError::Malformed("persist sequence would overflow"))?;
+        // Re-assert the published floor against the sequence we are about to
+        // emit. The `checked_add` above runs first so a wrap stays a Malformed
+        // overflow rather than masquerading as a stale sequence.
+        if work.sequence <= self.floor {
+            return Err(UsageError::StaleSequence {
+                next: work.sequence,
+                floor: self.floor,
+            });
+        }
 
         let batch_id = work.table.batch_id();
         let bucket_depth = work.table.bucket_depth();
-        let previously_allocated = self.slots.len();
+        let previously_allocated = self.snapshot.slots.len();
 
-        let allocate = |work: &mut Self| -> Result<()> {
+        let allocate = |work: &mut Snapshot| -> Result<()> {
             let index = work.slots.len() as u16;
             let address = usage_chunk_address(&batch_id, owner, index);
             let bucket = calculate_bucket(&address, bucket_depth);
@@ -516,8 +624,13 @@ impl Snapshot {
             sequence: work.sequence,
             chunks,
         };
-        *self = work;
+        *self.snapshot = work;
         Ok(plan)
+    }
+
+    /// Returns the published floor this admission was checked against.
+    pub const fn floor(&self) -> u64 {
+        self.floor
     }
 }
 

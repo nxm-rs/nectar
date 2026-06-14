@@ -4,8 +4,8 @@
 use alloy_primitives::{Address, B256};
 use nectar_postage::calculate_bucket;
 use nectar_postage_usage::{
-    Batch, MAGIC, Mutability, PersistPlan, RootInfo, Snapshot, UsageError, UsageTable,
-    usage_chunk_address, usage_chunk_id,
+    Batch, MAGIC, Mutability, PersistPlan, PublishedSequence, RootInfo, Snapshot, UsageError,
+    UsageTable, usage_chunk_address, usage_chunk_id,
 };
 
 const BUCKET_DEPTH: u8 = 16;
@@ -72,7 +72,11 @@ fn snapshot_from_batch_matches_batch_polarity() {
 fn empty_table_persists_as_a_single_small_root() {
     let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     assert_eq!(plan.sequence, 1);
     assert_eq!(plan.chunks.len(), 1);
@@ -98,7 +102,11 @@ fn uniform_spread_uses_leaves_and_round_trips() {
         UsageTable::from_counts(batch_id(), 24, BUCKET_DEPTH, counts, Mutability::Immutable)
             .unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     assert_eq!(plan.chunks.len(), 14, "root plus 13 leaves");
     assert!(plan.chunks.iter().all(|c| c.newly_allocated));
@@ -115,7 +123,11 @@ fn hot_bucket_becomes_an_exception_not_a_wider_table() {
         UsageTable::from_counts(batch_id(), 34, BUCKET_DEPTH, counts, Mutability::Immutable)
             .unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     // The outlier lands in the exception list, so width stays minimal and
     // everything fits in the root (width 0 needs no packed bits at all,
@@ -133,9 +145,17 @@ fn steady_state_persists_allocate_nothing_and_keep_slots() {
             .unwrap();
     let mut snapshot = Snapshot::new(table);
 
-    let first = snapshot.plan_persist(&owner()).unwrap();
+    let first = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     let slots_after_first = snapshot.allocated_slots().to_vec();
-    let second = snapshot.plan_persist(&owner()).unwrap();
+    let second = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     assert_eq!(second.sequence, first.sequence + 1);
     assert!(second.chunks.iter().all(|c| !c.newly_allocated));
@@ -161,7 +181,11 @@ fn snapshot_accounts_for_its_own_chunks() {
             .unwrap();
     let issued_before = table.total_issued();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     let allocated = plan.chunks.len() as u64;
     assert_eq!(snapshot.table().total_issued(), issued_before + allocated);
@@ -182,10 +206,18 @@ fn dilution_changes_no_leaf_bytes() {
         UsageTable::from_counts(batch_id(), 20, BUCKET_DEPTH, counts, Mutability::Immutable)
             .unwrap();
     let mut snapshot = Snapshot::new(table);
-    let before = snapshot.plan_persist(&owner()).unwrap();
+    let before = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     snapshot.dilute(24).unwrap();
-    let after = snapshot.plan_persist(&owner()).unwrap();
+    let after = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     assert_eq!(before.chunks.len(), after.chunks.len());
     for (a, b) in before.chunks[1..].iter().zip(after.chunks[1..].iter()) {
@@ -202,7 +234,11 @@ fn small_bucket_depth_inlines_in_the_root() {
     let counts = synthetic_counts(256, 1000, 4000);
     let table = UsageTable::from_counts(batch_id(), 21, 8, counts, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     assert_eq!(plan.chunks.len(), 1);
     assert_eq!(roundtrip(&plan), snapshot);
 }
@@ -220,7 +256,11 @@ fn full_capacity_counters_round_trip() {
         UsageTable::from_counts(batch_id(), 17, BUCKET_DEPTH, counts, Mutability::Immutable)
             .unwrap();
     let mut snapshot = Snapshot::new(table);
-    match snapshot.plan_persist(&owner()) {
+    match snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+    {
         Ok(plan) => {
             assert_eq!(roundtrip(&plan), snapshot);
         }
@@ -240,7 +280,11 @@ fn corruption_is_rejected() {
         UsageTable::from_counts(batch_id(), 23, BUCKET_DEPTH, counts, Mutability::Immutable)
             .unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     let root_payload = plan.chunks[0].payload.to_vec();
     let leaves: Vec<Vec<u8>> = plan.chunks[1..]
         .iter()
@@ -293,7 +337,11 @@ fn reserved_indices_match_planned_stamps_and_guard_reuse() {
         UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts, Mutability::Immutable)
             .unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     let reserved = snapshot.reserved_stamp_indices(&owner());
     assert_eq!(reserved.len(), plan.chunks.len());
@@ -329,7 +377,11 @@ fn mutable_round_trips_and_decodes_as_mutable() {
         UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts, Mutability::Mutable).unwrap();
     assert!(table.is_mutable());
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     // The flags byte marks the snapshot mutable.
     let root = RootInfo::parse(&plan.chunks[0].payload).unwrap();
@@ -351,7 +403,11 @@ fn mutable_dilution_changes_no_cursor_or_leaf_bytes() {
     let table =
         UsageTable::from_counts(batch_id(), 20, BUCKET_DEPTH, counts, Mutability::Mutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let before = snapshot.plan_persist(&owner()).unwrap();
+    let before = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     let cursors_before = snapshot.table().counts().to_vec();
 
     snapshot.dilute(24).unwrap();
@@ -361,7 +417,11 @@ fn mutable_dilution_changes_no_cursor_or_leaf_bytes() {
         "dilution must not move any cursor"
     );
 
-    let after = snapshot.plan_persist(&owner()).unwrap();
+    let after = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     assert_eq!(before.chunks.len(), after.chunks.len());
     for (a, b) in before.chunks[1..].iter().zip(after.chunks[1..].iter()) {
         assert_eq!(a.payload, b.payload, "leaf bytes must survive dilution");
@@ -407,7 +467,11 @@ fn recovered_mutable_issues_reserved_aware_through_the_handle() {
         UsageTable::from_counts(batch_id(), depth, BUCKET_DEPTH, counts, Mutability::Mutable)
             .unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     let reserved = snapshot.reserved_stamp_indices(&owner());
 
     // Recover the snapshot from the wire. It carries no reserved state; the
@@ -441,9 +505,21 @@ fn extract_then_rebuild_preserves_sequence_and_slots() {
     let mut snapshot = Snapshot::new(table);
 
     // Persist a few times so the sequence climbs above 0 and slots are allocated.
-    snapshot.plan_persist(&owner()).unwrap();
-    snapshot.plan_persist(&owner()).unwrap();
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     let sequence = snapshot.sequence();
     let slots = snapshot.allocated_slots().to_vec();
     assert_eq!(sequence, 3);
@@ -463,7 +539,11 @@ fn extract_then_rebuild_preserves_sequence_and_slots() {
     // The next persist from the rebuilt snapshot strictly advances the sequence
     // and keeps the metadata slots stable, exactly as it would from the original.
     let mut rebuilt = rebuilt;
-    let next = rebuilt.plan_persist(&owner()).unwrap();
+    let next = rebuilt
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     assert_eq!(next.sequence, sequence + 1);
     assert_eq!(rebuilt.allocated_slots(), slots.as_slice());
     // Stamp indices for the metadata chunks are unchanged across the rebuild.
@@ -481,8 +561,16 @@ fn recovered_snapshot_rebuilds_through_from_parts_without_regressing() {
         UsageTable::from_counts(batch_id(), 24, BUCKET_DEPTH, counts, Mutability::Immutable)
             .unwrap();
     let mut snapshot = Snapshot::new(table);
-    snapshot.plan_persist(&owner()).unwrap();
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     // Recover from the wire, then round-trip through the opaque parts. The
     // sequence and slots survive both hops.
@@ -508,11 +596,19 @@ fn table_view_exposes_counts_and_geometry_without_yielding_an_owned_table() {
     .unwrap();
     let issued = table.total_issued();
     let mut snapshot = Snapshot::new(table);
-    snapshot.plan_persist(&owner()).unwrap();
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
 
     // Recover from the wire so the assertions run against a view of a recovered
     // snapshot, exactly the case the clone-path closure protects.
-    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
     let recovered = roundtrip(&plan);
     let view = recovered.table();
 
@@ -554,4 +650,123 @@ fn address_in_bucket(bucket: u32) -> nectar_primitives::SwarmAddress {
     bytes[0] = (bucket >> 8) as u8;
     bytes[1] = bucket as u8;
     nectar_primitives::SwarmAddress::new(bytes)
+}
+
+/// A fresh table for a batch already published at a higher sequence is the
+/// fresh-construction forgery (attack a): the public constructors must keep
+/// minting fresh tables for genuinely new batches, so the floor is the only
+/// thing that can reject a forged sequence-0 persist against a published batch.
+#[test]
+fn fresh_construction_forgery_is_rejected_by_the_floor() {
+    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    // The published root the consumer reads live already carries sequence 5, so
+    // the floor is 5. A fresh snapshot would emit sequence 1, which does not
+    // exceed it.
+    let floor = PublishedSequence::new(5);
+    assert_eq!(
+        snapshot.revalidate(floor).unwrap_err(),
+        UsageError::StaleSequence { next: 1, floor: 5 },
+    );
+}
+
+/// Advances a snapshot to sequence `n` through the real persist path, then
+/// recovers it from the wire so it stands in for a snapshot loaded from a stale
+/// cache at sequence `n`.
+fn recovered_at_sequence(n: u64) -> Snapshot {
+    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let mut plan = None;
+    for _ in 0..n {
+        plan = Some(
+            snapshot
+                .revalidate(PublishedSequence::NONE)
+                .unwrap()
+                .plan_persist(&owner())
+                .unwrap(),
+        );
+    }
+    let plan = plan.expect("n must be at least 1");
+    let recovered = roundtrip(&plan);
+    assert_eq!(recovered.sequence(), n);
+    recovered
+}
+
+/// A snapshot recovered from a stale cache at sequence R persists at R + 1; if
+/// the live published sequence has moved past that, the floor rejects it
+/// (attack b). A non-increasing sequence can never overwrite a newer published
+/// snapshot.
+#[test]
+fn stale_recovered_persist_is_rejected_by_the_floor() {
+    let mut recovered = recovered_at_sequence(4);
+    // Cached sequence is 4, so the next persist would be 5. The live floor is 7,
+    // so 5 does not exceed it and the persist is rejected.
+    assert_eq!(
+        recovered.revalidate(PublishedSequence::new(7)).unwrap_err(),
+        UsageError::StaleSequence { next: 5, floor: 7 },
+    );
+    // Equality is also rejected: next must strictly exceed the floor.
+    assert_eq!(
+        recovered.revalidate(PublishedSequence::new(5)).unwrap_err(),
+        UsageError::StaleSequence { next: 5, floor: 5 },
+    );
+}
+
+/// A legitimate persist whose next sequence strictly exceeds the published floor
+/// is admitted and plans as usual.
+#[test]
+fn persist_above_the_floor_succeeds() {
+    let mut recovered = recovered_at_sequence(4);
+    // Cached sequence 4, so next is 5; the live floor is 4, so 5 exceeds it.
+    let mut validated = recovered.revalidate(PublishedSequence::new(4)).unwrap();
+    assert_eq!(validated.floor(), 4);
+    let plan = validated.plan_persist(&owner()).unwrap();
+    assert_eq!(plan.sequence, 5);
+    assert_eq!(recovered.sequence(), 5);
+}
+
+/// The `NONE` floor admits the very first persist of a genuinely new batch: next
+/// is 1 and `1 > 0`.
+#[test]
+fn none_floor_admits_the_first_persist() {
+    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    assert_eq!(plan.sequence, 1);
+}
+
+/// `PublishedSequence::from(&RootInfo)` reads the floor straight off a parsed
+/// live root chunk, the only sanctioned source of the floor value.
+#[test]
+fn published_sequence_reads_from_a_parsed_root() {
+    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
+    // Publish twice so the live root carries sequence 2.
+    snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    let root = RootInfo::parse(&plan.chunks[0].payload).unwrap();
+    assert_eq!(root.sequence(), 2);
+    let floor = PublishedSequence::from(&root);
+    assert_eq!(floor.get(), 2);
+    // A would-be writer holding the same cached state (sequence 2) would plan
+    // sequence 3, which clears the floor of 2.
+    let mut next = snapshot;
+    let plan = next
+        .revalidate(floor)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    assert_eq!(plan.sequence, 3);
 }

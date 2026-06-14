@@ -4,7 +4,9 @@
 
 use alloy_primitives::B256;
 use alloy_signer_local::PrivateKeySigner;
-use nectar_postage_usage::{Mutability, Snapshot, UsageTable, seal_plan, usage_chunk_address};
+use nectar_postage_usage::{
+    Mutability, PublishedSequence, Snapshot, UsageTable, seal_plan, usage_chunk_address,
+};
 use nectar_primitives::Chunk;
 
 #[test]
@@ -19,7 +21,11 @@ fn sealed_chunks_and_stamps_verify() {
     counts[123] = 1;
     let table = UsageTable::from_counts(batch_id, 20, 16, counts, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let plan = snapshot.plan_persist(&owner).unwrap();
+    let plan = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner)
+        .unwrap();
 
     let sealed = seal_plan(&plan, 1, &signer).unwrap();
     assert_eq!(sealed.len(), plan.chunks.len());

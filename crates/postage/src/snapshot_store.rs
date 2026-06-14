@@ -57,7 +57,9 @@ pub trait SnapshotStore<S> {
     /// and is not an error: the caller recovers the state from the network and
     /// may [`persist`](Self::persist) it afterwards. A returned value is a
     /// cached hint and must still be validated against the network before it is
-    /// trusted for issuance.
+    /// trusted for issuance. When `S` is a `nectar-postage-usage` snapshot the
+    /// loaded value is unvalidated and carries no persist capability; it must be
+    /// admitted through that crate's network-floor check before any persist.
     fn load(
         &self,
         id: &BatchId,
