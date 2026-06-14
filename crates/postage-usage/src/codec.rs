@@ -302,7 +302,7 @@ impl RootInfo {
         let batch_id = B256::from_slice(&payload[4..36]);
         let depth = payload[36];
         let bucket_depth = payload[37];
-        validate_geometry(depth, bucket_depth)?;
+        validate_geometry(depth, bucket_depth).map_err(UsageError::into_corruption)?;
         let flags = payload[38];
         // Only bit 0 (mutable) is defined; any other bit set is rejected so a
         // future flag is never silently ignored by an older reader.
@@ -366,13 +366,13 @@ impl RootInfo {
             let count = read_u32(payload, offset + 4);
             offset += 8;
             if bucket as usize >= buckets {
-                return Err(UsageError::InvalidBucket { bucket });
+                return Err(UsageError::CorruptBucket { bucket });
             }
             if previous.is_some_and(|p| p >= bucket) {
                 return Err(UsageError::Malformed("exceptions not strictly ascending"));
             }
             if count > capacity {
-                return Err(UsageError::CounterOverflow {
+                return Err(UsageError::CorruptCounter {
                     bucket,
                     count,
                     capacity,
@@ -387,7 +387,7 @@ impl RootInfo {
             let slot = read_u32(payload, offset);
             offset += 4;
             if slot >= capacity {
-                return Err(UsageError::InvalidSlot { slot, capacity });
+                return Err(UsageError::CorruptSlot { slot, capacity });
             }
             slots.push(slot);
         }
@@ -513,7 +513,7 @@ impl RootInfo {
                 }
                 let value = u64::from(self.base) + read_bits(packed, i * width as usize, width);
                 if value > u64::from(capacity) {
-                    return Err(UsageError::CounterOverflow {
+                    return Err(UsageError::CorruptCounter {
                         bucket: bucket as u32,
                         count: value.min(u64::from(u32::MAX)) as u32,
                         capacity,
@@ -590,14 +590,23 @@ impl RootInfo {
         } else {
             Mutability::Immutable
         };
+        // These reconstruct the table and validate the recovered slots through
+        // the shared caller-input checks, so a corrupt decoded counter or slot
+        // would otherwise surface as the caller-input range variant. Map those to
+        // their corruption counterparts: reached from the decode path, they mean
+        // the fetched bytes are bad, not a caller input that can be adjusted. A
+        // direct `Snapshot::from_parts` caller still gets the caller-input variant.
         let table = UsageTable::from_counts(
             self.batch_id,
             self.depth,
             self.bucket_depth,
             counts,
             mutability,
-        )?;
-        Snapshot::from_parts(Snapshot::recovered_parts(table, self.sequence, self.slots)?)
+        )
+        .map_err(UsageError::into_corruption)?;
+        let parts = Snapshot::recovered_parts(table, self.sequence, self.slots)
+            .map_err(UsageError::into_corruption)?;
+        Snapshot::from_parts(parts).map_err(UsageError::into_corruption)
     }
 }
 
@@ -682,5 +691,164 @@ mod tests {
         root[38] = 0x00;
         let info = RootInfo::parse(&root).unwrap();
         assert!(!info.is_mutable());
+    }
+
+    /// Builds a valid immutable root with depth 12, bucket depth 8 (256 buckets
+    /// of capacity 16), a single exception bucket, and one allocated slot. The
+    /// encoder selects width 0 with one exception, so the layout is the 66-byte
+    /// header, one 8-byte exception (bucket then count), and one 4-byte slot.
+    fn root_with_one_exception() -> Vec<u8> {
+        let mut counts = vec![0u32; 256];
+        // A single full bucket becomes the lone exception; the rest stay at the
+        // base so the encoder packs nothing inline.
+        counts[5] = 16;
+        let table = UsageTable::from_counts(
+            B256::repeat_byte(0x42),
+            12,
+            8,
+            counts,
+            Mutability::Immutable,
+        )
+        .unwrap();
+        let root = encode(&table, 1, &[4]).unwrap().root.to_vec();
+        // Header(66) + one exception(8) + one slot(4), width 0 so no packed tail.
+        assert_eq!(root.len(), ROOT_HEADER_SIZE + 8 + 4);
+        // The exception is bucket 5; confirm the offsets the tests corrupt below.
+        assert_eq!(read_u32(&root, ROOT_HEADER_SIZE), 5);
+        assert_eq!(read_u32(&root, ROOT_HEADER_SIZE + 4), 16);
+        assert_eq!(read_u32(&root, ROOT_HEADER_SIZE + 8), 4);
+        root
+    }
+
+    #[test]
+    fn parse_rejects_out_of_range_exception_bucket_as_corruption() {
+        let mut root = root_with_one_exception();
+        // Push the exception bucket index past the 256-bucket range.
+        root[ROOT_HEADER_SIZE..ROOT_HEADER_SIZE + 4].copy_from_slice(&300u32.to_be_bytes());
+        let err = RootInfo::parse(&root).unwrap_err();
+        assert_eq!(err, UsageError::CorruptBucket { bucket: 300 });
+        assert!(err.is_corruption());
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn parse_rejects_over_capacity_exception_counter_as_corruption() {
+        let mut root = root_with_one_exception();
+        // Push the exception counter past the per-bucket capacity of 16.
+        root[ROOT_HEADER_SIZE + 4..ROOT_HEADER_SIZE + 8].copy_from_slice(&17u32.to_be_bytes());
+        let err = RootInfo::parse(&root).unwrap_err();
+        assert_eq!(
+            err,
+            UsageError::CorruptCounter {
+                bucket: 5,
+                count: 17,
+                capacity: 16,
+            }
+        );
+        assert!(err.is_corruption());
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn parse_rejects_invalid_geometry_as_corruption() {
+        let mut root = root_with_one_exception();
+        // The geometry is read straight from the fetched bytes, so a corrupt
+        // bucket-depth byte (here past the supported maximum) is decode
+        // corruption, not a caller-input error.
+        root[37] = 17;
+        let err = RootInfo::parse(&root).unwrap_err();
+        assert_eq!(
+            err,
+            UsageError::CorruptGeometry {
+                depth: 12,
+                bucket_depth: 17,
+            }
+        );
+        assert!(err.is_corruption());
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn parse_rejects_out_of_range_slot_as_corruption() {
+        let mut root = root_with_one_exception();
+        // Push the allocated slot to the capacity bound (valid slots are < 16).
+        root[ROOT_HEADER_SIZE + 8..ROOT_HEADER_SIZE + 12].copy_from_slice(&16u32.to_be_bytes());
+        let err = RootInfo::parse(&root).unwrap_err();
+        assert_eq!(
+            err,
+            UsageError::CorruptSlot {
+                slot: 16,
+                capacity: 16,
+            }
+        );
+        assert!(err.is_corruption());
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn assemble_rejects_over_capacity_decoded_counter_as_corruption() {
+        // A table whose deltas span 0..16 packs inline at width 5 (no
+        // exceptions): every count is within the capacity of 16.
+        let counts: Vec<u32> = (0..256u32).map(|b| b % 17).collect();
+        let table = UsageTable::from_counts(
+            B256::repeat_byte(0x42),
+            12,
+            8,
+            counts,
+            Mutability::Immutable,
+        )
+        .unwrap();
+        let mut corrupt = encode(&table, 1, &[4]).unwrap().root.to_vec();
+        assert_eq!(
+            RootInfo::parse(&corrupt).unwrap().leaf_count(),
+            0,
+            "this geometry inlines the deltas"
+        );
+
+        // The packed deltas follow the header(66), the slot(4), and no
+        // exceptions, so they begin at offset 70. Force the first delta's high
+        // bits so it decodes to 31, above the capacity of 16.
+        let packed_start = ROOT_HEADER_SIZE + 4;
+        corrupt[packed_start] |= 0b1111_1000;
+
+        let info = RootInfo::parse(&corrupt).unwrap();
+        let err = info.assemble(&[] as &[&[u8]]).unwrap_err();
+        assert_eq!(
+            err,
+            UsageError::CorruptCounter {
+                bucket: 0,
+                count: 31,
+                capacity: 16,
+            }
+        );
+        assert!(err.is_corruption());
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn from_counts_over_capacity_is_caller_input_recoverable() {
+        // The same over-capacity condition supplied directly as caller input
+        // (not decoded from fetched bytes) stays the recoverable variant: the
+        // caller can fix the counts it passed.
+        let mut counts = vec![0u32; 256];
+        counts[5] = 17; // capacity is 16
+        let err = UsageTable::from_counts(
+            B256::repeat_byte(0x42),
+            12,
+            8,
+            counts,
+            Mutability::Immutable,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            UsageError::CounterOverflow {
+                bucket: 5,
+                count: 17,
+                capacity: 16,
+            }
+        );
+        assert!(err.is_recoverable());
+        assert!(!err.is_corruption());
     }
 }
