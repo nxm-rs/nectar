@@ -170,10 +170,11 @@ impl MemoryIssuer {
     ///
     /// Immutable batches yield a fill-only issuer identical to
     /// [`MemoryIssuer::new`] for the same geometry. Mutable batches are refused
-    /// with [`IssuerError::MutableNotSupported`]: overwrite-aware issuance needs
-    /// reserved-slot awareness that this primitive issuer cannot provide, so a
-    /// mutable batch must be stamped through the owner-aware
-    /// `nectar_postage_usage::Snapshot::issuer` / `SnapshotIssuer` instead.
+    /// with [`IssuerError::MutableNotSupported`] so a ring is never produced by
+    /// accident: overwrite-aware issuance must be requested by name through
+    /// [`RingIssuer::external`](crate::RingIssuer::external) for external
+    /// tracking, or [`RingIssuer::reserved`](crate::RingIssuer::reserved) for
+    /// self-hosting, where the protected slots come from `nectar-postage-usage`.
     pub fn from_batch(batch: &Batch) -> Result<Self, IssuerError> {
         if batch.immutable() {
             Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))

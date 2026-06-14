@@ -169,10 +169,13 @@ impl ShardedIssuer {
     ///
     /// Immutable batches yield a fill-only issuer. Mutable batches are refused
     /// with [`IssuerError::MutableNotSupported`], matching
-    /// [`MemoryIssuer::from_batch`](crate::MemoryIssuer::from_batch): overwrite-aware
-    /// issuance needs reserved-slot awareness this primitive issuer cannot
-    /// provide, so a mutable batch must be stamped through the owner-aware
-    /// `nectar_postage_usage::Snapshot::issuer` / `SnapshotIssuer` instead.
+    /// [`MemoryIssuer::from_batch`](crate::MemoryIssuer::from_batch), so a ring
+    /// is never produced by accident. Overwrite-aware parallel issuance must be
+    /// requested by name through
+    /// [`ShardedRingIssuer::external`](crate::ShardedRingIssuer::external) for
+    /// external tracking, or
+    /// [`ShardedRingIssuer::reserved`](crate::ShardedRingIssuer::reserved) for
+    /// self-hosting, where the protected slots come from `nectar-postage-usage`.
     pub fn from_batch(batch: &Batch) -> Result<Self, IssuerError> {
         if batch.immutable() {
             Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))
