@@ -10,7 +10,7 @@ use bytes::Bytes;
 use nectar_postage::BatchId;
 
 use crate::snapshot::Snapshot;
-use crate::table::{UsageTable, validate_geometry};
+use crate::table::{Mutability, UsageTable, validate_geometry};
 use crate::{
     MAGIC, MAX_EXCEPTIONS, MAX_PAYLOAD_SIZE, MAX_WIDTH, ROOT_HEADER_SIZE, Result, UsageError,
 };
@@ -576,11 +576,18 @@ impl RootInfo {
         // [`Issuer`](crate::Issuer) through [`Snapshot::issuer`](crate::Snapshot::issuer),
         // which is the only counter-advance path, so issuance on a recovered
         // mutable snapshot is reserved-aware by construction.
-        let table = if self.mutable {
-            UsageTable::from_counts_mutable(self.batch_id, self.depth, self.bucket_depth, counts)?
+        let mutability = if self.mutable {
+            Mutability::Mutable
         } else {
-            UsageTable::from_counts(self.batch_id, self.depth, self.bucket_depth, counts)?
+            Mutability::Immutable
         };
+        let table = UsageTable::from_counts(
+            self.batch_id,
+            self.depth,
+            self.bucket_depth,
+            counts,
+            mutability,
+        )?;
         Snapshot::from_parts(Snapshot::recovered_parts(table, self.sequence, self.slots)?)
     }
 }
@@ -631,7 +638,7 @@ mod tests {
         use alloy_primitives::B256;
 
         // Build a minimal valid mutable root: width 0, one slot, no exceptions.
-        let table = UsageTable::new_mutable(B256::repeat_byte(0x42), 20, 16).unwrap();
+        let table = UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Mutable).unwrap();
         let encoded = encode(&table, 1, &[0]).unwrap();
         let mut root = encoded.root.to_vec();
         assert_eq!(root[38], 0x01, "mutable flag must be set");
