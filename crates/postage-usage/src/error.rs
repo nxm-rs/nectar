@@ -139,4 +139,15 @@ pub enum UsageError {
         /// The sum of the reconstructed counters.
         sum: u64,
     },
+
+    /// A planned persist's next sequence does not strictly exceed the published
+    /// floor the consumer read from the live network, so publishing it would
+    /// overwrite a newer published snapshot in place.
+    #[error("persist sequence {next} does not exceed published floor {floor}")]
+    StaleSequence {
+        /// The sequence the persist would have published.
+        next: u64,
+        /// The published floor read live from the network.
+        floor: u64,
+    },
 }
