@@ -96,7 +96,7 @@ pub trait Stamper {
 /// ```ignore
 /// use nectar_postage_issuer::{BatchStamper, MemoryIssuer, Stamper};
 ///
-/// let issuer = MemoryIssuer::from_batch(&batch);
+/// let issuer = MemoryIssuer::from_batch(&batch)?;
 /// let mut stamper = BatchStamper::new(issuer, my_signer);
 /// let stamp = stamper.stamp(&chunk_address)?;
 /// ```

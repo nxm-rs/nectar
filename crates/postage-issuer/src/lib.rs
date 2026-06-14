@@ -6,6 +6,13 @@
 //! For verification-only use cases (like `vertex` nodes), use
 //! [`nectar-postage`](nectar_postage) directly.
 //!
+//! Mutable, overwrite-aware (ring) issuance is intentionally absent from this
+//! crate. Reserved-aware mutable issuance lives in `nectar-postage-usage` via
+//! `Snapshot::issuer` / `SnapshotIssuer`, which knows the owner's reserved
+//! slots and skips them; a ring here would be reserved-blind and silently evict
+//! a self-hosted snapshot's own chunks. [`MemoryIssuer::from_batch`] therefore
+//! refuses a mutable batch with [`IssuerError::MutableNotSupported`].
+//!
 //! # Features
 //!
 //! - `std` (default) - Enables standard library support
@@ -44,10 +51,10 @@ mod stamper;
 pub use nectar_postage::*;
 
 // Errors (override nectar_postage::StampError with our own that includes signing)
-pub use error::SigningError;
+pub use error::{IssuerError, SigningError};
 
 // Issuing
-pub use issuer::{IssuanceMode, MemoryIssuer, StampIssuer};
+pub use issuer::{MemoryIssuer, StampIssuer};
 pub use sharded::ShardedIssuer;
 pub use stamper::{BatchStamper, Stamper};
 
