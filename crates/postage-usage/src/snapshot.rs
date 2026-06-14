@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use alloy_primitives::{Address, B256};
 use bytes::Bytes;
-use nectar_postage::{BatchId, StampIndex, calculate_bucket};
+use nectar_postage::{Batch, BatchId, StampIndex, calculate_bucket};
 use nectar_primitives::SwarmAddress;
 
 use crate::codec::{self, Encoded};
@@ -140,6 +140,18 @@ impl Snapshot {
         }
     }
 
+    /// Wraps a fresh, never-persisted table built from a [`Batch`].
+    ///
+    /// The table's geometry and mutability are read from the batch: an immutable
+    /// batch yields a fill-watermark table, a mutable batch
+    /// (`batch.immutable() == false`) a wrapping ring. As with [`new`](Self::new),
+    /// this is correct *only* for a genuinely new batch and starts the persist
+    /// history at sequence 0 with no allocated slots; recovered or extracted state
+    /// round-trips through [`from_parts`](Self::from_parts) instead.
+    pub fn from_batch(batch: &Batch) -> Result<Self> {
+        Ok(Self::new(UsageTable::from_batch(batch)?))
+    }
+
     /// Validates the slots of a table/sequence/slots triple against the table
     /// geometry, the shared check behind [`from_parts`](Self::from_parts) and
     /// the codec's recovery path.
@@ -253,9 +265,9 @@ impl Snapshot {
     ///
     /// ```compile_fail
     /// use alloy_primitives::B256;
-    /// use nectar_postage_usage::{Snapshot, UsageTable};
+    /// use nectar_postage_usage::{Mutability, Snapshot, UsageTable};
     ///
-    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16).unwrap());
+    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap());
     /// // `into_table` no longer exists; only `into_parts` can consume a snapshot.
     /// let table = snapshot.into_table();
     /// ```
@@ -266,10 +278,10 @@ impl Snapshot {
     ///
     /// ```compile_fail
     /// use alloy_primitives::{Address, B256};
-    /// use nectar_postage_usage::{Snapshot, UsageTable};
+    /// use nectar_postage_usage::{Mutability, Snapshot, UsageTable};
     ///
     /// let owner = Address::repeat_byte(0x11);
-    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16).unwrap());
+    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap());
     /// let parts = snapshot.into_parts();
     /// // `parts.table` is private and only a `TableView` is exposed, so a fresh
     /// // sequence-0 snapshot cannot be rebuilt from extracted state.
@@ -284,9 +296,9 @@ impl Snapshot {
     ///
     /// ```compile_fail
     /// use alloy_primitives::B256;
-    /// use nectar_postage_usage::{Snapshot, UsageTable};
+    /// use nectar_postage_usage::{Mutability, Snapshot, UsageTable};
     ///
-    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16).unwrap());
+    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap());
     /// // `table()` returns a `TableView`; cloning it yields another view, not a
     /// // `UsageTable`, so this does not type-check.
     /// let reset = Snapshot::new(snapshot.table().clone());

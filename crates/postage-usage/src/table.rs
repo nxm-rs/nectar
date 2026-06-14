@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use nectar_postage::BatchId;
+use nectar_postage::{Batch, BatchId};
 use nectar_postage_issuer::{CounterError, CounterMode, CounterTable};
 
 use crate::{MAX_BUCKET_DEPTH, MAX_COUNTER_BITS, Result, UsageError};
@@ -48,6 +48,50 @@ pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()>
     Ok(())
 }
 
+/// Whether a usage table is an immutable fill watermark or a mutable ring.
+///
+/// The fill-or-ring choice is a runtime flag, not a type parameter: the SBU1
+/// codec decodes it from the wire at runtime (see
+/// [`RootInfo::assemble`](crate::RootInfo::assemble)), so a type-state parameter
+/// would fight the wire decode. This enum makes the choice an explicit, named
+/// argument to the table constructors instead of a bare bool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mutability {
+    /// `counts[b]` is a monotone fill watermark, the next unused index; issuance
+    /// advances it and a full bucket fails rather than overwriting.
+    #[default]
+    Immutable,
+    /// `counts[b]` is a ring cursor in `[0, capacity]` that wraps at capacity, so
+    /// a full bucket churns instead of failing.
+    Mutable,
+}
+
+impl Mutability {
+    /// Picks the mutability from a batch: an immutable batch yields the fill
+    /// watermark table, a mutable batch (`batch.immutable() == false`) yields the
+    /// wrapping ring.
+    pub const fn from_batch(batch: &Batch) -> Self {
+        if batch.immutable() {
+            Self::Immutable
+        } else {
+            Self::Mutable
+        }
+    }
+
+    /// Returns whether this is the mutable (ring) variant.
+    pub const fn is_mutable(self) -> bool {
+        matches!(self, Self::Mutable)
+    }
+
+    /// Maps the mutability onto the shared counter table's mode.
+    const fn mode(self) -> CounterMode {
+        match self {
+            Self::Immutable => CounterMode::Fill,
+            Self::Mutable => CounterMode::Ring,
+        }
+    }
+}
+
 /// Per-bucket slot counters for a postage batch.
 ///
 /// For each of the `2^bucket_depth` collision buckets, this records the state
@@ -58,15 +102,17 @@ pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()>
 /// slots first, so a bare table can never evict the chunks that record the
 /// batch state.
 ///
-/// - **Immutable** ([`new`](Self::new) / [`from_counts`](Self::from_counts)):
-///   `counts[b]` is a monotone fill watermark, the next unused index; issuance
-///   advances it and a full bucket fails rather than overwriting.
-/// - **Mutable** ([`new_mutable`](Self::new_mutable) /
-///   [`from_counts_mutable`](Self::from_counts_mutable)): `counts[b]` is a ring
-///   cursor in `[0, capacity]` that wraps at capacity, so a full bucket churns
-///   instead of failing. The reserved slots that the ring skips live on the
-///   issuing handle, not the table, so they cannot be lost when the table is
-///   moved.
+/// The fill-or-ring choice is a runtime [`Mutability`] flag passed to
+/// [`new`](Self::new) and [`from_counts`](Self::from_counts), or derived from a
+/// batch by [`from_batch`](Self::from_batch):
+///
+/// - **Immutable** ([`Mutability::Immutable`]): `counts[b]` is a monotone fill
+///   watermark, the next unused index; issuance advances it and a full bucket
+///   fails rather than overwriting.
+/// - **Mutable** ([`Mutability::Mutable`]): `counts[b]` is a ring cursor in
+///   `[0, capacity]` that wraps at capacity, so a full bucket churns instead of
+///   failing. The reserved slots that the ring skips live on the issuing handle,
+///   not the table, so they cannot be lost when the table is moved.
 ///
 /// A bare table cannot issue: it has no reserved-blind `record` mutator, so
 /// counter advances that skip reserved installation are a compile error, not a
@@ -74,18 +120,18 @@ pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()>
 ///
 /// ```compile_fail
 /// use alloy_primitives::B256;
-/// use nectar_postage_usage::UsageTable;
+/// use nectar_postage_usage::{Mutability, UsageTable};
 ///
-/// let mut table = UsageTable::new_mutable(B256::repeat_byte(0x42), 18, 16).unwrap();
+/// let mut table = UsageTable::new(B256::repeat_byte(0x42), 18, 16, Mutability::Mutable).unwrap();
 /// // `record` no longer exists on the inert table.
 /// table.record(7).unwrap();
 /// ```
 ///
 /// ```compile_fail
 /// use alloy_primitives::B256;
-/// use nectar_postage_usage::{SwarmAddress, UsageTable};
+/// use nectar_postage_usage::{Mutability, SwarmAddress, UsageTable};
 ///
-/// let mut table = UsageTable::new_mutable(B256::repeat_byte(0x42), 18, 16).unwrap();
+/// let mut table = UsageTable::new(B256::repeat_byte(0x42), 18, 16, Mutability::Mutable).unwrap();
 /// // `record_address` no longer exists on the inert table.
 /// table.record_address(&SwarmAddress::from(B256::repeat_byte(0x99))).unwrap();
 /// ```
@@ -100,78 +146,57 @@ pub struct UsageTable {
 }
 
 impl UsageTable {
-    /// Returns the mode the geometry-checked constructors install for `mutable`.
-    const fn mode(mutable: bool) -> CounterMode {
-        if mutable {
-            CounterMode::Ring
-        } else {
-            CounterMode::Fill
-        }
-    }
-
-    /// Creates an empty immutable table for a batch with the given geometry.
-    pub fn new(batch_id: BatchId, depth: u8, bucket_depth: u8) -> Result<Self> {
-        Self::new_with_mode(batch_id, depth, bucket_depth, false)
-    }
-
-    /// Creates an empty mutable (ring-cursor) table.
+    /// Creates an empty table for a batch with the given geometry and
+    /// [`Mutability`].
     ///
-    /// Issuance is a per-bucket ring: once a bucket fills it wraps to index `0`.
-    /// The ring skips the snapshot's reserved slots, which are installed onto the
-    /// issuing handle by [`Snapshot::issuer`](crate::Snapshot::issuer), so the
-    /// ring never evicts the snapshot's own chunks.
-    pub fn new_mutable(batch_id: BatchId, depth: u8, bucket_depth: u8) -> Result<Self> {
-        Self::new_with_mode(batch_id, depth, bucket_depth, true)
-    }
-
-    fn new_with_mode(
+    /// An immutable table is a monotone fill watermark; a mutable table is a
+    /// per-bucket ring that wraps once a bucket fills. The ring skips the
+    /// snapshot's reserved slots, which are installed onto the issuing handle by
+    /// [`Snapshot::issuer`](crate::Snapshot::issuer), so it never evicts the
+    /// snapshot's own chunks.
+    pub fn new(
         batch_id: BatchId,
         depth: u8,
         bucket_depth: u8,
-        mutable: bool,
+        mutability: Mutability,
     ) -> Result<Self> {
         validate_geometry(depth, bucket_depth)?;
         Ok(Self {
             batch_id,
-            counters: CounterTable::new(depth, bucket_depth, Self::mode(mutable)),
+            counters: CounterTable::new(depth, bucket_depth, mutability.mode()),
         })
     }
 
-    /// Creates an immutable table from existing counters.
+    /// Creates an empty table whose geometry and [`Mutability`] are read from a
+    /// [`Batch`].
     ///
-    /// `counts` must hold exactly `2^bucket_depth` entries, each at most the
-    /// bucket capacity.
+    /// An immutable batch yields a fill-watermark table; a mutable batch
+    /// (`batch.immutable() == false`) yields a wrapping ring. This lets a caller
+    /// holding a `Batch` build the matching table without restating the geometry
+    /// or polarity by hand.
+    pub fn from_batch(batch: &Batch) -> Result<Self> {
+        Self::new(
+            batch.id(),
+            batch.depth(),
+            batch.bucket_depth(),
+            Mutability::from_batch(batch),
+        )
+    }
+
+    /// Creates a table from existing counters with the given [`Mutability`].
+    ///
+    /// `counts` must hold exactly `2^bucket_depth` entries, each in
+    /// `[0, capacity]`. For a mutable table the reserved slots are installed by
+    /// [`Snapshot::issuer`](crate::Snapshot::issuer) before issuing.
     pub fn from_counts(
         batch_id: BatchId,
         depth: u8,
         bucket_depth: u8,
         counts: Vec<u32>,
-    ) -> Result<Self> {
-        Self::from_counts_with_mode(batch_id, depth, bucket_depth, counts, false)
-    }
-
-    /// Creates a mutable (ring-cursor) table from existing cursors, each in
-    /// `[0, capacity]`. As with [`new_mutable`](Self::new_mutable), the reserved
-    /// slots are installed by [`Snapshot::issuer`](crate::Snapshot::issuer)
-    /// before issuing.
-    pub fn from_counts_mutable(
-        batch_id: BatchId,
-        depth: u8,
-        bucket_depth: u8,
-        counts: Vec<u32>,
-    ) -> Result<Self> {
-        Self::from_counts_with_mode(batch_id, depth, bucket_depth, counts, true)
-    }
-
-    fn from_counts_with_mode(
-        batch_id: BatchId,
-        depth: u8,
-        bucket_depth: u8,
-        counts: Vec<u32>,
-        mutable: bool,
+        mutability: Mutability,
     ) -> Result<Self> {
         validate_geometry(depth, bucket_depth)?;
-        let counters = CounterTable::from_counts(depth, bucket_depth, Self::mode(mutable), counts)
+        let counters = CounterTable::from_counts(depth, bucket_depth, mutability.mode(), counts)
             .map_err(map_counter_error)?;
         Ok(Self { batch_id, counters })
     }
@@ -399,7 +424,8 @@ impl<'a> TableView<'a> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::b256;
+    use alloy_primitives::{Address, b256};
+    use nectar_postage::Batch;
 
     use super::*;
 
@@ -407,21 +433,81 @@ mod tests {
         b256!("0x1122334455667788112233445566778811223344556677881122334455667788")
     }
 
+    fn immutable_counts() -> Vec<u32> {
+        vec![0u32; 1usize << 16]
+    }
+
+    fn batch_with(depth: u8, bucket_depth: u8, immutable: bool) -> Batch {
+        Batch::new(
+            batch_id(),
+            1_000,
+            0,
+            Address::repeat_byte(0x11),
+            depth,
+            bucket_depth,
+            immutable,
+        )
+    }
+
     #[test]
     fn geometry_bounds() {
-        assert!(UsageTable::new(batch_id(), 20, 16).is_ok());
-        assert!(UsageTable::new(batch_id(), 16, 16).is_ok());
-        assert!(UsageTable::new(batch_id(), 47, 16).is_ok());
-        assert!(UsageTable::new(batch_id(), 48, 16).is_err());
-        assert!(UsageTable::new(batch_id(), 15, 16).is_err());
-        assert!(UsageTable::new(batch_id(), 20, 17).is_err());
+        let imm = Mutability::Immutable;
+        assert!(UsageTable::new(batch_id(), 20, 16, imm).is_ok());
+        assert!(UsageTable::new(batch_id(), 16, 16, imm).is_ok());
+        assert!(UsageTable::new(batch_id(), 47, 16, imm).is_ok());
+        assert!(UsageTable::new(batch_id(), 48, 16, imm).is_err());
+        assert!(UsageTable::new(batch_id(), 15, 16, imm).is_err());
+        assert!(UsageTable::new(batch_id(), 20, 17, imm).is_err());
+    }
+
+    #[test]
+    fn mutability_enum_matches_old_constructors() {
+        // The enum constructors produce the same tables the old `new`/`new_mutable`
+        // pair did: an immutable table is a fill watermark, a mutable table a ring.
+        let immutable = UsageTable::new(batch_id(), 20, 16, Mutability::Immutable).unwrap();
+        assert!(!immutable.is_mutable());
+
+        let mutable = UsageTable::new(batch_id(), 20, 16, Mutability::Mutable).unwrap();
+        assert!(mutable.is_mutable());
+
+        let from_counts_imm = UsageTable::from_counts(
+            batch_id(),
+            17,
+            16,
+            immutable_counts(),
+            Mutability::Immutable,
+        )
+        .unwrap();
+        assert!(!from_counts_imm.is_mutable());
+
+        let from_counts_mut =
+            UsageTable::from_counts(batch_id(), 17, 16, immutable_counts(), Mutability::Mutable)
+                .unwrap();
+        assert!(from_counts_mut.is_mutable());
+    }
+
+    #[test]
+    fn from_batch_picks_table_from_polarity() {
+        // An immutable batch yields a fill table; a mutable batch yields a ring.
+        let immutable_batch = batch_with(20, 16, true);
+        let immutable_table = UsageTable::from_batch(&immutable_batch).unwrap();
+        assert!(!immutable_table.is_mutable());
+        assert_eq!(immutable_table.batch_id(), batch_id());
+        assert_eq!(immutable_table.depth(), 20);
+        assert_eq!(immutable_table.bucket_depth(), 16);
+
+        let mutable_batch = batch_with(20, 16, false);
+        let mutable_table = UsageTable::from_batch(&mutable_batch).unwrap();
+        assert!(mutable_table.is_mutable());
+        assert_eq!(mutable_table.depth(), 20);
     }
 
     #[test]
     fn from_counts_sums_issued_and_rejects_overflow() {
         let mut counts = vec![0u32; 1usize << 16];
         counts[7] = 2;
-        let table = UsageTable::from_counts(batch_id(), 17, 16, counts).unwrap();
+        let table =
+            UsageTable::from_counts(batch_id(), 17, 16, counts, Mutability::Immutable).unwrap();
         assert_eq!(table.bucket_capacity(), 2);
         assert_eq!(table.total_issued(), 2);
         assert_eq!(table.max_count(), 2);
@@ -430,7 +516,7 @@ mod tests {
         let mut over = vec![0u32; 1usize << 16];
         over[7] = 3; // capacity is 2
         assert_eq!(
-            UsageTable::from_counts(batch_id(), 17, 16, over),
+            UsageTable::from_counts(batch_id(), 17, 16, over, Mutability::Immutable),
             Err(UsageError::CounterOverflow {
                 bucket: 7,
                 count: 3,
@@ -443,7 +529,8 @@ mod tests {
     fn dilute_grows_capacity_only() {
         let mut counts = vec![0u32; 1usize << 16];
         counts[0] = 1;
-        let mut table = UsageTable::from_counts(batch_id(), 17, 16, counts).unwrap();
+        let mut table =
+            UsageTable::from_counts(batch_id(), 17, 16, counts, Mutability::Immutable).unwrap();
         table.dilute(18).unwrap();
         assert_eq!(table.bucket_capacity(), 4);
         assert_eq!(table.count(0).unwrap(), 1);
@@ -463,8 +550,10 @@ mod tests {
         let mut counts_b = vec![0u32; 1usize << 16];
         counts_b[0] = 1;
         counts_b[1] = 1;
-        let mut a = UsageTable::from_counts(batch_id(), 18, 16, counts_a).unwrap();
-        let b = UsageTable::from_counts(batch_id(), 19, 16, counts_b).unwrap();
+        let mut a =
+            UsageTable::from_counts(batch_id(), 18, 16, counts_a, Mutability::Immutable).unwrap();
+        let b =
+            UsageTable::from_counts(batch_id(), 19, 16, counts_b, Mutability::Immutable).unwrap();
         a.merge_max(&b).unwrap();
         assert_eq!(a.depth(), 19);
         assert_eq!(a.count(0).unwrap(), 2);
@@ -475,11 +564,13 @@ mod tests {
     #[test]
     fn merge_max_rejects_mutable() {
         let zero = || vec![0u32; 1usize << 16];
-        let mut a = UsageTable::from_counts_mutable(batch_id(), 18, 16, zero()).unwrap();
-        let b = UsageTable::from_counts(batch_id(), 18, 16, zero()).unwrap();
+        let mut a =
+            UsageTable::from_counts(batch_id(), 18, 16, zero(), Mutability::Mutable).unwrap();
+        let b = UsageTable::from_counts(batch_id(), 18, 16, zero(), Mutability::Immutable).unwrap();
         assert_eq!(a.merge_max(&b), Err(UsageError::MutableMerge));
-        let mut c = UsageTable::from_counts(batch_id(), 18, 16, zero()).unwrap();
-        let d = UsageTable::from_counts_mutable(batch_id(), 18, 16, zero()).unwrap();
+        let mut c =
+            UsageTable::from_counts(batch_id(), 18, 16, zero(), Mutability::Immutable).unwrap();
+        let d = UsageTable::from_counts(batch_id(), 18, 16, zero(), Mutability::Mutable).unwrap();
         assert_eq!(c.merge_max(&d), Err(UsageError::MutableMerge));
     }
 }
