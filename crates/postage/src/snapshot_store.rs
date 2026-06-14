@@ -27,8 +27,8 @@ use crate::BatchId;
 /// A cache for recovered issuer snapshot state, keyed by [`BatchId`].
 ///
 /// Implementations persist and load the snapshot state `S` for a batch. The
-/// network is the source of truth for this state (see the [module
-/// docs](self)); a store is only a warm-path cache, so a missing entry is
+/// network is the source of truth for this state (see the module-level
+/// docs); a store is only a warm-path cache, so a missing entry is
 /// reported as `Ok(None)` rather than an error and the caller recovers from the
 /// network instead.
 ///

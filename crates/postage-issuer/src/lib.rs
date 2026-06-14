@@ -73,6 +73,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 mod counter;
+#[cfg(feature = "std")]
+mod dilute_handler;
 mod error;
 mod factory;
 mod issuer;
@@ -89,6 +91,10 @@ pub use error::{IssuerError, SigningError};
 
 // The shared per-bucket counter table behind every issuer and the snapshot.
 pub use counter::{CounterError, CounterMode, CounterTable};
+
+// Wiring on-chain depth-increase events through to issuer dilution (std only).
+#[cfg(feature = "std")]
+pub use dilute_handler::{Dilutable, IssuerRegistry};
 
 // Issuing
 pub use issuer::{MemoryIssuer, StampIssuer};
