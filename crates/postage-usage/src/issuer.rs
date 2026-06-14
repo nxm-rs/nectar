@@ -1,13 +1,13 @@
-//! [`StampIssuer`] implementations so a [`UsageTable`] or a [`Snapshot`] can
-//! back a `BatchStamper` directly.
+//! A [`StampIssuer`] that stamps content through a [`Snapshot`], the single
+//! owner-aware issuance path so a snapshot can back a `BatchStamper` directly.
 
 use alloy_primitives::Address;
-use nectar_postage::{BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
+use nectar_postage::{BatchId, StampDigest, StampError};
 use nectar_postage_issuer::StampIssuer;
 use nectar_primitives::SwarmAddress;
 
+use crate::Snapshot;
 use crate::error::UsageError;
-use crate::{Snapshot, UsageTable};
 
 /// Maps a usage table error onto a stamp issuer error.
 const fn map_usage_error(err: UsageError) -> StampError {
@@ -17,55 +17,11 @@ const fn map_usage_error(err: UsageError) -> StampError {
     }
 }
 
-impl StampIssuer for UsageTable {
-    fn prepare_stamp(
-        &mut self,
-        address: &SwarmAddress,
-        timestamp: u64,
-    ) -> core::result::Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.bucket_depth);
-        let index = self.record(bucket).map_err(map_usage_error)?;
-        Ok(StampDigest::new(
-            *address,
-            self.batch_id,
-            StampIndex::new(bucket, index),
-            timestamp,
-        ))
-    }
-
-    fn batch_id(&self) -> BatchId {
-        self.batch_id
-    }
-
-    fn batch_depth(&self) -> u8 {
-        self.depth
-    }
-
-    fn bucket_depth(&self) -> u8 {
-        self.bucket_depth
-    }
-
-    fn max_bucket_utilization(&self) -> u32 {
-        self.max_count()
-    }
-
-    fn bucket_utilization(&self, bucket: u32) -> u32 {
-        self.count(bucket).unwrap_or(0)
-    }
-
-    fn bucket_has_capacity(&self, bucket: u32) -> bool {
-        self.has_capacity(bucket).unwrap_or(false)
-    }
-
-    fn stamps_issued(&self) -> u64 {
-        self.issued
-    }
-}
-
 /// A [`StampIssuer`] that stamps content through a [`Snapshot`]'s table, so
 /// content stamping and snapshot allocation share one table and never collide.
 ///
-/// Owner-aware, unlike stamping a bare [`UsageTable`]: on a mutable batch it
+/// Owner-aware, unlike stamping a bare [`UsageTable`](crate::UsageTable): on a
+/// mutable batch it
 /// skips the reserved slots so the ring never evicts the batch-state chunks. It
 /// owns the snapshot by value to drop into `BatchStamper::new`; recover it with
 /// [`into_snapshot`](Self::into_snapshot).

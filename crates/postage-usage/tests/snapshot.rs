@@ -389,14 +389,3 @@ fn address_in_bucket(bucket: u32) -> nectar_primitives::SwarmAddress {
     bytes[1] = bucket as u8;
     nectar_primitives::SwarmAddress::new(bytes)
 }
-
-/// The `raw-table` escape hatch still exposes direct table mutation when
-/// explicitly opted into.
-#[cfg(feature = "raw-table")]
-#[test]
-fn raw_table_mut_allows_direct_recording() {
-    let mut snapshot = Snapshot::new(UsageTable::new(batch_id(), 20, BUCKET_DEPTH).unwrap());
-    let index = snapshot.table_mut().record(7).unwrap();
-    assert_eq!(index, 0);
-    assert_eq!(snapshot.table().count(7).unwrap(), 1);
-}

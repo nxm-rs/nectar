@@ -93,18 +93,6 @@ impl Snapshot {
         &self.table
     }
 
-    /// Returns a mutable reference to the usage table (the `raw-table` feature).
-    ///
-    /// An escape hatch that bypasses the reserved-aware issuance path: recording
-    /// content directly on a mutable batch does not skip the reserved slots and
-    /// can overwrite the snapshot's own data after the ring wraps. Prefer
-    /// [`record_address`](Self::record_address) / `into_issuer` for issuance and
-    /// [`dilute`](Self::dilute) for dilution.
-    #[cfg(feature = "raw-table")]
-    pub const fn table_mut(&mut self) -> &mut UsageTable {
-        &mut self.table
-    }
-
     /// Applies an on-chain dilution, growing per-bucket capacity without
     /// changing any counter or cursor. Safe in both modes: the reserved slots
     /// stay below the old capacity and remain valid in the larger ring.

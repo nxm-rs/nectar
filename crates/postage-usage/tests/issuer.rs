@@ -1,5 +1,5 @@
-//! Tests for the `StampIssuer` implementations on `UsageTable` and the
-//! `Snapshot`-bound shared-table path.
+//! Tests for the `SnapshotIssuer` `StampIssuer` implementation, the sole
+//! owner-aware issuance path bound to a `Snapshot`'s shared table.
 
 #![cfg(feature = "issuer")]
 
@@ -26,32 +26,36 @@ fn content_address(bucket: u32, salt: u8) -> SwarmAddress {
 }
 
 #[test]
-fn usage_table_issues_sequential_indices() {
+fn snapshot_issuer_issues_sequential_indices() {
     let batch_id = B256::repeat_byte(0x42);
-    let mut table = UsageTable::new(batch_id, 18, 16).unwrap();
+    let table = UsageTable::new(batch_id, 18, BUCKET_DEPTH).unwrap();
+    // A fresh, never-persisted snapshot reserves no slots, so issuance fills the
+    // bucket from index zero just as a bare table once did.
+    let snapshot = Snapshot::new(table);
+    let mut issuer = SnapshotIssuer::new(snapshot, owner());
 
     let address = SwarmAddress::new([0xCB; 32]);
-    let first = table.prepare_stamp(&address, 1).unwrap();
-    let second = table.prepare_stamp(&address, 2).unwrap();
+    let first = issuer.prepare_stamp(&address, 1).unwrap();
+    let second = issuer.prepare_stamp(&address, 2).unwrap();
 
     assert_eq!(first.batch_id, batch_id);
     assert_eq!(first.index.bucket(), 0xCBCB);
     assert_eq!(first.index.index(), 0);
     assert_eq!(second.index.index(), 1);
 
-    assert_eq!(StampIssuer::batch_id(&table), batch_id);
-    assert_eq!(table.batch_depth(), 18);
-    assert_eq!(StampIssuer::bucket_depth(&table), 16);
-    assert_eq!(table.stamps_issued(), 2);
-    assert_eq!(table.max_bucket_utilization(), 2);
-    assert_eq!(table.bucket_utilization(0xCBCB), 2);
-    assert!(table.bucket_has_capacity(0xCBCB));
+    assert_eq!(StampIssuer::batch_id(&issuer), batch_id);
+    assert_eq!(issuer.batch_depth(), 18);
+    assert_eq!(StampIssuer::bucket_depth(&issuer), BUCKET_DEPTH);
+    assert_eq!(issuer.stamps_issued(), 2);
+    assert_eq!(issuer.max_bucket_utilization(), 2);
+    assert_eq!(issuer.bucket_utilization(0xCBCB), 2);
+    assert!(issuer.bucket_has_capacity(0xCBCB));
 
     // Capacity is 4 at depth 18; exhaust the bucket.
-    table.prepare_stamp(&address, 3).unwrap();
-    table.prepare_stamp(&address, 4).unwrap();
-    assert!(!table.bucket_has_capacity(0xCBCB));
-    assert!(table.prepare_stamp(&address, 5).is_err());
+    issuer.prepare_stamp(&address, 3).unwrap();
+    issuer.prepare_stamp(&address, 4).unwrap();
+    assert!(!issuer.bucket_has_capacity(0xCBCB));
+    assert!(issuer.prepare_stamp(&address, 5).is_err());
 }
 
 #[test]
@@ -113,6 +117,62 @@ fn shared_table_mutable_skips_reserved_across_wraps() {
         for r in &reserved_here {
             assert!(snapshot.is_reserved(&owner(), *r));
         }
+    }
+}
+
+/// Regression guard for nectar issue #56: the owner-unaware `StampIssuer for
+/// UsageTable` path is gone, so the only way to obtain a `StampIssuer` from this
+/// crate is through a `Snapshot`, which is owner-aware. This test drives the
+/// sole entry point through the exact scenario the deleted bare-table path would
+/// have mishandled (a near-full mutable batch whose ring wraps onto the
+/// snapshot's own slots) and asserts those reserved slots are never evicted. If
+/// a bare-table issuance path were ever reintroduced, the eviction it allows
+/// would have no owner context to skip the reserved set and this guarantee could
+/// not hold.
+#[test]
+fn sole_issuance_path_cannot_evict_snapshot_slots() {
+    let batch_id = B256::repeat_byte(0x42);
+    // A mutable bucket at capacity 4, pre-filled to 3 so the very next stamp
+    // wraps the ring and would land on the reserved slot under a naive issuer.
+    let counts = vec![3u32; 1usize << BUCKET_DEPTH];
+    let table = UsageTable::from_counts_mutable(batch_id, 18, BUCKET_DEPTH, counts).unwrap();
+    assert!(table.is_mutable());
+
+    // `SnapshotIssuer` is the only `StampIssuer` this crate exposes. Persist
+    // first so the snapshot reserves its own slots, then issue through the
+    // issuer alone.
+    let mut snapshot = Snapshot::new(table);
+    let plan = snapshot.plan_persist(&owner()).unwrap();
+    let reserved = snapshot.reserved_stamp_indices(&owner());
+    assert!(
+        !reserved.is_empty(),
+        "persist must reserve at least the root"
+    );
+
+    let mut issuer = SnapshotIssuer::new(snapshot, owner());
+    for chunk in &plan.chunks {
+        let bucket = chunk.stamp_index.bucket();
+        let reserved_here: Vec<StampIndex> = reserved
+            .iter()
+            .copied()
+            .filter(|r| r.bucket() == bucket)
+            .collect();
+        // Churn well past several wraps of the ring.
+        for salt in 0..120u8 {
+            let addr = content_address(bucket, salt);
+            let digest = issuer.prepare_stamp(&addr, salt as u64).unwrap();
+            assert!(
+                !reserved_here.contains(&digest.index),
+                "the sole issuance path evicted a reserved snapshot slot"
+            );
+        }
+    }
+
+    // The snapshot's own chunks survive: recover it and confirm every reserved
+    // slot is still recognised.
+    let snapshot = issuer.into_snapshot();
+    for index in &reserved {
+        assert!(snapshot.is_reserved(&owner(), *index));
     }
 }
 

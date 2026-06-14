@@ -163,8 +163,9 @@ The format is single-writer. On an immutable batch counters are monotone, so the
 
 ## Crate layout
 
-- `UsageTable`: in-memory counters plus batch geometry; implements slot assignment, dilution, and `merge_max` (immutable only). A table can be immutable (monotone fill watermarks) or mutable (wrapping ring cursors that skip the snapshot's reserved slots). With the `issuer` feature it implements `nectar_postage_issuer::StampIssuer`, so it drops into `BatchStamper` directly; the same table instance must back both content stamping and snapshot allocation so their slots never collide.
+- `UsageTable`: in-memory counters plus batch geometry; implements slot assignment, dilution, and `merge_max` (immutable only). A table can be immutable (monotone fill watermarks) or mutable (wrapping ring cursors that skip the snapshot's reserved slots).
 - `Snapshot`: a `UsageTable` plus persistence state (sequence, allocated snapshot-chunk slots).
+- `SnapshotIssuer` (`issuer` feature): the sole `nectar_postage_issuer::StampIssuer`, owner-aware so it drops into `BatchStamper` while content stamping and snapshot allocation share one table and never collide; a bare `UsageTable` has no reserved set and is deliberately not an issuer, so it cannot evict the snapshot's own chunks.
 - `Snapshot::plan_persist`: runs the self-accounting fixed point and returns the payloads, SOC ids, and stamp indices to publish.
 - `RootInfo::parse` / `RootInfo::assemble`: two-phase decode with full structural validation and digest verification.
 - `usage_chunk_id` / `usage_chunk_address`: deterministic addressing.
