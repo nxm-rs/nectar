@@ -47,7 +47,7 @@ pub use nectar_postage::*;
 pub use error::SigningError;
 
 // Issuing
-pub use issuer::{MemoryIssuer, StampIssuer};
+pub use issuer::{IssuanceMode, MemoryIssuer, StampIssuer};
 pub use sharded::ShardedIssuer;
 pub use stamper::{BatchStamper, Stamper};
 
