@@ -19,8 +19,15 @@ use crate::{
 /// payloads. Payload `n` of the snapshot (root is `n = 0`, leaf `i` is
 /// `n = i + 1`) belongs in the single-owner chunk with id
 /// [`usage_chunk_id`](crate::usage_chunk_id)`(batch_id, n)`.
+///
+/// Crate-internal: the only encoder is [`encode`], and [`Validated::plan_persist`]
+/// turns its output into the public [`PersistPlan`], so no external consumer ever
+/// holds an `Encoded`.
+///
+/// [`Validated::plan_persist`]: crate::Validated::plan_persist
+/// [`PersistPlan`]: crate::PersistPlan
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Encoded {
+pub(crate) struct Encoded {
     /// The root chunk payload.
     pub root: Bytes,
     /// The leaf chunk payloads, in chunk-index order.
@@ -183,6 +190,7 @@ fn select_width(counts: &[u32], base: u32, buckets: usize, allocated: usize) -> 
 }
 
 /// Encodes a snapshot into its root and leaf payloads.
+#[must_use = "the encoded payloads are the snapshot to publish; dropping them discards the encode"]
 pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result<Encoded> {
     if slots.is_empty() {
         return Err(UsageError::Malformed("root slot not allocated"));
@@ -477,6 +485,7 @@ impl RootInfo {
     ///
     /// `leaves` must contain exactly [`leaf_count`](Self::leaf_count)
     /// payloads in chunk-index order.
+    #[must_use = "the reassembled snapshot is the recovered state; dropping it discards the assemble"]
     pub fn assemble<L: AsRef<[u8]>>(self, leaves: &[L]) -> Result<Snapshot> {
         let buckets = 1usize << self.bucket_depth;
         let capacity = 1u32 << (self.depth - self.bucket_depth);
@@ -631,6 +640,19 @@ mod tests {
         assert!(padding_is_zero(&[0b1010_0000], 3));
         assert!(!padding_is_zero(&[0b1011_0000], 3));
         assert!(padding_is_zero(&[0xff], 8));
+    }
+
+    #[test]
+    fn encode_requires_an_allocated_root() {
+        // Encoding with no allocated slot has no root slot to serialize, so the
+        // codec refuses it. The public path reaches encoding only through
+        // `plan_persist`, which always allocates the root first.
+        let table =
+            UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap();
+        assert_eq!(
+            encode(&table, 0, &[]),
+            Err(UsageError::Malformed("root slot not allocated")),
+        );
     }
 
     #[test]
