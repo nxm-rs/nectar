@@ -302,7 +302,7 @@ impl RootInfo {
         let batch_id = B256::from_slice(&payload[4..36]);
         let depth = payload[36];
         let bucket_depth = payload[37];
-        validate_geometry(depth, bucket_depth)?;
+        validate_geometry(depth, bucket_depth).map_err(UsageError::into_corruption)?;
         let flags = payload[38];
         // Only bit 0 (mutable) is defined; any other bit set is rejected so a
         // future flag is never silently ignored by an older reader.
@@ -743,6 +743,25 @@ mod tests {
                 bucket: 5,
                 count: 17,
                 capacity: 16,
+            }
+        );
+        assert!(err.is_corruption());
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn parse_rejects_invalid_geometry_as_corruption() {
+        let mut root = root_with_one_exception();
+        // The geometry is read straight from the fetched bytes, so a corrupt
+        // bucket-depth byte (here past the supported maximum) is decode
+        // corruption, not a caller-input error.
+        root[37] = 17;
+        let err = RootInfo::parse(&root).unwrap_err();
+        assert_eq!(
+            err,
+            UsageError::CorruptGeometry {
+                depth: 12,
+                bucket_depth: 17,
             }
         );
         assert!(err.is_corruption());

@@ -137,6 +137,19 @@ pub enum UsageError {
         capacity: u32,
     },
 
+    /// A decoded snapshot carries a batch geometry outside the supported range.
+    /// The decode counterpart of [`InvalidGeometry`](Self::InvalidGeometry): the
+    /// fetched bytes are corrupt, not a caller input that can be adjusted.
+    #[error(
+        "corrupt snapshot: unsupported batch geometry: depth {depth}, bucket depth {bucket_depth}"
+    )]
+    CorruptGeometry {
+        /// The batch depth.
+        depth: u8,
+        /// The bucket (uniformity) depth.
+        bucket_depth: u8,
+    },
+
     /// A leaf payload does not match the digest committed in the root.
     #[error("leaf {index} digest mismatch")]
     LeafDigestMismatch {
@@ -195,8 +208,9 @@ impl UsageError {
     /// same check reached through [`RootInfo::assemble`](crate::RootInfo::assemble)
     /// means the fetched bytes are corrupt. The codec maps the latter through
     /// here so the static taxonomy stays correct: the decode path yields
-    /// [`CorruptBucket`](Self::CorruptBucket), [`CorruptCounter`](Self::CorruptCounter)
-    /// or [`CorruptSlot`](Self::CorruptSlot), all in the corruption set.
+    /// [`CorruptBucket`](Self::CorruptBucket), [`CorruptCounter`](Self::CorruptCounter),
+    /// [`CorruptSlot`](Self::CorruptSlot) or [`CorruptGeometry`](Self::CorruptGeometry),
+    /// all in the corruption set.
     pub(crate) const fn into_corruption(self) -> Self {
         match self {
             Self::InvalidBucket { bucket } => Self::CorruptBucket { bucket },
@@ -210,6 +224,13 @@ impl UsageError {
                 capacity,
             },
             Self::InvalidSlot { slot, capacity } => Self::CorruptSlot { slot, capacity },
+            Self::InvalidGeometry {
+                depth,
+                bucket_depth,
+            } => Self::CorruptGeometry {
+                depth,
+                bucket_depth,
+            },
             other => other,
         }
     }
@@ -246,7 +267,8 @@ impl UsageError {
             | Self::LeafCount { .. }
             | Self::CorruptBucket { .. }
             | Self::CorruptCounter { .. }
-            | Self::CorruptSlot { .. } => true,
+            | Self::CorruptSlot { .. }
+            | Self::CorruptGeometry { .. } => true,
 
             // Caller-fixable or expected control flow, and the internal-invariant
             // bug: none of these say the fetched bytes are corrupt.
@@ -318,7 +340,8 @@ impl UsageError {
             | Self::LeafCount { .. }
             | Self::CorruptBucket { .. }
             | Self::CorruptCounter { .. }
-            | Self::CorruptSlot { .. } => false,
+            | Self::CorruptSlot { .. }
+            | Self::CorruptGeometry { .. } => false,
 
             // Internal invariant: a bug to report, not a recoverable condition.
             Self::RingExhausted { .. } => false,
@@ -424,6 +447,10 @@ mod tests {
                 slot: 0,
                 capacity: 0,
             },
+            UsageError::CorruptGeometry {
+                depth: 0,
+                bucket_depth: 0,
+            },
             UsageError::LeafDigestMismatch { index: 0 },
             UsageError::LeafLength {
                 index: 0,
@@ -452,7 +479,8 @@ mod tests {
                 | UsageError::LeafCount { .. }
                 | UsageError::CorruptBucket { .. }
                 | UsageError::CorruptCounter { .. }
-                | UsageError::CorruptSlot { .. } => {
+                | UsageError::CorruptSlot { .. }
+                | UsageError::CorruptGeometry { .. } => {
                     assert!(err.is_corruption() && !err.is_recoverable());
                 }
                 UsageError::BucketFull { .. }
