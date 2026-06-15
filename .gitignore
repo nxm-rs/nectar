@@ -7,3 +7,7 @@ cspell.json
 
 # Nix
 .direnv/
+
+# Agent / local worktrees (created under these paths; never tracked)
+.claude/
+.worktrees/
