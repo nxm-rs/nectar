@@ -106,6 +106,9 @@ jobs:
                   cache-on-failure: true
             - name: Check postage-usage builds for wasm32
               env:
+                  # Override the workspace rust-toolchain.toml (stable) so -Z
+                  # build-std runs on the nightly the toolchain step installed.
+                  RUSTUP_TOOLCHAIN: nightly
                   RUSTFLAGS: "-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--import-memory"
               run: |
                   cargo check \
