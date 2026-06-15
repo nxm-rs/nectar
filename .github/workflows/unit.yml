@@ -86,11 +86,41 @@ jobs:
               # run: cargo test --doc --workspace --features "${{ matrix.network }}"
               run: cargo test --doc --workspace
 
+    wasm:
+        # The postage-usage client facade is meant to run in a browser. The
+        # primitives it builds on pull wasm-bindgen-rayon, so the only faithful
+        # wasm check is the threaded build the wasm demo uses: nightly, build-std,
+        # and the atomics / bulk-memory target features.
+        name: wasm / postage-usage
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
+            - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2  # nightly
+              with:
+                  targets: wasm32-unknown-unknown
+                  components: rust-src
+            - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+              with:
+                  cache-on-failure: true
+            - name: Check postage-usage builds for wasm32
+              env:
+                  # Override the workspace rust-toolchain.toml (stable) so -Z
+                  # build-std runs on the nightly the toolchain step installed.
+                  RUSTUP_TOOLCHAIN: nightly
+                  RUSTFLAGS: "-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--import-memory"
+              run: |
+                  cargo check \
+                    -Z build-std=panic_abort,std \
+                    -p nectar-postage-usage --features client \
+                    --target wasm32-unknown-unknown
+
     unit-success:
         name: unit success
         runs-on: ubuntu-latest
         if: always()
-        needs: [test]
+        needs: [test, wasm]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed

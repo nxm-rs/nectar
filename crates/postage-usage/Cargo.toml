@@ -27,10 +27,13 @@ thiserror = { workspace = true }
 
 # optional
 alloy-signer = { workspace = true, optional = true }
+auto_impl = { workspace = true, optional = true }
+web-time = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["getrandom"] }
 alloy-signer-local = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
 default = ["std"]
@@ -47,9 +50,15 @@ issuer = ["std"]
 # Turns persist plans into signed single-owner chunks and stamps.
 seal = ["dep:alloy-signer", "std"]
 
+# High-level async facade (`BatchStamper`) that collapses the open / stamp /
+# flush cross-machine roam into three calls. The consumer supplies the network
+# through the `ChunkSource` and `ChunkSink` traits. Implies `seal` (it seals
+# every persist) and `std` (it reads the wall clock for the seal timestamp).
+client = ["std", "seal", "dep:auto_impl", "dep:web-time"]
+
 [[example]]
 name = "roam_between_machines"
-required-features = ["seal"]
+required-features = ["client", "seal"]
 
 [package.metadata.docs.rs]
 all-features = true
