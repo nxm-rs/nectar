@@ -67,7 +67,7 @@ impl Proof {
             }
 
             // Get hash for next level
-            current_hash = B256::from_slice(hasher.finalize().as_slice());
+            current_hash = hasher.finalize();
             current_index /= 2;
         }
 
@@ -85,7 +85,7 @@ impl Proof {
         // Add the intermediate hash
         hasher.update(current_hash.as_slice());
 
-        let computed_root = B256::from_slice(hasher.finalize().as_slice());
+        let computed_root = hasher.finalize();
 
         // Compare with provided root hash
         Ok(computed_root.as_slice() == root_hash)
@@ -110,109 +110,50 @@ impl Prover for Hasher {
             .into());
         }
 
-        // Create segments from data, padding with zeros if needed
-        let data_len = data.len();
+        let data_len = data.len().min(BRANCHES * SEGMENT_SIZE);
 
-        // Use platform-specific optimizations for segment generation
-        #[cfg(not(target_arch = "wasm32"))]
-        let segments = {
-            use rayon::prelude::*;
-            (0..BRANCHES)
-                .into_par_iter()
-                .map(|i| {
-                    let start = i * SEGMENT_SIZE;
-                    let mut segment = [0u8; SEGMENT_SIZE];
-
-                    if start < data_len {
-                        let end = (start + SEGMENT_SIZE).min(data_len);
-                        let copy_len = end - start;
-                        segment[..copy_len].copy_from_slice(&data[start..end]);
-                    }
-
-                    B256::from_slice(&segment)
-                })
-                .collect::<Vec<_>>()
-        };
-
-        #[cfg(target_arch = "wasm32")]
-        let segments = {
-            let mut segs = Vec::with_capacity(BRANCHES);
-            for i in 0..BRANCHES {
-                let start = i * SEGMENT_SIZE;
-                let mut segment = [0u8; SEGMENT_SIZE];
-
-                if start < data_len {
-                    let end = (start + SEGMENT_SIZE).min(data_len);
-                    let copy_len = end - start;
-                    segment[..copy_len].copy_from_slice(&data[start..end]);
-                }
-
-                segs.push(B256::from_slice(&segment));
+        // Build the 128 raw leaf segments directly into a fixed-size stack array.
+        // Leaves are the *raw* zero-padded 32-byte segments (not pre-hashed); the
+        // first keccak combines two raw segments. No heap allocation, no rayon —
+        // for a single 4096-byte tree the fan-out overhead dwarfs the work.
+        let mut level = [B256::ZERO; BRANCHES];
+        for (i, slot) in level.iter_mut().enumerate() {
+            let start = i * SEGMENT_SIZE;
+            if start < data_len {
+                let end = (start + SEGMENT_SIZE).min(data_len);
+                let mut seg = [0u8; SEGMENT_SIZE];
+                seg[..end - start].copy_from_slice(&data[start..end]);
+                *slot = B256::from(seg);
             }
+            // else: leaf stays B256::ZERO (zero-padded segment)
+        }
 
-            segs
-        };
+        // The segment being proven (a raw leaf).
+        let segment = level[segment_index];
 
-        // Get the segment being proven
-        let segment = segments[segment_index];
-
-        // Generate proof segments
+        // Walk up the tree once, recording the sibling at each of the 7 levels
+        // and collapsing pairs in place. `width` halves each round.
         let mut proof_segments = Vec::with_capacity(PROOF_LENGTH);
-
-        // Build the Merkle tree level by level
-        let mut current_level = segments;
         let mut current_index = segment_index;
+        let mut width = BRANCHES;
 
-        // Continue until we reach the root (or until we have BMT_PROOF_LENGTH segments)
-        while proof_segments.len() < PROOF_LENGTH {
-            // Get sibling's index
-            let sibling_index = if current_index.is_multiple_of(2) {
-                current_index + 1
-            } else {
-                current_index - 1
-            };
+        while width > 1 {
+            let sibling_index = current_index ^ 1;
+            proof_segments.push(level[sibling_index]);
 
-            // Add sibling to proof
-            if sibling_index < current_level.len() {
-                proof_segments.push(current_level[sibling_index]);
-            } else {
-                proof_segments.push(B256::ZERO);
-            }
-
-            // Compute the next level up in the tree
-            let mut next_level = Vec::with_capacity(current_level.len().div_ceil(2));
-
-            for i in (0..current_level.len()).step_by(2) {
-                let left = &current_level[i];
-                let right = if i + 1 < current_level.len() {
-                    &current_level[i + 1]
-                } else {
-                    &B256::ZERO
-                };
-
-                // Hash the pair to create the parent node
+            let parents = width / 2;
+            for j in 0..parents {
                 let mut hasher = Keccak256::new();
-                hasher.update(left.as_slice());
-                hasher.update(right.as_slice());
-
-                let parent = B256::from_slice(hasher.finalize().as_slice());
-                next_level.push(parent);
+                hasher.update(level[2 * j].as_slice());
+                hasher.update(level[2 * j + 1].as_slice());
+                level[j] = hasher.finalize();
             }
 
-            // Move up to the next level
-            current_level = next_level;
-            current_index /= 2;
-
-            // If we've reached the root or have only one node, break
-            if current_level.len() <= 1 {
-                break;
-            }
+            current_index >>= 1;
+            width = parents;
         }
 
-        // Ensure we have exactly BMT_PROOF_LENGTH segments in our proof
-        while proof_segments.len() < PROOF_LENGTH {
-            proof_segments.push(B256::ZERO);
-        }
+        debug_assert_eq!(proof_segments.len(), PROOF_LENGTH);
 
         // Include the prefix in the proof if there is one
         let prefix = if !self.prefix().is_empty() {
