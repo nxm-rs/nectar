@@ -88,31 +88,30 @@ jobs:
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The
-        # primitives it builds on pull wasm-bindgen-rayon, so the only faithful
-        # wasm check is the threaded build the wasm demo uses: nightly, build-std,
-        # and the atomics / bulk-memory target features.
+        # thread pool (wasm-bindgen-rayon) is opt-in behind the primitives
+        # `parallel` / `wasm-threads` features, so the crate builds for wasm32
+        # single-threaded by default. A plain stable check on the default
+        # features is therefore the faithful one.
         name: wasm / postage-usage
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
             - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
-            - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2  # nightly
+            - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
               with:
                   targets: wasm32-unknown-unknown
-                  components: rust-src
             - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
               with:
                   cache-on-failure: true
             - name: Check postage-usage builds for wasm32
               env:
-                  # Override the workspace rust-toolchain.toml (stable) so -Z
-                  # build-std runs on the nightly the toolchain step installed.
-                  RUSTUP_TOOLCHAIN: nightly
-                  RUSTFLAGS: "-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--import-memory"
+                  # The workspace rust-toolchain.toml pins 1.92, which has no
+                  # wasm32 std installed here; use the stable toolchain the setup
+                  # step added the wasm32 target to.
+                  RUSTUP_TOOLCHAIN: stable
               run: |
                   cargo check \
-                    -Z build-std=panic_abort,std \
                     -p nectar-postage-usage --features client \
                     --target wasm32-unknown-unknown
 
