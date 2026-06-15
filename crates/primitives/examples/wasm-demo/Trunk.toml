@@ -6,9 +6,8 @@ release = true
 target = "index.html"
 # Output directory (created automatically)
 dist = "dist"
-# Leave wasm-opt disabled: binaryen must run with --enable-threads to accept the
-# shared-memory threaded module, and that is not wired into the Pages workflow.
-# Size optimization comes from the workspace-root release profile instead.
+# wasm-opt is left disabled; size optimization comes from the workspace-root
+# release profile instead.
 wasm_opt = false
 
 public_url = "/"
