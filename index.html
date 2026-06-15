@@ -3,17 +3,6 @@
     <head>
         <meta charset="utf-8" />
         <title>BMT Hasher Demo</title>
-        <!--
-            The demo compiles nectar-primitives with wasm-bindgen-rayon, so the
-            wasm module imports a shared memory and needs SharedArrayBuffer.
-            That requires a cross-origin-isolated context (COOP/COEP), which
-            GitHub Pages cannot send as response headers. coi-serviceworker
-            registers a service worker that injects those headers locally and
-            reloads once, enabling SharedArrayBuffer on static hosts. It must
-            run before the wasm bootstrap, so it is loaded first here.
-        -->
-        
-        <script src="coi-serviceworker.min.js"></script>
         <link rel="stylesheet" href="/nectar/styles.css" integrity="sha384-EnLXN2qlrRASfFA2tUS9BA5lLlnXytYCRRjpWV1SSbdlEnME5gR8JhMWhwojR69h"/>
         
 <script type="module">
@@ -27,7 +16,7 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
-    <link rel="modulepreload" href="/nectar/bmt-wasm-demo.js" crossorigin="anonymous" integrity="sha384-QyOFv9+yYlq6QmL4OHA73yBA5+XjZozjX3i67K3xaRBnpOxF4aVPLkgXHs2/YO28"><link rel="preload" href="/nectar/bmt-wasm-demo_bg.wasm" crossorigin="anonymous" integrity="sha384-kWhD+uYLSTHy9Gqtmc9gMSRA0E+MF3yfZOCDKH8C911s2p8DFEGwaGu/p0X+FkUr" as="fetch" type="application/wasm"></head>
+    <link rel="modulepreload" href="/nectar/bmt-wasm-demo.js" crossorigin="anonymous" integrity="sha384-YA0zGK+JRljH/bY8F7JbXaAg8lLu+xkdaOPhBYru288fVMHp5vzmWqxt7UvhrIEd"><link rel="preload" href="/nectar/bmt-wasm-demo_bg.wasm" crossorigin="anonymous" integrity="sha384-OiI1xDgfEWis6R5QWiM0B8cFxSPq4KnOtCIhsvVqf/FM2HHkTSF7oy6LBuaPssRK" as="fetch" type="application/wasm"></head>
     <body>
         <main>
             <h1>Swarm Primitives Playground</h1>
