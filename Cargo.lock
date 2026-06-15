@@ -2122,11 +2122,14 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "auto_impl",
  "bytes",
  "nectar-postage",
  "nectar-postage-issuer",
  "nectar-primitives",
  "thiserror",
+ "tokio",
+ "web-time",
 ]
 
 [[package]]
