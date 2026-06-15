@@ -344,19 +344,19 @@ pub mod mainnet {
 
     /// Postage stamp contract.
     pub const POSTAGE_STAMP: PostageStamp = PostageStamp::new(
-        address!("5b53f7a1975eb212d4b20b7cdd443baa189af7c9"),
+        address!("45a1502382541Cd610CC9068e88727426b696293"),
         31305656,
     );
 
     /// Stake registry contract.
     pub const STAKING: StakeRegistry = StakeRegistry::new(
-        address!("0c6aa197271466f0afe3818ca03ac47d8f5c2f8a"),
+        address!("da2a16EE889E7F04980A8d597b48c8D51B9518F4"),
         40430237,
     );
 
     /// Redistribution contract.
     pub const REDISTRIBUTION: Redistribution = Redistribution::new(
-        address!("eb210c2e166f61b3fd32246d53893f8b9d2a624c"),
+        address!("5069cdfB3D9E56d23B1cAeE83CE6109A7E4fd62d"),
         41105199,
     );
 
@@ -387,23 +387,23 @@ pub mod testnet {
 
     /// BZZ token (sBZZ on Sepolia).
     pub const BZZ_TOKEN: Token =
-        Token::new(address!("6e01ee6183721ae9a006fd4906970c1583863765"), 0);
+        Token::new(address!("543dDb01Ba47acB11de34891cD86B675F04840db"), 0);
 
     /// Postage stamp contract.
     pub const POSTAGE_STAMP: PostageStamp = PostageStamp::new(
-        address!("621c2e0fa5ed488c7124eb55cc7eb3af75d0d9e8"),
+        address!("cdfdC3752caaA826fE62531E0000C40546eC56A6"),
         6596277,
     );
 
     /// Stake registry contract.
     pub const STAKING: StakeRegistry = StakeRegistry::new(
-        address!("6f252dd6f340f6c6d2f6ee8954b011dd5aba4350"),
+        address!("EEF13Ef9eD9cDD169701eeF3cd832df298dD1bB4"),
         8262529,
     );
 
     /// Redistribution contract.
     pub const REDISTRIBUTION: Redistribution = Redistribution::new(
-        address!("fb6c7d33be1fb12f4c5da71df7c9d5c22970ba7a"),
+        address!("5b718E36F5Ce2F2F7e25A397040436Ce6af3e89e"),
         8646721,
     );
 
