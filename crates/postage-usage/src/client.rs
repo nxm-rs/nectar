@@ -27,7 +27,8 @@
 //! a batch that already has a published root.
 
 use alloc::vec::Vec;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::Address;
 use alloy_signer::SignerSync;
@@ -60,10 +61,15 @@ pub trait ChunkSource {
 
     /// Fetches the data payload of the chunk at `address`, or `Ok(None)` if the
     /// network confirms no such chunk exists.
+    ///
+    /// The returned future intentionally carries no `Send` bound: a native
+    /// transport whose future is `Send` propagates that through
+    /// [`BatchStamper::open`] and [`BatchStamper::flush`] automatically, while a
+    /// browser transport with a `!Send` future can still implement this trait.
     fn fetch(
         &self,
         address: &SwarmAddress,
-    ) -> impl core::future::Future<Output = Result<Option<Bytes>, Self::Error>> + Send;
+    ) -> impl core::future::Future<Output = Result<Option<Bytes>, Self::Error>>;
 }
 
 /// Publishes a sealed snapshot chunk (the single-owner chunk and its stamp) to
@@ -74,10 +80,14 @@ pub trait ChunkSink {
     type Error: core::error::Error + Send + Sync + 'static;
 
     /// Uploads a sealed snapshot chunk.
+    ///
+    /// As with [`ChunkSource::fetch`], the returned future carries no `Send`
+    /// bound so a `!Send` browser transport can implement it; native `Send`-ness
+    /// propagates through the facade on its own.
     fn push(
         &self,
         sealed: &SealedChunk,
-    ) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send;
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>>;
 }
 
 /// Errors produced by the [`BatchStamper`] facade.
@@ -369,6 +379,52 @@ mod tests {
         async fn push(&self, _sealed: &SealedChunk) -> Result<(), Self::Error> {
             Ok(())
         }
+    }
+
+    /// A transport whose futures capture an [`Rc`](std::rc::Rc) and are therefore
+    /// `!Send`, standing in for a browser transport (`fetch`, websocket) that
+    /// cannot produce `Send` futures.
+    struct LocalNet(std::rc::Rc<()>);
+
+    impl ChunkSource for LocalNet {
+        type Error = MemError;
+        fn fetch(
+            &self,
+            _address: &SwarmAddress,
+        ) -> impl core::future::Future<Output = Result<Option<Bytes>, Self::Error>> {
+            let hold = self.0.clone();
+            async move {
+                let _hold = &hold;
+                Ok(None)
+            }
+        }
+    }
+
+    impl ChunkSink for LocalNet {
+        type Error = MemError;
+        fn push(
+            &self,
+            _sealed: &SealedChunk,
+        ) -> impl core::future::Future<Output = Result<(), Self::Error>> {
+            let hold = self.0.clone();
+            async move {
+                let _hold = &hold;
+                Ok(())
+            }
+        }
+    }
+
+    /// Compile-time proof that a `!Send` transport satisfies [`ChunkSource`] and
+    /// [`ChunkSink`]. This only type-checks while neither trait bounds its future
+    /// with `Send`, which is exactly what lets a single-threaded browser
+    /// transport implement the facade. Re-adding a `+ Send` bound breaks here.
+    #[test]
+    fn non_send_transport_satisfies_the_traits() {
+        fn assert_source<S: ChunkSource>(_: &S) {}
+        fn assert_sink<K: ChunkSink>(_: &K) {}
+        let local = LocalNet(std::rc::Rc::new(()));
+        assert_source(&local);
+        assert_sink(&local);
     }
 
     fn test_batch(signer: &PrivateKeySigner, immutable: bool) -> Batch {
