@@ -618,7 +618,9 @@ mod tests {
     type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 
     fn get_test_wallet() -> PrivateKeySigner {
-        // Test private key corresponding to address 0x8d3766440f0d7b949a5e32995d09619a7f86e632
+        // Test private key whose address is 0x654bFE2E030Ff82B8741c7a0BF9eC26Ea523b31C.
+        // (The 0x8d3766... owner elsewhere in these tests comes from the published
+        // SOC-test signature, which was produced by a different key.)
         let pk = hex!("2c7536e3605d9c16a7a3d7b1898e529396a65c23a3bcbd4012a11cf2731b0fbc");
         PrivateKeySigner::from_slice(&pk).unwrap()
     }

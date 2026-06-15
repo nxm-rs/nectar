@@ -81,6 +81,10 @@ impl<const BODY_SIZE: usize> SyncChunkGet<BODY_SIZE> for MemoryStore<BODY_SIZE> 
             .cloned()
             .ok_or_else(|| ChunkStoreError::not_found(address))
     }
+
+    fn is_not_found(&self, error: &Self::Error) -> bool {
+        error.is_not_found()
+    }
 }
 
 impl<const BODY_SIZE: usize> SyncChunkHas<BODY_SIZE> for MemoryStore<BODY_SIZE> {
@@ -98,6 +102,10 @@ impl<const BODY_SIZE: usize> SyncChunkGet<BODY_SIZE>
         self.get(address)
             .cloned()
             .ok_or_else(|| ChunkStoreError::not_found(address))
+    }
+
+    fn is_not_found(&self, error: &Self::Error) -> bool {
+        error.is_not_found()
     }
 }
 

@@ -64,7 +64,7 @@ mod tree;
 use crate::chunk::ChunkAddress;
 #[cfg(feature = "encryption")]
 use crate::chunk::encryption::EncryptedChunkRef;
-use crate::store::{SyncChunkGet, SyncChunkPut};
+use crate::store::{MaybeSend, MaybeSync, SyncChunkGet, SyncChunkPut};
 
 // Async (primary) re-exports
 #[cfg(feature = "encryption")]
@@ -96,7 +96,7 @@ mod join_ref_sealed {
 }
 
 /// Maps a reference type to its join mode.
-/// Sealed — implemented for `ChunkAddress` and `EncryptedChunkRef`.
+/// Sealed; implemented for `ChunkAddress` and `EncryptedChunkRef`.
 pub trait JoinRef: join_ref_sealed::Sealed + Clone + Send + Sync + 'static {
     /// The join mode associated with this reference type.
     type Mode: mode::JoinMode + Send + Sync;
@@ -205,9 +205,10 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: crate::store::ChunkGet<BODY_SIZE>
     fn joiner<R: JoinRef>(
         self,
         root: R,
-    ) -> impl std::future::Future<Output = error::Result<GenericJoiner<Self, R::Mode, BODY_SIZE>>> + Send
+    ) -> impl std::future::Future<Output = error::Result<GenericJoiner<Self, R::Mode, BODY_SIZE>>>
+    + MaybeSend
     where
-        Self: Sized + Clone + Send + Sync + 'static,
+        Self: Sized + Clone + MaybeSend + MaybeSync + 'static,
     {
         GenericJoiner::new(self, root.into_root_ref())
     }
@@ -216,9 +217,9 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: crate::store::ChunkGet<BODY_SIZE>
     fn read_file<R: JoinRef>(
         self,
         root: R,
-    ) -> impl std::future::Future<Output = error::Result<Vec<u8>>> + Send
+    ) -> impl std::future::Future<Output = error::Result<Vec<u8>>> + MaybeSend
     where
-        Self: Sized + Clone + Send + Sync + 'static,
+        Self: Sized + Clone + MaybeSend + MaybeSync + 'static,
     {
         join(self, root)
     }

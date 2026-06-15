@@ -3,9 +3,6 @@
 //! This module provides JavaScript-friendly wrappers around Hasher types.
 
 use super::{Hasher, Proof, Prover};
-use crate::chunk::ChunkAddress;
-use alloy_primitives::B256;
-use digest::Digest;
 use js_sys::{Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 
