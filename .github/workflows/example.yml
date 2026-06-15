@@ -37,7 +37,9 @@ jobs:
             - name: Build WASM Demo
               run: |
                   cd crates/primitives/examples/wasm-demo
-                  trunk build --release --public-url /nectar/
+                  # rust-toolchain.toml pins 1.92, whose wasm32 std is not
+                  # installed here; build with the stable toolchain that has it.
+                  RUSTUP_TOOLCHAIN=stable trunk build --release --public-url /nectar/
 
             - name: Deploy to GitHub Pages
               uses: JamesIves/github-pages-deploy-action@d92aa235d04922e8f08b40ce78cc5442fcfbfa2f  # v4.8.0

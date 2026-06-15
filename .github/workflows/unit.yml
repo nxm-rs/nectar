@@ -105,6 +105,11 @@ jobs:
               with:
                   cache-on-failure: true
             - name: Check postage-usage builds for wasm32
+              env:
+                  # The workspace rust-toolchain.toml pins 1.92, which has no
+                  # wasm32 std installed here; use the stable toolchain the setup
+                  # step added the wasm32 target to.
+                  RUSTUP_TOOLCHAIN: stable
               run: |
                   cargo check \
                     -p nectar-postage-usage --features client \
