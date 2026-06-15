@@ -4,25 +4,37 @@
 //! batch on one machine, persist the per-bucket counters *inside the batch
 //! itself* as single-owner chunks, and then resume issuing from a completely
 //! fresh machine holding nothing but their key and the batch id. This example
-//! walks that story end to end against an immutable batch.
+//! walks that story end to end against an immutable batch through the high-level
+//! [`BatchStamper`] facade, which collapses the cross-machine ceremony into
+//! `open` / `stamp` / `flush`.
 //!
 //! Run it with:
 //!
 //! ```text
-//! cargo run -p nectar-postage-usage --example roam_between_machines --features seal
+//! cargo run -p nectar-postage-usage --example roam_between_machines --features "client seal"
 //! ```
 //!
-//! It uses no network: "machine A" and "machine B" are two scopes in the same
-//! process, and the only thing that crosses between them is the bytes machine A
-//! would have uploaded to the network (the sealed snapshot chunks). Machine B
-//! starts from the key and batch id alone, exactly as a real second device
-//! would, and recovers the counters by parsing those bytes.
+//! It uses no real network: "machine A" and "machine B" are two scopes in the
+//! same process sharing one in-memory [`MemNet`], which implements both
+//! [`ChunkSource`] and [`ChunkSink`]. Machine B starts from the key and batch id
+//! alone, exactly as a real second device would, and the facade recovers the
+//! counters by fetching and parsing the chunks machine A uploaded.
+//!
+//! Power users who need partial persists, a custom seal timestamp policy, or
+//! direct access to the [`PersistPlan`](nectar_postage_usage::PersistPlan) can
+//! drop to the low-level `Snapshot` / `revalidate` / `seal_plan` path the facade
+//! is built on; it stays public and unchanged.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{Address, B256, hex};
 use alloy_signer_local::PrivateKeySigner;
+use bytes::Bytes;
+use nectar_postage::Batch;
 use nectar_postage_usage::{
-    Mutability, PublishedSequence, RootInfo, SealedChunk, Snapshot, SwarmAddress, UsageError,
-    UsageTable, seal_plan, usage_chunk_address,
+    BatchStamper, ChunkSink, ChunkSource, Mutability, PublishedSequence, SealedChunk, Snapshot,
+    SwarmAddress, UsageError, UsageTable,
 };
 use nectar_primitives::Chunk;
 
@@ -32,25 +44,57 @@ use nectar_primitives::Chunk;
 const DEPTH: u8 = 20;
 const BUCKET_DEPTH: u8 = 16;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// A shared in-memory network keyed by single-owner-chunk address. The same
+/// value backs the [`ChunkSource`] machine B reads from and the [`ChunkSink`]
+/// machine A uploads to, so the only thing crossing between the two machines is
+/// the bytes on the wire.
+#[derive(Clone, Default)]
+struct MemNet {
+    chunks: Arc<Mutex<HashMap<SwarmAddress, Bytes>>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("in-memory network error")]
+struct MemError;
+
+impl ChunkSource for MemNet {
+    type Error = MemError;
+    async fn fetch(&self, address: &SwarmAddress) -> Result<Option<Bytes>, Self::Error> {
+        Ok(self.chunks.lock().unwrap().get(address).cloned())
+    }
+}
+
+impl ChunkSink for MemNet {
+    type Error = MemError;
+    async fn push(&self, sealed: &SealedChunk) -> Result<(), Self::Error> {
+        let address = *sealed.chunk.address();
+        let payload = Bytes::copy_from_slice(sealed.chunk.data().as_ref());
+        self.chunks.lock().unwrap().insert(address, payload);
+        Ok(())
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The owner key is the one secret a user carries between machines. The batch
     // id is public and recoverable; together they pin every snapshot chunk
     // address, so machine B can find the state without any local store.
     let signer = PrivateKeySigner::random();
     let owner: Address = signer.address();
     let batch_id = B256::repeat_byte(0x42);
+    let batch = Batch::new(batch_id, 0, 0, owner, DEPTH, BUCKET_DEPTH, true);
 
     println!("Postage batch usage: roaming between machines");
     println!("==============================================\n");
     println!("owner    {}", hex::encode_prefixed(owner));
     println!("batch id {}\n", hex::encode_prefixed(batch_id));
 
-    // The bytes that travel from machine A to machine B: the sealed snapshot
-    // chunks machine A uploads to the network. Machine B fetches the root and
-    // any leaves back from these same addresses.
-    let uploaded = machine_a(&signer, owner, batch_id)?;
+    // The shared in-memory network. Machine A uploads into it; machine B reads
+    // back out of it.
+    let net = MemNet::default();
 
-    machine_b(&signer, owner, batch_id, &uploaded)?;
+    machine_a(&signer, &batch, &net).await?;
+    machine_b(&signer, &batch, &net).await?;
 
     stale_persist_is_rejected(owner, batch_id)?;
 
@@ -59,156 +103,97 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Machine A: a fresh immutable batch. Issue one content stamp, persist, seal,
-/// and return the chunk bytes that would be uploaded to the network.
-fn machine_a(
+/// Machine A: a fresh immutable batch. Open, issue one content stamp, flush.
+async fn machine_a(
     signer: &PrivateKeySigner,
-    owner: Address,
-    batch_id: B256,
-) -> Result<Vec<SealedChunk>, Box<dyn std::error::Error>> {
+    batch: &Batch,
+    net: &MemNet,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Machine A: fresh batch, first issuance");
     println!("-------------------------------------");
 
-    // A genuinely new, never-persisted batch starts at sequence 0 with no slots.
-    let table = UsageTable::new(batch_id, DEPTH, BUCKET_DEPTH, Mutability::Immutable)?;
-    let mut snapshot = Snapshot::new(table);
+    // Open the stamper. The network read returns nothing for a never-published
+    // batch, so the facade starts fresh at sequence 0.
+    let mut stamper = BatchStamper::open(signer.clone(), batch, net.clone(), net.clone()).await?;
+    println!("opened fresh at sequence {}", stamper.snapshot().sequence());
 
-    // Issue a stamp for a content chunk through the snapshot's issuing handle.
-    // The handle is the sole counter-advance path and is reserved-aware by
-    // construction, so a stamp can never land on the snapshot's own slots.
+    // Issue a content stamp. This is local: no network round trip, and the
+    // reserved snapshot slots can never be assigned to content.
     let content = SwarmAddress::from(B256::repeat_byte(0x99));
-    let stamp_index = snapshot.issuer(owner).record_address(&content)?;
+    let stamp_index = stamper.stamp(&content)?;
     println!(
         "issued a content stamp at bucket {}, slot {}",
         stamp_index.bucket(),
         stamp_index.index()
     );
 
-    // Plan a persist. This is a brand new batch that has never been published,
-    // so a live network read of the root chunk address would return nothing and
-    // the floor is `NONE`. The first persist therefore emits sequence 1.
-    let plan = snapshot
-        .revalidate(PublishedSequence::NONE)?
-        .plan_persist(&owner)?;
+    // Flush: re-read the live floor (NONE for a fresh batch), revalidate, plan,
+    // seal, and upload. The first persist emits sequence 1.
+    stamper.flush().await?;
     println!(
-        "planned persist sequence {} ({} chunk(s) to publish)",
-        plan.sequence,
-        plan.chunks.len()
+        "flushed: published sequence {} with slots {:?}\n",
+        stamper.snapshot().sequence(),
+        stamper.snapshot().allocated_slots()
     );
 
-    // Seal the plan: sign each snapshot chunk as a single-owner chunk and stamp
-    // it with its planned slot. The timestamp is the wall clock the reserve uses
-    // to overwrite the previous version in place; it must strictly increase
-    // across persists, which the seal enforces in process.
-    let sealed = seal_plan(&mut snapshot, &plan, 1_000, signer)?;
-
-    println!("sealed {} snapshot chunk(s), uploading to:", sealed.len());
-    for (planned, chunk) in plan.chunks.iter().zip(sealed.iter()) {
-        // The sealed single-owner chunk lands at exactly the address derived from
-        // the batch id and owner, so machine B can recompute it blind.
-        let derived = usage_chunk_address(&batch_id, &owner, planned.index);
-        assert_eq!(*chunk.chunk.address(), derived);
-        println!(
-            "  chunk {} -> {}  (stamp bucket {}, slot {})",
-            planned.index,
-            hex::encode_prefixed(derived),
-            planned.stamp_index.bucket(),
-            planned.stamp_index.index()
-        );
-    }
-    println!();
-
-    Ok(sealed)
+    Ok(())
 }
 
-/// Machine B: a fresh start with only the key and batch id. Recover the state
-/// from the bytes machine A uploaded, then issue and persist again.
-fn machine_b(
+/// Machine B: a fresh start with only the key and batch id. Open against the
+/// same in-memory network to recover the state, then issue and flush again.
+async fn machine_b(
     signer: &PrivateKeySigner,
-    owner: Address,
-    batch_id: B256,
-    uploaded: &[SealedChunk],
+    batch: &Batch,
+    net: &MemNet,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Machine B: fresh start, recover and resume");
     println!("------------------------------------------");
 
-    // Machine B knows where the root lives from the key and batch id alone:
-    // chunk index 0 of this batch.
-    let root_address = usage_chunk_address(&batch_id, &owner, 0);
-    println!("root chunk address {}", hex::encode_prefixed(root_address));
-
-    // Fetch the root chunk bytes back (here, straight from what A uploaded). On a
-    // real network this is a single chunk retrieval at the address above.
-    let root_bytes =
-        chunk_payload(uploaded, &root_address).expect("machine A uploaded the root chunk");
-
-    // Parse the root. This is also the live network read that supplies the
-    // published-sequence floor for the next persist: whatever sequence is
-    // already published is the floor a fresh persist must strictly exceed.
-    let root = RootInfo::parse(root_bytes)?;
-    let floor = PublishedSequence::from(&root);
-    println!(
-        "parsed root: published sequence {}, {} leaf chunk(s) to fetch",
-        floor.get(),
-        root.leaf_count()
-    );
-
-    // Fetch each leaf the root commits to and reassemble. This snapshot is small
-    // enough to be inline, so there are no leaves, but the recovery path is the
-    // same at any size: `assemble` rebuilds the snapshot through `from_parts`,
-    // preserving the recovered sequence and slots.
-    let leaves: Vec<&[u8]> = (0..root.leaf_count())
-        .map(|leaf| {
-            let address = usage_chunk_address(&batch_id, &owner, leaf + 1);
-            chunk_payload(uploaded, &address).expect("machine A uploaded every leaf")
-        })
-        .collect();
-    let mut snapshot = root.assemble(&leaves)?;
+    // Open recovers the published root and any leaves, preserving the recovered
+    // sequence and slots. Machine B holds no local store; the key and batch id
+    // are enough.
+    let mut stamper = BatchStamper::open(signer.clone(), batch, net.clone(), net.clone()).await?;
+    let recovered_slots = stamper.snapshot().allocated_slots().to_vec();
     println!(
         "recovered snapshot at sequence {} with slots {:?}",
-        snapshot.sequence(),
-        snapshot.allocated_slots()
+        stamper.snapshot().sequence(),
+        recovered_slots
     );
-
-    let recovered_slots = snapshot.allocated_slots().to_vec();
 
     // Resume issuing from the recovered state. A different content chunk lands in
     // a different bucket, advancing that counter without disturbing the
     // snapshot's own reserved slots.
     let content = SwarmAddress::from(B256::repeat_byte(0xab));
-    let stamp_index = snapshot.issuer(owner).record_address(&content)?;
+    let stamp_index = stamper.stamp(&content)?;
     println!(
         "issued a content stamp at bucket {}, slot {}",
         stamp_index.bucket(),
         stamp_index.index()
     );
 
-    // Persist again against the floor read from the live root. The next sequence
-    // (2) strictly exceeds the published floor (1), so the persist is admitted.
-    let plan = snapshot.revalidate(floor)?.plan_persist(&owner)?;
-    println!("planned persist sequence {}", plan.sequence);
-    assert_eq!(plan.sequence, floor.get() + 1, "sequence advanced by one");
+    // Flush again. The live floor read from the root is 1, so the next sequence
+    // (2) is admitted, and the snapshot's own slots are reused rather than
+    // re-allocated.
+    stamper.flush().await?;
+    assert_eq!(stamper.snapshot().sequence(), 2, "sequence advanced by one");
     assert_eq!(
-        snapshot.allocated_slots(),
+        stamper.snapshot().allocated_slots(),
         recovered_slots.as_slice(),
         "the snapshot's own slots were reused, not re-allocated",
     );
     println!(
-        "slots reused: {:?} (no new metadata slot burned)",
-        snapshot.allocated_slots()
+        "flushed: sequence {}, slots reused {:?} (no new metadata slot burned)\n",
+        stamper.snapshot().sequence(),
+        stamper.snapshot().allocated_slots()
     );
-
-    // Seal the resumed persist with a strictly newer timestamp than machine A
-    // used, so the reserve overwrites the previous version in place.
-    let sealed = seal_plan(&mut snapshot, &plan, 2_000, signer)?;
-    println!("sealed {} snapshot chunk(s) for upload\n", sealed.len());
 
     Ok(())
 }
 
 /// Show that a persist whose next sequence does not strictly exceed the live
 /// published floor is rejected, so it can never overwrite a newer published
-/// version in place.
+/// version in place. This is the low-level guard the facade enforces on every
+/// flush.
 fn stale_persist_is_rejected(
     owner: Address,
     batch_id: B256,
@@ -228,8 +213,7 @@ fn stale_persist_is_rejected(
     // there first). Reading that as the floor rejects this snapshot's persist:
     // its next sequence (2) does not strictly exceed the floor (2).
     let floor = PublishedSequence::new(2);
-    let result = snapshot.revalidate(floor);
-    match result {
+    match snapshot.revalidate(floor) {
         Err(UsageError::StaleSequence { next, floor }) => {
             println!("refused: next sequence {next} does not exceed published floor {floor}");
         }
@@ -237,13 +221,4 @@ fn stale_persist_is_rejected(
     }
 
     Ok(())
-}
-
-/// Look up the payload of an uploaded snapshot chunk by its single-owner chunk
-/// address, simulating a network chunk retrieval.
-fn chunk_payload<'a>(uploaded: &'a [SealedChunk], address: &SwarmAddress) -> Option<&'a [u8]> {
-    uploaded
-        .iter()
-        .find(|sealed| sealed.chunk.address() == address)
-        .map(|sealed| sealed.chunk.data().as_ref())
 }

@@ -103,6 +103,8 @@ mod error;
 mod snapshot;
 mod table;
 
+#[cfg(feature = "client")]
+mod client;
 #[cfg(feature = "issuer")]
 mod issuer;
 #[cfg(feature = "seal")]
@@ -120,6 +122,9 @@ pub use issuer::SnapshotIssuer;
 
 #[cfg(feature = "seal")]
 pub use seal::{SealError, SealedChunk, seal_plan};
+
+#[cfg(feature = "client")]
+pub use client::{BatchStamper, ChunkSink, ChunkSource, ClientError};
 
 pub use nectar_primitives::SwarmAddress;
 
