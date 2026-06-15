@@ -2060,6 +2060,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-feeds"
+version = "0.2.1"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "arbitrary",
+ "bytes",
+ "derive_more",
+ "futures",
+ "nectar-primitives",
+ "proptest",
+ "serde",
+ "strum 0.28.0",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "nectar-mantaray"
 version = "0.2.1"
 dependencies = [
