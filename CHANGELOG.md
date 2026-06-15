@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/nxm-rs/nectar/releases/tag/v0.2.0) - 2026-06-15
+
+### Bug Fixes
+
+- [time] Unify wall-clock on web-time so primitives run on wasm32 ([#52](https://github.com/nxm-rs/nectar/issues/52))
+
+### Documentation
+
+- [postage-usage] Tighten rustdoc and fix broken intra-doc links
+- [postage-usage] Pin a multi-leaf golden vector for large batches
+- [postage-usage] Worked example of the record structure, byte-minimal width
+
+### Features
+
+- [primitives] Default-off wasm-threads plus a parallel feature ([#80](https://github.com/nxm-rs/nectar/issues/80))
+- [postage-usage] BatchStamper open/stamp/flush client facade ([#78](https://github.com/nxm-rs/nectar/issues/78))
+- [postage-usage] Cross-machine example, error taxonomy, caller docs ([#76](https://github.com/nxm-rs/nectar/issues/76))
+- [postage-usage] Seal-timestamp monotonicity, dirty/evict signals, steady-state no-clone ([#75](https://github.com/nxm-rs/nectar/issues/75))
+- [postage-usage] Gate persist behind a published-sequence floor ([#74](https://github.com/nxm-rs/nectar/issues/74))
+- [postage-usage] Add from_batch constructors and Mutability enum ([#73](https://github.com/nxm-rs/nectar/issues/73))
+- [postage-issuer] Map DepthIncrease events to issuer dilution ([#72](https://github.com/nxm-rs/nectar/issues/72))
+- [postage-issuer] Make MemoryIssuer fill-only and refuse mutable batches ([#69](https://github.com/nxm-rs/nectar/issues/69))
+- [postage] Add std-gated generic SnapshotStore trait for warm-path batch snapshot caching ([#67](https://github.com/nxm-rs/nectar/issues/67))
+- [postage-usage] Mutable batches and a shared single-table issuance path
+- [postage-usage] Expose reserved stamp indices for slot-reuse tooling
+- [postage-usage] Self-hosted batch utilization snapshots
+
+### Miscellaneous Tasks
+
+- [wasm] Build the default wasm artifacts single-threaded ([#81](https://github.com/nxm-rs/nectar/issues/81))
+
+### Refactor
+
+- [postage-issuer] Unify per-bucket counter logic behind a shared CounterTable ([#71](https://github.com/nxm-rs/nectar/issues/71))
+- [postage-usage] Make SnapshotIssuer the sole stamp-issuance path ([#68](https://github.com/nxm-rs/nectar/issues/68))
+
 ## [0.1.1](https://github.com/nxm-rs/nectar/releases/tag/v0.1.1) - 2026-06-10
 
 ### Bug Fixes
