@@ -79,7 +79,22 @@ fn hasher_root(data: &[u8], span: u64) -> B256 {
 /// Sizes that exercise the zero-tree rollup, segment padding, and the
 /// power-of-two subtree boundary — exactly where the optimisations live.
 const BOUNDARY_SIZES: &[usize] = &[
-    0, 1, 31, 32, 33, 63, 64, 65, 127, 128, 129, 2048, BODY - 1, BODY, BODY + 1, BODY + 1000,
+    0,
+    1,
+    31,
+    32,
+    33,
+    63,
+    64,
+    65,
+    127,
+    128,
+    129,
+    2048,
+    BODY - 1,
+    BODY,
+    BODY + 1,
+    BODY + 1000,
 ];
 
 #[test]
