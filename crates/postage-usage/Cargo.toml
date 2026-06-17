@@ -52,7 +52,7 @@ seal = ["dep:alloy-signer", "std"]
 
 # High-level async facade (`BatchStamper`) that collapses the open / stamp /
 # flush cross-machine roam into three calls. The consumer supplies the network
-# through the `ChunkSource` and `ChunkSink` traits. Implies `seal` (it seals
+# through the `SnapshotSource` and `SnapshotSink` traits. Implies `seal` (it seals
 # every persist) and `std` (it reads the wall clock for the seal timestamp).
 client = ["std", "seal", "dep:auto_impl", "dep:web-time"]
 

@@ -16,7 +16,7 @@
 //!
 //! It uses no real network: "machine A" and "machine B" are two scopes in the
 //! same process sharing one in-memory [`MemNet`], which implements both
-//! [`ChunkSource`] and [`ChunkSink`]. Machine B starts from the key and batch id
+//! [`SnapshotSource`] and [`SnapshotSink`]. Machine B starts from the key and batch id
 //! alone, exactly as a real second device would, and the facade recovers the
 //! counters by fetching and parsing the chunks machine A uploaded.
 //!
@@ -33,8 +33,8 @@ use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use nectar_postage::Batch;
 use nectar_postage_usage::{
-    BatchStamper, ChunkSink, ChunkSource, Mutability, PublishedSequence, SealedChunk, Snapshot,
-    SwarmAddress, UsageError, UsageTable,
+    BatchStamper, Mutability, PublishedSequence, SealedChunk, Snapshot, SnapshotSink,
+    SnapshotSource, SwarmAddress, UsageError, UsageTable,
 };
 use nectar_primitives::Chunk;
 
@@ -45,7 +45,7 @@ const DEPTH: u8 = 20;
 const BUCKET_DEPTH: u8 = 16;
 
 /// A shared in-memory network keyed by single-owner-chunk address. The same
-/// value backs the [`ChunkSource`] machine B reads from and the [`ChunkSink`]
+/// value backs the [`SnapshotSource`] machine B reads from and the [`SnapshotSink`]
 /// machine A uploads to, so the only thing crossing between the two machines is
 /// the bytes on the wire.
 #[derive(Clone, Default)]
@@ -57,14 +57,14 @@ struct MemNet {
 #[error("in-memory network error")]
 struct MemError;
 
-impl ChunkSource for MemNet {
+impl SnapshotSource for MemNet {
     type Error = MemError;
     async fn fetch(&self, address: &SwarmAddress) -> Result<Option<Bytes>, Self::Error> {
         Ok(self.chunks.lock().unwrap().get(address).cloned())
     }
 }
 
-impl ChunkSink for MemNet {
+impl SnapshotSink for MemNet {
     type Error = MemError;
     async fn push(&self, sealed: &SealedChunk) -> Result<(), Self::Error> {
         let address = *sealed.chunk.address();
