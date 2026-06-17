@@ -116,6 +116,174 @@ fn test_bmt_hasher_with_prefix() {
 
     // Results should be different
     assert_ne!(result_with_prefix, result_without_prefix);
+
+    // with_prefix is equivalent to new + prefix_with
+    let mut hasher3 = DefaultHasher::with_prefix(b"prefix-");
+    hasher3.set_span(11);
+    hasher3.update(data);
+    assert_eq!(result_with_prefix, hasher3.sum());
+}
+
+/// Reference (non-optimized) prefix BMT root: hashes the full 4096-byte tree
+/// bottom-up with no zero fast paths, applying `keccak(prefix || ...)` at every
+/// node. Used to prove the optimized hasher matches a naive implementation,
+/// independently of the zero-subtree shortcuts.
+fn reference_prefix_root(prefix: Option<&[u8]>, span: u64, payload: &[u8]) -> B256 {
+    use alloy_primitives::Keccak256;
+
+    let node = |left: &[u8], right: &[u8]| {
+        let mut h = Keccak256::new();
+        if let Some(p) = prefix {
+            h.update(p);
+        }
+        h.update(left);
+        h.update(right);
+        B256::from_slice(h.finalize().as_slice())
+    };
+
+    // Materialise 128 leaf segments of 32 bytes (zero-padded).
+    let mut buf = [0u8; DEFAULT_BODY_SIZE];
+    let n = payload.len().min(DEFAULT_BODY_SIZE);
+    buf[..n].copy_from_slice(&payload[..n]);
+
+    let mut level: Vec<B256> = (0..DEFAULT_BODY_SIZE / 32)
+        .map(|i| B256::from_slice(&buf[i * 32..i * 32 + 32]))
+        .collect();
+
+    while level.len() > 1 {
+        level = level
+            .chunks(2)
+            .map(|pair| node(pair[0].as_slice(), pair[1].as_slice()))
+            .collect();
+    }
+
+    // Final span wrap.
+    let mut h = Keccak256::new();
+    if let Some(p) = prefix {
+        h.update(p);
+    }
+    h.update(span.to_le_bytes());
+    h.update(level[0].as_slice());
+    B256::from_slice(h.finalize().as_slice())
+}
+
+/// Cross-implementation parity gate against bee's published deterministic
+/// vector (pkg/storer/sample_test.go TestSampleVectorCAC).
+///
+/// Chunk content is 4096 bytes with byte[i] = i % 256; the CAC span is 4096
+/// (little-endian). The plain BMT root is the chunk address and the
+/// anchor-prefixed BMT root is bee's transformed address. Reproducing both
+/// byte-for-byte proves nectar's per-node prefixing is bee-identical.
+#[test]
+fn test_bee_sample_vector_cac_parity() {
+    const ANCHOR: &[u8] = b"swarm-test-anchor-deterministic!";
+    const WANT_CHUNK_ADDR: &str =
+        "902406053a7a2f3a17f16097e1d0b4b6a4abeae6b84968f5503ae621f9522e16";
+    const WANT_TRANSFORMED_ADDR: &str =
+        "9dee91d1ed794460474ffc942996bd713176731db4581a3c6470fe9862905a60";
+
+    assert_eq!(ANCHOR.len(), 32, "anchor must be exactly 32 bytes");
+
+    // 4096-byte payload with the repeating i % 256 pattern.
+    let payload: Vec<u8> = (0..DEFAULT_BODY_SIZE).map(|i| (i % 256) as u8).collect();
+    let span = DEFAULT_BODY_SIZE as u64;
+
+    // Plain BMT => chunk address.
+    let mut plain = DefaultHasher::new();
+    plain.set_span(span);
+    plain.update(&payload);
+    let chunk_addr = plain.sum();
+    assert_eq!(
+        chunk_addr.encode_hex(),
+        WANT_CHUNK_ADDR,
+        "plain BMT chunk address must match bee"
+    );
+
+    // Anchor-prefixed BMT => transformed address.
+    let mut prefixed = DefaultHasher::with_prefix(ANCHOR);
+    prefixed.set_span(span);
+    prefixed.update(&payload);
+    let transformed = prefixed.sum();
+    assert_eq!(
+        transformed.encode_hex(),
+        WANT_TRANSFORMED_ADDR,
+        "anchor-prefixed BMT transformed address must match bee"
+    );
+
+    // The optimized hasher must agree with the naive full-recursion reference.
+    assert_eq!(
+        transformed,
+        reference_prefix_root(Some(ANCHOR), span, &payload)
+    );
+}
+
+/// Zero-subtree parity guard. The dense i%256 vector has no trailing zeros, so
+/// it cannot catch a prefix-independent zero table. A sparse payload (data only
+/// in the first segment, the rest zero) forces the prefixed zero subtrees to be
+/// exercised; the optimized path must still match the naive reference.
+#[test]
+fn test_prefix_sparse_trailing_zeros_parity() {
+    const ANCHOR: &[u8] = b"swarm-test-anchor-deterministic!";
+
+    // Only the first 5 bytes are non-zero; the remaining 4091 bytes are zero.
+    let mut payload = vec![0u8; DEFAULT_BODY_SIZE];
+    payload[..5].copy_from_slice(b"hello");
+    let span = DEFAULT_BODY_SIZE as u64;
+
+    let mut prefixed = DefaultHasher::with_prefix(ANCHOR);
+    prefixed.set_span(span);
+    prefixed.update(&payload);
+    let optimized = prefixed.sum();
+
+    assert_eq!(
+        optimized,
+        reference_prefix_root(Some(ANCHOR), span, &payload),
+        "prefixed hash of a sparse chunk must match the naive reference (zero \
+         subtrees must be hashed under the prefix, not via the plain zero table)"
+    );
+
+    // An all-zero prefixed chunk must also match the reference.
+    let zero_payload = vec![0u8; DEFAULT_BODY_SIZE];
+    let mut zero_hasher = DefaultHasher::with_prefix(ANCHOR);
+    zero_hasher.set_span(span);
+    zero_hasher.update(&zero_payload);
+    assert_eq!(
+        zero_hasher.sum(),
+        reference_prefix_root(Some(ANCHOR), span, &zero_payload)
+    );
+}
+
+/// A prefixed proof must verify against the prefixed root and only against it.
+#[test]
+fn test_prefix_proof_roundtrip() {
+    const ANCHOR: &[u8] = b"swarm-test-anchor-deterministic!";
+
+    let payload: Vec<u8> = (0..DEFAULT_BODY_SIZE).map(|i| (i % 256) as u8).collect();
+    let span = DEFAULT_BODY_SIZE as u64;
+
+    let mut hasher = DefaultHasher::with_prefix(ANCHOR);
+    hasher.set_span(span);
+    hasher.update(&payload);
+    let root = hasher.sum();
+
+    for seg in [0usize, 1, 63, 127] {
+        let proof = hasher.generate_proof(&payload, seg).unwrap();
+        assert_eq!(proof.prefix.as_deref(), Some(ANCHOR));
+        assert!(
+            DefaultHasher::verify_proof(&proof, root.as_slice()).unwrap(),
+            "prefixed proof for segment {seg} must verify against the prefixed root"
+        );
+
+        // The same proof must NOT verify against the plain (unprefixed) root.
+        let mut plain = DefaultHasher::new();
+        plain.set_span(span);
+        plain.update(&payload);
+        let plain_root = plain.sum();
+        assert!(
+            !DefaultHasher::verify_proof(&proof, plain_root.as_slice()).unwrap(),
+            "prefixed proof must not verify against the plain root"
+        );
+    }
 }
 
 #[test]
