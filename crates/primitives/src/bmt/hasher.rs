@@ -79,10 +79,42 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         self.span
     }
 
-    /// Add a prefix to the hash calculation
+    /// Add a prefix to the hash calculation.
+    ///
+    /// The prefix is applied to *every* Keccak256 invocation in the tree (leaf
+    /// sections, internal nodes and the final span wrap), matching bee's
+    /// `swarm.NewPrefixHasher` semantics where `Reset()` re-writes the prefix as
+    /// the first bytes before each node hash. This makes the resulting root
+    /// byte-identical to bee's `transformedAddress`.
     #[inline]
     pub fn prefix_with(&mut self, prefix: &[u8]) {
         self.prefix = Some(prefix.to_vec());
+    }
+
+    /// Create a new BMT hasher pre-configured with an anchor `prefix`.
+    ///
+    /// Equivalent to [`Hasher::new`] followed by [`Hasher::prefix_with`]. The
+    /// prefix is mixed into every node hash (see [`Hasher::prefix_with`]), so
+    /// the produced root matches bee's anchor-keyed `transformedAddress`.
+    #[inline]
+    pub fn with_prefix(prefix: &[u8]) -> Self {
+        let mut hasher = Self::new();
+        hasher.prefix_with(prefix);
+        hasher
+    }
+
+    /// Construct a fresh Keccak256, seeded with the prefix when one is set.
+    ///
+    /// Every node in the tree is hashed as `keccak(prefix || data)`; this helper
+    /// centralises that so the prefix can never be forgotten at an individual
+    /// hash site.
+    #[inline(always)]
+    fn node_hasher(prefix: Option<&[u8]>) -> Keccak256 {
+        let mut hasher = Keccak256::new();
+        if let Some(p) = prefix {
+            hasher.update(p);
+        }
+        hasher
     }
 
     /// Get the current prefix
@@ -162,15 +194,24 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     /// 3. Iteratively combines with pre-computed zero hashes to reach the root
     #[inline(always)]
     fn hash_internal(&self) -> B256 {
+        let prefix = self.prefix.as_deref();
+
+        // Zero fast paths rely on the precomputed prefix-independent ZERO_HASHES
+        // table, which is only valid for plain (unprefixed) hashing. Under a
+        // non-empty prefix every zero section hashes as keccak(prefix||zeros),
+        // so we must compute the zero subtrees with the prefix instead.
+        let zero_hashes = self.zero_hashes(prefix);
+
         // Special case: no data means entire tree is zeros
         if self.cursor == 0 {
-            return ZERO_HASHES[ZERO_TREE_LEVELS - 1];
+            return zero_hashes[ZERO_TREE_LEVELS - 1];
         }
 
-        // Fast path: if all data is zeros, return pre-computed zero tree root
-        // This avoids hashing entirely when the input is all zeros
+        // Fast path: if all data is zeros, return the zero tree root.
+        // Valid for both plain and prefixed hashing because `zero_hashes`
+        // already accounts for the prefix.
         if Self::is_all_zeros(&self.buffer[..self.cursor]) {
-            return ZERO_HASHES[ZERO_TREE_LEVELS - 1];
+            return zero_hashes[ZERO_TREE_LEVELS - 1];
         }
 
         // Find the smallest power-of-2 subtree that contains all data
@@ -180,9 +221,16 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
             .max(SEGMENT_PAIR_LENGTH)
             .min(BODY_SIZE);
 
-        // Hash only the effective subtree (which contains all actual data)
+        // Hash only the effective subtree (which contains all actual data).
+        // The parallel zero-shortcut path uses the prefix-independent
+        // ZERO_HASHES; with a prefix set we recurse fully via the sequential
+        // path so every zero section is hashed under the prefix.
         #[cfg(not(target_arch = "wasm32"))]
-        let mut result = self.hash_subtree_parallel(&self.buffer[..effective_size], effective_size);
+        let mut result = if prefix.is_some() {
+            self.hash_subtree_sequential(&self.buffer[..effective_size], effective_size)
+        } else {
+            self.hash_subtree_parallel(&self.buffer[..effective_size], effective_size)
+        };
 
         #[cfg(target_arch = "wasm32")]
         let mut result =
@@ -193,14 +241,43 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         while current_size < BODY_SIZE {
             // The current result is a left child, combine with zero hash for right sibling
             let sibling_level = Self::zero_tree_level(current_size);
-            let mut hasher = Keccak256::new();
+            let mut hasher = Self::node_hasher(prefix);
             hasher.update(result.as_slice());
-            hasher.update(ZERO_HASHES[sibling_level].as_slice());
+            hasher.update(zero_hashes[sibling_level].as_slice());
             result = B256::from_slice(hasher.finalize().as_slice());
             current_size *= 2;
         }
 
         result
+    }
+
+    /// Return the per-level zero subtree hashes for the current prefix.
+    ///
+    /// With no prefix this returns the shared precomputed [`ZERO_HASHES`]. With
+    /// a prefix set it computes the table on demand so that each level is
+    /// `keccak(prefix || left || right)` (the level-0 entry being
+    /// `keccak(prefix || 64 zero bytes)`), matching bee's per-prefix
+    /// `zerohashes`.
+    #[inline(always)]
+    fn zero_hashes(&self, prefix: Option<&[u8]>) -> [B256; ZERO_TREE_LEVELS] {
+        let Some(p) = prefix else {
+            return *ZERO_HASHES;
+        };
+
+        let mut hashes = [B256::ZERO; ZERO_TREE_LEVELS];
+
+        let mut hasher = Self::node_hasher(Some(p));
+        hasher.update([0u8; SEGMENT_PAIR_LENGTH]);
+        hashes[0] = B256::from_slice(hasher.finalize().as_slice());
+
+        for i in 1..ZERO_TREE_LEVELS {
+            let mut hasher = Self::node_hasher(Some(p));
+            hasher.update(hashes[i - 1].as_slice());
+            hasher.update(hashes[i - 1].as_slice());
+            hashes[i] = B256::from_slice(hasher.finalize().as_slice());
+        }
+
+        hashes
     }
 
     /// Hash a subtree of exactly `length` bytes (must be power of 2, >= 64)
@@ -271,8 +348,10 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         debug_assert!(length.is_power_of_two());
         debug_assert!(length >= SEGMENT_PAIR_LENGTH);
 
+        let prefix = self.prefix.as_deref();
+
         if length == SEGMENT_PAIR_LENGTH {
-            let mut hasher = Keccak256::new();
+            let mut hasher = Self::node_hasher(prefix);
             hasher.update(data);
             return B256::from_slice(hasher.finalize().as_slice());
         }
@@ -280,9 +359,12 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         let half = length / 2;
         let (left, right) = data.split_at(half);
 
-        // Check if right half is entirely beyond cursor (all zeros in buffer)
-        let (left_hash, right_hash) = if half >= self.cursor {
-            // Right side is all zeros
+        // Check if right half is entirely beyond cursor (all zeros in buffer).
+        // The zero-sibling shortcut is only safe when the zero table matches the
+        // prefix; under a prefix we recurse over the literal zero section so it
+        // is hashed as keccak(prefix||...).
+        let (left_hash, right_hash) = if half >= self.cursor && prefix.is_none() {
+            // Right side is all zeros (plain hashing only)
             let left_hash = self.hash_subtree_sequential(left, half);
             let right_hash = ZERO_HASHES[Self::zero_tree_level(half)];
             (left_hash, right_hash)
@@ -292,7 +374,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
             (left_hash, right_hash)
         };
 
-        let mut hasher = Keccak256::new();
+        let mut hasher = Self::node_hasher(prefix);
         hasher.update(left_hash.as_slice());
         hasher.update(right_hash.as_slice());
         B256::from_slice(hasher.finalize().as_slice())
@@ -373,7 +455,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     #[inline(always)]
     fn compute_segment_hash(&self, data: &[u8], i: usize) -> B256 {
         let start = i << SEGMENT_SIZE_LOG2; // Equivalent to i * SEGMENT_SIZE
-        let mut hasher = Keccak256::new();
+        let mut hasher = Self::node_hasher(self.prefix.as_deref());
 
         if start < data.len() {
             let end = (start + SEGMENT_SIZE).min(data.len());

@@ -8,6 +8,38 @@ use alloy_primitives::{B256, Keccak256};
 use crate::bmt::{Hasher, constants::*, error::BmtError};
 use crate::error::Result;
 
+/// Construct a Keccak256 seeded with the prefix when one is present.
+///
+/// Mirrors the hasher's per-node prefixing so that every node in a proof path is
+/// `keccak(prefix || data)`, byte-identical to bee's prefix BMT.
+#[inline(always)]
+fn new_node_hasher(prefix: Option<&[u8]>) -> Keccak256 {
+    let mut hasher = Keccak256::new();
+    if let Some(p) = prefix {
+        hasher.update(p);
+    }
+    hasher
+}
+
+/// Compute the prefix-aware zero subtree hash for `level`.
+///
+/// `level` 0 is `keccak(prefix || 64 zero bytes)`; each higher level doubles the
+/// previous. With no prefix this equals the plain zero tree used by the hasher.
+fn prefixed_zero_hash(prefix: Option<&[u8]>, level: usize) -> B256 {
+    let mut hash = {
+        let mut hasher = new_node_hasher(prefix);
+        hasher.update([0u8; 2 * SEGMENT_SIZE]);
+        B256::from_slice(hasher.finalize().as_slice())
+    };
+    for _ in 0..level {
+        let mut hasher = new_node_hasher(prefix);
+        hasher.update(hash.as_slice());
+        hasher.update(hash.as_slice());
+        hash = B256::from_slice(hasher.finalize().as_slice());
+    }
+    hash
+}
+
 /// Represents a proof for a specific segment in a Binary Merkle Tree
 #[derive(Clone, Debug)]
 pub struct Proof {
@@ -53,9 +85,14 @@ impl Proof {
         let mut current_hash = self.segment;
         let mut current_index = self.segment_index;
 
+        let prefix = self.prefix.as_deref();
+
         // Apply each proof segment to compute the root
         for proof_segment in &self.proof_segments {
-            let mut hasher = Keccak256::new();
+            // Every intermediate node is keccak(prefix || left || right) to match
+            // bee's per-node prefix hasher; verifying without the prefix at each
+            // level would reject a valid anchor-keyed proof on-chain.
+            let mut hasher = new_node_hasher(prefix);
 
             // Order matters - left then right
             if current_index.is_multiple_of(2) {
@@ -156,12 +193,24 @@ impl Prover for Hasher {
         // Get the segment being proven
         let segment = segments[segment_index];
 
+        // Include the prefix in the proof if there is one
+        let prefix = if self.prefix().is_empty() {
+            None
+        } else {
+            Some(self.prefix().to_vec())
+        };
+        let prefix_ref = prefix.as_deref();
+
         // Generate proof segments
         let mut proof_segments = Vec::with_capacity(PROOF_LENGTH);
 
         // Build the Merkle tree level by level
         let mut current_level = segments;
         let mut current_index = segment_index;
+        // Tree level of the nodes in `current_level`: 0 = raw leaf segments,
+        // 1 = leaf-pair hashes, etc. Used to pick the right prefix-aware zero
+        // hash when padding an odd/short level.
+        let mut level: usize = 0;
 
         // Continue until we reach the root (or until we have BMT_PROOF_LENGTH segments)
         while proof_segments.len() < PROOF_LENGTH {
@@ -172,11 +221,15 @@ impl Prover for Hasher {
                 current_index - 1
             };
 
-            // Add sibling to proof
+            // Add sibling to proof. A missing sibling is an all-zero subtree at
+            // this level, which under a prefix hashes differently from B256::ZERO.
             if sibling_index < current_level.len() {
                 proof_segments.push(current_level[sibling_index]);
-            } else {
+            } else if level == 0 {
+                // Missing raw leaf segment is 32 zero bytes (not a hash).
                 proof_segments.push(B256::ZERO);
+            } else {
+                proof_segments.push(prefixed_zero_hash(prefix_ref, level - 1));
             }
 
             // Compute the next level up in the tree
@@ -185,13 +238,15 @@ impl Prover for Hasher {
             for i in (0..current_level.len()).step_by(2) {
                 let left = &current_level[i];
                 let right = if i + 1 < current_level.len() {
-                    &current_level[i + 1]
+                    current_level[i + 1]
+                } else if level == 0 {
+                    B256::ZERO
                 } else {
-                    &B256::ZERO
+                    prefixed_zero_hash(prefix_ref, level - 1)
                 };
 
-                // Hash the pair to create the parent node
-                let mut hasher = Keccak256::new();
+                // Hash the pair to create the parent node (prefix-aware)
+                let mut hasher = new_node_hasher(prefix_ref);
                 hasher.update(left.as_slice());
                 hasher.update(right.as_slice());
 
@@ -202,6 +257,7 @@ impl Prover for Hasher {
             // Move up to the next level
             current_level = next_level;
             current_index /= 2;
+            level += 1;
 
             // If we've reached the root or have only one node, break
             if current_level.len() <= 1 {
@@ -213,13 +269,6 @@ impl Prover for Hasher {
         while proof_segments.len() < PROOF_LENGTH {
             proof_segments.push(B256::ZERO);
         }
-
-        // Include the prefix in the proof if there is one
-        let prefix = if !self.prefix().is_empty() {
-            Some(self.prefix().to_vec())
-        } else {
-            None
-        };
 
         Ok(Proof::new(
             segment_index,
