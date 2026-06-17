@@ -66,4 +66,15 @@ pub enum StampError {
     /// Signature verification failed.
     #[error("invalid signature")]
     InvalidSignature,
+
+    /// A chunk operation in `nectar-primitives` failed (for example decoding or
+    /// address verification of the chunk half of a stamped chunk).
+    ///
+    /// The variant carries a `&'static str` context rather than embedding the
+    /// underlying [`nectar_primitives::PrimitivesError`]: [`StampError`] is
+    /// `Clone`, `PartialEq` and `Eq`, whereas `PrimitivesError` is none of these
+    /// (it carries `std::io::Error` among others), and this crate is `no_std`
+    /// without `alloc`, so an owned `String` message is not available either.
+    #[error("chunk error: {0}")]
+    Chunk(&'static str),
 }
