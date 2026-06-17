@@ -187,6 +187,90 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
             _ => None,
         }
     }
+
+    /// Encode this chunk as a type-tagged, self-describing byte string.
+    ///
+    /// The layout is `[type_id: 1 byte][chunk wire bytes]`, where the chunk
+    /// wire bytes are the same form produced by [`AnyChunk::into_bytes`] (the
+    /// inverse of [`ContentChunk::try_from`]/[`SingleOwnerChunk::try_from`]).
+    ///
+    /// The chunk address is deliberately *not* embedded. It is supplied from
+    /// context on decode (for example the redb key when reading from storage,
+    /// or the address field of a wire message). This mirrors the existing
+    /// reconstruction paths that take an expected address.
+    ///
+    /// Unlike the address-disambiguating reconstruction path, decoding the
+    /// result of this method dispatches purely by `type_id`, so it never has
+    /// to trial-parse both the content and single-owner shapes, and it
+    /// round-trips the [`AnyChunk::Custom`] variant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nectar_primitives::{AnyChunk, Chunk, ContentChunk};
+    ///
+    /// let content = ContentChunk::new(&b"hello world"[..]).unwrap();
+    /// let address = *content.address();
+    /// let any: AnyChunk = content.into();
+    ///
+    /// let encoded = any.to_typed_bytes();
+    /// assert_eq!(encoded[0], 0); // CONTENT type id
+    ///
+    /// let decoded: AnyChunk = AnyChunk::from_typed_bytes(&address, &encoded).unwrap();
+    /// assert_eq!(decoded.address(), any.address());
+    /// ```
+    pub fn to_typed_bytes(&self) -> Vec<u8> {
+        let tag = self.type_id().as_u8();
+        // Clone is required because `into_bytes` consumes the chunk; chunk
+        // payloads are reference-counted `Bytes`, so this is cheap.
+        let wire = self.clone().into_bytes();
+        let mut out = Vec::with_capacity(1 + wire.len());
+        out.push(tag);
+        out.extend_from_slice(&wire);
+        out
+    }
+
+    /// Decode a type-tagged chunk produced by [`AnyChunk::to_typed_bytes`].
+    ///
+    /// The leading byte selects the chunk type and the remainder is the chunk
+    /// wire payload. `address` is the expected chunk address (for example the
+    /// redb storage key or the wire message address field); it is used to
+    /// verify standard chunks and to populate the [`AnyChunk::Custom`] variant,
+    /// whose address is not otherwise recoverable from the payload.
+    ///
+    /// Decoding dispatches by the type tag and therefore never trial-parses the
+    /// other chunk shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error (and never panics) when:
+    /// - the input is empty (no type tag),
+    /// - the payload cannot be decoded as the tagged chunk type, or
+    /// - a standard chunk's computed address does not match `address`.
+    pub fn from_typed_bytes(address: &ChunkAddress, bytes: &[u8]) -> crate::error::Result<Self> {
+        let (&tag, payload) = bytes.split_first().ok_or_else(|| {
+            super::error::ChunkError::invalid_format("empty typed-chunk encoding: missing type tag")
+        })?;
+
+        let type_id = ChunkTypeId::from(tag);
+        match type_id {
+            ChunkTypeId::CONTENT => {
+                let chunk = ContentChunk::try_from(Bytes::copy_from_slice(payload))?;
+                chunk.verify(address)?;
+                Ok(Self::Content(chunk))
+            }
+            ChunkTypeId::SINGLE_OWNER => {
+                let chunk = SingleOwnerChunk::try_from(Bytes::copy_from_slice(payload))?;
+                chunk.verify(address)?;
+                Ok(Self::SingleOwner(chunk))
+            }
+            _ => Ok(Self::Custom {
+                type_id,
+                address: *address,
+                data: Bytes::copy_from_slice(payload),
+            }),
+        }
+    }
 }
 
 impl<const BODY_SIZE: usize> From<ContentChunk<BODY_SIZE>> for AnyChunk<BODY_SIZE> {
@@ -270,5 +354,115 @@ mod tests {
 
         assert_eq!(any.address(), cloned.address());
         assert_eq!(any.type_id(), cloned.type_id());
+    }
+
+    fn test_signer() -> alloy_signer_local::PrivateKeySigner {
+        // Fixed key so addresses are deterministic across runs.
+        let pk = [0x42u8; 32];
+        alloy_signer_local::PrivateKeySigner::from_slice(&pk).unwrap()
+    }
+
+    fn sample_single_owner() -> DefaultSingleOwnerChunk {
+        let id = alloy_primitives::B256::ZERO;
+        DefaultSingleOwnerChunk::new(id, b"single owner payload".to_vec(), &test_signer()).unwrap()
+    }
+
+    #[test]
+    fn test_typed_content_round_trip() {
+        let content = DefaultContentChunk::new(&b"hello typed world"[..]).unwrap();
+        let address = *content.address();
+        let any: DefaultAnyChunk = content.into();
+
+        let encoded = any.to_typed_bytes();
+        assert_eq!(encoded[0], 0, "CONTENT tag must be 0");
+
+        let decoded = DefaultAnyChunk::from_typed_bytes(&address, &encoded).unwrap();
+        assert!(decoded.is_content());
+        assert_eq!(decoded.type_id(), ChunkTypeId::CONTENT);
+        assert_eq!(decoded.address(), any.address());
+        assert_eq!(decoded.data(), any.data());
+    }
+
+    #[test]
+    fn test_typed_single_owner_round_trip() {
+        let soc = sample_single_owner();
+        let address = *soc.address();
+        let any: DefaultAnyChunk = soc.into();
+
+        let encoded = any.to_typed_bytes();
+        assert_eq!(encoded[0], 1, "SINGLE_OWNER tag must be 1");
+
+        let decoded = DefaultAnyChunk::from_typed_bytes(&address, &encoded).unwrap();
+        assert!(decoded.is_single_owner());
+        assert_eq!(decoded.type_id(), ChunkTypeId::SINGLE_OWNER);
+        assert_eq!(decoded.address(), any.address());
+        assert_eq!(decoded.data(), any.data());
+    }
+
+    #[test]
+    fn test_typed_custom_round_trip() {
+        let type_id = ChunkTypeId::custom(200);
+        let address: ChunkAddress = [0x11u8; 32].into();
+        let data = Bytes::from_static(b"opaque custom chunk bytes");
+
+        let any: DefaultAnyChunk = AnyChunk::Custom {
+            type_id,
+            address,
+            data: data.clone(),
+        };
+
+        let encoded = any.to_typed_bytes();
+        assert_eq!(encoded[0], 200, "custom tag preserved");
+
+        let decoded = DefaultAnyChunk::from_typed_bytes(&address, &encoded).unwrap();
+        assert!(decoded.is_custom());
+        assert_eq!(decoded.type_id(), type_id);
+        assert_eq!(*decoded.address(), address);
+        assert_eq!(decoded.data(), &data);
+    }
+
+    #[test]
+    fn test_typed_dispatch_by_tag_not_trial_parse() {
+        // A CONTENT-tagged payload must decode as Content, even though the old
+        // address-disambiguating path would also attempt a SOC parse.
+        let content = DefaultContentChunk::new(&b"dispatch sanity"[..]).unwrap();
+        let address = *content.address();
+        let any: DefaultAnyChunk = content.into();
+
+        let encoded = any.to_typed_bytes();
+        let decoded = DefaultAnyChunk::from_typed_bytes(&address, &encoded).unwrap();
+
+        // Returned variant matches the tag exactly.
+        assert!(decoded.is_content());
+        assert!(!decoded.is_single_owner());
+    }
+
+    #[test]
+    fn test_typed_decode_empty_input_errors() {
+        let address: ChunkAddress = [0u8; 32].into();
+        let result = DefaultAnyChunk::from_typed_bytes(&address, &[]);
+        assert!(result.is_err(), "empty input must error, not panic");
+    }
+
+    #[test]
+    fn test_typed_decode_address_mismatch_errors() {
+        let content = DefaultContentChunk::new(&b"chunk A"[..]).unwrap();
+        let encoded = DefaultAnyChunk::from(content).to_typed_bytes();
+
+        // Decode with a deliberately wrong address.
+        let wrong: ChunkAddress = [0xFFu8; 32].into();
+        let result = DefaultAnyChunk::from_typed_bytes(&wrong, &encoded);
+        assert!(result.is_err(), "address mismatch must error");
+    }
+
+    #[test]
+    fn test_typed_decode_corrupt_content_payload_errors() {
+        let content = DefaultContentChunk::new(&b"corruptible"[..]).unwrap();
+        let address = *content.address();
+
+        // CONTENT tag but a too-short payload that cannot form a valid body.
+        let bad = vec![ChunkTypeId::CONTENT.as_u8(), 0x00];
+        let result = DefaultAnyChunk::from_typed_bytes(&address, &bad);
+        assert!(result.is_err(), "corrupt content payload must error");
     }
 }
