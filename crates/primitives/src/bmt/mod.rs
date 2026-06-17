@@ -47,3 +47,8 @@ pub mod wasm;
 
 #[cfg(test)]
 mod tests;
+
+// Differential equivalence vs the naive, spec-faithful BMT reference.
+// See `verification/bmt/` for the F* model these tests shadow.
+#[cfg(test)]
+mod spec_equivalence;

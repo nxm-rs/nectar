@@ -26,14 +26,14 @@ static ZERO_HASHES: LazyLock<[B256; ZERO_TREE_LEVELS]> = LazyLock::new(|| {
     // Level 0: hash of 64 zero bytes (one segment pair)
     let mut hasher = Keccak256::new();
     hasher.update([0u8; SEGMENT_PAIR_LENGTH]);
-    hashes[0] = B256::from_slice(hasher.finalize().as_slice());
+    hashes[0] = hasher.finalize();
 
     // Each subsequent level: hash of two copies of previous level's hash
     for i in 1..ZERO_TREE_LEVELS {
         let mut hasher = Keccak256::new();
         hasher.update(hashes[i - 1].as_slice());
         hasher.update(hashes[i - 1].as_slice());
-        hashes[i] = B256::from_slice(hasher.finalize().as_slice());
+        hashes[i] = hasher.finalize();
     }
 
     hashes
@@ -146,12 +146,57 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     }
 
     /// Check if a byte slice is all zeros.
-    /// Uses chunk-based iteration which LLVM optimizes to SIMD on supported platforms.
+    /// Reads in `usize`-wide words (the dominant cost at 4096 bytes) and ORs them
+    /// together, leaving only a short scalar tail. LLVM auto-vectorises the word
+    /// loop into SIMD on supported platforms.
     #[inline(always)]
     fn is_all_zeros(data: &[u8]) -> bool {
-        // Fold with bitwise OR - any non-zero byte makes the result non-zero
-        // LLVM vectorizes this pattern into efficient SIMD code
-        data.iter().fold(0u8, |acc, &b| acc | b) == 0
+        const W: usize = core::mem::size_of::<usize>();
+        let (head, words, tail) = unsafe {
+            // SAFETY: `align_to` only reinterprets bytes; it returns the maximal
+            // middle slice that is correctly aligned for `usize` and leaves the
+            // unaligned prefix/suffix as `u8` slices. No out-of-bounds access and
+            // no mutation occur, and `u8`/`usize` have no invalid bit patterns.
+            data.align_to::<usize>()
+        };
+        let mut acc_b = 0u8;
+        for &b in head {
+            acc_b |= b;
+        }
+        for &b in tail {
+            acc_b |= b;
+        }
+        if acc_b != 0 {
+            return false;
+        }
+        let mut acc_w = 0usize;
+        for &w in words {
+            acc_w |= w;
+        }
+        let _ = W;
+        acc_w == 0
+    }
+
+    /// `keccak256(left_32 || right_32)` into a `B256`.
+    ///
+    /// `Keccak256::finalize` squeezes directly into an uninitialised `B256`, so
+    /// this avoids the `finalize().as_slice() -> B256::from_slice` copy the old
+    /// node code paid at every one of the 127 internal nodes.
+    #[inline(always)]
+    fn hash_pair(left: &B256, right: &B256) -> B256 {
+        let mut hasher = Keccak256::new();
+        hasher.update(left.as_slice());
+        hasher.update(right.as_slice());
+        hasher.finalize()
+    }
+
+    /// `keccak256(data_64)` of one contiguous 64-byte segment pair, into a `B256`.
+    #[inline(always)]
+    fn hash_segment_pair(data: &[u8]) -> B256 {
+        debug_assert_eq!(data.len(), SEGMENT_PAIR_LENGTH);
+        let mut hasher = Keccak256::new();
+        hasher.update(data);
+        hasher.finalize()
     }
 
     /// Hash data using a binary merkle tree (internal implementation)
@@ -180,122 +225,149 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
             .max(SEGMENT_PAIR_LENGTH)
             .min(BODY_SIZE);
 
-        // Hash only the effective subtree (which contains all actual data)
+        // Hash only the effective subtree (which contains all actual data).
+        // The full-size case can still farm out to rayon; everything smaller goes
+        // through the allocation-free iterative bottom-up sweep.
         #[cfg(not(target_arch = "wasm32"))]
-        let mut result = self.hash_subtree_parallel(&self.buffer[..effective_size], effective_size);
+        let mut result = if effective_size == BODY_SIZE {
+            Self::hash_subtree_recursive_parallel_inner(
+                &self.buffer[..effective_size],
+                effective_size,
+                self.cursor,
+            )
+        } else {
+            self.hash_subtree_iterative(effective_size)
+        };
 
         #[cfg(target_arch = "wasm32")]
-        let mut result =
-            self.hash_subtree_sequential(&self.buffer[..effective_size], effective_size);
+        let mut result = self.hash_subtree_iterative(effective_size);
 
-        // Roll up with zero hashes until we reach the full tree size
+        // Roll up with zero hashes until we reach the full tree size.
+        // `result` is always a left child; the right sibling is the zero subtree
+        // of the matching height, so this is a straight 7-deep (max) keccak chain.
         let mut current_size = effective_size;
         while current_size < BODY_SIZE {
-            // The current result is a left child, combine with zero hash for right sibling
             let sibling_level = Self::zero_tree_level(current_size);
-            let mut hasher = Keccak256::new();
-            hasher.update(result.as_slice());
-            hasher.update(ZERO_HASHES[sibling_level].as_slice());
-            result = B256::from_slice(hasher.finalize().as_slice());
+            result = Self::hash_pair(&result, &ZERO_HASHES[sibling_level]);
             current_size *= 2;
         }
 
         result
     }
 
-    /// Hash a subtree of exactly `length` bytes (must be power of 2, >= 64)
+    /// Hash a power-of-two subtree of `length` bytes (>= 64, <= BODY_SIZE) with a
+    /// fully iterative bottom-up sweep — no recursion, no heap allocation.
     ///
-    /// For sizes < BODY_SIZE: uses sequential hashing (no rayon overhead).
-    /// For BODY_SIZE (4096): uses recursive parallel hashing for maximum throughput.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[inline(always)]
-    fn hash_subtree_parallel(&self, data: &[u8], length: usize) -> B256 {
-        debug_assert!(length.is_power_of_two());
-        debug_assert!(length >= SEGMENT_PAIR_LENGTH);
+    /// The `length`-byte prefix of `buffer` is exactly `length / 64` contiguous
+    /// 64-byte segment pairs (the BMT leaves). We keccak each pair straight from
+    /// the buffer into a fixed `[B256; BODY_SIZE / 64]` level array, then collapse
+    /// the level in place, halving its width each round until one node remains.
+    ///
+    /// Leaf pairs that lie entirely beyond `cursor` are all-zero, so we splice in
+    /// the precomputed `ZERO_HASHES[0]` instead of hashing 64 zero bytes; the
+    /// same shortcut applies to whole zero subtrees as the level collapses.
+    #[inline]
+    fn hash_subtree_iterative(&self, length: usize) -> B256 {
+        Self::sweep_subtree(&self.buffer[..length], length, self.cursor.min(length))
+    }
 
-        // For sizes < BODY_SIZE, use sequential (avoids rayon overhead for small/medium sizes)
-        if length < BODY_SIZE {
-            return self.hash_subtree_sequential(data, length);
+    /// Iterative bottom-up sweep of a power-of-two subtree over a borrowed slice.
+    ///
+    /// `data[..length]` is exactly `length / 64` contiguous 64-byte segment pairs
+    /// (the leaves); the first `cursor` bytes hold real data and the rest are
+    /// zero. We keccak each live leaf pair straight from the buffer into a fixed
+    /// `[B256; BODY_SIZE/64]` level array, splice the precomputed zero leaf hash
+    /// for any all-zero tail, then collapse the level in place — halving its
+    /// width each round and substituting the zero subtree hash of the matching
+    /// height for the dead tail — until one node remains.
+    #[inline(always)]
+    fn sweep_subtree(data: &[u8], length: usize, cursor: usize) -> B256 {
+        debug_assert!(length.is_power_of_two());
+        debug_assert!((SEGMENT_PAIR_LENGTH..=BODY_SIZE).contains(&length));
+        debug_assert!(cursor <= length && data.len() >= length);
+
+        // Max leaf count is BODY_SIZE/64 (= 64 for the default 4096 body).
+        const MAX_LEAVES: usize = DEFAULT_BODY_SIZE / SEGMENT_PAIR_LENGTH;
+        let mut level: [B256; MAX_LEAVES] = [B256::ZERO; MAX_LEAVES];
+
+        let pairs = length / SEGMENT_PAIR_LENGTH;
+        // Leaf pairs starting at or beyond the cursor are entirely zero.
+        // `cursor` indexes raw bytes; a pair p covers [p*64, p*64+64).
+        let live_pairs = cursor.div_ceil(SEGMENT_PAIR_LENGTH).min(pairs);
+
+        for (i, slot) in level.iter_mut().take(live_pairs).enumerate() {
+            let base = i * SEGMENT_PAIR_LENGTH;
+            *slot = Self::hash_segment_pair(&data[base..base + SEGMENT_PAIR_LENGTH]);
+        }
+        // Remaining leaf pairs are zero subtrees of height 0.
+        for slot in level[live_pairs..pairs].iter_mut() {
+            *slot = ZERO_HASHES[0];
         }
 
-        // For BODY_SIZE (4096): use recursive parallel hashing
-        // Pass cursor as parameter to avoid self indirection in hot loop
-        Self::hash_subtree_recursive_parallel_inner(data, length, self.cursor)
+        // Collapse the level in place. After processing `width` nodes we have
+        // `width / 2` parents; `live` tracks how many of them carry real data so
+        // the all-zero tail can reuse the precomputed zero hash for its height.
+        let mut width = pairs;
+        let mut live = live_pairs;
+        let mut zero_level = 1usize; // ZERO_HASHES index for a fully-zero parent
+        while width > 1 {
+            let parents = width / 2;
+            let live_parents = live.div_ceil(2);
+            for j in 0..live_parents {
+                level[j] = Self::hash_pair(&level[2 * j], &level[2 * j + 1]);
+            }
+            let zero = ZERO_HASHES[zero_level];
+            for slot in level[live_parents..parents].iter_mut() {
+                *slot = zero;
+            }
+            width = parents;
+            live = live_parents;
+            zero_level += 1;
+        }
+
+        level[0]
     }
 
     /// Recursively hash a subtree using rayon for parallelism.
     /// Only called for full BODY_SIZE chunks where parallelism pays off.
     /// Takes cursor as parameter to avoid self indirection in recursive calls.
+    ///
+    /// Once a subtree shrinks below a threshold it hands off to the iterative
+    /// leaf sweep — recursion plus `rayon::join` is pure overhead for the small
+    /// fixed trees near the leaves.
     #[cfg(not(target_arch = "wasm32"))]
-    #[inline(always)]
     fn hash_subtree_recursive_parallel_inner(data: &[u8], length: usize, cursor: usize) -> B256 {
         debug_assert!(length.is_power_of_two());
         debug_assert!(length >= SEGMENT_PAIR_LENGTH);
 
-        // Base case: 64 bytes (one segment pair)
-        if length == SEGMENT_PAIR_LENGTH {
-            let mut hasher = Keccak256::new();
-            hasher.update(data);
-            return B256::from_slice(hasher.finalize().as_slice());
+        // Recurse with rayon::join until a subtree reaches this width, then hand
+        // off to the allocation-free iterative leaf sweep. Splitting down to
+        // 512-byte subtrees gives the leaf-heavy work ~8-way parallelism (a full
+        // 4096 body fans out into 8 independent sweeps), while keeping the sweep
+        // big enough that rayon's per-join overhead stays amortised — a measured
+        // sweet spot well below the 2-way split a BODY_SIZE/2 threshold gives.
+        const PARALLEL_THRESHOLD: usize = DEFAULT_BODY_SIZE / 8;
+
+        if length <= PARALLEL_THRESHOLD || length == SEGMENT_PAIR_LENGTH {
+            return Self::sweep_subtree(data, length, cursor.min(length));
         }
 
         let half = length / 2;
         let (left, right) = data.split_at(half);
 
-        // Check if right half is entirely beyond cursor (all zeros in buffer)
-        // cursor is relative to the start of this subtree
         let (left_hash, right_hash) = if half >= cursor {
-            // Right side is all zeros - compute left only, use precomputed right
+            // Right side is all zeros - compute left only, use precomputed right.
             let left_hash = Self::hash_subtree_recursive_parallel_inner(left, half, cursor);
-            let right_hash = ZERO_HASHES[Self::zero_tree_level(half)];
-            (left_hash, right_hash)
+            (left_hash, ZERO_HASHES[Self::zero_tree_level(half)])
         } else {
-            // Both sides have data, use parallel execution
-            // Left cursor is capped at half (can't exceed subtree size)
-            // Right cursor is adjusted by half (relative to right subtree start)
+            // Both sides have data, use parallel execution.
             rayon::join(
                 || Self::hash_subtree_recursive_parallel_inner(left, half, half),
                 || Self::hash_subtree_recursive_parallel_inner(right, half, cursor - half),
             )
         };
 
-        let mut hasher = Keccak256::new();
-        hasher.update(left_hash.as_slice());
-        hasher.update(right_hash.as_slice());
-        B256::from_slice(hasher.finalize().as_slice())
-    }
-
-    /// Hash a subtree of exactly `length` bytes (must be power of 2, >= 64) - sequential version
-    #[inline(always)]
-    fn hash_subtree_sequential(&self, data: &[u8], length: usize) -> B256 {
-        debug_assert!(length.is_power_of_two());
-        debug_assert!(length >= SEGMENT_PAIR_LENGTH);
-
-        if length == SEGMENT_PAIR_LENGTH {
-            let mut hasher = Keccak256::new();
-            hasher.update(data);
-            return B256::from_slice(hasher.finalize().as_slice());
-        }
-
-        let half = length / 2;
-        let (left, right) = data.split_at(half);
-
-        // Check if right half is entirely beyond cursor (all zeros in buffer)
-        let (left_hash, right_hash) = if half >= self.cursor {
-            // Right side is all zeros
-            let left_hash = self.hash_subtree_sequential(left, half);
-            let right_hash = ZERO_HASHES[Self::zero_tree_level(half)];
-            (left_hash, right_hash)
-        } else {
-            let left_hash = self.hash_subtree_sequential(left, half);
-            let right_hash = self.hash_subtree_sequential(right, half);
-            (left_hash, right_hash)
-        };
-
-        let mut hasher = Keccak256::new();
-        hasher.update(left_hash.as_slice());
-        hasher.update(right_hash.as_slice());
-        B256::from_slice(hasher.finalize().as_slice())
+        Self::hash_pair(&left_hash, &right_hash)
     }
 
     /// Calculate the zero-tree level for a given subtree length.
@@ -323,7 +395,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         hasher.update(intermediate_hash.as_slice());
 
         // Finalize to get the result
-        B256::from_slice(hasher.finalize().as_slice())
+        hasher.finalize()
     }
 
     /// Reset the hasher's internal state
@@ -391,7 +463,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
             hasher.update([0u8; SEGMENT_SIZE]);
         }
 
-        B256::from_slice(hasher.finalize().as_slice())
+        hasher.finalize()
     }
 }
 
