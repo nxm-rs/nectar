@@ -3,9 +3,10 @@
 //! This module provides [`AnyChunk`], an enum that can hold any chunk type
 //! for runtime polymorphism without requiring trait objects.
 
+use alloy_primitives::Keccak256;
 use bytes::Bytes;
 
-use crate::bmt::DEFAULT_BODY_SIZE;
+use crate::bmt::{DEFAULT_BODY_SIZE, Hasher};
 use crate::error::Result;
 
 use super::chunk_type::ChunkType;
@@ -108,6 +109,69 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
             Self::Content(c) => super::traits::BmtChunk::span(c),
             Self::SingleOwner(c) => super::traits::BmtChunk::span(c),
             Self::Custom { .. } => 0, // Custom chunks don't have span info
+        }
+    }
+
+    /// Compute the anchor-keyed *transformed address* of this chunk.
+    ///
+    /// The transformed address is the redistribution sampler's per-round,
+    /// per-node re-hash of a chunk. It is a prefixed BMT root keyed by the
+    /// node's `anchor`, used to order reserve chunks deterministically while
+    /// binding the ordering to the proving node. This reproduces bee's
+    /// `storer.transformedAddress` (`pkg/storer/sample.go`) byte-for-byte.
+    ///
+    /// # Derivation
+    ///
+    /// - For a content-addressed chunk (CAC) the transformed address is the
+    ///   prefixed BMT of the chunk body, i.e. `BMT(prefix = anchor, span,
+    ///   payload)`. This is computed by
+    ///   [`BmtBody::transformed_root`](super::bmt_body::BmtBody::transformed_root) on the
+    ///   chunk's borrowed body, which mixes the anchor into *every* node hash,
+    ///   matching bee's prefix hasher.
+    /// - For a single-owner chunk (SOC) the wrapped content body is re-hashed
+    ///   the same way to obtain `inner`, then the SOC's transformed address is
+    ///   a **plain, unprefixed** `keccak256(soc_address || inner)`. The outer
+    ///   wrap is a flat Keccak256, *not* a prefixed BMT, mirroring bee's
+    ///   `transformedAddressSOC` which uses `swarm.NewHasher()` (no anchor) for
+    ///   the final combine.
+    /// - A custom chunk type has no [`BmtBody`](super::bmt_body::BmtBody), so it
+    ///   cannot reuse the typed body path. It is hashed as a prefixed BMT over
+    ///   its raw `span()`/`data()` (identical bytes to the CAC case), keeping
+    ///   the variant well-defined and non-panicking.
+    ///
+    /// # Endianness
+    ///
+    /// The span is serialised little-endian inside the BMT. Do not confuse this
+    /// with the big-endian encodings used elsewhere on the redistribution wire
+    /// (e.g. proof witness indices); the BMT span is always LE.
+    ///
+    /// # Borrowing
+    ///
+    /// The CAC and SOC paths dispatch through borrowed body accessors
+    /// ([`ContentChunk::body`] and [`SingleOwnerChunk::inner_body`]), so no
+    /// chunk or body is cloned. For a SOC the wrapped body already *is* the
+    /// content chunk's `span || payload`, so the inner root needs no
+    /// `32 + 65` (id + signature) header slicing.
+    pub fn transformed_address(&self, anchor: &[u8]) -> ChunkAddress {
+        match self {
+            // CAC: the prefixed BMT root of the (borrowed) body is the address.
+            Self::Content(c) => ChunkAddress::from(c.body().transformed_root(anchor)),
+            // SOC: re-hash the (borrowed) wrapped body, then take the plain
+            // (unprefixed) keccak256(soc_address || inner).
+            Self::SingleOwner(c) => {
+                let inner = c.inner_body().transformed_root(anchor);
+                let mut hasher = Keccak256::new();
+                hasher.update(c.address().as_slice());
+                hasher.update(inner.as_slice());
+                ChunkAddress::from(hasher.finalize())
+            }
+            // Custom: no BmtBody, so hash its raw span/data as a prefixed BMT.
+            Self::Custom { .. } => {
+                let mut hasher: Hasher<BODY_SIZE> = Hasher::with_prefix(anchor);
+                hasher.set_span(self.span());
+                hasher.update(self.data());
+                ChunkAddress::from(hasher.sum())
+            }
         }
     }
 
@@ -328,7 +392,7 @@ impl<const BODY_SIZE: usize> Eq for AnyChunk<BODY_SIZE> {}
 
 #[cfg(test)]
 mod tests {
-    use super::super::traits::Chunk;
+    use super::super::traits::{BmtChunk, Chunk};
     use super::*;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
@@ -554,5 +618,95 @@ mod tests {
         let opaque = Bytes::from_static(b"opaque custom-looking payload bytes");
         let addr: ChunkAddress = [0x11u8; 32].into();
         assert!(DefaultAnyChunk::from_wire_bytes(&addr, opaque).is_err());
+    }
+
+    // --- transformed address (redistribution sampler) bee parity -------------
+    //
+    // nectar owns the parity oracle for the anchor-keyed transformed address.
+    // The vectors below are taken from bee so that any drift in the prefixed
+    // BMT or the single-owner outer wrap is caught here, at the primitive.
+
+    /// bee `TestSampleVectorCAC` (`pkg/storer/sample_test.go`): a 4096-byte CAC
+    /// whose payload is the repeating pattern `i % 256`, transformed under the
+    /// anchor `swarm-test-anchor-deterministic!`.
+    #[test]
+    fn transformed_address_reproduces_bee_cac_vector() {
+        use alloy_primitives::hex;
+
+        const ANCHOR: &[u8] = b"swarm-test-anchor-deterministic!";
+        // Plain (unprefixed) BMT root: the chunk's own content address.
+        const WANT_CHUNK_ADDR: &str =
+            "902406053a7a2f3a17f16097e1d0b4b6a4abeae6b84968f5503ae621f9522e16";
+        // Anchor-keyed transformed address.
+        const WANT_TRANSFORMED: &str =
+            "9dee91d1ed794460474ffc942996bd713176731db4581a3c6470fe9862905a60";
+
+        let mut payload = vec![0u8; 4096];
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b = (i % 256) as u8;
+        }
+
+        let content = DefaultContentChunk::new(payload).unwrap();
+
+        // The chunk's plain BMT address is the unprefixed root.
+        assert_eq!(
+            hex::encode(content.address().as_slice()),
+            WANT_CHUNK_ADDR,
+            "plain BMT address must match bee's published vector",
+        );
+
+        let any: DefaultAnyChunk = content.into();
+        let tr = any.transformed_address(ANCHOR);
+        assert_eq!(
+            hex::encode(tr.as_slice()),
+            WANT_TRANSFORMED,
+            "CAC transformed address must match bee byte-for-byte",
+        );
+    }
+
+    /// A single-owner chunk vector from bee's `TestMakeInclusionProofsRegression`
+    /// oracle (anchor1 = `0x64`). Exercises the SOC path: the wrapped content
+    /// chunk is re-hashed under the anchor, then the SOC transformed address is
+    /// the plain `keccak256(soc_address || inner)`.
+    #[test]
+    fn transformed_address_reproduces_bee_soc_vector() {
+        use alloy_primitives::hex;
+
+        // anchor1 from the oracle, a single byte 0x64 (== 100).
+        const ANCHOR: &[u8] = &[0x64];
+        const WANT_CHUNK_ADDR: &str =
+            "71d5144d0525b82cd550aa9254245c6195fdac9ccbb625eb45a0bfe244cb131f";
+        const WANT_TRANSFORMED: &str =
+            "521f50f895dc1deea14448c09ba8d9c510c5db09cd84c7ed8413b66f15fbc110";
+        // Full SOC wire bytes: id(32) || signature(65) || span(8) || payload.
+        const SOC_WIRE: &str = "82d0ed66f956ed70445d02df922606e02c11a79014cc441f9cc678275d260703\
+            15c7157590f599a81b38834786f79f57a6a6626bbe8bf48fbbd6db3e55ad41c0\
+            277d7d310bbefbb5d81d74605a5950171229ebdd320249ef5f8fd6b8dfe2bc7d\
+            1c1a00000000000000556e73746f707061626c65206461746121204368756e6b\
+            202331";
+
+        let wire = hex::decode(SOC_WIRE.replace([' ', '\n'], "")).unwrap();
+        let soc = DefaultSingleOwnerChunk::try_from(wire.as_slice()).unwrap();
+
+        // Sanity: this SOC's own address matches the oracle.
+        assert_eq!(
+            hex::encode(soc.address().as_slice()),
+            WANT_CHUNK_ADDR,
+            "SOC address must match bee's oracle",
+        );
+
+        // `unwrap_cac` must expose the wrapped content body with no manual
+        // 32 + 65 header slicing; its span/payload feed the inner BMT.
+        let cac = soc.unwrap_cac();
+        assert_eq!(cac.span(), soc.inner_body().span());
+        assert_eq!(cac.data(), soc.inner_body().data());
+
+        let any: DefaultAnyChunk = soc.into();
+        let tr = any.transformed_address(ANCHOR);
+        assert_eq!(
+            hex::encode(tr.as_slice()),
+            WANT_TRANSFORMED,
+            "SOC transformed address must match bee byte-for-byte",
+        );
     }
 }

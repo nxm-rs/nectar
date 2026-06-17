@@ -60,6 +60,24 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
         hasher.update(self.data.as_ref());
         hasher.sum().into()
     }
+
+    /// Compute the anchor-keyed *transformed* BMT root of this body.
+    ///
+    /// This is the prefixed BMT of the body (`span` + `payload`), where the
+    /// `anchor` is mixed into *every* node hash via [`Hasher::with_prefix`].
+    /// It mirrors bee's `transformedAddressCAC` (`pkg/storer/sample.go`) and is
+    /// the redistribution sampler's per-round, per-node re-hash of a chunk
+    /// body. The span is serialised little-endian by the hasher.
+    ///
+    /// The body already carries everything the hash needs — `span()`,
+    /// `data()`, and the `BODY_SIZE` const — so callers pass only the
+    /// `anchor`, and the body is borrowed (nothing is cloned).
+    pub fn transformed_root(&self, anchor: &[u8]) -> alloy_primitives::B256 {
+        let mut hasher: Hasher<BODY_SIZE> = Hasher::with_prefix(anchor);
+        hasher.set_span(self.span);
+        hasher.update(self.data.as_ref());
+        hasher.sum()
+    }
 }
 
 fn validate_data<const BODY_SIZE: usize>(data: impl Into<Bytes>) -> error::Result<Bytes> {
