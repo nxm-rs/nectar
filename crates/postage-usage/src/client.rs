@@ -7,7 +7,7 @@
 //! live floor, revalidate, plan, choose a strictly increasing timestamp, seal,
 //! and upload each sealed chunk. [`BatchStamper`] collapses that into
 //! `open` / `stamp` / `flush`, leaving the consumer to supply only the network
-//! through the [`ChunkSource`] and [`ChunkSink`] traits.
+//! through the [`SnapshotSource`] and [`SnapshotSink`] traits.
 //!
 //! Power users who need partial persists, custom timestamp policies, or direct
 //! access to the [`PersistPlan`] should keep reaching for the low-level
@@ -19,7 +19,7 @@
 //! The whole point of the published-sequence floor (nectar issue #70) is that a
 //! persist can never regress the version published at a snapshot's own chunk
 //! addresses. That guarantee survives only if a failed network read is never
-//! mistaken for "the chunk is absent". [`ChunkSource::fetch`] therefore
+//! mistaken for "the chunk is absent". [`SnapshotSource::fetch`] therefore
 //! distinguishes `Ok(None)` (the network definitively agrees the chunk does not
 //! exist) from `Err` (the read could not be completed). [`BatchStamper::open`]
 //! and [`BatchStamper::flush`] both abort on `Err`: a transport failure never
@@ -54,7 +54,7 @@ use crate::{UsageError, usage_chunk_address};
 /// floor as [`PublishedSequence::NONE`] and reopen the downgrade that nectar
 /// issue #70 closes.
 #[auto_impl::auto_impl(&, Arc, Box)]
-pub trait ChunkSource {
+pub trait SnapshotSource {
     /// The error a failed read reports. A value of this type means the read did
     /// not complete; it never means the chunk is absent.
     type Error: core::error::Error + Send + Sync + 'static;
@@ -75,13 +75,13 @@ pub trait ChunkSource {
 /// Publishes a sealed snapshot chunk (the single-owner chunk and its stamp) to
 /// the network.
 #[auto_impl::auto_impl(&, Arc, Box)]
-pub trait ChunkSink {
+pub trait SnapshotSink {
     /// The error a failed publish reports.
     type Error: core::error::Error + Send + Sync + 'static;
 
     /// Uploads a sealed snapshot chunk.
     ///
-    /// As with [`ChunkSource::fetch`], the returned future carries no `Send`
+    /// As with [`SnapshotSource::fetch`], the returned future carries no `Send`
     /// bound so a `!Send` browser transport can implement it; native `Send`-ness
     /// propagates through the facade on its own.
     fn push(
@@ -111,12 +111,12 @@ where
     /// Sealing the persist plan failed.
     #[error(transparent)]
     Seal(#[from] SealError),
-    /// The [`ChunkSource`] read could not be completed. This is *not* an absence:
+    /// The [`SnapshotSource`] read could not be completed. This is *not* an absence:
     /// `open` and `flush` abort here rather than starting fresh or persisting
     /// against a [`PublishedSequence::NONE`] floor.
     #[error("chunk source read failed")]
     Source(#[source] SrcErr),
-    /// The [`ChunkSink`] publish failed.
+    /// The [`SnapshotSink`] publish failed.
     #[error("chunk sink publish failed")]
     Sink(#[source] SnkErr),
     /// A published root committed to a leaf the source reported as absent. A
@@ -159,8 +159,8 @@ pub struct BatchStamper<Sg, Src, Snk> {
 impl<Sg, Src, Snk> BatchStamper<Sg, Src, Snk>
 where
     Sg: SignerSync + alloy_signer::Signer,
-    Src: ChunkSource,
-    Snk: ChunkSink,
+    Src: SnapshotSource,
+    Snk: SnapshotSink,
 {
     /// Opens a stamper for `batch`, recovering published state or starting fresh.
     ///
@@ -333,8 +333,8 @@ mod tests {
     use super::*;
     use crate::{Mutability, UsageTable};
 
-    /// A shared in-memory network backing both a [`ChunkSource`] and a
-    /// [`ChunkSink`], keyed by single-owner-chunk address.
+    /// A shared in-memory network backing both a [`SnapshotSource`] and a
+    /// [`SnapshotSink`], keyed by single-owner-chunk address.
     #[derive(Debug, Default, Clone)]
     struct MemNet {
         chunks: std::sync::Arc<Mutex<BTreeMap<SwarmAddress, Bytes>>>,
@@ -344,14 +344,14 @@ mod tests {
     #[error("mem net error")]
     struct MemError;
 
-    impl ChunkSource for MemNet {
+    impl SnapshotSource for MemNet {
         type Error = MemError;
         async fn fetch(&self, address: &SwarmAddress) -> Result<Option<Bytes>, Self::Error> {
             Ok(self.chunks.lock().unwrap().get(address).cloned())
         }
     }
 
-    impl ChunkSink for MemNet {
+    impl SnapshotSink for MemNet {
         type Error = MemError;
         async fn push(&self, sealed: &SealedChunk) -> Result<(), Self::Error> {
             use nectar_primitives::Chunk;
@@ -367,14 +367,14 @@ mod tests {
     #[derive(Debug, Default, Clone)]
     struct FailingSource;
 
-    impl ChunkSource for FailingSource {
+    impl SnapshotSource for FailingSource {
         type Error = MemError;
         async fn fetch(&self, _address: &SwarmAddress) -> Result<Option<Bytes>, Self::Error> {
             Err(MemError)
         }
     }
 
-    impl ChunkSink for FailingSource {
+    impl SnapshotSink for FailingSource {
         type Error = MemError;
         async fn push(&self, _sealed: &SealedChunk) -> Result<(), Self::Error> {
             Ok(())
@@ -386,7 +386,7 @@ mod tests {
     /// cannot produce `Send` futures.
     struct LocalNet(std::rc::Rc<()>);
 
-    impl ChunkSource for LocalNet {
+    impl SnapshotSource for LocalNet {
         type Error = MemError;
         fn fetch(
             &self,
@@ -400,7 +400,7 @@ mod tests {
         }
     }
 
-    impl ChunkSink for LocalNet {
+    impl SnapshotSink for LocalNet {
         type Error = MemError;
         fn push(
             &self,
@@ -414,14 +414,14 @@ mod tests {
         }
     }
 
-    /// Compile-time proof that a `!Send` transport satisfies [`ChunkSource`] and
-    /// [`ChunkSink`]. This only type-checks while neither trait bounds its future
+    /// Compile-time proof that a `!Send` transport satisfies [`SnapshotSource`] and
+    /// [`SnapshotSink`]. This only type-checks while neither trait bounds its future
     /// with `Send`, which is exactly what lets a single-threaded browser
     /// transport implement the facade. Re-adding a `+ Send` bound breaks here.
     #[test]
     fn non_send_transport_satisfies_the_traits() {
-        fn assert_source<S: ChunkSource>(_: &S) {}
-        fn assert_sink<K: ChunkSink>(_: &K) {}
+        fn assert_source<S: SnapshotSource>(_: &S) {}
+        fn assert_sink<K: SnapshotSink>(_: &K) {}
         let local = LocalNet(std::rc::Rc::new(()));
         assert_source(&local);
         assert_sink(&local);

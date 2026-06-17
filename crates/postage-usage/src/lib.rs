@@ -124,7 +124,7 @@ pub use issuer::SnapshotIssuer;
 pub use seal::{SealError, SealedChunk, seal_plan};
 
 #[cfg(feature = "client")]
-pub use client::{BatchStamper, ChunkSink, ChunkSource, ClientError};
+pub use client::{BatchStamper, ClientError, SnapshotSink, SnapshotSource};
 
 pub use nectar_primitives::SwarmAddress;
 
