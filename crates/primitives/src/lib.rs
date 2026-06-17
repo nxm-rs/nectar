@@ -45,6 +45,7 @@ pub mod network_id;
 pub mod nonce;
 pub mod overlay;
 pub mod proximity_order;
+pub mod redistribution;
 pub mod signing;
 pub mod spec;
 pub mod store;
@@ -70,6 +71,7 @@ pub use network_id::NetworkId;
 pub use nonce::Nonce;
 pub use overlay::compute_overlay;
 pub use proximity_order::{ProximityOrder, ProximityOrderError};
+pub use redistribution::{Entitlement, canonical_neighbourhood, sample};
 pub use spec::{MAINNET, StaticSpec, SwarmSpec, TESTNET};
 pub use timestamp::{Timestamp, TimestampError};
 
