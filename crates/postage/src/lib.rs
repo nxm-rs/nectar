@@ -36,9 +36,15 @@
 #[cfg(not(test))]
 use k256 as _;
 
+// `alloc` is required by the stamped-chunk codec (`Vec`). `nectar-primitives`,
+// a hard dependency, also already requires an allocator, so this adds no new
+// constraint to the `no_std` build.
+extern crate alloc;
+
 mod batch;
 mod error;
 mod stamp;
+mod stamped;
 mod util;
 mod validation;
 
@@ -58,6 +64,7 @@ pub mod parallel;
 pub use batch::{Batch, BatchId, BatchParams};
 pub use error::StampError;
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
+pub use stamped::StampedChunk;
 pub use util::{PostageContext, calculate_bucket, current_timestamp};
 pub use validation::StampValidator;
 #[cfg(feature = "std")]

@@ -271,6 +271,39 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
             }),
         }
     }
+
+    /// Decode a chunk from its bare wire bytes (NO type tag) given the expected
+    /// address, disambiguating content vs single-owner by which one hashes to
+    /// `address`. This is the type-less wire form (e.g. a Delivery `data`
+    /// field); prefer [`from_typed_bytes`](Self::from_typed_bytes) for
+    /// self-describing storage. A custom chunk type cannot be recovered from
+    /// bare bytes, so it is not produced.
+    ///
+    /// Reconstructing an [`AnyChunk`] from raw bytes is ambiguous without the
+    /// address: a [`ContentChunk`] parse almost always succeeds structurally (a
+    /// span plus an arbitrary payload), so the expected address is the
+    /// disambiguator. The chunk is whichever variant parses *and* hashes to
+    /// `address`. Content is tried first, then single-owner; a lying address
+    /// makes both attempts fail, so the address is self-validating against the
+    /// bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a verification error (and never panics) when neither the content
+    /// nor the single-owner interpretation of `data` hashes to `address`.
+    pub fn from_wire_bytes(address: &ChunkAddress, data: Bytes) -> crate::error::Result<Self> {
+        if let Ok(content) = ContentChunk::try_from(data.clone())
+            && content.address() == address
+        {
+            return Ok(Self::Content(content));
+        }
+        if let Ok(soc) = SingleOwnerChunk::try_from(data)
+            && soc.address() == address
+        {
+            return Ok(Self::SingleOwner(soc));
+        }
+        Err(super::error::ChunkError::verification_failed(*address, *address).into())
+    }
 }
 
 impl<const BODY_SIZE: usize> From<ContentChunk<BODY_SIZE>> for AnyChunk<BODY_SIZE> {
@@ -464,5 +497,62 @@ mod tests {
         let bad = vec![ChunkTypeId::CONTENT.as_u8(), 0x00];
         let result = DefaultAnyChunk::from_typed_bytes(&address, &bad);
         assert!(result.is_err(), "corrupt content payload must error");
+    }
+
+    #[test]
+    fn test_from_wire_bytes_content_round_trip() {
+        let content = DefaultContentChunk::new(&b"hello wire world"[..]).unwrap();
+        let address = *content.address();
+        let any: DefaultAnyChunk = content.into();
+        // Bare wire bytes carry no type tag.
+        let wire = any.clone().into_bytes();
+
+        let decoded = DefaultAnyChunk::from_wire_bytes(&address, wire.clone()).unwrap();
+        assert!(decoded.is_content());
+        assert_eq!(decoded.address(), any.address());
+        assert_eq!(decoded.into_bytes(), wire);
+    }
+
+    #[test]
+    fn test_from_wire_bytes_single_owner_round_trip() {
+        let soc = sample_single_owner();
+        let address = *soc.address();
+        let any: DefaultAnyChunk = soc.into();
+        let wire = any.clone().into_bytes();
+
+        let decoded = DefaultAnyChunk::from_wire_bytes(&address, wire.clone()).unwrap();
+        assert!(decoded.is_single_owner());
+        assert_eq!(decoded.address(), any.address());
+        assert_eq!(decoded.into_bytes(), wire);
+    }
+
+    #[test]
+    fn test_from_wire_bytes_address_mismatch_errors() {
+        let content = DefaultContentChunk::new(&b"chunk A"[..]).unwrap();
+        let wire = DefaultAnyChunk::from(content).into_bytes();
+
+        let wrong: ChunkAddress = [0xFFu8; 32].into();
+        let result = DefaultAnyChunk::from_wire_bytes(&wrong, wire);
+        assert!(result.is_err(), "address mismatch must error, not panic");
+    }
+
+    #[test]
+    fn test_from_wire_bytes_never_yields_custom() {
+        // A custom chunk type cannot be recovered from bare bytes: there is no
+        // type tag to identify it, so decoding can only ever produce Content or
+        // SingleOwner. We assert this by decoding both standard shapes and
+        // confirming neither is Custom, and that opaque bytes that are neither a
+        // valid content nor single-owner chunk for the address simply error.
+        let content = DefaultContentChunk::new(&b"not custom"[..]).unwrap();
+        let address = *content.address();
+        let wire = DefaultAnyChunk::from(content).into_bytes();
+        let decoded = DefaultAnyChunk::from_wire_bytes(&address, wire).unwrap();
+        assert!(!decoded.is_custom(), "bare bytes must never yield Custom");
+
+        // Opaque bytes for an arbitrary address: no Custom variant is produced,
+        // it errors instead.
+        let opaque = Bytes::from_static(b"opaque custom-looking payload bytes");
+        let addr: ChunkAddress = [0x11u8; 32].into();
+        assert!(DefaultAnyChunk::from_wire_bytes(&addr, opaque).is_err());
     }
 }
