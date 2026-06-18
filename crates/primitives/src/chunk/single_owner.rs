@@ -17,6 +17,7 @@ use crate::chunk::error::{self, ChunkError};
 use crate::error::Result;
 
 use super::bmt_body::BmtBody;
+use super::content::ContentChunk;
 use super::traits::{BmtChunk, Chunk, ChunkAddress, ChunkHeader, ChunkMetadata};
 
 // Constants for field sizes
@@ -291,6 +292,29 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// Get the signature of this chunk.
     pub const fn signature(&self) -> &Signature {
         &self.header.metadata.signature
+    }
+
+    /// Borrow the inner content body wrapped by this single-owner chunk.
+    ///
+    /// A single-owner chunk is `id || signature || span || payload`; the
+    /// `span || payload` tail is exactly the [`BmtBody`] of the content chunk it
+    /// wraps. This is the zero-copy accessor for that body, so callers reading
+    /// the wrapped span/payload never re-slice past the `id`/`signature`
+    /// header.
+    pub const fn inner_body(&self) -> &BmtBody<BODY_SIZE> {
+        &self.body
+    }
+
+    /// Extract the content-addressed chunk (CAC) wrapped inside this SOC.
+    ///
+    /// Mirrors bee's `soc.UnwrapCAC` (`pkg/soc/soc.go`): the SOC body *is* a
+    /// CAC body (`span || payload`), so this rebuilds the [`ContentChunk`] from
+    /// it without any manual `HashSize + SignatureSize` cursor arithmetic. The
+    /// returned chunk's address is the wrapped content address, not the SOC
+    /// address.
+    #[must_use]
+    pub fn unwrap_cac(&self) -> ContentChunk<BODY_SIZE> {
+        ContentChunk::from_body(self.body.clone())
     }
 }
 

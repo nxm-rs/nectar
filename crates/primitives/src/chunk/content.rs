@@ -136,6 +136,16 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
         }
     }
 
+    /// Borrow the BMT body of this content chunk.
+    ///
+    /// The body carries the chunk's `span`, `payload`, and the `BODY_SIZE`
+    /// const, so this is the zero-copy accessor callers use to feed the body
+    /// into BMT operations (e.g. [`BmtBody::transformed_root`]) without
+    /// re-slicing the span/payload back out of the wire form.
+    pub const fn body(&self) -> &BmtBody<BODY_SIZE> {
+        &self.body
+    }
+
     /// Create a ContentChunk from a pre-existing BmtBody with a known address.
     ///
     /// This is an advanced method for when you already have both the body
