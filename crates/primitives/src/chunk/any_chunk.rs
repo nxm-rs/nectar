@@ -6,7 +6,7 @@
 use alloy_primitives::Keccak256;
 use bytes::Bytes;
 
-use crate::bmt::{DEFAULT_BODY_SIZE, Hasher};
+use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::error::Result;
 
 use super::chunk_type::ChunkType;
@@ -49,18 +49,6 @@ pub enum AnyChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     Content(ContentChunk<BODY_SIZE>),
     /// A single-owner chunk (SOC).
     SingleOwner(SingleOwnerChunk<BODY_SIZE>),
-    /// A custom chunk type (for extensibility).
-    ///
-    /// This variant allows storing chunks of types not known at compile time.
-    /// The raw bytes are preserved for potential later processing.
-    Custom {
-        /// The chunk type identifier.
-        type_id: ChunkTypeId,
-        /// The chunk's address.
-        address: ChunkAddress,
-        /// The raw chunk data.
-        data: Bytes,
-    },
 }
 
 impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
@@ -69,7 +57,6 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
         match self {
             Self::Content(c) => c.address(),
             Self::SingleOwner(c) => c.address(),
-            Self::Custom { address, .. } => address,
         }
     }
 
@@ -78,7 +65,6 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
         match self {
             Self::Content(c) => c.data(),
             Self::SingleOwner(c) => c.data(),
-            Self::Custom { data, .. } => data,
         }
     }
 
@@ -87,7 +73,6 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
         match self {
             Self::Content(_) => ChunkTypeId::CONTENT,
             Self::SingleOwner(_) => ChunkTypeId::SINGLE_OWNER,
-            Self::Custom { type_id, .. } => *type_id,
         }
     }
 
@@ -96,19 +81,15 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
         match self {
             Self::Content(c) => c.size(),
             Self::SingleOwner(c) => c.size(),
-            Self::Custom { data, .. } => data.len(),
         }
     }
 
-    /// Get the span (logical data length) of this chunk.
-    ///
-    /// For content chunks and single-owner chunks, this returns the BMT span.
-    /// For custom chunks, the span is not available (returns 0).
+    /// Get the span (logical data length) of this chunk: the BMT span of its
+    /// underlying body.
     pub fn span(&self) -> u64 {
         match self {
             Self::Content(c) => super::traits::BmtChunk::span(c),
             Self::SingleOwner(c) => super::traits::BmtChunk::span(c),
-            Self::Custom { .. } => 0, // Custom chunks don't have span info
         }
     }
 
@@ -134,10 +115,6 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     ///   wrap is a flat Keccak256, *not* a prefixed BMT, mirroring bee's
     ///   `transformedAddressSOC` which uses `swarm.NewHasher()` (no anchor) for
     ///   the final combine.
-    /// - A custom chunk type has no [`BmtBody`](super::bmt_body::BmtBody), so it
-    ///   cannot reuse the typed body path. It is hashed as a prefixed BMT over
-    ///   its raw `span()`/`data()` (identical bytes to the CAC case), keeping
-    ///   the variant well-defined and non-panicking.
     ///
     /// # Endianness
     ///
@@ -165,13 +142,6 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
                 hasher.update(inner.as_slice());
                 ChunkAddress::from(hasher.finalize())
             }
-            // Custom: no BmtBody, so hash its raw span/data as a prefixed BMT.
-            Self::Custom { .. } => {
-                let mut hasher: Hasher<BODY_SIZE> = Hasher::with_prefix(anchor);
-                hasher.set_span(self.span());
-                hasher.update(self.data());
-                ChunkAddress::from(hasher.sum())
-            }
         }
     }
 
@@ -180,14 +150,6 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
         match self {
             Self::Content(c) => c.verify(expected),
             Self::SingleOwner(c) => c.verify(expected),
-            Self::Custom { address, .. } => {
-                if address != expected {
-                    return Err(
-                        super::error::ChunkError::verification_failed(*expected, *address).into(),
-                    );
-                }
-                Ok(())
-            }
         }
     }
 
@@ -196,7 +158,6 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
         match self {
             Self::Content(c) => c.into(),
             Self::SingleOwner(c) => c.into(),
-            Self::Custom { data, .. } => data,
         }
     }
 
@@ -213,11 +174,6 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     /// Check if this is a single-owner chunk.
     pub const fn is_single_owner(&self) -> bool {
         matches!(self, Self::SingleOwner(_))
-    }
-
-    /// Check if this is a custom chunk type.
-    pub const fn is_custom(&self) -> bool {
-        matches!(self, Self::Custom { .. })
     }
 
     /// Get a reference to the contained ContentChunk, if this is one.
@@ -265,8 +221,7 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     ///
     /// Unlike the address-disambiguating reconstruction path, decoding the
     /// result of this method dispatches purely by `type_id`, so it never has
-    /// to trial-parse both the content and single-owner shapes, and it
-    /// round-trips the [`AnyChunk::Custom`] variant.
+    /// to trial-parse both the content and single-owner shapes.
     ///
     /// # Examples
     ///
@@ -298,17 +253,19 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     ///
     /// The leading byte selects the chunk type and the remainder is the chunk
     /// wire payload. `address` is the expected chunk address (for example the
-    /// redb storage key or the wire message address field); it is used to
-    /// verify standard chunks and to populate the [`AnyChunk::Custom`] variant,
-    /// whose address is not otherwise recoverable from the payload.
+    /// redb storage key or the wire message address field); the decoded chunk
+    /// is verified against it.
     ///
     /// Decoding dispatches by the type tag and therefore never trial-parses the
-    /// other chunk shape.
+    /// other chunk shape. Only the standard content and single-owner types are
+    /// recognised; any other tag is an error (custom chunk types are tracked
+    /// separately as a future registration mechanism).
     ///
     /// # Errors
     ///
     /// Returns an error (and never panics) when:
     /// - the input is empty (no type tag),
+    /// - the type tag is not a recognised standard chunk type,
     /// - the payload cannot be decoded as the tagged chunk type, or
     /// - a standard chunk's computed address does not match `address`.
     pub fn from_typed_bytes(address: &ChunkAddress, bytes: &[u8]) -> crate::error::Result<Self> {
@@ -328,11 +285,7 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
                 chunk.verify(address)?;
                 Ok(Self::SingleOwner(chunk))
             }
-            _ => Ok(Self::Custom {
-                type_id,
-                address: *address,
-                data: Bytes::copy_from_slice(payload),
-            }),
+            other => Err(super::error::ChunkError::unsupported_type(other).into()),
         }
     }
 
@@ -340,8 +293,8 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     /// address, disambiguating content vs single-owner by which one hashes to
     /// `address`. This is the type-less wire form (e.g. a Delivery `data`
     /// field); prefer [`from_typed_bytes`](Self::from_typed_bytes) for
-    /// self-describing storage. A custom chunk type cannot be recovered from
-    /// bare bytes, so it is not produced.
+    /// self-describing storage. Only content and single-owner shapes are
+    /// recognised; bytes that parse as neither (for the given address) error.
     ///
     /// Reconstructing an [`AnyChunk`] from raw bytes is ambiguous without the
     /// address: a [`ContentChunk`] parse almost always succeeds structurally (a
@@ -408,7 +361,6 @@ mod tests {
 
         assert!(any.is_content());
         assert!(!any.is_single_owner());
-        assert!(!any.is_custom());
         assert_eq!(any.type_id(), ChunkTypeId::CONTENT);
         assert_eq!(*any.address(), address);
     }
@@ -498,24 +450,24 @@ mod tests {
 
     #[test]
     fn test_typed_custom_round_trip() {
+        // The Custom variant has been removed; an unrecognised type tag must now
+        // error rather than round-trip as an opaque blob.
         let type_id = ChunkTypeId::custom(200);
         let address: ChunkAddress = [0x11u8; 32].into();
         let data = Bytes::from_static(b"opaque custom chunk bytes");
 
-        let any: DefaultAnyChunk = AnyChunk::Custom {
-            type_id,
-            address,
-            data: data.clone(),
+        let encoded = {
+            let mut out = Vec::with_capacity(1 + data.len());
+            out.push(type_id.as_u8());
+            out.extend_from_slice(&data);
+            out
         };
 
-        let encoded = any.to_typed_bytes();
-        assert_eq!(encoded[0], 200, "custom tag preserved");
-
-        let decoded = DefaultAnyChunk::from_typed_bytes(&address, &encoded).unwrap();
-        assert!(decoded.is_custom());
-        assert_eq!(decoded.type_id(), type_id);
-        assert_eq!(*decoded.address(), address);
-        assert_eq!(decoded.data(), &data);
+        let result = DefaultAnyChunk::from_typed_bytes(&address, &encoded);
+        assert!(
+            result.is_err(),
+            "unrecognised type tags must error now that Custom is removed",
+        );
     }
 
     #[test]
@@ -601,20 +553,10 @@ mod tests {
     }
 
     #[test]
-    fn test_from_wire_bytes_never_yields_custom() {
-        // A custom chunk type cannot be recovered from bare bytes: there is no
-        // type tag to identify it, so decoding can only ever produce Content or
-        // SingleOwner. We assert this by decoding both standard shapes and
-        // confirming neither is Custom, and that opaque bytes that are neither a
-        // valid content nor single-owner chunk for the address simply error.
-        let content = DefaultContentChunk::new(&b"not custom"[..]).unwrap();
-        let address = *content.address();
-        let wire = DefaultAnyChunk::from(content).into_bytes();
-        let decoded = DefaultAnyChunk::from_wire_bytes(&address, wire).unwrap();
-        assert!(!decoded.is_custom(), "bare bytes must never yield Custom");
-
-        // Opaque bytes for an arbitrary address: no Custom variant is produced,
-        // it errors instead.
+    fn test_from_wire_bytes_unknown_shape_errors() {
+        // Bare wire bytes carry no type tag, so only the standard content and
+        // single-owner shapes can ever be recovered. Opaque bytes that parse as
+        // neither (for the given address) simply error.
         let opaque = Bytes::from_static(b"opaque custom-looking payload bytes");
         let addr: ChunkAddress = [0x11u8; 32].into();
         assert!(DefaultAnyChunk::from_wire_bytes(&addr, opaque).is_err());
