@@ -18,7 +18,10 @@
 //! # Traits
 //!
 //! - [`StampValidator`]: Validate stamps against batches
-//! - [`BatchStore`]: Persist and retrieve batches (requires `std`)
+//! - [`BatchStore`]: Persist and retrieve batches (requires `std`). The trait is
+//!   synchronous and, having an associated `Error` and no generic methods, is
+//!   naturally object-safe; drive it from an async edge (a gRPC service, an FFI
+//!   boundary) where async is genuinely needed, rather than colouring the core.
 //! - [`SnapshotStore`]: Cache recovered issuer snapshot state by batch id (requires `std`)
 //! - [`BatchEventHandler`]: Handle batch events from the blockchain (requires `std`)
 //!

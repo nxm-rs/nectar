@@ -40,7 +40,6 @@ proptest = { workspace = true }
 proptest-arbitrary-interop = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 alloy-signer-local = { workspace = true }
 alloy-primitives = { workspace = true, features = ["getrandom"] }
 arbitrary = { workspace = true, features = ["derive"] }

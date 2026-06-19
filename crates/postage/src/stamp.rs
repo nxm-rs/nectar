@@ -330,6 +330,10 @@ impl Stamp {
     /// [`verify_with_pubkey`](Self::verify_with_pubkey) which is approximately
     /// 10x faster than full signature recovery.
     ///
+    /// This pair (`recover_pubkey` / `verify_with_pubkey`) is the primitive for a
+    /// future in-memory, never-persisted per-batch pubkey memoization; it is kept
+    /// deliberately even though no cache is wired up yet.
+    ///
     /// # Arguments
     ///
     /// * `chunk_address` - The address of the chunk this stamp is for
