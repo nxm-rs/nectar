@@ -7,10 +7,16 @@ use crate::{Batch, BatchId, PostageContext};
 /// Implementations may persist batches in memory, on disk, or retrieve
 /// them from a remote source such as a blockchain node.
 ///
-/// # Async Design
+/// # Synchronous Design
 ///
-/// This trait uses async methods to support both local (fast) and
-/// remote (potentially slow) storage backends without blocking.
+/// The methods are synchronous. The known backends (in memory, redb) are
+/// themselves synchronous, so there is no genuinely async work to drive here;
+/// any async behaviour belongs at the true edges (a gRPC service, an FFI
+/// boundary) where it is added by the edge, not by the store. Keeping the core
+/// synchronous avoids colouring every caller with `async`, keeps the futures
+/// `Send`-free on the wasm path, and makes this trait naturally object-safe (it
+/// has an associated `Error` and no generic methods), a property the previous
+/// async-in-trait shape did not have.
 pub trait BatchStore {
     /// The error type returned by store operations.
     type Error: std::error::Error;
@@ -18,53 +24,38 @@ pub trait BatchStore {
     /// Retrieves a batch by its ID.
     ///
     /// Returns `None` if the batch doesn't exist.
-    fn get(
-        &self,
-        id: &BatchId,
-    ) -> impl std::future::Future<Output = Result<Option<Batch>, Self::Error>> + Send;
+    fn get(&self, id: &BatchId) -> Result<Option<Batch>, Self::Error>;
 
     /// Stores or updates a batch.
-    fn put(
-        &self,
-        batch: Batch,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
+    fn put(&self, batch: Batch) -> Result<(), Self::Error>;
 
     /// Removes a batch from the store.
     ///
     /// Returns `true` if the batch existed and was removed.
-    fn remove(
-        &self,
-        id: &BatchId,
-    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send;
+    fn remove(&self, id: &BatchId) -> Result<bool, Self::Error>;
 
     /// Checks if a batch exists in the store.
-    fn contains(
-        &self,
-        id: &BatchId,
-    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send;
+    fn contains(&self, id: &BatchId) -> Result<bool, Self::Error>;
 
     /// Returns the current postage context.
-    fn context(
-        &self,
-    ) -> impl std::future::Future<Output = Result<PostageContext, Self::Error>> + Send;
+    fn context(&self) -> Result<PostageContext, Self::Error>;
 
     /// Updates the postage context.
-    fn set_context(
-        &self,
-        state: PostageContext,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
+    fn set_context(&self, state: PostageContext) -> Result<(), Self::Error>;
 
     /// Returns all batch IDs in the store.
-    fn batch_ids(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Vec<BatchId>, Self::Error>> + Send;
+    fn batch_ids(&self) -> Result<Vec<BatchId>, Self::Error>;
 
     /// Returns the number of batches in the store.
-    fn count(&self) -> impl std::future::Future<Output = Result<usize, Self::Error>> + Send;
+    fn count(&self) -> Result<usize, Self::Error>;
 }
 
 /// Extension methods for [`BatchStore`].
-pub trait BatchStoreExt: BatchStore + Sync {
+///
+/// This is a plain synchronous extension trait; it carries no `Sync` bound,
+/// because the methods are no longer `async` and therefore never need their
+/// futures to be `Send` (which previously forced `Self: Sync`).
+pub trait BatchStoreExt: BatchStore {
     /// Gets a batch and verifies it's usable.
     ///
     /// Returns an error if the batch doesn't exist, isn't usable yet,
@@ -73,40 +64,37 @@ pub trait BatchStoreExt: BatchStore + Sync {
         &self,
         id: &BatchId,
         confirmation_threshold: u64,
-    ) -> impl std::future::Future<Output = Result<Batch, BatchStoreError<Self::Error>>> + Send {
-        async move {
-            let batch = self
-                .get(id)
-                .await
-                .map_err(BatchStoreError::Store)?
-                .ok_or(BatchStoreError::NotFound(*id))?;
+    ) -> Result<Batch, BatchStoreError<Self::Error>> {
+        let batch = self
+            .get(id)
+            .map_err(BatchStoreError::Store)?
+            .ok_or(BatchStoreError::NotFound(*id))?;
 
-            let state = self.context().await.map_err(BatchStoreError::Store)?;
+        let state = self.context().map_err(BatchStoreError::Store)?;
 
-            if !batch.is_usable(state.block(), confirmation_threshold) {
-                return Err(BatchStoreError::NotUsable {
-                    batch_id: *id,
-                    created: batch.start(),
-                    current: state.block(),
-                    threshold: confirmation_threshold,
-                });
-            }
-
-            if batch.is_expired(state.total_amount()) {
-                return Err(BatchStoreError::Expired {
-                    batch_id: *id,
-                    value: batch.value(),
-                    total_amount: state.total_amount(),
-                });
-            }
-
-            Ok(batch)
+        if !batch.is_usable(state.block(), confirmation_threshold) {
+            return Err(BatchStoreError::NotUsable {
+                batch_id: *id,
+                created: batch.start(),
+                current: state.block(),
+                threshold: confirmation_threshold,
+            });
         }
+
+        if batch.is_expired(state.total_amount()) {
+            return Err(BatchStoreError::Expired {
+                batch_id: *id,
+                value: batch.value(),
+                total_amount: state.total_amount(),
+            });
+        }
+
+        Ok(batch)
     }
 }
 
 // Blanket implementation
-impl<T: BatchStore + Sync> BatchStoreExt for T {}
+impl<T: BatchStore> BatchStoreExt for T {}
 
 /// Errors that can occur when working with a batch store.
 #[derive(Debug)]

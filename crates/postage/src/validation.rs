@@ -107,7 +107,7 @@ pub trait StampValidator {
 /// let store = MyBatchStore::new();
 /// let validator = StoreValidator::new(store, 50); // 50 block confirmations
 ///
-/// let result = validator.validate(&stamp, &address).await;
+/// let result = validator.validate(&stamp, &address);
 /// ```
 #[derive(Debug)]
 #[cfg(feature = "std")]
@@ -143,17 +143,17 @@ impl<S> StoreValidator<S> {
 }
 
 #[cfg(feature = "std")]
-impl<S: BatchStore + Sync> StoreValidator<S> {
-    /// Validates a stamp asynchronously.
+impl<S: BatchStore> StoreValidator<S> {
+    /// Validates a stamp.
     ///
     /// This performs full validation including signature verification.
     ///
     /// # Returns
     ///
     /// `Ok(())` if the stamp is valid, or a [`StampError`] describing the failure.
-    pub async fn validate(&self, stamp: &Stamp, address: &SwarmAddress) -> Result<(), StampError> {
+    pub fn validate(&self, stamp: &Stamp, address: &SwarmAddress) -> Result<(), StampError> {
         // Get the batch and verify it's usable
-        let batch = self.get_batch_for_stamp(stamp).await?;
+        let batch = self.get_batch_for_stamp(stamp)?;
 
         // Validate structure
         self.validate_structure_with_batch(stamp, address, &batch)?;
@@ -168,20 +168,19 @@ impl<S: BatchStore + Sync> StoreValidator<S> {
     ///
     /// This is faster than full validation when you only need to check
     /// that the stamp references a valid batch and bucket.
-    pub async fn validate_structure(
+    pub fn validate_structure(
         &self,
         stamp: &Stamp,
         address: &SwarmAddress,
     ) -> Result<(), StampError> {
-        let batch = self.get_batch_for_stamp(stamp).await?;
+        let batch = self.get_batch_for_stamp(stamp)?;
         self.validate_structure_with_batch(stamp, address, &batch)
     }
 
     /// Gets and validates the batch for a stamp.
-    async fn get_batch_for_stamp(&self, stamp: &Stamp) -> Result<Batch, StampError> {
+    fn get_batch_for_stamp(&self, stamp: &Stamp) -> Result<Batch, StampError> {
         self.store
             .get_usable(&stamp.batch(), self.confirmation_threshold)
-            .await
             .map_err(|e| match e {
                 crate::BatchStoreError::NotFound(id) => StampError::BatchNotFound(id),
                 crate::BatchStoreError::NotUsable {

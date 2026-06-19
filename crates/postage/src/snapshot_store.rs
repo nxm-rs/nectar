@@ -32,19 +32,22 @@ use crate::BatchId;
 /// reported as `Ok(None)` rather than an error and the caller recovers from the
 /// network instead.
 ///
-/// # Async Design
+/// # Synchronous Design
 ///
-/// The methods are async so an implementation may sit in front of a slow
-/// backend (disk, a key-value database) without forcing callers to block.
+/// The methods are synchronous. The known cache backends (in memory, a
+/// key-value database such as redb) are themselves synchronous, so there is no
+/// genuinely async work to drive here; any async behaviour belongs at the true
+/// edges where it is added by the edge, not by this cache. Keeping the trait
+/// synchronous avoids colouring callers with `async` and keeps it object-safe.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use nectar_postage::{BatchId, SnapshotStore};
 ///
-/// async fn warm<S, T: SnapshotStore<S>>(store: &T, id: &BatchId) -> Option<S> {
+/// fn warm<S, T: SnapshotStore<S>>(store: &T, id: &BatchId) -> Option<S> {
 ///     // Try the cache; on a miss the caller would recover from the network.
-///     store.load(id).await.ok().flatten()
+///     store.load(id).ok().flatten()
 /// }
 /// ```
 pub trait SnapshotStore<S> {
@@ -60,35 +63,22 @@ pub trait SnapshotStore<S> {
     /// trusted for issuance. When `S` is a `nectar-postage-usage` snapshot the
     /// loaded value is unvalidated and carries no persist capability; it must be
     /// admitted through that crate's network-floor check before any persist.
-    fn load(
-        &self,
-        id: &BatchId,
-    ) -> impl std::future::Future<Output = Result<Option<S>, Self::Error>> + Send;
+    fn load(&self, id: &BatchId) -> Result<Option<S>, Self::Error>;
 
     /// Persists the snapshot state for `id`, overwriting any cached entry.
     ///
     /// This only updates the local cache; it does not publish to the network
     /// and confers no authority on the stored value.
-    fn persist(
-        &self,
-        id: &BatchId,
-        snapshot: S,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
+    fn persist(&self, id: &BatchId, snapshot: S) -> Result<(), Self::Error>;
 
     /// Removes any cached snapshot state for `id`.
     ///
     /// Returns `true` if an entry existed and was removed. Dropping an entry is
     /// always safe: the state can be recovered from the network.
-    fn remove(
-        &self,
-        id: &BatchId,
-    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send;
+    fn remove(&self, id: &BatchId) -> Result<bool, Self::Error>;
 
     /// Returns whether a snapshot state is cached for `id`.
-    fn contains(
-        &self,
-        id: &BatchId,
-    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send;
+    fn contains(&self, id: &BatchId) -> Result<bool, Self::Error>;
 }
 
 #[cfg(test)]
@@ -121,23 +111,23 @@ mod tests {
         }
     }
 
-    impl<S: Clone + Send + Sync> SnapshotStore<S> for InMemorySnapshotStore<S> {
+    impl<S: Clone> SnapshotStore<S> for InMemorySnapshotStore<S> {
         type Error = Infallible;
 
-        async fn load(&self, id: &BatchId) -> Result<Option<S>, Self::Error> {
+        fn load(&self, id: &BatchId) -> Result<Option<S>, Self::Error> {
             Ok(self.entries.lock().expect("poisoned").get(id).cloned())
         }
 
-        async fn persist(&self, id: &BatchId, snapshot: S) -> Result<(), Self::Error> {
+        fn persist(&self, id: &BatchId, snapshot: S) -> Result<(), Self::Error> {
             self.entries.lock().expect("poisoned").insert(*id, snapshot);
             Ok(())
         }
 
-        async fn remove(&self, id: &BatchId) -> Result<bool, Self::Error> {
+        fn remove(&self, id: &BatchId) -> Result<bool, Self::Error> {
             Ok(self.entries.lock().expect("poisoned").remove(id).is_some())
         }
 
-        async fn contains(&self, id: &BatchId) -> Result<bool, Self::Error> {
+        fn contains(&self, id: &BatchId) -> Result<bool, Self::Error> {
             Ok(self.entries.lock().expect("poisoned").contains_key(id))
         }
     }
@@ -146,62 +136,62 @@ mod tests {
         B256::repeat_byte(byte)
     }
 
-    #[tokio::test]
-    async fn load_misses_on_cold_store() {
+    #[test]
+    fn load_misses_on_cold_store() {
         let store: InMemorySnapshotStore<u64> = InMemorySnapshotStore::new();
         // A cold load is a miss, not an error: the caller recovers from the
         // network instead.
-        assert_eq!(store.load(&id(1)).await.unwrap(), None);
-        assert!(!store.contains(&id(1)).await.unwrap());
+        assert_eq!(store.load(&id(1)).unwrap(), None);
+        assert!(!store.contains(&id(1)).unwrap());
     }
 
-    #[tokio::test]
-    async fn persist_then_load_round_trips() {
+    #[test]
+    fn persist_then_load_round_trips() {
         let store = InMemorySnapshotStore::new();
-        store.persist(&id(2), 42u64).await.unwrap();
+        store.persist(&id(2), 42u64).unwrap();
 
-        assert!(store.contains(&id(2)).await.unwrap());
-        assert_eq!(store.load(&id(2)).await.unwrap(), Some(42));
+        assert!(store.contains(&id(2)).unwrap());
+        assert_eq!(store.load(&id(2)).unwrap(), Some(42));
         // A different batch id is still a miss: entries are keyed by batch id.
-        assert_eq!(store.load(&id(3)).await.unwrap(), None);
+        assert_eq!(store.load(&id(3)).unwrap(), None);
     }
 
-    #[tokio::test]
-    async fn persist_overwrites_existing_entry() {
+    #[test]
+    fn persist_overwrites_existing_entry() {
         let store = InMemorySnapshotStore::new();
-        store.persist(&id(4), 1u64).await.unwrap();
-        store.persist(&id(4), 2u64).await.unwrap();
+        store.persist(&id(4), 1u64).unwrap();
+        store.persist(&id(4), 2u64).unwrap();
 
         // The later persist wins; the cache holds one entry per batch id.
-        assert_eq!(store.load(&id(4)).await.unwrap(), Some(2));
+        assert_eq!(store.load(&id(4)).unwrap(), Some(2));
         assert_eq!(store.len(), 1);
     }
 
-    #[tokio::test]
-    async fn remove_reports_prior_presence() {
+    #[test]
+    fn remove_reports_prior_presence() {
         let store = InMemorySnapshotStore::new();
-        store.persist(&id(5), 7u64).await.unwrap();
+        store.persist(&id(5), 7u64).unwrap();
 
         // Removing a present entry reports true and clears it; the state can
         // still be recovered from the network, so this is always safe.
-        assert!(store.remove(&id(5)).await.unwrap());
-        assert_eq!(store.load(&id(5)).await.unwrap(), None);
+        assert!(store.remove(&id(5)).unwrap());
+        assert_eq!(store.load(&id(5)).unwrap(), None);
         // Removing an absent entry reports false.
-        assert!(!store.remove(&id(5)).await.unwrap());
+        assert!(!store.remove(&id(5)).unwrap());
     }
 
-    #[tokio::test]
-    async fn entries_are_isolated_by_batch_id() {
+    #[test]
+    fn entries_are_isolated_by_batch_id() {
         let store = InMemorySnapshotStore::new();
-        store.persist(&id(6), 60u64).await.unwrap();
-        store.persist(&id(7), 70u64).await.unwrap();
+        store.persist(&id(6), 60u64).unwrap();
+        store.persist(&id(7), 70u64).unwrap();
 
         // Distinct batch ids do not alias one another.
-        assert_eq!(store.load(&id(6)).await.unwrap(), Some(60));
-        assert_eq!(store.load(&id(7)).await.unwrap(), Some(70));
-        assert!(store.remove(&id(6)).await.unwrap());
-        assert_eq!(store.load(&id(6)).await.unwrap(), None);
-        assert_eq!(store.load(&id(7)).await.unwrap(), Some(70));
+        assert_eq!(store.load(&id(6)).unwrap(), Some(60));
+        assert_eq!(store.load(&id(7)).unwrap(), Some(70));
+        assert!(store.remove(&id(6)).unwrap());
+        assert_eq!(store.load(&id(6)).unwrap(), None);
+        assert_eq!(store.load(&id(7)).unwrap(), Some(70));
         assert_eq!(store.len(), 1);
     }
 }
