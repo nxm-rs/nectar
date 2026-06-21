@@ -1,0 +1,58 @@
+[package]
+name = "nectar-feeds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Swarm feeds over single-owner chunks for Ethereum Swarm"
+documentation = "https://docs.rs/nectar-feeds"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "feeds", "soc"]
+categories = ["data-structures", "cryptography::cryptocurrencies"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nectar-primitives = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+strum = { workspace = true }
+derive_more = { workspace = true }
+futures = { workspace = true }
+
+# optional
+serde = { workspace = true, optional = true }
+arbitrary = { workspace = true, features = ["derive"], optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+alloy-signer-local = { workspace = true }
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[features]
+default = ["std"]
+
+# Standard library support. The async reader/writer paths build on the typed
+# chunk store traits, which require `std`.
+std = ["nectar-primitives/std", "alloy-primitives/std", "thiserror/std", "serde?/std"]
+
+# Serialization support with serde.
+serde = ["dep:serde", "nectar-primitives/serde", "alloy-primitives/serde"]
+
+# Arbitrary trait implementations for property-based testing.
+arbitrary = ["dep:arbitrary", "nectar-primitives/arbitrary", "alloy-primitives/arbitrary"]
+
+# Epoch-based feed scheme (time-indexed lookup over a binary epoch grid).
+epoch = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

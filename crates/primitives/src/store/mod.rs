@@ -5,9 +5,11 @@
 //! for CPU-bound paths (splitter, mantaray). Blanket impls bridge sync → async
 //! automatically for types that are `Send + Sync`.
 
+mod maybe_send;
 mod memory;
 mod typed;
 
+pub use maybe_send::{MaybeSend, MaybeSync};
 pub use memory::MemoryStore;
 pub use typed::{ChunkGet, ChunkHas, ChunkPut, SyncChunkGet, SyncChunkHas, SyncChunkPut};
 
@@ -35,6 +37,11 @@ impl ChunkStoreError {
             address_hex: format!("{address}"),
         }
     }
+
+    /// Whether this is a genuine miss (`NotFound`) rather than a backend error.
+    pub const fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound { .. })
+    }
 }
 
 /// A no-op loader that always returns [`ChunkStoreError::NotFound`].
@@ -49,5 +56,9 @@ impl<const BODY_SIZE: usize> SyncChunkGet<BODY_SIZE> for NullLoader<BODY_SIZE> {
 
     fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
         Err(ChunkStoreError::not_found(address))
+    }
+
+    fn is_not_found(&self, error: &Self::Error) -> bool {
+        error.is_not_found()
     }
 }

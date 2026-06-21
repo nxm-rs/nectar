@@ -42,6 +42,7 @@ nectar-swarms = { version = "0.2.1", path = "crates/swarms" }
 nectar-postage = { version = "0.2.1", path = "crates/postage" }
 nectar-postage-issuer = { version = "0.2.1", path = "crates/postage-issuer" }
 nectar-postage-usage = { version = "0.2.1", path = "crates/postage-usage" }
+nectar-feeds = { version = "0.2.1", path = "crates/feeds" }
 
 # alloy
 alloy-primitives = { version = "1.6", default-features = false }
