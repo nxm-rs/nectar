@@ -7,7 +7,7 @@ use bytes::Bytes;
 use crate::bmt::SPAN_SIZE;
 use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey, decrypt_chunk_data};
 use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
-use crate::store::{SyncChunkGet, SyncChunkPut};
+use crate::store::{MaybeSend, SyncChunkGet, SyncChunkPut};
 
 use super::constants::{ENCRYPTED_REF_SIZE, REF_SIZE, compute_spans_inline, subspan_for_spans};
 use super::error::{FileError, Result};
@@ -116,7 +116,7 @@ pub(crate) fn joiner_init<M: JoinMode, G: SyncChunkGet<BS>, const BS: usize>(
 
 /// Async variant of [`joiner_init`]: fetch root chunk, extract span and context.
 pub(crate) async fn joiner_init_async<
-    M: JoinMode + Send + Sync,
+    M: JoinMode + MaybeSend + Sync,
     G: crate::store::ChunkGet<BS>,
     const BS: usize,
 >(
@@ -148,7 +148,7 @@ pub(crate) fn read_chunk_body<M: JoinMode, G: SyncChunkGet<BS>, const BS: usize>
 
 /// Async variant of [`read_chunk_body`].
 pub(crate) async fn read_chunk_body_async<
-    M: JoinMode + Send + Sync,
+    M: JoinMode + MaybeSend + Sync,
     G: crate::store::ChunkGet<BS>,
     const BS: usize,
 >(
