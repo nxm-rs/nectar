@@ -21,10 +21,11 @@
 //!
 //! # Unified Store
 //!
-//! Manifest operations use the typed chunk store traits from `nectar_primitives`:
-//! [`SyncChunkGet`](nectar_primitives::store::SyncChunkGet) for loading and
-//! [`SyncChunkPut`](nectar_primitives::store::SyncChunkPut) for saving. This means a single
-//! [`MemoryStore`] can hold both file chunks and manifest trie nodes.
+//! Manifest operations use the async typed chunk store traits from
+//! `nectar_primitives`: [`ChunkGet`](nectar_primitives::store::ChunkGet) for
+//! loading and [`ChunkPut`](nectar_primitives::store::ChunkPut) for saving.
+//! This means a single [`MemoryStore`] can hold both file chunks and manifest
+//! trie nodes.
 //!
 //! ```no_run
 //! # use nectar_mantaray::{PlainManifest, Entry, DefaultMemoryStore};
@@ -40,8 +41,10 @@
 //! # use nectar_mantaray::{PlainManifest, Entry, metadata, DefaultMemoryStore};
 //! # let store = DefaultMemoryStore::new();
 //! # let mut manifest = PlainManifest::new(store);
-//! manifest.set_index_document("index.html").unwrap();
-//! manifest.set_error_document("404.html").unwrap();
+//! # futures::executor::block_on(async {
+//! manifest.set_index_document("index.html").await.unwrap();
+//! manifest.set_error_document("404.html").await.unwrap();
+//! # });
 //! ```
 //!
 //! # Metadata Constants
@@ -90,7 +93,7 @@ pub use obfuscation::ObfuscationKey;
 
 // Re-export typed storage traits from primitives.
 pub use nectar_primitives::DefaultMemoryStore;
-pub use nectar_primitives::store::{MemoryStore, SyncChunkHas};
+pub use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore};
 
 /// Default manifest type using [`DEFAULT_BODY_SIZE`] and plain mode.
 pub type DefaultManifest<S> = PlainManifest<S, DEFAULT_BODY_SIZE>;

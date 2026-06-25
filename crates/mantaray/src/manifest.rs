@@ -2,9 +2,10 @@
 
 use std::collections::BTreeMap;
 
+use futures::Stream;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::store::{SyncChunkGet, SyncChunkPut};
+use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
 
 use crate::entry::Entry;
 use crate::mode::NodeEntry;
@@ -85,16 +86,17 @@ impl<S, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     }
 }
 
-impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
+impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, BS> {
     /// Add a path with a typed reference (compile-time enforced by entry type).
-    pub fn add(&mut self, path: &str, reference: impl Into<E>) -> Result<()> {
+    pub async fn add(&mut self, path: &str, reference: impl Into<E>) -> Result<()> {
         let entry = reference.into();
         self.trie
             .add::<S, BS>(path.as_bytes(), Some(entry), BTreeMap::new(), &self.store)
+            .await
     }
 
     /// Add a path with a typed reference and metadata.
-    pub fn add_with_metadata(
+    pub async fn add_with_metadata(
         &mut self,
         path: &str,
         reference: impl Into<E>,
@@ -103,10 +105,11 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
         let entry = reference.into();
         self.trie
             .add::<S, BS>(path.as_bytes(), Some(entry), metadata, &self.store)
+            .await
     }
 
     /// Add a path with a pre-built [`Entry`] (metadata + reference).
-    pub fn add_entry(&mut self, path: &str, entry: Entry) -> Result<()> {
+    pub async fn add_entry(&mut self, path: &str, entry: Entry) -> Result<()> {
         let e = match entry.reference {
             Some(r) => {
                 let bytes = Vec::from(&r);
@@ -116,18 +119,22 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
         };
         self.trie
             .add::<S, BS>(path.as_bytes(), e, entry.metadata, &self.store)
+            .await
     }
 
     /// Remove a path from the manifest.
-    pub fn remove(&mut self, path: &str) -> Result<()> {
-        self.trie.remove::<S, BS>(path.as_bytes(), &self.store)
+    pub async fn remove(&mut self, path: &str) -> Result<()> {
+        self.trie
+            .remove::<S, BS>(path.as_bytes(), &self.store)
+            .await
     }
 
     /// Look up a path in the manifest.
-    pub fn lookup(&mut self, path: &str) -> Result<Entry> {
+    pub async fn lookup(&mut self, path: &str) -> Result<Entry> {
         let node = self
             .trie
-            .lookup_node::<S, BS>(path.as_bytes(), &self.store)?;
+            .lookup_node::<S, BS>(path.as_bytes(), &self.store)
+            .await?;
 
         if !node.is_value() {
             return Err(MantarayError::NotValueType);
@@ -137,61 +144,71 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     }
 
     /// Test whether the manifest contains a prefix.
-    pub fn has_prefix(&mut self, prefix: &str) -> Result<bool> {
+    pub async fn has_prefix(&mut self, prefix: &str) -> Result<bool> {
         self.trie
             .has_prefix::<S, BS>(prefix.as_bytes(), &self.store)
+            .await
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
-    pub fn walk<F>(&mut self, f: &mut F) -> Result<()>
+    pub async fn walk<F>(&mut self, f: &mut F) -> Result<()>
     where
         F: FnMut(&[u8], &Node<E>) -> Result<()>,
     {
-        self.trie.walk::<S, BS, _>(&self.store, f)
+        self.trie.walk::<S, BS, _>(&self.store, f).await
     }
 
     /// Walk the subtree rooted at `root`, calling `f` for each node with its path.
-    pub fn walk_from<F>(&mut self, root: &str, f: &mut F) -> Result<()>
+    pub async fn walk_from<F>(&mut self, root: &str, f: &mut F) -> Result<()>
     where
         F: FnMut(&[u8], &Node<E>) -> Result<()>,
     {
         self.trie
             .walk_from::<S, BS, _>(root.as_bytes(), &self.store, f)
+            .await
     }
 
     /// Collect all value entries from the manifest.
     ///
-    /// Convenience wrapper around [`iter()`](Self::iter). Prefer `iter()` for
-    /// lazy traversal.
-    pub fn entries(&mut self) -> Result<Vec<Entry>> {
-        self.iter().collect()
+    /// Convenience wrapper around the [`stream`](Self::stream) accessor.
+    pub async fn entries(&mut self) -> Result<Vec<Entry>> {
+        let mut iter = self.iter();
+        let mut out = Vec::new();
+        while let Some(item) = iter.next().await {
+            out.push(item?);
+        }
+        Ok(out)
     }
 
     /// Set the website index document on the root path metadata.
-    pub fn set_index_document(&mut self, filename: &str) -> Result<()> {
+    pub async fn set_index_document(&mut self, filename: &str) -> Result<()> {
         self.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, filename)
+            .await
     }
 
     /// Set the website error document on the root path metadata.
-    pub fn set_error_document(&mut self, path: &str) -> Result<()> {
+    pub async fn set_error_document(&mut self, path: &str) -> Result<()> {
         self.set_root_metadata(metadata::WEBSITE_ERROR_DOCUMENT, path)
+            .await
     }
 
     /// Get the website index document from root path metadata.
-    pub fn index_document(&mut self) -> Result<Option<String>> {
+    pub async fn index_document(&mut self) -> Result<Option<String>> {
         self.get_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT)
+            .await
     }
 
     /// Get the website error document from root path metadata.
-    pub fn error_document(&mut self) -> Result<Option<String>> {
+    pub async fn error_document(&mut self) -> Result<Option<String>> {
         self.get_root_metadata(metadata::WEBSITE_ERROR_DOCUMENT)
+            .await
     }
 
     /// Walk all nodes, yielding both node references and entry references.
     ///
-    /// This is useful for garbage collection and pinning: it enumerates every
-    /// chunk address the manifest depends on.
-    pub fn iterate_addresses<F>(&mut self, mut f: F) -> Result<()>
+    /// Enumerates every chunk address the manifest depends on, for garbage
+    /// collection and pinning.
+    pub async fn iterate_addresses<F>(&mut self, mut f: F) -> Result<()>
     where
         F: FnMut(&[u8]) -> Result<()>,
     {
@@ -209,44 +226,56 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
 
             Ok(())
         })
+        .await
     }
 
-    /// Create a lazy depth-first iterator over all entries in the manifest.
+    /// Create a lazy depth-first stream over all entries in the manifest.
     ///
     /// Nodes are loaded from storage on demand, so the entire trie does not
-    /// need to be in memory at once.
+    /// need to be in memory at once. Drive it with [`ManifestIter::next`] or
+    /// the [`Stream`] impl.
     pub const fn iter(&mut self) -> ManifestIter<'_, S, E, BS> {
         ManifestIter::new(&mut self.trie, &self.store)
     }
 
-    fn set_root_metadata(&mut self, key: &str, value: &str) -> Result<()> {
+    /// Lazy depth-first stream over all entries in the manifest.
+    pub fn stream(&mut self) -> impl Stream<Item = Result<Entry>> + '_ {
+        futures::stream::unfold(self.iter(), |mut iter| async move {
+            iter.next().await.map(|item| (item, iter))
+        })
+    }
+
+    async fn set_root_metadata(&mut self, key: &str, value: &str) -> Result<()> {
         // Ensure the root path node exists.
         match self
             .trie
             .lookup_node::<S, BS>(metadata::ROOT_PATH.as_bytes(), &self.store)
+            .await
         {
             Ok(node) => {
-                // Node exists — mutate metadata in place (no clone).
+                // Node exists; mutate metadata in place (no clone).
                 node.metadata_mut().insert(key.into(), value.into());
                 node.make_with_metadata();
                 node.mark_dirty();
                 Ok(())
             }
             Err(MantarayError::NoForkFound { .. }) => {
-                // Root path doesn't exist yet — create it with the metadata.
+                // Root path doesn't exist yet; create it with the metadata.
                 let mut meta = BTreeMap::new();
                 meta.insert(key.into(), value.into());
                 self.trie
                     .add::<S, BS>(metadata::ROOT_PATH.as_bytes(), None, meta, &self.store)
+                    .await
             }
             Err(e) => Err(e),
         }
     }
 
-    fn get_root_metadata(&mut self, key: &str) -> Result<Option<String>> {
+    async fn get_root_metadata(&mut self, key: &str) -> Result<Option<String>> {
         match self
             .trie
             .lookup_node::<S, BS>(metadata::ROOT_PATH.as_bytes(), &self.store)
+            .await
         {
             Ok(node) => Ok(node.metadata().get(key).cloned()),
             Err(MantarayError::NoForkFound { .. }) => Ok(None),
@@ -255,10 +284,10 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     }
 }
 
-impl<S: SyncChunkGet<BS> + SyncChunkPut<BS>, const BS: usize> Manifest<S, ChunkAddress, BS> {
+impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkAddress, BS> {
     /// Persist the plain manifest trie to storage, returning the root chunk address.
-    pub fn save(&mut self) -> Result<ChunkAddress> {
-        self.trie.save::<S, BS>(&self.store)?;
+    pub async fn save(&mut self) -> Result<ChunkAddress> {
+        self.trie.save::<S, BS>(&self.store).await?;
         Ok(*self
             .trie
             .reference()
@@ -267,12 +296,12 @@ impl<S: SyncChunkGet<BS> + SyncChunkPut<BS>, const BS: usize> Manifest<S, ChunkA
 }
 
 #[cfg(feature = "encryption")]
-impl<S: SyncChunkGet<BS> + SyncChunkPut<BS>, const BS: usize>
+impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
     Manifest<S, nectar_primitives::EncryptedChunkRef, BS>
 {
     /// Persist the encrypted manifest trie, returning a [`ManifestRef`](crate::ManifestRef).
-    pub fn save(&mut self) -> Result<crate::ManifestRef> {
-        self.trie.save::<S, BS>(&self.store)?;
+    pub async fn save(&mut self) -> Result<crate::ManifestRef> {
+        self.trie.save::<S, BS>(&self.store).await?;
         let addr = *self
             .trie
             .reference()
@@ -294,7 +323,7 @@ pub struct ManifestIter<'a, S, E: NodeEntry = ChunkAddress, const BS: usize = DE
     trie: &'a mut Node<E>,
     store: &'a S,
     stack: Vec<IterFrame<E>>,
-    /// Running path buffer — extended when pushing frames, truncated when popping.
+    /// Running path buffer; extended when pushing frames, truncated when popping.
     path_buf: Vec<u8>,
     root_visited: bool,
 }
@@ -324,7 +353,7 @@ struct IterFrame<E: NodeEntry> {
     key_idx: usize,
 }
 
-impl<'a, S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, BS> {
+impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, BS> {
     pub(crate) const fn new(trie: &'a mut Node<E>, store: &'a S) -> Self {
         Self {
             trie,
@@ -334,18 +363,17 @@ impl<'a, S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S,
             root_visited: false,
         }
     }
-}
 
-impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIter<'_, S, E, BS> {
-    type Item = Result<Entry>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Advance the lazy traversal, returning the next entry (or `None` when done).
+    ///
+    /// Loads unvisited nodes from storage on demand.
+    pub async fn next(&mut self) -> Option<Result<Entry>> {
         loop {
             if !self.root_visited {
                 self.root_visited = true;
 
                 if !self.trie.loaded
-                    && let Err(e) = self.trie.load::<S, BS>(self.store)
+                    && let Err(e) = self.trie.load::<S, BS>(self.store).await
                 {
                     return Some(Err(e));
                 }
@@ -388,7 +416,7 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIt
             };
 
             // SAFETY: parent_node points into the exclusively borrowed trie.
-            // No other mutable reference to this node exists — frames only hold
+            // No other mutable reference to this node exists; frames only hold
             // pointers to ancestors, which we do not dereference simultaneously.
             let parent = unsafe { &mut *parent_node };
             let fork = match parent.forks.get_mut(&key) {
@@ -405,7 +433,7 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIt
             // SAFETY: child is a descendant of the exclusively borrowed trie.
             let child_ref = unsafe { &mut *child };
             if !child_ref.loaded
-                && let Err(e) = child_ref.load::<S, BS>(self.store)
+                && let Err(e) = child_ref.load::<S, BS>(self.store).await
             {
                 return Some(Err(e));
             }
@@ -434,26 +462,31 @@ impl<S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> Iterator for ManifestIt
     }
 }
 
-impl<'a, S: SyncChunkGet<BS>, E: NodeEntry, const BS: usize> IntoIterator
-    for &'a mut Manifest<S, E, BS>
-{
-    type Item = Result<Entry>;
-    type IntoIter = ManifestIter<'a, S, E, BS>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        ManifestIter::new(&mut self.trie, &self.store)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use futures::executor::block_on;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
     use nectar_primitives::chunk::ChunkAddress;
     use nectar_primitives::store::MemoryStore;
 
+    use super::*;
+
     type Store = MemoryStore<DEFAULT_BODY_SIZE>;
     type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> =
         super::Manifest<S, ChunkAddress, BS>;
+
+    /// Drain an async manifest iterator into a `Vec`, propagating the first error.
+    fn drain<S: ChunkGet<BS>, E: NodeEntry, const BS: usize>(
+        mut iter: ManifestIter<'_, S, E, BS>,
+    ) -> Result<Vec<Entry>> {
+        block_on(async move {
+            let mut out = Vec::new();
+            while let Some(item) = iter.next().await {
+                out.push(item?);
+            }
+            Ok(out)
+        })
+    }
 
     /// Create a ChunkAddress from a string, right-padded with zeroes.
     fn make_addr(s: &str) -> ChunkAddress {
@@ -482,15 +515,15 @@ mod tests {
         ];
 
         for &path in paths {
-            m.save().unwrap();
+            block_on(m.save()).unwrap();
             let addr = make_addr(path);
-            m.add(path, addr).unwrap();
+            block_on(m.add(path, addr)).unwrap();
         }
 
-        m.save().unwrap();
+        block_on(m.save()).unwrap();
 
         for &path in paths {
-            let entry = m.lookup(path).unwrap();
+            let entry = block_on(m.lookup(path)).unwrap();
             let expected = make_addr(path);
             assert_eq!(entry.address(), Some(&expected));
         }
@@ -504,10 +537,10 @@ mod tests {
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &path in paths {
             let addr = make_addr(path);
-            m.add(path, addr).unwrap();
+            block_on(m.add(path, addr)).unwrap();
         }
 
-        let entries = m.entries().unwrap();
+        let entries = block_on(m.entries()).unwrap();
         assert_eq!(entries.len(), paths.len());
 
         for &path in paths {
@@ -524,13 +557,19 @@ mod tests {
         let mut m = PlainManifest::new(store);
 
         // Add a dummy entry so the root "/" path has an entry
-        m.add("/", ChunkAddress::from([0u8; 32])).unwrap();
+        block_on(m.add("/", ChunkAddress::from([0u8; 32]))).unwrap();
 
-        m.set_index_document("index.html").unwrap();
-        m.set_error_document("404.html").unwrap();
+        block_on(m.set_index_document("index.html")).unwrap();
+        block_on(m.set_error_document("404.html")).unwrap();
 
-        assert_eq!(m.index_document().unwrap(), Some("index.html".to_string()));
-        assert_eq!(m.error_document().unwrap(), Some("404.html".to_string()));
+        assert_eq!(
+            block_on(m.index_document()).unwrap(),
+            Some("index.html".to_string())
+        );
+        assert_eq!(
+            block_on(m.error_document()).unwrap(),
+            Some("404.html".to_string())
+        );
     }
 
     #[test]
@@ -538,11 +577,17 @@ mod tests {
         let store = Store::new();
         let mut m = PlainManifest::new(store);
 
-        m.set_index_document("index.html").unwrap();
-        m.set_error_document("404.html").unwrap();
+        block_on(m.set_index_document("index.html")).unwrap();
+        block_on(m.set_error_document("404.html")).unwrap();
 
-        assert_eq!(m.index_document().unwrap(), Some("index.html".to_string()));
-        assert_eq!(m.error_document().unwrap(), Some("404.html".to_string()));
+        assert_eq!(
+            block_on(m.index_document()).unwrap(),
+            Some("index.html".to_string())
+        );
+        assert_eq!(
+            block_on(m.error_document()).unwrap(),
+            Some("404.html".to_string())
+        );
     }
 
     #[test]
@@ -550,8 +595,8 @@ mod tests {
         let store = Store::new();
         let mut m = PlainManifest::new(store);
 
-        assert_eq!(m.index_document().unwrap(), None);
-        assert_eq!(m.error_document().unwrap(), None);
+        assert_eq!(block_on(m.index_document()).unwrap(), None);
+        assert_eq!(block_on(m.error_document()).unwrap(), None);
     }
 
     #[test]
@@ -562,18 +607,18 @@ mod tests {
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &path in paths {
             let addr = make_addr(path);
-            m.add(path, addr).unwrap();
+            block_on(m.add(path, addr)).unwrap();
         }
 
-        let root_ref = m.save().unwrap();
+        let root_ref = block_on(m.save()).unwrap();
 
         let (_, store) = m.into_parts();
         let mut m2 = PlainManifest::open(root_ref, store);
         let mut addresses = Vec::new();
-        m2.iterate_addresses(|addr| {
+        block_on(m2.iterate_addresses(|addr| {
             addresses.push(addr.to_vec());
             Ok(())
-        })
+        }))
         .unwrap();
 
         assert!(!addresses.is_empty());
@@ -596,23 +641,23 @@ mod tests {
         for i in 0..100u32 {
             let path = format!("dir{}/file{}.txt", i / 10, i);
             let addr = make_addr_u32(i);
-            m.add(&path, addr).unwrap();
+            block_on(m.add(&path, addr)).unwrap();
         }
-        let root_ref_1 = m.save().unwrap();
+        let root_ref_1 = block_on(m.save()).unwrap();
 
         // Update a single path
         let updated_addr = make_addr_u32(999);
-        m.add("dir0/file0.txt", updated_addr).unwrap();
-        let root_ref_2 = m.save().unwrap();
+        block_on(m.add("dir0/file0.txt", updated_addr)).unwrap();
+        let root_ref_2 = block_on(m.save()).unwrap();
 
         assert_ne!(root_ref_1, root_ref_2);
 
-        let entry = m.lookup("dir0/file0.txt").unwrap();
+        let entry = block_on(m.lookup("dir0/file0.txt")).unwrap();
         assert_eq!(entry.address(), Some(&updated_addr));
 
         for i in 1..100u32 {
             let path = format!("dir{}/file{}.txt", i / 10, i);
-            let entry = m.lookup(&path).unwrap();
+            let entry = block_on(m.lookup(&path)).unwrap();
             let expected = make_addr_u32(i);
             assert_eq!(
                 entry.address(),
@@ -623,26 +668,26 @@ mod tests {
     }
 
     #[test]
-    fn into_iterator() {
+    fn stream_yields_all_entries() {
+        use futures::StreamExt;
+
         let store = Store::new();
         let mut m = PlainManifest::new(store);
 
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &path in paths {
             let addr = make_addr(path);
-            m.add(path, addr).unwrap();
+            block_on(m.add(path, addr)).unwrap();
         }
 
-        let mut all_entries = Vec::new();
-        for result in &mut m {
-            all_entries.push(result.unwrap());
-        }
+        let all_entries: Vec<_> =
+            block_on(async { m.stream().map(|r| r.unwrap()).collect::<Vec<_>>().await });
 
         assert_eq!(all_entries.len(), paths.len());
         for &path in paths {
             assert!(
                 all_entries.iter().any(|e| e.path() == path.as_bytes()),
-                "path {path} not found via IntoIterator"
+                "path {path} not found via stream"
             );
         }
     }
@@ -655,17 +700,17 @@ mod tests {
         let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
         for &path in paths {
             let addr = make_addr(path);
-            m.add(path, addr).unwrap();
+            block_on(m.add(path, addr)).unwrap();
         }
 
         // Save and reload to exercise lazy loading
-        let root_ref = m.save().unwrap();
+        let root_ref = block_on(m.save()).unwrap();
 
         let (_, store) = m.into_parts();
         let mut m2 = PlainManifest::open(root_ref, store);
 
         let mut visited = Vec::new();
-        if let Some(result) = m2.iter().next() {
+        if let Some(result) = block_on(m2.iter().next()) {
             let entry = result.unwrap();
             visited.push(entry.path);
         }
@@ -674,10 +719,7 @@ mod tests {
         // Full iteration
         let (_, store) = m2.into_parts();
         let mut m3 = PlainManifest::open(root_ref, store);
-        let mut all_entries = Vec::new();
-        for result in m3.iter() {
-            all_entries.push(result.unwrap());
-        }
+        let all_entries = drain(m3.iter()).unwrap();
 
         assert_eq!(all_entries.len(), paths.len());
         for &path in paths {
@@ -692,7 +734,7 @@ mod tests {
     fn iter_empty_manifest() {
         let store = Store::new();
         let mut m = PlainManifest::new(store);
-        let entries: Vec<_> = m.iter().collect();
+        let entries = drain(m.iter()).unwrap();
         assert!(entries.is_empty(), "empty manifest should yield no entries");
     }
 
@@ -701,9 +743,9 @@ mod tests {
         let store = Store::new();
         let mut m = PlainManifest::new(store);
         let addr = make_addr("only");
-        m.add("only.txt", addr).unwrap();
+        block_on(m.add("only.txt", addr)).unwrap();
 
-        let entries: Vec<_> = m.iter().map(|r| r.unwrap()).collect();
+        let entries = drain(m.iter()).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path(), b"only.txt");
         assert_eq!(entries[0].address(), Some(&addr));
@@ -721,14 +763,14 @@ mod tests {
             .map(|i| format!("a/b/c/d/e/f/g/h/file{i:02}.dat"))
             .collect();
         for path in &deep_paths {
-            m.add(path, make_addr(path)).unwrap();
+            block_on(m.add(path, make_addr(path))).unwrap();
         }
 
-        let root_ref = m.save().unwrap();
+        let root_ref = block_on(m.save()).unwrap();
         let (_, store) = m.into_parts();
         let mut m2 = PlainManifest::open(root_ref, store);
 
-        let entries: Vec<_> = m2.iter().map(|r| r.unwrap()).collect();
+        let entries = drain(m2.iter()).unwrap();
         assert_eq!(entries.len(), deep_paths.len());
         for path in &deep_paths {
             assert!(
@@ -745,19 +787,19 @@ mod tests {
 
         let paths = &["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"];
         for &path in paths {
-            m.add(path, make_addr(path)).unwrap();
+            block_on(m.add(path, make_addr(path))).unwrap();
         }
 
         // Partial iteration: take only 2 entries, then drop iterator.
         {
             let mut iter = m.iter();
-            let _first = iter.next().unwrap().unwrap();
-            let _second = iter.next().unwrap().unwrap();
-            // Iterator dropped here — must not corrupt trie state.
+            let _first = block_on(iter.next()).unwrap().unwrap();
+            let _second = block_on(iter.next()).unwrap().unwrap();
+            // Iterator dropped here; must not corrupt trie state.
         }
 
         // Full re-iteration should still yield all entries.
-        let all: Vec<_> = m.iter().map(|r| r.unwrap()).collect();
+        let all = drain(m.iter()).unwrap();
         assert_eq!(all.len(), paths.len());
         for &path in paths {
             assert!(
@@ -774,22 +816,22 @@ mod tests {
 
         let paths = &["x/1.txt", "x/2.txt", "y/1.txt", "y/2.txt", "z.txt"];
         for &path in paths {
-            m.add(path, make_addr(path)).unwrap();
+            block_on(m.add(path, make_addr(path))).unwrap();
         }
 
-        let root_ref = m.save().unwrap();
+        let root_ref = block_on(m.save()).unwrap();
         let (_, store) = m.into_parts();
         let mut m2 = PlainManifest::open(root_ref, store);
 
         // Partial iteration on a lazy-loaded manifest.
         {
             let mut iter = m2.iter();
-            let _first = iter.next().unwrap().unwrap();
+            let _first = block_on(iter.next()).unwrap().unwrap();
         }
 
         // Re-iterate: previously loaded nodes stay loaded, the rest
         // are lazily fetched again through the raw-pointer path.
-        let all: Vec<_> = m2.iter().map(|r| r.unwrap()).collect();
+        let all = drain(m2.iter()).unwrap();
         assert_eq!(all.len(), paths.len());
         for &path in paths {
             assert!(

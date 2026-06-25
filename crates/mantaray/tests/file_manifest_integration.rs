@@ -1,9 +1,10 @@
 //! Integration test: unified store for file splitting and manifest creation.
 
+use futures::executor::block_on;
 use nectar_mantaray::PlainManifest;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::file::{SyncChunkPutExt, sync_join};
+use nectar_primitives::file::{SyncChunkPutExt, join};
 use nectar_primitives::store::MemoryStore;
 
 type Store = MemoryStore<DEFAULT_BODY_SIZE>;
@@ -14,7 +15,7 @@ type Store = MemoryStore<DEFAULT_BODY_SIZE>;
 fn unified_store_workflow() {
     let store = Store::new();
 
-    // Split files into the store
+    // Seed file chunks synchronously into the store.
     let root_a = store.write_file(b"file A contents").unwrap();
     let root_b = store.write_file(b"file B contents").unwrap();
 
@@ -23,22 +24,20 @@ fn unified_store_workflow() {
 
     // Create manifest in the same store
     let mut manifest = PlainManifest::new(store);
-    manifest
-        .add_with_metadata(
-            "a.txt",
-            root_a,
-            [("Content-Type".to_string(), "text/plain".to_string())].into(),
-        )
-        .unwrap();
-    manifest
-        .add_with_metadata(
-            "b.txt",
-            root_b,
-            [("Content-Type".to_string(), "text/plain".to_string())].into(),
-        )
-        .unwrap();
+    block_on(manifest.add_with_metadata(
+        "a.txt",
+        root_a,
+        [("Content-Type".to_string(), "text/plain".to_string())].into(),
+    ))
+    .unwrap();
+    block_on(manifest.add_with_metadata(
+        "b.txt",
+        root_b,
+        [("Content-Type".to_string(), "text/plain".to_string())].into(),
+    ))
+    .unwrap();
 
-    let root_ref = manifest.save().unwrap();
+    let root_ref = block_on(manifest.save()).unwrap();
 
     // Now the store contains both file chunks AND manifest trie nodes
     let (_, store) = manifest.into_parts();
@@ -48,18 +47,18 @@ fn unified_store_workflow() {
     let mut manifest2 = PlainManifest::open(root_ref, store.clone());
 
     // Verify lookup
-    let entry_a = manifest2.lookup("a.txt").unwrap();
+    let entry_a = block_on(manifest2.lookup("a.txt")).unwrap();
     assert_eq!(entry_a.address(), Some(&root_a));
     assert_eq!(entry_a.content_type(), Some("text/plain"));
 
-    let entry_b = manifest2.lookup("b.txt").unwrap();
+    let entry_b = block_on(manifest2.lookup("b.txt")).unwrap();
     assert_eq!(entry_b.address(), Some(&root_b));
 
     // Verify file data round-trip through the same store
-    let recovered_a = sync_join(&store, root_a).unwrap();
+    let recovered_a = block_on(join(store.clone(), root_a)).unwrap();
     assert_eq!(recovered_a, b"file A contents");
 
-    let recovered_b = sync_join(&store, root_b).unwrap();
+    let recovered_b = block_on(join(store, root_b)).unwrap();
     assert_eq!(recovered_b, b"file B contents");
 }
 
@@ -73,8 +72,8 @@ fn entries_round_trip() {
 
     for &path in paths {
         let addr = make_addr(path);
-        manifest
-            .add_with_metadata(
+        block_on(
+            manifest.add_with_metadata(
                 path,
                 addr,
                 [(
@@ -82,16 +81,17 @@ fn entries_round_trip() {
                     "application/octet-stream".to_string(),
                 )]
                 .into(),
-            )
-            .unwrap();
+            ),
+        )
+        .unwrap();
     }
 
-    let root_ref = manifest.save().unwrap();
+    let root_ref = block_on(manifest.save()).unwrap();
 
     let (_, store) = manifest.into_parts();
     let mut manifest2 = PlainManifest::open(root_ref, store);
 
-    let entries = manifest2.entries().unwrap();
+    let entries = block_on(manifest2.entries()).unwrap();
     assert_eq!(entries.len(), paths.len());
 
     for &path in paths {
@@ -116,10 +116,17 @@ fn iterator_yields_all_entries() {
     let paths = &["a/1", "a/2", "b/1", "c"];
     for &path in paths {
         let addr = make_addr(path);
-        manifest.add(path, addr).unwrap();
+        block_on(manifest.add(path, addr)).unwrap();
     }
 
-    let entries: Vec<_> = manifest.iter().collect::<Result<Vec<_>, _>>().unwrap();
+    let entries = block_on(async {
+        let mut out = Vec::new();
+        let mut iter = manifest.iter();
+        while let Some(item) = iter.next().await {
+            out.push(item.unwrap());
+        }
+        out
+    });
     assert_eq!(entries.len(), paths.len());
 
     for &path in paths {
@@ -134,32 +141,30 @@ fn iterator_yields_all_entries() {
 #[test]
 fn ergonomic_api_workflow() {
     use nectar_mantaray::DefaultMemoryStore;
-    use nectar_primitives::file::{SyncChunkGetExt, SyncChunkPutExt};
+    use nectar_primitives::file::{ChunkGetExt, SyncChunkPutExt};
 
     let store = DefaultMemoryStore::new();
 
-    // Split files using extension trait
+    // Seed file chunks synchronously.
     let root_a = store.write_file(b"file A contents").unwrap();
     let root_b = store.write_file(b"file B contents").unwrap();
 
     // Create manifest in the same store
     let mut manifest = PlainManifest::new(store);
-    manifest
-        .add_with_metadata(
-            "a.txt",
-            root_a,
-            [("Content-Type".to_string(), "text/plain".to_string())].into(),
-        )
-        .unwrap();
-    manifest
-        .add_with_metadata(
-            "b.txt",
-            root_b,
-            [("Content-Type".to_string(), "text/plain".to_string())].into(),
-        )
-        .unwrap();
+    block_on(manifest.add_with_metadata(
+        "a.txt",
+        root_a,
+        [("Content-Type".to_string(), "text/plain".to_string())].into(),
+    ))
+    .unwrap();
+    block_on(manifest.add_with_metadata(
+        "b.txt",
+        root_b,
+        [("Content-Type".to_string(), "text/plain".to_string())].into(),
+    ))
+    .unwrap();
 
-    let root_addr = manifest.save().unwrap();
+    let root_addr = block_on(manifest.save()).unwrap();
 
     let (_, store) = manifest.into_parts();
 
@@ -167,7 +172,14 @@ fn ergonomic_api_workflow() {
     let mut manifest2 = PlainManifest::open(root_addr, store);
 
     // Iterate entries using convenience methods
-    let entries: Vec<_> = manifest2.iter().collect::<Result<Vec<_>, _>>().unwrap();
+    let entries = block_on(async {
+        let mut out = Vec::new();
+        let mut iter = manifest2.iter();
+        while let Some(item) = iter.next().await {
+            out.push(item.unwrap());
+        }
+        out
+    });
 
     assert_eq!(entries.len(), 2);
 
@@ -182,7 +194,7 @@ fn ergonomic_api_workflow() {
         // address() extracts ChunkAddress from reference
         let addr = entry.address().expect("32-byte reference yields address");
 
-        let data = manifest2.store().read_file(*addr).unwrap();
+        let data = block_on(manifest2.store().clone().read_file(*addr)).unwrap();
         if path == "a.txt" {
             assert_eq!(data, b"file A contents");
         } else {

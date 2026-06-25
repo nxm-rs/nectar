@@ -1,6 +1,8 @@
 //! Node and Fork types for the mantaray trie.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::error::{MantarayError, Result};
 use crate::mode::NodeEntry;
@@ -8,11 +10,19 @@ use crate::obfuscation::ObfuscationKey;
 use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 use bytes::Bytes;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
-use nectar_primitives::store::{SyncChunkGet, SyncChunkPut};
+use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
+
+/// Boxed recursion future: `Send` on native, unbounded on wasm32 so `!Send`
+/// browser stores stay usable. `MaybeSend` cannot appear in a `dyn` bound
+/// directly (it is not an auto trait), so the auto trait is cfg-gated here.
+#[cfg(not(target_arch = "wasm32"))]
+type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+#[cfg(target_arch = "wasm32")]
+type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
 /// Inline-only byte buffer for fork prefixes (max 30 bytes).
 ///
-/// Always stores data inline — no heap allocation, no branching.
+/// Always stores data inline; no heap allocation, no branching.
 /// 31 bytes total (1 len + 30 data).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Prefix {
@@ -271,15 +281,15 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Load forks from storage if the node hasn't been loaded yet.
-    fn ensure_loaded<S: SyncChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
+    async fn ensure_loaded<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
         if !self.loaded {
-            self.load(store)?;
+            self.load(store).await?;
         }
         Ok(())
     }
 
     /// Load this node from storage by its reference.
-    pub(crate) fn load<S: SyncChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
+    pub(crate) async fn load<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
         let address = match self.reference {
             Some(addr) => addr,
             None => {
@@ -288,9 +298,12 @@ impl<E: NodeEntry> Node<E> {
             }
         };
 
-        let chunk = store.get(&address).map_err(|e| MantarayError::StoreGet {
-            source: std::sync::Arc::new(e),
-        })?;
+        let chunk = store
+            .get(&address)
+            .await
+            .map_err(|e| MantarayError::StoreGet {
+                source: std::sync::Arc::new(e),
+            })?;
         let mut loaded = Self::try_from(chunk.data().as_ref())?;
         loaded.reference = Some(address);
         // Preserve fields that live in the parent's fork data, not in this node's chunk:
@@ -302,43 +315,46 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Look up the node at the given path, loading from storage as needed.
-    pub(crate) fn lookup_node<S: SyncChunkGet<BS>, const BS: usize>(
+    pub(crate) async fn lookup_node<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
     ) -> Result<&mut Self> {
-        self.ensure_loaded(store)?;
+        // Iterative descent: reborrow `current` to the chosen child each step.
+        let mut current = self;
+        let mut rest = path;
+        loop {
+            current.ensure_loaded(store).await?;
 
-        if path.is_empty() {
-            return Ok(self);
-        }
+            if rest.is_empty() {
+                return Ok(current);
+            }
 
-        let first = path[0];
-        let fork = self
-            .forks
-            .get_mut(&first)
-            .ok_or_else(|| MantarayError::NoForkFound {
-                reference: self.reference,
-            })?;
+            let first = rest[0];
+            let reference = current.reference;
+            let fork = current
+                .forks
+                .get_mut(&first)
+                .ok_or(MantarayError::NoForkFound { reference })?;
 
-        let c = common_prefix_len(&fork.prefix, path);
-        if c == fork.prefix.len() {
-            fork.node.lookup_node(&path[c..], store)
-        } else {
-            Err(MantarayError::NoForkFound {
-                reference: self.reference,
-            })
+            let c = common_prefix_len(&fork.prefix, rest);
+            if c != fork.prefix.len() {
+                return Err(MantarayError::NoForkFound { reference });
+            }
+
+            current = &mut fork.node;
+            rest = &rest[c..];
         }
     }
 
     /// Look up the entry at the given path, loading from storage as needed.
     #[cfg(test)]
-    pub(crate) fn lookup<S: SyncChunkGet<BS>, const BS: usize>(
+    pub(crate) async fn lookup<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
     ) -> Result<Option<&E>> {
-        let node = self.lookup_node(path, store)?;
+        let node = self.lookup_node(path, store).await?;
         if !node.is_value() && !path.is_empty() {
             return Err(MantarayError::NoEntryFound {
                 reference: node.reference,
@@ -348,48 +364,74 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Add an entry at the given path with optional metadata, loading from storage as needed.
-    pub(crate) fn add<S: SyncChunkGet<BS>, const BS: usize>(
-        &mut self,
-        path: &[u8],
+    ///
+    /// Returns a boxed future so the `&mut self` recursion can name its own type.
+    /// The `MaybeSend` bound keeps `!Send` wasm stores usable.
+    pub(crate) fn add<'a, S: ChunkGet<BS>, const BS: usize>(
+        &'a mut self,
+        path: &'a [u8],
         entry: Option<E>,
         metadata: BTreeMap<String, String>,
-        store: &S,
-    ) -> Result<()> {
-        // empty path — set this node as a value
-        if path.is_empty() {
-            self.entry = entry;
-            self.make_value();
+        store: &'a S,
+    ) -> RecurseFuture<'a>
+    where
+        E: MaybeSend,
+    {
+        Box::pin(async move {
+            // empty path; set this node as a value
+            if path.is_empty() {
+                self.entry = entry;
+                self.make_value();
 
-            if !metadata.is_empty() {
-                self.metadata = metadata;
-                self.make_with_metadata();
+                if !metadata.is_empty() {
+                    self.metadata = metadata;
+                    self.make_with_metadata();
+                }
+
+                self.mark_dirty();
+                return Ok(());
             }
 
-            self.mark_dirty();
-            return Ok(());
-        }
+            // load forks if needed
+            if !self.loaded {
+                self.load(store).await?;
+                self.mark_dirty();
+            }
 
-        // load forks if needed
-        if !self.loaded {
-            self.load(store)?;
-            self.mark_dirty();
-        }
+            if !self.forks.contains_key(&path[0]) {
+                // no existing fork for this byte; create a new one
+                let mut nn = Self {
+                    obfuscation_key: self.obfuscation_key,
+                    ..Default::default()
+                };
 
-        if !self.forks.contains_key(&path[0]) {
-            // no existing fork for this byte — create a new one
-            let mut nn = Self {
-                obfuscation_key: self.obfuscation_key,
-                ..Default::default()
-            };
+                if path.len() > PREFIX_MAX_LEN {
+                    let (prefix, rest) = path.split_at(PREFIX_MAX_LEN);
+                    nn.add(rest, entry, metadata, store).await?;
+                    nn.update_is_with_path_separator(prefix);
+                    self.forks.insert(
+                        path[0],
+                        Fork {
+                            prefix: Prefix::from_slice(prefix),
+                            node: nn,
+                        },
+                    );
+                    self.make_edge();
+                    return Ok(());
+                }
 
-            if path.len() > PREFIX_MAX_LEN {
-                let (prefix, rest) = path.split_at(PREFIX_MAX_LEN);
-                nn.add(rest, entry, metadata, store)?;
-                nn.update_is_with_path_separator(prefix);
+                nn.entry = entry;
+                if !metadata.is_empty() {
+                    nn.metadata = metadata;
+                    nn.make_with_metadata();
+                }
+                nn.make_value();
+                nn.update_is_with_path_separator(path);
+
                 self.forks.insert(
                     path[0],
                     Fork {
-                        prefix: Prefix::from_slice(prefix),
+                        prefix: Prefix::from_slice(path),
                         node: nn,
                     },
                 );
@@ -397,178 +439,213 @@ impl<E: NodeEntry> Node<E> {
                 return Ok(());
             }
 
-            nn.entry = entry;
-            if !metadata.is_empty() {
-                nn.metadata = metadata;
-                nn.make_with_metadata();
-            }
-            nn.make_value();
+            // existing fork; need to split or extend
+            let fork = self.forks.get(&path[0]).expect("checked above");
+            let c = common_prefix_len(&fork.prefix, path);
+            let rest = Prefix::from_slice(&fork.prefix[c..]);
+            let common_prefix = Prefix::from_slice(&fork.prefix[..c]);
+
+            // Take ownership; avoids cloning the entire node subtree
+            let old_fork = self.forks.remove(&path[0]).expect("checked above");
+
+            let mut nn = if rest.is_empty() {
+                old_fork.node
+            } else {
+                // split: create intermediate node
+                let mut intermediate = Self {
+                    obfuscation_key: self.obfuscation_key,
+                    ..Default::default()
+                };
+
+                let mut old_fork_node = old_fork.node;
+                old_fork_node.update_is_with_path_separator(&rest);
+                intermediate.forks.insert(
+                    rest[0],
+                    Fork {
+                        prefix: rest,
+                        node: old_fork_node,
+                    },
+                );
+                intermediate.make_edge();
+
+                if c == path.len() {
+                    intermediate.make_value();
+                }
+                intermediate
+            };
+
             nn.update_is_with_path_separator(path);
+            nn.add(&path[c..], entry, metadata, store).await?;
 
             self.forks.insert(
                 path[0],
                 Fork {
-                    prefix: Prefix::from_slice(path),
+                    prefix: common_prefix,
                     node: nn,
                 },
             );
             self.make_edge();
-            return Ok(());
-        }
 
-        // existing fork — need to split or extend
-        let fork = self.forks.get(&path[0]).expect("checked above");
-        let c = common_prefix_len(&fork.prefix, path);
-        let rest = Prefix::from_slice(&fork.prefix[c..]);
-        let common_prefix = Prefix::from_slice(&fork.prefix[..c]);
-
-        // Take ownership — avoids cloning the entire node subtree
-        let old_fork = self.forks.remove(&path[0]).expect("checked above");
-
-        let mut nn = if rest.is_empty() {
-            old_fork.node
-        } else {
-            // split: create intermediate node
-            let mut intermediate = Self {
-                obfuscation_key: self.obfuscation_key,
-                ..Default::default()
-            };
-
-            let mut old_fork_node = old_fork.node;
-            old_fork_node.update_is_with_path_separator(&rest);
-            intermediate.forks.insert(
-                rest[0],
-                Fork {
-                    prefix: rest,
-                    node: old_fork_node,
-                },
-            );
-            intermediate.make_edge();
-
-            if c == path.len() {
-                intermediate.make_value();
-            }
-            intermediate
-        };
-
-        nn.update_is_with_path_separator(path);
-        nn.add(&path[c..], entry, metadata, store)?;
-
-        self.forks.insert(
-            path[0],
-            Fork {
-                prefix: common_prefix,
-                node: nn,
-            },
-        );
-        self.make_edge();
-
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Remove the entry at the given path, loading from storage as needed.
-    pub(crate) fn remove<S: SyncChunkGet<BS>, const BS: usize>(
-        &mut self,
-        path: &[u8],
-        store: &S,
-    ) -> Result<()> {
-        if path.is_empty() {
-            return Err(MantarayError::EmptyPath);
-        }
+    ///
+    /// Returns a boxed future so the `&mut self` recursion can name its own type.
+    pub(crate) fn remove<'a, S: ChunkGet<BS>, const BS: usize>(
+        &'a mut self,
+        path: &'a [u8],
+        store: &'a S,
+    ) -> RecurseFuture<'a>
+    where
+        E: MaybeSend,
+    {
+        Box::pin(async move {
+            if path.is_empty() {
+                return Err(MantarayError::EmptyPath);
+            }
 
-        self.ensure_loaded(store)?;
+            self.ensure_loaded(store).await?;
 
-        let first = path[0];
+            let first = path[0];
 
-        // Clone prefix to release the borrow on self.forks
-        let prefix = match self.forks.get(&first) {
-            Some(f) => f.prefix.clone(),
-            None => {
+            // Clone prefix to release the borrow on self.forks
+            let prefix = match self.forks.get(&first) {
+                Some(f) => f.prefix.clone(),
+                None => {
+                    return Err(MantarayError::PathPrefixNotFound {
+                        prefix: String::from_utf8_lossy(&[first]).to_string(),
+                    });
+                }
+            };
+
+            if !path.starts_with(&prefix) {
                 return Err(MantarayError::PathPrefixNotFound {
-                    prefix: String::from_utf8_lossy(&[first]).to_string(),
+                    prefix: String::from_utf8_lossy(path).to_string(),
                 });
             }
-        };
 
-        if !path.starts_with(&prefix) {
-            return Err(MantarayError::PathPrefixNotFound {
-                prefix: String::from_utf8_lossy(path).to_string(),
-            });
-        }
+            let rest = &path[prefix.len()..];
+            let result = if rest.is_empty() {
+                self.forks.remove(&first);
+                Ok(())
+            } else {
+                let fork = self.forks.get_mut(&first).expect("checked above");
+                fork.node.remove(rest, store).await
+            };
 
-        let rest = &path[prefix.len()..];
-        let result = if rest.is_empty() {
-            self.forks.remove(&first);
-            Ok(())
-        } else {
-            let fork = self.forks.get_mut(&first).expect("checked above");
-            fork.node.remove(rest, store)
-        };
-
-        // Always clear reference so the node gets re-saved (matches Go's defer pattern)
-        self.mark_dirty();
-        result
+            // Always clear reference so the node gets re-saved.
+            self.mark_dirty();
+            result
+        })
     }
 
     /// Test whether a prefix exists in the trie, loading from storage as needed.
-    pub(crate) fn has_prefix<S: SyncChunkGet<BS>, const BS: usize>(
+    pub(crate) async fn has_prefix<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
     ) -> Result<bool> {
-        if path.is_empty() {
-            return Ok(true);
+        // Iterative descent: reborrow `current` to the chosen child each step.
+        let mut current = self;
+        let mut rest = path;
+        loop {
+            if rest.is_empty() {
+                return Ok(true);
+            }
+
+            current.ensure_loaded(store).await?;
+
+            let fork = match current.forks.get_mut(&rest[0]) {
+                Some(f) => f,
+                None => return Ok(false),
+            };
+
+            let c = common_prefix_len(&fork.prefix, rest);
+
+            if c == fork.prefix.len() {
+                current = &mut fork.node;
+                rest = &rest[c..];
+                continue;
+            }
+
+            if fork.prefix.starts_with(rest) {
+                return Ok(true);
+            }
+
+            return Ok(false);
         }
-
-        self.ensure_loaded(store)?;
-
-        let fork = match self.forks.get_mut(&path[0]) {
-            Some(f) => f,
-            None => return Ok(false),
-        };
-
-        let c = common_prefix_len(&fork.prefix, path);
-
-        if c == fork.prefix.len() {
-            return fork.node.has_prefix(&path[c..], store);
-        }
-
-        if fork.prefix.starts_with(path) {
-            return Ok(true);
-        }
-
-        Ok(false)
     }
 
-    /// Recursively save this node and all children to storage.
+    /// Save this node and all children to storage in post-order.
     ///
-    /// Uses BMT content-addressing via `ContentChunk`.
-    pub(crate) fn save<S: SyncChunkPut<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
+    /// Uses BMT content-addressing via `ContentChunk`. An explicit stack avoids
+    /// recursion: each frame visits its forks (pushing unsaved children) before
+    /// the node itself is encoded and put.
+    pub(crate) async fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
         if self.reference.is_some() {
             return Ok(());
         }
 
-        for fork in self.forks.values_mut() {
-            fork.node.save(store)?;
+        struct SaveFrame<E: NodeEntry> {
+            /// Node owned by an ancestor's fork map, valid for this call.
+            node: *mut Node<E>,
+            /// Fork keys still to descend into.
+            keys: Vec<u8>,
+            /// Index into `keys`.
+            key_idx: usize,
         }
 
-        let data = Vec::<u8>::try_from(&*self)?;
-        let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
-        let address = *chunk.address();
-        store
-            .put(chunk.into())
-            .map_err(|e| MantarayError::StorePut {
-                source: std::sync::Arc::new(e),
-            })?;
-        self.reference = Some(address);
-        self.forks.clear();
-        self.loaded = false;
+        let mut stack: Vec<SaveFrame<E>> = vec![SaveFrame {
+            node: self as *mut Self,
+            keys: self.forks.keys().copied().collect(),
+            key_idx: 0,
+        }];
+
+        while let Some(frame) = stack.last_mut() {
+            // SAFETY: every frame's node points into the exclusively borrowed
+            // trie. Children are only pushed once, then their parent waits in
+            // the stack below them, so no two frames alias the same node.
+            let node = unsafe { &mut *frame.node };
+
+            if frame.key_idx < frame.keys.len() {
+                let key = frame.keys[frame.key_idx];
+                frame.key_idx += 1;
+                let child = node.forks.get_mut(&key).expect("key from this node");
+                if child.node.reference.is_none() {
+                    let child_ptr = &mut child.node as *mut Self;
+                    let child_keys = child.node.forks.keys().copied().collect();
+                    stack.push(SaveFrame {
+                        node: child_ptr,
+                        keys: child_keys,
+                        key_idx: 0,
+                    });
+                }
+                continue;
+            }
+
+            // All children saved; encode and put this node, then pop.
+            let data = Vec::<u8>::try_from(&*node)?;
+            let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
+            let address = *chunk.address();
+            store
+                .put(chunk.into())
+                .await
+                .map_err(|e| MantarayError::StorePut {
+                    source: std::sync::Arc::new(e),
+                })?;
+            node.reference = Some(address);
+            node.forks.clear();
+            node.loaded = false;
+            stack.pop();
+        }
 
         Ok(())
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
-    pub(crate) fn walk<S: SyncChunkGet<BS>, const BS: usize, F>(
+    pub(crate) async fn walk<S: ChunkGet<BS>, const BS: usize, F>(
         &mut self,
         store: &S,
         f: &mut F,
@@ -577,11 +654,11 @@ impl<E: NodeEntry> Node<E> {
         F: FnMut(&[u8], &Self) -> Result<()>,
     {
         let mut path_buf = Vec::new();
-        walk_inner(&mut path_buf, self, store, f)
+        walk_inner(&mut path_buf, self, store, f).await
     }
 
     /// Walk the subtree at `root`, calling `f` for each node.
-    pub(crate) fn walk_from<S: SyncChunkGet<BS>, const BS: usize, F>(
+    pub(crate) async fn walk_from<S: ChunkGet<BS>, const BS: usize, F>(
         &mut self,
         root: &[u8],
         store: &S,
@@ -592,15 +669,18 @@ impl<E: NodeEntry> Node<E> {
     {
         let mut path_buf = root.to_vec();
         if root.is_empty() {
-            return walk_inner(&mut path_buf, self, store, f);
+            return walk_inner(&mut path_buf, self, store, f).await;
         }
 
-        let target = self.lookup_node(root, store)?;
-        walk_inner(&mut path_buf, target, store, f)
+        let target = self.lookup_node(root, store).await?;
+        walk_inner(&mut path_buf, target, store, f).await
     }
 }
 
-fn walk_inner<E: NodeEntry, S: SyncChunkGet<BS>, const BS: usize, F>(
+/// Pre-order DFS visitor over a loaded-on-demand trie via an explicit stack.
+///
+/// The visitor `f` only reads loaded nodes, so it stays a synchronous `FnMut`.
+async fn walk_inner<E: NodeEntry, S: ChunkGet<BS>, const BS: usize, F>(
     path_buf: &mut Vec<u8>,
     node: &mut Node<E>,
     store: &S,
@@ -609,23 +689,62 @@ fn walk_inner<E: NodeEntry, S: SyncChunkGet<BS>, const BS: usize, F>(
 where
     F: FnMut(&[u8], &Node<E>) -> Result<()>,
 {
-    node.ensure_loaded(store)?;
+    struct WalkFrame {
+        /// Node visited at this level (raw pointer into the exclusive borrow).
+        node: *mut (),
+        /// Length of `path_buf` before this frame's prefix was appended.
+        path_len_before: usize,
+        /// Sorted fork keys for this node.
+        keys: Vec<u8>,
+        /// Index into `keys`.
+        key_idx: usize,
+    }
 
+    node.ensure_loaded(store).await?;
     f(path_buf, node)?;
 
-    // collect keys to avoid borrow conflict
-    let keys: Vec<u8> = node.forks.keys().copied().collect();
-    for key in keys {
-        let fork = node
+    let mut stack: Vec<WalkFrame> = vec![WalkFrame {
+        node: (node as *mut Node<E>).cast::<()>(),
+        path_len_before: path_buf.len(),
+        keys: node.forks.keys().copied().collect(),
+        key_idx: 0,
+    }];
+
+    while let Some(frame) = stack.last_mut() {
+        if frame.key_idx >= frame.keys.len() {
+            path_buf.truncate(frame.path_len_before);
+            stack.pop();
+            continue;
+        }
+
+        let key = frame.keys[frame.key_idx];
+        frame.key_idx += 1;
+
+        // SAFETY: frame.node points into the exclusively borrowed trie. Each
+        // node appears in exactly one frame and is only dereferenced while at
+        // the top of the stack, so no two live references alias.
+        let parent = unsafe { &mut *frame.node.cast::<Node<E>>() };
+        let reference = parent.reference;
+        let fork = parent
             .forks
             .get_mut(&key)
-            .ok_or_else(|| MantarayError::NoForkFound {
-                reference: node.reference,
-            })?;
+            .ok_or(MantarayError::NoForkFound { reference })?;
+
         let prev_len = path_buf.len();
         path_buf.extend_from_slice(&fork.prefix);
-        walk_inner(path_buf, &mut fork.node, store, f)?;
-        path_buf.truncate(prev_len);
+
+        let child = &mut fork.node;
+        child.ensure_loaded(store).await?;
+        f(path_buf, child)?;
+
+        let child_ptr = (child as *mut Node<E>).cast::<()>();
+        let child_keys = child.forks.keys().copied().collect();
+        stack.push(WalkFrame {
+            node: child_ptr,
+            path_len_before: prev_len,
+            keys: child_keys,
+            key_idx: 0,
+        });
     }
 
     Ok(())
@@ -799,6 +918,8 @@ mod tests {
         ]
     }
 
+    use futures::executor::block_on;
+
     const NL: NullLoader = NullLoader;
     const BS: usize = DEFAULT_BODY_SIZE;
 
@@ -813,28 +934,27 @@ mod tests {
 
     /// In-memory add: delegates to `add` with NullLoader.
     fn node_add(n: &mut Node, path: &[u8], entry: ChunkAddress, meta: BTreeMap<String, String>) {
-        n.add::<NullLoader, BS>(path, Some(entry), meta, &NL)
-            .unwrap();
+        block_on(n.add::<NullLoader, BS>(path, Some(entry), meta, &NL)).unwrap();
     }
 
     /// In-memory lookup: delegates to `lookup` with NullLoader.
     fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<Option<&'n ChunkAddress>> {
-        n.lookup::<NullLoader, BS>(path, &NL)
+        block_on(n.lookup::<NullLoader, BS>(path, &NL))
     }
 
     /// In-memory lookup_node: delegates to `lookup_node` with NullLoader.
     fn node_lookup_node<'n>(n: &'n mut Node, path: &[u8]) -> Result<&'n mut Node> {
-        n.lookup_node::<NullLoader, BS>(path, &NL)
+        block_on(n.lookup_node::<NullLoader, BS>(path, &NL))
     }
 
     /// In-memory remove: delegates to `remove` with NullLoader.
     fn node_remove(n: &mut Node, path: &[u8]) -> Result<()> {
-        n.remove::<NullLoader, BS>(path, &NL)
+        block_on(n.remove::<NullLoader, BS>(path, &NL))
     }
 
     /// In-memory has_prefix: delegates to `has_prefix` with NullLoader.
     fn node_has_prefix(n: &mut Node, path: &[u8]) -> Result<bool> {
-        n.has_prefix::<NullLoader, BS>(path, &NL)
+        block_on(n.has_prefix::<NullLoader, BS>(path, &NL))
     }
 
     /// In-memory walk: delegates to `walk` with NullLoader.
@@ -842,7 +962,7 @@ mod tests {
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        n.walk::<NullLoader, BS, _>(&NL, f)
+        block_on(n.walk::<NullLoader, BS, _>(&NL, f))
     }
 
     /// In-memory walk_node: delegates to `walk_from` with NullLoader.
@@ -850,7 +970,7 @@ mod tests {
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        n.walk_from::<NullLoader, BS, _>(root, &NL, f)
+        block_on(n.walk_from::<NullLoader, BS, _>(root, &NL, f))
     }
 
     #[test]
@@ -929,12 +1049,12 @@ mod tests {
         }
 
         let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
-        n.save(&store).unwrap();
+        block_on(n.save(&store)).unwrap();
 
         let mut n2: Node = Node::from_reference(n.reference.unwrap());
 
         for &d in items {
-            let node = n2.lookup_node(d.as_bytes(), &store).unwrap();
+            let node = block_on(n2.lookup_node(d.as_bytes(), &store)).unwrap();
             assert!(node.is_value());
             assert_eq!(node.entry(), Some(&make_entry(d)));
         }
@@ -1034,24 +1154,23 @@ mod tests {
         let mut n = Node::default();
         for c in &tc.items {
             let e = make_entry(&c.path);
-            n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)
-                .unwrap();
+            block_on(n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)).unwrap();
         }
-        n.save(&store).unwrap();
+        block_on(n.save(&store)).unwrap();
         let ref_ = n.reference.unwrap();
 
         // reload and remove
         let mut nn: Node = Node::from_reference(ref_);
         for path in &tc.remove {
-            nn.remove(path.as_bytes(), &store).unwrap();
+            block_on(nn.remove(path.as_bytes(), &store)).unwrap();
         }
-        nn.save(&store).unwrap();
+        block_on(nn.save(&store)).unwrap();
         let ref2 = nn.reference.unwrap();
 
         // reload and verify removed paths are gone
         let mut nnn: Node = Node::from_reference(ref2);
         for path in &tc.remove {
-            let result = nnn.lookup_node(path.as_bytes(), &store);
+            let result = block_on(nnn.lookup_node(path.as_bytes(), &store));
             assert!(
                 result.is_err(),
                 "expected removed path '{path}' to be not found"
@@ -1221,15 +1340,15 @@ mod tests {
         }
 
         let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
-        n.save(&store).unwrap();
+        block_on(n.save(&store)).unwrap();
 
         let mut n2: Node = Node::from_reference(n.reference.unwrap());
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
-        n2.walk_from(b"", &store, &mut |path: &[u8], _node: &Node| {
+        block_on(n2.walk_from(b"", &store, &mut |path: &[u8], _node: &Node| {
             walked.push(path.to_vec());
             Ok(())
-        })
+        }))
         .unwrap();
 
         assert_eq!(

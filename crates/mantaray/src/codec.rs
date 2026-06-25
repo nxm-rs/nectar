@@ -425,7 +425,7 @@ impl<E: NodeEntry> Fork<E> {
         data.push(self.node.node_type.bits());
         data.push(self.prefix.len() as u8);
 
-        // write prefix padded to Prefix::MAX_LEN — Prefix is already zero-padded
+        // write prefix padded to Prefix::MAX_LEN; Prefix is already zero-padded
         data.extend_from_slice(self.prefix.padded_bytes());
 
         // Write E::SIZE bytes for the reference (chunk address + zero padding)
@@ -777,9 +777,12 @@ mod tests {
                 buf[32 - len..].copy_from_slice(&path[..len]);
                 ChunkAddress::from(buf)
             };
-            n.add::<nectar_primitives::store::NullLoader, { nectar_primitives::bmt::DEFAULT_BODY_SIZE }>(
+            futures::executor::block_on(n.add::<
+                nectar_primitives::store::NullLoader,
+                { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
+            >(
                 path, Some(e), entry.metadata, &nectar_primitives::store::NullLoader,
-            )
+            ))
             .unwrap();
         }
 

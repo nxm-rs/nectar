@@ -2067,6 +2067,7 @@ dependencies = [
  "bitflags",
  "bytes",
  "codspeed-criterion-compat",
+ "futures",
  "nectar-primitives",
  "rand 0.10.1",
  "serde",
