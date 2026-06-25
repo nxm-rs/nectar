@@ -11,9 +11,11 @@ use std::io::Write;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use rand::{Rng, rng};
 
+use futures::executor::block_on;
+
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
-use nectar_primitives::file::{SyncJoiner, SyncParallelSplitter, SyncSplitter, sync_split};
+use nectar_primitives::file::{Joiner, SyncParallelSplitter, SyncSplitter, sync_split};
 use nectar_primitives::store::MemoryStore;
 
 /// File sizes to benchmark, covering typical use cases.
@@ -164,8 +166,8 @@ fn bench_joiner(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &root, |b, root| {
             b.iter(|| {
-                let joiner = SyncJoiner::new(store.clone(), *root).unwrap();
-                black_box(joiner.read_all().unwrap())
+                let joiner = block_on(Joiner::new(store.clone(), *root)).unwrap();
+                black_box(block_on(joiner.read_all()).unwrap())
             });
         });
     }
@@ -194,8 +196,8 @@ fn bench_roundtrip(c: &mut Criterion) {
             |b, data| {
                 b.iter(|| {
                     let (root, store) = split_to_store(data);
-                    let joiner = SyncJoiner::new(store, root).unwrap();
-                    black_box(joiner.read_all().unwrap())
+                    let joiner = block_on(Joiner::new(store, root)).unwrap();
+                    black_box(block_on(joiner.read_all()).unwrap())
                 });
             },
         );
@@ -205,8 +207,8 @@ fn bench_roundtrip(c: &mut Criterion) {
                 let (root, chunks) =
                     SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
                 let store = MemoryStore::from_chunks(chunks);
-                let joiner = SyncJoiner::new(store, root).unwrap();
-                black_box(joiner.read_all().unwrap())
+                let joiner = block_on(Joiner::new(store, root)).unwrap();
+                black_box(block_on(joiner.read_all()).unwrap())
             });
         });
     }
