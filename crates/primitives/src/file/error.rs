@@ -28,6 +28,12 @@ pub enum FileError {
     #[error("store error: {0}")]
     Store(Box<dyn std::error::Error + Send + Sync>),
 
+    /// Write sink failed. Rendered to a string so the error stays `Send + Sync`
+    /// even when the sink's own error is not (a single-threaded browser
+    /// writable).
+    #[error("sink error: {0}")]
+    Sink(String),
+
     /// Chunk getter failed to retrieve a chunk.
     #[error("getter error: {0}")]
     Getter(Box<dyn std::error::Error + Send + Sync>),
@@ -84,6 +90,12 @@ impl FileError {
     /// Create a getter error from any error type.
     pub fn getter<E: std::error::Error + Send + Sync + 'static>(err: E) -> Self {
         Self::Getter(Box::new(err))
+    }
+
+    /// Create a sink error by rendering any sink error to a string. Keeps
+    /// `FileError: Send + Sync` while accepting a `!Send` wasm sink error.
+    pub fn sink<E: std::error::Error>(err: E) -> Self {
+        Self::Sink(err.to_string())
     }
 }
 
