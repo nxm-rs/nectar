@@ -8,7 +8,6 @@ use alloy_primitives::hex;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::file::SyncSplitter;
-use crate::store::MemoryStore;
 
 const CHUNK_SIZE: usize = DEFAULT_BODY_SIZE;
 
@@ -112,8 +111,7 @@ const LARGE_TEST_VECTORS: &[(usize, &str)] = &[
 fn run_vector_test(size: usize, expected_hex: &str) {
     let data = sequential_bytes(size);
 
-    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-    let mut splitter = SyncSplitter::new(store, data.len() as u64);
+    let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
     splitter.write_all(&data).unwrap();
     let (root, _) = splitter.finish().unwrap();
 
@@ -242,11 +240,16 @@ mod write_file_ext {
     #[test]
     fn writer_roundtrip() {
         use std::io::Write;
+
+        use crate::store::SyncChunkPut;
         let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let data = b"streaming via writer";
         let mut writer = store.writer(data.len() as u64);
         writer.write_all(data).unwrap();
-        let (root, _) = writer.finish().unwrap();
+        let (root, chunks) = writer.finish().unwrap();
+        for chunk in chunks {
+            store.put(chunk).unwrap();
+        }
         let recovered = store.read_file(root).unwrap();
         assert_eq!(recovered, data);
     }

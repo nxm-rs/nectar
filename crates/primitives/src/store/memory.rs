@@ -41,6 +41,13 @@ impl<const BODY_SIZE: usize> MemoryStore<BODY_SIZE> {
         }
     }
 
+    /// Build a store from a collection of chunks, keyed by address.
+    pub fn from_chunks(chunks: impl IntoIterator<Item = AnyChunk<BODY_SIZE>>) -> Self {
+        Self {
+            chunks: RwLock::new(chunks.into_iter().map(|c| (*c.address(), c)).collect()),
+        }
+    }
+
     /// Get a cloned chunk by address.
     pub fn get(&self, address: &ChunkAddress) -> Option<AnyChunk<BODY_SIZE>> {
         self.chunks.read().get(address).cloned()

@@ -7,7 +7,7 @@ use bytes::Bytes;
 use crate::bmt::SPAN_SIZE;
 use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey, decrypt_chunk_data};
 use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
-use crate::store::{MaybeSend, SyncChunkGet, SyncChunkPut};
+use crate::store::{MaybeSend, SyncChunkGet};
 
 use super::constants::{ENCRYPTED_REF_SIZE, REF_SIZE, compute_spans_inline, subspan_for_spans};
 use super::error::{FileError, Result};
@@ -24,16 +24,6 @@ fn chunk_creation_error(e: crate::error::PrimitivesError) -> FileError {
 #[inline]
 fn create_chunk<const BS: usize>(data: Bytes) -> Result<ContentChunk<BS>> {
     ContentChunk::<BS>::try_from(data).map_err(chunk_creation_error)
-}
-
-/// Store a chunk and return its address (derived from the chunk).
-fn store_chunk<const BS: usize, S: SyncChunkPut<BS>>(
-    chunk: ContentChunk<BS>,
-    store: &S,
-) -> Result<ChunkAddress> {
-    let address = *chunk.address();
-    store.put(chunk.into()).map_err(FileError::store)?;
-    Ok(address)
 }
 
 /// Joiner-side chunk mode operations.
@@ -171,24 +161,12 @@ pub trait SplitMode: JoinMode {
     /// Fixed-size byte array for a reference: `[u8; 32]` or `[u8; 64]`.
     type RefBytes: AsRef<[u8]> + AsMut<[u8]> + Clone + Debug + Send + Sync;
 
-    /// Prepare chunk data (span + body) for storage, returning chunk and reference bytes.
+    /// Prepare chunk data (span + body), returning chunk and reference bytes.
     /// Takes ownership of the payload to avoid an extra allocation.
     fn prepare_chunk<const BS: usize>(data: Vec<u8>) -> Result<(ContentChunk<BS>, Self::RefBytes)>;
 
-    /// Process chunk data (span + body), store it, return reference bytes.
-    /// Takes ownership of the payload to avoid an extra allocation.
-    #[inline]
-    fn process_chunk<const BS: usize, S: SyncChunkPut<BS>>(
-        data: Vec<u8>,
-        store: &S,
-    ) -> Result<Self::RefBytes> {
-        let (chunk, ref_bytes) = Self::prepare_chunk::<BS>(data)?;
-        store.put(chunk.into()).map_err(FileError::store)?;
-        Ok(ref_bytes)
-    }
-
-    /// Process empty file, store chunk, return root ref.
-    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(store: &S) -> Result<Self::RootRef>;
+    /// Produce the chunk for an empty file, returning it and the root ref.
+    fn empty_chunk<const BS: usize>() -> Result<(ContentChunk<BS>, Self::RootRef)>;
 
     /// Extract root reference from top of buffer.
     fn extract_root(buffer: &[u8]) -> Result<Self::RootRef>;
@@ -245,11 +223,12 @@ impl SplitMode for PlainMode {
         Ok((chunk, ref_bytes))
     }
 
-    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(store: &S) -> Result<ChunkAddress> {
+    fn empty_chunk<const BS: usize>() -> Result<(ContentChunk<BS>, ChunkAddress)> {
         // Use `new` (not `try_from`) because Bytes::new() is raw content,
         // not pre-formatted span+body data.
         let chunk = ContentChunk::<BS>::new(Bytes::new()).map_err(chunk_creation_error)?;
-        store_chunk::<BS, S>(chunk, store)
+        let address = *chunk.address();
+        Ok((chunk, address))
     }
 
     fn extract_root(buffer: &[u8]) -> Result<ChunkAddress> {
@@ -345,15 +324,15 @@ impl SplitMode for EncryptedMode {
         Ok((chunk, ref_bytes))
     }
 
-    fn process_empty<const BS: usize, S: SyncChunkPut<BS>>(store: &S) -> Result<EncryptedChunkRef> {
+    fn empty_chunk<const BS: usize>() -> Result<(ContentChunk<BS>, EncryptedChunkRef)> {
         use crate::chunk::encryption::encrypt_chunk;
 
         let key = EncryptionKey::generate();
         let chunk_bytes = 0u64.to_le_bytes().to_vec();
         let ciphertext = encrypt_chunk::<BS>(&chunk_bytes, &key)?;
         let chunk = create_chunk::<BS>(Bytes::from(ciphertext))?;
-        let address = store_chunk::<BS, S>(chunk, store)?;
-        Ok(EncryptedChunkRef::new(address, key))
+        let address = *chunk.address();
+        Ok((chunk, EncryptedChunkRef::new(address, key)))
     }
 
     fn extract_root(buffer: &[u8]) -> Result<EncryptedChunkRef> {

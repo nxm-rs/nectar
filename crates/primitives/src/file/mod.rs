@@ -165,10 +165,8 @@ where
 pub fn sync_split<const BODY_SIZE: usize>(
     data: &[u8],
 ) -> error::Result<(ChunkAddress, crate::store::MemoryStore<BODY_SIZE>)> {
-    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
-    let splitter = SyncParallelSplitter::new(store);
-    let root = splitter.split(&data)?;
-    Ok((root, splitter.into_store()))
+    let (root, chunks) = SyncParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
+    Ok((root, crate::store::MemoryStore::from_chunks(chunks)))
 }
 
 /// Split data into encrypted chunks synchronously.
@@ -176,10 +174,8 @@ pub fn sync_split<const BODY_SIZE: usize>(
 pub fn sync_split_encrypted<const BODY_SIZE: usize>(
     data: &[u8],
 ) -> error::Result<(EncryptedChunkRef, crate::store::MemoryStore<BODY_SIZE>)> {
-    let store = crate::store::MemoryStore::<BODY_SIZE>::new();
-    let splitter = EncryptedSyncParallelSplitter::new(store);
-    let root_ref = splitter.split(&data)?;
-    Ok((root_ref, splitter.into_store()))
+    let (root_ref, chunks) = EncryptedSyncParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
+    Ok((root_ref, crate::store::MemoryStore::from_chunks(chunks)))
 }
 
 /// Join chunks synchronously. Dispatches plain/encrypted via [`JoinRef`].
@@ -291,21 +287,15 @@ impl<T, const BODY_SIZE: usize> SyncChunkGetExt<BODY_SIZE> for T where T: SyncCh
 /// ```
 pub trait SyncChunkPutExt<const BODY_SIZE: usize>: SyncChunkPut<BODY_SIZE> {
     /// Create a writer for streaming data. Returns a `SyncSplitter` implementing `Write`.
-    /// Call `.finish()` on the returned writer to get the root address.
-    fn writer(&self, size: u64) -> SyncSplitter<&Self, BODY_SIZE>
-    where
-        Self: Sized,
-    {
-        SyncSplitter::new(self, size)
+    /// Call `.finish()` on the returned writer to get the root and produced chunks.
+    fn writer(&self, size: u64) -> SyncSplitter<BODY_SIZE> {
+        SyncSplitter::new(size)
     }
 
     /// Create an encrypted writer. Returns an `EncryptedSyncSplitter` implementing `Write`.
     #[cfg(feature = "encryption")]
-    fn encrypted_writer(&self, size: u64) -> EncryptedSyncSplitter<&Self, BODY_SIZE>
-    where
-        Self: Sized,
-    {
-        EncryptedSyncSplitter::new(self, size)
+    fn encrypted_writer(&self, size: u64) -> EncryptedSyncSplitter<BODY_SIZE> {
+        EncryptedSyncSplitter::new(size)
     }
 
     /// Write file data into the store (like `fs::write`).
@@ -313,7 +303,11 @@ pub trait SyncChunkPutExt<const BODY_SIZE: usize>: SyncChunkPut<BODY_SIZE> {
     where
         Self: Send + Sync + Sized,
     {
-        SyncParallelSplitter::<&Self, BODY_SIZE>::new(self).split(&data)
+        let (root, chunks) = SyncParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
+        for chunk in chunks {
+            self.put(chunk).map_err(FileError::store)?;
+        }
+        Ok(root)
     }
 
     /// Write encrypted file data into the store.
@@ -322,7 +316,11 @@ pub trait SyncChunkPutExt<const BODY_SIZE: usize>: SyncChunkPut<BODY_SIZE> {
     where
         Self: Send + Sync + Sized,
     {
-        EncryptedSyncParallelSplitter::<&Self, BODY_SIZE>::new(self).split(&data)
+        let (root_ref, chunks) = EncryptedSyncParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
+        for chunk in chunks {
+            self.put(chunk).map_err(FileError::store)?;
+        }
+        Ok(root_ref)
     }
 }
 
