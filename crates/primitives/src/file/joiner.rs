@@ -289,6 +289,77 @@ where
         })
     }
 
+    /// Convert into a stream of `(byte_offset, leaf_body)` pairs fetched with
+    /// bounded concurrency and yielded out of order as each leaf lands.
+    ///
+    /// Unlike [`into_stream`](Self::into_stream), which walks subtrees one at a
+    /// time and emits bytes in file order, this keeps up to `concurrency`
+    /// subtree fetches in flight and yields each leaf the moment its subtree
+    /// resolves, tagged with its absolute byte offset in the file. Reassembling
+    /// the pairs by offset reproduces the file; nothing is buffered into a
+    /// single contiguous result, so peak memory is bounded by the in-flight
+    /// width, not the file size. Set the width with
+    /// [`with_concurrency`](Self::with_concurrency).
+    pub fn into_offset_stream(self) -> impl Stream<Item = Result<(u64, Bytes)>> {
+        let getter = self.getter;
+        let concurrency = self.concurrency;
+        let chunk_range = self.tree.chunks_for_range(0, self.span);
+
+        // Each subtree fetch resolves to its base offset plus its leaves in tree
+        // order; `buffer_unordered` yields whichever subtree finishes first.
+        let subtrees = stream::iter(self.subtrees)
+            .map(move |st| {
+                let getter = Arc::clone(&getter);
+                async move {
+                    let base = st.byte_offset;
+                    let bodies =
+                        read_subtree_bodies_async::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range)
+                            .await?;
+                    Ok::<(u64, Vec<Bytes>), FileError>((base, bodies))
+                }
+            })
+            .buffer_unordered(concurrency.max(1));
+
+        // Flatten each resolved subtree into per-leaf `(offset, body)` pairs,
+        // draining one subtree's leaves before polling the next ready subtree.
+        struct State<S> {
+            subtrees: S,
+            base: u64,
+            leaf_index: usize,
+            pending: std::vec::IntoIter<Bytes>,
+        }
+
+        let state = State {
+            subtrees: Box::pin(subtrees),
+            base: 0,
+            leaf_index: 0,
+            pending: Vec::new().into_iter(),
+        };
+
+        stream::unfold(state, move |mut state| async move {
+            loop {
+                // Drain leaves already in hand, offsetting each leaf from its
+                // subtree base by a whole body per preceding leaf.
+                if let Some(body) = state.pending.next() {
+                    let offset = state.base + state.leaf_index as u64 * BODY_SIZE as u64;
+                    state.leaf_index += 1;
+                    return Some((Ok((offset, body)), state));
+                }
+
+                // Pull the next resolved subtree (out of order).
+                match state.subtrees.next().await? {
+                    Ok((base, bodies)) => {
+                        state.base = base;
+                        state.leaf_index = 0;
+                        state.pending = bodies.into_iter();
+                        // Loop back to emit this subtree's first leaf.
+                    }
+                    Err(e) => return Some((Err(e), state)),
+                }
+            }
+        })
+    }
+
     /// Convert into an `AsyncRead` reader.
     #[cfg(feature = "tokio")]
     pub fn into_reader(self) -> JoinerReader<G, M, BODY_SIZE> {
@@ -473,6 +544,90 @@ mod tests {
             recovered.extend_from_slice(&chunk.unwrap());
         }
         assert_eq!(recovered, data);
+    }
+
+    /// Drain `into_offset_stream` into an offset-keyed map, asserting every leaf
+    /// arrives exactly once, then reassemble by offset and compare to `read_all`.
+    async fn assert_offset_stream_matches(data: &[u8]) {
+        let (root, store) = split_and_store(data);
+
+        let expected = Joiner::new(store.clone(), root)
+            .await
+            .unwrap()
+            .read_all()
+            .await
+            .unwrap();
+
+        let joiner = Joiner::new(store, root).await.unwrap();
+        let total = joiner.size();
+        let pairs: Vec<Result<(u64, Bytes)>> = joiner.into_offset_stream().collect().await;
+
+        let mut reassembled = vec![0u8; total as usize];
+        let mut covered = 0u64;
+        let mut seen_offsets = std::collections::HashSet::new();
+        for pair in pairs {
+            let (offset, body) = pair.unwrap();
+            assert!(
+                seen_offsets.insert(offset),
+                "offset {offset} yielded more than once"
+            );
+            let start = offset as usize;
+            let end = start + body.len();
+            reassembled[start..end].copy_from_slice(&body);
+            covered += body.len() as u64;
+        }
+
+        assert_eq!(covered, total, "every byte covered exactly once");
+        assert_eq!(reassembled, expected, "offset reassembly equals read_all");
+        assert_eq!(reassembled, data, "offset reassembly equals input");
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_small() {
+        assert_offset_stream_matches(b"hello world").await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_exact_chunk() {
+        assert_offset_stream_matches(&vec![0xAB; DEFAULT_BODY_SIZE]).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_multi_chunk() {
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        assert_offset_stream_matches(&data).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_129_chunks() {
+        let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * (refs_per_chunk + 1))
+            .map(|i| (i % 256) as u8)
+            .collect();
+        assert_offset_stream_matches(&data).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_concurrency_one() {
+        // Width 1 still yields every leaf with the right offset (degenerate
+        // concurrent path), so the reassembly invariant holds independent of fan.
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 7)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+        let joiner = Joiner::new(store, root).await.unwrap().with_concurrency(1);
+        let total = joiner.size();
+        let mut reassembled = vec![0u8; total as usize];
+        let stream = joiner.into_offset_stream();
+        futures::pin_mut!(stream);
+        while let Some(pair) = stream.next().await {
+            let (offset, body) = pair.unwrap();
+            let start = offset as usize;
+            reassembled[start..start + body.len()].copy_from_slice(&body);
+        }
+        assert_eq!(reassembled, data);
     }
 
     #[cfg(feature = "tokio")]
