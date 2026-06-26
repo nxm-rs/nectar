@@ -48,6 +48,7 @@
 mod constants;
 pub mod entry_ref;
 pub mod error;
+mod fold;
 mod frontier;
 mod helpers;
 #[cfg(test)]
@@ -62,6 +63,7 @@ mod sync_read_at;
 mod sync_splitter;
 mod sync_splitter_parallel;
 mod tree;
+mod windowed;
 mod write_at;
 
 use crate::chunk::ChunkAddress;
@@ -75,6 +77,9 @@ pub use joiner::EncryptedJoiner;
 #[cfg(feature = "tokio")]
 pub use joiner::JoinerReader;
 pub use joiner::{GenericJoiner, Joiner};
+#[cfg(feature = "tokio")]
+pub use windowed::WindowedJoinerReader;
+pub use windowed::WindowedReader;
 // Splitter re-exports
 pub use sync_read_at::SyncReadAt;
 #[cfg(feature = "encryption")]

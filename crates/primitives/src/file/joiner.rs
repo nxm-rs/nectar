@@ -551,6 +551,35 @@ where
         })
     }
 
+    /// Like [`into_offset_stream_chunked`](Self::into_offset_stream_chunked) but
+    /// restricted to the byte range `[start, start + len)`.
+    ///
+    /// Only subtrees and intermediate children overlapping the range are walked,
+    /// and the first and last partial leaves are clipped so each emitted
+    /// `(offset, body)` lies inside the range. Offsets stay absolute in the file,
+    /// so reassembling the pairs over `[start, start + len)` reproduces
+    /// [`read_range`](Self::read_range) byte-for-byte. A whole-file range equals
+    /// [`into_offset_stream_chunked`](Self::into_offset_stream_chunked); an empty
+    /// or out-of-bounds range yields an empty stream.
+    pub fn into_offset_stream_chunked_range(
+        self,
+        start: u64,
+        len: u64,
+    ) -> impl Stream<Item = Result<(u64, Bytes)>>
+    where
+        G: 'static,
+    {
+        chunked_range_stream_from::<G, M, BODY_SIZE>(
+            self.getter,
+            self.subtrees,
+            self.tree,
+            self.span,
+            self.concurrency,
+            start,
+            len,
+        )
+    }
+
     /// Convert into an `AsyncRead` reader.
     #[cfg(feature = "tokio")]
     pub fn into_reader(self) -> JoinerReader<G, M, BODY_SIZE> {
@@ -560,6 +589,191 @@ where
             future: None,
         }
     }
+}
+
+/// Build the chunk-granular range stream from already-decomposed joiner parts.
+///
+/// The single home of the chunk-granular walk: both
+/// [`GenericJoiner::into_offset_stream_chunked_range`] (which moves its parts
+/// in) and consumers that retain reusable joiner state (which clone their parts
+/// in) drive the same implementation. Walks only the subtrees and intermediate
+/// children overlapping `[start, start + len)`, clips boundary leaves to the
+/// range, and keeps absolute offsets, so the returned stream is identical to the
+/// inherent method.
+pub(crate) fn chunked_range_stream_from<G, M, const BODY_SIZE: usize>(
+    getter: Arc<G>,
+    subtrees: Vec<SubtreeNode<M>>,
+    tree: TreeParams<BODY_SIZE>,
+    span: u64,
+    concurrency: usize,
+    start: u64,
+    len: u64,
+) -> impl Stream<Item = Result<(u64, Bytes)>> + 'static
+where
+    G: ChunkGet<BODY_SIZE> + 'static,
+    M: JoinMode + MaybeSend + Sync,
+{
+    let width = concurrency.max(1);
+
+    // Clamp the requested window to the file and derive the chunk range that
+    // seeds the queue and prunes intermediate children, exactly as the full
+    // walk uses the whole-file chunk range.
+    let range_start = start.min(span);
+    let range_end = (start.saturating_add(len)).min(span);
+    let chunk_range = tree.chunks_for_range(range_start, range_end - range_start);
+
+    // One unit of pending work: a tree node plus its remaining retry budget.
+    // The budget only decrements on a failed leaf fetch.
+    struct Pending<M: JoinMode> {
+        node: SubtreeNode<M>,
+        retries: u32,
+    }
+
+    // What a worker future resolves to once its chunk lands.
+    enum Resolved<M: JoinMode> {
+        /// A leaf: its absolute byte offset and decoded body.
+        Leaf(u64, Bytes),
+        /// An intermediate: its overlapping children to re-queue.
+        Children(Vec<SubtreeNode<M>>),
+        /// A leaf fetch failed with retries left: re-queue this node.
+        Retry(Pending<M>),
+        /// A fetch failed terminally (retries exhausted or intermediate error).
+        Failed(FileError),
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    type BoxResolvedFuture<M> =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>> + Send>>;
+    #[cfg(target_arch = "wasm32")]
+    type BoxResolvedFuture<M> = std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>>>>;
+
+    // Fetch one node: a leaf yields its body, an intermediate yields its
+    // overlapping children. A leaf error consumes one retry, then re-queues
+    // or fails.
+    async fn fetch_one<G, M, const BS: usize>(
+        getter: &G,
+        chunk_range: &ChunkRange,
+        pending: Pending<M>,
+    ) -> Resolved<M>
+    where
+        G: ChunkGet<BS>,
+        M: JoinMode + MaybeSend + Sync,
+    {
+        let node = &pending.node;
+        let body = match super::mode::read_chunk_body_async::<M, G, BS>(
+            getter,
+            &node.addr,
+            &node.context,
+            node.span,
+        )
+        .await
+        {
+            Ok(body) => body,
+            Err(e) => {
+                if node.span <= BS as u64 && pending.retries > 0 {
+                    return Resolved::Retry(Pending {
+                        node: pending.node,
+                        retries: pending.retries - 1,
+                    });
+                }
+                return Resolved::Failed(e);
+            }
+        };
+
+        if node.span <= BS as u64 {
+            return Resolved::Leaf(node.byte_offset, body);
+        }
+        match overlapping_children::<M, BS>(&body, node, chunk_range) {
+            Ok(children) => Resolved::Children(children),
+            Err(e) => Resolved::Failed(e),
+        }
+    }
+
+    struct State<G, M: JoinMode> {
+        getter: Arc<G>,
+        chunk_range: ChunkRange,
+        range_start: u64,
+        range_end: u64,
+        width: usize,
+        queue: std::collections::VecDeque<Pending<M>>,
+        in_flight: FuturesUnordered<BoxResolvedFuture<M>>,
+    }
+
+    // Seed the queue with only the subtrees overlapping the range; an empty
+    // range leaves the queue empty and the stream finishes at once.
+    let mut queue = std::collections::VecDeque::new();
+    if range_end > range_start {
+        let range_start_byte = chunk_range.start * BODY_SIZE as u64;
+        let range_end_byte = chunk_range.end * BODY_SIZE as u64;
+        for st in subtrees {
+            if st.byte_offset < range_end_byte && st.byte_offset + st.span > range_start_byte {
+                queue.push_back(Pending {
+                    node: st,
+                    retries: DEFAULT_LEAF_RETRIES,
+                });
+            }
+        }
+    }
+
+    let state = State::<G, M> {
+        getter,
+        chunk_range,
+        range_start,
+        range_end,
+        width,
+        queue,
+        in_flight: FuturesUnordered::new(),
+    };
+
+    stream::unfold(state, move |mut state| async move {
+        loop {
+            // Refill the in-flight pool from the pending queue up to the
+            // width, so at most `width` chunks are fetching at once.
+            while state.in_flight.len() < state.width {
+                let Some(pending) = state.queue.pop_front() else {
+                    break;
+                };
+                let getter = Arc::clone(&state.getter);
+                let range = state.chunk_range;
+                state.in_flight.push(Box::pin(async move {
+                    fetch_one::<G, M, BODY_SIZE>(&*getter, &range, pending).await
+                }) as BoxResolvedFuture<M>);
+            }
+
+            // Nothing in flight and nothing queued: the range is drained.
+            let resolved = state.in_flight.next().await?;
+            match resolved {
+                Resolved::Leaf(leaf_start, body) => {
+                    // Clip the leaf to the range. Offsets stay absolute, so a
+                    // boundary leaf emits only its in-range slice, and the
+                    // emitted offset is the later of the leaf start and the
+                    // range start.
+                    let leaf_end = leaf_start + body.len() as u64;
+                    if leaf_end <= state.range_start || leaf_start >= state.range_end {
+                        continue;
+                    }
+                    let clip_lo = state.range_start.saturating_sub(leaf_start) as usize;
+                    let clip_hi = (state.range_end - leaf_start).min(body.len() as u64) as usize;
+                    let offset = leaf_start.max(state.range_start);
+                    return Some((Ok((offset, body.slice(clip_lo..clip_hi))), state));
+                }
+                Resolved::Children(children) => {
+                    for child in children {
+                        state.queue.push_back(Pending {
+                            node: child,
+                            retries: DEFAULT_LEAF_RETRIES,
+                        });
+                    }
+                }
+                Resolved::Retry(pending) => {
+                    // Re-enqueue at the back so the worker pulls fresh work
+                    // first; the failed chunk retries without holding a slot.
+                    state.queue.push_back(pending);
+                }
+                Resolved::Failed(e) => return Some((Err(e), state)),
+            }
+        }
+    })
 }
 
 /// Wrapper providing `tokio::io::AsyncRead` over a [`GenericJoiner`].
@@ -979,6 +1193,132 @@ mod tests {
         );
     }
 
+    /// Drain `into_offset_stream_chunked_range(start, len)`, reassemble the
+    /// clipped `(offset, bytes)` pairs over `[start, start + len)`, and assert it
+    /// equals `read_range(start, len)` byte-for-byte. Runs at the default width
+    /// and at width 1.
+    async fn assert_offset_stream_chunked_range_matches(data: &[u8], start: u64, len: u64) {
+        for width in [DEFAULT_ASYNC_CONCURRENCY, 1] {
+            let (root, store) = split_and_store(data);
+
+            let expected = Joiner::new(store.clone(), root)
+                .await
+                .unwrap()
+                .read_range(start, len as usize)
+                .await
+                .unwrap();
+
+            let joiner = Joiner::new(store, root)
+                .await
+                .unwrap()
+                .with_concurrency(width);
+            let pairs: Vec<Result<(u64, Bytes)>> = joiner
+                .into_offset_stream_chunked_range(start, len)
+                .collect()
+                .await;
+
+            let mut reassembled = vec![0u8; expected.len()];
+            let mut seen_offsets = std::collections::HashSet::new();
+            for pair in pairs {
+                let (offset, body) = pair.unwrap();
+                assert!(
+                    offset >= start && offset + body.len() as u64 <= start + len,
+                    "offset {offset} (+{}) outside [{start}, {})",
+                    body.len(),
+                    start + len
+                );
+                assert!(
+                    seen_offsets.insert(offset),
+                    "offset {offset} yielded more than once (width {width})"
+                );
+                let rel = (offset - start) as usize;
+                reassembled[rel..rel + body.len()].copy_from_slice(&body);
+            }
+
+            assert_eq!(
+                reassembled, expected,
+                "range reassembly equals read_range (width {width}, start {start}, len {len})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_chunked_range_windows() {
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let bs = DEFAULT_BODY_SIZE as u64;
+        let total = data.len() as u64;
+
+        // sub-leaf: start and len both inside one leaf
+        assert_offset_stream_chunked_range_matches(&data, bs + 10, 50).await;
+        // leaf-aligned single leaf
+        assert_offset_stream_chunked_range_matches(&data, bs, bs).await;
+        // spans several leaves, partial at both ends
+        assert_offset_stream_chunked_range_matches(&data, bs / 2, bs * 3 + 7).await;
+        // last partial leaf
+        assert_offset_stream_chunked_range_matches(&data, bs * 5, total - bs * 5).await;
+        // whole file (must equal read_all)
+        assert_offset_stream_chunked_range_matches(&data, 0, total).await;
+        // zero-len (empty)
+        assert_offset_stream_chunked_range_matches(&data, bs, 0).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_chunked_range_whole_equals_chunked() {
+        // A whole-file range must reproduce `into_offset_stream_chunked` exactly:
+        // same leaves, same absolute offsets, same bodies.
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 99)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+
+        let full = Joiner::new(store.clone(), root).await.unwrap();
+        let total = full.size();
+        let mut from_full: Vec<(u64, Vec<u8>)> = full
+            .into_offset_stream_chunked()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(|p| {
+                let (o, b) = p.unwrap();
+                (o, b.to_vec())
+            })
+            .collect();
+        from_full.sort_by_key(|(o, _)| *o);
+
+        let ranged = Joiner::new(store, root).await.unwrap();
+        let mut from_range: Vec<(u64, Vec<u8>)> = ranged
+            .into_offset_stream_chunked_range(0, total)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(|p| {
+                let (o, b) = p.unwrap();
+                (o, b.to_vec())
+            })
+            .collect();
+        from_range.sort_by_key(|(o, _)| *o);
+
+        assert_eq!(
+            from_range, from_full,
+            "whole-file range equals chunked walk"
+        );
+
+        // And the reassembly equals read_all.
+        let expected = Joiner::new(split_and_store(&data).1, root)
+            .await
+            .unwrap()
+            .read_all()
+            .await
+            .unwrap();
+        let mut reassembled = vec![0u8; total as usize];
+        for (o, b) in &from_range {
+            reassembled[*o as usize..*o as usize + b.len()].copy_from_slice(b);
+        }
+        assert_eq!(reassembled, expected);
+    }
+
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_async_reader_small() {
@@ -1098,6 +1438,76 @@ mod tests {
                 recovered.extend_from_slice(&chunk.unwrap());
             }
             assert_eq!(recovered, data);
+        }
+
+        /// Encrypted analogue of `assert_offset_stream_chunked_range_matches`.
+        /// Encrypted leaf bodies are shorter than `BODY_SIZE` (the span is
+        /// stripped), so clipping must key off `body.len()`, never a stride.
+        async fn assert_encrypted_range_matches(data: &[u8], start: u64, len: u64) {
+            for width in [DEFAULT_ASYNC_CONCURRENCY, 1] {
+                let (root_ref, store) = encrypted_split_and_store(data);
+
+                let expected = EncryptedJoiner::new(store.clone(), root_ref.clone())
+                    .await
+                    .unwrap()
+                    .read_range(start, len as usize)
+                    .await
+                    .unwrap();
+
+                let joiner = EncryptedJoiner::new(store, root_ref)
+                    .await
+                    .unwrap()
+                    .with_concurrency(width);
+                let pairs: Vec<Result<(u64, Bytes)>> = joiner
+                    .into_offset_stream_chunked_range(start, len)
+                    .collect()
+                    .await;
+
+                let mut reassembled = vec![0u8; expected.len()];
+                let mut seen_offsets = std::collections::HashSet::new();
+                for pair in pairs {
+                    let (offset, body) = pair.unwrap();
+                    assert!(
+                        offset >= start && offset + body.len() as u64 <= start + len,
+                        "offset {offset} (+{}) outside [{start}, {})",
+                        body.len(),
+                        start + len
+                    );
+                    assert!(
+                        seen_offsets.insert(offset),
+                        "offset {offset} yielded more than once (width {width})"
+                    );
+                    let rel = (offset - start) as usize;
+                    reassembled[rel..rel + body.len()].copy_from_slice(&body);
+                }
+
+                assert_eq!(
+                    reassembled, expected,
+                    "encrypted range equals read_range (width {width}, start {start}, len {len})"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn test_encrypted_offset_stream_chunked_range_windows() {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let bs = DEFAULT_BODY_SIZE as u64;
+            let total = data.len() as u64;
+
+            // sub-leaf
+            assert_encrypted_range_matches(&data, bs + 10, 50).await;
+            // leaf-aligned single leaf
+            assert_encrypted_range_matches(&data, bs, bs).await;
+            // spans several leaves
+            assert_encrypted_range_matches(&data, bs / 2, bs * 3 + 7).await;
+            // last partial leaf
+            assert_encrypted_range_matches(&data, bs * 5, total - bs * 5).await;
+            // whole file
+            assert_encrypted_range_matches(&data, 0, total).await;
+            // zero-len
+            assert_encrypted_range_matches(&data, bs, 0).await;
         }
     }
 }
