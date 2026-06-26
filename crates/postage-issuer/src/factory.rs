@@ -112,44 +112,6 @@ impl Default for MemoryBatchFactory {
     }
 }
 
-/// Error type for memory batch factory operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MemoryBatchError {
-    /// The batch was not found.
-    NotFound(BatchId),
-    /// The batch is immutable and cannot be diluted.
-    Immutable(BatchId),
-    /// Invalid depth for dilution.
-    InvalidDepth {
-        /// The batch ID.
-        batch_id: BatchId,
-        /// Current depth.
-        current: u8,
-        /// Requested depth.
-        requested: u8,
-    },
-}
-
-impl std::fmt::Display for MemoryBatchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound(id) => write!(f, "batch not found: {}", id),
-            Self::Immutable(id) => write!(f, "batch is immutable: {}", id),
-            Self::InvalidDepth {
-                batch_id,
-                current,
-                requested,
-            } => write!(
-                f,
-                "invalid depth for batch {}: current {}, requested {}",
-                batch_id, current, requested
-            ),
-        }
-    }
-}
-
-impl std::error::Error for MemoryBatchError {}
-
 impl BatchFactory for MemoryBatchFactory {
     type Error = std::convert::Infallible;
 

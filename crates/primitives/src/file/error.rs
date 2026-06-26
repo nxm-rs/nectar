@@ -25,8 +25,8 @@ pub enum FileError {
     },
 
     /// Chunk store failed to store a chunk.
-    #[error("store error: {0}")]
-    Store(Box<dyn std::error::Error + Send + Sync>),
+    #[error("store error")]
+    Store(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Write sink failed. Rendered to a string so the error stays `Send + Sync`
     /// even when the sink's own error is not (a single-threaded browser
@@ -35,8 +35,8 @@ pub enum FileError {
     Sink(String),
 
     /// Chunk getter failed to retrieve a chunk.
-    #[error("getter error: {0}")]
-    Getter(Box<dyn std::error::Error + Send + Sync>),
+    #[error("getter error")]
+    Getter(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Invalid chunk reference encountered during tree traversal.
     #[error("invalid reference at level {level}")]

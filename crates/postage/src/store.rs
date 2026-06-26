@@ -97,11 +97,15 @@ pub trait BatchStoreExt: BatchStore {
 impl<T: BatchStore> BatchStoreExt for T {}
 
 /// Errors that can occur when working with a batch store.
-#[derive(Debug)]
-pub enum BatchStoreError<E> {
+#[derive(Debug, thiserror::Error)]
+pub enum BatchStoreError<E: std::error::Error> {
     /// The batch was not found in the store.
+    #[error("batch not found: {0}")]
     NotFound(BatchId),
     /// The batch is not yet usable (needs more confirmations).
+    #[error(
+        "batch {batch_id} not usable: created at block {created}, current block {current}, need {threshold} confirmations"
+    )]
     NotUsable {
         /// The batch ID.
         batch_id: BatchId,
@@ -113,6 +117,7 @@ pub enum BatchStoreError<E> {
         threshold: u64,
     },
     /// The batch has expired.
+    #[error("batch {batch_id} expired: value {value} <= total_amount {total_amount}")]
     Expired {
         /// The batch ID.
         batch_id: BatchId,
@@ -122,42 +127,6 @@ pub enum BatchStoreError<E> {
         total_amount: u128,
     },
     /// An error from the underlying store.
-    Store(E),
-}
-
-impl<E: std::fmt::Display> std::fmt::Display for BatchStoreError<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound(id) => write!(f, "batch not found: {}", id),
-            Self::NotUsable {
-                batch_id,
-                created,
-                current,
-                threshold,
-            } => write!(
-                f,
-                "batch {} not usable: created at block {}, current block {}, need {} confirmations",
-                batch_id, created, current, threshold
-            ),
-            Self::Expired {
-                batch_id,
-                value,
-                total_amount,
-            } => write!(
-                f,
-                "batch {} expired: value {} <= total_amount {}",
-                batch_id, value, total_amount
-            ),
-            Self::Store(e) => write!(f, "store error: {}", e),
-        }
-    }
-}
-
-impl<E: std::error::Error + 'static> std::error::Error for BatchStoreError<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Store(e) => Some(e),
-            _ => None,
-        }
-    }
+    #[error("store error: {0}")]
+    Store(#[from] E),
 }

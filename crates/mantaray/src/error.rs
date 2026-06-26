@@ -84,11 +84,8 @@ pub enum MantarayError {
         actual: usize,
     },
     /// Metadata could not be parsed.
-    #[error("invalid metadata: {message}")]
-    InvalidMetadata {
-        /// Description of the error.
-        message: String,
-    },
+    #[error("invalid metadata")]
+    Metadata(#[from] serde_json::Error),
     /// Node has not been saved yet (reference is empty).
     #[error("missing reference")]
     MissingReference,
