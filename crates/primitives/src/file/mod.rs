@@ -60,11 +60,12 @@ mod sync_read_at;
 mod sync_splitter;
 mod sync_splitter_parallel;
 mod tree;
+mod write_at;
 
 use crate::chunk::ChunkAddress;
 #[cfg(feature = "encryption")]
 use crate::chunk::encryption::EncryptedChunkRef;
-use crate::store::{SyncChunkGet, SyncChunkPut};
+use crate::store::{MaybeSend, MaybeSync, SyncChunkGet, SyncChunkPut};
 
 // Async (primary) re-exports
 #[cfg(feature = "encryption")]
@@ -83,6 +84,7 @@ pub use sync_splitter::SyncSplitter;
 #[cfg(feature = "encryption")]
 pub use sync_splitter_parallel::EncryptedSyncParallelSplitter;
 pub use sync_splitter_parallel::SyncParallelSplitter;
+pub use write_at::WriteAt;
 
 pub use entry_ref::EntryRef;
 pub use error::FileError;
@@ -205,9 +207,10 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: crate::store::ChunkGet<BODY_SIZE>
     fn joiner<R: JoinRef>(
         self,
         root: R,
-    ) -> impl std::future::Future<Output = error::Result<GenericJoiner<Self, R::Mode, BODY_SIZE>>> + Send
+    ) -> impl std::future::Future<Output = error::Result<GenericJoiner<Self, R::Mode, BODY_SIZE>>>
+    + MaybeSend
     where
-        Self: Sized + Clone + Send + Sync + 'static,
+        Self: Sized + Clone + MaybeSend + MaybeSync + 'static,
     {
         GenericJoiner::new(self, root.into_root_ref())
     }
@@ -216,9 +219,9 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: crate::store::ChunkGet<BODY_SIZE>
     fn read_file<R: JoinRef>(
         self,
         root: R,
-    ) -> impl std::future::Future<Output = error::Result<Vec<u8>>> + Send
+    ) -> impl std::future::Future<Output = error::Result<Vec<u8>>> + MaybeSend
     where
-        Self: Sized + Clone + Send + Sync + 'static,
+        Self: Sized + Clone + MaybeSend + MaybeSync + 'static,
     {
         join(self, root)
     }

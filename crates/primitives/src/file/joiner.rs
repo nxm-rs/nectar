@@ -25,7 +25,7 @@ use super::frontier::{
 };
 use super::mode::{JoinMode, PlainMode};
 use super::tree::{ChunkRange, TreeParams};
-use crate::store::ChunkGet;
+use crate::store::{ChunkGet, MaybeSend};
 
 #[cfg(feature = "encryption")]
 use super::mode::EncryptedMode;
@@ -80,7 +80,7 @@ async fn collect_subtree_bodies_async<G, M, const BODY_SIZE: usize>(
 ) -> Result<Vec<Bytes>>
 where
     G: ChunkGet<BODY_SIZE>,
-    M: JoinMode + Send + Sync,
+    M: JoinMode + MaybeSend + Sync,
 {
     let bodies: Vec<Bytes> = stream::iter(subtrees)
         .map(|st| {
@@ -103,7 +103,7 @@ where
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
     G: ChunkGet<BODY_SIZE>,
-    M: JoinMode + Send + Sync,
+    M: JoinMode + MaybeSend + Sync,
 {
     /// Create an async joiner from a root reference.
     pub async fn new(getter: G, input: M::RootRef) -> Result<Self> {
@@ -160,6 +160,28 @@ where
     #[inline]
     pub const fn root(&self) -> &ChunkAddress {
         &self.root
+    }
+
+    // crate-private accessors for sibling-module joiner extensions
+    #[allow(dead_code, reason = "consumed by sibling-module joiner extensions")]
+    pub(crate) const fn getter(&self) -> &Arc<G> {
+        &self.getter
+    }
+    #[allow(dead_code, reason = "consumed by sibling-module joiner extensions")]
+    pub(crate) fn subtrees(&self) -> &[SubtreeNode<M>] {
+        &self.subtrees
+    }
+    #[allow(dead_code, reason = "consumed by sibling-module joiner extensions")]
+    pub(crate) const fn tree(&self) -> TreeParams<BODY_SIZE> {
+        self.tree
+    }
+    #[allow(dead_code, reason = "consumed by sibling-module joiner extensions")]
+    pub(crate) const fn concurrency(&self) -> usize {
+        self.concurrency
+    }
+    #[allow(dead_code, reason = "consumed by sibling-module joiner extensions")]
+    pub(crate) const fn context(&self) -> &M::JoinerContext {
+        &self.context
     }
 
     /// Read a range of bytes with concurrent fetching using the cached frontier.
@@ -417,6 +439,13 @@ where
             Failed(FileError),
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        type BoxResolvedFuture<M> =
+            std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>> + Send>>;
+        #[cfg(target_arch = "wasm32")]
+        type BoxResolvedFuture<M> =
+            std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>>>>;
+
         // Fetch one node: a leaf yields its body, an intermediate yields its
         // children. A leaf error consumes one retry, then re-queues or fails.
         async fn fetch_one<G, M, const BS: usize>(
@@ -426,7 +455,7 @@ where
         ) -> Resolved<M>
         where
             G: ChunkGet<BS>,
-            M: JoinMode + Send + Sync,
+            M: JoinMode + MaybeSend + Sync,
         {
             let node = &pending.node;
             let body = match super::mode::read_chunk_body_async::<M, G, BS>(
@@ -463,9 +492,7 @@ where
             chunk_range: ChunkRange,
             width: usize,
             queue: std::collections::VecDeque<Pending<M>>,
-            in_flight: FuturesUnordered<
-                std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>> + Send>>,
-            >,
+            in_flight: FuturesUnordered<BoxResolvedFuture<M>>,
         }
 
         let mut queue = std::collections::VecDeque::new();
@@ -496,10 +523,7 @@ where
                     let range = state.chunk_range;
                     state.in_flight.push(Box::pin(async move {
                         fetch_one::<G, M, BODY_SIZE>(&*getter, &range, pending).await
-                    })
-                        as std::pin::Pin<
-                            Box<dyn std::future::Future<Output = Resolved<M>> + Send>,
-                        >);
+                    }) as BoxResolvedFuture<M>);
                 }
 
                 // Nothing in flight and nothing queued: the tree is drained.

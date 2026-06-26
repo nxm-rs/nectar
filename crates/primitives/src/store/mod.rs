@@ -3,11 +3,13 @@
 //! Async traits (`ChunkGet`, `ChunkPut`, `ChunkHas`) are the primary API.
 //! Sync traits (`SyncChunkGet`, `SyncChunkPut`, `SyncChunkHas`) are helpers
 //! for CPU-bound paths (splitter, mantaray). Blanket impls bridge sync → async
-//! automatically for types that are `Send + Sync`.
+//! automatically for types that are `MaybeSend + MaybeSync`.
 
+mod maybe_send;
 mod memory;
 mod typed;
 
+pub use maybe_send::{MaybeSend, MaybeSync};
 pub use memory::MemoryStore;
 pub use typed::{ChunkGet, ChunkHas, ChunkPut, SyncChunkGet, SyncChunkHas, SyncChunkPut};
 
