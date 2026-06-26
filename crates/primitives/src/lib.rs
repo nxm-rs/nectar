@@ -107,36 +107,24 @@ pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
 pub type DefaultMemoryStore = MemoryStore<DEFAULT_BODY_SIZE>;
 
 // Chunk storage traits
-pub use store::{
-    ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, SyncChunkGet, SyncChunkHas,
-    SyncChunkPut,
-};
+pub use store::{ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore};
 
-// File operations — async (primary)
+// File joining (async)
 #[cfg(feature = "encryption")]
 pub use file::EncryptedJoiner;
 #[cfg(feature = "tokio")]
 pub use file::JoinerReader;
 pub use file::{
-    ChunkGetExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef, Joiner, TreeParams, join,
+    ChunkGetExt, ChunkPutExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef, Joiner,
+    TreeParams, join,
 };
 
-// File operations — sync (secondary)
+// File splitting (CPU-bound, rayon)
 #[cfg(feature = "encryption")]
-pub use file::{
-    EncryptedSyncJoiner, EncryptedSyncParallelSplitter, EncryptedSyncSplitter, sync_split_encrypted,
-};
-pub use file::{
-    GenericSyncJoiner, SyncChunkGetExt, SyncChunkPutExt, SyncJoiner, SyncParallelSplitter,
-    SyncReadAt, SyncSplitter, sync_join, sync_split,
-};
+pub use file::{EncryptedSyncParallelSplitter, EncryptedSyncSplitter, sync_split_encrypted};
+pub use file::{SyncParallelSplitter, SyncReadAt, SyncSplitter, sync_split};
 
 /// Default sync file splitter.
 pub type DefaultSyncSplitter = file::SyncSplitter<DEFAULT_BODY_SIZE>;
 /// Default async file joiner.
 pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
-/// Default sync file joiner.
-pub type DefaultSyncJoiner<G> = file::SyncJoiner<G, DEFAULT_BODY_SIZE>;
-/// Default encrypted sync file joiner.
-#[cfg(feature = "encryption")]
-pub type DefaultEncryptedSyncJoiner<G> = file::EncryptedSyncJoiner<G, DEFAULT_BODY_SIZE>;

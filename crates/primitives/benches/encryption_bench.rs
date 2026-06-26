@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use futures::executor::block_on;
 use rand::{Rng, rng};
 
 use nectar_primitives::chunk::encryption::{
@@ -10,7 +11,7 @@ use nectar_primitives::chunk::encryption::{
 };
 use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
 use nectar_primitives::file::{
-    EncryptedSyncJoiner, EncryptedSyncParallelSplitter, EncryptedSyncSplitter, SyncJoiner,
+    EncryptedJoiner, EncryptedSyncParallelSplitter, EncryptedSyncSplitter, Joiner,
     SyncParallelSplitter, SyncSplitter, sync_split, sync_split_encrypted,
 };
 use nectar_primitives::store::MemoryStore;
@@ -198,8 +199,9 @@ fn bench_encrypted_joiner(c: &mut Criterion) {
             &root_ref,
             |b, root_ref| {
                 b.iter(|| {
-                    let joiner = EncryptedSyncJoiner::new(store.clone(), root_ref.clone()).unwrap();
-                    black_box(joiner.read_all().unwrap())
+                    let joiner =
+                        block_on(EncryptedJoiner::new(store.clone(), root_ref.clone())).unwrap();
+                    black_box(block_on(joiner.read_all()).unwrap())
                 });
             },
         );
@@ -278,8 +280,8 @@ fn bench_plain_vs_encrypted_join(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("plain", name), &root, |b, root| {
             b.iter(|| {
-                let joiner = SyncJoiner::new(store.clone(), *root).unwrap();
-                black_box(joiner.read_all().unwrap())
+                let joiner = block_on(Joiner::new(store.clone(), *root)).unwrap();
+                black_box(block_on(joiner.read_all()).unwrap())
             });
         });
 
@@ -289,8 +291,9 @@ fn bench_plain_vs_encrypted_join(c: &mut Criterion) {
             |b, root_ref| {
                 b.iter(|| {
                     let joiner =
-                        EncryptedSyncJoiner::new(enc_store.clone(), root_ref.clone()).unwrap();
-                    black_box(joiner.read_all().unwrap())
+                        block_on(EncryptedJoiner::new(enc_store.clone(), root_ref.clone()))
+                            .unwrap();
+                    black_box(block_on(joiner.read_all()).unwrap())
                 });
             },
         );
@@ -318,8 +321,8 @@ fn bench_encrypted_roundtrip(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("streaming", name), &data, |b, data| {
             b.iter(|| {
                 let (root_ref, store) = encrypted_split_to_store(data);
-                let joiner = EncryptedSyncJoiner::new(store, root_ref).unwrap();
-                black_box(joiner.read_all().unwrap())
+                let joiner = block_on(EncryptedJoiner::new(store, root_ref)).unwrap();
+                black_box(block_on(joiner.read_all()).unwrap())
             });
         });
 
@@ -328,8 +331,8 @@ fn bench_encrypted_roundtrip(c: &mut Criterion) {
                 let (root_ref, chunks) =
                     EncryptedSyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
                 let store = MemoryStore::from_chunks(chunks);
-                let joiner = EncryptedSyncJoiner::new(store, root_ref).unwrap();
-                black_box(joiner.read_all().unwrap())
+                let joiner = block_on(EncryptedJoiner::new(store, root_ref)).unwrap();
+                black_box(block_on(joiner.read_all()).unwrap())
             });
         });
     }

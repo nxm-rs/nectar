@@ -4,7 +4,7 @@ use futures::executor::block_on;
 use nectar_mantaray::PlainManifest;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::file::{SyncChunkPutExt, join};
+use nectar_primitives::file::{ChunkPutExt, join};
 use nectar_primitives::store::MemoryStore;
 
 type Store = MemoryStore<DEFAULT_BODY_SIZE>;
@@ -15,9 +15,9 @@ type Store = MemoryStore<DEFAULT_BODY_SIZE>;
 fn unified_store_workflow() {
     let store = Store::new();
 
-    // Seed file chunks synchronously into the store.
-    let root_a = store.write_file(b"file A contents").unwrap();
-    let root_b = store.write_file(b"file B contents").unwrap();
+    // Seed file chunks into the store.
+    let root_a = block_on(store.write_file(b"file A contents".to_vec())).unwrap();
+    let root_b = block_on(store.write_file(b"file B contents".to_vec())).unwrap();
 
     let files_chunk_count = store.len();
     assert!(files_chunk_count > 0);
@@ -141,13 +141,13 @@ fn iterator_yields_all_entries() {
 #[test]
 fn ergonomic_api_workflow() {
     use nectar_mantaray::DefaultMemoryStore;
-    use nectar_primitives::file::{ChunkGetExt, SyncChunkPutExt};
+    use nectar_primitives::file::{ChunkGetExt, ChunkPutExt};
 
     let store = DefaultMemoryStore::new();
 
-    // Seed file chunks synchronously.
-    let root_a = store.write_file(b"file A contents").unwrap();
-    let root_b = store.write_file(b"file B contents").unwrap();
+    // Seed file chunks.
+    let root_a = block_on(store.write_file(b"file A contents".to_vec())).unwrap();
+    let root_b = block_on(store.write_file(b"file B contents".to_vec())).unwrap();
 
     // Create manifest in the same store
     let mut manifest = PlainManifest::new(store);

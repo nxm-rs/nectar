@@ -1,4 +1,4 @@
-//! Shared BFS frontier expansion for sync and async joiners.
+//! BFS frontier expansion for the async joiner.
 
 use bytes::Bytes;
 
@@ -7,7 +7,7 @@ use crate::chunk::ChunkAddress;
 use super::error::Result;
 use super::mode::JoinMode;
 use super::tree::ChunkRange;
-use crate::store::{MaybeSend, SyncChunkGet};
+use crate::store::MaybeSend;
 
 /// A subtree root in the BFS frontier.
 pub(crate) struct SubtreeNode<M: JoinMode> {
@@ -150,81 +150,12 @@ impl<M: JoinMode, const BS: usize> BfsExpander<M, BS> {
     }
 }
 
-// Sync implementations
-
-/// BFS expansion with span-threshold balancing for parallel work distribution.
+/// BFS expansion with span-threshold balancing for concurrent work distribution.
 ///
 /// Iteratively expands intermediate nodes whose span exceeds an ideal threshold,
-/// producing a frontier of roughly equal-sized subtrees suitable for parallel
-/// processing. Only children overlapping `chunk_range` are retained.
-pub(crate) fn expand_frontier<G, M, const BS: usize>(
-    getter: &G,
-    root: &ChunkAddress,
-    context: &M::JoinerContext,
-    span: u64,
-    chunk_range: &ChunkRange,
-    target_subtrees: usize,
-) -> Result<Vec<SubtreeNode<M>>>
-where
-    G: SyncChunkGet<BS>,
-    M: JoinMode,
-{
-    if chunk_range.is_empty() {
-        return Ok(Vec::new());
-    }
-    let Some(mut bfs) =
-        BfsExpander::<M, BS>::new(root, context, span, chunk_range, target_subtrees)
-    else {
-        return Ok(vec![frontier_seed::<M>(root, context, span)]);
-    };
-    loop {
-        let indices = bfs.nodes_to_expand();
-        let mut bodies = Vec::with_capacity(indices.len());
-        for &i in &indices {
-            let n = &bfs.frontier[i];
-            bodies.push(super::mode::read_chunk_body::<M, G, BS>(
-                getter, &n.addr, &n.context, n.span,
-            )?);
-        }
-        if !bfs.advance(&indices, &bodies)? {
-            break;
-        }
-    }
-    Ok(bfs.into_frontier())
-}
-
-/// Recursive descent within a subtree, collecting leaf bodies into `out`.
-pub(crate) fn read_subtree_bodies<G, M, const BS: usize>(
-    getter: &G,
-    node: &SubtreeNode<M>,
-    chunk_range: &ChunkRange,
-    out: &mut Vec<Bytes>,
-) -> Result<()>
-where
-    G: SyncChunkGet<BS>,
-    M: JoinMode,
-{
-    let body =
-        super::mode::read_chunk_body::<M, G, BS>(getter, &node.addr, &node.context, node.span)?;
-
-    if node.span <= BS as u64 {
-        out.push(body);
-        return Ok(());
-    }
-
-    for child in overlapping_children::<M, BS>(&body, node, chunk_range)? {
-        read_subtree_bodies::<G, M, BS>(getter, &child, chunk_range, out)?;
-    }
-
-    Ok(())
-}
-
-// Async implementations
-
-/// Async BFS expansion with concurrent chunk fetching per level.
-///
-/// See [`expand_frontier`] for the algorithm. The async variant fetches all
-/// expandable nodes within a BFS level concurrently using buffered streams.
+/// producing a frontier of roughly equal-sized subtrees. All expandable nodes
+/// within a BFS level are fetched concurrently. Only children overlapping
+/// `chunk_range` are retained.
 pub(crate) async fn expand_frontier_async<G, M, const BS: usize>(
     getter: &G,
     root: &ChunkAddress,

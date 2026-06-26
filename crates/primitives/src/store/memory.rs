@@ -8,11 +8,11 @@ use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{AnyChunk, ChunkAddress};
 
 use super::ChunkStoreError;
-use super::typed::{SyncChunkGet, SyncChunkHas, SyncChunkPut};
+use super::typed::{ChunkGet, ChunkHas, ChunkPut};
 
 /// In-memory chunk storage using a `RwLock<HashMap>`.
 ///
-/// Uses interior mutability so `SyncChunkPut::put(&self)` works without
+/// Uses interior mutability so `ChunkPut::put(&self)` works without
 /// external synchronization.
 #[derive(Debug)]
 pub struct MemoryStore<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
@@ -69,19 +69,19 @@ impl<const BODY_SIZE: usize> MemoryStore<BODY_SIZE> {
     }
 }
 
-impl<const BODY_SIZE: usize> SyncChunkPut<BODY_SIZE> for MemoryStore<BODY_SIZE> {
+impl<const BODY_SIZE: usize> ChunkPut<BODY_SIZE> for MemoryStore<BODY_SIZE> {
     type Error = std::convert::Infallible;
 
-    fn put(&self, chunk: AnyChunk<BODY_SIZE>) -> Result<(), Self::Error> {
+    async fn put(&self, chunk: AnyChunk<BODY_SIZE>) -> Result<(), Self::Error> {
         self.chunks.write().insert(*chunk.address(), chunk);
         Ok(())
     }
 }
 
-impl<const BODY_SIZE: usize> SyncChunkGet<BODY_SIZE> for MemoryStore<BODY_SIZE> {
+impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for MemoryStore<BODY_SIZE> {
     type Error = ChunkStoreError;
 
-    fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
+    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
         self.chunks
             .read()
             .get(address)
@@ -90,28 +90,24 @@ impl<const BODY_SIZE: usize> SyncChunkGet<BODY_SIZE> for MemoryStore<BODY_SIZE> 
     }
 }
 
-impl<const BODY_SIZE: usize> SyncChunkHas<BODY_SIZE> for MemoryStore<BODY_SIZE> {
-    fn has(&self, address: &ChunkAddress) -> bool {
+impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for MemoryStore<BODY_SIZE> {
+    async fn has(&self, address: &ChunkAddress) -> bool {
         self.chunks.read().contains_key(address)
     }
 }
 
-impl<const BODY_SIZE: usize> SyncChunkGet<BODY_SIZE>
-    for HashMap<ChunkAddress, AnyChunk<BODY_SIZE>>
-{
+impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for HashMap<ChunkAddress, AnyChunk<BODY_SIZE>> {
     type Error = ChunkStoreError;
 
-    fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
+    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
         self.get(address)
             .cloned()
             .ok_or_else(|| ChunkStoreError::not_found(address))
     }
 }
 
-impl<const BODY_SIZE: usize> SyncChunkHas<BODY_SIZE>
-    for HashMap<ChunkAddress, AnyChunk<BODY_SIZE>>
-{
-    fn has(&self, address: &ChunkAddress) -> bool {
+impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for HashMap<ChunkAddress, AnyChunk<BODY_SIZE>> {
+    async fn has(&self, address: &ChunkAddress) -> bool {
         self.contains_key(address)
     }
 }
@@ -120,6 +116,7 @@ impl<const BODY_SIZE: usize> SyncChunkHas<BODY_SIZE>
 mod tests {
     use super::*;
     use crate::chunk::{Chunk, ContentChunk};
+    use futures::executor::block_on;
 
     #[test]
     fn test_memory_store() {
@@ -130,9 +127,9 @@ mod tests {
         let addr = *chunk.address();
         let any: AnyChunk = chunk.into();
 
-        SyncChunkPut::put(&store, any.clone()).unwrap();
+        block_on(ChunkPut::put(&store, any.clone())).unwrap();
         assert_eq!(store.len(), 1);
-        assert!(SyncChunkHas::has(&store, &addr));
+        assert!(block_on(ChunkHas::has(&store, &addr)));
         assert_eq!(store.get(&addr), Some(any));
     }
 }

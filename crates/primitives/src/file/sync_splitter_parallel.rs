@@ -199,7 +199,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{join, sync_join};
+    use crate::file::join;
     use crate::store::MemoryStore;
 
     fn split_and_store(
@@ -272,10 +272,10 @@ mod tests {
 
             assert_eq!(par_store.len(), seq_store.len());
 
-            let par_recovered = sync_join(&par_store, par_ref).unwrap();
+            let par_recovered = futures::executor::block_on(join(&par_store, par_ref)).unwrap();
             assert_eq!(par_recovered, data);
 
-            let seq_recovered = sync_join(&seq_store, seq_ref).unwrap();
+            let seq_recovered = futures::executor::block_on(join(&seq_store, seq_ref)).unwrap();
             assert_eq!(seq_recovered, data);
         }
 

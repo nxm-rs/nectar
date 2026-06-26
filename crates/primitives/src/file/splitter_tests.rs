@@ -63,7 +63,7 @@ macro_rules! generate_plain_splitter_tests {
                 .map(|i| (i % 256) as u8)
                 .collect();
             let (root, store) = $split_fn(&data);
-            let recovered = crate::file::sync_join(&store, root).unwrap();
+            let recovered = futures::executor::block_on(crate::file::join(&store, root)).unwrap();
             assert_eq!(recovered, data);
         }
     };
@@ -99,7 +99,8 @@ macro_rules! generate_encrypted_splitter_tests {
             let (root_ref, store) = $split_fn(&data);
             assert_eq!(store.len(), 3);
 
-            let recovered = crate::file::sync_join(&store, root_ref).unwrap();
+            let recovered =
+                futures::executor::block_on(crate::file::join(&store, root_ref)).unwrap();
             assert_eq!(recovered, data);
         }
 
@@ -110,7 +111,8 @@ macro_rules! generate_encrypted_splitter_tests {
                 .collect();
             let (root_ref, store) = $split_fn(&data);
 
-            let recovered = crate::file::sync_join(&store, root_ref).unwrap();
+            let recovered =
+                futures::executor::block_on(crate::file::join(&store, root_ref)).unwrap();
             assert_eq!(recovered, data);
         }
     };

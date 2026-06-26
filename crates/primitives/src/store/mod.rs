@@ -1,9 +1,7 @@
 //! Chunk storage traits and implementations.
 //!
-//! Async traits (`ChunkGet`, `ChunkPut`, `ChunkHas`) are the primary API.
-//! Sync traits (`SyncChunkGet`, `SyncChunkPut`, `SyncChunkHas`) are helpers
-//! for CPU-bound paths (splitter, mantaray). Blanket impls bridge sync → async
-//! automatically for types that are `MaybeSend + MaybeSync`.
+//! `ChunkGet`, `ChunkPut`, and `ChunkHas` are async and carry `MaybeSend`/
+//! `MaybeSync` bounds so a store may be `!Send` on wasm.
 
 mod maybe_send;
 mod memory;
@@ -11,7 +9,7 @@ mod typed;
 
 pub use maybe_send::{MaybeSend, MaybeSync};
 pub use memory::MemoryStore;
-pub use typed::{ChunkGet, ChunkHas, ChunkPut, SyncChunkGet, SyncChunkHas, SyncChunkPut};
+pub use typed::{ChunkGet, ChunkHas, ChunkPut};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{AnyChunk, ChunkAddress};
@@ -46,10 +44,10 @@ impl ChunkStoreError {
 #[derive(Debug)]
 pub struct NullLoader<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>;
 
-impl<const BODY_SIZE: usize> SyncChunkGet<BODY_SIZE> for NullLoader<BODY_SIZE> {
+impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for NullLoader<BODY_SIZE> {
     type Error = ChunkStoreError;
 
-    fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
+    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
         Err(ChunkStoreError::not_found(address))
     }
 }

@@ -7,7 +7,7 @@ use bytes::Bytes;
 use crate::bmt::SPAN_SIZE;
 use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey, decrypt_chunk_data};
 use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
-use crate::store::{MaybeSend, SyncChunkGet};
+use crate::store::MaybeSend;
 
 use super::constants::{ENCRYPTED_REF_SIZE, REF_SIZE, compute_spans_inline, subspan_for_spans};
 use super::error::{FileError, Result};
@@ -92,19 +92,6 @@ pub trait JoinMode: Sized + 'static {
 }
 
 /// Initialize joiner: fetch root chunk, extract span and context.
-pub(crate) fn joiner_init<M: JoinMode, G: SyncChunkGet<BS>, const BS: usize>(
-    getter: &G,
-    input: M::RootRef,
-) -> Result<(ChunkAddress, u64, M::JoinerContext)> {
-    let addr = M::root_address(&input);
-    let any = getter.get(&addr).map_err(FileError::getter)?;
-    let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
-        type_name: "non-content",
-    })?;
-    M::init_from_chunk::<BS>(input, chunk)
-}
-
-/// Async variant of [`joiner_init`]: fetch root chunk, extract span and context.
 pub(crate) async fn joiner_init_async<
     M: JoinMode + MaybeSend + Sync,
     G: crate::store::ChunkGet<BS>,
@@ -122,21 +109,6 @@ pub(crate) async fn joiner_init_async<
 }
 
 /// Read chunk body at address with context. Returns body bytes (after decryption if needed).
-#[inline]
-pub(crate) fn read_chunk_body<M: JoinMode, G: SyncChunkGet<BS>, const BS: usize>(
-    getter: &G,
-    address: &ChunkAddress,
-    context: &M::JoinerContext,
-    span: u64,
-) -> Result<Bytes> {
-    let any = getter.get(address).map_err(FileError::getter)?;
-    let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
-        type_name: "non-content",
-    })?;
-    M::decode_body::<BS>(chunk, context, span)
-}
-
-/// Async variant of [`read_chunk_body`].
 pub(crate) async fn read_chunk_body_async<
     M: JoinMode + MaybeSend + Sync,
     G: crate::store::ChunkGet<BS>,
