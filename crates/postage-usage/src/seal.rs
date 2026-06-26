@@ -10,6 +10,7 @@ use thiserror::Error;
 use crate::snapshot::{PersistPlan, Snapshot};
 
 /// Errors produced while sealing a persist plan.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum SealError {
     /// The signer failed to produce a signature.

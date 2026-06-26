@@ -9,6 +9,7 @@ use nectar_primitives::error::PrimitivesError;
 pub type Result<T> = std::result::Result<T, MantarayError>;
 
 /// Errors that can occur during mantaray trie operations.
+#[non_exhaustive]
 #[derive(thiserror::Error, Debug)]
 pub enum MantarayError {
     /// Node is not a value type (has no entry).

@@ -46,6 +46,7 @@ pub type Result<T> = std::result::Result<T, PrimitivesError>;
 /// This enum represents all the possible errors that can occur when using
 /// the nectar-primitives crate. It wraps component-specific errors like
 /// `BmtError` and `ChunkError` to provide a unified error interface.
+#[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum PrimitivesError {
     /// Errors from BMT operations

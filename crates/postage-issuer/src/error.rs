@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 /// Errors that can occur when constructing a stamp issuer.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum IssuerError {
     /// Mutable batches require reserved-slot awareness that this primitive issuer cannot provide.
@@ -42,6 +43,7 @@ pub enum IssuerError {
 }
 
 /// Errors that can occur when signing stamps.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum SigningError {
     /// A stamp-related error occurred.

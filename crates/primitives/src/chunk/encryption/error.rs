@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 /// Errors from encryption operations.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum EncryptionError {
     /// Input data is shorter than the required minimum.

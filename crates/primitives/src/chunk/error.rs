@@ -7,6 +7,7 @@ use super::type_id::ChunkTypeId;
 pub(crate) type Result<T> = std::result::Result<T, ChunkError>;
 
 /// Errors specific to chunk operations
+#[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum ChunkError {
     /// Chunk size is invalid

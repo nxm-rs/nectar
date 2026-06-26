@@ -4,6 +4,7 @@ use crate::ChunkAddress;
 use thiserror::Error;
 
 /// Errors from file splitting and joining operations.
+#[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum FileError {
     /// Write exceeded the declared span length.

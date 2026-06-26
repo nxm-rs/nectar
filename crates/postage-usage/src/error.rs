@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 /// Errors produced by usage table operations and snapshot encoding/decoding.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum UsageError {
     /// The batch geometry is outside the range supported by the format.
