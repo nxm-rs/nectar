@@ -155,8 +155,8 @@ fn bench_encrypted_streaming_splitter(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
-                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let mut splitter = EncryptedSyncSplitter::new(store, data.len() as u64);
+                let mut splitter =
+                    EncryptedSyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                 splitter.write_all(data).unwrap();
                 black_box(splitter.finish().unwrap())
             });
@@ -175,10 +175,9 @@ fn bench_encrypted_parallel_splitter(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
-                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let splitter = EncryptedSyncParallelSplitter::new(store);
-                let root_ref = splitter.split(data).unwrap();
-                black_box((root_ref, splitter.into_store()))
+                black_box(
+                    EncryptedSyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap(),
+                )
             });
         });
     }
@@ -223,8 +222,7 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                    let mut splitter = SyncSplitter::new(store, data.len() as u64);
+                    let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                     splitter.write_all(data).unwrap();
                     black_box(splitter.finish().unwrap())
                 });
@@ -236,8 +234,8 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                    let mut splitter = EncryptedSyncSplitter::new(store, data.len() as u64);
+                    let mut splitter =
+                        EncryptedSyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                     splitter.write_all(data).unwrap();
                     black_box(splitter.finish().unwrap())
                 });
@@ -246,10 +244,7 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("plain_direct", name), &data, |b, data| {
             b.iter(|| {
-                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let splitter = SyncParallelSplitter::new(store);
-                let root = splitter.split(data).unwrap();
-                black_box((root, splitter.into_store()))
+                black_box(SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap())
             });
         });
 
@@ -258,10 +253,10 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                    let splitter = EncryptedSyncParallelSplitter::new(store);
-                    let root_ref = splitter.split(data).unwrap();
-                    black_box((root_ref, splitter.into_store()))
+                    black_box(
+                        EncryptedSyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data)
+                            .unwrap(),
+                    )
                 });
             },
         );
@@ -330,10 +325,9 @@ fn bench_encrypted_roundtrip(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("direct", name), &data, |b, data| {
             b.iter(|| {
-                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let splitter = EncryptedSyncParallelSplitter::new(store);
-                let root_ref = splitter.split(data).unwrap();
-                let store = splitter.into_store();
+                let (root_ref, chunks) =
+                    EncryptedSyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
+                let store = MemoryStore::from_chunks(chunks);
                 let joiner = EncryptedSyncJoiner::new(store, root_ref).unwrap();
                 black_box(joiner.read_all().unwrap())
             });

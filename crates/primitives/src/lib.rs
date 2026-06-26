@@ -132,7 +132,7 @@ pub use file::{
 };
 
 /// Default sync file splitter.
-pub type DefaultSyncSplitter<S> = file::SyncSplitter<S, DEFAULT_BODY_SIZE>;
+pub type DefaultSyncSplitter = file::SyncSplitter<DEFAULT_BODY_SIZE>;
 /// Default async file joiner.
 pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
 /// Default sync file joiner.

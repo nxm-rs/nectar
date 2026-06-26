@@ -63,10 +63,10 @@ fn bench_pipeline_mock_sequential(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Split file into chunks
-                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let mut splitter = SyncSplitter::new(store, data.len() as u64);
+                let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                 splitter.write_all(data).unwrap();
-                let (root, store) = splitter.finish().unwrap();
+                let (root, chunks) = splitter.finish().unwrap();
+                let store = MemoryStore::from_chunks(chunks);
 
                 // Stamp each chunk
                 let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
@@ -98,10 +98,9 @@ fn bench_pipeline_mock_parallel_split(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Parallel split
-                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let splitter = SyncParallelSplitter::new(store);
-                let root = splitter.split(data).unwrap();
-                let store = splitter.into_store();
+                let (root, chunks) =
+                    SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
+                let store = MemoryStore::from_chunks(chunks);
 
                 // Stamp each chunk (sequential)
                 let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
@@ -137,10 +136,10 @@ fn bench_pipeline_ecdsa_sequential(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Split file into chunks
-                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let mut splitter = SyncSplitter::new(store, data.len() as u64);
+                let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                 splitter.write_all(data).unwrap();
-                let (root, store) = splitter.finish().unwrap();
+                let (root, chunks) = splitter.finish().unwrap();
+                let store = MemoryStore::from_chunks(chunks);
 
                 // Stamp each chunk with real signatures
                 let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
@@ -182,10 +181,9 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Parallel split
-                let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-                let splitter = SyncParallelSplitter::new(store);
-                let root = splitter.split(data).unwrap();
-                let store = splitter.into_store();
+                let (root, chunks) =
+                    SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
+                let store = MemoryStore::from_chunks(chunks);
 
                 // Collect addresses for parallel signing
                 let chunks = store.into_chunks();
@@ -223,10 +221,10 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     // Fully sequential
     group.bench_function("sequential", |b| {
         b.iter(|| {
-            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = SyncSplitter::new(store, data.len() as u64);
+            let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             splitter.write_all(&data).unwrap();
-            let (root, store) = splitter.finish().unwrap();
+            let (root, chunks) = splitter.finish().unwrap();
+            let store = MemoryStore::from_chunks(chunks);
 
             let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
@@ -244,10 +242,9 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     // Parallel split only
     group.bench_function("parallel_split", |b| {
         b.iter(|| {
-            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter = SyncParallelSplitter::new(store);
-            let root = splitter.split(&data).unwrap();
-            let store = splitter.into_store();
+            let (root, chunks) =
+                SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
+            let store = MemoryStore::from_chunks(chunks);
 
             let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
@@ -265,10 +262,9 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     // Fully parallel
     group.bench_function("fully_parallel", |b| {
         b.iter(|| {
-            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter = SyncParallelSplitter::new(store);
-            let root = splitter.split(&data).unwrap();
-            let store = splitter.into_store();
+            let (root, chunks) =
+                SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
+            let store = MemoryStore::from_chunks(chunks);
 
             let chunks = store.into_chunks();
             let addresses: Vec<_> = chunks.keys().copied().collect();
@@ -297,8 +293,7 @@ fn bench_pipeline_stages(c: &mut Criterion) {
     // Stage 1: Split only (sequential)
     group.bench_function("1_split_sequential", |b| {
         b.iter(|| {
-            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let mut splitter = SyncSplitter::new(store, data.len() as u64);
+            let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             splitter.write_all(&data).unwrap();
             black_box(splitter.finish().unwrap())
         });
@@ -307,18 +302,15 @@ fn bench_pipeline_stages(c: &mut Criterion) {
     // Stage 1: Split only (parallel)
     group.bench_function("1_split_parallel", |b| {
         b.iter(|| {
-            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-            let splitter = SyncParallelSplitter::new(store);
-            let root = splitter.split(&data).unwrap();
-            black_box((root, splitter.into_store()))
+            black_box(SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap())
         });
     });
 
     // Pre-split for stamp benchmarks
-    let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
-    let mut splitter = SyncSplitter::new(store, data.len() as u64);
+    let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
     splitter.write_all(&data).unwrap();
-    let (_, store) = splitter.finish().unwrap();
+    let (_, chunks) = splitter.finish().unwrap();
+    let store = MemoryStore::from_chunks(chunks);
     let chunks = store.into_chunks();
     let addresses: Vec<_> = chunks.keys().copied().collect();
     let num_chunks = addresses.len();
