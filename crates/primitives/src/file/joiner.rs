@@ -20,9 +20,7 @@ use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::ChunkAddress;
 
 use super::error::{FileError, Result};
-use super::frontier::{
-    SubtreeNode, expand_frontier_async, overlapping_children, read_subtree_bodies_async,
-};
+use super::frontier::{SubtreeNode, expand_frontier, overlapping_children, read_subtree_bodies};
 use super::mode::{JoinMode, PlainMode};
 use super::tree::{ChunkRange, TreeParams};
 use crate::store::{ChunkGet, MaybeSend};
@@ -72,7 +70,7 @@ where
 }
 
 /// Collect leaf bodies for a set of subtrees with concurrent fetching.
-async fn collect_subtree_bodies_async<G, M, const BODY_SIZE: usize>(
+async fn collect_subtree_bodies<G, M, const BODY_SIZE: usize>(
     getter: &Arc<G>,
     subtrees: Vec<SubtreeNode<M>>,
     chunk_range: ChunkRange,
@@ -85,9 +83,7 @@ where
     let bodies: Vec<Bytes> = stream::iter(subtrees)
         .map(|st| {
             let getter = Arc::clone(getter);
-            async move {
-                read_subtree_bodies_async::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range).await
-            }
+            async move { read_subtree_bodies::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range).await }
         })
         .buffered(concurrency)
         .collect::<Vec<_>>()
@@ -110,20 +106,14 @@ where
         const { super::constants::assert_valid_body_size::<BODY_SIZE>() };
 
         let (root, span, context) =
-            super::mode::joiner_init_async::<M, G, BODY_SIZE>(&getter, input).await?;
+            super::mode::joiner_init::<M, G, BODY_SIZE>(&getter, input).await?;
         let tree = TreeParams::<BODY_SIZE>::new(span);
 
         let target = DEFAULT_ASYNC_CONCURRENCY * 2;
         let full_range = tree.chunks_for_range(0, span);
-        let subtrees = expand_frontier_async::<G, M, BODY_SIZE>(
-            &getter,
-            &root,
-            &context,
-            span,
-            &full_range,
-            target,
-        )
-        .await?;
+        let subtrees =
+            expand_frontier::<G, M, BODY_SIZE>(&getter, &root, &context, span, &full_range, target)
+                .await?;
 
         Ok(Self {
             getter: Arc::new(getter),
@@ -250,13 +240,9 @@ where
             .cloned()
             .collect();
 
-        let bodies = collect_subtree_bodies_async::<G, M, BODY_SIZE>(
-            getter,
-            relevant,
-            chunk_range,
-            concurrency,
-        )
-        .await?;
+        let bodies =
+            collect_subtree_bodies::<G, M, BODY_SIZE>(getter, relevant, chunk_range, concurrency)
+                .await?;
 
         Ok(super::tree::assemble_range(
             &tree,
@@ -298,9 +284,7 @@ where
 
                 // Fetch the next subtree's leaf bodies.
                 let st = state.subtrees.next()?;
-                match read_subtree_bodies_async::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range)
-                    .await
-                {
+                match read_subtree_bodies::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range).await {
                     Ok(bodies) => {
                         let mut iter = bodies.into_iter();
                         match iter.next() {
@@ -341,8 +325,7 @@ where
                 async move {
                     let base = st.byte_offset;
                     let bodies =
-                        read_subtree_bodies_async::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range)
-                            .await?;
+                        read_subtree_bodies::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range).await?;
                     Ok::<(u64, Vec<Bytes>), FileError>((base, bodies))
                 }
             })
@@ -458,7 +441,7 @@ where
             M: JoinMode + MaybeSend + Sync,
         {
             let node = &pending.node;
-            let body = match super::mode::read_chunk_body_async::<M, G, BS>(
+            let body = match super::mode::read_chunk_body::<M, G, BS>(
                 getter,
                 &node.addr,
                 &node.context,
@@ -660,7 +643,7 @@ where
         M: JoinMode + MaybeSend + Sync,
     {
         let node = &pending.node;
-        let body = match super::mode::read_chunk_body_async::<M, G, BS>(
+        let body = match super::mode::read_chunk_body::<M, G, BS>(
             getter,
             &node.addr,
             &node.context,
@@ -921,11 +904,11 @@ where
 mod tests {
     use super::*;
     use crate::chunk::AnyChunk;
-    use crate::file::sync_split;
+    use crate::file::split;
     use std::collections::HashMap;
 
     fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
-        let (root, store) = sync_split::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
         (root, store.into_chunks())
     }
 
@@ -935,7 +918,7 @@ mod tests {
     // --- Async-only tests: Stream, AsyncRead, AsyncSeek ---
 
     #[tokio::test]
-    async fn test_async_joiner_stream() {
+    async fn test_joiner_stream() {
         let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
             .map(|i| (i % 256) as u8)
             .collect();
@@ -1321,7 +1304,7 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[tokio::test]
-    async fn test_async_reader_small() {
+    async fn test_reader_small() {
         use tokio::io::AsyncReadExt;
 
         let data = b"hello world";
@@ -1336,7 +1319,7 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[tokio::test]
-    async fn test_async_reader_multi_chunk() {
+    async fn test_reader_multi_chunk() {
         use tokio::io::AsyncReadExt;
 
         let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
@@ -1353,7 +1336,7 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[tokio::test]
-    async fn test_async_reader_seek() {
+    async fn test_reader_seek() {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
         let data = b"hello world";
@@ -1370,7 +1353,7 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[tokio::test]
-    async fn test_async_reader_seek_back_and_forth() {
+    async fn test_reader_seek_back_and_forth() {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
         let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
@@ -1406,7 +1389,7 @@ mod tests {
     #[cfg(feature = "encryption")]
     mod encrypted {
         use super::*;
-        use crate::file::sync_split_encrypted;
+        use crate::file::split_encrypted;
 
         fn encrypted_split_and_store(
             data: &[u8],
@@ -1414,7 +1397,7 @@ mod tests {
             crate::chunk::encryption::EncryptedChunkRef,
             HashMap<ChunkAddress, AnyChunk>,
         ) {
-            let (root_ref, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+            let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
             (root_ref, store.into_chunks())
         }
 
@@ -1424,7 +1407,7 @@ mod tests {
         // --- Async-only tests: Stream ---
 
         #[tokio::test]
-        async fn test_encrypted_async_joiner_stream() {
+        async fn test_encrypted_joiner_stream() {
             let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
                 .map(|i| (i % 256) as u8)
                 .collect();

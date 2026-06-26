@@ -156,7 +156,7 @@ impl<M: JoinMode, const BS: usize> BfsExpander<M, BS> {
 /// producing a frontier of roughly equal-sized subtrees. All expandable nodes
 /// within a BFS level are fetched concurrently. Only children overlapping
 /// `chunk_range` are retained.
-pub(crate) async fn expand_frontier_async<G, M, const BS: usize>(
+pub(crate) async fn expand_frontier<G, M, const BS: usize>(
     getter: &G,
     root: &ChunkAddress,
     context: &M::JoinerContext,
@@ -189,7 +189,7 @@ where
             .iter()
             .map(|&i| {
                 let n = &bfs.frontier[i];
-                super::mode::read_chunk_body_async::<M, G, BS>(getter, &n.addr, &n.context, n.span)
+                super::mode::read_chunk_body::<M, G, BS>(getter, &n.addr, &n.context, n.span)
             })
             .collect();
 
@@ -208,7 +208,7 @@ where
 }
 
 /// Async iterative DFS descent within a subtree, collecting leaf bodies.
-pub(crate) async fn read_subtree_bodies_async<G, M, const BS: usize>(
+pub(crate) async fn read_subtree_bodies<G, M, const BS: usize>(
     getter: &G,
     node: &SubtreeNode<M>,
     chunk_range: &ChunkRange,
@@ -220,7 +220,7 @@ where
     let mut out = Vec::new();
     let mut stack = vec![node.clone()];
     while let Some(current) = stack.pop() {
-        let body = super::mode::read_chunk_body_async::<M, G, BS>(
+        let body = super::mode::read_chunk_body::<M, G, BS>(
             getter,
             &current.addr,
             &current.context,

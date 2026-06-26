@@ -7,7 +7,7 @@ use bytes::Bytes;
 /// Sync data source supporting offset-based reads.
 ///
 /// Enables parallel splitting by allowing concurrent reads at different offsets.
-pub trait SyncReadAt {
+pub trait ReadAt {
     /// Read data at offset into buffer, returning bytes read.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize>;
 
@@ -20,7 +20,7 @@ pub trait SyncReadAt {
     }
 }
 
-impl SyncReadAt for [u8] {
+impl ReadAt for [u8] {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let offset = offset as usize;
         if offset >= self.len() {
@@ -37,7 +37,7 @@ impl SyncReadAt for [u8] {
     }
 }
 
-impl SyncReadAt for Vec<u8> {
+impl ReadAt for Vec<u8> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         self.as_slice().read_at(offset, buf)
     }
@@ -47,7 +47,7 @@ impl SyncReadAt for Vec<u8> {
     }
 }
 
-impl SyncReadAt for Bytes {
+impl ReadAt for Bytes {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         self.as_ref().read_at(offset, buf)
     }
@@ -57,7 +57,7 @@ impl SyncReadAt for Bytes {
     }
 }
 
-impl<T: SyncReadAt + ?Sized> SyncReadAt for &T {
+impl<T: ReadAt + ?Sized> ReadAt for &T {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         (**self).read_at(offset, buf)
     }
@@ -68,7 +68,7 @@ impl<T: SyncReadAt + ?Sized> SyncReadAt for &T {
 }
 
 #[cfg(unix)]
-impl SyncReadAt for std::fs::File {
+impl ReadAt for std::fs::File {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         use std::os::unix::fs::FileExt;
         FileExt::read_at(self, buf, offset)
@@ -80,7 +80,7 @@ impl SyncReadAt for std::fs::File {
 }
 
 #[cfg(windows)]
-impl SyncReadAt for std::fs::File {
+impl ReadAt for std::fs::File {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         use std::os::windows::fs::FileExt;
         FileExt::seek_read(self, buf, offset)
@@ -137,7 +137,7 @@ mod tests {
         assert_eq!(n, 4);
         assert_eq!(&buf, b"data");
 
-        assert_eq!(SyncReadAt::len(&data), 9);
+        assert_eq!(ReadAt::len(&data), 9);
     }
 
     #[test]
