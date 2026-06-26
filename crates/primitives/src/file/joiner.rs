@@ -7,16 +7,22 @@ use std::sync::Arc;
 /// Default number of concurrent chunk fetches for async operations.
 const DEFAULT_ASYNC_CONCURRENCY: usize = 8;
 
+/// Default number of times a failed leaf fetch is re-enqueued before the
+/// chunk-granular offset stream surfaces the error.
+const DEFAULT_LEAF_RETRIES: u32 = 4;
+
 #[cfg(feature = "tokio")]
 use bytes::Buf;
 use bytes::Bytes;
-use futures::stream::{self, Stream, StreamExt};
+use futures::stream::{self, FuturesUnordered, Stream, StreamExt};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::ChunkAddress;
 
 use super::error::{FileError, Result};
-use super::frontier::{SubtreeNode, expand_frontier_async, read_subtree_bodies_async};
+use super::frontier::{
+    SubtreeNode, expand_frontier_async, overlapping_children, read_subtree_bodies_async,
+};
 use super::mode::{JoinMode, PlainMode};
 use super::tree::{ChunkRange, TreeParams};
 use crate::store::ChunkGet;
@@ -289,6 +295,238 @@ where
         })
     }
 
+    /// Convert into a stream of `(byte_offset, leaf_body)` pairs fetched with
+    /// bounded concurrency and yielded out of order as each leaf lands.
+    ///
+    /// Unlike [`into_stream`](Self::into_stream), which walks subtrees one at a
+    /// time and emits bytes in file order, this keeps up to `concurrency`
+    /// subtree fetches in flight and yields each leaf the moment its subtree
+    /// resolves, tagged with its absolute byte offset in the file. Reassembling
+    /// the pairs by offset reproduces the file; nothing is buffered into a
+    /// single contiguous result, so peak memory is bounded by the in-flight
+    /// width, not the file size. Set the width with
+    /// [`with_concurrency`](Self::with_concurrency).
+    pub fn into_offset_stream(self) -> impl Stream<Item = Result<(u64, Bytes)>> {
+        let getter = self.getter;
+        let concurrency = self.concurrency;
+        let chunk_range = self.tree.chunks_for_range(0, self.span);
+
+        // Each subtree fetch resolves to its base offset plus its leaves in tree
+        // order; `buffer_unordered` yields whichever subtree finishes first.
+        let subtrees = stream::iter(self.subtrees)
+            .map(move |st| {
+                let getter = Arc::clone(&getter);
+                async move {
+                    let base = st.byte_offset;
+                    let bodies =
+                        read_subtree_bodies_async::<G, M, BODY_SIZE>(&*getter, &st, &chunk_range)
+                            .await?;
+                    Ok::<(u64, Vec<Bytes>), FileError>((base, bodies))
+                }
+            })
+            .buffer_unordered(concurrency.max(1));
+
+        // Flatten each resolved subtree into per-leaf `(offset, body)` pairs,
+        // draining one subtree's leaves before polling the next ready subtree.
+        struct State<S> {
+            subtrees: S,
+            base: u64,
+            leaf_index: usize,
+            pending: std::vec::IntoIter<Bytes>,
+        }
+
+        let state = State {
+            subtrees: Box::pin(subtrees),
+            base: 0,
+            leaf_index: 0,
+            pending: Vec::new().into_iter(),
+        };
+
+        stream::unfold(state, move |mut state| async move {
+            loop {
+                // Drain leaves already in hand, offsetting each leaf from its
+                // subtree base by a whole body per preceding leaf.
+                if let Some(body) = state.pending.next() {
+                    let offset = state.base + state.leaf_index as u64 * BODY_SIZE as u64;
+                    state.leaf_index += 1;
+                    return Some((Ok((offset, body)), state));
+                }
+
+                // Pull the next resolved subtree (out of order).
+                match state.subtrees.next().await? {
+                    Ok((base, bodies)) => {
+                        state.base = base;
+                        state.leaf_index = 0;
+                        state.pending = bodies.into_iter();
+                        // Loop back to emit this subtree's first leaf.
+                    }
+                    Err(e) => return Some((Err(e), state)),
+                }
+            }
+        })
+    }
+
+    /// Convert into a stream of `(byte_offset, leaf_body)` pairs fetched with
+    /// per-chunk bounded concurrency and yielded out of order as each leaf lands.
+    ///
+    /// Where [`into_offset_stream`](Self::into_offset_stream) keeps up to
+    /// `concurrency` *subtree* fetches in flight and walks each subtree as a
+    /// sequential descent, this walks the tree at *chunk* granularity: every
+    /// intermediate and leaf fetch competes for the same bounded in-flight pool,
+    /// so up to `concurrency` individual chunks are in flight regardless of how
+    /// few top-level subtrees the tree has. Effective leaf concurrency is
+    /// `min(concurrency, leaf_count)` even for a tree that fans into one wide
+    /// subtree, which the subtree-granular variant cannot reach.
+    ///
+    /// The walk is a bounded producer/worker model expressed without a spawned
+    /// task: a queue of pending tree nodes feeds a [`FuturesUnordered`] pool
+    /// refilled to the width each step. An intermediate node resolves to its
+    /// overlapping children (re-queued); a leaf resolves to its
+    /// `(byte_offset, body)` pair. A leaf fetch that fails is re-enqueued (up to
+    /// a bounded retry budget) and the worker pulls the next node, so a slow or
+    /// flaky chunk retries without holding its slot or gating ready leaves.
+    ///
+    /// Peak memory is bounded by the pool width plus the pending queue, not the
+    /// file size. Set the width with [`with_concurrency`](Self::with_concurrency).
+    /// Reassembling the pairs by offset reproduces the file, byte-for-byte equal
+    /// to [`read_all`](Self::read_all).
+    pub fn into_offset_stream_chunked(self) -> impl Stream<Item = Result<(u64, Bytes)>>
+    where
+        G: 'static,
+    {
+        let getter = self.getter;
+        let width = self.concurrency.max(1);
+        let chunk_range = self.tree.chunks_for_range(0, self.span);
+
+        // One unit of pending work: a tree node plus its remaining retry budget.
+        // The budget only decrements on a failed leaf fetch.
+        struct Pending<M: JoinMode> {
+            node: SubtreeNode<M>,
+            retries: u32,
+        }
+
+        // What a worker future resolves to once its chunk lands.
+        enum Resolved<M: JoinMode> {
+            /// A leaf: its absolute byte offset and decoded body.
+            Leaf(u64, Bytes),
+            /// An intermediate: its overlapping children to re-queue.
+            Children(Vec<SubtreeNode<M>>),
+            /// A leaf fetch failed with retries left: re-queue this node.
+            Retry(Pending<M>),
+            /// A fetch failed terminally (retries exhausted or intermediate error).
+            Failed(FileError),
+        }
+
+        // Fetch one node: a leaf yields its body, an intermediate yields its
+        // children. A leaf error consumes one retry, then re-queues or fails.
+        async fn fetch_one<G, M, const BS: usize>(
+            getter: &G,
+            chunk_range: &ChunkRange,
+            pending: Pending<M>,
+        ) -> Resolved<M>
+        where
+            G: ChunkGet<BS>,
+            M: JoinMode + Send + Sync,
+        {
+            let node = &pending.node;
+            let body = match super::mode::read_chunk_body_async::<M, G, BS>(
+                getter,
+                &node.addr,
+                &node.context,
+                node.span,
+            )
+            .await
+            {
+                Ok(body) => body,
+                Err(e) => {
+                    if node.span <= BS as u64 && pending.retries > 0 {
+                        return Resolved::Retry(Pending {
+                            node: pending.node,
+                            retries: pending.retries - 1,
+                        });
+                    }
+                    return Resolved::Failed(e);
+                }
+            };
+
+            if node.span <= BS as u64 {
+                return Resolved::Leaf(node.byte_offset, body);
+            }
+            match overlapping_children::<M, BS>(&body, node, chunk_range) {
+                Ok(children) => Resolved::Children(children),
+                Err(e) => Resolved::Failed(e),
+            }
+        }
+
+        struct State<G, M: JoinMode, const BS: usize> {
+            getter: Arc<G>,
+            chunk_range: ChunkRange,
+            width: usize,
+            queue: std::collections::VecDeque<Pending<M>>,
+            in_flight: FuturesUnordered<
+                std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>> + Send>>,
+            >,
+        }
+
+        let mut queue = std::collections::VecDeque::new();
+        for st in self.subtrees {
+            queue.push_back(Pending {
+                node: st,
+                retries: DEFAULT_LEAF_RETRIES,
+            });
+        }
+
+        let state = State::<G, M, BODY_SIZE> {
+            getter,
+            chunk_range,
+            width,
+            queue,
+            in_flight: FuturesUnordered::new(),
+        };
+
+        stream::unfold(state, move |mut state| async move {
+            loop {
+                // Refill the in-flight pool from the pending queue up to the
+                // width, so at most `width` chunks are fetching at once.
+                while state.in_flight.len() < state.width {
+                    let Some(pending) = state.queue.pop_front() else {
+                        break;
+                    };
+                    let getter = Arc::clone(&state.getter);
+                    let range = state.chunk_range;
+                    state.in_flight.push(Box::pin(async move {
+                        fetch_one::<G, M, BODY_SIZE>(&*getter, &range, pending).await
+                    })
+                        as std::pin::Pin<
+                            Box<dyn std::future::Future<Output = Resolved<M>> + Send>,
+                        >);
+                }
+
+                // Nothing in flight and nothing queued: the tree is drained.
+                let resolved = state.in_flight.next().await?;
+                match resolved {
+                    Resolved::Leaf(offset, body) => {
+                        return Some((Ok((offset, body)), state));
+                    }
+                    Resolved::Children(children) => {
+                        for child in children {
+                            state.queue.push_back(Pending {
+                                node: child,
+                                retries: DEFAULT_LEAF_RETRIES,
+                            });
+                        }
+                    }
+                    Resolved::Retry(pending) => {
+                        // Re-enqueue at the back so the worker pulls fresh work
+                        // first; the failed chunk retries without holding a slot.
+                        state.queue.push_back(pending);
+                    }
+                    Resolved::Failed(e) => return Some((Err(e), state)),
+                }
+            }
+        })
+    }
+
     /// Convert into an `AsyncRead` reader.
     #[cfg(feature = "tokio")]
     pub fn into_reader(self) -> JoinerReader<G, M, BODY_SIZE> {
@@ -473,6 +711,248 @@ mod tests {
             recovered.extend_from_slice(&chunk.unwrap());
         }
         assert_eq!(recovered, data);
+    }
+
+    /// Drain `into_offset_stream` into an offset-keyed map, asserting every leaf
+    /// arrives exactly once, then reassemble by offset and compare to `read_all`.
+    async fn assert_offset_stream_matches(data: &[u8]) {
+        let (root, store) = split_and_store(data);
+
+        let expected = Joiner::new(store.clone(), root)
+            .await
+            .unwrap()
+            .read_all()
+            .await
+            .unwrap();
+
+        let joiner = Joiner::new(store, root).await.unwrap();
+        let total = joiner.size();
+        let pairs: Vec<Result<(u64, Bytes)>> = joiner.into_offset_stream().collect().await;
+
+        let mut reassembled = vec![0u8; total as usize];
+        let mut covered = 0u64;
+        let mut seen_offsets = std::collections::HashSet::new();
+        for pair in pairs {
+            let (offset, body) = pair.unwrap();
+            assert!(
+                seen_offsets.insert(offset),
+                "offset {offset} yielded more than once"
+            );
+            let start = offset as usize;
+            let end = start + body.len();
+            reassembled[start..end].copy_from_slice(&body);
+            covered += body.len() as u64;
+        }
+
+        assert_eq!(covered, total, "every byte covered exactly once");
+        assert_eq!(reassembled, expected, "offset reassembly equals read_all");
+        assert_eq!(reassembled, data, "offset reassembly equals input");
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_small() {
+        assert_offset_stream_matches(b"hello world").await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_exact_chunk() {
+        assert_offset_stream_matches(&vec![0xAB; DEFAULT_BODY_SIZE]).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_multi_chunk() {
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        assert_offset_stream_matches(&data).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_129_chunks() {
+        let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * (refs_per_chunk + 1))
+            .map(|i| (i % 256) as u8)
+            .collect();
+        assert_offset_stream_matches(&data).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_concurrency_one() {
+        // Width 1 still yields every leaf with the right offset (degenerate
+        // concurrent path), so the reassembly invariant holds independent of fan.
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 7)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+        let joiner = Joiner::new(store, root).await.unwrap().with_concurrency(1);
+        let total = joiner.size();
+        let mut reassembled = vec![0u8; total as usize];
+        let stream = joiner.into_offset_stream();
+        futures::pin_mut!(stream);
+        while let Some(pair) = stream.next().await {
+            let (offset, body) = pair.unwrap();
+            let start = offset as usize;
+            reassembled[start..start + body.len()].copy_from_slice(&body);
+        }
+        assert_eq!(reassembled, data);
+    }
+
+    /// Drain `into_offset_stream_chunked` into an offset-keyed buffer, asserting
+    /// every leaf arrives exactly once, then reassemble and compare to `read_all`.
+    async fn assert_offset_stream_chunked_matches(data: &[u8]) {
+        let (root, store) = split_and_store(data);
+
+        let expected = Joiner::new(store.clone(), root)
+            .await
+            .unwrap()
+            .read_all()
+            .await
+            .unwrap();
+
+        let joiner = Joiner::new(store, root).await.unwrap();
+        let total = joiner.size();
+        let pairs: Vec<Result<(u64, Bytes)>> = joiner.into_offset_stream_chunked().collect().await;
+
+        let mut reassembled = vec![0u8; total as usize];
+        let mut covered = 0u64;
+        let mut seen_offsets = std::collections::HashSet::new();
+        for pair in pairs {
+            let (offset, body) = pair.unwrap();
+            assert!(
+                seen_offsets.insert(offset),
+                "offset {offset} yielded more than once"
+            );
+            let start = offset as usize;
+            let end = start + body.len();
+            reassembled[start..end].copy_from_slice(&body);
+            covered += body.len() as u64;
+        }
+
+        assert_eq!(covered, total, "every byte covered exactly once");
+        assert_eq!(reassembled, expected, "chunked reassembly equals read_all");
+        assert_eq!(reassembled, data, "chunked reassembly equals input");
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_chunked_small() {
+        assert_offset_stream_chunked_matches(b"hello world").await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_chunked_exact_chunk() {
+        assert_offset_stream_chunked_matches(&vec![0xAB; DEFAULT_BODY_SIZE]).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_chunked_multi_chunk() {
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        assert_offset_stream_chunked_matches(&data).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_chunked_three_level_tree() {
+        // 129 leaves needs a three-level tree, exercising intermediate-node
+        // re-queueing in the chunk-granular walk.
+        let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * (refs_per_chunk + 1))
+            .map(|i| (i % 256) as u8)
+            .collect();
+        assert_offset_stream_chunked_matches(&data).await;
+    }
+
+    #[tokio::test]
+    async fn test_offset_stream_chunked_concurrency_one() {
+        // Width 1 still yields every leaf with the right offset.
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 7)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+        let joiner = Joiner::new(store, root).await.unwrap().with_concurrency(1);
+        let total = joiner.size();
+        let mut reassembled = vec![0u8; total as usize];
+        let stream = joiner.into_offset_stream_chunked();
+        futures::pin_mut!(stream);
+        while let Some(pair) = stream.next().await {
+            let (offset, body) = pair.unwrap();
+            let start = offset as usize;
+            reassembled[start..start + body.len()].copy_from_slice(&body);
+        }
+        assert_eq!(reassembled, data);
+    }
+
+    /// A getter that holds each fetch open across several executor yields so the
+    /// test can observe how many fetches the consumer admits at once, proving the
+    /// chunk-granular stream reaches per-chunk (not per-subtree) concurrency.
+    #[derive(Clone)]
+    struct ConcurrencyProbe {
+        chunks: Arc<HashMap<ChunkAddress, AnyChunk>>,
+        in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        max_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl crate::store::ChunkGet<DEFAULT_BODY_SIZE> for ConcurrencyProbe {
+        type Error = crate::store::ChunkStoreError;
+
+        async fn get(&self, address: &ChunkAddress) -> std::result::Result<AnyChunk, Self::Error> {
+            use std::sync::atomic::Ordering;
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+            // Yield several times so concurrently-admitted fetches overlap here
+            // before any resolves; the peak counter then reflects pool width.
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            self.chunks
+                .get(address)
+                .cloned()
+                .ok_or_else(|| crate::store::ChunkStoreError::not_found(address))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_offset_stream_chunked_per_chunk_concurrency() {
+        // A flat two-level tree: one intermediate over many leaves. The
+        // subtree-granular stream would walk it as a single sequential descent
+        // (in-flight = 1 leaf at a time); the chunk-granular stream fans the
+        // leaves across the width.
+        let leaves = 40usize;
+        let width = 16usize;
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * leaves)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+
+        let probe = ConcurrencyProbe {
+            chunks: Arc::new(store),
+            in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let max_seen = Arc::clone(&probe.max_in_flight);
+
+        let joiner = Joiner::new(probe, root)
+            .await
+            .unwrap()
+            .with_concurrency(width);
+
+        let total = joiner.size();
+        let mut reassembled = vec![0u8; total as usize];
+        let stream = joiner.into_offset_stream_chunked();
+        futures::pin_mut!(stream);
+        while let Some(pair) = stream.next().await {
+            let (offset, body) = pair.unwrap();
+            let start = offset as usize;
+            reassembled[start..start + body.len()].copy_from_slice(&body);
+        }
+        assert_eq!(reassembled, data, "concurrency probe still reassembles");
+
+        let peak = max_seen.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            peak >= width,
+            "chunk-granular stream should reach width {width} in-flight, saw {peak}"
+        );
     }
 
     #[cfg(feature = "tokio")]
