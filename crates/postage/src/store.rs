@@ -97,6 +97,7 @@ pub trait BatchStoreExt: BatchStore {
 impl<T: BatchStore> BatchStoreExt for T {}
 
 /// Errors that can occur when working with a batch store.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum BatchStoreError<E: std::error::Error> {
     /// The batch was not found in the store.

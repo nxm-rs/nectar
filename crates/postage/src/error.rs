@@ -5,6 +5,7 @@ use alloy_primitives::Address;
 use thiserror::Error;
 
 /// Errors that can occur when working with stamps.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum StampError {
     /// The owner recovered from the signature doesn't match the batch owner.

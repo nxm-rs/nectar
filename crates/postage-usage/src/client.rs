@@ -98,6 +98,7 @@ pub trait SnapshotSink {
 /// [`Source`](Self::Source) and [`Sink`](Self::Sink) variants carry the
 /// transport failures that abort `open` and `flush` rather than degrading into a
 /// fresh or [`PublishedSequence::NONE`] persist.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum ClientError<SrcErr, SnkErr>
 where

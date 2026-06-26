@@ -44,6 +44,7 @@ pub enum CounterMode {
 }
 
 /// An error advancing or constructing a [`CounterTable`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum CounterError {
     /// A bucket index is outside the table's bucket range.

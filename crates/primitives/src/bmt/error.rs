@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 /// Errors specific to BMT operations
+#[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum BmtError {
     /// Input size is invalid for the operation

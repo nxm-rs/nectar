@@ -30,6 +30,7 @@ pub(crate) const fn map_counter_error(err: CounterError) -> UsageError {
             count,
             capacity,
         },
+        _ => UsageError::Malformed("unexpected counter error"),
     }
 }
 

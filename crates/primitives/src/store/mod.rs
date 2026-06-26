@@ -15,6 +15,7 @@ use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{AnyChunk, ChunkAddress};
 
 /// Errors from chunk storage operations.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ChunkStoreError {
     /// Chunk not found at the given address.
