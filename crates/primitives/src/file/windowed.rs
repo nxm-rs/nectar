@@ -192,7 +192,7 @@ where
     M: JoinMode + MaybeSend + Sync,
 {
     let node = &pending.node;
-    let body = match super::mode::read_chunk_body_async::<M, G, BS>(
+    let body = match super::mode::read_chunk_body::<M, G, BS>(
         getter,
         &node.addr,
         &node.context,
@@ -454,7 +454,7 @@ where
     M: JoinMode + Send + Sync + 'static,
 {
     /// Wrap as a tokio `AsyncRead` + `AsyncSeek` reader. Native-only.
-    pub fn into_async_reader(self) -> WindowedJoinerReader<G, M, BODY_SIZE> {
+    pub fn into_reader(self) -> WindowedJoinerReader<G, M, BODY_SIZE> {
         WindowedJoinerReader {
             reader: self,
             residual: Bytes::new(),
@@ -554,13 +554,13 @@ mod tests {
     use crate::bmt::DEFAULT_BODY_SIZE;
     use crate::chunk::AnyChunk;
     use crate::file::Joiner;
-    use crate::file::sync_split;
+    use crate::file::split;
     use futures::executor::block_on;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
-        let (root, store) = sync_split::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
         (root, store.into_chunks())
     }
 
@@ -868,13 +868,13 @@ mod tests {
         // overlaps concurrently admitted leaves, and the occupancy hook proves a
         // correct walk holds at most `window` leaf bodies on short bodies.
         use crate::file::EncryptedJoiner;
-        use crate::file::sync_split_encrypted;
+        use crate::file::split_encrypted;
 
         let leaves = 30usize;
         let window = 5usize;
         let total = (DEFAULT_BODY_SIZE * leaves) as u64;
         let data: Vec<u8> = (0..total).map(unique_byte).collect();
-        let (root_ref, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
         let store = store.into_chunks();
 
         PEAK_LEAF_OCCUPANCY.with(|p| p.set(0));
@@ -933,7 +933,7 @@ mod tests {
     mod encrypted {
         use super::*;
         use crate::file::EncryptedJoiner;
-        use crate::file::sync_split_encrypted;
+        use crate::file::split_encrypted;
 
         async fn drain_enc(
             reader: &mut WindowedReader<
@@ -956,7 +956,7 @@ mod tests {
                 .map(|i| (i % 256) as u8)
                 .collect();
             let bs = DEFAULT_BODY_SIZE as u64;
-            let (root_ref, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+            let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
             let store = store.into_chunks();
             block_on(async {
                 // whole file
@@ -981,7 +981,7 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[tokio::test]
-    async fn async_reader_seek_and_read() {
+    async fn reader_seek_and_read() {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
         let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 50)
@@ -989,7 +989,7 @@ mod tests {
             .collect();
         let (root, store) = split_and_store(&data);
         let joiner = Joiner::new(store, root).await.unwrap();
-        let mut reader = joiner.into_windowed_reader(16).into_async_reader();
+        let mut reader = joiner.into_windowed_reader(16).into_reader();
 
         let mut all = Vec::new();
         reader.read_to_end(&mut all).await.unwrap();

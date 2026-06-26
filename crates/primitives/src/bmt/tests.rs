@@ -70,7 +70,7 @@ fn test_hasher_empty_data() {
 }
 
 #[test]
-fn test_sync_hasher_correctness() {
+fn test_hasher_correctness() {
     let mut rng = rand::rng();
     let data: Vec<u8> = (0..DEFAULT_BODY_SIZE)
         .map(|_| rand::random::<u8>())

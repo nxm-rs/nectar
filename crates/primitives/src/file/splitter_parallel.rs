@@ -10,7 +10,7 @@ use crate::chunk::AnyChunk;
 use super::constants::{LEVEL_LIMIT, compute_spans_inline};
 use super::error::{FileError, Result};
 use super::mode::{PlainMode, SplitMode};
-use super::sync_read_at::SyncReadAt;
+use super::read_at::ReadAt;
 use super::tree::TreeParams;
 
 #[cfg(feature = "encryption")]
@@ -20,30 +20,30 @@ use super::mode::EncryptedMode;
 ///
 /// Produces chunks by reading data at known offsets in parallel, then building
 /// intermediate levels. The caller decides where produced chunks go.
-pub struct GenericSyncParallelSplitter<M: SplitMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
+pub struct GenericParallelSplitter<M: SplitMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     _mode: PhantomData<M>,
 }
 
 /// Plain (unencrypted) parallel splitter.
-pub type SyncParallelSplitter<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
-    GenericSyncParallelSplitter<PlainMode, BODY_SIZE>;
+pub type ParallelSplitter<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericParallelSplitter<PlainMode, BODY_SIZE>;
 
 /// Encrypted parallel splitter.
 #[cfg(feature = "encryption")]
-pub type EncryptedSyncParallelSplitter<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
-    GenericSyncParallelSplitter<EncryptedMode, BODY_SIZE>;
+pub type EncryptedParallelSplitter<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericParallelSplitter<EncryptedMode, BODY_SIZE>;
 
-impl<M, const BODY_SIZE: usize> std::fmt::Debug for GenericSyncParallelSplitter<M, BODY_SIZE>
+impl<M, const BODY_SIZE: usize> std::fmt::Debug for GenericParallelSplitter<M, BODY_SIZE>
 where
     M: SplitMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GenericSyncParallelSplitter")
+        f.debug_struct("GenericParallelSplitter")
             .finish_non_exhaustive()
     }
 }
 
-impl<M, const BODY_SIZE: usize> GenericSyncParallelSplitter<M, BODY_SIZE>
+impl<M, const BODY_SIZE: usize> GenericParallelSplitter<M, BODY_SIZE>
 where
     M: SplitMode + Send + Sync,
 {
@@ -53,7 +53,7 @@ where
     /// Returns the root reference.
     pub fn split_into<R, F>(source: &R, sink: F) -> Result<M::RootRef>
     where
-        R: SyncReadAt + Sync,
+        R: ReadAt + Sync,
         F: Fn(AnyChunk<BODY_SIZE>) + Sync,
     {
         const { super::constants::assert_valid_body_size::<BODY_SIZE>() };
@@ -79,7 +79,7 @@ where
     ///
     /// Chunk order is irrelevant; callers key by address. Returns the root
     /// reference and the produced chunks.
-    pub fn split_to_vec<R: SyncReadAt + Sync>(
+    pub fn split_to_vec<R: ReadAt + Sync>(
         source: &R,
     ) -> Result<(M::RootRef, Vec<AnyChunk<BODY_SIZE>>)> {
         let chunks = std::sync::Mutex::new(Vec::new());
@@ -93,7 +93,7 @@ where
         sink: &F,
     ) -> Result<Vec<M::RefBytes>>
     where
-        R: SyncReadAt + Sync,
+        R: ReadAt + Sync,
         F: Fn(AnyChunk<BODY_SIZE>) + Sync,
     {
         let data_chunks = tree.data_chunks();
@@ -205,8 +205,7 @@ mod tests {
     fn split_and_store(
         data: &[u8],
     ) -> (crate::chunk::ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>) {
-        let (root, chunks) =
-            SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
+        let (root, chunks) = ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
         (root, MemoryStore::from_chunks(chunks))
     }
 
@@ -220,7 +219,7 @@ mod tests {
 
         let (root, store) = split_and_store(&data);
 
-        let (seq_root, _) = crate::file::sync_split::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        let (seq_root, _) = crate::file::split::<DEFAULT_BODY_SIZE>(&data).unwrap();
         assert_eq!(root, seq_root);
 
         let recovered = futures::executor::block_on(join(&store, root)).unwrap();
@@ -233,11 +232,10 @@ mod tests {
 
         let data = vec![0xAB; DEFAULT_BODY_SIZE + 1];
         let count = AtomicUsize::new(0);
-        let root =
-            SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_into(&data.as_slice(), |_chunk| {
-                count.fetch_add(1, Ordering::Relaxed);
-            })
-            .unwrap();
+        let root = ParallelSplitter::<DEFAULT_BODY_SIZE>::split_into(&data.as_slice(), |_chunk| {
+            count.fetch_add(1, Ordering::Relaxed);
+        })
+        .unwrap();
         assert!(!root.is_zero());
         assert_eq!(count.load(Ordering::Relaxed), 3);
     }
@@ -245,7 +243,7 @@ mod tests {
     #[cfg(feature = "encryption")]
     mod encrypted {
         use super::*;
-        use crate::file::{EncryptedSyncParallelSplitter, sync_split_encrypted};
+        use crate::file::{EncryptedParallelSplitter, split_encrypted};
         use crate::store::MemoryStore;
 
         fn encrypted_split_and_store(
@@ -255,7 +253,7 @@ mod tests {
             MemoryStore<DEFAULT_BODY_SIZE>,
         ) {
             let (root_ref, chunks) =
-                EncryptedSyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
+                EncryptedParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
             (root_ref, MemoryStore::from_chunks(chunks))
         }
 
@@ -268,7 +266,7 @@ mod tests {
                 .collect();
 
             let (par_ref, par_store) = encrypted_split_and_store(&data);
-            let (seq_ref, seq_store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+            let (seq_ref, seq_store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
 
             assert_eq!(par_store.len(), seq_store.len());
 

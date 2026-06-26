@@ -1,6 +1,6 @@
 //! File splitting and joining for arbitrary-size data.
 //!
-//! Joining is async; splitting is CPU-bound and runs on rayon. `SyncSplitter`
+//! Joining is async; splitting is CPU-bound and runs on rayon. `Splitter`
 //! implements `Write` for streaming producers.
 //!
 //! # Store-centric API (extension traits)
@@ -21,11 +21,11 @@
 //!
 //! ```
 //! use futures::executor::block_on;
-//! use nectar_primitives::file::{sync_split, join};
+//! use nectar_primitives::file::{split, join};
 //! use nectar_primitives::DEFAULT_BODY_SIZE;
 //!
 //! let data = b"Hello, Swarm!";
-//! let (root, store) = sync_split::<DEFAULT_BODY_SIZE>(data).unwrap();
+//! let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
 //! let recovered = block_on(join(&store, root)).unwrap();
 //! assert_eq!(recovered, data);
 //! ```
@@ -35,11 +35,11 @@
 //! ```
 //! # #[cfg(feature = "encryption")] {
 //! use futures::executor::block_on;
-//! use nectar_primitives::file::{sync_split_encrypted, join};
+//! use nectar_primitives::file::{split_encrypted, join};
 //! use nectar_primitives::DEFAULT_BODY_SIZE;
 //!
 //! let data = b"secret data";
-//! let (root_ref, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+//! let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
 //! let recovered = block_on(join(&store, root_ref)).unwrap();
 //! assert_eq!(recovered, data);
 //! # }
@@ -59,9 +59,9 @@ mod joiner_tests;
 mod splitter_tests;
 mod joiner;
 pub mod mode;
-mod sync_read_at;
-mod sync_splitter;
-mod sync_splitter_parallel;
+mod read_at;
+mod splitter;
+mod splitter_parallel;
 mod tree;
 mod windowed;
 mod write_at;
@@ -81,13 +81,13 @@ pub use joiner::{GenericJoiner, Joiner};
 pub use windowed::WindowedJoinerReader;
 pub use windowed::WindowedReader;
 // Splitter re-exports
-pub use sync_read_at::SyncReadAt;
+pub use read_at::ReadAt;
 #[cfg(feature = "encryption")]
-pub use sync_splitter::EncryptedSyncSplitter;
-pub use sync_splitter::SyncSplitter;
+pub use splitter::EncryptedSplitter;
+pub use splitter::Splitter;
 #[cfg(feature = "encryption")]
-pub use sync_splitter_parallel::EncryptedSyncParallelSplitter;
-pub use sync_splitter_parallel::SyncParallelSplitter;
+pub use splitter_parallel::EncryptedParallelSplitter;
+pub use splitter_parallel::ParallelSplitter;
 pub use write_at::WriteAt;
 
 pub use entry_ref::EntryRef;
@@ -165,20 +165,20 @@ where
 
 /// Split data into chunks, returning root address and chunk store.
 ///
-/// Uses `SyncParallelSplitter` for best performance on in-memory data.
-pub fn sync_split<const BODY_SIZE: usize>(
+/// Uses `ParallelSplitter` for best performance on in-memory data.
+pub fn split<const BODY_SIZE: usize>(
     data: &[u8],
 ) -> error::Result<(ChunkAddress, crate::store::MemoryStore<BODY_SIZE>)> {
-    let (root, chunks) = SyncParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
+    let (root, chunks) = ParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
     Ok((root, crate::store::MemoryStore::from_chunks(chunks)))
 }
 
 /// Split data into encrypted chunks.
 #[cfg(feature = "encryption")]
-pub fn sync_split_encrypted<const BODY_SIZE: usize>(
+pub fn split_encrypted<const BODY_SIZE: usize>(
     data: &[u8],
 ) -> error::Result<(EncryptedChunkRef, crate::store::MemoryStore<BODY_SIZE>)> {
-    let (root_ref, chunks) = EncryptedSyncParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
+    let (root_ref, chunks) = EncryptedParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
     Ok((root_ref, crate::store::MemoryStore::from_chunks(chunks)))
 }
 
@@ -244,14 +244,14 @@ pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> {
     ///
     /// Splitting runs on rayon up front; `data` is dropped before the first
     /// store await, so the returned future never holds the source.
-    fn write_file<D: SyncReadAt + Sync>(
+    fn write_file<D: ReadAt + Sync>(
         &self,
         data: D,
     ) -> impl std::future::Future<Output = error::Result<ChunkAddress>> + MaybeSend
     where
         Self: Sized + MaybeSync,
     {
-        let split = SyncParallelSplitter::<BODY_SIZE>::split_to_vec(&data);
+        let split = ParallelSplitter::<BODY_SIZE>::split_to_vec(&data);
         async move {
             let (root, chunks) = split?;
             for chunk in chunks {
@@ -263,14 +263,14 @@ pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> {
 
     /// Split `data` into encrypted chunks and store them, returning the root reference.
     #[cfg(feature = "encryption")]
-    fn write_encrypted_file<D: SyncReadAt + Sync>(
+    fn write_encrypted_file<D: ReadAt + Sync>(
         &self,
         data: D,
     ) -> impl std::future::Future<Output = error::Result<EncryptedChunkRef>> + MaybeSend
     where
         Self: Sized + MaybeSync,
     {
-        let split = EncryptedSyncParallelSplitter::<BODY_SIZE>::split_to_vec(&data);
+        let split = EncryptedParallelSplitter::<BODY_SIZE>::split_to_vec(&data);
         async move {
             let (root_ref, chunks) = split?;
             for chunk in chunks {

@@ -15,7 +15,7 @@ use futures::executor::block_on;
 
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
-use nectar_primitives::file::{Joiner, SyncParallelSplitter, SyncSplitter, sync_split};
+use nectar_primitives::file::{Joiner, ParallelSplitter, Splitter, split};
 use nectar_primitives::store::MemoryStore;
 
 /// File sizes to benchmark, covering typical use cases.
@@ -47,7 +47,7 @@ fn random_data(size: u64) -> Vec<u8> {
 }
 
 fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
-    let (root, store) = sync_split::<DEFAULT_BODY_SIZE>(data).unwrap();
+    let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
     (root, store.into_chunks())
 }
 
@@ -61,7 +61,7 @@ fn bench_streaming_splitter(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
-                let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+                let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                 splitter.write_all(data).unwrap();
                 black_box(splitter.finish().unwrap())
             });
@@ -81,7 +81,7 @@ fn bench_parallel_splitter(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
-                black_box(SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap())
+                black_box(ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap())
             });
         });
     }
@@ -100,7 +100,7 @@ fn bench_splitter_comparison(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("streaming", name), &data, |b, data| {
             b.iter(|| {
-                let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+                let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                 splitter.write_all(data).unwrap();
                 black_box(splitter.finish().unwrap())
             });
@@ -108,7 +108,7 @@ fn bench_splitter_comparison(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("direct", name), &data, |b, data| {
             b.iter(|| {
-                black_box(SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap())
+                black_box(ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap())
             });
         });
     }
@@ -127,7 +127,7 @@ fn bench_incremental_writes(c: &mut Criterion) {
 
     group.bench_function("single_write", |b| {
         b.iter(|| {
-            let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+            let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             splitter.write_all(&data).unwrap();
             black_box(splitter.finish().unwrap())
         });
@@ -135,7 +135,7 @@ fn bench_incremental_writes(c: &mut Criterion) {
 
     group.bench_function("4kb_chunks", |b| {
         b.iter(|| {
-            let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+            let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             for chunk in data.chunks(4096) {
                 splitter.write_all(chunk).unwrap();
             }
@@ -145,7 +145,7 @@ fn bench_incremental_writes(c: &mut Criterion) {
 
     group.bench_function("64kb_chunks", |b| {
         b.iter(|| {
-            let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+            let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             for chunk in data.chunks(65536) {
                 splitter.write_all(chunk).unwrap();
             }
@@ -205,7 +205,7 @@ fn bench_roundtrip(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("direct_split", name), &data, |b, data| {
             b.iter(|| {
                 let (root, chunks) =
-                    SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
+                    ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
                 let store = MemoryStore::from_chunks(chunks);
                 let joiner = block_on(Joiner::new(store, root)).unwrap();
                 black_box(block_on(joiner.read_all()).unwrap())

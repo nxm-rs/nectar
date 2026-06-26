@@ -70,12 +70,12 @@ mod tests {
     use crate::bmt::DEFAULT_BODY_SIZE;
     use crate::chunk::{AnyChunk, ChunkAddress};
     use crate::file::Joiner;
-    use crate::file::sync_split;
+    use crate::file::split;
     use futures::executor::block_on;
     use std::collections::HashMap;
 
     fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
-        let (root, store) = sync_split::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
         (root, store.into_chunks())
     }
 
@@ -222,7 +222,7 @@ mod tests {
     mod encrypted {
         use super::*;
         use crate::file::EncryptedJoiner;
-        use crate::file::sync_split_encrypted;
+        use crate::file::split_encrypted;
 
         fn enc_split_and_store(
             data: &[u8],
@@ -230,7 +230,7 @@ mod tests {
             crate::chunk::encryption::EncryptedChunkRef,
             HashMap<ChunkAddress, AnyChunk>,
         ) {
-            let (root_ref, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+            let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
             (root_ref, store.into_chunks())
         }
 

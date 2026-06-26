@@ -121,10 +121,10 @@ pub use file::{
 
 // File splitting (CPU-bound, rayon)
 #[cfg(feature = "encryption")]
-pub use file::{EncryptedSyncParallelSplitter, EncryptedSyncSplitter, sync_split_encrypted};
-pub use file::{SyncParallelSplitter, SyncReadAt, SyncSplitter, sync_split};
+pub use file::{EncryptedParallelSplitter, EncryptedSplitter, split_encrypted};
+pub use file::{ParallelSplitter, ReadAt, Splitter, split};
 
 /// Default sync file splitter.
-pub type DefaultSyncSplitter = file::SyncSplitter<DEFAULT_BODY_SIZE>;
+pub type DefaultSplitter = file::Splitter<DEFAULT_BODY_SIZE>;
 /// Default async file joiner.
 pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;

@@ -11,8 +11,8 @@ use nectar_primitives::chunk::encryption::{
 };
 use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
 use nectar_primitives::file::{
-    EncryptedJoiner, EncryptedSyncParallelSplitter, EncryptedSyncSplitter, Joiner,
-    SyncParallelSplitter, SyncSplitter, sync_split, sync_split_encrypted,
+    EncryptedJoiner, EncryptedParallelSplitter, EncryptedSplitter, Joiner, ParallelSplitter,
+    Splitter, split, split_encrypted,
 };
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{ContentChunk, DEFAULT_BODY_SIZE};
@@ -133,7 +133,7 @@ fn random_data(size: u64) -> Vec<u8> {
 }
 
 fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
-    let (root, store) = sync_split::<DEFAULT_BODY_SIZE>(data).unwrap();
+    let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
     (root, store.into_chunks())
 }
 
@@ -143,7 +143,7 @@ fn encrypted_split_to_store(
     encryption::EncryptedChunkRef,
     HashMap<ChunkAddress, AnyChunk>,
 ) {
-    let (root_ref, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+    let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
     (root_ref, store.into_chunks())
 }
 
@@ -156,8 +156,7 @@ fn bench_encrypted_streaming_splitter(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
-                let mut splitter =
-                    EncryptedSyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+                let mut splitter = EncryptedSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                 splitter.write_all(data).unwrap();
                 black_box(splitter.finish().unwrap())
             });
@@ -177,7 +176,7 @@ fn bench_encrypted_parallel_splitter(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 black_box(
-                    EncryptedSyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap(),
+                    EncryptedParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap(),
                 )
             });
         });
@@ -224,7 +223,7 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             &data,
             |b, data| {
                 b.iter(|| {
-                    let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+                    let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                     splitter.write_all(data).unwrap();
                     black_box(splitter.finish().unwrap())
                 });
@@ -237,7 +236,7 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             |b, data| {
                 b.iter(|| {
                     let mut splitter =
-                        EncryptedSyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+                        EncryptedSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
                     splitter.write_all(data).unwrap();
                     black_box(splitter.finish().unwrap())
                 });
@@ -246,7 +245,7 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("plain_direct", name), &data, |b, data| {
             b.iter(|| {
-                black_box(SyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap())
+                black_box(ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap())
             });
         });
 
@@ -256,8 +255,7 @@ fn bench_plain_vs_encrypted_split(c: &mut Criterion) {
             |b, data| {
                 b.iter(|| {
                     black_box(
-                        EncryptedSyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data)
-                            .unwrap(),
+                        EncryptedParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap(),
                     )
                 });
             },
@@ -329,7 +327,7 @@ fn bench_encrypted_roundtrip(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("direct", name), &data, |b, data| {
             b.iter(|| {
                 let (root_ref, chunks) =
-                    EncryptedSyncParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
+                    EncryptedParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
                 let store = MemoryStore::from_chunks(chunks);
                 let joiner = block_on(EncryptedJoiner::new(store, root_ref)).unwrap();
                 black_box(block_on(joiner.read_all()).unwrap())

@@ -1,6 +1,6 @@
 //! File splitter for producing BMT chunks from data streams.
 //!
-//! Buffers data via `Write`, then delegates to `GenericSyncParallelSplitter`
+//! Buffers data via `Write`, then delegates to `GenericParallelSplitter`
 //! on `finish()` for parallel chunk hashing. Produces chunks; the caller
 //! decides where they go.
 
@@ -13,43 +13,43 @@ use crate::chunk::AnyChunk;
 
 use super::error::{FileError, Result};
 use super::mode::{PlainMode, SplitMode};
-use super::sync_splitter_parallel::GenericSyncParallelSplitter;
+use super::splitter_parallel::GenericParallelSplitter;
 
 #[cfg(feature = "encryption")]
 use super::mode::EncryptedMode;
 
 /// Generic splitter parameterized by chunk mode.
 ///
-/// Buffers data written via `Write` and delegates to `GenericSyncParallelSplitter`
+/// Buffers data written via `Write` and delegates to `GenericParallelSplitter`
 /// on `finish()` for parallel chunk hashing.
-pub struct GenericSyncSplitter<M: SplitMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
+pub struct GenericSplitter<M: SplitMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     span_length: u64,
     buffer: Vec<u8>,
     _mode: PhantomData<M>,
 }
 
 /// Plain (unencrypted) file splitter.
-pub type SyncSplitter<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
-    GenericSyncSplitter<PlainMode, BODY_SIZE>;
+pub type Splitter<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericSplitter<PlainMode, BODY_SIZE>;
 
 /// Encrypted file splitter.
 #[cfg(feature = "encryption")]
-pub type EncryptedSyncSplitter<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
-    GenericSyncSplitter<EncryptedMode, BODY_SIZE>;
+pub type EncryptedSplitter<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    GenericSplitter<EncryptedMode, BODY_SIZE>;
 
-impl<M, const BODY_SIZE: usize> fmt::Debug for GenericSyncSplitter<M, BODY_SIZE>
+impl<M, const BODY_SIZE: usize> fmt::Debug for GenericSplitter<M, BODY_SIZE>
 where
     M: SplitMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GenericSyncSplitter")
+        f.debug_struct("GenericSplitter")
             .field("span_length", &self.span_length)
             .field("length", &self.buffer.len())
             .finish_non_exhaustive()
     }
 }
 
-impl<M, const BODY_SIZE: usize> GenericSyncSplitter<M, BODY_SIZE>
+impl<M, const BODY_SIZE: usize> GenericSplitter<M, BODY_SIZE>
 where
     M: SplitMode,
 {
@@ -80,7 +80,7 @@ where
     }
 }
 
-impl<M, const BODY_SIZE: usize> GenericSyncSplitter<M, BODY_SIZE>
+impl<M, const BODY_SIZE: usize> GenericSplitter<M, BODY_SIZE>
 where
     M: SplitMode + Send + Sync,
 {
@@ -98,11 +98,11 @@ where
             return Ok((root, vec![chunk.into()]));
         }
 
-        GenericSyncParallelSplitter::<M, BODY_SIZE>::split_to_vec(&self.buffer)
+        GenericParallelSplitter::<M, BODY_SIZE>::split_to_vec(&self.buffer)
     }
 }
 
-impl<M, const BODY_SIZE: usize> Write for GenericSyncSplitter<M, BODY_SIZE>
+impl<M, const BODY_SIZE: usize> Write for GenericSplitter<M, BODY_SIZE>
 where
     M: SplitMode,
 {
@@ -135,7 +135,7 @@ mod tests {
     fn split_and_store(
         data: &[u8],
     ) -> (crate::chunk::ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>) {
-        let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+        let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
         splitter.write_all(data).unwrap();
         let (root, chunks) = splitter.finish().unwrap();
         (root, MemoryStore::from_chunks(chunks))
@@ -147,7 +147,7 @@ mod tests {
     fn test_splitter_incremental_writes() {
         let mut data = vec![0u8; DEFAULT_BODY_SIZE * 2 + 100];
         rand::RngExt::fill(&mut rand::rng(), &mut data);
-        let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+        let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
 
         for chunk in data.chunks(100) {
             splitter.write_all(chunk).unwrap();
@@ -164,13 +164,13 @@ mod tests {
         let data = vec![0x56; DEFAULT_BODY_SIZE * 3];
 
         let root1 = {
-            let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+            let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             splitter.write_all(&data).unwrap();
             splitter.finish().unwrap().0
         };
 
         let root2 = {
-            let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+            let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             splitter.write_all(&data).unwrap();
             splitter.finish().unwrap().0
         };
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_splitter_write_past_span() {
-        let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(10);
+        let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(10);
 
         let result = splitter.write_all(b"this is more than 10 bytes");
         assert!(result.is_err());
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_splitter_span_mismatch() {
-        let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(100);
+        let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(100);
 
         splitter.write_all(b"short").unwrap();
         let result = splitter.finish();
@@ -206,7 +206,7 @@ mod tests {
             crate::chunk::encryption::EncryptedChunkRef,
             MemoryStore<DEFAULT_BODY_SIZE>,
         ) {
-            let mut splitter = EncryptedSyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+            let mut splitter = EncryptedSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             splitter.write_all(data).unwrap();
             let (root_ref, chunks) = splitter.finish().unwrap();
             (root_ref, MemoryStore::from_chunks(chunks))
@@ -216,7 +216,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_splitter_write_past_span() {
-            let mut splitter = EncryptedSyncSplitter::<DEFAULT_BODY_SIZE>::new(10);
+            let mut splitter = EncryptedSplitter::<DEFAULT_BODY_SIZE>::new(10);
 
             let result = splitter.write_all(b"this is more than 10 bytes");
             assert!(result.is_err());
@@ -224,7 +224,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_splitter_span_mismatch() {
-            let mut splitter = EncryptedSyncSplitter::<DEFAULT_BODY_SIZE>::new(100);
+            let mut splitter = EncryptedSplitter::<DEFAULT_BODY_SIZE>::new(100);
 
             splitter.write_all(b"short").unwrap();
             let result = splitter.finish();
@@ -235,12 +235,11 @@ mod tests {
         #[test]
         fn test_encrypted_differs_from_plaintext() {
             let data = b"test data for encryption comparison";
-            let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+            let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             splitter.write_all(data).unwrap();
             let (plain_root, _) = splitter.finish().unwrap();
 
-            let mut enc_splitter =
-                EncryptedSyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+            let mut enc_splitter = EncryptedSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             enc_splitter.write_all(data).unwrap();
             let (enc_root, _) = enc_splitter.finish().unwrap();
 

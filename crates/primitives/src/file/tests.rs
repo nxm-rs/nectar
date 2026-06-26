@@ -7,7 +7,7 @@ use std::io::Write;
 use alloy_primitives::hex;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::file::SyncSplitter;
+use crate::file::Splitter;
 
 const CHUNK_SIZE: usize = DEFAULT_BODY_SIZE;
 
@@ -111,7 +111,7 @@ const LARGE_TEST_VECTORS: &[(usize, &str)] = &[
 fn run_vector_test(size: usize, expected_hex: &str) {
     let data = sequential_bytes(size);
 
-    let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+    let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
     splitter.write_all(&data).unwrap();
     let (root, _) = splitter.finish().unwrap();
 
@@ -145,7 +145,7 @@ fn test_go_vectors_large() {
 #[cfg(feature = "encryption")]
 mod encrypted {
     use crate::bmt::DEFAULT_BODY_SIZE;
-    use crate::file::{join, sync_split_encrypted};
+    use crate::file::{join, split_encrypted};
     use futures::executor::block_on;
 
     /// Test sizes covering various boundary conditions.
@@ -167,7 +167,7 @@ mod encrypted {
     fn run_encrypted_roundtrip(size: usize) {
         let data: Vec<u8> = (0..size).map(|i| (i % 255) as u8).collect();
 
-        let (root_ref, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
 
         assert_eq!(
             Vec::from(&root_ref).len(),
@@ -191,7 +191,7 @@ mod encrypted {
     fn encrypted_chunk_count_single() {
         // Single chunk file: 1 encrypted chunk stored
         let data = b"small data";
-        let (_, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (_, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
         assert_eq!(store.len(), 1);
     }
 
@@ -199,7 +199,7 @@ mod encrypted {
     fn encrypted_chunk_count_two_data() {
         // 4097 bytes → 2 data chunks + 1 intermediate = 3
         let data = vec![0xAB; 4097];
-        let (_, store) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+        let (_, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
         assert_eq!(store.len(), 3);
     }
 
@@ -208,8 +208,8 @@ mod encrypted {
         // Two encryptions of the same data produce different ciphertexts
         // (different random keys each time)
         let data = b"test determinism";
-        let (ref1, _) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
-        let (ref2, _) = sync_split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (ref1, _) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
+        let (ref2, _) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
 
         // Root addresses differ because encryption keys are random
         assert_ne!(ref1.address(), ref2.address());
@@ -243,12 +243,12 @@ mod write_file_ext {
     fn splitter_chunks_roundtrip() {
         use std::io::Write;
 
-        use crate::file::SyncSplitter;
+        use crate::file::Splitter;
         use crate::store::ChunkPut;
 
         let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
         let data = b"streaming via splitter";
-        let mut splitter = SyncSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+        let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
         splitter.write_all(data).unwrap();
         let (root, chunks) = splitter.finish().unwrap();
         for chunk in chunks {
