@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/nxm-rs/nectar/releases/tag/v0.3.0) - 2026-06-26
+
+### Features
+
+- [primitives] Add bounded streaming joiner consumption (range, reader, folds, download) ([#115](https://github.com/nxm-rs/nectar/issues/115))
+- [primitives] Add wasm-ready async store traits and an async WriteAt sink ([#111](https://github.com/nxm-rs/nectar/issues/111))
+- [primitives] Add concurrent out-of-order offset streams to the joiner ([#110](https://github.com/nxm-rs/nectar/issues/110))
+- [postage] Make BatchStore/StoreValidator/SnapshotStore synchronous ([#103](https://github.com/nxm-rs/nectar/issues/103))
+- [primitives] Add anchor-keyed transformed address and SOC unwrap ([#99](https://github.com/nxm-rs/nectar/issues/99))
+- [bmt] Apply prefix to every node for bee parity ([#98](https://github.com/nxm-rs/nectar/issues/98))
+- [postage] Add StampedChunk and its typed/wire codec; add AnyChunk::from_wire_bytes ([#96](https://github.com/nxm-rs/nectar/issues/96))
+- [primitives] Add type-tagged AnyChunk codec ([#95](https://github.com/nxm-rs/nectar/issues/95))
+
+### Refactor
+
+- [primitives] Mark public error enums non_exhaustive ([#122](https://github.com/nxm-rs/nectar/issues/122))
+- [primitives] Tighten error source-preservation and drop hand-rolled error impls ([#120](https://github.com/nxm-rs/nectar/issues/120))
+- [primitives] Drop dead sync/async qualifiers from names ([#118](https://github.com/nxm-rs/nectar/issues/118))
+- [primitives] Remove the sync chunk-store trait family and the sync joiner ([#114](https://github.com/nxm-rs/nectar/issues/114))
+- [mantaray] Drive manifests over the async chunk-store traits ([#113](https://github.com/nxm-rs/nectar/issues/113))
+- [primitives] Decouple the splitter from the store and produce chunks ([#112](https://github.com/nxm-rs/nectar/issues/112))
+- [primitives] Drop the AnyChunk::Custom variant ([#100](https://github.com/nxm-rs/nectar/issues/100))
+- [postage-usage] Rename ChunkSink/ChunkSource to SnapshotSink/SnapshotSource ([#94](https://github.com/nxm-rs/nectar/issues/94))
+
 ## [0.2.1](https://github.com/nxm-rs/nectar/releases/tag/v0.2.1) - 2026-06-15
 
 ### Bug Fixes
