@@ -15,25 +15,20 @@ use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::{AnyChunk, ChunkAddress};
 
 /// Errors from chunk storage operations.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum ChunkStoreError {
     /// Chunk not found at the given address.
-    #[error("chunk not found: {address_hex}")]
-    NotFound {
-        /// Hex-encoded address of the missing chunk.
-        address_hex: String,
-    },
+    #[error("chunk not found: {0}")]
+    NotFound(ChunkAddress),
     /// Catch-all for backend-specific errors.
     #[error("{0}")]
-    Other(String),
+    Other(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl ChunkStoreError {
     /// Create a `NotFound` error for the given address.
-    pub fn not_found(address: &ChunkAddress) -> Self {
-        Self::NotFound {
-            address_hex: format!("{address}"),
-        }
+    pub const fn not_found(address: &ChunkAddress) -> Self {
+        Self::NotFound(*address)
     }
 }
 

@@ -440,9 +440,7 @@ impl<E: NodeEntry> Fork<E> {
 
         if self.node.is_with_metadata() {
             let mut metadata_json = serde_json::to_string(&self.node.metadata)
-                .map_err(|e| MantarayError::InvalidMetadata {
-                    message: e.to_string(),
-                })?
+                .map_err(MantarayError::Metadata)?
                 .into_bytes();
 
             let metadata_bytes_size_with_header =
@@ -509,11 +507,7 @@ impl<E: NodeEntry> Fork<E> {
             let metadata_start =
                 ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size + ForkHeader::METADATA_LEN_SIZE;
             let metadata_bytes = &data[metadata_start..];
-            self.node.metadata = serde_json::from_slice(metadata_bytes).map_err(|e| {
-                MantarayError::InvalidMetadata {
-                    message: e.to_string(),
-                }
-            })?;
+            self.node.metadata = serde_json::from_slice(metadata_bytes)?;
         }
 
         Ok(())

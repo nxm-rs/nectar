@@ -107,7 +107,7 @@ pub use sharded_ring::ShardedRingIssuer;
 
 // Factory (std only)
 #[cfg(feature = "std")]
-pub use factory::{BatchFactory, CreateResult, MemoryBatchError, MemoryBatchFactory};
+pub use factory::{BatchFactory, CreateResult, MemoryBatchFactory};
 
 // Parallel signing (requires parallel feature)
 #[cfg(feature = "parallel")]
