@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use futures::executor::block_on;
 use nectar_mantaray::node::Node;
 use nectar_mantaray::{MemoryStore, PlainManifest};
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
@@ -37,7 +38,7 @@ fn build_spa_manifest() -> PlainManifest<Store> {
     let mut m = PlainManifest::new(store);
     for &p in SPA_PATHS {
         let addr = make_addr(p.as_bytes());
-        m.add(p, addr).unwrap();
+        block_on(m.add(p, addr)).unwrap();
     }
     m
 }
@@ -49,7 +50,7 @@ fn build_large_manifest(count: usize) -> PlainManifest<Store> {
     for i in 0..count {
         let path = format!("dir{}/subdir{}/file{}.dat", i / 100, i / 10, i);
         let addr = make_addr(path.as_bytes());
-        m.add(&path, addr).unwrap();
+        block_on(m.add(&path, addr)).unwrap();
     }
     m
 }
@@ -74,7 +75,7 @@ fn bench_add(c: &mut Criterion) {
             let mut m = PlainManifest::new(store);
             for &p in paths {
                 let addr = make_addr(p.as_bytes());
-                m.add(p, addr).unwrap();
+                block_on(m.add(p, addr)).unwrap();
             }
             m
         });
@@ -94,7 +95,7 @@ fn bench_add(c: &mut Criterion) {
                 let store = Store::new();
                 let mut m = PlainManifest::new(store);
                 for (path, addr) in entries {
-                    m.add(path, *addr).unwrap();
+                    block_on(m.add(path, *addr)).unwrap();
                 }
                 m
             });
@@ -111,7 +112,7 @@ fn bench_lookup(c: &mut Criterion) {
 
     group.bench_function("existing_path", |b| {
         b.iter(|| {
-            let entry = m.lookup("js/app.js").unwrap();
+            let entry = block_on(m.lookup("js/app.js")).unwrap();
             entry.address().is_some()
         });
     });
@@ -121,7 +122,7 @@ fn bench_lookup(c: &mut Criterion) {
 
     group.bench_function("500_paths_deep", |b| {
         b.iter(|| {
-            let entry = large.lookup("dir4/subdir49/file499.dat").unwrap();
+            let entry = block_on(large.lookup("dir4/subdir49/file499.dat")).unwrap();
             entry.address().is_some()
         });
     });
@@ -136,7 +137,7 @@ fn bench_remove(c: &mut Criterion) {
         b.iter_batched(
             build_spa_manifest,
             |mut m| {
-                m.remove("js/app.js").unwrap();
+                block_on(m.remove("js/app.js")).unwrap();
                 m
             },
             criterion::BatchSize::SmallInput,
@@ -152,11 +153,11 @@ fn bench_has_prefix(c: &mut Criterion) {
     let mut m = build_spa_manifest();
 
     group.bench_function("existing_prefix", |b| {
-        b.iter(|| m.has_prefix("js/").unwrap());
+        b.iter(|| block_on(m.has_prefix("js/")).unwrap());
     });
 
     group.bench_function("missing_prefix", |b| {
-        b.iter(|| m.has_prefix("nonexistent/").unwrap());
+        b.iter(|| block_on(m.has_prefix("nonexistent/")).unwrap());
     });
 
     group.finish();
@@ -167,11 +168,11 @@ fn bench_encode(c: &mut Criterion) {
 
     // Build a trie via PlainManifest, save to get references assigned, reload.
     let mut m = build_spa_manifest();
-    let root_ref = m.save().unwrap();
+    let root_ref = block_on(m.save()).unwrap();
     let (_, store) = m.into_parts();
     let mut m2 = PlainManifest::open(root_ref, store);
     // Force-load the entire trie
-    m2.walk(&mut |_, _| Ok(())).unwrap();
+    block_on(m2.walk(&mut |_, _| Ok(()))).unwrap();
     let (n, _) = m2.into_parts();
 
     group.bench_function("spa_trie", |b| {
@@ -186,10 +187,10 @@ fn bench_decode(c: &mut Criterion) {
 
     // Build trie via PlainManifest, save, encode to get binary data.
     let mut m = build_spa_manifest();
-    let root_ref = m.save().unwrap();
+    let root_ref = block_on(m.save()).unwrap();
     let (_, store) = m.into_parts();
     let mut m2 = PlainManifest::open(root_ref, store);
-    m2.walk(&mut |_, _| Ok(())).unwrap();
+    block_on(m2.walk(&mut |_, _| Ok(()))).unwrap();
     let (n, _) = m2.into_parts();
     let data = Vec::<u8>::try_from(&n).unwrap();
 
@@ -209,10 +210,10 @@ fn bench_walk(c: &mut Criterion) {
         let mut m = build_spa_manifest();
         b.iter(|| {
             let mut count = 0u32;
-            m.walk(&mut |_path, _node| {
+            block_on(m.walk(&mut |_path, _node| {
                 count += 1;
                 Ok(())
-            })
+            }))
             .unwrap();
             count
         });
@@ -223,10 +224,10 @@ fn bench_walk(c: &mut Criterion) {
             let mut m = build_large_manifest(count);
             b.iter(|| {
                 let mut visited = 0u32;
-                m.walk(&mut |_path, _node| {
+                block_on(m.walk(&mut |_path, _node| {
                     visited += 1;
                     Ok(())
-                })
+                }))
                 .unwrap();
                 visited
             });
@@ -243,7 +244,7 @@ fn bench_save_load(c: &mut Criterion) {
         b.iter_batched(
             build_spa_manifest,
             |mut m| {
-                m.save().unwrap();
+                block_on(m.save()).unwrap();
                 m
             },
             criterion::BatchSize::SmallInput,
@@ -252,12 +253,12 @@ fn bench_save_load(c: &mut Criterion) {
 
     group.bench_function("load_spa_trie", |b| {
         let mut m = build_spa_manifest();
-        let root_ref = m.save().unwrap();
+        let root_ref = block_on(m.save()).unwrap();
         let (_, store) = m.into_parts();
 
         b.iter(|| {
             let mut m2 = PlainManifest::open(root_ref, store.clone());
-            let _ = m2.lookup("index.html").unwrap();
+            let _ = block_on(m2.lookup("index.html")).unwrap();
             m2
         });
     });
@@ -266,10 +267,10 @@ fn bench_save_load(c: &mut Criterion) {
         b.iter_batched(
             build_spa_manifest,
             |mut m| {
-                let root_ref = m.save().unwrap();
+                let root_ref = block_on(m.save()).unwrap();
                 let (_, store) = m.into_parts();
                 let mut m2 = PlainManifest::open(root_ref, store);
-                let _ = m2.lookup("index.html").unwrap();
+                let _ = block_on(m2.lookup("index.html")).unwrap();
                 m2
             },
             criterion::BatchSize::SmallInput,
@@ -285,7 +286,7 @@ fn bench_full_workflow(c: &mut Criterion) {
     group.bench_function("add_save_load_lookup", |b| {
         b.iter(|| {
             let mut m = build_spa_manifest();
-            let root_ref = m.save().unwrap();
+            let root_ref = block_on(m.save()).unwrap();
             let (_, store) = m.into_parts();
             let mut m2 = PlainManifest::open(root_ref, store);
 
@@ -297,7 +298,7 @@ fn bench_full_workflow(c: &mut Criterion) {
                 "js/app.js",
             ];
             for &p in paths {
-                m2.lookup(p).unwrap();
+                block_on(m2.lookup(p)).unwrap();
             }
         });
     });
@@ -313,29 +314,35 @@ fn bench_iter(c: &mut Criterion) {
         let mut m = build_spa_manifest();
 
         b.iter(|| {
-            let mut count = 0u32;
-            for result in m.iter() {
-                result.unwrap();
-                count += 1;
-            }
-            count
+            block_on(async {
+                let mut count = 0u32;
+                let mut iter = m.iter();
+                while let Some(result) = iter.next().await {
+                    result.unwrap();
+                    count += 1;
+                }
+                count
+            })
         });
     });
 
     // Lazy iteration after save/load (exercises storage loading)
     group.bench_function("spa_trie_lazy", |b| {
         let mut m = build_spa_manifest();
-        let root_ref = m.save().unwrap();
+        let root_ref = block_on(m.save()).unwrap();
         let (_, store) = m.into_parts();
 
         b.iter(|| {
             let mut m2 = PlainManifest::open(root_ref, store.clone());
-            let mut count = 0u32;
-            for result in m2.iter() {
-                result.unwrap();
-                count += 1;
-            }
-            count
+            block_on(async {
+                let mut count = 0u32;
+                let mut iter = m2.iter();
+                while let Some(result) = iter.next().await {
+                    result.unwrap();
+                    count += 1;
+                }
+                count
+            })
         });
     });
 
@@ -344,7 +351,7 @@ fn bench_iter(c: &mut Criterion) {
         let mut m = build_spa_manifest();
 
         b.iter(|| {
-            let entries = m.entries().unwrap();
+            let entries = block_on(m.entries()).unwrap();
             entries.len()
         });
     });
