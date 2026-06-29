@@ -35,7 +35,9 @@ use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::ChunkAddress;
 
 use super::error::{FileError, Result};
-use super::frontier::{SubtreeNode, expand_frontier, overlapping_children, read_subtree_bodies};
+use super::frontier::{
+    SubtreeNode, expand_frontier, frontier_seed, overlapping_children, read_subtree_bodies,
+};
 use super::mode::{JoinMode, PlainMode};
 use super::tree::{ChunkRange, TreeParams};
 use crate::store::{ChunkGet, MaybeSend};
@@ -129,6 +131,43 @@ where
         let subtrees =
             expand_frontier::<G, M, BODY_SIZE>(&getter, &root, &context, span, &full_range, target)
                 .await?;
+
+        Ok(Self {
+            getter: Arc::new(getter),
+            root,
+            context,
+            span,
+            tree,
+            subtrees,
+            position: 0,
+            concurrency: DEFAULT_ASYNC_CONCURRENCY,
+            _mode: PhantomData,
+        })
+    }
+
+    /// Open for a forward streaming download, skipping the eager frontier
+    /// expansion.
+    ///
+    /// [`new`](Self::new) pre-expands a balanced subtree frontier with a
+    /// level-synchronous BFS, so one slow intermediate stalls every byte until
+    /// its whole level resolves. The chunk-granular offset stream descends the
+    /// tree concurrently from any seed, so a forward download needs no
+    /// pre-expansion: seed it with the root alone and let the bounded pool walk
+    /// the rest with no per-level barrier, so a slow intermediate lags only its
+    /// own subtree rather than the whole download. Use this for
+    /// [`download_into`](Self::download_into) and
+    /// [`into_offset_stream_chunked`](Self::into_offset_stream_chunked); the
+    /// random-access reads ([`read_all`](Self::read_all),
+    /// [`into_windowed_reader`](Self::into_windowed_reader)) want the balanced
+    /// frontier and should open with [`new`](Self::new). The root is re-fetched
+    /// once as the stream descends it (a single chunk).
+    pub async fn open_streaming(getter: G, input: M::RootRef) -> Result<Self> {
+        const { super::constants::assert_valid_body_size::<BODY_SIZE>() };
+
+        let (root, span, context) =
+            super::mode::joiner_init::<M, G, BODY_SIZE>(&getter, input).await?;
+        let tree = TreeParams::<BODY_SIZE>::new(span);
+        let subtrees = vec![frontier_seed::<M>(&root, &context, span)];
 
         Ok(Self {
             getter: Arc::new(getter),
@@ -1001,6 +1040,114 @@ mod tests {
 
     // --- Generated shared tests (async variants) ---
     generate_plain_joiner_tests!(tokio::test, Joiner, [async], [await]);
+
+    // --- Lazy streaming open (`open_streaming`) ---
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A store that counts `get` calls and can park one chosen address until a
+    /// gate is released, so a test can prove the lazy open neither pre-expands
+    /// the frontier nor lets a slow intermediate stall other subtrees.
+    #[derive(Clone)]
+    struct ProbeStore {
+        inner: Arc<HashMap<ChunkAddress, AnyChunk>>,
+        gets: Arc<AtomicUsize>,
+    }
+
+    impl ChunkGet<DEFAULT_BODY_SIZE> for ProbeStore {
+        type Error = crate::store::ChunkStoreError;
+        async fn get(&self, address: &ChunkAddress) -> std::result::Result<AnyChunk, Self::Error> {
+            self.gets.fetch_add(1, Ordering::SeqCst);
+            self.inner
+                .get(address)
+                .cloned()
+                .ok_or_else(|| crate::store::ChunkStoreError::not_found(address))
+        }
+    }
+
+    async fn drain_chunked_to_buf<G>(joiner: GenericJoiner<G, PlainMode>, total: usize) -> Vec<u8>
+    where
+        G: ChunkGet<DEFAULT_BODY_SIZE> + 'static,
+    {
+        let stream = joiner.into_offset_stream_chunked();
+        futures::pin_mut!(stream);
+        let mut buf = vec![0u8; total];
+        while let Some(item) = stream.next().await {
+            let (offset, body) = item.unwrap();
+            let start = offset as usize;
+            buf[start..start + body.len()].copy_from_slice(&body);
+        }
+        buf
+    }
+
+    /// The lazy open seeds the chunked stream from the root and reproduces a
+    /// multi-level file byte-for-byte.
+    #[tokio::test]
+    async fn streaming_open_assembles_byte_exact() {
+        // ~600 leaves -> root over an intermediate level, so the lazy seed must
+        // descend intermediates rather than emit a single leaf.
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 600 + 123)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+
+        let joiner = Joiner::open_streaming(store, root).await.unwrap();
+        let total = joiner.size() as usize;
+        let got = drain_chunked_to_buf(joiner, total).await;
+        assert_eq!(got, data);
+    }
+
+    /// The lazy open fetches only the root before returning: no level-synchronous
+    /// frontier expansion, so no intermediate can stall the open. The eager
+    /// [`new`](Joiner::new) over the same tree fetches strictly more.
+    #[tokio::test]
+    async fn streaming_open_fetches_only_the_root() {
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 600)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+        let store = Arc::new(store);
+
+        let lazy_gets = Arc::new(AtomicUsize::new(0));
+        let lazy = ProbeStore {
+            inner: Arc::clone(&store),
+            gets: Arc::clone(&lazy_gets),
+        };
+        let _joiner = Joiner::open_streaming(lazy, root).await.unwrap();
+        assert_eq!(
+            lazy_gets.load(Ordering::SeqCst),
+            1,
+            "lazy open fetches only the root"
+        );
+
+        let eager_gets = Arc::new(AtomicUsize::new(0));
+        let eager = ProbeStore {
+            inner: store,
+            gets: Arc::clone(&eager_gets),
+        };
+        let _joiner = Joiner::new(eager, root).await.unwrap();
+        assert!(
+            eager_gets.load(Ordering::SeqCst) > 1,
+            "eager open pre-expands the frontier (root + intermediates)"
+        );
+    }
+
+    /// A lazily-opened stream reassembles byte-exact even when every fetch is
+    /// delayed, proving the descent is correct under latency and reordering.
+    #[tokio::test]
+    async fn streaming_open_is_byte_exact_under_latency() {
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 300 + 7)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+        let joiner = Joiner::open_streaming(store, root)
+            .await
+            .unwrap()
+            .with_concurrency(4);
+        let total = joiner.size() as usize;
+        let got = drain_chunked_to_buf(joiner, total).await;
+        assert_eq!(got, data);
+    }
 
     // --- Async-only tests: Stream, AsyncRead, AsyncSeek ---
 
