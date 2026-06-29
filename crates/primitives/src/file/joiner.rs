@@ -11,6 +11,18 @@ const DEFAULT_ASYNC_CONCURRENCY: usize = 8;
 /// chunk-granular offset stream surfaces the error.
 const DEFAULT_LEAF_RETRIES: u32 = 4;
 
+/// Maximum intermediate (non-leaf) chunk fetches kept in flight by the
+/// chunk-granular streaming walks.
+///
+/// Intermediate nodes are rare relative to leaves (one per branching-factor
+/// leaves) and each resolves to a whole chunk of child addresses, so a small
+/// handful keeps leaf discovery far ahead of leaf consumption. Capping them is
+/// what stops a wide subtree frontier from being fetched in full before the
+/// first data leaf: the cap leaves the rest of the configured width free for
+/// leaves, so leaf bytes begin flowing after only a short descent rather than
+/// after the whole frontier is drained.
+pub(crate) const MAX_INTERMEDIATE_IN_FLIGHT: usize = 4;
+
 #[cfg(feature = "tokio")]
 use bytes::Buf;
 use bytes::Bytes;
@@ -470,38 +482,70 @@ where
             }
         }
 
+        // Intermediates and leaves run on separate budgets out of `width`: at
+        // most `MAX_INTERMEDIATE_IN_FLIGHT` intermediate fetches resolve at once
+        // (each exposes a chunk of leaf addresses), and the rest of the width
+        // fetches leaf data. Leaves are emitted out of order the moment they
+        // land, so no reorder buffer is needed here.
         struct State<G, M: JoinMode, const BS: usize> {
             getter: Arc<G>,
             chunk_range: ChunkRange,
             width: usize,
-            queue: std::collections::VecDeque<Pending<M>>,
+            node_queue: std::collections::VecDeque<Pending<M>>,
+            leaf_queue: std::collections::VecDeque<Pending<M>>,
+            intermediate_in_flight: usize,
             in_flight: FuturesUnordered<BoxResolvedFuture<M>>,
         }
 
-        let mut queue = std::collections::VecDeque::new();
+        let mut node_queue = std::collections::VecDeque::new();
+        let mut leaf_queue = std::collections::VecDeque::new();
         for st in self.subtrees {
-            queue.push_back(Pending {
+            let pending = Pending {
                 node: st,
                 retries: DEFAULT_LEAF_RETRIES,
-            });
+            };
+            if pending.node.span <= BODY_SIZE as u64 {
+                leaf_queue.push_back(pending);
+            } else {
+                node_queue.push_back(pending);
+            }
         }
 
         let state = State::<G, M, BODY_SIZE> {
             getter,
             chunk_range,
             width,
-            queue,
+            node_queue,
+            leaf_queue,
+            intermediate_in_flight: 0,
             in_flight: FuturesUnordered::new(),
         };
 
         stream::unfold(state, move |mut state| async move {
             loop {
-                // Refill the in-flight pool from the pending queue up to the
-                // width, so at most `width` chunks are fetching at once.
+                // Refill the in-flight pool. An intermediate is admitted up to
+                // the intermediate cap, reserving at least one slot for a ready
+                // leaf at tiny widths; otherwise the slot fetches leaf data. With
+                // no leaf ready, intermediates may use the slot to drive the
+                // descent. So at most `width` chunks fetch at once and at most
+                // `MAX_INTERMEDIATE_IN_FLIGHT` of them are intermediates.
                 while state.in_flight.len() < state.width {
-                    let Some(pending) = state.queue.pop_front() else {
+                    let leaf_ready = !state.leaf_queue.is_empty();
+                    let can_admit_intermediate = state.intermediate_in_flight
+                        < MAX_INTERMEDIATE_IN_FLIGHT
+                        && !state.node_queue.is_empty();
+                    let admit_intermediate = can_admit_intermediate
+                        && (!leaf_ready || state.intermediate_in_flight + 1 < state.width);
+
+                    let pending = if admit_intermediate {
+                        state.intermediate_in_flight += 1;
+                        state.node_queue.pop_front().expect("node queue non-empty")
+                    } else if let Some(leaf) = state.leaf_queue.pop_front() {
+                        leaf
+                    } else {
                         break;
                     };
+
                     let getter = Arc::clone(&state.getter);
                     let range = state.chunk_range;
                     state.in_flight.push(Box::pin(async move {
@@ -516,17 +560,23 @@ where
                         return Some((Ok((offset, body)), state));
                     }
                     Resolved::Children(children) => {
+                        state.intermediate_in_flight -= 1;
                         for child in children {
-                            state.queue.push_back(Pending {
+                            let pending = Pending {
                                 node: child,
                                 retries: DEFAULT_LEAF_RETRIES,
-                            });
+                            };
+                            if pending.node.span <= BODY_SIZE as u64 {
+                                state.leaf_queue.push_back(pending);
+                            } else {
+                                state.node_queue.push_back(pending);
+                            }
                         }
                     }
                     Resolved::Retry(pending) => {
                         // Re-enqueue at the back so the worker pulls fresh work
                         // first; the failed chunk retries without holding a slot.
-                        state.queue.push_back(pending);
+                        state.leaf_queue.push_back(pending);
                     }
                     Resolved::Failed(e) => return Some((Err(e), state)),
                 }
@@ -672,28 +722,41 @@ where
         }
     }
 
+    // Intermediates and leaves run on separate budgets out of `width`, exactly
+    // as the whole-file walk: at most `MAX_INTERMEDIATE_IN_FLIGHT` intermediate
+    // fetches resolve at once and the rest of the width fetches leaf data, so a
+    // wide frontier no longer front-loads ahead of the first in-range leaf.
     struct State<G, M: JoinMode> {
         getter: Arc<G>,
         chunk_range: ChunkRange,
         range_start: u64,
         range_end: u64,
         width: usize,
-        queue: std::collections::VecDeque<Pending<M>>,
+        node_queue: std::collections::VecDeque<Pending<M>>,
+        leaf_queue: std::collections::VecDeque<Pending<M>>,
+        intermediate_in_flight: usize,
         in_flight: FuturesUnordered<BoxResolvedFuture<M>>,
     }
 
-    // Seed the queue with only the subtrees overlapping the range; an empty
-    // range leaves the queue empty and the stream finishes at once.
-    let mut queue = std::collections::VecDeque::new();
+    // Seed the queues with only the subtrees overlapping the range, splitting
+    // leaves from intermediates; an empty range leaves both empty and the
+    // stream finishes at once.
+    let mut node_queue = std::collections::VecDeque::new();
+    let mut leaf_queue = std::collections::VecDeque::new();
     if range_end > range_start {
         let range_start_byte = chunk_range.start * BODY_SIZE as u64;
         let range_end_byte = chunk_range.end * BODY_SIZE as u64;
         for st in subtrees {
             if st.byte_offset < range_end_byte && st.byte_offset + st.span > range_start_byte {
-                queue.push_back(Pending {
+                let pending = Pending {
                     node: st,
                     retries: DEFAULT_LEAF_RETRIES,
-                });
+                };
+                if pending.node.span <= BODY_SIZE as u64 {
+                    leaf_queue.push_back(pending);
+                } else {
+                    node_queue.push_back(pending);
+                }
             }
         }
     }
@@ -704,18 +767,33 @@ where
         range_start,
         range_end,
         width,
-        queue,
+        node_queue,
+        leaf_queue,
+        intermediate_in_flight: 0,
         in_flight: FuturesUnordered::new(),
     };
 
     stream::unfold(state, move |mut state| async move {
         loop {
-            // Refill the in-flight pool from the pending queue up to the
-            // width, so at most `width` chunks are fetching at once.
+            // Refill the in-flight pool: intermediates up to the cap (reserving
+            // a leaf slot at tiny widths), the rest of the width for leaf data.
             while state.in_flight.len() < state.width {
-                let Some(pending) = state.queue.pop_front() else {
+                let leaf_ready = !state.leaf_queue.is_empty();
+                let can_admit_intermediate = state.intermediate_in_flight
+                    < MAX_INTERMEDIATE_IN_FLIGHT
+                    && !state.node_queue.is_empty();
+                let admit_intermediate = can_admit_intermediate
+                    && (!leaf_ready || state.intermediate_in_flight + 1 < state.width);
+
+                let pending = if admit_intermediate {
+                    state.intermediate_in_flight += 1;
+                    state.node_queue.pop_front().expect("node queue non-empty")
+                } else if let Some(leaf) = state.leaf_queue.pop_front() {
+                    leaf
+                } else {
                     break;
                 };
+
                 let getter = Arc::clone(&state.getter);
                 let range = state.chunk_range;
                 state.in_flight.push(Box::pin(async move {
@@ -741,17 +819,23 @@ where
                     return Some((Ok((offset, body.slice(clip_lo..clip_hi))), state));
                 }
                 Resolved::Children(children) => {
+                    state.intermediate_in_flight -= 1;
                     for child in children {
-                        state.queue.push_back(Pending {
+                        let pending = Pending {
                             node: child,
                             retries: DEFAULT_LEAF_RETRIES,
-                        });
+                        };
+                        if pending.node.span <= BODY_SIZE as u64 {
+                            state.leaf_queue.push_back(pending);
+                        } else {
+                            state.node_queue.push_back(pending);
+                        }
                     }
                 }
                 Resolved::Retry(pending) => {
                     // Re-enqueue at the back so the worker pulls fresh work
                     // first; the failed chunk retries without holding a slot.
-                    state.queue.push_back(pending);
+                    state.leaf_queue.push_back(pending);
                 }
                 Resolved::Failed(e) => return Some((Err(e), state)),
             }
@@ -1173,6 +1257,221 @@ mod tests {
         assert!(
             peak >= width,
             "chunk-granular stream should reach width {width} in-flight, saw {peak}"
+        );
+    }
+
+    // --- Front-load / intermediate-cap guards (small body size = deep tree) ---
+
+    /// Branching for a 256-byte body is `256 / REF_SIZE` = 8, so a few hundred
+    /// leaves build a wide intermediate frontier with little data. This keeps the
+    /// front-load guards cheap while still exercising a frontier far larger than
+    /// the intermediate cap.
+    const TINY_BODY: usize = 256;
+
+    /// Content addresses of every data leaf for `data` under `TINY_BODY`, so a
+    /// probe getter can tell a leaf fetch from an intermediate fetch.
+    fn tiny_leaf_addresses(data: &[u8]) -> std::collections::HashSet<ChunkAddress> {
+        use crate::chunk::Chunk;
+        let mut set = std::collections::HashSet::new();
+        for block in data.chunks(TINY_BODY) {
+            let chunk = crate::chunk::ContentChunk::<TINY_BODY>::new(block.to_vec()).unwrap();
+            set.insert(*chunk.address());
+        }
+        set
+    }
+
+    /// A probe getter that records the leaf/intermediate kind of every fetch in
+    /// start order, tracks peak concurrent intermediate fetches, and can park one
+    /// chosen intermediate until the consumer has delivered `slow_gate` leaves.
+    #[derive(Clone)]
+    struct OrderProbe {
+        chunks: Arc<HashMap<ChunkAddress, AnyChunk<TINY_BODY>>>,
+        leaves: Arc<std::collections::HashSet<ChunkAddress>>,
+        /// One entry per fetch in start order: `true` for a leaf fetch.
+        kinds: Arc<std::sync::Mutex<Vec<bool>>>,
+        intermediate_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        peak_intermediate_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        delivered_leaves: Arc<std::sync::atomic::AtomicUsize>,
+        slow_addr: Option<ChunkAddress>,
+        slow_gate: usize,
+    }
+
+    impl OrderProbe {
+        fn new(store: HashMap<ChunkAddress, AnyChunk<TINY_BODY>>, data: &[u8]) -> Self {
+            Self {
+                chunks: Arc::new(store),
+                leaves: Arc::new(tiny_leaf_addresses(data)),
+                kinds: Arc::new(std::sync::Mutex::new(Vec::new())),
+                intermediate_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                peak_intermediate_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                delivered_leaves: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                slow_addr: None,
+                slow_gate: 0,
+            }
+        }
+
+        /// Drop the recorded order and the peak counter, e.g. after construction
+        /// so only the streaming walk's fetches are measured.
+        fn reset(&self) {
+            use std::sync::atomic::Ordering;
+            self.kinds.lock().unwrap().clear();
+            self.peak_intermediate_in_flight.store(0, Ordering::SeqCst);
+        }
+
+        /// Number of intermediate fetches before the first leaf fetch in the
+        /// recorded order.
+        fn intermediates_before_first_leaf(&self) -> usize {
+            let kinds = self.kinds.lock().unwrap();
+            kinds.iter().take_while(|is_leaf| !**is_leaf).count()
+        }
+
+        fn intermediate_fetches(&self) -> usize {
+            self.kinds.lock().unwrap().iter().filter(|l| !**l).count()
+        }
+    }
+
+    impl crate::store::ChunkGet<TINY_BODY> for OrderProbe {
+        type Error = crate::store::ChunkStoreError;
+
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> std::result::Result<AnyChunk<TINY_BODY>, Self::Error> {
+            use std::sync::atomic::Ordering;
+            let is_leaf = self.leaves.contains(address);
+            self.kinds.lock().unwrap().push(is_leaf);
+            if !is_leaf {
+                let now = self.intermediate_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak_intermediate_in_flight
+                    .fetch_max(now, Ordering::SeqCst);
+            }
+            if self.slow_addr == Some(*address) {
+                while self.delivered_leaves.load(Ordering::SeqCst) < self.slow_gate {
+                    tokio::task::yield_now().await;
+                }
+            }
+            for _ in 0..4 {
+                tokio::task::yield_now().await;
+            }
+            if !is_leaf {
+                self.intermediate_in_flight.fetch_sub(1, Ordering::SeqCst);
+            }
+            self.chunks
+                .get(address)
+                .cloned()
+                .ok_or_else(|| crate::store::ChunkStoreError::not_found(address))
+        }
+    }
+
+    fn tiny_deep_data(leaves: usize) -> Vec<u8> {
+        (0..TINY_BODY * leaves).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// The regression guard: on a wide frontier the first data leaf must be
+    /// fetched after only a short descent (a few intermediates), never after the
+    /// whole frontier is drained. The breadth-first walk fetched every
+    /// intermediate first, so the first leaf landed ~frontier-size fetches in.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_offset_stream_chunked_first_leaf_before_frontier() {
+        let data = tiny_deep_data(900);
+        let (root, store) = split::<TINY_BODY>(&data).unwrap();
+        let probe = OrderProbe::new(store.into_chunks(), &data);
+
+        let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
+            .await
+            .unwrap();
+        // Measure only the streaming walk, not the upfront frontier expansion.
+        probe.reset();
+
+        let total = joiner.size();
+        let mut reassembled = vec![0u8; total as usize];
+        let stream = joiner.into_offset_stream_chunked();
+        futures::pin_mut!(stream);
+        while let Some(pair) = stream.next().await {
+            let (offset, body) = pair.unwrap();
+            reassembled[offset as usize..offset as usize + body.len()].copy_from_slice(&body);
+        }
+        assert_eq!(reassembled, data, "deep-tree reassembly is byte-exact");
+
+        let frontier = probe.intermediate_fetches();
+        assert!(
+            frontier >= 40,
+            "test needs a frontier far larger than the cap, saw {frontier}"
+        );
+        let before = probe.intermediates_before_first_leaf();
+        assert!(
+            before <= 4 * MAX_INTERMEDIATE_IN_FLIGHT,
+            "first leaf fetched after {before} intermediates (frontier {frontier}); \
+             expected a short descent, not the whole frontier"
+        );
+    }
+
+    /// Intermediate fetches in flight never exceed the cap.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_offset_stream_chunked_intermediate_cap() {
+        let data = tiny_deep_data(900);
+        let (root, store) = split::<TINY_BODY>(&data).unwrap();
+        let probe = OrderProbe::new(store.into_chunks(), &data);
+
+        let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
+            .await
+            .unwrap()
+            .with_concurrency(16);
+        probe.reset();
+
+        let stream = joiner.into_offset_stream_chunked();
+        futures::pin_mut!(stream);
+        while let Some(pair) = stream.next().await {
+            pair.unwrap();
+        }
+
+        let peak = probe
+            .peak_intermediate_in_flight
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            peak <= MAX_INTERMEDIATE_IN_FLIGHT,
+            "intermediate in-flight peak {peak} exceeds cap {MAX_INTERMEDIATE_IN_FLIGHT}"
+        );
+    }
+
+    /// A single slow intermediate must not stall the rest of the stream: leaves
+    /// from other subtrees keep flowing while it is parked. The slow node parks
+    /// until the consumer has delivered a batch of leaves, so completion proves
+    /// those leaves were delivered without it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_offset_stream_chunked_slow_intermediate_does_not_stall() {
+        let data = tiny_deep_data(900);
+        let (root, store) = split::<TINY_BODY>(&data).unwrap();
+        let store = store.into_chunks();
+
+        // Pick an intermediate address (any non-leaf chunk) to slow down.
+        let leaves = tiny_leaf_addresses(&data);
+        let slow = *store
+            .keys()
+            .find(|a| !leaves.contains(*a) && **a != root)
+            .expect("an intermediate exists");
+
+        let mut probe = OrderProbe::new(store, &data);
+        probe.slow_addr = Some(slow);
+        probe.slow_gate = 100;
+        let delivered = Arc::clone(&probe.delivered_leaves);
+
+        let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
+            .await
+            .unwrap();
+
+        let total = joiner.size();
+        let mut reassembled = vec![0u8; total as usize];
+        let stream = joiner.into_offset_stream_chunked();
+        futures::pin_mut!(stream);
+        while let Some(pair) = stream.next().await {
+            let (offset, body) = pair.unwrap();
+            reassembled[offset as usize..offset as usize + body.len()].copy_from_slice(&body);
+            delivered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        assert_eq!(
+            reassembled, data,
+            "stream completes past the slow intermediate"
         );
     }
 

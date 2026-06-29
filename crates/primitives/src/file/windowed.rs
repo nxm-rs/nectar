@@ -21,7 +21,7 @@ use crate::chunk::ChunkAddress;
 
 use super::error::{FileError, Result};
 use super::frontier::{SubtreeNode, overlapping_children};
-use super::joiner::GenericJoiner;
+use super::joiner::{GenericJoiner, MAX_INTERMEDIATE_IN_FLIGHT};
 use super::mode::JoinMode;
 use super::tree::{ChunkRange, TreeParams};
 use crate::store::{ChunkGet, MaybeSend};
@@ -166,8 +166,9 @@ struct Pending<M: JoinMode> {
 enum Resolved<M: JoinMode> {
     /// A leaf: its absolute byte offset and decoded body.
     Leaf(u64, Bytes),
-    /// An intermediate: its overlapping children to re-queue.
-    Children(Vec<SubtreeNode<M>>),
+    /// An intermediate: the parent byte offset (to retire from the undescended
+    /// set) plus its overlapping children to re-queue.
+    Children(u64, Vec<SubtreeNode<M>>),
     /// A leaf fetch failed with retries left: re-queue this node.
     Retry(Pending<M>),
     /// A fetch failed terminally (retries exhausted or intermediate error).
@@ -215,28 +216,42 @@ where
     if is_leaf::<M, BS>(node) {
         return Resolved::Leaf(node.byte_offset, body);
     }
+    let parent_offset = node.byte_offset;
     match overlapping_children::<M, BS>(&body, node, chunk_range) {
-        Ok(children) => Resolved::Children(children),
+        Ok(children) => Resolved::Children(parent_offset, children),
         Err(e) => Resolved::Failed(e),
     }
 }
 
+/// Insert into an offset-ordered pending queue, keeping it ascending by byte
+/// offset so the front is always the lowest-offset node.
+fn insert_by_offset<M: JoinMode>(queue: &mut VecDeque<Pending<M>>, pending: Pending<M>) {
+    let pos = queue.partition_point(|p| p.node.byte_offset < pending.node.byte_offset);
+    queue.insert(pos, pending);
+}
+
 /// Window-bounded in-order walk from `start` to EOF.
 ///
-/// A single walk integrating fetch and reorder: intermediate nodes are always
-/// descended (few and small), but a leaf is moved from the pending queue into
-/// the in-flight pool only while in-flight plus buffered leaves are below
-/// `window`, and always the lowest-offset pending leaf first. Resolved leaves
-/// land in a `BTreeMap` reorder buffer keyed by absolute offset; the head is
-/// emitted when its offset equals `next_emit_offset`, which then advances by
-/// `body.len()` (never a fixed stride, so shorter encrypted leaves stay aligned)
-/// and frees a slot, sliding the window forward.
+/// A single walk integrating fetch and reorder. Intermediates and leaves are
+/// descended lowest-offset first and run on separate budgets out of `width`: at
+/// most `MAX_INTERMEDIATE_IN_FLIGHT` intermediate fetches resolve at once
+/// (enough to keep the next region's leaves discovered ahead of the cursor
+/// without fetching the whole frontier first), and a leaf is admitted only while
+/// in-flight plus buffered leaves are below `window`. Resolved leaves land in a
+/// `BTreeMap` reorder buffer keyed by absolute offset; the head is emitted when
+/// its offset equals `next_emit_offset`, which then advances by `body.len()`
+/// (never a fixed stride, so shorter encrypted leaves stay aligned) and frees a
+/// slot, sliding the window forward.
 ///
-/// The head leaf is always the lowest-offset pending leaf, so it is admitted as
-/// soon as a slot is free and emission always makes progress: no deadlock. The
-/// count gate enforces the invariant that in-flight leaf fetches plus buffered
-/// leaves never exceed `window`, so peak memory is `window` leaf bodies
-/// regardless of resolve order, leaf span, or file size.
+/// In-order and deadlock freedom rest on one rule: a queued leaf is admitted
+/// only when its offset is below every undescended intermediate's offset (a leaf
+/// at or above one could be preceded by a lower leaf that intermediate has yet
+/// to yield). Safe leaves admitted lowest-first are therefore a contiguous
+/// emittable prefix, so the window can never fill with un-emittable leaves while
+/// the head is still hidden behind an intermediate, and descending the lowest
+/// intermediate always exposes the head's region next. The count gate keeps
+/// in-flight plus buffered leaves at `window`, so peak memory is `window` leaf
+/// bodies regardless of resolve order, leaf span, tree depth, or file size.
 fn windowed_walk<G, M, const BODY_SIZE: usize>(
     getter: Arc<G>,
     subtrees: Vec<SubtreeNode<M>>,
@@ -266,8 +281,15 @@ where
         /// Leaves not yet admitted to the pool, kept in offset order so the
         /// lowest-offset (head) leaf is always admitted first.
         leaf_queue: VecDeque<Pending<M>>,
-        /// Intermediate nodes pending descent; always admissible.
+        /// Intermediate nodes pending descent, kept in offset order so the
+        /// lowest-offset subtree is always descended first.
         node_queue: VecDeque<Pending<M>>,
+        /// Byte offset -> count of undescended intermediates (queued or in
+        /// flight) starting there. The lowest key is the boundary below which a
+        /// leaf is safe to admit.
+        pending_intermediate_offsets: BTreeMap<u64, usize>,
+        /// Count of in-flight intermediate fetches (capped).
+        intermediate_in_flight: usize,
         /// Count of in-flight leaf fetches (excludes intermediates).
         leaf_in_flight: usize,
         in_flight: FuturesUnordered<BoxResolvedFuture<M>>,
@@ -275,9 +297,11 @@ where
     }
 
     // Seed the queues with the subtrees overlapping `[range_start, span)`,
-    // separating leaves (offset-gated) from intermediates (always admissible).
+    // separating leaves from intermediates and recording each intermediate's
+    // offset as undescended.
     let mut leaf_queue = VecDeque::new();
     let mut node_queue = VecDeque::new();
+    let mut pending_intermediate_offsets: BTreeMap<u64, usize> = BTreeMap::new();
     let range_start_byte = chunk_range.start * BODY_SIZE as u64;
     let range_end_byte = chunk_range.end * BODY_SIZE as u64;
     for st in subtrees {
@@ -289,9 +313,12 @@ where
             retries: DEFAULT_LEAF_RETRIES,
         };
         if is_leaf::<M, BODY_SIZE>(&pending.node) {
-            leaf_queue.push_back(pending);
+            insert_by_offset(&mut leaf_queue, pending);
         } else {
-            node_queue.push_back(pending);
+            *pending_intermediate_offsets
+                .entry(pending.node.byte_offset)
+                .or_insert(0) += 1;
+            insert_by_offset(&mut node_queue, pending);
         }
     }
 
@@ -304,6 +331,8 @@ where
         next_emit_offset: range_start,
         leaf_queue,
         node_queue,
+        pending_intermediate_offsets,
+        intermediate_in_flight: 0,
         leaf_in_flight: 0,
         in_flight: FuturesUnordered::new(),
         buffered: BTreeMap::new(),
@@ -324,33 +353,40 @@ where
                 return Some((Ok(body), state));
             }
 
-            // Refill the pool: intermediates always; a leaf only while a leaf slot
-            // is free, that is while in-flight plus buffered leaves are below
-            // `window`, and always the lowest-offset (head) leaf first. The head
-            // is therefore admitted as soon as a slot frees, so progress is
-            // guaranteed and at most `window` leaf bodies are ever held.
+            // Refill the pool. An intermediate is descended up to the cap,
+            // reserving a slot for a ready safe leaf at tiny widths; a leaf is
+            // admitted only when it is below every undescended intermediate (so
+            // no lower leaf can still appear) and a window slot is free. With no
+            // safe leaf ready, intermediates drive the descent to expose the
+            // head's region.
             loop {
                 if state.in_flight.len() >= state.width {
                     break;
                 }
-                if let Some(pending) = state.node_queue.pop_front() {
-                    let getter = Arc::clone(&state.getter);
-                    let range = state.chunk_range;
-                    state.in_flight.push(Box::pin(async move {
-                        fetch_one::<G, M, BODY_SIZE>(&*getter, &range, pending).await
-                    }) as BoxResolvedFuture<M>);
-                    continue;
-                }
-                if state.leaf_in_flight + state.buffered.len() >= state.window
-                    || state.leaf_queue.is_empty()
-                {
+
+                let min_pending_intermediate =
+                    state.pending_intermediate_offsets.keys().next().copied();
+                let leaf_admissible = state.leaf_queue.front().is_some_and(|p| {
+                    min_pending_intermediate.is_none_or(|m| p.node.byte_offset < m)
+                }) && state.leaf_in_flight + state.buffered.len()
+                    < state.window;
+
+                let can_admit_intermediate = state.intermediate_in_flight
+                    < MAX_INTERMEDIATE_IN_FLIGHT
+                    && !state.node_queue.is_empty();
+                let admit_intermediate = can_admit_intermediate
+                    && (!leaf_admissible || state.intermediate_in_flight + 1 < state.width);
+
+                let pending = if admit_intermediate {
+                    state.intermediate_in_flight += 1;
+                    state.node_queue.pop_front().expect("node queue non-empty")
+                } else if leaf_admissible {
+                    state.leaf_in_flight += 1;
+                    state.leaf_queue.pop_front().expect("front admissible")
+                } else {
                     break;
-                }
-                let pending = state
-                    .leaf_queue
-                    .pop_front()
-                    .expect("non-empty just observed");
-                state.leaf_in_flight += 1;
+                };
+
                 let getter = Arc::clone(&state.getter);
                 let range = state.chunk_range;
                 state.in_flight.push(Box::pin(async move {
@@ -386,21 +422,29 @@ where
                     let offset = leaf_start.max(state.range_start);
                     state.buffered.insert(offset, body.slice(clip_lo..));
                 }
-                Resolved::Children(children) => {
+                Resolved::Children(parent_offset, children) => {
+                    state.intermediate_in_flight -= 1;
+                    // Retire the descended parent from the undescended set.
+                    if let Some(count) = state.pending_intermediate_offsets.get_mut(&parent_offset)
+                    {
+                        *count -= 1;
+                        if *count == 0 {
+                            state.pending_intermediate_offsets.remove(&parent_offset);
+                        }
+                    }
                     for child in children {
                         let pending = Pending {
                             node: child,
                             retries: DEFAULT_LEAF_RETRIES,
                         };
                         if is_leaf::<M, BODY_SIZE>(&pending.node) {
-                            // Keep the leaf queue ordered by offset so the front
-                            // is always the lowest, which the window gate tests.
-                            let pos = state
-                                .leaf_queue
-                                .partition_point(|p| p.node.byte_offset < pending.node.byte_offset);
-                            state.leaf_queue.insert(pos, pending);
+                            insert_by_offset(&mut state.leaf_queue, pending);
                         } else {
-                            state.node_queue.push_back(pending);
+                            *state
+                                .pending_intermediate_offsets
+                                .entry(pending.node.byte_offset)
+                                .or_insert(0) += 1;
+                            insert_by_offset(&mut state.node_queue, pending);
                         }
                     }
                 }
@@ -408,10 +452,7 @@ where
                     // Re-enqueue in offset order so the gate still sees the lowest
                     // leaf at the front and the slot it held is freed for refill.
                     state.leaf_in_flight -= 1;
-                    let pos = state
-                        .leaf_queue
-                        .partition_point(|p| p.node.byte_offset < pending.node.byte_offset);
-                    state.leaf_queue.insert(pos, pending);
+                    insert_by_offset(&mut state.leaf_queue, pending);
                 }
                 Resolved::Failed(e) => return Some((Err(e), state)),
             }
@@ -855,6 +896,176 @@ mod tests {
         assert!(
             peak <= window,
             "leaf-body occupancy peak {peak} exceeds window {window}"
+        );
+    }
+
+    // --- Front-load / deep-frontier guards (small body size = deep tree) ---
+
+    /// Branching for a 256-byte body is `256 / REF_SIZE` = 8, so a few hundred
+    /// leaves build a wide intermediate frontier with little data.
+    const TINY_BODY: usize = 256;
+
+    fn tiny_leaf_addresses(data: &[u8]) -> HashMap<ChunkAddress, ()> {
+        use crate::chunk::Chunk;
+        let mut set = HashMap::new();
+        for block in data.chunks(TINY_BODY) {
+            let chunk = crate::chunk::ContentChunk::<TINY_BODY>::new(block.to_vec()).unwrap();
+            set.insert(*chunk.address(), ());
+        }
+        set
+    }
+
+    fn tiny_deep_data(leaves: usize) -> Vec<u8> {
+        (0..TINY_BODY * leaves).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// Records the leaf/intermediate kind of every fetch in start order and the
+    /// peak concurrent intermediate fetches.
+    #[derive(Clone)]
+    struct TinyOrderProbe {
+        chunks: Arc<HashMap<ChunkAddress, AnyChunk<TINY_BODY>>>,
+        leaves: Arc<HashMap<ChunkAddress, ()>>,
+        kinds: Arc<std::sync::Mutex<Vec<bool>>>,
+        intermediate_in_flight: Arc<AtomicUsize>,
+        peak_intermediate: Arc<AtomicUsize>,
+    }
+
+    impl TinyOrderProbe {
+        fn new(store: HashMap<ChunkAddress, AnyChunk<TINY_BODY>>, data: &[u8]) -> Self {
+            Self {
+                chunks: Arc::new(store),
+                leaves: Arc::new(tiny_leaf_addresses(data)),
+                kinds: Arc::new(std::sync::Mutex::new(Vec::new())),
+                intermediate_in_flight: Arc::new(AtomicUsize::new(0)),
+                peak_intermediate: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn reset(&self) {
+            self.kinds.lock().unwrap().clear();
+            self.peak_intermediate.store(0, Ordering::SeqCst);
+        }
+
+        fn intermediates_before_first_leaf(&self) -> usize {
+            self.kinds
+                .lock()
+                .unwrap()
+                .iter()
+                .take_while(|is_leaf| !**is_leaf)
+                .count()
+        }
+
+        fn intermediate_fetches(&self) -> usize {
+            self.kinds.lock().unwrap().iter().filter(|l| !**l).count()
+        }
+    }
+
+    impl ChunkGet<TINY_BODY> for TinyOrderProbe {
+        type Error = crate::store::ChunkStoreError;
+
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> std::result::Result<AnyChunk<TINY_BODY>, Self::Error> {
+            let is_leaf = self.leaves.contains_key(address);
+            self.kinds.lock().unwrap().push(is_leaf);
+            if !is_leaf {
+                let now = self.intermediate_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak_intermediate.fetch_max(now, Ordering::SeqCst);
+            }
+            for _ in 0..4 {
+                yield_now().await;
+            }
+            if !is_leaf {
+                self.intermediate_in_flight.fetch_sub(1, Ordering::SeqCst);
+            }
+            self.chunks
+                .get(address)
+                .cloned()
+                .ok_or_else(|| crate::store::ChunkStoreError::not_found(address))
+        }
+    }
+
+    /// The in-order regression guard: on a wide frontier the first data leaf is
+    /// fetched after only a short descent, not after the whole frontier drains.
+    #[test]
+    fn windowed_first_leaf_before_frontier() {
+        let data = tiny_deep_data(900);
+        let (root, store) = split::<TINY_BODY>(&data).unwrap();
+        let probe = TinyOrderProbe::new(store.into_chunks(), &data);
+
+        block_on(async {
+            let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
+                .await
+                .unwrap();
+            // Measure only the streaming walk, not the upfront expansion.
+            probe.reset();
+            let mut reader = joiner.into_windowed_reader(16);
+            let stream = reader.stream();
+            futures::pin_mut!(stream);
+            let mut got = Vec::new();
+            while let Some(item) = stream.next().await {
+                got.extend_from_slice(&item.unwrap());
+            }
+            assert_eq!(got, data, "deep-tree in-order reassembly is byte-exact");
+        });
+
+        let frontier = probe.intermediate_fetches();
+        assert!(
+            frontier >= 40,
+            "test needs a frontier far larger than the cap, saw {frontier}"
+        );
+        let before = probe.intermediates_before_first_leaf();
+        assert!(
+            before <= 4 * MAX_INTERMEDIATE_IN_FLIGHT,
+            "first leaf fetched after {before} intermediates (frontier {frontier}); \
+             expected a short descent, not the whole frontier"
+        );
+        let peak = probe.peak_intermediate.load(Ordering::SeqCst);
+        assert!(
+            peak <= MAX_INTERMEDIATE_IN_FLIGHT,
+            "intermediate in-flight peak {peak} exceeds cap {MAX_INTERMEDIATE_IN_FLIGHT}"
+        );
+    }
+
+    /// A multi-level frontier (intermediates whose children are themselves
+    /// intermediates) must still stream in order under a tight window without
+    /// deadlocking: the undescended-offset gate keeps buffered leaves a
+    /// contiguous emittable prefix, so the head is never starved.
+    #[test]
+    fn windowed_deep_frontier_in_order_and_bounded() {
+        let leaves = 2000usize;
+        let window = 5usize;
+        let data = tiny_deep_data(leaves);
+        let (root, store) = split::<TINY_BODY>(&data).unwrap();
+        let probe = TinyOrderProbe::new(store.into_chunks(), &data);
+
+        PEAK_LEAF_OCCUPANCY.with(|p| p.set(0));
+        block_on(async {
+            let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
+                .await
+                .unwrap()
+                .with_concurrency(leaves);
+            probe.reset();
+            let mut reader = joiner.into_windowed_reader(window);
+            let stream = reader.stream();
+            futures::pin_mut!(stream);
+            let mut got = Vec::new();
+            while let Some(item) = stream.next().await {
+                got.extend_from_slice(&item.unwrap());
+            }
+            assert_eq!(got, data, "deep frontier still yields whole file in order");
+        });
+
+        let occupancy = PEAK_LEAF_OCCUPANCY.with(std::cell::Cell::get);
+        assert!(
+            occupancy <= window,
+            "leaf-body occupancy peak {occupancy} exceeds window {window}"
+        );
+        let peak = probe.peak_intermediate.load(Ordering::SeqCst);
+        assert!(
+            peak <= MAX_INTERMEDIATE_IN_FLIGHT,
+            "intermediate in-flight peak {peak} exceeds cap {MAX_INTERMEDIATE_IN_FLIGHT}"
         );
     }
 
