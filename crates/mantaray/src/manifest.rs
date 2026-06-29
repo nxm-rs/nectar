@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use futures::Stream;
+use futures::{Stream, StreamExt, TryStreamExt, stream};
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
@@ -11,6 +11,12 @@ use crate::entry::Entry;
 use crate::mode::NodeEntry;
 use crate::node::Node;
 use crate::{MantarayError, Result, metadata};
+
+/// Default fan-out width for [`Manifest::entries_concurrent`].
+///
+/// Matches the file joiner's async width, balancing round-trip overlap against
+/// peak in-flight store load.
+pub const DEFAULT_LIST_CONCURRENCY: usize = 8;
 
 /// High-level mantaray manifest backed by a typed chunk store.
 ///
@@ -177,6 +183,65 @@ impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, 
         while let Some(item) = iter.next().await {
             out.push(item?);
         }
+        Ok(out)
+    }
+
+    /// Collect all value entries, fetching sibling forks concurrently.
+    ///
+    /// Walks the trie level by level, keeping up to `concurrency` node loads in
+    /// flight through the shared [`ChunkGet`]. Where [`entries`](Self::entries)
+    /// fetches one node per `await` in depth-first order, this fans out each
+    /// level's sibling forks at once, collapsing a folder's N sequential round
+    /// trips into ceil(N / concurrency) batched ones.
+    ///
+    /// Entries arrive in completion order, not path order. Sort by
+    /// [`path`](Entry::path) if a stable order is required; use
+    /// [`entries`](Self::entries) for the serial depth-first ordering.
+    ///
+    /// `concurrency` is clamped to at least 1; pass [`DEFAULT_LIST_CONCURRENCY`]
+    /// for the default width. Takes `&self`: the manifest's own trie is left
+    /// untouched (traversal runs over owned clones), so unlike `entries` no
+    /// nodes are cached back into it.
+    pub async fn entries_concurrent(&self, concurrency: usize) -> Result<Vec<Entry>> {
+        let width = concurrency.max(1);
+        let store = &self.store;
+        let mut out = Vec::new();
+
+        // Owned, loaded root. Cloning leaves the manifest trie untouched and
+        // gives each per-node load future disjoint state to own across the
+        // fan-out. For a persisted manifest the cloned child forks are
+        // reference-only, so the clone is shallow.
+        let mut root = self.trie.clone();
+        if !root.loaded {
+            root.load::<S, BS>(store).await?;
+        }
+        let mut frontier: Vec<(Vec<u8>, Node<E>)> = vec![(Vec::new(), root)];
+
+        while !frontier.is_empty() {
+            let mut pending: Vec<(Vec<u8>, Node<E>)> = Vec::new();
+            for (path, node) in &frontier {
+                if node.is_value() {
+                    out.push(Entry::from_node(path, node)?);
+                }
+                for fork in node.forks.values() {
+                    let mut child_path = path.clone();
+                    child_path.extend_from_slice(&fork.prefix);
+                    pending.push((child_path, fork.node.clone()));
+                }
+            }
+
+            frontier = stream::iter(pending)
+                .map(move |(path, mut node)| async move {
+                    if !node.loaded {
+                        node.load::<S, BS>(store).await?;
+                    }
+                    Ok::<_, MantarayError>((path, node))
+                })
+                .buffer_unordered(width)
+                .try_collect()
+                .await?;
+        }
+
         Ok(out)
     }
 
@@ -807,6 +872,238 @@ mod tests {
                 "path {path} missing after partial iteration + re-iteration"
             );
         }
+    }
+
+    /// A `ChunkGet` wrapper that records the peak number of concurrent
+    /// in-flight `get` calls, proving the concurrent listing fans out and
+    /// stays bounded by the chosen width.
+    struct TrackingStore {
+        inner: Store,
+        inflight: std::sync::atomic::AtomicUsize,
+        max_inflight: std::sync::atomic::AtomicUsize,
+        gets: std::sync::atomic::AtomicUsize,
+    }
+
+    impl TrackingStore {
+        fn new(inner: Store) -> Self {
+            Self {
+                inner,
+                inflight: std::sync::atomic::AtomicUsize::new(0),
+                max_inflight: std::sync::atomic::AtomicUsize::new(0),
+                gets: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn max_inflight(&self) -> usize {
+            self.max_inflight.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn gets(&self) -> usize {
+            self.gets.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// Yield once so sibling fetches in the same `buffer_unordered` batch can
+    /// ramp their in-flight count before any single fetch resolves.
+    async fn yield_once() {
+        use std::task::Poll;
+        let mut yielded = false;
+        futures::future::poll_fn(|cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+
+    impl ChunkGet<DEFAULT_BODY_SIZE> for TrackingStore {
+        type Error = <Store as ChunkGet<DEFAULT_BODY_SIZE>>::Error;
+
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> std::result::Result<nectar_primitives::chunk::AnyChunk<DEFAULT_BODY_SIZE>, Self::Error>
+        {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.gets.fetch_add(1, SeqCst);
+            let cur = self.inflight.fetch_add(1, SeqCst) + 1;
+            self.max_inflight.fetch_max(cur, SeqCst);
+            yield_once().await;
+            let r = ChunkGet::get(&self.inner, address).await;
+            self.inflight.fetch_sub(1, SeqCst);
+            r
+        }
+    }
+
+    /// Build a saved manifest, reopen it over a `TrackingStore`, and return it
+    /// alongside the recorded paths.
+    fn saved_tracking_manifest(paths: &[&str]) -> (PlainManifest<TrackingStore>, Vec<Vec<u8>>) {
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        for &path in paths {
+            block_on(m.add(path, make_addr(path))).unwrap();
+        }
+        let root_ref = block_on(m.save()).unwrap();
+        let (_, store) = m.into_parts();
+        let expected = paths.iter().map(|p| p.as_bytes().to_vec()).collect();
+        (
+            PlainManifest::open(root_ref, TrackingStore::new(store)),
+            expected,
+        )
+    }
+
+    fn sorted_paths(entries: &[Entry]) -> Vec<Vec<u8>> {
+        let mut v: Vec<Vec<u8>> = entries.iter().map(|e| e.path().to_vec()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn entries_concurrent_matches_serial() {
+        let paths = &[
+            "index.html",
+            "img/1.png",
+            "img/2.png",
+            "img/sub/deep.png",
+            "robots.txt",
+            "css/main.css",
+        ];
+
+        // Serial reference set.
+        let store = Store::new();
+        let mut serial = PlainManifest::new(store);
+        for &path in paths {
+            block_on(serial.add(path, make_addr(path))).unwrap();
+        }
+        let serial_entries = block_on(serial.entries()).unwrap();
+
+        let (m, _) = saved_tracking_manifest(paths);
+        let conc = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
+
+        assert_eq!(
+            sorted_paths(&serial_entries),
+            sorted_paths(&conc),
+            "concurrent listing must yield the same entry set as serial"
+        );
+        assert_eq!(conc.len(), paths.len());
+    }
+
+    #[test]
+    fn entries_concurrent_is_bounded_and_parallel() {
+        // Twenty sibling files share the "file" prefix, so the widest trie
+        // level has many forks fetched in one batch.
+        let owned: Vec<String> = (0..20).map(|i| format!("file{i:02}.dat")).collect();
+        let paths: Vec<&str> = owned.iter().map(String::as_str).collect();
+
+        let (m, expected) = saved_tracking_manifest(&paths);
+        let width = 4;
+        let entries = block_on(m.entries_concurrent(width)).unwrap();
+
+        let mut got = sorted_paths(&entries);
+        let mut want = expected;
+        want.sort();
+        assert_eq!(got.len(), paths.len());
+        got.dedup();
+        assert_eq!(got, want, "all sibling files must be listed exactly once");
+
+        let store = m.store();
+        assert!(store.gets() > 1, "listing must perform multiple fetches");
+        assert!(
+            store.max_inflight() > 1,
+            "concurrent listing must overlap fetches (got {})",
+            store.max_inflight()
+        );
+        assert!(
+            store.max_inflight() <= width,
+            "in-flight fetches must stay bounded by width {width} (got {})",
+            store.max_inflight()
+        );
+    }
+
+    #[test]
+    fn entries_concurrent_width_one_is_serial() {
+        let owned: Vec<String> = (0..12).map(|i| format!("file{i:02}.dat")).collect();
+        let paths: Vec<&str> = owned.iter().map(String::as_str).collect();
+
+        let (m, _) = saved_tracking_manifest(&paths);
+        let entries = block_on(m.entries_concurrent(1)).unwrap();
+
+        assert_eq!(entries.len(), paths.len());
+        assert_eq!(
+            m.store().max_inflight(),
+            1,
+            "width 1 must never overlap fetches"
+        );
+    }
+
+    #[test]
+    fn entries_concurrent_clamps_zero_width() {
+        let (m, _) = saved_tracking_manifest(&["a.txt", "b.txt"]);
+        let entries = block_on(m.entries_concurrent(0)).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(m.store().max_inflight(), 1, "zero width clamps to serial");
+    }
+
+    #[test]
+    fn entries_concurrent_empty_manifest() {
+        let store = Store::new();
+        let m = PlainManifest::new(store);
+        let entries = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
+        assert!(entries.is_empty(), "empty manifest yields no entries");
+    }
+
+    #[test]
+    fn entries_concurrent_single_entry() {
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        let addr = make_addr("only");
+        block_on(m.add("only.txt", addr)).unwrap();
+
+        let entries = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path(), b"only.txt");
+        assert_eq!(entries[0].address(), Some(&addr));
+    }
+
+    #[test]
+    fn entries_concurrent_deep_trie() {
+        let deep_paths: Vec<String> = (0..20)
+            .map(|i| format!("a/b/c/d/e/f/g/h/file{i:02}.dat"))
+            .collect();
+        let paths: Vec<&str> = deep_paths.iter().map(String::as_str).collect();
+
+        let (m, _) = saved_tracking_manifest(&paths);
+        let entries = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
+
+        assert_eq!(entries.len(), deep_paths.len());
+        let got = sorted_paths(&entries);
+        for path in &deep_paths {
+            assert!(
+                got.iter().any(|p| p == path.as_bytes()),
+                "deep path {path} missing from concurrent listing"
+            );
+        }
+    }
+
+    #[test]
+    fn entries_concurrent_shared_prefix_branches() {
+        // Shared-prefix branches force the trie to split mid-prefix, exercising
+        // sibling fan-out at several levels.
+        let paths = &[
+            "aaaaaa", "aaaaab", "aaabbb", "abbbbb", "abbbba", "bbbbba", "bbbaaa", "bbbaab",
+        ];
+        let (m, _) = saved_tracking_manifest(paths);
+        let entries = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
+
+        assert_eq!(sorted_paths(&entries), {
+            let mut v: Vec<Vec<u8>> = paths.iter().map(|p| p.as_bytes().to_vec()).collect();
+            v.sort();
+            v
+        });
     }
 
     #[test]
