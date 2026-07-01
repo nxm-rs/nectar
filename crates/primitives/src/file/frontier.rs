@@ -66,8 +66,8 @@ where
     Ok(children)
 }
 
-/// Create the initial frontier seed.
-fn frontier_seed<M: JoinMode>(
+/// Create the initial frontier seed (the whole-file root subtree).
+pub(crate) fn frontier_seed<M: JoinMode>(
     root: &ChunkAddress,
     context: &M::JoinerContext,
     span: u64,
