@@ -20,7 +20,10 @@ const DEFAULT_LEAF_RETRIES: u32 = 4;
 /// what stops a wide subtree frontier from being fetched in full before the
 /// first data leaf: the cap leaves the rest of the configured width free for
 /// leaves, so leaf bytes begin flowing after only a short descent rather than
-/// after the whole frontier is drained.
+/// after the whole frontier is drained. The cap shapes the walk for
+/// time-to-first-byte, sized to keep roughly a subtree descent's worth of
+/// structure fetches concurrent; any reduction in the cold-start fetch burst is
+/// a side effect, not the purpose.
 pub(crate) const MAX_INTERMEDIATE_IN_FLIGHT: usize = 4;
 
 #[cfg(feature = "tokio")]
