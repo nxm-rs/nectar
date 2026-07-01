@@ -5,10 +5,12 @@
 
 mod maybe_send;
 mod memory;
+mod retry;
 mod typed;
 
 pub use maybe_send::{MaybeSend, MaybeSync};
 pub use memory::MemoryStore;
+pub use retry::{RetryConfig, RetryingChunkGet, Sleeper};
 pub use typed::{ChunkGet, ChunkHas, ChunkPut};
 
 use crate::bmt::DEFAULT_BODY_SIZE;

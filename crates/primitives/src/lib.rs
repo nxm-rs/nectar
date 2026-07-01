@@ -107,7 +107,10 @@ pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
 pub type DefaultMemoryStore = MemoryStore<DEFAULT_BODY_SIZE>;
 
 // Chunk storage traits
-pub use store::{ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore};
+pub use store::{
+    ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, RetryConfig, RetryingChunkGet,
+    Sleeper,
+};
 
 // File joining (async)
 #[cfg(feature = "encryption")]
