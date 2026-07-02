@@ -1973,6 +1973,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "keccak-batch"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4172542d4f7233006681ac8d6ed65bf689a67e96eaa3d5dc27655d513fccb8cc"
+
+[[package]]
 name = "konst"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2150,6 +2156,7 @@ dependencies = [
  "getrandom 0.4.2",
  "hybrid-array",
  "js-sys",
+ "keccak-batch",
  "once_cell",
  "parking_lot",
  "proptest",
