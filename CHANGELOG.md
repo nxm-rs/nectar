@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/nxm-rs/nectar/releases/tag/v0.4.0) - 2026-07-02
+
+### Features
+
+- [primitives] Add a lazy streaming joiner open ([#124](https://github.com/nxm-rs/nectar/issues/124))
+- [primitives] Add a wasm-safe RetryingChunkGet decorator ([#130](https://github.com/nxm-rs/nectar/issues/130))
+
+### Performance
+
+- [primitives] Batch BMT keccak across SIMD lanes via keccak-batch ([#131](https://github.com/nxm-rs/nectar/issues/131))
+- [mantaray] Concurrent manifest listing ([#126](https://github.com/nxm-rs/nectar/issues/126))
+- [primitives] Split intermediate and leaf budgets in streaming walks ([#128](https://github.com/nxm-rs/nectar/issues/128))
+
 ## [0.3.0](https://github.com/nxm-rs/nectar/releases/tag/v0.3.0) - 2026-06-26
 
 ### Features

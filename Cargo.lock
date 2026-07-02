@@ -2057,7 +2057,7 @@ checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
 name = "nectar-contracts"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "nectar-mantaray"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "bitflags",
@@ -2083,7 +2083,7 @@ dependencies = [
 
 [[package]]
 name = "nectar-postage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "nectar-postage-issuer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -2123,7 +2123,7 @@ dependencies = [
 
 [[package]]
 name = "nectar-postage-usage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -2140,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "nectar-primitives"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -2175,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "nectar-swarms"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-chains",
  "num_enum",
