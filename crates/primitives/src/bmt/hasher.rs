@@ -10,10 +10,6 @@ use hybrid_array::{Array, sizes::U32};
 use std::io::{self, Write};
 use std::sync::LazyLock;
 
-// Use rayon for parallel processing on non-WASM platforms
-#[cfg(not(target_arch = "wasm32"))]
-use rayon;
-
 use super::constants::*;
 
 /// Number of zero tree levels for the default body size.
@@ -38,6 +34,32 @@ static ZERO_HASHES: LazyLock<[B256; ZERO_TREE_LEVELS]> = LazyLock::new(|| {
 
     hashes
 });
+
+/// Hash consecutive 64-byte sibling pairs of a tree level, batched across SIMD
+/// lanes.
+///
+/// `pairs` is the flat byte view of the level (`out.len()` pairs of two
+/// 32-byte nodes); each output is `keccak(prefix || left || right)`.
+pub(super) fn hash_pairs(prefix: Option<&[u8]>, pairs: &[u8], out: &mut [[u8; 32]]) {
+    debug_assert_eq!(pairs.len(), out.len() * SEGMENT_PAIR_LENGTH);
+
+    let Some(p) = prefix else {
+        let inputs: Vec<&[u8]> = pairs.chunks_exact(SEGMENT_PAIR_LENGTH).collect();
+        return keccak_batch::keccak256_many_into(&inputs, out);
+    };
+
+    let entry = p.len() + SEGMENT_PAIR_LENGTH;
+    let mut scratch = vec![0u8; entry * out.len()];
+    for (slot, pair) in scratch
+        .chunks_exact_mut(entry)
+        .zip(pairs.chunks_exact(SEGMENT_PAIR_LENGTH))
+    {
+        slot[..p.len()].copy_from_slice(p);
+        slot[p.len()..].copy_from_slice(pair);
+    }
+    let inputs: Vec<&[u8]> = scratch.chunks_exact(entry).collect();
+    keccak_batch::keccak256_many_into(&inputs, out);
+}
 
 /// BMT hasher with configurable body size.
 #[derive(Debug, Clone)]
@@ -222,19 +244,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
             .min(BODY_SIZE);
 
         // Hash only the effective subtree (which contains all actual data).
-        // The parallel zero-shortcut path uses the prefix-independent
-        // ZERO_HASHES; with a prefix set we recurse fully via the sequential
-        // path so every zero section is hashed under the prefix.
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut result = if prefix.is_some() {
-            self.hash_subtree_sequential(&self.buffer[..effective_size], effective_size)
-        } else {
-            self.hash_subtree_parallel(&self.buffer[..effective_size], effective_size)
-        };
-
-        #[cfg(target_arch = "wasm32")]
-        let mut result =
-            self.hash_subtree_sequential(&self.buffer[..effective_size], effective_size);
+        let mut result = self.hash_subtree(&self.buffer[..effective_size], &zero_hashes);
 
         // Roll up with zero hashes until we reach the full tree size
         let mut current_size = effective_size;
@@ -280,104 +290,54 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         hashes
     }
 
-    /// Hash a subtree of exactly `length` bytes (must be power of 2, >= 64)
+    /// Hash a power-of-two subtree (>= 64 bytes) level by level, batching each
+    /// level's sibling pairs across SIMD lanes.
     ///
-    /// For sizes < BODY_SIZE: uses sequential hashing (no rayon overhead).
-    /// For BODY_SIZE (4096): uses recursive parallel hashing for maximum throughput.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[inline(always)]
-    fn hash_subtree_parallel(&self, data: &[u8], length: usize) -> B256 {
-        debug_assert!(length.is_power_of_two());
-        debug_assert!(length >= SEGMENT_PAIR_LENGTH);
-
-        // For sizes < BODY_SIZE, use sequential (avoids rayon overhead for small/medium sizes)
-        if length < BODY_SIZE {
-            return self.hash_subtree_sequential(data, length);
-        }
-
-        // For BODY_SIZE (4096): use recursive parallel hashing
-        // Pass cursor as parameter to avoid self indirection in hot loop
-        Self::hash_subtree_recursive_parallel_inner(data, length, self.cursor)
-    }
-
-    /// Recursively hash a subtree using rayon for parallelism.
-    /// Only called for full BODY_SIZE chunks where parallelism pays off.
-    /// Takes cursor as parameter to avoid self indirection in recursive calls.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[inline(always)]
-    fn hash_subtree_recursive_parallel_inner(data: &[u8], length: usize, cursor: usize) -> B256 {
-        debug_assert!(length.is_power_of_two());
-        debug_assert!(length >= SEGMENT_PAIR_LENGTH);
-
-        // Base case: 64 bytes (one segment pair)
-        if length == SEGMENT_PAIR_LENGTH {
-            let mut hasher = Keccak256::new();
-            hasher.update(data);
-            return B256::from_slice(hasher.finalize().as_slice());
-        }
-
-        let half = length / 2;
-        let (left, right) = data.split_at(half);
-
-        // Check if right half is entirely beyond cursor (all zeros in buffer)
-        // cursor is relative to the start of this subtree
-        let (left_hash, right_hash) = if half >= cursor {
-            // Right side is all zeros - compute left only, use precomputed right
-            let left_hash = Self::hash_subtree_recursive_parallel_inner(left, half, cursor);
-            let right_hash = ZERO_HASHES[Self::zero_tree_level(half)];
-            (left_hash, right_hash)
-        } else {
-            // Both sides have data, use parallel execution
-            // Left cursor is capped at half (can't exceed subtree size)
-            // Right cursor is adjusted by half (relative to right subtree start)
-            rayon::join(
-                || Self::hash_subtree_recursive_parallel_inner(left, half, half),
-                || Self::hash_subtree_recursive_parallel_inner(right, half, cursor - half),
-            )
-        };
-
-        let mut hasher = Keccak256::new();
-        hasher.update(left_hash.as_slice());
-        hasher.update(right_hash.as_slice());
-        B256::from_slice(hasher.finalize().as_slice())
-    }
-
-    /// Hash a subtree of exactly `length` bytes (must be power of 2, >= 64) - sequential version
-    #[inline(always)]
-    fn hash_subtree_sequential(&self, data: &[u8], length: usize) -> B256 {
-        debug_assert!(length.is_power_of_two());
-        debug_assert!(length >= SEGMENT_PAIR_LENGTH);
+    /// Only pairs that overlap live data (the cursor) cost a Keccak; everything
+    /// past them is an all-zero subtree taken from `zero_hashes`, which the
+    /// caller has already made prefix-aware.
+    fn hash_subtree(&self, data: &[u8], zero_hashes: &[B256; ZERO_TREE_LEVELS]) -> B256 {
+        debug_assert!(data.len().is_power_of_two());
+        debug_assert!(data.len() >= SEGMENT_PAIR_LENGTH);
 
         let prefix = self.prefix.as_deref();
 
-        if length == SEGMENT_PAIR_LENGTH {
+        if data.len() == SEGMENT_PAIR_LENGTH {
             let mut hasher = Self::node_hasher(prefix);
             hasher.update(data);
             return B256::from_slice(hasher.finalize().as_slice());
         }
 
-        let half = length / 2;
-        let (left, right) = data.split_at(half);
+        // Level 0: pairs that overlap live data (the caller guarantees
+        // cursor > 0); the rest of the level is zero pairs.
+        let pairs = data.len() / SEGMENT_PAIR_LENGTH;
+        let mut live = self.cursor.div_ceil(SEGMENT_PAIR_LENGTH).min(pairs);
+        let mut level = vec![[0u8; 32]; pairs];
+        hash_pairs(
+            prefix,
+            &data[..live * SEGMENT_PAIR_LENGTH],
+            &mut level[..live],
+        );
+        for slot in &mut level[live..] {
+            slot.copy_from_slice(zero_hashes[0].as_slice());
+        }
 
-        // Check if right half is entirely beyond cursor (all zeros in buffer).
-        // The zero-sibling shortcut is only safe when the zero table matches the
-        // prefix; under a prefix we recurse over the literal zero section so it
-        // is hashed as keccak(prefix||...).
-        let (left_hash, right_hash) = if half >= self.cursor && prefix.is_none() {
-            // Right side is all zeros (plain hashing only)
-            let left_hash = self.hash_subtree_sequential(left, half);
-            let right_hash = ZERO_HASHES[Self::zero_tree_level(half)];
-            (left_hash, right_hash)
-        } else {
-            let left_hash = self.hash_subtree_sequential(left, half);
-            let right_hash = self.hash_subtree_sequential(right, half);
-            (left_hash, right_hash)
-        };
+        // Combine sibling digests level by level until one root remains.
+        let mut next = vec![[0u8; 32]; pairs / 2];
+        let mut count = pairs;
+        let mut depth = 1;
+        while count > 1 {
+            count /= 2;
+            live = live.div_ceil(2);
+            hash_pairs(prefix, level[..live * 2].as_flattened(), &mut next[..live]);
+            for slot in &mut next[live..count] {
+                slot.copy_from_slice(zero_hashes[depth].as_slice());
+            }
+            std::mem::swap(&mut level, &mut next);
+            depth += 1;
+        }
 
-        let mut hasher = Self::node_hasher(prefix);
-        hasher.update(left_hash.as_slice());
-        hasher.update(right_hash.as_slice());
-        B256::from_slice(hasher.finalize().as_slice())
+        B256::from(level[0])
     }
 
     /// Calculate the zero-tree level for a given subtree length.

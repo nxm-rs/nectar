@@ -32,6 +32,29 @@ fn bench_bmt_hash(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_bmt_hash_prefixed(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bmt_hash_prefixed");
+
+    // 32-byte anchor, matching the transformed-address (sampler) use.
+    let anchor = B256::random();
+
+    for size in [1024, 4096].iter() {
+        let mut data = vec![0u8; *size];
+        rng().fill_bytes(&mut data);
+
+        group.bench_with_input(BenchmarkId::from_parameter(size), &data, |b, data| {
+            b.iter(|| {
+                let mut hasher = DefaultHasher::with_prefix(anchor.as_slice());
+                hasher.set_span(data.len() as u64);
+                hasher.update(data);
+                hasher.sum()
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_content_chunk_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("content_chunk");
 
@@ -282,6 +305,7 @@ fn bench_bmt_zero_tree_optimization(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_bmt_hash,
+    bench_bmt_hash_prefixed,
     bench_content_chunk_creation,
     bench_single_owner_chunk_creation,
     bench_chunk_deserialization,

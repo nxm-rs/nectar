@@ -5,6 +5,7 @@
 
 use alloy_primitives::{B256, Keccak256};
 
+use super::hasher::hash_pairs;
 use crate::bmt::{Hasher, constants::*, error::BmtError};
 use crate::error::Result;
 
@@ -19,25 +20,6 @@ fn new_node_hasher(prefix: Option<&[u8]>) -> Keccak256 {
         hasher.update(p);
     }
     hasher
-}
-
-/// Compute the prefix-aware zero subtree hash for `level`.
-///
-/// `level` 0 is `keccak(prefix || 64 zero bytes)`; each higher level doubles the
-/// previous. With no prefix this equals the plain zero tree used by the hasher.
-fn prefixed_zero_hash(prefix: Option<&[u8]>, level: usize) -> B256 {
-    let mut hash = {
-        let mut hasher = new_node_hasher(prefix);
-        hasher.update([0u8; 2 * SEGMENT_SIZE]);
-        B256::from_slice(hasher.finalize().as_slice())
-    };
-    for _ in 0..level {
-        let mut hasher = new_node_hasher(prefix);
-        hasher.update(hash.as_slice());
-        hasher.update(hash.as_slice());
-        hash = B256::from_slice(hasher.finalize().as_slice());
-    }
-    hash
 }
 
 /// Represents a proof for a specific segment in a Binary Merkle Tree
@@ -147,51 +129,15 @@ impl Prover for Hasher {
             .into());
         }
 
-        // Create segments from data, padding with zeros if needed
-        let data_len = data.len();
-
-        // Use platform-specific optimizations for segment generation
-        #[cfg(not(target_arch = "wasm32"))]
-        let segments = {
-            use rayon::prelude::*;
-            (0..BRANCHES)
-                .into_par_iter()
-                .map(|i| {
-                    let start = i * SEGMENT_SIZE;
-                    let mut segment = [0u8; SEGMENT_SIZE];
-
-                    if start < data_len {
-                        let end = (start + SEGMENT_SIZE).min(data_len);
-                        let copy_len = end - start;
-                        segment[..copy_len].copy_from_slice(&data[start..end]);
-                    }
-
-                    B256::from_slice(&segment)
-                })
-                .collect::<Vec<_>>()
-        };
-
-        #[cfg(target_arch = "wasm32")]
-        let segments = {
-            let mut segs = Vec::with_capacity(BRANCHES);
-            for i in 0..BRANCHES {
-                let start = i * SEGMENT_SIZE;
-                let mut segment = [0u8; SEGMENT_SIZE];
-
-                if start < data_len {
-                    let end = (start + SEGMENT_SIZE).min(data_len);
-                    let copy_len = end - start;
-                    segment[..copy_len].copy_from_slice(&data[start..end]);
-                }
-
-                segs.push(B256::from_slice(&segment));
-            }
-
-            segs
-        };
+        // Materialise the BRANCHES zero-padded 32-byte leaf segments.
+        let mut leaves = [[0u8; SEGMENT_SIZE]; BRANCHES];
+        let n = data.len().min(BRANCHES * SEGMENT_SIZE);
+        for (leaf, chunk) in leaves.iter_mut().zip(data[..n].chunks(SEGMENT_SIZE)) {
+            leaf[..chunk.len()].copy_from_slice(chunk);
+        }
 
         // Get the segment being proven
-        let segment = segments[segment_index];
+        let segment = B256::from(leaves[segment_index]);
 
         // Include the prefix in the proof if there is one
         let prefix = if self.prefix().is_empty() {
@@ -201,73 +147,24 @@ impl Prover for Hasher {
         };
         let prefix_ref = prefix.as_deref();
 
-        // Generate proof segments
-        let mut proof_segments = Vec::with_capacity(PROOF_LENGTH);
-
-        // Build the Merkle tree level by level
-        let mut current_level = segments;
-        let mut current_index = segment_index;
-        // Tree level of the nodes in `current_level`: 0 = raw leaf segments,
-        // 1 = leaf-pair hashes, etc. Used to pick the right prefix-aware zero
-        // hash when padding an odd/short level.
-        let mut level: usize = 0;
-
-        // Continue until we reach the root (or until we have BMT_PROOF_LENGTH segments)
-        while proof_segments.len() < PROOF_LENGTH {
-            // Get sibling's index
-            let sibling_index = if current_index.is_multiple_of(2) {
-                current_index + 1
-            } else {
-                current_index - 1
-            };
-
-            // Add sibling to proof. A missing sibling is an all-zero subtree at
-            // this level, which under a prefix hashes differently from B256::ZERO.
-            if sibling_index < current_level.len() {
-                proof_segments.push(current_level[sibling_index]);
-            } else if level == 0 {
-                // Missing raw leaf segment is 32 zero bytes (not a hash).
-                proof_segments.push(B256::ZERO);
-            } else {
-                proof_segments.push(prefixed_zero_hash(prefix_ref, level - 1));
-            }
-
-            // Compute the next level up in the tree
-            let mut next_level = Vec::with_capacity(current_level.len().div_ceil(2));
-
-            for i in (0..current_level.len()).step_by(2) {
-                let left = &current_level[i];
-                let right = if i + 1 < current_level.len() {
-                    current_level[i + 1]
-                } else if level == 0 {
-                    B256::ZERO
-                } else {
-                    prefixed_zero_hash(prefix_ref, level - 1)
-                };
-
-                // Hash the pair to create the parent node (prefix-aware)
-                let mut hasher = new_node_hasher(prefix_ref);
-                hasher.update(left.as_slice());
-                hasher.update(right.as_slice());
-
-                let parent = B256::from_slice(hasher.finalize().as_slice());
-                next_level.push(parent);
-            }
-
-            // Move up to the next level
-            current_level = next_level;
-            current_index /= 2;
-            level += 1;
-
-            // If we've reached the root or have only one node, break
-            if current_level.len() <= 1 {
-                break;
-            }
+        // Build every tree level below the root, batching each level's sibling
+        // pairs across SIMD lanes. Zero padding is hashed literally, so under a
+        // prefix every zero subtree comes out as keccak(prefix || ...).
+        let mut levels: Vec<Vec<[u8; 32]>> = Vec::with_capacity(PROOF_LENGTH);
+        let mut current = leaves.to_vec();
+        while current.len() > 1 {
+            let mut next = vec![[0u8; 32]; current.len() / 2];
+            hash_pairs(prefix_ref, current.as_flattened(), &mut next);
+            levels.push(current);
+            current = next;
         }
 
-        // Ensure we have exactly BMT_PROOF_LENGTH segments in our proof
-        while proof_segments.len() < PROOF_LENGTH {
-            proof_segments.push(B256::ZERO);
+        // The proof is the sibling of the proven node at every level.
+        let mut proof_segments = Vec::with_capacity(PROOF_LENGTH);
+        let mut index = segment_index;
+        for level in &levels {
+            proof_segments.push(B256::from(level[index ^ 1]));
+            index /= 2;
         }
 
         Ok(Proof::new(
