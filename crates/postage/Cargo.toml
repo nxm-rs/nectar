@@ -41,8 +41,9 @@ proptest-arbitrary-interop = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
 alloy-signer-local = { workspace = true }
-alloy-primitives = { workspace = true, features = ["getrandom"] }
+alloy-primitives = { workspace = true, features = ["getrandom", "arbitrary"] }
 arbitrary = { workspace = true, features = ["derive"] }
+nectar-primitives = { workspace = true, features = ["arbitrary"] }
 
 [[bench]]
 name = "verify"
@@ -61,7 +62,8 @@ serde = ["dep:serde", "nectar-primitives/serde", "alloy-primitives/serde"]
 # Parallel verification using rayon (sync, CPU-bound).
 parallel = ["dep:rayon", "std"]
 
-# Arbitrary trait implementations for property-based testing.
+# Arbitrary trait implementations and valid-by-construction generators for
+# property-based testing and fuzzing.
 arbitrary = ["dep:arbitrary", "nectar-primitives/arbitrary", "alloy-primitives/arbitrary"]
 
 [package.metadata.docs.rs]

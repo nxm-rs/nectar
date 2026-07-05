@@ -48,6 +48,13 @@ impl Nonce {
     }
 }
 
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for Nonce {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self::new(u.arbitrary()?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

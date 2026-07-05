@@ -30,6 +30,8 @@
 //! - `std` (default): Enable standard library support, BatchStore, events
 //! - `serde`: Enable serde serialization/deserialization
 //! - `parallel`: Enable parallel verification with rayon
+//! - `arbitrary`: Raw `Arbitrary` impls plus the valid-by-construction
+//!   `generators` module for property-based testing and fuzzing
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -46,6 +48,8 @@ extern crate alloc;
 
 mod batch;
 mod error;
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod generators;
 mod stamp;
 mod stamped;
 mod util;

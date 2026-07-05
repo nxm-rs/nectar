@@ -245,7 +245,7 @@ impl Batch {
 
 // Arbitrary implementations for property-based testing
 
-#[cfg(feature = "arbitrary")]
+#[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for BatchParams {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         // Generate valid depth values (bucket_depth must be <= depth)
@@ -262,7 +262,7 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchParams {
     }
 }
 
-#[cfg(feature = "arbitrary")]
+#[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for Batch {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         // Generate valid depth values (bucket_depth must be <= depth)
