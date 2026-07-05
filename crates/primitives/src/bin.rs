@@ -91,6 +91,14 @@ impl From<ProximityOrder> for Bin {
     }
 }
 
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for Bin {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Uniform over the representable range; every Bin is valid.
+        Ok(Self(u.int_in_range(0..=MAX_PO)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

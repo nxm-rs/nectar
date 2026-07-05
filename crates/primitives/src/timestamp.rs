@@ -90,6 +90,15 @@ impl Timestamp {
     }
 }
 
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for Timestamp {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Any i64 is representable, including pre-1970 values; validity
+        // policies (skew windows) are the caller's concern.
+        Ok(Self::from_seconds(u.arbitrary()?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

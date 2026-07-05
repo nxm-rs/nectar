@@ -40,6 +40,8 @@ mod cache;
 pub mod chunk;
 pub mod error;
 pub mod file;
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod generators;
 pub mod neighborhood_depth;
 pub mod network_id;
 pub mod nonce;

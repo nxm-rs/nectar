@@ -343,6 +343,20 @@ impl<const BODY_SIZE: usize> PartialEq for AnyChunk<BODY_SIZE> {
 
 impl<const BODY_SIZE: usize> Eq for AnyChunk<BODY_SIZE> {}
 
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for AnyChunk<BODY_SIZE> {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Raw tier: delegates to the variant impls, so the single-owner arm
+        // may carry a signature that does not verify. Use
+        // `crate::generators::any_chunk` for a valid-by-construction value.
+        if u.arbitrary()? {
+            Ok(ContentChunk::<BODY_SIZE>::arbitrary(u)?.into())
+        } else {
+            Ok(SingleOwnerChunk::<BODY_SIZE>::arbitrary(u)?.into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::traits::{BmtChunk, Chunk};

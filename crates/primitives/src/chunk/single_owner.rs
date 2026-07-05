@@ -614,19 +614,41 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, ReadyToBuild
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
-impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for SingleOwnerChunk<BODY_SIZE> {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
+    /// Valid-by-construction generator: a chunk with a `u`-drawn id and body,
+    /// signed by `signer` so ownership recovery and `verify` succeed.
+    ///
+    /// Deterministic in `u` for a deterministic signer; contrast with the raw
+    /// `Arbitrary` impl, whose signature is unconstrained.
+    pub fn arbitrary_signed(
+        u: &mut arbitrary::Unstructured<'_>,
+        signer: &impl SignerSync,
+    ) -> arbitrary::Result<Self> {
+        use arbitrary::Arbitrary;
+
         let id = B256::arbitrary(u)?;
         let body = BmtBody::<BODY_SIZE>::arbitrary(u)?;
-        let signer = alloy_signer_local::PrivateKeySigner::random();
 
-        Ok(SingleOwnerChunkBuilderImpl::<BODY_SIZE, Initial>::default()
+        SingleOwnerChunkBuilderImpl::<BODY_SIZE, Initial>::default()
             .with_body(body)
             .with_id(id)
-            .with_signer(&signer)
-            .unwrap()
-            .build()
-            .unwrap())
+            .with_signer(signer)
+            .and_then(SingleOwnerChunkBuilderImpl::build)
+            .map_err(|_| arbitrary::Error::IncorrectFormat)
+    }
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for SingleOwnerChunk<BODY_SIZE> {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Raw tier: the signature is an unconstrained well-formed signature,
+        // not a signature over the id and body, so ownership recovery and
+        // address verification may fail. Use [`Self::arbitrary_signed`] or
+        // `crate::generators` for a valid-by-construction chunk.
+        let id = B256::arbitrary(u)?;
+        let signature = Signature::arbitrary(u)?;
+        let body = BmtBody::<BODY_SIZE>::arbitrary(u)?;
+        Ok(Self::from_parts(id, signature, body))
     }
 }
 
@@ -647,9 +669,22 @@ mod tests {
         PrivateKeySigner::from_slice(&pk).unwrap()
     }
 
-    // Strategy for generating SingleOwnerChunk using the Arbitrary implementation
+    // Strategy for generating SingleOwnerChunk using the raw Arbitrary
+    // implementation (signature unconstrained, so no verify assertions).
     fn chunk_strategy() -> impl Strategy<Value = DefaultSingleOwnerChunk> {
         arb::<DefaultSingleOwnerChunk>()
+    }
+
+    // Strategy for valid-by-construction chunks via `arbitrary_signed`.
+    fn signed_chunk_strategy() -> impl Strategy<Value = DefaultSingleOwnerChunk> {
+        proptest::collection::vec(any::<u8>(), 64..1024).prop_filter_map(
+            "arbitrary_signed needs a signable draw",
+            |bytes| {
+                let mut u = arbitrary::Unstructured::new(&bytes);
+                let signer = crate::generators::signer(&mut u).ok()?;
+                DefaultSingleOwnerChunk::arbitrary_signed(&mut u, &signer).ok()
+            },
+        )
     }
 
     proptest! {
@@ -657,15 +692,22 @@ mod tests {
         fn test_chunk_properties(chunk in chunk_strategy()) {
             prop_assert!(chunk.size() >= MIN_SOC_FIELDS_SIZE);
 
-            // Test round-trip conversion
+            // Test round-trip conversion of the raw parts
             let bytes: Bytes = chunk.clone().into();
             let decoded = DefaultSingleOwnerChunk::try_from(bytes.as_ref()).unwrap();
             prop_assert_eq!(chunk.id(), decoded.id());
             prop_assert_eq!(chunk.signature(), decoded.signature());
             prop_assert_eq!(chunk.data(), decoded.data());
+        }
+
+        #[test]
+        fn test_signed_chunk_verifies(chunk in signed_chunk_strategy()) {
+            // Owner recovery succeeds and survives the round-trip
+            let bytes: Bytes = chunk.clone().into();
+            let decoded = DefaultSingleOwnerChunk::try_from(bytes.as_ref()).unwrap();
             prop_assert_eq!(chunk.owner().unwrap(), decoded.owner().unwrap());
 
-            // Test address verification
+            // Address verification succeeds
             let address = chunk.address();
             prop_assert!(chunk.verify(address).is_ok());
         }

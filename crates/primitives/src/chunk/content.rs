@@ -400,6 +400,8 @@ impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild> {
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for ContentChunk<BODY_SIZE> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Every content chunk is valid by construction: the address is the
+        // BMT hash of the drawn body, so this impl serves both tiers.
         Ok(Self::from_body(BmtBody::<BODY_SIZE>::arbitrary(u)?))
     }
 }

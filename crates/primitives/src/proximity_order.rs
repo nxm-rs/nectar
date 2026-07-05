@@ -77,6 +77,14 @@ impl TryFrom<u8> for ProximityOrder {
     }
 }
 
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for ProximityOrder {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Uniform over the representable range; every ProximityOrder is valid.
+        Ok(Self(u.int_in_range(0..=MAX_PO)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

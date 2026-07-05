@@ -346,7 +346,7 @@ impl From<SwarmAddress> for [u8; 32] {
     }
 }
 
-#[cfg(feature = "arbitrary")]
+#[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for SwarmAddress {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         Ok(Self(B256::arbitrary(u)?))
