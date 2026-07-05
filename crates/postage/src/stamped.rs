@@ -157,6 +157,19 @@ impl<const BODY_SIZE: usize> StampedChunk<BODY_SIZE> {
     }
 }
 
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for StampedChunk<BODY_SIZE> {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Raw tier: the stamp is structurally valid but not signed over the
+        // chunk's address. Use `crate::generators::signed_stamped_chunk` for a
+        // pairing whose stamp verifies.
+        Ok(Self::new(
+            nectar_primitives::AnyChunk::arbitrary(u)?,
+            Stamp::arbitrary(u)?,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_primitives::{B256, Signature};
