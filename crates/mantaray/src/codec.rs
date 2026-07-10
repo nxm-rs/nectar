@@ -855,9 +855,63 @@ mod tests {
         ));
     }
 
+    /// Same as `truncated_node_bytes` but with `ref_size = 64`, the width of
+    /// the `EncryptedChunkRef` entry, so the 64-byte slicing arithmetic in
+    /// `decode_v01`/`decode_v02` is exercised on stable (the fuzz target
+    /// drives this width too, but only under libfuzzer mutation on nightly).
+    #[cfg(feature = "encryption")]
+    fn truncated_encref_node_bytes(version: &VersionHash, len: usize) -> Vec<u8> {
+        assert!(len >= NodeHeader::SIZE);
+        let mut data = vec![0u8; len];
+        data[NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + VersionHash::SIZE]
+            .copy_from_slice(version.as_bytes());
+        data[NodeHeader::REF_SIZE_OFFSET] = 64;
+        data
+    }
+
+    /// Regression for the 64-byte entry width: with `ref_size = 64` the entry
+    /// slot is `data[64..128]` and the forks index `data[128..160]`, so every
+    /// length below 160 must return `Err` (the PR bounds check, exercised for
+    /// the encrypted-ref path), never panic.
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn decode_encref_truncated_lengths_return_err() {
+        use nectar_primitives::EncryptedChunkRef;
+        for (label, version) in [("v01", VersionHash::V01), ("v02", VersionHash::V02)] {
+            for len in NodeHeader::SIZE..NodeHeader::SIZE + 64 + 32 {
+                let data = truncated_encref_node_bytes(&version, len);
+                let result = Node::<EncryptedChunkRef>::try_from(data.as_slice());
+                assert!(
+                    matches!(result, Err(MantarayError::DataTooShort)),
+                    "encref {label} length {len} must yield DataTooShort"
+                );
+            }
+        }
+    }
+
+    /// A full 160-byte encrypted-ref node whose index demands a fork ref that
+    /// is not present must hit the guarded error path, not panic.
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn decode_encref_index_demands_missing_fork_returns_err() {
+        use nectar_primitives::EncryptedChunkRef;
+        for (label, version) in [("v01", VersionHash::V01), ("v02", VersionHash::V02)] {
+            let mut data = truncated_encref_node_bytes(&version, NodeHeader::SIZE + 64 + 32);
+            // Set bit 0 of the forks index (LE bitfield at offset 128).
+            data[NodeHeader::SIZE + 64] = 0x01;
+            let result = Node::<EncryptedChunkRef>::try_from(data.as_slice());
+            assert!(
+                matches!(result, Err(MantarayError::InsufficientForkBytes { .. })),
+                "encref {label} missing fork body must yield InsufficientForkBytes"
+            );
+        }
+    }
+
     /// Replay the committed seed corpus of the `mantaray_node_decode` fuzz
-    /// target through the exact decode entry point the fuzzer exercises
-    /// (`Node::<ChunkAddress>::try_from(&[u8])`). The oracle is "no panic";
+    /// target through the exact decode entry points the fuzzer exercises
+    /// (`Node::<ChunkAddress>` for 32-byte plain entries and, under the
+    /// `encryption` feature, `Node::<EncryptedChunkRef>` for 64-byte
+    /// entries). The oracle is "no panic";
     /// `Err` is an acceptable outcome for any seed. Additionally pin the
     /// intent of each seed by name: `crash-*` seeds must stay `Err` (they
     /// are fixed panic reproducers), `valid-*` seeds must decode `Ok`.
@@ -876,8 +930,12 @@ mod tests {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             let data = std::fs::read(&path).unwrap();
 
-            // The fuzz oracle: must not panic.
+            // The fuzz oracle: must not panic. Drive both entry widths the
+            // fuzz target drives; the 64-byte `EncryptedChunkRef` path only
+            // exists under the `encryption` feature.
             let result = Node::<ChunkAddress>::try_from(data.as_slice());
+            #[cfg(feature = "encryption")]
+            let _ = Node::<nectar_primitives::EncryptedChunkRef>::try_from(data.as_slice());
 
             if name.starts_with("crash-") {
                 assert!(result.is_err(), "seed {name} must remain an Err reproducer");
