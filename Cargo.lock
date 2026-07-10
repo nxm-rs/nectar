@@ -2070,6 +2070,7 @@ name = "nectar-mantaray"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
+ "arbitrary",
  "bitflags",
  "bytes",
  "codspeed-criterion-compat",
@@ -2128,6 +2129,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "arbitrary",
  "auto_impl",
  "bytes",
  "nectar-postage",

@@ -423,6 +423,61 @@ impl<'a> TableView<'a> {
     }
 }
 
+/// `Arbitrary` implementations that generate *valid* tables: the geometry is
+/// within the format bounds ([`validate_geometry`]) and every counter is
+/// within `[0, capacity]`, so a generated table always encodes, and a
+/// structured fuzz target can assert a full round trip instead of merely "no
+/// panic". Counters cluster around a base with a few outliers, matching the
+/// frame-of-reference packing the codec applies.
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impls {
+    use alloc::vec;
+    use alloy_primitives::B256;
+    use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
+
+    use super::{Mutability, UsageTable};
+    use crate::{MAX_BUCKET_DEPTH, MAX_COUNTER_BITS};
+
+    impl<'a> Arbitrary<'a> for Mutability {
+        fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
+            Ok(if u.arbitrary::<bool>()? {
+                Self::Mutable
+            } else {
+                Self::Immutable
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for UsageTable {
+        fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
+            let batch_id = B256::from(u.arbitrary::<[u8; 32]>()?);
+            // The format itself allows `bucket_depth == 0`, but
+            // `nectar_postage::calculate_bucket` shifts a u32 right by
+            // `32 - bucket_depth`, so depth 0 overflows the shift and panics
+            // on every persist. Generate only persistable geometry here.
+            let bucket_depth = u.int_in_range(1..=MAX_BUCKET_DEPTH)?;
+            let counter_bits = u.int_in_range(0..=MAX_COUNTER_BITS)?;
+            let depth = bucket_depth + counter_bits;
+            let capacity = 1u32 << counter_bits;
+            let mutability = Mutability::arbitrary(u)?;
+
+            let buckets = 1usize << bucket_depth;
+            let base = u.int_in_range(0..=capacity)?;
+            let mut counts = vec![base; buckets];
+            let outliers = u.int_in_range(0..=buckets.min(16))?;
+            for _ in 0..outliers {
+                let bucket = u.choose_index(buckets)?;
+                counts[bucket] = u.int_in_range(0..=capacity)?;
+            }
+
+            // Cannot fail for the geometry and counters generated above; map
+            // defensively rather than panicking inside the generator.
+            Self::from_counts(batch_id, depth, bucket_depth, counts, mutability)
+                .map_err(|_| arbitrary::Error::IncorrectFormat)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_primitives::{Address, b256};

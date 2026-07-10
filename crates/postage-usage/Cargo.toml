@@ -27,11 +27,13 @@ thiserror = { workspace = true }
 
 # optional
 alloy-signer = { workspace = true, optional = true }
+arbitrary = { workspace = true, optional = true }
 auto_impl = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["getrandom"] }
+arbitrary = { workspace = true }
 alloy-signer-local = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
@@ -40,6 +42,16 @@ default = ["std"]
 
 # Standard library support.
 std = ["nectar-postage/std", "nectar-postage-issuer/std", "alloy-primitives/std", "thiserror/std"]
+
+# Valid-by-construction `arbitrary::Arbitrary` impls for `UsageTable`,
+# `Mutability`, and `Snapshot`, for structured (round-trip) fuzz targets.
+arbitrary = [
+	"std",
+	"dep:arbitrary",
+	"nectar-postage/arbitrary",
+	"nectar-postage-issuer/arbitrary",
+	"nectar-primitives/arbitrary"
+]
 
 # Implements `nectar_postage_issuer::StampIssuer` for `SnapshotIssuer` so a
 # snapshot can back a `BatchStamper` directly. The shared counter table that
