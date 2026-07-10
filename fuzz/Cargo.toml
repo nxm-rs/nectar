@@ -10,11 +10,34 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 nectar-mantaray = { path = "../crates/mantaray" }
+nectar-postage = { path = "../crates/postage" }
+nectar-postage-usage = { path = "../crates/postage-usage" }
 nectar-primitives = { path = "../crates/primitives" }
 
 [[bin]]
 name = "mantaray_node_decode"
 path = "fuzz_targets/mantaray_node_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chunk_decode"
+path = "fuzz_targets/chunk_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stamp_decode"
+path = "fuzz_targets/stamp_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usage_snapshot_decode"
+path = "fuzz_targets/usage_snapshot_decode.rs"
 test = false
 doc = false
 bench = false

@@ -752,4 +752,87 @@ mod tests {
                 .is_err()
         );
     }
+
+    /// Mirrors the body of the `stamp_decode` fuzz target: decode the whole
+    /// input, decode the leading 113 bytes when present, and run EIP-191
+    /// signer recovery (and owner verification) over whatever parsed. The
+    /// fuzz oracle is "no panic"; `Err` is an acceptable outcome for
+    /// arbitrary bytes. Returns the primary decode result: the first
+    /// `STAMP_SIZE` bytes when the input is long enough, the whole slice
+    /// otherwise.
+    fn exercise_stamp_decode(data: &[u8]) -> Result<Stamp, StampError> {
+        let _ = Stamp::try_from_slice(data);
+
+        let primary = if data.len() >= STAMP_SIZE {
+            Stamp::try_from_slice(&data[..STAMP_SIZE])
+        } else {
+            Stamp::try_from_slice(data)
+        };
+        if let Ok(stamp) = &primary {
+            // Trailing bytes, when present, act as the chunk address the
+            // stamp is recovered against; ECDSA recovery over arbitrary
+            // stamp fields must not panic.
+            let address = if data.len() >= STAMP_SIZE + 32 {
+                SwarmAddress::from_slice(&data[STAMP_SIZE..STAMP_SIZE + 32]).unwrap()
+            } else {
+                SwarmAddress::zero()
+            };
+            let _ = stamp.recover_signer(&address);
+            let _ = stamp.verify(&address, Address::ZERO);
+        }
+        primary
+    }
+
+    /// Replay crafted edge inputs through the exact entry points the
+    /// `stamp_decode` fuzz target exercises: length boundaries around the
+    /// 113-byte wire size and the 113+32 recovery split, in all-zero and
+    /// all-0xff flavours.
+    #[test]
+    fn stamp_decode_edge_inputs_do_not_panic() {
+        let edge_inputs: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec![
+            alloc::vec::Vec::new(),
+            alloc::vec![0x00],
+            alloc::vec![0xff; STAMP_SIZE - 1],
+            alloc::vec![0x00; STAMP_SIZE],
+            alloc::vec![0xff; STAMP_SIZE],
+            alloc::vec![0xff; STAMP_SIZE + 1],
+            alloc::vec![0x00; STAMP_SIZE + 32],
+            alloc::vec![0xab; STAMP_SIZE + 32],
+        ];
+        for data in &edge_inputs {
+            let _ = exercise_stamp_decode(data);
+        }
+    }
+
+    /// Replay the committed seed corpus of the `stamp_decode` fuzz target
+    /// (`fuzz/seeds/stamp_decode/`). Seed intent is pinned by name:
+    /// `valid-*` must parse `Ok`, `invalid-*` must stay `Err`, `edge-*` only
+    /// asserts no panic. This keeps the fuzz seeds meaningful on stable
+    /// without running the fuzzer itself.
+    #[test]
+    fn seed_replay_stamp_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/seeds/stamp_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let result = exercise_stamp_decode(&data);
+
+            if name.starts_with("valid-") {
+                assert!(result.is_ok(), "seed {name} must parse successfully");
+            } else if name.starts_with("invalid-") {
+                assert!(result.is_err(), "seed {name} must remain an Err input");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 4,
+            "expected at least the 4 curated seeds, found {replayed}"
+        );
+    }
 }
