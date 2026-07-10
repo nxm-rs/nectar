@@ -835,4 +835,40 @@ mod tests {
             "expected at least the 4 curated seeds, found {replayed}"
         );
     }
+
+    /// Build arbitrary stamps from a fixed byte buffer and prove
+    /// `from_bytes(to_bytes(stamp)) == stamp` (and that re-encoding is
+    /// byte-identical) for each: the `Arbitrary` impl generates stamps with
+    /// arbitrary (r, s, v) signatures, and the wire codec must round-trip
+    /// them exactly. This is the property the `stamp_roundtrip` fuzz target
+    /// relies on; the buffer is deterministic, so it is pinned on stable
+    /// (with `--features arbitrary`) without running the fuzzer.
+    #[cfg(feature = "arbitrary")]
+    #[test]
+    fn arbitrary_stamp_encode_decode_round_trip() {
+        use arbitrary::{Arbitrary, Unstructured};
+
+        // Deterministic pseudo-random bytes (Knuth multiplicative hash).
+        let raw: alloc::vec::Vec<u8> = (0u32..8192)
+            .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+            .collect();
+        let mut u = Unstructured::new(&raw);
+
+        let mut checked = 0usize;
+        while !u.is_empty() && checked < 32 {
+            let stamp = Stamp::arbitrary(&mut u).unwrap();
+            let encoded = stamp.to_bytes();
+            let decoded = Stamp::from_bytes(&encoded).unwrap();
+            assert_eq!(
+                decoded, stamp,
+                "decode(encode(stamp)) must reproduce the stamp"
+            );
+            assert_eq!(decoded.to_bytes(), encoded, "encoding must be canonical");
+            checked += 1;
+        }
+        assert!(
+            checked >= 16,
+            "expected at least 16 arbitrary stamps, got {checked}"
+        );
+    }
 }
