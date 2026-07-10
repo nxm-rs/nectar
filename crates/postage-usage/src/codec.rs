@@ -851,4 +851,81 @@ mod tests {
         assert!(err.is_recoverable());
         assert!(!err.is_corruption());
     }
+
+    /// Replay crafted edge inputs through `RootInfo::parse`, the exact entry
+    /// point the `usage_snapshot_decode` fuzz target exercises: length
+    /// boundaries around the 66-byte header, all-zero/all-0xff payloads, and
+    /// magic-prefixed headers probing the geometry (`capacity =
+    /// 1 << (depth - bucket_depth)`) and delta-width guards. The fuzz oracle
+    /// is "no panic"; `Err` is an acceptable outcome for arbitrary bytes.
+    #[test]
+    fn usage_snapshot_decode_edge_inputs_do_not_panic() {
+        let mut edge_inputs: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            vec![0x00],
+            vec![0xff; ROOT_HEADER_SIZE - 1],
+            vec![0x00; ROOT_HEADER_SIZE],
+            vec![0xff; ROOT_HEADER_SIZE],
+            vec![0xff; MAX_PAYLOAD_SIZE],
+        ];
+        // Magic-prefixed headers probing the geometry and width guards:
+        // (depth, bucket_depth, width) triples around the validation
+        // boundaries, including the depth < bucket_depth underflow shape and
+        // the depth - bucket_depth = 32 shift-overflow shape.
+        for (depth, bucket_depth, width) in [
+            (0u8, 0u8, 0u8),
+            (15, 16, 0),   // depth < bucket_depth
+            (16, 17, 0),   // bucket_depth over MAX_BUCKET_DEPTH
+            (47, 16, 0),   // depth - bucket_depth = 31 (max counter bits)
+            (48, 16, 0),   // depth - bucket_depth = 32 (must be rejected)
+            (20, 16, 32),  // width at MAX_WIDTH
+            (20, 16, 33),  // width over MAX_WIDTH
+            (255, 255, 255),
+        ] {
+            let mut header = vec![0u8; ROOT_HEADER_SIZE];
+            header[..4].copy_from_slice(&MAGIC);
+            header[36] = depth;
+            header[37] = bucket_depth;
+            header[39] = width;
+            edge_inputs.push(header);
+        }
+        for data in &edge_inputs {
+            let _ = RootInfo::parse(data);
+        }
+    }
+
+    /// Replay the committed seed corpus of the `usage_snapshot_decode` fuzz
+    /// target (`fuzz/seeds/usage_snapshot_decode/`). Seed intent is pinned by
+    /// name: `valid-*` must parse `Ok`, `invalid-*` must stay `Err`. This
+    /// keeps the fuzz seeds meaningful on stable without running the fuzzer
+    /// itself.
+    #[test]
+    fn seed_replay_usage_snapshot_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/seeds/usage_snapshot_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let result = RootInfo::parse(&data);
+
+            if name.starts_with("valid-") {
+                assert!(
+                    result.is_ok(),
+                    "seed {name} must parse successfully: {result:?}"
+                );
+            } else if name.starts_with("invalid-") {
+                assert!(result.is_err(), "seed {name} must remain an Err input");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 3,
+            "expected at least the 3 curated seeds, found {replayed}"
+        );
+    }
 }
