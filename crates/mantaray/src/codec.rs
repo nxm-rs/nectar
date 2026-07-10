@@ -855,6 +855,43 @@ mod tests {
         ));
     }
 
+    /// Replay the committed seed corpus of the `mantaray_node_decode` fuzz
+    /// target through the exact decode entry point the fuzzer exercises
+    /// (`Node::<ChunkAddress>::try_from(&[u8])`). The oracle is "no panic";
+    /// `Err` is an acceptable outcome for any seed. Additionally pin the
+    /// intent of each seed by name: `crash-*` seeds must stay `Err` (they
+    /// are fixed panic reproducers), `valid-*` seeds must decode `Ok`.
+    ///
+    /// This keeps the fuzz seeds meaningful on stable without running the
+    /// fuzzer itself.
+    #[test]
+    fn seed_replay_mantaray_node_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/seeds/mantaray_node_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            // The fuzz oracle: must not panic.
+            let result = Node::<ChunkAddress>::try_from(data.as_slice());
+
+            if name.starts_with("crash-") {
+                assert!(result.is_err(), "seed {name} must remain an Err reproducer");
+            } else if name.starts_with("valid-") {
+                assert!(result.is_ok(), "seed {name} must decode successfully");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 3,
+            "expected at least the 3 curated seeds, found {replayed}"
+        );
+    }
+
     /// Encode-decode round-trip preserves entries and metadata.
     #[test]
     fn encode_decode_round_trip() {

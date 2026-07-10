@@ -1,0 +1,31 @@
+[package]
+name = "nectar-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nectar-mantaray = { path = "../crates/mantaray" }
+nectar-primitives = { path = "../crates/primitives" }
+
+[[bin]]
+name = "mantaray_node_decode"
+path = "fuzz_targets/mantaray_node_decode.rs"
+test = false
+doc = false
+bench = false
+
+# Make arithmetic overflow and debug_assert! act as fuzz oracles even in the
+# optimised builds cargo-fuzz produces.
+[profile.release]
+overflow-checks = true
+debug-assertions = true
+
+# Self-contained workspace root: keeps the parent workspace (whose member
+# globs are crates/*) from ever trying to build the nightly-only fuzz crate.
+[workspace]
+resolver = "2"
