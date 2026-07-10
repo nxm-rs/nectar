@@ -769,6 +769,36 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_zero_bucket_depth_as_corruption() {
+        // A handcrafted root that is valid in every other respect: depth 5,
+        // bucket depth 0 (one zero-width bucket), width 0, sequence 1, one
+        // allocated slot, no exceptions, no leaves. Before bucket depth 0 was
+        // rejected by `validate_geometry`, this payload parsed `Ok` and the
+        // recovered snapshot panicked downstream in `calculate_bucket`
+        // (`leading >> (32 - 0)` is a shift overflow) on the persist and
+        // issue paths.
+        let mut root = vec![0u8; ROOT_HEADER_SIZE + 4];
+        root[..4].copy_from_slice(&MAGIC);
+        root[4..36].copy_from_slice(B256::repeat_byte(0x42).as_slice());
+        root[36] = 5; // depth
+        root[37] = 0; // bucket_depth: the zero-width bucket under test
+        root[40..48].copy_from_slice(&1u64.to_be_bytes()); // sequence
+        root[60..62].copy_from_slice(&1u16.to_be_bytes()); // allocated = 1
+        // exceptions = 0, leaves = 0, base = 0, slot 0 already zeroed.
+
+        let err = RootInfo::parse(&root).unwrap_err();
+        assert_eq!(
+            err,
+            UsageError::CorruptGeometry {
+                depth: 5,
+                bucket_depth: 0,
+            }
+        );
+        assert!(err.is_corruption());
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
     fn parse_rejects_out_of_range_slot_as_corruption() {
         let mut root = root_with_one_exception();
         // Push the allocated slot to the capacity bound (valid slots are < 16).
