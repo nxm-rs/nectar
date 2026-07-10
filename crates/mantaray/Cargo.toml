@@ -25,11 +25,14 @@ futures.workspace = true
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
 serde_json.workspace = true
+arbitrary = { workspace = true, features = ["derive"], optional = true }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
+arbitrary = { workspace = true, features = ["derive"] }
 criterion.workspace = true
+nectar-primitives = { workspace = true, features = ["arbitrary"] }
 rand.workspace = true
 serde_json.workspace = true
 
@@ -40,6 +43,15 @@ harness = false
 [features]
 default = ["std"]
 std = ["alloy-primitives/std", "thiserror/std", "serde_json/std", "rand", "nectar-primitives/std"]
+# Valid-by-construction `arbitrary::Arbitrary` impls for `Node`, `Fork`,
+# `Prefix`, `NodeType`, and `ObfuscationKey`, for structured (round-trip)
+# fuzz targets.
+arbitrary = [
+	"std",
+	"dep:arbitrary",
+	"nectar-primitives/arbitrary",
+	"alloy-primitives/arbitrary",
+]
 serde = [
 	"dep:serde",
 	"alloy-primitives/serde",

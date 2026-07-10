@@ -927,3 +927,42 @@ impl Issuer<'_> {
         self.snapshot.table_ref().total_issued()
     }
 }
+
+/// `Arbitrary` implementation that generates *valid* snapshots, routed
+/// through the same [`Snapshot::from_parts`] validation the recovery path
+/// uses: the table is valid by construction, every allocated slot sits below
+/// the per-bucket capacity, and the sequence leaves headroom so
+/// [`Snapshot::revalidate`] + [`Validated::plan_persist`] can advance it. A
+/// structured fuzz target can therefore persist the snapshot and assert the
+/// parse/assemble round trip instead of merely "no panic".
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impls {
+    use alloc::vec::Vec;
+    use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
+
+    use super::Snapshot;
+    use crate::UsageTable;
+
+    impl<'a> Arbitrary<'a> for Snapshot {
+        fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
+            let table = UsageTable::arbitrary(u)?;
+            // Leave headroom so revalidate/plan_persist can advance the
+            // sequence without overflowing.
+            let sequence = u.int_in_range(0..=u64::MAX - 1)?;
+            // Allocated slots must sit below the per-bucket capacity
+            // (`validate_parts`); entry 0, when present, is the root's own
+            // slot. An empty list is a never-persisted snapshot.
+            let capacity = table.bucket_capacity();
+            let allocated = u.int_in_range(0..=4usize)?;
+            let mut slots = Vec::with_capacity(allocated);
+            for _ in 0..allocated {
+                slots.push(u.int_in_range(0..=capacity - 1)?);
+            }
+            // Cannot fail for the values generated above; map defensively
+            // rather than panicking inside the generator.
+            let parts = Self::recovered_parts(table, sequence, slots)
+                .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+            Self::from_parts(parts).map_err(|_| arbitrary::Error::IncorrectFormat)
+        }
+    }
+}

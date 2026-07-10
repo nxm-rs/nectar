@@ -892,6 +892,33 @@ mod tests {
         );
     }
 
+    /// Build arbitrary (valid-by-construction) nodes from a fixed byte buffer
+    /// and prove `decode(encode(node)) == node` for each: the `Arbitrary`
+    /// impls generate only encodable, round-trip-stable nodes, which is the
+    /// property the structured round-trip fuzz target relies on. The buffer
+    /// is deterministic, so this pins the impls on stable without running the
+    /// fuzzer.
+    #[test]
+    fn arbitrary_node_encode_decode_round_trip() {
+        use arbitrary::{Arbitrary, Unstructured};
+
+        // Deterministic pseudo-random bytes (Knuth multiplicative hash).
+        let raw: Vec<u8> = (0u32..8192)
+            .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+            .collect();
+        let mut u = Unstructured::new(&raw);
+
+        let mut checked = 0usize;
+        while !u.is_empty() && checked < 16 {
+            let node = Node::<ChunkAddress>::arbitrary(&mut u).unwrap();
+            let encoded = Vec::<u8>::try_from(&node).unwrap();
+            let decoded = Node::<ChunkAddress>::try_from(encoded.as_slice()).unwrap();
+            assert_eq!(decoded, node, "decode(encode(node)) must reproduce the node");
+            checked += 1;
+        }
+        assert!(checked >= 8, "expected at least 8 arbitrary nodes, got {checked}");
+    }
+
     /// Encode-decode round-trip preserves entries and metadata.
     #[test]
     fn encode_decode_round_trip() {

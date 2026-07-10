@@ -761,6 +761,118 @@ where
     Ok(())
 }
 
+/// `Arbitrary` implementations that generate *valid* mantaray values: every
+/// generated [`Node`] encodes successfully and survives an encode/decode
+/// round trip, so structured fuzz targets can assert
+/// `decode(encode(node)) == node` rather than merely "no panic".
+///
+/// Mirrors the manual valid-by-construction impls in `nectar-primitives`
+/// (`BmtBody`, `SingleOwnerChunk`). The wire format constrains what can round
+/// trip, and these impls generate only that shape:
+///
+/// - Fork prefixes are 1..=30 bytes (`parse_fork_header` rejects empty ones)
+///   and each fork is keyed by its prefix's first byte, as the encoder's forks
+///   index expects.
+/// - Fork children carry a chunk reference (a reference-less child is not
+///   encodable) plus flags, and metadata only when the METADATA flag is set.
+/// - The root's own flags are not serialized; the v0.2 decoder derives EDGE
+///   from a non-empty forks index and nothing else, so the root's `node_type`
+///   is exactly that.
+/// - An all-zero entry is the wire sentinel for "no entry", so it is mapped
+///   to `None`.
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impls {
+    use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
+
+    use super::*;
+
+    impl<'a> Arbitrary<'a> for Prefix {
+        fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
+            let len = u.int_in_range(1..=PREFIX_MAX_LEN)?;
+            let mut data = [0u8; PREFIX_MAX_LEN];
+            u.fill_buffer(&mut data[..len])?;
+            Ok(Self {
+                len: len as u8,
+                data,
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for NodeType {
+        fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
+            Ok(Self::from_bits_truncate(u8::arbitrary(u)?))
+        }
+    }
+
+    impl<'a, E> Arbitrary<'a> for Fork<E>
+    where
+        E: NodeEntry + Arbitrary<'a>,
+    {
+        fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
+            let prefix = Prefix::arbitrary(u)?;
+            // On the wire a fork child is flags + a chunk reference (plus
+            // optional metadata); a reference-less child is not encodable.
+            let mut node = Node::<E>::from_reference(ChunkAddress::from(u.arbitrary::<[u8; 32]>()?));
+            node.node_type = NodeType::arbitrary(u)?;
+            if node.node_type.contains(NodeType::METADATA) {
+                // Keep pairs small: the encoder caps the padded metadata JSON
+                // at u16::MAX bytes.
+                let pairs = u.int_in_range(0..=3usize)?;
+                for _ in 0..pairs {
+                    let key: String = u.arbitrary::<&str>()?.chars().take(8).collect();
+                    let value: String = u.arbitrary::<&str>()?.chars().take(8).collect();
+                    node.metadata.insert(key, value);
+                }
+            }
+            Ok(Self { prefix, node })
+        }
+    }
+
+    impl<'a, E> Arbitrary<'a> for Node<E>
+    where
+        E: NodeEntry + Arbitrary<'a>,
+    {
+        fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
+            let obfuscation_key = ObfuscationKey::arbitrary(u)?;
+
+            // An all-zero entry encodes as the "no entry" sentinel, so it
+            // cannot round-trip as `Some`; map it to `None`.
+            let entry = if u.arbitrary::<bool>()? {
+                let e = E::arbitrary(u)?;
+                e.to_bytes().iter().any(|&b| b != 0).then_some(e)
+            } else {
+                None
+            };
+
+            let fork_count = u.int_in_range(0..=4usize)?;
+            let mut forks = BTreeMap::new();
+            for _ in 0..fork_count {
+                let fork = Fork::<E>::arbitrary(u)?;
+                forks.insert(fork.prefix[0], fork);
+            }
+
+            // The root's own flags are not serialized; the v0.2 decoder
+            // derives EDGE from a non-empty forks index and nothing else.
+            let node_type = if forks.is_empty() {
+                NodeType::empty()
+            } else {
+                NodeType::EDGE
+            };
+
+            Ok(Self {
+                node_type,
+                obfuscation_key,
+                // Decoding yields an unpersisted, loaded node.
+                reference: None,
+                entry,
+                metadata: BTreeMap::new(),
+                forks,
+                loaded: true,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
