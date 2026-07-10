@@ -40,6 +40,15 @@ pub const fn current_timestamp() -> u64 {
 ///
 /// The bucket number (0 to 2^bucket_depth - 1)
 ///
+/// # Panics
+///
+/// `bucket_depth` must be in `1..=32`: the implementation shifts a `u32`
+/// right by `32 - bucket_depth`, so `bucket_depth == 0` overflows the shift
+/// (and values above 32 overflow the subtraction), which panics with
+/// overflow checks enabled and yields an unspecified value without them.
+/// Callers validate the batch geometry (e.g. `nectar-postage-usage` rejects
+/// `bucket_depth == 0` at decode) before reaching this function.
+///
 /// # Example
 ///
 /// ```
