@@ -50,7 +50,7 @@ nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "..." }
 
 ## Contributing
 
-Open an issue before non-trivial PRs. Conventional Commits, `cargo fmt`, `cargo clippy -- -D warnings`. Tests for protocol-touching changes are non-optional — wire-format regressions are expensive to debug after the fact. CLA in [`CLA.md`](./CLA.md).
+Open an issue before non-trivial PRs. Conventional Commits, `cargo fmt`, `cargo clippy -- -D warnings`. Tests for protocol-touching changes are non-optional — wire-format regressions are expensive to debug after the fact. The wire-format decoders are also fuzzed continuously; see [`fuzz/README.md`](./fuzz/README.md) for the cargo-fuzz harness. CLA in [`CLA.md`](./CLA.md).
 
 ## Security
 
