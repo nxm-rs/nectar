@@ -50,10 +50,21 @@ impl Prefix {
         }
     }
 
-    /// Create a prefix from a byte slice. Panics if `src.len() > 30`.
+    /// Create a prefix from a byte slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `src.len() > 30`. Decode paths must validate the length
+    /// first (see `parse_fork_header`, which rejects oversized prefixes with
+    /// `MantarayError::InvalidPrefixLength` before calling this).
     #[inline]
     pub fn from_slice(src: &[u8]) -> Self {
-        debug_assert!(src.len() <= PREFIX_MAX_LEN);
+        assert!(
+            src.len() <= PREFIX_MAX_LEN,
+            "prefix length {} exceeds maximum {}",
+            src.len(),
+            PREFIX_MAX_LEN
+        );
         let mut data = [0u8; PREFIX_MAX_LEN];
         data[..src.len()].copy_from_slice(src);
         Self {
