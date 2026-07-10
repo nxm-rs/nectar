@@ -30,6 +30,13 @@
           extensions = [ "rust-src" "clippy" "rustfmt" ];
           targets = [ "wasm32-unknown-unknown" ];
         };
+
+        # Nightly toolchain for fuzzing (cargo-fuzz needs -Zsanitizer et al).
+        # llvm-tools supplies the llvm-profdata/llvm-cov binaries that
+        # `cargo fuzz coverage` looks up via the rustc sysroot.
+        rustFuzz = pkgs.rust-bin.nightly.latest.default.override {
+          extensions = [ "rust-src" "clippy" "rustfmt" "llvm-tools-preview" ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -87,6 +94,27 @@
           shellHook = ''
             alias wasm-serve='miniserve --header "Cross-Origin-Opener-Policy:same-origin" --header "Cross-Origin-Embedder-Policy:require-corp" -p 8080'
           '';
+        };
+
+        # Dedicated shell for fuzzing (see fuzz/README.md). Nightly is the
+        # default cargo here so `cargo fuzz run <target>` just works.
+        devShells.fuzz = pkgs.mkShell {
+          name = "nectar-fuzz";
+
+          buildInputs = with pkgs; [
+            rustFuzz
+            cargo-fuzz
+            # libfuzzer-sys compiles the libFuzzer C++ runtime via the `cc`
+            # crate, which needs a working clang/clang++.
+            clang
+            pkg-config
+            openssl
+            openssl.dev
+          ];
+
+          OPENSSL_DIR = "${pkgs.openssl.dev}";
+          OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
+          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
         };
       }
     );
