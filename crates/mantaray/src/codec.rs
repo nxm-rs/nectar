@@ -426,18 +426,13 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 fn parse_fork_header(data: &[u8]) -> Result<(NodeType, Prefix)> {
     let node_type =
         NodeType::from_bits_truncate(*data.first().ok_or(MantarayError::DataTooShort)?);
-    let prefix_length = usize::from(*data.get(1).ok_or(MantarayError::DataTooShort)?);
-    if prefix_length == 0 || prefix_length > Prefix::MAX_LEN {
-        return Err(MantarayError::InvalidPrefixLength {
-            max: Prefix::MAX_LEN,
-            actual: prefix_length,
-        });
-    }
-    #[allow(clippy::arithmetic_side_effects)] // PREFIX_OFFSET (2) + prefix_length (<= 30) cannot overflow
-    let prefix = Prefix::from_slice(
-        data.get(ForkHeader::PREFIX_OFFSET..ForkHeader::PREFIX_OFFSET + prefix_length)
-            .ok_or(MantarayError::DataTooShort)?,
-    );
+    let prefix_length = *data.get(1).ok_or(MantarayError::DataTooShort)?;
+    let padded: &[u8; Prefix::MAX_LEN] = data
+        .get(ForkHeader::PREFIX_OFFSET..ForkHeader::PRE_REFERENCE_SIZE)
+        .ok_or(MantarayError::DataTooShort)?
+        .try_into()
+        .map_err(|_| MantarayError::DataTooShort)?;
+    let prefix = Prefix::from_wire(padded, prefix_length)?;
     Ok((node_type, prefix))
 }
 

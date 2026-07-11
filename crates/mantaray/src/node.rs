@@ -50,13 +50,15 @@ impl Prefix {
         }
     }
 
-    /// Create a prefix from a byte slice.
+    /// Create a prefix from a byte slice whose length is already structurally
+    /// bounded (trie construction, where splits never exceed the maximum).
+    ///
+    /// The wire decode path uses `from_wire`, which validates the length
+    /// instead of asserting it.
     ///
     /// # Panics
     ///
-    /// Panics if `src.len() > 30`. Decode paths must validate the length
-    /// first (see `parse_fork_header`, which rejects oversized prefixes with
-    /// `MantarayError::InvalidPrefixLength` before calling this).
+    /// Panics if `src.len() > 30`.
     #[inline]
     pub fn from_slice(src: &[u8]) -> Self {
         assert!(
@@ -72,6 +74,27 @@ impl Prefix {
         #[allow(clippy::as_conversions)] // src.len() <= PREFIX_MAX_LEN (30) asserted above, fits u8
         let len = src.len() as u8;
         Self { len, data }
+    }
+
+    /// Construct a prefix from its wire form: the fixed 30-byte padded region
+    /// and the declared length byte.
+    ///
+    /// Enforces the 1..=30 length invariant at construction, so decode never
+    /// relies on a caller-side guard. Bytes past `len` are re-zeroed to keep
+    /// the padding canonical for equality and re-encoding.
+    #[inline]
+    pub fn from_wire(padded: &[u8; PREFIX_MAX_LEN], len: u8) -> Result<Self> {
+        let len_usize = usize::from(len);
+        if len == 0 || len_usize > PREFIX_MAX_LEN {
+            return Err(MantarayError::InvalidPrefixLength {
+                max: PREFIX_MAX_LEN,
+                actual: len_usize,
+            });
+        }
+        let mut data = [0u8; PREFIX_MAX_LEN];
+        #[allow(clippy::indexing_slicing)] // len_usize <= PREFIX_MAX_LEN checked above
+        data[..len_usize].copy_from_slice(&padded[..len_usize]);
+        Ok(Self { len, data })
     }
 
     /// Returns the prefix length in bytes.
@@ -1125,6 +1148,58 @@ mod tests {
     fn nil_path() {
         let mut n = Node::default();
         assert!(node_lookup(&mut n, b"").is_ok());
+    }
+
+    #[test]
+    fn prefix_from_wire_valid() {
+        let mut padded = [0u8; PREFIX_MAX_LEN];
+        padded[..3].copy_from_slice(b"abc");
+        let prefix = Prefix::from_wire(&padded, 3).unwrap();
+        assert_eq!(prefix.len(), 3);
+        assert_eq!(&*prefix, b"abc");
+    }
+
+    #[test]
+    fn prefix_from_wire_zeroes_padding() {
+        // Non-zero bytes past `len` must be dropped so equality and re-encode
+        // stay canonical.
+        let padded = [0xffu8; PREFIX_MAX_LEN];
+        let prefix = Prefix::from_wire(&padded, 2).unwrap();
+        assert_eq!(&*prefix, &[0xff, 0xff]);
+        assert_eq!(prefix, Prefix::from_slice(&[0xff, 0xff]));
+        assert!(prefix.padded_bytes()[2..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn prefix_from_wire_rejects_zero_length() {
+        let padded = [0u8; PREFIX_MAX_LEN];
+        let err = Prefix::from_wire(&padded, 0).unwrap_err();
+        assert!(matches!(
+            err,
+            MantarayError::InvalidPrefixLength { max, actual } if max == PREFIX_MAX_LEN && actual == 0
+        ));
+    }
+
+    #[test]
+    fn prefix_from_wire_rejects_oversized() {
+        let padded = [0u8; PREFIX_MAX_LEN];
+        #[allow(clippy::as_conversions)] // test literal within u8 range
+        let over = (PREFIX_MAX_LEN + 1) as u8;
+        let err = Prefix::from_wire(&padded, over).unwrap_err();
+        assert!(matches!(
+            err,
+            MantarayError::InvalidPrefixLength { max, actual }
+                if max == PREFIX_MAX_LEN && actual == usize::from(over)
+        ));
+    }
+
+    #[test]
+    fn prefix_from_wire_accepts_max_length() {
+        let padded = [7u8; PREFIX_MAX_LEN];
+        #[allow(clippy::as_conversions)] // PREFIX_MAX_LEN (30) fits u8
+        let prefix = Prefix::from_wire(&padded, PREFIX_MAX_LEN as u8).unwrap();
+        assert_eq!(prefix.len(), PREFIX_MAX_LEN);
+        assert_eq!(&*prefix, &padded[..]);
     }
 
     #[test]
