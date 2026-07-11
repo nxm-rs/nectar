@@ -89,7 +89,7 @@ impl Reference for EncryptedChunkRef {
             EntryRef::Encrypted(enc) => Ok(enc),
             EntryRef::Plain(_) => Err(WrongRefKind {
                 expected: Self::KIND,
-                got: RefKind::Unencrypted,
+                got: RefKind::Plain,
             }),
         }
     }

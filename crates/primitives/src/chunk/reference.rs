@@ -32,7 +32,7 @@ pub struct WrongRefKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RefKind {
     /// A plain reference ([`ChunkRef`]): a 32-byte address.
-    Unencrypted,
+    Plain,
     /// An encrypted reference
     /// ([`EncryptedChunkRef`](crate::chunk::encryption::EncryptedChunkRef)):
     /// the same address plus the chunk's decryption key.
@@ -43,7 +43,7 @@ impl RefKind {
     /// Wire width in bytes of a reference of this kind.
     pub const fn size(self) -> usize {
         match self {
-            Self::Unencrypted => ChunkRef::SIZE,
+            Self::Plain => ChunkRef::SIZE,
             Self::Encrypted => crate::chunk::encryption::EncryptedChunkRef::SIZE,
         }
     }
@@ -130,7 +130,7 @@ impl From<ChunkAddress> for ChunkRef {
 impl sealed::Sealed for ChunkRef {}
 
 impl Reference for ChunkRef {
-    const KIND: RefKind = RefKind::Unencrypted;
+    const KIND: RefKind = RefKind::Plain;
 
     fn address(&self) -> &ChunkAddress {
         &self.0
@@ -186,8 +186,8 @@ mod tests {
     fn chunk_ref_is_address_width() {
         assert_eq!(ChunkRef::SIZE, 32);
         assert_eq!(<ChunkRef as Reference>::SIZE, ChunkRef::SIZE);
-        assert_eq!(ChunkRef::KIND, RefKind::Unencrypted);
-        assert_eq!(RefKind::Unencrypted.size(), ChunkRef::SIZE);
+        assert_eq!(ChunkRef::KIND, RefKind::Plain);
+        assert_eq!(RefKind::Plain.size(), ChunkRef::SIZE);
     }
 
     #[test]
@@ -230,13 +230,13 @@ mod tests {
             EncryptedChunkRef::from_entry_ref(plain).unwrap_err(),
             WrongRefKind {
                 expected: RefKind::Encrypted,
-                got: RefKind::Unencrypted,
+                got: RefKind::Plain,
             }
         );
         assert_eq!(
             ChunkRef::from_entry_ref(encrypted).unwrap_err(),
             WrongRefKind {
-                expected: RefKind::Unencrypted,
+                expected: RefKind::Plain,
                 got: RefKind::Encrypted,
             }
         );
