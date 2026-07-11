@@ -153,6 +153,7 @@ impl Batch {
     ///
     /// This is equal to 2^(depth - bucket_depth).
     #[inline]
+    #[allow(clippy::arithmetic_side_effects)] // batch geometry invariant: depth >= bucket_depth (capacity is 2^(depth - bucket_depth) chunks per bucket)
     pub const fn bucket_upper_bound(&self) -> u32 {
         1u32 << (self.depth - self.bucket_depth)
     }
