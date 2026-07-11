@@ -36,7 +36,7 @@
 //! # });
 //! ```
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
 
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};

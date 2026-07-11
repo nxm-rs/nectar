@@ -1,6 +1,6 @@
 //! Manifest entry type: path, reference, and metadata.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
 
 use nectar_primitives::chunk::{ChunkAddress, Reference};
 use nectar_primitives::file::EntryRef;
@@ -77,7 +77,7 @@ impl Entry {
 
     /// Path as a UTF-8 string. Returns `None` if the path is not valid UTF-8.
     pub fn path_str(&self) -> Option<&str> {
-        std::str::from_utf8(&self.path).ok()
+        core::str::from_utf8(&self.path).ok()
     }
 
     /// Chunk address from the reference.
