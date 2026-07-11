@@ -77,6 +77,7 @@ impl StampIndex {
     /// bucket and index values; the exact wire format for the combined index
     /// used in signature computation is left to implementations.
     #[inline]
+    #[allow(clippy::as_conversions)] // widening u32 -> u64, infallible; `u64::from` is not const-callable
     pub const fn encode(&self) -> u64 {
         ((self.bucket as u64) << 32) | (self.index as u64)
     }
@@ -85,6 +86,7 @@ impl StampIndex {
     ///
     /// See [`encode`](Self::encode) for the encoding format.
     #[inline]
+    #[allow(clippy::as_conversions)] // `encoded >> 32` fits in u32; low-word cast is the intended 32-bit extraction; `try_from` is not const-callable
     pub const fn decode(encoded: u64) -> Self {
         Self {
             bucket: (encoded >> 32) as u32,
@@ -850,7 +852,12 @@ mod tests {
 
         // Deterministic pseudo-random bytes (Knuth multiplicative hash).
         let raw: alloc::vec::Vec<u8> = (0u32..8192)
-            .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+            .map(|i| {
+                #[allow(clippy::as_conversions)] // `u32 >> 24` is always <= 0xFF, cast is lossless
+                {
+                    (i.wrapping_mul(2654435761) >> 24) as u8
+                }
+            })
             .collect();
         let mut u = Unstructured::new(&raw);
 

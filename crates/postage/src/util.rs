@@ -13,7 +13,14 @@ pub fn current_timestamp() -> u64 {
     use web_time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
+        // Nanoseconds since the Unix epoch fit in a `u64` until the year
+        // ~2554; truncation is unreachable in practice.
+        .map(|d| {
+            #[allow(clippy::as_conversions)]
+            {
+                d.as_nanos() as u64
+            }
+        })
         .unwrap_or(0)
 }
 
