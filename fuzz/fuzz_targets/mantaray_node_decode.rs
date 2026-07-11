@@ -4,8 +4,8 @@
 //! manifest chunks from the network are parsed. Both entry widths are
 //! exercised on every input: `ChunkAddress` (plain manifests, 32-byte
 //! entries) and `EncryptedChunkRef` (encrypted manifests, 64-byte entries),
-//! each of which drives its own `ref_bytes_size` slicing arithmetic in
-//! `decode_v01`/`decode_v02`. The decoder is the structure recoverer, so the
+//! each of which drives its own reference-width cursor reads through the
+//! shared body decoder. The decoder is the structure recoverer, so the
 //! target takes raw bytes; any returned `Err` is success. The oracle is "no
 //! panic, no OOM, no hang".
 //!
