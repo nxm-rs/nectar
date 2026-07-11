@@ -104,12 +104,12 @@ pub use chunk::{
     BmtChunk,
     Chunk,
     ChunkAddress,
+    // Concrete chunk types
+    ChunkRef,
     ChunkSerialization,
     ChunkType,
     ChunkTypeId,
     ChunkTypeSet,
-    // Concrete chunk types
-    ChunkRef,
     ContentChunk,
     ContentOnlyChunkSet,
     RefKind,

@@ -103,7 +103,10 @@ mod tests {
     #[test]
     fn encrypted_ref_is_address_plus_key() {
         assert_eq!(EncryptedChunkRef::SIZE, 64);
-        assert_eq!(<EncryptedChunkRef as Reference>::SIZE, EncryptedChunkRef::SIZE);
+        assert_eq!(
+            <EncryptedChunkRef as Reference>::SIZE,
+            EncryptedChunkRef::SIZE
+        );
         assert_eq!(EncryptedChunkRef::KIND, RefKind::Encrypted);
         assert_eq!(RefKind::Encrypted.size(), EncryptedChunkRef::SIZE);
     }

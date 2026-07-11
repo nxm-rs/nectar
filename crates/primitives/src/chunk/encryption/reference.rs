@@ -113,6 +113,7 @@ mod tests {
         let enc_ref = EncryptedChunkRef::new(addr, key.clone());
 
         assert_eq!(enc_ref.address(), &addr);
+        assert_eq!(enc_ref.reference().address(), &addr);
         assert_eq!(enc_ref.key(), &key);
 
         let bytes: [u8; 64] = (&enc_ref).into();
