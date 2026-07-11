@@ -171,6 +171,22 @@ bitflags::bitflags! {
     }
 }
 
+/// Persistence state of a node relative to content-addressed storage.
+///
+/// Collapses the former `(reference, loaded)` pair so the stale-address
+/// combinations a bool cannot forbid are unrepresentable: only a stub is
+/// unloaded, and only a dirty node lacks an address, so `save` re-serializes
+/// exactly the mutated nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NodeState {
+    /// Persisted at this address; forks are not yet loaded from storage.
+    Stub(ChunkAddress),
+    /// Held in memory with unsaved mutations; carries no persisted address.
+    Dirty,
+    /// Persisted at this address with its forks loaded from storage.
+    Clean(ChunkAddress),
+}
+
 /// A node in the mantaray trie.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node<R: Reference = ChunkRef> {
@@ -178,16 +194,14 @@ pub struct Node<R: Reference = ChunkRef> {
     pub(crate) node_type: NodeType,
     /// XOR obfuscation key for binary serialisation.
     pub(crate) obfuscation_key: ObfuscationKey,
-    /// Content-addressed reference for this node (None if not yet persisted).
-    pub(crate) reference: Option<ChunkAddress>,
     /// The typed entry stored at this node (the chunk reference this path maps to).
     pub(crate) entry: Option<R>,
     /// Metadata key-value pairs attached to this node.
     pub(crate) metadata: BTreeMap<String, String>,
     /// Child forks keyed by the first byte of their prefix.
     pub(crate) forks: BTreeMap<u8, Fork<R>>,
-    /// Whether this node's forks have been loaded from storage.
-    pub(crate) loaded: bool,
+    /// Persistence state (stub, dirty, or clean) relative to storage.
+    pub(crate) state: NodeState,
 }
 
 impl<R: Reference> Default for Node<R> {
@@ -195,11 +209,10 @@ impl<R: Reference> Default for Node<R> {
         Self {
             node_type: NodeType::empty(),
             obfuscation_key: ObfuscationKey::ZERO,
-            reference: None,
             entry: None,
             metadata: BTreeMap::new(),
             forks: BTreeMap::new(),
-            loaded: false,
+            state: NodeState::Dirty,
         }
     }
 }
@@ -256,7 +269,7 @@ impl<R: Reference> Node<R> {
     /// Create a node that references persisted data.
     pub fn from_reference(reference: ChunkAddress) -> Self {
         Self {
-            reference: Some(reference),
+            state: NodeState::Stub(reference),
             ..Default::default()
         }
     }
@@ -276,9 +289,12 @@ impl<R: Reference> Node<R> {
         &mut self.metadata
     }
 
-    /// Content-addressed reference for this node.
+    /// Content-addressed reference for this node, absent only while it is dirty.
     pub const fn reference(&self) -> Option<&ChunkAddress> {
-        self.reference.as_ref()
+        match &self.state {
+            NodeState::Stub(address) | NodeState::Clean(address) => Some(address),
+            NodeState::Dirty => None,
+        }
     }
 
     /// Child forks keyed by the first byte of their prefix.
@@ -336,14 +352,26 @@ impl<R: Reference> Node<R> {
         }
     }
 
-    /// Clear persisted reference, marking this node for re-serialization on next save.
+    /// Drop any persisted address, marking this node for re-serialization on
+    /// the next save.
     pub(crate) const fn mark_dirty(&mut self) {
-        self.reference = None;
+        self.state = NodeState::Dirty;
+    }
+
+    /// Record that this node is persisted at `address` with its forks loaded.
+    pub(crate) const fn mark_persisted(&mut self, address: ChunkAddress) {
+        self.state = NodeState::Clean(address);
+    }
+
+    /// Whether this node's forks are resident in memory (true for every state
+    /// but a stub).
+    pub(crate) const fn is_loaded(&self) -> bool {
+        !matches!(self.state, NodeState::Stub(_))
     }
 
     /// Load forks from storage if the node hasn't been loaded yet.
     async fn ensure_loaded<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
-        if !self.loaded {
+        if !self.is_loaded() {
             self.load(store).await?;
         }
         Ok(())
@@ -351,12 +379,10 @@ impl<R: Reference> Node<R> {
 
     /// Load this node from storage by its reference.
     pub(crate) async fn load<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
-        let address = match self.reference {
-            Some(addr) => addr,
-            None => {
-                self.loaded = true;
-                return Ok(());
-            }
+        let address = match self.state {
+            NodeState::Stub(address) | NodeState::Clean(address) => address,
+            // A dirty node holds its content in memory; nothing to fetch.
+            NodeState::Dirty => return Ok(()),
         };
 
         let chunk = store
@@ -367,7 +393,7 @@ impl<R: Reference> Node<R> {
             })?;
         let mut loaded = Self::decode(chunk.data().as_ref())
             .map_err(|source| MantarayError::Corrupt { address, source })?;
-        loaded.reference = Some(address);
+        loaded.mark_persisted(address);
         // Preserve fields that live in the parent's fork data, not in this node's chunk:
         // node_type flags and metadata key-value pairs.
         loaded.node_type |= self.node_type;
@@ -394,7 +420,7 @@ impl<R: Reference> Node<R> {
             }
 
             let first = rest[0];
-            let reference = current.reference;
+            let reference = current.reference().copied();
             let fork = current
                 .forks
                 .get_mut(&first)
@@ -420,7 +446,7 @@ impl<R: Reference> Node<R> {
         let node = self.lookup_node(path, store).await?;
         if !node.is_value() && !path.is_empty() {
             return Err(MantarayError::NoEntryFound {
-                reference: node.reference,
+                reference: node.reference().copied(),
             });
         }
         Ok(node.entry.as_ref())
@@ -461,7 +487,7 @@ impl<R: Reference> Node<R> {
             }
 
             // load forks if needed
-            if !self.loaded {
+            if !self.is_loaded() {
                 self.load(store).await?;
                 self.mark_dirty();
             }
@@ -658,7 +684,7 @@ impl<R: Reference> Node<R> {
     /// the node itself is encoded and put.
     #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
     pub(crate) async fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
-        if self.reference.is_some() {
+        if self.reference().is_some() {
             return Ok(());
         }
 
@@ -690,7 +716,7 @@ impl<R: Reference> Node<R> {
                 #[allow(clippy::expect_used)]
                 // key was collected from this node's fork map, which is not mutated while the frame is live
                 let child = node.forks.get_mut(&key).expect("key from this node");
-                if child.node.reference.is_none() {
+                if child.node.reference().is_none() {
                     let child_ptr = std::ptr::from_mut(&mut child.node);
                     let child_keys = child.node.forks.keys().copied().collect();
                     stack.push(SaveFrame {
@@ -712,9 +738,10 @@ impl<R: Reference> Node<R> {
                 .map_err(|e| MantarayError::StorePut {
                     source: std::sync::Arc::new(e),
                 })?;
-            node.reference = Some(address);
+            // Persist the address and drop the now-redundant forks: the node
+            // becomes a stub, reloaded on demand.
+            node.state = NodeState::Stub(address);
             node.forks.clear();
-            node.loaded = false;
             stack.pop();
         }
 
@@ -803,7 +830,7 @@ where
         // node appears in exactly one frame and is only dereferenced while at
         // the top of the stack, so no two live references alias.
         let parent = unsafe { &mut *frame.node.cast::<Node<R>>() };
-        let reference = parent.reference;
+        let reference = parent.reference().copied();
         let fork = parent
             .forks
             .get_mut(&key)
@@ -934,12 +961,11 @@ mod arbitrary_impls {
             Ok(Self {
                 node_type,
                 obfuscation_key,
-                // Decoding yields an unpersisted, loaded node.
-                reference: None,
                 entry,
                 metadata: BTreeMap::new(),
                 forks,
-                loaded: true,
+                // Decoding yields an unpersisted, loaded (dirty) node.
+                state: NodeState::Dirty,
             })
         }
     }
@@ -1342,7 +1368,7 @@ mod tests {
         let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
         block_on(n.save(&store)).unwrap();
 
-        let mut n2: Node = Node::from_reference(n.reference.unwrap());
+        let mut n2: Node = Node::from_reference(*n.reference().unwrap());
 
         for &d in items {
             let node = block_on(n2.lookup_node(d.as_bytes(), &store)).unwrap();
@@ -1473,7 +1499,7 @@ mod tests {
             block_on(n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)).unwrap();
         }
         block_on(n.save(&store)).unwrap();
-        let ref_ = n.reference.unwrap();
+        let ref_ = *n.reference().unwrap();
 
         // reload and remove
         let mut nn: Node = Node::from_reference(ref_);
@@ -1481,7 +1507,7 @@ mod tests {
             block_on(nn.remove(path.as_bytes(), &store)).unwrap();
         }
         block_on(nn.save(&store)).unwrap();
-        let ref2 = nn.reference.unwrap();
+        let ref2 = *nn.reference().unwrap();
 
         // reload and verify removed paths are gone
         let mut nnn: Node = Node::from_reference(ref2);
@@ -1658,7 +1684,7 @@ mod tests {
         let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
         block_on(n.save(&store)).unwrap();
 
-        let mut n2: Node = Node::from_reference(n.reference.unwrap());
+        let mut n2: Node = Node::from_reference(*n.reference().unwrap());
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
         block_on(n2.walk_from(b"", &store, &mut |path: &[u8], _node: &Node| {

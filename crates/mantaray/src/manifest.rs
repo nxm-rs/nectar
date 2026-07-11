@@ -206,7 +206,7 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
         // fan-out. For a persisted manifest the cloned child forks are
         // reference-only, so the clone is shallow.
         let mut root = self.trie.clone();
-        if !root.loaded {
+        if !root.is_loaded() {
             root.load::<S, BS>(store).await?;
         }
         let mut frontier: Vec<(Vec<u8>, Node<R>)> = vec![(Vec::new(), root)];
@@ -226,7 +226,7 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
 
             frontier = stream::iter(pending)
                 .map(move |(path, mut node)| async move {
-                    if !node.loaded {
+                    if !node.is_loaded() {
                         node.load::<S, BS>(store).await?;
                     }
                     Ok::<_, MantarayError>((path, node))
@@ -432,7 +432,7 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
             if !self.root_visited {
                 self.root_visited = true;
 
-                if !self.trie.loaded
+                if !self.trie.is_loaded()
                     && let Err(e) = self.trie.load::<S, BS>(self.store).await
                 {
                     return Some(Err(e));
@@ -481,7 +481,7 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
                 Some(f) => f,
                 None => {
                     return Some(Err(MantarayError::NoForkFound {
-                        reference: parent.reference,
+                        reference: parent.reference().copied(),
                     }));
                 }
             };
@@ -490,7 +490,7 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
 
             // SAFETY: child is a descendant of the exclusively borrowed trie.
             let child_ref = unsafe { &mut *child };
-            if !child_ref.loaded
+            if !child_ref.is_loaded()
                 && let Err(e) = child_ref.load::<S, BS>(self.store).await
             {
                 return Some(Err(e));

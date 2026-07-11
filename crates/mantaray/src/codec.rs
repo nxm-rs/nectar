@@ -164,7 +164,7 @@ impl<R: Reference> Node<R> {
 
         let mut node = decode_node::<R>(&data)?;
         node.obfuscation_key = obfuscation_key;
-        node.loaded = true;
+        // A decoded node is loaded but unpersisted, i.e. dirty (the default).
         Ok(node)
     }
 }
@@ -517,8 +517,7 @@ impl<'a, R: Reference> TryFrom<&'a Fork<R>> for WireFork<'a> {
     fn try_from(fork: &'a Fork<R>) -> Result<Self> {
         let address = fork
             .node
-            .reference
-            .as_ref()
+            .reference()
             .ok_or(MantarayError::MissingReference)?;
         let metadata = if fork.node.is_with_metadata() {
             Some(WireMetadata::build(&fork.node.metadata)?)
@@ -1221,7 +1220,8 @@ mod tests {
             #[allow(clippy::as_conversions)] // forks are keyed by u8, so counter <= 255
             let counter_byte = counter as u8;
             addr[31] = counter_byte;
-            fork.node.reference = Some(nectar_primitives::chunk::ChunkAddress::from(addr));
+            fork.node
+                .mark_persisted(nectar_primitives::chunk::ChunkAddress::from(addr));
         }
 
         let encoded = n.encode().unwrap();
