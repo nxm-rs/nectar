@@ -1104,10 +1104,16 @@ mod tests {
             let node = Node::<ChunkRef>::arbitrary(&mut u).unwrap();
             let encoded = Vec::<u8>::try_from(&node).unwrap();
             let decoded = Node::<ChunkRef>::try_from(encoded.as_slice()).unwrap();
-            assert_eq!(decoded, node, "decode(encode(node)) must reproduce the node");
+            assert_eq!(
+                decoded, node,
+                "decode(encode(node)) must reproduce the node"
+            );
             checked += 1;
         }
-        assert!(checked >= 8, "expected at least 8 arbitrary nodes, got {checked}");
+        assert!(
+            checked >= 8,
+            "expected at least 8 arbitrary nodes, got {checked}"
+        );
     }
 
     /// Encoding a fork whose child has no saved reference must error rather

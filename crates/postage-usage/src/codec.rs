@@ -1032,12 +1032,12 @@ mod tests {
         // the depth - bucket_depth = 32 shift-overflow shape.
         for (depth, bucket_depth, width) in [
             (0u8, 0u8, 0u8),
-            (15, 16, 0),   // depth < bucket_depth
-            (16, 17, 0),   // bucket_depth over MAX_BUCKET_DEPTH
-            (47, 16, 0),   // depth - bucket_depth = 31 (max counter bits)
-            (48, 16, 0),   // depth - bucket_depth = 32 (must be rejected)
-            (20, 16, 32),  // width at MAX_WIDTH
-            (20, 16, 33),  // width over MAX_WIDTH
+            (15, 16, 0),  // depth < bucket_depth
+            (16, 17, 0),  // bucket_depth over MAX_BUCKET_DEPTH
+            (47, 16, 0),  // depth - bucket_depth = 31 (max counter bits)
+            (48, 16, 0),  // depth - bucket_depth = 32 (must be rejected)
+            (20, 16, 32), // width at MAX_WIDTH
+            (20, 16, 33), // width over MAX_WIDTH
             (255, 255, 255),
         ] {
             let mut header = vec![0u8; ROOT_HEADER_SIZE];
@@ -1089,8 +1089,13 @@ mod tests {
                 Err(_) => continue,
             };
             let root = RootInfo::parse(&plan.chunks[0].payload).expect("planned root must parse");
-            let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| c.payload.as_ref()).collect();
-            let recovered = root.assemble(&leaves).expect("planned leaves must assemble");
+            let leaves: Vec<_> = plan.chunks[1..]
+                .iter()
+                .map(|c| c.payload.as_ref())
+                .collect();
+            let recovered = root
+                .assemble(&leaves)
+                .expect("planned leaves must assemble");
             assert_eq!(
                 recovered, snapshot,
                 "parse+assemble must recover the persisted snapshot"

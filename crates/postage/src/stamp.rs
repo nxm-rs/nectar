@@ -813,8 +813,8 @@ mod tests {
     /// without running the fuzzer itself.
     #[test]
     fn seed_replay_stamp_decode() {
-        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fuzz/seeds/stamp_decode");
+        let seed_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/stamp_decode");
         let mut replayed = 0usize;
         for entry in std::fs::read_dir(&seed_dir)
             .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))

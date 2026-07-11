@@ -466,7 +466,8 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
             // Advance: get the next fork key and parent pointer from the top frame.
             let (key, parent_node) = {
                 let frame = self.stack.last_mut()?;
-                #[allow(clippy::indexing_slicing)] // the pop_if loop above removed every frame with key_idx >= keys.len()
+                #[allow(clippy::indexing_slicing)]
+                // the pop_if loop above removed every frame with key_idx >= keys.len()
                 let key = frame.keys[frame.key_idx];
                 frame.key_idx += 1;
                 (key, frame.node)
