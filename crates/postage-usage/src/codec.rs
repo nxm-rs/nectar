@@ -62,8 +62,9 @@ pub struct RootInfo {
 
 /// Returns the maximum delta representable in `width` bits.
 // In the else branch `width < 32`, so the u64 shift is in range and
-// `1 << width >= 1` makes the decrement safe.
-#[allow(clippy::arithmetic_side_effects)]
+// `1 << width >= 1` makes the decrement safe. The `u32::MAX -> u64`
+// widening is infallible; `u64::from` is not const-callable.
+#[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
 const fn delta_limit(width: u8) -> u64 {
     if width >= 32 {
         u32::MAX as u64
@@ -74,8 +75,9 @@ const fn delta_limit(width: u8) -> u64 {
 
 /// Returns the byte length of `buckets` deltas packed at `width` bits.
 // `buckets <= 2^16` (validated geometry) and `width <= 32`, so the product
-// is at most 2^21 and cannot overflow usize.
-#[allow(clippy::arithmetic_side_effects)]
+// is at most 2^21 and cannot overflow usize. The `u8 -> usize` widening is
+// infallible; `usize::from` is not const-callable.
+#[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
 const fn packed_len(buckets: usize, width: u8) -> usize {
     (buckets * width as usize).div_ceil(8)
 }
@@ -84,7 +86,9 @@ const fn packed_len(buckets: usize, width: u8) -> usize {
 // Callers uphold `width > 0` (leaves exist only for a nonzero delta width:
 // the encoder inlines width 0 and the parser rejects `leaves > 0` with
 // width 0), so the division cannot be by zero; the dividend is a constant.
-#[allow(clippy::arithmetic_side_effects)]
+// The `u8 -> usize` widening is infallible; `usize::from` is not
+// const-callable.
+#[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
 const fn buckets_per_leaf(width: u8) -> usize {
     (MAX_PAYLOAD_SIZE * 8) / width as usize
 }
@@ -104,8 +108,8 @@ const fn leaf_count(buckets: usize, width: u8) -> usize {
 // offset math and byte indexing cannot overflow or go out of bounds.
 #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 fn write_bits(buf: &mut [u8], bit_offset: usize, width: u8, value: u64) {
-    for i in 0..width as usize {
-        let bit = (value >> (width as usize - 1 - i)) & 1;
+    for i in 0..usize::from(width) {
+        let bit = (value >> (usize::from(width) - 1 - i)) & 1;
         if bit != 0 {
             let pos = bit_offset + i;
             buf[pos / 8] |= 1 << (7 - pos % 8);
@@ -120,12 +124,20 @@ fn write_bits(buf: &mut [u8], bit_offset: usize, width: u8, value: u64) {
 #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 fn read_bits(buf: &[u8], bit_offset: usize, width: u8) -> u64 {
     let mut value = 0u64;
-    for i in 0..width as usize {
+    for i in 0..usize::from(width) {
         let pos = bit_offset + i;
         let bit = (buf[pos / 8] >> (7 - pos % 8)) & 1;
         value = (value << 1) | u64::from(bit);
     }
     value
+}
+
+/// Returns `bucket` as a table index.
+// `u32` always fits `usize` on the >=32-bit targets this crate supports;
+// `usize::from` takes at most `u16`.
+#[allow(clippy::as_conversions)]
+const fn bucket_index(bucket: u32) -> usize {
+    bucket as usize
 }
 
 /// Packs the deltas of buckets `range` into a fresh zero-padded buffer.
@@ -149,7 +161,7 @@ fn pack_range(
     let mut out = vec![0u8; packed_len(end - start, width)];
     let mut except = exceptions
         .iter()
-        .map(|&(bucket, _)| bucket as usize)
+        .map(|&(bucket, _)| bucket_index(bucket))
         .skip_while(|&b| b < start)
         .peekable();
     for (i, bucket) in (start..end).enumerate() {
@@ -159,7 +171,7 @@ fn pack_range(
         } else {
             u64::from(counts[bucket] - base)
         };
-        write_bits(&mut out, i * width as usize, width, delta);
+        write_bits(&mut out, i * usize::from(width), width, delta);
     }
     out
 }
@@ -197,12 +209,15 @@ fn select_width(counts: &[u32], base: u32, buckets: usize, allocated: usize) -> 
     let mut histogram = [0usize; 33];
     for &count in counts {
         let delta = count - base;
-        histogram[(32 - delta.leading_zeros()) as usize] += 1;
+        // `leading_zeros() <= 32`, so the histogram index fits usize.
+        #[allow(clippy::as_conversions)]
+        let bits = (32 - delta.leading_zeros()) as usize;
+        histogram[bits] += 1;
     }
 
     let mut best: Option<(u8, usize)> = None;
     for width in 0..=MAX_WIDTH {
-        let exceptions: usize = histogram[width as usize + 1..].iter().sum();
+        let exceptions: usize = histogram[usize::from(width) + 1..].iter().sum();
         if exceptions > MAX_EXCEPTIONS {
             continue;
         }
@@ -234,6 +249,9 @@ pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result
     if slots.is_empty() {
         return Err(UsageError::Malformed("root slot not allocated"));
     }
+    // The u32 bucket count always fits usize on the >=32-bit targets this
+    // crate supports.
+    #[allow(clippy::as_conversions)]
     let buckets = table.bucket_count() as usize;
     let counts = table.counts();
     let base = table.min_count();
@@ -250,7 +268,12 @@ pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result
             .iter()
             .enumerate()
             .filter(|&(_, &count)| u64::from(count - base) > limit)
-            .map(|(bucket, &count)| (bucket as u32, count))
+            .map(|(bucket, &count)| {
+                // `bucket < buckets <= 2^16`, so it fits u32.
+                #[allow(clippy::as_conversions)]
+                let bucket = bucket as u32;
+                (bucket, count)
+            })
             .collect();
 
         let fixed = ROOT_HEADER_SIZE + 8 * exceptions.len() + 4 * allocated;
@@ -289,8 +312,16 @@ pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result
         root.extend_from_slice(&sequence.to_be_bytes());
         root.extend_from_slice(&table.total_issued().to_be_bytes());
         root.extend_from_slice(&base.to_be_bytes());
+        // The section counts are bounded by the validated geometry:
+        // `allocated <= u16::MAX` (checked by `validate_parts`), `leaves`
+        // is at most the digests that fit a root chunk, and
+        // `exceptions.len() <= MAX_EXCEPTIONS` (guaranteed by
+        // `select_width`), so each fits u16.
+        #[allow(clippy::as_conversions)]
         root.extend_from_slice(&(allocated as u16).to_be_bytes());
+        #[allow(clippy::as_conversions)]
         root.extend_from_slice(&(leaves as u16).to_be_bytes());
+        #[allow(clippy::as_conversions)]
         root.extend_from_slice(&(exceptions.len() as u16).to_be_bytes());
         for &(bucket, count) in &exceptions {
             root.extend_from_slice(&bucket.to_be_bytes());
@@ -384,9 +415,9 @@ impl RootInfo {
         let sequence = read_u64(payload, 40);
         let total_issued = read_u64(payload, 48);
         let base = read_u32(payload, 56);
-        let allocated = read_u16(payload, 60) as usize;
-        let leaves = read_u16(payload, 62) as usize;
-        let exception_count = read_u16(payload, 64) as usize;
+        let allocated = usize::from(read_u16(payload, 60));
+        let leaves = usize::from(read_u16(payload, 62));
+        let exception_count = usize::from(read_u16(payload, 64));
 
         let buckets = 1usize << bucket_depth;
         let capacity = 1u32 << (depth - bucket_depth);
@@ -432,7 +463,7 @@ impl RootInfo {
             let bucket = read_u32(payload, offset);
             let count = read_u32(payload, offset + 4);
             offset += 8;
-            if bucket as usize >= buckets {
+            if bucket_index(bucket) >= buckets {
                 return Err(UsageError::CorruptBucket { bucket });
             }
             if previous.is_some_and(|p| p >= bucket) {
@@ -468,7 +499,7 @@ impl RootInfo {
             LeafSection::Digests(digests)
         } else {
             let packed = payload[offset..].to_vec();
-            if !padding_is_zero(&packed, buckets * width as usize) {
+            if !padding_is_zero(&packed, buckets * usize::from(width)) {
                 return Err(UsageError::Malformed("nonzero padding"));
             }
             LeafSection::Inline(packed)
@@ -527,6 +558,10 @@ impl RootInfo {
 
     /// Returns the number of leaf chunks that must be fetched to assemble
     /// this snapshot.
+    // The digest list length round-trips a `leaves` header field parsed
+    // from a u16, so it always fits back into u16; `u16::try_from` is not
+    // const-callable.
+    #[allow(clippy::as_conversions)]
     pub const fn leaf_count(&self) -> u16 {
         match &self.leaves {
             LeafSection::Inline(_) => 0,
@@ -542,12 +577,12 @@ impl RootInfo {
     // from underflowing.
     #[allow(clippy::arithmetic_side_effects)]
     pub fn expected_leaf_len(&self, leaf: u16) -> Option<usize> {
-        if (leaf as usize) >= self.leaf_count() as usize {
+        if usize::from(leaf) >= usize::from(self.leaf_count()) {
             return None;
         }
         let buckets = 1usize << self.bucket_depth;
         let per_leaf = buckets_per_leaf(self.width);
-        let start = leaf as usize * per_leaf;
+        let start = usize::from(leaf) * per_leaf;
         let end = (start + per_leaf).min(buckets);
         Some(packed_len(end - start, self.width))
     }
@@ -576,13 +611,13 @@ impl RootInfo {
         // a meaningless filler value; they are skipped here and overlaid with
         // their absolute counts afterwards.
         let unpack_range = |counts: &mut [u32], packed: &[u8], start: usize, end: usize| {
-            if !padding_is_zero(packed, (end - start) * width as usize) {
+            if !padding_is_zero(packed, (end - start) * usize::from(width)) {
                 return Err(UsageError::Malformed("nonzero padding"));
             }
             let mut except = self
                 .exceptions
                 .iter()
-                .map(|&(bucket, _)| bucket as usize)
+                .map(|&(bucket, _)| bucket_index(bucket))
                 .skip_while(|&b| b < start)
                 .peekable();
             for (i, count) in counts[start..end].iter_mut().enumerate() {
@@ -591,15 +626,24 @@ impl RootInfo {
                     except.next();
                     continue;
                 }
-                let value = u64::from(self.base) + read_bits(packed, i * width as usize, width);
+                let value = u64::from(self.base) + read_bits(packed, i * usize::from(width), width);
                 if value > u64::from(capacity) {
+                    // `bucket < buckets <= 2^16` fits u32, and the reported
+                    // count is min-clamped to u32::MAX before the cast.
+                    #[allow(clippy::as_conversions)]
+                    let bucket = bucket as u32;
+                    #[allow(clippy::as_conversions)]
+                    let count = value.min(u64::from(u32::MAX)) as u32;
                     return Err(UsageError::CorruptCounter {
-                        bucket: bucket as u32,
-                        count: value.min(u64::from(u32::MAX)) as u32,
+                        bucket,
+                        count,
                         capacity,
                     });
                 }
-                *count = value as u32;
+                // `value <= capacity` (checked above) keeps it within u32.
+                #[allow(clippy::as_conversions)]
+                let value = value as u32;
+                *count = value;
             }
             Ok(())
         };
@@ -623,19 +667,23 @@ impl RootInfo {
                 }
                 let per_leaf = buckets_per_leaf(width);
                 for (i, (payload, digest)) in leaves.iter().zip(digests.iter()).enumerate() {
+                    // `i < digests.len() <= u16::MAX` (the digest list length
+                    // round-trips a u16 header field).
+                    #[allow(clippy::as_conversions)]
+                    let index = i as u16;
                     let payload = payload.as_ref();
                     let start = i * per_leaf;
                     let end = (start + per_leaf).min(buckets);
                     let expected = packed_len(end - start, width);
                     if payload.len() != expected {
                         return Err(UsageError::LeafLength {
-                            index: i as u16,
+                            index,
                             expected,
                             got: payload.len(),
                         });
                     }
                     if keccak256(payload) != *digest {
-                        return Err(UsageError::LeafDigestMismatch { index: i as u16 });
+                        return Err(UsageError::LeafDigestMismatch { index });
                     }
                     unpack_range(&mut counts, payload, start, end)?;
                 }
@@ -643,7 +691,7 @@ impl RootInfo {
         }
 
         for &(bucket, count) in &self.exceptions {
-            counts[bucket as usize] = count;
+            counts[bucket_index(bucket)] = count;
         }
 
         let sum: u64 = counts.iter().map(|&c| u64::from(c)).sum();
@@ -701,11 +749,11 @@ mod tests {
             let values = [0, 1, limit / 2, limit.saturating_sub(1), limit];
             let mut buf = vec![0u8; packed_len(values.len(), width)];
             for (i, &v) in values.iter().enumerate() {
-                write_bits(&mut buf, i * width as usize, width, v);
+                write_bits(&mut buf, i * usize::from(width), width, v);
             }
             for (i, &v) in values.iter().enumerate() {
                 assert_eq!(
-                    read_bits(&buf, i * width as usize, width),
+                    read_bits(&buf, i * usize::from(width), width),
                     v,
                     "width {width}"
                 );
@@ -922,7 +970,7 @@ mod tests {
         corrupt[packed_start] |= 0b1111_1000;
 
         let info = RootInfo::parse(&corrupt).unwrap();
-        let err = info.assemble(&[] as &[&[u8]]).unwrap_err();
+        let err = info.assemble::<&[u8]>(&[]).unwrap_err();
         assert_eq!(
             err,
             UsageError::CorruptCounter {
@@ -1022,7 +1070,8 @@ mod tests {
 
         // Deterministic pseudo-random bytes (Knuth multiplicative hash).
         let raw: Vec<u8> = (0u32..8192)
-            .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+            // The high byte of the mixed u32 (`x >> 24`) always fits u8.
+            .map(|i| i.wrapping_mul(2654435761).to_be_bytes()[0])
             .collect();
         let mut u = Unstructured::new(&raw);
         let owner = Address::repeat_byte(0x11);

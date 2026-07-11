@@ -26,7 +26,10 @@ fn synthetic_counts(buckets: usize, base: u32, spread: u32) -> Vec<u32> {
             state = state
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
-            base + ((state >> 33) as u32) % (spread + 1)
+            // `state >> 33` keeps 31 bits, which always fit u32.
+            #[allow(clippy::as_conversions)]
+            let mixed = (state >> 33) as u32;
+            base + mixed % (spread + 1)
         })
         .collect()
 }
@@ -34,7 +37,7 @@ fn synthetic_counts(buckets: usize, base: u32, spread: u32) -> Vec<u32> {
 fn roundtrip(plan: &PersistPlan) -> Snapshot {
     let root = RootInfo::parse(&plan.chunks[0].payload).unwrap();
     let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| &c.payload).collect();
-    assert_eq!(root.leaf_count() as usize, leaves.len());
+    assert_eq!(usize::from(root.leaf_count()), leaves.len());
     root.assemble(&leaves).unwrap()
 }
 
@@ -187,6 +190,9 @@ fn snapshot_accounts_for_its_own_chunks() {
         .plan_persist(&owner())
         .unwrap();
 
+    // A plan holds at most root + leaves chunks; usize fits u64 on
+    // supported targets.
+    #[allow(clippy::as_conversions)]
     let allocated = plan.chunks.len() as u64;
     assert_eq!(snapshot.table().total_issued(), issued_before + allocated);
     for chunk in &plan.chunks {
@@ -605,11 +611,15 @@ fn table_view_exposes_counts_and_geometry_without_yielding_an_owned_table() {
     let recovered = roundtrip(&plan);
     let view = recovered.table();
 
+    // Test geometry: `buckets = 2^BUCKET_DEPTH` fits u32.
+    #[allow(clippy::as_conversions)]
+    let buckets_u32 = buckets as u32;
+
     // Geometry getters.
     assert_eq!(view.batch_id(), batch_id());
     assert_eq!(view.depth(), 24);
     assert_eq!(view.bucket_depth(), BUCKET_DEPTH);
-    assert_eq!(view.bucket_count(), buckets as u32);
+    assert_eq!(view.bucket_count(), buckets_u32);
     assert_eq!(view.bucket_capacity(), 1u32 << (24 - BUCKET_DEPTH));
     assert_eq!(view.total_capacity(), 1u64 << 24);
     assert!(!view.is_mutable());
@@ -625,7 +635,7 @@ fn table_view_exposes_counts_and_geometry_without_yielding_an_owned_table() {
         recovered.table().counts().iter().copied().min().unwrap()
     );
     assert!(
-        view.count(buckets as u32).is_err(),
+        view.count(buckets_u32).is_err(),
         "out-of-range bucket errors"
     );
     assert!(view.has_capacity(7).unwrap());
@@ -851,9 +861,12 @@ fn failed_allocation_rolls_back_the_snapshot() {
 /// Returns a chunk address whose top `BUCKET_DEPTH` bits select `bucket`.
 fn address_in_bucket(bucket: u32) -> nectar_primitives::SwarmAddress {
     let mut bytes = [0u8; 32];
-    // bucket occupies the most-significant BUCKET_DEPTH (=16) bits.
-    bytes[0] = (bucket >> 8) as u8;
-    bytes[1] = bucket as u8;
+    // bucket occupies the most-significant BUCKET_DEPTH (=16) bits: take the
+    // low two big-endian bytes of the u32 (identical to the former `>> 8` /
+    // truncating casts).
+    let [_, _, hi, lo] = bucket.to_be_bytes();
+    bytes[0] = hi;
+    bytes[1] = lo;
     nectar_primitives::SwarmAddress::new(bytes)
 }
 
