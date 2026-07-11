@@ -8,6 +8,18 @@
 //!
 //! This provides realistic throughput estimates for upload operations.
 
+// Bench, example, and integration-test code: unwraps, direct indexing,
+// casts, and assertions are setup and illustration, not shipped surface.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::as_conversions,
+    clippy::missing_panics_doc
+)]
 use std::io::Write;
 
 use alloy_primitives::{B256, Signature, U256};

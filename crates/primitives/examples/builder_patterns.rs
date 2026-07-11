@@ -3,6 +3,18 @@
 //! This example demonstrates usage of the chunk creation APIs,
 //! since our API doesn't use the builder pattern extensively.
 
+// Bench and example code: unwraps, direct indexing, casts, and assertions
+// are setup and illustration, not shipped surface.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::as_conversions,
+    clippy::missing_panics_doc
+)]
 use alloy_primitives::B256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;

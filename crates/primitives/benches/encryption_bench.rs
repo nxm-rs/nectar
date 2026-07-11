@@ -1,4 +1,16 @@
 #![allow(missing_docs)]
+// Bench and example code: unwraps, direct indexing, casts, and assertions
+// are setup and illustration, not shipped surface.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::as_conversions,
+    clippy::missing_panics_doc
+)]
 use std::collections::HashMap;
 use std::io::Write;
 
