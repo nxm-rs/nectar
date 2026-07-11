@@ -7,7 +7,7 @@ use crate::node::{Fork, Node, NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 
 use alloy_primitives::{U256, hex};
-use nectar_primitives::chunk::{ChunkAddress, Reference};
+use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 /// Mantaray wire format version (truncated keccak256, 31 bytes).
@@ -202,7 +202,7 @@ fn encode_node<R: Reference>(node: &Node<R>) -> Result<Vec<u8>> {
     for &fork_byte in node.forks.keys() {
         index.set_bit(usize::from(fork_byte), true);
     }
-    data.extend_from_slice(&index.to_le_bytes::<32>());
+    data.extend_from_slice(&index.to_le_bytes::<FORK_INDEX_SIZE>());
 
     // append forks in sorted order, each as a total wire record over the buffer
     let mut writer = Writer::new(&mut data);
@@ -424,7 +424,7 @@ fn parse_fork_body<R: Reference>(
         .map_err(|_| DecodeError::TooShort)?;
     let mut ref_cur = Cursor::new(ref_region);
     let addr = ref_cur
-        .take::<[u8; 32]>()
+        .take::<[u8; ChunkRef::SIZE]>()
         .map_err(|_| DecodeError::TooShort)?;
 
     let mut node = Node::from_reference(ChunkAddress::from(addr));
@@ -542,7 +542,7 @@ impl WireFork<'_> {
         w.put(self.prefix);
 
         w.put(self.address.as_bytes());
-        w.put_zeros(self.ref_size.saturating_sub(32));
+        w.put_zeros(self.ref_size.saturating_sub(ChunkRef::SIZE));
 
         if let Some(metadata) = &self.metadata {
             w.put(&metadata.len);
