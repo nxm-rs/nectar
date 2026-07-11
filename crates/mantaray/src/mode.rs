@@ -48,6 +48,7 @@ impl NodeEntry for ChunkAddress {
                 actual: bytes.len(),
             });
         }
+        #[allow(clippy::expect_used)] // infallible: bytes.len() == Self::SIZE (32) checked above
         let arr: [u8; 32] = bytes.try_into().expect("length checked");
         Ok(Self::from(arr))
     }
