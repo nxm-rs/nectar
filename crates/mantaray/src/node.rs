@@ -828,7 +828,7 @@ where
 /// (`BmtBody`, `SingleOwnerChunk`). The wire format constrains what can round
 /// trip, and these impls generate only that shape:
 ///
-/// - Fork prefixes are 1..=30 bytes (`parse_fork_header` rejects empty ones)
+/// - Fork prefixes are 1..=30 bytes (`Prefix::from_wire` rejects empty ones)
 ///   and each fork is keyed by its prefix's first byte, as the encoder's forks
 ///   index expects.
 /// - Fork children carry a chunk reference (a reference-less child is not
