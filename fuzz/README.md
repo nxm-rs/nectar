@@ -46,11 +46,17 @@ OOM, no hang*:
 Round-trip targets take a structured value via valid-by-construction
 `arbitrary::Arbitrary` impls (behind each crate's `arbitrary` feature), so the
 invariant is stronger — encode must decode back to an equal value, and where
-the encoding is canonical, re-encoding must be byte-identical:
+the encoding is canonical, re-encoding must be byte-identical. The one
+exception is `mantaray_record_roundtrip`, which takes raw `&[u8]` and is seeded
+from the `mantaray_node_decode` corpus: the encoder emits v0.2 only, so it
+decodes a real wire image (either version, either ref width) to recover its
+records, then asserts the encode/decode pair reaches a byte- and
+structure-canonical fixed point:
 
 | Target | Invariant |
 |---|---|
 | `mantaray_node_roundtrip` | `decode(encode(node)) == node`, canonical re-encode |
+| `mantaray_record_roundtrip` | decoded manifests re-encode to a byte- and structure-canonical fixed point, both ref widths, both wire versions |
 | `chunk_roundtrip` | decoded CAC/SOC preserves address, span, data (+ signature/owner for SOC) |
 | `stamp_roundtrip` | `from_bytes(to_bytes(stamp)) == stamp`, canonical re-encode |
 | `usage_snapshot_roundtrip` | `revalidate → plan_persist → parse + assemble` reproduces the snapshot |
@@ -67,7 +73,10 @@ without nightly or libFuzzer:
 
 The round-trip invariants are pinned on stable by the `arbitrary_*` tests next
 to the replay tests (run with `--features arbitrary`) and the chunk proptests
-in `crates/primitives/src/chunk/{content,single_owner}.rs`.
+in `crates/primitives/src/chunk/{content,single_owner}.rs`. The corpus-seeded
+`mantaray_record_roundtrip` is additionally pinned by
+`seed_replay_mantaray_record_roundtrip` in `crates/mantaray/src/codec.rs`,
+which replays its seeds through the same fixed-point round trip.
 
 ## Corpus & seed policy
 

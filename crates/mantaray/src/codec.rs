@@ -1008,6 +1008,71 @@ mod tests {
         );
     }
 
+    /// Round-trip one wire image at a single reference width: a width the
+    /// image does not declare decodes to `Err` and is skipped. The encoder
+    /// normalizes to v0.2, so the first re-encode is the canonical image and
+    /// the oracle is a fixed point, not equality with the decoded input.
+    /// Returns whether the width decoded, so callers can assert the corpus
+    /// actually exercises the width it claims.
+    fn record_round_trip<R: Reference>(data: &[u8]) -> bool {
+        let Ok(node) = Node::<R>::try_from(data) else {
+            return false;
+        };
+        let encoded = Vec::<u8>::try_from(&node).expect("a decoded node must re-encode");
+        let redecoded =
+            Node::<R>::try_from(encoded.as_slice()).expect("the canonical image must decode");
+        let reencoded = Vec::<u8>::try_from(&redecoded).expect("a re-decoded node must re-encode");
+        assert_eq!(
+            reencoded, encoded,
+            "encode/decode must reach a byte-canonical fixed point"
+        );
+        let redecoded_again =
+            Node::<R>::try_from(reencoded.as_slice()).expect("the canonical image must re-decode");
+        assert_eq!(
+            redecoded_again, redecoded,
+            "decode(encode(node)) must be structurally stable"
+        );
+        true
+    }
+
+    /// Replay the `mantaray_record_roundtrip` seed corpus through the exact
+    /// fixed-point round trip the fuzz target runs, at both reference widths.
+    /// The corpus is seeded from the decode corpus (a v0.1 and a v0.2
+    /// manifest) plus a 64-byte `ref_size` case, so this pins record
+    /// round-tripping across both wire versions and both widths on stable,
+    /// without running the fuzzer. The 64-byte case must actually decode at
+    /// the `EncryptedChunkRef` width, not merely be skipped.
+    #[test]
+    fn seed_replay_mantaray_record_roundtrip() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/seeds/mantaray_record_roundtrip");
+        let mut replayed = 0usize;
+        #[cfg(feature = "encryption")]
+        let mut wide_decoded = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let data = std::fs::read(&path).unwrap();
+
+            let _ = record_round_trip::<ChunkRef>(&data);
+            #[cfg(feature = "encryption")]
+            if record_round_trip::<nectar_primitives::EncryptedChunkRef>(&data) {
+                wide_decoded += 1;
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 3,
+            "expected at least the 3 curated seeds, found {replayed}"
+        );
+        #[cfg(feature = "encryption")]
+        assert!(
+            wide_decoded >= 1,
+            "expected the ref_size=64 seed to decode at the EncryptedChunkRef width"
+        );
+    }
+
     /// Build arbitrary (valid-by-construction) nodes from a fixed byte buffer
     /// and prove `decode(encode(node)) == node` for each: the `Arbitrary`
     /// impls generate only encodable, round-trip-stable nodes, which is the
