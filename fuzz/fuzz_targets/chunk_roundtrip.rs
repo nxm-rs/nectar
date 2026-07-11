@@ -1,18 +1,25 @@
 //! Structured round-trip fuzz of the chunk wire codecs.
 //!
-//! The `Arbitrary` impls for `ContentChunk` (content.rs) and
-//! `SingleOwnerChunk` (single_owner.rs) generate only valid chunks — the SOC
-//! impl signs the id/body with a fresh key — so the oracle is stronger than
+//! Inputs are valid by construction: CACs via the raw `Arbitrary` impl
+//! (content addressing needs no signature), SOCs via `arbitrary_signed`
+//! with a signer whose key is drawn from the same input, so ownership
+//! recovery and `verify` succeed. The oracle is therefore stronger than
 //! "no panic": the wire encoding (`Bytes: From<chunk>`) must decode
 //! (`TryFrom<&[u8]>`), and the decoded chunk must reproduce the original's
 //! identity (address), payload (span/data), and, for SOCs, the signature and
 //! recovered owner. Any failure is a codec bug.
+//!
+//! The raw SOC `Arbitrary` impl (unconstrained signature) is deliberately
+//! not used here; adversarial inputs belong to the decode targets.
 //!
 //! The same properties are pinned on stable by the `test_chunk_properties`
 //! proptests in `crates/primitives/src/chunk/{content,single_owner}.rs`.
 
 #![no_main]
 
+use alloy_primitives::B256;
+use alloy_signer_local::PrivateKeySigner;
+use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use nectar_primitives::{
     BmtChunk, Chunk, ContentChunk, DEFAULT_BODY_SIZE, SingleOwnerChunk, bytes::Bytes,
@@ -20,10 +27,24 @@ use nectar_primitives::{
 
 /// One structured input: either chunk kind, so a single corpus drives both
 /// codecs (the SOC arm pays an ECDSA sign per exec, the CAC arm stays cheap).
-#[derive(Debug, arbitrary::Arbitrary)]
+#[derive(Debug)]
 enum ChunkInput {
     Content(ContentChunk<DEFAULT_BODY_SIZE>),
     SingleOwner(SingleOwnerChunk<DEFAULT_BODY_SIZE>),
+}
+
+impl<'a> Arbitrary<'a> for ChunkInput {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        if u.arbitrary()? {
+            Ok(Self::Content(ContentChunk::arbitrary(u)?))
+        } else {
+            let signer = PrivateKeySigner::from_bytes(&B256::arbitrary(u)?)
+                .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+            Ok(Self::SingleOwner(SingleOwnerChunk::arbitrary_signed(
+                u, &signer,
+            )?))
+        }
+    }
 }
 
 fuzz_target!(|input: ChunkInput| {

@@ -1923,6 +1923,7 @@ name = "nectar-fuzz"
 version = "0.0.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer-local",
  "arbitrary",
  "libfuzzer-sys",
  "nectar-mantaray",

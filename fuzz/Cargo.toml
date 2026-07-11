@@ -12,6 +12,7 @@ cargo-fuzz = true
 # already in the graph transitively, this only names it for `Address`.
 alloy-primitives = { version = "1.6", default-features = false }
 arbitrary = { version = "1", features = ["derive"] }
+alloy-signer-local = { version = "2.0", default-features = false }
 libfuzzer-sys = "0.4"
 nectar-mantaray = { path = "../crates/mantaray", features = ["arbitrary"] }
 nectar-postage = { path = "../crates/postage", features = ["arbitrary"] }
