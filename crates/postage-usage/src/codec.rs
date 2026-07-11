@@ -851,4 +851,131 @@ mod tests {
         assert!(err.is_recoverable());
         assert!(!err.is_corruption());
     }
+
+    /// Replay crafted edge inputs through `RootInfo::parse`, the exact entry
+    /// point the `usage_snapshot_decode` fuzz target exercises: length
+    /// boundaries around the 66-byte header, all-zero/all-0xff payloads, and
+    /// magic-prefixed headers probing the geometry (`capacity =
+    /// 1 << (depth - bucket_depth)`) and delta-width guards. The fuzz oracle
+    /// is "no panic"; `Err` is an acceptable outcome for arbitrary bytes.
+    #[test]
+    fn usage_snapshot_decode_edge_inputs_do_not_panic() {
+        let mut edge_inputs: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            vec![0x00],
+            vec![0xff; ROOT_HEADER_SIZE - 1],
+            vec![0x00; ROOT_HEADER_SIZE],
+            vec![0xff; ROOT_HEADER_SIZE],
+            vec![0xff; MAX_PAYLOAD_SIZE],
+        ];
+        // Magic-prefixed headers probing the geometry and width guards:
+        // (depth, bucket_depth, width) triples around the validation
+        // boundaries, including the depth < bucket_depth underflow shape and
+        // the depth - bucket_depth = 32 shift-overflow shape.
+        for (depth, bucket_depth, width) in [
+            (0u8, 0u8, 0u8),
+            (15, 16, 0),   // depth < bucket_depth
+            (16, 17, 0),   // bucket_depth over MAX_BUCKET_DEPTH
+            (47, 16, 0),   // depth - bucket_depth = 31 (max counter bits)
+            (48, 16, 0),   // depth - bucket_depth = 32 (must be rejected)
+            (20, 16, 32),  // width at MAX_WIDTH
+            (20, 16, 33),  // width over MAX_WIDTH
+            (255, 255, 255),
+        ] {
+            let mut header = vec![0u8; ROOT_HEADER_SIZE];
+            header[..4].copy_from_slice(&MAGIC);
+            header[36] = depth;
+            header[37] = bucket_depth;
+            header[39] = width;
+            edge_inputs.push(header);
+        }
+        for data in &edge_inputs {
+            let _ = RootInfo::parse(data);
+        }
+    }
+
+    /// Build arbitrary (valid-by-construction) snapshots from a fixed byte
+    /// buffer and prove the full public round trip: `plan_persist` encodes
+    /// them into root+leaf payloads that `RootInfo::parse` + `assemble`
+    /// recover to an identical snapshot. This is the property the structured
+    /// round-trip fuzz target relies on; the buffer is deterministic, so it
+    /// is pinned on stable without running the fuzzer. A persist may
+    /// legitimately refuse to allocate a snapshot slot (a full immutable
+    /// bucket, an exhausted capacity-1 ring), so those iterations are
+    /// skipped, but most generated snapshots must round-trip.
+    #[test]
+    fn arbitrary_snapshot_persist_parse_assemble_round_trip() {
+        use alloy_primitives::Address;
+        use arbitrary::{Arbitrary, Unstructured};
+
+        use crate::{PublishedSequence, Snapshot};
+
+        // Deterministic pseudo-random bytes (Knuth multiplicative hash).
+        let raw: Vec<u8> = (0u32..8192)
+            .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+            .collect();
+        let mut u = Unstructured::new(&raw);
+        let owner = Address::repeat_byte(0x11);
+
+        let mut round_trips = 0usize;
+        for _ in 0..32 {
+            let mut snapshot = Snapshot::arbitrary(&mut u).unwrap();
+            let plan = match snapshot
+                .revalidate(PublishedSequence::NONE)
+                .unwrap()
+                .plan_persist(&owner)
+            {
+                Ok(plan) => plan,
+                // A full bucket can legitimately refuse a snapshot slot.
+                Err(_) => continue,
+            };
+            let root = RootInfo::parse(&plan.chunks[0].payload).expect("planned root must parse");
+            let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| c.payload.as_ref()).collect();
+            let recovered = root.assemble(&leaves).expect("planned leaves must assemble");
+            assert_eq!(
+                recovered, snapshot,
+                "parse+assemble must recover the persisted snapshot"
+            );
+            round_trips += 1;
+        }
+        assert!(
+            round_trips >= 8,
+            "expected at least 8 snapshot round trips, got {round_trips}"
+        );
+    }
+
+    /// Replay the committed seed corpus of the `usage_snapshot_decode` fuzz
+    /// target (`fuzz/seeds/usage_snapshot_decode/`). Seed intent is pinned by
+    /// name: `valid-*` must parse `Ok`, `invalid-*` must stay `Err`. This
+    /// keeps the fuzz seeds meaningful on stable without running the fuzzer
+    /// itself.
+    #[test]
+    fn seed_replay_usage_snapshot_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/seeds/usage_snapshot_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let result = RootInfo::parse(&data);
+
+            if name.starts_with("valid-") {
+                assert!(
+                    result.is_ok(),
+                    "seed {name} must parse successfully: {result:?}"
+                );
+            } else if name.starts_with("invalid-") {
+                assert!(result.is_err(), "seed {name} must remain an Err input");
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 3,
+            "expected at least the 3 curated seeds, found {replayed}"
+        );
+    }
 }

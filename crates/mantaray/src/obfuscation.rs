@@ -37,3 +37,10 @@ impl Default for ObfuscationKey {
         Self::ZERO
     }
 }
+
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for ObfuscationKey {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self(u.arbitrary::<[u8; 32]>()?))
+    }
+}

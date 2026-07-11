@@ -274,4 +274,86 @@ mod tests {
         let result = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::deserialize(&[]);
         assert!(result.is_err());
     }
+
+    /// Mirrors the body of the `chunk_decode` fuzz target: run the input
+    /// through every decode entry point the fuzzer drives and force the lazy
+    /// address/owner computations. The fuzz oracle is "no panic"; `Err` is an
+    /// acceptable outcome for arbitrary bytes.
+    fn exercise_chunk_decode(data: &[u8]) -> Result<AnyChunk<DEFAULT_BODY_SIZE>> {
+        let result = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::deserialize(data);
+        if let Ok(chunk) = &result {
+            let _ = chunk.address();
+        }
+
+        let _ = ContentChunk::<DEFAULT_BODY_SIZE>::try_from(data);
+        if let Ok(soc) = SingleOwnerChunk::<DEFAULT_BODY_SIZE>::try_from(data) {
+            // ECDSA public-key recovery over bytes 32..97 must not panic.
+            let _ = soc.owner();
+            let _ = soc.address();
+        }
+        result
+    }
+
+    /// Replay crafted edge inputs through the exact entry points the
+    /// `chunk_decode` fuzz target exercises: length boundaries around the
+    /// 8-byte span, the 97-byte SOC id+signature header, and the maximum
+    /// CAC/SOC encodings, in all-zero and all-0xff flavours.
+    #[test]
+    fn chunk_decode_edge_inputs_do_not_panic() {
+        let edge_inputs: Vec<Vec<u8>> = alloc::vec![
+            Vec::new(),
+            alloc::vec![0x00],
+            alloc::vec![0xff; 7],                              // one short of a CAC span
+            alloc::vec![0x00; 8],                              // zero span, empty payload
+            alloc::vec![0xff; 8],                              // max span, empty payload
+            alloc::vec![0xff; 96],                             // one short of the SOC header
+            alloc::vec![0xff; 97],                             // SOC header, no body
+            alloc::vec![0xff; 105],                            // SOC header + span, empty payload
+            alloc::vec![0xff; 8 + DEFAULT_BODY_SIZE],          // max CAC encoding
+            alloc::vec![0xff; 8 + DEFAULT_BODY_SIZE + 1],      // one past max CAC
+            alloc::vec![0x00; 97 + 8 + DEFAULT_BODY_SIZE],     // max SOC encoding
+            alloc::vec![0xff; 97 + 8 + DEFAULT_BODY_SIZE + 1], // one past max SOC
+        ];
+        for data in &edge_inputs {
+            let _ = exercise_chunk_decode(data);
+        }
+    }
+
+    /// Replay the committed seed corpus of the `chunk_decode` fuzz target
+    /// (`fuzz/seeds/chunk_decode/`). Seed intent is pinned by name:
+    /// `valid-*` must deserialize `Ok` (and `valid-soc-*` must also decode as
+    /// a SOC directly), `invalid-*` must stay `Err`. This keeps the fuzz
+    /// seeds meaningful on stable without running the fuzzer itself.
+    #[test]
+    fn seed_replay_chunk_decode() {
+        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/seeds/chunk_decode");
+        let mut replayed = 0usize;
+        for entry in std::fs::read_dir(&seed_dir)
+            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+
+            let result = exercise_chunk_decode(&data);
+
+            if name.starts_with("valid-") {
+                assert!(result.is_ok(), "seed {name} must deserialize successfully");
+            } else if name.starts_with("invalid-") {
+                assert!(result.is_err(), "seed {name} must remain an Err input");
+            }
+            if name.starts_with("valid-soc-") {
+                assert!(
+                    SingleOwnerChunk::<DEFAULT_BODY_SIZE>::try_from(data.as_slice()).is_ok(),
+                    "seed {name} must decode as a single-owner chunk"
+                );
+            }
+            replayed += 1;
+        }
+        assert!(
+            replayed >= 4,
+            "expected at least the 4 curated seeds, found {replayed}"
+        );
+    }
 }

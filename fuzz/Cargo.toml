@@ -1,0 +1,89 @@
+[package]
+name = "nectar-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# `default-features = false` matches the parent workspace; the crate is
+# already in the graph transitively, this only names it for `Address`.
+alloy-primitives = { version = "1.6", default-features = false }
+arbitrary = { version = "1", features = ["derive"] }
+alloy-signer-local = { version = "2.0", default-features = false }
+libfuzzer-sys = "0.4"
+nectar-mantaray = { path = "../crates/mantaray", features = ["arbitrary"] }
+nectar-postage = { path = "../crates/postage", features = ["arbitrary"] }
+nectar-postage-usage = { path = "../crates/postage-usage", features = [
+	"arbitrary",
+] }
+nectar-primitives = { path = "../crates/primitives", features = ["arbitrary"] }
+
+[[bin]]
+name = "mantaray_node_decode"
+path = "fuzz_targets/mantaray_node_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chunk_decode"
+path = "fuzz_targets/chunk_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stamp_decode"
+path = "fuzz_targets/stamp_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usage_snapshot_decode"
+path = "fuzz_targets/usage_snapshot_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mantaray_node_roundtrip"
+path = "fuzz_targets/mantaray_node_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chunk_roundtrip"
+path = "fuzz_targets/chunk_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stamp_roundtrip"
+path = "fuzz_targets/stamp_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usage_snapshot_roundtrip"
+path = "fuzz_targets/usage_snapshot_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+# Make arithmetic overflow and debug_assert! act as fuzz oracles even in the
+# optimised builds cargo-fuzz produces.
+[profile.release]
+overflow-checks = true
+debug-assertions = true
+
+# Self-contained workspace root: keeps the parent workspace (whose member
+# globs are crates/*) from ever trying to build the nightly-only fuzz crate.
+[workspace]
+resolver = "2"
