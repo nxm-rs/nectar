@@ -35,9 +35,15 @@ pub(crate) const fn map_counter_error(err: CounterError) -> UsageError {
 }
 
 /// Validates that a batch geometry is within the range supported by the
-/// snapshot format: `bucket_depth <= 16` and `depth - bucket_depth <= 31`.
+/// snapshot format: `1 <= bucket_depth <= 16` and `depth - bucket_depth <= 31`.
+///
+/// A zero bucket depth is rejected: a batch with no collision buckets is
+/// meaningless, and `nectar_postage::calculate_bucket` shifts a `u32` right by
+/// `32 - bucket_depth`, so `bucket_depth == 0` would overflow the shift on the
+/// persist and issue paths.
 pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()> {
-    if bucket_depth > MAX_BUCKET_DEPTH
+    if bucket_depth == 0
+        || bucket_depth > MAX_BUCKET_DEPTH
         || depth < bucket_depth
         || depth - bucket_depth > MAX_COUNTER_BITS
     {
@@ -451,10 +457,11 @@ mod arbitrary_impls {
     impl<'a> Arbitrary<'a> for UsageTable {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
             let batch_id = B256::from(u.arbitrary::<[u8; 32]>()?);
-            // The format itself allows `bucket_depth == 0`, but
-            // `nectar_postage::calculate_bucket` shifts a u32 right by
-            // `32 - bucket_depth`, so depth 0 overflows the shift and panics
-            // on every persist. Generate only persistable geometry here.
+            // `bucket_depth == 0` (a zero-width bucket) is invalid geometry:
+            // `validate_geometry` rejects it because `nectar_postage::
+            // calculate_bucket` shifts a u32 right by `32 - bucket_depth`, so
+            // depth 0 would overflow the shift. The range below is therefore
+            // exactly the format invariant, not a generator restriction.
             let bucket_depth = u.int_in_range(1..=MAX_BUCKET_DEPTH)?;
             let counter_bits = u.int_in_range(0..=MAX_COUNTER_BITS)?;
             let depth = bucket_depth + counter_bits;
@@ -514,6 +521,37 @@ mod tests {
         assert!(UsageTable::new(batch_id(), 48, 16, imm).is_err());
         assert!(UsageTable::new(batch_id(), 15, 16, imm).is_err());
         assert!(UsageTable::new(batch_id(), 20, 17, imm).is_err());
+    }
+
+    #[test]
+    fn geometry_rejects_zero_bucket_depth() {
+        // A zero bucket depth would overflow `calculate_bucket`'s
+        // `32 - bucket_depth` shift on the persist and issue paths, so the
+        // geometry validator rejects it outright.
+        for depth in [0u8, 1, 20, 31] {
+            assert_eq!(
+                validate_geometry(depth, 0),
+                Err(UsageError::InvalidGeometry {
+                    depth,
+                    bucket_depth: 0,
+                })
+            );
+        }
+        // Both constructors go through the validator.
+        assert_eq!(
+            UsageTable::new(batch_id(), 20, 0, Mutability::Immutable),
+            Err(UsageError::InvalidGeometry {
+                depth: 20,
+                bucket_depth: 0,
+            })
+        );
+        assert_eq!(
+            UsageTable::from_counts(batch_id(), 5, 0, vec![0u32], Mutability::Immutable),
+            Err(UsageError::InvalidGeometry {
+                depth: 5,
+                bucket_depth: 0,
+            })
+        );
     }
 
     #[test]
