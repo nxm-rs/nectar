@@ -40,7 +40,11 @@ harness = false
 [features]
 default = ["std"]
 std = ["alloy-primitives/std", "thiserror/std", "serde_json/std", "rand", "nectar-primitives/std"]
-serde = ["dep:serde", "alloy-primitives/serde"]
+serde = [
+	"dep:serde",
+	"alloy-primitives/serde",
+	"nectar-primitives/serde"
+]
 encryption = ["nectar-primitives/encryption"]
 
 [package.metadata.docs.rs]

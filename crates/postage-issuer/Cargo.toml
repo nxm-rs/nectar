@@ -55,13 +55,22 @@ default = ["std"]
 std = ["nectar-postage/std"]
 
 # Serialization support with serde
-serde = ["dep:serde", "nectar-postage/serde"]
+serde = [
+	"dep:serde",
+	"nectar-postage/serde",
+	"nectar-primitives/serde"
+]
 
 # Local key signing for testing and development
 local-signer = ["dep:alloy-signer-local", "std"]
 
 # Parallel signing operations using rayon
-parallel = ["dep:rayon", "std"]
+parallel = [
+	"dep:rayon",
+	"std",
+	"nectar-postage/parallel",
+	"nectar-primitives/parallel"
+]
 
 # Arbitrary trait implementations for property-based testing
 arbitrary = ["nectar-postage/arbitrary", "nectar-primitives/arbitrary"]
