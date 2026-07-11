@@ -160,6 +160,8 @@ impl CounterTable {
                 got: counts.len(),
             });
         }
+        // Batch geometry invariant: depth >= bucket_depth, enforced by callers.
+        #[allow(clippy::arithmetic_side_effects)]
         let capacity = 1u32 << (depth - bucket_depth);
         let mut issued = 0u64;
         for (bucket, &count) in counts.iter().enumerate() {
@@ -170,7 +172,11 @@ impl CounterTable {
                     capacity,
                 });
             }
-            issued += u64::from(count);
+            // Sum of at most 2^bucket_depth u32 counters cannot overflow a u64.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                issued += u64::from(count);
+            }
         }
         Ok(Self {
             depth,
@@ -202,6 +208,8 @@ impl CounterTable {
     }
 
     /// Returns the number of slots per bucket (`2^(depth - bucket_depth)`).
+    // Batch geometry invariant: depth >= bucket_depth, enforced at construction.
+    #[allow(clippy::arithmetic_side_effects)]
     pub const fn bucket_capacity(&self) -> u32 {
         1u32 << (self.depth - self.bucket_depth)
     }
@@ -269,16 +277,25 @@ impl CounterTable {
         let capacity = self.bucket_capacity();
 
         if matches!(self.mode, CounterMode::Fill) {
+            // Indexing guarded by the bucket range check at the top of `record`.
+            #[allow(clippy::indexing_slicing)]
             let count = &mut self.counts[bucket as usize];
             if *count >= capacity {
                 return Err(CounterError::BucketFull { bucket, capacity });
             }
             let index = *count;
-            *count += 1;
-            self.issued += 1;
+            // `*count < capacity <= u32::MAX` (checked above) and the u64 issued
+            // total cannot overflow before the u32 counters do.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                *count += 1;
+                self.issued += 1;
+            }
             return Ok(index);
         }
 
+        // Indexing guarded by the bucket range check at the top of `record`.
+        #[allow(clippy::indexing_slicing)]
         let old_cursor = self.counts[bucket as usize];
         // Start at the cursor; a cursor equal to capacity means "wrap on the next
         // write", resetting to 0 when the bucket bound is reached.
@@ -290,6 +307,10 @@ impl CounterTable {
         // Skip protected slots, wrapping. Bounded by `capacity` steps: if every
         // slot is protected we fail rather than loop.
         let mut steps = 0u32;
+        // `candidate < capacity` throughout (initial value and the modulo keep it
+        // there), `capacity >= 1` (a power of two), and `steps < capacity`, so
+        // neither increment can overflow and the modulo divisor is nonzero.
+        #[allow(clippy::arithmetic_side_effects)]
         while is_protected(candidate) {
             candidate = (candidate + 1) % capacity;
             steps += 1;
@@ -301,11 +322,22 @@ impl CounterTable {
         // The new cursor points just past the slot we returned. Storing
         // `capacity` (rather than wrapping to 0 here) defers the wrap to the next
         // write, keeping the cursor in [0, capacity] as on the wire.
+        // `index < capacity <= u32::MAX`, so the increment cannot overflow.
+        #[allow(clippy::arithmetic_side_effects)]
         let new_cursor = index + 1;
-        self.counts[bucket as usize] = new_cursor;
+        // Indexing guarded by the bucket range check at the top of `record`.
+        #[allow(clippy::indexing_slicing)]
+        {
+            self.counts[bucket as usize] = new_cursor;
+        }
         // Keep issued == sum(counts): fold in the signed delta (it decreases on
-        // wrap, when new_cursor < old_cursor).
-        self.issued = self.issued - u64::from(old_cursor) + u64::from(new_cursor);
+        // wrap, when new_cursor < old_cursor). `issued == sum(counts) >=
+        // old_cursor` (it is one of the summands), so the subtraction cannot
+        // underflow, and the sum of 2^bucket_depth u32 counters fits a u64.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.issued = self.issued - u64::from(old_cursor) + u64::from(new_cursor);
+        }
         Ok(index)
     }
 
@@ -331,7 +363,11 @@ impl CounterTable {
         let mut issued = 0u64;
         for (mine, theirs) in self.counts.iter_mut().zip(other.counts.iter()) {
             *mine = (*mine).max(*theirs);
-            issued += u64::from(*mine);
+            // Sum of at most 2^bucket_depth u32 counters cannot overflow a u64.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                issued += u64::from(*mine);
+            }
         }
         self.issued = issued;
     }

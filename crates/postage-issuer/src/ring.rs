@@ -225,6 +225,10 @@ impl<R: Reservation> RingIssuer<R> {
     ///
     /// This saturates at the bucket capacity, so a wrapped ring reports the
     /// bucket as full rather than counting overwrites as fresh utilization.
+    // Every caller guarantees `bucket_idx` is within the bucket count (either by
+    // an explicit bounds check or via a successful `record` on the counter
+    // table), and `saturated` and `counts()` share that length by construction.
+    #[allow(clippy::indexing_slicing)]
     fn bucket_fill(&self, bucket_idx: usize) -> u32 {
         if self.saturated[bucket_idx] {
             self.counters.bucket_capacity()
@@ -257,7 +261,12 @@ impl<R: Reservation> RingIssuer<R> {
         // A cursor sitting at the capacity has just filled the bucket's last
         // fresh slot, so the bucket is saturated from here on.
         if self.counters.count(bucket).unwrap_or(0) == self.counters.bucket_capacity() {
-            self.saturated[bucket as usize] = true;
+            // `record` above succeeded, so `bucket` is within the bucket count and
+            // `saturated` has that same length by construction.
+            #[allow(clippy::indexing_slicing)]
+            {
+                self.saturated[bucket as usize] = true;
+            }
         }
         Ok(position)
     }
@@ -280,7 +289,12 @@ impl<R: Reservation> RingIssuer<R> {
         let bucket = calculate_bucket(address, self.counters.bucket_depth());
         let position = self.next_slot(bucket)?;
 
-        self.stamps_issued += 1;
+        // Monotone u64 issuance counter; one increment per stamp cannot
+        // realistically overflow 2^64.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.stamps_issued += 1;
+        }
 
         let fill = self.bucket_fill(bucket as usize);
         if fill > self.max_utilization {
@@ -318,7 +332,10 @@ impl<R: Reservation> StampIssuer for RingIssuer<R> {
                     bucket,
                     capacity: self.counters.bucket_capacity(),
                 },
-                // `prepare_ring_stamp` only ever yields RingExhausted.
+                // Invariant: `prepare_ring_stamp` only ever yields RingExhausted
+                // (its sole error source is `next_slot`, which maps every counter
+                // error to RingExhausted).
+                #[allow(clippy::unreachable)]
                 _ => unreachable!("ring issuance only fails with RingExhausted"),
             })
     }

@@ -2116,7 +2116,6 @@ dependencies = [
  "proptest-arbitrary-interop",
  "rand 0.10.1",
  "rayon",
- "serde",
  "thiserror",
  "tokio",
 ]
