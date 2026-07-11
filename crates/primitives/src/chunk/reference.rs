@@ -272,6 +272,15 @@ mod tests {
                 got: 31
             }
         );
+
+        let long = [0u8; 64];
+        assert_eq!(
+            ChunkRef::try_from(long.as_slice()).unwrap_err(),
+            WrongLength {
+                expected: ChunkRef::SIZE,
+                got: 64
+            }
+        );
     }
 
     #[test]

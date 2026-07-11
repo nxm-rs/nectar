@@ -107,6 +107,15 @@ mod tests {
                 got: 16
             }
         );
+
+        let long = [0u8; 48];
+        assert_eq!(
+            Nonce::try_from(long.as_slice()).unwrap_err(),
+            WrongLength {
+                expected: 32,
+                got: 48
+            }
+        );
     }
 
     #[test]

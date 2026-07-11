@@ -136,6 +136,16 @@ mod tests {
                 got: 16
             }
         );
+
+        let long = [0u8; 64];
+        let err = EncryptionKey::try_from(long.as_slice()).unwrap_err();
+        assert_eq!(
+            err,
+            WrongLength {
+                expected: EncryptionKey::SIZE,
+                got: 64
+            }
+        );
     }
 
     #[test]

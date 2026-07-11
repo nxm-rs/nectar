@@ -195,6 +195,16 @@ mod tests {
                 got: 48
             }
         );
+
+        let long = [0u8; 80];
+        let err = EncryptedChunkRef::try_from(long.as_slice()).unwrap_err();
+        assert_eq!(
+            err,
+            WrongLength {
+                expected: EncryptedChunkRef::SIZE,
+                got: 80
+            }
+        );
     }
 
     #[test]
