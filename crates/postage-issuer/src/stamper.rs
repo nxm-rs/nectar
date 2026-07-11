@@ -326,7 +326,7 @@ mod tests {
         let mut sig_bytes = [0u8; 65];
         sig_bytes[..32].copy_from_slice(&signature.r().to_be_bytes::<32>());
         sig_bytes[32..64].copy_from_slice(&signature.s().to_be_bytes::<32>());
-        sig_bytes[64] = signature.v() as u8 + 27;
+        sig_bytes[64] = u8::from(signature.v()) + 27;
 
         assert_eq!(
             sig_bytes.as_slice(),

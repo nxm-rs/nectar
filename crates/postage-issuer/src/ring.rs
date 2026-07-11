@@ -262,8 +262,9 @@ impl<R: Reservation> RingIssuer<R> {
         // fresh slot, so the bucket is saturated from here on.
         if self.counters.count(bucket).unwrap_or(0) == self.counters.bucket_capacity() {
             // `record` above succeeded, so `bucket` is within the bucket count and
-            // `saturated` has that same length by construction.
-            #[allow(clippy::indexing_slicing)]
+            // `saturated` has that same length by construction; `u32` always fits
+            // `usize` on the >=32-bit targets this crate supports.
+            #[allow(clippy::indexing_slicing, clippy::as_conversions)]
             {
                 self.saturated[bucket as usize] = true;
             }
@@ -296,6 +297,8 @@ impl<R: Reservation> RingIssuer<R> {
             self.stamps_issued += 1;
         }
 
+        // `u32` always fits `usize` on the >=32-bit targets this crate supports.
+        #[allow(clippy::as_conversions)]
         let fill = self.bucket_fill(bucket as usize);
         if fill > self.max_utilization {
             self.max_utilization = fill;
@@ -357,6 +360,8 @@ impl<R: Reservation> StampIssuer for RingIssuer<R> {
     }
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
+        // `u32` always fits `usize` on the >=32-bit targets this crate supports.
+        #[allow(clippy::as_conversions)]
         let bucket_idx = bucket as usize;
         if bucket_idx >= self.counters.counts().len() {
             return 0;
@@ -365,6 +370,8 @@ impl<R: Reservation> StampIssuer for RingIssuer<R> {
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
+        // `u32` always fits `usize` on the >=32-bit targets this crate supports.
+        #[allow(clippy::as_conversions)]
         let bucket_idx = bucket as usize;
         if bucket_idx >= self.counters.counts().len() {
             return false;
@@ -389,8 +396,13 @@ mod tests {
 
     fn test_address(leading: u16) -> SwarmAddress {
         let mut bytes = [0u8; 32];
-        bytes[0] = (leading >> 8) as u8;
-        bytes[1] = leading as u8;
+        // Big-endian split of a u16: `leading >> 8` is <= 0xFF and the low-byte
+        // truncation is the intended extraction; both casts are lossless.
+        #[allow(clippy::as_conversions)]
+        {
+            bytes[0] = (leading >> 8) as u8;
+            bytes[1] = leading as u8;
+        }
         SwarmAddress::new(bytes)
     }
 

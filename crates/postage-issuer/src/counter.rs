@@ -166,6 +166,10 @@ impl CounterTable {
         let mut issued = 0u64;
         for (bucket, &count) in counts.iter().enumerate() {
             if count > capacity {
+                // `bucket` indexes a vector whose length was validated above to
+                // be `2^bucket_depth`; a table wider than `u32` is geometrically
+                // impossible (the bucket space is addressed by `u32` throughout).
+                #[allow(clippy::as_conversions)]
                 return Err(CounterError::CounterOverflow {
                     bucket: bucket as u32,
                     count,
@@ -225,6 +229,8 @@ impl CounterTable {
     }
 
     /// Returns the counter of a bucket.
+    // `u32` always fits `usize` on the >=32-bit targets this crate supports.
+    #[allow(clippy::as_conversions)]
     pub fn count(&self, bucket: u32) -> Result<u32, CounterError> {
         self.counts
             .get(bucket as usize)
@@ -271,7 +277,10 @@ impl CounterTable {
         bucket: u32,
         is_protected: impl Fn(u32) -> bool,
     ) -> Result<u32, CounterError> {
-        if bucket as usize >= self.counts.len() {
+        // `u32` always fits `usize` on the >=32-bit targets this crate supports.
+        #[allow(clippy::as_conversions)]
+        let bucket_idx = bucket as usize;
+        if bucket_idx >= self.counts.len() {
             return Err(CounterError::InvalidBucket { bucket });
         }
         let capacity = self.bucket_capacity();
@@ -279,7 +288,7 @@ impl CounterTable {
         if matches!(self.mode, CounterMode::Fill) {
             // Indexing guarded by the bucket range check at the top of `record`.
             #[allow(clippy::indexing_slicing)]
-            let count = &mut self.counts[bucket as usize];
+            let count = &mut self.counts[bucket_idx];
             if *count >= capacity {
                 return Err(CounterError::BucketFull { bucket, capacity });
             }
@@ -296,7 +305,7 @@ impl CounterTable {
 
         // Indexing guarded by the bucket range check at the top of `record`.
         #[allow(clippy::indexing_slicing)]
-        let old_cursor = self.counts[bucket as usize];
+        let old_cursor = self.counts[bucket_idx];
         // Start at the cursor; a cursor equal to capacity means "wrap on the next
         // write", resetting to 0 when the bucket bound is reached.
         let mut candidate = if old_cursor >= capacity {
@@ -328,7 +337,7 @@ impl CounterTable {
         // Indexing guarded by the bucket range check at the top of `record`.
         #[allow(clippy::indexing_slicing)]
         {
-            self.counts[bucket as usize] = new_cursor;
+            self.counts[bucket_idx] = new_cursor;
         }
         // Keep issued == sum(counts): fold in the signed delta (it decreases on
         // wrap, when new_cursor < old_cursor). `issued == sum(counts) >=

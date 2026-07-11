@@ -52,8 +52,10 @@ impl BucketShard {
 
     /// Returns the local index within this shard for a given global bucket.
     // Shard routing invariant: callers only pass buckets owned by this shard, so
-    // `bucket >= base_bucket` and the subtraction cannot underflow.
-    #[allow(clippy::arithmetic_side_effects)]
+    // `bucket >= base_bucket` and the subtraction cannot underflow. The offset
+    // always fits `usize` on the >=32-bit targets this crate supports (const fn,
+    // so `usize::try_from` is unavailable).
+    #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
     #[inline]
     const fn local_index(&self, bucket: u32) -> usize {
         (bucket - self.base_bucket) as usize
@@ -154,18 +156,29 @@ impl ShardedIssuer {
         );
 
         let total_buckets = 1u32 << bucket_depth;
+        // `u32` always fits `usize` on the >=32-bit targets this crate supports.
+        #[allow(clippy::as_conversions)]
         let shard_count = shard_count.min(total_buckets as usize);
-        let buckets_per_shard = total_buckets / shard_count as u32;
+        // `shard_count <= total_buckets <= u32::MAX` after the clamp above, so
+        // the narrowing is lossless.
+        #[allow(clippy::as_conversions)]
+        let shard_count_u32 = shard_count as u32;
+        let buckets_per_shard = total_buckets / shard_count_u32;
         let bucket_capacity = 1u32 << (depth - bucket_depth);
 
         // Calculate shard_shift: how many bits to shift bucket to get shard index
         // For bucket_depth=16 and shard_count=16, we take top 4 bits: shift = 16 - 4 = 12
-        let shard_bits = (shard_count as u32).trailing_zeros();
-        let shard_shift = bucket_depth as u32 - shard_bits;
-        let shard_mask = (shard_count - 1) as u32;
+        let shard_bits = shard_count_u32.trailing_zeros();
+        let shard_shift = u32::from(bucket_depth) - shard_bits;
+        let shard_mask = shard_count_u32 - 1;
 
         let shards: Vec<_> = (0..shard_count)
-            .map(|i| BucketShard::new(i as u32 * buckets_per_shard, buckets_per_shard))
+            .map(|i| {
+                // `i < shard_count <= u32::MAX`, so the narrowing is lossless.
+                #[allow(clippy::as_conversions)]
+                let base = i as u32 * buckets_per_shard;
+                BucketShard::new(base, buckets_per_shard)
+            })
             .collect();
 
         Self {
@@ -231,6 +244,9 @@ impl ShardedIssuer {
     }
 
     /// Maps a bucket to its shard index.
+    // The masked value always fits `usize` on the >=32-bit targets this crate
+    // supports (const fn, so `usize::try_from` is unavailable).
+    #[allow(clippy::as_conversions)]
     #[inline]
     const fn shard_index(&self, bucket: u32) -> usize {
         ((bucket >> self.shard_shift) & self.shard_mask) as usize
@@ -525,10 +541,10 @@ mod tests {
             handle.join().unwrap();
         }
 
-        assert_eq!(
-            issuer.stamps_issued(),
-            (num_threads * stamps_per_thread) as u64
-        );
+        // `8 * 1000` is positive and fits `u64`; the cast is lossless.
+        #[allow(clippy::as_conversions)]
+        let expected = (num_threads * stamps_per_thread) as u64;
+        assert_eq!(issuer.stamps_issued(), expected);
     }
 
     #[cfg(feature = "parallel")]
