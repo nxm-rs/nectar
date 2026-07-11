@@ -1351,6 +1351,31 @@ mod tests {
         }
     }
 
+    /// A chunk whose bytes fail to decode surfaces as `Corrupt`, naming the
+    /// address the malformed bytes came from so a deep-load failure is
+    /// diagnosable rather than an anonymous wire error.
+    #[test]
+    fn load_corrupt_chunk_reports_address() {
+        // Fewer bytes than the obfuscation-key header cannot decode: the
+        // wire failure is `TooShort`, wrapped with the chunk's address.
+        let chunk = ContentChunk::<{ DEFAULT_BODY_SIZE }>::new(Bytes::from(vec![1u8; 8])).unwrap();
+        let address = *chunk.address();
+
+        let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
+        block_on(store.put(chunk.into())).unwrap();
+
+        let mut node: Node = Node::from_reference(address);
+        let err = block_on(node.load(&store)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                MantarayError::Corrupt { address: a, source: DecodeError::TooShort }
+                    if a == address
+            ),
+            "expected Corrupt naming the chunk address, got {err:?}"
+        );
+    }
+
     #[test]
     fn add_and_lookup_with_load_save_a() {
         run_add_and_lookup_with_load_save(&test_case_data()[0].items);
