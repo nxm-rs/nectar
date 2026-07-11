@@ -35,7 +35,7 @@ pub mod wasm;
 pub use traits::{BmtChunk, Chunk, ChunkAddress, ChunkHeader, ChunkMetadata, ChunkSerialization};
 
 // Re-export the reference types
-pub use reference::{ChunkRef, RefKind, Reference};
+pub use reference::{ChunkRef, RefKind, Reference, WrongRefKind};
 
 // Re-export the type system
 pub use any_chunk::AnyChunk;

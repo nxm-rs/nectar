@@ -116,6 +116,7 @@ pub use chunk::{
     Reference,
     SingleOwnerChunk,
     StandardChunkSet,
+    WrongRefKind,
 };
 
 /// Default BMT hasher.

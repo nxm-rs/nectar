@@ -8,10 +8,24 @@
 use std::mem::size_of;
 
 use crate::chunk::ChunkAddress;
+use crate::file::EntryRef;
 use crate::wire::{Cursor, Underrun};
 
 pub(crate) mod sealed {
     pub trait Sealed {}
+}
+
+/// An [`EntryRef`] did not carry the width its target reference type requires.
+///
+/// Raised where a manifest keyed by one [`RefKind`] is handed an entry of the
+/// other; the typed replacement for a laundered byte-length mismatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("wrong reference kind: expected {expected:?}, got {got:?}")]
+pub struct WrongRefKind {
+    /// The reference kind the target type requires.
+    pub expected: RefKind,
+    /// The reference kind the entry actually carried.
+    pub got: RefKind,
 }
 
 /// The two reference widths: a plain address, or an address plus a key.
@@ -50,6 +64,14 @@ pub trait Reference: sealed::Sealed + Sized + Clone + Eq + core::fmt::Debug + 's
 
     /// The chunk address this reference names.
     fn address(&self) -> &ChunkAddress;
+
+    /// This reference as a width-typed [`EntryRef`], carrying its address (and
+    /// key) without a wire round-trip.
+    fn into_entry_ref(self) -> EntryRef;
+
+    /// Recover a typed reference from an [`EntryRef`], or report the kind found
+    /// when it is not [`KIND`](Self::KIND).
+    fn from_entry_ref(entry: EntryRef) -> Result<Self, WrongRefKind>;
 
     /// Append this reference's [`SIZE`](Self::SIZE) wire bytes to `out`.
     fn write_to(&self, out: &mut Vec<u8>);
@@ -114,6 +136,20 @@ impl Reference for ChunkRef {
         &self.0
     }
 
+    fn into_entry_ref(self) -> EntryRef {
+        EntryRef::Plain(self.into_address())
+    }
+
+    fn from_entry_ref(entry: EntryRef) -> Result<Self, WrongRefKind> {
+        match entry {
+            EntryRef::Plain(address) => Ok(Self::new(address)),
+            EntryRef::Encrypted(_) => Err(WrongRefKind {
+                expected: Self::KIND,
+                got: RefKind::Encrypted,
+            }),
+        }
+    }
+
     fn write_to(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(self.0.as_bytes());
     }
@@ -143,7 +179,7 @@ impl<'a> arbitrary::Arbitrary<'a> for ChunkRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::encryption::EncryptedChunkRef;
+    use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
     use alloy_primitives::B256;
 
     #[test]
@@ -163,6 +199,47 @@ mod tests {
         );
         assert_eq!(EncryptedChunkRef::KIND, RefKind::Encrypted);
         assert_eq!(RefKind::Encrypted.size(), EncryptedChunkRef::SIZE);
+    }
+
+    #[test]
+    fn entry_ref_round_trips_plain() {
+        let addr = ChunkAddress::from(B256::repeat_byte(0x11));
+        let reference = ChunkRef::new(addr);
+        let entry = reference.into_entry_ref();
+        assert_eq!(entry, EntryRef::Plain(addr));
+        assert_eq!(ChunkRef::from_entry_ref(entry).unwrap(), reference);
+    }
+
+    #[test]
+    fn entry_ref_round_trips_encrypted() {
+        let addr = ChunkAddress::from(B256::repeat_byte(0x22));
+        let reference = EncryptedChunkRef::new(addr, EncryptionKey::from([0x33; 32]));
+        let entry = reference.clone().into_entry_ref();
+        assert_eq!(entry, EntryRef::Encrypted(reference.clone()));
+        assert_eq!(EncryptedChunkRef::from_entry_ref(entry).unwrap(), reference);
+    }
+
+    #[test]
+    fn from_entry_ref_rejects_wrong_kind() {
+        let addr = ChunkAddress::from(B256::repeat_byte(0x44));
+        let plain = ChunkRef::new(addr).into_entry_ref();
+        let encrypted =
+            EncryptedChunkRef::new(addr, EncryptionKey::from([0x55; 32])).into_entry_ref();
+
+        assert_eq!(
+            EncryptedChunkRef::from_entry_ref(plain).unwrap_err(),
+            WrongRefKind {
+                expected: RefKind::Encrypted,
+                got: RefKind::Unencrypted,
+            }
+        );
+        assert_eq!(
+            ChunkRef::from_entry_ref(encrypted).unwrap_err(),
+            WrongRefKind {
+                expected: RefKind::Unencrypted,
+                got: RefKind::Encrypted,
+            }
+        );
     }
 
     #[test]
