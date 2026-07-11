@@ -261,6 +261,46 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn encrypted_builder_round_trips_the_reference() {
+        use nectar_primitives::file::EntryRef;
+        use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
+
+        let mut builder = ManifestBuilder::<Store, EncryptedChunkRef>::new_encrypted(Store::new());
+        let eref = EncryptedChunkRef::new(
+            make_addr("index.html"),
+            EncryptionKey::from([7u8; EncryptionKey::SIZE]),
+        );
+        block_on(builder.add("index.html", eref.clone())).unwrap();
+
+        let (root, mut manifest) = block_on(builder.save()).unwrap();
+        // The returned reference addresses the saved root.
+        assert_eq!(manifest.reference(), Some(root.address()));
+
+        // Address and decryption key both survive encode and decode.
+        let entry = block_on(manifest.lookup("index.html")).unwrap();
+        assert_eq!(entry.reference(), Some(&EntryRef::Encrypted(eref)));
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn encrypted_builder_rejects_root_metadata() {
+        use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
+
+        let mut builder = ManifestBuilder::<Store, EncryptedChunkRef>::new_encrypted(Store::new());
+        let eref = EncryptedChunkRef::new(
+            make_addr("root"),
+            EncryptionKey::from([9u8; EncryptionKey::SIZE]),
+        );
+        let mut meta = BTreeMap::new();
+        meta.insert("k".to_string(), "v".to_string());
+        block_on(builder.add_with_metadata("", eref, meta)).unwrap();
+
+        let err = block_on(builder.save()).unwrap_err();
+        assert!(matches!(err, MantarayError::RootMetadata));
+    }
+
     #[test]
     fn remove_before_save_drops_the_path() {
         let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
