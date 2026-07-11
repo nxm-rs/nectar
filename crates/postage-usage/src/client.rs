@@ -201,6 +201,9 @@ where
                 let root = RootInfo::parse(&root_bytes)?;
                 let mut leaves: Vec<Bytes> = Vec::with_capacity(root.leaf_count() as usize);
                 for leaf in 0..root.leaf_count() {
+                    // `leaf < leaf_count() <= u16::MAX`, so the increment
+                    // cannot overflow.
+                    #[allow(clippy::arithmetic_side_effects)]
                     let index = leaf + 1;
                     let leaf_addr = usage_chunk_address(&batch_id, &owner, index);
                     match source
@@ -287,6 +290,10 @@ where
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        // `previous` is a wall-clock seal timestamp in seconds, recorded by
+        // an earlier flush, so it sits far below u64::MAX and the increment
+        // cannot overflow.
+        #[allow(clippy::arithmetic_side_effects)]
         let timestamp = self
             .snapshot
             .last_seal_timestamp()

@@ -61,6 +61,9 @@ pub struct RootInfo {
 }
 
 /// Returns the maximum delta representable in `width` bits.
+// In the else branch `width < 32`, so the u64 shift is in range and
+// `1 << width >= 1` makes the decrement safe.
+#[allow(clippy::arithmetic_side_effects)]
 const fn delta_limit(width: u8) -> u64 {
     if width >= 32 {
         u32::MAX as u64
@@ -70,11 +73,18 @@ const fn delta_limit(width: u8) -> u64 {
 }
 
 /// Returns the byte length of `buckets` deltas packed at `width` bits.
+// `buckets <= 2^16` (validated geometry) and `width <= 32`, so the product
+// is at most 2^21 and cannot overflow usize.
+#[allow(clippy::arithmetic_side_effects)]
 const fn packed_len(buckets: usize, width: u8) -> usize {
     (buckets * width as usize).div_ceil(8)
 }
 
 /// Returns the number of buckets per leaf for a given width (`width > 0`).
+// Callers uphold `width > 0` (leaves exist only for a nonzero delta width:
+// the encoder inlines width 0 and the parser rejects `leaves > 0` with
+// width 0), so the division cannot be by zero; the dividend is a constant.
+#[allow(clippy::arithmetic_side_effects)]
 const fn buckets_per_leaf(width: u8) -> usize {
     (MAX_PAYLOAD_SIZE * 8) / width as usize
 }
@@ -89,6 +99,10 @@ const fn leaf_count(buckets: usize, width: u8) -> usize {
 }
 
 /// Writes the low `width` bits of `value` at `bit_offset`, MSB first.
+// Callers size `buf` to `packed_len(..)` with `bit_offset + width` within
+// its bit length, and `i < width` keeps the shift exponent in range, so the
+// offset math and byte indexing cannot overflow or go out of bounds.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 fn write_bits(buf: &mut [u8], bit_offset: usize, width: u8, value: u64) {
     for i in 0..width as usize {
         let bit = (value >> (width as usize - 1 - i)) & 1;
@@ -100,6 +114,10 @@ fn write_bits(buf: &mut [u8], bit_offset: usize, width: u8, value: u64) {
 }
 
 /// Reads `width` bits at `bit_offset`, MSB first.
+// Callers validate `buf` to `packed_len(..)` bytes with `bit_offset + width`
+// within its bit length before reading, and `width <= 32` keeps the value
+// accumulation within u64, so the offset math and indexing cannot fail.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 fn read_bits(buf: &[u8], bit_offset: usize, width: u8) -> u64 {
     let mut value = 0u64;
     for i in 0..width as usize {
@@ -114,6 +132,11 @@ fn read_bits(buf: &[u8], bit_offset: usize, width: u8) -> u64 {
 ///
 /// Exception buckets are filled with all one bits; `exceptions` must be
 /// sorted ascending by bucket.
+// `start <= end <= counts.len()` (callers pass leaf ranges clamped to the
+// bucket count), every bucket index is below `end`, and `base` is the
+// minimum count, so `count - base` cannot underflow; `i * width` is bounded
+// by the buffer sized from `packed_len`.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 fn pack_range(
     counts: &[u32],
     base: u32,
@@ -142,6 +165,10 @@ fn pack_range(
 }
 
 /// Checks that all bits past `bit_len` in `buf` are zero.
+// Callers validate `buf.len() == packed_len(..) == ceil(bit_len / 8)`
+// before the call, so when `bit_len` is not byte-aligned the final byte
+// `buf[bit_len / 8]` exists.
+#[allow(clippy::indexing_slicing)]
 const fn padding_is_zero(buf: &[u8], bit_len: usize) -> bool {
     if !bit_len.is_multiple_of(8) {
         let last = buf[bit_len / 8];
@@ -157,6 +184,13 @@ const fn padding_is_zero(buf: &[u8], bit_len: usize) -> bool {
 /// plus 8 bytes per exception, plus 32 bytes per leaf digest when the table
 /// does not inline. Ties break toward the smaller width. Returns `None` when
 /// no width fits, which cannot happen within the supported geometry.
+// `base` is the minimum count so `count - base` cannot underflow;
+// `leading_zeros() <= 32` keeps the histogram index within its 33 entries
+// and `width <= MAX_WIDTH = 32` keeps the tail slice in bounds; the size
+// arithmetic is over values bounded by the geometry (buckets <= 2^16,
+// exceptions <= buckets, allocated <= the snapshot's chunk count), all far
+// below usize overflow.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 fn select_width(counts: &[u32], base: u32, buckets: usize, allocated: usize) -> Option<u8> {
     // histogram[n] counts deltas whose minimal representation is n bits, so
     // the exception count at width w is the histogram tail above w.
@@ -190,6 +224,11 @@ fn select_width(counts: &[u32], base: u32, buckets: usize, allocated: usize) -> 
 }
 
 /// Encodes a snapshot into its root and leaf payloads.
+// All arithmetic here is over values bounded by the validated table
+// geometry: `buckets <= 2^16`, `width <= 32`, counter deltas fit the
+// selected width (`base` is the minimum count), and byte sizes are within
+// a few multiples of MAX_PAYLOAD_SIZE, so none of it can overflow.
+#[allow(clippy::arithmetic_side_effects)]
 #[must_use = "the encoded payloads are the snapshot to publish; dropping them discards the encode"]
 pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result<Encoded> {
     if slots.is_empty() {
@@ -275,20 +314,48 @@ pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result
     }
 }
 
+// The fixed-size reads below are called only with offsets that were bounds
+// checked against the payload length (`parse` verifies the exact payload
+// size before reading), so the slicing and offset math cannot go out of
+// bounds, and `try_into` on an exactly-sized subslice is infallible.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::unwrap_used
+)]
 fn read_u16(buf: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes(buf[offset..offset + 2].try_into().unwrap())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::unwrap_used
+)]
 fn read_u32(buf: &[u8], offset: usize) -> u32 {
     u32::from_be_bytes(buf[offset..offset + 4].try_into().unwrap())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::unwrap_used
+)]
 fn read_u64(buf: &[u8], offset: usize) -> u64 {
     u64::from_be_bytes(buf[offset..offset + 8].try_into().unwrap())
 }
 
 impl RootInfo {
     /// Parses and structurally validates a root payload.
+    // Untrusted input is handled length-first: the header reads are guarded
+    // by the `payload.len() >= ROOT_HEADER_SIZE` check at the top, and every
+    // read past the header happens after `payload.len() == expected` is
+    // verified, where `expected` is the exact sum of all section sizes read
+    // below it. The size arithmetic itself is over u16-derived counts
+    // (allocated, leaves, exceptions <= 2^16) and validated geometry
+    // (`bucket_depth in 1..=16`, `depth - bucket_depth <= 31`), so it cannot
+    // overflow.
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
     pub fn parse(payload: &[u8]) -> Result<Self> {
         if payload.len() < ROOT_HEADER_SIZE {
             return Err(UsageError::PayloadLength {
@@ -469,6 +536,11 @@ impl RootInfo {
 
     /// Returns the expected byte length of the zero-based `leaf`, or `None`
     /// if the index is out of range.
+    // `leaf < leaf_count <= 2^16` and `per_leaf <= MAX_PAYLOAD_SIZE * 8`,
+    // so `leaf * per_leaf` stays far below usize overflow, and
+    // `end = min(start + per_leaf, buckets) >= start` keeps `end - start`
+    // from underflowing.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn expected_leaf_len(&self, leaf: u16) -> Option<usize> {
         if (leaf as usize) >= self.leaf_count() as usize {
             return None;
@@ -485,6 +557,14 @@ impl RootInfo {
     ///
     /// `leaves` must contain exactly [`leaf_count`](Self::leaf_count)
     /// payloads in chunk-index order.
+    // `parse` already validated the geometry (`depth - bucket_depth <= 31`),
+    // the exception buckets (`bucket < buckets`, indexed into a `counts`
+    // vector of exactly `buckets` entries), and the inline packed length;
+    // each untrusted leaf payload is length checked against `packed_len`
+    // before it is unpacked. The remaining index math (`i * per_leaf`,
+    // `start + per_leaf`, `end - start` with `end >= start`) is bounded by
+    // `buckets <= 2^16` and `width <= 32`.
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
     #[must_use = "the reassembled snapshot is the recovered state; dropping it discards the assemble"]
     pub fn assemble<L: AsRef<[u8]>>(self, leaves: &[L]) -> Result<Snapshot> {
         let buckets = 1usize << self.bucket_depth;
