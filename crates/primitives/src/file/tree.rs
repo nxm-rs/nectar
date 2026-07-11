@@ -23,6 +23,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// Create tree parameters with a custom reference size (e.g. 64 for encrypted mode).
+    #[allow(clippy::arithmetic_side_effects)] // ref_size is the constant 32 (plain) or 64 (encrypted), never zero
     pub fn with_ref_size(size: u64, ref_size: usize) -> Self {
         let branches = BODY_SIZE / ref_size;
         let (depth, data_chunks) = if size == 0 {
@@ -57,6 +58,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// Total chunks across all levels.
+    #[allow(clippy::arithmetic_side_effects)] // branches >= 1 (BODY_SIZE / 64 minimum) and the geometric level sum is < 2 * data_chunks, far below u64::MAX
     pub const fn total_chunks(&self) -> u64 {
         let mut total = self.data_chunks;
         let mut chunks_at_level = self.data_chunks;
@@ -70,6 +72,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// Chunks at a specific level.
+    #[allow(clippy::arithmetic_side_effects)] // branches >= 1, so the div_ceil divisor is never zero
     pub fn chunks_at_level(&self, level: usize) -> u64 {
         if level >= self.depth {
             return 0;
@@ -86,6 +89,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// Span for a chunk at given level and index.
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // level < depth <= LEVEL_LIMIT = spans.len(); index < chunks_at_level and per-chunk spans partition the file size, so the products/sums stay within the u64 file span
     pub fn span_at(&self, level: usize, index: u64) -> u64 {
         let spans = super::constants::compute_spans_inline(self.branches);
         let max_span = spans[level] * BODY_SIZE as u64;
@@ -107,11 +111,13 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// Byte offset for start of chunk at level 0.
+    #[allow(clippy::arithmetic_side_effects)] // chunk_index < data_chunks, so the byte offset is bounded by the u64 file size
     pub const fn chunk_offset(&self, chunk_index: u64) -> u64 {
         chunk_index * BODY_SIZE as u64
     }
 
     /// Byte range covered by a data chunk.
+    #[allow(clippy::arithmetic_side_effects)] // start is bounded by the file size, so start + BODY_SIZE cannot overflow u64
     pub fn chunk_range(&self, chunk_index: u64) -> (u64, u64) {
         let start = self.chunk_offset(chunk_index);
         let end = (start + BODY_SIZE as u64).min(self.size);
@@ -119,6 +125,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     }
 
     /// Calculate required data chunks for a byte range.
+    #[allow(clippy::arithmetic_side_effects)] // offset < size (early return above) and len is a read length within the file, so offset + len stays within u64; BODY_SIZE divisor is a nonzero constant
     pub fn chunks_for_range(&self, offset: u64, len: u64) -> ChunkRange {
         if len == 0 || offset >= self.size {
             return ChunkRange { start: 0, end: 0 };
@@ -134,6 +141,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // branches >= 1 for the div_ceil; depth increments at most log_branches(data_chunks) times
     fn calculate_depth_with(data_chunks: u64, branches: usize) -> usize {
         if data_chunks <= 1 {
             return 1;
@@ -180,6 +188,7 @@ impl ChunkRange {
 /// Given a set of chunk bodies corresponding to `chunk_range`, copies the
 /// relevant byte slices into a single output buffer accounting for partial
 /// reads at the start/end of the range.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // the caller supplies one body per chunk in chunk_range; read_start/read_end are derived from the chunk's intersection with [offset, offset + actual_len) so read_start <= read_end <= body.len() and the copied total is exactly actual_len
 pub(crate) fn assemble_range<const BODY_SIZE: usize>(
     tree: &TreeParams<BODY_SIZE>,
     offset: u64,

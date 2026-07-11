@@ -49,6 +49,7 @@ pub const SIGN_DATA_PREFIX: &[u8] = b"bee-handshake-";
 /// behaviour (so `None` and `Some(Address::ZERO)` produce byte-identical
 /// sign-data - verified by the test suite).
 #[must_use]
+#[allow(clippy::arithmetic_side_effects)] // capacity hint summing an underlay address plus ~100 bytes of fixed-size fields, far below usize::MAX
 pub fn sign_data(
     underlay_bytes: &[u8],
     overlay: &SwarmAddress,

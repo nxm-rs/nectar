@@ -121,6 +121,7 @@ pub trait Prover {
 }
 
 impl Prover for Hasher {
+    #[allow(clippy::indexing_slicing)] // n = min(data.len(), ..) bounds data[..n], chunk.len() <= SEGMENT_SIZE bounds leaf[..], segment_index < BRANCHES is checked above, and index halves in lockstep with each level's width so level[index ^ 1] is in range
     fn generate_proof(&self, data: &[u8], segment_index: usize) -> Result<Proof> {
         if segment_index >= BRANCHES {
             return Err(self::BmtError::invalid_input_size(format!(

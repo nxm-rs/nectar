@@ -45,6 +45,7 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
     }
 
     /// Get the size of this body in bytes
+    #[allow(clippy::arithmetic_side_effects)] // SPAN_SIZE (8) + a body bounded by BODY_SIZE cannot overflow usize
     pub const fn size(&self) -> usize {
         SPAN_SIZE + self.data.len()
     }
@@ -104,6 +105,7 @@ impl<const BODY_SIZE: usize> From<BmtBody<BODY_SIZE>> for Bytes {
 impl<const BODY_SIZE: usize> TryFrom<Bytes> for BmtBody<BODY_SIZE> {
     type Error = PrimitivesError;
 
+    #[allow(clippy::unwrap_used)] // infallible: split_to(SPAN_SIZE) yields exactly 8 bytes (length checked above)
     fn try_from(mut buf: Bytes) -> Result<Self> {
         if buf.len() < SPAN_SIZE {
             return Err(ChunkError::invalid_size(
@@ -191,6 +193,7 @@ impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, Initial> {
 }
 
 impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, WithSpan> {
+    #[allow(clippy::unwrap_used)] // the WithSpan typestate guarantees span is Some
     pub(crate) fn with_data(
         mut self,
         data: impl Into<Bytes>,
@@ -218,6 +221,7 @@ impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, WithSpan> {
 }
 
 impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, ReadyToBuild> {
+    #[allow(clippy::unwrap_used)] // the ReadyToBuild typestate guarantees span and data are Some
     pub(crate) fn build(self) -> Result<BmtBody<BODY_SIZE>> {
         Ok(BmtBody::new_unchecked(
             self.span.unwrap(),
@@ -228,6 +232,7 @@ impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, ReadyToBuild> {
 
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for BmtBody<BODY_SIZE> {
+    #[allow(clippy::arithmetic_side_effects, clippy::unwrap_used)] // test-input generator: BODY_SIZE + 1 sums small constants, and the builder cannot fail on the generated span/data combination
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         // Decide whether to generate a leaf chunk (span == data_len) or an
         // intermediate chunk (span > BODY_SIZE, full body).

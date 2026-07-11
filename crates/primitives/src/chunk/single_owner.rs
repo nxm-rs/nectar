@@ -280,6 +280,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     }
 
     // Checks if the chunk is a valid dispersed replica
+    #[allow(clippy::indexing_slicing)] // both id and body hash are fixed 32-byte values, so [1..] holds
     fn is_valid_replica(&self) -> bool {
         self.id()[1..] == self.body.hash().as_slice()[1..]
     }
@@ -339,6 +340,7 @@ impl<const BODY_SIZE: usize> Chunk for SingleOwnerChunk<BODY_SIZE> {
         self.body.data()
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // header (97 bytes) plus a body bounded by BODY_SIZE cannot overflow usize
     fn size(&self) -> usize {
         self.header().bytes().len() + self.body.size()
     }
@@ -427,6 +429,7 @@ impl<const BODY_SIZE: usize> TryFrom<&[u8]> for SingleOwnerChunk<BODY_SIZE> {
 }
 
 impl<const BODY_SIZE: usize> fmt::Display for SingleOwnerChunk<BODY_SIZE> {
+    #[allow(clippy::indexing_slicing)] // id is a fixed 32-byte value, so [..8] holds
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let owner_str = self.owner().map_or_else(
             |_| "invalid".to_string(),
@@ -550,6 +553,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
     }
 
     /// Creates a new dispersed replica chunk with the given first byte and transitions to ReadyToBuild
+    #[allow(clippy::unwrap_used, clippy::indexing_slicing)] // the WithData typestate guarantees body is Some; id and body_hash are fixed 32-byte values; DISPERSED_REPLICA_OWNER_PK is a known-valid constant key
     fn dispersed_replica(
         self,
         first_byte: u8,
@@ -567,6 +571,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
 
 impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithId> {
     /// Sign the chunk with the given signer
+    #[allow(clippy::unwrap_used)] // the WithId typestate guarantees body and id are Some
     fn with_signer(
         self,
         signer: &impl SignerSync,
@@ -604,6 +609,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithId> {
 
 impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, ReadyToBuild> {
     /// Build the final SingleOwnerChunk
+    #[allow(clippy::unwrap_used)] // the ReadyToBuild typestate guarantees body, id and signature are Some
     fn build(self) -> Result<SingleOwnerChunk<BODY_SIZE>> {
         let body = self.body.unwrap();
         let id = self.id.unwrap();

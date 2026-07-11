@@ -38,6 +38,7 @@ pub trait JoinMode: Sized + 'static {
     type JoinerContext: Clone + Debug + Send + Sync;
 
     /// Number of child references per intermediate chunk.
+    #[allow(clippy::arithmetic_side_effects)] // REF_SIZE is the nonzero constant 32 or 64
     #[inline]
     fn refs_per_chunk(body_size: usize) -> usize {
         body_size / Self::REF_SIZE
@@ -50,6 +51,7 @@ pub trait JoinMode: Sized + 'static {
     }
 
     /// Subspan size for a given parent span.
+    #[allow(clippy::arithmetic_side_effects)] // REF_SIZE is the nonzero constant 32 or 64
     #[inline]
     fn subspan_size<const BS: usize>(span: u64) -> u64 {
         let spans = compute_spans_inline(BS / Self::REF_SIZE);
@@ -57,6 +59,8 @@ pub trait JoinMode: Sized + 'static {
     }
 
     /// Compute the span covered by a child at `child_index` within a parent of `parent_span`.
+    #[allow(clippy::arithmetic_side_effects)]
+    // branches = BS / REF_SIZE >= 1 for the asserted BS >= 64, so branches - 1 cannot underflow; child_index * subspan addresses a child inside the parent span for any tree the splitters can produce
     #[inline]
     fn child_span<const BS: usize>(parent_span: u64, subspan: u64, child_index: usize) -> u64 {
         let branches = Self::refs_per_chunk(BS);
@@ -177,10 +181,12 @@ impl JoinMode for PlainMode {
 
     #[inline]
     fn parse_child_ref(body: &[u8], ref_start: usize) -> Result<(ChunkAddress, ())> {
-        let ref_end = ref_start + REF_SIZE;
-        let child_addr_bytes: [u8; 32] = body[ref_start..ref_end]
-            .try_into()
-            .map_err(|_| FileError::InvalidReference { level: 0 })?;
+        // Bounds-check the untrusted body instead of panicking on a short slice.
+        let child_addr_bytes: [u8; 32] = ref_start
+            .checked_add(REF_SIZE)
+            .and_then(|ref_end| body.get(ref_start..ref_end))
+            .and_then(|slice| slice.try_into().ok())
+            .ok_or(FileError::InvalidReference { level: 0 })?;
         Ok((ChunkAddress::from(child_addr_bytes), ()))
     }
 }
@@ -221,6 +227,7 @@ pub struct EncryptedMode;
 
 impl EncryptedMode {
     /// Calculate data length for decryption of a chunk with given span.
+    #[allow(clippy::arithmetic_side_effects)] // sub = subspan_size(..) >= BS > 0 for the div_ceil; num_children <= branches (sub covers at least span / branches), so the product is bounded by BS
     fn decrypt_data_length<const BS: usize>(span: u64) -> usize {
         if span <= BS as u64 {
             span as usize
@@ -268,11 +275,16 @@ impl JoinMode for EncryptedMode {
     }
 
     fn parse_child_ref(body: &[u8], ref_start: usize) -> Result<(ChunkAddress, EncryptionKey)> {
-        let ref_end = ref_start + ENCRYPTED_REF_SIZE;
-        let child_addr_bytes: [u8; 32] = body[ref_start..ref_start + 32]
+        // Bounds-check the untrusted body instead of panicking on a short slice.
+        let ref_bytes = ref_start
+            .checked_add(ENCRYPTED_REF_SIZE)
+            .and_then(|ref_end| body.get(ref_start..ref_end))
+            .ok_or(FileError::InvalidReference { level: 0 })?;
+        let (addr_bytes, key_bytes) = ref_bytes.split_at(32);
+        let child_addr_bytes: [u8; 32] = addr_bytes
             .try_into()
             .map_err(|_| FileError::InvalidReference { level: 0 })?;
-        let child_key = EncryptionKey::try_from(&body[ref_start + 32..ref_end])?;
+        let child_key = EncryptionKey::try_from(key_bytes)?;
         Ok((ChunkAddress::from(child_addr_bytes), child_key))
     }
 }
@@ -317,6 +329,7 @@ impl SplitMode for EncryptedMode {
 }
 
 /// Decrypt just the span (first 8 bytes) from encrypted chunk data.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // SPAN_SIZE + BODY_SIZE sums small compile-time constants; the exact-length check above guarantees encrypted_data has at least SPAN_SIZE bytes; EncryptionKey::SIZE is a nonzero constant
 fn decrypt_span<const BODY_SIZE: usize>(
     encrypted_data: &[u8],
     key: &EncryptionKey,

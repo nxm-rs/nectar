@@ -238,6 +238,7 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     /// let decoded: AnyChunk = AnyChunk::from_typed_bytes(&address, &encoded).unwrap();
     /// assert_eq!(decoded.address(), any.address());
     /// ```
+    #[allow(clippy::arithmetic_side_effects)] // 1 + a chunk wire length bounded by the chunk format is a capacity hint far below usize::MAX
     pub fn to_typed_bytes(&self) -> Vec<u8> {
         let tag = self.type_id().as_u8();
         // Clone is required because `into_bytes` consumes the chunk; chunk

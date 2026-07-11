@@ -45,6 +45,7 @@ use crate::Bin;
 /// let depth = recompute_neighborhood_depth(&counts, 8, 2);
 /// assert!(depth.get() <= 8);
 /// ```
+#[allow(clippy::indexing_slicing)] // connected_per_bin[i] with i from the reversed 0..len() range
 #[must_use]
 pub fn recompute_neighborhood_depth(
     connected_per_bin: &[u8; 32],

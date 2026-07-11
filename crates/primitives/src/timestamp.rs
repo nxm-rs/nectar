@@ -62,6 +62,7 @@ impl Timestamp {
     /// Panics only if the system clock is set before the unix epoch, which
     /// would already break far more than this primitive. Pre-1970 callers
     /// can construct via [`Self::from_seconds`] manually.
+    #[allow(clippy::expect_used)] // documented invariants: panics only on a pre-1970 or absurdly far-future system clock
     pub fn now() -> Self {
         use web_time::{SystemTime, UNIX_EPOCH};
         let secs = SystemTime::now()

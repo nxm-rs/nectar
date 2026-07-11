@@ -10,6 +10,7 @@ use super::error::EncryptionError;
 use super::key::EncryptionKey;
 
 /// Span encryption counter: `BODY_SIZE / EncryptionKey::SIZE` (128 for default 4096).
+#[allow(clippy::arithmetic_side_effects)] // EncryptionKey::SIZE is the nonzero constant 32
 const fn span_ctr(body_size: usize) -> u32 {
     (body_size / EncryptionKey::SIZE) as u32
 }
@@ -22,6 +23,7 @@ const fn span_ctr(body_size: usize) -> u32 {
 ///
 /// `chunk_data` must be `SPAN_SIZE..=SPAN_SIZE + BODY_SIZE` bytes.
 #[cfg(feature = "encryption")]
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // SPAN_SIZE + BODY_SIZE and SPAN_SIZE + data.len() sum small constants; the length checks above bound chunk_data, and output is allocated SPAN_SIZE + BODY_SIZE bytes
 pub(crate) fn encrypt_chunk<const BODY_SIZE: usize>(
     chunk_data: &[u8],
     key: &EncryptionKey,
@@ -64,6 +66,7 @@ pub(crate) fn encrypt_chunk<const BODY_SIZE: usize>(
 ///
 /// `encrypted_data` must be exactly `SPAN_SIZE + BODY_SIZE` bytes.
 /// `data_length` specifies the actual data length (excluding padding).
+#[allow(clippy::arithmetic_side_effects)] // SPAN_SIZE (8) + data_length (<= BODY_SIZE, checked in decrypt_chunk_into) cannot overflow usize
 pub(crate) fn decrypt_chunk_data<const BODY_SIZE: usize>(
     encrypted_data: &[u8],
     key: &EncryptionKey,
@@ -78,6 +81,7 @@ pub(crate) fn decrypt_chunk_data<const BODY_SIZE: usize>(
 ///
 /// `output` must be at least `SPAN_SIZE + data_length` bytes.
 /// `encrypted_data` must be exactly `SPAN_SIZE + BODY_SIZE` bytes.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // the three length checks above guarantee data_length <= BODY_SIZE, encrypted_data.len() == SPAN_SIZE + BODY_SIZE and output.len() >= SPAN_SIZE + data_length, bounding every sum and slice
 pub(crate) fn decrypt_chunk_into<const BODY_SIZE: usize>(
     encrypted_data: &[u8],
     key: &EncryptionKey,

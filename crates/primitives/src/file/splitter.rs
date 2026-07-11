@@ -54,6 +54,7 @@ where
     M: SplitMode,
 {
     /// Create a splitter for data of known size.
+    #[allow(clippy::arithmetic_side_effects)] // BODY_SIZE * 2 multiplies small compile-time constants
     pub fn new(span_length: u64) -> Self {
         const { super::constants::assert_valid_body_size::<BODY_SIZE>() };
 
@@ -106,6 +107,7 @@ impl<M, const BODY_SIZE: usize> Write for GenericSplitter<M, BODY_SIZE>
 where
     M: SplitMode,
 {
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // span_length + 1 only renders the error message (span_length < u64::MAX in any reachable state); to_write <= buf.len() bounds the slice
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let remaining = self.span_length.saturating_sub(self.buffer.len() as u64) as usize;
         let to_write = buf.len().min(remaining);

@@ -34,7 +34,6 @@ derive_more.workspace = true
 # Core dependencies
 bytes.workspace = true
 thiserror.workspace = true
-once_cell.workspace = true
 serde = { workspace = true, optional = true }
 
 # key material protection

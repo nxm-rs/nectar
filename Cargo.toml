@@ -105,9 +105,6 @@ rayon = "1.10"
 bytes = { version = "1.11", default-features = false }
 byteorder = { version = "1.5", default-features = false }
 thiserror = { version = "2.0", default-features = false }
-once_cell = { version = "1.21", default-features = false, features = [
-    "critical-section",
-] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 

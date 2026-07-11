@@ -123,6 +123,7 @@ impl<G, S> RetryingChunkGet<G, S> {
 impl<const BS: usize, G: ChunkGet<BS>, S: Sleeper> ChunkGet<BS> for RetryingChunkGet<G, S> {
     type Error = G::Error;
 
+    #[allow(clippy::arithmetic_side_effects)] // attempt only increments while < max_attempts (u32), so + 1 cannot overflow
     async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BS>, Self::Error> {
         let mut attempt = 1;
         loop {

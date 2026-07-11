@@ -13,6 +13,7 @@ pub(crate) enum ReadRangeCheck {
 }
 
 /// Validate a read range against span and body size, returning the action to take.
+#[allow(clippy::arithmetic_side_effects)] // span - offset is guarded by the offset >= span early return
 #[inline]
 pub(crate) fn validate_read_range<const BODY_SIZE: usize>(
     offset: u64,
@@ -36,6 +37,7 @@ pub(crate) fn validate_read_range<const BODY_SIZE: usize>(
 }
 
 /// Build an intermediate chunk payload: span (LE u64) prepended to reference data.
+#[allow(clippy::arithmetic_side_effects)] // SPAN_SIZE (8) + ref_data.len() (<= BODY_SIZE) is a capacity hint far below usize::MAX
 #[inline]
 pub(crate) fn build_intermediate_payload(span: u64, ref_data: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(SPAN_SIZE + ref_data.len());

@@ -183,6 +183,7 @@ fn is_leaf<M: JoinMode, const BS: usize>(node: &SubtreeNode<M>) -> bool {
 
 /// Fetch one node: a leaf yields its body, an intermediate yields its children.
 /// A leaf error consumes one retry, then re-queues or fails.
+#[allow(clippy::arithmetic_side_effects)] // retries - 1 is guarded by retries > 0
 async fn fetch_one<G, M, const BS: usize>(
     getter: &G,
     chunk_range: &ChunkRange,
@@ -252,6 +253,7 @@ fn insert_by_offset<M: JoinMode>(queue: &mut VecDeque<Pending<M>>, pending: Pend
 /// intermediate always exposes the head's region next. The count gate keeps
 /// in-flight plus buffered leaves at `window`, so peak memory is `window` leaf
 /// bodies regardless of resolve order, leaf span, tree depth, or file size.
+#[allow(clippy::arithmetic_side_effects, clippy::expect_used)] // span - range_start is guarded by range_start = start.min(span); leaf/chunk offsets are bounded by the file span; the in-flight and pending-intermediate counters move in lockstep with admissions/retirements so +=/-= cannot wrap; each expect follows the emptiness/head check observed just above it
 fn windowed_walk<G, M, const BODY_SIZE: usize>(
     getter: Arc<G>,
     subtrees: Vec<SubtreeNode<M>>,
@@ -516,6 +518,11 @@ where
     G: ChunkGet<BODY_SIZE> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::expect_used
+    )] // to_copy = min(len, remaining) bounds both slices; position advances by leaf lengths bounded by the file span; the expect follows the is_none() branch that just set the stream
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

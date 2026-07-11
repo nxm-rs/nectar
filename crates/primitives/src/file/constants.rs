@@ -5,6 +5,7 @@ use crate::bmt::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE};
 /// Derive the maximum tree depth from branching factor and body size.
 /// The limit is the number of levels needed to address all storable data:
 /// `branches^(limit-1) * body_size` must exceed any practical file size.
+#[allow(clippy::arithmetic_side_effects)] // compile-time constants: body_bits <= 12 < 64 and branch_bits >= 1 for the power-of-two inputs used
 const fn compute_level_limit(branches: usize, body_size: usize) -> usize {
     // bits needed = ceil(log2(u64::MAX / body_size)) / log2(branches)
     // For branches=128 (7 bits), body_size=4096 (12 bits): (64-12)/7 + 1 = 8.4 → 9
@@ -26,6 +27,7 @@ const REFS_PER_CHUNK: usize = BRANCHES;
 
 /// Compute span multipliers for a given branching factor.
 /// `spans[i] = branches^i`, representing how many level-0 refs each level-i ref covers.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // i < LEVEL_LIMIT is the loop condition and the array length; i += 1 stops at LEVEL_LIMIT
 const fn compute_spans(branches: usize) -> [u64; LEVEL_LIMIT] {
     let mut spans = [0u64; LEVEL_LIMIT];
     let mut span = 1u64;
@@ -58,6 +60,7 @@ pub(crate) const fn assert_valid_body_size<const BODY_SIZE: usize>() {
 }
 
 /// Calculate tree depth for a given file size using integer arithmetic.
+#[allow(clippy::arithmetic_side_effects)] // chunk_size and ref_size are nonzero constants with ref_size <= chunk_size, so branches >= 1; depth increments at most log_branches(data_chunks) times
 pub(crate) const fn tree_depth(length: u64, chunk_size: usize, ref_size: usize) -> usize {
     if length == 0 {
         return 0;
@@ -82,7 +85,7 @@ pub(crate) const fn tree_depth(length: u64, chunk_size: usize, ref_size: usize) 
 
 /// Calculate subspan size for children of a node with given span, using the
 /// provided span multiplier table.
-#[inline]
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices i, i - 1 (i > 0 checked) and LEVEL_LIMIT - 2 are all < LEVEL_LIMIT = spans.len(); every span produced by the splitters returns before the last level's product, and a span beyond the deepest level falls through to the same deepest-level subspan
 pub(crate) fn subspan_for_spans<const BODY_SIZE: usize>(
     span: u64,
     spans: &[u64; LEVEL_LIMIT],
