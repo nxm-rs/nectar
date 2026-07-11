@@ -47,7 +47,6 @@
 //! # Features
 //!
 //! - `std` (default) - Enables standard library support
-//! - `serde` - Enables serialization/deserialization
 //! - `local-signer` - Enables local key signing with `alloy-signer-local`
 //! - `parallel` - Enables parallel signing with rayon
 //!
@@ -71,6 +70,20 @@
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::get_unwrap,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::panic_in_result_fn
+    )
+)]
 
 mod counter;
 #[cfg(feature = "std")]

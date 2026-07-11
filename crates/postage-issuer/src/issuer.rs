@@ -110,6 +110,8 @@ pub trait StampIssuer {
     }
 
     /// Returns the bucket capacity (2^(depth - bucket_depth)).
+    // Batch geometry invariant: depth >= bucket_depth for every issuer.
+    #[allow(clippy::arithmetic_side_effects)]
     fn bucket_capacity(&self) -> u32 {
         1u32 << (self.batch_depth() - self.bucket_depth())
     }
