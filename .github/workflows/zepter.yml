@@ -1,0 +1,31 @@
+# Feature-propagation hygiene: enabling `std` / `serde` / `arbitrary` /
+# `encryption` / `parallel` on a crate must also enable it on that crate's
+# dependencies. Configured in zepter.yaml; run `zepter run` locally to auto-fix.
+name: zepter
+
+on:
+    pull_request:
+        paths: ['**/Cargo.toml', 'zepter.yaml']
+    merge_group:
+    push:
+        branches: [main]
+        paths: ['**/Cargo.toml', 'zepter.yaml']
+
+env:
+    CARGO_TERM_COLOR: always
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+    cancel-in-progress: true
+
+jobs:
+    zepter:
+        name: feature propagation
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            - uses: taiki-e/install-action@1b57bc699ba2af96a06eb2a2a0d32b43a7d8e8b8  # install-action
+              with:
+                  tool: zepter@1.88.1
+            - name: zepter run check
+              run: zepter run check
