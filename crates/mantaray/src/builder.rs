@@ -165,9 +165,13 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
     /// stages an encrypted reference, so a plain-encrypted pairing cannot be
     /// expressed. Drives the splitter directly rather than the deprecated
     /// `write_encrypted_file` ergonomic wrapper it supersedes.
+    ///
+    /// `data` is dropped before the first store await, mirroring `write_file`,
+    /// so the returned future never holds the source across a suspension point.
     pub async fn put_file<D: ReadAt + Sync>(&mut self, path: &str, data: D) -> Result<()> {
         use nectar_primitives::file::{EncryptedParallelSplitter, FileError};
         let (root, chunks) = EncryptedParallelSplitter::<BS>::split_to_vec(&data)?;
+        drop(data);
         for chunk in chunks {
             self.store().put(chunk).await.map_err(FileError::store)?;
         }
