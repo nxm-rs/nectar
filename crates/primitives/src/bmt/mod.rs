@@ -27,7 +27,7 @@
 //! let proof = hasher.generate_proof(data, 0).unwrap();
 //!
 //! // Verify the proof
-//! assert!(Hasher::verify_proof(&proof, hash.as_slice()).unwrap());
+//! assert!(Hasher::verify_proof(&proof, &hash).unwrap());
 //! ```
 
 mod constants;

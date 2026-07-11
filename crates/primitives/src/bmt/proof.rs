@@ -29,8 +29,11 @@ pub struct Proof {
     pub segment_index: usize,
     /// The segment data being proven
     pub segment: B256,
-    /// The proof segments (sibling hashes in the path to the root)
-    pub proof_segments: Vec<B256>,
+    /// The sibling hashes on the path to the root, one per tree level.
+    ///
+    /// The length is fixed by the tree geometry, so an ill-sized path is
+    /// unrepresentable rather than checked at verification time.
+    pub proof_segments: [B256; PROOF_LENGTH],
     /// The span of the data
     pub span: u64,
     /// Optional prefix (used during verification)
@@ -42,7 +45,7 @@ impl Proof {
     pub const fn new(
         segment_index: usize,
         segment: B256,
-        proof_segments: Vec<B256>,
+        proof_segments: [B256; PROOF_LENGTH],
         span: u64,
         prefix: Option<Vec<u8>>,
     ) -> Self {
@@ -55,14 +58,11 @@ impl Proof {
         }
     }
 
-    /// Verify this proof against a root hash
-    pub fn verify(&self, root_hash: &[u8]) -> Result<bool> {
-        if self.proof_segments.len() != PROOF_LENGTH {
-            return Err(
-                BmtError::invalid_proof_length(PROOF_LENGTH, self.proof_segments.len()).into(),
-            );
-        }
-
+    /// Verify this proof against a root hash.
+    ///
+    /// The root is a typed 32-byte hash, so a mis-sized root cannot silently
+    /// verify as a mismatch.
+    pub fn verify(&self, root_hash: &B256) -> Result<bool> {
         // Start with the segment being proven
         let mut current_hash = self.segment;
         let mut current_index = self.segment_index;
@@ -107,7 +107,7 @@ impl Proof {
         let computed_root = B256::from_slice(hasher.finalize().as_slice());
 
         // Compare with provided root hash
-        Ok(computed_root.as_slice() == root_hash)
+        Ok(computed_root == *root_hash)
     }
 }
 
@@ -117,11 +117,11 @@ pub trait Prover {
     fn generate_proof(&self, data: &[u8], segment_index: usize) -> Result<Proof>;
 
     /// Verify a proof against a root hash
-    fn verify_proof(proof: &Proof, root_hash: &[u8]) -> Result<bool>;
+    fn verify_proof(proof: &Proof, root_hash: &B256) -> Result<bool>;
 }
 
 impl Prover for Hasher {
-    #[allow(clippy::indexing_slicing)] // n = min(data.len(), ..) bounds data[..n], chunk.len() <= SEGMENT_SIZE bounds leaf[..], segment_index < BRANCHES is checked above, and index halves in lockstep with each level's width so level[index ^ 1] is in range
+    #[allow(clippy::indexing_slicing)] // n = min(data.len(), ..) bounds data[..n], chunk.len() <= SEGMENT_SIZE bounds leaf[..], segment_index < BRANCHES is checked above, from_fn yields exactly PROOF_LENGTH levels so levels[level] is in range, and index halves in lockstep with each level's width so levels[level][index ^ 1] is in range
     fn generate_proof(&self, data: &[u8], segment_index: usize) -> Result<Proof> {
         if segment_index >= BRANCHES {
             return Err(self::BmtError::invalid_input_size(format!(
@@ -160,13 +160,14 @@ impl Prover for Hasher {
             current = next;
         }
 
-        // The proof is the sibling of the proven node at every level.
-        let mut proof_segments = Vec::with_capacity(PROOF_LENGTH);
+        // The proof is the sibling of the proven node at every level. One
+        // sibling per level, so the level count fixes the array length.
         let mut index = segment_index;
-        for level in &levels {
-            proof_segments.push(B256::from(level[index ^ 1]));
+        let proof_segments = core::array::from_fn(|level| {
+            let sibling = B256::from(levels[level][index ^ 1]);
             index /= 2;
-        }
+            sibling
+        });
 
         Ok(Proof::new(
             segment_index,
@@ -177,7 +178,7 @@ impl Prover for Hasher {
         ))
     }
 
-    fn verify_proof(proof: &Proof, root_hash: &[u8]) -> Result<bool> {
+    fn verify_proof(proof: &Proof, root_hash: &B256) -> Result<bool> {
         proof.verify(root_hash)
     }
 }

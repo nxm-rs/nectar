@@ -65,7 +65,9 @@ impl WasmHasher {
     /// Verify a proof against a root hash
     #[wasm_bindgen(js_name = verifyProof, static_method_of = Hasher)]
     pub fn verify_proof(proof: &WasmProof, root_hash: &Uint8Array) -> Result<bool, JsValue> {
-        match Hasher::verify_proof(&proof.0, &root_hash.to_vec()) {
+        let root = B256::try_from(root_hash.to_vec().as_slice())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        match Hasher::verify_proof(&proof.0, &root) {
             Ok(result) => Ok(result),
             Err(e) => Err(JsValue::from_str(&e.to_string())),
         }
@@ -113,7 +115,9 @@ impl WasmProof {
     /// Verify this proof against a root hash
     #[wasm_bindgen]
     pub fn verify(&self, root_hash: &Uint8Array) -> Result<bool, JsValue> {
-        match self.0.verify(&root_hash.to_vec()) {
+        let root = B256::try_from(root_hash.to_vec().as_slice())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        match self.0.verify(&root) {
             Ok(result) => Ok(result),
             Err(e) => Err(JsValue::from_str(&e.to_string())),
         }
