@@ -64,11 +64,12 @@ pub trait JoinMode: Sized + 'static {
     #[inline]
     fn child_span<const BS: usize>(parent_span: u64, subspan: u64, child_index: usize) -> u64 {
         let branches = Self::refs_per_chunk(BS);
-        if child_index == branches - 1 {
-            let preceding = child_index as u64 * subspan;
+        let child_index = crate::cast::u64_from_usize(child_index);
+        if child_index == crate::cast::u64_from_usize(branches - 1) {
+            let preceding = child_index * subspan;
             parent_span.saturating_sub(preceding)
         } else {
-            subspan.min(parent_span.saturating_sub(child_index as u64 * subspan))
+            subspan.min(parent_span.saturating_sub(child_index * subspan))
         }
     }
 
@@ -229,11 +230,13 @@ impl EncryptedMode {
     /// Calculate data length for decryption of a chunk with given span.
     #[allow(clippy::arithmetic_side_effects)] // sub = subspan_size(..) >= BS > 0 for the div_ceil; num_children <= branches (sub covers at least span / branches), so the product is bounded by BS
     fn decrypt_data_length<const BS: usize>(span: u64) -> usize {
-        if span <= BS as u64 {
-            span as usize
+        if span <= crate::cast::u64_from_usize(BS) {
+            // span <= BS here, so it fits usize on all supported targets.
+            crate::cast::usize_from_u64(span)
         } else {
             let sub = Self::subspan_size::<BS>(span);
-            let num_children = span.div_ceil(sub) as usize;
+            // num_children <= branches (sub covers at least span / branches).
+            let num_children = crate::cast::usize_from_u64(span.div_ceil(sub));
             let raw = num_children * ENCRYPTED_REF_SIZE;
             raw.min(BS)
         }
@@ -346,6 +349,9 @@ fn decrypt_span<const BODY_SIZE: usize>(
         ));
     }
 
+    // BODY_SIZE / 32 is 128 for the default 4096-byte body and stays far
+    // below u32::MAX for any chunk-sized body.
+    #[allow(clippy::as_conversions)]
     let span_ctr = (BODY_SIZE / EncryptionKey::SIZE) as u32;
     let mut span_buf = [0u8; SPAN_SIZE];
     transcrypt(key, span_ctr, &encrypted_data[..SPAN_SIZE], &mut span_buf)

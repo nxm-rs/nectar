@@ -10,7 +10,7 @@ use super::error::EncryptionError;
 use super::key::EncryptionKey;
 
 /// Span encryption counter: `BODY_SIZE / EncryptionKey::SIZE` (128 for default 4096).
-#[allow(clippy::arithmetic_side_effects)] // EncryptionKey::SIZE is the nonzero constant 32
+#[allow(clippy::arithmetic_side_effects, clippy::as_conversions)] // EncryptionKey::SIZE is the nonzero constant 32; body_size / 32 is 128 for the default 4096-byte body and stays far below u32::MAX for any chunk-sized body (u32::try_from is not const-callable)
 const fn span_ctr(body_size: usize) -> u32 {
     (body_size / EncryptionKey::SIZE) as u32
 }

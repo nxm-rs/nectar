@@ -265,8 +265,12 @@ impl SwarmAddress {
     }
 
     /// Helper function to calculate proximity with a maximum
-    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
-    // max is MAX_PO (31) or EXTENDED_PO (36), so i <= max_bytes = 4 < 32 and i * 8 + leading_zeros <= 40 fits u8
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::as_conversions
+    )]
+    // max is MAX_PO (31) or EXTENDED_PO (36), so i <= max_bytes = 4 < 32 and i * 8 + leading_zeros <= 40 fits u8; the casts to u8 (max, i, and the u8 xor's leading_zeros <= 8) are all within those bounds
     #[inline(always)]
     fn proximity_helper(&self, other: &Self, max: usize) -> u8 {
         let max_bytes = max / 8;

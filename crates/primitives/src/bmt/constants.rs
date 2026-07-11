@@ -25,7 +25,8 @@ pub const SPAN_SIZE: usize = std::mem::size_of::<u64>();
 pub(crate) const PROOF_LENGTH: usize = 7;
 
 /// Compute number of zero tree levels for a given body size.
-#[allow(clippy::arithmetic_side_effects)] // trailing_zeros() <= 64, so + 1 cannot overflow usize
+#[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
+// trailing_zeros() <= 64, so + 1 cannot overflow usize and the u32 -> usize widening is infallible (usize::from is not const-callable)
 #[inline]
 pub(crate) const fn zero_tree_levels(body_size: usize) -> usize {
     (body_size / SEGMENT_PAIR_LENGTH).trailing_zeros() as usize + 1

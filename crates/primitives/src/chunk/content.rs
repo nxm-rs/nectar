@@ -200,10 +200,13 @@ impl<const BODY_SIZE: usize> EncryptedContentChunk<BODY_SIZE> {
         let key = self.encrypted_ref.key();
 
         // Decrypt the span to learn the original data length
+        // BODY_SIZE / 32 is 128 for the default 4096-byte body and stays far
+        // below u32::MAX for any chunk-sized body.
+        #[allow(clippy::as_conversions)]
         let span_ctr = (BODY_SIZE / super::encryption::EncryptionKey::SIZE) as u32;
         let mut span_buf = [0u8; SPAN_SIZE];
         transcrypt(key, span_ctr, &encrypted_data[..SPAN_SIZE], &mut span_buf)?;
-        let data_length = u64::from_le_bytes(span_buf) as usize;
+        let data_length = crate::cast::usize_from_u64(u64::from_le_bytes(span_buf));
 
         let decrypted =
             super::encryption::decrypt_chunk_data::<BODY_SIZE>(&encrypted_data, key, data_length)?;

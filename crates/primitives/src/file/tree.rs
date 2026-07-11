@@ -29,7 +29,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
         let (depth, data_chunks) = if size == 0 {
             (1, 1) // Empty file still produces one chunk
         } else {
-            let data_chunks = size.div_ceil(BODY_SIZE as u64);
+            let data_chunks = size.div_ceil(crate::cast::u64_from_usize(BODY_SIZE));
             let depth = Self::calculate_depth_with(data_chunks, branches);
             (depth, data_chunks)
         };
@@ -64,7 +64,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
         let mut chunks_at_level = self.data_chunks;
 
         while chunks_at_level > 1 {
-            chunks_at_level = chunks_at_level.div_ceil(self.branches as u64);
+            chunks_at_level = chunks_at_level.div_ceil(crate::cast::u64_from_usize(self.branches));
             total += chunks_at_level;
         }
 
@@ -83,7 +83,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
 
         let mut chunks = self.data_chunks;
         for _ in 0..level {
-            chunks = chunks.div_ceil(self.branches as u64);
+            chunks = chunks.div_ceil(crate::cast::u64_from_usize(self.branches));
         }
         chunks
     }
@@ -92,7 +92,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // level < depth <= LEVEL_LIMIT = spans.len(); index < chunks_at_level and per-chunk spans partition the file size, so the products/sums stay within the u64 file span
     pub fn span_at(&self, level: usize, index: u64) -> u64 {
         let spans = super::constants::compute_spans_inline(self.branches);
-        let max_span = spans[level] * BODY_SIZE as u64;
+        let max_span = spans[level] * crate::cast::u64_from_usize(BODY_SIZE);
         let chunks_at_level = self.chunks_at_level(level);
 
         if index + 1 == chunks_at_level {
@@ -113,14 +113,14 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     /// Byte offset for start of chunk at level 0.
     #[allow(clippy::arithmetic_side_effects)] // chunk_index < data_chunks, so the byte offset is bounded by the u64 file size
     pub const fn chunk_offset(&self, chunk_index: u64) -> u64 {
-        chunk_index * BODY_SIZE as u64
+        chunk_index * crate::cast::u64_from_usize(BODY_SIZE)
     }
 
     /// Byte range covered by a data chunk.
     #[allow(clippy::arithmetic_side_effects)] // start is bounded by the file size, so start + BODY_SIZE cannot overflow u64
     pub fn chunk_range(&self, chunk_index: u64) -> (u64, u64) {
         let start = self.chunk_offset(chunk_index);
-        let end = (start + BODY_SIZE as u64).min(self.size);
+        let end = (start + crate::cast::u64_from_usize(BODY_SIZE)).min(self.size);
         (start, end)
     }
 
@@ -132,8 +132,8 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
         }
 
         let end_offset = (offset + len).min(self.size);
-        let start_chunk = offset / BODY_SIZE as u64;
-        let end_chunk = end_offset.div_ceil(BODY_SIZE as u64);
+        let start_chunk = offset / crate::cast::u64_from_usize(BODY_SIZE);
+        let end_chunk = end_offset.div_ceil(crate::cast::u64_from_usize(BODY_SIZE));
 
         ChunkRange {
             start: start_chunk,
@@ -150,7 +150,7 @@ impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
         let mut depth = 1;
         let mut chunks = data_chunks;
         while chunks > 1 {
-            chunks = chunks.div_ceil(branches as u64);
+            chunks = chunks.div_ceil(crate::cast::u64_from_usize(branches));
             depth += 1;
         }
         depth.min(LEVEL_LIMIT)
@@ -201,16 +201,18 @@ pub(crate) fn assemble_range<const BODY_SIZE: usize>(
 
     for (i, chunk_idx) in chunk_range.iter().enumerate() {
         let (chunk_start, chunk_end) = tree.chunk_range(chunk_idx);
-        let chunk_data_len = (chunk_end - chunk_start) as usize;
+        // Per-chunk byte quantities: all bounded by BODY_SIZE, so they fit usize.
+        let chunk_data_len = crate::cast::usize_from_u64(chunk_end - chunk_start);
 
         let read_start = if chunk_start < offset {
-            (offset - chunk_start) as usize
+            crate::cast::usize_from_u64(offset - chunk_start)
         } else {
             0
         };
 
-        let read_end = if chunk_end > offset + actual_len as u64 {
-            chunk_data_len - ((chunk_end - offset - actual_len as u64) as usize)
+        let actual_len_u64 = crate::cast::u64_from_usize(actual_len);
+        let read_end = if chunk_end > offset + actual_len_u64 {
+            chunk_data_len - crate::cast::usize_from_u64(chunk_end - offset - actual_len_u64)
         } else {
             chunk_data_len
         };

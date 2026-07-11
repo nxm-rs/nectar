@@ -151,7 +151,10 @@ pub(crate) fn resolve_seek_position(
     if new_pos < 0 {
         return Err(Error::new(InvalidInput, "seek to negative position"));
     }
-    Ok(new_pos as u64)
+    // new_pos >= 0 was just checked, so the i64 -> u64 conversion is lossless.
+    #[allow(clippy::as_conversions)]
+    let new_pos = new_pos as u64;
+    Ok(new_pos)
 }
 
 // ---- Primary async API ----

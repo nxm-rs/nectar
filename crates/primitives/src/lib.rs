@@ -41,7 +41,8 @@
         clippy::arithmetic_side_effects,
         clippy::panic,
         clippy::unreachable,
-        clippy::panic_in_result_fn
+        clippy::panic_in_result_fn,
+        clippy::as_conversions
     )
 )]
 
@@ -52,6 +53,7 @@ pub mod address;
 pub mod bin;
 pub mod bmt;
 mod cache;
+mod cast;
 pub mod chunk;
 pub mod error;
 pub mod file;

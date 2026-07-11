@@ -63,7 +63,10 @@ impl WriteAt for std::fs::File {
         use std::os::windows::fs::FileExt;
         let mut written = 0;
         while written < buf.len() {
-            let n = self.seek_write(&buf[written..], offset + written as u64)?;
+            let n = self.seek_write(
+                &buf[written..],
+                offset + crate::cast::u64_from_usize(written),
+            )?;
             if n == 0 {
                 return Err(io::Error::from(io::ErrorKind::WriteZero));
             }
@@ -90,11 +93,13 @@ impl WriteAt for Mutex<Vec<u8>> {
         let mut vec = self
             .lock()
             .map_err(|_| io::Error::other("sink lock poisoned"))?;
-        let end = offset as usize + buf.len();
+        // In-memory sink: offsets are bounded by the Vec the sink grows.
+        let offset = crate::cast::usize_from_u64(offset);
+        let end = offset + buf.len();
         if vec.len() < end {
             vec.resize(end, 0);
         }
-        vec[offset as usize..end].copy_from_slice(buf);
+        vec[offset..end].copy_from_slice(buf);
         Ok(())
     }
 
@@ -102,7 +107,7 @@ impl WriteAt for Mutex<Vec<u8>> {
         let mut vec = self
             .lock()
             .map_err(|_| io::Error::other("sink lock poisoned"))?;
-        vec.resize(len as usize, 0);
+        vec.resize(crate::cast::usize_from_u64(len), 0);
         Ok(())
     }
 }
@@ -161,7 +166,7 @@ where
             sink.write_at(offset, &body)
                 .await
                 .map_err(FileError::sink)?;
-            written += body.len() as u64;
+            written += crate::cast::u64_from_usize(body.len());
             on_progress(written, total);
         }
         sink.flush().await.map_err(FileError::sink)?;

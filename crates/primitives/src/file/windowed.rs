@@ -178,7 +178,7 @@ enum Resolved<M: JoinMode> {
 /// Is this node a leaf?
 #[inline]
 fn is_leaf<M: JoinMode, const BS: usize>(node: &SubtreeNode<M>) -> bool {
-    node.span <= BS as u64
+    node.span <= crate::cast::u64_from_usize(BS)
 }
 
 /// Fetch one node: a leaf yields its body, an intermediate yields its children.
@@ -304,8 +304,8 @@ where
     let mut leaf_queue = VecDeque::new();
     let mut node_queue = VecDeque::new();
     let mut pending_intermediate_offsets: BTreeMap<u64, usize> = BTreeMap::new();
-    let range_start_byte = chunk_range.start * BODY_SIZE as u64;
-    let range_end_byte = chunk_range.end * BODY_SIZE as u64;
+    let range_start_byte = chunk_range.start * crate::cast::u64_from_usize(BODY_SIZE);
+    let range_end_byte = chunk_range.end * crate::cast::u64_from_usize(BODY_SIZE);
     for st in subtrees {
         if st.byte_offset >= range_end_byte || st.byte_offset + st.span <= range_start_byte {
             continue;
@@ -351,7 +351,7 @@ where
                 .is_some_and(|(&k, _)| k == state.next_emit_offset);
             if head_ready {
                 let (_, body) = state.buffered.pop_first().expect("head just observed");
-                state.next_emit_offset += body.len() as u64;
+                state.next_emit_offset += crate::cast::u64_from_usize(body.len());
                 return Some((Ok(body), state));
             }
 
@@ -391,9 +391,10 @@ where
 
                 let getter = Arc::clone(&state.getter);
                 let range = state.chunk_range;
-                state.in_flight.push(Box::pin(async move {
+                let fut: BoxResolvedFuture<M> = Box::pin(async move {
                     fetch_one::<G, M, BODY_SIZE>(&*getter, &range, pending).await
-                }) as BoxResolvedFuture<M>);
+                });
+                state.in_flight.push(fut);
             }
 
             // In-flight leaf fetches plus buffered leaves never exceed `window`.
@@ -416,11 +417,13 @@ where
                     // Clip the first partial leaf at the read position; offsets
                     // stay absolute, so a boundary leaf buffers only its in-range
                     // tail keyed at the read position.
-                    let leaf_end = leaf_start + body.len() as u64;
+                    let leaf_end = leaf_start + crate::cast::u64_from_usize(body.len());
                     if leaf_end <= state.range_start {
                         continue;
                     }
-                    let clip_lo = state.range_start.saturating_sub(leaf_start) as usize;
+                    // clip_lo < body.len() (leaf_end > range_start above).
+                    let clip_lo =
+                        crate::cast::usize_from_u64(state.range_start.saturating_sub(leaf_start));
                     let offset = leaf_start.max(state.range_start);
                     state.buffered.insert(offset, body.slice(clip_lo..));
                 }
@@ -561,7 +564,7 @@ where
             Poll::Ready(Some(Ok(body))) => {
                 let to_copy = body.len().min(buf.remaining());
                 buf.put_slice(&body[..to_copy]);
-                this.reader.position += body.len() as u64;
+                this.reader.position += crate::cast::u64_from_usize(body.len());
                 if to_copy < body.len() {
                     this.residual = body.slice(to_copy..);
                 }

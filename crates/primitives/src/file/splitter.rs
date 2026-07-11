@@ -60,14 +60,17 @@ where
 
         Self {
             span_length,
-            buffer: Vec::with_capacity(span_length.min(BODY_SIZE as u64 * 2) as usize),
+            // The capacity hint is clamped to 2 * BODY_SIZE, so it fits usize.
+            buffer: Vec::with_capacity(crate::cast::usize_from_u64(
+                span_length.min(crate::cast::u64_from_usize(BODY_SIZE) * 2),
+            )),
             _mode: PhantomData,
         }
     }
 
     /// Bytes written so far.
     pub const fn len(&self) -> u64 {
-        self.buffer.len() as u64
+        crate::cast::u64_from_usize(self.buffer.len())
     }
 
     /// Whether any data has been written.
@@ -87,10 +90,10 @@ where
 {
     /// Finalize, returning the root reference and the produced chunks.
     pub fn finish(self) -> Result<(M::RootRef, Vec<AnyChunk<BODY_SIZE>>)> {
-        if self.buffer.len() as u64 != self.span_length {
+        if crate::cast::u64_from_usize(self.buffer.len()) != self.span_length {
             return Err(FileError::SpanMismatch {
                 expected: self.span_length,
-                actual: self.buffer.len() as u64,
+                actual: crate::cast::u64_from_usize(self.buffer.len()),
             });
         }
 
@@ -109,7 +112,10 @@ where
 {
     #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // span_length + 1 only renders the error message (span_length < u64::MAX in any reachable state); to_write <= buf.len() bounds the slice
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let remaining = self.span_length.saturating_sub(self.buffer.len() as u64) as usize;
+        let remaining = crate::cast::usize_from_u64(
+            self.span_length
+                .saturating_sub(crate::cast::u64_from_usize(self.buffer.len())),
+        );
         let to_write = buf.len().min(remaining);
         if to_write == 0 && !buf.is_empty() {
             return Err(io::Error::other(

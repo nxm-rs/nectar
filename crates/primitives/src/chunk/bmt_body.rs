@@ -182,7 +182,7 @@ impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, Initial> {
         let data = validate_data::<BODY_SIZE>(data)?;
         let len = data.len();
         self.data = Some(data);
-        self.span = Some(len as u64);
+        self.span = Some(crate::cast::u64_from_usize(len));
 
         Ok(BmtBodyBuilder {
             span: self.span,
@@ -203,13 +203,17 @@ impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, WithSpan> {
         self.data = Some(data);
 
         let span = self.span.unwrap();
-        if span <= BODY_SIZE as u64 && data_len != span as usize {
-            return Err(ChunkError::invalid_size(
-                "span does not match data size",
-                span as usize,
-                data_len,
-            )
-            .into());
+        if span <= crate::cast::u64_from_usize(BODY_SIZE) {
+            // span <= BODY_SIZE here, so it fits usize on all supported targets.
+            let span_len = crate::cast::usize_from_u64(span);
+            if data_len != span_len {
+                return Err(ChunkError::invalid_size(
+                    "span does not match data size",
+                    span_len,
+                    data_len,
+                )
+                .into());
+            }
         }
 
         Ok(BmtBodyBuilder {
@@ -240,10 +244,10 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for BmtBody<BODY_SIZE>
 
         let (span, data_len) = if is_leaf {
             let data_len: usize = u.int_in_range(0..=BODY_SIZE)?;
-            (data_len as u64, data_len)
+            (crate::cast::u64_from_usize(data_len), data_len)
         } else {
             // Intermediate node: span exceeds BODY_SIZE, body is always full.
-            let span = u.int_in_range(BODY_SIZE as u64 + 1..=u64::MAX)?;
+            let span = u.int_in_range(crate::cast::u64_from_usize(BODY_SIZE) + 1..=u64::MAX)?;
             (span, BODY_SIZE)
         };
 

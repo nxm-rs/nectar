@@ -43,12 +43,12 @@ where
 {
     let subspan = M::subspan_size::<BS>(parent.span);
     let num_children = body.len() / M::REF_SIZE;
-    let range_start = chunk_range.start * BS as u64;
-    let range_end = chunk_range.end * BS as u64;
+    let range_start = chunk_range.start * crate::cast::u64_from_usize(BS);
+    let range_end = chunk_range.end * crate::cast::u64_from_usize(BS);
 
     let mut children = Vec::with_capacity(num_children);
     for i in 0..num_children {
-        let byte_offset = parent.byte_offset + i as u64 * subspan;
+        let byte_offset = parent.byte_offset + crate::cast::u64_from_usize(i) * subspan;
         let span = M::child_span::<BS>(parent.span, subspan, i);
 
         if byte_offset >= range_end || byte_offset + span <= range_start {
@@ -103,13 +103,13 @@ impl<M: JoinMode, const BS: usize> BfsExpander<M, BS> {
         chunk_range: &ChunkRange,
         target_subtrees: usize,
     ) -> Option<Self> {
-        if span <= BS as u64 {
+        if span <= crate::cast::u64_from_usize(BS) {
             return None;
         }
         Some(Self {
             frontier: vec![frontier_seed::<M>(root, context, span)],
             next: Vec::new(),
-            ideal_span: span / target_subtrees as u64,
+            ideal_span: span / crate::cast::u64_from_usize(target_subtrees),
             chunk_range: *chunk_range,
         })
     }
@@ -119,7 +119,7 @@ impl<M: JoinMode, const BS: usize> BfsExpander<M, BS> {
         self.frontier
             .iter()
             .enumerate()
-            .filter(|(_, n)| n.span > self.ideal_span && n.span > BS as u64)
+            .filter(|(_, n)| n.span > self.ideal_span && n.span > crate::cast::u64_from_usize(BS))
             .map(|(i, _)| i)
             .collect()
     }
@@ -233,7 +233,7 @@ where
             current.span,
         )
         .await?;
-        if current.span <= BS as u64 {
+        if current.span <= crate::cast::u64_from_usize(BS) {
             out.push(body);
         } else {
             let children = overlapping_children::<M, BS>(&body, &current, chunk_range)?;

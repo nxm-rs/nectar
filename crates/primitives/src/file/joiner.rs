@@ -246,7 +246,8 @@ where
 
     /// Read entire file into memory.
     pub async fn read_all(&self) -> Result<Vec<u8>> {
-        self.read_range(0, self.span as usize).await
+        self.read_range(0, crate::cast::usize_from_u64(self.span))
+            .await
     }
 
     /// Shared read-range implementation used by both `read_range` and `poll_read`.
@@ -276,16 +277,17 @@ where
                     type_name: "non-content",
                 })?;
                 let body = M::decode_body::<BODY_SIZE>(chunk, context, span)?;
-                let start = offset as usize;
+                // offset < span <= BODY_SIZE in the single-chunk case.
+                let start = crate::cast::usize_from_u64(offset);
                 let end = start + actual_len;
                 return Ok(body[start..end].to_vec());
             }
             ReadRangeCheck::MultiChunk { offset, actual_len } => (offset, actual_len),
         };
 
-        let chunk_range = tree.chunks_for_range(offset, actual_len as u64);
-        let range_start_byte = chunk_range.start * BODY_SIZE as u64;
-        let range_end_byte = chunk_range.end * BODY_SIZE as u64;
+        let chunk_range = tree.chunks_for_range(offset, crate::cast::u64_from_usize(actual_len));
+        let range_start_byte = chunk_range.start * crate::cast::u64_from_usize(BODY_SIZE);
+        let range_end_byte = chunk_range.end * crate::cast::u64_from_usize(BODY_SIZE);
 
         let relevant: Vec<_> = subtrees
             .iter()
@@ -408,7 +410,9 @@ where
                 // Drain leaves already in hand, offsetting each leaf from its
                 // subtree base by a whole body per preceding leaf.
                 if let Some(body) = state.pending.next() {
-                    let offset = state.base + state.leaf_index as u64 * BODY_SIZE as u64;
+                    let offset = state.base
+                        + crate::cast::u64_from_usize(state.leaf_index)
+                            * crate::cast::u64_from_usize(BODY_SIZE);
                     state.leaf_index += 1;
                     return Some((Ok((offset, body)), state));
                 }
@@ -451,7 +455,11 @@ where
     /// file size. Set the width with [`with_concurrency`](Self::with_concurrency).
     /// Reassembling the pairs by offset reproduces the file, byte-for-byte equal
     /// to [`read_all`](Self::read_all).
-    #[allow(clippy::arithmetic_side_effects, clippy::expect_used)] // retries - 1 is guarded by retries > 0; intermediate_in_flight moves in lockstep with admissions (bounded by MAX_INTERMEDIATE_IN_FLIGHT) so +1/-1 cannot wrap; the pop_front().expect is guarded by the !is_empty() admission check just above
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::expect_used,
+        clippy::missing_panics_doc
+    )] // retries - 1 is guarded by retries > 0; intermediate_in_flight moves in lockstep with admissions (bounded by MAX_INTERMEDIATE_IN_FLIGHT) so +1/-1 cannot wrap; the pop_front().expect is guarded by the !is_empty() admission check just above, so no panic is reachable to document
     pub fn into_offset_stream_chunked(self) -> impl Stream<Item = Result<(u64, Bytes)>>
     where
         G: 'static,
@@ -508,7 +516,7 @@ where
             {
                 Ok(body) => body,
                 Err(e) => {
-                    if node.span <= BS as u64 && pending.retries > 0 {
+                    if node.span <= crate::cast::u64_from_usize(BS) && pending.retries > 0 {
                         return Resolved::Retry(Pending {
                             node: pending.node,
                             retries: pending.retries - 1,
@@ -518,7 +526,7 @@ where
                 }
             };
 
-            if node.span <= BS as u64 {
+            if node.span <= crate::cast::u64_from_usize(BS) {
                 return Resolved::Leaf(node.byte_offset, body);
             }
             match overlapping_children::<M, BS>(&body, node, chunk_range) {
@@ -549,7 +557,7 @@ where
                 node: st,
                 retries: DEFAULT_LEAF_RETRIES,
             };
-            if pending.node.span <= BODY_SIZE as u64 {
+            if pending.node.span <= crate::cast::u64_from_usize(BODY_SIZE) {
                 leaf_queue.push_back(pending);
             } else {
                 node_queue.push_back(pending);
@@ -593,9 +601,10 @@ where
 
                     let getter = Arc::clone(&state.getter);
                     let range = state.chunk_range;
-                    state.in_flight.push(Box::pin(async move {
+                    let fut: BoxResolvedFuture<M> = Box::pin(async move {
                         fetch_one::<G, M, BODY_SIZE>(&*getter, &range, pending).await
-                    }) as BoxResolvedFuture<M>);
+                    });
+                    state.in_flight.push(fut);
                 }
 
                 // Nothing in flight and nothing queued: the tree is drained.
@@ -611,7 +620,7 @@ where
                                 node: child,
                                 retries: DEFAULT_LEAF_RETRIES,
                             };
-                            if pending.node.span <= BODY_SIZE as u64 {
+                            if pending.node.span <= crate::cast::u64_from_usize(BODY_SIZE) {
                                 state.leaf_queue.push_back(pending);
                             } else {
                                 state.node_queue.push_back(pending);
@@ -749,7 +758,7 @@ where
         {
             Ok(body) => body,
             Err(e) => {
-                if node.span <= BS as u64 && pending.retries > 0 {
+                if node.span <= crate::cast::u64_from_usize(BS) && pending.retries > 0 {
                     return Resolved::Retry(Pending {
                         node: pending.node,
                         retries: pending.retries - 1,
@@ -759,7 +768,7 @@ where
             }
         };
 
-        if node.span <= BS as u64 {
+        if node.span <= crate::cast::u64_from_usize(BS) {
             return Resolved::Leaf(node.byte_offset, body);
         }
         match overlapping_children::<M, BS>(&body, node, chunk_range) {
@@ -790,15 +799,15 @@ where
     let mut node_queue = std::collections::VecDeque::new();
     let mut leaf_queue = std::collections::VecDeque::new();
     if range_end > range_start {
-        let range_start_byte = chunk_range.start * BODY_SIZE as u64;
-        let range_end_byte = chunk_range.end * BODY_SIZE as u64;
+        let range_start_byte = chunk_range.start * crate::cast::u64_from_usize(BODY_SIZE);
+        let range_end_byte = chunk_range.end * crate::cast::u64_from_usize(BODY_SIZE);
         for st in subtrees {
             if st.byte_offset < range_end_byte && st.byte_offset + st.span > range_start_byte {
                 let pending = Pending {
                     node: st,
                     retries: DEFAULT_LEAF_RETRIES,
                 };
-                if pending.node.span <= BODY_SIZE as u64 {
+                if pending.node.span <= crate::cast::u64_from_usize(BODY_SIZE) {
                     leaf_queue.push_back(pending);
                 } else {
                     node_queue.push_back(pending);
@@ -842,9 +851,10 @@ where
 
                 let getter = Arc::clone(&state.getter);
                 let range = state.chunk_range;
-                state.in_flight.push(Box::pin(async move {
+                let fut: BoxResolvedFuture<M> = Box::pin(async move {
                     fetch_one::<G, M, BODY_SIZE>(&*getter, &range, pending).await
-                }) as BoxResolvedFuture<M>);
+                });
+                state.in_flight.push(fut);
             }
 
             // Nothing in flight and nothing queued: the range is drained.
@@ -855,12 +865,16 @@ where
                     // boundary leaf emits only its in-range slice, and the
                     // emitted offset is the later of the leaf start and the
                     // range start.
-                    let leaf_end = leaf_start + body.len() as u64;
+                    let leaf_end = leaf_start + crate::cast::u64_from_usize(body.len());
                     if leaf_end <= state.range_start || leaf_start >= state.range_end {
                         continue;
                     }
-                    let clip_lo = state.range_start.saturating_sub(leaf_start) as usize;
-                    let clip_hi = (state.range_end - leaf_start).min(body.len() as u64) as usize;
+                    // Both clip bounds are <= body.len(), so they fit usize.
+                    let clip_lo =
+                        crate::cast::usize_from_u64(state.range_start.saturating_sub(leaf_start));
+                    let clip_hi = crate::cast::usize_from_u64(
+                        (state.range_end - leaf_start).min(crate::cast::u64_from_usize(body.len())),
+                    );
                     let offset = leaf_start.max(state.range_start);
                     return Some((Ok((offset, body.slice(clip_lo..clip_hi))), state));
                 }
@@ -871,7 +885,7 @@ where
                             node: child,
                             retries: DEFAULT_LEAF_RETRIES,
                         };
-                        if pending.node.span <= BODY_SIZE as u64 {
+                        if pending.node.span <= crate::cast::u64_from_usize(BODY_SIZE) {
                             state.leaf_queue.push_back(pending);
                         } else {
                             state.node_queue.push_back(pending);
@@ -962,7 +976,7 @@ where
         // Create a future for the next read if we don't have one
         if this.future.is_none() {
             let position = this.joiner.position;
-            let remaining = (this.joiner.span - position) as usize;
+            let remaining = crate::cast::usize_from_u64(this.joiner.span - position);
             let read_len = remaining.min(BODY_SIZE);
             let getter = Arc::clone(&this.joiner.getter);
             let root = this.joiner.root;
@@ -995,7 +1009,7 @@ where
             Poll::Ready(Ok(data)) => {
                 this.future = None;
                 let bytes = Bytes::from(data);
-                this.joiner.position += bytes.len() as u64;
+                this.joiner.position += crate::cast::u64_from_usize(bytes.len());
                 let to_copy = bytes.len().min(buf.remaining());
                 buf.put_slice(&bytes[..to_copy]);
                 if to_copy < bytes.len() {
