@@ -9,7 +9,7 @@ use crate::obfuscation::ObfuscationKey;
 
 use alloy_primitives::{U256, hex};
 use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::wire::{Cursor, FromCursor, Underrun};
+use nectar_primitives::wire::{Cursor, FromCursor, Underrun, Writer};
 
 /// Mantaray wire format version (truncated keccak256, 31 bytes).
 #[derive(Clone, Copy)]
@@ -174,9 +174,10 @@ fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
     }
     data.extend_from_slice(&index.to_le_bytes::<32>());
 
-    // append forks in sorted order
+    // append forks in sorted order, each as a total wire record over the buffer
+    let mut writer = Writer::new(&mut data);
     for fork in node.forks.values() {
-        fork.encode_into(&mut data)?;
+        WireFork::try_from(fork)?.emit(&mut writer);
     }
 
     // XOR-encrypt everything after the obfuscation key in place.
@@ -438,68 +439,113 @@ fn parse_fork_body<E: NodeEntry>(
     Ok(Fork { prefix, node })
 }
 
-impl<E: NodeEntry> Fork<E> {
-    /// Encode this fork, appending to `buf`.
-    #[allow(clippy::arithmetic_side_effects)] // in-memory buffer length arithmetic; padding math is guarded (`SIZE - x` only when `x < SIZE`, `SIZE - rem` only when `rem != 0`) and `% ObfuscationKey::SIZE` has a nonzero constant divisor
-    fn encode_into(&self, data: &mut Vec<u8>) -> Result<()> {
-        data.push(self.node.node_type.bits());
-        #[allow(clippy::as_conversions)] // Prefix invariant: len <= Prefix::MAX_LEN (30), fits u8
-        let prefix_len_byte = self.prefix.len() as u8;
-        data.push(prefix_len_byte);
+/// A fork in wire-record form: the fields the fork layout emits, with the child
+/// reference already resolved so emission is total.
+///
+/// Construction is the sole fallible step: a fork whose child was never
+/// persisted has no reference, and oversized metadata cannot be sized into the
+/// `u16` length field. Once built, [`emit`](Self::emit) cannot produce a
+/// misaligned image. bee-spec node.md: fork layout is node_type, prefix_len, a
+/// 30-byte prefix region, the reference, then optional metadata.
+struct WireFork<'a> {
+    node_type: NodeType,
+    prefix: &'a Prefix,
+    /// Child chunk address; mandatory by construction, filling the reference
+    /// slot within the fork's pre-reference region.
+    address: &'a ChunkAddress,
+    /// Uniform reference width; the 32-byte address is right-padded with zeros
+    /// to it (encrypted mode carries a 64-byte reference slot).
+    ref_size: usize,
+    /// Length-prefixed, padded metadata payload, present only when the child
+    /// carries metadata.
+    metadata: Option<WireMetadata>,
+}
 
-        // write prefix padded to Prefix::MAX_LEN; Prefix is already zero-padded
-        data.extend_from_slice(self.prefix.padded_bytes());
+/// A fork's metadata payload, serialised and padded to the obfuscation-key
+/// stride with its `u16` length precomputed so emission stays total.
+struct WireMetadata {
+    len: u16,
+    padded_json: Vec<u8>,
+}
 
-        // Write E::SIZE bytes for the reference (chunk address + zero padding).
-        // A child without a saved reference cannot be encoded into a decodable
-        // stream, so reject it rather than emit truncated wire bytes.
-        let addr = self
+impl WireMetadata {
+    /// Serialise, pad to the `ObfuscationKey::SIZE` stride, and size the length
+    /// field. Padding fills with `0x0a`, so the trailing bytes are JSON
+    /// whitespace the decoder re-parses transparently.
+    #[allow(clippy::arithmetic_side_effects)] // padding math is guarded (`SIZE - x` only when `x < SIZE`, `SIZE - rem` only when `rem != 0`) and `% ObfuscationKey::SIZE` has a nonzero constant divisor
+    fn build(metadata: &BTreeMap<String, String>) -> Result<Self> {
+        let mut padded_json = serde_json::to_string(metadata)
+            .map_err(MantarayError::Metadata)?
+            .into_bytes();
+
+        let size_with_header = padded_json.len() + ForkHeader::METADATA_LEN_SIZE;
+        let padding = if size_with_header < ObfuscationKey::SIZE {
+            ObfuscationKey::SIZE - size_with_header
+        } else if size_with_header > ObfuscationKey::SIZE {
+            let rem = size_with_header % ObfuscationKey::SIZE;
+            if rem == 0 {
+                0
+            } else {
+                ObfuscationKey::SIZE - rem
+            }
+        } else {
+            0
+        };
+        padded_json.resize(padded_json.len() + padding, 0x0a);
+
+        let len =
+            u16::try_from(padded_json.len()).map_err(|_| MantarayError::MetadataTooLarge {
+                max: usize::from(u16::MAX),
+                actual: padded_json.len(),
+            })?;
+        Ok(Self { len, padded_json })
+    }
+}
+
+impl<'a, E: NodeEntry> TryFrom<&'a Fork<E>> for WireFork<'a> {
+    type Error = MantarayError;
+
+    /// Resolve a fork into an emittable record. A child without a saved
+    /// reference cannot be encoded into a decodable stream, so it is rejected
+    /// here, before any bytes are written.
+    fn try_from(fork: &'a Fork<E>) -> Result<Self> {
+        let address = fork
             .node
             .reference
             .as_ref()
             .ok_or(MantarayError::MissingReference)?;
-        data.extend_from_slice(addr.as_bytes());
-        // Pad to E::SIZE if needed (encrypted mode has 64-byte refs)
-        let padding = E::SIZE.saturating_sub(32);
-        if padding > 0 {
-            data.resize(data.len() + padding, 0);
+        let metadata = if fork.node.is_with_metadata() {
+            Some(WireMetadata::build(&fork.node.metadata)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            node_type: fork.node.node_type,
+            prefix: &fork.prefix,
+            address,
+            ref_size: E::SIZE,
+            metadata,
+        })
+    }
+}
+
+impl WireFork<'_> {
+    /// Emit this fork: node_type, prefix length and its padded region, the
+    /// reference padded to `ref_size`, then any metadata. Total by construction.
+    fn emit(&self, w: &mut Writer<'_>) {
+        w.put_u8(self.node_type.bits());
+        #[allow(clippy::as_conversions)] // Prefix invariant: len <= Prefix::MAX_LEN (30), fits u8
+        let prefix_len = self.prefix.len() as u8;
+        w.put_u8(prefix_len);
+        w.put_array(self.prefix.padded_bytes());
+
+        w.put_slice(self.address.as_bytes());
+        w.put_zeros(self.ref_size.saturating_sub(32));
+
+        if let Some(metadata) = &self.metadata {
+            w.put_u16_be(metadata.len);
+            w.put_slice(&metadata.padded_json);
         }
-
-        if self.node.is_with_metadata() {
-            let mut metadata_json = serde_json::to_string(&self.node.metadata)
-                .map_err(MantarayError::Metadata)?
-                .into_bytes();
-
-            let metadata_bytes_size_with_header =
-                metadata_json.len() + ForkHeader::METADATA_LEN_SIZE;
-
-            let padding = if metadata_bytes_size_with_header < ObfuscationKey::SIZE {
-                ObfuscationKey::SIZE - metadata_bytes_size_with_header
-            } else if metadata_bytes_size_with_header > ObfuscationKey::SIZE {
-                let rem = metadata_bytes_size_with_header % ObfuscationKey::SIZE;
-                if rem == 0 {
-                    0
-                } else {
-                    ObfuscationKey::SIZE - rem
-                }
-            } else {
-                0
-            };
-
-            metadata_json.resize(metadata_json.len() + padding, 0x0a);
-
-            let metadata_size = metadata_json.len();
-            let metadata_size_u16 =
-                u16::try_from(metadata_size).map_err(|_| MantarayError::MetadataTooLarge {
-                    max: usize::from(u16::MAX),
-                    actual: metadata_size,
-                })?;
-
-            data.extend_from_slice(&metadata_size_u16.to_be_bytes());
-            data.extend_from_slice(&metadata_json);
-        }
-
-        Ok(())
     }
 }
 
@@ -1000,6 +1046,57 @@ mod tests {
         // The fork's child node has no reference assigned (never persisted).
         let result = Vec::<u8>::try_from(&n);
         assert!(matches!(result, Err(MantarayError::MissingReference)));
+    }
+
+    /// Build a leaf fork whose child is exactly what the single body decoder
+    /// reconstructs: a referenced node with a node_type and optional metadata,
+    /// no entry or children.
+    fn leaf_fork(
+        prefix: &[u8],
+        addr_byte: u8,
+        node_type: NodeType,
+        metadata: BTreeMap<String, String>,
+    ) -> Fork<ChunkAddress> {
+        let mut addr = [0u8; 32];
+        addr[31] = addr_byte;
+        let mut node = Node::from_reference(ChunkAddress::from(addr));
+        node.node_type = node_type;
+        node.metadata = metadata;
+        Fork {
+            prefix: Prefix::from_slice(prefix),
+            node,
+        }
+    }
+
+    /// Per-record property: parsing an emitted `WireFork` reproduces the fork.
+    /// Misalignment is unrepresentable, so the only variation is the presence
+    /// of metadata, exercised here alongside plain and value-typed forks.
+    #[test]
+    fn wire_fork_record_round_trips() {
+        let mut website: BTreeMap<String, String> = BTreeMap::new();
+        website.insert("index-document".to_string(), "aaaaa".to_string());
+
+        let cases = [
+            leaf_fork(b"aaaaa", 1, NodeType::VALUE, BTreeMap::new()),
+            leaf_fork(b"cc", 2, NodeType::empty(), BTreeMap::new()),
+            leaf_fork(b"/", 3, NodeType::VALUE | NodeType::METADATA, website),
+        ];
+
+        for fork in cases {
+            let has_metadata = fork.node.is_with_metadata();
+            let mut buf = Vec::new();
+            WireFork::try_from(&fork)
+                .unwrap()
+                .emit(&mut Writer::new(&mut buf));
+
+            let parsed = parse_fork_body::<ChunkAddress>(
+                &buf,
+                <ChunkAddress as NodeEntry>::SIZE,
+                has_metadata,
+            )
+            .unwrap();
+            assert_eq!(parsed, fork, "parse(emit(fork)) must reproduce the fork");
+        }
     }
 
     /// Encode-decode round-trip preserves entries and metadata.

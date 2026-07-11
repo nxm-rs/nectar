@@ -152,6 +152,74 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// A writer appending fixed- and variable-width fields to a byte buffer.
+///
+/// The dual of [`Cursor`]: every method appends and cannot fail, so an encoder
+/// built only from these primitives cannot emit a misaligned wire image. The
+/// borrowed buffer is the sole state; a reader over the finished bytes recovers
+/// each field in the order it was put.
+///
+/// ```
+/// use nectar_primitives::wire::{Cursor, Writer};
+///
+/// let mut buf = Vec::new();
+/// let mut w = Writer::new(&mut buf);
+/// w.put_u16_be(0x20);
+/// w.put_array(&[0xaa, 0xbb]);
+///
+/// let mut cur = Cursor::new(&buf);
+/// assert_eq!(cur.take_u16_be()?, 0x20);
+/// assert_eq!(cur.take_array::<2>()?, &[0xaa, 0xbb]);
+/// # Ok::<(), nectar_primitives::wire::Underrun>(())
+/// ```
+#[derive(Debug)]
+pub struct Writer<'a> {
+    bytes: &'a mut Vec<u8>,
+}
+
+impl<'a> Writer<'a> {
+    /// Wraps a growable buffer for appending. Existing contents are kept, so a
+    /// writer can extend a partially built image.
+    pub const fn new(bytes: &'a mut Vec<u8>) -> Self {
+        Self { bytes }
+    }
+
+    /// Appends a fixed-size array.
+    pub fn put_array<const N: usize>(&mut self, arr: &[u8; N]) {
+        self.bytes.extend_from_slice(arr);
+    }
+
+    /// Appends a byte slice.
+    pub fn put_slice(&mut self, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    /// Appends a single byte.
+    pub fn put_u8(&mut self, byte: u8) {
+        self.bytes.push(byte);
+    }
+
+    /// Appends a big-endian `u16`.
+    pub fn put_u16_be(&mut self, value: u16) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    /// Appends `n` zero bytes, e.g. to pad a field to its declared width.
+    pub fn put_zeros(&mut self, n: usize) {
+        self.bytes.resize(self.bytes.len().saturating_add(n), 0);
+    }
+
+    /// Bytes written so far, including any pre-existing contents.
+    pub const fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Whether the buffer is empty.
+    pub const fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +333,47 @@ mod tests {
         assert!(cur.is_empty());
         assert_eq!(cur.take::<u8>().unwrap_err().available, 0);
         assert_eq!(cur.take::<[u8; 0]>().unwrap(), [0u8; 0]);
+    }
+
+    #[test]
+    fn writer_appends_each_width() {
+        let mut buf = Vec::new();
+        let mut w = Writer::new(&mut buf);
+        assert!(w.is_empty());
+
+        w.put_u8(0xab);
+        w.put_u16_be(0x1234);
+        w.put_array(&[0xaa, 0xbb]);
+        w.put_slice(&[0xcc, 0xdd]);
+        w.put_zeros(3);
+
+        assert_eq!(w.len(), 10);
+        assert_eq!(buf, [0xab, 0x12, 0x34, 0xaa, 0xbb, 0xcc, 0xdd, 0, 0, 0]);
+    }
+
+    #[test]
+    fn writer_extends_existing_contents() {
+        let mut buf = vec![0x01, 0x02];
+        let mut w = Writer::new(&mut buf);
+        w.put_u8(0x03);
+        assert_eq!(buf, [0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn writer_and_cursor_round_trip() {
+        // Each field a reader takes matches what the writer put, in order.
+        let mut buf = Vec::new();
+        let mut w = Writer::new(&mut buf);
+        w.put_u8(0x7f);
+        w.put_u16_be(0xbeef);
+        w.put_array(&[1u8, 2, 3, 4]);
+        w.put_slice(&[9u8, 8]);
+
+        let mut cur = Cursor::new(&buf);
+        assert_eq!(cur.take_u8().unwrap(), 0x7f);
+        assert_eq!(cur.take_u16_be().unwrap(), 0xbeef);
+        assert_eq!(cur.take_array::<4>().unwrap(), &[1, 2, 3, 4]);
+        assert_eq!(cur.take(2).unwrap(), &[9, 8]);
+        assert!(cur.is_empty());
     }
 }
