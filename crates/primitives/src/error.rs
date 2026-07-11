@@ -41,6 +41,19 @@ use thiserror::Error;
 /// Result type for operations in the primitives crate
 pub type Result<T> = std::result::Result<T, PrimitivesError>;
 
+/// A byte slice did not carry the width its target type requires.
+///
+/// Returned by the fallible byte constructors on the fixed-width types so
+/// wire codecs can propagate the observed length instead of pre-checking it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("wrong length: expected {expected} bytes, got {got}")]
+pub struct WrongLength {
+    /// The byte width the target type requires.
+    pub expected: usize,
+    /// The byte width the slice actually carried.
+    pub got: usize,
+}
+
 /// Main error type for the primitives crate
 ///
 /// This enum represents all the possible errors that can occur when using
@@ -76,4 +89,8 @@ pub enum PrimitivesError {
     /// Array conversion errors
     #[error("Array conversion error: {0}")]
     ArrayConversion(#[from] std::array::TryFromSliceError),
+
+    /// A byte slice had the wrong width for a fixed-width type
+    #[error(transparent)]
+    WrongLength(#[from] WrongLength),
 }

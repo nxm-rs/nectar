@@ -83,7 +83,7 @@ pub use chunk::{ChunkEncrypt, EncryptedContentChunk};
 // Re-export core types
 pub use address::{EXTENDED_PO, MAX_PO, SwarmAddress};
 pub use bin::{Bin, BinError};
-pub use error::{PrimitivesError, Result};
+pub use error::{PrimitivesError, Result, WrongLength};
 pub use neighborhood_depth::recompute_neighborhood_depth;
 pub use network_id::NetworkId;
 pub use nonce::Nonce;

@@ -67,6 +67,10 @@ pub enum FileError {
     #[error("encryption error: {0}")]
     Encryption(#[from] crate::chunk::encryption::EncryptionError),
 
+    /// A byte slice had the wrong width for a fixed-width type.
+    #[error(transparent)]
+    WrongLength(#[from] crate::error::WrongLength),
+
     /// Invalid entry reference length (expected 32 or 64 bytes).
     #[error("invalid entry reference length: {len} (expected 32 or 64)")]
     InvalidEntryRef {

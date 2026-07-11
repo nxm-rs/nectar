@@ -73,7 +73,7 @@ use alloy_primitives::{B256, U256};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{Result, WrongLength};
 use crate::{Bin, ProximityOrder};
 
 /// Maximum proximity order for standard routing operations.
@@ -117,10 +117,11 @@ impl SwarmAddress {
         self.0.as_slice()
     }
 
-    /// Creates a new address from a slice, checking the length
+    /// Creates a new address from a slice, checking the length.
+    ///
+    /// The error carries expected and actual lengths via [`WrongLength`].
     pub fn from_slice(slice: &[u8]) -> Result<Self> {
-        let address = B256::try_from(slice)?;
-        Ok(Self(address))
+        Ok(Self::try_from(slice)?)
     }
 
     /// Checks if this address is zeros
@@ -352,6 +353,18 @@ impl AsRef<[u8]> for SwarmAddress {
     }
 }
 
+impl TryFrom<&[u8]> for SwarmAddress {
+    type Error = WrongLength;
+
+    fn try_from(slice: &[u8]) -> std::result::Result<Self, Self::Error> {
+        let bytes: [u8; 32] = slice.try_into().map_err(|_| WrongLength {
+            expected: 32,
+            got: slice.len(),
+        })?;
+        Ok(Self::new(bytes))
+    }
+}
+
 impl From<SwarmAddress> for [u8; 32] {
     fn from(addr: SwarmAddress) -> Self {
         addr.0.into()
@@ -362,5 +375,45 @@ impl From<SwarmAddress> for [u8; 32] {
 impl<'a> arbitrary::Arbitrary<'a> for SwarmAddress {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         Ok(Self(B256::arbitrary(u)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::PrimitivesError;
+
+    #[test]
+    fn try_from_slice_valid() {
+        let bytes = [0x5au8; 32];
+        assert_eq!(
+            SwarmAddress::try_from(bytes.as_slice()).unwrap(),
+            SwarmAddress::new(bytes)
+        );
+    }
+
+    #[test]
+    fn try_from_slice_wrong_length() {
+        let short = [0u8; 31];
+        assert_eq!(
+            SwarmAddress::try_from(short.as_slice()).unwrap_err(),
+            WrongLength {
+                expected: 32,
+                got: 31
+            }
+        );
+    }
+
+    #[test]
+    fn from_slice_carries_lengths() {
+        let long = [0u8; 33];
+        let err = SwarmAddress::from_slice(&long).unwrap_err();
+        assert!(matches!(
+            err,
+            PrimitivesError::WrongLength(WrongLength {
+                expected: 32,
+                got: 33
+            })
+        ));
     }
 }
