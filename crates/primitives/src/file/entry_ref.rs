@@ -1,7 +1,7 @@
 //! Unified file entry reference type.
 
-use crate::chunk::ChunkAddress;
 use crate::chunk::encryption::EncryptedChunkRef;
+use crate::chunk::{ChunkAddress, ChunkRef};
 
 use super::error::FileError;
 
@@ -17,24 +17,18 @@ pub enum EntryRef {
 impl EntryRef {
     /// Parse an entry reference from raw bytes.
     ///
-    /// - 32 bytes → `Plain`
-    /// - 64 bytes → `Encrypted` (requires `encryption` feature)
-    #[allow(clippy::missing_panics_doc)] // the expect below is unreachable: the match arm guarantees the length, so there is no panic to document
+    /// - [`ChunkRef::SIZE`] bytes → `Plain`
+    /// - [`EncryptedChunkRef::SIZE`] bytes → `Encrypted`
     pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, FileError> {
-        match bytes.len() {
-            32 => {
-                #[allow(clippy::expect_used)]
-                // infallible: this match arm guarantees bytes.len() == 32
-                let addr_bytes: [u8; 32] = bytes.try_into().expect("length checked");
-                Ok(Self::Plain(ChunkAddress::from(addr_bytes)))
-            }
-            64 => {
-                let enc_ref = EncryptedChunkRef::try_from(bytes)
-                    .map_err(|_| FileError::InvalidEntryRef { len: bytes.len() })?;
-                Ok(Self::Encrypted(enc_ref))
-            }
-            len => Err(FileError::InvalidEntryRef { len }),
+        if let Ok(addr_bytes) = <[u8; ChunkRef::SIZE]>::try_from(bytes) {
+            return Ok(Self::Plain(ChunkAddress::from(addr_bytes)));
         }
+        if bytes.len() == EncryptedChunkRef::SIZE {
+            let enc_ref = EncryptedChunkRef::try_from(bytes)
+                .map_err(|_| FileError::InvalidEntryRef { len: bytes.len() })?;
+            return Ok(Self::Encrypted(enc_ref));
+        }
+        Err(FileError::InvalidEntryRef { len: bytes.len() })
     }
 
     /// The chunk address (first 32 bytes of any reference).
