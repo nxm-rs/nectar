@@ -40,6 +40,7 @@ use std::collections::BTreeMap;
 
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
+use nectar_primitives::file::{ChunkPutExt, ReadAt};
 use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
 
 use crate::entry::Entry;
@@ -135,6 +136,15 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> ManifestBuilder
 }
 
 impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> ManifestBuilder<S, ChunkRef, BS> {
+    /// Split `data`, store its chunks, and stage the resulting root at `path`.
+    ///
+    /// One mode end to end: a plain builder splits in plain mode and stages a
+    /// plain reference, so a plain-encrypted pairing cannot be expressed.
+    pub async fn put_file<D: ReadAt + Sync>(&mut self, path: &str, data: D) -> Result<()> {
+        let root = self.store().write_file(data).await?;
+        self.add(path, root).await
+    }
+
     /// Persist the plain manifest, consuming the builder.
     ///
     /// Returns the root chunk address and a read handle over the same store.
@@ -149,6 +159,21 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> ManifestBuilder<S, ChunkRe
 impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
     ManifestBuilder<S, nectar_primitives::EncryptedChunkRef, BS>
 {
+    /// Split `data` in encrypted mode, store its chunks, and stage the root at `path`.
+    ///
+    /// One mode end to end: an encrypted builder splits in encrypted mode and
+    /// stages an encrypted reference, so a plain-encrypted pairing cannot be
+    /// expressed. Drives the splitter directly rather than the deprecated
+    /// `write_encrypted_file` ergonomic wrapper it supersedes.
+    pub async fn put_file<D: ReadAt + Sync>(&mut self, path: &str, data: D) -> Result<()> {
+        use nectar_primitives::file::{EncryptedParallelSplitter, FileError};
+        let (root, chunks) = EncryptedParallelSplitter::<BS>::split_to_vec(&data)?;
+        for chunk in chunks {
+            self.store().put(chunk).await.map_err(FileError::store)?;
+        }
+        self.add(path, root).await
+    }
+
     /// Persist the encrypted manifest, consuming the builder.
     ///
     /// Returns a [`ManifestRef`](crate::ManifestRef) and a read handle over the
@@ -299,6 +324,57 @@ mod tests {
 
         let err = block_on(builder.save()).unwrap_err();
         assert!(matches!(err, MantarayError::RootMetadata));
+    }
+
+    #[test]
+    fn put_file_round_trips_through_read() {
+        let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+        // A multi-chunk payload exercises the splitter and joiner, not just a
+        // single content chunk.
+        let big = vec![0xabu8; DEFAULT_BODY_SIZE * 3 + 17];
+        block_on(builder.put_file("a.txt", b"file A contents".to_vec())).unwrap();
+        block_on(builder.put_file("dir/big.bin", big.clone())).unwrap();
+
+        let (root, manifest) = block_on(builder.save()).unwrap();
+
+        assert_eq!(
+            block_on(manifest.read("a.txt")).unwrap().unwrap(),
+            b"file A contents"
+        );
+        assert_eq!(
+            block_on(manifest.read("dir/big.bin")).unwrap().unwrap(),
+            big
+        );
+        // Absent path reads as None, not an error.
+        assert!(block_on(manifest.read("missing.txt")).unwrap().is_none());
+
+        // Reopen from storage: read drives the lazy-load path.
+        let (_, store) = manifest.into_parts();
+        let reopened = super::Manifest::<Store, ChunkRef>::open(root, store);
+        assert_eq!(
+            block_on(reopened.read("dir/big.bin")).unwrap().unwrap(),
+            big
+        );
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn encrypted_put_file_round_trips_through_read() {
+        use nectar_primitives::EncryptedChunkRef;
+
+        let mut builder = ManifestBuilder::<Store, EncryptedChunkRef>::new_encrypted(Store::new());
+        let big = vec![0x5cu8; DEFAULT_BODY_SIZE * 2 + 5];
+        block_on(builder.put_file("secret.txt", b"secret data".to_vec())).unwrap();
+        block_on(builder.put_file("blob.bin", big.clone())).unwrap();
+
+        let (_root, manifest) = block_on(builder.save()).unwrap();
+
+        assert_eq!(
+            block_on(manifest.read("secret.txt")).unwrap().unwrap(),
+            b"secret data"
+        );
+        assert_eq!(block_on(manifest.read("blob.bin")).unwrap().unwrap(), big);
+        assert!(block_on(manifest.read("absent")).unwrap().is_none());
     }
 
     #[test]
