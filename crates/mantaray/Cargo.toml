@@ -27,7 +27,6 @@ thiserror.workspace = true
 serde_json.workspace = true
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 rand = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 arbitrary = { workspace = true, features = ["derive"] }
@@ -51,11 +50,6 @@ arbitrary = [
 	"dep:arbitrary",
 	"nectar-primitives/arbitrary",
 	"alloy-primitives/arbitrary",
-]
-serde = [
-	"dep:serde",
-	"alloy-primitives/serde",
-	"nectar-primitives/serde"
 ]
 encryption = ["nectar-primitives/encryption"]
 

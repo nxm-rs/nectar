@@ -65,6 +65,8 @@
 //! number should be removed. Run `git grep -n BEE-WORKAROUND` to enumerate
 //! them.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::get_unwrap, clippy::indexing_slicing, clippy::string_slice, clippy::arithmetic_side_effects, clippy::panic, clippy::unreachable, clippy::panic_in_result_fn))]
+
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
 

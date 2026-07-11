@@ -85,6 +85,7 @@ const VERSION_STRING_01: &str = "mantaray:0.1";
 const VERSION_STRING_02: &str = "mantaray:0.2";
 
 /// XOR `data` in-place with a repeating `key`.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // key is the 32-byte obfuscation key (never empty): `i % key_len` cannot divide by zero and is always < key_len
 fn xor_in_place(data: &mut [u8], key: &[u8]) {
     let key_len = key.len();
     for (i, byte) in data.iter_mut().enumerate() {
@@ -101,6 +102,7 @@ impl<E: NodeEntry> TryFrom<&Node<E>> for Vec<u8> {
     }
 }
 
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // header offsets are compile-time constants within the freshly sized NodeHeader::SIZE buffer; size arithmetic sums in-memory buffer lengths (<= 256 forks) and cannot overflow usize
 fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
     let ref_size = E::SIZE;
     // Pre-allocate: header + entry + bitfield(32) + estimated fork data
@@ -150,6 +152,7 @@ fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
 impl<E: NodeEntry> TryFrom<&[u8]> for Node<E> {
     type Error = MantarayError;
 
+    #[allow(clippy::indexing_slicing)] // every slice lies within NodeHeader::SIZE, guaranteed by the length check below
     fn try_from(value: &[u8]) -> Result<Self> {
         if value.len() < NodeHeader::SIZE {
             return Err(MantarayError::DataTooShort);
@@ -217,6 +220,7 @@ fn decode_empty_terminal_node<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
     if data.len() < bitfield_end {
         return Err(MantarayError::DataTooShort);
     }
+    #[allow(clippy::indexing_slicing)] // `bitfield_end` bounds-checked against data.len() above
     if data[bitfield_start..bitfield_end].iter().any(|&b| b != 0) {
         return Err(MantarayError::EntrySizeMismatch {
             expected: E::SIZE,
@@ -230,6 +234,12 @@ fn decode_empty_terminal_node<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
     })
 }
 
+// Bounds safety: only called from `TryFrom<&[u8]>`, which guarantees
+// `data.len() >= NodeHeader::SIZE` (covers the ref-size byte at offset 63);
+// every further slice is preceded by an explicit `data.len()` check with an
+// error return, and offsets are sums of header constants and `E::SIZE`
+// (<= 64) that cannot overflow usize.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 fn decode_v01<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
     let ref_bytes_size = data[NodeHeader::REF_SIZE_OFFSET] as usize;
     // BEE-WORKAROUND(bee#5483): see HAZMAT block above `decode_empty_terminal_node`.
@@ -286,6 +296,12 @@ fn decode_v01<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
     })
 }
 
+// Bounds safety: only called from `TryFrom<&[u8]>`, which guarantees
+// `data.len() >= NodeHeader::SIZE` (covers the ref-size byte at offset 63);
+// every further slice is preceded by an explicit `data.len()` check with an
+// error return, and offsets are sums of header constants, `E::SIZE` (<= 64)
+// and a metadata size (<= u16::MAX) that cannot overflow usize.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
     let ref_bytes_size = data[NodeHeader::REF_SIZE_OFFSET] as usize;
     // BEE-WORKAROUND(bee#5483): see HAZMAT block above `decode_empty_terminal_node`.
@@ -406,16 +422,19 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 
 /// Parse and validate fork header. Returns (node_type, prefix).
 fn parse_fork_header(data: &[u8]) -> Result<(NodeType, Prefix)> {
-    let node_type = NodeType::from_bits_truncate(data[0]);
-    let prefix_length = data[1] as usize;
+    let node_type =
+        NodeType::from_bits_truncate(*data.first().ok_or(MantarayError::DataTooShort)?);
+    let prefix_length = usize::from(*data.get(1).ok_or(MantarayError::DataTooShort)?);
     if prefix_length == 0 || prefix_length > Prefix::MAX_LEN {
         return Err(MantarayError::InvalidPrefixLength {
             max: Prefix::MAX_LEN,
             actual: prefix_length,
         });
     }
+    #[allow(clippy::arithmetic_side_effects)] // PREFIX_OFFSET (2) + prefix_length (<= 30) cannot overflow
     let prefix = Prefix::from_slice(
-        &data[ForkHeader::PREFIX_OFFSET..ForkHeader::PREFIX_OFFSET + prefix_length],
+        data.get(ForkHeader::PREFIX_OFFSET..ForkHeader::PREFIX_OFFSET + prefix_length)
+            .ok_or(MantarayError::DataTooShort)?,
     );
     Ok((node_type, prefix))
 }
@@ -426,6 +445,7 @@ impl<E: NodeEntry> Fork<E> {
         if ref_data.len() < 32 {
             return Err(MantarayError::DataTooShort);
         }
+        #[allow(clippy::indexing_slicing)] // length >= 32 checked above
         let addr_bytes: [u8; 32] = ref_data[..32]
             .try_into()
             .map_err(|_| MantarayError::DataTooShort)?;
@@ -433,6 +453,7 @@ impl<E: NodeEntry> Fork<E> {
     }
 
     /// Encode this fork, appending to `buf`.
+    #[allow(clippy::arithmetic_side_effects)] // in-memory buffer length arithmetic; padding math is guarded (`SIZE - x` only when `x < SIZE`, `SIZE - rem` only when `rem != 0`) and `% ObfuscationKey::SIZE` has a nonzero constant divisor
     fn encode_into(&self, data: &mut Vec<u8>) -> Result<()> {
         data.push(self.node.node_type.bits());
         data.push(self.prefix.len() as u8);
@@ -493,6 +514,7 @@ impl<E: NodeEntry> Fork<E> {
         let (node_type, prefix) = parse_fork_header(data)?;
 
         self.prefix = prefix;
+        #[allow(clippy::indexing_slicing)] // callers (decode_v01/decode_v02) bounds-check `data` to PRE_REFERENCE_SIZE + ref size before calling
         let ref_data = &data[ForkHeader::PRE_REFERENCE_SIZE..];
         self.node = Self::node_from_ref_bytes(ref_data)?;
         self.node.node_type = node_type;
@@ -501,6 +523,12 @@ impl<E: NodeEntry> Fork<E> {
     }
 
     /// Decode a fork from v0.2 binary data (with metadata).
+    // Bounds safety: the only caller (`decode_v02`) sizes `data` to exactly
+    // PRE_REFERENCE_SIZE + ref_bytes_size + METADATA_LEN_SIZE +
+    // metadata_bytes_size before calling, so the slices below are in-bounds
+    // and the offset sums (constants + ref size + u16-bounded metadata size)
+    // cannot overflow usize.
+    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
     pub(crate) fn decode_v02(
         &mut self,
         data: &[u8],

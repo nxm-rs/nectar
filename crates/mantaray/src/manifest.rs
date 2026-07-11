@@ -432,6 +432,7 @@ impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, 
     /// Advance the lazy traversal, returning the next entry (or `None` when done).
     ///
     /// Loads unvisited nodes from storage on demand.
+    #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
     pub async fn next(&mut self) -> Option<Result<Entry>> {
         loop {
             if !self.root_visited {
@@ -467,14 +468,14 @@ impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, 
             }
 
             // Pop exhausted frames, truncating path_buf as we go.
-            while self.stack.last().is_some_and(|f| f.key_idx >= f.keys.len()) {
-                let frame = self.stack.pop().unwrap();
+            while let Some(frame) = self.stack.pop_if(|f| f.key_idx >= f.keys.len()) {
                 self.path_buf.truncate(frame.path_len_before);
             }
 
             // Advance: get the next fork key and parent pointer from the top frame.
             let (key, parent_node) = {
                 let frame = self.stack.last_mut()?;
+                #[allow(clippy::indexing_slicing)] // the pop_if loop above removed every frame with key_idx >= keys.len()
                 let key = frame.keys[frame.key_idx];
                 frame.key_idx += 1;
                 (key, frame.node)
