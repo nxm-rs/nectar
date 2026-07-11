@@ -20,7 +20,6 @@ default = ["console_error_panic_hook"]
 [dependencies]
 bytes.workspace = true
 nectar-primitives.workspace = true
-digest.workspace = true
 wasm-bindgen.workspace = true
 js-sys.workspace = true
 console_error_panic_hook = { version = "0.1.7", optional = true }

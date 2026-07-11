@@ -800,7 +800,6 @@ dependencies = [
  "alloy-signer-local",
  "bytes",
  "console_error_panic_hook",
- "digest 0.11.3",
  "getrandom 0.2.17",
  "js-sys",
  "nectar-primitives",
