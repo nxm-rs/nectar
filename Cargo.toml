@@ -41,8 +41,9 @@ unreachable = "deny"
 todo = "deny"
 unimplemented = "deny"
 panic_in_result_fn = "deny"
-# Lossy/`as` casts: warn now; denied in the maximal follow-up PR.
-as_conversions = "warn"
+# Lossy/`as` casts: all casts must be explicit (`from`/`try_into`) or a
+# justified `#[allow]` where truncation is intended and provably in range.
+as_conversions = "deny"
 missing_panics_doc = "warn"
 
 [workspace.metadata.docs.rs]
