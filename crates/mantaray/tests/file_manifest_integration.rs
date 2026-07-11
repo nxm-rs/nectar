@@ -56,14 +56,14 @@ fn unified_store_workflow() {
     assert!(store.len() > files_chunk_count);
 
     // Reload manifest from the store
-    let mut manifest2 = PlainManifest::open(root_ref, store.clone());
+    let manifest2 = PlainManifest::open(root_ref, store.clone());
 
     // Verify lookup
-    let entry_a = block_on(manifest2.lookup("a.txt")).unwrap();
+    let entry_a = block_on(manifest2.get("a.txt")).unwrap().unwrap();
     assert_eq!(entry_a.address(), Some(&root_a));
     assert_eq!(entry_a.content_type(), Some("text/plain"));
 
-    let entry_b = block_on(manifest2.lookup("b.txt")).unwrap();
+    let entry_b = block_on(manifest2.get("b.txt")).unwrap().unwrap();
     assert_eq!(entry_b.address(), Some(&root_b));
 
     // Verify file data round-trip through the same store
@@ -101,7 +101,7 @@ fn entries_round_trip() {
     let root_ref = block_on(manifest.save()).unwrap();
 
     let (_, store) = manifest.into_parts();
-    let mut manifest2 = PlainManifest::open(root_ref, store);
+    let manifest2 = PlainManifest::open(root_ref, store);
 
     let entries = block_on(manifest2.entries()).unwrap();
     assert_eq!(entries.len(), paths.len());

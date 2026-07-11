@@ -129,7 +129,23 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
             .await
     }
 
+    /// Look up a path, returning `None` when it is absent or not a value.
+    ///
+    /// Shared-read (`&self`) accessor: descends over owned clones, so a
+    /// persisted manifest is read without mutating or caching into the trie.
+    pub async fn get(&self, path: &str) -> Result<Option<Entry>> {
+        let path = path.as_bytes();
+        let Some(node) = self.trie.get_node::<S, BS>(path, &self.store).await? else {
+            return Ok(None);
+        };
+        if !node.is_value() {
+            return Ok(None);
+        }
+        Ok(Some(Entry::from_node(path, &node)))
+    }
+
     /// Look up a path in the manifest.
+    #[deprecated(note = "use `get`, which returns `Ok(None)` for absent paths instead of erroring")]
     pub async fn lookup(&mut self, path: &str) -> Result<Entry> {
         let node = self
             .trie
@@ -170,9 +186,10 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
 
     /// Collect all value entries from the manifest.
     ///
-    /// Convenience wrapper around the [`stream`](Self::stream) accessor.
-    pub async fn entries(&mut self) -> Result<Vec<Entry>> {
-        let mut iter = self.iter();
+    /// Shared-read (`&self`) accessor: depth-first over owned clones, leaving
+    /// the trie untouched. Convenience wrapper around [`stream`](Self::stream).
+    pub async fn entries(&self) -> Result<Vec<Entry>> {
+        let mut iter = self.shared_iter();
         let mut out = Vec::new();
         while let Some(item) = iter.next().await {
             out.push(item?);
@@ -252,13 +269,17 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
     }
 
     /// Get the website index document from root path metadata.
-    pub async fn index_document(&mut self) -> Result<Option<String>> {
+    ///
+    /// Shared-read (`&self`) accessor; `None` when unset.
+    pub async fn index_document(&self) -> Result<Option<String>> {
         self.get_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT)
             .await
     }
 
     /// Get the website error document from root path metadata.
-    pub async fn error_document(&mut self) -> Result<Option<String>> {
+    ///
+    /// Shared-read (`&self`) accessor; `None` when unset.
+    pub async fn error_document(&self) -> Result<Option<String>> {
         self.get_root_metadata(metadata::WEBSITE_ERROR_DOCUMENT)
             .await
     }
@@ -298,10 +319,18 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
     }
 
     /// Lazy depth-first stream over all entries in the manifest.
-    pub fn stream(&mut self) -> impl Stream<Item = Result<Entry>> + '_ {
-        futures::stream::unfold(self.iter(), |mut iter| async move {
+    ///
+    /// Shared-read (`&self`) accessor: traverses owned clones on demand,
+    /// leaving the trie untouched.
+    pub fn stream(&self) -> impl Stream<Item = Result<Entry>> + '_ {
+        futures::stream::unfold(self.shared_iter(), |mut iter| async move {
             iter.next().await.map(|item| (item, iter))
         })
+    }
+
+    /// Seed a shared-read depth-first traversal from a clone of the root.
+    fn shared_iter(&self) -> SharedIter<'_, S, R, BS> {
+        SharedIter::new(self.trie.clone(), &self.store)
     }
 
     async fn set_root_metadata(&mut self, key: &str, value: &str) -> Result<()> {
@@ -330,16 +359,12 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
         }
     }
 
-    async fn get_root_metadata(&mut self, key: &str) -> Result<Option<String>> {
-        match self
+    async fn get_root_metadata(&self, key: &str) -> Result<Option<String>> {
+        let node = self
             .trie
-            .lookup_node::<S, BS>(metadata::ROOT_PATH.as_bytes(), &self.store)
-            .await
-        {
-            Ok(node) => Ok(node.metadata().get(key).cloned()),
-            Err(MantarayError::NoForkFound { .. }) => Ok(None),
-            Err(e) => Err(e),
-        }
+            .get_node::<S, BS>(metadata::ROOT_PATH.as_bytes(), &self.store)
+            .await?;
+        Ok(node.and_then(|n| n.metadata().get(key).cloned()))
     }
 }
 
@@ -517,6 +542,119 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
     }
 }
 
+/// Shared-read depth-first iterator over owned node clones.
+///
+/// Shared-read (`&self`) counterpart to [`ManifestIter`]: each descent step
+/// clones the child fork, so a persisted manifest is streamed without mutating
+/// or caching into the trie. Nodes load from storage on demand.
+struct SharedIter<'a, S, R: Reference = ChunkRef, const BS: usize = DEFAULT_BODY_SIZE> {
+    store: &'a S,
+    /// Cloned root, taken and visited on the first advance.
+    root: Option<Node<R>>,
+    stack: Vec<SharedFrame<R>>,
+    /// Running path buffer; extended when pushing frames, truncated when popping.
+    path_buf: Vec<u8>,
+}
+
+struct SharedFrame<R: Reference> {
+    /// Owned clone of the node at this stack level.
+    node: Node<R>,
+    /// Length of `path_buf` before this frame's prefix was appended.
+    path_len_before: usize,
+    /// This node's sorted fork keys.
+    keys: Vec<u8>,
+    /// Index into `keys` for the next fork to visit.
+    key_idx: usize,
+}
+
+impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> SharedIter<'a, S, R, BS> {
+    const fn new(root: Node<R>, store: &'a S) -> Self {
+        Self {
+            store,
+            root: Some(root),
+            stack: Vec::new(),
+            path_buf: Vec::new(),
+        }
+    }
+
+    /// Advance the traversal, returning the next entry (or `None` when done).
+    #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
+    async fn next(&mut self) -> Option<Result<Entry>> {
+        loop {
+            if let Some(mut root) = self.root.take() {
+                if !root.is_loaded()
+                    && let Err(e) = root.load::<S, BS>(self.store).await
+                {
+                    return Some(Err(e));
+                }
+
+                let keys: Vec<u8> = root.forks.keys().copied().collect();
+                let entry = root.is_value().then(|| Entry::from_node(&[], &root));
+
+                self.stack.push(SharedFrame {
+                    node: root,
+                    path_len_before: 0,
+                    keys,
+                    key_idx: 0,
+                });
+
+                if let Some(entry) = entry {
+                    return Some(Ok(entry));
+                }
+                continue;
+            }
+
+            // Pop exhausted frames, truncating path_buf as we go.
+            while let Some(frame) = self.stack.pop_if(|f| f.key_idx >= f.keys.len()) {
+                self.path_buf.truncate(frame.path_len_before);
+            }
+
+            // Clone the next child out of the top frame, releasing its borrow
+            // before touching path_buf.
+            let (mut child, prefix) = {
+                let frame = self.stack.last_mut()?;
+                #[allow(clippy::indexing_slicing)]
+                // the pop_if loop above removed every frame with key_idx >= keys.len()
+                let key = frame.keys[frame.key_idx];
+                frame.key_idx += 1;
+                match frame.node.forks.get(&key) {
+                    Some(fork) => (fork.node.clone(), fork.prefix.clone()),
+                    None => {
+                        return Some(Err(MantarayError::NoForkFound {
+                            reference: frame.node.reference().copied(),
+                        }));
+                    }
+                }
+            };
+
+            let path_len_before = self.path_buf.len();
+            self.path_buf.extend_from_slice(&prefix);
+
+            if !child.is_loaded()
+                && let Err(e) = child.load::<S, BS>(self.store).await
+            {
+                return Some(Err(e));
+            }
+
+            let keys: Vec<u8> = child.forks.keys().copied().collect();
+            let entry = child
+                .is_value()
+                .then(|| Entry::from_node(&self.path_buf, &child));
+
+            self.stack.push(SharedFrame {
+                node: child,
+                path_len_before,
+                keys,
+                key_idx: 0,
+            });
+
+            if let Some(entry) = entry {
+                return Some(Ok(entry));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::executor::block_on;
@@ -577,7 +715,7 @@ mod tests {
         block_on(m.save()).unwrap();
 
         for &path in paths {
-            let entry = block_on(m.lookup(path)).unwrap();
+            let entry = block_on(m.get(path)).unwrap().unwrap();
             let expected = make_addr(path);
             assert_eq!(entry.address(), Some(&expected));
         }
@@ -647,7 +785,7 @@ mod tests {
     #[test]
     fn website_document_helpers_none_when_missing() {
         let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        let m = PlainManifest::new(store);
 
         assert_eq!(block_on(m.index_document()).unwrap(), None);
         assert_eq!(block_on(m.error_document()).unwrap(), None);
@@ -706,12 +844,12 @@ mod tests {
 
         assert_ne!(root_ref_1, root_ref_2);
 
-        let entry = block_on(m.lookup("dir0/file0.txt")).unwrap();
+        let entry = block_on(m.get("dir0/file0.txt")).unwrap().unwrap();
         assert_eq!(entry.address(), Some(&updated_addr));
 
         for i in 1..100u32 {
             let path = format!("dir{}/file{}.txt", i / 10, i);
-            let entry = block_on(m.lookup(&path)).unwrap();
+            let entry = block_on(m.get(&path)).unwrap().unwrap();
             let expected = make_addr_u32(i);
             assert_eq!(
                 entry.address(),
@@ -1125,5 +1263,83 @@ mod tests {
                 "path {path} missing after partial lazy iteration"
             );
         }
+    }
+
+    #[test]
+    fn get_returns_some_for_present_path() {
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        let addr = make_addr("only");
+        block_on(m.add("only.txt", addr)).unwrap();
+
+        let entry = block_on(m.get("only.txt")).unwrap().unwrap();
+        assert_eq!(entry.address(), Some(&addr));
+    }
+
+    #[test]
+    fn get_returns_none_for_absent_path() {
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        block_on(m.add("present.txt", make_addr("present"))).unwrap();
+
+        assert!(block_on(m.get("absent.txt")).unwrap().is_none());
+        // A pure prefix of an existing path is an edge, not a value.
+        assert!(block_on(m.get("present")).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_resolves_after_save_reload() {
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        let paths = &["index.html", "img/1.png", "img/2.png"];
+        for &path in paths {
+            block_on(m.add(path, make_addr(path))).unwrap();
+        }
+        let root_ref = block_on(m.save()).unwrap();
+        let (_, store) = m.into_parts();
+        let m2 = PlainManifest::open(root_ref, store);
+
+        // Shared reference: several reads share `&m2` without exclusive borrow.
+        let read = |p: &str| block_on(m2.get(p)).unwrap();
+        assert_eq!(
+            read("img/1.png").unwrap().address(),
+            Some(&make_addr("img/1.png"))
+        );
+        assert!(read("img/3.png").is_none());
+        assert_eq!(
+            read("index.html").unwrap().address(),
+            Some(&make_addr("index.html"))
+        );
+    }
+
+    #[test]
+    fn shared_reads_take_shared_reference() {
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        block_on(m.add("/", ChunkAddress::from([0u8; 32]))).unwrap();
+        block_on(m.set_index_document("index.html")).unwrap();
+        block_on(m.add("a.txt", make_addr("a"))).unwrap();
+
+        // All read accessors are callable through a shared borrow.
+        fn read_all<S: ChunkGet<DEFAULT_BODY_SIZE>>(m: &PlainManifest<S>) {
+            assert!(block_on(m.get("a.txt")).unwrap().is_some());
+            assert_eq!(block_on(m.entries()).unwrap().len(), 2);
+            assert_eq!(
+                block_on(m.index_document()).unwrap(),
+                Some("index.html".to_string())
+            );
+        }
+        read_all(&m);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_lookup_still_errors_on_miss() {
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        block_on(m.add("present.txt", make_addr("present"))).unwrap();
+
+        assert!(block_on(m.lookup("present.txt")).is_ok());
+        assert!(block_on(m.lookup("absent.txt")).is_err());
     }
 }

@@ -436,6 +436,42 @@ impl<R: Reference> Node<R> {
         }
     }
 
+    /// Resolve the node at `path` over owned clones, loading on demand.
+    ///
+    /// Shared-read counterpart to [`lookup_node`](Self::lookup_node): borrows
+    /// `&self` and clones each descended fork, so reading a persisted manifest
+    /// leaves the trie untouched. Returns `None` for an absent path.
+    #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
+    pub(crate) async fn get_node<S: ChunkGet<BS>, const BS: usize>(
+        &self,
+        path: &[u8],
+        store: &S,
+    ) -> Result<Option<Self>> {
+        let mut current = self.clone();
+        let mut rest = path;
+        loop {
+            current.ensure_loaded(store).await?;
+
+            if rest.is_empty() {
+                return Ok(Some(current));
+            }
+
+            let first = rest[0];
+            let Some(fork) = current.forks.get(&first) else {
+                return Ok(None);
+            };
+
+            let c = common_prefix_len(&fork.prefix, rest);
+            if c != fork.prefix.len() {
+                return Ok(None);
+            }
+
+            let child = fork.node.clone();
+            rest = &rest[c..];
+            current = child;
+        }
+    }
+
     /// Look up the entry at the given path, loading from storage as needed.
     #[cfg(test)]
     pub(crate) async fn lookup<S: ChunkGet<BS>, const BS: usize>(
