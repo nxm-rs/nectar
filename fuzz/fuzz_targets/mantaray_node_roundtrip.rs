@@ -14,7 +14,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nectar_mantaray::Node;
+use nectar_mantaray::hazmat::Node;
 use nectar_primitives::chunk::ChunkRef;
 
 fuzz_target!(|node: Node<ChunkRef>| {

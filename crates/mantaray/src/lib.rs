@@ -76,7 +76,7 @@ pub mod entry;
 pub mod error;
 pub mod manifest;
 pub mod manifest_ref;
-pub mod node;
+mod node;
 pub mod obfuscation;
 
 // Re-export constants.
@@ -88,8 +88,17 @@ pub use entry::Entry;
 pub use error::{DecodeError, DecodeResult, MantarayError, Result};
 pub use manifest::{Manifest, ManifestIter};
 pub use manifest_ref::ManifestRef;
-pub use node::{Fork, Node, NodeType, Prefix};
+pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
+
+/// Raw node internals for fuzz harnesses only.
+///
+/// Not part of the public API and exempt from semver guarantees; the encode
+/// path here (`Vec::<u8>::try_from(&Node)`) has no other sanctioned spelling.
+#[doc(hidden)]
+pub mod hazmat {
+    pub use crate::node::{Fork, Node, Prefix};
+}
 
 // Re-export typed storage traits from primitives.
 pub use nectar_primitives::DefaultMemoryStore;

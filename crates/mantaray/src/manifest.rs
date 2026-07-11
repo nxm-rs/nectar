@@ -76,7 +76,8 @@ impl<S, R: Reference, const BS: usize> Manifest<S, R, BS> {
     }
 
     /// Mutable access to the root trie node.
-    pub const fn root_mut(&mut self) -> &mut Node<R> {
+    #[allow(dead_code)] // crate-internal mutation seam retained for the node-state follow-up
+    pub(crate) const fn root_mut(&mut self) -> &mut Node<R> {
         &mut self.trie
     }
 

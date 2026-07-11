@@ -13,7 +13,7 @@
 )]
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use futures::executor::block_on;
-use nectar_mantaray::node::Node;
+use nectar_mantaray::hazmat::Node;
 use nectar_mantaray::{MemoryStore, PlainManifest};
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
