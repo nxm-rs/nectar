@@ -129,19 +129,18 @@ impl Mutability {
 /// runtime check.
 ///
 /// ```compile_fail
-/// use alloy_primitives::B256;
-/// use nectar_postage_usage::{Mutability, UsageTable};
+/// use nectar_postage_usage::{BatchId, Mutability, UsageTable};
 ///
-/// let mut table = UsageTable::new(B256::repeat_byte(0x42), 18, 16, Mutability::Mutable).unwrap();
+/// let mut table = UsageTable::new(BatchId::new([0x42; 32]), 18, 16, Mutability::Mutable).unwrap();
 /// // `record` no longer exists on the inert table.
 /// table.record(7).unwrap();
 /// ```
 ///
 /// ```compile_fail
 /// use alloy_primitives::B256;
-/// use nectar_postage_usage::{Mutability, SwarmAddress, UsageTable};
+/// use nectar_postage_usage::{BatchId, Mutability, SwarmAddress, UsageTable};
 ///
-/// let mut table = UsageTable::new(B256::repeat_byte(0x42), 18, 16, Mutability::Mutable).unwrap();
+/// let mut table = UsageTable::new(BatchId::new([0x42; 32]), 18, 16, Mutability::Mutable).unwrap();
 /// // `record_address` no longer exists on the inert table.
 /// table.record_address(&SwarmAddress::from(B256::repeat_byte(0x99))).unwrap();
 /// ```
@@ -441,8 +440,8 @@ impl<'a> TableView<'a> {
 #[cfg(any(test, feature = "arbitrary"))]
 mod arbitrary_impls {
     use alloc::vec;
-    use alloy_primitives::B256;
     use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
+    use nectar_postage::BatchId;
 
     use super::{Mutability, UsageTable};
     use crate::{MAX_BUCKET_DEPTH, MAX_COUNTER_BITS};
@@ -459,7 +458,7 @@ mod arbitrary_impls {
 
     impl<'a> Arbitrary<'a> for UsageTable {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
-            let batch_id = B256::from(u.arbitrary::<[u8; 32]>()?);
+            let batch_id = BatchId::new(u.arbitrary::<[u8; 32]>()?);
             // `bucket_depth == 0` (a zero-width bucket) is invalid geometry:
             // `validate_geometry` rejects it because `nectar_postage::
             // calculate_bucket` shifts a u32 right by `32 - bucket_depth`, so
@@ -504,7 +503,9 @@ mod tests {
     use super::*;
 
     fn batch_id() -> BatchId {
-        b256!("0x1122334455667788112233445566778811223344556677881122334455667788")
+        BatchId::from(b256!(
+            "0x1122334455667788112233445566778811223344556677881122334455667788"
+        ))
     }
 
     fn immutable_counts() -> Vec<u32> {

@@ -20,7 +20,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nectar_postage_issuer::{
-    BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
+    BatchId, BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
 use nectar_primitives::SwarmAddress;
 use rand::RngExt;
@@ -57,7 +57,7 @@ fn bench_stamper_mock(c: &mut Criterion) {
 
     group.bench_function("single", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(B256::ZERO, 24, 16);
+            let issuer = MemoryIssuer::new(BatchId::ZERO, 24, 16);
             let mut stamper = BatchStamper::new(issuer, MockSigner);
             let address = random_address();
             black_box(stamper.stamp(black_box(&address)))
@@ -69,7 +69,7 @@ fn bench_stamper_mock(c: &mut Criterion) {
 
     group.bench_function("throughput_1000", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, MockSigner);
             for addr in &addresses {
                 black_box(stamper.stamp(addr).unwrap());
@@ -90,7 +90,7 @@ fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
 
     group.bench_function("single", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(B256::ZERO, 24, 16);
+            let issuer = MemoryIssuer::new(BatchId::ZERO, 24, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
             let address = random_address();
             black_box(stamper.stamp(black_box(&address)))
@@ -101,7 +101,7 @@ fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
 
     group.bench_function("throughput_100", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
             for addr in &addresses {
                 black_box(stamper.stamp(addr).unwrap());
@@ -131,7 +131,7 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     group.throughput(Throughput::Elements(100));
     group.bench_function("throughput_100", |b| {
         b.iter(|| {
-            let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
+            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, 16);
             black_box(sign_stamps_parallel(&issuer, &sign_fn, &addresses_100))
         })
     });
@@ -139,7 +139,7 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1000));
     group.bench_function("throughput_1000", |b| {
         b.iter(|| {
-            let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
+            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, 16);
             black_box(sign_stamps_parallel(&issuer, &sign_fn, &addresses_1000))
         })
     });
@@ -166,7 +166,7 @@ fn bench_sign_comparison(c: &mut Criterion) {
     // Sequential
     group.bench_function("sequential", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
             for addr in &addresses {
                 black_box(stamper.stamp(addr).unwrap());
@@ -177,7 +177,7 @@ fn bench_sign_comparison(c: &mut Criterion) {
     // Parallel
     group.bench_function("parallel", |b| {
         b.iter(|| {
-            let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
+            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, 16);
             black_box(sign_stamps_parallel(&issuer, &sign_fn, &addresses))
         })
     });

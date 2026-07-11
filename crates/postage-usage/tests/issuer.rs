@@ -14,8 +14,8 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use alloy_primitives::{Address, B256};
-use nectar_postage::{StampIndex, calculate_bucket};
+use alloy_primitives::Address;
+use nectar_postage::{BatchId, StampIndex, calculate_bucket};
 use nectar_postage_issuer::StampIssuer;
 use nectar_postage_usage::{Mutability, PublishedSequence, Snapshot, SnapshotIssuer, UsageTable};
 use nectar_primitives::SwarmAddress;
@@ -41,7 +41,7 @@ fn content_address(bucket: u32, salt: u8) -> SwarmAddress {
 
 #[test]
 fn snapshot_issuer_issues_sequential_indices() {
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
     let table = UsageTable::new(batch_id, 18, BUCKET_DEPTH, Mutability::Immutable).unwrap();
     // A fresh, never-persisted snapshot reserves no slots, so issuance fills the
     // bucket from index zero just as a bare table once did.
@@ -75,7 +75,7 @@ fn snapshot_issuer_issues_sequential_indices() {
 
 #[test]
 fn shared_table_immutable_never_collides_with_reserved_slots() {
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
     let counts = vec![5u32; 1usize << BUCKET_DEPTH];
     let table =
         UsageTable::from_counts(batch_id, 24, BUCKET_DEPTH, counts, Mutability::Immutable).unwrap();
@@ -105,7 +105,7 @@ fn shared_table_immutable_never_collides_with_reserved_slots() {
 
 #[test]
 fn shared_table_mutable_skips_reserved_across_wraps() {
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
     // Capacity 4 per bucket; fill near-full so the ring wraps almost at once.
     let counts = vec![2u32; 1usize << BUCKET_DEPTH];
     let table =
@@ -156,7 +156,7 @@ fn shared_table_mutable_skips_reserved_across_wraps() {
 /// not hold.
 #[test]
 fn sole_issuance_path_cannot_evict_snapshot_slots() {
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
     // A mutable bucket at capacity 4, pre-filled to 3 so the very next stamp
     // wraps the ring and would land on the reserved slot under a naive issuer.
     let counts = vec![3u32; 1usize << BUCKET_DEPTH];
@@ -215,7 +215,7 @@ fn sole_issuance_path_cannot_evict_snapshot_slots() {
 fn shared_counter_table_backs_both_crates_identically() {
     use nectar_postage_issuer::MemoryIssuer;
 
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
     // A fresh, never-persisted snapshot reserves no slots, so its fill watermark
     // advances exactly like a bare MemoryIssuer.
     let table = UsageTable::new(batch_id, 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
@@ -248,7 +248,7 @@ fn snapshot_issuer_adapter_drives_a_batch_stamper_path() {
 
     let signer = PrivateKeySigner::random();
     let owner = signer.address();
-    let batch_id = B256::repeat_byte(0x77);
+    let batch_id = BatchId::new([0x77; 32]);
 
     let table = UsageTable::new(batch_id, 20, BUCKET_DEPTH, Mutability::Mutable).unwrap();
     let mut snapshot = Snapshot::new(table);

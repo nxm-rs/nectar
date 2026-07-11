@@ -218,20 +218,20 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_basic() {
-        let issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         let address = SwarmAddress::new([0xAB; 32]);
         let stamp = stamper.stamp(&address).unwrap();
 
-        assert_eq!(stamp.batch(), B256::ZERO);
+        assert_eq!(stamp.batch(), BatchId::ZERO);
         // First stamp in bucket should have index 0
         assert_eq!(stamp.index(), 0);
     }
 
     #[test]
     fn test_batch_stamper_increments_index() {
-        let issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         // Use same address to hit same bucket
@@ -256,7 +256,7 @@ mod tests {
 
         // Create an issuer with very small bucket capacity: depth=17, bucket_depth=16
         // This gives 2^(17-16) = 2 slots per bucket
-        let issuer = MemoryIssuer::new(B256::ZERO, 17, 16);
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 17, 16);
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         let address = SwarmAddress::new([0xAB; 32]);
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_max_utilization() {
-        let issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         assert_eq!(stamper.max_bucket_utilization(), 0);
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn test_stamp_digest_prehash() {
         let address = SwarmAddress::new([0xAB; 32]);
-        let batch_id = B256::ZERO;
+        let batch_id = BatchId::ZERO;
         let index = StampIndex::new(100, 5);
         let timestamp = 1234567890u64;
 

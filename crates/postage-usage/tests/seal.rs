@@ -13,16 +13,17 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use alloy_primitives::{Address, B256};
+use alloy_primitives::Address;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_usage::{
-    Mutability, PublishedSequence, SealError, Snapshot, UsageTable, seal_plan, usage_chunk_address,
+    BatchId, Mutability, PublishedSequence, SealError, Snapshot, UsageTable, seal_plan,
+    usage_chunk_address,
 };
 use nectar_primitives::Chunk;
 
 const BUCKET_DEPTH: u8 = 16;
 
-fn seeded_snapshot(owner: Address, batch_id: B256) -> Snapshot {
+fn seeded_snapshot(owner: Address, batch_id: BatchId) -> Snapshot {
     // Seed one stamp in bucket 123 via the inert constructor; the table itself
     // has no record path.
     let mut counts = vec![0u32; 1usize << BUCKET_DEPTH];
@@ -42,7 +43,7 @@ fn seeded_snapshot(owner: Address, batch_id: B256) -> Snapshot {
 fn sealed_chunks_and_stamps_verify() {
     let signer = PrivateKeySigner::random();
     let owner = signer.address();
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
 
     let mut snapshot = seeded_snapshot(owner, batch_id);
     let plan = snapshot
@@ -98,7 +99,7 @@ fn sealed_chunks_and_stamps_verify() {
 fn non_increasing_seal_timestamp_is_rejected() {
     let signer = PrivateKeySigner::random();
     let owner = signer.address();
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
 
     let mut snapshot = seeded_snapshot(owner, batch_id);
 

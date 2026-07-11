@@ -22,6 +22,7 @@ nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
 byteorder = { workspace = true }
+derive_more = { workspace = true }
 thiserror = { workspace = true }
 
 # k256 with precomputed tables for faster ECDSA verification

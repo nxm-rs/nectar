@@ -82,12 +82,12 @@ pub trait BatchEventHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256};
+    use alloy_primitives::Address;
 
     #[test]
     fn test_batch_event_batch_id() {
         let batch = Batch::new(
-            B256::repeat_byte(1),
+            BatchId::new([0x01; 32]),
             1000,
             100,
             Address::ZERO,

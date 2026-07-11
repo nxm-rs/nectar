@@ -33,12 +33,11 @@
 //!
 //! ```compile_fail
 //! use nectar_postage_issuer::{RingIssuer, Reserved, Unreserved};
-//! use nectar_postage::Batch;
-//! use alloy_primitives::B256;
+//! use nectar_postage::{Batch, BatchId};
 //!
 //! fn self_hosting_sink(_ring: RingIssuer<Reserved>) {}
 //!
-//! let batch = Batch::new(B256::ZERO, 0, 0, Default::default(), 20, 16, false);
+//! let batch = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, 16, false);
 //! let unreserved: RingIssuer<Unreserved> = RingIssuer::external(&batch).unwrap();
 //! // A reserved-blind ring is not a Reserved ring, and there is no conversion.
 //! self_hosting_sink(unreserved);
@@ -53,13 +52,12 @@
 //! # Example
 //!
 //! ```ignore
-//! use nectar_postage_issuer::{BatchStamper, MemoryIssuer, Stamper};
+//! use nectar_postage_issuer::{BatchId, BatchStamper, MemoryIssuer, Stamper};
 //! use nectar_primitives::SwarmAddress;
-//! use alloy_primitives::B256;
 //! use alloy_signer_local::PrivateKeySigner;
 //!
 //! // Create an issuer for a batch
-//! let issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+//! let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
 //!
 //! // Combine with any SignerSync implementation to create a stamper
 //! let signer = PrivateKeySigner::random();

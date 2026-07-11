@@ -184,7 +184,7 @@ mod tests {
 
     fn test_stamp() -> Stamp {
         let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        Stamp::new(B256::repeat_byte(0xaa), 3, 7, 42, sig)
+        Stamp::new(BatchId::new([0xaa; 32]), 3, 7, 42, sig)
     }
 
     fn content_chunk() -> ContentChunk<DEFAULT_BODY_SIZE> {

@@ -29,7 +29,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use rand::{Rng, rng};
 
 use nectar_postage_issuer::{
-    BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
+    BatchId, BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::file::{ParallelSplitter, Splitter};
@@ -81,7 +81,7 @@ fn bench_pipeline_mock_sequential(c: &mut Criterion) {
                 let store = MemoryStore::from_chunks(chunks);
 
                 // Stamp each chunk
-                let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+                let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
                 let mut stamper = BatchStamper::new(issuer, MockSigner);
 
                 let chunks = store.into_chunks();
@@ -115,7 +115,7 @@ fn bench_pipeline_mock_parallel_split(c: &mut Criterion) {
                 let store = MemoryStore::from_chunks(chunks);
 
                 // Stamp each chunk (sequential)
-                let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+                let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
                 let mut stamper = BatchStamper::new(issuer, MockSigner);
 
                 let chunks = store.into_chunks();
@@ -154,7 +154,7 @@ fn bench_pipeline_ecdsa_sequential(c: &mut Criterion) {
                 let store = MemoryStore::from_chunks(chunks);
 
                 // Stamp each chunk with real signatures
-                let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+                let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
                 let mut stamper = BatchStamper::new(issuer, &signer);
 
                 let chunks = store.into_chunks();
@@ -202,7 +202,7 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
                 let addresses: Vec<_> = chunks.keys().copied().collect();
 
                 // Parallel stamp signing
-                let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
+                let issuer = ShardedIssuer::new(BatchId::ZERO, 32, 16);
                 let stamps = sign_stamps_parallel(&issuer, &sign_fn, &addresses);
 
                 black_box((root, stamps))
@@ -238,7 +238,7 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
             let (root, chunks) = splitter.finish().unwrap();
             let store = MemoryStore::from_chunks(chunks);
 
-            let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
 
             let chunks = store.into_chunks();
@@ -258,7 +258,7 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
                 ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
             let store = MemoryStore::from_chunks(chunks);
 
-            let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
 
             let chunks = store.into_chunks();
@@ -281,7 +281,7 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
             let chunks = store.into_chunks();
             let addresses: Vec<_> = chunks.keys().copied().collect();
 
-            let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
+            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, 16);
             let stamps = sign_stamps_parallel(&issuer, &sign_fn, &addresses);
 
             black_box((root, stamps))
@@ -330,7 +330,7 @@ fn bench_pipeline_stages(c: &mut Criterion) {
     // Stage 2: Stamp only (sequential)
     group.bench_function("2_stamp_sequential", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(B256::ZERO, 32, 16);
+            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
             let stamps: Vec<_> = addresses
                 .iter()
@@ -349,7 +349,7 @@ fn bench_pipeline_stages(c: &mut Criterion) {
 
     group.bench_function("2_stamp_parallel", |b| {
         b.iter(|| {
-            let issuer = ShardedIssuer::new(B256::ZERO, 32, 16);
+            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, 16);
             black_box(sign_stamps_parallel(&issuer, &sign_fn, &addresses))
         });
     });

@@ -191,13 +191,13 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
-    use crate::{Stamp, StampIndex, current_timestamp};
+    use crate::{BatchId, Stamp, StampIndex, current_timestamp};
 
     /// Creates a stamp for testing verification.
     fn create_test_stamp(
         signer: &PrivateKeySigner,
         chunk_address: &SwarmAddress,
-        batch_id: B256,
+        batch_id: BatchId,
     ) -> Stamp {
         let index = StampIndex::new(0, 0);
         let timestamp = current_timestamp();
@@ -213,7 +213,7 @@ mod tests {
     fn test_parallel_verification() {
         let signer = PrivateKeySigner::random();
         let expected_owner = signer.address();
-        let batch_id = B256::ZERO;
+        let batch_id = BatchId::ZERO;
 
         // Create stamps
         let addresses: Vec<_> = (0..50)
@@ -239,7 +239,7 @@ mod tests {
     fn test_verify_wrong_signer() {
         let signer = PrivateKeySigner::random();
         let wrong_owner = Address::repeat_byte(0xFF);
-        let batch_id = B256::ZERO;
+        let batch_id = BatchId::ZERO;
 
         let address = SwarmAddress::from(B256::random());
         let stamp = create_test_stamp(&signer, &address, batch_id);
@@ -258,7 +258,7 @@ mod tests {
     fn test_verify_stamps_parallel_basic() {
         let signer = PrivateKeySigner::random();
         let expected_owner = signer.address();
-        let batch_id = B256::ZERO;
+        let batch_id = BatchId::ZERO;
 
         let address = SwarmAddress::from(B256::random());
         let stamp = create_test_stamp(&signer, &address, batch_id);
@@ -274,7 +274,7 @@ mod tests {
     fn test_verify_stamps_parallel_with_pubkey() {
         let signer = PrivateKeySigner::random();
         let expected_owner = signer.address();
-        let batch_id = B256::ZERO;
+        let batch_id = BatchId::ZERO;
 
         // Create stamps
         let addresses: Vec<_> = (0..50)

@@ -1,12 +1,60 @@
 //! Postage batch types.
 
 use alloy_primitives::{Address, B256};
+use derive_more::{AsRef, Display, From, Into};
 use nectar_primitives::SwarmAddress;
 
 use crate::{StampError, StampIndex, calculate_bucket};
 
 /// A 32-byte batch identifier.
-pub type BatchId = B256;
+///
+/// Nominal wrapper over [`B256`]: other 32-byte values (chunk addresses,
+/// hashes) do not type-check as batch ids. The `From`/`Into` conversions
+/// cover the contracts `bytes32` boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into, AsRef)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+#[display("{_0}")]
+#[from(B256, [u8; 32])]
+#[into(B256, [u8; 32])]
+#[as_ref([u8])]
+#[repr(transparent)]
+pub struct BatchId(B256);
+
+impl BatchId {
+    /// Zero id, useful for tests and deterministic vectors.
+    pub const ZERO: Self = Self(B256::ZERO);
+
+    /// Construct from raw 32 bytes. `const` for static contexts; for runtime
+    /// conversions prefer the `From` impls.
+    #[inline]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(B256::new(bytes))
+    }
+
+    /// Borrow the underlying 32 bytes.
+    #[inline]
+    pub const fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    /// Copy an id out of a 32-byte slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `slice` is not exactly 32 bytes.
+    #[inline]
+    pub fn from_slice(slice: &[u8]) -> Self {
+        Self(B256::from_slice(slice))
+    }
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for BatchId {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self::new(u.arbitrary()?))
+    }
+}
 
 /// Parameters for creating a new batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,7 +319,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Batch {
         let bucket_depth: u8 = u.int_in_range(1..=depth)?;
 
         Ok(Self::new(
-            B256::arbitrary(u)?,
+            BatchId::arbitrary(u)?,
             u.arbitrary()?,
             u.arbitrary()?,
             Address::arbitrary(u)?,
@@ -287,8 +335,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn batch_id_roundtrips_via_from_impls() {
+        let bytes = [7u8; 32];
+        let id = BatchId::new(bytes);
+        assert_eq!(B256::from(id), B256::new(bytes));
+        assert_eq!(BatchId::from(B256::new(bytes)), id);
+        assert_eq!(<[u8; 32]>::from(id), bytes);
+        assert_eq!(BatchId::from(bytes), id);
+    }
+
+    #[test]
     fn test_batch_creation() {
-        let id = B256::ZERO;
+        let id = BatchId::ZERO;
         let batch = Batch::new(id, 1000, 100, Address::ZERO, 18, 16, false);
 
         assert_eq!(batch.id(), id);
@@ -302,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_bucket_calculations() {
-        let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
 
         // 2^(18-16) = 2^2 = 4 chunks per bucket
         assert_eq!(batch.bucket_upper_bound(), 4);
@@ -312,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_batch_expiry() {
-        let batch = Batch::new(B256::ZERO, 1000, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(BatchId::ZERO, 1000, 0, Address::ZERO, 18, 16, false);
 
         assert!(!batch.is_expired(999));
         assert!(batch.is_expired(1000));
@@ -321,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_batch_usability() {
-        let batch = Batch::new(B256::ZERO, 1000, 100, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(BatchId::ZERO, 1000, 100, Address::ZERO, 18, 16, false);
 
         assert!(!batch.is_usable(100, 10)); // Same block
         assert!(!batch.is_usable(109, 10)); // Not enough confirmations

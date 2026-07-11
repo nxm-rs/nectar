@@ -95,14 +95,12 @@ impl MemoryBatchFactory {
     }
 
     fn generate_batch_id(&self) -> BatchId {
-        use alloy_primitives::B256;
-
         let id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut bytes = [0u8; 32];
         bytes[24..32].copy_from_slice(&id.to_be_bytes());
-        B256::from(bytes)
+        BatchId::new(bytes)
     }
 }
 
