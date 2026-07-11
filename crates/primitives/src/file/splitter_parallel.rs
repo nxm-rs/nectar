@@ -94,7 +94,7 @@ where
         source: &R,
         tree: &TreeParams<BODY_SIZE>,
         sink: &F,
-    ) -> Result<Vec<M::RefBytes>>
+    ) -> Result<Vec<M::Ref>>
     where
         R: ReadAt + Sync,
         F: Fn(AnyChunk<BODY_SIZE>) + Sync,
@@ -102,7 +102,7 @@ where
         let data_chunks = tree.data_chunks();
         let size = tree.size();
 
-        let results: Vec<Result<M::RefBytes>> = (0..data_chunks)
+        let results: Vec<Result<M::Ref>> = (0..data_chunks)
             .into_par_iter()
             .map(|i| {
                 let offset = i * crate::cast::u64_from_usize(BODY_SIZE);
@@ -122,9 +122,9 @@ where
 
                 let chunk_bytes = super::helpers::build_intermediate_payload(span, &buf);
 
-                let (chunk, ref_bytes) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
+                let (chunk, reference) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
                 sink(chunk.into());
-                Ok(ref_bytes)
+                Ok(reference)
             })
             .collect();
 
@@ -133,7 +133,7 @@ where
 
     #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // refs starts non-empty (size > 0 produces >= 1 data chunk) and each level keeps >= 1 ref, so refs[0] exists; level increments at most log_branches(refs) < LEVEL_LIMIT times
     fn build_intermediate_levels<F>(
-        mut refs: Vec<M::RefBytes>,
+        mut refs: Vec<M::Ref>,
         total_size: u64,
         spans: &[u64; LEVEL_LIMIT],
         sink: &F,
@@ -148,18 +148,18 @@ where
             level += 1;
         }
 
-        // Extract root reference from the single remaining ref.
-        M::extract_root(refs[0].as_ref())
+        // The single remaining reference is the tree root.
+        Ok(M::root_ref(refs[0].clone()))
     }
 
     #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // refs_per_chunk >= 1; level < LEVEL_LIMIT = spans.len() for any in-memory ref count; start = i * refs_per_chunk < refs.len() and end is clamped to refs.len(), so the slice holds and child_refs is non-empty
     fn build_level<F>(
-        refs: &[M::RefBytes],
+        refs: &[M::Ref],
         level: usize,
         total_size: u64,
         spans: &[u64; LEVEL_LIMIT],
         sink: &F,
-    ) -> Result<Vec<M::RefBytes>>
+    ) -> Result<Vec<M::Ref>>
     where
         F: Fn(AnyChunk<BODY_SIZE>) + Sync,
     {
@@ -167,7 +167,7 @@ where
         let chunks_at_level = refs.len().div_ceil(refs_per_chunk);
         let max_span = spans[level] * crate::cast::u64_from_usize(BODY_SIZE);
 
-        let results: Vec<Result<M::RefBytes>> = (0..chunks_at_level)
+        let results: Vec<Result<M::Ref>> = (0..chunks_at_level)
             .into_par_iter()
             .map(|i| {
                 let start = i * refs_per_chunk;
@@ -185,16 +185,15 @@ where
                     max_span
                 };
 
-                let ref_data: Vec<u8> = child_refs
-                    .iter()
-                    .flat_map(|r| r.as_ref())
-                    .copied()
-                    .collect();
+                let mut ref_data = Vec::with_capacity(child_refs.len() * M::REF_SIZE);
+                for reference in child_refs {
+                    M::extend_ref_bytes(reference, &mut ref_data);
+                }
                 let chunk_bytes = super::helpers::build_intermediate_payload(span, &ref_data);
 
-                let (chunk, ref_bytes) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
+                let (chunk, reference) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
                 sink(chunk.into());
-                Ok(ref_bytes)
+                Ok(reference)
             })
             .collect();
 

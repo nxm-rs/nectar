@@ -6,10 +6,11 @@ use bytes::Bytes;
 
 use crate::bmt::SPAN_SIZE;
 use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey, decrypt_chunk_data};
-use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ContentChunk};
+use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ChunkRef, ContentChunk, Reference};
 use crate::store::MaybeSend;
+use crate::wire::Cursor;
 
-use super::constants::{ENCRYPTED_REF_SIZE, REF_SIZE, compute_spans_inline, subspan_for_spans};
+use super::constants::{compute_spans_inline, subspan_for_spans};
 use super::error::{FileError, Result};
 
 /// Convert a `PrimitivesError` from chunk creation into a `FileError`.
@@ -28,8 +29,12 @@ fn create_chunk<const BS: usize>(data: Bytes) -> Result<ContentChunk<BS>> {
 
 /// Joiner-side chunk mode operations.
 pub trait JoinMode: Sized + 'static {
-    /// Size of a single reference in bytes (32 plain, 64 encrypted).
-    const REF_SIZE: usize;
+    /// The reference type this mode reads; its width is a fact of the type.
+    type Ref: Reference + Clone + Debug + Send + Sync;
+
+    /// Wire width of one reference, derived from [`Self::Ref`] so no mode
+    /// restates 32 or 64.
+    const REF_SIZE: usize = <Self::Ref as Reference>::SIZE;
 
     /// Root reference type: `ChunkAddress` (plain) or `EncryptedChunkRef` (encrypted).
     type RootRef: Clone + Debug + Send + Sync;
@@ -89,11 +94,10 @@ pub trait JoinMode: Sized + 'static {
         span: u64,
     ) -> Result<Bytes>;
 
-    /// Parse a child reference from body bytes at offset. Returns (address, child_context).
-    fn parse_child_ref(
-        body: &[u8],
-        ref_start: usize,
-    ) -> Result<(ChunkAddress, Self::JoinerContext)>;
+    /// Read this mode's per-child context, the bytes that trail the address in
+    /// a child reference: plain carries none, encrypted reads its key. The
+    /// [`Cursor`] is the sole fallible read.
+    fn context_from_wire(cursor: &mut Cursor<'_>) -> Result<Self::JoinerContext>;
 }
 
 /// Initialize joiner: fetch root chunk, extract span and context.
@@ -135,18 +139,19 @@ pub(crate) async fn read_chunk_body<
 
 /// Splitter-side chunk mode operations (extends JoinMode).
 pub trait SplitMode: JoinMode {
-    /// Fixed-size byte array for a reference: `[u8; 32]` or `[u8; 64]`.
-    type RefBytes: AsRef<[u8]> + AsMut<[u8]> + Clone + Debug + Send + Sync;
-
-    /// Prepare chunk data (span + body), returning chunk and reference bytes.
-    /// Takes ownership of the payload to avoid an extra allocation.
-    fn prepare_chunk<const BS: usize>(data: Vec<u8>) -> Result<(ContentChunk<BS>, Self::RefBytes)>;
+    /// Prepare chunk data (span + body), returning the chunk and the reference
+    /// that names it. Takes ownership of the payload to avoid an extra
+    /// allocation.
+    fn prepare_chunk<const BS: usize>(data: Vec<u8>) -> Result<(ContentChunk<BS>, Self::Ref)>;
 
     /// Produce the chunk for an empty file, returning it and the root ref.
     fn empty_chunk<const BS: usize>() -> Result<(ContentChunk<BS>, Self::RootRef)>;
 
-    /// Extract root reference from top of buffer.
-    fn extract_root(buffer: &[u8]) -> Result<Self::RootRef>;
+    /// Append a reference's `REF_SIZE` wire bytes to `out`.
+    fn extend_ref_bytes(reference: &Self::Ref, out: &mut Vec<u8>);
+
+    /// The root reference of a finished tree from its sole top reference.
+    fn root_ref(reference: Self::Ref) -> Self::RootRef;
 }
 
 /// Plain (unencrypted) chunk mode.
@@ -154,7 +159,7 @@ pub trait SplitMode: JoinMode {
 pub struct PlainMode;
 
 impl JoinMode for PlainMode {
-    const REF_SIZE: usize = REF_SIZE;
+    type Ref = ChunkRef;
     type RootRef = ChunkAddress;
     type JoinerContext = ();
 
@@ -181,25 +186,18 @@ impl JoinMode for PlainMode {
     }
 
     #[inline]
-    fn parse_child_ref(body: &[u8], ref_start: usize) -> Result<(ChunkAddress, ())> {
-        // Bounds-check the untrusted body instead of panicking on a short slice.
-        let child_addr_bytes: [u8; 32] = ref_start
-            .checked_add(REF_SIZE)
-            .and_then(|ref_end| body.get(ref_start..ref_end))
-            .and_then(|slice| slice.try_into().ok())
-            .ok_or(FileError::InvalidReference { level: 0 })?;
-        Ok((ChunkAddress::from(child_addr_bytes), ()))
+    fn context_from_wire(_cursor: &mut Cursor<'_>) -> Result<()> {
+        // A plain reference is the address alone; it carries no trailing context.
+        Ok(())
     }
 }
 
 impl SplitMode for PlainMode {
-    type RefBytes = [u8; REF_SIZE];
-
     #[inline]
-    fn prepare_chunk<const BS: usize>(data: Vec<u8>) -> Result<(ContentChunk<BS>, [u8; REF_SIZE])> {
+    fn prepare_chunk<const BS: usize>(data: Vec<u8>) -> Result<(ContentChunk<BS>, ChunkRef)> {
         let chunk = create_chunk::<BS>(Bytes::from(data))?;
-        let ref_bytes = (*chunk.address()).into();
-        Ok((chunk, ref_bytes))
+        let reference = ChunkRef::new(*chunk.address());
+        Ok((chunk, reference))
     }
 
     fn empty_chunk<const BS: usize>() -> Result<(ContentChunk<BS>, ChunkAddress)> {
@@ -210,12 +208,14 @@ impl SplitMode for PlainMode {
         Ok((chunk, address))
     }
 
-    fn extract_root(buffer: &[u8]) -> Result<ChunkAddress> {
-        let root_bytes: [u8; 32] = buffer
-            .get(..REF_SIZE)
-            .and_then(|s| s.try_into().ok())
-            .ok_or(FileError::InvalidReference { level: 0 })?;
-        Ok(ChunkAddress::from(root_bytes))
+    #[inline]
+    fn extend_ref_bytes(reference: &ChunkRef, out: &mut Vec<u8>) {
+        out.extend_from_slice(reference.address().as_bytes());
+    }
+
+    #[inline]
+    fn root_ref(reference: ChunkRef) -> ChunkAddress {
+        reference.into_address()
     }
 }
 
@@ -237,14 +237,14 @@ impl EncryptedMode {
             let sub = Self::subspan_size::<BS>(span);
             // num_children <= branches (sub covers at least span / branches).
             let num_children = crate::cast::usize_from_u64(span.div_ceil(sub));
-            let raw = num_children * ENCRYPTED_REF_SIZE;
+            let raw = num_children * EncryptedChunkRef::SIZE;
             raw.min(BS)
         }
     }
 }
 
 impl JoinMode for EncryptedMode {
-    const REF_SIZE: usize = ENCRYPTED_REF_SIZE;
+    type Ref = EncryptedChunkRef;
     type RootRef = EncryptedChunkRef;
     type JoinerContext = EncryptionKey;
 
@@ -277,38 +277,27 @@ impl JoinMode for EncryptedMode {
         Ok(Bytes::from(decrypted).slice(SPAN_SIZE..))
     }
 
-    fn parse_child_ref(body: &[u8], ref_start: usize) -> Result<(ChunkAddress, EncryptionKey)> {
-        // Bounds-check the untrusted body instead of panicking on a short slice.
-        let ref_bytes = ref_start
-            .checked_add(ENCRYPTED_REF_SIZE)
-            .and_then(|ref_end| body.get(ref_start..ref_end))
-            .ok_or(FileError::InvalidReference { level: 0 })?;
-        let (addr_bytes, key_bytes) = ref_bytes.split_at(32);
-        let child_addr_bytes: [u8; 32] = addr_bytes
-            .try_into()
+    fn context_from_wire(cursor: &mut Cursor<'_>) -> Result<EncryptionKey> {
+        // An encrypted reference trails its address with the decryption key.
+        let key_bytes = cursor
+            .take(EncryptionKey::SIZE)
             .map_err(|_| FileError::InvalidReference { level: 0 })?;
-        let child_key = EncryptionKey::try_from(key_bytes)?;
-        Ok((ChunkAddress::from(child_addr_bytes), child_key))
+        Ok(EncryptionKey::try_from(key_bytes)?)
     }
 }
 
 #[cfg(feature = "encryption")]
 impl SplitMode for EncryptedMode {
-    type RefBytes = [u8; ENCRYPTED_REF_SIZE];
-
     fn prepare_chunk<const BS: usize>(
         data: Vec<u8>,
-    ) -> Result<(ContentChunk<BS>, [u8; ENCRYPTED_REF_SIZE])> {
+    ) -> Result<(ContentChunk<BS>, EncryptedChunkRef)> {
         use crate::chunk::encryption::encrypt_chunk;
 
         let key = EncryptionKey::generate();
         let ciphertext = encrypt_chunk::<BS>(&data, &key)?;
         let chunk = create_chunk::<BS>(Bytes::from(ciphertext))?;
-
-        let mut ref_bytes = [0u8; ENCRYPTED_REF_SIZE];
-        ref_bytes[..32].copy_from_slice(chunk.address().as_bytes());
-        ref_bytes[32..].copy_from_slice(key.as_bytes());
-        Ok((chunk, ref_bytes))
+        let reference = EncryptedChunkRef::new(*chunk.address(), key);
+        Ok((chunk, reference))
     }
 
     fn empty_chunk<const BS: usize>() -> Result<(ContentChunk<BS>, EncryptedChunkRef)> {
@@ -322,12 +311,12 @@ impl SplitMode for EncryptedMode {
         Ok((chunk, EncryptedChunkRef::new(address, key)))
     }
 
-    fn extract_root(buffer: &[u8]) -> Result<EncryptedChunkRef> {
-        let root_ref_bytes = buffer
-            .get(..ENCRYPTED_REF_SIZE)
-            .ok_or(FileError::InvalidReference { level: 0 })?;
-        EncryptedChunkRef::try_from(root_ref_bytes)
-            .map_err(|_| FileError::InvalidReference { level: 0 })
+    fn extend_ref_bytes(reference: &EncryptedChunkRef, out: &mut Vec<u8>) {
+        out.extend_from_slice(&<[u8; EncryptedChunkRef::SIZE]>::from(reference));
+    }
+
+    fn root_ref(reference: EncryptedChunkRef) -> EncryptedChunkRef {
+        reference
     }
 }
 

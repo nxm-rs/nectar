@@ -1,13 +1,14 @@
 //! Tree structure calculations for parallel file operations.
 
-use super::constants::{LEVEL_LIMIT, REF_SIZE};
+use super::constants::LEVEL_LIMIT;
 use crate::bmt::DEFAULT_BODY_SIZE;
+use crate::chunk::{ChunkRef, Reference};
 
 /// Tree structure for a file of known size.
 ///
 /// Pre-computes chunk counts and spans for efficient parallel operations.
 /// The branching factor defaults to `BODY_SIZE / 32` (plain mode, 128 branches).
-/// Use [`with_ref_size`](Self::with_ref_size) for encrypted mode (`BODY_SIZE / 64` = 64 branches).
+/// Use [`with_ref`](Self::with_ref) for encrypted mode (`BODY_SIZE / 64` = 64 branches).
 #[derive(Debug, Clone, Copy)]
 pub struct TreeParams<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     size: u64,
@@ -19,13 +20,14 @@ pub struct TreeParams<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
 impl<const BODY_SIZE: usize> TreeParams<BODY_SIZE> {
     /// Create tree parameters for a file of given size (plain mode, `REF_SIZE = 32`).
     pub fn new(size: u64) -> Self {
-        Self::with_ref_size(size, REF_SIZE)
+        Self::with_ref::<ChunkRef>(size)
     }
 
-    /// Create tree parameters with a custom reference size (e.g. 64 for encrypted mode).
-    #[allow(clippy::arithmetic_side_effects)] // ref_size is the constant 32 (plain) or 64 (encrypted), never zero
-    pub fn with_ref_size(size: u64, ref_size: usize) -> Self {
-        let branches = BODY_SIZE / ref_size;
+    /// Create tree parameters whose branching derives from reference type `R`;
+    /// the width is [`Reference::SIZE`], never a passed-in byte count.
+    #[allow(clippy::arithmetic_side_effects)] // R::SIZE is the constant 32 (plain) or 64 (encrypted), never zero
+    pub fn with_ref<R: Reference>(size: u64) -> Self {
+        let branches = BODY_SIZE / R::SIZE;
         let (depth, data_chunks) = if size == 0 {
             (1, 1) // Empty file still produces one chunk
         } else {
@@ -231,7 +233,7 @@ pub(crate) fn assemble_range<const BODY_SIZE: usize>(
 /// Calculate subspan size for children of a node with given span (plain mode).
 #[cfg(test)]
 fn subspan_size<const BODY_SIZE: usize>(span: u64) -> u64 {
-    let spans = super::constants::compute_spans_inline(BODY_SIZE / super::constants::REF_SIZE);
+    let spans = super::constants::compute_spans_inline(BODY_SIZE / ChunkRef::SIZE);
     super::constants::subspan_for_spans::<BODY_SIZE>(span, &spans)
 }
 
@@ -357,11 +359,11 @@ mod tests {
 
     #[test]
     fn test_encrypted_tree_params() {
-        use super::super::constants::ENCRYPTED_REF_SIZE;
+        use crate::chunk::encryption::EncryptedChunkRef;
 
         // 64 data chunks fills one encrypted intermediate exactly
         let size = DEFAULT_BODY_SIZE as u64 * 64;
-        let tree = TreeParams::<DEFAULT_BODY_SIZE>::with_ref_size(size, ENCRYPTED_REF_SIZE);
+        let tree = TreeParams::<DEFAULT_BODY_SIZE>::with_ref::<EncryptedChunkRef>(size);
         assert_eq!(tree.depth(), 2); // 64 chunks / 64 branches = 1 intermediate
         assert_eq!(tree.data_chunks(), 64);
         assert_eq!(tree.chunks_at_level(0), 64);
@@ -370,7 +372,7 @@ mod tests {
 
         // 65 data chunks needs a third level
         let size2 = DEFAULT_BODY_SIZE as u64 * 65;
-        let tree2 = TreeParams::<DEFAULT_BODY_SIZE>::with_ref_size(size2, ENCRYPTED_REF_SIZE);
+        let tree2 = TreeParams::<DEFAULT_BODY_SIZE>::with_ref::<EncryptedChunkRef>(size2);
         assert_eq!(tree2.depth(), 3);
         assert_eq!(tree2.chunks_at_level(0), 65);
         assert_eq!(tree2.chunks_at_level(1), 2);
