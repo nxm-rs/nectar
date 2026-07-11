@@ -51,24 +51,30 @@ harness = false
 required-features = ["parallel"]
 
 [features]
-default = ["std"]
+default = [ "std" ]
 
 # Standard library support. Enables BatchStore, BatchFactory, and timestamp functions.
-std = ["dep:web-time", "nectar-primitives/std", "alloy-primitives/std", "thiserror/std", "serde?/std"]
+std = [
+	"alloy-primitives/std",
+	"dep:web-time",
+	"nectar-primitives/std",
+	"serde?/std",
+	"thiserror/std",
+]
 
 # Serialization support with serde.
-serde = ["dep:serde", "nectar-primitives/serde", "alloy-primitives/serde"]
+serde = [ "alloy-primitives/serde", "dep:serde", "nectar-primitives/serde" ]
 
 # Parallel verification using rayon (sync, CPU-bound).
-parallel = [
-	"dep:rayon",
-	"std",
-	"nectar-primitives/parallel"
-]
+parallel = [ "dep:rayon", "nectar-primitives/parallel", "std" ]
 
 # Arbitrary trait implementations and valid-by-construction generators for
 # property-based testing and fuzzing.
-arbitrary = ["dep:arbitrary", "nectar-primitives/arbitrary", "alloy-primitives/arbitrary"]
+arbitrary = [
+	"alloy-primitives/arbitrary",
+	"dep:arbitrary",
+	"nectar-primitives/arbitrary",
+]
 
 [package.metadata.docs.rs]
 all-features = true

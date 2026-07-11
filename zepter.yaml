@@ -1,5 +1,5 @@
 # Enforce that std/serde/arbitrary/encryption/parallel propagate to workspace
-# dependencies. Run `zepter` at the workspace root to auto-fix.
+# dependencies, and keep feature lists formatted. Run `zepter` to auto-fix.
 version:
   format: 1
   binary: 1.88.1
@@ -16,8 +16,10 @@ workflows:
         "--show-path",
         "--quiet",
       ]
+    - ["format", "features"]
   default:
     - [$check.0, "--fix"]
+    - ["format", "features", "--fix"]
 
 help:
   text: |

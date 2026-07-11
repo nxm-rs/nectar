@@ -30,10 +30,10 @@ proptest = { workspace = true }
 proptest-arbitrary-interop = { workspace = true }
 
 [features]
-default = ["std"]
-std = ["strum/std", "alloy-chains/std", "serde?/std"]
-serde = ["dep:serde", "alloy-chains/serde"]
-arbitrary = ["alloy-chains/arbitrary"]
+default = [ "std" ]
+std = [ "alloy-chains/std", "serde?/std", "strum/std" ]
+serde = [ "alloy-chains/serde", "dep:serde" ]
+arbitrary = [ "alloy-chains/arbitrary" ]
 
 [package.metadata.docs.rs]
 all-features = true

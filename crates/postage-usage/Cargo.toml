@@ -38,35 +38,40 @@ alloy-signer-local = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
-default = ["std"]
+default = [ "std" ]
 
 # Standard library support.
-std = ["nectar-postage/std", "nectar-postage-issuer/std", "alloy-primitives/std", "thiserror/std"]
+std = [
+	"alloy-primitives/std",
+	"nectar-postage-issuer/std",
+	"nectar-postage/std",
+	"thiserror/std",
+]
 
 # Valid-by-construction `arbitrary::Arbitrary` impls for `UsageTable`,
 # `Mutability`, and `Snapshot`, for structured (round-trip) fuzz targets.
 arbitrary = [
-	"std",
 	"dep:arbitrary",
-	"nectar-postage/arbitrary",
 	"nectar-postage-issuer/arbitrary",
-	"nectar-primitives/arbitrary"
+	"nectar-postage/arbitrary",
+	"nectar-primitives/arbitrary",
+	"std",
 ]
 
 # Implements `nectar_postage_issuer::StampIssuer` for `SnapshotIssuer` so a
 # snapshot can back a `BatchStamper` directly. The shared counter table that
 # backs every usage table already comes from the issuer crate; this feature adds
 # the `StampIssuer` adapter on top.
-issuer = ["std"]
+issuer = [ "std" ]
 
 # Turns persist plans into signed single-owner chunks and stamps.
-seal = ["dep:alloy-signer", "std"]
+seal = [ "dep:alloy-signer", "std" ]
 
 # High-level async facade (`BatchStamper`) that collapses the open / stamp /
 # flush cross-machine roam into three calls. The consumer supplies the network
 # through the `SnapshotSource` and `SnapshotSink` traits. Implies `seal` (it seals
 # every persist) and `std` (it reads the wall clock for the seal timestamp).
-client = ["std", "seal", "dep:auto_impl", "dep:web-time"]
+client = [ "dep:auto_impl", "dep:web-time", "seal", "std" ]
 
 [[example]]
 name = "roam_between_machines"
