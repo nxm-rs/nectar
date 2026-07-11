@@ -193,11 +193,11 @@ mod tests {
             block_on(builder.add(path, make_addr(path))).unwrap();
         }
 
-        let (root, mut manifest) = block_on(builder.save()).unwrap();
+        let (root, manifest) = block_on(builder.save()).unwrap();
         assert_eq!(manifest.reference(), Some(&root));
 
         for &path in paths {
-            let entry = block_on(manifest.lookup(path)).unwrap();
+            let entry = block_on(manifest.get(path)).unwrap().unwrap();
             assert_eq!(entry.address(), Some(&make_addr(path)));
         }
     }
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn empty_builder_saves_to_a_root() {
         let builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
-        let (_root, mut manifest) = block_on(builder.save()).unwrap();
+        let (_root, manifest) = block_on(builder.save()).unwrap();
         assert!(block_on(manifest.entries()).unwrap().is_empty());
     }
 
@@ -249,8 +249,8 @@ mod tests {
         block_on(builder.set_index_document("index.html")).unwrap();
         block_on(builder.set_error_document("404.html")).unwrap();
 
-        let (_root, mut manifest) = block_on(builder.save()).unwrap();
-        let index = block_on(manifest.lookup(metadata::ROOT_PATH)).unwrap();
+        let (_root, manifest) = block_on(builder.save()).unwrap();
+        let index = block_on(manifest.get(metadata::ROOT_PATH)).unwrap().unwrap();
         assert_eq!(
             index.metadata().get(metadata::WEBSITE_INDEX_DOCUMENT),
             Some(&"index.html".to_string())
@@ -274,12 +274,12 @@ mod tests {
         );
         block_on(builder.add("index.html", eref.clone())).unwrap();
 
-        let (root, mut manifest) = block_on(builder.save()).unwrap();
+        let (root, manifest) = block_on(builder.save()).unwrap();
         // The returned reference addresses the saved root.
         assert_eq!(manifest.reference(), Some(root.address()));
 
         // Address and decryption key both survive encode and decode.
-        let entry = block_on(manifest.lookup("index.html")).unwrap();
+        let entry = block_on(manifest.get("index.html")).unwrap().unwrap();
         assert_eq!(entry.reference(), Some(&EntryRef::Encrypted(eref)));
     }
 
@@ -308,7 +308,7 @@ mod tests {
         block_on(builder.add("b.txt", make_addr("b"))).unwrap();
         block_on(builder.remove("a.txt")).unwrap();
 
-        let (_root, mut manifest) = block_on(builder.save()).unwrap();
+        let (_root, manifest) = block_on(builder.save()).unwrap();
         let paths: Vec<_> = block_on(manifest.entries())
             .unwrap()
             .into_iter()
