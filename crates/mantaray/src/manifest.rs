@@ -455,7 +455,7 @@ impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, 
                 };
 
                 self.stack.push(IterFrame {
-                    node: self.trie as *mut Node<E>,
+                    node: std::ptr::from_mut(self.trie),
                     path_len_before: 0,
                     keys,
                     key_idx: 0,
@@ -494,7 +494,7 @@ impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, 
                 }
             };
 
-            let child = &mut fork.node as *mut Node<E>;
+            let child = std::ptr::from_mut(&mut fork.node);
 
             // SAFETY: child is a descendant of the exclusively borrowed trie.
             let child_ref = unsafe { &mut *child };

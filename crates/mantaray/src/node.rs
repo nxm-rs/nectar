@@ -68,14 +68,14 @@ impl Prefix {
         let mut data = [0u8; PREFIX_MAX_LEN];
         #[allow(clippy::indexing_slicing)] // src.len() <= PREFIX_MAX_LEN asserted above (documented # Panics contract)
         data[..src.len()].copy_from_slice(src);
-        Self {
-            len: src.len() as u8,
-            data,
-        }
+        #[allow(clippy::as_conversions)] // src.len() <= PREFIX_MAX_LEN (30) asserted above, fits u8
+        let len = src.len() as u8;
+        Self { len, data }
     }
 
     /// Returns the prefix length in bytes.
     #[inline]
+    #[allow(clippy::as_conversions)] // u8 -> usize widening, infallible; `usize::from` is not const-callable
     pub const fn len(&self) -> usize {
         self.len as usize
     }
@@ -99,7 +99,7 @@ impl std::ops::Deref for Prefix {
     #[inline]
     #[allow(clippy::indexing_slicing)] // invariant: self.len <= PREFIX_MAX_LEN, the backing array length
     fn deref(&self) -> &[u8] {
-        &self.data[..self.len as usize]
+        &self.data[..usize::from(self.len)]
     }
 }
 
@@ -624,7 +624,7 @@ impl<E: NodeEntry> Node<E> {
         }
 
         let mut stack: Vec<SaveFrame<E>> = vec![SaveFrame {
-            node: self as *mut Self,
+            node: std::ptr::from_mut(self),
             keys: self.forks.keys().copied().collect(),
             key_idx: 0,
         }];
@@ -642,7 +642,7 @@ impl<E: NodeEntry> Node<E> {
                 #[allow(clippy::expect_used)] // key was collected from this node's fork map, which is not mutated while the frame is live
                 let child = node.forks.get_mut(&key).expect("key from this node");
                 if child.node.reference.is_none() {
-                    let child_ptr = &mut child.node as *mut Self;
+                    let child_ptr = std::ptr::from_mut(&mut child.node);
                     let child_keys = child.node.forks.keys().copied().collect();
                     stack.push(SaveFrame {
                         node: child_ptr,
@@ -733,7 +733,7 @@ where
     f(path_buf, node)?;
 
     let mut stack: Vec<WalkFrame> = vec![WalkFrame {
-        node: (node as *mut Node<E>).cast::<()>(),
+        node: std::ptr::from_mut(node).cast::<()>(),
         path_len_before: path_buf.len(),
         keys: node.forks.keys().copied().collect(),
         key_idx: 0,
@@ -767,7 +767,7 @@ where
         child.ensure_loaded(store).await?;
         f(path_buf, child)?;
 
-        let child_ptr = (child as *mut Node<E>).cast::<()>();
+        let child_ptr = std::ptr::from_mut(child).cast::<()>();
         let child_keys = child.forks.keys().copied().collect();
         stack.push(WalkFrame {
             node: child_ptr,
@@ -810,10 +810,9 @@ mod arbitrary_impls {
             let len = u.int_in_range(1..=PREFIX_MAX_LEN)?;
             let mut data = [0u8; PREFIX_MAX_LEN];
             u.fill_buffer(&mut data[..len])?;
-            Ok(Self {
-                len: len as u8,
-                data,
-            })
+            #[allow(clippy::as_conversions)] // len ∈ 1..=PREFIX_MAX_LEN (30), fits u8
+            let len = len as u8;
+            Ok(Self { len, data })
         }
     }
 
