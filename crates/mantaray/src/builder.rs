@@ -19,8 +19,8 @@
 //!     .add("index.html", ChunkAddress::from([1u8; 32]))
 //!     .await
 //!     .unwrap();
-//! let (_root, mut manifest) = builder.save().await.unwrap();
-//! let entry = manifest.lookup("index.html").await.unwrap();
+//! let (_root, manifest) = builder.save().await.unwrap();
+//! let entry = manifest.get("index.html").await.unwrap().unwrap();
 //! assert_eq!(entry.address(), Some(&ChunkAddress::from([1u8; 32])));
 //! # });
 //! ```
@@ -279,7 +279,9 @@ mod tests {
         block_on(builder.set_error_document("404.html")).unwrap();
 
         let (_root, manifest) = block_on(builder.save()).unwrap();
-        let index = block_on(manifest.get(metadata::ROOT_PATH)).unwrap().unwrap();
+        let index = block_on(manifest.get(metadata::ROOT_PATH))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             index.metadata().get(metadata::WEBSITE_INDEX_DOCUMENT),
             Some(&"index.html".to_string())
