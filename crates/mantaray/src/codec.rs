@@ -44,7 +44,7 @@ impl VersionHash {
     }
 }
 
-/// Wire layout descriptor for a serialised node header.
+/// Wire layout descriptor for a serialized node header.
 struct NodeHeader;
 
 impl NodeHeader {
@@ -285,8 +285,7 @@ fn parse_header(cur: &mut Cursor<'_>) -> DecodeResult<(VersionHash, RefSize)> {
 /// Accepts this wire shape only when the forks bitfield is also empty; a
 /// `ref_size = 0` node with non-empty forks is unrecoverable (fork refs would
 /// have zero width), so it is rejected as malformed rather than silently
-/// dropping forks the way bee's v0.2 decoder does
-/// (`bee/pkg/manifest/mantaray/marshal.go:285-287`). See the HAZMAT block.
+/// dropping forks. See the HAZMAT block.
 fn decode_empty_terminal<R: Reference>(cur: &mut Cursor<'_>) -> DecodeResult<Node<R>> {
     let index = cur
         .take::<[u8; FORK_INDEX_SIZE]>()
@@ -336,7 +335,7 @@ fn decode_body<R: Reference>(
 
     // The entry slot is a zero-sentinel `Option<R>`: `read_optional` maps the
     // all-zero width to `None`. The index is read next so a truncated index
-    // reports `DataTooShort` rather than an entry-shaped error.
+    // reports `TooShort` rather than an entry-shaped error.
     let entry = R::read_optional(cur).map_err(|_| DecodeError::TooShort)?;
     let index_bytes = cur
         .take::<[u8; FORK_INDEX_SIZE]>()
@@ -464,7 +463,7 @@ struct WireFork<'a> {
     metadata: Option<WireMetadata>,
 }
 
-/// A fork's metadata payload, serialised and padded to the obfuscation-key
+/// A fork's metadata payload, serialized and padded to the obfuscation-key
 /// stride with its `u16` length precomputed so emission stays total.
 struct WireMetadata {
     len: MetadataLen,
@@ -472,7 +471,7 @@ struct WireMetadata {
 }
 
 impl WireMetadata {
-    /// Serialise, pad to the `ObfuscationKey::SIZE` stride, and size the length
+    /// Serialize, pad to the `ObfuscationKey::SIZE` stride, and size the length
     /// field. Padding fills with `0x0a`, so the trailing bytes are JSON
     /// whitespace the decoder re-parses transparently.
     #[allow(clippy::arithmetic_side_effects)] // padding math is guarded (`SIZE - x` only when `x < SIZE`, `SIZE - rem` only when `rem != 0`) and `% ObfuscationKey::SIZE` has a nonzero constant divisor
@@ -774,7 +773,7 @@ mod tests {
     /// BEE-WORKAROUND(bee#5483): a `ref_size = 0` node with a non-empty forks
     /// bitfield is unrecoverable by any reference implementation (fork refs
     /// would have zero width). Reject as malformed rather than silently
-    /// dropping forks the way bee's v0.2 decoder does.
+    /// dropping forks.
     #[test]
     fn decode_bee_legacy_ref_size_zero_with_forks_is_rejected() {
         let mut data = vec![0u8; 96];

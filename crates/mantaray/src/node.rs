@@ -192,7 +192,7 @@ pub(crate) enum NodeState {
 pub struct Node<R: Reference = ChunkRef> {
     /// Bitflags encoding the node kind (value, edge, path-separator, metadata).
     pub(crate) node_type: NodeType,
-    /// XOR obfuscation key for binary serialisation.
+    /// XOR obfuscation key for binary serialization.
     pub(crate) obfuscation_key: ObfuscationKey,
     /// The typed entry stored at this node (the chunk reference this path maps to).
     pub(crate) entry: Option<R>,
@@ -302,7 +302,7 @@ impl<R: Reference> Node<R> {
         &self.forks
     }
 
-    /// XOR obfuscation key for binary serialisation.
+    /// XOR obfuscation key for binary serialization.
     pub const fn obfuscation_key(&self) -> &ObfuscationKey {
         &self.obfuscation_key
     }

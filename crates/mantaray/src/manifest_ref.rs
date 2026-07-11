@@ -39,7 +39,7 @@ impl ManifestRef {
         (self.address, self.obfuscation_key)
     }
 
-    /// Serialise to the fixed wire form: address followed by obfuscation key.
+    /// Serialize to the fixed wire form: address followed by obfuscation key.
     pub const fn to_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let (address, key) = buf.split_at_mut(size_of::<ChunkAddress>());
