@@ -243,6 +243,12 @@ fn decode_v01<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
         });
     }
 
+    // Guard the entry slot and the 32-byte forks index that follows it; the
+    // header check in `try_from` only guarantees `NodeHeader::SIZE` bytes.
+    if data.len() < NodeHeader::SIZE + ref_bytes_size + 32 {
+        return Err(MantarayError::DataTooShort);
+    }
+
     let entry_bytes = &data[NodeHeader::SIZE..NodeHeader::SIZE + ref_bytes_size];
     let entry = if entry_bytes.iter().all(|&b| b == 0) {
         None
@@ -291,6 +297,12 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
             expected: E::SIZE,
             actual: ref_bytes_size,
         });
+    }
+
+    // Guard the entry slot and the 32-byte forks index that follows it; the
+    // header check in `try_from` only guarantees `NodeHeader::SIZE` bytes.
+    if data.len() < NodeHeader::SIZE + ref_bytes_size + 32 {
+        return Err(MantarayError::DataTooShort);
     }
 
     let entry_bytes = &data[NodeHeader::SIZE..NodeHeader::SIZE + ref_bytes_size];
@@ -756,6 +768,91 @@ mod tests {
             <ChunkAddress as NodeEntry>::SIZE,
             "encoder must emit ref_size = E::SIZE, not 0; spec requires uniform reference width"
         );
+    }
+
+    /// Build a header-only prefix of a node: zero obfuscation key (XOR is
+    /// identity), the given raw version hash, `ref_size = 32`, then zero
+    /// padding up to `len` bytes.
+    fn truncated_node_bytes(version: &VersionHash, len: usize) -> Vec<u8> {
+        assert!(len >= NodeHeader::SIZE);
+        let mut data = vec![0u8; len];
+        data[NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + VersionHash::SIZE]
+            .copy_from_slice(version.as_bytes());
+        data[NodeHeader::REF_SIZE_OFFSET] = 32;
+        data
+    }
+
+    /// Regression: a 64-byte input (header only, `ref_size = 32`) used to
+    /// panic slicing the absent entry slot (`data[64..96]`). It must return
+    /// `Err`, never panic. Exact minimal crash case.
+    #[test]
+    fn decode_v01_header_only_64_bytes_returns_err() {
+        let data = truncated_node_bytes(&VersionHash::V01, NodeHeader::SIZE);
+        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        assert!(matches!(result, Err(MantarayError::DataTooShort)));
+    }
+
+    /// Regression: same minimal 64-byte crash case for the v0.2 decoder.
+    #[test]
+    fn decode_v02_header_only_64_bytes_returns_err() {
+        let data = truncated_node_bytes(&VersionHash::V02, NodeHeader::SIZE);
+        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        assert!(matches!(result, Err(MantarayError::DataTooShort)));
+    }
+
+    /// Regression: every length in 64..128 used to panic in `decode_v01`,
+    /// either slicing the entry slot (`data[64..96]`, lengths 64..96) or the
+    /// forks index (`data[96..128]`, lengths 96..128). All must return `Err`.
+    #[test]
+    fn decode_v01_truncated_lengths_return_err() {
+        for len in NodeHeader::SIZE..NodeHeader::SIZE + 32 + 32 {
+            let data = truncated_node_bytes(&VersionHash::V01, len);
+            let result = Node::<ChunkAddress>::try_from(data.as_slice());
+            assert!(
+                matches!(result, Err(MantarayError::DataTooShort)),
+                "length {len} must yield DataTooShort"
+            );
+        }
+    }
+
+    /// Regression: same truncated-length sweep for the v0.2 decoder, which
+    /// additionally read the forks index twice (edge-type deduction).
+    #[test]
+    fn decode_v02_truncated_lengths_return_err() {
+        for len in NodeHeader::SIZE..NodeHeader::SIZE + 32 + 32 {
+            let data = truncated_node_bytes(&VersionHash::V02, len);
+            let result = Node::<ChunkAddress>::try_from(data.as_slice());
+            assert!(
+                matches!(result, Err(MantarayError::DataTooShort)),
+                "length {len} must yield DataTooShort"
+            );
+        }
+    }
+
+    /// A 128-byte input (header + entry + index) whose index demands a fork
+    /// ref that is not present must hit the existing guarded error path.
+    #[test]
+    fn decode_v01_index_demands_missing_fork_returns_err() {
+        let mut data = truncated_node_bytes(&VersionHash::V01, NodeHeader::SIZE + 32 + 32);
+        // Set bit 0 of the forks index (LE bitfield at offset 96).
+        data[NodeHeader::SIZE + 32] = 0x01;
+        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        assert!(matches!(
+            result,
+            Err(MantarayError::InsufficientForkBytes { .. })
+        ));
+    }
+
+    /// Same as above for the v0.2 decoder.
+    #[test]
+    fn decode_v02_index_demands_missing_fork_returns_err() {
+        let mut data = truncated_node_bytes(&VersionHash::V02, NodeHeader::SIZE + 32 + 32);
+        data[NodeHeader::SIZE + 32] = 0x01;
+        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        assert!(matches!(
+            result,
+            Err(MantarayError::InsufficientForkBytes { .. })
+        ));
     }
 
     /// Encode-decode round-trip preserves entries and metadata.
