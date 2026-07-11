@@ -1,0 +1,26 @@
+# Enforce that std/serde/arbitrary/encryption/parallel propagate to workspace
+# dependencies. Run `zepter` at the workspace root to auto-fix.
+version:
+  format: 1
+  binary: 1.88.1
+
+workflows:
+  check:
+    - [
+        "lint", "propagate-feature",
+        "--features=std,serde,arbitrary,encryption,parallel",
+        "--left-side-feature-missing=ignore",
+        "--left-side-outside-workspace=ignore",
+        "--dep-kinds=normal:check,dev:ignore",
+        "--workspace",
+        "--show-path",
+        "--quiet",
+      ]
+  default:
+    - [$check.0, "--fix"]
+
+help:
+  text: |
+    Feature propagation check failed. Run `zepter` at the workspace root to fix.
+  links:
+    - "https://github.com/ggwpez/zepter"
