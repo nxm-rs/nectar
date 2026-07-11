@@ -39,7 +39,7 @@ impl RefKind {
 ///
 /// Sealed: the only references are [`ChunkRef`] and
 /// [`EncryptedChunkRef`](crate::chunk::encryption::EncryptedChunkRef). The width
-/// fact is stated once, on [`Self::KIND`]; wire serialisation derives from it,
+/// fact is stated once, on [`Self::KIND`]; wire serialization derives from it,
 /// so no caller restates 32 or 64.
 pub trait Reference: sealed::Sealed + Sized + Clone + Eq + core::fmt::Debug + 'static {
     /// Which width this reference carries.
