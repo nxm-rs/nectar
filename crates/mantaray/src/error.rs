@@ -132,6 +132,12 @@ pub enum MantarayError {
     /// Node has not been saved yet (reference is empty).
     #[error("missing reference")]
     MissingReference,
+    /// Root node carries its own metadata, which the wire format cannot hold.
+    ///
+    /// Only fork children serialize metadata; a root's would be silently
+    /// dropped, so the builder rejects it at save.
+    #[error("root node metadata is not serializable")]
+    RootMetadata,
     /// Error from primitives (chunk creation, BMT, etc.).
     #[error(transparent)]
     Primitives(#[from] PrimitivesError),
