@@ -2,10 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::chunk::{ChunkAddress, Reference};
 use nectar_primitives::file::EntryRef;
 
-use crate::mode::NodeEntry;
 use crate::node::Node;
 use crate::{MantarayError, Result, metadata};
 
@@ -88,15 +87,15 @@ impl Entry {
 
     /// Reconstruct an `Entry` from a trie node and its accumulated path.
     ///
-    /// Converts the typed `Option<&E>` entry to an `Option<EntryRef>` via
+    /// Converts the typed `Option<&R>` entry to an `Option<EntryRef>` via
     /// serialization, keeping `Entry` non-generic for the public API.
-    pub(crate) fn from_node<E: NodeEntry>(path: &[u8], node: &Node<E>) -> Result<Self> {
+    pub(crate) fn from_node<R: Reference>(path: &[u8], node: &Node<R>) -> Result<Self> {
         let reference = match node.entry() {
             Some(e) => {
                 let bytes = e.to_bytes();
                 Some(EntryRef::try_from_bytes(&bytes).map_err(|_| {
                     MantarayError::EntrySizeMismatch {
-                        expected: E::SIZE,
+                        expected: R::SIZE,
                         actual: bytes.len(),
                     }
                 })?)

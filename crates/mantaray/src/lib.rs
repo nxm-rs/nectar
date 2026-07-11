@@ -68,7 +68,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::get_unwrap, clippy::indexing_slicing, clippy::string_slice, clippy::arithmetic_side_effects, clippy::panic, clippy::unreachable, clippy::panic_in_result_fn))]
 
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::chunk::ChunkRef;
 
 pub mod codec;
 mod constants;
@@ -76,7 +76,6 @@ pub mod entry;
 pub mod error;
 pub mod manifest;
 pub mod manifest_ref;
-pub mod mode;
 pub mod node;
 pub mod obfuscation;
 
@@ -89,7 +88,6 @@ pub use entry::Entry;
 pub use error::{MantarayError, Result};
 pub use manifest::{Manifest, ManifestIter};
 pub use manifest_ref::ManifestRef;
-pub use mode::NodeEntry;
 pub use node::{Fork, Node, NodeType, Prefix};
 pub use obfuscation::ObfuscationKey;
 
@@ -101,7 +99,7 @@ pub use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore};
 pub type DefaultManifest<S> = PlainManifest<S, DEFAULT_BODY_SIZE>;
 
 /// Plain manifest: 32-byte refs, no obfuscation.
-pub type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = Manifest<S, ChunkAddress, BS>;
+pub type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = Manifest<S, ChunkRef, BS>;
 
 /// Encrypted manifest: 64-byte refs, random obfuscation key.
 #[cfg(feature = "encryption")]

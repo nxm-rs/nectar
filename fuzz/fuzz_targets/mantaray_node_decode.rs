@@ -1,8 +1,8 @@
 //! Fuzz the mantaray node wire decoder with raw attacker-controlled bytes.
 //!
-//! `Node::<E>::try_from(&[u8])` is the entry point through which untrusted
+//! `Node::<R>::try_from(&[u8])` is the entry point through which untrusted
 //! manifest chunks from the network are parsed. Both entry widths are
-//! exercised on every input: `ChunkAddress` (plain manifests, 32-byte
+//! exercised on every input: `ChunkRef` (plain manifests, 32-byte
 //! entries) and `EncryptedChunkRef` (encrypted manifests, 64-byte entries),
 //! each of which drives its own reference-width cursor reads through the
 //! shared body decoder. The decoder is the structure recoverer, so the
@@ -18,9 +18,9 @@
 use libfuzzer_sys::fuzz_target;
 use nectar_mantaray::Node;
 use nectar_primitives::EncryptedChunkRef;
-use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::chunk::ChunkRef;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = Node::<ChunkAddress>::try_from(data);
+    let _ = Node::<ChunkRef>::try_from(data);
     let _ = Node::<EncryptedChunkRef>::try_from(data);
 });

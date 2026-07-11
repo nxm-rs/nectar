@@ -4,11 +4,10 @@ use std::collections::BTreeMap;
 
 use futures::{Stream, StreamExt, TryStreamExt, stream};
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
 
 use crate::entry::Entry;
-use crate::mode::NodeEntry;
 use crate::node::Node;
 use crate::{MantarayError, Result, metadata};
 
@@ -20,17 +19,17 @@ pub const DEFAULT_LIST_CONCURRENCY: usize = 8;
 
 /// High-level mantaray manifest backed by a typed chunk store.
 ///
-/// The entry type parameter `E` determines:
+/// The entry type parameter `R` determines:
 /// - What reference types `add()` accepts (compile-time enforcement)
-/// - The reference byte size via `E::SIZE`
+/// - The reference byte size via `R::SIZE`
 /// - What `save()` returns (specialized per entry type)
 #[derive(Debug)]
-pub struct Manifest<S, E: NodeEntry = ChunkAddress, const BS: usize = DEFAULT_BODY_SIZE> {
-    trie: Node<E>,
+pub struct Manifest<S, R: Reference = ChunkRef, const BS: usize = DEFAULT_BODY_SIZE> {
+    trie: Node<R>,
     store: S,
 }
 
-impl<S, const BS: usize> Manifest<S, ChunkAddress, BS> {
+impl<S, const BS: usize> Manifest<S, ChunkRef, BS> {
     /// Create a new plain manifest (no obfuscation, 32-byte refs).
     pub fn new(store: S) -> Self {
         let trie = Node::new_unencrypted();
@@ -65,24 +64,24 @@ impl<S, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
     }
 }
 
-impl<S, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
+impl<S, R: Reference, const BS: usize> Manifest<S, R, BS> {
     /// Access the underlying chunk store.
     pub const fn store(&self) -> &S {
         &self.store
     }
 
     /// Access the root trie node.
-    pub const fn root(&self) -> &Node<E> {
+    pub const fn root(&self) -> &Node<R> {
         &self.trie
     }
 
     /// Mutable access to the root trie node.
-    pub const fn root_mut(&mut self) -> &mut Node<E> {
+    pub const fn root_mut(&mut self) -> &mut Node<R> {
         &mut self.trie
     }
 
     /// Consume the manifest and return its parts.
-    pub fn into_parts(self) -> (Node<E>, S) {
+    pub fn into_parts(self) -> (Node<R>, S) {
         (self.trie, self.store)
     }
 
@@ -92,9 +91,9 @@ impl<S, E: NodeEntry, const BS: usize> Manifest<S, E, BS> {
     }
 }
 
-impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, BS> {
+impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, BS> {
     /// Add a path with a typed reference (compile-time enforced by entry type).
-    pub async fn add(&mut self, path: &str, reference: impl Into<E>) -> Result<()> {
+    pub async fn add(&mut self, path: &str, reference: impl Into<R>) -> Result<()> {
         let entry = reference.into();
         self.trie
             .add::<S, BS>(path.as_bytes(), Some(entry), BTreeMap::new(), &self.store)
@@ -105,7 +104,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, 
     pub async fn add_with_metadata(
         &mut self,
         path: &str,
-        reference: impl Into<E>,
+        reference: impl Into<R>,
         metadata: BTreeMap<String, String>,
     ) -> Result<()> {
         let entry = reference.into();
@@ -119,7 +118,12 @@ impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, 
         let e = match entry.reference {
             Some(r) => {
                 let bytes = Vec::from(&r);
-                Some(E::try_from_bytes(&bytes)?)
+                let reference =
+                    R::from_wire_bytes(&bytes).ok_or(MantarayError::EntrySizeMismatch {
+                        expected: R::SIZE,
+                        actual: bytes.len(),
+                    })?;
+                Some(reference)
             }
             None => None,
         };
@@ -159,7 +163,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
     pub async fn walk<F>(&mut self, f: &mut F) -> Result<()>
     where
-        F: FnMut(&[u8], &Node<E>) -> Result<()>,
+        F: FnMut(&[u8], &Node<R>) -> Result<()>,
     {
         self.trie.walk::<S, BS, _>(&self.store, f).await
     }
@@ -167,7 +171,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, 
     /// Walk the subtree rooted at `root`, calling `f` for each node with its path.
     pub async fn walk_from<F>(&mut self, root: &str, f: &mut F) -> Result<()>
     where
-        F: FnMut(&[u8], &Node<E>) -> Result<()>,
+        F: FnMut(&[u8], &Node<R>) -> Result<()>,
     {
         self.trie
             .walk_from::<S, BS, _>(root.as_bytes(), &self.store, f)
@@ -215,10 +219,10 @@ impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, 
         if !root.loaded {
             root.load::<S, BS>(store).await?;
         }
-        let mut frontier: Vec<(Vec<u8>, Node<E>)> = vec![(Vec::new(), root)];
+        let mut frontier: Vec<(Vec<u8>, Node<R>)> = vec![(Vec::new(), root)];
 
         while !frontier.is_empty() {
-            let mut pending: Vec<(Vec<u8>, Node<E>)> = Vec::new();
+            let mut pending: Vec<(Vec<u8>, Node<R>)> = Vec::new();
             for (path, node) in &frontier {
                 if node.is_value() {
                     out.push(Entry::from_node(path, node)?);
@@ -299,7 +303,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, 
     /// Nodes are loaded from storage on demand, so the entire trie does not
     /// need to be in memory at once. Drive it with [`ManifestIter::next`] or
     /// the [`Stream`] impl.
-    pub const fn iter(&mut self) -> ManifestIter<'_, S, E, BS> {
+    pub const fn iter(&mut self) -> ManifestIter<'_, S, R, BS> {
         ManifestIter::new(&mut self.trie, &self.store)
     }
 
@@ -349,7 +353,7 @@ impl<S: ChunkGet<BS>, E: NodeEntry + MaybeSend, const BS: usize> Manifest<S, E, 
     }
 }
 
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkAddress, BS> {
+impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkRef, BS> {
     /// Persist the plain manifest trie to storage, returning the root chunk address.
     pub async fn save(&mut self) -> Result<ChunkAddress> {
         self.trie.save::<S, BS>(&self.store).await?;
@@ -384,16 +388,16 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
 /// the trie is exclusively borrowed (`&'a mut Node`) for the iterator's
 /// lifetime, and `BTreeMap` values are stable (we never insert into or remove
 /// from a parent's fork map during iteration).
-pub struct ManifestIter<'a, S, E: NodeEntry = ChunkAddress, const BS: usize = DEFAULT_BODY_SIZE> {
-    trie: &'a mut Node<E>,
+pub struct ManifestIter<'a, S, R: Reference = ChunkRef, const BS: usize = DEFAULT_BODY_SIZE> {
+    trie: &'a mut Node<R>,
     store: &'a S,
-    stack: Vec<IterFrame<E>>,
+    stack: Vec<IterFrame<R>>,
     /// Running path buffer; extended when pushing frames, truncated when popping.
     path_buf: Vec<u8>,
     root_visited: bool,
 }
 
-impl<S, E: NodeEntry, const BS: usize> std::fmt::Debug for ManifestIter<'_, S, E, BS> {
+impl<S, R: Reference, const BS: usize> std::fmt::Debug for ManifestIter<'_, S, R, BS> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ManifestIter")
             .field("stack_depth", &self.stack.len())
@@ -402,14 +406,14 @@ impl<S, E: NodeEntry, const BS: usize> std::fmt::Debug for ManifestIter<'_, S, E
     }
 }
 
-struct IterFrame<E: NodeEntry> {
+struct IterFrame<R: Reference> {
     /// Pointer to the node at this stack level.
     ///
     /// # Safety
     /// Valid for the iterator's `'a` lifetime. Points into the exclusively
     /// borrowed trie. Derived from `&mut Node` references obtained via
     /// `BTreeMap::get_mut`, whose values are stable across unrelated mutations.
-    node: *mut Node<E>,
+    node: *mut Node<R>,
     /// Length of `path_buf` before this frame's prefix was appended.
     path_len_before: usize,
     /// This node's sorted fork keys.
@@ -418,8 +422,8 @@ struct IterFrame<E: NodeEntry> {
     key_idx: usize,
 }
 
-impl<'a, S: ChunkGet<BS>, E: NodeEntry, const BS: usize> ManifestIter<'a, S, E, BS> {
-    pub(crate) const fn new(trie: &'a mut Node<E>, store: &'a S) -> Self {
+impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, BS> {
+    pub(crate) const fn new(trie: &'a mut Node<R>, store: &'a S) -> Self {
         Self {
             trie,
             store,
@@ -538,12 +542,11 @@ mod tests {
     use super::*;
 
     type Store = MemoryStore<DEFAULT_BODY_SIZE>;
-    type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> =
-        super::Manifest<S, ChunkAddress, BS>;
+    type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = super::Manifest<S, ChunkRef, BS>;
 
     /// Drain an async manifest iterator into a `Vec`, propagating the first error.
-    fn drain<S: ChunkGet<BS>, E: NodeEntry, const BS: usize>(
-        mut iter: ManifestIter<'_, S, E, BS>,
+    fn drain<S: ChunkGet<BS>, R: Reference, const BS: usize>(
+        mut iter: ManifestIter<'_, S, R, BS>,
     ) -> Result<Vec<Entry>> {
         block_on(async move {
             let mut out = Vec::new();

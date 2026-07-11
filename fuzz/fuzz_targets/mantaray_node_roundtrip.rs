@@ -1,6 +1,6 @@
 //! Structured round-trip fuzz of the mantaray node codec.
 //!
-//! The valid-by-construction `Arbitrary` impl for `Node<ChunkAddress>`
+//! The valid-by-construction `Arbitrary` impl for `Node<ChunkRef>`
 //! (crates/mantaray/src/node.rs) generates only encodable, round-trip-stable
 //! nodes, so the oracle is stronger than "no panic": every generated node
 //! must encode (`TryFrom<&Node> for Vec<u8>`), the encoding must decode
@@ -15,12 +15,12 @@
 
 use libfuzzer_sys::fuzz_target;
 use nectar_mantaray::Node;
-use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::chunk::ChunkRef;
 
-fuzz_target!(|node: Node<ChunkAddress>| {
+fuzz_target!(|node: Node<ChunkRef>| {
     let encoded = Vec::<u8>::try_from(&node).expect("arbitrary nodes must encode");
     let decoded =
-        Node::<ChunkAddress>::try_from(encoded.as_slice()).expect("encoded nodes must decode");
+        Node::<ChunkRef>::try_from(encoded.as_slice()).expect("encoded nodes must decode");
     assert_eq!(decoded, node, "decode(encode(node)) must reproduce the node");
 
     // Canonical form: re-encoding the decoded node must be byte-identical.

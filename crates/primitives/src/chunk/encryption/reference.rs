@@ -75,6 +75,20 @@ impl sealed::Sealed for EncryptedChunkRef {}
 impl Reference for EncryptedChunkRef {
     const KIND: RefKind = RefKind::Encrypted;
 
+    fn address(&self) -> &ChunkAddress {
+        self.reference.address()
+    }
+
+    fn write_to(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(self.address().as_bytes());
+        out.extend_from_slice(self.key.as_bytes());
+    }
+
+    fn from_wire_bytes(bytes: &[u8]) -> Option<Self> {
+        let bytes: &[u8; Self::SIZE] = bytes.try_into().ok()?;
+        Some(Self::from_bytes(bytes))
+    }
+
     fn read_optional(cursor: &mut Cursor<'_>) -> Result<Option<Self>, Underrun> {
         // The sentinel is the whole slot as written on the wire: address and
         // key both all-zero.

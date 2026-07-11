@@ -5,11 +5,10 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::error::{MantarayError, Result};
-use crate::mode::NodeEntry;
 use crate::obfuscation::ObfuscationKey;
 use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 use bytes::Bytes;
-use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
+use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkRef, ContentChunk, Reference};
 use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
 
@@ -174,7 +173,7 @@ bitflags::bitflags! {
 
 /// A node in the mantaray trie.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Node<E: NodeEntry = ChunkAddress> {
+pub struct Node<R: Reference = ChunkRef> {
     /// Bitflags encoding the node kind (value, edge, path-separator, metadata).
     pub(crate) node_type: NodeType,
     /// XOR obfuscation key for binary serialisation.
@@ -182,16 +181,16 @@ pub struct Node<E: NodeEntry = ChunkAddress> {
     /// Content-addressed reference for this node (None if not yet persisted).
     pub(crate) reference: Option<ChunkAddress>,
     /// The typed entry stored at this node (the chunk reference this path maps to).
-    pub(crate) entry: Option<E>,
+    pub(crate) entry: Option<R>,
     /// Metadata key-value pairs attached to this node.
     pub(crate) metadata: BTreeMap<String, String>,
     /// Child forks keyed by the first byte of their prefix.
-    pub(crate) forks: BTreeMap<u8, Fork<E>>,
+    pub(crate) forks: BTreeMap<u8, Fork<R>>,
     /// Whether this node's forks have been loaded from storage.
     pub(crate) loaded: bool,
 }
 
-impl<E: NodeEntry> Default for Node<E> {
+impl<R: Reference> Default for Node<R> {
     fn default() -> Self {
         Self {
             node_type: NodeType::empty(),
@@ -207,14 +206,14 @@ impl<E: NodeEntry> Default for Node<E> {
 
 /// A fork in the mantaray trie, consisting of a prefix and a child node.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Fork<E: NodeEntry = ChunkAddress> {
+pub struct Fork<R: Reference = ChunkRef> {
     /// Inline-only prefix (max 30 bytes). No heap allocation, no branching.
     pub(crate) prefix: Prefix,
     /// The child node.
-    pub(crate) node: Node<E>,
+    pub(crate) node: Node<R>,
 }
 
-impl<E: NodeEntry> Default for Fork<E> {
+impl<R: Reference> Default for Fork<R> {
     fn default() -> Self {
         Self {
             prefix: Prefix::new(),
@@ -223,19 +222,19 @@ impl<E: NodeEntry> Default for Fork<E> {
     }
 }
 
-impl<E: NodeEntry> Fork<E> {
+impl<R: Reference> Fork<R> {
     /// The prefix bytes for this fork edge.
     pub fn prefix(&self) -> &[u8] {
         &self.prefix
     }
 
     /// The child node.
-    pub const fn node(&self) -> &Node<E> {
+    pub const fn node(&self) -> &Node<R> {
         &self.node
     }
 
     /// Mutable access to the child node.
-    pub const fn node_mut(&mut self) -> &mut Node<E> {
+    pub const fn node_mut(&mut self) -> &mut Node<R> {
         &mut self.node
     }
 }
@@ -245,7 +244,7 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
-impl<E: NodeEntry> Node<E> {
+impl<R: Reference> Node<R> {
     /// Create a new node with a zeroed obfuscation key (unencrypted).
     pub fn new_unencrypted() -> Self {
         Self {
@@ -263,7 +262,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// The typed entry stored at this node.
-    pub const fn entry(&self) -> Option<&E> {
+    pub const fn entry(&self) -> Option<&R> {
         self.entry.as_ref()
     }
 
@@ -283,7 +282,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Child forks keyed by the first byte of their prefix.
-    pub const fn forks(&self) -> &BTreeMap<u8, Fork<E>> {
+    pub const fn forks(&self) -> &BTreeMap<u8, Fork<R>> {
         &self.forks
     }
 
@@ -416,7 +415,7 @@ impl<E: NodeEntry> Node<E> {
         &mut self,
         path: &[u8],
         store: &S,
-    ) -> Result<Option<&E>> {
+    ) -> Result<Option<&R>> {
         let node = self.lookup_node(path, store).await?;
         if !node.is_value() && !path.is_empty() {
             return Err(MantarayError::NoEntryFound {
@@ -438,12 +437,12 @@ impl<E: NodeEntry> Node<E> {
     pub(crate) fn add<'a, S: ChunkGet<BS>, const BS: usize>(
         &'a mut self,
         path: &'a [u8],
-        entry: Option<E>,
+        entry: Option<R>,
         metadata: BTreeMap<String, String>,
         store: &'a S,
     ) -> RecurseFuture<'a>
     where
-        E: MaybeSend,
+        R: MaybeSend,
     {
         Box::pin(async move {
             // empty path; set this node as a value
@@ -571,7 +570,7 @@ impl<E: NodeEntry> Node<E> {
         store: &'a S,
     ) -> RecurseFuture<'a>
     where
-        E: MaybeSend,
+        R: MaybeSend,
     {
         Box::pin(async move {
             if path.is_empty() {
@@ -662,16 +661,16 @@ impl<E: NodeEntry> Node<E> {
             return Ok(());
         }
 
-        struct SaveFrame<E: NodeEntry> {
+        struct SaveFrame<R: Reference> {
             /// Node owned by an ancestor's fork map, valid for this call.
-            node: *mut Node<E>,
+            node: *mut Node<R>,
             /// Fork keys still to descend into.
             keys: Vec<u8>,
             /// Index into `keys`.
             key_idx: usize,
         }
 
-        let mut stack: Vec<SaveFrame<E>> = vec![SaveFrame {
+        let mut stack: Vec<SaveFrame<R>> = vec![SaveFrame {
             node: std::ptr::from_mut(self),
             keys: self.forks.keys().copied().collect(),
             key_idx: 0,
@@ -758,14 +757,14 @@ impl<E: NodeEntry> Node<E> {
 ///
 /// The visitor `f` only reads loaded nodes, so it stays a synchronous `FnMut`.
 #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
-async fn walk_inner<E: NodeEntry, S: ChunkGet<BS>, const BS: usize, F>(
+async fn walk_inner<R: Reference, S: ChunkGet<BS>, const BS: usize, F>(
     path_buf: &mut Vec<u8>,
-    node: &mut Node<E>,
+    node: &mut Node<R>,
     store: &S,
     f: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(&[u8], &Node<E>) -> Result<()>,
+    F: FnMut(&[u8], &Node<R>) -> Result<()>,
 {
     struct WalkFrame {
         /// Node visited at this level (raw pointer into the exclusive borrow).
@@ -802,7 +801,7 @@ where
         // SAFETY: frame.node points into the exclusively borrowed trie. Each
         // node appears in exactly one frame and is only dereferenced while at
         // the top of the stack, so no two live references alias.
-        let parent = unsafe { &mut *frame.node.cast::<Node<E>>() };
+        let parent = unsafe { &mut *frame.node.cast::<Node<R>>() };
         let reference = parent.reference;
         let fork = parent
             .forks
@@ -873,16 +872,16 @@ mod arbitrary_impls {
         }
     }
 
-    impl<'a, E> Arbitrary<'a> for Fork<E>
+    impl<'a, R> Arbitrary<'a> for Fork<R>
     where
-        E: NodeEntry + Arbitrary<'a>,
+        R: Reference + Arbitrary<'a>,
     {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
             let prefix = Prefix::arbitrary(u)?;
             // On the wire a fork child is flags + a chunk reference (plus
             // optional metadata); a reference-less child is not encodable.
             let mut node =
-                Node::<E>::from_reference(ChunkAddress::from(u.arbitrary::<[u8; 32]>()?));
+                Node::<R>::from_reference(ChunkAddress::from(u.arbitrary::<[u8; 32]>()?));
             node.node_type = NodeType::arbitrary(u)?;
             if node.node_type.contains(NodeType::METADATA) {
                 // Keep pairs small: the encoder caps the padded metadata JSON
@@ -898,9 +897,9 @@ mod arbitrary_impls {
         }
     }
 
-    impl<'a, E> Arbitrary<'a> for Node<E>
+    impl<'a, R> Arbitrary<'a> for Node<R>
     where
-        E: NodeEntry + Arbitrary<'a>,
+        R: Reference + Arbitrary<'a>,
     {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
             let obfuscation_key = ObfuscationKey::arbitrary(u)?;
@@ -908,7 +907,7 @@ mod arbitrary_impls {
             // An all-zero entry encodes as the "no entry" sentinel, so it
             // cannot round-trip as `Some`; map it to `None`.
             let entry = if u.arbitrary::<bool>()? {
-                let e = E::arbitrary(u)?;
+                let e = R::arbitrary(u)?;
                 e.to_bytes().iter().any(|&b| b != 0).then_some(e)
             } else {
                 None
@@ -917,7 +916,7 @@ mod arbitrary_impls {
             let fork_count = u.int_in_range(0..=4usize)?;
             let mut forks = BTreeMap::new();
             for _ in 0..fork_count {
-                let fork = Fork::<E>::arbitrary(u)?;
+                let fork = Fork::<R>::arbitrary(u)?;
                 // In-bounds: Prefix::arbitrary yields a non-empty prefix.
                 #[allow(clippy::indexing_slicing)]
                 forks.insert(fork.prefix[0], fork);
@@ -1118,22 +1117,22 @@ mod tests {
     const NL: NullLoader = NullLoader;
     const BS: usize = DEFAULT_BODY_SIZE;
 
-    /// Create a 32-byte ChunkAddress from a string, left-padded with zeroes.
-    fn make_entry(s: &str) -> ChunkAddress {
+    /// Create a plain reference from a string, left-padded with zeroes.
+    fn make_entry(s: &str) -> ChunkRef {
         let bytes = s.as_bytes();
         let mut buf = [0u8; 32];
         let start = 32 - bytes.len();
         buf[start..].copy_from_slice(bytes);
-        ChunkAddress::from(buf)
+        ChunkRef::from(ChunkAddress::from(buf))
     }
 
     /// In-memory add: delegates to `add` with NullLoader.
-    fn node_add(n: &mut Node, path: &[u8], entry: ChunkAddress, meta: BTreeMap<String, String>) {
+    fn node_add(n: &mut Node, path: &[u8], entry: ChunkRef, meta: BTreeMap<String, String>) {
         block_on(n.add::<NullLoader, BS>(path, Some(entry), meta, &NL)).unwrap();
     }
 
     /// In-memory lookup: delegates to `lookup` with NullLoader.
-    fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<Option<&'n ChunkAddress>> {
+    fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<Option<&'n ChunkRef>> {
         block_on(n.lookup::<NullLoader, BS>(path, &NL))
     }
 
@@ -1479,11 +1478,11 @@ mod tests {
         run_persist_remove(remove_test_case_data()[1].clone());
     }
 
-    fn make_entry_bytes(s: &[u8]) -> ChunkAddress {
+    fn make_entry_bytes(s: &[u8]) -> ChunkRef {
         let mut buf = [0u8; 32];
         let start = 32 - s.len();
         buf[start..].copy_from_slice(s);
-        ChunkAddress::from(buf)
+        ChunkRef::from(ChunkAddress::from(buf))
     }
 
     #[test]
