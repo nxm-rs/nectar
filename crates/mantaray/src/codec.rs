@@ -259,7 +259,7 @@ fn decode_node<R: Reference>(data: &[u8]) -> DecodeResult<Node<R>> {
 /// width.
 ///
 /// The version hash is validated only after the ref_size byte is confirmed
-/// present, so a header truncated at that byte reports `DataTooShort` rather
+/// present, so a header truncated at that byte reports `TooShort` rather
 /// than an invalid-version error.
 fn parse_header(cur: &mut Cursor<'_>) -> DecodeResult<(VersionHash, RefSize)> {
     // The obfuscation key was already consumed by the caller for decryption.
@@ -318,7 +318,7 @@ fn insufficient_fork(underrun: Underrun, total: usize, byte_index: u8) -> Decode
 /// Decode the node body: entry slot, forks bitfield, then each present fork.
 ///
 /// The entry slot and index are both read before the entry is validated, so a
-/// truncated index reports `DataTooShort` rather than an entry-shaped error.
+/// truncated index reports `TooShort` rather than an entry-shaped error.
 /// v0.2 derives the root EDGE flag from a non-empty index; v0.1 leaves it unset.
 fn decode_body<R: Reference>(
     cur: &mut Cursor<'_>,
@@ -867,7 +867,7 @@ mod tests {
             let result = Node::<ChunkRef>::try_from(data.as_slice());
             assert!(
                 matches!(result, Err(DecodeError::TooShort)),
-                "length {len} must yield DataTooShort"
+                "length {len} must yield TooShort"
             );
         }
     }
@@ -881,7 +881,7 @@ mod tests {
             let result = Node::<ChunkRef>::try_from(data.as_slice());
             assert!(
                 matches!(result, Err(DecodeError::TooShort)),
-                "length {len} must yield DataTooShort"
+                "length {len} must yield TooShort"
             );
         }
     }
@@ -940,7 +940,7 @@ mod tests {
                 let result = Node::<EncryptedChunkRef>::try_from(data.as_slice());
                 assert!(
                     matches!(result, Err(DecodeError::TooShort)),
-                    "encref {label} length {len} must yield DataTooShort"
+                    "encref {label} length {len} must yield TooShort"
                 );
             }
         }
