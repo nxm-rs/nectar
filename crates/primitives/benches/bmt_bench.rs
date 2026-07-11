@@ -19,7 +19,7 @@ use rand::{Rng, rng};
 
 use nectar_primitives::bmt::Prover;
 use nectar_primitives::{
-    DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk,
+    DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk, SocId,
 };
 
 fn bench_bmt_hash(c: &mut Criterion) {
@@ -166,7 +166,7 @@ fn bench_single_owner_chunk_creation(c: &mut Criterion) {
         // Generate random data and ID
         let mut data = vec![0u8; *size];
         rng().fill_bytes(&mut data);
-        let id = B256::random();
+        let id = SocId::random();
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &data, |b, data| {
             b.iter(|| DefaultSingleOwnerChunk::new(id, data.clone(), &signer).unwrap());
@@ -199,7 +199,7 @@ fn bench_chunk_deserialization(c: &mut Criterion) {
         );
 
         // Create single-owner chunk and serialize
-        let id = B256::random();
+        let id = SocId::random();
         let soc = DefaultSingleOwnerChunk::new(id, data.clone(), &signer).unwrap();
         let soc_bytes: Bytes = soc.into();
 

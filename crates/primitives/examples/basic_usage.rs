@@ -15,14 +15,13 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use alloy_primitives::B256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
 use bytes::Bytes;
 
 use nectar_primitives::bmt::Prover;
 use nectar_primitives::chunk::{BmtChunk, Chunk};
-use nectar_primitives::{DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk};
+use nectar_primitives::{DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk, SocId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Nectar Primitives Example");
@@ -98,10 +97,10 @@ fn content_chunk_example() -> Result<(), Box<dyn std::error::Error>> {
 
 fn single_owner_chunk_example(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error::Error>> {
     // Create a unique ID for the chunk
-    let id = B256::random();
+    let id = SocId::random();
     println!(
         "Generated random chunk ID: {}",
-        alloy_primitives::hex::encode(&id[..8])
+        alloy_primitives::hex::encode(&id.as_slice()[..8])
     );
 
     // Create a single-owner chunk
@@ -161,7 +160,7 @@ fn deserialization_example() -> Result<(), Box<dyn std::error::Error>> {
     let content_chunk = DefaultContentChunk::new(data1)?;
 
     let wallet = LocalSigner::random();
-    let id = B256::random();
+    let id = SocId::random();
     let data2 = b"Example owner chunk".to_vec();
     let single_owner_chunk = DefaultSingleOwnerChunk::new(id, data2, &wallet)?;
 

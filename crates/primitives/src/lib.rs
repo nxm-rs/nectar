@@ -12,9 +12,8 @@
 //! ## Usage Examples
 //!
 //! ```
-//! use nectar_primitives::{Chunk, DefaultContentChunk, DefaultSingleOwnerChunk};
+//! use nectar_primitives::{Chunk, DefaultContentChunk, DefaultSingleOwnerChunk, SocId};
 //! use alloy_signer_local::LocalSigner;
-//! use alloy_primitives::FixedBytes;
 //!
 //! // Creating content chunks
 //! let chunk = DefaultContentChunk::new(b"Hello, world!".as_slice()).unwrap();
@@ -26,7 +25,7 @@
 //!
 //! // Creating signed chunks
 //! let wallet = LocalSigner::random();
-//! let id = FixedBytes::random();
+//! let id = SocId::random();
 //! let owner_chunk = DefaultSingleOwnerChunk::new(id, b"Signed data".as_slice(), &wallet).unwrap();
 //! ```
 
@@ -115,6 +114,7 @@ pub use chunk::{
     RefKind,
     Reference,
     SingleOwnerChunk,
+    SocId,
     StandardChunkSet,
     WrongRefKind,
 };
