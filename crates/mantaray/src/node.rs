@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::error::{MantarayError, Result};
+use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
 use crate::obfuscation::ObfuscationKey;
 use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 use bytes::Bytes;
@@ -83,10 +83,10 @@ impl Prefix {
     /// relies on a caller-side guard. Bytes past `len` are re-zeroed to keep
     /// the padding canonical for equality and re-encoding.
     #[inline]
-    pub fn from_wire(padded: &[u8; PREFIX_MAX_LEN], len: u8) -> Result<Self> {
+    pub fn from_wire(padded: &[u8; PREFIX_MAX_LEN], len: u8) -> DecodeResult<Self> {
         let len_usize = usize::from(len);
         if len == 0 || len_usize > PREFIX_MAX_LEN {
-            return Err(MantarayError::InvalidPrefixLength {
+            return Err(DecodeError::InvalidPrefixLength {
                 max: PREFIX_MAX_LEN,
                 actual: len_usize,
             });
@@ -121,7 +121,7 @@ impl Prefix {
 /// block. The length byte never leaves this impl; callers take a validated
 /// `Prefix` in one step.
 impl FromCursor for Prefix {
-    type Error = MantarayError;
+    type Error = DecodeError;
 
     fn take_from(cur: &mut Cursor<'_>) -> std::result::Result<Self, Self::Error> {
         let len = cur.take::<u8>()?;
@@ -365,7 +365,8 @@ impl<R: Reference> Node<R> {
             .map_err(|e| MantarayError::StoreGet {
                 source: std::sync::Arc::new(e),
             })?;
-        let mut loaded = Self::try_from(chunk.data().as_ref())?;
+        let mut loaded = Self::try_from(chunk.data().as_ref())
+            .map_err(|source| MantarayError::Corrupt { address, source })?;
         loaded.reference = Some(address);
         // Preserve fields that live in the parent's fork data, not in this node's chunk:
         // node_type flags and metadata key-value pairs.
@@ -1199,7 +1200,7 @@ mod tests {
         let err = Prefix::from_wire(&padded, 0).unwrap_err();
         assert!(matches!(
             err,
-            MantarayError::InvalidPrefixLength { max, actual } if max == PREFIX_MAX_LEN && actual == 0
+            DecodeError::InvalidPrefixLength { max, actual } if max == PREFIX_MAX_LEN && actual == 0
         ));
     }
 
@@ -1211,7 +1212,7 @@ mod tests {
         let err = Prefix::from_wire(&padded, over).unwrap_err();
         assert!(matches!(
             err,
-            MantarayError::InvalidPrefixLength { max, actual }
+            DecodeError::InvalidPrefixLength { max, actual }
                 if max == PREFIX_MAX_LEN && actual == usize::from(over)
         ));
     }
@@ -1255,17 +1256,17 @@ mod tests {
         let mut cur = Cursor::new(&wire);
         assert!(matches!(
             cur.take::<Prefix>().unwrap_err(),
-            MantarayError::InvalidPrefixLength { actual: 0, .. }
+            DecodeError::InvalidPrefixLength { actual: 0, .. }
         ));
     }
 
     #[test]
-    fn prefix_take_underrun_is_data_too_short() {
+    fn prefix_take_underrun_is_too_short() {
         let wire = [3u8, b'a'];
         let mut cur = Cursor::new(&wire);
         assert!(matches!(
             cur.take::<Prefix>().unwrap_err(),
-            MantarayError::DataTooShort
+            DecodeError::TooShort
         ));
     }
 
