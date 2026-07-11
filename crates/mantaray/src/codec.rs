@@ -1037,16 +1037,19 @@ mod tests {
 
     /// Replay the `mantaray_record_roundtrip` seed corpus through the exact
     /// fixed-point round trip the fuzz target runs, at both reference widths.
-    /// The corpus is seeded from the decode corpus (a v0.1 and a v0.2
-    /// manifest) plus a 64-byte `ref_size` case, so this pins record
-    /// round-tripping across both wire versions and both widths on stable,
-    /// without running the fuzzer. The 64-byte case must actually decode at
-    /// the `EncryptedChunkRef` width, not merely be skipped.
+    /// The corpus carries a v0.1 and a v0.2 plain manifest plus a `ref_size`
+    /// 64 encrypted case, so this pins record round-tripping across both wire
+    /// versions and both widths on stable, without running the fuzzer. Each
+    /// width must actually decode at least the seeds it claims, not merely be
+    /// skipped: the two plain manifests at the `ChunkRef` width and the
+    /// encrypted case at the `EncryptedChunkRef` width. Counting decodes is
+    /// what keeps the fixed-point assertions from passing vacuously.
     #[test]
     fn seed_replay_mantaray_record_roundtrip() {
         let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fuzz/seeds/mantaray_record_roundtrip");
         let mut replayed = 0usize;
+        let mut plain_decoded = 0usize;
         #[cfg(feature = "encryption")]
         let mut wide_decoded = 0usize;
         for entry in std::fs::read_dir(&seed_dir)
@@ -1055,7 +1058,9 @@ mod tests {
             let path = entry.unwrap().path();
             let data = std::fs::read(&path).unwrap();
 
-            let _ = record_round_trip::<ChunkRef>(&data);
+            if record_round_trip::<ChunkRef>(&data) {
+                plain_decoded += 1;
+            }
             #[cfg(feature = "encryption")]
             if record_round_trip::<nectar_primitives::EncryptedChunkRef>(&data) {
                 wide_decoded += 1;
@@ -1065,6 +1070,10 @@ mod tests {
         assert!(
             replayed >= 3,
             "expected at least the 3 curated seeds, found {replayed}"
+        );
+        assert!(
+            plain_decoded >= 2,
+            "expected the v0.1 and v0.2 manifests to round-trip at the ChunkRef width, decoded {plain_decoded}"
         );
         #[cfg(feature = "encryption")]
         assert!(
