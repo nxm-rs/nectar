@@ -627,14 +627,17 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> SharedIter<'a, S, R, BS
                 }
             };
 
-            let path_len_before = self.path_buf.len();
-            self.path_buf.extend_from_slice(&prefix);
-
+            // Load before extending path_buf: an early return on load error
+            // must leave path_buf unchanged so a resumed traversal keeps its
+            // path prefix intact.
             if !child.is_loaded()
                 && let Err(e) = child.load::<S, BS>(self.store).await
             {
                 return Some(Err(e));
             }
+
+            let path_len_before = self.path_buf.len();
+            self.path_buf.extend_from_slice(&prefix);
 
             let keys: Vec<u8> = child.forks.keys().copied().collect();
             let entry = child
@@ -1341,5 +1344,70 @@ mod tests {
 
         assert!(block_on(m.lookup("present.txt")).is_ok());
         assert!(block_on(m.lookup("absent.txt")).is_err());
+    }
+
+    #[test]
+    fn stream_load_error_does_not_corrupt_sibling_paths() {
+        use futures::StreamExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Store injecting a single load failure on the `fail_on`-th get,
+        // delegating every other get to the inner store.
+        struct FailOnceStore {
+            inner: Store,
+            fail_on: usize,
+            count: AtomicUsize,
+        }
+
+        impl ChunkGet<DEFAULT_BODY_SIZE> for FailOnceStore {
+            type Error = nectar_primitives::store::ChunkStoreError;
+
+            async fn get(
+                &self,
+                address: &ChunkAddress,
+            ) -> std::result::Result<
+                nectar_primitives::chunk::AnyChunk<DEFAULT_BODY_SIZE>,
+                Self::Error,
+            > {
+                let n = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == self.fail_on {
+                    // Force a miss to surface a load error mid-traversal.
+                    return ChunkGet::get(&self.inner, &ChunkAddress::from([0xffu8; 32])).await;
+                }
+                ChunkGet::get(&self.inner, address).await
+            }
+        }
+
+        // Two top-level leaves; 'a' sorts before 'b', so the depth-first
+        // traversal descends the 'a' fork first.
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        block_on(m.add("a.txt", make_addr("a.txt"))).unwrap();
+        block_on(m.add("b.txt", make_addr("b.txt"))).unwrap();
+        let root_ref = block_on(m.save()).unwrap();
+        let (_, store) = m.into_parts();
+
+        // get #1 loads the root; get #2 is the 'a' leaf and is failed; get #3
+        // is the sibling 'b' leaf and succeeds. A resumed traversal must not
+        // carry the failed fork's prefix into the sibling's path.
+        let failing = FailOnceStore {
+            inner: store,
+            fail_on: 2,
+            count: AtomicUsize::new(0),
+        };
+        let m2 = PlainManifest::open(root_ref, failing);
+
+        let items: Vec<Result<Entry>> = block_on(m2.stream().collect::<Vec<_>>());
+
+        assert_eq!(items.len(), 2);
+        assert!(
+            items[0].is_err(),
+            "first descent should surface the injected load error"
+        );
+        assert_eq!(
+            items[1].as_ref().unwrap().path(),
+            b"b.txt",
+            "sibling path must not be prefixed by the failed fork"
+        );
     }
 }
