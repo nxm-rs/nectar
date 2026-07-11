@@ -36,6 +36,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::get_unwrap, clippy::indexing_slicing, clippy::string_slice, clippy::arithmetic_side_effects, clippy::panic, clippy::unreachable, clippy::panic_in_result_fn))]
 
 // k256 is a dependency only to enable the precomputed-tables feature for faster ECDSA
 #[cfg(not(test))]
