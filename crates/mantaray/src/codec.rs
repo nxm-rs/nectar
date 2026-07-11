@@ -465,14 +465,19 @@ impl<E: NodeEntry> Fork<E> {
         // write prefix padded to Prefix::MAX_LEN; Prefix is already zero-padded
         data.extend_from_slice(self.prefix.padded_bytes());
 
-        // Write E::SIZE bytes for the reference (chunk address + zero padding)
-        if let Some(addr) = &self.node.reference {
-            data.extend_from_slice(addr.as_bytes());
-            // Pad to E::SIZE if needed (encrypted mode has 64-byte refs)
-            let padding = E::SIZE.saturating_sub(32);
-            if padding > 0 {
-                data.resize(data.len() + padding, 0);
-            }
+        // Write E::SIZE bytes for the reference (chunk address + zero padding).
+        // A child without a saved reference cannot be encoded into a decodable
+        // stream, so reject it rather than emit truncated wire bytes.
+        let addr = self
+            .node
+            .reference
+            .as_ref()
+            .ok_or(MantarayError::MissingReference)?;
+        data.extend_from_slice(addr.as_bytes());
+        // Pad to E::SIZE if needed (encrypted mode has 64-byte refs)
+        let padding = E::SIZE.saturating_sub(32);
+        if padding > 0 {
+            data.resize(data.len() + padding, 0);
         }
 
         if self.node.is_with_metadata() {
@@ -1007,6 +1012,31 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 8, "expected at least 8 arbitrary nodes, got {checked}");
+    }
+
+    /// Encoding a fork whose child has no saved reference must error rather
+    /// than emit a truncated, undecodable stream.
+    #[test]
+    fn encode_fork_with_unsaved_child_errors() {
+        let mut n = Node::<ChunkAddress>::new_unencrypted();
+
+        let path = b"aaaaa";
+        let e = {
+            let mut buf = [0u8; 32];
+            buf[32 - path.len()..].copy_from_slice(path);
+            ChunkAddress::from(buf)
+        };
+        futures::executor::block_on(n.add::<
+            nectar_primitives::store::NullLoader,
+            { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
+        >(
+            path, Some(e), BTreeMap::new(), &nectar_primitives::store::NullLoader,
+        ))
+        .unwrap();
+
+        // The fork's child node has no reference assigned (never persisted).
+        let result = Vec::<u8>::try_from(&n);
+        assert!(matches!(result, Err(MantarayError::MissingReference)));
     }
 
     /// Encode-decode round-trip preserves entries and metadata.
