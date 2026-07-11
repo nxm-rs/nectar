@@ -109,8 +109,11 @@ pub use chunk::{
     ChunkTypeId,
     ChunkTypeSet,
     // Concrete chunk types
+    ChunkRef,
     ContentChunk,
     ContentOnlyChunkSet,
+    RefKind,
+    Reference,
     SingleOwnerChunk,
     StandardChunkSet,
 };

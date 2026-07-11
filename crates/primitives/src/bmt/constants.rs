@@ -1,7 +1,7 @@
 //! Constants used in the Binary Merkle Tree implementation
 
-/// Hash size in bytes (keccak256).
-pub const HASH_SIZE: usize = 32;
+/// Hash size in bytes (keccak256), equal to a plain chunk reference width.
+pub const HASH_SIZE: usize = crate::chunk::ChunkRef::SIZE;
 
 /// Size of a segment in the BMT (same as hash size).
 pub(crate) const SEGMENT_SIZE: usize = HASH_SIZE;

@@ -1,34 +1,42 @@
 //! Chunk reference types for encrypted chunks.
 
-use std::mem::size_of;
-
-use crate::chunk::ChunkAddress;
+use crate::chunk::reference::{RefKind, Reference, sealed};
+use crate::chunk::{ChunkAddress, ChunkRef};
 
 use super::error::EncryptionError;
 use super::key::EncryptionKey;
 
-/// An encrypted chunk reference: 32-byte address + 32-byte decryption key.
+/// An encrypted chunk reference: a plain reference plus the decryption key.
 ///
-/// This type statically guarantees the reference is encrypted,
-/// eliminating runtime variant checks.
+/// This type statically guarantees the reference is encrypted, eliminating
+/// runtime variant checks. It composes [`ChunkRef`] rather than restating the
+/// address field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptedChunkRef {
-    address: ChunkAddress,
+    reference: ChunkRef,
     key: EncryptionKey,
 }
 
 impl EncryptedChunkRef {
-    /// Serialized size: address + decryption key.
-    pub const SIZE: usize = size_of::<ChunkAddress>() + EncryptionKey::SIZE;
+    /// Serialized size: reference + decryption key.
+    pub const SIZE: usize = ChunkRef::SIZE + EncryptionKey::SIZE;
 
     /// Create a new encrypted chunk reference.
     pub const fn new(address: ChunkAddress, key: EncryptionKey) -> Self {
-        Self { address, key }
+        Self {
+            reference: ChunkRef::new(address),
+            key,
+        }
+    }
+
+    /// The plain reference this encrypted reference extends.
+    pub const fn reference(&self) -> &ChunkRef {
+        &self.reference
     }
 
     /// Chunk address (BMT hash of ciphertext).
     pub const fn address(&self) -> &ChunkAddress {
-        &self.address
+        self.reference.address()
     }
 
     /// Decryption key.
@@ -38,15 +46,21 @@ impl EncryptedChunkRef {
 
     /// Consume and return (address, key).
     pub fn into_parts(self) -> (ChunkAddress, EncryptionKey) {
-        (self.address, self.key)
+        (self.reference.into_address(), self.key)
     }
 
     /// Write the reference into `buf`. Panics if `buf` is too small.
     #[allow(clippy::indexing_slicing)] // documented contract: panics if buf.len() < Self::SIZE; both callers pass fixed [u8; Self::SIZE] buffers
     pub fn write_to(&self, buf: &mut [u8]) {
-        buf[..size_of::<ChunkAddress>()].copy_from_slice(self.address.as_bytes());
-        buf[size_of::<ChunkAddress>()..Self::SIZE].copy_from_slice(self.key.as_bytes());
+        buf[..ChunkRef::SIZE].copy_from_slice(self.address().as_bytes());
+        buf[ChunkRef::SIZE..Self::SIZE].copy_from_slice(self.key.as_bytes());
     }
+}
+
+impl sealed::Sealed for EncryptedChunkRef {}
+
+impl Reference for EncryptedChunkRef {
+    const KIND: RefKind = RefKind::Encrypted;
 }
 
 impl From<&EncryptedChunkRef> for [u8; EncryptedChunkRef::SIZE] {
@@ -66,7 +80,7 @@ impl From<EncryptedChunkRef> for [u8; EncryptedChunkRef::SIZE] {
 impl From<&EncryptedChunkRef> for Vec<u8> {
     fn from(r: &EncryptedChunkRef) -> Self {
         let mut v = Self::with_capacity(EncryptedChunkRef::SIZE);
-        v.extend_from_slice(r.address.as_bytes());
+        v.extend_from_slice(r.address().as_bytes());
         v.extend_from_slice(r.key.as_bytes());
         v
     }
@@ -80,10 +94,10 @@ impl TryFrom<&[u8]> for EncryptedChunkRef {
         if slice.len() != Self::SIZE {
             return Err(EncryptionError::InvalidReferenceLength { len: slice.len() });
         }
-        let addr = ChunkAddress::from_slice(&slice[..size_of::<ChunkAddress>()])
+        let addr = ChunkAddress::from_slice(&slice[..ChunkRef::SIZE])
             .map_err(|_| EncryptionError::InvalidReferenceLength { len: slice.len() })?;
-        let key = EncryptionKey::try_from(&slice[size_of::<ChunkAddress>()..])?;
-        Ok(Self { address: addr, key })
+        let key = EncryptionKey::try_from(&slice[ChunkRef::SIZE..])?;
+        Ok(Self::new(addr, key))
     }
 }
 
