@@ -269,8 +269,7 @@ fn parse_header(cur: &mut Cursor<'_>) -> DecodeResult<(VersionHash, RefSize)> {
         .take::<[u8; VersionHash::SIZE]>()
         .map_err(|_| DecodeError::TooShort)?;
     let ref_size = cur.take::<u8>().map_err(|_| DecodeError::TooShort)?;
-    let version =
-        VersionHash::from_bytes(&version_bytes).ok_or(DecodeError::InvalidVersionHash)?;
+    let version = VersionHash::from_bytes(&version_bytes).ok_or(DecodeError::InvalidVersionHash)?;
     let ref_size = if ref_size == 0 {
         RefSize::EmptyTerminal
     } else {
@@ -418,7 +417,9 @@ fn parse_fork_body<R: Reference>(
     let mut cur = Cursor::new(body);
     let ForkHeader { node_type, prefix } = cur.take::<ForkHeader>()?;
 
-    let ref_region = cur.take_slice(ref_size).map_err(|_| DecodeError::TooShort)?;
+    let ref_region = cur
+        .take_slice(ref_size)
+        .map_err(|_| DecodeError::TooShort)?;
     let mut ref_cur = Cursor::new(ref_region);
     let addr = ref_cur
         .take::<[u8; 32]>()
