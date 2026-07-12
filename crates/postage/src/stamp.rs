@@ -643,6 +643,11 @@ mod tests {
         assert_eq!(stamp.bucket(), 52197); // 0x0000cbe5
         assert_eq!(stamp.index(), 0);
         assert_eq!(stamp.timestamp(), 1688492510651);
+
+        // Re-encoding reproduces the reference bytes exactly, pinning the encode
+        // path against the external vector rather than only against its own
+        // decoder.
+        assert_eq!(stamp.to_bytes().as_slice(), bytes.as_slice());
     }
 
     #[test]
