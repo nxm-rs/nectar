@@ -209,8 +209,14 @@ mod tests {
 
     fn split_and_store(
         data: &[u8],
-    ) -> (crate::chunk::ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>) {
+    ) -> (
+        crate::chunk::ChunkAddress,
+        MemoryStore<crate::chunk::StandardChunkSet>,
+    ) {
         let (root, chunks) = ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
+        let chunks = chunks
+            .into_iter()
+            .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap());
         (root, MemoryStore::from_chunks(chunks))
     }
 
@@ -255,10 +261,13 @@ mod tests {
             data: &[u8],
         ) -> (
             crate::chunk::encryption::EncryptedChunkRef,
-            MemoryStore<DEFAULT_BODY_SIZE>,
+            MemoryStore<crate::chunk::StandardChunkSet>,
         ) {
             let (root_ref, chunks) =
                 EncryptedParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
+            let chunks = chunks
+                .into_iter()
+                .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap());
             (root_ref, MemoryStore::from_chunks(chunks))
         }
 

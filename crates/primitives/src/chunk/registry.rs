@@ -6,6 +6,7 @@
 
 use bytes::Bytes;
 
+use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::error::Result;
 
 use super::address::ChunkAddress;
@@ -145,13 +146,17 @@ pub trait ChunkRegistry: Send + Sync + 'static {
     fn encode_typed(chunk: &Self::Envelope) -> Vec<u8>;
 }
 
-/// Standard Swarm registry: content-addressed and single-owner chunks at the
-/// default body size, carried in [`AnyChunk`].
+/// Registry of content-addressed and single-owner chunks at body size
+/// `BODY_SIZE`, carried in [`AnyChunk`]. The registry carries the body size
+/// so no store trait restates it.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct StandardChunkSet;
+pub struct AnyChunkSet<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>;
 
-impl ChunkRegistry for StandardChunkSet {
-    type Envelope = AnyChunk;
+/// Standard Swarm registry: [`AnyChunkSet`] at the default body size.
+pub type StandardChunkSet = AnyChunkSet<DEFAULT_BODY_SIZE>;
+
+impl<const BODY_SIZE: usize> ChunkRegistry for AnyChunkSet<BODY_SIZE> {
+    type Envelope = AnyChunk<BODY_SIZE>;
 
     const MEMBERS: &'static [ChunkTypeInfo] = &[
         ChunkTypeInfo::of::<CacHeader>(),
@@ -159,11 +164,11 @@ impl ChunkRegistry for StandardChunkSet {
     ];
 
     fn parse_typed(bytes: &[u8]) -> Result<Self::Envelope> {
-        AnyChunk::parse_typed(bytes)
+        AnyChunk::<BODY_SIZE>::parse_typed(bytes)
     }
 
     fn decode_wire(address: &ChunkAddress, data: Bytes) -> Result<Self::Envelope> {
-        AnyChunk::from_wire_bytes(address, data)
+        AnyChunk::<BODY_SIZE>::from_wire_bytes(address, data)
     }
 
     fn encode_typed(chunk: &Self::Envelope) -> Vec<u8> {

@@ -8,10 +8,9 @@
 //! ```
 //! use futures::executor::block_on;
 //! use nectar_primitives::file::{ChunkGetExt, ChunkPutExt};
-//! use nectar_primitives::store::MemoryStore;
-//! use nectar_primitives::DEFAULT_BODY_SIZE;
+//! use nectar_primitives::DefaultMemoryStore;
 //!
-//! let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+//! let store = DefaultMemoryStore::new();
 //! let addr = block_on(store.write_file(b"hello swarm".to_vec())).unwrap();
 //! let data = block_on(store.read_file(addr)).unwrap();
 //! assert_eq!(data, b"hello swarm");
@@ -66,10 +65,10 @@ mod tree;
 mod windowed;
 mod write_at;
 
-use crate::chunk::ChunkAddress;
 #[cfg(feature = "encryption")]
 use crate::chunk::encryption::EncryptedChunkRef;
-use crate::store::{ChunkPut, MaybeSend, MaybeSync};
+use crate::chunk::{AnyChunk, AnyChunkSet, Chunk, ChunkAddress, Verified};
+use crate::store::{ChunkPut, MaybeSend, MaybeSync, TrustedStore};
 
 // Async (primary) re-exports
 #[cfg(feature = "encryption")]
@@ -163,7 +162,7 @@ pub(crate) fn resolve_seek_position(
 pub async fn join<R, G, const BODY_SIZE: usize>(getter: G, root: R) -> error::Result<Vec<u8>>
 where
     R: JoinRef,
-    G: crate::store::ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
 {
     GenericJoiner::<G, R::Mode, BODY_SIZE>::new(getter, root.into_root_ref())
         .await?
@@ -173,23 +172,45 @@ where
 
 // ---- Splitting (CPU-bound, rayon) ----
 
+/// Seal freshly split chunks for the store boundary.
+fn seal_chunks<const BODY_SIZE: usize>(
+    chunks: Vec<AnyChunk<BODY_SIZE>>,
+) -> error::Result<Vec<Chunk<Verified, AnyChunkSet<BODY_SIZE>>>> {
+    chunks
+        .into_iter()
+        .map(|chunk| Chunk::from_envelope(chunk).map_err(mode::chunk_creation_error))
+        .collect()
+}
+
 /// Split data into chunks, returning root address and chunk store.
 ///
 /// Uses `ParallelSplitter` for best performance on in-memory data.
 pub fn split<const BODY_SIZE: usize>(
     data: &[u8],
-) -> error::Result<(ChunkAddress, crate::store::MemoryStore<BODY_SIZE>)> {
+) -> error::Result<(
+    ChunkAddress,
+    crate::store::MemoryStore<AnyChunkSet<BODY_SIZE>>,
+)> {
     let (root, chunks) = ParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
-    Ok((root, crate::store::MemoryStore::from_chunks(chunks)))
+    Ok((
+        root,
+        crate::store::MemoryStore::from_chunks(seal_chunks(chunks)?),
+    ))
 }
 
 /// Split data into encrypted chunks.
 #[cfg(feature = "encryption")]
 pub fn split_encrypted<const BODY_SIZE: usize>(
     data: &[u8],
-) -> error::Result<(EncryptedChunkRef, crate::store::MemoryStore<BODY_SIZE>)> {
+) -> error::Result<(
+    EncryptedChunkRef,
+    crate::store::MemoryStore<AnyChunkSet<BODY_SIZE>>,
+)> {
     let (root_ref, chunks) = EncryptedParallelSplitter::<BODY_SIZE>::split_to_vec(&data)?;
-    Ok((root_ref, crate::store::MemoryStore::from_chunks(chunks)))
+    Ok((
+        root_ref,
+        crate::store::MemoryStore::from_chunks(seal_chunks(chunks)?),
+    ))
 }
 
 /// Calculate tree depth for a given file size (plain mode).
@@ -203,7 +224,7 @@ pub(crate) const fn levels(length: u64, chunk_size: usize) -> usize {
 /// Extension methods for async chunk getters.
 ///
 /// Uses [`JoinRef`] for unified plain/encrypted dispatch.
-pub trait ChunkGetExt<const BODY_SIZE: usize>: crate::store::ChunkGet<BODY_SIZE> {
+pub trait ChunkGetExt<const BODY_SIZE: usize>: TrustedStore<AnyChunkSet<BODY_SIZE>> {
     /// Open a file for async reading.
     fn joiner<R: JoinRef>(
         self,
@@ -229,7 +250,7 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: crate::store::ChunkGet<BODY_SIZE>
 }
 
 impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where
-    T: crate::store::ChunkGet<BODY_SIZE>
+    T: TrustedStore<AnyChunkSet<BODY_SIZE>>
 {
 }
 
@@ -241,15 +262,14 @@ impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where
 /// ```
 /// use futures::executor::block_on;
 /// use nectar_primitives::file::{ChunkGetExt, ChunkPutExt};
-/// use nectar_primitives::store::MemoryStore;
-/// use nectar_primitives::DEFAULT_BODY_SIZE;
+/// use nectar_primitives::DefaultMemoryStore;
 ///
-/// let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+/// let store = DefaultMemoryStore::new();
 /// let addr = block_on(store.write_file(b"hello swarm".to_vec())).unwrap();
 /// let recovered = block_on(store.read_file(addr)).unwrap();
 /// assert_eq!(recovered, b"hello swarm");
 /// ```
-pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> {
+pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<AnyChunkSet<BODY_SIZE>> {
     /// Split `data` and store every produced chunk, returning the root address.
     ///
     /// Splitting runs on rayon up front; `data` is dropped before the first
@@ -264,7 +284,7 @@ pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> {
         let split = ParallelSplitter::<BODY_SIZE>::split_to_vec(&data);
         async move {
             let (root, chunks) = split?;
-            for chunk in chunks {
+            for chunk in seal_chunks(chunks)? {
                 self.put(chunk).await.map_err(FileError::store)?;
             }
             Ok(root)
@@ -286,7 +306,7 @@ pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> {
         let split = EncryptedParallelSplitter::<BODY_SIZE>::split_to_vec(&data);
         async move {
             let (root_ref, chunks) = split?;
-            for chunk in chunks {
+            for chunk in seal_chunks(chunks)? {
                 self.put(chunk).await.map_err(FileError::store)?;
             }
             Ok(root_ref)
@@ -294,7 +314,10 @@ pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> {
     }
 }
 
-impl<T, const BODY_SIZE: usize> ChunkPutExt<BODY_SIZE> for T where T: ChunkPut<BODY_SIZE> {}
+impl<T, const BODY_SIZE: usize> ChunkPutExt<BODY_SIZE> for T where
+    T: ChunkPut<AnyChunkSet<BODY_SIZE>>
+{
+}
 
 #[cfg(test)]
 mod tests;

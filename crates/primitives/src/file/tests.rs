@@ -224,7 +224,7 @@ mod write_file_ext {
 
     #[test]
     fn write_file_roundtrip() {
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
         let addr = block_on(store.write_file(b"hello swarm".to_vec())).unwrap();
         let recovered = block_on(store.read_file(addr)).unwrap();
         assert_eq!(recovered, b"hello swarm");
@@ -233,7 +233,7 @@ mod write_file_ext {
     #[test]
     fn write_file_large() {
         let data = vec![0xAB; 8192];
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
         let addr = block_on(store.write_file(data.clone())).unwrap();
         let recovered = block_on(store.read_file(addr)).unwrap();
         assert_eq!(recovered, data);
@@ -246,13 +246,14 @@ mod write_file_ext {
         use crate::file::Splitter;
         use crate::store::ChunkPut;
 
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
         let data = b"streaming via splitter";
         let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
         splitter.write_all(data).unwrap();
         let (root, chunks) = splitter.finish().unwrap();
         for chunk in chunks {
-            block_on(store.put(chunk)).unwrap();
+            let sealed = crate::chunk::Chunk::from_envelope(chunk).unwrap();
+            block_on(store.put(sealed)).unwrap();
         }
         let recovered = block_on(store.read_file(root)).unwrap();
         assert_eq!(recovered, data);
@@ -260,7 +261,6 @@ mod write_file_ext {
 
     #[cfg(feature = "encryption")]
     mod encrypted {
-        use crate::bmt::DEFAULT_BODY_SIZE;
         use crate::file::{ChunkGetExt, ChunkPutExt};
         use crate::store::MemoryStore;
         use futures::executor::block_on;
@@ -268,7 +268,7 @@ mod write_file_ext {
         #[test]
         #[allow(deprecated)] // pins the deprecated ergonomic wrapper's behaviour until removal
         fn write_encrypted_file_roundtrip() {
-            let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+            let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
             let enc_ref = block_on(store.write_encrypted_file(b"secret data".to_vec())).unwrap();
             let recovered = block_on(store.read_file(enc_ref)).unwrap();
             assert_eq!(recovered, b"secret data");

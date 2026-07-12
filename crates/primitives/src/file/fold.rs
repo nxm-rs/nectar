@@ -15,11 +15,12 @@ use futures::stream::StreamExt;
 use super::error::Result;
 use super::joiner::GenericJoiner;
 use super::mode::JoinMode;
-use crate::store::{ChunkGet, MaybeSend};
+use crate::chunk::AnyChunkSet;
+use crate::store::{MaybeSend, TrustedStore};
 
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     /// Visit each leaf body as it lands, out of order, tagged with its absolute
@@ -68,13 +69,13 @@ where
 mod tests {
     use super::*;
     use crate::bmt::DEFAULT_BODY_SIZE;
-    use crate::chunk::{AnyChunk, ChunkAddress};
+    use crate::chunk::{Chunk, ChunkAddress};
     use crate::file::Joiner;
     use crate::file::split;
     use futures::executor::block_on;
     use std::collections::HashMap;
 
-    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
+    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, Chunk>) {
         let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
         (root, store.into_chunks())
     }
@@ -228,7 +229,7 @@ mod tests {
             data: &[u8],
         ) -> (
             crate::chunk::encryption::EncryptedChunkRef,
-            HashMap<ChunkAddress, AnyChunk>,
+            HashMap<ChunkAddress, Chunk>,
         ) {
             let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
             (root_ref, store.into_chunks())

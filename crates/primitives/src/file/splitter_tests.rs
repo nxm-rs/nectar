@@ -2,7 +2,7 @@
 ///
 /// The calling module must pass an adapter function:
 /// ```ignore
-/// fn split_and_store(data: &[u8]) -> (ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>);
+/// fn split_and_store(data: &[u8]) -> (ChunkAddress, MemoryStore<StandardChunkSet>);
 /// ```
 macro_rules! generate_plain_splitter_tests {
     ($split_fn:ident) => {
@@ -74,7 +74,7 @@ macro_rules! generate_plain_splitter_tests {
 /// The calling module must pass an adapter function:
 /// ```ignore
 /// fn encrypted_split_and_store(data: &[u8])
-///     -> (EncryptedChunkRef, MemoryStore<DEFAULT_BODY_SIZE>);
+///     -> (EncryptedChunkRef, MemoryStore<StandardChunkSet>);
 /// ```
 macro_rules! generate_encrypted_splitter_tests {
     ($split_fn:ident) => {

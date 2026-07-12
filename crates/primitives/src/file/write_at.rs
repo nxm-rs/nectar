@@ -8,7 +8,8 @@ use futures::StreamExt;
 use super::error::FileError;
 use super::joiner::GenericJoiner;
 use super::mode::JoinMode;
-use crate::store::{ChunkGet, MaybeSend, MaybeSync};
+use crate::chunk::AnyChunkSet;
+use crate::store::{MaybeSend, MaybeSync, TrustedStore};
 
 /// Async random-access write sink. Each leaf body is written at its absolute
 /// offset; when every offset is written the sink is whole. Not `Send`-bound so
@@ -137,7 +138,7 @@ impl<T: WriteAt + ?Sized> WriteAt for &T {
 
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     /// Reassemble the whole file into `sink`, writing each out-of-order leaf at
@@ -241,12 +242,12 @@ mod download_tests {
     use super::*;
 
     use crate::DEFAULT_BODY_SIZE;
-    use crate::chunk::AnyChunk;
+    use crate::chunk::Chunk;
     use crate::file::{Joiner, split};
     use futures::executor::block_on;
     use std::collections::HashMap;
 
-    type Store = HashMap<crate::ChunkAddress, AnyChunk>;
+    type Store = HashMap<crate::ChunkAddress, Chunk>;
 
     fn split_and_store(data: &[u8]) -> (crate::ChunkAddress, Store) {
         let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();

@@ -3,10 +3,11 @@
 use alloc::collections::BTreeMap;
 
 use futures::{Stream, StreamExt, TryStreamExt, stream};
+use nectar_primitives::AnyChunkSet;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::file::join;
-use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
+use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedStore};
 
 use crate::entry::Entry;
 use crate::node::Node;
@@ -95,7 +96,9 @@ impl<S, R: Reference, const BS: usize> Manifest<S, R, BS> {
     }
 }
 
-impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, BS> {
+impl<S: TrustedStore<AnyChunkSet<BS>>, R: Reference + MaybeSend, const BS: usize>
+    Manifest<S, R, BS>
+{
     /// Add a path with a typed reference (compile-time enforced by entry type).
     pub async fn add(&mut self, path: &str, reference: impl Into<R>) -> Result<()> {
         let entry = reference.into();
@@ -372,7 +375,7 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
     }
 }
 
-impl<S: ChunkGet<BS>, const BS: usize> Manifest<S, ChunkRef, BS> {
+impl<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize> Manifest<S, ChunkRef, BS> {
     /// Look up `path` and join the file it references into memory.
     ///
     /// Shared-read (`&self`); `None` when the path is absent or is not a value.
@@ -392,7 +395,9 @@ impl<S: ChunkGet<BS>, const BS: usize> Manifest<S, ChunkRef, BS> {
     }
 }
 
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkRef, BS> {
+impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
+    Manifest<S, ChunkRef, BS>
+{
     /// Persist the plain manifest trie to storage, returning the root chunk address.
     pub async fn save(&mut self) -> Result<ChunkAddress> {
         self.trie.save::<S, BS>(&self.store).await?;
@@ -405,7 +410,9 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkRef, BS> 
 }
 
 #[cfg(feature = "encryption")]
-impl<S: ChunkGet<BS>, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
+impl<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>
+    Manifest<S, nectar_primitives::EncryptedChunkRef, BS>
+{
     /// Look up `path` and join the encrypted file it references into memory.
     ///
     /// Shared-read (`&self`); `None` when the path is absent or is not a value.
@@ -426,7 +433,7 @@ impl<S: ChunkGet<BS>, const BS: usize> Manifest<S, nectar_primitives::EncryptedC
     }
 }
 
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
+impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
     Manifest<S, nectar_primitives::EncryptedChunkRef, BS>
 {
     /// Persist the encrypted manifest trie, returning a [`ManifestRef`](crate::ManifestRef).
@@ -484,7 +491,9 @@ struct IterFrame<R: Reference> {
     key_idx: usize,
 }
 
-impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, BS> {
+impl<'a, S: TrustedStore<AnyChunkSet<BS>>, R: Reference, const BS: usize>
+    ManifestIter<'a, S, R, BS>
+{
     pub(crate) const fn new(trie: &'a mut Node<R>, store: &'a S) -> Self {
         Self {
             trie,
@@ -614,7 +623,7 @@ struct SharedFrame<R: Reference> {
     key_idx: usize,
 }
 
-impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> SharedIter<'a, S, R, BS> {
+impl<'a, S: TrustedStore<AnyChunkSet<BS>>, R: Reference, const BS: usize> SharedIter<'a, S, R, BS> {
     const fn new(root: Node<R>, store: &'a S) -> Self {
         Self {
             store,
@@ -710,15 +719,16 @@ mod tests {
     use futures::executor::block_on;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
     use nectar_primitives::chunk::ChunkAddress;
-    use nectar_primitives::store::MemoryStore;
+    use nectar_primitives::store::{ChunkGet, MemoryStore};
+    use nectar_primitives::{StandardChunkSet, Verified};
 
     use super::*;
 
-    type Store = MemoryStore<DEFAULT_BODY_SIZE>;
+    type Store = MemoryStore<StandardChunkSet>;
     type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = super::Manifest<S, ChunkRef, BS>;
 
     /// Drain an async manifest iterator into a `Vec`, propagating the first error.
-    fn drain<S: ChunkGet<BS>, R: Reference, const BS: usize>(
+    fn drain<S: TrustedStore<AnyChunkSet<BS>>, R: Reference, const BS: usize>(
         mut iter: ManifestIter<'_, S, R, BS>,
     ) -> Result<Vec<Entry>> {
         block_on(async move {
@@ -1097,14 +1107,14 @@ mod tests {
         .await;
     }
 
-    impl ChunkGet<DEFAULT_BODY_SIZE> for TrackingStore {
-        type Error = <Store as ChunkGet<DEFAULT_BODY_SIZE>>::Error;
+    impl ChunkGet<StandardChunkSet> for TrackingStore {
+        type Trust = Verified;
+        type Error = <Store as ChunkGet<StandardChunkSet>>::Error;
 
         async fn get(
             &self,
             address: &ChunkAddress,
-        ) -> core::result::Result<nectar_primitives::chunk::AnyChunk<DEFAULT_BODY_SIZE>, Self::Error>
-        {
+        ) -> core::result::Result<nectar_primitives::Chunk, Self::Error> {
             use core::sync::atomic::Ordering::SeqCst;
             self.gets.fetch_add(1, SeqCst);
             let cur = self.inflight.fetch_add(1, SeqCst) + 1;
@@ -1371,7 +1381,7 @@ mod tests {
         block_on(m.add("a.txt", make_addr("a"))).unwrap();
 
         // All read accessors are callable through a shared borrow.
-        fn read_all<S: ChunkGet<DEFAULT_BODY_SIZE>>(m: &PlainManifest<S>) {
+        fn read_all<S: TrustedStore<StandardChunkSet>>(m: &PlainManifest<S>) {
             assert!(block_on(m.get("a.txt")).unwrap().is_some());
             assert_eq!(block_on(m.entries()).unwrap().len(), 2);
             assert_eq!(
@@ -1406,16 +1416,14 @@ mod tests {
             count: AtomicUsize,
         }
 
-        impl ChunkGet<DEFAULT_BODY_SIZE> for FailOnceStore {
+        impl ChunkGet<StandardChunkSet> for FailOnceStore {
+            type Trust = Verified;
             type Error = nectar_primitives::store::ChunkStoreError;
 
             async fn get(
                 &self,
                 address: &ChunkAddress,
-            ) -> core::result::Result<
-                nectar_primitives::chunk::AnyChunk<DEFAULT_BODY_SIZE>,
-                Self::Error,
-            > {
+            ) -> core::result::Result<nectar_primitives::Chunk, Self::Error> {
                 let n = self.count.fetch_add(1, Ordering::SeqCst) + 1;
                 if n == self.fail_on {
                     // Force a miss to surface a load error mid-traversal.

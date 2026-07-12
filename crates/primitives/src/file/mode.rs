@@ -6,15 +6,16 @@ use bytes::Bytes;
 
 use crate::bmt::SPAN_SIZE;
 use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey, decrypt_chunk_data};
-use crate::chunk::{ChunkAddress, ChunkOps, ChunkRef, ContentChunk, Reference};
+use crate::chunk::{AnyChunkSet, ChunkAddress, ChunkOps, ChunkRef, ContentChunk, Reference};
 use crate::store::MaybeSend;
 use crate::wire::Cursor;
 
 use super::constants::{compute_spans_inline, subspan_for_spans};
 use super::error::{FileError, Result};
 
-/// Convert a `PrimitivesError` from chunk creation into a `FileError`.
-fn chunk_creation_error(e: crate::error::PrimitivesError) -> FileError {
+/// Convert a `PrimitivesError` from chunk creation or sealing into a
+/// `FileError`.
+pub(crate) fn chunk_creation_error(e: crate::error::PrimitivesError) -> FileError {
     match e {
         crate::error::PrimitivesError::Chunk(c) => FileError::Chunk(c),
         other => FileError::Store(Box::new(other)),
@@ -103,14 +104,18 @@ pub trait JoinMode: Sized + 'static {
 /// Initialize joiner: fetch root chunk, extract span and context.
 pub(crate) async fn joiner_init<
     M: JoinMode + MaybeSend + Sync,
-    G: crate::store::ChunkGet<BS>,
+    G: crate::store::TrustedStore<AnyChunkSet<BS>>,
     const BS: usize,
 >(
     getter: &G,
     input: M::RootRef,
 ) -> Result<(ChunkAddress, u64, M::JoinerContext)> {
     let addr = M::root_address(&input);
-    let any = getter.get(&addr).await.map_err(FileError::getter)?;
+    let any = getter
+        .get(&addr)
+        .await
+        .map_err(FileError::getter)?
+        .into_envelope();
     let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
         type_name: "non-content",
     })?;
@@ -120,7 +125,7 @@ pub(crate) async fn joiner_init<
 /// Read chunk body at address with context. Returns body bytes (after decryption if needed).
 pub(crate) async fn read_chunk_body<
     M: JoinMode + MaybeSend + Sync,
-    G: crate::store::ChunkGet<BS>,
+    G: crate::store::TrustedStore<AnyChunkSet<BS>>,
     const BS: usize,
 >(
     getter: &G,
@@ -130,7 +135,11 @@ pub(crate) async fn read_chunk_body<
 ) -> Result<Bytes> {
     let address = *address;
     let context = context.clone();
-    let any = getter.get(&address).await.map_err(FileError::getter)?;
+    let any = getter
+        .get(&address)
+        .await
+        .map_err(FileError::getter)?
+        .into_envelope();
     let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
         type_name: "non-content",
     })?;

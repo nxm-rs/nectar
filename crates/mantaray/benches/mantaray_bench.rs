@@ -17,10 +17,10 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use futures::executor::block_on;
 use nectar_mantaray::hazmat;
 use nectar_mantaray::{MemoryStore, PlainManifest};
-use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::ChunkAddress;
 
-type Store = MemoryStore<DEFAULT_BODY_SIZE>;
+type Store = MemoryStore<StandardChunkSet>;
 
 /// Create a ChunkAddress from a path, left-padded with zeroes.
 fn make_addr(path: &[u8]) -> ChunkAddress {

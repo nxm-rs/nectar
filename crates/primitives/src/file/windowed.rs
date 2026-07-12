@@ -17,14 +17,14 @@ use bytes::Bytes;
 use futures::stream::{self, FuturesUnordered, Stream, StreamExt};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::ChunkAddress;
+use crate::chunk::{AnyChunkSet, ChunkAddress};
 
 use super::error::{FileError, Result};
 use super::frontier::{SubtreeNode, overlapping_children};
 use super::joiner::{GenericJoiner, MAX_INTERMEDIATE_IN_FLIGHT};
 use super::mode::JoinMode;
 use super::tree::{ChunkRange, TreeParams};
-use crate::store::{ChunkGet, MaybeSend};
+use crate::store::{MaybeSend, TrustedStore};
 
 /// Number of times a failed leaf fetch is re-enqueued before the walk surfaces
 /// the error.
@@ -54,7 +54,7 @@ fn record_occupancy(occupancy: usize) {
 /// only repositions; it never re-fetches intermediates.
 pub struct WindowedReader<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
 {
     getter: Arc<G>,
     subtrees: Vec<SubtreeNode<M>>,
@@ -72,7 +72,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for WindowedReader<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -86,7 +86,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     /// Seek-and-play reader over a window that slides with the read cursor. Peak
@@ -110,7 +110,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> WindowedReader<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     /// In-order leaf bodies from the current position to EOF. Each item is one
@@ -190,7 +190,7 @@ async fn fetch_one<G, M, const BS: usize>(
     pending: Pending<M>,
 ) -> Resolved<M>
 where
-    G: ChunkGet<BS>,
+    G: TrustedStore<AnyChunkSet<BS>>,
     M: JoinMode + MaybeSend + Sync,
 {
     let node = &pending.node;
@@ -264,7 +264,7 @@ fn windowed_walk<G, M, const BODY_SIZE: usize>(
     window: usize,
 ) -> impl Stream<Item = Result<Bytes>>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     let width = concurrency.max(1);
@@ -470,7 +470,7 @@ where
 #[cfg(feature = "tokio")]
 pub struct WindowedJoinerReader<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
 {
     reader: WindowedReader<G, M, BODY_SIZE>,
     residual: Bytes,
@@ -481,7 +481,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for WindowedJoinerReader<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -496,7 +496,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> WindowedReader<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     /// Wrap as a tokio `AsyncRead` + `AsyncSeek` reader. Native-only.
@@ -510,7 +510,7 @@ where
 }
 
 #[cfg(feature = "tokio")]
-impl<G: ChunkGet<BODY_SIZE>, M: JoinMode, const BODY_SIZE: usize> Unpin
+impl<G: TrustedStore<AnyChunkSet<BODY_SIZE>>, M: JoinMode, const BODY_SIZE: usize> Unpin
     for WindowedJoinerReader<G, M, BODY_SIZE>
 {
 }
@@ -518,7 +518,7 @@ impl<G: ChunkGet<BODY_SIZE>, M: JoinMode, const BODY_SIZE: usize> Unpin
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncRead for WindowedJoinerReader<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     #[allow(
@@ -580,7 +580,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncSeek for WindowedJoinerReader<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     fn start_seek(self: Pin<&mut Self>, pos: SeekFrom) -> std::io::Result<()> {
@@ -603,20 +603,21 @@ where
 mod tests {
     use super::*;
     use crate::bmt::DEFAULT_BODY_SIZE;
-    use crate::chunk::AnyChunk;
+    use crate::chunk::{Chunk, StandardChunkSet, Verified};
     use crate::file::Joiner;
     use crate::file::split;
+    use crate::store::ChunkGet;
     use futures::executor::block_on;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
+    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, Chunk>) {
         let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
         (root, store.into_chunks())
     }
 
     async fn drain(
-        reader: &mut WindowedReader<HashMap<ChunkAddress, AnyChunk>, super::super::mode::PlainMode>,
+        reader: &mut WindowedReader<HashMap<ChunkAddress, Chunk>, super::super::mode::PlainMode>,
     ) -> Vec<u8> {
         let stream = reader.stream();
         futures::pin_mut!(stream);
@@ -718,15 +719,16 @@ mod tests {
     /// reorder buffer never admits more than `window` leaves at once.
     #[derive(Clone)]
     struct BoundProbe {
-        chunks: Arc<HashMap<ChunkAddress, AnyChunk>>,
+        chunks: Arc<HashMap<ChunkAddress, Chunk>>,
         in_flight: Arc<AtomicUsize>,
         max_in_flight: Arc<AtomicUsize>,
     }
 
-    impl ChunkGet<DEFAULT_BODY_SIZE> for BoundProbe {
+    impl ChunkGet<StandardChunkSet> for BoundProbe {
+        type Trust = Verified;
         type Error = crate::store::ChunkStoreError;
 
-        async fn get(&self, address: &ChunkAddress) -> std::result::Result<AnyChunk, Self::Error> {
+        async fn get(&self, address: &ChunkAddress) -> std::result::Result<Chunk, Self::Error> {
             let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_in_flight.fetch_max(now, Ordering::SeqCst);
             // Hold the fetch open across several self-waking yields so
@@ -794,7 +796,7 @@ mod tests {
     /// refuses to fetch past a free slot, holding the total at the window.
     #[derive(Clone)]
     struct HeadSlow {
-        chunks: Arc<HashMap<ChunkAddress, AnyChunk>>,
+        chunks: Arc<HashMap<ChunkAddress, Chunk>>,
         /// File offset of the head leaf to delay.
         slow_offset: u64,
         /// Number of leaves released so far (used to gate the slow leaf).
@@ -805,10 +807,11 @@ mod tests {
         leaf_offsets: Arc<HashMap<ChunkAddress, u64>>,
     }
 
-    impl ChunkGet<DEFAULT_BODY_SIZE> for HeadSlow {
+    impl ChunkGet<StandardChunkSet> for HeadSlow {
+        type Trust = Verified;
         type Error = crate::store::ChunkStoreError;
 
-        async fn get(&self, address: &ChunkAddress) -> std::result::Result<AnyChunk, Self::Error> {
+        async fn get(&self, address: &ChunkAddress) -> std::result::Result<Chunk, Self::Error> {
             let is_slow = self.leaf_offsets.get(address) == Some(&self.slow_offset);
             if is_slow {
                 // Park until the gate of other leaves has released, then a few
@@ -915,6 +918,9 @@ mod tests {
     /// leaves build a wide intermediate frontier with little data.
     const TINY_BODY: usize = 256;
 
+    /// Sealed chunk currency at the tiny body size.
+    type TinyChunk = Chunk<Verified, AnyChunkSet<TINY_BODY>>;
+
     fn tiny_leaf_addresses(data: &[u8]) -> HashMap<ChunkAddress, ()> {
         use crate::chunk::ChunkOps;
         let mut set = HashMap::new();
@@ -933,7 +939,7 @@ mod tests {
     /// peak concurrent intermediate fetches.
     #[derive(Clone)]
     struct TinyOrderProbe {
-        chunks: Arc<HashMap<ChunkAddress, AnyChunk<TINY_BODY>>>,
+        chunks: Arc<HashMap<ChunkAddress, TinyChunk>>,
         leaves: Arc<HashMap<ChunkAddress, ()>>,
         kinds: Arc<std::sync::Mutex<Vec<bool>>>,
         intermediate_in_flight: Arc<AtomicUsize>,
@@ -941,7 +947,7 @@ mod tests {
     }
 
     impl TinyOrderProbe {
-        fn new(store: HashMap<ChunkAddress, AnyChunk<TINY_BODY>>, data: &[u8]) -> Self {
+        fn new(store: HashMap<ChunkAddress, TinyChunk>, data: &[u8]) -> Self {
             Self {
                 chunks: Arc::new(store),
                 leaves: Arc::new(tiny_leaf_addresses(data)),
@@ -970,13 +976,11 @@ mod tests {
         }
     }
 
-    impl ChunkGet<TINY_BODY> for TinyOrderProbe {
+    impl ChunkGet<AnyChunkSet<TINY_BODY>> for TinyOrderProbe {
+        type Trust = Verified;
         type Error = crate::store::ChunkStoreError;
 
-        async fn get(
-            &self,
-            address: &ChunkAddress,
-        ) -> std::result::Result<AnyChunk<TINY_BODY>, Self::Error> {
+        async fn get(&self, address: &ChunkAddress) -> std::result::Result<TinyChunk, Self::Error> {
             let is_leaf = self.leaves.contains_key(address);
             self.kinds.lock().unwrap().push(is_leaf);
             if !is_leaf {
@@ -1132,14 +1136,15 @@ mod tests {
     #[cfg(feature = "encryption")]
     #[derive(Clone)]
     struct UniformSlow {
-        chunks: Arc<HashMap<ChunkAddress, AnyChunk>>,
+        chunks: Arc<HashMap<ChunkAddress, Chunk>>,
     }
 
     #[cfg(feature = "encryption")]
-    impl ChunkGet<DEFAULT_BODY_SIZE> for UniformSlow {
+    impl ChunkGet<StandardChunkSet> for UniformSlow {
+        type Trust = Verified;
         type Error = crate::store::ChunkStoreError;
 
-        async fn get(&self, address: &ChunkAddress) -> std::result::Result<AnyChunk, Self::Error> {
+        async fn get(&self, address: &ChunkAddress) -> std::result::Result<Chunk, Self::Error> {
             for _ in 0..4 {
                 yield_now().await;
             }
@@ -1158,7 +1163,7 @@ mod tests {
 
         async fn drain_enc(
             reader: &mut WindowedReader<
-                HashMap<ChunkAddress, AnyChunk>,
+                HashMap<ChunkAddress, Chunk>,
                 crate::file::mode::EncryptedMode,
             >,
         ) -> Vec<u8> {
