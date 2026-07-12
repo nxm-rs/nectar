@@ -40,18 +40,24 @@ name = "mantaray_bench"
 harness = false
 
 [features]
-default = ["std"]
-std = ["alloy-primitives/std", "thiserror/std", "serde_json/std", "rand", "nectar-primitives/std"]
+default = [ "std" ]
+std = [
+	"alloy-primitives/std",
+	"nectar-primitives/std",
+	"rand",
+	"serde_json/std",
+	"thiserror/std",
+]
 # Valid-by-construction `arbitrary::Arbitrary` impls for `Node`, `Fork`,
 # `Prefix`, `NodeType`, and `ObfuscationKey`, for structured (round-trip)
 # fuzz targets.
 arbitrary = [
-	"std",
+	"alloy-primitives/arbitrary",
 	"dep:arbitrary",
 	"nectar-primitives/arbitrary",
-	"alloy-primitives/arbitrary",
+	"std",
 ]
-encryption = ["nectar-primitives/encryption"]
+encryption = [ "nectar-primitives/encryption" ]
 
 [package.metadata.docs.rs]
 all-features = true

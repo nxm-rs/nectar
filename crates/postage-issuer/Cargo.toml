@@ -48,24 +48,24 @@ harness = false
 required-features = ["parallel"]
 
 [features]
-default = ["std"]
+default = [ "std" ]
 
 # Standard library support
-std = ["nectar-postage/std"]
+std = [ "nectar-postage/std" ]
 
 # Local key signing for testing and development
-local-signer = ["dep:alloy-signer-local", "std"]
+local-signer = [ "dep:alloy-signer-local", "std" ]
 
 # Parallel signing operations using rayon
 parallel = [
 	"dep:rayon",
-	"std",
 	"nectar-postage/parallel",
-	"nectar-primitives/parallel"
+	"nectar-primitives/parallel",
+	"std",
 ]
 
 # Arbitrary trait implementations for property-based testing
-arbitrary = ["nectar-postage/arbitrary", "nectar-primitives/arbitrary"]
+arbitrary = [ "nectar-postage/arbitrary", "nectar-primitives/arbitrary" ]
 
 [package.metadata.docs.rs]
 all-features = true

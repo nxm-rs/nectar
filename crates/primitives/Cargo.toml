@@ -88,7 +88,7 @@ proptest-arbitrary-interop.workspace = true
 rand.workspace = true
 
 [features]
-default = ["std"]
+default = [ "std" ]
 std = []
 # WASM thread pool via wasm-bindgen-rayon. OFF by default so the default wasm
 # build needs no SharedArrayBuffer / cross-origin isolation — letting it run on
@@ -97,7 +97,7 @@ std = []
 # requires shared memory). Must stay out of `default`: dependents pull this
 # crate with default features, so a default-on threads feature would be forced
 # on transitively and couldn't be opted out.
-wasm-threads = ["dep:wasm-bindgen-rayon"]
+wasm-threads = [ "dep:wasm-bindgen-rayon" ]
 # Plain-terminology umbrella for "run in parallel", matching the `parallel`
 # feature on nectar-postage and nectar-postage-issuer. Native builds already
 # parallelize through rayon, so this is a no-op there; on wasm32 it opts into the
@@ -105,16 +105,11 @@ wasm-threads = ["dep:wasm-bindgen-rayon"]
 # shared-memory / cross-origin-isolation requirement). Reach for `parallel` to
 # express intent; use `wasm-threads` directly only to toggle the wasm thread pool
 # on its own.
-parallel = ["wasm-threads"]
-serde = ["dep:serde"]
-arbitrary = [
-	"std",
-	"dep:rand",
-	"dep:arbitrary",
-	"alloy-primitives/arbitrary",
-]
-encryption = ["dep:rand"]
-tokio = ["dep:tokio"]
+parallel = [ "wasm-threads" ]
+serde = [ "dep:serde" ]
+arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "dep:rand", "std" ]
+encryption = [ "dep:rand" ]
+tokio = [ "dep:tokio" ]
 
 [[bench]]
 name = "primitives"

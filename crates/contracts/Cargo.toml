@@ -29,9 +29,9 @@ serde = { workspace = true, optional = true }
 proptest = { workspace = true }
 
 [features]
-default = ["std"]
-std = ["alloy-primitives/std", "alloy-sol-types/std", "serde?/std"]
-serde = ["dep:serde", "alloy-primitives/serde"]
+default = [ "std" ]
+std = [ "alloy-primitives/std", "alloy-sol-types/std", "serde?/std" ]
+serde = [ "alloy-primitives/serde", "dep:serde" ]
 
 [package.metadata.docs.rs]
 all-features = true
