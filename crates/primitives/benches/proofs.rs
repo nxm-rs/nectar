@@ -67,12 +67,11 @@ pub fn proofs(c: &mut Criterion) {
         let index = indexes[i];
         // Verify proof is valid before benchmarking
         assert!(
-            DefaultHasher::verify_proof(proof, root_hash.as_slice())
-                .expect("Failed to verify proof"),
+            DefaultHasher::verify_proof(proof, &root_hash).expect("Failed to verify proof"),
             "Verification failed for index {index}"
         );
         group.bench_with_input(BenchmarkId::new("verify_proof", index), &index, |b, _| {
-            b.iter(|| black_box(DefaultHasher::verify_proof(proof, root_hash.as_slice())));
+            b.iter(|| black_box(DefaultHasher::verify_proof(proof, &root_hash)));
         });
     }
 
@@ -83,7 +82,7 @@ pub fn proofs(c: &mut Criterion) {
             let proof = hasher
                 .generate_proof(&data, index)
                 .expect("Failed to generate proof");
-            black_box(DefaultHasher::verify_proof(&proof, root_hash.as_slice()))
+            black_box(DefaultHasher::verify_proof(&proof, &root_hash))
         });
     });
 
@@ -105,7 +104,7 @@ pub fn proofs(c: &mut Criterion) {
                     let proof = h
                         .generate_proof(partial_data, idx)
                         .expect("Failed to generate proof");
-                    black_box(DefaultHasher::verify_proof(&proof, partial_root.as_slice()))
+                    black_box(DefaultHasher::verify_proof(&proof, &partial_root))
                 });
             },
         );

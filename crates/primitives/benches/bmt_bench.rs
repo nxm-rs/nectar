@@ -107,7 +107,7 @@ fn bench_bmt_proof(c: &mut Criterion) {
 
     // Benchmark proof verification
     group.bench_function("verify", |b| {
-        b.iter(|| DefaultHasher::verify_proof(&proof, root_hash.as_slice()).unwrap());
+        b.iter(|| DefaultHasher::verify_proof(&proof, &root_hash).unwrap());
     });
 
     group.finish();

@@ -270,7 +270,7 @@ fn test_prefix_proof_roundtrip() {
         let proof = hasher.generate_proof(&payload, seg).unwrap();
         assert_eq!(proof.prefix.as_deref(), Some(ANCHOR));
         assert!(
-            DefaultHasher::verify_proof(&proof, root.as_slice()).unwrap(),
+            DefaultHasher::verify_proof(&proof, &root).unwrap(),
             "prefixed proof for segment {seg} must verify against the prefixed root"
         );
 
@@ -280,7 +280,7 @@ fn test_prefix_proof_roundtrip() {
         plain.update(&payload);
         let plain_root = plain.sum();
         assert!(
-            !DefaultHasher::verify_proof(&proof, plain_root.as_slice()).unwrap(),
+            !DefaultHasher::verify_proof(&proof, &plain_root).unwrap(),
             "prefixed proof must not verify against the plain root"
         );
     }
@@ -318,8 +318,7 @@ fn test_proof_generation_and_verification() {
         .expect("Failed to generate proof");
 
     // Verify the proof
-    let is_valid =
-        DefaultHasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
+    let is_valid = DefaultHasher::verify_proof(&proof, &root_hash).expect("Failed to verify proof");
 
     assert!(is_valid, "Proof verification should succeed");
 }
@@ -383,8 +382,7 @@ fn test_proof_correctness() {
     verify_segments(&expected_segments, &proof.proof_segments);
 
     // Test proof verification
-    let is_valid =
-        DefaultHasher::verify_proof(&proof, root_hash.as_slice()).expect("Failed to verify proof");
+    let is_valid = DefaultHasher::verify_proof(&proof, &root_hash).expect("Failed to verify proof");
 
     assert!(is_valid, "Proof verification should succeed");
 
@@ -408,7 +406,7 @@ fn test_proof_correctness() {
         &rightmost_proof.proof_segments,
     );
 
-    let is_valid = DefaultHasher::verify_proof(&rightmost_proof, root_hash.as_slice())
+    let is_valid = DefaultHasher::verify_proof(&rightmost_proof, &root_hash)
         .expect("Failed to verify rightmost proof");
     assert!(is_valid, "Rightmost proof verification should succeed");
 
@@ -429,7 +427,7 @@ fn test_proof_correctness() {
 
     verify_segments(&expected_middle_segments, &middle_proof.proof_segments);
 
-    let is_valid = DefaultHasher::verify_proof(&middle_proof, root_hash.as_slice())
+    let is_valid = DefaultHasher::verify_proof(&middle_proof, &root_hash)
         .expect("Failed to verify middle proof");
     assert!(is_valid, "Middle proof verification should succeed");
 }
@@ -476,8 +474,8 @@ fn test_root_hash_calculation() {
         .expect("Failed to generate proof");
 
     // Verify the proof against the root hash
-    let is_valid = DefaultHasher::verify_proof(&proof, expected_root_hash.as_slice())
-        .expect("Failed to verify proof");
+    let is_valid =
+        DefaultHasher::verify_proof(&proof, &expected_root_hash).expect("Failed to verify proof");
     assert!(is_valid, "Proof verification should succeed");
 }
 
@@ -501,8 +499,8 @@ fn test_proof() {
             .expect("Failed to generate proof");
 
         // Verify the proof
-        let is_valid = DefaultHasher::verify_proof(&proof, root_hash.as_slice())
-            .expect("Failed to verify proof");
+        let is_valid =
+            DefaultHasher::verify_proof(&proof, &root_hash).expect("Failed to verify proof");
 
         assert!(
             is_valid,

@@ -212,7 +212,7 @@ fn bmt_proof_example() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Proof length: {} segments", proof.proof_segments.len());
 
     // Verify the proof
-    let is_valid = DefaultHasher::verify_proof(&proof, hash.as_slice())?;
+    let is_valid = DefaultHasher::verify_proof(&proof, &hash)?;
     println!(
         "  - Proof verification: {}",
         if is_valid {
