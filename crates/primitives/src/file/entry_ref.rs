@@ -24,6 +24,8 @@ impl EntryRef {
     pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, FileError> {
         match bytes.len() {
             32 => {
+                #[allow(clippy::expect_used)]
+                // infallible: this match arm guarantees bytes.len() == 32
                 let addr_bytes: [u8; 32] = bytes.try_into().expect("length checked");
                 Ok(Self::Plain(ChunkAddress::from(addr_bytes)))
             }

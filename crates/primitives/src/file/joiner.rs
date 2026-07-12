@@ -254,6 +254,7 @@ where
         clippy::too_many_arguments,
         reason = "internal helper threading already-decomposed reader state from two call sites"
     )]
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // validate_read_range clamps offset + actual_len within the single chunk body; chunk indices and subtree byte offsets are bounded by the file span, so the u64 products/sums cannot overflow
     async fn read_range_with(
         getter: &Arc<G>,
         subtrees: &[SubtreeNode<M>],
@@ -366,6 +367,7 @@ where
     /// single contiguous result, so peak memory is bounded by the in-flight
     /// width, not the file size. Set the width with
     /// [`with_concurrency`](Self::with_concurrency).
+    #[allow(clippy::arithmetic_side_effects)] // base + leaf_index * BODY_SIZE addresses a leaf inside the file, so it is bounded by the file span (u64)
     pub fn into_offset_stream(self) -> impl Stream<Item = Result<(u64, Bytes)>> {
         let getter = self.getter;
         let concurrency = self.concurrency;
@@ -449,6 +451,7 @@ where
     /// file size. Set the width with [`with_concurrency`](Self::with_concurrency).
     /// Reassembling the pairs by offset reproduces the file, byte-for-byte equal
     /// to [`read_all`](Self::read_all).
+    #[allow(clippy::arithmetic_side_effects, clippy::expect_used)] // retries - 1 is guarded by retries > 0; intermediate_in_flight moves in lockstep with admissions (bounded by MAX_INTERMEDIATE_IN_FLIGHT) so +1/-1 cannot wrap; the pop_front().expect is guarded by the !is_empty() admission check just above
     pub fn into_offset_stream_chunked(self) -> impl Stream<Item = Result<(u64, Bytes)>>
     where
         G: 'static,
@@ -675,6 +678,7 @@ where
 /// children overlapping `[start, start + len)`, clips boundary leaves to the
 /// range, and keeps absolute offsets, so the returned stream is identical to the
 /// inherent method.
+#[allow(clippy::arithmetic_side_effects, clippy::expect_used)] // range_end >= range_start by the min/saturating clamps above; retries - 1 is guarded by retries > 0; in-flight counters move in lockstep with admissions; leaf/chunk offsets are bounded by the file span; range_end - leaf_start is guarded by the leaf_start >= range_end continue; the pop_front().expect is guarded by the !is_empty() admission check just above
 pub(crate) fn chunked_range_stream_from<G, M, const BODY_SIZE: usize>(
     getter: Arc<G>,
     subtrees: Vec<SubtreeNode<M>>,
@@ -928,6 +932,11 @@ where
     G: ChunkGet<BODY_SIZE> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::unwrap_used
+    )] // to_copy = min(len, remaining) bounds both slices; span - position is guarded by the EOF return above; position advances by read lengths bounded by the file span; the unwrap follows the is_none() branch that just set the future
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

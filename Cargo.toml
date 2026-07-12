@@ -26,6 +26,25 @@ use-self = "warn"
 option-if-let-else = "warn"
 redundant-clone = "warn"
 
+# Runtime-safety restriction lints (deny in production code). These forbid
+# operations that can panic or overflow at runtime. Test code is exempted per
+# crate via `#![cfg_attr(test, allow(...))]`. Provably-safe internal sites carry
+# a justified `#[allow(...)]`; untrusted/parse paths are hardened for real.
+unwrap_used = "deny"
+expect_used = "deny"
+get_unwrap = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+arithmetic_side_effects = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+panic_in_result_fn = "deny"
+# Lossy/`as` casts: warn now; denied in the maximal follow-up PR.
+as_conversions = "warn"
+missing_panics_doc = "warn"
+
 [workspace.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
@@ -86,9 +105,6 @@ rayon = "1.10"
 bytes = { version = "1.11", default-features = false }
 byteorder = { version = "1.5", default-features = false }
 thiserror = { version = "2.0", default-features = false }
-once_cell = { version = "1.21", default-features = false, features = [
-    "critical-section",
-] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 

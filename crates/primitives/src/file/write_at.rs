@@ -85,6 +85,7 @@ impl WriteAt for std::fs::File {
 impl WriteAt for Mutex<Vec<u8>> {
     type Error = io::Error;
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // offset + buf.len() is a leaf position within the file size the sink was set to; the resize above guarantees vec.len() >= end
     async fn write_at(&self, offset: u64, buf: &[u8]) -> io::Result<()> {
         let mut vec = self
             .lock()
@@ -145,6 +146,7 @@ where
 
     /// As [`download_into`](Self::download_into), invoking
     /// `on_progress(written, total)` after each leaf lands.
+    #[allow(clippy::arithmetic_side_effects)] // written sums leaf body lengths, bounded by the u64 file size
     pub async fn download_into_with_progress<S: WriteAt, F: FnMut(u64, u64)>(
         self,
         sink: S,

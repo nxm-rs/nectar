@@ -16,6 +16,7 @@ use super::constants::*;
 const ZERO_TREE_LEVELS: usize = zero_tree_levels(DEFAULT_BODY_SIZE);
 
 /// Pre-computed zero hashes for the default body size tree.
+#[allow(clippy::indexing_slicing)] // indices 0, i and i-1 with 1 <= i < ZERO_TREE_LEVELS, the array length
 static ZERO_HASHES: LazyLock<[B256; ZERO_TREE_LEVELS]> = LazyLock::new(|| {
     let mut hashes = [B256::ZERO; ZERO_TREE_LEVELS];
 
@@ -40,6 +41,7 @@ static ZERO_HASHES: LazyLock<[B256; ZERO_TREE_LEVELS]> = LazyLock::new(|| {
 ///
 /// `pairs` is the flat byte view of the level (`out.len()` pairs of two
 /// 32-byte nodes); each output is `keccak(prefix || left || right)`.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // entry = prefix len + 64 and entry * out.len() size the scratch Vec that is then sliced by the same bounds; each `slot` is exactly `entry` bytes long
 pub(super) fn hash_pairs(prefix: Option<&[u8]>, pairs: &[u8], out: &mut [[u8; 32]]) {
     debug_assert_eq!(pairs.len(), out.len() * SEGMENT_PAIR_LENGTH);
 
@@ -164,6 +166,8 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     }
 
     /// Update the hasher with more data (non-destructive)
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+    // cursor <= BODY_SIZE invariant: bytes_to_copy = min(data.len(), BODY_SIZE - cursor), so the subtraction, the cursor bump and the buffer slice all stay within BODY_SIZE
     #[inline]
     pub fn update(&mut self, data: &[u8]) {
         if data.is_empty() {
@@ -214,6 +218,8 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     /// 1. Finds the smallest power-of-2 subtree containing all data
     /// 2. Hashes only that subtree
     /// 3. Iteratively combines with pre-computed zero hashes to reach the root
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+    // cursor <= BODY_SIZE, effective_size is clamped to [64, BODY_SIZE], zero-hash indices are < ZERO_TREE_LEVELS by construction, and current_size *= 2 stops at BODY_SIZE
     #[inline(always)]
     fn hash_internal(&self) -> B256 {
         let prefix = self.prefix.as_deref();
@@ -268,6 +274,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     /// `keccak(prefix || left || right)` (the level-0 entry being
     /// `keccak(prefix || 64 zero bytes)`), matching bee's per-prefix
     /// `zerohashes`.
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices 0, i and i-1 with 1 <= i < ZERO_TREE_LEVELS, the array length
     #[inline(always)]
     fn zero_hashes(&self, prefix: Option<&[u8]>) -> [B256; ZERO_TREE_LEVELS] {
         let Some(p) = prefix else {
@@ -296,6 +303,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     /// Only pairs that overlap live data (the cursor) cost a Keccak; everything
     /// past them is an all-zero subtree taken from `zero_hashes`, which the
     /// caller has already made prefix-aware.
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // data.len() is a power of two >= 64, live <= pairs = data.len()/64 (so live*64 <= data.len() and level/next slices hold), depth < ZERO_TREE_LEVELS as count halves from pairs, and count > 1 guarantees level[0] exists
     fn hash_subtree(&self, data: &[u8], zero_hashes: &[B256; ZERO_TREE_LEVELS]) -> B256 {
         debug_assert!(data.len().is_power_of_two());
         debug_assert!(data.len() >= SEGMENT_PAIR_LENGTH);
@@ -342,6 +350,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
 
     /// Calculate the zero-tree level for a given subtree length.
     /// Length must be a power of 2 between 64 and 4096.
+    #[allow(clippy::arithmetic_side_effects)] // length >= 64 (per contract above), so trailing_zeros() >= 6 and the subtraction cannot underflow
     #[inline(always)]
     const fn zero_tree_level(length: usize) -> usize {
         // length = 64 * 2^level, so level = log2(length) - log2(64) = log2(length) - 6
@@ -412,6 +421,8 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     }
 
     /// Compute the hash for a single segment at given index
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+    // start < data.len() is checked before slicing, end is clamped to data.len(), and segment_data.len() < SEGMENT_SIZE guards the zero-padding subtraction
     #[inline(always)]
     fn compute_segment_hash(&self, data: &[u8], i: usize) -> B256 {
         let start = i << SEGMENT_SIZE_LOG2; // Equivalent to i * SEGMENT_SIZE
@@ -438,6 +449,8 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
 }
 
 impl<const BODY_SIZE: usize> Write for Hasher<BODY_SIZE> {
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+    // cursor <= BODY_SIZE invariant: to_write = min(buf.len(), BODY_SIZE - cursor), so the subtraction, the cursor bump and the buffer slice all stay within BODY_SIZE
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let available = BODY_SIZE - self.cursor;

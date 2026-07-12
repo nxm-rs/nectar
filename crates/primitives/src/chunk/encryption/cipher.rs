@@ -31,6 +31,7 @@ fn derive_segment_key(key_state: &Keccak256, counter: u32) -> [u8; 32] {
 }
 
 /// XOR `data` with the Keccak-256 CTR keystream in place.
+#[allow(clippy::indexing_slicing)] // j < chunk.len() <= EncryptionKey::SIZE = seg.len() (32)
 #[inline]
 fn apply_keystream(key: &EncryptionKey, init_ctr: u32, data: &mut [u8]) {
     let ks = key_state(key);
@@ -49,6 +50,7 @@ fn apply_keystream(key: &EncryptionKey, init_ctr: u32, data: &mut [u8]) {
 ///
 /// `output` must be at least as long as `input`. Bytes in `output` beyond
 /// `input.len()` are left untouched.
+#[allow(clippy::indexing_slicing)] // output.len() >= input.len() is checked above with an error return
 #[inline]
 pub fn transcrypt(
     key: &EncryptionKey,

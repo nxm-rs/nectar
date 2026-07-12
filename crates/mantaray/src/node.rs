@@ -66,6 +66,7 @@ impl Prefix {
             PREFIX_MAX_LEN
         );
         let mut data = [0u8; PREFIX_MAX_LEN];
+        #[allow(clippy::indexing_slicing)] // src.len() <= PREFIX_MAX_LEN asserted above (documented # Panics contract)
         data[..src.len()].copy_from_slice(src);
         Self {
             len: src.len() as u8,
@@ -96,6 +97,7 @@ impl std::ops::Deref for Prefix {
     type Target = [u8];
 
     #[inline]
+    #[allow(clippy::indexing_slicing)] // invariant: self.len <= PREFIX_MAX_LEN, the backing array length
     fn deref(&self) -> &[u8] {
         &self.data[..self.len as usize]
     }
@@ -278,6 +280,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     fn update_is_with_path_separator(&mut self, path: &[u8]) {
+        #[allow(clippy::indexing_slicing)] // PATH_SEPARATOR is a non-empty str constant
         let sep = PATH_SEPARATOR.as_bytes()[0];
         if path.iter().skip(1).any(|&b| b == sep) {
             self.node_type = self.node_type.union(NodeType::PATH_SEPARATOR);
@@ -326,6 +329,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Look up the node at the given path, loading from storage as needed.
+    #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
     pub(crate) async fn lookup_node<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
@@ -378,6 +382,11 @@ impl<E: NodeEntry> Node<E> {
     ///
     /// Returns a boxed future so the `&mut self` recursion can name its own type.
     /// The `MaybeSend` bound keeps `!Send` wasm stores usable.
+    // Panic-freedom: `path` is non-empty past the empty-path guard, so
+    // `path[0]` is in-bounds; `c = common_prefix_len(prefix, path)` is
+    // <= min(prefix.len(), path.len()), bounding every split; the fork at
+    // `path[0]` is checked present (`contains_key`) before each get/expect.
+    #[allow(clippy::indexing_slicing, clippy::expect_used)]
     pub(crate) fn add<'a, S: ChunkGet<BS>, const BS: usize>(
         &'a mut self,
         path: &'a [u8],
@@ -504,6 +513,10 @@ impl<E: NodeEntry> Node<E> {
     /// Remove the entry at the given path, loading from storage as needed.
     ///
     /// Returns a boxed future so the `&mut self` recursion can name its own type.
+    // Panic-freedom: `path` is non-empty past the EmptyPath guard;
+    // `path.starts_with(&prefix)` guarantees `prefix.len() <= path.len()`;
+    // the fork at `first` is checked present before the get_mut/expect.
+    #[allow(clippy::indexing_slicing, clippy::expect_used)]
     pub(crate) fn remove<'a, S: ChunkGet<BS>, const BS: usize>(
         &'a mut self,
         path: &'a [u8],
@@ -553,6 +566,7 @@ impl<E: NodeEntry> Node<E> {
     }
 
     /// Test whether a prefix exists in the trie, loading from storage as needed.
+    #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
     pub(crate) async fn has_prefix<S: ChunkGet<BS>, const BS: usize>(
         &mut self,
         path: &[u8],
@@ -594,6 +608,7 @@ impl<E: NodeEntry> Node<E> {
     /// Uses BMT content-addressing via `ContentChunk`. An explicit stack avoids
     /// recursion: each frame visits its forks (pushing unsaved children) before
     /// the node itself is encoded and put.
+    #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
     pub(crate) async fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
         if self.reference.is_some() {
             return Ok(());
@@ -621,8 +636,10 @@ impl<E: NodeEntry> Node<E> {
             let node = unsafe { &mut *frame.node };
 
             if frame.key_idx < frame.keys.len() {
+                #[allow(clippy::indexing_slicing)] // key_idx < keys.len() checked above
                 let key = frame.keys[frame.key_idx];
                 frame.key_idx += 1;
+                #[allow(clippy::expect_used)] // key was collected from this node's fork map, which is not mutated while the frame is live
                 let child = node.forks.get_mut(&key).expect("key from this node");
                 if child.node.reference.is_none() {
                     let child_ptr = &mut child.node as *mut Self;
@@ -691,6 +708,7 @@ impl<E: NodeEntry> Node<E> {
 /// Pre-order DFS visitor over a loaded-on-demand trie via an explicit stack.
 ///
 /// The visitor `f` only reads loaded nodes, so it stays a synchronous `FnMut`.
+#[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
 async fn walk_inner<E: NodeEntry, S: ChunkGet<BS>, const BS: usize, F>(
     path_buf: &mut Vec<u8>,
     node: &mut Node<E>,
@@ -728,6 +746,7 @@ where
             continue;
         }
 
+        #[allow(clippy::indexing_slicing)] // key_idx < keys.len() checked above
         let key = frame.keys[frame.key_idx];
         frame.key_idx += 1;
 

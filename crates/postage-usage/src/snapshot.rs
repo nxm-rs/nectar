@@ -770,6 +770,10 @@ impl Validated<'_> {
         self.snapshot.issued_at_persist = Some(self.snapshot.table.total_issued());
 
         let slots = &self.snapshot.slots;
+        // The leaf count is bounded by the chunk geometry (at most
+        // MAX_PAYLOAD_SIZE / 32 digests fit the root), so `1 + len` cannot
+        // overflow.
+        #[allow(clippy::arithmetic_side_effects)]
         let mut chunks = Vec::with_capacity(1 + encoded.leaves.len());
         let payloads = core::iter::once(&encoded.root).chain(encoded.leaves.iter());
         for (index, payload) in payloads.enumerate() {
@@ -777,6 +781,10 @@ impl Validated<'_> {
             let id = usage_chunk_id(&batch_id, index);
             let address = usage_chunk_address(&batch_id, owner, index);
             let bucket = calculate_bucket(&address, bucket_depth);
+            // The allocation loop above breaks only once
+            // `slots.len() > encoded.leaves.len()`, so every payload index
+            // (root plus one per leaf) has an allocated slot.
+            #[allow(clippy::indexing_slicing)]
             chunks.push(PlannedChunk {
                 index,
                 id,
@@ -956,6 +964,9 @@ mod arbitrary_impls {
             let allocated = u.int_in_range(0..=4usize)?;
             let mut slots = Vec::with_capacity(allocated);
             for _ in 0..allocated {
+                // `bucket_capacity()` is `1 << counter_bits >= 1`, so the
+                // decrement cannot underflow.
+                #[allow(clippy::arithmetic_side_effects)]
                 slots.push(u.int_in_range(0..=capacity - 1)?);
             }
             // Cannot fail for the values generated above; map defensively

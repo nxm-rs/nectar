@@ -131,6 +131,7 @@ impl SwarmAddress {
     }
 
     /// Calculate the distance between Self and address `y` in big-endian
+    #[allow(clippy::indexing_slicing)] // i < 32 from enumerating a 32-byte address, matching result's length
     #[inline(always)]
     #[must_use]
     pub fn distance(&self, y: &Self) -> U256 {
@@ -176,6 +177,7 @@ impl SwarmAddress {
     /// is closer (smaller distance), because `min_by` selects the element for
     /// which the comparator returns `Less` - and we want to select the one
     /// that is NOT closer (i.e., has a larger distance), leaving the closest.
+    #[allow(clippy::indexing_slicing)] // ab, xb and yb are all 32-byte addresses and i < ab.len()
     #[inline(always)]
     #[must_use]
     pub fn distance_cmp(&self, x: &Self, y: &Self) -> Ordering {
@@ -242,6 +244,7 @@ impl SwarmAddress {
     /// XOR distance - bitwise XOR of the two 32-byte addresses as a new
     /// [`SwarmAddress`]. Useful when callers want the raw distance bytes
     /// (e.g. for content-routing bias) rather than the proximity-order metric.
+    #[allow(clippy::indexing_slicing)] // i < 32 from enumerating a 32-byte address, matching out's length
     #[inline(always)]
     #[must_use]
     pub fn xor(&self, other: &Self) -> Self {
@@ -262,6 +265,8 @@ impl SwarmAddress {
     }
 
     /// Helper function to calculate proximity with a maximum
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+    // max is MAX_PO (31) or EXTENDED_PO (36), so i <= max_bytes = 4 < 32 and i * 8 + leading_zeros <= 40 fits u8
     #[inline(always)]
     fn proximity_helper(&self, other: &Self, max: usize) -> u8 {
         let max_bytes = max / 8;

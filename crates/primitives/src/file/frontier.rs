@@ -30,6 +30,8 @@ impl<M: JoinMode> Clone for SubtreeNode<M> {
 }
 
 /// Parse children of an intermediate node that overlap a byte range.
+#[allow(clippy::arithmetic_side_effects)]
+// REF_SIZE is a nonzero constant; i < num_children <= BS / REF_SIZE bounds i * REF_SIZE within body.len(); child byte offsets and chunk-range bounds stay within the u64 file span for any tree the splitters can produce
 #[inline]
 pub(crate) fn overlapping_children<M, const BS: usize>(
     body: &[u8],
@@ -93,6 +95,7 @@ struct BfsExpander<M: JoinMode, const BS: usize> {
 
 impl<M: JoinMode, const BS: usize> BfsExpander<M, BS> {
     /// Returns `None` if `span` fits in a single chunk (no expansion possible).
+    #[allow(clippy::arithmetic_side_effects)] // both callers pass a nonzero target_subtrees (DEFAULT_ASYNC_CONCURRENCY * 2)
     fn new(
         root: &ChunkAddress,
         context: &M::JoinerContext,
@@ -123,6 +126,7 @@ impl<M: JoinMode, const BS: usize> BfsExpander<M, BS> {
 
     /// Apply pre-read bodies for expanded nodes, produce next frontier layer.
     /// Returns `false` if nothing was expanded (converged).
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // body_idx < expand_indices.len() is checked before both indexings, and the caller supplies exactly one body per expand index
     fn advance(&mut self, expand_indices: &[usize], bodies: &[Bytes]) -> Result<bool> {
         if expand_indices.is_empty() {
             return Ok(false);
@@ -188,6 +192,8 @@ where
         let futs: Vec<_> = indices
             .iter()
             .map(|&i| {
+                #[allow(clippy::indexing_slicing)]
+                // indices come from enumerating this same frontier
                 let n = &bfs.frontier[i];
                 super::mode::read_chunk_body::<M, G, BS>(getter, &n.addr, &n.context, n.span)
             })

@@ -51,6 +51,7 @@ where
     ///
     /// `sink` is called from rayon worker threads, so it must be `Fn + Sync`.
     /// Returns the root reference.
+    #[allow(clippy::arithmetic_side_effects)] // M::REF_SIZE is the nonzero constant 32 or 64
     pub fn split_into<R, F>(source: &R, sink: F) -> Result<M::RootRef>
     where
         R: ReadAt + Sync,
@@ -79,6 +80,7 @@ where
     ///
     /// Chunk order is irrelevant; callers key by address. Returns the root
     /// reference and the produced chunks.
+    #[allow(clippy::unwrap_used)] // Mutex poisoning requires a sink panic, which itself already aborts the rayon join; both unwraps are on that same local mutex
     pub fn split_to_vec<R: ReadAt + Sync>(
         source: &R,
     ) -> Result<(M::RootRef, Vec<AnyChunk<BODY_SIZE>>)> {
@@ -87,6 +89,7 @@ where
         Ok((root, chunks.into_inner().unwrap()))
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // i < data_chunks = ceil(size / BODY_SIZE), so offset = i * BODY_SIZE < size and size - offset cannot underflow
     fn create_data_chunks<R, F>(
         source: &R,
         tree: &TreeParams<BODY_SIZE>,
@@ -127,6 +130,7 @@ where
         results.into_iter().collect()
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // refs starts non-empty (size > 0 produces >= 1 data chunk) and each level keeps >= 1 ref, so refs[0] exists; level increments at most log_branches(refs) < LEVEL_LIMIT times
     fn build_intermediate_levels<F>(
         mut refs: Vec<M::RefBytes>,
         total_size: u64,
@@ -147,6 +151,7 @@ where
         M::extract_root(refs[0].as_ref())
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // refs_per_chunk >= 1; level < LEVEL_LIMIT = spans.len() for any in-memory ref count; start = i * refs_per_chunk < refs.len() and end is clamped to refs.len(), so the slice holds and child_refs is non-empty
     fn build_level<F>(
         refs: &[M::RefBytes],
         level: usize,

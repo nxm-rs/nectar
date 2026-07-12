@@ -136,10 +136,17 @@ pub(crate) fn resolve_seek_position(
 ) -> std::io::Result<u64> {
     use std::io::{Error, ErrorKind::InvalidInput, SeekFrom};
     let to_i64 = |v: u64, msg: &str| i64::try_from(v).map_err(|_| Error::new(InvalidInput, msg));
+    // Match std's seek semantics: a relative offset that overflows i64 is an
+    // invalid-input error, never a wrap or panic.
+    let overflow = || Error::new(InvalidInput, "seek position overflows i64");
     let new_pos = match pos {
         SeekFrom::Start(off) => to_i64(off, "seek offset exceeds i64::MAX")?,
-        SeekFrom::End(off) => to_i64(span, "file span exceeds i64::MAX")? + off,
-        SeekFrom::Current(off) => to_i64(current, "current position exceeds i64::MAX")? + off,
+        SeekFrom::End(off) => to_i64(span, "file span exceeds i64::MAX")?
+            .checked_add(off)
+            .ok_or_else(overflow)?,
+        SeekFrom::Current(off) => to_i64(current, "current position exceeds i64::MAX")?
+            .checked_add(off)
+            .ok_or_else(overflow)?,
     };
     if new_pos < 0 {
         return Err(Error::new(InvalidInput, "seek to negative position"));

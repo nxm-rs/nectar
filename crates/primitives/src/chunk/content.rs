@@ -191,6 +191,7 @@ impl<const BODY_SIZE: usize> EncryptedContentChunk<BODY_SIZE> {
     }
 
     /// Decrypt back to a plaintext `ContentChunk`.
+    #[allow(clippy::indexing_slicing)] // a ContentChunk's wire bytes always start with an 8-byte span, so [..SPAN_SIZE] holds
     pub fn decrypt(&self) -> Result<ContentChunk<BODY_SIZE>> {
         use super::encryption::transcrypt;
         use crate::bmt::SPAN_SIZE;
@@ -258,6 +259,7 @@ impl<const BODY_SIZE: usize> Chunk for ContentChunk<BODY_SIZE> {
         self.body.data()
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // header (0 bytes) plus a body bounded by BODY_SIZE cannot overflow usize
     fn size(&self) -> usize {
         self.header().bytes().len() + self.body.size()
     }
@@ -300,6 +302,7 @@ impl<const BODY_SIZE: usize> TryFrom<&[u8]> for ContentChunk<BODY_SIZE> {
 }
 
 impl<const BODY_SIZE: usize> fmt::Display for ContentChunk<BODY_SIZE> {
+    #[allow(clippy::indexing_slicing)] // the address is a fixed 32-byte value, so [..8] holds
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -381,6 +384,7 @@ impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild> {
     }
 
     /// Build the final ContentChunk
+    #[allow(clippy::unwrap_used)] // the ReadyToBuild typestate guarantees body is Some
     fn build(self) -> ContentChunk<BODY_SIZE> {
         // This is safe as we have already checked that the body is set
         let body = self.body.unwrap();

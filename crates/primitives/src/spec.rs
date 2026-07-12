@@ -66,6 +66,7 @@ pub trait SwarmSpec {
     }
 
     /// Convenience: the routing-table bin count (`max_proximity_order() + 1`).
+    #[allow(clippy::arithmetic_side_effects)] // max_proximity_order() <= MAX_PO (31), so + 1 cannot overflow usize
     fn bin_count(&self) -> usize {
         usize::from(self.max_proximity_order().get()) + 1
     }

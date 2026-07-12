@@ -41,6 +41,9 @@ pub(crate) const fn map_counter_error(err: CounterError) -> UsageError {
 /// meaningless, and `nectar_postage::calculate_bucket` shifts a `u32` right by
 /// `32 - bucket_depth`, so `bucket_depth == 0` would overflow the shift on the
 /// persist and issue paths.
+// `depth - bucket_depth` is short-circuit guarded by the preceding
+// `depth < bucket_depth` disjunct, so it cannot underflow.
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()> {
     if bucket_depth == 0
         || bucket_depth > MAX_BUCKET_DEPTH
@@ -464,6 +467,9 @@ mod arbitrary_impls {
             // exactly the format invariant, not a generator restriction.
             let bucket_depth = u.int_in_range(1..=MAX_BUCKET_DEPTH)?;
             let counter_bits = u.int_in_range(0..=MAX_COUNTER_BITS)?;
+            // `bucket_depth <= 16` and `counter_bits <= 31`, so the u8 sum
+            // is at most 47.
+            #[allow(clippy::arithmetic_side_effects)]
             let depth = bucket_depth + counter_bits;
             let capacity = 1u32 << counter_bits;
             let mutability = Mutability::arbitrary(u)?;
@@ -474,7 +480,12 @@ mod arbitrary_impls {
             let outliers = u.int_in_range(0..=buckets.min(16))?;
             for _ in 0..outliers {
                 let bucket = u.choose_index(buckets)?;
-                counts[bucket] = u.int_in_range(0..=capacity)?;
+                // `choose_index(buckets)` returns an index below `buckets`,
+                // the length of `counts`.
+                #[allow(clippy::indexing_slicing)]
+                {
+                    counts[bucket] = u.int_in_range(0..=capacity)?;
+                }
             }
 
             // Cannot fail for the geometry and counters generated above; map

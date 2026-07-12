@@ -60,6 +60,8 @@ pub const fn current_timestamp() -> u64 {
 /// assert_eq!(bucket, 0xCBE5);
 /// ```
 #[inline]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)] // SwarmAddress is a fixed 32-byte array: `[0..4]` and the 4-byte `try_into` are infallible
+#[allow(clippy::arithmetic_side_effects)] // `32 - bucket_depth` underflow is the documented `# Panics` contract (`bucket_depth` in 1..=32)
 pub fn calculate_bucket(address: &SwarmAddress, bucket_depth: u8) -> u32 {
     // Take the first 4 bytes as a big-endian u32
     let leading = u32::from_be_bytes(address.as_bytes()[0..4].try_into().unwrap());

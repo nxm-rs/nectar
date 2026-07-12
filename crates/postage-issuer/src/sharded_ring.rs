@@ -62,6 +62,9 @@ impl<R: Reservation> RingShard<R> {
         }
     }
 
+    // Shard routing invariant: callers only pass buckets owned by this shard, so
+    // `bucket >= base_bucket` and the subtraction cannot underflow.
+    #[allow(clippy::arithmetic_side_effects)]
     #[inline]
     const fn local_index(&self, bucket: u32) -> usize {
         (bucket - self.base_bucket) as usize
@@ -72,8 +75,15 @@ impl<R: Reservation> RingShard<R> {
     ///
     /// Returns [`IssuerError::RingExhausted`] if every slot in the bucket is
     /// protected.
+    // Shard routing invariant: `local < cursors.len() == saturated.len()` because
+    // this shard owns that bucket range. The cursor is kept strictly below
+    // `bucket_capacity` (reset to 0 on wrap), so `position + 1` cannot overflow.
+    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
     fn next_slot(&self, bucket: u32, bucket_capacity: u32) -> Result<u32, IssuerError> {
         let local = self.local_index(bucket);
+        // Lock poisoning means another thread already panicked; propagating the
+        // panic is the intended behavior.
+        #[allow(clippy::expect_used)]
         let mut state = self.state.lock().expect("ring shard lock poisoned");
         for _ in 0..bucket_capacity {
             let position = state.cursors[local];
@@ -95,8 +105,14 @@ impl<R: Reservation> RingShard<R> {
 
     /// Returns the number of distinct slots written in a bucket, saturating at
     /// the bucket capacity.
+    // Shard routing invariant: `local < cursors.len() == saturated.len()` because
+    // this shard owns that bucket range.
+    #[allow(clippy::indexing_slicing)]
     fn utilization(&self, bucket: u32, bucket_capacity: u32) -> u32 {
         let local = self.local_index(bucket);
+        // Lock poisoning means another thread already panicked; propagating the
+        // panic is the intended behavior.
+        #[allow(clippy::expect_used)]
         let state = self.state.lock().expect("ring shard lock poisoned");
         if state.saturated[local] {
             bucket_capacity
@@ -205,6 +221,13 @@ impl<R: Reservation> ShardedRingIssuer<R> {
         ))
     }
 
+    // All arithmetic is on validated shard geometry: `shard_count` is a nonzero
+    // power of two clamped to `total_buckets = 2^bucket_depth`, so the division,
+    // the `shard_count - 1` mask, `bucket_depth - shard_bits`, and the
+    // `i * buckets_per_shard` shard bases (bounded by `total_buckets`) cannot
+    // divide by zero, underflow, or overflow; `depth >= bucket_depth` is the
+    // batch geometry invariant.
+    #[allow(clippy::arithmetic_side_effects)]
     fn with_shard_count(
         batch_id: BatchId,
         depth: u8,
@@ -268,6 +291,9 @@ impl<R: Reservation> ShardedRingIssuer<R> {
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
         let bucket = calculate_bucket(address, self.bucket_depth);
+        // `shard_index` masks with `shard_mask = shards.len() - 1`, so the index
+        // is always in range.
+        #[allow(clippy::indexing_slicing)]
         let shard = &self.shards[self.shard_index(bucket)];
 
         let position =
@@ -279,11 +305,22 @@ impl<R: Reservation> ShardedRingIssuer<R> {
                 })?;
 
         {
+            // Lock poisoning means another thread already panicked; propagating
+            // the panic is the intended behavior.
+            #[allow(clippy::expect_used)]
             let mut issued = self.stamps_issued.lock().expect("stamps lock poisoned");
-            *issued += 1;
+            // Monotone u64 issuance counter; one increment per stamp cannot
+            // realistically overflow 2^64.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                *issued += 1;
+            }
         }
         let fill = shard.utilization(bucket, self.bucket_capacity);
         {
+            // Lock poisoning means another thread already panicked; propagating
+            // the panic is the intended behavior.
+            #[allow(clippy::expect_used)]
             let mut max = self
                 .max_utilization
                 .lock()
@@ -325,11 +362,17 @@ impl<R: Reservation> ShardedRingIssuer<R> {
     /// Returns the current utilization of a specific bucket, saturating at the
     /// bucket capacity once the ring has wrapped.
     pub fn bucket_utilization(&self, bucket: u32) -> u32 {
+        // `shard_index` masks with `shard_mask = shards.len() - 1`, so the index
+        // is always in range.
+        #[allow(clippy::indexing_slicing)]
         let shard = &self.shards[self.shard_index(bucket)];
         shard.utilization(bucket, self.bucket_capacity)
     }
 
     /// Returns the maximum bucket utilization observed across all buckets.
+    // Lock poisoning means another thread already panicked; propagating the
+    // panic is the intended behavior.
+    #[allow(clippy::expect_used)]
     pub fn max_bucket_utilization(&self) -> u32 {
         *self
             .max_utilization
@@ -338,6 +381,9 @@ impl<R: Reservation> ShardedRingIssuer<R> {
     }
 
     /// Returns the total number of stamps issued.
+    // Lock poisoning means another thread already panicked; propagating the
+    // panic is the intended behavior.
+    #[allow(clippy::expect_used)]
     pub fn stamps_issued(&self) -> u64 {
         *self.stamps_issued.lock().expect("stamps lock poisoned")
     }

@@ -51,6 +51,9 @@ impl BucketShard {
     }
 
     /// Returns the local index within this shard for a given global bucket.
+    // Shard routing invariant: callers only pass buckets owned by this shard, so
+    // `bucket >= base_bucket` and the subtraction cannot underflow.
+    #[allow(clippy::arithmetic_side_effects)]
     #[inline]
     const fn local_index(&self, bucket: u32) -> usize {
         (bucket - self.base_bucket) as usize
@@ -58,6 +61,9 @@ impl BucketShard {
 
     /// Allocates the next index for a bucket, returning the allocated index.
     /// Returns None if the bucket is full.
+    // Shard routing invariant: `local_index(bucket) < indices.len()` because this
+    // shard owns buckets `[base_bucket, base_bucket + indices.len())`.
+    #[allow(clippy::indexing_slicing)]
     #[inline]
     fn allocate(&self, bucket: u32, bucket_capacity: u32) -> Option<u32> {
         let local_idx = self.local_index(bucket);
@@ -72,6 +78,9 @@ impl BucketShard {
     }
 
     /// Gets the current utilization of a bucket.
+    // Shard routing invariant: `local_index(bucket) < indices.len()` because this
+    // shard owns buckets `[base_bucket, base_bucket + indices.len())`.
+    #[allow(clippy::indexing_slicing)]
     #[inline]
     fn utilization(&self, bucket: u32) -> u32 {
         let local_idx = self.local_index(bucket);
@@ -126,6 +135,13 @@ impl ShardedIssuer {
     /// # Panics
     ///
     /// Panics if `shard_count` is not a power of 2 or is greater than the bucket count.
+    // All arithmetic is on validated shard geometry: `shard_count` is a nonzero
+    // power of two clamped to `total_buckets = 2^bucket_depth`, so the division,
+    // the `shard_count - 1` mask, `bucket_depth - shard_bits`, and the
+    // `i * buckets_per_shard` shard bases (bounded by `total_buckets`) cannot
+    // divide by zero, underflow, or overflow; `depth >= bucket_depth` is the
+    // batch geometry invariant.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn with_shard_count(
         batch_id: BatchId,
         depth: u8,
@@ -205,7 +221,12 @@ impl ShardedIssuer {
             });
         }
         self.depth = new_depth;
-        self.bucket_capacity = 1u32 << (new_depth - self.bucket_depth);
+        // `new_depth >= self.depth >= self.bucket_depth` (checked above plus the
+        // batch geometry invariant), so the subtraction cannot underflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.bucket_capacity = 1u32 << (new_depth - self.bucket_depth);
+        }
         Ok(())
     }
 
@@ -225,6 +246,9 @@ impl ShardedIssuer {
     ) -> Result<StampDigest, StampError> {
         let bucket = calculate_bucket(address, self.bucket_depth);
         let shard_idx = self.shard_index(bucket);
+        // `shard_index` masks with `shard_mask = shards.len() - 1`, so the index
+        // is always in range.
+        #[allow(clippy::indexing_slicing)]
         let shard = &self.shards[shard_idx];
 
         let position =
@@ -238,7 +262,10 @@ impl ShardedIssuer {
         // Update stats (relaxed ordering is fine for stats)
         self.stamps_issued.fetch_add(1, Ordering::Relaxed);
 
-        // Update max utilization (compare-and-swap loop)
+        // Update max utilization (compare-and-swap loop).
+        // `position < bucket_capacity <= u32::MAX` (allocate returned Some), so
+        // the increment cannot overflow.
+        #[allow(clippy::arithmetic_side_effects)]
         let new_util = position + 1;
         let mut current_max = self.max_utilization.load(Ordering::Relaxed);
         while new_util > current_max {
@@ -278,6 +305,9 @@ impl ShardedIssuer {
     }
 
     /// Current utilization of a specific bucket.
+    // `shard_index` masks with `shard_mask = shards.len() - 1`, so the index is
+    // always in range.
+    #[allow(clippy::indexing_slicing)]
     pub fn bucket_utilization(&self, bucket: u32) -> u32 {
         let shard_idx = self.shard_index(bucket);
         self.shards[shard_idx].utilization(bucket)

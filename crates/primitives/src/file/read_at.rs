@@ -21,6 +21,7 @@ pub trait ReadAt {
 }
 
 impl ReadAt for [u8] {
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // offset < self.len() is checked above, and to_read = min(buf.len(), self.len() - offset) bounds both slices
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let offset = offset as usize;
         if offset >= self.len() {

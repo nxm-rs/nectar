@@ -1,0 +1,59 @@
+# Clippy (runtime-safety restriction lints) + unused-dependency checks.
+name: lint
+
+on:
+    pull_request:
+    merge_group:
+    push:
+        branches: [main]
+
+env:
+    CARGO_TERM_COLOR: always
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+    cancel-in-progress: true
+
+jobs:
+    clippy:
+        name: clippy
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
+            - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+              with:
+                  components: clippy
+            - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+              with:
+                  cache-on-failure: true
+            # Lints lib+bins with default features; the `deny`-level restriction
+            # lints in `[workspace.lints.clippy]` make this fail on any
+            # panicking/overflowing operation in production code.
+            - name: cargo clippy
+              run: cargo clippy --workspace --locked
+            # `unused_crate_dependencies` is enforced per-library via `cargo
+            # rustc` (not `[workspace.lints]`) so the flag applies only to each
+            # crate's own lib target — never to benches/examples/tests (which
+            # inherit the package's full dependency set and would false-positive)
+            # or to third-party crates. cargo-machete (below) is the broader gate
+            # that also covers non-lib targets.
+            - name: unused lib dependencies
+              run: |
+                  for crate in nectar-primitives nectar-mantaray nectar-postage \
+                               nectar-postage-issuer nectar-postage-usage \
+                               nectar-swarms nectar-contracts; do
+                      cargo rustc --locked -p "$crate" --lib -- -D unused_crate_dependencies
+                  done
+
+    unused-deps:
+        name: unused-deps (machete)
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            - uses: taiki-e/install-action@1b57bc699ba2af96a06eb2a2a0d32b43a7d8e8b8  # install-action
+              with:
+                  tool: cargo-machete
+            - name: cargo machete
+              run: cargo machete

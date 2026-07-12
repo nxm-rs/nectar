@@ -59,6 +59,7 @@ pub trait Chunk: Send + Sync + 'static {
     fn data(&self) -> &Bytes;
 
     /// Get the total size of this chunk in bytes
+    #[allow(clippy::arithmetic_side_effects)] // header and payload are both bounded by the chunk wire size, far below usize::MAX
     fn size(&self) -> usize {
         self.header().bytes().len() + self.data().len()
     }
@@ -83,6 +84,7 @@ pub trait ChunkSerialization {
 }
 
 impl<T: Chunk> ChunkSerialization for T {
+    #[allow(clippy::arithmetic_side_effects)] // 2 + a chunk size bounded by the wire format is a capacity hint far below usize::MAX
     fn serialize_with_prefix(&self) -> Bytes {
         let mut bytes = BytesMut::with_capacity(2 + self.size());
         bytes.extend(self.header().bytes());

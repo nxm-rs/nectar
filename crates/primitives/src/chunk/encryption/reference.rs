@@ -42,6 +42,7 @@ impl EncryptedChunkRef {
     }
 
     /// Write the reference into `buf`. Panics if `buf` is too small.
+    #[allow(clippy::indexing_slicing)] // documented contract: panics if buf.len() < Self::SIZE; both callers pass fixed [u8; Self::SIZE] buffers
     pub fn write_to(&self, buf: &mut [u8]) {
         buf[..size_of::<ChunkAddress>()].copy_from_slice(self.address.as_bytes());
         buf[size_of::<ChunkAddress>()..Self::SIZE].copy_from_slice(self.key.as_bytes());
@@ -74,6 +75,7 @@ impl From<&EncryptedChunkRef> for Vec<u8> {
 impl TryFrom<&[u8]> for EncryptedChunkRef {
     type Error = EncryptionError;
 
+    #[allow(clippy::indexing_slicing)] // slice.len() == Self::SIZE (64) is checked above with an error return, covering both the 32-byte address and 32-byte key slices
     fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
         if slice.len() != Self::SIZE {
             return Err(EncryptionError::InvalidReferenceLength { len: slice.len() });

@@ -25,7 +25,6 @@ alloy-signer = { workspace = true }
 thiserror = { workspace = true }
 
 # optional
-serde = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
@@ -53,13 +52,6 @@ default = ["std"]
 
 # Standard library support
 std = ["nectar-postage/std"]
-
-# Serialization support with serde
-serde = [
-	"dep:serde",
-	"nectar-postage/serde",
-	"nectar-primitives/serde"
-]
 
 # Local key signing for testing and development
 local-signer = ["dep:alloy-signer-local", "std"]
