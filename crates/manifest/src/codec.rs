@@ -1352,4 +1352,99 @@ mod tests {
             EncodeError::OverBudget { len, max } if len > V1::BUDGET && max == V1::BUDGET
         ));
     }
+
+    /// A valid image exercising every entry width, an embedded child, a
+    /// nested embedded child, and metadata: the mutation seed below.
+    fn rich_payload() -> Vec<u8> {
+        let mut inner = ForkTable::new();
+        inner
+            .insert(prefix(b"deep"), Entry::from(ref32(9)).into(), None)
+            .unwrap();
+
+        let mut child = ForkTable::new();
+        child
+            .insert(
+                prefix(b"eaf"),
+                ForkPayload::new(Some(Entry::from(ref64(7))), Some(Child::Embedded(inner)))
+                    .unwrap(),
+                Some(meta(KeyId::Filename, b"leaf")),
+            )
+            .unwrap();
+
+        let mut forks = ForkTable::new();
+        forks
+            .insert(prefix(b"a"), Entry::from(ref32(1)).into(), None)
+            .unwrap();
+        forks
+            .insert(
+                prefix(b"binline"),
+                Entry::inline(Bytes::from_static(b"v")).unwrap().into(),
+                None,
+            )
+            .unwrap();
+        forks
+            .insert(prefix(b"l"), Child::Embedded(child).into(), None)
+            .unwrap();
+
+        let node: Node = Node::new(
+            RootExtension::new(
+                Some(Entry::from(ref64(2))),
+                Some(meta(KeyId::WebsiteIndexDocument, b"index.html")),
+            ),
+            forks,
+        );
+        node.encode().unwrap()
+    }
+
+    // The decoder parses untrusted network bytes, so no input may panic: the
+    // reject-or-accept contract holds for every corruption, not just the
+    // canonical images the round-trip tests build. A future edit that trades
+    // a cursor read for a bare index or a saturating narrowing for a raw one
+    // is caught here rather than in production.
+    #[test]
+    fn no_adversarial_input_panics() {
+        let base = rich_payload();
+
+        // Every single-byte substitution, and the prefix truncation at that
+        // point, over the whole image.
+        for i in 0..base.len() {
+            let _ = Node::<V1>::decode(&base[..i]);
+            for byte in 0..=u8::MAX {
+                let mut image = base.clone();
+                image[i] = byte;
+                let _ = Node::<V1>::decode(&image);
+            }
+        }
+
+        // Every adjacent-pair overwrite with a wide length field: drives the
+        // count, offset, and length readers toward their bounds.
+        for i in 0..base.len().saturating_sub(1) {
+            for hi in [0x00u8, 0x01, 0x02, 0x04, 0x06, 0x10, 0x40, 0xFF] {
+                let mut image = base.clone();
+                image[i] = 0xFF;
+                image[i + 1] = hi;
+                let _ = Node::<V1>::decode(&image);
+            }
+        }
+
+        // Deterministic pseudorandom images, half carrying the real preamble.
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..100_000 {
+            let len = usize::try_from(next() % 300).unwrap();
+            let mut image: Vec<u8> = (0..len)
+                .map(|_| u8::try_from(next() & 0xFF).unwrap())
+                .collect();
+            if len >= 2 && next() & 1 == 0 {
+                image[0] = V1::MAGIC;
+                image[1] = V1::VERSION;
+            }
+            let _ = Node::<V1>::decode(&image);
+        }
+    }
 }
