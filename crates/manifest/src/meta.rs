@@ -366,6 +366,22 @@ mod tests {
     }
 
     #[test]
+    fn key_id_order_tracks_the_wire_id() {
+        // The canonical wire order of known pairs is ascending key_id, and the
+        // encoder emits them in the derived enum order: the two MUST coincide
+        // for every id, else a variant reorder silently drifts the address.
+        let mut by_ord = ALL_IDS;
+        by_ord.sort_unstable();
+        let mut by_id = ALL_IDS;
+        by_id.sort_unstable_by_key(|id| id.id());
+        assert_eq!(by_ord, by_id);
+        for pair in ALL_IDS.windows(2) {
+            assert!(pair[0].id() < pair[1].id());
+            assert!(MetadataKey::<V1>::from(pair[0]) < MetadataKey::from(pair[1]));
+        }
+    }
+
+    #[test]
     fn metadata_key_order_is_the_wire_order() {
         let known_last: MetadataKey = KeyId::SwarmFeedType.into();
         let custom_first: MetadataKey = custom(b"a").into();
