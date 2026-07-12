@@ -111,7 +111,6 @@ pub use chunk::{
     ChunkAddress,
     // Concrete chunk types
     ChunkRef,
-    ChunkSerialization,
     ChunkType,
     ChunkTypeId,
     ChunkTypeSet,

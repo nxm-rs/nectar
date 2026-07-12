@@ -7,22 +7,17 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use bytes::Bytes;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::error::Result;
 
-use super::any_chunk::AnyChunk;
-use super::content::ContentChunk;
-use super::error::ChunkError;
-use super::single_owner::SingleOwnerChunk;
 use super::type_id::ChunkTypeId;
 
 /// Trait defining a set of supported chunk types with configurable body size.
 ///
 /// This trait is implemented by marker types that define which chunk types
-/// a system supports. It enables compile-time configuration of valid chunk types
-/// while providing runtime polymorphism through [`AnyChunk`].
+/// a system supports. It enables compile-time configuration of valid chunk
+/// types; decoding into a runtime-polymorphic chunk goes through
+/// [`AnyChunk::from_wire_bytes`](super::any_chunk::AnyChunk::from_wire_bytes).
 ///
 /// # Design Rationale
 ///
@@ -31,7 +26,6 @@ use super::type_id::ChunkTypeId;
 ///
 /// - Zero-cost type checking at compile time
 /// - Generic programming over chunk type sets
-/// - Runtime dispatch only when necessary (deserialization)
 ///
 /// # Example
 ///
@@ -59,17 +53,6 @@ pub trait ChunkTypeSet<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: Send + Sync 
     /// Returns `true` if chunks with the given type ID can be
     /// deserialized and processed by this set.
     fn supports(type_id: ChunkTypeId) -> bool;
-
-    /// Deserialize bytes into the appropriate chunk type.
-    ///
-    /// The first byte of the input should be the chunk type ID.
-    /// Returns an error if the type is not supported or deserialization fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ChunkError::UnsupportedType` if the type ID is not in this set.
-    /// May return other errors from the underlying chunk deserialization.
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>>;
 
     /// Get the list of all supported type IDs.
     ///
@@ -119,10 +102,6 @@ pub trait ChunkTypeSet<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: Send + Sync 
 /// // Check support
 /// assert!(StandardChunkSet::supports(ChunkTypeId::CONTENT));
 /// assert!(StandardChunkSet::supports(ChunkTypeId::SINGLE_OWNER));
-///
-/// // Deserialize a chunk
-/// let bytes: &[u8] = /* serialized chunk bytes */;
-/// let chunk = StandardChunkSet::deserialize(bytes)?;
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StandardChunkSet;
@@ -130,35 +109,6 @@ pub struct StandardChunkSet;
 impl<const BODY_SIZE: usize> ChunkTypeSet<BODY_SIZE> for StandardChunkSet {
     fn supports(type_id: ChunkTypeId) -> bool {
         matches!(type_id, ChunkTypeId::CONTENT | ChunkTypeId::SINGLE_OWNER)
-    }
-
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>> {
-        if bytes.is_empty() {
-            return Err(ChunkError::invalid_format("empty chunk data").into());
-        }
-
-        // Note: For CAC/SOC, the type ID is in the header, but for raw chunk data
-        // coming off the wire, we typically don't have the header prefix.
-        // The actual deserialization happens based on the chunk structure.
-        //
-        // For CAC: just BMT body (span + data)
-        // For SOC: id + signature + BMT body
-        //
-        // We'll try ContentChunk first (simpler structure), then SingleOwnerChunk.
-        // This is a heuristic - in practice, callers should know the expected type.
-
-        // Try as ContentChunk first
-        if let Ok(content) = ContentChunk::<BODY_SIZE>::try_from(Bytes::copy_from_slice(bytes)) {
-            return Ok(AnyChunk::Content(content));
-        }
-
-        // Try as SingleOwnerChunk
-        if let Ok(soc) = SingleOwnerChunk::<BODY_SIZE>::try_from(Bytes::copy_from_slice(bytes)) {
-            return Ok(AnyChunk::SingleOwner(soc));
-        }
-
-        // If neither worked, it's an invalid format
-        Err(ChunkError::invalid_format("could not deserialize as any supported chunk type").into())
     }
 
     fn supported_types() -> &'static [ChunkTypeId] {
@@ -177,14 +127,6 @@ impl<const BODY_SIZE: usize> ChunkTypeSet<BODY_SIZE> for ContentOnlyChunkSet {
         type_id == ChunkTypeId::CONTENT
     }
 
-    fn deserialize(bytes: &[u8]) -> Result<AnyChunk<BODY_SIZE>> {
-        if bytes.is_empty() {
-            return Err(ChunkError::invalid_format("empty chunk data").into());
-        }
-
-        ContentChunk::<BODY_SIZE>::try_from(Bytes::copy_from_slice(bytes)).map(AnyChunk::Content)
-    }
-
     fn supported_types() -> &'static [ChunkTypeId] {
         &[ChunkTypeId::CONTENT]
     }
@@ -192,8 +134,16 @@ impl<const BODY_SIZE: usize> ChunkTypeSet<BODY_SIZE> for ContentOnlyChunkSet {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
+    use super::super::address::ChunkAddress;
+    use super::super::any_chunk::AnyChunk;
+    use super::super::content::ContentChunk;
+    use super::super::error::ChunkError;
+    use super::super::single_owner::SingleOwnerChunk;
     use super::super::traits::Chunk;
     use super::*;
+    use crate::error::Result;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
 
@@ -256,22 +206,23 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_content_chunk() {
+    fn test_from_wire_bytes_content_chunk() {
         // Create a content chunk and serialize it
         let content = DefaultContentChunk::new(&b"hello world"[..]).unwrap();
         let bytes: Bytes = content.clone().into();
 
-        // Deserialize through StandardChunkSet
+        // Decode through the address-keyed wire decoder
         let any_chunk =
-            <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::deserialize(&bytes).unwrap();
+            AnyChunk::<DEFAULT_BODY_SIZE>::from_wire_bytes(content.address(), bytes).unwrap();
 
         assert!(any_chunk.is_content());
         assert_eq!(*any_chunk.address(), *content.address());
     }
 
     #[test]
-    fn test_deserialize_empty_bytes_fails() {
-        let result = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::deserialize(&[]);
+    fn test_from_wire_bytes_empty_bytes_fails() {
+        let result =
+            AnyChunk::<DEFAULT_BODY_SIZE>::from_wire_bytes(&ChunkAddress::default(), Bytes::new());
         assert!(result.is_err());
     }
 
@@ -280,16 +231,31 @@ mod tests {
     /// address/owner computations. The fuzz oracle is "no panic"; `Err` is an
     /// acceptable outcome for arbitrary bytes.
     fn exercise_chunk_decode(data: &[u8]) -> Result<AnyChunk<DEFAULT_BODY_SIZE>> {
-        let result = <StandardChunkSet as ChunkTypeSet<DEFAULT_BODY_SIZE>>::deserialize(data);
-        if let Ok(chunk) = &result {
-            let _ = chunk.address();
-        }
+        let bytes = Bytes::copy_from_slice(data);
 
-        let _ = ContentChunk::<DEFAULT_BODY_SIZE>::try_from(data);
-        if let Ok(soc) = SingleOwnerChunk::<DEFAULT_BODY_SIZE>::try_from(data) {
+        // Address-mismatch arm: the zero address matches (almost) no input,
+        // so both trial parses and their address computations run to `Err`.
+        let _ =
+            AnyChunk::<DEFAULT_BODY_SIZE>::from_wire_bytes(&ChunkAddress::default(), bytes.clone());
+
+        let content = ContentChunk::<DEFAULT_BODY_SIZE>::try_from(data);
+        let soc = SingleOwnerChunk::<DEFAULT_BODY_SIZE>::try_from(data);
+        if let Ok(soc) = &soc {
             // ECDSA public-key recovery over bytes 32..97 must not panic.
             let _ = soc.owner();
             let _ = soc.address();
+        }
+
+        // Ok arm: key the wire decoder by the address of whichever direct
+        // parse succeeded, CAC first (the same trial order the decoder uses).
+        let address = content
+            .ok()
+            .map(|c| *c.address())
+            .or_else(|| soc.ok().map(|s| *s.address()))
+            .ok_or_else(|| ChunkError::invalid_format("no structural parse"))?;
+        let result = AnyChunk::from_wire_bytes(&address, bytes);
+        if let Ok(chunk) = &result {
+            let _ = chunk.address();
         }
         result
     }

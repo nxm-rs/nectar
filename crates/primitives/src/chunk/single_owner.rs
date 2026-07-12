@@ -20,7 +20,7 @@ use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::content::ContentChunk;
 use super::soc_id::SocId;
-use super::traits::{BmtChunk, Chunk, ChunkHeader, ChunkMetadata};
+use super::traits::{BmtChunk, Chunk, ChunkHeader};
 
 // Constants for field sizes
 const ID_SIZE: usize = std::mem::size_of::<B256>();
@@ -39,7 +39,7 @@ const DISPERSED_REPLICA_OWNER_PK: B256 =
 /// and includes a digital signature proving ownership.
 #[derive(Debug, Clone)]
 pub struct SingleOwnerChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
-    /// The header containing type ID, version, and metadata (ID and signature)
+    /// The wire header (ID and signature)
     header: SingleOwnerChunkHeader,
     /// The body of the chunk, containing the actual data
     body: BmtBody<BODY_SIZE>,
@@ -73,10 +73,9 @@ impl SingleOwnerChunkMetadata {
     pub const fn signature(&self) -> &Signature {
         &self.signature
     }
-}
 
-impl ChunkMetadata for SingleOwnerChunkMetadata {
-    fn bytes(&self) -> Bytes {
+    /// Get the wire bytes of this metadata: `id || signature`
+    pub fn bytes(&self) -> Bytes {
         let mut bytes = BytesMut::with_capacity(ID_SIZE + SIGNATURE_SIZE);
         bytes.extend_from_slice(self.id.as_ref());
         bytes.extend_from_slice(&self.signature.as_bytes());
@@ -98,20 +97,6 @@ impl SingleOwnerChunkHeader {
 }
 
 impl ChunkHeader for SingleOwnerChunkHeader {
-    type Metadata = SingleOwnerChunkMetadata;
-
-    fn id(&self) -> u8 {
-        1
-    }
-
-    fn version(&self) -> u8 {
-        1
-    }
-
-    fn metadata(&self) -> &Self::Metadata {
-        &self.metadata
-    }
-
     fn bytes(&self) -> Bytes {
         self.metadata.bytes()
     }

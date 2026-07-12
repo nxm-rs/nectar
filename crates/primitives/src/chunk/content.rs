@@ -14,7 +14,7 @@ use crate::error::{PrimitivesError, Result};
 
 use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
-use super::traits::{BmtChunk, Chunk, ChunkHeader, ChunkMetadata};
+use super::traits::{BmtChunk, Chunk, ChunkHeader};
 
 /// A content-addressed chunk with configurable body size.
 ///
@@ -22,7 +22,7 @@ use super::traits::{BmtChunk, Chunk, ChunkHeader, ChunkMetadata};
 /// of its contents. It is immutable once created.
 #[derive(Debug, Clone)]
 pub struct ContentChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
-    /// The header containing type ID, version, and metadata
+    /// The (empty) wire header
     header: ContentChunkHeader,
     /// The body of the chunk, containing the actual data
     body: BmtBody<BODY_SIZE>,
@@ -30,54 +30,21 @@ pub struct ContentChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     address_cache: OnceCache<ChunkAddress>,
 }
 
-/// Metadata for a content-addressed chunk
-///
-/// Content chunks don't have any specific metadata, so this is empty.
-#[derive(Debug, Clone)]
-pub struct ContentChunkMetadata;
-
-impl ChunkMetadata for ContentChunkMetadata {
-    fn bytes(&self) -> Bytes {
-        Bytes::new()
-    }
-}
-
 /// Header for a content-addressed chunk
-#[derive(Debug, Clone)]
-pub struct ContentChunkHeader {
-    metadata: ContentChunkMetadata,
-}
+///
+/// Content chunks carry no wire header: the body (`span || payload`) is the
+/// whole encoding.
+#[derive(Debug, Clone, Default)]
+pub struct ContentChunkHeader;
 
 impl ContentChunkHeader {
-    /// Create a new header with default metadata
+    /// Create a new header
     pub const fn new() -> Self {
-        Self {
-            metadata: ContentChunkMetadata,
-        }
-    }
-}
-
-impl Default for ContentChunkHeader {
-    fn default() -> Self {
-        Self::new()
+        Self
     }
 }
 
 impl ChunkHeader for ContentChunkHeader {
-    type Metadata = ContentChunkMetadata;
-
-    fn id(&self) -> u8 {
-        0
-    }
-
-    fn version(&self) -> u8 {
-        1
-    }
-
-    fn metadata(&self) -> &Self::Metadata {
-        &self.metadata
-    }
-
     fn bytes(&self) -> Bytes {
         Bytes::new()
     }

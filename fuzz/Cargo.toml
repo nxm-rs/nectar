@@ -13,6 +13,9 @@ cargo-fuzz = true
 alloy-primitives = { version = "1.6", default-features = false }
 arbitrary = { version = "1", features = ["derive"] }
 alloy-signer-local = { version = "2.0", default-features = false }
+# Chunk wire payloads are `Bytes`; the chunk targets build them from the
+# fuzzer's raw input.
+bytes = "1"
 libfuzzer-sys = "0.4"
 # No `encryption` feature: the `EncryptedChunkRef` representation the
 # mantaray targets drive for the 64-byte entry path is unconditional.
