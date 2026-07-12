@@ -50,11 +50,23 @@ impl EncryptedChunkRef {
         (self.reference.into_address(), self.key)
     }
 
-    /// Write the reference into `buf`. Panics if `buf` is too small.
-    #[allow(clippy::indexing_slicing)] // documented contract: panics if buf.len() < Self::SIZE; both callers pass fixed [u8; Self::SIZE] buffers
-    pub fn write_to(&self, buf: &mut [u8]) {
-        buf[..ChunkRef::SIZE].copy_from_slice(self.address().as_bytes());
-        buf[ChunkRef::SIZE..Self::SIZE].copy_from_slice(self.key.as_bytes());
+    /// Serialise to the fixed wire form: address followed by decryption key.
+    pub const fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        let (address, key) = buf.split_at_mut(ChunkRef::SIZE);
+        address.copy_from_slice(self.address().as_bytes());
+        key.copy_from_slice(self.key.as_bytes());
+        buf
+    }
+
+    /// Reconstruct from the fixed wire form: any 64 bytes are a valid reference.
+    pub fn from_bytes(bytes: &[u8; Self::SIZE]) -> Self {
+        let mut address = [0u8; ChunkRef::SIZE];
+        let mut key = [0u8; EncryptionKey::SIZE];
+        let (a, k) = bytes.split_at(ChunkRef::SIZE);
+        address.copy_from_slice(a);
+        key.copy_from_slice(k);
+        Self::new(ChunkAddress::from(address), EncryptionKey::from(key))
     }
 }
 
@@ -81,15 +93,19 @@ impl Reference for EncryptedChunkRef {
 
 impl From<&EncryptedChunkRef> for [u8; EncryptedChunkRef::SIZE] {
     fn from(r: &EncryptedChunkRef) -> Self {
-        let mut buf = [0u8; EncryptedChunkRef::SIZE];
-        r.write_to(&mut buf);
-        buf
+        r.to_bytes()
     }
 }
 
 impl From<EncryptedChunkRef> for [u8; EncryptedChunkRef::SIZE] {
     fn from(r: EncryptedChunkRef) -> Self {
-        (&r).into()
+        r.to_bytes()
+    }
+}
+
+impl From<[u8; Self::SIZE]> for EncryptedChunkRef {
+    fn from(bytes: [u8; Self::SIZE]) -> Self {
+        Self::from_bytes(&bytes)
     }
 }
 
@@ -137,6 +153,9 @@ mod tests {
 
         let recovered = EncryptedChunkRef::try_from(bytes.as_slice()).unwrap();
         assert_eq!(recovered, enc_ref);
+
+        assert_eq!(EncryptedChunkRef::from(bytes), enc_ref);
+        assert_eq!(EncryptedChunkRef::from_bytes(&bytes), enc_ref);
     }
 
     #[test]
@@ -150,13 +169,12 @@ mod tests {
     }
 
     #[test]
-    fn write_to_buffer() {
+    fn to_bytes_layout() {
         let addr = ChunkAddress::from(B256::repeat_byte(0x22));
         let key = EncryptionKey::from([0x33; 32]);
         let enc_ref = EncryptedChunkRef::new(addr, key);
 
-        let mut buf = [0u8; 64];
-        enc_ref.write_to(&mut buf);
+        let buf = enc_ref.to_bytes();
         assert_eq!(&buf[..32], &[0x22; 32]);
         assert_eq!(&buf[32..], &[0x33; 32]);
     }
