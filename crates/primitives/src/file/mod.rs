@@ -67,7 +67,7 @@ mod write_at;
 
 #[cfg(feature = "encryption")]
 use crate::chunk::encryption::EncryptedChunkRef;
-use crate::chunk::{AnyChunk, AnyChunkSet, Chunk, ChunkAddress, Verified};
+use crate::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentChunk, Verified};
 use crate::store::{ChunkPut, MaybeSend, MaybeSync, TrustedStore};
 
 // Async (primary) re-exports
@@ -172,13 +172,14 @@ where
 
 // ---- Splitting (CPU-bound, rayon) ----
 
-/// Seal freshly split chunks for the store boundary.
+/// Seal freshly split chunks for the store boundary: the sole upcast into
+/// the store's envelope.
 fn seal_chunks<const BODY_SIZE: usize>(
-    chunks: Vec<AnyChunk<BODY_SIZE>>,
+    chunks: Vec<ContentChunk<BODY_SIZE>>,
 ) -> error::Result<Vec<Chunk<Verified, AnyChunkSet<BODY_SIZE>>>> {
     chunks
         .into_iter()
-        .map(|chunk| Chunk::from_envelope(chunk).map_err(mode::chunk_creation_error))
+        .map(|chunk| Chunk::from_envelope(chunk.into()).map_err(mode::chunk_creation_error))
         .collect()
 }
 

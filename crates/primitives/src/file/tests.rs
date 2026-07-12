@@ -252,7 +252,7 @@ mod write_file_ext {
         splitter.write_all(data).unwrap();
         let (root, chunks) = splitter.finish().unwrap();
         for chunk in chunks {
-            let sealed = crate::chunk::Chunk::from_envelope(chunk).unwrap();
+            let sealed = crate::chunk::Chunk::from_envelope(chunk.into()).unwrap();
             block_on(store.put(sealed)).unwrap();
         }
         let recovered = block_on(store.read_file(root)).unwrap();

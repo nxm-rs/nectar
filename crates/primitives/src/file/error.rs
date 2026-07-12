@@ -77,13 +77,6 @@ pub enum FileError {
         /// Actual byte length of the reference.
         len: usize,
     },
-
-    /// Expected a content chunk but got a different chunk type.
-    #[error("expected content chunk, got {type_name}")]
-    InvalidChunkType {
-        /// Name of the chunk type that was received.
-        type_name: &'static str,
-    },
 }
 
 impl FileError {

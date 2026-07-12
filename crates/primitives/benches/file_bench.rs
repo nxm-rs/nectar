@@ -219,7 +219,9 @@ fn bench_roundtrip(c: &mut Criterion) {
                 let (root, chunks) =
                     ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
                 let store = MemoryStore::from_chunks(
-                    chunks.into_iter().map(|c| Chunk::from_envelope(c).unwrap()),
+                    chunks
+                        .into_iter()
+                        .map(|c| Chunk::from_envelope(c.into()).unwrap()),
                 );
                 let joiner = block_on(Joiner::new(store, root)).unwrap();
                 black_box(block_on(joiner.read_all()).unwrap())

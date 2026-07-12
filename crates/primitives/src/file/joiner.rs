@@ -269,24 +269,18 @@ where
     ) -> Result<Vec<u8>> {
         use super::helpers::{ReadRangeCheck, validate_read_range};
 
-        let (offset, actual_len) =
-            match validate_read_range::<BODY_SIZE>(offset, len, span) {
-                ReadRangeCheck::Empty => return Ok(Vec::new()),
-                ReadRangeCheck::SingleChunk { offset, actual_len } => {
-                    let chunk = getter.get(root).await.map_err(FileError::getter)?;
-                    let chunk = chunk.into_envelope().into_content().ok_or(
-                        FileError::InvalidChunkType {
-                            type_name: "non-content",
-                        },
-                    )?;
-                    let body = M::decode_body::<BODY_SIZE>(chunk, context, span)?;
-                    // offset < span <= BODY_SIZE in the single-chunk case.
-                    let start = crate::cast::usize_from_u64(offset);
-                    let end = start + actual_len;
-                    return Ok(body[start..end].to_vec());
-                }
-                ReadRangeCheck::MultiChunk { offset, actual_len } => (offset, actual_len),
-            };
+        let (offset, actual_len) = match validate_read_range::<BODY_SIZE>(offset, len, span) {
+            ReadRangeCheck::Empty => return Ok(Vec::new()),
+            ReadRangeCheck::SingleChunk { offset, actual_len } => {
+                let chunk = getter.get(root).await.map_err(FileError::getter)?;
+                let body = M::decode_body::<_, BODY_SIZE>(chunk.into_envelope(), context, span)?;
+                // offset < span <= BODY_SIZE in the single-chunk case.
+                let start = crate::cast::usize_from_u64(offset);
+                let end = start + actual_len;
+                return Ok(body[start..end].to_vec());
+            }
+            ReadRangeCheck::MultiChunk { offset, actual_len } => (offset, actual_len),
+        };
 
         let chunk_range = tree.chunks_for_range(offset, crate::cast::u64_from_usize(actual_len));
         let range_start_byte = chunk_range.start * crate::cast::u64_from_usize(BODY_SIZE);

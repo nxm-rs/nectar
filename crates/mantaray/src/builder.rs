@@ -178,7 +178,7 @@ impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usi
         let (root, chunks) = EncryptedParallelSplitter::<BS>::split_to_vec(&data)?;
         drop(data);
         for chunk in chunks {
-            let sealed: Chunk<_, AnyChunkSet<BS>> = Chunk::from_envelope(chunk)?;
+            let sealed: Chunk<_, AnyChunkSet<BS>> = Chunk::from_envelope(chunk.into())?;
             self.store().put(sealed).await.map_err(FileError::store)?;
         }
         self.add(path, root).await

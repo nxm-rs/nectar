@@ -83,14 +83,18 @@ pub trait JoinMode: Sized + 'static {
     fn root_address(input: &Self::RootRef) -> ChunkAddress;
 
     /// Initialize joiner from a root ref and pre-fetched root chunk.
-    fn init_from_chunk<const BS: usize>(
+    ///
+    /// Generic over [`ChunkOps`], so the store's envelope flows in directly.
+    fn init_from_chunk<C: ChunkOps, const BS: usize>(
         input: Self::RootRef,
-        chunk: ContentChunk<BS>,
+        chunk: C,
     ) -> Result<(ChunkAddress, u64, Self::JoinerContext)>;
 
     /// Decode a fetched chunk into body bytes (decrypting if needed).
-    fn decode_body<const BS: usize>(
-        chunk: ContentChunk<BS>,
+    ///
+    /// Generic over [`ChunkOps`], so the store's envelope flows in directly.
+    fn decode_body<C: ChunkOps, const BS: usize>(
+        chunk: C,
         context: &Self::JoinerContext,
         span: u64,
     ) -> Result<Bytes>;
@@ -111,15 +115,12 @@ pub(crate) async fn joiner_init<
     input: M::RootRef,
 ) -> Result<(ChunkAddress, u64, M::JoinerContext)> {
     let addr = M::root_address(&input);
-    let any = getter
+    let chunk = getter
         .get(&addr)
         .await
         .map_err(FileError::getter)?
         .into_envelope();
-    let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
-        type_name: "non-content",
-    })?;
-    M::init_from_chunk::<BS>(input, chunk)
+    M::init_from_chunk::<_, BS>(input, chunk)
 }
 
 /// Read chunk body at address with context. Returns body bytes (after decryption if needed).
@@ -135,15 +136,12 @@ pub(crate) async fn read_chunk_body<
 ) -> Result<Bytes> {
     let address = *address;
     let context = context.clone();
-    let any = getter
+    let chunk = getter
         .get(&address)
         .await
         .map_err(FileError::getter)?
         .into_envelope();
-    let chunk = any.into_content().ok_or(FileError::InvalidChunkType {
-        type_name: "non-content",
-    })?;
-    M::decode_body::<BS>(chunk, &context, span)
+    M::decode_body::<_, BS>(chunk, &context, span)
 }
 
 /// Splitter-side chunk mode operations (extends JoinMode).
@@ -180,17 +178,17 @@ impl JoinMode for PlainMode {
         *input
     }
 
-    fn init_from_chunk<const BS: usize>(
+    fn init_from_chunk<C: ChunkOps, const BS: usize>(
         root: ChunkAddress,
-        chunk: ContentChunk<BS>,
+        chunk: C,
     ) -> Result<(ChunkAddress, u64, ())> {
         let span = chunk.span();
         Ok((root, span, ()))
     }
 
     #[inline]
-    fn decode_body<const BS: usize>(
-        chunk: ContentChunk<BS>,
+    fn decode_body<C: ChunkOps, const BS: usize>(
+        chunk: C,
         _context: &(),
         _span: u64,
     ) -> Result<Bytes> {
@@ -259,11 +257,11 @@ impl JoinMode for EncryptedMode {
         *input.address()
     }
 
-    fn init_from_chunk<const BS: usize>(
+    fn init_from_chunk<C: ChunkOps, const BS: usize>(
         root_ref: EncryptedChunkRef,
-        chunk: ContentChunk<BS>,
+        chunk: C,
     ) -> Result<(ChunkAddress, u64, EncryptionKey)> {
-        let encrypted_data: Bytes = chunk.into();
+        let encrypted_data = chunk.into_bytes();
 
         let span_buf = decrypt_span::<BS>(&encrypted_data, root_ref.key())?;
         let span = u64::from_le_bytes(span_buf);
@@ -272,12 +270,12 @@ impl JoinMode for EncryptedMode {
         Ok((address, span, key))
     }
 
-    fn decode_body<const BS: usize>(
-        chunk: ContentChunk<BS>,
+    fn decode_body<C: ChunkOps, const BS: usize>(
+        chunk: C,
         key: &EncryptionKey,
         span: u64,
     ) -> Result<Bytes> {
-        let encrypted_data: Bytes = chunk.into();
+        let encrypted_data = chunk.into_bytes();
 
         let data_length = Self::decrypt_data_length::<BS>(span);
         let decrypted = decrypt_chunk_data::<BS>(&encrypted_data, key, data_length)?;
