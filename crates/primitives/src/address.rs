@@ -4,7 +4,7 @@
 //! `keccak256(ethereum_address || network_id || nonce)` (see
 //! [`compute_overlay`](crate::compute_overlay)). It is nominally distinct
 //! from the content-address kind; cross-kind proximity goes through
-//! [`XorMetric`](crate::XorMetric).
+//! [`XorMetric`].
 
 use alloy_primitives::B256;
 use derive_more::{AsRef, Display, From, Into};
@@ -19,6 +19,16 @@ use crate::xor_metric::XorMetric;
 ///
 /// Transparent over the same 32 wire bytes as the alias it replaces: every
 /// handshake sign-data buffer and routing-table key serializes identically.
+///
+/// Nominally distinct from the content-address kind: a [`ChunkAddress`](crate::ChunkAddress)
+/// is rejected where an `OverlayAddress` is expected.
+///
+/// ```compile_fail
+/// use nectar_primitives::{ChunkAddress, OverlayAddress};
+///
+/// fn route_to(_addr: OverlayAddress) {}
+/// route_to(ChunkAddress::zero());
+/// ```
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into, AsRef,
 )]
