@@ -1,20 +1,20 @@
 //! Fallible byte reader for wire decoding.
 //!
 //! [`Cursor`] is the single site at which a short read can occur: every
-//! fixed-size field leaves the buffer as a `&[u8; N]`, so downstream indexing
-//! and length checks disappear. It is a thin wrapper over the std slice
-//! splitters (`split_first_chunk` and `split_at_checked`), and so never panics
-//! on underrun.
+//! fixed-size field is read as a whole via [`FromCursor`], so downstream
+//! indexing and length checks disappear. It is a thin wrapper over the std
+//! slice splitters (`split_first_chunk` and `split_at_checked`), and so never
+//! panics on underrun.
 //!
 //! ```
 //! use nectar_primitives::wire::Cursor;
 //!
-//! let data = [0x00, 0x20, 0xaa, 0xbb];
+//! let data = [0x20, 0xaa, 0xbb];
 //! let mut cur = Cursor::new(&data);
-//! let len = cur.take_u16_be()?;
-//! let field: &[u8; 2] = cur.take_array::<2>()?;
-//! assert_eq!(len, 0x20);
-//! assert_eq!(field, &[0xaa, 0xbb]);
+//! let tag = cur.take::<u8>()?;
+//! let field = cur.take::<[u8; 2]>()?;
+//! assert_eq!(tag, 0x20);
+//! assert_eq!(field, [0xaa, 0xbb]);
 //! assert!(cur.finish().is_empty());
 //! # Ok::<(), nectar_primitives::wire::Underrun>(())
 //! ```
@@ -32,6 +32,38 @@ pub struct Underrun {
     pub expected: usize,
     /// Bytes remaining in the buffer.
     pub available: usize,
+}
+
+/// A value that reads exactly its own wire bytes from a [`Cursor`].
+///
+/// Implementors state their byte order internally; endian-ambiguous bare
+/// integers are not exposed. Downstream crates implement this for their own
+/// domain types to read them via [`Cursor::take`].
+pub trait FromCursor: Sized {
+    /// Reads `Self` from the cursor, advancing it past the consumed bytes.
+    /// On [`Underrun`] the cursor is left untouched.
+    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun>;
+}
+
+impl FromCursor for u8 {
+    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
+        cur.take::<[Self; 1]>().map(|[byte]| byte)
+    }
+}
+
+impl<const N: usize> FromCursor for [u8; N] {
+    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
+        match cur.bytes.split_first_chunk::<N>() {
+            Some((head, tail)) => {
+                cur.bytes = tail;
+                Ok(*head)
+            }
+            None => Err(Underrun {
+                expected: N,
+                available: cur.bytes.len(),
+            }),
+        }
+    }
 }
 
 /// A cursor advancing over a byte slice, yielding fixed- and variable-width
@@ -64,8 +96,14 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Reads the next value as a whole via its [`FromCursor`] impl, advancing
+    /// the cursor.
+    pub fn take<T: FromCursor>(&mut self) -> Result<T, Underrun> {
+        T::take_from(self)
+    }
+
     /// Reads the next `n` bytes as a slice, advancing the cursor.
-    pub const fn take(&mut self, n: usize) -> Result<&'a [u8], Underrun> {
+    pub const fn take_slice(&mut self, n: usize) -> Result<&'a [u8], Underrun> {
         match self.bytes.split_at_checked(n) {
             Some((head, tail)) => {
                 self.bytes = tail;
@@ -114,10 +152,10 @@ mod tests {
         let data = [1u8, 2, 3, 4, 5];
         let mut cur = Cursor::new(&data);
 
-        assert_eq!(cur.take_array::<2>().unwrap(), &[1, 2]);
+        assert_eq!(cur.take::<[u8; 2]>().unwrap(), [1, 2]);
         assert_eq!(cur.remaining(), &[3, 4, 5]);
 
-        let err = cur.take_array::<4>().unwrap_err();
+        let err = cur.take::<[u8; 4]>().unwrap_err();
         assert_eq!(
             err,
             Underrun {
@@ -134,27 +172,43 @@ mod tests {
         let data = [10u8, 20, 30];
         let mut cur = Cursor::new(&data);
 
-        assert_eq!(cur.take(2).unwrap(), &[10, 20]);
-        assert_eq!(cur.take(2).unwrap_err().available, 1);
-        assert_eq!(cur.take(1).unwrap(), &[30]);
+        assert_eq!(cur.take_slice(2).unwrap(), &[10, 20]);
+        assert_eq!(cur.take_slice(2).unwrap_err().available, 1);
+        assert_eq!(cur.take_slice(1).unwrap(), &[30]);
         assert!(cur.is_empty());
     }
 
     #[test]
     fn scalar_reads() {
-        let data = [0xabu8, 0x12, 0x34];
+        let data = [0xabu8, 0x12];
         let mut cur = Cursor::new(&data);
 
-        assert_eq!(cur.take_u8().unwrap(), 0xab);
-        assert_eq!(cur.take_u16_be().unwrap(), 0x1234);
-        assert_eq!(cur.take_u8().unwrap_err().expected, 1);
+        assert_eq!(cur.take::<u8>().unwrap(), 0xab);
+        assert_eq!(cur.take::<u8>().unwrap(), 0x12);
+        assert_eq!(cur.take::<u8>().unwrap_err().expected, 1);
+    }
+
+    #[test]
+    fn domain_type_reads_through_take() {
+        struct BeLen(u16);
+
+        impl FromCursor for BeLen {
+            fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
+                cur.take::<[u8; 2]>().map(|b| Self(u16::from_be_bytes(b)))
+            }
+        }
+
+        let data = [0x12u8, 0x34];
+        let mut cur = Cursor::new(&data);
+        assert_eq!(cur.take::<BeLen>().unwrap().0, 0x1234);
+        assert!(cur.is_empty());
     }
 
     #[test]
     fn finish_returns_tail() {
         let data = [1u8, 2, 3];
         let mut cur = Cursor::new(&data);
-        let _ = cur.take_u8().unwrap();
+        let _ = cur.take::<u8>().unwrap();
         assert_eq!(cur.finish(), &[2, 3]);
     }
 
@@ -162,7 +216,7 @@ mod tests {
     fn empty_buffer() {
         let mut cur = Cursor::new(&[]);
         assert!(cur.is_empty());
-        assert_eq!(cur.take_u8().unwrap_err().available, 0);
-        assert_eq!(cur.take_array::<0>().unwrap(), &[0u8; 0]);
+        assert_eq!(cur.take::<u8>().unwrap_err().available, 0);
+        assert_eq!(cur.take::<[u8; 0]>().unwrap(), [0u8; 0]);
     }
 }
