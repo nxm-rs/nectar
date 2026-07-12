@@ -156,4 +156,13 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn display_matches_b256_lowercase_hex() {
+        let addr = OverlayAddress::new([0xab; 32]);
+        let rendered = format!("{addr}");
+        assert!(rendered.starts_with("0x"));
+        assert_eq!(rendered.len(), 66);
+        assert!(rendered.chars().skip(2).all(|c| c.is_ascii_hexdigit()));
+    }
 }
