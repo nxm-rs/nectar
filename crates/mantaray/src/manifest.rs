@@ -76,7 +76,8 @@ impl<S, R: Reference, const BS: usize> Manifest<S, R, BS> {
     }
 
     /// Mutable access to the root trie node.
-    pub const fn root_mut(&mut self) -> &mut Node<R> {
+    #[allow(dead_code)] // crate-internal mutation seam retained for the node-state follow-up
+    pub(crate) const fn root_mut(&mut self) -> &mut Node<R> {
         &mut self.trie
     }
 
@@ -465,7 +466,8 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
             // Advance: get the next fork key and parent pointer from the top frame.
             let (key, parent_node) = {
                 let frame = self.stack.last_mut()?;
-                #[allow(clippy::indexing_slicing)] // the pop_if loop above removed every frame with key_idx >= keys.len()
+                #[allow(clippy::indexing_slicing)]
+                // the pop_if loop above removed every frame with key_idx >= keys.len()
                 let key = frame.keys[frame.key_idx];
                 frame.key_idx += 1;
                 (key, frame.node)

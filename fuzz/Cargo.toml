@@ -15,10 +15,12 @@ arbitrary = { version = "1", features = ["derive"] }
 alloy-signer-local = { version = "2.0", default-features = false }
 libfuzzer-sys = "0.4"
 # `encryption` gates the `Reference for EncryptedChunkRef` impl that
-# `mantaray_node_decode` uses to drive the 64-byte entry path.
+# `mantaray_node_decode` uses to drive the 64-byte entry path; `hazmat`
+# exposes the raw node types and codec the mantaray targets exercise.
 nectar-mantaray = { path = "../crates/mantaray", features = [
 	"arbitrary",
 	"encryption",
+	"hazmat",
 ] }
 nectar-postage = { path = "../crates/postage", features = ["arbitrary"] }
 nectar-postage-usage = { path = "../crates/postage-usage", features = [

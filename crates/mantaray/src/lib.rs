@@ -56,6 +56,32 @@
 //! assert_eq!(metadata::CONTENT_TYPE, "Content-Type");
 //! ```
 //!
+//! # Raw encode containment
+//!
+//! Node bytes are produced only inside [`Manifest::save`] and consumed only
+//! on load; a node handed out by [`Manifest::root`], [`Manifest::walk`], or
+//! [`Manifest::into_parts`] carries no public encode:
+//!
+//! ```compile_fail
+//! use nectar_mantaray::{DefaultMemoryStore, PlainManifest};
+//!
+//! let manifest: PlainManifest<_> = PlainManifest::new(DefaultMemoryStore::new());
+//! let bytes: Vec<u8> = Vec::try_from(manifest.root()).unwrap();
+//! ```
+//!
+//! The raw node internals exist only under the `hazmat` feature, for fuzz
+//! harnesses and benches; without it the module does not resolve:
+//!
+#![cfg_attr(not(feature = "hazmat"), doc = "```compile_fail")]
+#![cfg_attr(feature = "hazmat", doc = "```")]
+//! use nectar_mantaray::hazmat::{self, Node};
+//!
+//! let node: Node = Node::new_unencrypted();
+//! let bytes = hazmat::encode(&node).unwrap();
+//! let decoded: Node = hazmat::decode(&bytes).unwrap();
+//! assert!(decoded.entry().is_none());
+//! ```
+//!
 //! # Upstream-bug workarounds
 //!
 //! Code that exists solely to tolerate a defect in an upstream reference
@@ -65,7 +91,20 @@
 //! number should be removed. Run `git grep -n BEE-WORKAROUND` to enumerate
 //! them.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::get_unwrap, clippy::indexing_slicing, clippy::string_slice, clippy::arithmetic_side_effects, clippy::panic, clippy::unreachable, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::get_unwrap,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::panic_in_result_fn
+    )
+)]
 
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkRef;
@@ -76,7 +115,7 @@ pub mod entry;
 pub mod error;
 pub mod manifest;
 pub mod manifest_ref;
-pub mod node;
+mod node;
 pub mod obfuscation;
 
 // Re-export constants.
@@ -88,8 +127,31 @@ pub use entry::Entry;
 pub use error::{DecodeError, DecodeResult, MantarayError, Result};
 pub use manifest::{Manifest, ManifestIter};
 pub use manifest_ref::ManifestRef;
-pub use node::{Fork, Node, NodeType, Prefix};
+pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
+
+/// Raw node internals for fuzz harnesses and benches only.
+///
+/// Not part of the public API and exempt from semver guarantees. Compiled
+/// only under the `hazmat` feature; normal builds carry no raw node types
+/// and no raw encode or decode surface.
+#[cfg(feature = "hazmat")]
+#[doc(hidden)]
+pub mod hazmat {
+    use nectar_primitives::chunk::Reference;
+
+    pub use crate::node::{Fork, Node};
+
+    /// Encode a raw node into its wire image.
+    pub fn encode<R: Reference>(node: &Node<R>) -> crate::Result<Vec<u8>> {
+        node.encode()
+    }
+
+    /// Decode a wire image into a raw node.
+    pub fn decode<R: Reference>(bytes: &[u8]) -> crate::DecodeResult<Node<R>> {
+        Node::decode(bytes)
+    }
+}
 
 // Re-export typed storage traits from primitives.
 pub use nectar_primitives::DefaultMemoryStore;

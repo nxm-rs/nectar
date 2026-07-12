@@ -13,7 +13,7 @@
 )]
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use futures::executor::block_on;
-use nectar_mantaray::node::Node;
+use nectar_mantaray::hazmat;
 use nectar_mantaray::{MemoryStore, PlainManifest};
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkAddress;
@@ -187,7 +187,7 @@ fn bench_encode(c: &mut Criterion) {
     let (n, _) = m2.into_parts();
 
     group.bench_function("spa_trie", |b| {
-        b.iter(|| Vec::<u8>::try_from(&n).unwrap());
+        b.iter(|| hazmat::encode(&n).unwrap());
     });
 
     group.finish();
@@ -203,10 +203,10 @@ fn bench_decode(c: &mut Criterion) {
     let mut m2 = PlainManifest::open(root_ref, store);
     block_on(m2.walk(&mut |_, _| Ok(()))).unwrap();
     let (n, _) = m2.into_parts();
-    let data = Vec::<u8>::try_from(&n).unwrap();
+    let data = hazmat::encode(&n).unwrap();
 
     group.bench_function("spa_trie", |b| {
-        b.iter(|| Node::<nectar_primitives::chunk::ChunkRef>::try_from(data.as_slice()).unwrap());
+        b.iter(|| hazmat::decode::<nectar_primitives::chunk::ChunkRef>(data.as_slice()).unwrap());
     });
 
     group.finish();

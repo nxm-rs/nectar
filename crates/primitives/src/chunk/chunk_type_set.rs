@@ -303,15 +303,15 @@ mod tests {
         let edge_inputs: Vec<Vec<u8>> = alloc::vec![
             Vec::new(),
             alloc::vec![0x00],
-            alloc::vec![0xff; 7],                              // one short of a CAC span
-            alloc::vec![0x00; 8],                              // zero span, empty payload
-            alloc::vec![0xff; 8],                              // max span, empty payload
-            alloc::vec![0xff; 96],                             // one short of the SOC header
-            alloc::vec![0xff; 97],                             // SOC header, no body
-            alloc::vec![0xff; 105],                            // SOC header + span, empty payload
-            alloc::vec![0xff; 8 + DEFAULT_BODY_SIZE],          // max CAC encoding
-            alloc::vec![0xff; 8 + DEFAULT_BODY_SIZE + 1],      // one past max CAC
-            alloc::vec![0x00; 97 + 8 + DEFAULT_BODY_SIZE],     // max SOC encoding
+            alloc::vec![0xff; 7],                     // one short of a CAC span
+            alloc::vec![0x00; 8],                     // zero span, empty payload
+            alloc::vec![0xff; 8],                     // max span, empty payload
+            alloc::vec![0xff; 96],                    // one short of the SOC header
+            alloc::vec![0xff; 97],                    // SOC header, no body
+            alloc::vec![0xff; 105],                   // SOC header + span, empty payload
+            alloc::vec![0xff; 8 + DEFAULT_BODY_SIZE], // max CAC encoding
+            alloc::vec![0xff; 8 + DEFAULT_BODY_SIZE + 1], // one past max CAC
+            alloc::vec![0x00; 97 + 8 + DEFAULT_BODY_SIZE], // max SOC encoding
             alloc::vec![0xff; 97 + 8 + DEFAULT_BODY_SIZE + 1], // one past max SOC
         ];
         for data in &edge_inputs {
@@ -326,8 +326,8 @@ mod tests {
     /// seeds meaningful on stable without running the fuzzer itself.
     #[test]
     fn seed_replay_chunk_decode() {
-        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fuzz/seeds/chunk_decode");
+        let seed_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/chunk_decode");
         let mut replayed = 0usize;
         for entry in std::fs::read_dir(&seed_dir)
             .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))

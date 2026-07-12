@@ -25,7 +25,7 @@ type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 /// Always stores data inline; no heap allocation, no branching.
 /// 31 bytes total (1 len + 30 data).
 #[derive(Clone, PartialEq, Eq)]
-pub struct Prefix {
+pub(crate) struct Prefix {
     len: u8,
     data: [u8; PREFIX_MAX_LEN],
 }
@@ -39,11 +39,11 @@ impl Default for Prefix {
 
 impl Prefix {
     /// Maximum prefix length in bytes (constrained by the fork pre-reference region).
-    pub const MAX_LEN: usize = PREFIX_MAX_LEN;
+    pub(crate) const MAX_LEN: usize = PREFIX_MAX_LEN;
 
     /// Create an empty prefix.
     #[inline]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             len: 0,
             data: [0u8; PREFIX_MAX_LEN],
@@ -60,7 +60,7 @@ impl Prefix {
     ///
     /// Panics if `src.len() > 30`.
     #[inline]
-    pub fn from_slice(src: &[u8]) -> Self {
+    pub(crate) fn from_slice(src: &[u8]) -> Self {
         assert!(
             src.len() <= PREFIX_MAX_LEN,
             "prefix length {} exceeds maximum {}",
@@ -83,7 +83,7 @@ impl Prefix {
     /// relies on a caller-side guard. Bytes past `len` are re-zeroed to keep
     /// the padding canonical for equality and re-encoding.
     #[inline]
-    pub fn from_wire(padded: &[u8; PREFIX_MAX_LEN], len: u8) -> DecodeResult<Self> {
+    pub(crate) fn from_wire(padded: &[u8; PREFIX_MAX_LEN], len: u8) -> DecodeResult<Self> {
         let len_usize = usize::from(len);
         if len == 0 || len_usize > PREFIX_MAX_LEN {
             return Err(DecodeError::InvalidPrefixLength {
@@ -100,19 +100,19 @@ impl Prefix {
     /// Returns the prefix length in bytes.
     #[inline]
     #[allow(clippy::as_conversions)] // u8 -> usize widening, infallible; `usize::from` is not const-callable
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.len as usize
     }
 
     /// Returns true if the prefix is empty.
     #[inline]
-    pub const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns the full 30-byte backing array (zero-padded beyond `len`).
     #[inline]
-    pub const fn padded_bytes(&self) -> &[u8; PREFIX_MAX_LEN] {
+    pub(crate) const fn padded_bytes(&self) -> &[u8; PREFIX_MAX_LEN] {
         &self.data
     }
 }
@@ -136,7 +136,7 @@ impl FromCursor for Prefix {
 impl ToWriter for Prefix {
     fn put_into(&self, w: &mut Writer<'_>) {
         w.put(&self.len);
-        w.put(&self.data);
+        w.put(self.padded_bytes());
     }
 }
 
@@ -365,7 +365,7 @@ impl<R: Reference> Node<R> {
             .map_err(|e| MantarayError::StoreGet {
                 source: std::sync::Arc::new(e),
             })?;
-        let mut loaded = Self::try_from(chunk.data().as_ref())
+        let mut loaded = Self::decode(chunk.data().as_ref())
             .map_err(|source| MantarayError::Corrupt { address, source })?;
         loaded.reference = Some(address);
         // Preserve fields that live in the parent's fork data, not in this node's chunk:
@@ -703,7 +703,7 @@ impl<R: Reference> Node<R> {
             }
 
             // All children saved; encode and put this node, then pop.
-            let data = Vec::<u8>::try_from(&*node)?;
+            let data = node.encode()?;
             let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
             let address = *chunk.address();
             store

@@ -87,7 +87,8 @@ impl<const BODY_SIZE: usize> StampedChunk<BODY_SIZE> {
     pub fn to_typed_bytes(&self) -> Vec<u8> {
         let stamp = self.stamp.to_bytes();
         let chunk = self.chunk.to_typed_bytes();
-        #[allow(clippy::arithmetic_side_effects)] // capacity hint: sum of two in-memory buffer lengths cannot overflow usize
+        #[allow(clippy::arithmetic_side_effects)]
+        // capacity hint: sum of two in-memory buffer lengths cannot overflow usize
         let mut out = Vec::with_capacity(stamp.len() + chunk.len());
         out.extend_from_slice(&stamp);
         out.extend_from_slice(&chunk);
