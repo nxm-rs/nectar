@@ -23,6 +23,7 @@ mod chunk_type_set;
 mod content;
 pub mod encryption;
 pub(crate) mod error;
+mod reference;
 mod single_owner;
 mod traits;
 mod type_id;
@@ -32,6 +33,9 @@ pub mod wasm;
 
 // Re-export the core traits
 pub use traits::{BmtChunk, Chunk, ChunkAddress, ChunkHeader, ChunkMetadata, ChunkSerialization};
+
+// Re-export the reference types
+pub use reference::{ChunkRef, RefKind, Reference};
 
 // Re-export the type system
 pub use any_chunk::AnyChunk;

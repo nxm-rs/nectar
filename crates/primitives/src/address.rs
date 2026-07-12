@@ -95,6 +95,9 @@ pub const EXTENDED_PO: u8 = MAX_PO + 5;
 pub struct SwarmAddress(pub B256);
 
 impl SwarmAddress {
+    /// Width in bytes of an address.
+    pub const SIZE: usize = size_of::<B256>();
+
     /// Creates an address with only the first byte set, rest zeros.
     ///
     /// The first byte controls proximity order (leading bits determine PO).

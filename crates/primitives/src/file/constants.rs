@@ -1,6 +1,6 @@
 //! Constants for file splitting and joining.
 
-use crate::bmt::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE};
+use crate::bmt::{BRANCHES, DEFAULT_BODY_SIZE};
 
 /// Derive the maximum tree depth from branching factor and body size.
 /// The limit is the number of levels needed to address all storable data:
@@ -18,8 +18,8 @@ const fn compute_level_limit(branches: usize, body_size: usize) -> usize {
 pub(crate) const LEVEL_LIMIT: usize = compute_level_limit(BRANCHES, DEFAULT_BODY_SIZE);
 const _: () = assert!(LEVEL_LIMIT == 9);
 
-/// Size of a chunk reference (hash). Same as bmt::HASH_SIZE.
-pub(crate) const REF_SIZE: usize = HASH_SIZE;
+/// Size of a chunk reference. Derived from the reference type.
+pub(crate) const REF_SIZE: usize = crate::chunk::ChunkRef::SIZE;
 
 /// Number of references per intermediate chunk (plain mode). Same as bmt::BRANCHES.
 #[cfg(test)]
