@@ -194,11 +194,11 @@ impl<'a> Cursor<'a> {
 ///
 /// let mut buf = Vec::new();
 /// let mut w = Writer::new(&mut buf);
-/// w.put_u16_be(0x20);
-/// w.put_array(&[0xaa, 0xbb]);
+/// w.put(&0x20u8);
+/// w.put(&[0xaa, 0xbb]);
 ///
 /// let mut cur = Cursor::new(&buf);
-/// assert_eq!(cur.take::<[u8; 2]>()?, 0x20u16.to_be_bytes());
+/// assert_eq!(cur.take::<u8>()?, 0x20);
 /// assert_eq!(cur.take::<[u8; 2]>()?, [0xaa, 0xbb]);
 /// # Ok::<(), nectar_primitives::wire::Underrun>(())
 /// ```
@@ -319,6 +319,33 @@ mod tests {
     }
 
     #[test]
+    fn domain_type_round_trips_through_put_and_take() {
+        struct BeLen(u16);
+
+        impl FromCursor for BeLen {
+            type Error = Underrun;
+
+            fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
+                cur.take::<[u8; 2]>().map(|b| Self(u16::from_be_bytes(b)))
+            }
+        }
+
+        impl ToWriter for BeLen {
+            fn put_into(&self, w: &mut Writer<'_>) {
+                w.put(&self.0.to_be_bytes());
+            }
+        }
+
+        let mut buf = Vec::new();
+        Writer::new(&mut buf).put(&BeLen(0x1234));
+        assert_eq!(buf, [0x12, 0x34]);
+
+        let mut cur = Cursor::new(&buf);
+        assert_eq!(cur.take::<BeLen>().unwrap().0, 0x1234);
+        assert!(cur.is_empty());
+    }
+
+    #[test]
     fn take_surfaces_impl_validation_errors() {
         #[derive(Debug, PartialEq)]
         enum TagError {
@@ -376,21 +403,20 @@ mod tests {
         let mut w = Writer::new(&mut buf);
         assert!(w.is_empty());
 
-        w.put_u8(0xab);
-        w.put_u16_be(0x1234);
-        w.put_array(&[0xaa, 0xbb]);
-        w.put_slice(&[0xcc, 0xdd]);
+        w.put(&0xabu8);
+        w.put(&[0xaa, 0xbb]);
+        w.put([0xcc, 0xdd].as_slice());
         w.put_zeros(3);
 
-        assert_eq!(w.len(), 10);
-        assert_eq!(buf, [0xab, 0x12, 0x34, 0xaa, 0xbb, 0xcc, 0xdd, 0, 0, 0]);
+        assert_eq!(w.len(), 8);
+        assert_eq!(buf, [0xab, 0xaa, 0xbb, 0xcc, 0xdd, 0, 0, 0]);
     }
 
     #[test]
     fn writer_extends_existing_contents() {
         let mut buf = vec![0x01, 0x02];
         let mut w = Writer::new(&mut buf);
-        w.put_u8(0x03);
+        w.put(&0x03u8);
         assert_eq!(buf, [0x01, 0x02, 0x03]);
     }
 
@@ -399,14 +425,12 @@ mod tests {
         // Each field a reader takes matches what the writer put, in order.
         let mut buf = Vec::new();
         let mut w = Writer::new(&mut buf);
-        w.put_u8(0x7f);
-        w.put_u16_be(0xbeef);
-        w.put_array(&[1u8, 2, 3, 4]);
-        w.put_slice(&[9u8, 8]);
+        w.put(&0x7fu8);
+        w.put(&[1u8, 2, 3, 4]);
+        w.put([9u8, 8].as_slice());
 
         let mut cur = Cursor::new(&buf);
         assert_eq!(cur.take::<u8>().unwrap(), 0x7f);
-        assert_eq!(cur.take::<[u8; 2]>().unwrap(), 0xbeefu16.to_be_bytes());
         assert_eq!(cur.take::<[u8; 4]>().unwrap(), [1, 2, 3, 4]);
         assert_eq!(cur.take_slice(2).unwrap(), &[9, 8]);
         assert!(cur.is_empty());

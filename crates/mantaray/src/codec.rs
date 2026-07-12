@@ -9,7 +9,7 @@ use crate::obfuscation::ObfuscationKey;
 
 use alloy_primitives::{U256, hex};
 use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::wire::{Cursor, FromCursor, Underrun, Writer};
+use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 /// Mantaray wire format version (truncated keccak256, 31 bytes).
 #[derive(Clone, Copy)]
@@ -94,6 +94,14 @@ impl FromCursor for MetadataLen {
     fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Underrun> {
         cur.take::<[u8; ForkHeader::METADATA_LEN_SIZE]>()
             .map(|bytes| Self(u16::from_be_bytes(bytes)))
+    }
+}
+
+/// Writes the length big-endian, the mirror of the `FromCursor` impl above;
+/// the byte order never leaves this type.
+impl ToWriter for MetadataLen {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(&self.0.to_be_bytes());
     }
 }
 
@@ -464,7 +472,7 @@ struct WireFork<'a> {
 /// A fork's metadata payload, serialised and padded to the obfuscation-key
 /// stride with its `u16` length precomputed so emission stays total.
 struct WireMetadata {
-    len: u16,
+    len: MetadataLen,
     padded_json: Vec<u8>,
 }
 
@@ -498,7 +506,10 @@ impl WireMetadata {
                 max: usize::from(u16::MAX),
                 actual: padded_json.len(),
             })?;
-        Ok(Self { len, padded_json })
+        Ok(Self {
+            len: MetadataLen(len),
+            padded_json,
+        })
     }
 }
 
@@ -530,21 +541,18 @@ impl<'a, E: NodeEntry> TryFrom<&'a Fork<E>> for WireFork<'a> {
 }
 
 impl WireFork<'_> {
-    /// Emit this fork: node_type, prefix length and its padded region, the
-    /// reference padded to `ref_size`, then any metadata. Total by construction.
+    /// Emit this fork: node_type, the prefix record, the reference padded to
+    /// `ref_size`, then any metadata. Total by construction.
     fn emit(&self, w: &mut Writer<'_>) {
-        w.put_u8(self.node_type.bits());
-        #[allow(clippy::as_conversions)] // Prefix invariant: len <= Prefix::MAX_LEN (30), fits u8
-        let prefix_len = self.prefix.len() as u8;
-        w.put_u8(prefix_len);
-        w.put_array(self.prefix.padded_bytes());
+        w.put(&self.node_type.bits());
+        w.put(self.prefix);
 
-        w.put_slice(self.address.as_bytes());
+        w.put(self.address.as_bytes());
         w.put_zeros(self.ref_size.saturating_sub(32));
 
         if let Some(metadata) = &self.metadata {
-            w.put_u16_be(metadata.len);
-            w.put_slice(&metadata.padded_json);
+            w.put(&metadata.len);
+            w.put(metadata.padded_json.as_slice());
         }
     }
 }
@@ -675,6 +683,17 @@ mod tests {
             cur.take::<ForkHeader>(),
             Err(MantarayError::DataTooShort)
         ));
+    }
+
+    #[test]
+    fn metadata_len_wire_round_trips_through_put_and_take() {
+        let mut buf = Vec::new();
+        Writer::new(&mut buf).put(&MetadataLen(0x1234));
+        assert_eq!(buf, [0x12, 0x34]);
+
+        let mut cur = Cursor::new(&buf);
+        assert_eq!(cur.take::<MetadataLen>().unwrap().get(), 0x1234);
+        assert!(cur.is_empty());
     }
 
     #[test]
