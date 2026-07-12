@@ -118,6 +118,25 @@ mod tests {
         assert_eq!(V1::PREAMBLE, [0x6D, 0x01]);
     }
 
+    // Frozen tag_version 0x01 parameters: pin every value so a silent edit to
+    // a wire-format constant fails here rather than drifting the format.
+    #[test]
+    fn v1_parameters_are_frozen() {
+        assert_eq!(V1::MAGIC, 0x6D);
+        assert_eq!(V1::VERSION, 0x01);
+        assert_eq!(V1::BUDGET, 4094);
+        assert_eq!(V1::PLEN_MAX, 255);
+        assert_eq!(V1::VINLINE_MAX, 128);
+        assert_eq!(V1::META_MAX, 1024);
+        assert_eq!(V1::FORKS_MAX, 256);
+        assert_eq!(V1::INLINE_MAX, 1536);
+        assert_eq!(V1::SEG_TARGET, 2048);
+        assert_eq!(V1::SEG_MIN, 512);
+        assert_eq!(V1::CAP_FORK, 4091);
+        assert_eq!(V1::CAP_DIR, 4090);
+        assert_eq!(V1::CUT_SCALE, 9_007_199_254_740_992);
+    }
+
     #[test]
     fn cut_scale_divides_the_hash_space_by_seg_target() {
         let product = u128::from(V1::CUT_SCALE) * u128::try_from(V1::SEG_TARGET).unwrap();
