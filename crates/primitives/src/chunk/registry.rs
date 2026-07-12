@@ -65,7 +65,9 @@ impl ChunkTypeInfo {
 /// carries the body size, so no const generic appears on the trait, and
 /// [`MEMBERS`](Self::MEMBERS) is its inspectable description. Implementations
 /// are hand-written per network; force the duplicate-tag guard with a
-/// `const _: () = MyRegistry::DISTINCT_TAGS;` item next to the impl.
+/// `const _: () = MyRegistry::DISTINCT_TAGS;` item next to the impl. The
+/// downstream extension pattern (custom header plus downstream-owned
+/// envelope) is worked through in the [`chunk`](crate::chunk) module docs.
 ///
 /// # Example
 ///

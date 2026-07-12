@@ -39,6 +39,24 @@ Key features:
 - Signature verification
 - Protected updates (only the owner can create valid versions)
 
+## Extending the Chunk Set
+
+Custom chunk types are defined at compile time, per network. Implement
+`ChunkHeader` for the new header under a custom id (128-255), then own a
+closed envelope enum over the accepted standard members plus the custom type,
+implement `ChunkOps` on it by delegation, and expose it through a
+`ChunkRegistry` implementation. Everything generic over the registry or
+`ChunkOps` (the typestate `Chunk`, the store traits) accepts the new registry;
+growing the accepted set is the downstream's deliberate, loud change. The
+`chunk` module rustdoc walks a complete example.
+
+A runtime type-id-to-decoder registry (an open `AnyChunk::Other` variant) is
+rejected by design: chunk acceptance is self-certifying per member predicate,
+so a type unknown to a node cannot be validated or admitted, and a
+runtime-unknown chunk can never cross the trust boundary. Custom types are
+part of a network's definition (a custom swarm or a coordinated fork), not
+plugins on a running network.
+
 ## Serialization and Deserialization
 
 Serializing a chunk (`Into<Bytes>`) produces its bare wire bytes: `span || payload` for a content chunk, `id || signature || span || payload` for a single-owner chunk.
