@@ -7,7 +7,7 @@
 //!
 //! - **Chunks**: Content-addressed and signed data chunks ([`ContentChunk`], [`SingleOwnerChunk`])
 //! - **Binary Merkle Tree**: Efficient content addressing and proof generation ([`bmt::Hasher`])
-//! - **SwarmAddress**: 256-bit identifiers for network addressing
+//! - **OverlayAddress**: 256-bit identifiers for network addressing
 //!
 //! ## Usage Examples
 //!
@@ -82,7 +82,7 @@ pub use chunk::encryption::{EncryptedChunkRef, EncryptionKey};
 pub use chunk::{ChunkEncrypt, EncryptedContentChunk};
 
 // Re-export core types
-pub use address::SwarmAddress;
+pub use address::OverlayAddress;
 pub use bin::{Bin, BinError};
 pub use error::{PrimitivesError, Result, WrongLength};
 pub use neighborhood_depth::recompute_neighborhood_depth;
@@ -93,6 +93,10 @@ pub use proximity_order::{ProximityOrder, ProximityOrderError};
 pub use spec::{MAINNET, StaticSpec, SwarmSpec, TESTNET};
 pub use timestamp::{Timestamp, TimestampError};
 pub use xor_metric::{EXTENDED_PO, MAX_PO, XorMetric};
+
+/// Former name of the node-identity address kind.
+#[deprecated(note = "use `OverlayAddress`; this alias is removed in the next release")]
+pub type SwarmAddress = OverlayAddress;
 
 // Core BMT functionality
 pub use bmt::{Hasher, HasherFactory, Proof, Prover};

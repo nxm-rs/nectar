@@ -1,13 +1,13 @@
-//! Swarm address implementation
+//! Typed overlay address for node identity.
 //!
-//! This module provides the [`SwarmAddress`] type, a 32-byte identifier used
-//! for addressing nodes in the swarm network. The XOR-metric operations
-//! (distance, proximity) shared with the other address kinds live on the
-//! [`XorMetric`](crate::XorMetric) trait.
-
-use std::fmt;
+//! An [`OverlayAddress`] names a node by the canonical derivation
+//! `keccak256(ethereum_address || network_id || nonce)` (see
+//! [`compute_overlay`](crate::compute_overlay)). It is nominally distinct
+//! from the content-address kind; cross-kind proximity goes through
+//! [`XorMetric`](crate::XorMetric).
 
 use alloy_primitives::B256;
+use derive_more::{AsRef, Display, From, Into};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -15,15 +15,35 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, WrongLength};
 use crate::xor_metric::XorMetric;
 
-/// A 256-bit address in the Swarm network
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// 32-byte overlay address of a node.
+///
+/// Transparent over the same 32 wire bytes as the alias it replaces: every
+/// handshake sign-data buffer and routing-table key serializes identically.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into, AsRef,
+)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct SwarmAddress(B256);
+#[display("{_0}")]
+#[from(B256, [u8; 32])]
+#[into(B256, [u8; 32])]
+#[as_ref([u8])]
+#[repr(transparent)]
+pub struct OverlayAddress(B256);
 
-impl SwarmAddress {
+impl OverlayAddress {
     /// Width in bytes of an address.
     pub const SIZE: usize = size_of::<B256>();
+
+    /// Zero address, useful for tests and sentinel slots.
+    pub const ZERO: Self = Self(B256::ZERO);
+
+    /// Construct from raw 32 bytes. `const` for static contexts; for runtime
+    /// conversions prefer the `From` impls.
+    #[inline]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(B256::new(bytes))
+    }
 
     /// Creates an address with only the first byte set, rest zeros.
     ///
@@ -34,12 +54,8 @@ impl SwarmAddress {
         Self(B256::new(bytes))
     }
 
-    /// Creates a new SwarmAddress from raw bytes
-    pub fn new(bytes: [u8; 32]) -> Self {
-        Self(B256::from(bytes))
-    }
-
-    /// Returns the underlying bytes
+    /// Borrow the underlying 32 bytes.
+    #[inline]
     pub const fn as_bytes(&self) -> &[u8] {
         self.0.as_slice()
     }
@@ -51,60 +67,24 @@ impl SwarmAddress {
         Ok(Self::try_from(slice)?)
     }
 
-    /// Checks if this address is zeros
+    /// Checks if this address is zeros.
     pub fn is_zero(&self) -> bool {
         self.0.is_zero()
     }
 
-    /// Create a new zero-filled address
+    /// Create a new zero-filled address.
     pub const fn zero() -> Self {
-        Self(B256::ZERO)
+        Self::ZERO
     }
 }
 
-impl XorMetric for SwarmAddress {
+impl XorMetric for OverlayAddress {
     fn point(&self) -> &[u8; 32] {
         &self.0.0
     }
 }
 
-impl Default for SwarmAddress {
-    fn default() -> Self {
-        Self(B256::ZERO)
-    }
-}
-
-impl fmt::Display for SwarmAddress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<B256> for SwarmAddress {
-    fn from(value: B256) -> Self {
-        Self(value)
-    }
-}
-
-impl From<[u8; 32]> for SwarmAddress {
-    fn from(bytes: [u8; 32]) -> Self {
-        Self::new(bytes)
-    }
-}
-
-impl From<SwarmAddress> for B256 {
-    fn from(addr: SwarmAddress) -> Self {
-        addr.0
-    }
-}
-
-impl AsRef<[u8]> for SwarmAddress {
-    fn as_ref(&self) -> &[u8] {
-        self.as_bytes()
-    }
-}
-
-impl TryFrom<&[u8]> for SwarmAddress {
+impl TryFrom<&[u8]> for OverlayAddress {
     type Error = WrongLength;
 
     fn try_from(slice: &[u8]) -> std::result::Result<Self, Self::Error> {
@@ -116,16 +96,10 @@ impl TryFrom<&[u8]> for SwarmAddress {
     }
 }
 
-impl From<SwarmAddress> for [u8; 32] {
-    fn from(addr: SwarmAddress) -> Self {
-        addr.0.into()
-    }
-}
-
 #[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for SwarmAddress {
+impl<'a> arbitrary::Arbitrary<'a> for OverlayAddress {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(Self(B256::arbitrary(u)?))
+        Ok(Self::new(u.arbitrary()?))
     }
 }
 
@@ -135,19 +109,34 @@ mod tests {
     use crate::error::PrimitivesError;
 
     #[test]
-    fn try_from_slice_valid() {
+    fn zero_is_all_zero_bytes() {
+        assert_eq!(OverlayAddress::ZERO.as_bytes(), &[0u8; 32]);
+        assert!(OverlayAddress::zero().is_zero());
+    }
+
+    #[test]
+    fn roundtrips_via_from_impls() {
         let bytes = [0x5au8; 32];
-        assert_eq!(
-            SwarmAddress::try_from(bytes.as_slice()).unwrap(),
-            SwarmAddress::new(bytes)
-        );
+        let addr = OverlayAddress::new(bytes);
+        assert_eq!(B256::from(addr), B256::new(bytes));
+        assert_eq!(OverlayAddress::from(B256::new(bytes)), addr);
+        assert_eq!(<[u8; 32]>::from(addr), bytes);
+        assert_eq!(OverlayAddress::from(bytes), addr);
+    }
+
+    #[test]
+    fn with_first_byte_sets_only_the_first_byte() {
+        let addr = OverlayAddress::with_first_byte(0x80);
+        let mut expected = [0u8; 32];
+        expected[0] = 0x80;
+        assert_eq!(addr.as_bytes(), &expected);
     }
 
     #[test]
     fn try_from_slice_wrong_length() {
         let short = [0u8; 31];
         assert_eq!(
-            SwarmAddress::try_from(short.as_slice()).unwrap_err(),
+            OverlayAddress::try_from(short.as_slice()).unwrap_err(),
             WrongLength {
                 expected: 32,
                 got: 31
@@ -158,7 +147,7 @@ mod tests {
     #[test]
     fn from_slice_carries_lengths() {
         let long = [0u8; 33];
-        let err = SwarmAddress::from_slice(&long).unwrap_err();
+        let err = OverlayAddress::from_slice(&long).unwrap_err();
         assert!(matches!(
             err,
             PrimitivesError::WrongLength(WrongLength {

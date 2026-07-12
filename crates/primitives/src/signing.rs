@@ -36,7 +36,7 @@
 
 use alloy_primitives::Address;
 
-use crate::{NetworkId, Nonce, SwarmAddress, Timestamp};
+use crate::{NetworkId, Nonce, OverlayAddress, Timestamp};
 
 /// Magic prefix matching bee `pkg/bzz/address.go:138` (`signDataPrefix`).
 pub const SIGN_DATA_PREFIX: &[u8] = b"bee-handshake-";
@@ -52,7 +52,7 @@ pub const SIGN_DATA_PREFIX: &[u8] = b"bee-handshake-";
 #[allow(clippy::arithmetic_side_effects)] // capacity hint summing an underlay address plus ~100 bytes of fixed-size fields, far below usize::MAX
 pub fn sign_data(
     underlay_bytes: &[u8],
-    overlay: &SwarmAddress,
+    overlay: &OverlayAddress,
     network_id: NetworkId,
     nonce: &Nonce,
     timestamp: Timestamp,
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn layout_matches_bee_spec() {
-        let overlay = SwarmAddress::new([0xaa; 32]);
+        let overlay = OverlayAddress::new([0xaa; 32]);
         let net = NetworkId::MAINNET;
         let nonce = Nonce::new([0xbb; 32]);
         let ts = Timestamp::from(0x0102_0304_0506_0708_i64);
@@ -116,7 +116,7 @@ mod tests {
     fn no_chequebook_is_byte_identical_to_zero_chequebook() {
         let a = sign_data(
             &[],
-            &SwarmAddress::zero(),
+            &OverlayAddress::zero(),
             NetworkId::MAINNET,
             &Nonce::ZERO,
             Timestamp::ZERO,
@@ -124,7 +124,7 @@ mod tests {
         );
         let b = sign_data(
             &[],
-            &SwarmAddress::zero(),
+            &OverlayAddress::zero(),
             NetworkId::MAINNET,
             &Nonce::ZERO,
             Timestamp::ZERO,
