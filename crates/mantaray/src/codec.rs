@@ -9,6 +9,7 @@ use crate::obfuscation::ObfuscationKey;
 
 use alloy_primitives::{U256, hex};
 use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::wire::Cursor;
 
 /// Mantaray wire format version (truncated keccak256, 31 bytes).
 enum VersionHash {
@@ -424,15 +425,9 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 
 /// Parse and validate fork header. Returns (node_type, prefix).
 fn parse_fork_header(data: &[u8]) -> Result<(NodeType, Prefix)> {
-    let node_type =
-        NodeType::from_bits_truncate(*data.first().ok_or(MantarayError::DataTooShort)?);
-    let prefix_length = *data.get(1).ok_or(MantarayError::DataTooShort)?;
-    let padded: &[u8; Prefix::MAX_LEN] = data
-        .get(ForkHeader::PREFIX_OFFSET..ForkHeader::PRE_REFERENCE_SIZE)
-        .ok_or(MantarayError::DataTooShort)?
-        .try_into()
-        .map_err(|_| MantarayError::DataTooShort)?;
-    let prefix = Prefix::from_wire(padded, prefix_length)?;
+    let mut cur = Cursor::new(data);
+    let node_type = NodeType::from_bits_truncate(cur.take::<u8>()?);
+    let prefix = cur.take::<Prefix>()?;
     Ok((node_type, prefix))
 }
 

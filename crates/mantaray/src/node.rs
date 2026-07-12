@@ -11,6 +11,7 @@ use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 use bytes::Bytes;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
 use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
+use nectar_primitives::wire::{Cursor, FromCursor};
 
 /// Boxed recursion future: `Send` on native, unbounded on wasm32 so `!Send`
 /// browser stores stay usable. `MaybeSend` cannot appear in a `dyn` bound
@@ -53,8 +54,8 @@ impl Prefix {
     /// Create a prefix from a byte slice whose length is already structurally
     /// bounded (trie construction, where splits never exceed the maximum).
     ///
-    /// The wire decode path uses `from_wire`, which validates the length
-    /// instead of asserting it.
+    /// The wire decode path reads a `Prefix` from a [`Cursor`] instead, which
+    /// validates the length rather than asserting it.
     ///
     /// # Panics
     ///
@@ -114,6 +115,19 @@ impl Prefix {
     #[inline]
     pub const fn padded_bytes(&self) -> &[u8; PREFIX_MAX_LEN] {
         &self.data
+    }
+}
+
+/// Reads the prefix wire record: the length byte, then the padded 30-byte
+/// block. The length byte never leaves this impl; callers take a validated
+/// `Prefix` in one step.
+impl FromCursor for Prefix {
+    type Error = MantarayError;
+
+    fn take_from(cur: &mut Cursor<'_>) -> std::result::Result<Self, Self::Error> {
+        let len = cur.take::<u8>()?;
+        let padded = cur.take::<[u8; PREFIX_MAX_LEN]>()?;
+        Self::from_wire(&padded, len)
     }
 }
 
@@ -1200,6 +1214,38 @@ mod tests {
         let prefix = Prefix::from_wire(&padded, PREFIX_MAX_LEN as u8).unwrap();
         assert_eq!(prefix.len(), PREFIX_MAX_LEN);
         assert_eq!(&*prefix, &padded[..]);
+    }
+
+    #[test]
+    fn prefix_take_consumes_len_byte_and_padded_block() {
+        let mut wire = vec![3u8];
+        wire.extend_from_slice(b"abc");
+        wire.resize(1 + PREFIX_MAX_LEN, 0);
+        let mut cur = Cursor::new(&wire);
+        let prefix = cur.take::<Prefix>().unwrap();
+        assert_eq!(&*prefix, b"abc");
+        assert!(cur.is_empty());
+    }
+
+    #[test]
+    fn prefix_take_rejects_invalid_length() {
+        let mut wire = vec![0u8];
+        wire.resize(1 + PREFIX_MAX_LEN, 0);
+        let mut cur = Cursor::new(&wire);
+        assert!(matches!(
+            cur.take::<Prefix>().unwrap_err(),
+            MantarayError::InvalidPrefixLength { actual: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn prefix_take_underrun_is_data_too_short() {
+        let wire = [3u8, b'a'];
+        let mut cur = Cursor::new(&wire);
+        assert!(matches!(
+            cur.take::<Prefix>().unwrap_err(),
+            MantarayError::DataTooShort
+        ));
     }
 
     #[test]
