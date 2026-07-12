@@ -56,6 +56,32 @@
 //! assert_eq!(metadata::CONTENT_TYPE, "Content-Type");
 //! ```
 //!
+//! # Raw encode containment
+//!
+//! Node bytes are produced only inside [`Manifest::save`] and consumed only
+//! on load; a node handed out by [`Manifest::root`], [`Manifest::walk`], or
+//! [`Manifest::into_parts`] carries no public encode:
+//!
+//! ```compile_fail
+//! use nectar_mantaray::{DefaultMemoryStore, PlainManifest};
+//!
+//! let manifest: PlainManifest<_> = PlainManifest::new(DefaultMemoryStore::new());
+//! let bytes: Vec<u8> = Vec::try_from(manifest.root()).unwrap();
+//! ```
+//!
+//! The raw node internals exist only under the `hazmat` feature, for fuzz
+//! harnesses and benches; without it the module does not resolve:
+//!
+#![cfg_attr(not(feature = "hazmat"), doc = "```compile_fail")]
+#![cfg_attr(feature = "hazmat", doc = "```")]
+//! use nectar_mantaray::hazmat::{self, Node};
+//!
+//! let node: Node = Node::new_unencrypted();
+//! let bytes = hazmat::encode(&node).unwrap();
+//! let decoded: Node = hazmat::decode(&bytes).unwrap();
+//! assert!(decoded.entry().is_none());
+//! ```
+//!
 //! # Upstream-bug workarounds
 //!
 //! Code that exists solely to tolerate a defect in an upstream reference
@@ -104,13 +130,27 @@ pub use manifest_ref::ManifestRef;
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
 
-/// Raw node internals for fuzz harnesses only.
+/// Raw node internals for fuzz harnesses and benches only.
 ///
-/// Not part of the public API and exempt from semver guarantees; the encode
-/// path here (`Vec::<u8>::try_from(&Node)`) has no other sanctioned spelling.
+/// Not part of the public API and exempt from semver guarantees. Compiled
+/// only under the `hazmat` feature; normal builds carry no raw node types
+/// and no raw encode or decode surface.
+#[cfg(feature = "hazmat")]
 #[doc(hidden)]
 pub mod hazmat {
-    pub use crate::node::{Fork, Node, Prefix};
+    use nectar_primitives::chunk::Reference;
+
+    pub use crate::node::{Fork, Node};
+
+    /// Encode a raw node into its wire image.
+    pub fn encode<R: Reference>(node: &Node<R>) -> crate::Result<Vec<u8>> {
+        node.encode()
+    }
+
+    /// Decode a wire image into a raw node.
+    pub fn decode<R: Reference>(bytes: &[u8]) -> crate::DecodeResult<Node<R>> {
+        Node::decode(bytes)
+    }
 }
 
 // Re-export typed storage traits from primitives.

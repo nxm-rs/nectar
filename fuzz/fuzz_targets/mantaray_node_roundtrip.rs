@@ -3,8 +3,8 @@
 //! The valid-by-construction `Arbitrary` impl for `Node<ChunkRef>`
 //! (crates/mantaray/src/node.rs) generates only encodable, round-trip-stable
 //! nodes, so the oracle is stronger than "no panic": every generated node
-//! must encode (`TryFrom<&Node> for Vec<u8>`), the encoding must decode
-//! (`TryFrom<&[u8]> for Node`), the decoded node must equal the original,
+//! must encode (`hazmat::encode`), the encoding must decode
+//! (`hazmat::decode`), the decoded node must equal the original,
 //! and re-encoding the decoded node must reproduce the same bytes (canonical
 //! form). Any failure is a codec bug.
 //!
@@ -14,16 +14,16 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nectar_mantaray::hazmat::Node;
+use nectar_mantaray::hazmat::{self, Node};
 use nectar_primitives::chunk::ChunkRef;
 
 fuzz_target!(|node: Node<ChunkRef>| {
-    let encoded = Vec::<u8>::try_from(&node).expect("arbitrary nodes must encode");
+    let encoded = hazmat::encode(&node).expect("arbitrary nodes must encode");
     let decoded =
-        Node::<ChunkRef>::try_from(encoded.as_slice()).expect("encoded nodes must decode");
+        hazmat::decode::<ChunkRef>(encoded.as_slice()).expect("encoded nodes must decode");
     assert_eq!(decoded, node, "decode(encode(node)) must reproduce the node");
 
     // Canonical form: re-encoding the decoded node must be byte-identical.
-    let reencoded = Vec::<u8>::try_from(&decoded).expect("decoded nodes must re-encode");
+    let reencoded = hazmat::encode(&decoded).expect("decoded nodes must re-encode");
     assert_eq!(reencoded, encoded, "encoding must be canonical");
 });

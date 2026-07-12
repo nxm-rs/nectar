@@ -24,7 +24,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nectar_mantaray::hazmat::Node;
+use nectar_mantaray::hazmat;
 use nectar_primitives::EncryptedChunkRef;
 use nectar_primitives::chunk::{ChunkRef, Reference};
 
@@ -32,21 +32,21 @@ use nectar_primitives::chunk::{ChunkRef, Reference};
 /// declare decodes to `Err` and is skipped; every decoded node must reach a
 /// byte- and structure-canonical fixed point under encode/decode.
 fn round_trip<R: Reference>(data: &[u8]) {
-    let Ok(node) = Node::<R>::try_from(data) else {
+    let Ok(node) = hazmat::decode::<R>(data) else {
         return;
     };
 
     // A decoded node carries a saved reference on every fork child, so it is
     // always encodable; this first re-encode is the canonical v0.2 image.
-    let encoded = Vec::<u8>::try_from(&node).expect("a decoded node must re-encode");
+    let encoded = hazmat::encode(&node).expect("a decoded node must re-encode");
     let redecoded =
-        Node::<R>::try_from(encoded.as_slice()).expect("the canonical image must decode");
+        hazmat::decode::<R>(encoded.as_slice()).expect("the canonical image must decode");
 
-    let reencoded = Vec::<u8>::try_from(&redecoded).expect("a re-decoded node must re-encode");
+    let reencoded = hazmat::encode(&redecoded).expect("a re-decoded node must re-encode");
     assert_eq!(reencoded, encoded, "encode/decode must reach a byte-canonical fixed point");
 
     let redecoded_again =
-        Node::<R>::try_from(reencoded.as_slice()).expect("the canonical image must re-decode");
+        hazmat::decode::<R>(reencoded.as_slice()).expect("the canonical image must re-decode");
     assert_eq!(
         redecoded_again, redecoded,
         "decode(encode(node)) must be structurally stable"

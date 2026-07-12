@@ -35,9 +35,12 @@ nectar-primitives = { workspace = true, features = ["arbitrary"] }
 rand.workspace = true
 serde_json.workspace = true
 
+# The encode/decode benches drive the raw node codec, so the bench target
+# needs the hazmat surface: `cargo bench --features hazmat`.
 [[bench]]
 name = "mantaray_bench"
 harness = false
+required-features = ["hazmat"]
 
 [features]
 default = [ "std" ]
@@ -58,6 +61,8 @@ arbitrary = [
 	"std",
 ]
 encryption = [ "nectar-primitives/encryption" ]
+# Raw node internals (the `hazmat` module) for fuzz harnesses and benches.
+hazmat = []
 
 [package.metadata.docs.rs]
 all-features = true
