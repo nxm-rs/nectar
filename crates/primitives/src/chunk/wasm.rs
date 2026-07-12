@@ -123,7 +123,11 @@ pub fn split_file(data: &Uint8Array) -> Result<WasmSplitResult, JsValue> {
 
     Ok(WasmSplitResult {
         root: root.into(),
-        chunks: store.into_chunks().into_values().collect(),
+        chunks: store
+            .into_chunks()
+            .into_values()
+            .map(|c| c.into_envelope())
+            .collect(),
     })
 }
 
