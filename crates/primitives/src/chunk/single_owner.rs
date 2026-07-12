@@ -15,17 +15,19 @@ use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::cache::OnceCache;
 use crate::chunk::error::{self, ChunkError};
 use crate::error::Result;
+use crate::wire;
 
 use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::content::ContentChunk;
 use super::soc_id::SocId;
 use super::traits::{BmtChunk, Chunk, ChunkHeader};
+use super::type_id::ChunkTypeId;
+use super::type_tag::ChunkVersion;
 
 // Constants for field sizes
 const ID_SIZE: usize = std::mem::size_of::<B256>();
 const SIGNATURE_SIZE: usize = 65;
-const MIN_SOC_FIELDS_SIZE: usize = ID_SIZE + SIGNATURE_SIZE;
 
 /// The address of the owner of the SOC for dispersed replicas.
 const DISPERSED_REPLICA_OWNER: Address = address!("0xdc5b20847f43d67928f49cd4f85d696b5a7617b5");
@@ -40,7 +42,7 @@ const DISPERSED_REPLICA_OWNER_PK: B256 =
 #[derive(Debug, Clone)]
 pub struct SingleOwnerChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     /// The wire header (ID and signature)
-    header: SingleOwnerChunkHeader,
+    header: SocHeader,
     /// The body of the chunk, containing the actual data
     body: BmtBody<BODY_SIZE>,
     /// Cache for the chunk's address
@@ -49,56 +51,121 @@ pub struct SingleOwnerChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     owner_cache: OnceCache<Address>,
 }
 
-/// Metadata for a single-owner chunk
-#[derive(Debug, Clone)]
-pub struct SingleOwnerChunkMetadata {
-    /// Unique identifier for this chunk
+/// Header of a single-owner chunk (SOC): `id || signature`, 97 wire bytes.
+///
+/// The address is `keccak256(id || owner)`, with the owner recovered from
+/// the signature over `keccak256(id || body_hash)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SocHeader {
+    /// Unique identifier the chunk is signed under
     id: SocId,
-    /// Digital signature of the chunk's ID and body hash
+    /// Digital signature over the chunk's ID and body hash
     signature: Signature,
 }
 
-impl SingleOwnerChunkMetadata {
-    /// Create a new metadata instance with the given ID and signature
+impl SocHeader {
+    /// Create a new header with the given ID and signature
     pub const fn new(id: SocId, signature: Signature) -> Self {
         Self { id, signature }
     }
 
-    /// Get the unique ID of this chunk
+    /// Get the unique ID of this header
     pub const fn id(&self) -> SocId {
         self.id
     }
 
-    /// Get the signature of this chunk
+    /// Get the signature of this header
     pub const fn signature(&self) -> &Signature {
         &self.signature
     }
 
-    /// Get the wire bytes of this metadata: `id || signature`
-    pub fn bytes(&self) -> Bytes {
-        let mut bytes = BytesMut::with_capacity(ID_SIZE + SIGNATURE_SIZE);
-        bytes.extend_from_slice(self.id.as_ref());
-        bytes.extend_from_slice(&self.signature.as_bytes());
-        bytes.freeze()
+    /// EIP-191 message the owner signs: `keccak256(id || body_hash)`.
+    pub fn owner_message(id: SocId, body_hash: B256) -> B256 {
+        let mut hasher = Keccak256::new();
+        hasher.update(id.as_slice());
+        hasher.update(body_hash);
+        hasher.finalize()
+    }
+
+    /// Recover the owner's address from the signature over `body_hash`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChunkError::Signature` if the signature recovery fails.
+    pub fn owner(&self, body_hash: B256) -> error::Result<Address> {
+        self.signature
+            .recover_address_from_msg(Self::owner_message(self.id, body_hash))
+            .map_err(Into::into)
+    }
+
+    /// The SOC address derivation: `keccak256(id || owner)`.
+    fn address_for(id: SocId, owner: Address) -> ChunkAddress {
+        let mut hasher = Keccak256::new();
+        hasher.update(id.as_slice());
+        hasher.update(owner);
+        ChunkAddress::from(hasher.finalize())
+    }
+
+    /// Dispersed-replica rule: `id[1..]` must equal `body_hash[1..]`; only the
+    /// first id byte is mined.
+    fn is_valid_replica(&self, body_hash: B256) -> bool {
+        // Both slices are fixed 32-byte values, so split_first is always Some.
+        let id_tail = self.id.as_slice().split_first().map(|(_, tail)| tail);
+        let hash_tail = body_hash.as_slice().split_first().map(|(_, tail)| tail);
+        id_tail == hash_tail
     }
 }
 
-/// Header for a single-owner chunk
-#[derive(Debug, Clone)]
-pub struct SingleOwnerChunkHeader {
-    metadata: SingleOwnerChunkMetadata,
-}
+impl ChunkHeader for SocHeader {
+    const TYPE_ID: ChunkTypeId = ChunkTypeId::SINGLE_OWNER;
+    const VERSION: ChunkVersion = ChunkVersion::new(0);
+    const NAME: &'static str = "single_owner";
+    const SIZE: usize = ID_SIZE + SIGNATURE_SIZE;
 
-impl SingleOwnerChunkHeader {
-    /// Create a new header with the given metadata
-    pub const fn new(metadata: SingleOwnerChunkMetadata) -> Self {
-        Self { metadata }
+    /// Total commitment: an unrecoverable signature commits under the zero
+    /// owner, an address [`validate`](ChunkHeader::validate) then rejects.
+    fn commit(&self, body_hash: B256) -> ChunkAddress {
+        let owner = self.owner(body_hash).unwrap_or(Address::ZERO);
+        Self::address_for(self.id, owner)
     }
-}
 
-impl ChunkHeader for SingleOwnerChunkHeader {
-    fn bytes(&self) -> Bytes {
-        self.metadata.bytes()
+    fn validate(
+        &self,
+        body_hash: B256,
+        expected: &ChunkAddress,
+    ) -> std::result::Result<(), ChunkError> {
+        let owner = self.owner(body_hash)?;
+
+        // If the owner is the replica chunk owner, the ID must adhere to the
+        // dispersed-replica semantics.
+        if owner == DISPERSED_REPLICA_OWNER && !self.is_valid_replica(body_hash) {
+            return Err(ChunkError::invalid_format("invalid dispersed replica"));
+        }
+
+        let actual = Self::address_for(self.id, owner);
+        if actual != *expected {
+            return Err(ChunkError::verification_failed(*expected, actual));
+        }
+        Ok(())
+    }
+
+    /// Plain (unprefixed) `keccak256(soc_address || transformed_root)`.
+    fn seal_transformed(&self, address: &ChunkAddress, transformed_root: B256) -> ChunkAddress {
+        let mut hasher = Keccak256::new();
+        hasher.update(address);
+        hasher.update(transformed_root);
+        ChunkAddress::from(hasher.finalize())
+    }
+
+    fn encode(&self, out: &mut BytesMut) {
+        out.extend_from_slice(self.id.as_slice());
+        out.extend_from_slice(&self.signature.as_bytes());
+    }
+
+    fn decode(cursor: &mut wire::Cursor<'_>) -> std::result::Result<Self, ChunkError> {
+        let id = SocId::new(cursor.take::<[u8; ID_SIZE]>()?);
+        let signature = Signature::from_raw(&cursor.take::<[u8; SIGNATURE_SIZE]>()?)?;
+        Ok(Self::new(id, signature))
     }
 }
 
@@ -174,11 +241,8 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// * `body` - The BMT body containing the data.
     #[must_use]
     pub const fn from_parts(id: SocId, signature: Signature, body: BmtBody<BODY_SIZE>) -> Self {
-        let metadata = SingleOwnerChunkMetadata::new(id, signature);
-        let header = SingleOwnerChunkHeader::new(metadata);
-
         Self {
-            header,
+            header: SocHeader::new(id, signature),
             body,
             chunk_address_cache: OnceCache::new(),
             owner_cache: OnceCache::new(),
@@ -197,11 +261,8 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
         address: ChunkAddress,
         owner: Address,
     ) -> Self {
-        let metadata = SingleOwnerChunkMetadata::new(id, signature);
-        let header = SingleOwnerChunkHeader::new(metadata);
-
         Self {
-            header,
+            header: SocHeader::new(id, signature),
             body,
             chunk_address_cache: OnceCache::with_value(address),
             owner_cache: OnceCache::with_value(owner),
@@ -237,49 +298,23 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
 
     /// Calculate the owner's address from the signature.
     fn calculate_owner(&self) -> error::Result<Address> {
-        // Generate the hash to verify
-        let hash = Self::to_sign(&self.header.metadata.id, &self.body);
-
-        // Recover the address from the signature
-        self.signature()
-            .recover_address_from_msg(hash)
-            .map_err(Into::into)
-    }
-
-    /// Compute the data to be signed for this chunk.
-    ///
-    /// This combines the chunk's ID and body hash to create the data
-    /// that is signed to prove ownership.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The chunk's ID.
-    /// * `body` - The chunk's body.
-    ///
-    /// # Returns
-    ///
-    /// A 32-byte hash representing the data to sign.
-    fn to_sign(id: &SocId, body: &BmtBody<BODY_SIZE>) -> B256 {
-        let mut hasher = Keccak256::new();
-        hasher.update(id);
-        hasher.update(body.hash());
-        hasher.finalize()
+        self.header.owner(self.body.hash().into())
     }
 
     // Checks if the chunk is a valid dispersed replica
-    #[allow(clippy::indexing_slicing)] // both id and body hash are fixed 32-byte values, so [1..] holds
+    #[cfg(test)]
     fn is_valid_replica(&self) -> bool {
-        self.id().as_slice()[1..] == self.body.hash().as_bytes()[1..]
+        self.header.is_valid_replica(self.body.hash().into())
     }
 
     /// Get the ID of this chunk.
     pub const fn id(&self) -> SocId {
-        self.header.metadata.id
+        self.header.id()
     }
 
     /// Get the signature of this chunk.
     pub const fn signature(&self) -> &Signature {
-        &self.header.metadata.signature
+        self.header.signature()
     }
 
     /// Borrow the inner content body wrapped by this single-owner chunk.
@@ -295,9 +330,8 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
 
     /// Extract the content-addressed chunk (CAC) wrapped inside this SOC.
     ///
-    /// Mirrors bee's `soc.UnwrapCAC` (`pkg/soc/soc.go`): the SOC body *is* a
-    /// CAC body (`span || payload`), so this rebuilds the [`ContentChunk`] from
-    /// it without any manual `HashSize + SignatureSize` cursor arithmetic. The
+    /// The SOC body *is* a CAC body (`span || payload`), so this rebuilds the
+    /// [`ContentChunk`] from it without any manual cursor arithmetic. The
     /// returned chunk's address is the wrapped content address, not the SOC
     /// address.
     #[must_use]
@@ -307,29 +341,20 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
 }
 
 impl<const BODY_SIZE: usize> Chunk for SingleOwnerChunk<BODY_SIZE> {
-    type Header = SingleOwnerChunkHeader;
+    type Header = SocHeader;
 
     fn address(&self) -> &ChunkAddress {
-        self.chunk_address_cache.get_or_compute(|| {
-            // Compute address from id and owner
-            // Note: If owner recovery fails, we use Address::ZERO which will cause
-            // address verification to fail, which is the correct behavior.
-            let owner = self.owner().unwrap_or(Address::ZERO);
-            let mut hasher = Keccak256::new();
-            hasher.update(self.id());
-            hasher.update(owner);
-
-            hasher.finalize().into()
-        })
+        self.chunk_address_cache
+            .get_or_compute(|| self.header.commit(self.body.hash().into()))
     }
 
     fn data(&self) -> &Bytes {
         self.body.data()
     }
 
-    #[allow(clippy::arithmetic_side_effects)] // header (97 bytes) plus a body bounded by BODY_SIZE cannot overflow usize
     fn size(&self) -> usize {
-        self.header().bytes().len() + self.body.size()
+        // Header (97 bytes) plus a body bounded by BODY_SIZE cannot overflow.
+        SocHeader::SIZE.saturating_add(self.body.size())
     }
 
     fn header(&self) -> &Self::Header {
@@ -337,19 +362,7 @@ impl<const BODY_SIZE: usize> Chunk for SingleOwnerChunk<BODY_SIZE> {
     }
 
     fn verify(&self, expected: &ChunkAddress) -> Result<()> {
-        let actual = self.address();
-
-        // At this point, the owner has been recovered. Now check if the owner
-        // is the replica chunk owner, the ID must adhere to specific semantics.
-        let owner = self.owner()?;
-        if owner == DISPERSED_REPLICA_OWNER && !self.is_valid_replica() {
-            return Err(error::ChunkError::invalid_format("invalid dispersed replica").into());
-        }
-
-        if actual != expected {
-            return Err(error::ChunkError::verification_failed(*expected, *actual).into());
-        }
-        Ok(())
+        Ok(self.header.validate(self.body.hash().into(), expected)?)
     }
 }
 
@@ -362,7 +375,7 @@ impl<const BODY_SIZE: usize> BmtChunk for SingleOwnerChunk<BODY_SIZE> {
 impl<const BODY_SIZE: usize> From<SingleOwnerChunk<BODY_SIZE>> for Bytes {
     fn from(chunk: SingleOwnerChunk<BODY_SIZE>) -> Self {
         let mut bytes = BytesMut::with_capacity(chunk.size());
-        bytes.extend_from_slice(chunk.header().bytes().as_ref());
+        chunk.header.encode(&mut bytes);
         bytes.extend_from_slice(&Self::from(chunk.body));
         bytes.freeze()
     }
@@ -372,32 +385,11 @@ impl<const BODY_SIZE: usize> TryFrom<Bytes> for SingleOwnerChunk<BODY_SIZE> {
     type Error = PrimitivesError;
 
     fn try_from(bytes: Bytes) -> Result<Self> {
-        if bytes.len() < MIN_SOC_FIELDS_SIZE {
-            return Err(ChunkError::invalid_size(
-                "insufficient data for single-owner chunk",
-                MIN_SOC_FIELDS_SIZE,
-                bytes.len(),
-            )
-            .into());
-        }
+        let mut cursor = wire::Cursor::new(&bytes);
+        let header = SocHeader::decode(&mut cursor)?;
 
-        // Extract ID
-        let id_slice = &bytes.slice(0..ID_SIZE);
-        let mut id = B256::default();
-        id.copy_from_slice(id_slice);
-        let id = SocId::from(id);
-
-        // Extract signature
-        let sig_slice = &bytes.slice(ID_SIZE..ID_SIZE + SIGNATURE_SIZE);
-        let signature = Signature::from_raw(sig_slice).map_err(ChunkError::from)?;
-
-        // Extract body
-        let body_bytes = bytes.slice(ID_SIZE + SIGNATURE_SIZE..);
-        let body = BmtBody::try_from(body_bytes)?;
-
-        // Create metadata and header
-        let metadata = SingleOwnerChunkMetadata::new(id, signature);
-        let header = SingleOwnerChunkHeader::new(metadata);
+        // decode consumed exactly SocHeader::SIZE bytes, so the slice holds.
+        let body = BmtBody::try_from(bytes.slice(SocHeader::SIZE..))?;
 
         Ok(Self {
             header,
@@ -566,10 +558,10 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithId> {
     ) -> Result<SingleOwnerChunkBuilderImpl<BODY_SIZE, ReadyToBuild>> {
         // Get body and ID - these are guaranteed to be Some by the state
         let body = self.body.as_ref().unwrap();
-        let id = self.id.as_ref().unwrap();
+        let id = *self.id.as_ref().unwrap();
 
         // Compute hash to sign
-        let hash = SingleOwnerChunk::<BODY_SIZE>::to_sign(id, body);
+        let hash = SocHeader::owner_message(id, body.hash().into());
 
         // Sign the hash
         let signature = signer
@@ -684,7 +676,7 @@ mod tests {
     proptest! {
         #[test]
         fn test_chunk_properties(chunk in chunk_strategy()) {
-            prop_assert!(chunk.size() >= MIN_SOC_FIELDS_SIZE);
+            prop_assert!(chunk.size() >= SocHeader::SIZE);
 
             // Test round-trip conversion of the raw parts
             let bytes: Bytes = chunk.clone().into();
@@ -789,7 +781,7 @@ mod tests {
         }
 
         #[test]
-        fn test_chunk_too_small(data in proptest::collection::vec(any::<u8>(), 1..MIN_SOC_FIELDS_SIZE)) {
+        fn test_chunk_too_small(data in proptest::collection::vec(any::<u8>(), 1..SocHeader::SIZE)) {
             // Test insufficient data size
             let chunk = DefaultSingleOwnerChunk::try_from(data.as_slice());
             prop_assert!(chunk.is_err());
@@ -886,5 +878,121 @@ mod tests {
         ));
 
         Ok(())
+    }
+
+    /// Decode the go-interop test vector's header and pin its wire shape:
+    /// `id || signature`, 97 bytes, no type or version prefix.
+    #[test]
+    fn soc_header_decode_encode_round_trips_go_vector() {
+        let wire = get_test_chunk_data();
+        let mut cursor = wire::Cursor::new(&wire);
+        let header = SocHeader::decode(&mut cursor).unwrap();
+
+        assert_eq!(header.id(), SocId::ZERO);
+        assert_eq!(cursor.remaining(), &wire[SocHeader::SIZE..]);
+
+        let mut out = BytesMut::new();
+        header.encode(&mut out);
+        assert_eq!(out.len(), SocHeader::SIZE);
+        assert_eq!(out.as_ref(), &wire[..SocHeader::SIZE]);
+    }
+
+    #[test]
+    fn soc_header_decode_underrun_errors() {
+        for len in [0, ID_SIZE, SocHeader::SIZE - 1] {
+            let short = vec![0u8; len];
+            let mut cursor = wire::Cursor::new(&short);
+            assert!(matches!(
+                SocHeader::decode(&mut cursor),
+                Err(ChunkError::Underrun(_))
+            ));
+        }
+    }
+
+    /// The commit rule on the go vector: `keccak256(id || owner)` with the
+    /// owner recovered over `keccak256(id || body_hash)`.
+    #[test]
+    fn soc_header_commit_reproduces_go_vector_address() {
+        let chunk = DefaultSingleOwnerChunk::try_from(get_test_chunk_data().as_slice()).unwrap();
+        let body_hash: B256 = chunk.inner_body().hash().into();
+
+        let expected = b256!("9d453ebb73b2fedaaf44ceddcf7a0aa37f3e3d6453fea5841c31f0ea6d61dc85");
+        assert_eq!(
+            chunk.header().commit(body_hash),
+            ChunkAddress::from(expected)
+        );
+        assert!(chunk.header().validate(body_hash, &expected.into()).is_ok());
+    }
+
+    /// An unrecoverable signature commits under the zero owner and validate
+    /// rejects it with a signature error, never an address compare.
+    #[test]
+    fn soc_header_bad_signature_commits_zero_owner_and_fails_validate() {
+        let mut wire = get_test_chunk_data();
+        wire[ID_SIZE..ID_SIZE + SIGNATURE_SIZE].copy_from_slice(&[0xff; SIGNATURE_SIZE]);
+
+        let chunk = DefaultSingleOwnerChunk::try_from(wire.as_slice()).unwrap();
+        let body_hash: B256 = chunk.inner_body().hash().into();
+        let header = chunk.header();
+
+        // Commit is total: the zero owner stands in.
+        let zero_owner_address = SocHeader::address_for(header.id(), Address::ZERO);
+        assert_eq!(header.commit(body_hash), zero_owner_address);
+
+        // Validate is not: even the committed (lying) address is rejected.
+        assert!(matches!(
+            header.validate(body_hash, &zero_owner_address),
+            Err(ChunkError::Signature(_))
+        ));
+    }
+
+    /// The dispersed-replica rule lives inside validate: a replica-owner
+    /// signature over a non-replica id fails even at its committed address.
+    #[test]
+    fn soc_header_validate_enforces_replica_rule() {
+        let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
+        let chunk = DefaultSingleOwnerChunk::new(SocId::ZERO, b"data".to_vec(), &signer).unwrap();
+        let body_hash: B256 = chunk.inner_body().hash().into();
+        let committed = chunk.header().commit(body_hash);
+
+        assert!(matches!(
+            chunk.header().validate(body_hash, &committed),
+            Err(ChunkError::InvalidFormat(_))
+        ));
+
+        // A well-formed replica id passes.
+        let replica =
+            DefaultSingleOwnerChunk::new_dispersed_replica(0x2a, chunk.inner_body().clone())
+                .unwrap();
+        let replica_body_hash: B256 = replica.inner_body().hash().into();
+        assert!(
+            replica
+                .header()
+                .validate(replica_body_hash, replica.address())
+                .is_ok()
+        );
+    }
+
+    /// SOC transformed sealing is the plain `keccak256(address || root)`.
+    #[test]
+    fn soc_header_seal_transformed_is_plain_keccak() {
+        let chunk = DefaultSingleOwnerChunk::try_from(get_test_chunk_data().as_slice()).unwrap();
+        let address = *chunk.address();
+        let root = B256::repeat_byte(0x5a);
+
+        let mut hasher = Keccak256::new();
+        hasher.update(address);
+        hasher.update(root);
+        let expected = ChunkAddress::from(hasher.finalize());
+
+        assert_eq!(chunk.header().seal_transformed(&address, root), expected);
+    }
+
+    #[test]
+    fn soc_header_constants() {
+        assert_eq!(SocHeader::SIZE, 97);
+        assert_eq!(SocHeader::TYPE_ID, ChunkTypeId::SINGLE_OWNER);
+        assert_eq!(SocHeader::VERSION, ChunkVersion::new(0));
+        assert_eq!(SocHeader::NAME, "single_owner");
     }
 }

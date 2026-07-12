@@ -3,7 +3,6 @@
 //! This module provides [`AnyChunk`], an enum that can hold any chunk type
 //! for runtime polymorphism without requiring trait objects.
 
-use alloy_primitives::Keccak256;
 use bytes::Bytes;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
@@ -13,7 +12,7 @@ use super::address::ChunkAddress;
 use super::chunk_type::ChunkType;
 use super::content::ContentChunk;
 use super::single_owner::SingleOwnerChunk;
-use super::traits::Chunk;
+use super::traits::{Chunk, ChunkHeader};
 use super::type_id::ChunkTypeId;
 
 /// Type-erased chunk for runtime polymorphism with configurable body size.
@@ -104,18 +103,15 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     ///
     /// # Derivation
     ///
-    /// - For a content-addressed chunk (CAC) the transformed address is the
-    ///   prefixed BMT of the chunk body, i.e. `BMT(prefix = anchor, span,
-    ///   payload)`. This is computed by
+    /// - The anchor-keyed BMT root of the chunk body is computed by
     ///   [`BmtBody::transformed_root`](super::bmt_body::BmtBody::transformed_root) on the
-    ///   chunk's borrowed body, which mixes the anchor into *every* node hash,
-    ///   matching bee's prefix hasher.
-    /// - For a single-owner chunk (SOC) the wrapped content body is re-hashed
-    ///   the same way to obtain `inner`, then the SOC's transformed address is
-    ///   a **plain, unprefixed** `keccak256(soc_address || inner)`. The outer
-    ///   wrap is a flat Keccak256, *not* a prefixed BMT, mirroring bee's
-    ///   `transformedAddressSOC` which uses `swarm.NewHasher()` (no anchor) for
-    ///   the final combine.
+    ///   chunk's borrowed body, which mixes the anchor into *every* node hash.
+    ///   For a SOC the wrapped content body is the one re-hashed.
+    /// - The root is then sealed into the transformed address by the chunk's
+    ///   header predicate
+    ///   ([`ChunkHeader::seal_transformed`](super::traits::ChunkHeader::seal_transformed)):
+    ///   the root itself for a CAC, the plain (unprefixed, no anchor)
+    ///   `keccak256(soc_address || inner)` for a SOC.
     ///
     /// # Endianness
     ///
@@ -132,17 +128,12 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     /// `32 + 65` (id + signature) header slicing.
     pub fn transformed_address(&self, anchor: &[u8]) -> ChunkAddress {
         match self {
-            // CAC: the prefixed BMT root of the (borrowed) body is the address.
-            Self::Content(c) => ChunkAddress::from(c.body().transformed_root(anchor)),
-            // SOC: re-hash the (borrowed) wrapped body, then take the plain
-            // (unprefixed) keccak256(soc_address || inner).
-            Self::SingleOwner(c) => {
-                let inner = c.inner_body().transformed_root(anchor);
-                let mut hasher = Keccak256::new();
-                hasher.update(c.address());
-                hasher.update(inner.as_slice());
-                ChunkAddress::from(hasher.finalize())
-            }
+            Self::Content(c) => c
+                .header()
+                .seal_transformed(c.address(), c.body().transformed_root(anchor)),
+            Self::SingleOwner(c) => c
+                .header()
+                .seal_transformed(c.address(), c.inner_body().transformed_root(anchor)),
         }
     }
 

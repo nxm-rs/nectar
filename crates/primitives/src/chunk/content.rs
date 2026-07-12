@@ -3,18 +3,22 @@
 //! This module provides the implementation of content-addressed chunks,
 //! which are chunks whose address is derived from the hash of their content.
 
-use alloy_primitives::hex;
-use bytes::Bytes;
+use alloy_primitives::{B256, hex};
+use bytes::{Bytes, BytesMut};
 use std::fmt;
 use std::marker::PhantomData;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::cache::OnceCache;
 use crate::error::{PrimitivesError, Result};
+use crate::wire;
 
 use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
+use super::error::ChunkError;
 use super::traits::{BmtChunk, Chunk, ChunkHeader};
+use super::type_id::ChunkTypeId;
+use super::type_tag::ChunkVersion;
 
 /// A content-addressed chunk with configurable body size.
 ///
@@ -23,30 +27,53 @@ use super::traits::{BmtChunk, Chunk, ChunkHeader};
 #[derive(Debug, Clone)]
 pub struct ContentChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     /// The (empty) wire header
-    header: ContentChunkHeader,
+    header: CacHeader,
     /// The body of the chunk, containing the actual data
     body: BmtBody<BODY_SIZE>,
     /// Cache for the chunk's address
     address_cache: OnceCache<ChunkAddress>,
 }
 
-/// Header for a content-addressed chunk
+/// Header of a content-addressed chunk (CAC).
 ///
-/// Content chunks carry no wire header: the body (`span || payload`) is the
-/// whole encoding.
-#[derive(Debug, Clone, Default)]
-pub struct ContentChunkHeader;
+/// A CAC carries no wire header and commits to its own body hash; the empty
+/// header is a type fact ([`SIZE`](ChunkHeader::SIZE) is 0), not a runtime
+/// check.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacHeader;
 
-impl ContentChunkHeader {
-    /// Create a new header
-    pub const fn new() -> Self {
-        Self
+impl ChunkHeader for CacHeader {
+    const TYPE_ID: ChunkTypeId = ChunkTypeId::CONTENT;
+    const VERSION: ChunkVersion = ChunkVersion::new(0);
+    const NAME: &'static str = "content";
+    const SIZE: usize = 0;
+
+    /// The address is the BMT body hash itself.
+    fn commit(&self, body_hash: B256) -> ChunkAddress {
+        ChunkAddress::from(body_hash)
     }
-}
 
-impl ChunkHeader for ContentChunkHeader {
-    fn bytes(&self) -> Bytes {
-        Bytes::new()
+    fn validate(
+        &self,
+        body_hash: B256,
+        expected: &ChunkAddress,
+    ) -> std::result::Result<(), ChunkError> {
+        let actual = self.commit(body_hash);
+        if actual != *expected {
+            return Err(ChunkError::verification_failed(*expected, actual));
+        }
+        Ok(())
+    }
+
+    /// The transformed address is the anchor-keyed BMT root itself.
+    fn seal_transformed(&self, _address: &ChunkAddress, transformed_root: B256) -> ChunkAddress {
+        ChunkAddress::from(transformed_root)
+    }
+
+    fn encode(&self, _out: &mut BytesMut) {}
+
+    fn decode(_cursor: &mut wire::Cursor<'_>) -> std::result::Result<Self, ChunkError> {
+        Ok(Self)
     }
 }
 
@@ -98,7 +125,7 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     #[must_use]
     pub const fn from_body(body: BmtBody<BODY_SIZE>) -> Self {
         Self {
-            header: ContentChunkHeader::new(),
+            header: CacHeader,
             body,
             address_cache: OnceCache::new(),
         }
@@ -121,7 +148,7 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     #[must_use]
     pub fn from_body_with_address(body: BmtBody<BODY_SIZE>, address: ChunkAddress) -> Self {
         Self {
-            header: ContentChunkHeader::new(),
+            header: CacHeader,
             body,
             address_cache: OnceCache::with_value(address),
         }
@@ -220,23 +247,28 @@ impl<const BODY_SIZE: usize> super::encryption::ChunkEncrypt for ContentChunk<BO
 }
 
 impl<const BODY_SIZE: usize> Chunk for ContentChunk<BODY_SIZE> {
-    type Header = ContentChunkHeader;
+    type Header = CacHeader;
 
     fn address(&self) -> &ChunkAddress {
-        self.address_cache.get_or_compute(|| self.body.hash())
+        self.address_cache
+            .get_or_compute(|| self.header.commit(self.body.hash().into()))
     }
 
     fn data(&self) -> &Bytes {
         self.body.data()
     }
 
-    #[allow(clippy::arithmetic_side_effects)] // header (0 bytes) plus a body bounded by BODY_SIZE cannot overflow usize
     fn size(&self) -> usize {
-        self.header().bytes().len() + self.body.size()
+        // Header (0 bytes) plus a body bounded by BODY_SIZE cannot overflow.
+        CacHeader::SIZE.saturating_add(self.body.size())
     }
 
     fn header(&self) -> &Self::Header {
         &self.header
+    }
+
+    fn verify(&self, expected: &ChunkAddress) -> Result<()> {
+        Ok(self.header.validate(self.body.hash().into(), expected)?)
     }
 }
 
@@ -257,7 +289,7 @@ impl<const BODY_SIZE: usize> TryFrom<Bytes> for ContentChunk<BODY_SIZE> {
 
     fn try_from(bytes: Bytes) -> Result<Self> {
         Ok(Self {
-            header: ContentChunkHeader::new(),
+            header: CacHeader,
             body: BmtBody::try_from(bytes)?,
             address_cache: OnceCache::new(),
         })
@@ -365,7 +397,7 @@ impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild> {
             .map_or_else(OnceCache::new, OnceCache::with_value);
 
         ContentChunk {
-            header: ContentChunkHeader::new(),
+            header: CacHeader,
             body,
             address_cache,
         }
@@ -510,5 +542,60 @@ mod tests {
         assert_eq!(chunk.span(), 0);
         assert_eq!(chunk.data(), &[0u8; 0].as_slice());
         assert_eq!(chunk.size(), 8);
+    }
+
+    /// The commit rule is the body hash itself, pinned on a known vector.
+    #[test]
+    fn cac_header_commit_is_body_hash() {
+        let chunk = DefaultContentChunk::new(b"foo".to_vec()).unwrap();
+        let body_hash: B256 = chunk.body().hash().into();
+
+        let expected = b256!("2387e8e7d8a48c2a9339c97c1dc3461a9a7aa07e994c5cb8b38fd7c1b3e6ea48");
+        assert_eq!(CacHeader.commit(body_hash), ChunkAddress::from(expected));
+        assert!(CacHeader.validate(body_hash, &expected.into()).is_ok());
+    }
+
+    #[test]
+    fn cac_header_validate_rejects_wrong_address() {
+        let body_hash = B256::repeat_byte(0x11);
+        let wrong = ChunkAddress::from(B256::repeat_byte(0x22));
+        assert!(matches!(
+            CacHeader.validate(body_hash, &wrong),
+            Err(ChunkError::VerificationFailed { .. })
+        ));
+    }
+
+    /// The wire header is empty: encode writes nothing, decode consumes nothing.
+    #[test]
+    fn cac_header_wire_shape_is_empty() {
+        let mut out = BytesMut::new();
+        CacHeader.encode(&mut out);
+        assert_eq!(out.len(), CacHeader::SIZE);
+        assert!(out.is_empty());
+
+        let data = [0xaau8; 4];
+        let mut cursor = wire::Cursor::new(&data);
+        let _ = CacHeader::decode(&mut cursor).unwrap();
+        assert_eq!(cursor.remaining(), &data);
+    }
+
+    /// The transformed address is the anchor-keyed root itself; nothing is
+    /// sealed over the chunk address.
+    #[test]
+    fn cac_header_seal_transformed_is_root() {
+        let address = ChunkAddress::from(B256::repeat_byte(0x33));
+        let root = B256::repeat_byte(0x44);
+        assert_eq!(
+            CacHeader.seal_transformed(&address, root),
+            ChunkAddress::from(root)
+        );
+    }
+
+    #[test]
+    fn cac_header_constants() {
+        assert_eq!(CacHeader::SIZE, 0);
+        assert_eq!(CacHeader::TYPE_ID, ChunkTypeId::CONTENT);
+        assert_eq!(CacHeader::VERSION, ChunkVersion::new(0));
+        assert_eq!(CacHeader::NAME, "content");
     }
 }

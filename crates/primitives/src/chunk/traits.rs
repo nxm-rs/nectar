@@ -1,19 +1,109 @@
-//! Traits for chunk types and operations
+//! Core traits for chunk types and operations.
 //!
-//! This module defines the core traits that all chunk types must implement.
+//! [`ChunkHeader`] is the predicate a chunk type *is*: its address derivation
+//! and self-certification rule. [`Chunk`] and [`BmtChunk`] are the carrier
+//! traits over a header plus a BMT body.
 
-use crate::chunk::error;
-use crate::error::Result;
-use bytes::Bytes;
+use alloy_primitives::B256;
+use bytes::{Bytes, BytesMut};
+
+use crate::error::PrimitivesError;
+use crate::wire;
 
 use super::address::ChunkAddress;
+use super::error::ChunkError;
+use super::type_id::ChunkTypeId;
+use super::type_tag::ChunkVersion;
 
-/// Core trait for chunk header
-pub trait ChunkHeader {
-    /// Get the wire header bytes for this chunk: everything that precedes the
-    /// BMT body in the chunk's encoding (empty for a content chunk,
-    /// `id || signature` for a single-owner chunk).
-    fn bytes(&self) -> Bytes;
+/// Address-derivation and self-certification predicate of one chunk type.
+///
+/// A chunk is `header || span || payload`: the header is everything that
+/// precedes the BMT body on the wire, and everything that turns the body hash
+/// into an address. Implementing this trait defines a chunk type; custom
+/// swarms use ids 128-255 ([`ChunkTypeId::custom`]). The trait is deliberately
+/// unsealed: auditability lives in each network's closed envelope enum, not
+/// in sealing.
+///
+/// ```
+/// use alloy_primitives::{B256, Keccak256};
+/// use nectar_primitives::bytes::BytesMut;
+/// use nectar_primitives::chunk::{ChunkAddress, ChunkError, ChunkHeader};
+/// use nectar_primitives::{ChunkTypeId, ChunkVersion, wire};
+///
+/// /// Custom headerless type: address = keccak256(0xC0 || body_hash).
+/// struct TaggedHeader;
+///
+/// impl ChunkHeader for TaggedHeader {
+///     const TYPE_ID: ChunkTypeId = ChunkTypeId::custom(200);
+///     const VERSION: ChunkVersion = ChunkVersion::new(0);
+///     const NAME: &'static str = "tagged";
+///     const SIZE: usize = 0;
+///
+///     fn commit(&self, body_hash: B256) -> ChunkAddress {
+///         let mut hasher = Keccak256::new();
+///         hasher.update([0xC0]);
+///         hasher.update(body_hash);
+///         ChunkAddress::from(hasher.finalize())
+///     }
+///
+///     fn validate(&self, body_hash: B256, expected: &ChunkAddress) -> Result<(), ChunkError> {
+///         let actual = self.commit(body_hash);
+///         if actual == *expected {
+///             Ok(())
+///         } else {
+///             Err(ChunkError::verification_failed(*expected, actual))
+///         }
+///     }
+///
+///     fn seal_transformed(&self, _address: &ChunkAddress, transformed_root: B256) -> ChunkAddress {
+///         ChunkAddress::from(transformed_root)
+///     }
+///
+///     fn encode(&self, _out: &mut BytesMut) {}
+///
+///     fn decode(_cursor: &mut wire::Cursor<'_>) -> Result<Self, ChunkError> {
+///         Ok(Self)
+///     }
+/// }
+/// ```
+pub trait ChunkHeader: Sized + Send + Sync + 'static {
+    /// Wire-level type id of this chunk type.
+    const TYPE_ID: ChunkTypeId;
+
+    /// Revision of this type id's acceptance rule.
+    const VERSION: ChunkVersion;
+
+    /// Human-readable type name.
+    const NAME: &'static str;
+
+    /// Exact wire width of the header in bytes; [`encode`](Self::encode)
+    /// writes exactly this many.
+    const SIZE: usize;
+
+    /// Derive the chunk address this header commits to over `body_hash`.
+    ///
+    /// Total: inputs that cannot certify still commit to *some* address,
+    /// which [`validate`](Self::validate) then rejects.
+    fn commit(&self, body_hash: B256) -> ChunkAddress;
+
+    /// Certify that this header and `body_hash` derive `expected`.
+    ///
+    /// Required, deliberately without a default: an address-compare-only
+    /// implementation would accept single-owner chunks whose signatures do
+    /// not recover, so every header must state its full acceptance rule.
+    fn validate(&self, body_hash: B256, expected: &ChunkAddress) -> Result<(), ChunkError>;
+
+    /// Seal the anchor-keyed `transformed_root` of the body into the chunk's
+    /// transformed address (the redistribution sampler's re-hash).
+    fn seal_transformed(&self, address: &ChunkAddress, transformed_root: B256) -> ChunkAddress;
+
+    /// Append the wire header bytes, exactly [`SIZE`](Self::SIZE) of them,
+    /// to `out`.
+    fn encode(&self, out: &mut BytesMut);
+
+    /// Read a header from the cursor, consuming exactly [`SIZE`](Self::SIZE)
+    /// bytes.
+    fn decode(cursor: &mut wire::Cursor<'_>) -> Result<Self, ChunkError>;
 }
 
 /// Core trait for all chunk types in the system.
@@ -33,16 +123,16 @@ pub trait Chunk: Send + Sync + 'static {
     fn data(&self) -> &Bytes;
 
     /// Get the total size of this chunk in bytes
-    #[allow(clippy::arithmetic_side_effects)] // header and payload are both bounded by the chunk wire size, far below usize::MAX
     fn size(&self) -> usize {
-        self.header().bytes().len() + self.data().len()
+        // Header and payload are both bounded by the chunk wire size.
+        Self::Header::SIZE.saturating_add(self.data().len())
     }
 
     /// Verify that this chunk matches an expected address
-    fn verify(&self, expected: &ChunkAddress) -> Result<()> {
+    fn verify(&self, expected: &ChunkAddress) -> Result<(), PrimitivesError> {
         let actual = self.address();
         if actual != expected {
-            return Err(error::ChunkError::verification_failed(*expected, *actual).into());
+            return Err(ChunkError::verification_failed(*expected, *actual).into());
         }
         Ok(())
     }
