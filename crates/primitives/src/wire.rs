@@ -75,6 +75,36 @@ impl<const N: usize> FromCursor for [u8; N] {
     }
 }
 
+/// A value that appends exactly its own wire bytes to a [`Writer`].
+///
+/// The dual of [`FromCursor`]: implementors state their byte order internally,
+/// so endian-ambiguous bare integers are not exposed, and appending cannot
+/// fail because the buffer grows. Downstream crates implement this for their
+/// own domain types to write them via [`Writer::put`].
+pub trait ToWriter {
+    /// Appends the wire bytes of `self` to the writer.
+    fn put_into(&self, w: &mut Writer<'_>);
+}
+
+impl ToWriter for u8 {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.bytes.push(*self);
+    }
+}
+
+impl<const N: usize> ToWriter for [u8; N] {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.bytes.extend_from_slice(self);
+    }
+}
+
+/// The raw escape for variable-width fields whose framing the caller owns.
+impl ToWriter for [u8] {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.bytes.extend_from_slice(self);
+    }
+}
+
 /// A cursor advancing over a byte slice, yielding fixed- and variable-width
 /// fields or an [`Underrun`].
 ///
@@ -182,6 +212,11 @@ impl<'a> Writer<'a> {
     /// writer can extend a partially built image.
     pub const fn new(bytes: &'a mut Vec<u8>) -> Self {
         Self { bytes }
+    }
+
+    /// Appends the next value as a whole via its [`ToWriter`] impl.
+    pub fn put<T: ToWriter + ?Sized>(&mut self, value: &T) {
+        value.put_into(self);
     }
 
     /// Appends a fixed-size array.
