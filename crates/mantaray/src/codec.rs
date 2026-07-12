@@ -9,9 +9,10 @@ use crate::obfuscation::ObfuscationKey;
 
 use alloy_primitives::{U256, hex};
 use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::wire::Cursor;
+use nectar_primitives::wire::{Cursor, FromCursor, Underrun};
 
 /// Mantaray wire format version (truncated keccak256, 31 bytes).
+#[derive(Clone, Copy)]
 enum VersionHash {
     V01,
     V02,
@@ -53,25 +54,62 @@ impl NodeHeader {
     const REF_SIZE_OFFSET: usize = ObfuscationKey::SIZE + VersionHash::SIZE;
 }
 
-/// Wire layout descriptor for a serialised fork header.
-struct ForkHeader;
+/// A fork's fixed wire header: the node type byte, then the prefix record.
+struct ForkHeader {
+    node_type: NodeType,
+    prefix: Prefix,
+}
 
 impl ForkHeader {
     /// Protocol anchor: total pre-reference bytes in a fork.
     const PRE_REFERENCE_SIZE: usize = 32;
-    /// Offset to the prefix data (past node_type u8 + prefix_len u8).
-    const PREFIX_OFFSET: usize = size_of::<u8>() + size_of::<u8>();
-    /// Maximum prefix length that fits in a fork header.
-    const MAX_PREFIX_LEN: usize = Self::PRE_REFERENCE_SIZE - Self::PREFIX_OFFSET;
     /// Size of the metadata length field.
     const METADATA_LEN_SIZE: usize = size_of::<u16>();
 }
 
+impl FromCursor for ForkHeader {
+    type Error = MantarayError;
+
+    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Self::Error> {
+        let node_type = NodeType::from_bits_truncate(cur.take::<u8>()?);
+        let prefix = cur.take::<Prefix>()?;
+        Ok(Self { node_type, prefix })
+    }
+}
+
+/// Length of a fork's metadata region, stored big-endian on the wire.
+#[derive(Clone, Copy)]
+struct MetadataLen(u16);
+
+impl MetadataLen {
+    /// The length in bytes.
+    fn get(self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+impl FromCursor for MetadataLen {
+    type Error = Underrun;
+
+    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Underrun> {
+        cur.take::<[u8; ForkHeader::METADATA_LEN_SIZE]>()
+            .map(|bytes| Self(u16::from_be_bytes(bytes)))
+    }
+}
+
+/// Size of the 256-bit forks presence bitfield following the entry slot.
+const FORK_INDEX_SIZE: usize = size_of::<U256>();
+
 // Compile-time layout assertions.
 const _: () = assert!(NodeHeader::SIZE == 64);
 const _: () = assert!(ForkHeader::PRE_REFERENCE_SIZE == 32);
-const _: () = assert!(ForkHeader::MAX_PREFIX_LEN == Prefix::MAX_LEN);
+// node_type byte + prefix length byte + padded prefix block fill the
+// pre-reference region exactly.
+const _: () = assert!(2 * size_of::<u8>() + Prefix::MAX_LEN == ForkHeader::PRE_REFERENCE_SIZE);
 const _: () = assert!(ObfuscationKey::SIZE == 32);
+const _: () = assert!(NodeHeader::VERSION_HASH_OFFSET == ObfuscationKey::SIZE);
+const _: () = assert!(NodeHeader::REF_SIZE_OFFSET == NodeHeader::SIZE - size_of::<u8>());
+const _: () = assert!(FORK_INDEX_SIZE == 32);
 
 #[cfg(test)]
 const VERSION_HASH_01_BYTES: [u8; 32] =
@@ -85,12 +123,10 @@ const VERSION_STRING_01: &str = "mantaray:0.1";
 #[cfg(test)]
 const VERSION_STRING_02: &str = "mantaray:0.2";
 
-/// XOR `data` in-place with a repeating `key`.
-#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // key is the 32-byte obfuscation key (never empty): `i % key_len` cannot divide by zero and is always < key_len
+/// XOR `data` in place with a repeating `key`.
 fn xor_in_place(data: &mut [u8], key: &[u8]) {
-    let key_len = key.len();
-    for (i, byte) in data.iter_mut().enumerate() {
-        *byte ^= key[i % key_len];
+    for (byte, mask) in data.iter_mut().zip(key.iter().cycle()) {
+        *byte ^= *mask;
     }
 }
 
@@ -103,30 +139,27 @@ impl<E: NodeEntry> TryFrom<&Node<E>> for Vec<u8> {
     }
 }
 
-#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // header offsets are compile-time constants within the freshly sized NodeHeader::SIZE buffer; size arithmetic sums in-memory buffer lengths (<= 256 forks) and cannot overflow usize
+#[allow(clippy::arithmetic_side_effects)] // size arithmetic sums in-memory buffer lengths (<= 256 forks) and cannot overflow usize
 fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
     let ref_size = E::SIZE;
-    // Pre-allocate: header + entry + bitfield(32) + estimated fork data
+    // Pre-allocate: header + entry + bitfield + estimated fork data
     let estimated = NodeHeader::SIZE
         + ref_size
-        + 32
+        + FORK_INDEX_SIZE
         + node.forks.len() * (ForkHeader::PRE_REFERENCE_SIZE + ref_size);
     let mut data = Vec::with_capacity(estimated);
-    data.resize(NodeHeader::SIZE, 0);
 
     // Use the obfuscation key as-is. The key is set at manifest construction:
     // - PlainManifest: ObfuscationKey::ZERO (no obfuscation)
     // - EncryptedManifest: ObfuscationKey::generate() (random key)
     let obfuscation_key = node.obfuscation_key.as_bytes();
 
-    data[..ObfuscationKey::SIZE].copy_from_slice(obfuscation_key);
-
-    data[NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + VersionHash::SIZE]
-        .copy_from_slice(VersionHash::V02.as_bytes());
-
+    // Header: obfuscation key, version hash, ref_size byte (NodeHeader::SIZE).
+    data.extend_from_slice(obfuscation_key);
+    data.extend_from_slice(VersionHash::V02.as_bytes());
     #[allow(clippy::as_conversions)] // ref_size = E::SIZE (32 or 64), always fits u8
     let ref_size_byte = ref_size as u8;
-    data[NodeHeader::REF_SIZE_OFFSET] = ref_size_byte;
+    data.push(ref_size_byte);
 
     // append entry (or E::SIZE zero bytes if empty)
     match &node.entry {
@@ -146,8 +179,9 @@ fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
         fork.encode_into(&mut data)?;
     }
 
-    // XOR-encrypt everything after the obfuscation key in-place
-    xor_in_place(&mut data[ObfuscationKey::SIZE..], obfuscation_key);
+    // XOR-encrypt everything after the obfuscation key in place.
+    let (_, body) = data.split_at_mut(ObfuscationKey::SIZE);
+    xor_in_place(body, obfuscation_key);
 
     Ok(data)
 }
@@ -155,34 +189,18 @@ fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
 impl<E: NodeEntry> TryFrom<&[u8]> for Node<E> {
     type Error = MantarayError;
 
-    #[allow(clippy::indexing_slicing)] // every slice lies within NodeHeader::SIZE, guaranteed by the length check below
     fn try_from(value: &[u8]) -> Result<Self> {
-        if value.len() < NodeHeader::SIZE {
-            return Err(MantarayError::DataTooShort);
-        }
-
         let mut data = value.to_vec();
 
-        let key_bytes: [u8; ObfuscationKey::SIZE] = data[..ObfuscationKey::SIZE]
-            .try_into()
-            .map_err(|_| MantarayError::DataTooShort)?;
-        let obfuscation_key = ObfuscationKey::from(key_bytes);
+        // The obfuscation key is the header's first field and is stored in the
+        // clear; every later byte is XOR-encrypted under it.
+        let (key, body) = data
+            .split_first_chunk_mut::<{ ObfuscationKey::SIZE }>()
+            .ok_or(MantarayError::DataTooShort)?;
+        let obfuscation_key = ObfuscationKey::from(*key);
+        xor_in_place(body, obfuscation_key.as_bytes());
 
-        // decrypt in-place
-        xor_in_place(
-            &mut data[ObfuscationKey::SIZE..],
-            obfuscation_key.as_bytes(),
-        );
-
-        let version_hash = &data
-            [NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + VersionHash::SIZE];
-
-        let mut node = match VersionHash::from_bytes(version_hash) {
-            Some(VersionHash::V01) => decode_v01::<E>(&data)?,
-            Some(VersionHash::V02) => decode_v02::<E>(&data)?,
-            None => return Err(MantarayError::InvalidVersionHash),
-        };
-
+        let mut node = decode_node::<E>(&data)?;
         node.obfuscation_key = obfuscation_key;
         node.loaded = true;
         Ok(node)
@@ -201,30 +219,70 @@ impl<E: NodeEntry> TryFrom<&[u8]> for Node<E> {
 // │ if one uploads a file on the bzz endpoint, the node under    │
 // │ `/` gets 0 refsize."                                         │
 // │                                                              │
-// │ Remove `decode_empty_terminal_node` and the two call-sites   │
-// │ guarded by `BEE-WORKAROUND(bee#5483)` once the upstream bee   │
-// │ fix lands and downstream consumers have upgraded past the    │
-// │ buggy releases.                                              │
+// │ Remove the `RefSize::EmptyTerminal` variant, its zero-width   │
+// │ classification in `parse_header`, and `decode_empty_terminal` │
+// │ once the upstream bee fix lands and downstream consumers have │
+// │ upgraded past the buggy releases.                            │
 // └──────────────────────────────────────────────────────────────┘
 
-/// Decode a `ref_size = 0` node as the empty terminal node that bee intends
-/// it to mean.
+/// The reference width declared by a node header.
 ///
-/// Accepts this wire shape only when the forks bitfield is also empty. A
-/// `ref_size = 0` node with non-empty forks is unrecoverable by any
-/// implementation (fork refs would have zero width), so we reject it as
-/// malformed rather than silently dropping forks the way bee's v0.2 decoder
-/// does (`bee/pkg/manifest/mantaray/marshal.go:285-287`).
-///
-/// See the HAZMAT block above for the full context.
-fn decode_empty_terminal_node<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
-    let bitfield_start = NodeHeader::SIZE;
-    let bitfield_end = bitfield_start + 32;
-    if data.len() < bitfield_end {
-        return Err(MantarayError::DataTooShort);
+/// `EmptyTerminal` is the bee#5483 sentinel (a `ref_size` byte of zero); it is
+/// not spec-legal and marks an entry-less terminal node. See the HAZMAT block.
+enum RefSize {
+    /// bee#5483: `ref_size == 0`, an entry-less terminal node.
+    EmptyTerminal,
+    /// A declared uniform reference width in bytes.
+    Declared(usize),
+}
+
+/// Decode a decrypted node buffer: header, then the version-specific body.
+fn decode_node<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
+    let total = data.len();
+    let mut cur = Cursor::new(data);
+    let (version, ref_size) = parse_header(&mut cur)?;
+    match ref_size {
+        RefSize::EmptyTerminal => decode_empty_terminal(&mut cur),
+        RefSize::Declared(width) => decode_body::<E>(&mut cur, version, width, total),
     }
-    #[allow(clippy::indexing_slicing)] // `bitfield_end` bounds-checked against data.len() above
-    if data[bitfield_start..bitfield_end].iter().any(|&b| b != 0) {
+}
+
+/// Parse the fixed node header, yielding the wire version and the reference
+/// width.
+///
+/// The version hash is validated only after the ref_size byte is confirmed
+/// present, so a header truncated at that byte reports `DataTooShort` rather
+/// than an invalid-version error.
+fn parse_header(cur: &mut Cursor<'_>) -> Result<(VersionHash, RefSize)> {
+    // The obfuscation key was already consumed by the caller for decryption.
+    cur.take::<[u8; ObfuscationKey::SIZE]>()
+        .map_err(|_| MantarayError::DataTooShort)?;
+    let version_bytes = cur
+        .take::<[u8; VersionHash::SIZE]>()
+        .map_err(|_| MantarayError::DataTooShort)?;
+    let ref_size = cur.take::<u8>().map_err(|_| MantarayError::DataTooShort)?;
+    let version =
+        VersionHash::from_bytes(&version_bytes).ok_or(MantarayError::InvalidVersionHash)?;
+    let ref_size = if ref_size == 0 {
+        RefSize::EmptyTerminal
+    } else {
+        RefSize::Declared(usize::from(ref_size))
+    };
+    Ok((version, ref_size))
+}
+
+/// Decode a `ref_size = 0` node as the empty terminal node bee intends.
+///
+/// Accepts this wire shape only when the forks bitfield is also empty; a
+/// `ref_size = 0` node with non-empty forks is unrecoverable (fork refs would
+/// have zero width), so it is rejected as malformed rather than silently
+/// dropping forks the way bee's v0.2 decoder does
+/// (`bee/pkg/manifest/mantaray/marshal.go:285-287`). See the HAZMAT block.
+fn decode_empty_terminal<E: NodeEntry>(cur: &mut Cursor<'_>) -> Result<Node<E>> {
+    let index = cur
+        .take::<[u8; FORK_INDEX_SIZE]>()
+        .map_err(|_| MantarayError::DataTooShort)?;
+    if index.iter().any(|&b| b != 0) {
         return Err(MantarayError::EntrySizeMismatch {
             expected: E::SIZE,
             actual: 0,
@@ -237,181 +295,59 @@ fn decode_empty_terminal_node<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
     })
 }
 
-// Bounds safety: only called from `TryFrom<&[u8]>`, which guarantees
-// `data.len() >= NodeHeader::SIZE` (covers the ref-size byte at offset 63);
-// every further slice is preceded by an explicit `data.len()` check with an
-// error return, and offsets are sums of header constants and `E::SIZE`
-// (<= 64) that cannot overflow usize.
-#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
-fn decode_v01<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
-    let ref_bytes_size = usize::from(data[NodeHeader::REF_SIZE_OFFSET]);
-    // BEE-WORKAROUND(bee#5483): see HAZMAT block above `decode_empty_terminal_node`.
-    if ref_bytes_size == 0 {
-        return decode_empty_terminal_node::<E>(data);
+/// Restate a fork-region [`Underrun`] as an `InsufficientForkBytes` diagnostic
+/// carrying absolute byte offsets into the node buffer.
+fn insufficient_fork(underrun: Underrun, total: usize, byte_index: u8) -> MantarayError {
+    MantarayError::InsufficientForkBytes {
+        expected: total
+            .saturating_sub(underrun.available)
+            .saturating_add(underrun.expected),
+        actual: total,
+        byte_index: usize::from(byte_index),
     }
-    if ref_bytes_size != E::SIZE {
-        return Err(MantarayError::EntrySizeMismatch {
-            expected: E::SIZE,
-            actual: ref_bytes_size,
-        });
-    }
-
-    // Guard the entry slot and the 32-byte forks index that follows it; the
-    // header check in `try_from` only guarantees `NodeHeader::SIZE` bytes.
-    if data.len() < NodeHeader::SIZE + ref_bytes_size + 32 {
-        return Err(MantarayError::DataTooShort);
-    }
-
-    let entry_bytes = &data[NodeHeader::SIZE..NodeHeader::SIZE + ref_bytes_size];
-    let entry = if entry_bytes.iter().all(|&b| b == 0) {
-        None
-    } else {
-        Some(E::try_from_bytes(entry_bytes)?)
-    };
-
-    let mut offset = NodeHeader::SIZE + ref_bytes_size;
-    let index = U256::from_le_slice(&data[offset..offset + 32]);
-    offset += 32;
-
-    let mut forks = BTreeMap::new();
-    for b in 0..=u8::MAX {
-        if index.bit(usize::from(b)) {
-            let end = offset + ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size;
-            if data.len() < end {
-                return Err(MantarayError::InsufficientForkBytes {
-                    expected: end,
-                    actual: data.len(),
-                    byte_index: usize::from(b),
-                });
-            }
-
-            let mut fork = Fork::default();
-            fork.decode_v01(&data[offset..end])?;
-            forks.insert(b, fork);
-            offset = end;
-        }
-    }
-
-    Ok(Node {
-        entry,
-        forks,
-        ..Default::default()
-    })
 }
 
-// Bounds safety: only called from `TryFrom<&[u8]>`, which guarantees
-// `data.len() >= NodeHeader::SIZE` (covers the ref-size byte at offset 63);
-// every further slice is preceded by an explicit `data.len()` check with an
-// error return, and offsets are sums of header constants, `E::SIZE` (<= 64)
-// and a metadata size (<= u16::MAX) that cannot overflow usize.
-#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
-fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
-    let ref_bytes_size = usize::from(data[NodeHeader::REF_SIZE_OFFSET]);
-    // BEE-WORKAROUND(bee#5483): see HAZMAT block above `decode_empty_terminal_node`.
-    if ref_bytes_size == 0 {
-        return decode_empty_terminal_node::<E>(data);
-    }
-    if ref_bytes_size != E::SIZE {
+/// Decode the node body: entry slot, forks bitfield, then each present fork.
+///
+/// The entry slot and index are both read before the entry is validated, so a
+/// truncated index reports `DataTooShort` rather than an entry-shaped error.
+/// v0.2 derives the root EDGE flag from a non-empty index; v0.1 leaves it unset.
+fn decode_body<E: NodeEntry>(
+    cur: &mut Cursor<'_>,
+    version: VersionHash,
+    ref_size: usize,
+    total: usize,
+) -> Result<Node<E>> {
+    if ref_size != E::SIZE {
         return Err(MantarayError::EntrySizeMismatch {
             expected: E::SIZE,
-            actual: ref_bytes_size,
+            actual: ref_size,
         });
     }
 
-    // Guard the entry slot and the 32-byte forks index that follows it; the
-    // header check in `try_from` only guarantees `NodeHeader::SIZE` bytes.
-    if data.len() < NodeHeader::SIZE + ref_bytes_size + 32 {
-        return Err(MantarayError::DataTooShort);
-    }
+    let entry_bytes = cur
+        .take_slice(ref_size)
+        .map_err(|_| MantarayError::DataTooShort)?;
+    let index_bytes = cur
+        .take::<[u8; FORK_INDEX_SIZE]>()
+        .map_err(|_| MantarayError::DataTooShort)?;
 
-    let entry_bytes = &data[NodeHeader::SIZE..NodeHeader::SIZE + ref_bytes_size];
     let entry = if entry_bytes.iter().all(|&b| b == 0) {
         None
     } else {
         Some(E::try_from_bytes(entry_bytes)?)
     };
 
-    let mut offset = NodeHeader::SIZE + ref_bytes_size;
     let mut node_type = NodeType::empty();
-
-    // deduce edge type from index
-    if data[offset..offset + 32].iter().any(|&b| b != 0) {
+    if matches!(version, VersionHash::V02) && index_bytes.iter().any(|&b| b != 0) {
         node_type |= NodeType::EDGE;
     }
 
-    let index = U256::from_le_slice(&data[offset..offset + 32]);
-    offset += 32;
-
+    let index = U256::from_le_slice(&index_bytes);
     let mut forks = BTreeMap::new();
     for b in 0..=u8::MAX {
         if index.bit(usize::from(b)) {
-            let mut fork = Fork::default();
-
-            if data.len() < offset + 1 {
-                return Err(MantarayError::InsufficientForkBytes {
-                    expected: offset + 1,
-                    actual: data.len(),
-                    byte_index: usize::from(b),
-                });
-            }
-
-            let fork_node_type = NodeType::from_bits_truncate(data[offset]);
-            let mut node_fork_size = ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size;
-
-            if fork_node_type.contains(NodeType::METADATA) {
-                if data.len()
-                    < offset
-                        + ForkHeader::PRE_REFERENCE_SIZE
-                        + ref_bytes_size
-                        + ForkHeader::METADATA_LEN_SIZE
-                {
-                    return Err(MantarayError::InsufficientForkBytes {
-                        expected: offset
-                            + ForkHeader::PRE_REFERENCE_SIZE
-                            + ref_bytes_size
-                            + ForkHeader::METADATA_LEN_SIZE,
-                        actual: data.len(),
-                        byte_index: usize::from(b),
-                    });
-                }
-
-                let metadata_bytes_size = usize::from(u16::from_be_bytes(
-                    data[offset + node_fork_size
-                        ..offset + node_fork_size + ForkHeader::METADATA_LEN_SIZE]
-                        .try_into()
-                        .map_err(|_| MantarayError::DataTooShort)?,
-                ));
-
-                node_fork_size += ForkHeader::METADATA_LEN_SIZE;
-                node_fork_size += metadata_bytes_size;
-
-                if offset + node_fork_size > data.len() {
-                    return Err(MantarayError::InsufficientForkBytes {
-                        expected: offset + node_fork_size,
-                        actual: data.len(),
-                        byte_index: usize::from(b),
-                    });
-                }
-
-                fork.decode_v02(
-                    &data[offset..offset + node_fork_size],
-                    ref_bytes_size,
-                    metadata_bytes_size,
-                )?;
-            } else {
-                if data.len() < offset + ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size {
-                    return Err(MantarayError::InsufficientForkBytes {
-                        expected: offset + ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size,
-                        actual: data.len(),
-                        byte_index: usize::from(b),
-                    });
-                }
-
-                fork.decode_v01(&data[offset..offset + node_fork_size])?;
-            }
-
-            forks.insert(b, fork);
-            offset += node_fork_size;
+            forks.insert(b, parse_fork::<E>(cur, version, ref_size, b, total)?);
         }
     }
 
@@ -423,27 +359,86 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
     })
 }
 
-/// Parse and validate fork header. Returns (node_type, prefix).
-fn parse_fork_header(data: &[u8]) -> Result<(NodeType, Prefix)> {
-    let mut cur = Cursor::new(data);
-    let node_type = NodeType::from_bits_truncate(cur.take::<u8>()?);
-    let prefix = cur.take::<Prefix>()?;
-    Ok((node_type, prefix))
+/// Consume one fork from the cursor.
+///
+/// The fork header is peeked to learn the body width (including any metadata)
+/// before the body is consumed, so every availability check precedes prefix
+/// and metadata parsing. v0.1 carries no metadata: its fork body is always the
+/// pre-reference region plus one reference.
+#[allow(clippy::arithmetic_side_effects)] // fork widths sum header constants, E::SIZE (<= 64) and a u16-bounded metadata length; the running cursor never exceeds the buffer
+fn parse_fork<E: NodeEntry>(
+    cur: &mut Cursor<'_>,
+    version: VersionHash,
+    ref_size: usize,
+    byte_index: u8,
+    total: usize,
+) -> Result<Fork<E>> {
+    let mut peek = cur.clone();
+    let node_type = NodeType::from_bits_truncate(
+        peek.take::<u8>()
+            .map_err(|u| insufficient_fork(u, total, byte_index))?,
+    );
+    let has_metadata =
+        matches!(version, VersionHash::V02) && node_type.contains(NodeType::METADATA);
+
+    let body_size = if has_metadata {
+        // The metadata length field follows the pre-reference region and the
+        // reference; skip past them (node_type is already consumed) to read it.
+        peek.take_slice(ForkHeader::PRE_REFERENCE_SIZE - size_of::<u8>() + ref_size)
+            .map_err(|u| insufficient_fork(u, total, byte_index))?;
+        let metadata_len = peek
+            .take::<MetadataLen>()
+            .map_err(|u| insufficient_fork(u, total, byte_index))?
+            .get();
+        ForkHeader::PRE_REFERENCE_SIZE + ref_size + ForkHeader::METADATA_LEN_SIZE + metadata_len
+    } else {
+        ForkHeader::PRE_REFERENCE_SIZE + ref_size
+    };
+
+    let body = cur
+        .take_slice(body_size)
+        .map_err(|u| insufficient_fork(u, total, byte_index))?;
+    parse_fork_body::<E>(body, ref_size, has_metadata)
+}
+
+/// Parse a complete, correctly sized fork body: header, reference (address
+/// only), and optional metadata.
+///
+/// Only the first 32 bytes of the reference slot are retained: a fork child is
+/// addressed by its chunk address, so the encryption-key half of a 64-byte
+/// reference is dropped.
+fn parse_fork_body<E: NodeEntry>(
+    body: &[u8],
+    ref_size: usize,
+    has_metadata: bool,
+) -> Result<Fork<E>> {
+    let mut cur = Cursor::new(body);
+    let ForkHeader { node_type, prefix } = cur.take::<ForkHeader>()?;
+
+    let ref_region = cur
+        .take_slice(ref_size)
+        .map_err(|_| MantarayError::DataTooShort)?;
+    let mut ref_cur = Cursor::new(ref_region);
+    let addr = ref_cur
+        .take::<[u8; 32]>()
+        .map_err(|_| MantarayError::DataTooShort)?;
+
+    let mut node = Node::from_reference(ChunkAddress::from(addr));
+    node.node_type = node_type;
+
+    if has_metadata {
+        let metadata_len = cur
+            .take::<MetadataLen>()
+            .map_err(|_| MantarayError::DataTooShort)?;
+        if metadata_len.get() > 0 {
+            node.metadata = serde_json::from_slice(cur.finish())?;
+        }
+    }
+
+    Ok(Fork { prefix, node })
 }
 
 impl<E: NodeEntry> Fork<E> {
-    /// Create a node from reference bytes (first 32 bytes used as chunk address).
-    fn node_from_ref_bytes(ref_data: &[u8]) -> Result<Node<E>> {
-        if ref_data.len() < 32 {
-            return Err(MantarayError::DataTooShort);
-        }
-        #[allow(clippy::indexing_slicing)] // length >= 32 checked above
-        let addr_bytes: [u8; 32] = ref_data[..32]
-            .try_into()
-            .map_err(|_| MantarayError::DataTooShort)?;
-        Ok(Node::from_reference(ChunkAddress::from(addr_bytes)))
-    }
-
     /// Encode this fork, appending to `buf`.
     #[allow(clippy::arithmetic_side_effects)] // in-memory buffer length arithmetic; padding math is guarded (`SIZE - x` only when `x < SIZE`, `SIZE - rem` only when `rem != 0`) and `% ObfuscationKey::SIZE` has a nonzero constant divisor
     fn encode_into(&self, data: &mut Vec<u8>) -> Result<()> {
@@ -502,50 +497,6 @@ impl<E: NodeEntry> Fork<E> {
 
             data.extend_from_slice(&metadata_size_u16.to_be_bytes());
             data.extend_from_slice(&metadata_json);
-        }
-
-        Ok(())
-    }
-
-    /// Decode a fork from v0.1 binary data.
-    pub(crate) fn decode_v01(&mut self, data: &[u8]) -> Result<()> {
-        let (node_type, prefix) = parse_fork_header(data)?;
-
-        self.prefix = prefix;
-        #[allow(clippy::indexing_slicing)] // callers (decode_v01/decode_v02) bounds-check `data` to PRE_REFERENCE_SIZE + ref size before calling
-        let ref_data = &data[ForkHeader::PRE_REFERENCE_SIZE..];
-        self.node = Self::node_from_ref_bytes(ref_data)?;
-        self.node.node_type = node_type;
-
-        Ok(())
-    }
-
-    /// Decode a fork from v0.2 binary data (with metadata).
-    // Bounds safety: the only caller (`decode_v02`) sizes `data` to exactly
-    // PRE_REFERENCE_SIZE + ref_bytes_size + METADATA_LEN_SIZE +
-    // metadata_bytes_size before calling, so the slices below are in-bounds
-    // and the offset sums (constants + ref size + u16-bounded metadata size)
-    // cannot overflow usize.
-    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
-    pub(crate) fn decode_v02(
-        &mut self,
-        data: &[u8],
-        ref_bytes_size: usize,
-        metadata_bytes_size: usize,
-    ) -> Result<()> {
-        let (node_type, prefix) = parse_fork_header(data)?;
-
-        self.prefix = prefix;
-        let ref_data =
-            &data[ForkHeader::PRE_REFERENCE_SIZE..ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size];
-        self.node = Self::node_from_ref_bytes(ref_data)?;
-        self.node.node_type = node_type;
-
-        if metadata_bytes_size > 0 {
-            let metadata_start =
-                ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size + ForkHeader::METADATA_LEN_SIZE;
-            let metadata_bytes = &data[metadata_start..];
-            self.node.metadata = serde_json::from_slice(metadata_bytes)?;
         }
 
         Ok(())
@@ -656,6 +607,28 @@ mod tests {
                 assert_eq!(n.forks()[&key].node().metadata(), &entry.metadata);
             }
         }
+    }
+
+    #[test]
+    fn fork_header_take_consumes_the_pre_reference_region() {
+        let mut wire = vec![NodeType::VALUE.bits(), 2];
+        wire.extend_from_slice(b"ab");
+        wire.resize(ForkHeader::PRE_REFERENCE_SIZE, 0);
+        let mut cur = Cursor::new(&wire);
+        let header = cur.take::<ForkHeader>().unwrap();
+        assert_eq!(header.node_type, NodeType::VALUE);
+        assert_eq!(&*header.prefix, b"ab");
+        assert!(cur.is_empty());
+    }
+
+    #[test]
+    fn fork_header_take_underrun_is_data_too_short() {
+        let wire = [NodeType::VALUE.bits()];
+        let mut cur = Cursor::new(&wire);
+        assert!(matches!(
+            cur.take::<ForkHeader>(),
+            Err(MantarayError::DataTooShort)
+        ));
     }
 
     #[test]
