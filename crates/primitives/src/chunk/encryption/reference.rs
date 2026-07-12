@@ -2,6 +2,7 @@
 
 use crate::chunk::reference::{RefKind, Reference, sealed};
 use crate::chunk::{ChunkAddress, ChunkRef};
+use crate::wire::{Cursor, Underrun};
 
 use super::error::EncryptionError;
 use super::key::EncryptionKey;
@@ -61,6 +62,21 @@ impl sealed::Sealed for EncryptedChunkRef {}
 
 impl Reference for EncryptedChunkRef {
     const KIND: RefKind = RefKind::Encrypted;
+
+    fn read_optional(cursor: &mut Cursor<'_>) -> Result<Option<Self>, Underrun> {
+        // The sentinel is the whole slot as written on the wire: address and
+        // key both all-zero.
+        let addr = cursor.take::<[u8; ChunkAddress::SIZE]>()?;
+        let key = cursor.take::<[u8; EncryptionKey::SIZE]>()?;
+        if addr.iter().all(|&b| b == 0) && key.iter().all(|&b| b == 0) {
+            Ok(None)
+        } else {
+            Ok(Some(Self::new(
+                ChunkAddress::new(addr),
+                EncryptionKey::from(key),
+            )))
+        }
+    }
 }
 
 impl From<&EncryptedChunkRef> for [u8; EncryptedChunkRef::SIZE] {
@@ -143,5 +159,30 @@ mod tests {
         enc_ref.write_to(&mut buf);
         assert_eq!(&buf[..32], &[0x22; 32]);
         assert_eq!(&buf[32..], &[0x33; 32]);
+    }
+
+    #[test]
+    fn read_optional_sentinel_is_the_whole_slot() {
+        let zeros = [0u8; EncryptedChunkRef::SIZE];
+        let mut cur = Cursor::new(&zeros);
+        assert_eq!(EncryptedChunkRef::read_optional(&mut cur).unwrap(), None);
+        assert!(cur.is_empty());
+
+        // A zero address under a nonzero key is a reference, not the sentinel.
+        let mut slot = [0u8; EncryptedChunkRef::SIZE];
+        slot[32..].copy_from_slice(&[0x33; 32]);
+        let mut cur = Cursor::new(&slot);
+        assert_eq!(
+            EncryptedChunkRef::read_optional(&mut cur).unwrap(),
+            Some(EncryptedChunkRef::new(
+                ChunkAddress::new([0u8; 32]),
+                EncryptionKey::from([0x33; 32])
+            ))
+        );
+
+        // Underrun inside the slot is an error, not a sentinel.
+        let short = [0u8; EncryptedChunkRef::SIZE - 1];
+        let mut cur = Cursor::new(&short);
+        assert!(EncryptedChunkRef::read_optional(&mut cur).is_err());
     }
 }

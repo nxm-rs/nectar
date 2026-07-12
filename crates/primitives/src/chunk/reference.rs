@@ -8,6 +8,7 @@
 use std::mem::size_of;
 
 use crate::chunk::ChunkAddress;
+use crate::wire::{Cursor, Underrun};
 
 pub(crate) mod sealed {
     pub trait Sealed {}
@@ -38,12 +39,17 @@ impl RefKind {
 ///
 /// Sealed: the only references are [`ChunkRef`] and
 /// [`EncryptedChunkRef`](crate::chunk::encryption::EncryptedChunkRef).
-pub trait Reference: sealed::Sealed {
+pub trait Reference: sealed::Sealed + Sized {
     /// Which width this reference carries.
     const KIND: RefKind;
 
     /// Wire width in bytes; the width fact, derived from [`Self::KIND`].
     const SIZE: usize = Self::KIND.size();
+
+    /// Read a reference from `cursor`, or `None` when the slot is the all-zero
+    /// sentinel. Each impl reads its own typed fields; the cursor is the sole
+    /// fallible read.
+    fn read_optional(cursor: &mut Cursor<'_>) -> Result<Option<Self>, Underrun>;
 }
 
 /// A 32-byte reference to a chunk.
@@ -84,6 +90,15 @@ impl sealed::Sealed for ChunkRef {}
 
 impl Reference for ChunkRef {
     const KIND: RefKind = RefKind::Unencrypted;
+
+    fn read_optional(cursor: &mut Cursor<'_>) -> Result<Option<Self>, Underrun> {
+        let addr = cursor.take::<[u8; ChunkAddress::SIZE]>()?;
+        if addr.iter().all(|&b| b == 0) {
+            Ok(None)
+        } else {
+            Ok(Some(Self(ChunkAddress::new(addr))))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -118,5 +133,25 @@ mod tests {
         assert_eq!(reference.address(), &addr);
         assert_eq!(reference.into_address(), addr);
         assert_eq!(ChunkRef::from(addr), reference);
+    }
+
+    #[test]
+    fn read_optional_maps_the_zero_slot_to_none() {
+        let zeros = [0u8; ChunkRef::SIZE];
+        let mut cur = Cursor::new(&zeros);
+        assert_eq!(ChunkRef::read_optional(&mut cur).unwrap(), None);
+        assert!(cur.is_empty());
+
+        let bytes = [0x7fu8; ChunkRef::SIZE];
+        let mut cur = Cursor::new(&bytes);
+        assert_eq!(
+            ChunkRef::read_optional(&mut cur).unwrap(),
+            Some(ChunkRef::new(ChunkAddress::new(bytes)))
+        );
+        assert!(cur.is_empty());
+
+        let short = [0x7fu8; ChunkRef::SIZE - 1];
+        let mut cur = Cursor::new(&short);
+        assert!(ChunkRef::read_optional(&mut cur).is_err());
     }
 }
