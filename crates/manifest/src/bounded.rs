@@ -60,6 +60,21 @@ impl<F: Format> Prefix<F> {
     pub fn into_bytes(self) -> Bytes {
         self.bytes
     }
+
+    /// Split off the first byte, sharing the tail; `None` when empty.
+    ///
+    /// The tail is strictly shorter, so its bound needs no re-check.
+    #[must_use]
+    pub fn split_first(self) -> Option<(u8, Self)> {
+        let first = *self.bytes.first()?;
+        Some((
+            first,
+            Self {
+                bytes: self.bytes.slice(1..),
+                _format: PhantomData,
+            },
+        ))
+    }
 }
 
 /// Length gate shared by the owned and copying constructors, checked before
