@@ -280,7 +280,7 @@ impl JoinMode for EncryptedMode {
     fn context_from_wire(cursor: &mut Cursor<'_>) -> Result<EncryptionKey> {
         // An encrypted reference trails its address with the decryption key.
         let key_bytes = cursor
-            .take(EncryptionKey::SIZE)
+            .take_slice(EncryptionKey::SIZE)
             .map_err(|_| FileError::InvalidReference { level: 0 })?;
         Ok(EncryptionKey::try_from(key_bytes)?)
     }

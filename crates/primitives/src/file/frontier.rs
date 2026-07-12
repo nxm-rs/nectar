@@ -57,7 +57,7 @@ where
         // mode's trailing context. The Cursor is the only fallible read and
         // cannot underrun while i < num_children.
         let addr_bytes = cursor
-            .take_array::<{ ChunkRef::SIZE }>()
+            .take::<[u8; ChunkRef::SIZE]>()
             .map_err(|_| FileError::InvalidReference { level: 0 })?;
         let context = M::context_from_wire(&mut cursor)?;
 
@@ -69,7 +69,7 @@ where
         }
 
         children.push(SubtreeNode {
-            addr: ChunkAddress::from(*addr_bytes),
+            addr: ChunkAddress::from(addr_bytes),
             context,
             span,
             byte_offset,
