@@ -1617,12 +1617,24 @@ mod tests {
         let (root, store) = split::<TINY_BODY>(&data).unwrap();
         let store = store.into_chunks();
 
-        // Pick an intermediate address (any non-leaf chunk) to slow down.
+        // Park an intermediate that only the streaming walk fetches: a leaf
+        // parent, every child a data leaf. An upper intermediate is read by
+        // the upfront frontier expansion in `new`, before any leaf can be
+        // delivered, so parking one there deadlocks the gate below.
         let leaves = tiny_leaf_addresses(&data);
         let slow = *store
-            .keys()
-            .find(|a| !leaves.contains(*a) && **a != root)
-            .expect("an intermediate exists");
+            .iter()
+            .find(|(addr, chunk)| {
+                let body = chunk.data();
+                !leaves.contains(*addr)
+                    && **addr != root
+                    && body.len() % super::super::constants::REF_SIZE == 0
+                    && body.chunks(super::super::constants::REF_SIZE).all(|child| {
+                        ChunkAddress::from_slice(child).is_ok_and(|a| leaves.contains(&a))
+                    })
+            })
+            .expect("a leaf-parent intermediate exists")
+            .0;
 
         let mut probe = OrderProbe::new(store, &data);
         probe.slow_addr = Some(slow);

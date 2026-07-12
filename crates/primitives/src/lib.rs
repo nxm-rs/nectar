@@ -68,6 +68,7 @@ pub mod signing;
 pub mod spec;
 pub mod store;
 pub mod timestamp;
+pub mod wire;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
