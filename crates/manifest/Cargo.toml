@@ -18,16 +18,19 @@ categories = ["data-structures"]
 workspace = true
 
 [dependencies]
+alloy-primitives = { workspace = true }
 bytes.workspace = true
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
 
-[dev-dependencies]
-alloy-primitives.workspace = true
-
 [features]
 default = [ "std" ]
-std = [ "bytes/std", "nectar-primitives/std", "thiserror/std" ]
+std = [
+	"alloy-primitives/std",
+	"bytes/std",
+	"nectar-primitives/std",
+	"thiserror/std",
+]
 
 [package.metadata.docs.rs]
 all-features = true

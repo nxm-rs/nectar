@@ -23,6 +23,12 @@
 //! in-payload preamble, failing loud on anything that is not a 1.0
 //! manifest; no other format is co-decoded.
 //!
+//! The packing layer is the deterministic tree shape: [`embed`] (child-local
+//! inlining), [`h64`]/[`cut`]/[`segment`] (content-defined boundaries keyed on
+//! the fork-relative prefix) and [`spill`] (a <= depth-2 [`Directory`] for an
+//! oversized fork table). Every boundary is a pure function of content, so an
+//! insert disturbs `O(1)` boundaries and re-rooting does not churn.
+//!
 //! ```
 //! use nectar_manifest::{Format, Prefix, V1};
 //!
@@ -55,6 +61,7 @@ mod fork;
 mod format;
 mod meta;
 mod node;
+mod packing;
 mod value;
 
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
@@ -66,4 +73,5 @@ pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, RootExtension};
+pub use packing::{Directory, Domain, SegmentKind, cut, embed, h64, segment, spill};
 pub use value::{Entry, InlineValue, Key};
