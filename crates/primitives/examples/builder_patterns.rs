@@ -51,16 +51,17 @@ fn content_chunk_creation_methods() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Span: {} bytes", chunk.span());
     println!("  - Data size: {} bytes", chunk.data().len());
 
-    // With precomputed address
-    println!("\n2. Creation with precomputed address");
-    let precomputed_address = *chunk.address(); // Simulating a known address
+    // Certifying against a known address
+    println!("\n2. Certifying against a known address");
+    let known_address = *chunk.address(); // Simulating a known address
     let data_copy = chunk.data().clone();
 
-    let chunk2 = DefaultContentChunk::with_address(data_copy, precomputed_address)?;
+    let chunk2 = DefaultContentChunk::new(data_copy)?;
+    chunk2.verify(&known_address)?;
 
-    println!("  - Created chunk with address: {}", chunk2.address());
+    println!("  - Rebuilt chunk with address: {}", chunk2.address());
     assert_eq!(chunk.address(), chunk2.address());
-    println!("  - Address matches precomputed value ✅");
+    println!("  - Chunk certifies against the known address ✅");
 
     Ok(())
 }

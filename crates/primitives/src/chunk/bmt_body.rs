@@ -13,12 +13,26 @@ use crate::chunk::error::{self, ChunkError};
 use crate::error::{PrimitivesError, Result};
 
 /// A BMT body with configurable maximum size.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Clone)]
 pub struct BmtBody<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     span: u64,
     data: Bytes,
     cached_hash: OnceLock<ChunkAddress>,
 }
+
+/// Structural equality over span and payload. Never derives the hash: when
+/// both caches are hot the roots decide (the BMT root commits to span and
+/// payload); otherwise the fields compare directly.
+impl<const BODY_SIZE: usize> PartialEq for BmtBody<BODY_SIZE> {
+    fn eq(&self, other: &Self) -> bool {
+        if let (Some(a), Some(b)) = (self.cached_hash.get(), other.cached_hash.get()) {
+            return a == b;
+        }
+        self.span == other.span && self.data == other.data
+    }
+}
+
+impl<const BODY_SIZE: usize> Eq for BmtBody<BODY_SIZE> {}
 
 impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
     const fn new_unchecked(span: u64, data: Bytes) -> Self {

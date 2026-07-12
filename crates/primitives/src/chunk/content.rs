@@ -1,38 +1,31 @@
 //! Content-addressed chunk implementation
 //!
-//! This module provides the implementation of content-addressed chunks,
-//! which are chunks whose address is derived from the hash of their content.
+//! This module provides the content-addressed chunk type: the [`ChunkInner`]
+//! carrier under the empty [`CacHeader`], whose address is the hash of the
+//! chunk's own body.
 
 use alloy_primitives::{B256, hex};
 use bytes::{Bytes, BytesMut};
 use std::fmt;
-use std::marker::PhantomData;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::cache::OnceCache;
-use crate::error::{PrimitivesError, Result};
+use crate::error::Result;
 use crate::wire;
 
 use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::error::ChunkError;
-use super::traits::{BmtChunk, Chunk, ChunkHeader};
+use super::inner::ChunkInner;
+use super::traits::{Chunk, ChunkHeader};
 use super::type_id::ChunkTypeId;
 use super::type_tag::ChunkVersion;
 
-/// A content-addressed chunk with configurable body size.
+/// A content-addressed chunk (CAC) with configurable body size.
 ///
-/// This type represents a chunk of data whose address is derived from the hash
-/// of its contents. It is immutable once created.
-#[derive(Debug, Clone)]
-pub struct ContentChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
-    /// The (empty) wire header
-    header: CacHeader,
-    /// The body of the chunk, containing the actual data
-    body: BmtBody<BODY_SIZE>,
-    /// Cache for the chunk's address
-    address_cache: OnceCache<ChunkAddress>,
-}
+/// The [`ChunkInner`] carrier under a [`CacHeader`]: the address is the BMT
+/// hash of the body, derived by the carrier and never caller-supplied.
+pub type ContentChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
+    ChunkInner<CacHeader, BODY_SIZE>;
 
 /// Header of a content-addressed chunk (CAC).
 ///
@@ -80,41 +73,17 @@ impl ChunkHeader for CacHeader {
 impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     /// Create a new content chunk with the given data.
     ///
-    /// This function automatically calculates the span based on the data length.
+    /// The span is calculated from the data length; the address is derived
+    /// from the body on first use.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `data` - The raw data content to encapsulate in the chunk.
-    ///
-    /// # Returns
-    ///
-    /// A Result containing the new ContentChunk, or an error if creation fails.
+    /// Returns an error if `data` exceeds `BODY_SIZE`.
     #[must_use = "this returns a new chunk without modifying the input"]
     pub fn new(data: impl Into<Bytes>) -> Result<Self> {
-        Ok(ContentChunkBuilderImpl::<BODY_SIZE, _>::default()
-            .auto_from_data(data)?
-            .build())
-    }
-
-    /// Create a new ContentChunk with a pre-computed address.
-    ///
-    /// This function is useful when the address is already known, for example
-    /// when retrieving a chunk from a database.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - The raw data content to encapsulate in the chunk.
-    /// * `address` - The pre-computed address of the chunk.
-    ///
-    /// # Returns
-    ///
-    /// A Result containing the new ContentChunk, or an error if creation fails.
-    #[must_use = "this returns a new chunk without modifying the input"]
-    pub fn with_address(data: impl Into<Bytes>, address: ChunkAddress) -> Result<Self> {
-        Ok(ContentChunkBuilderImpl::<BODY_SIZE, _>::default()
-            .auto_from_data(data)?
-            .with_address(address)
-            .build())
+        Ok(Self::from_body(
+            BmtBody::builder().auto_from_data(data)?.build()?,
+        ))
     }
 
     /// Create a ContentChunk from a pre-existing BmtBody.
@@ -124,34 +93,7 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     /// intermediate nodes in a merkle tree.
     #[must_use]
     pub const fn from_body(body: BmtBody<BODY_SIZE>) -> Self {
-        Self {
-            header: CacHeader,
-            body,
-            address_cache: OnceCache::new(),
-        }
-    }
-
-    /// Borrow the BMT body of this content chunk.
-    ///
-    /// The body carries the chunk's `span`, `payload`, and the `BODY_SIZE`
-    /// const, so this is the zero-copy accessor callers use to feed the body
-    /// into BMT operations (e.g. [`BmtBody::transformed_root`]) without
-    /// re-slicing the span/payload back out of the wire form.
-    pub const fn body(&self) -> &BmtBody<BODY_SIZE> {
-        &self.body
-    }
-
-    /// Create a ContentChunk from a pre-existing BmtBody with a known address.
-    ///
-    /// This is an advanced method for when you already have both the body
-    /// and know the chunk's address (e.g., when reconstructing from storage).
-    #[must_use]
-    pub fn from_body_with_address(body: BmtBody<BODY_SIZE>, address: ChunkAddress) -> Self {
-        Self {
-            header: CacHeader,
-            body,
-            address_cache: OnceCache::with_value(address),
-        }
+        Self::from_header_and_body(CacHeader, body)
     }
 }
 
@@ -246,64 +188,6 @@ impl<const BODY_SIZE: usize> super::encryption::ChunkEncrypt for ContentChunk<BO
     // encrypt() uses default impl — generates random key, calls encrypt_with()
 }
 
-impl<const BODY_SIZE: usize> Chunk for ContentChunk<BODY_SIZE> {
-    type Header = CacHeader;
-
-    fn address(&self) -> &ChunkAddress {
-        self.address_cache
-            .get_or_compute(|| self.header.commit(self.body.hash().into()))
-    }
-
-    fn data(&self) -> &Bytes {
-        self.body.data()
-    }
-
-    fn size(&self) -> usize {
-        // Header (0 bytes) plus a body bounded by BODY_SIZE cannot overflow.
-        CacHeader::SIZE.saturating_add(self.body.size())
-    }
-
-    fn header(&self) -> &Self::Header {
-        &self.header
-    }
-
-    fn verify(&self, expected: &ChunkAddress) -> Result<()> {
-        Ok(self.header.validate(self.body.hash().into(), expected)?)
-    }
-}
-
-impl<const BODY_SIZE: usize> BmtChunk for ContentChunk<BODY_SIZE> {
-    fn span(&self) -> u64 {
-        self.body.span()
-    }
-}
-
-impl<const BODY_SIZE: usize> From<ContentChunk<BODY_SIZE>> for Bytes {
-    fn from(chunk: ContentChunk<BODY_SIZE>) -> Self {
-        chunk.body.into()
-    }
-}
-
-impl<const BODY_SIZE: usize> TryFrom<Bytes> for ContentChunk<BODY_SIZE> {
-    type Error = PrimitivesError;
-
-    fn try_from(bytes: Bytes) -> Result<Self> {
-        Ok(Self {
-            header: CacHeader,
-            body: BmtBody::try_from(bytes)?,
-            address_cache: OnceCache::new(),
-        })
-    }
-}
-
-impl<const BODY_SIZE: usize> TryFrom<&[u8]> for ContentChunk<BODY_SIZE> {
-    type Error = PrimitivesError;
-
-    fn try_from(bytes: &[u8]) -> Result<Self> {
-        Self::try_from(Bytes::copy_from_slice(bytes))
-    }
-}
-
 impl<const BODY_SIZE: usize> fmt::Display for ContentChunk<BODY_SIZE> {
     #[allow(clippy::indexing_slicing)] // the address is a fixed 32-byte value, so [..8] holds
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -312,95 +196,6 @@ impl<const BODY_SIZE: usize> fmt::Display for ContentChunk<BODY_SIZE> {
             "ContentChunk[{}]",
             hex::encode(&self.address().as_bytes()[..8])
         )
-    }
-}
-
-impl<const BODY_SIZE: usize> PartialEq for ContentChunk<BODY_SIZE> {
-    fn eq(&self, other: &Self) -> bool {
-        self.address() == other.address()
-    }
-}
-
-impl<const BODY_SIZE: usize> Eq for ContentChunk<BODY_SIZE> {}
-
-impl<const BODY_SIZE: usize> super::chunk_type::ChunkType for ContentChunk<BODY_SIZE> {
-    const TYPE_ID: super::type_id::ChunkTypeId = super::type_id::ChunkTypeId::CONTENT;
-    const TYPE_NAME: &'static str = "content";
-}
-
-// Internal builder implementation
-trait BuilderState {}
-
-#[derive(Debug, Default)]
-struct Initial;
-impl BuilderState for Initial {}
-
-#[derive(Debug)]
-struct ReadyToBuild;
-impl BuilderState for ReadyToBuild {}
-
-/// Builder for ContentChunk with type state pattern
-#[derive(Debug)]
-struct ContentChunkBuilderImpl<const BODY_SIZE: usize, S: BuilderState = Initial> {
-    /// The body to use for the chunk
-    body: Option<BmtBody<BODY_SIZE>>,
-    /// Pre-computed address for the chunk
-    address: Option<ChunkAddress>,
-    /// Marker for the builder state
-    _state: PhantomData<S>,
-}
-
-impl<const BODY_SIZE: usize> Default for ContentChunkBuilderImpl<BODY_SIZE, Initial> {
-    fn default() -> Self {
-        Self {
-            body: None,
-            address: None,
-            _state: PhantomData,
-        }
-    }
-}
-
-impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, Initial> {
-    /// Initialize from data with automatically calculated span
-    fn auto_from_data(
-        mut self,
-        data: impl Into<Bytes>,
-    ) -> Result<ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild>> {
-        let body = BmtBody::<BODY_SIZE>::builder()
-            .auto_from_data(data)?
-            .build()?;
-        self.body = Some(body);
-
-        Ok(ContentChunkBuilderImpl {
-            body: self.body,
-            address: self.address,
-            _state: PhantomData,
-        })
-    }
-}
-
-impl<const BODY_SIZE: usize> ContentChunkBuilderImpl<BODY_SIZE, ReadyToBuild> {
-    /// Set a pre-computed address for the chunk
-    const fn with_address(mut self, address: ChunkAddress) -> Self {
-        self.address = Some(address);
-        self
-    }
-
-    /// Build the final ContentChunk
-    #[allow(clippy::unwrap_used)] // the ReadyToBuild typestate guarantees body is Some
-    fn build(self) -> ContentChunk<BODY_SIZE> {
-        // This is safe as we have already checked that the body is set
-        let body = self.body.unwrap();
-
-        let address_cache = self
-            .address
-            .map_or_else(OnceCache::new, OnceCache::with_value);
-
-        ContentChunk {
-            header: CacHeader,
-            body,
-            address_cache,
-        }
     }
 }
 
@@ -415,7 +210,11 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for ContentChunk<BODY_
 
 #[cfg(test)]
 mod tests {
-    use crate::{DEFAULT_BODY_SIZE, chunk::error::ChunkError};
+    use crate::{
+        DEFAULT_BODY_SIZE,
+        chunk::{BmtChunk, error::ChunkError},
+        error::PrimitivesError,
+    };
 
     use super::*;
     use alloy_primitives::b256;

@@ -9,6 +9,8 @@
 //!
 //! - [`ChunkHeader`] - Address-derivation and self-certification predicate of
 //!   a chunk type ([`CacHeader`], [`SocHeader`])
+//! - [`ChunkInner`] - The single carrier: one header plus one BMT body;
+//!   [`ContentChunk`] and [`SingleOwnerChunk`] are its aliases
 //! - [`Chunk`] - Core trait for all chunk types
 //! - [`ChunkType`] - Adds compile-time type identification
 //! - [`ChunkTypeSet`] - Defines which chunk types a system supports
@@ -26,6 +28,7 @@ mod chunk_type_set;
 mod content;
 pub mod encryption;
 pub(crate) mod error;
+mod inner;
 mod reference;
 mod single_owner;
 mod soc_id;
@@ -39,6 +42,7 @@ pub mod wasm;
 // Re-export the address type, error type, and core traits
 pub use address::ChunkAddress;
 pub use error::ChunkError;
+pub use inner::ChunkInner;
 pub use traits::{BmtChunk, Chunk, ChunkHeader};
 
 // Re-export the reference types
