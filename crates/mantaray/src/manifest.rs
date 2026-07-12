@@ -39,7 +39,7 @@ impl<S, const BS: usize> Manifest<S, ChunkRef, BS> {
 
     /// Load a plain manifest from storage by its root chunk address.
     pub fn open(root: ChunkAddress, store: S) -> Self {
-        let trie = Node::from_reference(root);
+        let trie = Node::from_reference(ChunkRef::from(root));
         Self { trie, store }
     }
 }
@@ -58,8 +58,10 @@ impl<S, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
 
     /// Load an encrypted manifest from storage by its manifest reference.
     pub fn open_encrypted(root: crate::ManifestRef, store: S) -> Self {
+        use crate::node::StoredReference;
         let (addr, key) = root.into_parts();
-        let mut trie = Node::from_reference(addr);
+        let mut trie =
+            Node::from_reference(nectar_primitives::EncryptedChunkRef::from_stored(addr));
         trie.obfuscation_key = key;
         Self { trie, store }
     }
@@ -87,9 +89,9 @@ impl<S, R: Reference, const BS: usize> Manifest<S, R, BS> {
         (self.trie, self.store)
     }
 
-    /// Get the root reference (`None` if not yet saved).
-    pub const fn reference(&self) -> Option<&ChunkAddress> {
-        self.trie.reference()
+    /// Get the root chunk address (`None` if not yet saved).
+    pub fn reference(&self) -> Option<&ChunkAddress> {
+        self.trie.reference().map(Reference::address)
     }
 }
 
@@ -295,8 +297,8 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
         F: FnMut(&[u8]) -> Result<()>,
     {
         self.walk(&mut |_path, node| {
-            if let Some(addr) = node.reference() {
-                f(addr.as_bytes())?;
+            if let Some(reference) = node.reference() {
+                f(reference.address().as_bytes())?;
             }
 
             if let Some(entry) = node.entry()
@@ -397,7 +399,8 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkRef, BS> 
         Ok(*self
             .trie
             .reference()
-            .ok_or(MantarayError::MissingReference)?)
+            .ok_or(MantarayError::MissingReference)?
+            .address())
     }
 }
 
@@ -432,7 +435,8 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
         let addr = *self
             .trie
             .reference()
-            .ok_or(MantarayError::MissingReference)?;
+            .ok_or(MantarayError::MissingReference)?
+            .address();
         Ok(crate::ManifestRef::new(addr, self.trie.obfuscation_key))
     }
 }
@@ -549,7 +553,7 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
                 Some(f) => f,
                 None => {
                     return Some(Err(MantarayError::NoForkFound {
-                        reference: parent.reference().copied(),
+                        reference: parent.reference().map(|r| *r.address()),
                     }));
                 }
             };
@@ -664,7 +668,7 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> SharedIter<'a, S, R, BS
                     Some(fork) => (fork.node.clone(), fork.prefix.clone()),
                     None => {
                         return Some(Err(MantarayError::NoForkFound {
-                            reference: frame.node.reference().copied(),
+                            reference: frame.node.reference().map(|r| *r.address()),
                         }));
                     }
                 }
