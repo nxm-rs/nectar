@@ -2,7 +2,18 @@
 //! owner-aware issuance path bound to a `Snapshot`'s shared table.
 
 #![cfg(feature = "issuer")]
-
+// Bench, example, and integration-test code: unwraps, direct indexing,
+// casts, and assertions are setup and illustration, not shipped surface.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::as_conversions,
+    clippy::missing_panics_doc
+)]
 use alloy_primitives::{Address, B256};
 use nectar_postage::{StampIndex, calculate_bucket};
 use nectar_postage_issuer::StampIssuer;

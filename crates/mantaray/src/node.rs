@@ -66,7 +66,8 @@ impl Prefix {
             PREFIX_MAX_LEN
         );
         let mut data = [0u8; PREFIX_MAX_LEN];
-        #[allow(clippy::indexing_slicing)] // src.len() <= PREFIX_MAX_LEN asserted above (documented # Panics contract)
+        #[allow(clippy::indexing_slicing)]
+        // src.len() <= PREFIX_MAX_LEN asserted above (documented # Panics contract)
         data[..src.len()].copy_from_slice(src);
         #[allow(clippy::as_conversions)] // src.len() <= PREFIX_MAX_LEN (30) asserted above, fits u8
         let len = src.len() as u8;
@@ -639,7 +640,8 @@ impl<E: NodeEntry> Node<E> {
                 #[allow(clippy::indexing_slicing)] // key_idx < keys.len() checked above
                 let key = frame.keys[frame.key_idx];
                 frame.key_idx += 1;
-                #[allow(clippy::expect_used)] // key was collected from this node's fork map, which is not mutated while the frame is live
+                #[allow(clippy::expect_used)]
+                // key was collected from this node's fork map, which is not mutated while the frame is live
                 let child = node.forks.get_mut(&key).expect("key from this node");
                 if child.node.reference.is_none() {
                     let child_ptr = std::ptr::from_mut(&mut child.node);
@@ -809,6 +811,8 @@ mod arbitrary_impls {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
             let len = u.int_in_range(1..=PREFIX_MAX_LEN)?;
             let mut data = [0u8; PREFIX_MAX_LEN];
+            // In-bounds: len is drawn from 1..=PREFIX_MAX_LEN and data is PREFIX_MAX_LEN long.
+            #[allow(clippy::indexing_slicing)]
             u.fill_buffer(&mut data[..len])?;
             #[allow(clippy::as_conversions)] // len ∈ 1..=PREFIX_MAX_LEN (30), fits u8
             let len = len as u8;
@@ -830,7 +834,8 @@ mod arbitrary_impls {
             let prefix = Prefix::arbitrary(u)?;
             // On the wire a fork child is flags + a chunk reference (plus
             // optional metadata); a reference-less child is not encodable.
-            let mut node = Node::<E>::from_reference(ChunkAddress::from(u.arbitrary::<[u8; 32]>()?));
+            let mut node =
+                Node::<E>::from_reference(ChunkAddress::from(u.arbitrary::<[u8; 32]>()?));
             node.node_type = NodeType::arbitrary(u)?;
             if node.node_type.contains(NodeType::METADATA) {
                 // Keep pairs small: the encoder caps the padded metadata JSON
@@ -866,6 +871,8 @@ mod arbitrary_impls {
             let mut forks = BTreeMap::new();
             for _ in 0..fork_count {
                 let fork = Fork::<E>::arbitrary(u)?;
+                // In-bounds: Prefix::arbitrary yields a non-empty prefix.
+                #[allow(clippy::indexing_slicing)]
                 forks.insert(fork.prefix[0], fork);
             }
 

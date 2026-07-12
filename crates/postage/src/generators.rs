@@ -49,7 +49,7 @@ pub fn signed_stamp(
     address: &SwarmAddress,
 ) -> arbitrary::Result<Stamp> {
     let bucket = batch.bucket_for_address(address);
-    let position = u.int_in_range(0..=batch.bucket_upper_bound() - 1)?;
+    let position = u.int_in_range(0..=batch.bucket_upper_bound().saturating_sub(1))?;
     let index = StampIndex::new(bucket, position);
     let timestamp = u.arbitrary()?;
 
