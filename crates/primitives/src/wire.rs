@@ -40,18 +40,27 @@ pub struct Underrun {
 /// integers are not exposed. Downstream crates implement this for their own
 /// domain types to read them via [`Cursor::take`].
 pub trait FromCursor: Sized {
+    /// Read failure for this type. [`Underrun`] converts into it, so impls can
+    /// add their own validation errors on top of short reads.
+    type Error: From<Underrun>;
+
     /// Reads `Self` from the cursor, advancing it past the consumed bytes.
-    /// On [`Underrun`] the cursor is left untouched.
-    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun>;
+    /// On failure the cursor keeps only the fields already taken; a failed
+    /// single-field read leaves it untouched.
+    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Self::Error>;
 }
 
 impl FromCursor for u8 {
+    type Error = Underrun;
+
     fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
         cur.take::<[Self; 1]>().map(|[byte]| byte)
     }
 }
 
 impl<const N: usize> FromCursor for [u8; N] {
+    type Error = Underrun;
+
     fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
         match cur.bytes.split_first_chunk::<N>() {
             Some((head, tail)) => {
@@ -98,7 +107,7 @@ impl<'a> Cursor<'a> {
 
     /// Reads the next value as a whole via its [`FromCursor`] impl, advancing
     /// the cursor.
-    pub fn take<T: FromCursor>(&mut self) -> Result<T, Underrun> {
+    pub fn take<T: FromCursor>(&mut self) -> Result<T, T::Error> {
         T::take_from(self)
     }
 
@@ -193,6 +202,8 @@ mod tests {
         struct BeLen(u16);
 
         impl FromCursor for BeLen {
+            type Error = Underrun;
+
             fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
                 cur.take::<[u8; 2]>().map(|b| Self(u16::from_be_bytes(b)))
             }
@@ -202,6 +213,42 @@ mod tests {
         let mut cur = Cursor::new(&data);
         assert_eq!(cur.take::<BeLen>().unwrap().0, 0x1234);
         assert!(cur.is_empty());
+    }
+
+    #[test]
+    fn take_surfaces_impl_validation_errors() {
+        #[derive(Debug, PartialEq)]
+        enum TagError {
+            Short,
+            Odd,
+        }
+
+        impl From<Underrun> for TagError {
+            fn from(_: Underrun) -> Self {
+                Self::Short
+            }
+        }
+
+        #[derive(Debug)]
+        struct EvenTag(u8);
+
+        impl FromCursor for EvenTag {
+            type Error = TagError;
+
+            fn take_from(cur: &mut Cursor<'_>) -> Result<Self, TagError> {
+                let byte = cur.take::<u8>()?;
+                if byte % 2 == 0 {
+                    Ok(Self(byte))
+                } else {
+                    Err(TagError::Odd)
+                }
+            }
+        }
+
+        let mut cur = Cursor::new(&[4u8, 5]);
+        assert_eq!(cur.take::<EvenTag>().unwrap().0, 4);
+        assert_eq!(cur.take::<EvenTag>().unwrap_err(), TagError::Odd);
+        assert_eq!(cur.take::<EvenTag>().unwrap_err(), TagError::Short);
     }
 
     #[test]
