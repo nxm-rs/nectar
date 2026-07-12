@@ -1,9 +1,13 @@
 //! Postage stamp types.
 
+use alloc::vec::Vec;
+
 use alloy_primitives::{Address, B256, Signature, eip191_hash_message};
 use alloy_signer::k256::ecdsa::VerifyingKey;
-use byteorder::{BigEndian, ByteOrder};
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{
+    ChunkAddress,
+    wire::{Cursor, FromCursor, ToWriter, Underrun, Writer},
+};
 
 use crate::{BatchId, StampError};
 
@@ -11,6 +15,20 @@ use crate::{BatchId, StampError};
 ///
 /// Layout: batch_id (32) + bucket (4) + index (4) + timestamp (8) + signature (65) = 113 bytes
 pub const STAMP_SIZE: usize = 113;
+
+/// Wire width of a stamp index: bucket (4) + index (4), big-endian.
+const INDEX_SIZE: usize = size_of::<u64>();
+/// Wire width of the big-endian timestamp.
+const TIMESTAMP_SIZE: usize = size_of::<u64>();
+/// Wire width of the signature: `r || s || v`.
+const SIG_SIZE: usize = 65;
+
+// The four field widths fill the stamp exactly.
+const _: () = assert!(BatchId::SIZE + INDEX_SIZE + TIMESTAMP_SIZE + SIG_SIZE == STAMP_SIZE);
+
+/// Size of the digest preimage: chunk address, then the three signed stamp
+/// fields.
+const PREHASH_SIZE: usize = ChunkAddress::SIZE + BatchId::SIZE + INDEX_SIZE + TIMESTAMP_SIZE;
 
 /// A serialized postage stamp as a fixed-size byte array.
 pub type StampBytes = [u8; STAMP_SIZE];
@@ -119,6 +137,22 @@ impl From<StampIndex> for (u32, u32) {
     }
 }
 
+/// Reads the index from its 8 wire bytes; see [`StampIndex::from_be_bytes`].
+impl FromCursor for StampIndex {
+    type Error = Underrun;
+
+    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
+        cur.take::<[u8; INDEX_SIZE]>().map(Self::from_be_bytes)
+    }
+}
+
+/// Writes the 8 wire bytes, the mirror of the `FromCursor` impl above.
+impl ToWriter for StampIndex {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(&self.to_be_bytes());
+    }
+}
+
 /// A postage stamp represents proof of payment for storing a chunk.
 ///
 /// Stamps are created by signing a message containing the chunk address,
@@ -218,12 +252,13 @@ impl Stamp {
     /// Serializes the stamp to a 113-byte array.
     #[inline]
     pub fn to_bytes(&self) -> StampBytes {
+        let mut buf = Vec::with_capacity(STAMP_SIZE);
+        Writer::new(&mut buf).put(self);
+
+        // The field widths sum to STAMP_SIZE (asserted at compile time above),
+        // so the writer filled the array exactly.
         let mut bytes = [0u8; STAMP_SIZE];
-        bytes[..32].copy_from_slice(self.batch.as_slice());
-        BigEndian::write_u32(&mut bytes[32..36], self.index.bucket());
-        BigEndian::write_u32(&mut bytes[36..40], self.index.index());
-        BigEndian::write_u64(&mut bytes[40..48], self.timestamp);
-        bytes[48..STAMP_SIZE].copy_from_slice(&self.sig.as_bytes());
+        bytes.copy_from_slice(&buf);
         bytes
     }
 
@@ -232,20 +267,7 @@ impl Stamp {
     /// Returns an error if the signature bytes are invalid.
     #[inline]
     pub fn from_bytes(bytes: &StampBytes) -> Result<Self, StampError> {
-        let batch = BatchId::from_slice(&bytes[..32]);
-        let bucket = BigEndian::read_u32(&bytes[32..36]);
-        let index = BigEndian::read_u32(&bytes[36..40]);
-        let timestamp = BigEndian::read_u64(&bytes[40..48]);
-
-        let sig = Signature::from_raw(&bytes[48..STAMP_SIZE])
-            .map_err(|_| StampError::InvalidSignature)?;
-
-        Ok(Self {
-            batch,
-            index: StampIndex::new(bucket, index),
-            timestamp,
-            sig,
-        })
+        Cursor::new(bytes).take::<Self>()
     }
 
     /// Attempts to deserialize a stamp from a byte slice.
@@ -253,14 +275,12 @@ impl Stamp {
     /// Returns an error if the slice is not exactly 113 bytes or if the signature is invalid.
     #[inline]
     pub fn try_from_slice(bytes: &[u8]) -> Result<Self, StampError> {
-        if bytes.len() != STAMP_SIZE {
+        let mut cur = Cursor::new(bytes);
+        let stamp = cur.take::<Self>()?;
+        if !cur.is_empty() {
             return Err(StampError::InvalidData("stamp must be exactly 113 bytes"));
         }
-
-        // Safety: we verified the length above
-        let mut stamp_bytes = [0u8; STAMP_SIZE];
-        stamp_bytes.copy_from_slice(bytes);
-        Self::from_bytes(&stamp_bytes)
+        Ok(stamp)
     }
 
     /// Recovers the signer address from this stamp using EIP-191 message recovery.
@@ -432,6 +452,37 @@ impl Stamp {
     }
 }
 
+/// Reads a stamp from its 113 wire bytes: batch id, stamp index, big-endian
+/// timestamp, then the 65-byte signature.
+impl FromCursor for Stamp {
+    type Error = StampError;
+
+    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, StampError> {
+        let batch = cur.take::<BatchId>()?;
+        let index = cur.take::<StampIndex>()?;
+        let timestamp = u64::from_be_bytes(cur.take::<[u8; TIMESTAMP_SIZE]>()?);
+        // from_raw_array compile-checks SIG_SIZE against alloy's signature width.
+        let sig = Signature::from_raw_array(&cur.take::<[u8; SIG_SIZE]>()?)
+            .map_err(|_| StampError::InvalidSignature)?;
+        Ok(Self {
+            batch,
+            index,
+            timestamp,
+            sig,
+        })
+    }
+}
+
+/// Writes the 113 wire bytes, the mirror of the `FromCursor` impl above.
+impl ToWriter for Stamp {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(&self.batch);
+        w.put(&self.index);
+        w.put(&self.timestamp.to_be_bytes());
+        w.put(&self.sig.as_bytes());
+    }
+}
+
 /// The digest that must be signed to create a valid stamp.
 ///
 /// The digest is computed as: `keccak256(chunk_address || batch_id || index || timestamp)`
@@ -480,11 +531,12 @@ impl StampDigest {
     pub fn to_prehash(&self) -> B256 {
         use alloy_primitives::keccak256;
 
-        let mut data = [0u8; 32 + 32 + 8 + 8]; // 80 bytes
-        data[..32].copy_from_slice(self.chunk_address.as_bytes());
-        data[32..64].copy_from_slice(self.batch_id.as_slice());
-        data[64..72].copy_from_slice(&self.index.to_be_bytes());
-        data[72..80].copy_from_slice(&self.timestamp.to_be_bytes());
+        let mut data = Vec::with_capacity(PREHASH_SIZE);
+        let mut w = Writer::new(&mut data);
+        w.put(self.chunk_address.as_bytes());
+        w.put(&self.batch_id);
+        w.put(&self.index);
+        w.put(&self.timestamp.to_be_bytes());
 
         keccak256(data)
     }
@@ -612,8 +664,14 @@ mod tests {
 
     #[test]
     fn test_invalid_slice_size() {
-        let bytes = [0u8; 100];
-        let result = Stamp::try_from_slice(&bytes);
+        // Short input underruns the cursor.
+        let short = [0u8; 100];
+        let result = Stamp::try_from_slice(&short);
+        assert!(matches!(result, Err(StampError::Underrun { .. })));
+
+        // Trailing bytes are rejected explicitly.
+        let long = [0u8; STAMP_SIZE + 1];
+        let result = Stamp::try_from_slice(&long);
         assert!(matches!(result, Err(StampError::InvalidData(_))));
     }
 

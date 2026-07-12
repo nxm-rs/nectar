@@ -21,7 +21,6 @@ workspace = true
 nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-signer = { workspace = true }
-byteorder = { workspace = true }
 derive_more = { workspace = true }
 thiserror = { workspace = true }
 

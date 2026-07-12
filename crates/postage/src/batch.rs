@@ -2,7 +2,10 @@
 
 use alloy_primitives::{Address, B256};
 use derive_more::{AsRef, Display, From, Into};
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{
+    ChunkAddress,
+    wire::{Cursor, FromCursor, ToWriter, Underrun, Writer},
+};
 
 use crate::{StampError, StampIndex, calculate_bucket};
 
@@ -22,6 +25,9 @@ use crate::{StampError, StampIndex, calculate_bucket};
 pub struct BatchId(B256);
 
 impl BatchId {
+    /// Width in bytes of an id.
+    pub const SIZE: usize = size_of::<B256>();
+
     /// Zero id, useful for tests and deterministic vectors.
     pub const ZERO: Self = Self(B256::ZERO);
 
@@ -46,6 +52,22 @@ impl BatchId {
     #[inline]
     pub fn from_slice(slice: &[u8]) -> Self {
         Self(B256::from_slice(slice))
+    }
+}
+
+/// Reads the id as its raw 32 bytes.
+impl FromCursor for BatchId {
+    type Error = Underrun;
+
+    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
+        cur.take::<[u8; Self::SIZE]>().map(Self::new)
+    }
+}
+
+/// Writes the raw 32 bytes, the mirror of the `FromCursor` impl above.
+impl ToWriter for BatchId {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(&<[u8; Self::SIZE]>::from(*self));
     }
 }
 

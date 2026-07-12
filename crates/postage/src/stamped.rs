@@ -12,9 +12,9 @@
 
 use alloc::vec::Vec;
 
-use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE, bytes::Bytes};
+use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE, bytes::Bytes, wire::Cursor};
 
-use crate::{BatchId, STAMP_SIZE, Stamp, StampError};
+use crate::{BatchId, Stamp, StampError};
 
 /// A chunk together with its postage stamp.
 ///
@@ -107,14 +107,9 @@ impl<const BODY_SIZE: usize> StampedChunk<BODY_SIZE> {
     /// stamp, the stamp bytes are invalid, the chunk payload cannot be decoded,
     /// or the chunk's computed address does not match `address`.
     pub fn from_typed_bytes(address: &ChunkAddress, bytes: &[u8]) -> Result<Self, StampError> {
-        if bytes.len() < STAMP_SIZE {
-            return Err(StampError::InvalidData(
-                "stamped chunk shorter than a stamp",
-            ));
-        }
-        let (stamp_bytes, chunk_bytes) = bytes.split_at(STAMP_SIZE);
-        let stamp = Stamp::try_from_slice(stamp_bytes)?;
-        let chunk = AnyChunk::<BODY_SIZE>::from_typed_bytes(address, chunk_bytes)
+        let mut cur = Cursor::new(bytes);
+        let stamp = cur.take::<Stamp>()?;
+        let chunk = AnyChunk::<BODY_SIZE>::from_typed_bytes(address, cur.finish())
             .map_err(|_| StampError::Chunk("failed to decode typed chunk"))?;
         Ok(Self::new(chunk, stamp))
     }
@@ -143,19 +138,16 @@ impl<const BODY_SIZE: usize> StampedChunk<BODY_SIZE> {
     /// Read the batch id from a [`to_typed_bytes`](Self::to_typed_bytes) value
     /// without a full decode.
     ///
-    /// The stamp leads the encoding and [`Stamp::to_bytes`] places the batch id
-    /// in its first 32 bytes, so the batch id is `typed_bytes[0..32]`. This lets
-    /// a store index a stamped chunk by batch without decoding the chunk.
+    /// The stamp leads the encoding and the batch id is the stamp's first wire
+    /// field, so a cursor over the typed bytes yields it directly. This lets a
+    /// store index a stamped chunk by batch without decoding the chunk.
     ///
     /// # Errors
     ///
-    /// Returns an error (and never panics) when `typed_bytes` is shorter than 32
-    /// bytes.
+    /// Returns an error (and never panics) when `typed_bytes` is shorter than a
+    /// batch id.
     pub fn batch_id(typed_bytes: &[u8]) -> Result<BatchId, StampError> {
-        let id = typed_bytes.get(..32).ok_or(StampError::InvalidData(
-            "typed bytes shorter than a batch id",
-        ))?;
-        Ok(BatchId::from_slice(id))
+        Ok(Cursor::new(typed_bytes).take::<BatchId>()?)
     }
 }
 
@@ -179,6 +171,7 @@ mod tests {
     use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk, SocId, bytes::Bytes};
 
     use super::*;
+    use crate::STAMP_SIZE;
 
     type DefaultStampedChunk = StampedChunk<DEFAULT_BODY_SIZE>;
 
@@ -299,7 +292,7 @@ mod tests {
         let short = [0u8; STAMP_SIZE - 1];
         let err = DefaultStampedChunk::from_typed_bytes(&address, &short)
             .expect_err("short input must error");
-        assert!(matches!(err, StampError::InvalidData(_)));
+        assert!(matches!(err, StampError::Underrun { .. }));
     }
 
     #[test]
