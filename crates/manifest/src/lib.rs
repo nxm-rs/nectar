@@ -8,6 +8,10 @@
 //! check a format bound once at construction and carry it as a type
 //! invariant.
 //!
+//! The value model is [`Key`] (arbitrary bytes), [`Entry`] (a chunk
+//! reference or an inline value; absence is `Option` at the use site) and
+//! [`Metadata`] (typed key-registry pairs, sorted-unique and bounded).
+//!
 //! ```
 //! use nectar_manifest::{Format, Prefix, V1};
 //!
@@ -36,7 +40,11 @@
 mod bounded;
 mod error;
 mod format;
+mod meta;
+mod value;
 
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
-pub use error::{MetadataTooLong, PrefixTooLong, WeightOverBudget};
+pub use error::{CustomKeyError, MetadataTooLong, PrefixTooLong, ValueTooLong, WeightOverBudget};
 pub use format::{Format, V1};
+pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
+pub use value::{Entry, InlineValue, Key};

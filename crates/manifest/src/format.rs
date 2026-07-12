@@ -43,6 +43,9 @@ pub trait Format:
     /// Max encoded metadata length per meta block, in bytes.
     const META_MAX: usize;
 
+    /// Max custom metadata key length in bytes.
+    const CKEY_MAX: usize;
+
     /// Max forks per node: radix-256, one fork per distinct first byte.
     const FORKS_MAX: usize;
 
@@ -80,6 +83,7 @@ impl Format for V1 {
     const PLEN_MAX: usize = 255;
     const VINLINE_MAX: usize = 128;
     const META_MAX: usize = 1024;
+    const CKEY_MAX: usize = 64;
     const FORKS_MAX: usize = 256;
     const INLINE_MAX: usize = 1536;
     const SEG_TARGET: usize = 2048;
@@ -107,6 +111,10 @@ const _: () = {
         V1::VINLINE_MAX <= V1::INLINE_MAX && V1::INLINE_MAX < V1::BUDGET,
         "inline caps must nest below the body budget"
     );
+    assert!(
+        V1::VINLINE_MAX <= 0xFF && V1::CKEY_MAX <= 0xFF && V1::META_MAX <= 0xFFFF,
+        "bounded lengths must fit their one- or two-byte wire length fields"
+    );
 };
 
 #[cfg(test)]
@@ -128,6 +136,7 @@ mod tests {
         assert_eq!(V1::PLEN_MAX, 255);
         assert_eq!(V1::VINLINE_MAX, 128);
         assert_eq!(V1::META_MAX, 1024);
+        assert_eq!(V1::CKEY_MAX, 64);
         assert_eq!(V1::FORKS_MAX, 256);
         assert_eq!(V1::INLINE_MAX, 1536);
         assert_eq!(V1::SEG_TARGET, 2048);
