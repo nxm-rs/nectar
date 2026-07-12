@@ -121,20 +121,6 @@ impl<'a> Cursor<'a> {
         Self { bytes }
     }
 
-    /// Reads the next `N` bytes as a fixed-size array, advancing the cursor.
-    pub const fn take_array<const N: usize>(&mut self) -> Result<&'a [u8; N], Underrun> {
-        match self.bytes.split_first_chunk::<N>() {
-            Some((head, tail)) => {
-                self.bytes = tail;
-                Ok(head)
-            }
-            None => Err(Underrun {
-                expected: N,
-                available: self.bytes.len(),
-            }),
-        }
-    }
-
     /// Reads the next value as a whole via its [`FromCursor`] impl, advancing
     /// the cursor.
     pub fn take<T: FromCursor>(&mut self) -> Result<T, T::Error> {
@@ -153,17 +139,6 @@ impl<'a> Cursor<'a> {
                 available: self.bytes.len(),
             }),
         }
-    }
-
-    /// Reads a single byte, advancing the cursor.
-    pub fn take_u8(&mut self) -> Result<u8, Underrun> {
-        let &[byte] = self.take_array::<1>()?;
-        Ok(byte)
-    }
-
-    /// Reads a big-endian `u16`, advancing the cursor.
-    pub fn take_u16_be(&mut self) -> Result<u16, Underrun> {
-        self.take_array::<2>().map(|b| u16::from_be_bytes(*b))
     }
 
     /// The unread tail, without advancing.
