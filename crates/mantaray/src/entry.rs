@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use nectar_primitives::chunk::{ChunkAddress, Reference};
 use nectar_primitives::file::EntryRef;
 
+use crate::metadata;
 use crate::node::Node;
-use crate::{MantarayError, Result, metadata};
 
 /// A manifest entry: a path, typed reference, and optional metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -87,31 +87,20 @@ impl Entry {
 
     /// Reconstruct an `Entry` from a trie node and its accumulated path.
     ///
-    /// Converts the typed `Option<&R>` entry to an `Option<EntryRef>` via
-    /// serialization, keeping `Entry` non-generic for the public API.
-    pub(crate) fn from_node<R: Reference>(path: &[u8], node: &Node<R>) -> Result<Self> {
-        let reference = match node.entry() {
-            Some(e) => {
-                let bytes = e.to_bytes();
-                Some(EntryRef::try_from_bytes(&bytes).map_err(|_| {
-                    MantarayError::EntrySizeMismatch {
-                        expected: R::SIZE,
-                        actual: bytes.len(),
-                    }
-                })?)
-            }
-            None => None,
-        };
+    /// Flows the node's typed reference straight into an [`EntryRef`], keeping
+    /// `Entry` non-generic for the public API without a wire round-trip.
+    pub(crate) fn from_node<R: Reference>(path: &[u8], node: &Node<R>) -> Self {
+        let reference = node.entry().cloned().map(Reference::into_entry_ref);
         let metadata = if node.metadata().is_empty() {
             BTreeMap::new()
         } else {
             node.metadata().clone()
         };
-        Ok(Self {
+        Self {
             path: path.to_vec(),
             reference,
             metadata,
-        })
+        }
     }
 }
 

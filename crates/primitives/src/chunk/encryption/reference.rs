@@ -1,7 +1,8 @@
 //! Chunk reference types for encrypted chunks.
 
-use crate::chunk::reference::{RefKind, Reference, sealed};
+use crate::chunk::reference::{RefKind, Reference, WrongRefKind, sealed};
 use crate::chunk::{ChunkAddress, ChunkRef};
+use crate::file::EntryRef;
 use crate::wire::{Cursor, Underrun};
 
 use super::error::EncryptionError;
@@ -77,6 +78,20 @@ impl Reference for EncryptedChunkRef {
 
     fn address(&self) -> &ChunkAddress {
         self.reference.address()
+    }
+
+    fn into_entry_ref(self) -> EntryRef {
+        EntryRef::Encrypted(self)
+    }
+
+    fn from_entry_ref(entry: EntryRef) -> Result<Self, WrongRefKind> {
+        match entry {
+            EntryRef::Encrypted(enc) => Ok(enc),
+            EntryRef::Plain(_) => Err(WrongRefKind {
+                expected: Self::KIND,
+                got: RefKind::Unencrypted,
+            }),
+        }
     }
 
     fn write_to(&self, out: &mut Vec<u8>) {

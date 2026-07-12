@@ -90,6 +90,9 @@ pub enum MantarayError {
         /// Actual size.
         actual: usize,
     },
+    /// Entry reference kind does not match the manifest's reference type.
+    #[error(transparent)]
+    WrongRefKind(#[from] nectar_primitives::chunk::WrongRefKind),
     /// Path cannot be empty for this operation.
     #[error("empty path")]
     EmptyPath,

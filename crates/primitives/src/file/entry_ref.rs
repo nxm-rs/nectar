@@ -1,7 +1,6 @@
 //! Unified file entry reference type.
 
 use crate::chunk::ChunkAddress;
-#[cfg(feature = "encryption")]
 use crate::chunk::encryption::EncryptedChunkRef;
 
 use super::error::FileError;
@@ -12,7 +11,6 @@ pub enum EntryRef {
     /// Plain 32-byte chunk address.
     Plain(ChunkAddress),
     /// Encrypted 64-byte reference (address + decryption key).
-    #[cfg(feature = "encryption")]
     Encrypted(EncryptedChunkRef),
 }
 
@@ -30,7 +28,6 @@ impl EntryRef {
                 let addr_bytes: [u8; 32] = bytes.try_into().expect("length checked");
                 Ok(Self::Plain(ChunkAddress::from(addr_bytes)))
             }
-            #[cfg(feature = "encryption")]
             64 => {
                 let enc_ref = EncryptedChunkRef::try_from(bytes)
                     .map_err(|_| FileError::InvalidEntryRef { len: bytes.len() })?;
@@ -44,7 +41,6 @@ impl EntryRef {
     pub const fn address(&self) -> &ChunkAddress {
         match self {
             Self::Plain(addr) => addr,
-            #[cfg(feature = "encryption")]
             Self::Encrypted(enc) => enc.address(),
         }
     }
@@ -56,7 +52,6 @@ impl From<ChunkAddress> for EntryRef {
     }
 }
 
-#[cfg(feature = "encryption")]
 impl From<EncryptedChunkRef> for EntryRef {
     fn from(enc: EncryptedChunkRef) -> Self {
         Self::Encrypted(enc)
@@ -67,7 +62,6 @@ impl From<&EntryRef> for Vec<u8> {
     fn from(entry_ref: &EntryRef) -> Self {
         match entry_ref {
             EntryRef::Plain(addr) => addr.as_bytes().to_vec(),
-            #[cfg(feature = "encryption")]
             EntryRef::Encrypted(enc) => Self::from(enc),
         }
     }

@@ -115,18 +115,7 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
 
     /// Add a path with a pre-built [`Entry`] (metadata + reference).
     pub async fn add_entry(&mut self, path: &str, entry: Entry) -> Result<()> {
-        let e = match entry.reference {
-            Some(r) => {
-                let bytes = Vec::from(&r);
-                let reference =
-                    R::from_wire_bytes(&bytes).ok_or(MantarayError::EntrySizeMismatch {
-                        expected: R::SIZE,
-                        actual: bytes.len(),
-                    })?;
-                Some(reference)
-            }
-            None => None,
-        };
+        let e = entry.reference.map(R::from_entry_ref).transpose()?;
         self.trie
             .add::<S, BS>(path.as_bytes(), e, entry.metadata, &self.store)
             .await
@@ -150,7 +139,7 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
             return Err(MantarayError::NotValueType);
         }
 
-        Entry::from_node(path.as_bytes(), node)
+        Ok(Entry::from_node(path.as_bytes(), node))
     }
 
     /// Test whether the manifest contains a prefix.
@@ -225,7 +214,7 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
             let mut pending: Vec<(Vec<u8>, Node<R>)> = Vec::new();
             for (path, node) in &frontier {
                 if node.is_value() {
-                    out.push(Entry::from_node(path, node)?);
+                    out.push(Entry::from_node(path, node));
                 }
                 for fork in node.forks.values() {
                     let mut child_path = path.clone();
@@ -450,10 +439,7 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
 
                 let keys: Vec<u8> = self.trie.forks.keys().copied().collect();
                 let entry = if self.trie.is_value() {
-                    match Entry::from_node(&[], self.trie) {
-                        Ok(e) => Some(e),
-                        Err(e) => return Some(Err(e)),
-                    }
+                    Some(Entry::from_node(&[], self.trie))
                 } else {
                     None
                 };
@@ -523,10 +509,7 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
             });
 
             if is_value {
-                match Entry::from_node(&self.path_buf, child_ref) {
-                    Ok(e) => return Some(Ok(e)),
-                    Err(e) => return Some(Err(e)),
-                }
+                return Some(Ok(Entry::from_node(&self.path_buf, child_ref)));
             }
         }
     }
