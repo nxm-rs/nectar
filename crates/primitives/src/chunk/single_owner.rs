@@ -141,6 +141,10 @@ impl ChunkHeader for SocHeader {
         Ok(())
     }
 
+    fn recover_owner(&self, body_hash: B256) -> Option<Address> {
+        self.owner(body_hash).ok()
+    }
+
     /// Plain (unprefixed) `keccak256(soc_address || transformed_root)`.
     fn seal_transformed(&self, address: &ChunkAddress, transformed_root: B256) -> ChunkAddress {
         let mut hasher = Keccak256::new();

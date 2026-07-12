@@ -104,16 +104,32 @@ pub trait ChunkRegistry: Send + Sync + 'static {
         Self::MEMBERS.iter().any(|member| member.tag.id == id)
     }
 
+    /// Structurally decode the typed form produced by
+    /// [`encode_typed`](Self::encode_typed): the tag routes to a member and
+    /// the payload is decoded, but nothing certifies. The result is only a
+    /// claim; certify it via [`decode_typed`](Self::decode_typed) or the
+    /// typestate carrier's parse-then-verify.
+    ///
+    /// # Errors
+    ///
+    /// A tag outside [`MEMBERS`](Self::MEMBERS) is a distinct
+    /// [`ChunkError::UnsupportedTag`] carrying the tag, never a format
+    /// error; a structurally malformed payload errors, never panics.
+    fn parse_typed(bytes: &[u8]) -> Result<Self::Envelope>;
+
     /// Decode the self-describing typed form produced by
     /// [`encode_typed`](Self::encode_typed): the tag routes to a member,
     /// the address certifies the payload.
     ///
     /// # Errors
     ///
-    /// A tag outside [`MEMBERS`](Self::MEMBERS) is a distinct
-    /// [`ChunkError::UnsupportedTag`] carrying the tag, never a format
-    /// error; a payload that fails the member's acceptance rule errors.
-    fn decode_typed(address: &ChunkAddress, bytes: &[u8]) -> Result<Self::Envelope>;
+    /// Errors as [`parse_typed`](Self::parse_typed) does, plus when the
+    /// payload fails the member's acceptance rule against `address`.
+    fn decode_typed(address: &ChunkAddress, bytes: &[u8]) -> Result<Self::Envelope> {
+        let chunk = Self::parse_typed(bytes)?;
+        chunk.verify(address)?;
+        Ok(chunk)
+    }
 
     /// Decode bare wire bytes (no type tag), trial-parsing members in
     /// declaration order; the address is the disambiguator.
@@ -142,8 +158,8 @@ impl ChunkRegistry for StandardChunkSet {
         ChunkTypeInfo::of::<SocHeader>(),
     ];
 
-    fn decode_typed(address: &ChunkAddress, bytes: &[u8]) -> Result<Self::Envelope> {
-        AnyChunk::from_typed_bytes(address, bytes)
+    fn parse_typed(bytes: &[u8]) -> Result<Self::Envelope> {
+        AnyChunk::parse_typed(bytes)
     }
 
     fn decode_wire(address: &ChunkAddress, data: Bytes) -> Result<Self::Envelope> {
@@ -167,7 +183,7 @@ impl ChunkRegistry for ContentOnlyChunkSet {
 
     const MEMBERS: &'static [ChunkTypeInfo] = &[ChunkTypeInfo::of::<CacHeader>()];
 
-    fn decode_typed(address: &ChunkAddress, bytes: &[u8]) -> Result<Self::Envelope> {
+    fn parse_typed(bytes: &[u8]) -> Result<Self::Envelope> {
         let (tag, payload) = bytes.split_first_chunk::<2>().ok_or_else(|| {
             ChunkError::invalid_format("typed-chunk encoding shorter than the two-byte type tag")
         })?;
@@ -175,9 +191,7 @@ impl ChunkRegistry for ContentOnlyChunkSet {
         if !Self::supports(tag) {
             return Err(ChunkError::unsupported_tag(tag).into());
         }
-        let chunk = ContentChunk::try_from(Bytes::copy_from_slice(payload))?;
-        chunk.verify(address)?;
-        Ok(chunk)
+        ContentChunk::try_from(Bytes::copy_from_slice(payload))
     }
 
     fn decode_wire(address: &ChunkAddress, data: Bytes) -> Result<Self::Envelope> {
@@ -328,6 +342,22 @@ mod tests {
         assert!(decoded.is_single_owner());
         assert_eq!(decoded.address(), any.address());
         assert_eq!(decoded.into_bytes(), wire);
+    }
+
+    /// parse_typed is structural only: the same bytes that decode_typed
+    /// rejects at a wrong address still parse.
+    #[test]
+    fn parse_typed_is_structural_only() {
+        let content = DefaultContentChunk::new(&b"structural"[..]).unwrap();
+        let wrong: ChunkAddress = [0xFFu8; 32].into();
+
+        let standard = StandardChunkSet::encode_typed(&content.clone().into());
+        assert!(StandardChunkSet::parse_typed(&standard).is_ok());
+        assert!(StandardChunkSet::decode_typed(&wrong, &standard).is_err());
+
+        let content_only = ContentOnlyChunkSet::encode_typed(&content);
+        assert!(ContentOnlyChunkSet::parse_typed(&content_only).is_ok());
+        assert!(ContentOnlyChunkSet::decode_typed(&wrong, &content_only).is_err());
     }
 
     #[test]

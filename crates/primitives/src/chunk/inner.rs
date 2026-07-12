@@ -15,7 +15,7 @@ use crate::wire;
 use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::chunk_type::ChunkType;
-use super::traits::{Chunk, ChunkHeader, ChunkOps};
+use super::traits::{ChunkHeader, ChunkOps, HeaderedChunk};
 
 /// A chunk: a wire header committing to a BMT body.
 ///
@@ -84,6 +84,10 @@ impl<H: ChunkHeader, const BODY_SIZE: usize> ChunkOps for ChunkInner<H, BODY_SIZ
         self.body.span()
     }
 
+    fn owner(&self) -> Option<alloy_primitives::Address> {
+        self.header.recover_owner(self.body.hash().into())
+    }
+
     /// Certify through [`ChunkHeader::validate`]: the header's full acceptance
     /// rule runs, not an address compare against the cached address.
     fn verify(&self, expected: &ChunkAddress) -> Result<()> {
@@ -104,7 +108,7 @@ impl<H: ChunkHeader, const BODY_SIZE: usize> ChunkOps for ChunkInner<H, BODY_SIZ
     }
 }
 
-impl<H: ChunkHeader, const BODY_SIZE: usize> Chunk for ChunkInner<H, BODY_SIZE> {
+impl<H: ChunkHeader, const BODY_SIZE: usize> HeaderedChunk for ChunkInner<H, BODY_SIZE> {
     type Header = H;
 
     fn header(&self) -> &H {

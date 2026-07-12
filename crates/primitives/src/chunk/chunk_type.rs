@@ -3,12 +3,12 @@
 //! This module provides the [`ChunkType`] trait which adds compile-time type
 //! information to chunk implementations.
 
-use super::traits::Chunk;
+use super::traits::HeaderedChunk;
 use super::type_id::ChunkTypeId;
 
 /// Trait for chunk types with compile-time type information.
 ///
-/// This trait extends [`Chunk`] with static type metadata, enabling:
+/// This trait extends [`HeaderedChunk`] with static type metadata, enabling:
 /// - Compile-time type identification via [`TYPE_ID`](ChunkType::TYPE_ID)
 /// - Type-safe serialization/deserialization
 /// - Generic programming over chunk types
@@ -16,14 +16,14 @@ use super::type_id::ChunkTypeId;
 /// # Implementing ChunkType
 ///
 /// All implementations must also implement:
-/// - [`Chunk`] trait
+/// - [`HeaderedChunk`] trait
 /// - [`TryFrom<Bytes>`] for deserialization
 /// - [`Into<Bytes>`] for serialization
 ///
 /// # Example
 ///
 /// ```ignore
-/// use nectar_primitives::{Chunk, ChunkType, ChunkTypeId};
+/// use nectar_primitives::{ChunkType, ChunkTypeId, HeaderedChunk};
 ///
 /// struct MyCustomChunk { /* ... */ }
 ///
@@ -32,7 +32,7 @@ use super::type_id::ChunkTypeId;
 ///     const TYPE_NAME: &'static str = "my_custom";
 /// }
 /// ```
-pub trait ChunkType: Chunk + Sized {
+pub trait ChunkType: HeaderedChunk + Sized {
     /// The wire-level type identifier for this chunk type.
     ///
     /// This ID is used in chunk headers for serialization and must be unique
