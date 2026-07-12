@@ -336,6 +336,38 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Wire-compatibility car: the registry typed codec and the underlying
+    /// [`AnyChunk`] typed codec are byte-for-byte interchangeable, so bytes
+    /// written by either encoder decode through the other. Guards the registry
+    /// against silently diverging from the established `AnyChunk` wire format
+    /// even if its own encode/decode stayed self-consistent.
+    #[test]
+    fn standard_typed_interops_with_any_chunk_codec() {
+        let content: AnyChunk = DefaultContentChunk::new(&b"interop cac"[..])
+            .unwrap()
+            .into();
+        let soc: AnyChunk = sample_single_owner().into();
+
+        for chunk in [content, soc] {
+            let address = *chunk.address();
+
+            // Old encoder -> new decoder.
+            let old_bytes = chunk.to_typed_bytes();
+            let via_registry = StandardChunkSet::decode_typed(&address, &old_bytes).unwrap();
+            assert_eq!(via_registry.address(), chunk.address());
+            assert_eq!(via_registry.into_bytes(), chunk.clone().into_bytes());
+
+            // New encoder -> old decoder; the two encoders must agree exactly.
+            let new_bytes = StandardChunkSet::encode_typed(&chunk);
+            assert_eq!(
+                new_bytes, old_bytes,
+                "registry and AnyChunk typed encodings must match byte-for-byte"
+            );
+            let via_any: AnyChunk = AnyChunk::from_typed_bytes(&address, &new_bytes).unwrap();
+            assert_eq!(via_any.address(), chunk.address());
+        }
+    }
+
     #[test]
     fn content_only_typed_round_trip() {
         let content = DefaultContentChunk::new(&b"content only"[..]).unwrap();
