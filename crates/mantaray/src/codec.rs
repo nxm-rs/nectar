@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::{MantarayError, Result};
+use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
 use crate::node::{Fork, Node, NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 
@@ -67,7 +67,7 @@ impl ForkHeader {
 }
 
 impl FromCursor for ForkHeader {
-    type Error = MantarayError;
+    type Error = DecodeError;
 
     fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Self::Error> {
         let node_type = NodeType::from_bits_truncate(cur.take::<u8>()?);
@@ -195,16 +195,16 @@ fn encode_node<R: Reference>(node: &Node<R>) -> Result<Vec<u8>> {
 }
 
 impl<R: Reference> TryFrom<&[u8]> for Node<R> {
-    type Error = MantarayError;
+    type Error = DecodeError;
 
-    fn try_from(value: &[u8]) -> Result<Self> {
+    fn try_from(value: &[u8]) -> DecodeResult<Self> {
         let mut data = value.to_vec();
 
         // The obfuscation key is the header's first field and is stored in the
         // clear; every later byte is XOR-encrypted under it.
         let (key, body) = data
             .split_first_chunk_mut::<{ ObfuscationKey::SIZE }>()
-            .ok_or(MantarayError::DataTooShort)?;
+            .ok_or(DecodeError::TooShort)?;
         let obfuscation_key = ObfuscationKey::from(*key);
         xor_in_place(body, obfuscation_key.as_bytes());
 
@@ -245,7 +245,7 @@ enum RefSize {
 }
 
 /// Decode a decrypted node buffer: header, then the version-specific body.
-fn decode_node<R: Reference>(data: &[u8]) -> Result<Node<R>> {
+fn decode_node<R: Reference>(data: &[u8]) -> DecodeResult<Node<R>> {
     let total = data.len();
     let mut cur = Cursor::new(data);
     let (version, ref_size) = parse_header(&mut cur)?;
@@ -259,18 +259,17 @@ fn decode_node<R: Reference>(data: &[u8]) -> Result<Node<R>> {
 /// width.
 ///
 /// The version hash is validated only after the ref_size byte is confirmed
-/// present, so a header truncated at that byte reports `DataTooShort` rather
+/// present, so a header truncated at that byte reports `TooShort` rather
 /// than an invalid-version error.
-fn parse_header(cur: &mut Cursor<'_>) -> Result<(VersionHash, RefSize)> {
+fn parse_header(cur: &mut Cursor<'_>) -> DecodeResult<(VersionHash, RefSize)> {
     // The obfuscation key was already consumed by the caller for decryption.
     cur.take::<[u8; ObfuscationKey::SIZE]>()
-        .map_err(|_| MantarayError::DataTooShort)?;
+        .map_err(|_| DecodeError::TooShort)?;
     let version_bytes = cur
         .take::<[u8; VersionHash::SIZE]>()
-        .map_err(|_| MantarayError::DataTooShort)?;
-    let ref_size = cur.take::<u8>().map_err(|_| MantarayError::DataTooShort)?;
-    let version =
-        VersionHash::from_bytes(&version_bytes).ok_or(MantarayError::InvalidVersionHash)?;
+        .map_err(|_| DecodeError::TooShort)?;
+    let ref_size = cur.take::<u8>().map_err(|_| DecodeError::TooShort)?;
+    let version = VersionHash::from_bytes(&version_bytes).ok_or(DecodeError::InvalidVersionHash)?;
     let ref_size = if ref_size == 0 {
         RefSize::EmptyTerminal
     } else {
@@ -286,12 +285,12 @@ fn parse_header(cur: &mut Cursor<'_>) -> Result<(VersionHash, RefSize)> {
 /// have zero width), so it is rejected as malformed rather than silently
 /// dropping forks the way bee's v0.2 decoder does
 /// (`bee/pkg/manifest/mantaray/marshal.go:285-287`). See the HAZMAT block.
-fn decode_empty_terminal<R: Reference>(cur: &mut Cursor<'_>) -> Result<Node<R>> {
+fn decode_empty_terminal<R: Reference>(cur: &mut Cursor<'_>) -> DecodeResult<Node<R>> {
     let index = cur
         .take::<[u8; FORK_INDEX_SIZE]>()
-        .map_err(|_| MantarayError::DataTooShort)?;
+        .map_err(|_| DecodeError::TooShort)?;
     if index.iter().any(|&b| b != 0) {
-        return Err(MantarayError::EntrySizeMismatch {
+        return Err(DecodeError::RefSizeMismatch {
             expected: R::SIZE,
             actual: 0,
         });
@@ -305,8 +304,8 @@ fn decode_empty_terminal<R: Reference>(cur: &mut Cursor<'_>) -> Result<Node<R>> 
 
 /// Restate a fork-region [`Underrun`] as an `InsufficientForkBytes` diagnostic
 /// carrying absolute byte offsets into the node buffer.
-fn insufficient_fork(underrun: Underrun, total: usize, byte_index: u8) -> MantarayError {
-    MantarayError::InsufficientForkBytes {
+fn insufficient_fork(underrun: Underrun, total: usize, byte_index: u8) -> DecodeError {
+    DecodeError::InsufficientForkBytes {
         expected: total
             .saturating_sub(underrun.available)
             .saturating_add(underrun.expected),
@@ -318,16 +317,16 @@ fn insufficient_fork(underrun: Underrun, total: usize, byte_index: u8) -> Mantar
 /// Decode the node body: entry slot, forks bitfield, then each present fork.
 ///
 /// The entry slot and index are both read before the entry is validated, so a
-/// truncated index reports `DataTooShort` rather than an entry-shaped error.
+/// truncated index reports `TooShort` rather than an entry-shaped error.
 /// v0.2 derives the root EDGE flag from a non-empty index; v0.1 leaves it unset.
 fn decode_body<R: Reference>(
     cur: &mut Cursor<'_>,
     version: VersionHash,
     ref_size: usize,
     total: usize,
-) -> Result<Node<R>> {
+) -> DecodeResult<Node<R>> {
     if ref_size != R::SIZE {
-        return Err(MantarayError::EntrySizeMismatch {
+        return Err(DecodeError::RefSizeMismatch {
             expected: R::SIZE,
             actual: ref_size,
         });
@@ -336,10 +335,10 @@ fn decode_body<R: Reference>(
     // The entry slot is a zero-sentinel `Option<R>`: `read_optional` maps the
     // all-zero width to `None`. The index is read next so a truncated index
     // reports `DataTooShort` rather than an entry-shaped error.
-    let entry = R::read_optional(cur).map_err(|_| MantarayError::DataTooShort)?;
+    let entry = R::read_optional(cur).map_err(|_| DecodeError::TooShort)?;
     let index_bytes = cur
         .take::<[u8; FORK_INDEX_SIZE]>()
-        .map_err(|_| MantarayError::DataTooShort)?;
+        .map_err(|_| DecodeError::TooShort)?;
 
     let mut node_type = NodeType::empty();
     if matches!(version, VersionHash::V02) && index_bytes.iter().any(|&b| b != 0) {
@@ -375,7 +374,7 @@ fn parse_fork<R: Reference>(
     ref_size: usize,
     byte_index: u8,
     total: usize,
-) -> Result<Fork<R>> {
+) -> DecodeResult<Fork<R>> {
     let mut peek = cur.clone();
     let node_type = NodeType::from_bits_truncate(
         peek.take::<u8>()
@@ -414,17 +413,17 @@ fn parse_fork_body<R: Reference>(
     body: &[u8],
     ref_size: usize,
     has_metadata: bool,
-) -> Result<Fork<R>> {
+) -> DecodeResult<Fork<R>> {
     let mut cur = Cursor::new(body);
     let ForkHeader { node_type, prefix } = cur.take::<ForkHeader>()?;
 
     let ref_region = cur
         .take_slice(ref_size)
-        .map_err(|_| MantarayError::DataTooShort)?;
+        .map_err(|_| DecodeError::TooShort)?;
     let mut ref_cur = Cursor::new(ref_region);
     let addr = ref_cur
         .take::<[u8; 32]>()
-        .map_err(|_| MantarayError::DataTooShort)?;
+        .map_err(|_| DecodeError::TooShort)?;
 
     let mut node = Node::from_reference(ChunkAddress::from(addr));
     node.node_type = node_type;
@@ -432,7 +431,7 @@ fn parse_fork_body<R: Reference>(
     if has_metadata {
         let metadata_len = cur
             .take::<MetadataLen>()
-            .map_err(|_| MantarayError::DataTooShort)?;
+            .map_err(|_| DecodeError::TooShort)?;
         if metadata_len.get() > 0 {
             node.metadata = serde_json::from_slice(cur.finish())?;
         }
@@ -671,12 +670,12 @@ mod tests {
     }
 
     #[test]
-    fn fork_header_take_underrun_is_data_too_short() {
+    fn fork_header_take_underrun_is_too_short() {
         let wire = [NodeType::VALUE.bits()];
         let mut cur = Cursor::new(&wire);
         assert!(matches!(
             cur.take::<ForkHeader>(),
-            Err(MantarayError::DataTooShort)
+            Err(DecodeError::TooShort)
         ));
     }
 
@@ -694,21 +693,21 @@ mod tests {
     #[test]
     fn decode_nil_input() {
         let result = Node::<ChunkRef>::try_from([].as_slice());
-        assert!(matches!(result, Err(MantarayError::DataTooShort)));
+        assert!(matches!(result, Err(DecodeError::TooShort)));
     }
 
     #[test]
     fn decode_too_short_for_header() {
         let data = vec![0u8; NodeHeader::SIZE - 1];
         let result = Node::<ChunkRef>::try_from(data.as_slice());
-        assert!(matches!(result, Err(MantarayError::DataTooShort)));
+        assert!(matches!(result, Err(DecodeError::TooShort)));
     }
 
     #[test]
     fn decode_invalid_version_hash() {
         let data = vec![0u8; NodeHeader::SIZE];
         let result = Node::<ChunkRef>::try_from(data.as_slice());
-        assert!(matches!(result, Err(MantarayError::InvalidVersionHash)));
+        assert!(matches!(result, Err(DecodeError::InvalidVersionHash)));
     }
 
     /// Test vector: valid manifest with correct metadata size (93 bytes).
@@ -786,7 +785,7 @@ mod tests {
         let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(
             result,
-            Err(MantarayError::EntrySizeMismatch {
+            Err(DecodeError::RefSizeMismatch {
                 expected: 32,
                 actual: 0
             })
@@ -848,7 +847,7 @@ mod tests {
     fn decode_v01_header_only_64_bytes_returns_err() {
         let data = truncated_node_bytes(&VersionHash::V01, NodeHeader::SIZE);
         let result = Node::<ChunkRef>::try_from(data.as_slice());
-        assert!(matches!(result, Err(MantarayError::DataTooShort)));
+        assert!(matches!(result, Err(DecodeError::TooShort)));
     }
 
     /// Regression: same minimal 64-byte crash case for the v0.2 decoder.
@@ -856,7 +855,7 @@ mod tests {
     fn decode_v02_header_only_64_bytes_returns_err() {
         let data = truncated_node_bytes(&VersionHash::V02, NodeHeader::SIZE);
         let result = Node::<ChunkRef>::try_from(data.as_slice());
-        assert!(matches!(result, Err(MantarayError::DataTooShort)));
+        assert!(matches!(result, Err(DecodeError::TooShort)));
     }
 
     /// Regression: every length in 64..128 used to panic in `decode_v01`,
@@ -868,8 +867,8 @@ mod tests {
             let data = truncated_node_bytes(&VersionHash::V01, len);
             let result = Node::<ChunkRef>::try_from(data.as_slice());
             assert!(
-                matches!(result, Err(MantarayError::DataTooShort)),
-                "length {len} must yield DataTooShort"
+                matches!(result, Err(DecodeError::TooShort)),
+                "length {len} must yield TooShort"
             );
         }
     }
@@ -882,8 +881,8 @@ mod tests {
             let data = truncated_node_bytes(&VersionHash::V02, len);
             let result = Node::<ChunkRef>::try_from(data.as_slice());
             assert!(
-                matches!(result, Err(MantarayError::DataTooShort)),
-                "length {len} must yield DataTooShort"
+                matches!(result, Err(DecodeError::TooShort)),
+                "length {len} must yield TooShort"
             );
         }
     }
@@ -898,7 +897,7 @@ mod tests {
         let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(
             result,
-            Err(MantarayError::InsufficientForkBytes { .. })
+            Err(DecodeError::InsufficientForkBytes { .. })
         ));
     }
 
@@ -910,7 +909,7 @@ mod tests {
         let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(
             result,
-            Err(MantarayError::InsufficientForkBytes { .. })
+            Err(DecodeError::InsufficientForkBytes { .. })
         ));
     }
 
@@ -941,8 +940,8 @@ mod tests {
                 let data = truncated_encref_node_bytes(&version, len);
                 let result = Node::<EncryptedChunkRef>::try_from(data.as_slice());
                 assert!(
-                    matches!(result, Err(MantarayError::DataTooShort)),
-                    "encref {label} length {len} must yield DataTooShort"
+                    matches!(result, Err(DecodeError::TooShort)),
+                    "encref {label} length {len} must yield TooShort"
                 );
             }
         }
@@ -960,7 +959,7 @@ mod tests {
             data[NodeHeader::SIZE + 64] = 0x01;
             let result = Node::<EncryptedChunkRef>::try_from(data.as_slice());
             assert!(
-                matches!(result, Err(MantarayError::InsufficientForkBytes { .. })),
+                matches!(result, Err(DecodeError::InsufficientForkBytes { .. })),
                 "encref {label} missing fork body must yield InsufficientForkBytes"
             );
         }

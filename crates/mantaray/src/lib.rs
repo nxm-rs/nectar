@@ -85,7 +85,7 @@ pub(crate) use constants::*;
 
 // Re-export public types.
 pub use entry::Entry;
-pub use error::{MantarayError, Result};
+pub use error::{DecodeError, DecodeResult, MantarayError, Result};
 pub use manifest::{Manifest, ManifestIter};
 pub use manifest_ref::ManifestRef;
 pub use node::{Fork, Node, NodeType, Prefix};

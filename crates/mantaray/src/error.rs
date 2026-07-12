@@ -8,6 +8,61 @@ use nectar_primitives::error::PrimitivesError;
 /// Result type alias for mantaray operations.
 pub type Result<T> = std::result::Result<T, MantarayError>;
 
+/// Result type alias for node wire decoding.
+pub type DecodeResult<T> = std::result::Result<T, DecodeError>;
+
+/// Wire decode failures for a mantaray node chunk.
+///
+/// Reported to callers through [`MantarayError::Corrupt`], which pairs the
+/// failure with the address of the chunk the malformed bytes came from so a
+/// deep-load failure names the offending chunk. bee-spec node.md governs the
+/// layout these variants reject.
+#[non_exhaustive]
+#[derive(thiserror::Error, Debug)]
+pub enum DecodeError {
+    /// Data is too short to contain a header or a declared field.
+    #[error("data too short")]
+    TooShort,
+    /// Version hash does not match any known version.
+    #[error("invalid version hash")]
+    InvalidVersionHash,
+    /// Header-declared reference width does not match the entry type width.
+    #[error("reference size mismatch: expected {expected}, got {actual}")]
+    RefSizeMismatch {
+        /// Entry-type reference width in bytes.
+        expected: usize,
+        /// Width declared by the node header.
+        actual: usize,
+    },
+    /// Fork data has insufficient bytes.
+    #[error("insufficient fork bytes: expected {expected}, got {actual} at byte {byte_index}")]
+    InsufficientForkBytes {
+        /// Expected number of bytes.
+        expected: usize,
+        /// Actual number of bytes.
+        actual: usize,
+        /// Byte index of the fork.
+        byte_index: usize,
+    },
+    /// Prefix length is outside the 1..=30 wire range.
+    #[error("invalid prefix length: max {max}, got {actual}")]
+    InvalidPrefixLength {
+        /// Maximum allowed length.
+        max: usize,
+        /// Actual length.
+        actual: usize,
+    },
+    /// Entry bytes are not a valid reference of the expected width.
+    #[error("malformed entry of {size} bytes")]
+    Entry {
+        /// Entry reference width in bytes.
+        size: usize,
+    },
+    /// Fork metadata is not valid JSON.
+    #[error("invalid metadata")]
+    Metadata(#[from] serde_json::Error),
+}
+
 /// Errors that can occur during mantaray trie operations.
 #[non_exhaustive]
 #[derive(thiserror::Error, Debug)]
@@ -44,21 +99,13 @@ pub enum MantarayError {
         /// The prefix that was not found.
         prefix: String,
     },
-    /// Data is too short to contain a valid header.
-    #[error("data too short for header")]
-    DataTooShort,
-    /// Version hash does not match any known version.
-    #[error("invalid version hash")]
-    InvalidVersionHash,
-    /// Fork data has insufficient bytes.
-    #[error("insufficient fork bytes: expected {expected}, got {actual} at byte {byte_index}")]
-    InsufficientForkBytes {
-        /// Expected number of bytes.
-        expected: usize,
-        /// Actual number of bytes.
-        actual: usize,
-        /// Byte index of the fork.
-        byte_index: usize,
+    /// A chunk's bytes could not be decoded into a node.
+    #[error("corrupt chunk {address}: {source}")]
+    Corrupt {
+        /// Address of the chunk whose bytes failed to decode.
+        address: ChunkAddress,
+        /// The underlying wire decode failure.
+        source: DecodeError,
     },
     /// Reference is too long.
     #[error("reference too long: max {max}, got {actual}")]
@@ -74,14 +121,6 @@ pub enum MantarayError {
         /// Maximum allowed size.
         max: usize,
         /// Actual size.
-        actual: usize,
-    },
-    /// Prefix length is invalid.
-    #[error("invalid prefix length: max {max}, got {actual}")]
-    InvalidPrefixLength {
-        /// Maximum allowed length.
-        max: usize,
-        /// Actual length.
         actual: usize,
     },
     /// Metadata could not be parsed.
@@ -108,8 +147,8 @@ pub enum MantarayError {
 }
 
 /// A wire-level short read is a truncated node buffer.
-impl From<nectar_primitives::wire::Underrun> for MantarayError {
+impl From<nectar_primitives::wire::Underrun> for DecodeError {
     fn from(_: nectar_primitives::wire::Underrun) -> Self {
-        Self::DataTooShort
+        Self::TooShort
     }
 }
