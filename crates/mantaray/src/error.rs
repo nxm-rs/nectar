@@ -106,3 +106,10 @@ pub enum MantarayError {
         source: Arc<dyn std::error::Error + Send + Sync>,
     },
 }
+
+/// A wire-level short read is a truncated node buffer.
+impl From<nectar_primitives::wire::Underrun> for MantarayError {
+    fn from(_: nectar_primitives::wire::Underrun) -> Self {
+        Self::DataTooShort
+    }
+}

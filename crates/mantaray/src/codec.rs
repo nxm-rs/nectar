@@ -9,6 +9,7 @@ use crate::obfuscation::ObfuscationKey;
 
 use alloy_primitives::{U256, hex};
 use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::wire::Cursor;
 
 /// Mantaray wire format version (truncated keccak256, 31 bytes).
 enum VersionHash {
@@ -424,20 +425,9 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 
 /// Parse and validate fork header. Returns (node_type, prefix).
 fn parse_fork_header(data: &[u8]) -> Result<(NodeType, Prefix)> {
-    let node_type =
-        NodeType::from_bits_truncate(*data.first().ok_or(MantarayError::DataTooShort)?);
-    let prefix_length = usize::from(*data.get(1).ok_or(MantarayError::DataTooShort)?);
-    if prefix_length == 0 || prefix_length > Prefix::MAX_LEN {
-        return Err(MantarayError::InvalidPrefixLength {
-            max: Prefix::MAX_LEN,
-            actual: prefix_length,
-        });
-    }
-    #[allow(clippy::arithmetic_side_effects)] // PREFIX_OFFSET (2) + prefix_length (<= 30) cannot overflow
-    let prefix = Prefix::from_slice(
-        data.get(ForkHeader::PREFIX_OFFSET..ForkHeader::PREFIX_OFFSET + prefix_length)
-            .ok_or(MantarayError::DataTooShort)?,
-    );
+    let mut cur = Cursor::new(data);
+    let node_type = NodeType::from_bits_truncate(cur.take::<u8>()?);
+    let prefix = cur.take::<Prefix>()?;
     Ok((node_type, prefix))
 }
 
