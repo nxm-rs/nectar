@@ -54,18 +54,27 @@ impl NodeHeader {
     const REF_SIZE_OFFSET: usize = ObfuscationKey::SIZE + VersionHash::SIZE;
 }
 
-/// Wire layout descriptor for a serialised fork header.
-struct ForkHeader;
+/// A fork's fixed wire header: the node type byte, then the prefix record.
+struct ForkHeader {
+    node_type: NodeType,
+    prefix: Prefix,
+}
 
 impl ForkHeader {
     /// Protocol anchor: total pre-reference bytes in a fork.
     const PRE_REFERENCE_SIZE: usize = 32;
-    /// Offset to the prefix data (past node_type u8 + prefix_len u8).
-    const PREFIX_OFFSET: usize = size_of::<u8>() + size_of::<u8>();
-    /// Maximum prefix length that fits in a fork header.
-    const MAX_PREFIX_LEN: usize = Self::PRE_REFERENCE_SIZE - Self::PREFIX_OFFSET;
     /// Size of the metadata length field.
     const METADATA_LEN_SIZE: usize = size_of::<u16>();
+}
+
+impl FromCursor for ForkHeader {
+    type Error = MantarayError;
+
+    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Self::Error> {
+        let node_type = NodeType::from_bits_truncate(cur.take::<u8>()?);
+        let prefix = cur.take::<Prefix>()?;
+        Ok(Self { node_type, prefix })
+    }
 }
 
 /// Length of a fork's metadata region, stored big-endian on the wire.
@@ -94,7 +103,9 @@ const FORK_INDEX_SIZE: usize = size_of::<U256>();
 // Compile-time layout assertions.
 const _: () = assert!(NodeHeader::SIZE == 64);
 const _: () = assert!(ForkHeader::PRE_REFERENCE_SIZE == 32);
-const _: () = assert!(ForkHeader::MAX_PREFIX_LEN == Prefix::MAX_LEN);
+// node_type byte + prefix length byte + padded prefix block fill the
+// pre-reference region exactly.
+const _: () = assert!(2 * size_of::<u8>() + Prefix::MAX_LEN == ForkHeader::PRE_REFERENCE_SIZE);
 const _: () = assert!(ObfuscationKey::SIZE == 32);
 const _: () = assert!(NodeHeader::VERSION_HASH_OFFSET == ObfuscationKey::SIZE);
 const _: () = assert!(NodeHeader::REF_SIZE_OFFSET == NodeHeader::SIZE - size_of::<u8>());
@@ -402,13 +413,7 @@ fn parse_fork_body<E: NodeEntry>(
     has_metadata: bool,
 ) -> Result<Fork<E>> {
     let mut cur = Cursor::new(body);
-    let node_type =
-        NodeType::from_bits_truncate(cur.take::<u8>().map_err(|_| MantarayError::DataTooShort)?);
-    let prefix_len = cur.take::<u8>().map_err(|_| MantarayError::DataTooShort)?;
-    let padded = cur
-        .take::<[u8; Prefix::MAX_LEN]>()
-        .map_err(|_| MantarayError::DataTooShort)?;
-    let prefix = Prefix::from_wire(&padded, prefix_len)?;
+    let ForkHeader { node_type, prefix } = cur.take::<ForkHeader>()?;
 
     let ref_region = cur
         .take_slice(ref_size)
@@ -602,6 +607,28 @@ mod tests {
                 assert_eq!(n.forks()[&key].node().metadata(), &entry.metadata);
             }
         }
+    }
+
+    #[test]
+    fn fork_header_take_consumes_the_pre_reference_region() {
+        let mut wire = vec![NodeType::VALUE.bits(), 2];
+        wire.extend_from_slice(b"ab");
+        wire.resize(ForkHeader::PRE_REFERENCE_SIZE, 0);
+        let mut cur = Cursor::new(&wire);
+        let header = cur.take::<ForkHeader>().unwrap();
+        assert_eq!(header.node_type, NodeType::VALUE);
+        assert_eq!(&*header.prefix, b"ab");
+        assert!(cur.is_empty());
+    }
+
+    #[test]
+    fn fork_header_take_underrun_is_data_too_short() {
+        let wire = [NodeType::VALUE.bits()];
+        let mut cur = Cursor::new(&wire);
+        assert!(matches!(
+            cur.take::<ForkHeader>(),
+            Err(MantarayError::DataTooShort)
+        ));
     }
 
     #[test]
