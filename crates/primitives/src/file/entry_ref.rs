@@ -21,6 +21,7 @@ impl EntryRef {
     ///
     /// - 32 bytes → `Plain`
     /// - 64 bytes → `Encrypted` (requires `encryption` feature)
+    #[allow(clippy::missing_panics_doc)] // the expect below is unreachable: the match arm guarantees the length, so there is no panic to document
     pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, FileError> {
         match bytes.len() {
             32 => {

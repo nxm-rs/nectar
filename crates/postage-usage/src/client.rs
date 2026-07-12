@@ -199,7 +199,7 @@ where
                 // committed leaf must be present; a missing leaf is corruption,
                 // not a reason to start over.
                 let root = RootInfo::parse(&root_bytes)?;
-                let mut leaves: Vec<Bytes> = Vec::with_capacity(root.leaf_count() as usize);
+                let mut leaves: Vec<Bytes> = Vec::with_capacity(usize::from(root.leaf_count()));
                 for leaf in 0..root.leaf_count() {
                     // `leaf < leaf_count() <= u16::MAX`, so the increment
                     // cannot overflow.

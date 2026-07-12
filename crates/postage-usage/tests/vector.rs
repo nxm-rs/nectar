@@ -56,7 +56,7 @@ fn readme_worked_example_vector() {
 
     // And the vector decodes back to the same snapshot.
     let root = RootInfo::parse(&hex::decode(ROOT_PAYLOAD_HEX).unwrap()).unwrap();
-    let recovered = root.assemble(&[] as &[&[u8]]).unwrap();
+    let recovered = root.assemble::<&[u8]>(&[]).unwrap();
     assert_eq!(recovered, snapshot);
 }
 
@@ -150,7 +150,7 @@ fn mutable_vector_flags_byte_and_round_trip() {
     // It decodes back as mutable to the same snapshot.
     let root = RootInfo::parse(&hex::decode(MUTABLE_ROOT_PAYLOAD_HEX).unwrap()).unwrap();
     assert!(root.is_mutable());
-    let recovered = root.assemble(&[] as &[&[u8]]).unwrap();
+    let recovered = root.assemble::<&[u8]>(&[]).unwrap();
     assert!(recovered.table().is_mutable());
     assert_eq!(recovered, snapshot);
 }

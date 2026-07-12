@@ -19,8 +19,11 @@ const fn owner() -> Address {
 /// `salt` mixed into lower bytes so distinct calls stay in the same bucket.
 fn content_address(bucket: u32, salt: u8) -> SwarmAddress {
     let mut bytes = [0u8; 32];
-    bytes[0] = (bucket >> 8) as u8;
-    bytes[1] = bucket as u8;
+    // Take the low two big-endian bytes of the u32 (identical to the former
+    // `>> 8` / truncating casts).
+    let [_, _, hi, lo] = bucket.to_be_bytes();
+    bytes[0] = hi;
+    bytes[1] = lo;
     bytes[31] = salt;
     SwarmAddress::new(bytes)
 }
@@ -176,7 +179,7 @@ fn sole_issuance_path_cannot_evict_snapshot_slots() {
         // Churn well past several wraps of the ring.
         for salt in 0..120u8 {
             let addr = content_address(bucket, salt);
-            let digest = issuer.prepare_stamp(&addr, salt as u64).unwrap();
+            let digest = issuer.prepare_stamp(&addr, u64::from(salt)).unwrap();
             assert!(
                 !reserved_here.contains(&digest.index),
                 "the sole issuance path evicted a reserved snapshot slot"

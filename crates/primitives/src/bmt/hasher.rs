@@ -350,7 +350,8 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
 
     /// Calculate the zero-tree level for a given subtree length.
     /// Length must be a power of 2 between 64 and 4096.
-    #[allow(clippy::arithmetic_side_effects)] // length >= 64 (per contract above), so trailing_zeros() >= 6 and the subtraction cannot underflow
+    #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
+    // length >= 64 (per contract above), so trailing_zeros() >= 6 and the subtraction cannot underflow; the u32 -> usize widening is infallible (usize::from is not const-callable)
     #[inline(always)]
     const fn zero_tree_level(length: usize) -> usize {
         // length = 64 * 2^level, so level = log2(length) - log2(64) = log2(length) - 6

@@ -123,7 +123,9 @@ fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
     data[NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + VersionHash::SIZE]
         .copy_from_slice(VersionHash::V02.as_bytes());
 
-    data[NodeHeader::REF_SIZE_OFFSET] = ref_size as u8;
+    #[allow(clippy::as_conversions)] // ref_size = E::SIZE (32 or 64), always fits u8
+    let ref_size_byte = ref_size as u8;
+    data[NodeHeader::REF_SIZE_OFFSET] = ref_size_byte;
 
     // append entry (or E::SIZE zero bytes if empty)
     match &node.entry {
@@ -134,7 +136,7 @@ fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
     // build the 256-bit index of which fork bytes are present
     let mut index = U256::ZERO;
     for &fork_byte in node.forks.keys() {
-        index.set_bit(fork_byte as usize, true);
+        index.set_bit(usize::from(fork_byte), true);
     }
     data.extend_from_slice(&index.to_le_bytes::<32>());
 
@@ -241,7 +243,7 @@ fn decode_empty_terminal_node<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 // (<= 64) that cannot overflow usize.
 #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 fn decode_v01<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
-    let ref_bytes_size = data[NodeHeader::REF_SIZE_OFFSET] as usize;
+    let ref_bytes_size = usize::from(data[NodeHeader::REF_SIZE_OFFSET]);
     // BEE-WORKAROUND(bee#5483): see HAZMAT block above `decode_empty_terminal_node`.
     if ref_bytes_size == 0 {
         return decode_empty_terminal_node::<E>(data);
@@ -272,13 +274,13 @@ fn decode_v01<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 
     let mut forks = BTreeMap::new();
     for b in 0..=u8::MAX {
-        if index.bit(b as usize) {
+        if index.bit(usize::from(b)) {
             let end = offset + ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size;
             if data.len() < end {
                 return Err(MantarayError::InsufficientForkBytes {
                     expected: end,
                     actual: data.len(),
-                    byte_index: b as usize,
+                    byte_index: usize::from(b),
                 });
             }
 
@@ -303,7 +305,7 @@ fn decode_v01<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 // and a metadata size (<= u16::MAX) that cannot overflow usize.
 #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
-    let ref_bytes_size = data[NodeHeader::REF_SIZE_OFFSET] as usize;
+    let ref_bytes_size = usize::from(data[NodeHeader::REF_SIZE_OFFSET]);
     // BEE-WORKAROUND(bee#5483): see HAZMAT block above `decode_empty_terminal_node`.
     if ref_bytes_size == 0 {
         return decode_empty_terminal_node::<E>(data);
@@ -341,14 +343,14 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 
     let mut forks = BTreeMap::new();
     for b in 0..=u8::MAX {
-        if index.bit(b as usize) {
+        if index.bit(usize::from(b)) {
             let mut fork = Fork::default();
 
             if data.len() < offset + 1 {
                 return Err(MantarayError::InsufficientForkBytes {
                     expected: offset + 1,
                     actual: data.len(),
-                    byte_index: b as usize,
+                    byte_index: usize::from(b),
                 });
             }
 
@@ -368,16 +370,16 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
                             + ref_bytes_size
                             + ForkHeader::METADATA_LEN_SIZE,
                         actual: data.len(),
-                        byte_index: b as usize,
+                        byte_index: usize::from(b),
                     });
                 }
 
-                let metadata_bytes_size = u16::from_be_bytes(
+                let metadata_bytes_size = usize::from(u16::from_be_bytes(
                     data[offset + node_fork_size
                         ..offset + node_fork_size + ForkHeader::METADATA_LEN_SIZE]
                         .try_into()
                         .map_err(|_| MantarayError::DataTooShort)?,
-                ) as usize;
+                ));
 
                 node_fork_size += ForkHeader::METADATA_LEN_SIZE;
                 node_fork_size += metadata_bytes_size;
@@ -386,7 +388,7 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
                     return Err(MantarayError::InsufficientForkBytes {
                         expected: offset + node_fork_size,
                         actual: data.len(),
-                        byte_index: b as usize,
+                        byte_index: usize::from(b),
                     });
                 }
 
@@ -400,7 +402,7 @@ fn decode_v02<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
                     return Err(MantarayError::InsufficientForkBytes {
                         expected: offset + ForkHeader::PRE_REFERENCE_SIZE + ref_bytes_size,
                         actual: data.len(),
-                        byte_index: b as usize,
+                        byte_index: usize::from(b),
                     });
                 }
 
@@ -456,7 +458,9 @@ impl<E: NodeEntry> Fork<E> {
     #[allow(clippy::arithmetic_side_effects)] // in-memory buffer length arithmetic; padding math is guarded (`SIZE - x` only when `x < SIZE`, `SIZE - rem` only when `rem != 0`) and `% ObfuscationKey::SIZE` has a nonzero constant divisor
     fn encode_into(&self, data: &mut Vec<u8>) -> Result<()> {
         data.push(self.node.node_type.bits());
-        data.push(self.prefix.len() as u8);
+        #[allow(clippy::as_conversions)] // Prefix invariant: len <= Prefix::MAX_LEN (30), fits u8
+        let prefix_len_byte = self.prefix.len() as u8;
+        data.push(prefix_len_byte);
 
         // write prefix padded to Prefix::MAX_LEN; Prefix is already zero-padded
         data.extend_from_slice(self.prefix.padded_bytes());
@@ -495,14 +499,13 @@ impl<E: NodeEntry> Fork<E> {
             metadata_json.resize(metadata_json.len() + padding, 0x0a);
 
             let metadata_size = metadata_json.len();
-            if metadata_size > u16::MAX as usize {
-                return Err(MantarayError::MetadataTooLarge {
-                    max: u16::MAX as usize,
+            let metadata_size_u16 =
+                u16::try_from(metadata_size).map_err(|_| MantarayError::MetadataTooLarge {
+                    max: usize::from(u16::MAX),
                     actual: metadata_size,
-                });
-            }
+                })?;
 
-            data.extend_from_slice(&(metadata_size as u16).to_be_bytes());
+            data.extend_from_slice(&metadata_size_u16.to_be_bytes());
             data.extend_from_slice(&metadata_json);
         }
 
@@ -792,7 +795,7 @@ mod tests {
         xor_in_place(&mut decoded[ObfuscationKey::SIZE..], &key);
 
         assert_eq!(
-            decoded[NodeHeader::REF_SIZE_OFFSET] as usize,
+            usize::from(decoded[NodeHeader::REF_SIZE_OFFSET]),
             <ChunkAddress as NodeEntry>::SIZE,
             "encoder must emit ref_size = E::SIZE, not 0; spec requires uniform reference width"
         );
@@ -989,6 +992,7 @@ mod tests {
         use arbitrary::{Arbitrary, Unstructured};
 
         // Deterministic pseudo-random bytes (Knuth multiplicative hash).
+        #[allow(clippy::as_conversions)] // u32 >> 24 is always <= 0xFF, fits u8
         let raw: Vec<u8> = (0u32..8192)
             .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
             .collect();
@@ -1030,7 +1034,9 @@ mod tests {
         // assign deterministic references to forks so encoding works
         for (counter, fork) in n.forks.values_mut().enumerate() {
             let mut addr = [0u8; 32];
-            addr[31] = counter as u8;
+            #[allow(clippy::as_conversions)] // forks are keyed by u8, so counter <= 255
+            let counter_byte = counter as u8;
+            addr[31] = counter_byte;
             fork.node.reference = Some(nectar_primitives::chunk::ChunkAddress::from(addr));
         }
 

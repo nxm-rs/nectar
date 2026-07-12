@@ -23,7 +23,7 @@ pub trait ReadAt {
 impl ReadAt for [u8] {
     #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // offset < self.len() is checked above, and to_read = min(buf.len(), self.len() - offset) bounds both slices
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        let offset = offset as usize;
+        let offset = crate::cast::usize_from_u64(offset);
         if offset >= self.len() {
             return Ok(0);
         }
@@ -34,7 +34,7 @@ impl ReadAt for [u8] {
     }
 
     fn len(&self) -> u64 {
-        <[u8]>::len(self) as u64
+        crate::cast::u64_from_usize(<[u8]>::len(self))
     }
 }
 
@@ -44,7 +44,7 @@ impl ReadAt for Vec<u8> {
     }
 
     fn len(&self) -> u64 {
-        Self::len(self) as u64
+        crate::cast::u64_from_usize(Self::len(self))
     }
 }
 
@@ -54,7 +54,7 @@ impl ReadAt for Bytes {
     }
 
     fn len(&self) -> u64 {
-        Self::len(self) as u64
+        crate::cast::u64_from_usize(Self::len(self))
     }
 }
 

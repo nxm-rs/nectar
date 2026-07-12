@@ -42,6 +42,9 @@ impl Bin {
     pub const MAX: Self = Self(MAX_PO);
 
     /// The number of bins in the routing table (`MAX_PO + 1` = 32).
+    // `u8 -> usize` widening is infallible; `usize::from` is not
+    // const-callable.
+    #[allow(clippy::as_conversions)]
     pub const COUNT: usize = MAX_PO as usize + 1;
 
     /// Construct without bounds checking. Caller must ensure `raw <= MAX_PO`.
@@ -68,6 +71,9 @@ impl Bin {
     }
 
     /// Index into a `[T; Bin::COUNT]` array.
+    // `u8 -> usize` widening is infallible; `usize::from` is not
+    // const-callable.
+    #[allow(clippy::as_conversions)]
     #[inline]
     pub const fn as_index(self) -> usize {
         self.0 as usize

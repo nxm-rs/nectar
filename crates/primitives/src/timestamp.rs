@@ -59,9 +59,12 @@ impl Timestamp {
     /// and the browser clock on `wasm32`, so this runs on every supported
     /// target instead of panicking through the std unsupported-platform stub.
     ///
-    /// Panics only if the system clock is set before the unix epoch, which
-    /// would already break far more than this primitive. Pre-1970 callers
-    /// can construct via [`Self::from_seconds`] manually.
+    /// # Panics
+    ///
+    /// Only if the system clock is set before the unix epoch (or past
+    /// `i64::MAX` unix-seconds), which would already break far more than this
+    /// primitive. Pre-1970 callers can construct via [`Self::from_seconds`]
+    /// manually.
     #[allow(clippy::expect_used)] // documented invariants: panics only on a pre-1970 or absurdly far-future system clock
     pub fn now() -> Self {
         use web_time::{SystemTime, UNIX_EPOCH};

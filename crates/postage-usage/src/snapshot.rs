@@ -225,7 +225,7 @@ impl Snapshot {
     /// the codec's recovery path.
     pub(crate) fn validate_parts(table: &UsageTable, slots: &[u32]) -> Result<()> {
         let capacity = table.bucket_capacity();
-        if slots.len() > u16::MAX as usize {
+        if slots.len() > usize::from(u16::MAX) {
             return Err(UsageError::Malformed("too many allocated chunks"));
         }
         if let Some(&slot) = slots.iter().find(|&&slot| slot >= capacity) {
@@ -477,7 +477,11 @@ impl Snapshot {
             .iter()
             .enumerate()
             .map(|(index, &slot)| {
-                let address = usage_chunk_address(&batch_id, owner, index as u16);
+                // `validate_parts` caps the slot list at u16::MAX entries,
+                // so every index fits u16.
+                #[allow(clippy::as_conversions)]
+                let index = index as u16;
+                let address = usage_chunk_address(&batch_id, owner, index);
                 StampIndex::new(calculate_bucket(&address, bucket_depth), slot)
             })
             .collect()
@@ -734,6 +738,10 @@ impl Validated<'_> {
             work.sequence = sequence;
 
             let allocate = |work: &mut Snapshot| -> Result<()> {
+                // The allocation loop stops once the slots outnumber the
+                // leaves (at most the digests that fit a root chunk), far
+                // below u16::MAX.
+                #[allow(clippy::as_conversions)]
                 let index = work.slots.len() as u16;
                 let address = usage_chunk_address(&batch_id, owner, index);
                 let bucket = calculate_bucket(&address, bucket_depth);
@@ -777,6 +785,9 @@ impl Validated<'_> {
         let mut chunks = Vec::with_capacity(1 + encoded.leaves.len());
         let payloads = core::iter::once(&encoded.root).chain(encoded.leaves.iter());
         for (index, payload) in payloads.enumerate() {
+            // Chunk indices count the root plus the leaves, bounded by the
+            // allocated slot list (`validate_parts` caps it at u16::MAX).
+            #[allow(clippy::as_conversions)]
             let index = index as u16;
             let id = usage_chunk_id(&batch_id, index);
             let address = usage_chunk_address(&batch_id, owner, index);
@@ -789,9 +800,9 @@ impl Validated<'_> {
                 index,
                 id,
                 address,
-                stamp_index: StampIndex::new(bucket, slots[index as usize]),
+                stamp_index: StampIndex::new(bucket, slots[usize::from(index)]),
                 payload: payload.clone(),
-                newly_allocated: (index as usize) >= previously_allocated,
+                newly_allocated: usize::from(index) >= previously_allocated,
             });
         }
 

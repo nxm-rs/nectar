@@ -45,7 +45,8 @@ use crate::Bin;
 /// let depth = recompute_neighborhood_depth(&counts, 8, 2);
 /// assert!(depth.get() <= 8);
 /// ```
-#[allow(clippy::indexing_slicing)] // connected_per_bin[i] with i from the reversed 0..len() range
+#[allow(clippy::indexing_slicing, clippy::as_conversions)]
+// connected_per_bin[i] with i from the reversed 0..len() range; i < 32, so the bin-index casts to u8 are in range
 #[must_use]
 pub fn recompute_neighborhood_depth(
     connected_per_bin: &[u8; 32],

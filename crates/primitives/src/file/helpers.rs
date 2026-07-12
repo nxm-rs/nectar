@@ -24,12 +24,12 @@ pub(crate) fn validate_read_range<const BODY_SIZE: usize>(
         return ReadRangeCheck::Empty;
     }
 
-    let actual_len = len.min((span - offset) as usize);
+    let actual_len = len.min(crate::cast::usize_from_u64(span - offset));
     if actual_len == 0 {
         return ReadRangeCheck::Empty;
     }
 
-    if span <= BODY_SIZE as u64 {
+    if span <= crate::cast::u64_from_usize(BODY_SIZE) {
         return ReadRangeCheck::SingleChunk { offset, actual_len };
     }
 

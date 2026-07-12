@@ -105,8 +105,9 @@ where
         let results: Vec<Result<M::RefBytes>> = (0..data_chunks)
             .into_par_iter()
             .map(|i| {
-                let offset = i * BODY_SIZE as u64;
-                let chunk_size = ((size - offset) as usize).min(BODY_SIZE);
+                let offset = i * crate::cast::u64_from_usize(BODY_SIZE);
+                // The min against BODY_SIZE bounds the chunk size.
+                let chunk_size = crate::cast::usize_from_u64(size - offset).min(BODY_SIZE);
 
                 let mut buf = vec![0u8; chunk_size];
                 source
@@ -116,7 +117,7 @@ where
                 let span = if i + 1 == data_chunks {
                     size - offset
                 } else {
-                    BODY_SIZE as u64
+                    crate::cast::u64_from_usize(BODY_SIZE)
                 };
 
                 let chunk_bytes = super::helpers::build_intermediate_payload(span, &buf);
@@ -164,7 +165,7 @@ where
     {
         let refs_per_chunk = M::refs_per_chunk(BODY_SIZE);
         let chunks_at_level = refs.len().div_ceil(refs_per_chunk);
-        let max_span = spans[level] * BODY_SIZE as u64;
+        let max_span = spans[level] * crate::cast::u64_from_usize(BODY_SIZE);
 
         let results: Vec<Result<M::RefBytes>> = (0..chunks_at_level)
             .into_par_iter()
@@ -179,7 +180,7 @@ where
                 }
 
                 let span = if i + 1 == chunks_at_level {
-                    total_size.saturating_sub(i as u64 * max_span)
+                    total_size.saturating_sub(crate::cast::u64_from_usize(i) * max_span)
                 } else {
                     max_span
                 };

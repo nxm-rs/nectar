@@ -51,6 +51,8 @@ struct RingShardState {
 
 impl<R: Reservation> RingShard<R> {
     fn new(base_bucket: u32, buckets_per_shard: u32, reservation: R) -> Self {
+        // `u32` always fits `usize` on the >=32-bit targets this crate supports.
+        #[allow(clippy::as_conversions)]
         let count = buckets_per_shard as usize;
         Self {
             base_bucket,
@@ -63,8 +65,10 @@ impl<R: Reservation> RingShard<R> {
     }
 
     // Shard routing invariant: callers only pass buckets owned by this shard, so
-    // `bucket >= base_bucket` and the subtraction cannot underflow.
-    #[allow(clippy::arithmetic_side_effects)]
+    // `bucket >= base_bucket` and the subtraction cannot underflow. The offset
+    // always fits `usize` on the >=32-bit targets this crate supports (const fn,
+    // so `usize::try_from` is unavailable).
+    #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
     #[inline]
     const fn local_index(&self, bucket: u32) -> usize {
         (bucket - self.base_bucket) as usize
@@ -241,16 +245,24 @@ impl<R: Reservation> ShardedRingIssuer<R> {
         );
 
         let total_buckets = 1u32 << bucket_depth;
+        // `u32` always fits `usize` on the >=32-bit targets this crate supports.
+        #[allow(clippy::as_conversions)]
         let shard_count = shard_count.min(total_buckets as usize);
-        let buckets_per_shard = total_buckets / shard_count as u32;
+        // `shard_count <= total_buckets <= u32::MAX` after the clamp above, so
+        // the narrowing is lossless.
+        #[allow(clippy::as_conversions)]
+        let shard_count_u32 = shard_count as u32;
+        let buckets_per_shard = total_buckets / shard_count_u32;
         let bucket_capacity = 1u32 << (depth - bucket_depth);
 
-        let shard_bits = (shard_count as u32).trailing_zeros();
-        let shard_shift = bucket_depth as u32 - shard_bits;
-        let shard_mask = (shard_count - 1) as u32;
+        let shard_bits = shard_count_u32.trailing_zeros();
+        let shard_shift = u32::from(bucket_depth) - shard_bits;
+        let shard_mask = shard_count_u32 - 1;
 
         let shards: Vec<_> = (0..shard_count)
             .map(|i| {
+                // `i < shard_count <= u32::MAX`, so the narrowing is lossless.
+                #[allow(clippy::as_conversions)]
                 let base = i as u32 * buckets_per_shard;
                 let end = base + buckets_per_shard;
                 RingShard::new(base, buckets_per_shard, make_reservation(base, end, i))
@@ -270,6 +282,9 @@ impl<R: Reservation> ShardedRingIssuer<R> {
         }
     }
 
+    // The masked value always fits `usize` on the >=32-bit targets this crate
+    // supports (const fn, so `usize::try_from` is unavailable).
+    #[allow(clippy::as_conversions)]
     #[inline]
     const fn shard_index(&self, bucket: u32) -> usize {
         ((bucket >> self.shard_shift) & self.shard_mask) as usize
@@ -285,6 +300,11 @@ impl<R: Reservation> ShardedRingIssuer<R> {
     /// Returns [`StampError::BucketFull`] only when every slot in the target
     /// bucket is protected, which is geometrically impossible at real batch
     /// depths.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an internal lock is poisoned, i.e. another stamping thread
+    /// already panicked; propagating the panic is the intended behavior.
     pub fn prepare_stamp(
         &self,
         address: &SwarmAddress,
@@ -370,8 +390,11 @@ impl<R: Reservation> ShardedRingIssuer<R> {
     }
 
     /// Returns the maximum bucket utilization observed across all buckets.
-    // Lock poisoning means another thread already panicked; propagating the
-    // panic is the intended behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the utilization lock is poisoned, i.e. another stamping thread
+    /// already panicked; propagating the panic is the intended behavior.
     #[allow(clippy::expect_used)]
     pub fn max_bucket_utilization(&self) -> u32 {
         *self
@@ -381,8 +404,11 @@ impl<R: Reservation> ShardedRingIssuer<R> {
     }
 
     /// Returns the total number of stamps issued.
-    // Lock poisoning means another thread already panicked; propagating the
-    // panic is the intended behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the issuance counter lock is poisoned, i.e. another stamping
+    /// thread already panicked; propagating the panic is the intended behavior.
     #[allow(clippy::expect_used)]
     pub fn stamps_issued(&self) -> u64 {
         *self.stamps_issued.lock().expect("stamps lock poisoned")
@@ -396,8 +422,13 @@ mod tests {
 
     fn test_address(leading: u16) -> SwarmAddress {
         let mut bytes = [0u8; 32];
-        bytes[0] = (leading >> 8) as u8;
-        bytes[1] = leading as u8;
+        // Big-endian split of a u16: `leading >> 8` is <= 0xFF and the low-byte
+        // truncation is the intended extraction; both casts are lossless.
+        #[allow(clippy::as_conversions)]
+        {
+            bytes[0] = (leading >> 8) as u8;
+            bytes[1] = leading as u8;
+        }
         SwarmAddress::new(bytes)
     }
 
@@ -470,7 +501,9 @@ mod tests {
         let bucket_hi = 0xF001u32;
         let issuer = ShardedRingIssuer::reserved(&batch, [(bucket_lo, 0), (bucket_hi, 1)]).unwrap();
 
+        #[allow(clippy::as_conversions)] // 0x0001 fits u16, lossless
         let addr_lo = test_address(bucket_lo as u16);
+        #[allow(clippy::as_conversions)] // 0xF001 fits u16, lossless
         let addr_hi = test_address(bucket_hi as u16);
 
         // bucket_lo protects slot 0, so it may only emit slot 1.

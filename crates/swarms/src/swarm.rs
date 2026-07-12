@@ -122,14 +122,10 @@ impl<'de> serde::Deserialize<'de> for Swarm {
             }
 
             fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
-                if v.is_negative() {
-                    Err(serde::de::Error::invalid_value(
-                        serde::de::Unexpected::Signed(v),
-                        &self,
-                    ))
-                } else {
-                    Ok(Swarm::from_id(v as u64))
-                }
+                // `u64::try_from(i64)` fails exactly when `v` is negative.
+                u64::try_from(v).map(Swarm::from_id).map_err(|_| {
+                    serde::de::Error::invalid_value(serde::de::Unexpected::Signed(v), &self)
+                })
             }
 
             fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
@@ -177,7 +173,7 @@ impl Swarm {
     #[inline]
     pub const fn id(self) -> u64 {
         match *self.kind() {
-            SwarmKind::Named(named) => named as u64,
+            SwarmKind::Named(named) => named.id(),
             SwarmKind::Id(id) => id,
         }
     }

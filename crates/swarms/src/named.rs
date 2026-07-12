@@ -52,6 +52,7 @@ macro_rules! impl_into_numeric {
     ($($t:ty)+) => {$(
         impl From<NamedSwarm> for $t {
             #[inline]
+            #[allow(clippy::as_conversions)] // repr(u64) discriminant {1, 10, 1337} fits all target types losslessly
             fn from(swarm: NamedSwarm) -> Self {
                 swarm as $t
             }
@@ -71,6 +72,28 @@ macro_rules! impl_try_from_numeric {
 
                 #[inline]
                 fn try_from(value: $native) -> Result<Self, Self::Error> {
+                    u64::from(value).try_into()
+                }
+            }
+        )+
+    };
+}
+
+impl_try_from_numeric!(u8 u16 u32);
+
+// Signed and pointer-sized inputs have no lossless `u64::from`. The `as u64`
+// cast sign-extends negative values (and zero-extends `usize`), so any value
+// outside the valid discriminant set {1, 10, 1337} keeps failing the
+// `try_into` discriminant check exactly as before.
+macro_rules! impl_try_from_numeric_lossy {
+    ($($native:ty)+) => {
+        $(
+            impl TryFrom<$native> for NamedSwarm {
+                type Error = TryFromPrimitiveError<Self>;
+
+                #[inline]
+                #[allow(clippy::as_conversions)] // extension to u64 cannot alias a valid discriminant
+                fn try_from(value: $native) -> Result<Self, Self::Error> {
                     (value as u64).try_into()
                 }
             }
@@ -78,7 +101,7 @@ macro_rules! impl_try_from_numeric {
     };
 }
 
-impl_try_from_numeric!(u8 i8 u16 i16 u32 i32 usize isize);
+impl_try_from_numeric_lossy!(i8 i16 i32 usize isize);
 
 impl fmt::Display for NamedSwarm {
     #[inline]
@@ -97,14 +120,14 @@ impl AsRef<str> for NamedSwarm {
 impl PartialEq<u64> for NamedSwarm {
     #[inline]
     fn eq(&self, other: &u64) -> bool {
-        (*self as u64) == *other
+        u64::from(*self) == *other
     }
 }
 
 impl PartialOrd<u64> for NamedSwarm {
     #[inline]
     fn partial_cmp(&self, other: &u64) -> Option<Ordering> {
-        (*self as u64).partial_cmp(other)
+        u64::from(*self).partial_cmp(other)
     }
 }
 
@@ -147,6 +170,7 @@ impl NamedSwarm {
 
     /// Returns the network ID for this swarm.
     #[inline]
+    #[allow(clippy::as_conversions)] // repr(u64) discriminant read; `u64::from` is not const-callable
     pub const fn id(&self) -> u64 {
         *self as u64
     }

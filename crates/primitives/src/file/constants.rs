@@ -5,7 +5,7 @@ use crate::bmt::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE};
 /// Derive the maximum tree depth from branching factor and body size.
 /// The limit is the number of levels needed to address all storable data:
 /// `branches^(limit-1) * body_size` must exceed any practical file size.
-#[allow(clippy::arithmetic_side_effects)] // compile-time constants: body_bits <= 12 < 64 and branch_bits >= 1 for the power-of-two inputs used
+#[allow(clippy::arithmetic_side_effects, clippy::as_conversions)] // compile-time constants: body_bits <= 12 < 64 and branch_bits >= 1 for the power-of-two inputs used; the trailing_zeros u32 -> usize widenings are infallible (usize::from is not const-callable)
 const fn compute_level_limit(branches: usize, body_size: usize) -> usize {
     // bits needed = ceil(log2(u64::MAX / body_size)) / log2(branches)
     // For branches=128 (7 bits), body_size=4096 (12 bits): (64-12)/7 + 1 = 8.4 → 9
@@ -34,7 +34,7 @@ const fn compute_spans(branches: usize) -> [u64; LEVEL_LIMIT] {
     let mut i = 0;
     while i < LEVEL_LIMIT {
         spans[i] = span;
-        span = span.saturating_mul(branches as u64);
+        span = span.saturating_mul(crate::cast::u64_from_usize(branches));
         i += 1;
     }
     spans
@@ -66,10 +66,10 @@ pub(crate) const fn tree_depth(length: u64, chunk_size: usize, ref_size: usize) 
         return 0;
     }
 
-    let branches = (chunk_size / ref_size) as u64;
+    let branches = crate::cast::u64_from_usize(chunk_size / ref_size);
 
     // div_ceil(length, chunk_size)
-    let data_chunks = length.div_ceil(chunk_size as u64);
+    let data_chunks = length.div_ceil(crate::cast::u64_from_usize(chunk_size));
     if data_chunks <= 1 {
         return 1;
     }
@@ -90,17 +90,18 @@ pub(crate) fn subspan_for_spans<const BODY_SIZE: usize>(
     span: u64,
     spans: &[u64; LEVEL_LIMIT],
 ) -> u64 {
+    let body_size = crate::cast::u64_from_usize(BODY_SIZE);
     for i in 0..LEVEL_LIMIT {
-        let level_span = spans[i] * BODY_SIZE as u64;
+        let level_span = spans[i] * body_size;
         if span <= level_span {
             return if i == 0 {
-                BODY_SIZE as u64
+                body_size
             } else {
-                spans[i - 1] * BODY_SIZE as u64
+                spans[i - 1] * body_size
             };
         }
     }
-    spans[LEVEL_LIMIT - 2] * BODY_SIZE as u64
+    spans[LEVEL_LIMIT - 2] * body_size
 }
 
 #[cfg(test)]

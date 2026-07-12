@@ -126,8 +126,8 @@ pub trait StampIssuer {
     /// Returns `true` if the most utilized bucket has reached the
     /// specified percentage of capacity (0.0 to 1.0).
     fn is_near_capacity(&self, threshold: f64) -> bool {
-        let max_util = self.max_bucket_utilization() as f64;
-        let capacity = self.bucket_capacity() as f64;
+        let max_util = f64::from(self.max_bucket_utilization());
+        let capacity = f64::from(self.bucket_capacity());
         max_util / capacity >= threshold
     }
 }
@@ -265,8 +265,13 @@ mod tests {
 
     fn test_address(leading: u16) -> SwarmAddress {
         let mut bytes = [0u8; 32];
-        bytes[0] = (leading >> 8) as u8;
-        bytes[1] = leading as u8;
+        // Big-endian split of a u16: `leading >> 8` is <= 0xFF and the low-byte
+        // truncation is the intended extraction; both casts are lossless.
+        #[allow(clippy::as_conversions)]
+        {
+            bytes[0] = (leading >> 8) as u8;
+            bytes[1] = leading as u8;
+        }
         SwarmAddress::new(bytes)
     }
 

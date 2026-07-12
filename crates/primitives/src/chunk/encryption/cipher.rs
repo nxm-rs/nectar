@@ -31,7 +31,8 @@ fn derive_segment_key(key_state: &Keccak256, counter: u32) -> [u8; 32] {
 }
 
 /// XOR `data` with the Keccak-256 CTR keystream in place.
-#[allow(clippy::indexing_slicing)] // j < chunk.len() <= EncryptionKey::SIZE = seg.len() (32)
+#[allow(clippy::indexing_slicing, clippy::as_conversions)]
+// j < chunk.len() <= EncryptionKey::SIZE = seg.len() (32); i < data.len() / 32 <= a few hundred for any chunk-sized buffer, so it fits u32
 #[inline]
 fn apply_keystream(key: &EncryptionKey, init_ctr: u32, data: &mut [u8]) {
     let ks = key_state(key);
