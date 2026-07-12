@@ -60,6 +60,7 @@ structure-canonical fixed point:
 | `chunk_roundtrip` | decoded CAC/SOC preserves address, span, data (+ signature/owner for SOC) |
 | `stamp_roundtrip` | `from_bytes(to_bytes(stamp)) == stamp`, canonical re-encode |
 | `usage_snapshot_roundtrip` | `revalidate → plan_persist → parse + assemble` reproduces the snapshot |
+| `chunk_domain_separation` | a valid chunk of one `StandardChunkSet` member never certifies under the other member's predicate, so typeless-wire disambiguation by address stays sound |
 
 Every decode target has a stable-gated **seed replay test in the library
 crate** that pushes the committed seed bytes through the exact same decode
