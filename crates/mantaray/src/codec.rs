@@ -9,7 +9,7 @@ use crate::obfuscation::ObfuscationKey;
 
 use alloy_primitives::{U256, hex};
 use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::wire::{Cursor, Underrun};
+use nectar_primitives::wire::{Cursor, FromCursor, Underrun};
 
 /// Mantaray wire format version (truncated keccak256, 31 bytes).
 #[derive(Clone, Copy)]
@@ -66,6 +66,26 @@ impl ForkHeader {
     const MAX_PREFIX_LEN: usize = Self::PRE_REFERENCE_SIZE - Self::PREFIX_OFFSET;
     /// Size of the metadata length field.
     const METADATA_LEN_SIZE: usize = size_of::<u16>();
+}
+
+/// Length of a fork's metadata region, stored big-endian on the wire.
+#[derive(Clone, Copy)]
+struct MetadataLen(u16);
+
+impl MetadataLen {
+    /// The length in bytes.
+    fn get(self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+impl FromCursor for MetadataLen {
+    type Error = Underrun;
+
+    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Underrun> {
+        cur.take::<[u8; ForkHeader::METADATA_LEN_SIZE]>()
+            .map(|bytes| Self(u16::from_be_bytes(bytes)))
+    }
 }
 
 /// Size of the 256-bit forks presence bitfield following the entry slot.
@@ -224,14 +244,14 @@ fn decode_node<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
 /// than an invalid-version error.
 fn parse_header(cur: &mut Cursor<'_>) -> Result<(VersionHash, RefSize)> {
     // The obfuscation key was already consumed by the caller for decryption.
-    cur.take_array::<{ ObfuscationKey::SIZE }>()
+    cur.take::<[u8; ObfuscationKey::SIZE]>()
         .map_err(|_| MantarayError::DataTooShort)?;
     let version_bytes = cur
-        .take_array::<{ VersionHash::SIZE }>()
+        .take::<[u8; VersionHash::SIZE]>()
         .map_err(|_| MantarayError::DataTooShort)?;
-    let ref_size = cur.take_u8().map_err(|_| MantarayError::DataTooShort)?;
+    let ref_size = cur.take::<u8>().map_err(|_| MantarayError::DataTooShort)?;
     let version =
-        VersionHash::from_bytes(version_bytes).ok_or(MantarayError::InvalidVersionHash)?;
+        VersionHash::from_bytes(&version_bytes).ok_or(MantarayError::InvalidVersionHash)?;
     let ref_size = if ref_size == 0 {
         RefSize::EmptyTerminal
     } else {
@@ -249,7 +269,7 @@ fn parse_header(cur: &mut Cursor<'_>) -> Result<(VersionHash, RefSize)> {
 /// (`bee/pkg/manifest/mantaray/marshal.go:285-287`). See the HAZMAT block.
 fn decode_empty_terminal<E: NodeEntry>(cur: &mut Cursor<'_>) -> Result<Node<E>> {
     let index = cur
-        .take_array::<{ FORK_INDEX_SIZE }>()
+        .take::<[u8; FORK_INDEX_SIZE]>()
         .map_err(|_| MantarayError::DataTooShort)?;
     if index.iter().any(|&b| b != 0) {
         return Err(MantarayError::EntrySizeMismatch {
@@ -295,10 +315,10 @@ fn decode_body<E: NodeEntry>(
     }
 
     let entry_bytes = cur
-        .take(ref_size)
+        .take_slice(ref_size)
         .map_err(|_| MantarayError::DataTooShort)?;
     let index_bytes = cur
-        .take_array::<{ FORK_INDEX_SIZE }>()
+        .take::<[u8; FORK_INDEX_SIZE]>()
         .map_err(|_| MantarayError::DataTooShort)?;
 
     let entry = if entry_bytes.iter().all(|&b| b == 0) {
@@ -312,7 +332,7 @@ fn decode_body<E: NodeEntry>(
         node_type |= NodeType::EDGE;
     }
 
-    let index = U256::from_le_slice(index_bytes);
+    let index = U256::from_le_slice(&index_bytes);
     let mut forks = BTreeMap::new();
     for b in 0..=u8::MAX {
         if index.bit(usize::from(b)) {
@@ -344,7 +364,7 @@ fn parse_fork<E: NodeEntry>(
 ) -> Result<Fork<E>> {
     let mut peek = cur.clone();
     let node_type = NodeType::from_bits_truncate(
-        peek.take_u8()
+        peek.take::<u8>()
             .map_err(|u| insufficient_fork(u, total, byte_index))?,
     );
     let has_metadata =
@@ -353,19 +373,19 @@ fn parse_fork<E: NodeEntry>(
     let body_size = if has_metadata {
         // The metadata length field follows the pre-reference region and the
         // reference; skip past them (node_type is already consumed) to read it.
-        peek.take(ForkHeader::PRE_REFERENCE_SIZE - size_of::<u8>() + ref_size)
+        peek.take_slice(ForkHeader::PRE_REFERENCE_SIZE - size_of::<u8>() + ref_size)
             .map_err(|u| insufficient_fork(u, total, byte_index))?;
-        let metadata_len = usize::from(
-            peek.take_u16_be()
-                .map_err(|u| insufficient_fork(u, total, byte_index))?,
-        );
+        let metadata_len = peek
+            .take::<MetadataLen>()
+            .map_err(|u| insufficient_fork(u, total, byte_index))?
+            .get();
         ForkHeader::PRE_REFERENCE_SIZE + ref_size + ForkHeader::METADATA_LEN_SIZE + metadata_len
     } else {
         ForkHeader::PRE_REFERENCE_SIZE + ref_size
     };
 
     let body = cur
-        .take(body_size)
+        .take_slice(body_size)
         .map_err(|u| insufficient_fork(u, total, byte_index))?;
     parse_fork_body::<E>(body, ref_size, has_metadata)
 }
@@ -383,27 +403,29 @@ fn parse_fork_body<E: NodeEntry>(
 ) -> Result<Fork<E>> {
     let mut cur = Cursor::new(body);
     let node_type =
-        NodeType::from_bits_truncate(cur.take_u8().map_err(|_| MantarayError::DataTooShort)?);
-    let prefix_len = cur.take_u8().map_err(|_| MantarayError::DataTooShort)?;
+        NodeType::from_bits_truncate(cur.take::<u8>().map_err(|_| MantarayError::DataTooShort)?);
+    let prefix_len = cur.take::<u8>().map_err(|_| MantarayError::DataTooShort)?;
     let padded = cur
-        .take_array::<{ Prefix::MAX_LEN }>()
+        .take::<[u8; Prefix::MAX_LEN]>()
         .map_err(|_| MantarayError::DataTooShort)?;
-    let prefix = Prefix::from_wire(padded, prefix_len)?;
+    let prefix = Prefix::from_wire(&padded, prefix_len)?;
 
     let ref_region = cur
-        .take(ref_size)
+        .take_slice(ref_size)
         .map_err(|_| MantarayError::DataTooShort)?;
     let mut ref_cur = Cursor::new(ref_region);
     let addr = ref_cur
-        .take_array::<32>()
+        .take::<[u8; 32]>()
         .map_err(|_| MantarayError::DataTooShort)?;
 
-    let mut node = Node::from_reference(ChunkAddress::from(*addr));
+    let mut node = Node::from_reference(ChunkAddress::from(addr));
     node.node_type = node_type;
 
     if has_metadata {
-        let metadata_len = cur.take_u16_be().map_err(|_| MantarayError::DataTooShort)?;
-        if metadata_len > 0 {
+        let metadata_len = cur
+            .take::<MetadataLen>()
+            .map_err(|_| MantarayError::DataTooShort)?;
+        if metadata_len.get() > 0 {
             node.metadata = serde_json::from_slice(cur.finish())?;
         }
     }
