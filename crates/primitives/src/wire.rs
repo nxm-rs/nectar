@@ -75,6 +75,36 @@ impl<const N: usize> FromCursor for [u8; N] {
     }
 }
 
+/// A value that appends exactly its own wire bytes to a [`Writer`].
+///
+/// The dual of [`FromCursor`]: implementors state their byte order internally,
+/// so endian-ambiguous bare integers are not exposed, and appending cannot
+/// fail because the buffer grows. Downstream crates implement this for their
+/// own domain types to write them via [`Writer::put`].
+pub trait ToWriter {
+    /// Appends the wire bytes of `self` to the writer.
+    fn put_into(&self, w: &mut Writer<'_>);
+}
+
+impl ToWriter for u8 {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.bytes.push(*self);
+    }
+}
+
+impl<const N: usize> ToWriter for [u8; N] {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.bytes.extend_from_slice(self);
+    }
+}
+
+/// The raw escape for variable-width fields whose framing the caller owns.
+impl ToWriter for [u8] {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.bytes.extend_from_slice(self);
+    }
+}
+
 /// A cursor advancing over a byte slice, yielding fixed- and variable-width
 /// fields or an [`Underrun`].
 ///
@@ -152,6 +182,59 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// A writer appending fixed- and variable-width fields to a byte buffer.
+///
+/// The dual of [`Cursor`]: every method appends and cannot fail, so an encoder
+/// built only from these primitives cannot emit a misaligned wire image. The
+/// borrowed buffer is the sole state; a reader over the finished bytes recovers
+/// each field in the order it was put.
+///
+/// ```
+/// use nectar_primitives::wire::{Cursor, Writer};
+///
+/// let mut buf = Vec::new();
+/// let mut w = Writer::new(&mut buf);
+/// w.put(&0x20u8);
+/// w.put(&[0xaa, 0xbb]);
+///
+/// let mut cur = Cursor::new(&buf);
+/// assert_eq!(cur.take::<u8>()?, 0x20);
+/// assert_eq!(cur.take::<[u8; 2]>()?, [0xaa, 0xbb]);
+/// # Ok::<(), nectar_primitives::wire::Underrun>(())
+/// ```
+#[derive(Debug)]
+pub struct Writer<'a> {
+    bytes: &'a mut Vec<u8>,
+}
+
+impl<'a> Writer<'a> {
+    /// Wraps a growable buffer for appending. Existing contents are kept, so a
+    /// writer can extend a partially built image.
+    pub const fn new(bytes: &'a mut Vec<u8>) -> Self {
+        Self { bytes }
+    }
+
+    /// Appends the next value as a whole via its [`ToWriter`] impl.
+    pub fn put<T: ToWriter + ?Sized>(&mut self, value: &T) {
+        value.put_into(self);
+    }
+
+    /// Appends `n` zero bytes, e.g. to pad a field to its declared width.
+    pub fn put_zeros(&mut self, n: usize) {
+        self.bytes.resize(self.bytes.len().saturating_add(n), 0);
+    }
+
+    /// Bytes written so far, including any pre-existing contents.
+    pub const fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Whether the buffer is empty.
+    pub const fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +299,33 @@ mod tests {
     }
 
     #[test]
+    fn domain_type_round_trips_through_put_and_take() {
+        struct BeLen(u16);
+
+        impl FromCursor for BeLen {
+            type Error = Underrun;
+
+            fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
+                cur.take::<[u8; 2]>().map(|b| Self(u16::from_be_bytes(b)))
+            }
+        }
+
+        impl ToWriter for BeLen {
+            fn put_into(&self, w: &mut Writer<'_>) {
+                w.put(&self.0.to_be_bytes());
+            }
+        }
+
+        let mut buf = Vec::new();
+        Writer::new(&mut buf).put(&BeLen(0x1234));
+        assert_eq!(buf, [0x12, 0x34]);
+
+        let mut cur = Cursor::new(&buf);
+        assert_eq!(cur.take::<BeLen>().unwrap().0, 0x1234);
+        assert!(cur.is_empty());
+    }
+
+    #[test]
     fn take_surfaces_impl_validation_errors() {
         #[derive(Debug, PartialEq)]
         enum TagError {
@@ -265,5 +375,44 @@ mod tests {
         assert!(cur.is_empty());
         assert_eq!(cur.take::<u8>().unwrap_err().available, 0);
         assert_eq!(cur.take::<[u8; 0]>().unwrap(), [0u8; 0]);
+    }
+
+    #[test]
+    fn writer_appends_each_width() {
+        let mut buf = Vec::new();
+        let mut w = Writer::new(&mut buf);
+        assert!(w.is_empty());
+
+        w.put(&0xabu8);
+        w.put(&[0xaa, 0xbb]);
+        w.put([0xcc, 0xdd].as_slice());
+        w.put_zeros(3);
+
+        assert_eq!(w.len(), 8);
+        assert_eq!(buf, [0xab, 0xaa, 0xbb, 0xcc, 0xdd, 0, 0, 0]);
+    }
+
+    #[test]
+    fn writer_extends_existing_contents() {
+        let mut buf = vec![0x01, 0x02];
+        let mut w = Writer::new(&mut buf);
+        w.put(&0x03u8);
+        assert_eq!(buf, [0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn writer_and_cursor_round_trip() {
+        // Each field a reader takes matches what the writer put, in order.
+        let mut buf = Vec::new();
+        let mut w = Writer::new(&mut buf);
+        w.put(&0x7fu8);
+        w.put(&[1u8, 2, 3, 4]);
+        w.put([9u8, 8].as_slice());
+
+        let mut cur = Cursor::new(&buf);
+        assert_eq!(cur.take::<u8>().unwrap(), 0x7f);
+        assert_eq!(cur.take::<[u8; 4]>().unwrap(), [1, 2, 3, 4]);
+        assert_eq!(cur.take_slice(2).unwrap(), &[9, 8]);
+        assert!(cur.is_empty());
     }
 }

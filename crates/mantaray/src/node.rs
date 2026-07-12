@@ -11,7 +11,7 @@ use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 use bytes::Bytes;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk};
 use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
-use nectar_primitives::wire::{Cursor, FromCursor};
+use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
 
 /// Boxed recursion future: `Send` on native, unbounded on wasm32 so `!Send`
 /// browser stores stay usable. `MaybeSend` cannot appear in a `dyn` bound
@@ -128,6 +128,16 @@ impl FromCursor for Prefix {
         let len = cur.take::<u8>()?;
         let padded = cur.take::<[u8; PREFIX_MAX_LEN]>()?;
         Self::from_wire(&padded, len)
+    }
+}
+
+/// Writes the prefix wire record: the length byte, then the padded 30-byte
+/// block. The mirror of the `FromCursor` impl above, so the length byte never
+/// appears at call sites on the encode side either.
+impl ToWriter for Prefix {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(&self.len);
+        w.put(&self.data);
     }
 }
 
@@ -1224,6 +1234,18 @@ mod tests {
         let mut cur = Cursor::new(&wire);
         let prefix = cur.take::<Prefix>().unwrap();
         assert_eq!(&*prefix, b"abc");
+        assert!(cur.is_empty());
+    }
+
+    #[test]
+    fn prefix_wire_round_trips_through_put_and_take() {
+        let prefix = Prefix::from_slice(b"abc");
+        let mut buf = Vec::new();
+        Writer::new(&mut buf).put(&prefix);
+        assert_eq!(buf.len(), 1 + PREFIX_MAX_LEN);
+
+        let mut cur = Cursor::new(&buf);
+        assert_eq!(cur.take::<Prefix>().unwrap(), prefix);
         assert!(cur.is_empty());
     }
 
