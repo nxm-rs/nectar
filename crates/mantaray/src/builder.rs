@@ -296,6 +296,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn encrypted_builder_round_trips_the_reference() {
         use nectar_primitives::file::EntryRef;
@@ -317,6 +318,7 @@ mod tests {
         assert_eq!(entry.reference(), Some(&EntryRef::Encrypted(eref)));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn encrypted_builder_rejects_root_metadata() {
         use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
