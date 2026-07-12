@@ -56,6 +56,7 @@ check.all_targets = true
 [workspace.dependencies]
 # nectar crates
 nectar-contracts = { version = "0.4.0", path = "crates/contracts" }
+nectar-manifest = { version = "0.4.0", path = "crates/manifest" }
 nectar-mantaray = { version = "0.4.0", path = "crates/mantaray" }
 nectar-primitives = { version = "0.4.0", path = "crates/primitives" }
 nectar-swarms = { version = "0.4.0", path = "crates/swarms" }
