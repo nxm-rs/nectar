@@ -17,6 +17,17 @@ use serde::{Deserialize, Serialize};
 /// still serializes as `id || signature || body`. Dispersed replicas
 /// constrain `id[1..]` to the wrapped body hash, leaving only the first byte
 /// mined.
+///
+/// Nominally distinct from the raw hash it wraps: a bare `B256` is rejected
+/// where a `SocId` is expected.
+///
+/// ```compile_fail
+/// use alloy_primitives::B256;
+/// use nectar_primitives::SocId;
+///
+/// fn sign_under(_id: SocId) {}
+/// sign_under(B256::ZERO);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into, AsRef)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
@@ -24,6 +35,7 @@ use serde::{Deserialize, Serialize};
 #[from(B256, [u8; 32])]
 #[into(B256, [u8; 32])]
 #[as_ref([u8])]
+#[repr(transparent)]
 pub struct SocId(B256);
 
 impl SocId {
