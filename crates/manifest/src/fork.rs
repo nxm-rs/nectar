@@ -161,6 +161,20 @@ impl<F: Format> ForkRecord<F> {
         ))
     }
 
+    /// A record from its decoded wire parts; the tail arrives without its
+    /// fork-table key byte, so no split is needed.
+    pub(crate) const fn from_tail_parts(
+        tail: Prefix<F>,
+        payload: ForkPayload<F>,
+        metadata: Option<Metadata<F>>,
+    ) -> Self {
+        Self {
+            tail,
+            payload,
+            metadata,
+        }
+    }
+
     /// The prefix tail: everything after the fork-table key byte.
     #[must_use]
     pub const fn tail(&self) -> &Prefix<F> {
@@ -238,6 +252,16 @@ impl<F: Format> ForkTable<F> {
     ) -> Result<Option<ForkRecord<F>>, ForkPrefixEmpty> {
         let (first, record) = ForkRecord::new(prefix, payload, metadata)?;
         Ok(self.records.insert(first, record))
+    }
+
+    /// Insert a decoded record directly under its fork-table key byte,
+    /// replacing and returning any record already indexed there.
+    pub(crate) fn insert_record(
+        &mut self,
+        first: u8,
+        record: ForkRecord<F>,
+    ) -> Option<ForkRecord<F>> {
+        self.records.insert(first, record)
     }
 
     /// The record indexed under `first`.
