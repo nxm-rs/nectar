@@ -8,7 +8,7 @@ use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
 use crate::obfuscation::ObfuscationKey;
 use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 use bytes::Bytes;
-use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkRef, ContentChunk, Reference};
+use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ChunkRef, ContentChunk, Reference};
 use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
 use nectar_primitives::{EncryptedChunkRef, EncryptionKey};

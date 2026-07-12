@@ -1,8 +1,8 @@
 //! Core traits for chunk types and operations.
 //!
 //! [`ChunkHeader`] is the predicate a chunk type *is*: its address derivation
-//! and self-certification rule. [`Chunk`] and [`BmtChunk`] are the carrier
-//! traits over a header plus a BMT body.
+//! and self-certification rule. [`ChunkOps`] is the header-free behaviour
+//! every chunk value offers; [`Chunk`] ties a carrier to its header type.
 
 use alloy_primitives::B256;
 use bytes::{Bytes, BytesMut};
@@ -106,27 +106,24 @@ pub trait ChunkHeader: Sized + Send + Sync + 'static {
     fn decode(cursor: &mut wire::Cursor<'_>) -> Result<Self, ChunkError>;
 }
 
-/// Core trait for all chunk types in the system.
+/// Header-free behaviour common to every chunk value.
 ///
-/// This trait defines the common interface that all chunk implementations must provide.
-pub trait Chunk: Send + Sync + 'static {
-    /// The header type for this chunk
-    type Header: ChunkHeader;
-
-    /// Get the address of this chunk
+/// No `Header` associated type, so the boundary enum
+/// ([`AnyChunk`](super::any_chunk::AnyChunk)) implements it alongside the
+/// concrete carriers and generic code accepts both through one bound.
+pub trait ChunkOps: Send + Sync + 'static {
+    /// Get the address of this chunk.
     fn address(&self) -> &ChunkAddress;
 
-    /// Get the header for this chunk
-    fn header(&self) -> &Self::Header;
-
-    /// Get the raw data contained in this chunk
+    /// Get the raw payload of this chunk (the BMT body without its span).
     fn data(&self) -> &Bytes;
 
-    /// Get the total size of this chunk in bytes
-    fn size(&self) -> usize {
-        // Header and payload are both bounded by the chunk wire size.
-        Self::Header::SIZE.saturating_add(self.data().len())
-    }
+    /// Get the total wire size of this chunk in bytes.
+    fn size(&self) -> usize;
+
+    /// Get the span (logical data length) of this chunk: the BMT span of its
+    /// underlying body.
+    fn span(&self) -> u64;
 
     /// Certify this chunk against an expected address.
     ///
@@ -134,10 +131,48 @@ pub trait Chunk: Send + Sync + 'static {
     /// header's full acceptance rule ([`ChunkHeader::validate`]), never a bare
     /// compare against the chunk's own derived address.
     fn verify(&self, expected: &ChunkAddress) -> Result<(), PrimitivesError>;
+
+    /// Compute the anchor-keyed *transformed address* of this chunk.
+    ///
+    /// The transformed address is the redistribution sampler's per-round,
+    /// per-node re-hash of a chunk. It is a prefixed BMT root keyed by the
+    /// node's `anchor`, used to order reserve chunks deterministically while
+    /// binding the ordering to the proving node.
+    ///
+    /// # Derivation
+    ///
+    /// - The anchor-keyed BMT root of the chunk body is computed by
+    ///   [`BmtBody::transformed_root`](super::bmt_body::BmtBody::transformed_root)
+    ///   on the chunk's borrowed body, which mixes the anchor into *every* node
+    ///   hash. For a SOC the wrapped content body is the one re-hashed.
+    /// - The root is then sealed into the transformed address by the chunk's
+    ///   header predicate ([`ChunkHeader::seal_transformed`]): the root itself
+    ///   for a CAC, the plain (unprefixed, no anchor)
+    ///   `keccak256(soc_address || inner)` for a SOC.
+    ///
+    /// # Endianness
+    ///
+    /// The span is serialised little-endian inside the BMT. Do not confuse this
+    /// with the big-endian encodings used elsewhere on the redistribution wire
+    /// (e.g. proof witness indices); the BMT span is always LE.
+    fn transformed_address(&self, anchor: &[u8]) -> ChunkAddress;
+
+    /// Convert this chunk into its bare wire bytes (`header || span ||
+    /// payload`), the inverse of the carrier's `TryFrom<Bytes>` decode.
+    fn into_bytes(self) -> Bytes
+    where
+        Self: Sized;
 }
 
-/// Trait for chunks that contain a BMT body
-pub trait BmtChunk: Chunk {
-    /// Get the span of the chunk data
-    fn span(&self) -> u64;
+/// Carrier trait tying a chunk to its wire header type.
+///
+/// The behaviour surface lives on the [`ChunkOps`] supertrait; this trait adds
+/// only the header association, so it is exactly the part the header-free
+/// boundary enum cannot implement.
+pub trait Chunk: ChunkOps {
+    /// The header type for this chunk
+    type Header: ChunkHeader;
+
+    /// Get the header for this chunk
+    fn header(&self) -> &Self::Header;
 }

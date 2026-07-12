@@ -1053,6 +1053,7 @@ where
 mod tests {
     use super::*;
     use crate::chunk::AnyChunk;
+    use crate::chunk::ChunkOps;
     use crate::file::split;
     use std::collections::HashMap;
 
@@ -1444,7 +1445,6 @@ mod tests {
     /// Content addresses of every data leaf for `data` under `TINY_BODY`, so a
     /// probe getter can tell a leaf fetch from an intermediate fetch.
     fn tiny_leaf_addresses(data: &[u8]) -> std::collections::HashSet<ChunkAddress> {
-        use crate::chunk::Chunk;
         let mut set = std::collections::HashSet::new();
         for block in data.chunks(TINY_BODY) {
             let chunk = crate::chunk::ContentChunk::<TINY_BODY>::new(block.to_vec()).unwrap();

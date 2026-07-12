@@ -22,7 +22,7 @@
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
 use nectar_primitives::{
-    AnyChunk, Chunk, ChunkAddress, ContentChunk, DEFAULT_BODY_SIZE, SingleOwnerChunk,
+    AnyChunk, ChunkAddress, ChunkOps, ContentChunk, DEFAULT_BODY_SIZE, SingleOwnerChunk,
 };
 
 fuzz_target!(|data: &[u8]| {

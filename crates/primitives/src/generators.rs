@@ -76,6 +76,7 @@ pub fn any_chunk<const BODY_SIZE: usize>(
 mod tests {
     use super::*;
     use crate::DEFAULT_BODY_SIZE;
+    use crate::chunk::ChunkOps;
     use proptest::prelude::*;
 
     proptest! {

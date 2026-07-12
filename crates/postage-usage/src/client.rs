@@ -362,7 +362,7 @@ mod tests {
     impl SnapshotSink for MemNet {
         type Error = MemError;
         async fn push(&self, sealed: &SealedChunk) -> Result<(), Self::Error> {
-            use nectar_primitives::Chunk;
+            use nectar_primitives::ChunkOps;
             let address = *sealed.chunk.address();
             let payload = Bytes::copy_from_slice(sealed.chunk.data().as_ref());
             self.chunks.lock().unwrap().insert(address, payload);

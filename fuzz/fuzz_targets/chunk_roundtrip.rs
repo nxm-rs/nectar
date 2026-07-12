@@ -22,7 +22,7 @@ use alloy_signer_local::PrivateKeySigner;
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use nectar_primitives::{
-    BmtChunk, Chunk, ContentChunk, DEFAULT_BODY_SIZE, SingleOwnerChunk, bytes::Bytes,
+    ChunkOps, ContentChunk, DEFAULT_BODY_SIZE, SingleOwnerChunk, bytes::Bytes,
 };
 
 /// One structured input: either chunk kind, so a single corpus drives both

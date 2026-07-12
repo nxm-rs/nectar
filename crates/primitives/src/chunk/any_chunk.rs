@@ -10,26 +10,27 @@ use crate::error::Result;
 
 use super::address::ChunkAddress;
 use super::chunk_type::ChunkType;
-use super::content::ContentChunk;
-use super::single_owner::SingleOwnerChunk;
-use super::traits::{Chunk, ChunkHeader};
+use super::content::{CacHeader, ContentChunk};
+use super::single_owner::{SingleOwnerChunk, SocHeader};
+use super::traits::{ChunkHeader, ChunkOps};
 use super::type_id::ChunkTypeId;
+use super::type_tag::ChunkTypeTag;
 
 /// Type-erased chunk for runtime polymorphism with configurable body size.
 ///
-/// This enum provides dynamic dispatch for chunks without requiring object-safe traits.
-/// Use this when you need to store heterogeneous chunk types in collections or pass
-/// chunks through interfaces that can't be generic.
+/// This enum provides dynamic dispatch for chunks without requiring trait
+/// objects. Use this when you need to store heterogeneous chunk types in
+/// collections or pass chunks through interfaces that can't be generic.
 ///
-/// # Why an enum instead of `Box<dyn Chunk>`?
-///
-/// The [`Chunk`] trait has an associated type (`type Header`) which makes it not
-/// object-safe. This enum provides the same functionality while maintaining type safety.
+/// The behaviour surface comes from the [`ChunkOps`] impl, shared with the
+/// concrete chunk types. The enum is the closed, exhaustive set of chunk types
+/// this network accepts: adding a variant is deliberately semver-major and
+/// breaks every downstream match.
 ///
 /// # Examples
 ///
 /// ```
-/// use nectar_primitives::{AnyChunk, Chunk, ContentChunk, ChunkTypeId};
+/// use nectar_primitives::{AnyChunk, ChunkOps, ContentChunk, ChunkTypeId};
 ///
 /// // Create a content chunk
 /// let content = ContentChunk::new(&b"hello world"[..]).unwrap();
@@ -51,23 +52,61 @@ pub enum AnyChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     SingleOwner(SingleOwnerChunk<BODY_SIZE>),
 }
 
-impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
-    /// Get the address of this chunk.
-    pub fn address(&self) -> &ChunkAddress {
+/// Match-delegation to the variants' own [`ChunkOps`] impls. A new variant
+/// extends every arm here, which is part of the deliberate semver-major
+/// surface of adding a chunk type.
+impl<const BODY_SIZE: usize> ChunkOps for AnyChunk<BODY_SIZE> {
+    fn address(&self) -> &ChunkAddress {
         match self {
             Self::Content(c) => c.address(),
             Self::SingleOwner(c) => c.address(),
         }
     }
 
-    /// Get the raw data contained in this chunk.
-    pub fn data(&self) -> &Bytes {
+    fn data(&self) -> &Bytes {
         match self {
             Self::Content(c) => c.data(),
             Self::SingleOwner(c) => c.data(),
         }
     }
 
+    fn size(&self) -> usize {
+        match self {
+            Self::Content(c) => c.size(),
+            Self::SingleOwner(c) => c.size(),
+        }
+    }
+
+    fn span(&self) -> u64 {
+        match self {
+            Self::Content(c) => c.span(),
+            Self::SingleOwner(c) => c.span(),
+        }
+    }
+
+    fn verify(&self, expected: &ChunkAddress) -> Result<()> {
+        match self {
+            Self::Content(c) => c.verify(expected),
+            Self::SingleOwner(c) => c.verify(expected),
+        }
+    }
+
+    fn transformed_address(&self, anchor: &[u8]) -> ChunkAddress {
+        match self {
+            Self::Content(c) => c.transformed_address(anchor),
+            Self::SingleOwner(c) => c.transformed_address(anchor),
+        }
+    }
+
+    fn into_bytes(self) -> Bytes {
+        match self {
+            Self::Content(c) => c.into_bytes(),
+            Self::SingleOwner(c) => c.into_bytes(),
+        }
+    }
+}
+
+impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     /// Get the type ID of this chunk.
     pub const fn type_id(&self) -> ChunkTypeId {
         match self {
@@ -76,80 +115,12 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
         }
     }
 
-    /// Get the total size of this chunk in bytes.
-    pub fn size(&self) -> usize {
+    /// Get the versioned type tag of this chunk: the variant's `(id, version)`
+    /// pair, taken from its header predicate.
+    pub const fn type_tag(&self) -> ChunkTypeTag {
         match self {
-            Self::Content(c) => c.size(),
-            Self::SingleOwner(c) => c.size(),
-        }
-    }
-
-    /// Get the span (logical data length) of this chunk: the BMT span of its
-    /// underlying body.
-    pub fn span(&self) -> u64 {
-        match self {
-            Self::Content(c) => super::traits::BmtChunk::span(c),
-            Self::SingleOwner(c) => super::traits::BmtChunk::span(c),
-        }
-    }
-
-    /// Compute the anchor-keyed *transformed address* of this chunk.
-    ///
-    /// The transformed address is the redistribution sampler's per-round,
-    /// per-node re-hash of a chunk. It is a prefixed BMT root keyed by the
-    /// node's `anchor`, used to order reserve chunks deterministically while
-    /// binding the ordering to the proving node. This reproduces bee's
-    /// `storer.transformedAddress` (`pkg/storer/sample.go`) byte-for-byte.
-    ///
-    /// # Derivation
-    ///
-    /// - The anchor-keyed BMT root of the chunk body is computed by
-    ///   [`BmtBody::transformed_root`](super::bmt_body::BmtBody::transformed_root) on the
-    ///   chunk's borrowed body, which mixes the anchor into *every* node hash.
-    ///   For a SOC the wrapped content body is the one re-hashed.
-    /// - The root is then sealed into the transformed address by the chunk's
-    ///   header predicate
-    ///   ([`ChunkHeader::seal_transformed`](super::traits::ChunkHeader::seal_transformed)):
-    ///   the root itself for a CAC, the plain (unprefixed, no anchor)
-    ///   `keccak256(soc_address || inner)` for a SOC.
-    ///
-    /// # Endianness
-    ///
-    /// The span is serialised little-endian inside the BMT. Do not confuse this
-    /// with the big-endian encodings used elsewhere on the redistribution wire
-    /// (e.g. proof witness indices); the BMT span is always LE.
-    ///
-    /// # Borrowing
-    ///
-    /// Both paths dispatch through the carrier's borrowed body accessor
-    /// ([`ChunkInner::body`](super::inner::ChunkInner::body)), so no chunk or
-    /// body is cloned. For a SOC the wrapped body already *is* the content
-    /// chunk's `span || payload`, so the inner root needs no `32 + 65`
-    /// (id + signature) header slicing.
-    pub fn transformed_address(&self, anchor: &[u8]) -> ChunkAddress {
-        match self {
-            Self::Content(c) => c
-                .header()
-                .seal_transformed(c.address(), c.body().transformed_root(anchor)),
-            Self::SingleOwner(c) => c
-                .header()
-                .seal_transformed(c.address(), c.body().transformed_root(anchor)),
-        }
-    }
-
-    /// Verify that this chunk's address matches an expected address.
-    pub fn verify(&self, expected: &ChunkAddress) -> Result<()> {
-        match self {
-            Self::Content(c) => c.verify(expected),
-            Self::SingleOwner(c) => c.verify(expected),
-        }
-    }
-
-    /// Convert this chunk into its serialized bytes representation.
-    pub fn into_bytes(self) -> Bytes {
-        match self {
-            Self::Content(c) => c.into(),
-            Self::SingleOwner(c) => c.into(),
+            Self::Content(_) => ChunkTypeTag::new(CacHeader::TYPE_ID, CacHeader::VERSION),
+            Self::SingleOwner(_) => ChunkTypeTag::new(SocHeader::TYPE_ID, SocHeader::VERSION),
         }
     }
 
@@ -202,9 +173,15 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
 
     /// Encode this chunk as a type-tagged, self-describing byte string.
     ///
-    /// The layout is `[type_id: 1 byte][chunk wire bytes]`, where the chunk
-    /// wire bytes are the same form produced by [`AnyChunk::into_bytes`] (the
-    /// inverse of [`ContentChunk::try_from`]/[`SingleOwnerChunk::try_from`]).
+    /// The layout is `[id: 1 byte][version: 1 byte][chunk wire bytes]`: the
+    /// chunk's [`ChunkTypeTag`] in its two-byte form
+    /// ([`ChunkTypeTag::to_bytes`]), then the same wire bytes produced by
+    /// [`ChunkOps::into_bytes`] (the inverse of
+    /// [`ContentChunk::try_from`]/[`SingleOwnerChunk::try_from`]).
+    ///
+    /// Stored-format change: earlier releases wrote a one-byte `[id]` prefix.
+    /// Stores holding the old form must re-encode; this decoder does not
+    /// accept it.
     ///
     /// The chunk address is deliberately *not* embedded. It is supplied from
     /// context on decode (for example the redb key when reading from storage,
@@ -212,73 +189,76 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     /// reconstruction paths that take an expected address.
     ///
     /// Unlike the address-disambiguating reconstruction path, decoding the
-    /// result of this method dispatches purely by `type_id`, so it never has
+    /// result of this method dispatches purely by the tag, so it never has
     /// to trial-parse both the content and single-owner shapes.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nectar_primitives::{AnyChunk, Chunk, ContentChunk};
+    /// use nectar_primitives::{AnyChunk, ChunkOps, ContentChunk};
     ///
     /// let content = ContentChunk::new(&b"hello world"[..]).unwrap();
     /// let address = *content.address();
     /// let any: AnyChunk = content.into();
     ///
     /// let encoded = any.to_typed_bytes();
-    /// assert_eq!(encoded[0], 0); // CONTENT type id
+    /// assert_eq!(encoded[..2], [0, 0]); // CONTENT id, version 0
     ///
     /// let decoded: AnyChunk = AnyChunk::from_typed_bytes(&address, &encoded).unwrap();
     /// assert_eq!(decoded.address(), any.address());
     /// ```
-    #[allow(clippy::arithmetic_side_effects)] // 1 + a chunk wire length bounded by the chunk format is a capacity hint far below usize::MAX
     pub fn to_typed_bytes(&self) -> Vec<u8> {
-        let tag = self.type_id().as_u8();
+        let tag = self.type_tag().to_bytes();
         // Clone is required because `into_bytes` consumes the chunk; chunk
         // payloads are reference-counted `Bytes`, so this is cheap.
         let wire = self.clone().into_bytes();
-        let mut out = Vec::with_capacity(1 + wire.len());
-        out.push(tag);
+        // Capacity hint: a tag plus a wire length bounded by the chunk format.
+        let mut out = Vec::with_capacity(wire.len().saturating_add(tag.len()));
+        out.extend_from_slice(&tag);
         out.extend_from_slice(&wire);
         out
     }
 
     /// Decode a type-tagged chunk produced by [`AnyChunk::to_typed_bytes`].
     ///
-    /// The leading byte selects the chunk type and the remainder is the chunk
-    /// wire payload. `address` is the expected chunk address (for example the
-    /// redb storage key or the wire message address field); the decoded chunk
-    /// is verified against it.
+    /// The leading two bytes are the [`ChunkTypeTag`] selecting the chunk
+    /// type's acceptance rule; the remainder is the chunk wire payload.
+    /// `address` is the expected chunk address (for example the redb storage
+    /// key or the wire message address field); the decoded chunk is verified
+    /// against it.
     ///
-    /// Decoding dispatches by the type tag and therefore never trial-parses the
-    /// other chunk shape. Only the standard content and single-owner types are
-    /// recognised; any other tag is an error (custom chunk types are tracked
-    /// separately as a future registration mechanism).
+    /// Decoding dispatches by the tag and therefore never trial-parses the
+    /// other chunk shape. Only the current content and single-owner tags are
+    /// recognised; an unknown id *or* an unknown version of a known id is an
+    /// error, because each `(id, version)` pair is a distinct acceptance rule.
     ///
     /// # Errors
     ///
     /// Returns an error (and never panics) when:
-    /// - the input is empty (no type tag),
-    /// - the type tag is not a recognised standard chunk type,
+    /// - the input is shorter than the two-byte type tag,
+    /// - the tag is not a recognised `(id, version)` pair,
     /// - the payload cannot be decoded as the tagged chunk type, or
-    /// - a standard chunk's computed address does not match `address`.
+    /// - the chunk's computed address does not match `address`.
     pub fn from_typed_bytes(address: &ChunkAddress, bytes: &[u8]) -> crate::error::Result<Self> {
-        let (&tag, payload) = bytes.split_first().ok_or_else(|| {
-            super::error::ChunkError::invalid_format("empty typed-chunk encoding: missing type tag")
+        let (tag, payload) = bytes.split_first_chunk::<2>().ok_or_else(|| {
+            super::error::ChunkError::invalid_format(
+                "typed-chunk encoding shorter than the two-byte type tag",
+            )
         })?;
 
-        let type_id = ChunkTypeId::from(tag);
-        match type_id {
-            ChunkTypeId::CONTENT => {
+        let tag = ChunkTypeTag::from(*tag);
+        match tag {
+            t if t == ChunkTypeTag::new(CacHeader::TYPE_ID, CacHeader::VERSION) => {
                 let chunk = ContentChunk::try_from(Bytes::copy_from_slice(payload))?;
                 chunk.verify(address)?;
                 Ok(Self::Content(chunk))
             }
-            ChunkTypeId::SINGLE_OWNER => {
+            t if t == ChunkTypeTag::new(SocHeader::TYPE_ID, SocHeader::VERSION) => {
                 let chunk = SingleOwnerChunk::try_from(Bytes::copy_from_slice(payload))?;
                 chunk.verify(address)?;
                 Ok(Self::SingleOwner(chunk))
             }
-            other => Err(super::error::ChunkError::unsupported_type(other).into()),
+            other => Err(super::error::ChunkError::unsupported_tag(other).into()),
         }
     }
 
@@ -357,7 +337,7 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for AnyChunk<BODY_SIZE
 
 #[cfg(test)]
 mod tests {
-    use super::super::traits::{BmtChunk, Chunk};
+    use super::super::traits::ChunkOps;
     use super::*;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
@@ -435,7 +415,7 @@ mod tests {
         let any: DefaultAnyChunk = content.into();
 
         let encoded = any.to_typed_bytes();
-        assert_eq!(encoded[0], 0, "CONTENT tag must be 0");
+        assert_eq!(encoded[..2], [0, 0], "CONTENT tag must be id 0, version 0");
 
         let decoded = DefaultAnyChunk::from_typed_bytes(&address, &encoded).unwrap();
         assert!(decoded.is_content());
@@ -451,7 +431,11 @@ mod tests {
         let any: DefaultAnyChunk = soc.into();
 
         let encoded = any.to_typed_bytes();
-        assert_eq!(encoded[0], 1, "SINGLE_OWNER tag must be 1");
+        assert_eq!(
+            encoded[..2],
+            [1, 0],
+            "SINGLE_OWNER tag must be id 1, version 0",
+        );
 
         let decoded = DefaultAnyChunk::from_typed_bytes(&address, &encoded).unwrap();
         assert!(decoded.is_single_owner());
@@ -464,13 +448,13 @@ mod tests {
     fn test_typed_custom_round_trip() {
         // The Custom variant has been removed; an unrecognised type tag must now
         // error rather than round-trip as an opaque blob.
-        let type_id = ChunkTypeId::custom(200);
+        let tag = ChunkTypeTag::new(ChunkTypeId::custom(200), crate::ChunkVersion::new(0));
         let address: ChunkAddress = [0x11u8; 32].into();
         let data = Bytes::from_static(b"opaque custom chunk bytes");
 
         let encoded = {
-            let mut out = Vec::with_capacity(1 + data.len());
-            out.push(type_id.as_u8());
+            let mut out = Vec::with_capacity(2 + data.len());
+            out.extend_from_slice(&tag.to_bytes());
             out.extend_from_slice(&data);
             out
         };
@@ -480,6 +464,40 @@ mod tests {
             result.is_err(),
             "unrecognised type tags must error now that Custom is removed",
         );
+    }
+
+    #[test]
+    fn test_typed_unknown_version_errors() {
+        // A known id under an unknown version is a distinct, unrecognised
+        // acceptance rule; the payload must not be decoded under version 0.
+        let content = DefaultContentChunk::new(&b"future revision"[..]).unwrap();
+        let address = *content.address();
+        let mut encoded = DefaultAnyChunk::from(content).to_typed_bytes();
+        encoded[1] = 7;
+
+        let result = DefaultAnyChunk::from_typed_bytes(&address, &encoded);
+        assert!(result.is_err(), "unknown version of a known id must error");
+    }
+
+    #[test]
+    fn test_typed_legacy_one_byte_prefix_rejected() {
+        // Stored-format change: the old `[id][wire]` form is one byte shorter,
+        // so under the two-byte tag its first span byte is read as a version
+        // and the payload shifts. It must never decode to the original chunk.
+        let content = DefaultContentChunk::new(&b"legacy stored form"[..]).unwrap();
+        let address = *content.address();
+        let any = DefaultAnyChunk::from(content);
+
+        let legacy = {
+            let wire = any.clone().into_bytes();
+            let mut out = Vec::with_capacity(1 + wire.len());
+            out.push(any.type_id().as_u8());
+            out.extend_from_slice(&wire);
+            out
+        };
+
+        let result = DefaultAnyChunk::from_typed_bytes(&address, &legacy);
+        assert!(result.is_err(), "legacy one-byte-prefix form must error");
     }
 
     #[test]

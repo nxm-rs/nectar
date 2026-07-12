@@ -141,7 +141,7 @@ mod tests {
     use super::super::content::ContentChunk;
     use super::super::error::ChunkError;
     use super::super::single_owner::SingleOwnerChunk;
-    use super::super::traits::Chunk;
+    use super::super::traits::ChunkOps;
     use super::*;
     use crate::error::Result;
 

@@ -11,7 +11,9 @@
 //!   a chunk type ([`CacHeader`], [`SocHeader`])
 //! - [`ChunkInner`] - The single carrier: one header plus one BMT body;
 //!   [`ContentChunk`] and [`SingleOwnerChunk`] are its aliases
-//! - [`Chunk`] - Core trait for all chunk types
+//! - [`ChunkOps`] - Header-free behaviour shared by concrete chunks and
+//!   [`AnyChunk`]
+//! - [`Chunk`] - Ties a carrier to its header type
 //! - [`ChunkType`] - Adds compile-time type identification
 //! - [`ChunkTypeSet`] - Defines which chunk types a system supports
 //!
@@ -43,7 +45,7 @@ pub mod wasm;
 pub use address::ChunkAddress;
 pub use error::ChunkError;
 pub use inner::ChunkInner;
-pub use traits::{BmtChunk, Chunk, ChunkHeader};
+pub use traits::{Chunk, ChunkHeader, ChunkOps};
 
 // Re-export the reference types
 pub use reference::{ChunkRef, RefKind, Reference, WrongRefKind};
