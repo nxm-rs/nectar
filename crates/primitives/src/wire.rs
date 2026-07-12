@@ -168,8 +168,8 @@ impl<'a> Cursor<'a> {
 /// w.put_array(&[0xaa, 0xbb]);
 ///
 /// let mut cur = Cursor::new(&buf);
-/// assert_eq!(cur.take_u16_be()?, 0x20);
-/// assert_eq!(cur.take_array::<2>()?, &[0xaa, 0xbb]);
+/// assert_eq!(cur.take::<[u8; 2]>()?, 0x20u16.to_be_bytes());
+/// assert_eq!(cur.take::<[u8; 2]>()?, [0xaa, 0xbb]);
 /// # Ok::<(), nectar_primitives::wire::Underrun>(())
 /// ```
 #[derive(Debug)]
@@ -370,10 +370,10 @@ mod tests {
         w.put_slice(&[9u8, 8]);
 
         let mut cur = Cursor::new(&buf);
-        assert_eq!(cur.take_u8().unwrap(), 0x7f);
-        assert_eq!(cur.take_u16_be().unwrap(), 0xbeef);
-        assert_eq!(cur.take_array::<4>().unwrap(), &[1, 2, 3, 4]);
-        assert_eq!(cur.take(2).unwrap(), &[9, 8]);
+        assert_eq!(cur.take::<u8>().unwrap(), 0x7f);
+        assert_eq!(cur.take::<[u8; 2]>().unwrap(), 0xbeefu16.to_be_bytes());
+        assert_eq!(cur.take::<[u8; 4]>().unwrap(), [1, 2, 3, 4]);
+        assert_eq!(cur.take_slice(2).unwrap(), &[9, 8]);
         assert!(cur.is_empty());
     }
 }
