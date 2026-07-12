@@ -66,7 +66,7 @@ impl<S, const BS: usize> ManifestBuilder<S, ChunkRef, BS> {
     }
 }
 
-#[cfg(feature = "encryption")]
+#[cfg(feature = "std")]
 impl<S, const BS: usize> ManifestBuilder<S, nectar_primitives::EncryptedChunkRef, BS> {
     /// Create a new encrypted builder (random obfuscation key, 64-byte refs).
     pub fn new_encrypted(store: S) -> Self {
@@ -177,7 +177,11 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
         }
         self.add(path, root).await
     }
+}
 
+impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
+    ManifestBuilder<S, nectar_primitives::EncryptedChunkRef, BS>
+{
     /// Persist the encrypted manifest, consuming the builder.
     ///
     /// Returns a [`ManifestRef`](crate::ManifestRef) and a read handle over the
@@ -292,7 +296,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "encryption")]
     #[test]
     fn encrypted_builder_round_trips_the_reference() {
         use nectar_primitives::file::EntryRef;
@@ -314,7 +317,6 @@ mod tests {
         assert_eq!(entry.reference(), Some(&EntryRef::Encrypted(eref)));
     }
 
-    #[cfg(feature = "encryption")]
     #[test]
     fn encrypted_builder_rejects_root_metadata() {
         use nectar_primitives::{EncryptedChunkRef, EncryptionKey};

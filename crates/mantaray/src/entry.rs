@@ -110,7 +110,6 @@ impl From<ChunkAddress> for Entry {
     }
 }
 
-#[cfg(feature = "encryption")]
 impl From<nectar_primitives::EncryptedChunkRef> for Entry {
     fn from(enc_ref: nectar_primitives::EncryptedChunkRef) -> Self {
         Self::new(enc_ref)

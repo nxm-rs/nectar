@@ -917,7 +917,6 @@ mod tests {
     /// the `EncryptedChunkRef` entry, so the 64-byte slicing arithmetic in
     /// `decode_v01`/`decode_v02` is exercised on stable (the fuzz target
     /// drives this width too, but only under libfuzzer mutation on nightly).
-    #[cfg(feature = "encryption")]
     fn truncated_encref_node_bytes(version: &VersionHash, len: usize) -> Vec<u8> {
         assert!(len >= NodeHeader::SIZE);
         let mut data = vec![0u8; len];
@@ -931,7 +930,6 @@ mod tests {
     /// slot is `data[64..128]` and the forks index `data[128..160]`, so every
     /// length below 160 must return `Err` (the PR bounds check, exercised for
     /// the encrypted-ref path), never panic.
-    #[cfg(feature = "encryption")]
     #[test]
     fn decode_encref_truncated_lengths_return_err() {
         use nectar_primitives::EncryptedChunkRef;
@@ -949,7 +947,6 @@ mod tests {
 
     /// A full 160-byte encrypted-ref node whose index demands a fork ref that
     /// is not present must hit the guarded error path, not panic.
-    #[cfg(feature = "encryption")]
     #[test]
     fn decode_encref_index_demands_missing_fork_returns_err() {
         use nectar_primitives::EncryptedChunkRef;
@@ -967,9 +964,9 @@ mod tests {
 
     /// Replay the committed seed corpus of the `mantaray_node_decode` fuzz
     /// target through the exact decode entry points the fuzzer exercises
-    /// (`Node::<ChunkRef>` for 32-byte plain entries and, under the
-    /// `encryption` feature, `Node::<EncryptedChunkRef>` for 64-byte
-    /// entries). The oracle is "no panic";
+    /// (`Node::<ChunkRef>` for 32-byte plain entries and
+    /// `Node::<EncryptedChunkRef>` for 64-byte entries).
+    /// The oracle is "no panic";
     /// `Err` is an acceptable outcome for any seed. Additionally pin the
     /// intent of each seed by name: `crash-*` seeds must stay `Err` (they
     /// are fixed panic reproducers), `valid-*` seeds must decode `Ok`.
@@ -989,10 +986,8 @@ mod tests {
             let data = std::fs::read(&path).unwrap();
 
             // The fuzz oracle: must not panic. Drive both entry widths the
-            // fuzz target drives; the 64-byte `EncryptedChunkRef` path only
-            // exists under the `encryption` feature.
+            // fuzz target drives.
             let result = Node::<ChunkRef>::decode(data.as_slice());
-            #[cfg(feature = "encryption")]
             let _ = Node::<nectar_primitives::EncryptedChunkRef>::decode(data.as_slice());
 
             if name.starts_with("crash-") {
@@ -1052,7 +1047,6 @@ mod tests {
             .join("../../fuzz/seeds/mantaray_record_roundtrip");
         let mut replayed = 0usize;
         let mut plain_decoded = 0usize;
-        #[cfg(feature = "encryption")]
         let mut wide_decoded = 0usize;
         for entry in std::fs::read_dir(&seed_dir)
             .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
@@ -1063,7 +1057,6 @@ mod tests {
             if record_round_trip::<ChunkRef>(&data) {
                 plain_decoded += 1;
             }
-            #[cfg(feature = "encryption")]
             if record_round_trip::<nectar_primitives::EncryptedChunkRef>(&data) {
                 wide_decoded += 1;
             }
@@ -1077,7 +1070,6 @@ mod tests {
             plain_decoded >= 2,
             "expected the v0.1 and v0.2 manifests to round-trip at the ChunkRef width, decoded {plain_decoded}"
         );
-        #[cfg(feature = "encryption")]
         assert!(
             wide_decoded >= 1,
             "expected the ref_size=64 seed to decode at the EncryptedChunkRef width"

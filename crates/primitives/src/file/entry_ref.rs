@@ -60,3 +60,42 @@ impl From<&EntryRef> for Vec<u8> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
+
+    /// Both widths parse and re-serialize without the `encryption` feature:
+    /// the representation is unconditional, only key generation and joining
+    /// are gated.
+    #[test]
+    fn parses_and_reserializes_both_widths() {
+        let plain_bytes = [0x11u8; ChunkRef::SIZE];
+        let plain = EntryRef::try_from_bytes(&plain_bytes).unwrap();
+        assert!(matches!(plain, EntryRef::Plain(_)));
+        assert_eq!(Vec::<u8>::from(&plain), plain_bytes);
+
+        let mut enc_bytes = [0x22u8; EncryptedChunkRef::SIZE];
+        enc_bytes[ChunkRef::SIZE..].fill(0x33);
+        let encrypted = EntryRef::try_from_bytes(&enc_bytes).unwrap();
+        let EntryRef::Encrypted(ref enc) = encrypted else {
+            panic!("64 bytes must parse as an encrypted reference");
+        };
+        assert_eq!(enc.address().as_bytes(), &[0x22u8; ChunkRef::SIZE]);
+        assert_eq!(
+            enc.key(),
+            &EncryptionKey::from([0x33u8; EncryptionKey::SIZE])
+        );
+        assert_eq!(Vec::<u8>::from(&encrypted), enc_bytes);
+    }
+
+    #[test]
+    fn rejects_other_widths() {
+        for len in [0usize, 31, 33, 63, 65, 96] {
+            let bytes = vec![0u8; len];
+            let err = EntryRef::try_from_bytes(&bytes).unwrap_err();
+            assert!(matches!(err, FileError::InvalidEntryRef { len: got } if got == len));
+        }
+    }
+}
