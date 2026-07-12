@@ -14,7 +14,7 @@
 use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use arbitrary::Unstructured;
-use nectar_primitives::{ChunkAddress, ChunkOps};
+use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 
 use crate::{Batch, BatchId, Stamp, StampDigest, StampIndex, StampedChunk};
 
@@ -72,7 +72,10 @@ pub fn signed_stamped_chunk<const BODY_SIZE: usize>(
 ) -> arbitrary::Result<(StampedChunk<BODY_SIZE>, Batch)> {
     let signer = nectar_primitives::generators::signer(u)?;
     let batch = batch(u, signer.address())?;
-    let chunk = nectar_primitives::generators::any_chunk::<BODY_SIZE>(u)?;
+    let chunk = Chunk::<Verified, AnyChunkSet<BODY_SIZE>>::from_envelope(
+        nectar_primitives::generators::any_chunk::<BODY_SIZE>(u)?,
+    )
+    .map_err(|_| arbitrary::Error::IncorrectFormat)?;
     let stamp = signed_stamp(u, &signer, &batch, chunk.address())?;
     Ok((StampedChunk::new(chunk, stamp), batch))
 }
