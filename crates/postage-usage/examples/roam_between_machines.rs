@@ -45,8 +45,8 @@ use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use nectar_postage::{Batch, BatchId};
 use nectar_postage_usage::{
-    BatchStamper, Mutability, PublishedSequence, SealedChunk, Snapshot, SnapshotSink,
-    SnapshotSource, SwarmAddress, UsageError, UsageTable,
+    BatchStamper, ChunkAddress, Mutability, PublishedSequence, SealedChunk, Snapshot, SnapshotSink,
+    SnapshotSource, UsageError, UsageTable,
 };
 use nectar_primitives::Chunk;
 
@@ -62,7 +62,7 @@ const BUCKET_DEPTH: u8 = 16;
 /// the bytes on the wire.
 #[derive(Clone, Default)]
 struct MemNet {
-    chunks: Arc<Mutex<HashMap<SwarmAddress, Bytes>>>,
+    chunks: Arc<Mutex<HashMap<ChunkAddress, Bytes>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,7 +71,7 @@ struct MemError;
 
 impl SnapshotSource for MemNet {
     type Error = MemError;
-    async fn fetch(&self, address: &SwarmAddress) -> Result<Option<Bytes>, Self::Error> {
+    async fn fetch(&self, address: &ChunkAddress) -> Result<Option<Bytes>, Self::Error> {
         Ok(self.chunks.lock().unwrap().get(address).cloned())
     }
 }
@@ -131,7 +131,7 @@ async fn machine_a(
 
     // Issue a content stamp. This is local: no network round trip, and the
     // reserved snapshot slots can never be assigned to content.
-    let content = SwarmAddress::from(B256::repeat_byte(0x99));
+    let content = ChunkAddress::from(B256::repeat_byte(0x99));
     let stamp_index = stamper.stamp(&content)?;
     println!(
         "issued a content stamp at bucket {}, slot {}",
@@ -175,7 +175,7 @@ async fn machine_b(
     // Resume issuing from the recovered state. A different content chunk lands in
     // a different bucket, advancing that counter without disturbing the
     // snapshot's own reserved slots.
-    let content = SwarmAddress::from(B256::repeat_byte(0xab));
+    let content = ChunkAddress::from(B256::repeat_byte(0xab));
     let stamp_index = stamper.stamp(&content)?;
     println!(
         "issued a content stamp at bucket {}, slot {}",

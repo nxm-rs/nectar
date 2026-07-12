@@ -2,8 +2,6 @@
 //!
 //! This module provides JavaScript-friendly wrappers around the BMT hasher.
 
-use std::ops::Deref;
-
 use alloy_primitives::{hex, Address, B256};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
@@ -772,7 +770,7 @@ pub fn create_content_chunk(data: &[u8]) -> Result<ContentChunkResult, JsValue> 
 
     // Return the result
     Ok(ContentChunkResult {
-        address: *chunk.address().deref(),
+        address: B256::from(*chunk.address()),
         data: data.to_vec(),
         serialized,
     })
@@ -855,7 +853,7 @@ pub fn create_single_owner_chunk(
 
     // Return the result
     Ok(SingleOwnerChunkResult {
-        address: *chunk.address().deref(),
+        address: B256::from(*chunk.address()),
         id: chunk_id,
         owner,
         data: data.to_vec(),
@@ -907,7 +905,7 @@ pub fn analyze_chunk(
         (Ok(content_chunk), _) if content_chunk.address() == &expected => Ok(ChunkAnalysisResult {
             is_valid: true,
             chunk_type: ChunkType::Content,
-            address: *content_chunk.address().deref(),
+            address: B256::from(*content_chunk.address()),
             data: content_chunk.data().to_vec(),
             id: None,
             owner: None,
@@ -918,7 +916,7 @@ pub fn analyze_chunk(
             Ok(ChunkAnalysisResult {
                 is_valid: true,
                 chunk_type: ChunkType::SingleOwner,
-                address: *single_owner_chunk.address().deref(),
+                address: B256::from(*single_owner_chunk.address()),
                 data: single_owner_chunk.data().to_vec(),
                 id: Some(single_owner_chunk.id().into()),
                 owner: single_owner_chunk.owner().ok(),
@@ -930,7 +928,7 @@ pub fn analyze_chunk(
         (Ok(content_chunk), _) => Ok(ChunkAnalysisResult {
             is_valid: false,
             chunk_type: ChunkType::Content,
-            address: *content_chunk.address().deref(),
+            address: B256::from(*content_chunk.address()),
             data: content_chunk.data().to_vec(),
             id: None,
             owner: None,
@@ -944,7 +942,7 @@ pub fn analyze_chunk(
         (_, Ok(single_owner_chunk)) => Ok(ChunkAnalysisResult {
             is_valid: false,
             chunk_type: ChunkType::SingleOwner,
-            address: *single_owner_chunk.address().deref(),
+            address: B256::from(*single_owner_chunk.address()),
             data: single_owner_chunk.data().to_vec(),
             id: Some(single_owner_chunk.id().into()),
             owner: single_owner_chunk.owner().ok(),

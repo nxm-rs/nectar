@@ -7,8 +7,8 @@ use bytes::{Bytes, BytesMut};
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
-use crate::SwarmAddress;
 use crate::bmt::{DEFAULT_BODY_SIZE, Hasher, SPAN_SIZE};
+use crate::chunk::ChunkAddress;
 use crate::chunk::error::{self, ChunkError};
 use crate::error::{PrimitivesError, Result};
 
@@ -17,7 +17,7 @@ use crate::error::{PrimitivesError, Result};
 pub struct BmtBody<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     span: u64,
     data: Bytes,
-    cached_hash: OnceLock<SwarmAddress>,
+    cached_hash: OnceLock<ChunkAddress>,
 }
 
 impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
@@ -51,11 +51,11 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
     }
 
     /// Compute the BMT hash of this body
-    pub fn hash(&self) -> SwarmAddress {
+    pub fn hash(&self) -> ChunkAddress {
         *self.cached_hash.get_or_init(|| self.calculate_hash())
     }
 
-    fn calculate_hash(&self) -> SwarmAddress {
+    fn calculate_hash(&self) -> ChunkAddress {
         let mut hasher: Hasher<BODY_SIZE> = Hasher::new();
         hasher.set_span(self.span);
         hasher.update(self.data.as_ref());

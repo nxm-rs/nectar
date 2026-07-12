@@ -53,7 +53,7 @@
 //!
 //! ```ignore
 //! use nectar_postage_issuer::{BatchId, BatchStamper, MemoryIssuer, Stamper};
-//! use nectar_primitives::SwarmAddress;
+//! use nectar_primitives::ChunkAddress;
 //! use alloy_signer_local::PrivateKeySigner;
 //!
 //! // Create an issuer for a batch

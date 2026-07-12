@@ -13,7 +13,7 @@
 )]
 use alloy_primitives::{B256, b256};
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::{SwarmAddress, XorMetric};
 use rand::prelude::*;
 
 pub fn address_benchmarks(c: &mut Criterion) {

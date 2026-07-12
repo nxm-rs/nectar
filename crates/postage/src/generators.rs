@@ -14,7 +14,7 @@
 use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use arbitrary::Unstructured;
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 use crate::{Batch, BatchId, Stamp, StampDigest, StampIndex, StampedChunk};
 
@@ -46,7 +46,7 @@ pub fn signed_stamp(
     u: &mut Unstructured<'_>,
     signer: &impl SignerSync,
     batch: &Batch,
-    address: &SwarmAddress,
+    address: &ChunkAddress,
 ) -> arbitrary::Result<Stamp> {
     let bucket = batch.bucket_for_address(address);
     let position = u.int_in_range(0..=batch.bucket_upper_bound().saturating_sub(1))?;

@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, B256, Signature, eip191_hash_message};
 use alloy_signer::k256::ecdsa::VerifyingKey;
 use byteorder::{BigEndian, ByteOrder};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 use crate::{BatchId, StampError};
 
@@ -283,7 +283,7 @@ impl Stamp {
     /// let signer = stamp.recover_signer(&chunk_address)?;
     /// println!("Stamp signed by: {}", signer);
     /// ```
-    pub fn recover_signer(&self, chunk_address: &SwarmAddress) -> Result<Address, StampError> {
+    pub fn recover_signer(&self, chunk_address: &ChunkAddress) -> Result<Address, StampError> {
         let digest = StampDigest::new(*chunk_address, self.batch, self.index, self.timestamp);
         let prehash = digest.to_prehash();
 
@@ -314,7 +314,7 @@ impl Stamp {
     /// let stamp = Stamp::try_from_slice(&bytes)?;
     /// stamp.verify(&chunk_address, batch.owner())?;
     /// ```
-    pub fn verify(&self, chunk_address: &SwarmAddress, owner: Address) -> Result<(), StampError> {
+    pub fn verify(&self, chunk_address: &ChunkAddress, owner: Address) -> Result<(), StampError> {
         let recovered = self.recover_signer(chunk_address)?;
         if recovered != owner {
             return Err(StampError::OwnerMismatch {
@@ -355,7 +355,7 @@ impl Stamp {
     ///     stamp.verify_with_pubkey(&addr, &pubkey)?;
     /// }
     /// ```
-    pub fn recover_pubkey(&self, chunk_address: &SwarmAddress) -> Result<VerifyingKey, StampError> {
+    pub fn recover_pubkey(&self, chunk_address: &ChunkAddress) -> Result<VerifyingKey, StampError> {
         let digest = StampDigest::new(*chunk_address, self.batch, self.index, self.timestamp);
         let prehash = digest.to_prehash();
 
@@ -408,7 +408,7 @@ impl Stamp {
     /// ```
     pub fn verify_with_pubkey(
         &self,
-        chunk_address: &SwarmAddress,
+        chunk_address: &ChunkAddress,
         pubkey: &VerifyingKey,
     ) -> Result<(), StampError> {
         use alloy_signer::k256::ecdsa::signature::hazmat::PrehashVerifier;
@@ -441,14 +441,14 @@ impl Stamp {
 ///
 /// ```compile_fail
 /// use nectar_postage::{BatchId, StampDigest, StampIndex};
-/// use nectar_primitives::SwarmAddress;
+/// use nectar_primitives::ChunkAddress;
 ///
-/// let _ = StampDigest::new(BatchId::ZERO, SwarmAddress::zero(), StampIndex::new(0, 0), 0);
+/// let _ = StampDigest::new(BatchId::ZERO, ChunkAddress::zero(), StampIndex::new(0, 0), 0);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StampDigest {
     /// The chunk address being stamped.
-    pub chunk_address: SwarmAddress,
+    pub chunk_address: ChunkAddress,
     /// The batch ID.
     pub batch_id: BatchId,
     /// The stamp index (bucket and position).
@@ -461,7 +461,7 @@ impl StampDigest {
     /// Creates a new stamp digest.
     #[inline]
     pub const fn new(
-        chunk_address: SwarmAddress,
+        chunk_address: ChunkAddress,
         batch_id: BatchId,
         index: StampIndex,
         timestamp: u64,
@@ -644,7 +644,7 @@ mod tests {
         ).unwrap();
         let expected_owner: Address = "8d3766440f0d7b949a5e32995d09619a7f86e632".parse().unwrap();
 
-        let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
+        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
         let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
 
         // Test recover_signer
@@ -665,7 +665,7 @@ mod tests {
         let expected_owner: Address = "8d3766440f0d7b949a5e32995d09619a7f86e632".parse().unwrap();
         let wrong_owner: Address = "0000000000000000000000000000000000000001".parse().unwrap();
 
-        let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
+        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
         let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
 
         // Verify with correct owner should succeed
@@ -690,7 +690,7 @@ mod tests {
         ).unwrap();
         let expected_owner: Address = "8d3766440f0d7b949a5e32995d09619a7f86e632".parse().unwrap();
 
-        let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
+        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
         let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
 
         // Test recover_pubkey
@@ -712,7 +712,7 @@ mod tests {
             "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
         ).unwrap();
 
-        let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
+        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
         let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
 
         // First recover the public key
@@ -731,7 +731,7 @@ mod tests {
 
         // Create a stamp with one signer
         let signer = PrivateKeySigner::random();
-        let chunk_address = SwarmAddress::new([0xAB; 32]);
+        let chunk_address = ChunkAddress::new([0xAB; 32]);
         let batch_id = BatchId::ZERO;
         let index = StampIndex::new(0, 0);
         let timestamp = 12345u64;
@@ -785,9 +785,9 @@ mod tests {
             // stamp is recovered against; ECDSA recovery over arbitrary
             // stamp fields must not panic.
             let address = if data.len() >= STAMP_SIZE + 32 {
-                SwarmAddress::from_slice(&data[STAMP_SIZE..STAMP_SIZE + 32]).unwrap()
+                ChunkAddress::from_slice(&data[STAMP_SIZE..STAMP_SIZE + 32]).unwrap()
             } else {
-                SwarmAddress::zero()
+                ChunkAddress::zero()
             };
             let _ = stamp.recover_signer(&address);
             let _ = stamp.verify(&address, Address::ZERO);

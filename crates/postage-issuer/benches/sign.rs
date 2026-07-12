@@ -22,15 +22,15 @@ use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_mai
 use nectar_postage_issuer::{
     BatchId, BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 use rand::RngExt;
 
-/// Generate a random SwarmAddress for benchmarking.
-fn random_address() -> SwarmAddress {
+/// Generate a random ChunkAddress for benchmarking.
+fn random_address() -> ChunkAddress {
     let mut rng = rand::rng();
     let mut bytes = [0u8; 32];
     rng.fill(&mut bytes);
-    SwarmAddress::new(bytes)
+    ChunkAddress::new(bytes)
 }
 
 // Mock Signer (for measuring non-crypto overhead)
@@ -64,7 +64,7 @@ fn bench_stamper_mock(c: &mut Criterion) {
         })
     });
 
-    let addresses: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
+    let addresses: Vec<ChunkAddress> = (0..1000).map(|_| random_address()).collect();
     group.throughput(Throughput::Elements(1000));
 
     group.bench_function("throughput_1000", |b| {
@@ -84,7 +84,7 @@ fn bench_stamper_mock(c: &mut Criterion) {
 
 fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
-    let addresses: Vec<SwarmAddress> = (0..100).map(|_| random_address()).collect();
+    let addresses: Vec<ChunkAddress> = (0..100).map(|_| random_address()).collect();
 
     let mut group = c.benchmark_group("ecdsa_sign_sequential");
 
@@ -116,8 +116,8 @@ fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
 
 fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
-    let addresses_100: Vec<SwarmAddress> = (0..100).map(|_| random_address()).collect();
-    let addresses_1000: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
+    let addresses_100: Vec<ChunkAddress> = (0..100).map(|_| random_address()).collect();
+    let addresses_1000: Vec<ChunkAddress> = (0..1000).map(|_| random_address()).collect();
 
     // Use sign_message_sync for EIP-191 compatibility
     let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
@@ -151,7 +151,7 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
 
 fn bench_sign_comparison(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
-    let addresses: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
+    let addresses: Vec<ChunkAddress> = (0..1000).map(|_| random_address()).collect();
 
     // Use sign_message_sync for EIP-191 compatibility
     let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {

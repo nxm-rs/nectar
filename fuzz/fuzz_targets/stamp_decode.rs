@@ -14,7 +14,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use nectar_postage::{STAMP_SIZE, Stamp};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 fuzz_target!(|data: &[u8]| {
     // Whole-input decode covers the exact-length check path.
@@ -24,7 +24,7 @@ fuzz_target!(|data: &[u8]| {
     // so signer recovery runs over arbitrary stamp fields.
     if data.len() >= STAMP_SIZE + 32
         && let Ok(stamp) = Stamp::try_from_slice(&data[..STAMP_SIZE])
-        && let Ok(address) = SwarmAddress::from_slice(&data[STAMP_SIZE..STAMP_SIZE + 32])
+        && let Ok(address) = ChunkAddress::from_slice(&data[STAMP_SIZE..STAMP_SIZE + 32])
     {
         let _ = stamp.recover_signer(&address);
     }

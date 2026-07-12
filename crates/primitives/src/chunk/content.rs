@@ -12,8 +12,9 @@ use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::cache::OnceCache;
 use crate::error::{PrimitivesError, Result};
 
+use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
-use super::traits::{BmtChunk, Chunk, ChunkAddress, ChunkHeader, ChunkMetadata};
+use super::traits::{BmtChunk, Chunk, ChunkHeader, ChunkMetadata};
 
 /// A content-addressed chunk with configurable body size.
 ///

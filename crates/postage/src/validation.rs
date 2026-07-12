@@ -1,7 +1,7 @@
 //! Stamp validation traits and utilities.
 
 use crate::{PostageContext, Stamp, StampError};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 #[cfg(any(test, feature = "std"))]
 use crate::Batch;
@@ -26,14 +26,14 @@ use crate::{BatchStore, BatchStoreExt};
 ///
 /// ```ignore
 /// use nectar_postage::{StampValidator, Stamp, PostageContext};
-/// use nectar_primitives::SwarmAddress;
+/// use nectar_primitives::ChunkAddress;
 ///
 /// struct MyValidator { /* ... */ }
 ///
 /// impl StampValidator for MyValidator {
 ///     type Error = nectar_postage::StampError;
 ///
-///     fn validate(&self, stamp: &Stamp, address: &SwarmAddress, state: &PostageContext) -> Result<(), Self::Error> {
+///     fn validate(&self, stamp: &Stamp, address: &ChunkAddress, state: &PostageContext) -> Result<(), Self::Error> {
 ///         // Validation logic...
 ///         Ok(())
 ///     }
@@ -57,7 +57,7 @@ pub trait StampValidator {
     fn validate(
         &self,
         stamp: &Stamp,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         state: &PostageContext,
     ) -> Result<(), Self::Error>;
 
@@ -77,7 +77,7 @@ pub trait StampValidator {
     fn validate_structure(
         &self,
         stamp: &Stamp,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         state: &PostageContext,
     ) -> Result<(), Self::Error> {
         self.validate(stamp, address, state)
@@ -151,7 +151,7 @@ impl<S: BatchStore> StoreValidator<S> {
     /// # Returns
     ///
     /// `Ok(())` if the stamp is valid, or a [`StampError`] describing the failure.
-    pub fn validate(&self, stamp: &Stamp, address: &SwarmAddress) -> Result<(), StampError> {
+    pub fn validate(&self, stamp: &Stamp, address: &ChunkAddress) -> Result<(), StampError> {
         // Get the batch and verify it's usable
         let batch = self.get_batch_for_stamp(stamp)?;
 
@@ -171,7 +171,7 @@ impl<S: BatchStore> StoreValidator<S> {
     pub fn validate_structure(
         &self,
         stamp: &Stamp,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
     ) -> Result<(), StampError> {
         let batch = self.get_batch_for_stamp(stamp)?;
         self.validate_structure_with_batch(stamp, address, &batch)
@@ -209,7 +209,7 @@ impl<S: BatchStore> StoreValidator<S> {
     fn validate_structure_with_batch(
         &self,
         stamp: &Stamp,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         batch: &Batch,
     ) -> Result<(), StampError> {
         // Validate index bounds
@@ -264,7 +264,7 @@ mod tests {
     fn test_bucket_for_address() {
         let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
 
-        let address = SwarmAddress::new([
+        let address = ChunkAddress::new([
             0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0,
         ]);
@@ -276,7 +276,7 @@ mod tests {
     fn test_validate_bucket_match() {
         let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
 
-        let address = SwarmAddress::new([
+        let address = ChunkAddress::new([
             0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0,
         ]);
@@ -289,7 +289,7 @@ mod tests {
     fn test_validate_bucket_mismatch() {
         let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
 
-        let address = SwarmAddress::new([
+        let address = ChunkAddress::new([
             0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0,
         ]);

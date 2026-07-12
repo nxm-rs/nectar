@@ -9,10 +9,11 @@ use bytes::Bytes;
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::error::Result;
 
+use super::address::ChunkAddress;
 use super::chunk_type::ChunkType;
 use super::content::ContentChunk;
 use super::single_owner::SingleOwnerChunk;
-use super::traits::{Chunk, ChunkAddress};
+use super::traits::Chunk;
 use super::type_id::ChunkTypeId;
 
 /// Type-erased chunk for runtime polymorphism with configurable body size.
@@ -138,7 +139,7 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
             Self::SingleOwner(c) => {
                 let inner = c.inner_body().transformed_root(anchor);
                 let mut hasher = Keccak256::new();
-                hasher.update(c.address().as_slice());
+                hasher.update(c.address());
                 hasher.update(inner.as_slice());
                 ChunkAddress::from(hasher.finalize())
             }
@@ -607,7 +608,7 @@ mod tests {
 
         // The chunk's plain BMT address is the unprefixed root.
         assert_eq!(
-            hex::encode(content.address().as_slice()),
+            hex::encode(content.address().as_bytes()),
             WANT_CHUNK_ADDR,
             "plain BMT address must match bee's published vector",
         );
@@ -615,7 +616,7 @@ mod tests {
         let any: DefaultAnyChunk = content.into();
         let tr = any.transformed_address(ANCHOR);
         assert_eq!(
-            hex::encode(tr.as_slice()),
+            hex::encode(tr.as_bytes()),
             WANT_TRANSFORMED,
             "CAC transformed address must match bee byte-for-byte",
         );
@@ -647,7 +648,7 @@ mod tests {
 
         // Sanity: this SOC's own address matches the oracle.
         assert_eq!(
-            hex::encode(soc.address().as_slice()),
+            hex::encode(soc.address().as_bytes()),
             WANT_CHUNK_ADDR,
             "SOC address must match bee's oracle",
         );
@@ -661,7 +662,7 @@ mod tests {
         let any: DefaultAnyChunk = soc.into();
         let tr = any.transformed_address(ANCHOR);
         assert_eq!(
-            hex::encode(tr.as_slice()),
+            hex::encode(tr.as_bytes()),
             WANT_TRANSFORMED,
             "SOC transformed address must match bee byte-for-byte",
         );

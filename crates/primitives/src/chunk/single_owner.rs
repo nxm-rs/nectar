@@ -16,10 +16,11 @@ use crate::cache::OnceCache;
 use crate::chunk::error::{self, ChunkError};
 use crate::error::Result;
 
+use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::content::ContentChunk;
 use super::soc_id::SocId;
-use super::traits::{BmtChunk, Chunk, ChunkAddress, ChunkHeader, ChunkMetadata};
+use super::traits::{BmtChunk, Chunk, ChunkHeader, ChunkMetadata};
 
 // Constants for field sizes
 const ID_SIZE: usize = std::mem::size_of::<B256>();
@@ -283,7 +284,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     // Checks if the chunk is a valid dispersed replica
     #[allow(clippy::indexing_slicing)] // both id and body hash are fixed 32-byte values, so [1..] holds
     fn is_valid_replica(&self) -> bool {
-        self.id().as_slice()[1..] == self.body.hash().as_slice()[1..]
+        self.id().as_slice()[1..] == self.body.hash().as_bytes()[1..]
     }
 
     /// Get the ID of this chunk.
@@ -563,7 +564,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
         let body_hash = self.body.as_ref().unwrap().hash();
         let mut id = B256::default();
         id[0] = first_byte;
-        id[1..].copy_from_slice(&body_hash.as_slice()[1..]);
+        id[1..].copy_from_slice(&body_hash.as_bytes()[1..]);
 
         let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
 

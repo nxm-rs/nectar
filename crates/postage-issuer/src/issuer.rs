@@ -3,7 +3,7 @@
 use crate::counter::{CounterMode, CounterTable};
 use crate::error::IssuerError;
 use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 /// A trait for managing stamp issuance within a batch.
 ///
@@ -21,12 +21,12 @@ use nectar_primitives::SwarmAddress;
 ///
 /// ```ignore
 /// use nectar_postage_issuer::{StampIssuer, StampDigest, StampError};
-/// use nectar_primitives::SwarmAddress;
+/// use nectar_primitives::ChunkAddress;
 ///
 /// struct MyIssuer { /* ... */ }
 ///
 /// impl StampIssuer for MyIssuer {
-///     fn prepare_stamp(&mut self, address: &SwarmAddress, timestamp: u64) -> Result<StampDigest, StampError> {
+///     fn prepare_stamp(&mut self, address: &ChunkAddress, timestamp: u64) -> Result<StampDigest, StampError> {
 ///         // Allocate index and return digest
 ///         todo!()
 ///     }
@@ -59,7 +59,7 @@ pub trait StampIssuer {
     /// Returns `StampError::BucketFull` if the bucket has no remaining capacity.
     fn prepare_stamp(
         &mut self,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError>;
 
@@ -204,7 +204,7 @@ impl MemoryIssuer {
 impl StampIssuer for MemoryIssuer {
     fn prepare_stamp(
         &mut self,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
         let bucket = calculate_bucket(address, self.counters.bucket_depth());
@@ -262,7 +262,7 @@ impl StampIssuer for MemoryIssuer {
 mod tests {
     use super::*;
 
-    fn test_address(leading: u16) -> SwarmAddress {
+    fn test_address(leading: u16) -> ChunkAddress {
         let mut bytes = [0u8; 32];
         // Big-endian split of a u16: `leading >> 8` is <= 0xFF and the low-byte
         // truncation is the intended extraction; both casts are lossless.
@@ -271,7 +271,7 @@ mod tests {
             bytes[0] = (leading >> 8) as u8;
             bytes[1] = leading as u8;
         }
-        SwarmAddress::new(bytes)
+        ChunkAddress::new(bytes)
     }
 
     #[test]

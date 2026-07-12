@@ -871,7 +871,7 @@ fn failed_allocation_rolls_back_the_snapshot() {
 }
 
 /// Returns a chunk address whose top `BUCKET_DEPTH` bits select `bucket`.
-fn address_in_bucket(bucket: u32) -> nectar_primitives::SwarmAddress {
+const fn address_in_bucket(bucket: u32) -> nectar_primitives::ChunkAddress {
     let mut bytes = [0u8; 32];
     // bucket occupies the most-significant BUCKET_DEPTH (=16) bits: take the
     // low two big-endian bytes of the u32 (identical to the former `>> 8` /
@@ -879,7 +879,7 @@ fn address_in_bucket(bucket: u32) -> nectar_primitives::SwarmAddress {
     let [_, _, hi, lo] = bucket.to_be_bytes();
     bytes[0] = hi;
     bytes[1] = lo;
-    nectar_primitives::SwarmAddress::new(bytes)
+    nectar_primitives::ChunkAddress::new(bytes)
 }
 
 /// A fresh table for a batch already published at a higher sequence is the

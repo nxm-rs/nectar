@@ -4,7 +4,7 @@
 use alloy_primitives::Address;
 use nectar_postage::{BatchId, StampDigest, StampError};
 use nectar_postage_issuer::StampIssuer;
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 use crate::Snapshot;
 use crate::error::UsageError;
@@ -62,7 +62,7 @@ impl SnapshotIssuer {
 impl StampIssuer for SnapshotIssuer {
     fn prepare_stamp(
         &mut self,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         timestamp: u64,
     ) -> core::result::Result<StampDigest, StampError> {
         let index = self

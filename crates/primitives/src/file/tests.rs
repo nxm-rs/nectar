@@ -116,7 +116,7 @@ fn run_vector_test(size: usize, expected_hex: &str) {
     let (root, _) = splitter.finish().unwrap();
 
     assert_eq!(
-        hex::encode(root.as_slice()),
+        hex::encode(root.as_bytes()),
         expected_hex,
         "Root hash mismatch for size {} bytes",
         size

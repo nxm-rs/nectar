@@ -3,13 +3,11 @@
 //! This module defines the core traits that all chunk types must implement,
 //! along with serialization and deserialization functionality.
 
-use crate::SwarmAddress;
 use crate::chunk::error;
 use crate::error::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 
-/// Type alias for chunk addresses
-pub type ChunkAddress = SwarmAddress;
+use super::address::ChunkAddress;
 
 /// Core trait for chunk metadata
 pub trait ChunkMetadata {
