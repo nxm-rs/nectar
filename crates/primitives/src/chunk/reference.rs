@@ -38,13 +38,32 @@ impl RefKind {
 /// A chunk reference whose width is a compile-time fact.
 ///
 /// Sealed: the only references are [`ChunkRef`] and
-/// [`EncryptedChunkRef`](crate::chunk::encryption::EncryptedChunkRef).
-pub trait Reference: sealed::Sealed + Sized {
+/// [`EncryptedChunkRef`](crate::chunk::encryption::EncryptedChunkRef). The width
+/// fact is stated once, on [`Self::KIND`]; wire serialization derives from it,
+/// so no caller restates 32 or 64.
+pub trait Reference: sealed::Sealed + Sized + Clone + Eq + core::fmt::Debug + 'static {
     /// Which width this reference carries.
     const KIND: RefKind;
 
     /// Wire width in bytes; the width fact, derived from [`Self::KIND`].
     const SIZE: usize = Self::KIND.size();
+
+    /// The chunk address this reference names.
+    fn address(&self) -> &ChunkAddress;
+
+    /// Append this reference's [`SIZE`](Self::SIZE) wire bytes to `out`.
+    fn write_to(&self, out: &mut Vec<u8>);
+
+    /// Reconstruct from exactly [`SIZE`](Self::SIZE) wire bytes; `None` on any
+    /// other length.
+    fn from_wire_bytes(bytes: &[u8]) -> Option<Self>;
+
+    /// This reference's [`SIZE`](Self::SIZE) wire bytes as an owned buffer.
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::SIZE);
+        self.write_to(&mut out);
+        out
+    }
 
     /// Read a reference from `cursor`, or `None` when the slot is the all-zero
     /// sentinel. Each impl reads its own typed fields; the cursor is the sole
@@ -91,6 +110,19 @@ impl sealed::Sealed for ChunkRef {}
 impl Reference for ChunkRef {
     const KIND: RefKind = RefKind::Unencrypted;
 
+    fn address(&self) -> &ChunkAddress {
+        &self.0
+    }
+
+    fn write_to(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(self.0.as_bytes());
+    }
+
+    fn from_wire_bytes(bytes: &[u8]) -> Option<Self> {
+        let bytes: [u8; Self::SIZE] = bytes.try_into().ok()?;
+        Some(Self::new(ChunkAddress::from(bytes)))
+    }
+
     fn read_optional(cursor: &mut Cursor<'_>) -> Result<Option<Self>, Underrun> {
         let addr = cursor.take::<[u8; ChunkAddress::SIZE]>()?;
         if addr.iter().all(|&b| b == 0) {
@@ -98,6 +130,13 @@ impl Reference for ChunkRef {
         } else {
             Ok(Some(Self(ChunkAddress::new(addr))))
         }
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for ChunkRef {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self::new(ChunkAddress::arbitrary(u)?))
     }
 }
 

@@ -3,12 +3,11 @@
 use std::collections::BTreeMap;
 
 use crate::error::{MantarayError, Result};
-use crate::mode::NodeEntry;
 use crate::node::{Fork, Node, NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 
 use alloy_primitives::{U256, hex};
-use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::chunk::{ChunkAddress, Reference};
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 /// Mantaray wire format version (truncated keccak256, 31 bytes).
@@ -138,18 +137,18 @@ fn xor_in_place(data: &mut [u8], key: &[u8]) {
     }
 }
 
-impl<E: NodeEntry> TryFrom<&Node<E>> for Vec<u8> {
+impl<R: Reference> TryFrom<&Node<R>> for Vec<u8> {
     type Error = MantarayError;
 
     #[inline]
-    fn try_from(node: &Node<E>) -> Result<Self> {
+    fn try_from(node: &Node<R>) -> Result<Self> {
         encode_node(node)
     }
 }
 
 #[allow(clippy::arithmetic_side_effects)] // size arithmetic sums in-memory buffer lengths (<= 256 forks) and cannot overflow usize
-fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
-    let ref_size = E::SIZE;
+fn encode_node<R: Reference>(node: &Node<R>) -> Result<Vec<u8>> {
+    let ref_size = R::SIZE;
     // Pre-allocate: header + entry + bitfield + estimated fork data
     let estimated = NodeHeader::SIZE
         + ref_size
@@ -165,11 +164,11 @@ fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
     // Header: obfuscation key, version hash, ref_size byte (NodeHeader::SIZE).
     data.extend_from_slice(obfuscation_key);
     data.extend_from_slice(VersionHash::V02.as_bytes());
-    #[allow(clippy::as_conversions)] // ref_size = E::SIZE (32 or 64), always fits u8
+    #[allow(clippy::as_conversions)] // ref_size = R::SIZE (32 or 64), always fits u8
     let ref_size_byte = ref_size as u8;
     data.push(ref_size_byte);
 
-    // append entry (or E::SIZE zero bytes if empty)
+    // append entry (or R::SIZE zero bytes if empty)
     match &node.entry {
         Some(e) => e.write_to(&mut data),
         None => data.resize(data.len() + ref_size, 0),
@@ -195,7 +194,7 @@ fn encode_node<E: NodeEntry>(node: &Node<E>) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-impl<E: NodeEntry> TryFrom<&[u8]> for Node<E> {
+impl<R: Reference> TryFrom<&[u8]> for Node<R> {
     type Error = MantarayError;
 
     fn try_from(value: &[u8]) -> Result<Self> {
@@ -209,7 +208,7 @@ impl<E: NodeEntry> TryFrom<&[u8]> for Node<E> {
         let obfuscation_key = ObfuscationKey::from(*key);
         xor_in_place(body, obfuscation_key.as_bytes());
 
-        let mut node = decode_node::<E>(&data)?;
+        let mut node = decode_node::<R>(&data)?;
         node.obfuscation_key = obfuscation_key;
         node.loaded = true;
         Ok(node)
@@ -246,13 +245,13 @@ enum RefSize {
 }
 
 /// Decode a decrypted node buffer: header, then the version-specific body.
-fn decode_node<E: NodeEntry>(data: &[u8]) -> Result<Node<E>> {
+fn decode_node<R: Reference>(data: &[u8]) -> Result<Node<R>> {
     let total = data.len();
     let mut cur = Cursor::new(data);
     let (version, ref_size) = parse_header(&mut cur)?;
     match ref_size {
         RefSize::EmptyTerminal => decode_empty_terminal(&mut cur),
-        RefSize::Declared(width) => decode_body::<E>(&mut cur, version, width, total),
+        RefSize::Declared(width) => decode_body::<R>(&mut cur, version, width, total),
     }
 }
 
@@ -287,13 +286,13 @@ fn parse_header(cur: &mut Cursor<'_>) -> Result<(VersionHash, RefSize)> {
 /// have zero width), so it is rejected as malformed rather than silently
 /// dropping forks the way bee's v0.2 decoder does
 /// (`bee/pkg/manifest/mantaray/marshal.go:285-287`). See the HAZMAT block.
-fn decode_empty_terminal<E: NodeEntry>(cur: &mut Cursor<'_>) -> Result<Node<E>> {
+fn decode_empty_terminal<R: Reference>(cur: &mut Cursor<'_>) -> Result<Node<R>> {
     let index = cur
         .take::<[u8; FORK_INDEX_SIZE]>()
         .map_err(|_| MantarayError::DataTooShort)?;
     if index.iter().any(|&b| b != 0) {
         return Err(MantarayError::EntrySizeMismatch {
-            expected: E::SIZE,
+            expected: R::SIZE,
             actual: 0,
         });
     }
@@ -321,31 +320,26 @@ fn insufficient_fork(underrun: Underrun, total: usize, byte_index: u8) -> Mantar
 /// The entry slot and index are both read before the entry is validated, so a
 /// truncated index reports `DataTooShort` rather than an entry-shaped error.
 /// v0.2 derives the root EDGE flag from a non-empty index; v0.1 leaves it unset.
-fn decode_body<E: NodeEntry>(
+fn decode_body<R: Reference>(
     cur: &mut Cursor<'_>,
     version: VersionHash,
     ref_size: usize,
     total: usize,
-) -> Result<Node<E>> {
-    if ref_size != E::SIZE {
+) -> Result<Node<R>> {
+    if ref_size != R::SIZE {
         return Err(MantarayError::EntrySizeMismatch {
-            expected: E::SIZE,
+            expected: R::SIZE,
             actual: ref_size,
         });
     }
 
-    let entry_bytes = cur
-        .take_slice(ref_size)
-        .map_err(|_| MantarayError::DataTooShort)?;
+    // The entry slot is a zero-sentinel `Option<R>`: `read_optional` maps the
+    // all-zero width to `None`. The index is read next so a truncated index
+    // reports `DataTooShort` rather than an entry-shaped error.
+    let entry = R::read_optional(cur).map_err(|_| MantarayError::DataTooShort)?;
     let index_bytes = cur
         .take::<[u8; FORK_INDEX_SIZE]>()
         .map_err(|_| MantarayError::DataTooShort)?;
-
-    let entry = if entry_bytes.iter().all(|&b| b == 0) {
-        None
-    } else {
-        Some(E::try_from_bytes(entry_bytes)?)
-    };
 
     let mut node_type = NodeType::empty();
     if matches!(version, VersionHash::V02) && index_bytes.iter().any(|&b| b != 0) {
@@ -356,7 +350,7 @@ fn decode_body<E: NodeEntry>(
     let mut forks = BTreeMap::new();
     for b in 0..=u8::MAX {
         if index.bit(usize::from(b)) {
-            forks.insert(b, parse_fork::<E>(cur, version, ref_size, b, total)?);
+            forks.insert(b, parse_fork::<R>(cur, version, ref_size, b, total)?);
         }
     }
 
@@ -374,14 +368,14 @@ fn decode_body<E: NodeEntry>(
 /// before the body is consumed, so every availability check precedes prefix
 /// and metadata parsing. v0.1 carries no metadata: its fork body is always the
 /// pre-reference region plus one reference.
-#[allow(clippy::arithmetic_side_effects)] // fork widths sum header constants, E::SIZE (<= 64) and a u16-bounded metadata length; the running cursor never exceeds the buffer
-fn parse_fork<E: NodeEntry>(
+#[allow(clippy::arithmetic_side_effects)] // fork widths sum header constants, R::SIZE (<= 64) and a u16-bounded metadata length; the running cursor never exceeds the buffer
+fn parse_fork<R: Reference>(
     cur: &mut Cursor<'_>,
     version: VersionHash,
     ref_size: usize,
     byte_index: u8,
     total: usize,
-) -> Result<Fork<E>> {
+) -> Result<Fork<R>> {
     let mut peek = cur.clone();
     let node_type = NodeType::from_bits_truncate(
         peek.take::<u8>()
@@ -407,7 +401,7 @@ fn parse_fork<E: NodeEntry>(
     let body = cur
         .take_slice(body_size)
         .map_err(|u| insufficient_fork(u, total, byte_index))?;
-    parse_fork_body::<E>(body, ref_size, has_metadata)
+    parse_fork_body::<R>(body, ref_size, has_metadata)
 }
 
 /// Parse a complete, correctly sized fork body: header, reference (address
@@ -416,11 +410,11 @@ fn parse_fork<E: NodeEntry>(
 /// Only the first 32 bytes of the reference slot are retained: a fork child is
 /// addressed by its chunk address, so the encryption-key half of a 64-byte
 /// reference is dropped.
-fn parse_fork_body<E: NodeEntry>(
+fn parse_fork_body<R: Reference>(
     body: &[u8],
     ref_size: usize,
     has_metadata: bool,
-) -> Result<Fork<E>> {
+) -> Result<Fork<R>> {
     let mut cur = Cursor::new(body);
     let ForkHeader { node_type, prefix } = cur.take::<ForkHeader>()?;
 
@@ -513,13 +507,13 @@ impl WireMetadata {
     }
 }
 
-impl<'a, E: NodeEntry> TryFrom<&'a Fork<E>> for WireFork<'a> {
+impl<'a, R: Reference> TryFrom<&'a Fork<R>> for WireFork<'a> {
     type Error = MantarayError;
 
     /// Resolve a fork into an emittable record. A child without a saved
     /// reference cannot be encoded into a decodable stream, so it is rejected
     /// here, before any bytes are written.
-    fn try_from(fork: &'a Fork<E>) -> Result<Self> {
+    fn try_from(fork: &'a Fork<R>) -> Result<Self> {
         let address = fork
             .node
             .reference
@@ -534,7 +528,7 @@ impl<'a, E: NodeEntry> TryFrom<&'a Fork<E>> for WireFork<'a> {
             node_type: fork.node.node_type,
             prefix: &fork.prefix,
             address,
-            ref_size: E::SIZE,
+            ref_size: R::SIZE,
             metadata,
         })
     }
@@ -562,6 +556,7 @@ mod tests {
     use super::*;
     use alloy_primitives::hex;
     use alloy_primitives::utils::keccak256;
+    use nectar_primitives::chunk::ChunkRef;
 
     const ENCODED_V01: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950ac787fbce1061870e8d34e0a638bc7e812c7ca4ebd31d626a572ba47b06f6952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64950fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
     const ENCODED_V02: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64905954fb18659339d0b25e0fb9723d3cd5d528fb3c8d495fd157bd7b7a210496952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64940fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952e3872548ec012a6e123b60f9177017fb12e57732621d2c1ada267adbe8cc4350f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
@@ -616,7 +611,7 @@ mod tests {
     #[test]
     fn decode_v01() {
         let data = hex::decode(ENCODED_V01).unwrap();
-        let n = Node::<ChunkAddress>::try_from(data.as_slice()).unwrap();
+        let n = Node::<ChunkRef>::try_from(data.as_slice()).unwrap();
 
         let mut expect_bytes = hex::decode(&ENCODED_V01[128..192]).unwrap();
         xor_in_place(&mut expect_bytes, n.obfuscation_key().as_bytes());
@@ -625,7 +620,7 @@ mod tests {
         if expect_bytes.iter().all(|&b| b == 0) {
             assert!(n.entry().is_none());
         } else {
-            assert_eq!(n.entry().unwrap().as_bytes(), &expect_bytes[..]);
+            assert_eq!(n.entry().unwrap().address().as_bytes(), &expect_bytes[..]);
         }
         assert_eq!(test_entries().len(), n.forks().len());
 
@@ -639,7 +634,7 @@ mod tests {
     #[test]
     fn decode_v02() {
         let data = hex::decode(ENCODED_V02).unwrap();
-        let n = Node::<ChunkAddress>::try_from(data.as_slice()).unwrap();
+        let n = Node::<ChunkRef>::try_from(data.as_slice()).unwrap();
 
         let mut expect_bytes = hex::decode(&ENCODED_V02[128..192]).unwrap();
         xor_in_place(&mut expect_bytes, n.obfuscation_key().as_bytes());
@@ -648,7 +643,7 @@ mod tests {
         if expect_bytes.iter().all(|&b| b == 0) {
             assert!(n.entry().is_none());
         } else {
-            assert_eq!(n.entry().unwrap().as_bytes(), &expect_bytes[..]);
+            assert_eq!(n.entry().unwrap().address().as_bytes(), &expect_bytes[..]);
         }
         assert_eq!(test_entries().len(), n.forks().len());
 
@@ -698,21 +693,21 @@ mod tests {
 
     #[test]
     fn decode_nil_input() {
-        let result = Node::<ChunkAddress>::try_from([].as_slice());
+        let result = Node::<ChunkRef>::try_from([].as_slice());
         assert!(matches!(result, Err(MantarayError::DataTooShort)));
     }
 
     #[test]
     fn decode_too_short_for_header() {
         let data = vec![0u8; NodeHeader::SIZE - 1];
-        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(result, Err(MantarayError::DataTooShort)));
     }
 
     #[test]
     fn decode_invalid_version_hash() {
         let data = vec![0u8; NodeHeader::SIZE];
-        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(result, Err(MantarayError::InvalidVersionHash)));
     }
 
@@ -724,7 +719,7 @@ mod tests {
         let data = hex::decode(
             "00000000000000000000000000000000000000000000000000000000000000005768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f200000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000016012f0000000000000000000000000000000000000000000000000000000000e87f95c3d081c4fede769b6c69e27b435e525cbd25c6715c607e7c531e329639005d7b22776562736974652d696e6465782d646f63756d656e74223a2233356561656538316262363338303436393965633637316265323736326465626665346662643330636461646139303232393239646131613965366134366436227d0a"
         ).unwrap();
-        assert!(Node::<ChunkAddress>::try_from(data.as_slice()).is_ok());
+        assert!(Node::<ChunkRef>::try_from(data.as_slice()).is_ok());
     }
 
     /// Test vector: metadata size field says 89 but actual content needs 93.
@@ -734,7 +729,7 @@ mod tests {
         let data = hex::decode(
             "00000000000000000000000000000000000000000000000000000000000000005768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f200000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000016012f0000000000000000000000000000000000000000000000000000000000e87f95c3d081c4fede769b6c69e27b435e525cbd25c6715c607e7c531e32963900597b22776562736974652d696e6465782d646f63756d656e74223a2233356561656538316262363338303436393965633637316265323736326465626665346662643330636461646139303232393239646131613965366134366436227d0a"
         ).unwrap();
-        assert!(Node::<ChunkAddress>::try_from(data.as_slice()).is_err());
+        assert!(Node::<ChunkRef>::try_from(data.as_slice()).is_err());
     }
 
     /// Test vector: metadata size field says 95 but actual content is 93.
@@ -744,7 +739,7 @@ mod tests {
         let data = hex::decode(
             "00000000000000000000000000000000000000000000000000000000000000005768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f200000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000016012f0000000000000000000000000000000000000000000000000000000000e87f95c3d081c4fede769b6c69e27b435e525cbd25c6715c607e7c531e329639005f7b22776562736974652d696e6465782d646f63756d656e74223a2233356561656538316262363338303436393965633637316265323736326465626665346662643330636461646139303232393239646131613965366134366436227d0a"
         ).unwrap();
-        assert!(Node::<ChunkAddress>::try_from(data.as_slice()).is_err());
+        assert!(Node::<ChunkRef>::try_from(data.as_slice()).is_err());
     }
 
     /// Test vector: metadata size field says 96 but actual content is 93.
@@ -754,7 +749,7 @@ mod tests {
         let data = hex::decode(
             "00000000000000000000000000000000000000000000000000000000000000005768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f200000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000016012f0000000000000000000000000000000000000000000000000000000000e87f95c3d081c4fede769b6c69e27b435e525cbd25c6715c607e7c531e32963900607b22776562736974652d696e6465782d646f63756d656e74223a2233356561656538316262363338303436393965633637316265323736326465626665346662643330636461646139303232393239646131613965366134366436227d0a"
         ).unwrap();
-        assert!(Node::<ChunkAddress>::try_from(data.as_slice()).is_err());
+        assert!(Node::<ChunkRef>::try_from(data.as_slice()).is_err());
     }
 
     /// BEE-WORKAROUND(bee#5483): bee occasionally emits nodes with
@@ -770,7 +765,7 @@ mod tests {
             .copy_from_slice(VersionHash::V02.as_bytes());
         // ref_size at offset 63 is left as 0; index (offset 64..96) is all zero.
 
-        let n = Node::<ChunkAddress>::try_from(data.as_slice())
+        let n = Node::<ChunkRef>::try_from(data.as_slice())
             .expect("ref_size=0 with empty forks should decode as terminal node");
         assert!(n.entry().is_none());
         assert!(n.forks().is_empty());
@@ -788,7 +783,7 @@ mod tests {
         // ref_size = 0 (offset 63 already zero), but flip one bit in the index.
         data[NodeHeader::SIZE] = 0x01;
 
-        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(
             result,
             Err(MantarayError::EntrySizeMismatch {
@@ -806,19 +801,19 @@ mod tests {
         data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + VersionHash::SIZE]
             .copy_from_slice(VersionHash::V01.as_bytes());
 
-        let n = Node::<ChunkAddress>::try_from(data.as_slice())
+        let n = Node::<ChunkRef>::try_from(data.as_slice())
             .expect("v0.1 ref_size=0 with empty forks should decode as terminal node");
         assert!(n.entry().is_none());
         assert!(n.forks().is_empty());
     }
 
     /// Pin nectar's encoder behaviour: even for an entry-less node, it must
-    /// emit `ref_size = E::SIZE`, never `0`. Spec-correct, matches bee's
+    /// emit `ref_size = R::SIZE`, never `0`. Spec-correct, matches bee's
     /// "valid manifest" test fixture, matches mantaray-js. Emitting 0 would
     /// reproduce the bee bug rather than fix it.
     #[test]
     fn encoder_never_emits_ref_size_zero_for_entryless_node() {
-        let n = Node::<ChunkAddress>::new_unencrypted();
+        let n = Node::<ChunkRef>::new_unencrypted();
         let encoded = Vec::<u8>::try_from(&n).unwrap();
 
         // Decrypt (obfuscation key is all-zero for `new_unencrypted`, so XOR
@@ -829,8 +824,8 @@ mod tests {
 
         assert_eq!(
             usize::from(decoded[NodeHeader::REF_SIZE_OFFSET]),
-            <ChunkAddress as NodeEntry>::SIZE,
-            "encoder must emit ref_size = E::SIZE, not 0; spec requires uniform reference width"
+            <ChunkRef as Reference>::SIZE,
+            "encoder must emit ref_size = R::SIZE, not 0; spec requires uniform reference width"
         );
     }
 
@@ -852,7 +847,7 @@ mod tests {
     #[test]
     fn decode_v01_header_only_64_bytes_returns_err() {
         let data = truncated_node_bytes(&VersionHash::V01, NodeHeader::SIZE);
-        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(result, Err(MantarayError::DataTooShort)));
     }
 
@@ -860,7 +855,7 @@ mod tests {
     #[test]
     fn decode_v02_header_only_64_bytes_returns_err() {
         let data = truncated_node_bytes(&VersionHash::V02, NodeHeader::SIZE);
-        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(result, Err(MantarayError::DataTooShort)));
     }
 
@@ -871,7 +866,7 @@ mod tests {
     fn decode_v01_truncated_lengths_return_err() {
         for len in NodeHeader::SIZE..NodeHeader::SIZE + 32 + 32 {
             let data = truncated_node_bytes(&VersionHash::V01, len);
-            let result = Node::<ChunkAddress>::try_from(data.as_slice());
+            let result = Node::<ChunkRef>::try_from(data.as_slice());
             assert!(
                 matches!(result, Err(MantarayError::DataTooShort)),
                 "length {len} must yield DataTooShort"
@@ -885,7 +880,7 @@ mod tests {
     fn decode_v02_truncated_lengths_return_err() {
         for len in NodeHeader::SIZE..NodeHeader::SIZE + 32 + 32 {
             let data = truncated_node_bytes(&VersionHash::V02, len);
-            let result = Node::<ChunkAddress>::try_from(data.as_slice());
+            let result = Node::<ChunkRef>::try_from(data.as_slice());
             assert!(
                 matches!(result, Err(MantarayError::DataTooShort)),
                 "length {len} must yield DataTooShort"
@@ -900,7 +895,7 @@ mod tests {
         let mut data = truncated_node_bytes(&VersionHash::V01, NodeHeader::SIZE + 32 + 32);
         // Set bit 0 of the forks index (LE bitfield at offset 96).
         data[NodeHeader::SIZE + 32] = 0x01;
-        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(
             result,
             Err(MantarayError::InsufficientForkBytes { .. })
@@ -912,7 +907,7 @@ mod tests {
     fn decode_v02_index_demands_missing_fork_returns_err() {
         let mut data = truncated_node_bytes(&VersionHash::V02, NodeHeader::SIZE + 32 + 32);
         data[NodeHeader::SIZE + 32] = 0x01;
-        let result = Node::<ChunkAddress>::try_from(data.as_slice());
+        let result = Node::<ChunkRef>::try_from(data.as_slice());
         assert!(matches!(
             result,
             Err(MantarayError::InsufficientForkBytes { .. })
@@ -973,7 +968,7 @@ mod tests {
 
     /// Replay the committed seed corpus of the `mantaray_node_decode` fuzz
     /// target through the exact decode entry points the fuzzer exercises
-    /// (`Node::<ChunkAddress>` for 32-byte plain entries and, under the
+    /// (`Node::<ChunkRef>` for 32-byte plain entries and, under the
     /// `encryption` feature, `Node::<EncryptedChunkRef>` for 64-byte
     /// entries). The oracle is "no panic";
     /// `Err` is an acceptable outcome for any seed. Additionally pin the
@@ -997,7 +992,7 @@ mod tests {
             // The fuzz oracle: must not panic. Drive both entry widths the
             // fuzz target drives; the 64-byte `EncryptedChunkRef` path only
             // exists under the `encryption` feature.
-            let result = Node::<ChunkAddress>::try_from(data.as_slice());
+            let result = Node::<ChunkRef>::try_from(data.as_slice());
             #[cfg(feature = "encryption")]
             let _ = Node::<nectar_primitives::EncryptedChunkRef>::try_from(data.as_slice());
 
@@ -1033,9 +1028,9 @@ mod tests {
 
         let mut checked = 0usize;
         while !u.is_empty() && checked < 16 {
-            let node = Node::<ChunkAddress>::arbitrary(&mut u).unwrap();
+            let node = Node::<ChunkRef>::arbitrary(&mut u).unwrap();
             let encoded = Vec::<u8>::try_from(&node).unwrap();
-            let decoded = Node::<ChunkAddress>::try_from(encoded.as_slice()).unwrap();
+            let decoded = Node::<ChunkRef>::try_from(encoded.as_slice()).unwrap();
             assert_eq!(decoded, node, "decode(encode(node)) must reproduce the node");
             checked += 1;
         }
@@ -1046,13 +1041,13 @@ mod tests {
     /// than emit a truncated, undecodable stream.
     #[test]
     fn encode_fork_with_unsaved_child_errors() {
-        let mut n = Node::<ChunkAddress>::new_unencrypted();
+        let mut n = Node::<ChunkRef>::new_unencrypted();
 
         let path = b"aaaaa";
         let e = {
             let mut buf = [0u8; 32];
             buf[32 - path.len()..].copy_from_slice(path);
-            ChunkAddress::from(buf)
+            ChunkRef::from(ChunkAddress::from(buf))
         };
         futures::executor::block_on(n.add::<
             nectar_primitives::store::NullLoader,
@@ -1075,7 +1070,7 @@ mod tests {
         addr_byte: u8,
         node_type: NodeType,
         metadata: BTreeMap<String, String>,
-    ) -> Fork<ChunkAddress> {
+    ) -> Fork<ChunkRef> {
         let mut addr = [0u8; 32];
         addr[31] = addr_byte;
         let mut node = Node::from_reference(ChunkAddress::from(addr));
@@ -1108,12 +1103,9 @@ mod tests {
                 .unwrap()
                 .emit(&mut Writer::new(&mut buf));
 
-            let parsed = parse_fork_body::<ChunkAddress>(
-                &buf,
-                <ChunkAddress as NodeEntry>::SIZE,
-                has_metadata,
-            )
-            .unwrap();
+            let parsed =
+                parse_fork_body::<ChunkRef>(&buf, <ChunkRef as Reference>::SIZE, has_metadata)
+                    .unwrap();
             assert_eq!(parsed, fork, "parse(emit(fork)) must reproduce the fork");
         }
     }
@@ -1121,7 +1113,7 @@ mod tests {
     /// Encode-decode round-trip preserves entries and metadata.
     #[test]
     fn encode_decode_round_trip() {
-        let mut n = Node::<ChunkAddress>::new_unencrypted();
+        let mut n = Node::<ChunkRef>::new_unencrypted();
 
         for entry in test_entries() {
             let path = entry.path.as_bytes();
@@ -1129,7 +1121,7 @@ mod tests {
                 let mut buf = [0u8; 32];
                 let len = path.len().min(32);
                 buf[32 - len..].copy_from_slice(&path[..len]);
-                ChunkAddress::from(buf)
+                ChunkRef::from(ChunkAddress::from(buf))
             };
             futures::executor::block_on(n.add::<
                 nectar_primitives::store::NullLoader,
@@ -1150,7 +1142,7 @@ mod tests {
         }
 
         let encoded = Vec::<u8>::try_from(&n).unwrap();
-        let n2 = Node::<ChunkAddress>::try_from(encoded.as_slice()).unwrap();
+        let n2 = Node::<ChunkRef>::try_from(encoded.as_slice()).unwrap();
 
         // Root has no entry; encoding writes zero bytes, decoding reads them back as None
         assert!(n2.entry().is_none());
