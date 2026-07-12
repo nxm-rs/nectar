@@ -64,6 +64,15 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
         SPAN_SIZE + self.data.len()
     }
 
+    /// Append the body wire bytes (`span || payload`) to `out`.
+    ///
+    /// The sole body encoder: the span is serialised little-endian here so the
+    /// standalone [`Bytes`] conversion and the chunk carrier share one copy.
+    pub(crate) fn encode(&self, out: &mut BytesMut) {
+        out.extend_from_slice(&self.span.to_le_bytes());
+        out.extend_from_slice(self.data.as_ref());
+    }
+
     /// Compute the BMT hash of this body
     pub fn hash(&self) -> ChunkAddress {
         *self.cached_hash.get_or_init(|| self.calculate_hash())
@@ -110,8 +119,7 @@ fn validate_data<const BODY_SIZE: usize>(data: impl Into<Bytes>) -> error::Resul
 impl<const BODY_SIZE: usize> From<BmtBody<BODY_SIZE>> for Bytes {
     fn from(body: BmtBody<BODY_SIZE>) -> Self {
         let mut bytes = BytesMut::with_capacity(body.size());
-        bytes.extend(&body.span.to_le_bytes());
-        bytes.extend(body.data());
+        body.encode(&mut bytes);
         bytes.freeze()
     }
 }

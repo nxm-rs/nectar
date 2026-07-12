@@ -119,7 +119,7 @@ impl<H: ChunkHeader, const BODY_SIZE: usize> From<ChunkInner<H, BODY_SIZE>> for 
     fn from(chunk: ChunkInner<H, BODY_SIZE>) -> Self {
         let mut bytes = BytesMut::with_capacity(chunk.size());
         chunk.header.encode(&mut bytes);
-        bytes.extend_from_slice(&Self::from(chunk.body));
+        chunk.body.encode(&mut bytes);
         bytes.freeze()
     }
 }
