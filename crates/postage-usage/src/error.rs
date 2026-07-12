@@ -1,5 +1,6 @@
 //! Error types for usage table operations and the snapshot codec.
 
+use nectar_primitives::wire::Underrun;
 use thiserror::Error;
 
 /// Errors produced by usage table operations and snapshot encoding/decoding.
@@ -197,6 +198,17 @@ pub enum UsageError {
         /// The published floor read live from the network.
         floor: u64,
     },
+}
+
+/// A short read is a length mismatch: the payload ended before a declared
+/// field, so it maps to [`PayloadLength`](UsageError::PayloadLength).
+impl From<Underrun> for UsageError {
+    fn from(underrun: Underrun) -> Self {
+        Self::PayloadLength {
+            expected: underrun.expected,
+            got: underrun.available,
+        }
+    }
 }
 
 impl UsageError {

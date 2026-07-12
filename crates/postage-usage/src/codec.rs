@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use alloy_primitives::{B256, keccak256};
 use bytes::Bytes;
 use nectar_postage::BatchId;
+use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 use crate::snapshot::Snapshot;
 use crate::table::{Mutability, UsageTable, validate_geometry};
@@ -58,6 +59,127 @@ pub struct RootInfo {
     exceptions: Vec<(u32, u32)>,
     slots: Vec<u32>,
     leaves: LeafSection,
+}
+
+/// The fixed root header, stated once in wire order. Multi-byte fields are
+/// big-endian; `README.md` gives the full layout.
+struct RootHeader {
+    magic: [u8; 4],
+    batch_id: BatchId,
+    depth: u8,
+    bucket_depth: u8,
+    /// Bit 0 marks a mutable (ring-cursor) batch; other bits are reserved.
+    flags: u8,
+    width: u8,
+    sequence: u64,
+    total_issued: u64,
+    base: u32,
+    allocated: u16,
+    leaves: u16,
+    exceptions: u16,
+}
+
+impl RootHeader {
+    /// Total wire width, summed from the field types in wire order.
+    const SIZE: usize = size_of::<[u8; 4]>()  // magic
+        + BatchId::SIZE                       // batch_id
+        + 4 * size_of::<u8>()                 // depth, bucket_depth, flags, width
+        + 2 * size_of::<u64>()                // sequence, total_issued
+        + size_of::<u32>()                    // base
+        + 3 * size_of::<u16>(); // allocated, leaves, exceptions
+}
+
+// The layout is stated once, by the paired impls below; this pins their total
+// width to the crate constant.
+const _: () = assert!(RootHeader::SIZE == ROOT_HEADER_SIZE);
+
+impl FromCursor for RootHeader {
+    type Error = Underrun;
+
+    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Underrun> {
+        Ok(Self {
+            magic: cur.take()?,
+            batch_id: BatchId::new(cur.take()?),
+            depth: cur.take()?,
+            bucket_depth: cur.take()?,
+            flags: cur.take()?,
+            width: cur.take()?,
+            sequence: u64::from_be_bytes(cur.take()?),
+            total_issued: u64::from_be_bytes(cur.take()?),
+            base: u32::from_be_bytes(cur.take()?),
+            allocated: u16::from_be_bytes(cur.take()?),
+            leaves: u16::from_be_bytes(cur.take()?),
+            exceptions: u16::from_be_bytes(cur.take()?),
+        })
+    }
+}
+
+/// The mirror of the `FromCursor` impl above; the field order and byte order
+/// never leave this type.
+impl ToWriter for RootHeader {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(&self.magic);
+        w.put(&<[u8; 32]>::from(self.batch_id));
+        w.put(&self.depth);
+        w.put(&self.bucket_depth);
+        w.put(&self.flags);
+        w.put(&self.width);
+        w.put(&self.sequence.to_be_bytes());
+        w.put(&self.total_issued.to_be_bytes());
+        w.put(&self.base.to_be_bytes());
+        w.put(&self.allocated.to_be_bytes());
+        w.put(&self.leaves.to_be_bytes());
+        w.put(&self.exceptions.to_be_bytes());
+    }
+}
+
+/// One exception record: the bucket index then its absolute count, both
+/// big-endian u32.
+struct ExceptionEntry {
+    bucket: u32,
+    count: u32,
+}
+
+impl FromCursor for ExceptionEntry {
+    type Error = Underrun;
+
+    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Underrun> {
+        Ok(Self {
+            bucket: u32::from_be_bytes(cur.take()?),
+            count: u32::from_be_bytes(cur.take()?),
+        })
+    }
+}
+
+impl ToWriter for ExceptionEntry {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(&self.bucket.to_be_bytes());
+        w.put(&self.count.to_be_bytes());
+    }
+}
+
+/// One allocated within-bucket slot index, big-endian u32.
+struct SlotEntry(u32);
+
+impl FromCursor for SlotEntry {
+    type Error = Underrun;
+
+    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Underrun> {
+        cur.take().map(|bytes| Self(u32::from_be_bytes(bytes)))
+    }
+}
+
+impl ToWriter for SlotEntry {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(&self.0.to_be_bytes());
+    }
+}
+
+/// Narrows a section count to its u16 wire field. The validated geometry
+/// keeps every section count within u16, so a failure signals an internal
+/// inconsistency rather than an expected condition.
+fn section_count(n: usize) -> Result<u16> {
+    u16::try_from(n).map_err(|_| UsageError::Malformed("section count exceeds u16"))
 }
 
 /// Returns the maximum delta representable in `width` bits.
@@ -239,20 +361,16 @@ fn select_width(counts: &[u32], base: u32, buckets: usize, allocated: usize) -> 
 }
 
 /// Encodes a snapshot into its root and leaf payloads.
-// All arithmetic here is over values bounded by the validated table
-// geometry: `buckets <= 2^16`, `width <= 32`, counter deltas fit the
-// selected width (`base` is the minimum count), and byte sizes are within
-// a few multiples of MAX_PAYLOAD_SIZE, so none of it can overflow.
-#[allow(clippy::arithmetic_side_effects)]
+// Sizes are bounded by the validated geometry (`buckets <= 2^16`,
+// `width <= 32`, `exceptions <= MAX_EXCEPTIONS`, `allocated` at most the
+// chunk count), so every saturating operation below is exact.
 #[must_use = "the encoded payloads are the snapshot to publish; dropping them discards the encode"]
 pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result<Encoded> {
     if slots.is_empty() {
         return Err(UsageError::Malformed("root slot not allocated"));
     }
-    // The u32 bucket count always fits usize on the >=32-bit targets this
-    // crate supports.
-    #[allow(clippy::as_conversions)]
-    let buckets = table.bucket_count() as usize;
+    // The bucket count is a table index bound, `<= 2^16`.
+    let buckets = bucket_index(table.bucket_count());
     let counts = table.counts();
     let base = table.min_count();
     let allocated = slots.len();
@@ -262,165 +380,122 @@ pub(crate) fn encode(table: &UsageTable, sequence: u64, slots: &[u32]) -> Result
     let width = select_width(counts, base, buckets, allocated)
         .ok_or(UsageError::Malformed("no encoding fits the root chunk"))?;
 
-    {
-        let limit = delta_limit(width);
-        let exceptions: Vec<(u32, u32)> = counts
-            .iter()
-            .enumerate()
-            .filter(|&(_, &count)| u64::from(count - base) > limit)
-            .map(|(bucket, &count)| {
-                // `bucket < buckets <= 2^16`, so it fits u32.
-                #[allow(clippy::as_conversions)]
-                let bucket = bucket as u32;
-                (bucket, count)
-            })
-            .collect();
+    let limit = delta_limit(width);
+    // `base` is the minimum count, so the saturating subtraction is exact;
+    // the u32 bucket range covers `buckets <= 2^16`.
+    let exceptions: Vec<(u32, u32)> = (0u32..)
+        .zip(counts)
+        .filter(|&(_, &count)| u64::from(count.saturating_sub(base)) > limit)
+        .map(|(bucket, &count)| (bucket, count))
+        .collect();
 
-        let fixed = ROOT_HEADER_SIZE + 8 * exceptions.len() + 4 * allocated;
-        let inline_len = packed_len(buckets, width);
-        let (leaves, inline) = if fixed + inline_len <= MAX_PAYLOAD_SIZE {
-            (0usize, true)
-        } else {
-            (leaf_count(buckets, width), false)
-        };
+    let fixed = ROOT_HEADER_SIZE
+        .saturating_add(exceptions.len().saturating_mul(8))
+        .saturating_add(allocated.saturating_mul(4));
+    let inline_len = packed_len(buckets, width);
+    let (leaves, inline) = if fixed.saturating_add(inline_len) <= MAX_PAYLOAD_SIZE {
+        (0usize, true)
+    } else {
+        (leaf_count(buckets, width), false)
+    };
 
-        let mut leaf_payloads = Vec::with_capacity(leaves);
-        if !inline {
-            let per_leaf = buckets_per_leaf(width);
-            for i in 0..leaves {
-                let start = i * per_leaf;
-                let end = (start + per_leaf).min(buckets);
-                leaf_payloads.push(Bytes::from(pack_range(
-                    counts,
-                    base,
-                    width,
-                    &exceptions,
-                    start,
-                    end,
-                )));
-            }
+    let mut leaf_payloads = Vec::with_capacity(leaves);
+    if !inline {
+        let per_leaf = buckets_per_leaf(width);
+        for i in 0..leaves {
+            let start = i.saturating_mul(per_leaf);
+            let end = start.saturating_add(per_leaf).min(buckets);
+            leaf_payloads.push(Bytes::from(pack_range(
+                counts,
+                base,
+                width,
+                &exceptions,
+                start,
+                end,
+            )));
         }
-
-        let mut root = Vec::with_capacity(fixed + if inline { inline_len } else { 32 * leaves });
-        root.extend_from_slice(&MAGIC);
-        root.extend_from_slice(table.batch_id().as_slice());
-        root.push(table.depth());
-        root.push(table.bucket_depth());
-        // flags: bit 0 marks a mutable (ring-cursor) batch.
-        root.push(if table.is_mutable() { 1 } else { 0 });
-        root.push(width);
-        root.extend_from_slice(&sequence.to_be_bytes());
-        root.extend_from_slice(&table.total_issued().to_be_bytes());
-        root.extend_from_slice(&base.to_be_bytes());
-        // The section counts are bounded by the validated geometry:
-        // `allocated <= u16::MAX` (checked by `validate_parts`), `leaves`
-        // is at most the digests that fit a root chunk, and
-        // `exceptions.len() <= MAX_EXCEPTIONS` (guaranteed by
-        // `select_width`), so each fits u16.
-        #[allow(clippy::as_conversions)]
-        root.extend_from_slice(&(allocated as u16).to_be_bytes());
-        #[allow(clippy::as_conversions)]
-        root.extend_from_slice(&(leaves as u16).to_be_bytes());
-        #[allow(clippy::as_conversions)]
-        root.extend_from_slice(&(exceptions.len() as u16).to_be_bytes());
-        for &(bucket, count) in &exceptions {
-            root.extend_from_slice(&bucket.to_be_bytes());
-            root.extend_from_slice(&count.to_be_bytes());
-        }
-        for &slot in slots {
-            root.extend_from_slice(&slot.to_be_bytes());
-        }
-        if inline {
-            root.extend_from_slice(&pack_range(counts, base, width, &exceptions, 0, buckets));
-        } else {
-            for payload in &leaf_payloads {
-                root.extend_from_slice(keccak256(payload).as_slice());
-            }
-        }
-
-        Ok(Encoded {
-            root: Bytes::from(root),
-            leaves: leaf_payloads,
-        })
     }
-}
 
-// The fixed-size reads below are called only with offsets that were bounds
-// checked against the payload length (`parse` verifies the exact payload
-// size before reading), so the slicing and offset math cannot go out of
-// bounds, and `try_into` on an exactly-sized subslice is infallible.
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::indexing_slicing,
-    clippy::unwrap_used
-)]
-fn read_u16(buf: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes(buf[offset..offset + 2].try_into().unwrap())
-}
+    let tail = if inline {
+        inline_len
+    } else {
+        leaves.saturating_mul(32)
+    };
+    let mut root = Vec::with_capacity(fixed.saturating_add(tail));
+    let mut w = Writer::new(&mut root);
+    w.put(&RootHeader {
+        magic: MAGIC,
+        batch_id: table.batch_id(),
+        depth: table.depth(),
+        bucket_depth: table.bucket_depth(),
+        flags: if table.is_mutable() { 1 } else { 0 },
+        width,
+        sequence,
+        total_issued: table.total_issued(),
+        base,
+        allocated: section_count(allocated)?,
+        leaves: section_count(leaves)?,
+        exceptions: section_count(exceptions.len())?,
+    });
+    for &(bucket, count) in &exceptions {
+        w.put(&ExceptionEntry { bucket, count });
+    }
+    for &slot in slots {
+        w.put(&SlotEntry(slot));
+    }
+    if inline {
+        w.put(pack_range(counts, base, width, &exceptions, 0, buckets).as_slice());
+    } else {
+        for payload in &leaf_payloads {
+            w.put(&keccak256(payload).0);
+        }
+    }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::indexing_slicing,
-    clippy::unwrap_used
-)]
-fn read_u32(buf: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(buf[offset..offset + 4].try_into().unwrap())
-}
-
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::indexing_slicing,
-    clippy::unwrap_used
-)]
-fn read_u64(buf: &[u8], offset: usize) -> u64 {
-    u64::from_be_bytes(buf[offset..offset + 8].try_into().unwrap())
+    Ok(Encoded {
+        root: Bytes::from(root),
+        leaves: leaf_payloads,
+    })
 }
 
 impl RootInfo {
     /// Parses and structurally validates a root payload.
-    // Untrusted input is handled length-first: the header reads are guarded
-    // by the `payload.len() >= ROOT_HEADER_SIZE` check at the top, and every
-    // read past the header happens after `payload.len() == expected` is
-    // verified, where `expected` is the exact sum of all section sizes read
-    // below it. The size arithmetic itself is over u16-derived counts
-    // (allocated, leaves, exceptions <= 2^16) and validated geometry
-    // (`bucket_depth in 1..=16`, `depth - bucket_depth <= 31`), so it cannot
-    // overflow.
-    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+    ///
+    /// Untrusted input: every byte access goes through [`Cursor`], and the
+    /// declared section counts must explain the payload length exactly before
+    /// any section is read.
+    // The size arithmetic is over u16-derived section counts and validated
+    // geometry (`bucket_depth in 1..=16`, `bucket_depth <= depth`), so every
+    // saturating operation is exact for an accepted payload; a saturated sum
+    // fails the chunk-size check.
     pub fn parse(payload: &[u8]) -> Result<Self> {
-        if payload.len() < ROOT_HEADER_SIZE {
-            return Err(UsageError::PayloadLength {
+        let mut cur = Cursor::new(payload);
+        let header = cur
+            .take::<RootHeader>()
+            .map_err(|_| UsageError::PayloadLength {
                 expected: ROOT_HEADER_SIZE,
                 got: payload.len(),
-            });
-        }
-        if payload[0..4] != MAGIC {
+            })?;
+        if header.magic != MAGIC {
             return Err(UsageError::BadMagic);
         }
-        let batch_id = BatchId::from_slice(&payload[4..36]);
-        let depth = payload[36];
-        let bucket_depth = payload[37];
-        validate_geometry(depth, bucket_depth).map_err(UsageError::into_corruption)?;
-        let flags = payload[38];
+        validate_geometry(header.depth, header.bucket_depth)
+            .map_err(UsageError::into_corruption)?;
         // Only bit 0 (mutable) is defined; any other bit set is rejected so a
         // future flag is never silently ignored by an older reader.
-        if flags & !0x01 != 0 {
+        if header.flags & !0x01 != 0 {
             return Err(UsageError::Malformed("unsupported flags"));
         }
-        let mutable = flags & 0x01 == 1;
-        let width = payload[39];
+        let mutable = header.flags & 0x01 == 1;
+        let width = header.width;
         if width > MAX_WIDTH {
             return Err(UsageError::Malformed("delta width exceeds 32"));
         }
-        let sequence = read_u64(payload, 40);
-        let total_issued = read_u64(payload, 48);
-        let base = read_u32(payload, 56);
-        let allocated = usize::from(read_u16(payload, 60));
-        let leaves = usize::from(read_u16(payload, 62));
-        let exception_count = usize::from(read_u16(payload, 64));
+        let allocated = usize::from(header.allocated);
+        let leaves = usize::from(header.leaves);
+        let exception_count = usize::from(header.exceptions);
 
-        let buckets = 1usize << bucket_depth;
-        let capacity = 1u32 << (depth - bucket_depth);
+        let buckets = 1usize << header.bucket_depth;
+        let capacity = 1u32 << header.depth.saturating_sub(header.bucket_depth);
 
         if exception_count > MAX_EXCEPTIONS {
             return Err(UsageError::Malformed("too many exceptions"));
@@ -435,17 +510,21 @@ impl RootInfo {
             if leaves != leaf_count(buckets, width) {
                 return Err(UsageError::Malformed("leaf count does not match width"));
             }
-            if allocated < leaves + 1 {
+            // Every leaf needs a slot, plus one for the root.
+            if allocated <= leaves {
                 return Err(UsageError::Malformed("missing slots for leaves"));
             }
         }
 
         let tail = if leaves > 0 {
-            32 * leaves
+            leaves.saturating_mul(32)
         } else {
             packed_len(buckets, width)
         };
-        let expected = ROOT_HEADER_SIZE + 8 * exception_count + 4 * allocated + tail;
+        let expected = ROOT_HEADER_SIZE
+            .saturating_add(exception_count.saturating_mul(8))
+            .saturating_add(allocated.saturating_mul(4))
+            .saturating_add(tail);
         if expected > MAX_PAYLOAD_SIZE {
             return Err(UsageError::Malformed("root larger than a chunk"));
         }
@@ -456,13 +535,10 @@ impl RootInfo {
             });
         }
 
-        let mut offset = ROOT_HEADER_SIZE;
         let mut exceptions = Vec::with_capacity(exception_count);
         let mut previous: Option<u32> = None;
         for _ in 0..exception_count {
-            let bucket = read_u32(payload, offset);
-            let count = read_u32(payload, offset + 4);
-            offset += 8;
+            let ExceptionEntry { bucket, count } = cur.take()?;
             if bucket_index(bucket) >= buckets {
                 return Err(UsageError::CorruptBucket { bucket });
             }
@@ -482,8 +558,7 @@ impl RootInfo {
 
         let mut slots = Vec::with_capacity(allocated);
         for _ in 0..allocated {
-            let slot = read_u32(payload, offset);
-            offset += 4;
+            let SlotEntry(slot) = cur.take()?;
             if slot >= capacity {
                 return Err(UsageError::CorruptSlot { slot, capacity });
             }
@@ -493,27 +568,26 @@ impl RootInfo {
         let leaves = if leaves > 0 {
             let mut digests = Vec::with_capacity(leaves);
             for _ in 0..leaves {
-                digests.push(B256::from_slice(&payload[offset..offset + 32]));
-                offset += 32;
+                digests.push(B256::from(cur.take::<[u8; 32]>()?));
             }
             LeafSection::Digests(digests)
         } else {
-            let packed = payload[offset..].to_vec();
-            if !padding_is_zero(&packed, buckets * usize::from(width)) {
+            let packed = cur.finish().to_vec();
+            if !padding_is_zero(&packed, buckets.saturating_mul(usize::from(width))) {
                 return Err(UsageError::Malformed("nonzero padding"));
             }
             LeafSection::Inline(packed)
         };
 
         Ok(Self {
-            batch_id,
-            depth,
-            bucket_depth,
+            batch_id: header.batch_id,
+            depth: header.depth,
+            bucket_depth: header.bucket_depth,
             mutable,
             width,
-            sequence,
-            total_issued,
-            base,
+            sequence: header.sequence,
+            total_issued: header.total_issued,
+            base: header.base,
             exceptions,
             slots,
             leaves,
@@ -741,6 +815,11 @@ impl RootInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reads a big-endian u32 at `offset`, for fixture verification.
+    fn read_u32(buf: &[u8], offset: usize) -> u32 {
+        u32::from_be_bytes(buf[offset..offset + 4].try_into().unwrap())
+    }
 
     #[test]
     fn bit_packing_round_trips() {
