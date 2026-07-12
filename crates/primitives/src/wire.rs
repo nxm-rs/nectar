@@ -219,26 +219,6 @@ impl<'a> Writer<'a> {
         value.put_into(self);
     }
 
-    /// Appends a fixed-size array.
-    pub fn put_array<const N: usize>(&mut self, arr: &[u8; N]) {
-        self.bytes.extend_from_slice(arr);
-    }
-
-    /// Appends a byte slice.
-    pub fn put_slice(&mut self, bytes: &[u8]) {
-        self.bytes.extend_from_slice(bytes);
-    }
-
-    /// Appends a single byte.
-    pub fn put_u8(&mut self, byte: u8) {
-        self.bytes.push(byte);
-    }
-
-    /// Appends a big-endian `u16`.
-    pub fn put_u16_be(&mut self, value: u16) {
-        self.bytes.extend_from_slice(&value.to_be_bytes());
-    }
-
     /// Appends `n` zero bytes, e.g. to pad a field to its declared width.
     pub fn put_zeros(&mut self, n: usize) {
         self.bytes.resize(self.bytes.len().saturating_add(n), 0);
