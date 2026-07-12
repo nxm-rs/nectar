@@ -19,6 +19,7 @@ pub(crate) const LEVEL_LIMIT: usize = compute_level_limit(BRANCHES, DEFAULT_BODY
 const _: () = assert!(LEVEL_LIMIT == 9);
 
 /// Size of a chunk reference. Derived from the reference type.
+#[cfg(test)]
 pub(crate) const REF_SIZE: usize = crate::chunk::ChunkRef::SIZE;
 
 /// Number of references per intermediate chunk (plain mode). Same as bmt::BRANCHES.
@@ -39,9 +40,6 @@ const fn compute_spans(branches: usize) -> [u64; LEVEL_LIMIT] {
     }
     spans
 }
-
-/// Size of an encrypted chunk reference (address + decryption key).
-pub(crate) const ENCRYPTED_REF_SIZE: usize = crate::chunk::encryption::EncryptedChunkRef::SIZE;
 
 /// Compute span multipliers for an arbitrary branching factor.
 /// Used by `TreeParams` which derives its branching factor from const generics,

@@ -2,9 +2,10 @@
 
 use bytes::Bytes;
 
-use crate::chunk::ChunkAddress;
+use crate::chunk::{ChunkAddress, ChunkRef};
+use crate::wire::Cursor;
 
-use super::error::Result;
+use super::error::{FileError, Result};
 use super::mode::JoinMode;
 use super::tree::ChunkRange;
 use crate::store::MaybeSend;
@@ -31,7 +32,7 @@ impl<M: JoinMode> Clone for SubtreeNode<M> {
 
 /// Parse children of an intermediate node that overlap a byte range.
 #[allow(clippy::arithmetic_side_effects)]
-// REF_SIZE is a nonzero constant; i < num_children <= BS / REF_SIZE bounds i * REF_SIZE within body.len(); child byte offsets and chunk-range bounds stay within the u64 file span for any tree the splitters can produce
+// REF_SIZE is a nonzero constant; child byte offsets and chunk-range bounds stay within the u64 file span for any tree the splitters can produce
 #[inline]
 pub(crate) fn overlapping_children<M, const BS: usize>(
     body: &[u8],
@@ -42,12 +43,24 @@ where
     M: JoinMode,
 {
     let subspan = M::subspan_size::<BS>(parent.span);
+    // An intermediate body packs whole references back to back. A trailing run
+    // shorter than one reference (body.len() % REF_SIZE bytes) is not a child:
+    // the splitter never emits one, so it is tolerated and left unread.
     let num_children = body.len() / M::REF_SIZE;
     let range_start = chunk_range.start * crate::cast::u64_from_usize(BS);
     let range_end = chunk_range.end * crate::cast::u64_from_usize(BS);
 
+    let mut cursor = Cursor::new(body);
     let mut children = Vec::with_capacity(num_children);
     for i in 0..num_children {
+        // Each turn consumes exactly one reference: the address, then this
+        // mode's trailing context. The Cursor is the only fallible read and
+        // cannot underrun while i < num_children.
+        let addr_bytes = cursor
+            .take::<[u8; ChunkRef::SIZE]>()
+            .map_err(|_| FileError::InvalidReference { level: 0 })?;
+        let context = M::context_from_wire(&mut cursor)?;
+
         let byte_offset = parent.byte_offset + crate::cast::u64_from_usize(i) * subspan;
         let span = M::child_span::<BS>(parent.span, subspan, i);
 
@@ -55,10 +68,8 @@ where
             continue;
         }
 
-        let ref_start = i * M::REF_SIZE;
-        let (addr, context) = M::parse_child_ref(body, ref_start)?;
         children.push(SubtreeNode {
-            addr,
+            addr: ChunkAddress::from(addr_bytes),
             context,
             span,
             byte_offset,
