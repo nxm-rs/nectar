@@ -287,7 +287,7 @@ impl<'a, F: Format> Frame<'a, F> {
         Ok(())
     }
 
-    /// Insert the next terminal fork, or open the next child, or finalise.
+    /// Insert the next terminal fork, or open the next child, or finalize.
     fn step(&mut self) -> Result<Action<'a, F>, BuildError> {
         if self.cursor >= self.items.len() {
             return Ok(Action::Finalize);
