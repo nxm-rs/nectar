@@ -22,6 +22,13 @@
 //! [`verify`] replays the descent over the authenticated bytes and reports what
 //! it finds, so a proof asserts no verdict its bytes do not.
 //!
+//! Two compositions ride the single-key primitives. A
+//! [range-completeness](prove_range_complete) proof attests a listing is every
+//! key in `[lo, hi)`, authenticating the frontier of nodes the range spans so an
+//! omitted key has no witness. A [state-transition](prove_transition) proof
+//! attests one key changed between two roots - an insertion, or its deletion and
+//! update duals - as its state under each root.
+//!
 //! The model is generic over [`Format`](nectar_manifest::Format) and defaults to
 //! the frozen `V1` plaintext layout.
 
@@ -42,10 +49,16 @@ mod descent;
 mod error;
 mod proof;
 mod prove;
+mod range;
+mod transition;
 mod verify;
 
 pub use descent::DescentError;
 pub use error::{ProveError, VerifyError};
 pub use proof::{ForkPathProof, Granularity, PathStep, Verdict};
 pub use prove::{NodeSource, prove_exclusion, prove_inclusion};
+pub use range::{RangeProof, prove_range_complete, verify_range};
+pub use transition::{
+    Transition, TransitionProof, prove_deletion, prove_transition, prove_update, verify_transition,
+};
 pub use verify::verify;

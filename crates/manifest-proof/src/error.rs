@@ -1,6 +1,6 @@
 //! Prove- and verify-side failures.
 
-use nectar_manifest::EncodeError;
+use nectar_manifest::{DecodeError, EncodeError};
 use nectar_primitives::{ChunkAddress, PrimitivesError};
 
 use crate::descent::DescentError;
@@ -64,4 +64,14 @@ pub enum VerifyError {
     /// encrypted subtree.
     #[error("proof path does not match the descent")]
     Malformed,
+    /// A frontier node the range walk needed was not carried in the proof; the
+    /// listing cannot be complete without it.
+    #[error("range node {0} absent from the proof")]
+    NodeAbsent(ChunkAddress),
+    /// A carried frontier node did not decode as a manifest node.
+    #[error(transparent)]
+    Decode(#[from] DecodeError),
+    /// The range spans an encrypted subtree the plain walk cannot enumerate.
+    #[error("range reaches an encrypted subtree")]
+    Encrypted,
 }
