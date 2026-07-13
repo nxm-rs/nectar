@@ -216,6 +216,60 @@ fn a_tampered_proof_and_a_wrong_root_are_rejected() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_referenced_child_yields_a_multi_step_path() -> TestResult {
+    // Keys sharing a leading byte, enough of them that the shared subtree
+    // exceeds the embedding bound and is stored as its own chunk: the descent
+    // then crosses a referenced hop, so the follow loop and the verifier's
+    // node-to-node authentication chain run past a single node.
+    let pairs: Vec<(Vec<u8>, u8)> = (0u8..55).map(|i| (vec![b'a', i], i)).collect();
+    let (store, root, map) = build(&pairs).ok_or("unexpected spill")?;
+
+    let present = Key::from(&[b'a', 5][..]);
+    let src = source(&map);
+    let proof = prove_inclusion(&src, &root, &present, Granularity::Chunk)?;
+    ensure(
+        proof.len() >= 2,
+        "a referenced child must yield a path of at least two nodes",
+    )?;
+
+    // The reader agrees across the two-node descent for the present key and for
+    // absent keys that only diverge inside the referenced child: a missing
+    // second byte, and a key that outlives the child's terminal.
+    check_key(&store, &root, &map, &present)?;
+    check_key(&store, &root, &map, &Key::from(&[b'a', 200][..]))?;
+    check_key(&store, &root, &map, &Key::from(&[b'a', 5, 0][..]))?;
+
+    // Tampering the intermediate node breaks the chain before the terminal node
+    // is reached, at either granularity.
+    for granularity in [Granularity::Chunk, Granularity::Segment] {
+        let proof = prove_inclusion(&src, &root, &present, granularity)?;
+        let mut steps: Vec<PathStep> = proof.steps().to_vec();
+        match steps.first_mut() {
+            Some(PathStep::Chunk { payload }) => {
+                if let Some(byte) = payload.last_mut() {
+                    *byte ^= 0xFF;
+                }
+            }
+            Some(PathStep::Segment { segments }) => {
+                if let Some(seg) = segments.first_mut() {
+                    let mut bytes = seg.segment.0;
+                    if let Some(byte) = bytes.first_mut() {
+                        *byte ^= 0xFF;
+                    }
+                    seg.segment = B256::from(bytes);
+                }
+            }
+            _ => {}
+        }
+        ensure(
+            verify::<V1>(&root, &present, &ForkPathProof::new(steps)).is_err(),
+            "a tampered intermediate node is rejected",
+        )?;
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
