@@ -20,11 +20,11 @@ workspace = true
 [dependencies]
 alloy-primitives = { workspace = true }
 bytes.workspace = true
+futures.workspace = true
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-futures.workspace = true
 proptest.workspace = true
 
 [features]
