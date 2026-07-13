@@ -8,6 +8,7 @@ use nectar_primitives::DEFAULT_BODY_SIZE;
 mod sealed {
     pub trait Sealed {}
     impl Sealed for super::V1 {}
+    impl Sealed for super::V1Read {}
 }
 
 /// Frozen layout parameters of one manifest wire format version, carried as
@@ -112,29 +113,93 @@ impl Format for V1 {
     const DERIVE_TAG: &'static [u8] = b"mantaray/1.0/key";
 }
 
-// Frozen cross-parameter facts, kept honest at compile time.
-const _: () = {
-    assert!(
-        V1::BUDGET + V1::PREAMBLE.len() == DEFAULT_BODY_SIZE,
-        "BUDGET must be the chunk body minus the preamble"
-    );
-    assert!(
-        V1::CAP_DIR < V1::CAP_FORK && V1::CAP_FORK < V1::BUDGET,
-        "segment capacities must sit below the body budget"
-    );
-    assert!(
-        V1::SEG_MIN <= V1::SEG_TARGET && V1::SEG_TARGET <= V1::CAP_DIR,
-        "cut suppression and target must fit the tightest capacity"
-    );
-    assert!(
-        V1::VINLINE_MAX <= V1::INLINE_MAX && V1::INLINE_MAX < V1::BUDGET,
-        "inline caps must nest below the body budget"
-    );
-    assert!(
-        V1::VINLINE_MAX <= 0xFF && V1::CKEY_MAX <= 0xFF && V1::META_MAX <= 0xFFFF,
-        "bounded lengths must fit their one- or two-byte wire length fields"
-    );
-};
+/// The read-optimized `tag_version 0x02` parameter set: the frozen `V1` layout
+/// with a heavier embedding budget.
+///
+/// A larger `INLINE_MAX` inlines heavier subtrees into their parent, so a
+/// range or listing window resolves through fewer referenced hops. The honest
+/// cost is single-update write-amplification: editing any key beneath an
+/// embedded subtree rewrites the larger parent chunk. A distinct wire version,
+/// so a manifest built here is byte-distinct from a `V1` one and only a
+/// `V1Read` reader accepts its heavier embeds; frozen `V1` is untouched. Every
+/// termination bound `V1` carries holds here, asserted below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct V1Read;
+
+impl Format for V1Read {
+    const VERSION: u8 = 0x02;
+    const BUDGET: usize = V1::BUDGET;
+    const PLEN_MAX: usize = V1::PLEN_MAX;
+    const VINLINE_MAX: usize = V1::VINLINE_MAX;
+    const META_MAX: usize = V1::META_MAX;
+    const CKEY_MAX: usize = V1::CKEY_MAX;
+    const FORKS_MAX: usize = V1::FORKS_MAX;
+    // The one retuned parameter: a heavier embedding budget, still leaving the
+    // forced-cut margin a minimum-weight segment (asserted below).
+    const INLINE_MAX: usize = 2048;
+    const SEG_TARGET: usize = V1::SEG_TARGET;
+    const SEG_MIN: usize = V1::SEG_MIN;
+    const CAP_FORK: usize = V1::CAP_FORK;
+    const CAP_DIR: usize = V1::CAP_DIR;
+    const CUT_SCALE: u64 = V1::CUT_SCALE;
+    const DERIVE_TAG: &'static [u8] = V1::DERIVE_TAG;
+}
+
+// Frozen cross-parameter facts, kept honest at compile time. The bounds hold
+// for every profile: the heaviest fork record still fits a leaf segment alone,
+// so partitioning terminates and the OverBudget guard stays unreachable (spec
+// 5.4). Emitted as a const block per format so the checks evaluate at compile
+// time.
+macro_rules! assert_layout {
+    ($f:ty) => {
+        const _: () = {
+            assert!(
+                <$f>::BUDGET + <$f>::PREAMBLE.len() == DEFAULT_BODY_SIZE,
+                "BUDGET must be the chunk body minus the preamble"
+            );
+            assert!(
+                <$f>::CAP_DIR < <$f>::CAP_FORK && <$f>::CAP_FORK < <$f>::BUDGET,
+                "segment capacities must sit below the body budget"
+            );
+            assert!(
+                <$f>::SEG_MIN <= <$f>::SEG_TARGET && <$f>::SEG_TARGET <= <$f>::CAP_DIR,
+                "cut suppression and target must fit the tightest capacity"
+            );
+            assert!(
+                <$f>::VINLINE_MAX <= <$f>::INLINE_MAX && <$f>::INLINE_MAX < <$f>::BUDGET,
+                "inline caps must nest below the body budget"
+            );
+            assert!(
+                <$f>::VINLINE_MAX <= 0xFF && <$f>::CKEY_MAX <= 0xFF && <$f>::META_MAX <= 0xFFFF,
+                "bounded lengths must fit their one- or two-byte wire length fields"
+            );
+            // The worst-case Both fork record: an index slot, flags, plen, the
+            // longest tail, an inline value, an embedded child and two full
+            // metadata blocks (spec 5.4).
+            let worst = 3
+                + 1
+                + 1
+                + (<$f>::PLEN_MAX - 1)
+                + (1 + <$f>::VINLINE_MAX)
+                + (2 + <$f>::INLINE_MAX)
+                + (2 + <$f>::META_MAX);
+            // Any single record fits a leaf segment, so partitioning
+            // terminates, and the forced-cut margin still leaves room for a
+            // minimum-weight segment.
+            assert!(
+                worst <= <$f>::CAP_FORK,
+                "the worst fork record must fit a leaf segment alone"
+            );
+            assert!(
+                <$f>::CAP_FORK - worst >= <$f>::SEG_MIN,
+                "the forced-cut margin must leave a minimum-weight segment"
+            );
+        };
+    };
+}
+
+assert_layout!(V1);
+assert_layout!(V1Read);
 
 #[cfg(test)]
 mod tests {
@@ -173,6 +238,48 @@ mod tests {
     fn cut_scale_divides_the_hash_space_by_seg_target() {
         let product = u128::from(V1::CUT_SCALE) * u128::try_from(V1::SEG_TARGET).unwrap();
         assert_eq!(product, 1u128 << 64);
+    }
+
+    // The read profile is a distinct wire version carrying V1's layout with a
+    // heavier embedding budget; only INLINE_MAX and the version byte move.
+    #[test]
+    fn v1read_is_v1_with_a_heavier_embedding_budget() {
+        assert_eq!(V1Read::PREAMBLE, [0x6D, 0x02]);
+        assert_eq!(V1Read::VERSION, 0x02);
+        assert_ne!(V1Read::VERSION, V1::VERSION);
+        // A strictly larger embedding budget: the whole point of the profile.
+        const { assert!(V1Read::INLINE_MAX > V1::INLINE_MAX) };
+        assert_eq!(V1Read::INLINE_MAX, 2048);
+        // Every other layout parameter is inherited from V1 unchanged.
+        assert_eq!(V1Read::BUDGET, V1::BUDGET);
+        assert_eq!(V1Read::PLEN_MAX, V1::PLEN_MAX);
+        assert_eq!(V1Read::VINLINE_MAX, V1::VINLINE_MAX);
+        assert_eq!(V1Read::META_MAX, V1::META_MAX);
+        assert_eq!(V1Read::CKEY_MAX, V1::CKEY_MAX);
+        assert_eq!(V1Read::FORKS_MAX, V1::FORKS_MAX);
+        assert_eq!(V1Read::SEG_TARGET, V1::SEG_TARGET);
+        assert_eq!(V1Read::SEG_MIN, V1::SEG_MIN);
+        assert_eq!(V1Read::CAP_FORK, V1::CAP_FORK);
+        assert_eq!(V1Read::CAP_DIR, V1::CAP_DIR);
+        assert_eq!(V1Read::CUT_SCALE, V1::CUT_SCALE);
+        assert_eq!(V1Read::DERIVE_TAG, V1::DERIVE_TAG);
+    }
+
+    // The heavier budget keeps the termination bounds: the worst fork record
+    // still fits a leaf segment alone, and the forced-cut margin still leaves a
+    // minimum-weight segment (spec 5.4).
+    #[test]
+    fn the_read_profile_worst_fork_record_fits_a_segment_alone() {
+        let worst = 3
+            + 1
+            + 1
+            + (V1Read::PLEN_MAX - 1)
+            + (1 + V1Read::VINLINE_MAX)
+            + (2 + V1Read::INLINE_MAX)
+            + (2 + V1Read::META_MAX);
+        assert_eq!(worst, 3464);
+        assert!(worst <= V1Read::CAP_FORK);
+        assert!(V1Read::CAP_FORK - worst >= V1Read::SEG_MIN);
     }
 
     // The frozen bounds that make spill terminate and keep the OverBudget guard

@@ -6,7 +6,9 @@
 //! 0x01` parameter set, and public types default their format parameter to
 //! [`V1`]. Bounded newtypes ([`Prefix`], [`MetadataLen`], [`SegmentWeight`])
 //! check a format bound once at construction and carry it as a type
-//! invariant.
+//! invariant. [`V1Read`] is an opt-in read-optimized sibling: the same layout
+//! with a heavier embedding budget, trading single-update write-amplification
+//! for fewer chunks touched per range or listing window.
 //!
 //! The value model is [`Key`] (arbitrary bytes), [`Entry`] (a chunk
 //! reference or an inline value; absence is `Option` at the use site) and
@@ -107,7 +109,7 @@ pub use error::{
 };
 pub use folder::{DirEntry, Listing, Served, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
-pub use format::{Format, V1};
+pub use format::{Format, V1, V1Read};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, RootExtension};
 pub use packing::{Directory, Domain, SegmentKind, cut, embed, h64, segment, spill};

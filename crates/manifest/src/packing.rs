@@ -248,7 +248,7 @@ pub fn spill<F: Format>(forks: &[(Prefix<F>, SegmentWeight<F>)], domain: Domain)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::V1;
+    use crate::format::{V1, V1Read};
 
     // The eight worked forks a..h with the spec's weights and hash-cut bits.
     const ROWS: [(u8, u64, bool); 8] = [
@@ -362,6 +362,25 @@ mod tests {
         ));
         assert!(!embed::<V1>(1, Domain::Plain, Domain::Encrypted));
         assert!(embed::<V1>(1, Domain::Encrypted, Domain::Encrypted));
+    }
+
+    // A subtree sized in the window between the two budgets is referenced under
+    // V1 but embedded under the read profile: the direct source of the read
+    // profile's fewer-fetches trade.
+    #[test]
+    fn the_read_profile_embeds_where_v1_references() {
+        for len in [V1::INLINE_MAX + 1, V1Read::INLINE_MAX] {
+            assert!(!embed::<V1>(len, Domain::Plain, Domain::Plain));
+            assert!(embed::<V1Read>(len, Domain::Plain, Domain::Plain));
+        }
+        // The read profile does not embed across the domain boundary either.
+        assert!(!embed::<V1Read>(1, Domain::Plain, Domain::Encrypted));
+        // Nor beyond its own, larger budget.
+        assert!(!embed::<V1Read>(
+            V1Read::INLINE_MAX + 1,
+            Domain::Plain,
+            Domain::Plain
+        ));
     }
 
     #[test]
