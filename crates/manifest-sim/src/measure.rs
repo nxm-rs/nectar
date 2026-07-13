@@ -1,0 +1,602 @@
+//! Metric collection for one `(format, corpus, scale)` cell.
+//!
+//! Every number here comes from executing the real builder/reader/apply path
+//! over the shared `CountingStore`; nulls are only ever produced by a
+//! capability gap, never by estimate.
+
+use std::error::Error;
+use std::time::Instant;
+
+use bytes::Bytes;
+use futures::executor::block_on;
+
+use nectar_manifest::{Builder, Changeset, Entry, Key, KeyId, Metadata, Reader, V1, apply};
+use nectar_mantaray::{Manifest, PlainManifest};
+use nectar_primitives::{AnyChunkSet, ChunkAddress, ChunkRef, StandardChunkSet};
+
+use crate::corpus::{Corpus, GenKey, tagged_addr, value_addr};
+use crate::results::{
+    BatchUpdate, Build, Cell, Depth, Floor, Get, Listing, LoadLatency, OpCost, Range, SingleUpdate,
+    Storage, Update,
+};
+use crate::store::CountingStore;
+
+type Err = Box<dyn Error>;
+
+const BODY: f64 = 4096.0;
+
+/// Config knobs shared across cells.
+#[derive(Clone, Copy, Debug)]
+pub struct Cfg {
+    pub sample_keys: usize,
+    pub update_sample: usize,
+    pub batch_ops: usize,
+    pub rtt_ms: u32,
+}
+
+// ---- small stats helpers -------------------------------------------------
+
+fn mean(v: &[u64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let sum: u128 = v.iter().map(|&x| u128::from(x)).sum();
+    sum as f64 / v.len() as f64
+}
+
+fn pct(sorted: &[u64], p: f64) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
+    sorted.get(idx).copied().unwrap_or(0)
+}
+
+fn depth_from(hops: &mut [u64]) -> Depth {
+    hops.sort_unstable();
+    Depth {
+        min: hops.first().copied(),
+        mean: Some(mean(hops)),
+        p95: Some(pct(hops, 0.95)),
+        max: hops.last().copied(),
+    }
+}
+
+fn get_block(hops: &[u64], rtt_ms: u32) -> Get {
+    let mut sorted = hops.to_vec();
+    sorted.sort_unstable();
+    let m = mean(hops);
+    let p95 = pct(&sorted, 0.95);
+    let mx = sorted.last().copied().unwrap_or(0);
+    let rtt = f64::from(rtt_ms);
+    Get {
+        sampled_keys: Some(hops.len() as u64),
+        hops_mean: Some(m),
+        hops_p95: Some(p95),
+        hops_max: Some(mx),
+        load_latency_ms: Some(LoadLatency {
+            mean: Some(m * rtt),
+            p95: Some(p95 as f64 * rtt),
+            max: Some(mx as f64 * rtt),
+            derived_from_hops: true,
+        }),
+        criterion_ns_per_op: None,
+    }
+}
+
+/// Deterministic evenly-spaced sample of `count` indices in `0..n`.
+fn sample_indices(n: usize, count: usize) -> Vec<usize> {
+    if n == 0 {
+        return Vec::new();
+    }
+    if n <= count {
+        return (0..n).collect();
+    }
+    let stride = n / count;
+    (0..count).map(|j| (j * stride).min(n - 1)).collect()
+}
+
+/// Peak resident set of the process, sampled from `/proc/self/status` VmHWM.
+/// Cumulative over the process lifetime, so it is a floor on the current
+/// build's peak, not a clean per-cell figure (see `peak_live_store_bytes`).
+fn peak_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmHWM:") {
+            let kb: u64 = rest.trim().trim_end_matches(" kB").trim().parse().ok()?;
+            return Some(kb.saturating_mul(1024));
+        }
+    }
+    None
+}
+
+// ---- value / key builders ------------------------------------------------
+
+fn ref32(addr: [u8; 32]) -> ChunkRef {
+    ChunkRef::new(ChunkAddress::new(addr))
+}
+
+fn entry10(bytes: &[u8]) -> Entry<V1> {
+    Entry::from(ref32(value_addr(bytes)))
+}
+
+fn alt_entry10(bytes: &[u8]) -> Entry<V1> {
+    Entry::from(ref32(tagged_addr(b"upd", bytes)))
+}
+
+fn meta10(k: &GenKey) -> Option<Metadata<V1>> {
+    k.content_type.map(|ct| {
+        Metadata::<V1>::new(KeyId::ContentType, Bytes::from_static(ct.as_bytes()))
+            .expect("content-type fits the metadata bound")
+    })
+}
+
+/// A synthetic insert key in a namespace disjoint from every corpus key
+/// (uniform hex is `0-9a-f`, kiwix starts `A/M/-/I`, osm starts with a digit),
+/// so an insert adds a fresh branch and never nests under an existing key.
+fn insert_key(tag: usize) -> (Vec<u8>, String) {
+    let path = format!("~~ins~~{tag}");
+    let mut raw = vec![0xffu8, 0xff, 0xff];
+    raw.extend_from_slice(&(tag as u64).to_le_bytes());
+    (raw, path)
+}
+
+// ========================================================================
+// mantaray 1.0
+// ========================================================================
+
+/// Measure one 1.0 cell. `store` is fresh; only manifest node chunks land in
+/// it (values are bare ref32, never split), so `total_chunks` is exactly the
+/// resident node count.
+pub fn measure_10(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err> {
+    let store = CountingStore::<StandardChunkSet>::new();
+    let n = keys.len();
+
+    // --- build ---
+    let mut builder = Builder::<V1>::new();
+    for k in keys {
+        builder.insert(Key::from(k.raw.as_slice()), entry10(&k.raw), meta10(k));
+    }
+    let rss_before = peak_rss_bytes();
+    let t = Instant::now();
+    let built = block_on(builder.build(&store))?;
+    let build_ns = t.elapsed().as_nanos() as u64;
+    let rss_after = peak_rss_bytes();
+    let root = *built.root();
+    let stats = built.stats();
+    let snap = store.snapshot();
+
+    let build = Build {
+        wall_ns: Some(build_ns),
+        criterion_ns_per_op: None,
+        criterion_stddev_ns: None,
+        peak_open_nodes: Some(stats.peak_open_nodes() as u64),
+        nodes_written: Some(stats.nodes_written() as u64),
+        nodes_embedded: Some(stats.nodes_embedded() as u64),
+        peak_rss_bytes: rss_after.or(rss_before),
+        peak_live_store_bytes: Some(snap.peak_live_bytes),
+    };
+    let total_chunks = snap.total_chunks;
+    let storage = Storage {
+        total_chunks: Some(total_chunks),
+        total_payload_bytes: Some(snap.live_bytes),
+        storage_utilisation: Some(if total_chunks == 0 {
+            0.0
+        } else {
+            snap.live_bytes as f64 / (total_chunks as f64 * BODY)
+        }),
+    };
+
+    // --- get hops (== referenced chunk-path depth) over the sample ---
+    let reader: Reader<&CountingStore<StandardChunkSet>, V1> = Reader::new(&store);
+    let idxs = sample_indices(n, cfg.sample_keys);
+    let mut hops: Vec<u64> = Vec::with_capacity(idxs.len());
+    for &i in &idxs {
+        let key = Key::from(keys[i].raw.as_slice());
+        let before = store.gets();
+        let _ = block_on(reader.get(&root, &key))?;
+        hops.push(store.gets() - before);
+    }
+    let get = get_block(&hops, cfg.rtt_ms);
+    let mut depth_src = hops.clone();
+    let tree_depth = depth_from(&mut depth_src);
+
+    // --- prefix listing (folder view) over a fixed set of prefixes ---
+    let mut fetch_total = 0u64;
+    let mut keys_total = 0u64;
+    for p in listing_prefixes(corpus, keys) {
+        let pk = Key::from(p.as_slice());
+        let before = store.gets();
+        let mut cursor = block_on(reader.prefix(&root, &pk))?;
+        let mut count = 0u64;
+        while let Some(_pair) = block_on(cursor.next())? {
+            count += 1;
+        }
+        fetch_total += store.gets() - before;
+        keys_total += count;
+    }
+    let listing = Listing {
+        method: "prefix".to_string(),
+        fetch_count: Some(fetch_total),
+        keys_returned: Some(keys_total),
+        fetches_per_key: Some(if keys_total == 0 {
+            0.0
+        } else {
+            fetch_total as f64 / keys_total as f64
+        }),
+    };
+
+    // --- floor (1.0 only) over the sample ---
+    let mut floor_hops: Vec<u64> = Vec::with_capacity(idxs.len());
+    for &i in &idxs {
+        let key = Key::from(keys[i].raw.as_slice());
+        let before = store.gets();
+        let _ = block_on(reader.floor(&root, &key))?;
+        floor_hops.push(store.gets() - before);
+    }
+    floor_hops.sort_unstable();
+    let floor = Floor {
+        supported: true,
+        reason: None,
+        hops_mean: Some(mean(&floor_hops)),
+        hops_p95: Some(pct(&floor_hops, 0.95)),
+        hops_max: floor_hops.last().copied(),
+    };
+
+    // --- range (1.0 only): a fixed mid window ---
+    let (range, _) = if n >= 3 {
+        let lo = Key::from(keys[n * 2 / 5].raw.as_slice());
+        let hi = Key::from(keys[n * 3 / 5].raw.as_slice());
+        let before = store.gets();
+        let mut cursor = block_on(reader.range(&root, &lo, &hi))?;
+        let mut count = 0u64;
+        while let Some(_pair) = block_on(cursor.next())? {
+            count += 1;
+        }
+        (
+            Range {
+                supported: true,
+                reason: None,
+                fetch_count: Some(store.gets() - before),
+                keys_returned: Some(count),
+            },
+            (),
+        )
+    } else {
+        (
+            Range {
+                supported: true,
+                reason: None,
+                fetch_count: Some(0),
+                keys_returned: Some(0),
+            },
+            (),
+        )
+    };
+
+    // --- single-key update / insert / delete (apply, 1-op changeset) ---
+    let usample = sample_indices(n, cfg.update_sample);
+    let mut upd = (Vec::new(), Vec::new());
+    let mut ins = (Vec::new(), Vec::new());
+    let mut del = (Vec::new(), Vec::new());
+    for (tag, &i) in usample.iter().enumerate() {
+        let k = &keys[i];
+        // update
+        let mut cs = Changeset::<V1>::new();
+        cs.put(Key::from(k.raw.as_slice()), alt_entry10(&k.raw), meta10(k));
+        apply_measure(&store, &root, &cs, &mut upd)?;
+        // insert
+        let (iraw, _ipath) = insert_key(tag);
+        let mut cs = Changeset::<V1>::new();
+        cs.put(Key::from(iraw.as_slice()), entry10(&iraw), None);
+        apply_measure(&store, &root, &cs, &mut ins)?;
+        // delete
+        let mut cs = Changeset::<V1>::new();
+        cs.remove(Key::from(k.raw.as_slice()));
+        apply_measure(&store, &root, &cs, &mut del)?;
+    }
+
+    // --- batch apply (one changeset) ---
+    let kops = n.min(cfg.batch_ops);
+    let mut cs = Changeset::<V1>::new();
+    let all_update = matches!(corpus, Corpus::OsmPyramid | Corpus::OsmBbox);
+    for (i, k) in keys.iter().take(kops).enumerate() {
+        let slot = i % 10;
+        if all_update || slot < 8 {
+            cs.put(Key::from(k.raw.as_slice()), alt_entry10(&k.raw), meta10(k));
+        } else if slot == 8 {
+            let (iraw, _ip) = insert_key(1_000_000 + i);
+            cs.put(Key::from(iraw.as_slice()), entry10(&iraw), None);
+        } else {
+            cs.remove(Key::from(k.raw.as_slice()));
+        }
+    }
+    let before_p = store.puts();
+    let t = Instant::now();
+    let _new_root = block_on(apply(&store, &root, &cs))?;
+    let batch_ns = t.elapsed().as_nanos() as u64;
+    let batch_chunks = store.puts() - before_p;
+    let batch = BatchUpdate {
+        k_ops: Some(kops as u64),
+        mix: if all_update {
+            "100/0/0".to_string()
+        } else {
+            "80/10/10".to_string()
+        },
+        chunks_rewritten: Some(batch_chunks),
+        wall_ns: Some(batch_ns),
+        write_amplification: Some(if kops == 0 {
+            0.0
+        } else {
+            batch_chunks as f64 / kops as f64
+        }),
+        criterion_ns_per_op: None,
+    };
+
+    let update = Update {
+        single: Some(SingleUpdate {
+            update: Some(op_cost(&upd)),
+            insert: Some(op_cost(&ins)),
+            delete: Some(op_cost(&del)),
+            criterion_ns_per_op: None,
+        }),
+        batch: Some(batch),
+    };
+
+    Ok(Cell {
+        ran: true,
+        reason: None,
+        n_keys: Some(n as u64),
+        key_encoding: Some("raw".to_string()),
+        build: Some(build),
+        storage: Some(storage),
+        tree_depth: Some(tree_depth),
+        get: Some(get),
+        listing: Some(listing),
+        floor: Some(floor),
+        range: Some(range),
+        update: Some(update),
+    })
+}
+
+fn apply_measure(
+    store: &CountingStore<StandardChunkSet>,
+    root: &ChunkAddress,
+    cs: &Changeset<V1>,
+    acc: &mut (Vec<u64>, Vec<u64>),
+) -> Result<(), Err> {
+    let before = store.puts();
+    let t = Instant::now();
+    let _ = block_on(apply(store, root, cs))?;
+    acc.0.push(store.puts() - before);
+    acc.1.push(t.elapsed().as_nanos() as u64);
+    Ok(())
+}
+
+fn op_cost(acc: &(Vec<u64>, Vec<u64>)) -> OpCost {
+    OpCost {
+        chunks_rewritten_mean: Some(mean(&acc.0)),
+        wall_ns: Some(mean(&acc.1).round() as u64),
+    }
+}
+
+fn listing_prefixes(corpus: Corpus, keys: &[GenKey]) -> Vec<Vec<u8>> {
+    let n = keys.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for j in 0..8 {
+        let idx = (j * n / 8).min(n - 1);
+        let raw = &keys[idx].raw;
+        let p: Vec<u8> = match corpus {
+            Corpus::Uniform => raw.iter().take(1).copied().collect(),
+            _ => match raw.iter().rposition(|&b| b == b'/') {
+                Some(pos) => raw[..=pos].to_vec(),
+                None => raw.iter().take(1).copied().collect(),
+            },
+        };
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+// ========================================================================
+// mantaray 0.2
+// ========================================================================
+
+type Store02 = CountingStore<AnyChunkSet<4096>>;
+
+/// Measure one 0.2 cell as a full reader+writer over the plain (ref32) trie.
+pub fn measure_02(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err> {
+    let store = Store02::new();
+    let n = keys.len();
+
+    // --- build: add-loop then one save ---
+    let mut m: PlainManifest<&Store02> = Manifest::new(&store);
+    let rss_before = peak_rss_bytes();
+    let t = Instant::now();
+    for k in keys {
+        let r = ref32(value_addr(k.path.as_bytes()));
+        match k.content_type {
+            Some(ct) => {
+                let mut md = std::collections::BTreeMap::new();
+                md.insert("content-type".to_string(), ct.to_string());
+                block_on(m.add_with_metadata(&k.path, r, md))?;
+            }
+            None => block_on(m.add(&k.path, r))?,
+        }
+    }
+    let root = block_on(m.save())?;
+    let build_ns = t.elapsed().as_nanos() as u64;
+    let rss_after = peak_rss_bytes();
+    let snap = store.snapshot();
+
+    let build = Build {
+        wall_ns: Some(build_ns),
+        criterion_ns_per_op: None,
+        criterion_stddev_ns: None,
+        peak_open_nodes: None,
+        nodes_written: Some(snap.distinct_puts),
+        nodes_embedded: None,
+        peak_rss_bytes: rss_after.or(rss_before),
+        peak_live_store_bytes: Some(snap.peak_live_bytes),
+    };
+    let total_chunks = snap.total_chunks;
+    let storage = Storage {
+        total_chunks: Some(total_chunks),
+        total_payload_bytes: Some(snap.live_bytes),
+        storage_utilisation: Some(if total_chunks == 0 {
+            0.0
+        } else {
+            snap.live_bytes as f64 / (total_chunks as f64 * BODY)
+        }),
+    };
+
+    // --- get hops over the sample (fresh open, no trie caching) ---
+    let reader: PlainManifest<&Store02> = Manifest::open(root, &store);
+    let idxs = sample_indices(n, cfg.sample_keys);
+    let mut hops: Vec<u64> = Vec::with_capacity(idxs.len());
+    for &i in &idxs {
+        let before = store.gets();
+        let _ = block_on(reader.get(&keys[i].path))?;
+        hops.push(store.gets() - before);
+    }
+    let get = get_block(&hops, cfg.rtt_ms);
+    let mut depth_src = hops.clone();
+    let tree_depth = depth_from(&mut depth_src);
+
+    // --- listing: full entries() walk fallback (no ordered prefix API) ---
+    let before = store.gets();
+    let entries = block_on(reader.entries())?;
+    let walk_fetches = store.gets() - before;
+    let keys_returned = entries.len() as u64;
+    let listing = Listing {
+        method: "full_walk_fallback".to_string(),
+        fetch_count: Some(walk_fetches),
+        keys_returned: Some(keys_returned),
+        fetches_per_key: Some(if keys_returned == 0 {
+            0.0
+        } else {
+            walk_fetches as f64 / keys_returned as f64
+        }),
+    };
+
+    // floor / range: unsupported.
+    let floor = Floor {
+        supported: false,
+        reason: Some("no ordered API".to_string()),
+        hops_mean: None,
+        hops_p95: None,
+        hops_max: None,
+    };
+    let range = Range {
+        supported: false,
+        reason: Some("no ordered API".to_string()),
+        fetch_count: None,
+        keys_returned: None,
+    };
+
+    // --- single-key update / insert / delete: add/remove + save ---
+    let usample = sample_indices(n, cfg.update_sample);
+    let mut upd = (Vec::new(), Vec::new());
+    let mut ins = (Vec::new(), Vec::new());
+    let mut del = (Vec::new(), Vec::new());
+    for (tag, &i) in usample.iter().enumerate() {
+        let k = &keys[i];
+        // update
+        let r = ref32(tagged_addr(b"upd", k.path.as_bytes()));
+        save_measure(&store, root, &mut upd, |mm| block_on(mm.add(&k.path, r)))?;
+        // insert
+        let (_iraw, ipath) = insert_key(tag);
+        let ir = ref32(value_addr(ipath.as_bytes()));
+        save_measure(&store, root, &mut ins, |mm| block_on(mm.add(&ipath, ir)))?;
+        // delete
+        save_measure(&store, root, &mut del, |mm| block_on(mm.remove(&k.path)))?;
+    }
+
+    // --- batch: {K adds/removes} + one save ---
+    let kops = n.min(cfg.batch_ops);
+    let all_update = matches!(corpus, Corpus::OsmPyramid | Corpus::OsmBbox);
+    let mut mb: PlainManifest<&Store02> = Manifest::open(root, &store);
+    let before_p = store.puts();
+    let t = Instant::now();
+    for (i, k) in keys.iter().take(kops).enumerate() {
+        let slot = i % 10;
+        if all_update || slot < 8 {
+            let r = ref32(tagged_addr(b"upd", k.path.as_bytes()));
+            block_on(mb.add(&k.path, r))?;
+        } else if slot == 8 {
+            let (_ir, ip) = insert_key(1_000_000 + i);
+            let r = ref32(value_addr(ip.as_bytes()));
+            block_on(mb.add(&ip, r))?;
+        } else {
+            block_on(mb.remove(&k.path))?;
+        }
+    }
+    let _ = block_on(mb.save())?;
+    let batch_ns = t.elapsed().as_nanos() as u64;
+    let batch_chunks = store.puts() - before_p;
+    let batch = BatchUpdate {
+        k_ops: Some(kops as u64),
+        mix: if all_update {
+            "100/0/0 (adds+save)".to_string()
+        } else {
+            "80/10/10 (adds+save)".to_string()
+        },
+        chunks_rewritten: Some(batch_chunks),
+        wall_ns: Some(batch_ns),
+        write_amplification: Some(if kops == 0 {
+            0.0
+        } else {
+            batch_chunks as f64 / kops as f64
+        }),
+        criterion_ns_per_op: None,
+    };
+
+    let update = Update {
+        single: Some(SingleUpdate {
+            update: Some(op_cost(&upd)),
+            insert: Some(op_cost(&ins)),
+            delete: Some(op_cost(&del)),
+            criterion_ns_per_op: None,
+        }),
+        batch: Some(batch),
+    };
+
+    Ok(Cell {
+        ran: true,
+        reason: None,
+        n_keys: Some(n as u64),
+        key_encoding: Some(corpus.key_encoding().to_string()),
+        build: Some(build),
+        storage: Some(storage),
+        tree_depth: Some(tree_depth),
+        get: Some(get),
+        listing: Some(listing),
+        floor: Some(floor),
+        range: Some(range),
+        update: Some(update),
+    })
+}
+
+fn save_measure<Fn>(
+    store: &Store02,
+    root: ChunkAddress,
+    acc: &mut (Vec<u64>, Vec<u64>),
+    mutate: Fn,
+) -> Result<(), Err>
+where
+    Fn: FnOnce(&mut PlainManifest<&Store02>) -> Result<(), nectar_mantaray::MantarayError>,
+{
+    let mut mm: PlainManifest<&Store02> = Manifest::open(root, store);
+    let before = store.puts();
+    let t = Instant::now();
+    mutate(&mut mm)?;
+    let _ = block_on(mm.save())?;
+    acc.0.push(store.puts() - before);
+    acc.1.push(t.elapsed().as_nanos() as u64);
+    Ok(())
+}

@@ -2071,6 +2071,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-manifest-sim"
+version = "0.4.0"
+dependencies = [
+ "bytes",
+ "codspeed-criterion-compat",
+ "futures",
+ "nectar-manifest",
+ "nectar-mantaray",
+ "nectar-primitives",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "nectar-mantaray"
 version = "0.4.0"
 dependencies = [
