@@ -133,6 +133,8 @@ pub struct Cursor<'a, S, F: Format = V1> {
     ready: Vec<Fetched<F>>,
     /// The next fetch sequence id to hand out.
     next_seq: usize,
+    /// Remaining yields a paginated cursor may return; `None` is unbounded.
+    remaining: Option<usize>,
 }
 
 /// What visiting the top frame's next step resolves to, computed under a short
@@ -223,7 +225,30 @@ where
             inflight: FuturesUnordered::new(),
             ready: Vec::new(),
             next_seq: 0,
+            remaining: None,
         })
+    }
+
+    /// An already-exhausted cursor: yields nothing. Used when a paginated seek
+    /// starts past the last key.
+    pub(crate) fn exhausted(store: &'a S) -> Self {
+        Self {
+            store,
+            stack: Vec::new(),
+            end: None,
+            done: true,
+            inflight: FuturesUnordered::new(),
+            ready: Vec::new(),
+            next_seq: 0,
+            remaining: None,
+        }
+    }
+
+    /// Cap this cursor at `limit` yields, for a paginated page of a listing.
+    #[must_use]
+    pub(crate) const fn with_limit(mut self, limit: usize) -> Self {
+        self.remaining = Some(limit);
+        self
     }
 
     /// The next `(key, value)` in key order, or `None` at the end of the walk.
@@ -233,6 +258,10 @@ where
     /// fetch per key.
     pub async fn next(&mut self) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
         if self.done {
+            return Ok(None);
+        }
+        if self.remaining == Some(0) {
+            self.done = true;
             return Ok(None);
         }
         loop {
@@ -272,6 +301,9 @@ where
                     if self.past_end(&key) {
                         self.done = true;
                         return Ok(None);
+                    }
+                    if let Some(left) = self.remaining {
+                        self.remaining = Some(left.saturating_sub(1));
                     }
                     return Ok(Some((Key::new(Bytes::from(key)), entry)));
                 }
