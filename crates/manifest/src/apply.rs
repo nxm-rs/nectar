@@ -23,6 +23,7 @@ use nectar_primitives::store::{ChunkPut, MaybeSync};
 
 use crate::bounded::Prefix;
 use crate::builder::{BuildError, BuildStats, Item, build_table, emit_node, resolve};
+use crate::count::SubtreeCount;
 use crate::error::{ForkPrefixEmpty, PrefixTooLong};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::{Format, V1};
@@ -335,13 +336,14 @@ where
     }
 
     if deeper.is_empty() {
-        // The child is untouched: reuse it verbatim.
+        // The child is untouched: reuse it verbatim, carrying its stored count.
         return finish(
             store,
             edge,
             new_entry,
             new_meta,
             existing.child().cloned(),
+            existing.child_count(),
             stats,
         )
         .await;
@@ -353,7 +355,7 @@ where
             if items.is_empty() {
                 // A deletion of an absent deeper key: the fork is unchanged bar
                 // its terminal value.
-                return finish(store, edge, new_entry, new_meta, None, stats).await;
+                return finish(store, edge, new_entry, new_meta, None, None, stats).await;
             }
             build_table(store, &items, plen, stats).await?
         }
@@ -394,7 +396,7 @@ where
     F: Format,
 {
     if table.is_empty() {
-        return finish(store, edge, entry, meta, None, stats).await;
+        return finish(store, edge, entry, meta, None, None, stats).await;
     }
     // Edge-compaction: a child-only fork over a single-fork child merges into
     // one edge, exactly as a from-scratch build would compact the shared run.
@@ -404,8 +406,10 @@ where
     {
         return compact(store, edge, first, record, stats).await;
     }
-    let child = resolve(store, table, stats).await?.into_child();
-    finish(store, edge, entry, meta, Some(child), stats).await
+    let resolved = resolve(store, table, stats).await?;
+    let count = resolved.child_count();
+    let child = resolved.into_child();
+    finish(store, edge, entry, meta, Some(child), count, stats).await
 }
 
 /// An insertion diverges within the edge: branch at the divergence, re-rooting
@@ -485,6 +489,7 @@ where
         remainder,
         existing.payload().clone(),
         existing.metadata().cloned(),
+        existing.child_count(),
     )
 }
 
@@ -500,6 +505,7 @@ async fn finish<S, F>(
     entry: Option<Entry<F>>,
     meta: Option<Metadata<F>>,
     child: Option<Child<F>>,
+    child_count: Option<SubtreeCount>,
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F>>, ApplyError>
 where
@@ -516,7 +522,14 @@ where
     let has_entry = entry.is_some();
     ForkPayload::new(entry, child).map_or_else(
         || Ok(None),
-        |payload| make_fork(edge, payload, if has_entry { meta } else { None }),
+        |payload| {
+            make_fork(
+                edge,
+                payload,
+                if has_entry { meta } else { None },
+                child_count,
+            )
+        },
     )
 }
 
@@ -541,6 +554,7 @@ where
         &merged,
         record.payload().clone(),
         record.metadata().cloned(),
+        record.child_count(),
         stats,
     )
     .await
@@ -555,6 +569,7 @@ async fn chain<S, F>(
     prefix: &[u8],
     payload: ForkPayload<F>,
     meta: Option<Metadata<F>>,
+    child_count: Option<SubtreeCount>,
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F>>, ApplyError>
 where
@@ -562,28 +577,40 @@ where
     F: Format,
 {
     if prefix.len() <= F::PLEN_MAX {
-        return make_fork(prefix, payload, meta);
+        return make_fork(prefix, payload, meta, child_count);
     }
     let head = prefix.get(..F::PLEN_MAX).ok_or(ApplyError::Internal)?;
     let rest = prefix.get(F::PLEN_MAX..).ok_or(ApplyError::Internal)?;
     let &first = rest.first().ok_or(ApplyError::Internal)?;
-    let inner = Box::pin(chain(store, rest, payload, meta, stats))
+    let inner = Box::pin(chain(store, rest, payload, meta, child_count, stats))
         .await?
         .ok_or(ApplyError::Internal)?;
     let mut table = ForkTable::new();
     table.insert_record(first, inner);
-    let child = resolve(store, table, stats).await?.into_child();
-    make_fork(head, ForkPayload::Child(child), None)
+    // The wrapping child-only fork routes the same subtree; its reference count
+    // is recomputed from the resolved table, not the terminal payload's.
+    let resolved = resolve(store, table, stats).await?;
+    let count = resolved.child_count();
+    let child = resolved.into_child();
+    make_fork(head, ForkPayload::Child(child), None, count)
 }
 
-/// A fork record for `edge` (its index byte plus tail) carrying `payload`.
+/// A fork record for `edge` (its index byte plus tail) carrying `payload`,
+/// stamping the referenced-child subtree count so it survives the rewrite.
 fn make_fork<F: Format>(
     edge: &[u8],
     payload: ForkPayload<F>,
     meta: Option<Metadata<F>>,
+    child_count: Option<SubtreeCount>,
 ) -> Result<Option<ForkRecord<F>>, ApplyError> {
     let tail = Prefix::try_from(edge.get(1..).ok_or(ApplyError::Internal)?)?;
-    Ok(Some(ForkRecord::from_tail_parts(tail, payload, meta)))
+    let mut record = ForkRecord::from_tail_parts(tail, payload, meta);
+    // The count rides only a referenced child; an embedded or leaf fork walks
+    // it in place, so a stray count never reaches the record.
+    if record.child().is_some_and(Child::is_reference) {
+        record.set_child_count(child_count);
+    }
+    Ok(Some(record))
 }
 
 /// The insertions of a change group as builder items, dropping deletions.
@@ -620,12 +647,90 @@ mod tests {
     use nectar_primitives::{ChunkAddress, ChunkRef};
 
     use crate::builder::Builder;
+    use crate::format::V1;
     use crate::meta::{KeyId, Metadata};
 
     use super::*;
 
     fn entry(byte: u8) -> Entry {
         ChunkRef::new(ChunkAddress::new([byte; 32])).into()
+    }
+
+    // Walk the counted tree, asserting every stored referenced-child count
+    // equals the walked subtree size, and return the subtree's key count.
+    fn walk_counts(store: &MemoryStore, table: &ForkTable<V1>) -> u64 {
+        let mut total = 0u64;
+        for (_, record) in table.iter() {
+            let child = match record.child() {
+                None => 0,
+                Some(Child::Embedded(inner)) => walk_counts(store, inner),
+                Some(Child::Ref32(reference)) => {
+                    let node = block_on(store.get_node::<V1>(reference.address())).unwrap();
+                    let actual = walk_counts(store, node.forks());
+                    assert_eq!(
+                        record.child_count(),
+                        Some(SubtreeCount::new(actual)),
+                        "stored count must equal the walked subtree size"
+                    );
+                    actual
+                }
+                Some(Child::Ref64(_)) => unreachable!("a plaintext build has no encrypted child"),
+            };
+            total += u64::from(record.entry().is_some()) + child;
+        }
+        total
+    }
+
+    #[test]
+    fn counted_child_counts_match_a_full_walk_oracle() {
+        let store = MemoryStore::default();
+        let mut builder = Builder::<V1>::new();
+        let mut expected = 0u64;
+        // Many wide sub-trees, each referenced (over the embedding budget), under
+        // enough root forks to spill the root into a segment directory: exercises
+        // referenced-child counts and the segment path at once.
+        for p in 0u8..128 {
+            for x in 0u8..44 {
+                builder.insert(Key::from(&[p, x][..]), entry(x), None);
+                expected += 1;
+            }
+        }
+        let root = *block_on(builder.build(&store)).unwrap().root();
+        let node = block_on(store.get_node::<V1>(&root)).unwrap();
+        let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks());
+        assert_eq!(total, expected);
+    }
+
+    #[test]
+    fn counted_apply_matches_a_rebuild_and_preserves_counts() {
+        let store = MemoryStore::default();
+        // A base that references a wide sub-tree under "a", then a changeset that
+        // deepens it: apply must reproduce the from-scratch counted root.
+        let mut base = Builder::<V1>::new();
+        for x in 0u8..40 {
+            base.insert(Key::from(&[b'a', x][..]), entry(x), None);
+        }
+        let base_root = *block_on(base.build(&store)).unwrap().root();
+
+        let mut cs = Changeset::<V1>::new();
+        for x in 40u8..64 {
+            cs.put(Key::from(&[b'a', x][..]), entry(x), None);
+        }
+        let applied = block_on(apply(&store, &base_root, &cs)).unwrap();
+
+        let mut scratch = Builder::<V1>::new();
+        for x in 0u8..64 {
+            scratch.insert(Key::from(&[b'a', x][..]), entry(x), None);
+        }
+        let scratch_root = *block_on(scratch.build(&MemoryStore::default()))
+            .unwrap()
+            .root();
+        assert_eq!(applied, scratch_root, "apply must match a counted rebuild");
+
+        // The applied tree's stored counts still equal the walked subtree sizes.
+        let node = block_on(store.get_node::<V1>(&applied)).unwrap();
+        let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks());
+        assert_eq!(total, 64);
     }
 
     // Build a manifest from `keys` and return its root.

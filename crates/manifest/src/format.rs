@@ -5,6 +5,8 @@ use core::hash::Hash;
 
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
+use crate::count::MAX_WIRE_BYTES;
+
 mod sealed {
     pub trait Sealed {}
     impl Sealed for super::V1 {}
@@ -93,6 +95,12 @@ pub trait Format:
 }
 
 /// The frozen `tag_version 0x01` parameter set.
+///
+/// The node grammar carries order-statistic subtree counts: every
+/// referenced-child fork ends with a trailing `child_count` and every
+/// segment-directory descriptor carries a `seg_count`, so navigation by rank
+/// costs O(depth) instead of O(window). Each count is a pure function of the
+/// key set, so canonical bytes and bit-exact `apply` hold unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct V1;
 
@@ -175,14 +183,18 @@ macro_rules! assert_layout {
             );
             // The worst-case Both fork record: an index slot, flags, plen, the
             // longest tail, an inline value, an embedded child and two full
-            // metadata blocks (spec 5.4).
+            // metadata blocks (spec 5.4). A referenced child adds a trailing
+            // count; charge its worst-case width to the record even though the
+            // embedded worst case never carries one.
+            let count = MAX_WIRE_BYTES;
             let worst = 3
                 + 1
                 + 1
                 + (<$f>::PLEN_MAX - 1)
                 + (1 + <$f>::VINLINE_MAX)
                 + (2 + <$f>::INLINE_MAX)
-                + (2 + <$f>::META_MAX);
+                + (2 + <$f>::META_MAX)
+                + count;
             // Any single record fits a leaf segment, so partitioning
             // terminates, and the forced-cut margin still leaves room for a
             // minimum-weight segment.
@@ -200,6 +212,15 @@ macro_rules! assert_layout {
 
 assert_layout!(V1);
 assert_layout!(V1Read);
+
+// Wire-version registry: 0x01 V1, 0x02 V1Read. Readers dispatch on the
+// version byte, so every profile must own a distinct one; pinned at compile
+// time so a collision is a build error rather than a silent wire ambiguity.
+const _: () = {
+    assert!(V1::VERSION == 0x01);
+    assert!(V1Read::VERSION == 0x02);
+    assert!(V1::VERSION != V1Read::VERSION);
+};
 
 #[cfg(test)]
 mod tests {
@@ -265,9 +286,10 @@ mod tests {
         assert_eq!(V1Read::DERIVE_TAG, V1::DERIVE_TAG);
     }
 
-    // The heavier budget keeps the termination bounds: the worst fork record
-    // still fits a leaf segment alone, and the forced-cut margin still leaves a
-    // minimum-weight segment (spec 5.4).
+    // The heavier budget keeps the termination bounds: the worst fork record,
+    // with the worst-case trailing count charged, still fits a leaf segment
+    // alone, and the forced-cut margin still leaves a minimum-weight segment
+    // (spec 5.4).
     #[test]
     fn the_read_profile_worst_fork_record_fits_a_segment_alone() {
         let worst = 3
@@ -276,8 +298,9 @@ mod tests {
             + (V1Read::PLEN_MAX - 1)
             + (1 + V1Read::VINLINE_MAX)
             + (2 + V1Read::INLINE_MAX)
-            + (2 + V1Read::META_MAX);
-        assert_eq!(worst, 3464);
+            + (2 + V1Read::META_MAX)
+            + MAX_WIRE_BYTES;
+        assert_eq!(worst, 3474);
         assert!(worst <= V1Read::CAP_FORK);
         assert!(V1Read::CAP_FORK - worst >= V1Read::SEG_MIN);
     }
@@ -288,15 +311,17 @@ mod tests {
     #[test]
     fn the_worst_fork_record_fits_a_segment_alone() {
         // A Both fork at the worst case: index slot, flags, plen, the longest
-        // tail, an inline value, an embedded child and two full metadata blocks.
+        // tail, an inline value, an embedded child, two full metadata blocks
+        // and the worst-case trailing count.
         let worst = 3
             + 1
             + 1
             + (V1::PLEN_MAX - 1)
             + (1 + V1::VINLINE_MAX)
             + (2 + V1::INLINE_MAX)
-            + (2 + V1::META_MAX);
-        assert_eq!(worst, 2952);
+            + (2 + V1::META_MAX)
+            + MAX_WIRE_BYTES;
+        assert_eq!(worst, 2962);
         // Any single record fits a leaf segment, so partitioning terminates.
         assert!(worst <= V1::CAP_FORK);
         // The forced-cut margin leaves room for a minimum-weight segment, so

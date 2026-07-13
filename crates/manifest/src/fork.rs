@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef};
 
 use crate::bounded::Prefix;
+use crate::count::SubtreeCount;
 use crate::error::ForkPrefixEmpty;
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
@@ -139,6 +140,17 @@ pub struct ForkRecord<F: Format = V1> {
     tail: Prefix<F>,
     payload: ForkPayload<F>,
     metadata: Option<Metadata<F>>,
+    child_count: Option<SubtreeCount>,
+}
+
+/// The count a fresh record starts with: a referenced child always owns a
+/// wire count, zero until the builder or apply stamps the real subtree size;
+/// an embedded or absent child carries none, its count is walked in place.
+const fn initial_child_count<F: Format>(payload: &ForkPayload<F>) -> Option<SubtreeCount> {
+    match payload.child() {
+        Some(Child::Ref32(_) | Child::Ref64(_)) => Some(SubtreeCount::new(0)),
+        _ => None,
+    }
 }
 
 impl<F: Format> ForkRecord<F> {
@@ -151,12 +163,14 @@ impl<F: Format> ForkRecord<F> {
         metadata: Option<Metadata<F>>,
     ) -> Result<(u8, Self), ForkPrefixEmpty> {
         let (first, tail) = prefix.split_first().ok_or(ForkPrefixEmpty)?;
+        let child_count = initial_child_count(&payload);
         Ok((
             first,
             Self {
                 tail,
                 payload,
                 metadata,
+                child_count,
             },
         ))
     }
@@ -168,10 +182,12 @@ impl<F: Format> ForkRecord<F> {
         payload: ForkPayload<F>,
         metadata: Option<Metadata<F>>,
     ) -> Self {
+        let child_count = initial_child_count(&payload);
         Self {
             tail,
             payload,
             metadata,
+            child_count,
         }
     }
 
@@ -214,6 +230,19 @@ impl<F: Format> ForkRecord<F> {
     #[must_use]
     pub const fn metadata(&self) -> Option<&Metadata<F>> {
         self.metadata.as_ref()
+    }
+
+    /// The subtree key-count of a referenced child, carried on the wire and
+    /// reused verbatim when the subtree is spliced by address. `None` for an
+    /// embedded or absent child, whose count is walked in place.
+    pub(crate) const fn child_count(&self) -> Option<SubtreeCount> {
+        self.child_count
+    }
+
+    /// Set the referenced-child subtree count the builder and apply maintain
+    /// bottom-up.
+    pub(crate) const fn set_child_count(&mut self, count: Option<SubtreeCount>) {
+        self.child_count = count;
     }
 
     /// Mutable access to the fork's metadata slot.
