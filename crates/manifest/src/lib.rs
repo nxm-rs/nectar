@@ -29,6 +29,20 @@
 //! oversized fork table). Every boundary is a pure function of content, so an
 //! insert disturbs `O(1)` boundaries and re-rooting does not churn.
 //!
+//! Encryption is per-reference: a ref64 ([`Entry::Ref64`], [`Child::Ref64`])
+//! carries `address || key`, transporting the child's decryption key in the
+//! parent record with no side channel, so reading a node opens every child it
+//! references, recursively. The 64-byte representation is always available, so
+//! a build without the `encryption` feature still decodes and re-serializes an
+//! encrypted manifest losslessly; only the crypto (key derivation, sealing,
+//! opening) sits behind the feature. The key derivation is deterministic, so an
+//! encrypted tree keeps canonical bytes and cross-build dedup.
+//!
+//! PRIVACY: a ref64 IS a read capability for its whole subtree. Writing one
+//! into a PLAINTEXT parent publishes that key to anyone who reads the parent;
+//! confidentiality rests solely on the outermost ref64 being distributed
+//! privately. See the `encryption` module.
+//!
 //! ```
 //! use nectar_manifest::{Format, Prefix, V1};
 //!
@@ -58,6 +72,8 @@ mod apply;
 mod bounded;
 mod builder;
 mod codec;
+#[cfg(feature = "encryption")]
+mod encryption;
 mod error;
 mod fork;
 mod format;
@@ -73,6 +89,9 @@ pub use apply::{ApplyError, Changeset, apply};
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
 pub use builder::{BuildError, BuildStats, Builder, Built, build_files};
 pub use codec::{DecodeError, EncodeError};
+#[cfg(feature = "encryption")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
+pub use encryption::{EncryptedNode, EncryptedNodeGet, EncryptedNodePut, derive_key};
 pub use error::{
     CustomKeyError, ForkPrefixEmpty, MetadataTooLong, PrefixTooLong, ValueTooLong, WeightOverBudget,
 };
