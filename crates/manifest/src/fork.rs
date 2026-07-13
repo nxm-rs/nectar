@@ -285,6 +285,11 @@ impl<F: Format> ForkTable<F> {
         self.records.iter().map(|(first, record)| (*first, record))
     }
 
+    /// Consume the table into its records in ascending first-byte order.
+    pub(crate) fn into_records(self) -> impl Iterator<Item = (u8, ForkRecord<F>)> {
+        self.records.into_iter()
+    }
+
     /// Number of forks; always at most `F::FORKS_MAX`.
     #[must_use]
     pub fn len(&self) -> usize {

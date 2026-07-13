@@ -14,6 +14,7 @@ use bytes::Bytes;
 use futures::executor::block_on;
 use nectar_manifest::{
     ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, Metadata, Reader, V1, apply,
+    recanonicalize,
 };
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{
@@ -133,15 +134,36 @@ fn peak_open_nodes_tracks_depth_not_width() -> TestResult {
     )
 }
 
+/// Stream a byte-keyed profile into the builder: the first two key positions
+/// range over all 256 byte values and the third over `0..tail`, so every level-0
+/// and level-1 node is a full radix-256 fork table that overruns one chunk and
+/// must spill. `tail = 16` yields `256*256*16 = 1_048_576` keys.
+fn fill_radix256(builder: &mut Builder<V1>, tail: u16, fill: u8) -> Result<(), Box<dyn Error>> {
+    let mut key = [0u8; 3];
+    for a in 0u16..256 {
+        key[0] = u8::try_from(a)?;
+        for b in 0u16..256 {
+            key[1] = u8::try_from(b)?;
+            for c in 0u16..tail {
+                key[2] = u8::try_from(c)?;
+                builder.insert(Key::from(&key[..]), entry(fill), None);
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn a_million_key_manifest_is_depth_bounded() -> TestResult {
-    // radix 100, depth 3 is exactly 1_000_000 keys, three nodes deep. One build
-    // witnesses both bounds: the builder's peak retained buffer count is the
-    // depth, independent of the key count, and a lookup fetches one node per
-    // level rather than the wide sibling frontier.
+    // A byte-keyed radix-256 profile: 256*256*16 = 1_048_576 keys three nodes
+    // deep, whose level-0 and level-1 nodes are full 256-fork tables that a
+    // naive encoder would reject as over-budget. Spill packs each into a segment
+    // directory, so one build witnesses all three bounds: the builder's peak
+    // retained buffer count is the depth, every emitted chunk fits one chunk
+    // body, and a lookup stays O(depth) even through the spilled levels.
     let inner = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
-    fill_radix(&mut builder, 100, 3, &mut Vec::new(), 0x22);
+    fill_radix256(&mut builder, 16, 0x22)?;
     let built = block_on(builder.build(&inner)).map_err(|e| e.to_string())?;
     let stats = *built.stats();
     let root = *built.root();
@@ -162,26 +184,106 @@ fn a_million_key_manifest_is_depth_bounded() -> TestResult {
             stats.nodes_written(),
         ),
     )?;
-    // Every emitted node fits one chunk body, checked at 10^6-key scale.
+    // Every emitted node fits one chunk body, checked at 10^6-key scale over a
+    // profile whose interior nodes are all spilled.
     assert_single_chunk_nodes(&inner)?;
 
     // Read a spread of keys through a counting store: each lookup is O(depth).
+    // A spilled level costs its segmented node plus the covering segments, a
+    // small constant per level, so the fetch count is bounded independent of the
+    // key count.
     let store = CountingStore {
         inner,
         gets: AtomicUsize::new(0),
     };
     let reader: Reader<_> = Reader::new(&store);
-    for probe in [[0u8, 0, 0], [50, 50, 50], [99, 99, 99], [7, 63, 12]] {
+    for probe in [[0u8, 0, 0], [255, 255, 15], [128, 64, 8], [7, 200, 3]] {
         store.gets.store(0, Ordering::Relaxed);
         let value =
             block_on(reader.get(&root, &Key::from(&probe[..]))).map_err(|e| e.to_string())?;
         ensure(value == Some(entry(0x22)), format!("missing key {probe:?}"))?;
-        // Depth three: at most the root and one node per level.
+        // Three levels, each at most a segmented node and its covering segments.
         ensure(
-            store.gets() <= 4,
+            store.gets() <= 24,
             format!("lookup fetched {} nodes, not O(depth)", store.gets()),
         )?;
     }
+    Ok(())
+}
+
+#[test]
+fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> TestResult {
+    // A single node holding all 256 first-byte forks, each carrying a heavy
+    // metadata block: a ~9.5 KB fork table that far overruns one chunk. The
+    // builder spills it into a segment directory; every emitted chunk still fits
+    // one body, and each key reads back through the reassembled node.
+    let store = MemoryStore::default();
+    let mut builder = Builder::<V1>::new();
+    for first in 0u16..256 {
+        let byte = u8::try_from(first)?;
+        let meta = Metadata::new(KeyId::ContentType, Bytes::from(vec![b'a'; 900]))
+            .map_err(|e| e.to_string())?;
+        builder.insert(Key::from(vec![byte]), entry(byte), Some(meta));
+    }
+    let built = block_on(builder.build(&store)).map_err(|e| e.to_string())?;
+
+    // The node did not fit one chunk, so it was spilled across several.
+    ensure(
+        built.stats().nodes_written() > 1,
+        "a full radix-256 heavy node must spill into several chunks".to_owned(),
+    )?;
+    assert_single_chunk_nodes(&store)?;
+
+    let reader: Reader<_> = Reader::new(&store);
+    for first in [0u8, 1, 127, 200, 255] {
+        let value = block_on(reader.get(built.root(), &Key::from(vec![first])))
+            .map_err(|e| e.to_string())?;
+        ensure(
+            value == Some(entry(first)),
+            format!("missing key {first} after spill"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> TestResult {
+    // The canonical-form check (spec 6.2) over a whole spilled node set: decode
+    // each stored chunk and re-encode it, and the bytes must match, plain node,
+    // segmented node and segment alike. This is the build-roundtrip fuzz oracle
+    // exercised on a deterministic set that is known to spill.
+    let store = MemoryStore::default();
+    let mut builder = Builder::<V1>::new();
+    for first in 0u16..256 {
+        let byte = u8::try_from(first)?;
+        let meta = Metadata::new(KeyId::ContentType, Bytes::from(vec![b'a'; 700]))
+            .map_err(|e| e.to_string())?;
+        builder.insert(Key::from(vec![byte]), entry(byte), Some(meta));
+    }
+    block_on(builder.build(&store)).map_err(|e| e.to_string())?;
+
+    let mut saw_segment = false;
+    for chunk in store.into_chunks().into_values() {
+        let payload = chunk.envelope().data();
+        let reencoded = recanonicalize::<V1>(payload.as_ref()).map_err(|e| e.to_string())?;
+        ensure(
+            reencoded.as_slice() == payload.as_ref(),
+            "a stored chunk did not re-encode to its own bytes".to_owned(),
+        )?;
+        // The flags byte follows the two preamble bytes; a set SEGMENTED or
+        // SEGMENT bit witnesses that spill actually fired.
+        if payload
+            .as_ref()
+            .get(2)
+            .is_some_and(|flags| flags & 0x60 != 0)
+        {
+            saw_segment = true;
+        }
+    }
+    ensure(
+        saw_segment,
+        "the heavy set did not spill into segments".to_owned(),
+    )?;
     Ok(())
 }
 
@@ -211,9 +313,10 @@ fn filler_meta(len: usize) -> Result<Metadata<V1>, TestCaseError> {
 }
 
 proptest! {
-    // No node the builder emits ever exceeds one chunk body. A key set too wide
-    // or heavy to fit surfaces a typed error, never a panic and never an
-    // over-budget chunk written to the store.
+    // No node the builder emits ever exceeds one chunk body. A wide or heavy
+    // node is spilled into a segment directory rather than surfacing an
+    // over-budget error, so the single-chunk-node invariant holds by
+    // construction across arbitrary key sets.
     #[test]
     fn no_built_node_exceeds_budget(entries in wide_heavy_set()) {
         let store = MemoryStore::default();
@@ -225,10 +328,10 @@ proptest! {
             };
             builder.insert(Key::from(key.clone()), entry(*fill), metadata);
         }
-        if block_on(builder.build(&store)).is_ok() {
-            for len in chunk_lengths(&store) {
-                prop_assert!(len <= DEFAULT_BODY_SIZE, "built node over one chunk body");
-            }
+        let built = block_on(builder.build(&store));
+        prop_assert!(built.is_ok(), "a wide/heavy set must spill, not error: {built:?}");
+        for len in chunk_lengths(&store) {
+            prop_assert!(len <= DEFAULT_BODY_SIZE, "built node over one chunk body");
         }
     }
 

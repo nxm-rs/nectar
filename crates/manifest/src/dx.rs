@@ -26,10 +26,11 @@ pub enum FetchError {
     /// Reassembling the referenced file from its chunks failed.
     #[error("join file")]
     Join(#[source] FileError),
-    /// The entry names an encrypted file this build cannot open; the
-    /// `encryption` feature carries the joiner that reads it.
-    #[cfg(not(feature = "encryption"))]
-    #[error("encrypted file needs the encryption feature")]
+    /// The entry names an encrypted file body. Per-reference node encryption
+    /// (the `encryption` feature) seals and opens nodes; reassembling an
+    /// encrypted file's own chunks is a separate decrypting joiner the manifest
+    /// does not carry.
+    #[error("encrypted file body is not reassembled by the manifest")]
     Encrypted,
 }
 
@@ -40,8 +41,9 @@ where
 {
     /// Reassemble the full file bytes `entry` names.
     ///
-    /// Inline bytes return directly; a reference is joined from its BMT chunks
-    /// over the reader's store. A ref64 needs the `encryption` feature to open.
+    /// Inline bytes return directly; a plain reference is joined from its BMT
+    /// chunks over the reader's store. A ref64 names an encrypted file body,
+    /// which the manifest does not reassemble.
     pub async fn read(&self, entry: &Entry<F>) -> Result<Bytes, FetchError> {
         match entry {
             Entry::Inline(value) => Ok(value.clone().into_bytes()),
@@ -52,17 +54,6 @@ where
                         .map_err(FetchError::Join)?;
                 Ok(Bytes::from(bytes))
             }
-            #[cfg(feature = "encryption")]
-            Entry::Ref64(reference) => {
-                let bytes = join::<nectar_primitives::EncryptedChunkRef, _, DEFAULT_BODY_SIZE>(
-                    self.store(),
-                    reference.clone(),
-                )
-                .await
-                .map_err(FetchError::Join)?;
-                Ok(Bytes::from(bytes))
-            }
-            #[cfg(not(feature = "encryption"))]
             Entry::Ref64(_) => Err(FetchError::Encrypted),
         }
     }

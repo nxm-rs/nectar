@@ -22,13 +22,13 @@ use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::{ChunkPut, MaybeSync};
 
 use crate::bounded::Prefix;
-use crate::builder::{BuildError, BuildStats, Item, build_table, resolve};
+use crate::builder::{BuildError, BuildStats, Item, build_table, emit_node, resolve};
 use crate::error::{ForkPrefixEmpty, PrefixTooLong};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
 use crate::node::{Node, RootExtension};
-use crate::store::{NodeGet, NodePut, StoreError};
+use crate::store::{NodeGet, StoreError};
 use crate::value::{Entry, Key};
 
 /// One key's update within a changeset.
@@ -181,7 +181,7 @@ where
     ))
     .await?;
     let new_node = Node::new(root_ext, forks);
-    Ok(store.put_node(&new_node).await?)
+    Ok(emit_node(store, &new_node, &mut stats).await?)
 }
 
 /// One staged update paired with its key, borrowed for the length of the apply.

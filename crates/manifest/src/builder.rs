@@ -13,16 +13,20 @@ use std::io::Write;
 use bytes::Bytes;
 use nectar_primitives::store::{ChunkPut, MaybeSync};
 use nectar_primitives::{
-    Chunk, ChunkAddress, ChunkRef, DefaultSplitter, FileError, PrimitivesError,
+    Chunk, ChunkAddress, ChunkRef, ContentChunk, DefaultSplitter, FileError, PrimitivesError,
 };
 
-use crate::bounded::Prefix;
-use crate::error::{ForkPrefixEmpty, PrefixTooLong};
-use crate::fork::{Child, ForkPayload, ForkTable};
+use crate::bounded::{Prefix, SegmentWeight};
+use crate::codec::{
+    SegmentDir, body_len, encode_dir_segment, encode_leaf_segment, encode_segmented_node,
+    record_weight,
+};
+use crate::error::{ForkPrefixEmpty, PrefixTooLong, WeightOverBudget};
+use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
 use crate::node::{Node, RootExtension};
-use crate::packing::{Domain, embed};
+use crate::packing::{Domain, embed, spill};
 use crate::store::{NodePut, StoreError};
 use crate::value::{Entry, Key};
 
@@ -52,6 +56,11 @@ pub enum BuildError {
     /// A fork prefix consumed no byte to index under.
     #[error(transparent)]
     EmptyPrefix(#[from] ForkPrefixEmpty),
+    /// A single fork record outweighed a whole segment. Unreachable under the
+    /// frozen bounds (worst record weight 2952 <= CAP_FORK 4091); the guard
+    /// stays so a future parameter drift fails loud rather than silently.
+    #[error(transparent)]
+    Weight(#[from] WeightOverBudget),
     /// A stack invariant did not hold; a builder bug rather than bad input.
     #[error("builder invariant violated")]
     Internal,
@@ -190,7 +199,7 @@ impl<F: Format> Builder<F> {
         let mut stats = BuildStats::default();
         let table = build_table(store, &items, 0, &mut stats).await?;
         let node = Node::new(root_ext, table);
-        let root = put_counted(store, &node, &mut stats).await?;
+        let root = emit_node(store, &node, &mut stats).await?;
         Ok(Built { root, stats })
     }
 }
@@ -441,8 +450,105 @@ where
         return Ok(Resolved::Embedded(table));
     }
     let node = Node::new(None, table);
-    let address = put_counted(store, &node, stats).await?;
+    let address = emit_node(store, &node, stats).await?;
     Ok(Resolved::Reference(ChunkRef::new(address)))
+}
+
+/// Publish `node` as one chunk, or, when its flat body overruns the format
+/// budget, spill it into a segment directory of sub-chunks that each fit.
+///
+/// The single-chunk-node invariant holds here by construction: a body within
+/// `F::BUDGET` seals as one node, and a wider body partitions at content-defined
+/// boundaries into leaf and directory segments no larger than one chunk. The
+/// `OverBudget` guard on [`Node::encode`] therefore stays unreachable on this
+/// path, kept only as a fail-closed backstop for a future parameter drift.
+pub(crate) async fn emit_node<S, F>(
+    store: &S,
+    node: &Node<F>,
+    stats: &mut BuildStats,
+) -> Result<ChunkAddress, BuildError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
+    if body_len(node) <= F::BUDGET {
+        return put_counted(store, node, stats).await;
+    }
+    spill_node(store, node, stats).await
+}
+
+/// Spill an over-budget node into a `<=` depth-two segment directory, storing
+/// each leaf and directory segment and returning the segmented node's address.
+async fn spill_node<S, F>(
+    store: &S,
+    node: &Node<F>,
+    stats: &mut BuildStats,
+) -> Result<ChunkAddress, BuildError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
+    let forks: Vec<(u8, &ForkRecord<F>)> = node.forks().iter().collect();
+    let mut items: Vec<(Prefix<F>, SegmentWeight<F>)> = Vec::with_capacity(forks.len());
+    for (first, record) in &forks {
+        let mut full = Vec::with_capacity(record.tail().len().saturating_add(1));
+        full.push(*first);
+        full.extend_from_slice(record.tail().as_bytes());
+        items.push((
+            Prefix::try_from(full.as_slice())?,
+            SegmentWeight::new(record_weight(record))?,
+        ));
+    }
+
+    let directory = spill::<F>(&items, Domain::Plain);
+    let mut leaf_descs: Vec<(u8, ChunkAddress)> = Vec::with_capacity(directory.leaves().len());
+    for range in directory.leaves() {
+        let slice = forks.get(range.clone()).ok_or(BuildError::Internal)?;
+        let &(first_key, _) = slice.first().ok_or(BuildError::Internal)?;
+        let mut leaf = ForkTable::new();
+        for (byte, record) in slice {
+            leaf.insert_record(*byte, (*record).clone());
+        }
+        let address = put_payload(store, encode_leaf_segment(&leaf), stats).await?;
+        leaf_descs.push((first_key, address));
+    }
+
+    let top = if directory.dirs().len() <= 1 {
+        SegmentDir::plain(leaf_descs)
+    } else {
+        let mut dir_descs: Vec<(u8, ChunkAddress)> = Vec::with_capacity(directory.dirs().len());
+        for range in directory.dirs() {
+            let group = leaf_descs.get(range.clone()).ok_or(BuildError::Internal)?;
+            let &(first_key, _) = group.first().ok_or(BuildError::Internal)?;
+            let address = put_payload(
+                store,
+                encode_dir_segment::<F>(&SegmentDir::plain(group.to_vec())),
+                stats,
+            )
+            .await?;
+            dir_descs.push((first_key, address));
+        }
+        SegmentDir::plain(dir_descs)
+    };
+
+    put_payload(store, encode_segmented_node::<F>(node.root(), &top), stats).await
+}
+
+/// Seal a ready payload into a content chunk, store it, and count it.
+async fn put_payload<S>(
+    store: &S,
+    payload: Vec<u8>,
+    stats: &mut BuildStats,
+) -> Result<ChunkAddress, BuildError>
+where
+    S: ChunkPut + MaybeSync,
+{
+    let content = ContentChunk::new(payload).map_err(BuildError::Seal)?;
+    let chunk = Chunk::from_envelope(content.into()).map_err(BuildError::Seal)?;
+    let address = *chunk.address();
+    store.put(chunk).await.map_err(BuildError::backend)?;
+    stats.nodes_written = stats.nodes_written.saturating_add(1);
+    Ok(address)
 }
 
 /// Spill one node to the store, counting it.

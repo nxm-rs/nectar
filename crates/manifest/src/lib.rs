@@ -97,7 +97,7 @@ mod value;
 pub use apply::{ApplyError, Changeset, apply};
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
 pub use builder::{BuildError, BuildStats, Builder, Built, build_files};
-pub use codec::{DecodeError, EncodeError};
+pub use codec::{DecodeError, EncodeError, recanonicalize};
 pub use dx::FetchError;
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]

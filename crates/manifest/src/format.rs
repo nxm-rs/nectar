@@ -103,7 +103,7 @@ impl Format for V1 {
     const CAP_FORK: usize = 4091;
     const CAP_DIR: usize = 4090;
     const CUT_SCALE: u64 = 9_007_199_254_740_992;
-    const DERIVE_TAG: &'static [u8] = b"mantaray-1.0-encryption";
+    const DERIVE_TAG: &'static [u8] = b"mantaray/1.0/key";
 }
 
 // Frozen cross-parameter facts, kept honest at compile time.
@@ -158,12 +158,36 @@ mod tests {
         assert_eq!(V1::CAP_FORK, 4091);
         assert_eq!(V1::CAP_DIR, 4090);
         assert_eq!(V1::CUT_SCALE, 9_007_199_254_740_992);
-        assert_eq!(V1::DERIVE_TAG, b"mantaray-1.0-encryption");
+        assert_eq!(V1::DERIVE_TAG, b"mantaray/1.0/key");
+        // The spec fixes the KDF domain tag at 16 ASCII bytes (spec 12.2).
+        assert_eq!(V1::DERIVE_TAG.len(), 16);
     }
 
     #[test]
     fn cut_scale_divides_the_hash_space_by_seg_target() {
         let product = u128::from(V1::CUT_SCALE) * u128::try_from(V1::SEG_TARGET).unwrap();
         assert_eq!(product, 1u128 << 64);
+    }
+
+    // The frozen bounds that make spill terminate and keep the OverBudget guard
+    // unreachable: the heaviest fork record still fits a leaf segment alone, so
+    // every node partitions into one-chunk segments (spec 5.4).
+    #[test]
+    fn the_worst_fork_record_fits_a_segment_alone() {
+        // A Both fork at the worst case: index slot, flags, plen, the longest
+        // tail, an inline value, an embedded child and two full metadata blocks.
+        let worst = 3
+            + 1
+            + 1
+            + (V1::PLEN_MAX - 1)
+            + (1 + V1::VINLINE_MAX)
+            + (2 + V1::INLINE_MAX)
+            + (2 + V1::META_MAX);
+        assert_eq!(worst, 2952);
+        // Any single record fits a leaf segment, so partitioning terminates.
+        assert!(worst <= V1::CAP_FORK);
+        // The forced-cut margin leaves room for a minimum-weight segment, so
+        // every segment but the last reaches SEG_MIN.
+        assert!(V1::CAP_FORK - worst >= V1::SEG_MIN);
     }
 }
