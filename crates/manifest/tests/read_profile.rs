@@ -1,4 +1,4 @@
-//! The read-optimised profile through the public API: the whole build, read
+//! The read-optimized profile through the public API: the whole build, read
 //! and apply path is generic over the format, and a heavier embedding budget
 //! inlines a subtree that V1 would reference, so the same key set resolves
 //! through fewer chunks under `V1Read`.
