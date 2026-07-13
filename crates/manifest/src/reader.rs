@@ -9,7 +9,7 @@
 use core::marker::PhantomData;
 
 use nectar_primitives::store::MaybeSync;
-use nectar_primitives::{ChunkAddress, ChunkOps};
+use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef};
 
 use crate::codec::{DecodedChunk, SegmentDir};
 use crate::fork::{Child, ForkTable};
@@ -115,6 +115,149 @@ where
                     is_root = false;
                 }
             }
+        }
+    }
+
+    /// The reference of the single chunk that holds exactly the keys carrying
+    /// `prefix`, so a folder or prefix listing can be handed off in one
+    /// delegation rather than walked.
+    ///
+    /// The empty prefix selects the whole manifest and returns the root
+    /// reference. The result is `None` when no single chunk's key set is
+    /// exactly the prefix's: the prefix selects nothing, ends inside an embedded
+    /// child, or ends at a fork that also terminates a key. Descent into an
+    /// encrypted subtree surfaces as [`ReaderError::EncryptedChild`], since a
+    /// plain reference cannot carry it.
+    pub async fn subtree(
+        &self,
+        root: &ChunkAddress,
+        prefix: &Key,
+    ) -> Result<Option<ChunkRef>, ReaderError> {
+        Ok(self
+            .descend_subtree(root, prefix.as_bytes())
+            .await?
+            .map(|found| found.reference))
+    }
+
+    /// Descend `prefix` to the referenced chunk whose key set it is, tracking
+    /// the key bytes consumed to reach that chunk's root.
+    ///
+    /// Each referenced hop is one fetch, and the boundary chunk itself is never
+    /// fetched: its reference is the answer, so the cost is O(depth) fetches
+    /// down to the boundary and nothing below it.
+    pub(crate) async fn descend_subtree(
+        &self,
+        root: &ChunkAddress,
+        prefix: &[u8],
+    ) -> Result<Option<Subtree>, ReaderError> {
+        if prefix.is_empty() {
+            return Ok(Some(Subtree {
+                reference: ChunkRef::new(*root),
+                base: 0,
+            }));
+        }
+        let mut address = *root;
+        let mut base = 0usize;
+        loop {
+            let node = self.store.get_node::<F>(&address).await?;
+            match subtree_step(node.forks(), prefix, base) {
+                SubtreeStep::Absent => return Ok(None),
+                SubtreeStep::Encrypted => return Err(ReaderError::EncryptedChild),
+                SubtreeStep::Boundary(reference, base) => {
+                    return Ok(Some(Subtree { reference, base }));
+                }
+                SubtreeStep::Descend(next_address, next) => {
+                    address = next_address;
+                    base = next;
+                }
+            }
+        }
+    }
+}
+
+/// A prefix's subtree: the chunk holding exactly the prefix's keys, and the key
+/// bytes consumed to reach that chunk's root.
+pub(crate) struct Subtree {
+    /// The subtree chunk's reference.
+    pub(crate) reference: ChunkRef,
+    /// Key bytes consumed to reach the subtree chunk's root; at least the
+    /// prefix length, and equal to it when the prefix ends at the chunk root.
+    pub(crate) base: usize,
+}
+
+/// Where following `prefix` from `pos` through a chunk's embedded fork tables
+/// lands, stopping at the first boundary, referenced hop, or dead end.
+enum SubtreeStep {
+    /// No single chunk's key set is exactly the prefix's below here.
+    Absent,
+    /// The prefix funnels into an encrypted child the plain reader cannot open.
+    Encrypted,
+    /// The prefix's key set is exactly this referenced child's; its reference
+    /// and the key bytes consumed to reach the child's root.
+    Boundary(ChunkRef, usize),
+    /// The prefix continues past this edge into a referenced child at the given
+    /// address, with this many key bytes consumed.
+    Descend(ChunkAddress, usize),
+}
+
+/// Follow `prefix` from `pos` down a node's fork table and its embedded
+/// children, stopping where the prefix's key set is a lone referenced child,
+/// crosses a referenced edge, or has no single-chunk boundary.
+///
+/// Stays within one chunk: an embedded child lives in the parent's bytes, so
+/// the walk crosses embedded tables without a fetch and only a referenced edge
+/// bubbles up as a hop or a boundary.
+fn subtree_step<F: Format>(table: &ForkTable<F>, prefix: &[u8], pos: usize) -> SubtreeStep {
+    let mut table = table;
+    let mut pos = pos;
+    loop {
+        let Some(&byte) = prefix.get(pos) else {
+            return SubtreeStep::Absent;
+        };
+        let Some(record) = table.get(byte) else {
+            return SubtreeStep::Absent;
+        };
+        let tail = record.tail().as_bytes();
+        let Some(start) = pos.checked_add(1) else {
+            return SubtreeStep::Absent;
+        };
+        let Some(end) = start.checked_add(tail.len()) else {
+            return SubtreeStep::Absent;
+        };
+        // The prefix bytes past the fork byte, up to whatever the prefix holds.
+        let rest = prefix.get(start..).unwrap_or(&[]);
+        if prefix.len() <= end {
+            // The prefix ends at or within this edge: a boundary only when the
+            // fork is a lone reference whose child holds exactly its key set.
+            match tail.get(..rest.len()) {
+                Some(head) if head == rest => {}
+                _ => return SubtreeStep::Absent,
+            }
+            if record.entry().is_some() {
+                return SubtreeStep::Absent;
+            }
+            return match record.child() {
+                Some(Child::Ref32(reference)) => SubtreeStep::Boundary(*reference, end),
+                Some(Child::Ref64(_)) => SubtreeStep::Encrypted,
+                Some(Child::Embedded(_)) | None => SubtreeStep::Absent,
+            };
+        }
+        // The prefix passes the edge end: the whole edge must match, then the
+        // walk continues into the child.
+        match prefix.get(start..end) {
+            Some(matched) if matched == tail => {}
+            _ => return SubtreeStep::Absent,
+        }
+        match record.child() {
+            Some(Child::Embedded(inner)) => {
+                table = inner;
+                pos = end;
+            }
+            Some(Child::Ref32(reference)) => {
+                return SubtreeStep::Descend(*reference.address(), end);
+            }
+            Some(Child::Ref64(_)) => return SubtreeStep::Encrypted,
+            None => return SubtreeStep::Absent,
         }
     }
 }
@@ -367,6 +510,128 @@ mod tests {
             block_on(reader.get(&root, &Key::from(&b"k"[..]))).unwrap(),
             Some(value),
         );
+    }
+
+    // A manifest whose "mg/" directory is a referenced subtree holding one key
+    // "mg/logo.png", with "index.html" embedded in the root under "i".
+    fn subtree_sample(store: &MemoryStore) -> (ChunkAddress, ChunkAddress) {
+        let mut leaf = ForkTable::new();
+        leaf.insert(prefix(b"logo.png"), entry(0xBB).into(), None)
+            .unwrap();
+        let leaf_ref = block_on(store.put_node(&Node::new(None, leaf))).unwrap();
+
+        let mut embedded = ForkTable::new();
+        embedded
+            .insert(prefix(b"ndex.html"), entry(0xAA).into(), None)
+            .unwrap();
+        let mut forks = ForkTable::new();
+        forks
+            .insert(prefix(b"i"), Child::Embedded(embedded).into(), None)
+            .unwrap();
+        forks
+            .insert(
+                prefix(b"mg/"),
+                Child::Ref32(ChunkRef::new(leaf_ref)).into(),
+                None,
+            )
+            .unwrap();
+        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+        (root, leaf_ref)
+    }
+
+    #[test]
+    fn subtree_of_the_empty_prefix_is_the_root() {
+        let store = MemoryStore::default();
+        let (root, _) = subtree_sample(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        assert_eq!(
+            block_on(reader.subtree(&root, &Key::empty())).unwrap(),
+            Some(ChunkRef::new(root)),
+        );
+    }
+
+    #[test]
+    fn subtree_returns_the_referenced_child_covering_the_prefix() {
+        let store = MemoryStore::default();
+        let (root, leaf_ref) = subtree_sample(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        // The prefix ends exactly at the referenced edge: the child is the
+        // subtree root, and its key set is exactly the "mg/" keys.
+        assert_eq!(
+            block_on(reader.subtree(&root, &Key::from(&b"mg/"[..]))).unwrap(),
+            Some(ChunkRef::new(leaf_ref)),
+        );
+        // A shorter prefix funnels into the same lone child with no branch or
+        // key between: still one node boundary, still the child.
+        assert_eq!(
+            block_on(reader.subtree(&root, &Key::from(&b"m"[..]))).unwrap(),
+            Some(ChunkRef::new(leaf_ref)),
+        );
+    }
+
+    #[test]
+    fn subtree_of_a_mid_edge_prefix_with_no_boundary_is_none() {
+        let store = MemoryStore::default();
+        let (root, _) = subtree_sample(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        // "mg/logo" lands within the leaf's "logo.png" edge, which terminates a
+        // key rather than referencing a child: no chunk holds exactly its keys.
+        assert_eq!(
+            block_on(reader.subtree(&root, &Key::from(&b"mg/logo"[..]))).unwrap(),
+            None,
+        );
+    }
+
+    #[test]
+    fn subtree_of_an_embedded_prefix_is_none() {
+        let store = MemoryStore::default();
+        let (root, _) = subtree_sample(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        // "index.html" lives embedded in the root chunk, with no chunk of its
+        // own to hand off.
+        assert_eq!(
+            block_on(reader.subtree(&root, &Key::from(&b"i"[..]))).unwrap(),
+            None,
+        );
+    }
+
+    #[test]
+    fn subtree_of_an_absent_prefix_is_none() {
+        let store = MemoryStore::default();
+        let (root, _) = subtree_sample(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        assert_eq!(
+            block_on(reader.subtree(&root, &Key::from(&b"zzz"[..]))).unwrap(),
+            None,
+        );
+    }
+
+    #[test]
+    fn subtree_covers_exactly_the_prefix_key_set() {
+        let store = MemoryStore::default();
+        let (root, leaf_ref) = subtree_sample(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        let sub = block_on(reader.subtree(&root, &Key::from(&b"mg/"[..])))
+            .unwrap()
+            .unwrap();
+        assert_eq!(sub.address(), &leaf_ref);
+
+        // The delegated subtree, walked from its own root, yields the same keys
+        // as the prefix range walked from the manifest root.
+        let mut delegated = Vec::new();
+        let mut cursor = block_on(reader.iter(sub.address())).unwrap();
+        while let Some((key, value)) = block_on(cursor.next()).unwrap() {
+            let mut full = b"mg/".to_vec();
+            full.extend_from_slice(key.as_bytes());
+            delegated.push((full, value));
+        }
+
+        let mut walked = Vec::new();
+        let mut cursor = block_on(reader.prefix(&root, &Key::from(&b"mg/"[..]))).unwrap();
+        while let Some((key, value)) = block_on(cursor.next()).unwrap() {
+            walked.push((key.as_bytes().to_vec(), value));
+        }
+        assert_eq!(delegated, walked);
     }
 
     #[test]
