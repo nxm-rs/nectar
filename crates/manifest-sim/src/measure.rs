@@ -16,14 +16,24 @@ use nectar_primitives::{AnyChunkSet, ChunkAddress, ChunkRef, StandardChunkSet};
 
 use crate::corpus::{Corpus, GenKey, tagged_addr, value_addr};
 use crate::results::{
-    BatchUpdate, Build, Cell, Depth, Floor, Get, Listing, LoadLatency, OpCost, Range, SingleUpdate,
-    Storage, Update,
+    BatchPoint, BatchUpdate, Build, Cdf, Ceiling, Cell, Depth, Floor, Get, Histogram, IterFull,
+    KfCount, LatQuad, Listing, LoadLatency, OpCost, Range, RangeWindow, SingleUpdate, Storage,
+    SubtreeDelete, Update, ValueRead, WallLatency,
 };
 use crate::store::CountingStore;
 
 type Err = Box<dyn Error>;
 
 const BODY: f64 = 4096.0;
+
+/// RTT values (ms) for the hop x RTT illustrative wall-clock model.
+const RTT_SET: [u32; 3] = [25, 50, 75];
+/// Batch-size sweep for the write-amplification amortisation curve.
+const BATCH_KS: [usize; 5] = [1, 10, 100, 1_000, 10_000];
+/// Range-window widths (fraction of the sorted key domain) for the sweep.
+const RANGE_WS: [f64; 4] = [0.001, 0.01, 0.10, 1.0];
+/// A key that sorts strictly above every corpus key (ceiling upper bound).
+const MAX_KEY: [u8; 48] = [0xff; 48];
 
 /// Config knobs shared across cells.
 #[derive(Clone, Copy, Debug)]
@@ -52,6 +62,46 @@ fn pct(sorted: &[u64], p: f64) -> u64 {
     sorted.get(idx).copied().unwrap_or(0)
 }
 
+/// Discrete PMF of a small-integer sample (hops are 1..~150).
+fn histogram(values: &[u64]) -> Histogram {
+    let mut h: Histogram = Histogram::new();
+    for &v in values {
+        *h.entry(v).or_insert(0) += 1;
+    }
+    h
+}
+
+fn cdf(sorted: &[u64]) -> Cdf {
+    Cdf {
+        p50: pct(sorted, 0.50),
+        p90: pct(sorted, 0.90),
+        p99: pct(sorted, 0.99),
+        max: sorted.last().copied().unwrap_or(0),
+    }
+}
+
+/// The hop x RTT illustrative wall-clock model, one quad per RTT.
+fn wall_latency(sorted: &[u64]) -> WallLatency {
+    let c = cdf(sorted);
+    let mut by_rtt = std::collections::BTreeMap::new();
+    for rtt in RTT_SET {
+        let r = f64::from(rtt);
+        by_rtt.insert(
+            rtt.to_string(),
+            LatQuad {
+                p50: c.p50 as f64 * r,
+                p90: c.p90 as f64 * r,
+                p99: c.p99 as f64 * r,
+                max: c.max as f64 * r,
+            },
+        );
+    }
+    WallLatency {
+        by_rtt_ms: by_rtt,
+        model: "hops * rtt, sequential fetch, no pipelining or caching".to_string(),
+    }
+}
+
 fn depth_from(hops: &mut [u64]) -> Depth {
     hops.sort_unstable();
     Depth {
@@ -59,6 +109,8 @@ fn depth_from(hops: &mut [u64]) -> Depth {
         mean: Some(mean(hops)),
         p95: Some(pct(hops, 0.95)),
         max: hops.last().copied(),
+        histogram: Some(histogram(hops)),
+        fanout_mean: None,
     }
 }
 
@@ -81,6 +133,48 @@ fn get_block(hops: &[u64], rtt_ms: u32) -> Get {
             derived_from_hops: true,
         }),
         criterion_ns_per_op: None,
+        hops_histogram: Some(histogram(hops)),
+        hops_cdf: Some(cdf(&sorted)),
+        wall_latency_ms: Some(wall_latency(&sorted)),
+    }
+}
+
+/// Per-key `bytes/key`, `chunks/key`, embedding ratio.
+fn storage_block(snap_chunks: u64, live_bytes: u64, n: u64, embedded: Option<u64>) -> Storage {
+    let total_chunks = snap_chunks;
+    let bpk = if n == 0 {
+        0.0
+    } else {
+        live_bytes as f64 / n as f64
+    };
+    let cpk = if n == 0 {
+        0.0
+    } else {
+        total_chunks as f64 / n as f64
+    };
+    // 0.2 never embeds: caller passes None -> explicit 0.0, not null.
+    let emb = match embedded {
+        Some(e) => {
+            let denom = e + total_chunks;
+            if denom == 0 {
+                0.0
+            } else {
+                e as f64 / denom as f64
+            }
+        }
+        None => 0.0,
+    };
+    Storage {
+        total_chunks: Some(total_chunks),
+        total_payload_bytes: Some(live_bytes),
+        storage_utilisation: Some(if total_chunks == 0 {
+            0.0
+        } else {
+            live_bytes as f64 / (total_chunks as f64 * BODY)
+        }),
+        bytes_per_key: Some(bpk),
+        chunks_per_key: Some(cpk),
+        embedding_ratio: Some(emb),
     }
 }
 
@@ -166,6 +260,30 @@ pub fn measure_10(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
     let stats = built.stats();
     let snap = store.snapshot();
 
+    // Second identical build into the same store: by I6 no new distinct chunk
+    // should land. Capped to protect the 1e6 wall-clock budget.
+    let (dedup, dedup_reason) = if n <= 100_000 {
+        let first_distinct = snap.distinct_puts;
+        let before = store.snapshot().distinct_puts;
+        let mut b2 = Builder::<V1>::new();
+        for k in keys {
+            b2.insert(Key::from(k.raw.as_slice()), entry10(&k.raw), meta10(k));
+        }
+        let _ = block_on(b2.build(&store))?;
+        let after = store.snapshot().distinct_puts;
+        let ratio = if first_distinct == 0 {
+            0.0
+        } else {
+            (after - before) as f64 / first_distinct as f64
+        };
+        (Some(ratio), None)
+    } else {
+        (
+            None,
+            Some("second build skipped above 1e5 to bound wall-clock".to_string()),
+        )
+    };
+
     let build = Build {
         wall_ns: Some(build_ns),
         criterion_ns_per_op: None,
@@ -175,17 +293,18 @@ pub fn measure_10(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
         nodes_embedded: Some(stats.nodes_embedded() as u64),
         peak_rss_bytes: rss_after.or(rss_before),
         peak_live_store_bytes: Some(snap.peak_live_bytes),
+        builder_frontier_nodes: Some(stats.peak_open_nodes() as u64),
+        cpu_loglog: None,
+        dedup_ratio_second_build: dedup,
+        dedup_reason,
     };
     let total_chunks = snap.total_chunks;
-    let storage = Storage {
-        total_chunks: Some(total_chunks),
-        total_payload_bytes: Some(snap.live_bytes),
-        storage_utilisation: Some(if total_chunks == 0 {
-            0.0
-        } else {
-            snap.live_bytes as f64 / (total_chunks as f64 * BODY)
-        }),
-    };
+    let storage = storage_block(
+        total_chunks,
+        snap.live_bytes,
+        n as u64,
+        Some(stats.nodes_embedded() as u64),
+    );
 
     // --- get hops (== referenced chunk-path depth) over the sample ---
     let reader: Reader<&CountingStore<StandardChunkSet>, V1> = Reader::new(&store);
@@ -224,6 +343,9 @@ pub fn measure_10(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
         } else {
             fetch_total as f64 / keys_total as f64
         }),
+        fallback_02_full_entries: None,
+        fallback_02_walk_from: None,
+        multiplier_fair: None,
     };
 
     // --- floor (1.0 only) over the sample ---
@@ -241,37 +363,88 @@ pub fn measure_10(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
         hops_mean: Some(mean(&floor_hops)),
         hops_p95: Some(pct(&floor_hops, 0.95)),
         hops_max: floor_hops.last().copied(),
+        hops_histogram: Some(histogram(&floor_hops)),
+        fallback_02: None,
     };
 
-    // --- range (1.0 only): a fixed mid window ---
-    let (range, _) = if n >= 3 {
-        let lo = Key::from(keys[n * 2 / 5].raw.as_slice());
-        let hi = Key::from(keys[n * 3 / 5].raw.as_slice());
+    // --- ceiling (neither format names it): 1.0 emulates by seek, so measure
+    //     the range(key, MAX).next() hop cost per sampled key ---
+    let hi_all = Key::from(MAX_KEY.as_slice());
+    let mut ceil_hops: Vec<u64> = Vec::with_capacity(idxs.len());
+    for &i in &idxs {
+        let key = Key::from(keys[i].raw.as_slice());
+        let before = store.gets();
+        let mut cursor = block_on(reader.range(&root, &key, &hi_all))?;
+        let _ = block_on(cursor.next())?;
+        ceil_hops.push(store.gets() - before);
+    }
+    ceil_hops.sort_unstable();
+    let ceiling = Ceiling {
+        supported: true,
+        class: "seek_emulated".to_string(),
+        native_seek_hops_mean: Some(mean(&ceil_hops)),
+        native_seek_hops_max: ceil_hops.last().copied(),
+        fallback_02: None,
+    };
+
+    // --- range (1.0 only): selectivity sweep of centred windows ---
+    let mut windows: Vec<RangeWindow> = Vec::with_capacity(RANGE_WS.len());
+    for &w in &RANGE_WS {
+        let (lo_i, hi_i) = window_indices(n, w);
+        let lo = Key::from(keys[lo_i].raw.as_slice());
+        let hi = Key::from(keys[hi_i].raw.as_slice());
         let before = store.gets();
         let mut cursor = block_on(reader.range(&root, &lo, &hi))?;
         let mut count = 0u64;
         while let Some(_pair) = block_on(cursor.next())? {
             count += 1;
         }
-        (
-            Range {
-                supported: true,
-                reason: None,
-                fetch_count: Some(store.gets() - before),
-                keys_returned: Some(count),
-            },
-            (),
-        )
-    } else {
-        (
-            Range {
-                supported: true,
-                reason: None,
-                fetch_count: Some(0),
-                keys_returned: Some(0),
-            },
-            (),
-        )
+        windows.push(RangeWindow {
+            w,
+            fetch_count: Some(store.gets() - before),
+            keys_returned: Some(count),
+            fallback_02_fetches: None,
+            multiplier: None,
+            reason_if_null: None,
+        });
+    }
+    let range = Range {
+        supported: true,
+        reason: None,
+        windows,
+    };
+
+    // --- ordered full iter: fetches to first key, then to drain all ---
+    let before = store.gets();
+    let mut it = block_on(reader.iter(&root))?;
+    let _first = block_on(it.next())?;
+    let to_first = store.gets() - before;
+    let mut all = to_first;
+    loop {
+        let g0 = store.gets();
+        if block_on(it.next())?.is_none() {
+            break;
+        }
+        all += store.gets() - g0;
+    }
+    let iter_full = IterFull {
+        native_fetch_to_first_key: Some(to_first),
+        native_fetch_all: Some(all),
+        fallback_02_materialise_fetches: None,
+        ordered_guaranteed: true,
+    };
+
+    // --- value read: this harness binds ref32 values that are never stored as
+    //     content chunks, so a read-through / inline study is not exercised ---
+    let value_read = ValueRead {
+        inline_fraction: None,
+        fetches_native_mean: None,
+        fetches_02_mean: None,
+        chunks_saved_by_inline: None,
+        reason: Some(
+            "values are synthetic ref32 addresses, not stored content chunks; inline read-through not exercised"
+                .to_string(),
+        ),
     };
 
     // --- single-key update / insert / delete (apply, 1-op changeset) ---
@@ -333,6 +506,49 @@ pub fn measure_10(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
         criterion_ns_per_op: None,
     };
 
+    // --- batch-size sweep: one changeset per K, same mix ---
+    let mut batch_sweep: Vec<BatchPoint> = Vec::with_capacity(BATCH_KS.len());
+    let mix_label = if all_update { "100/0/0" } else { "80/10/10" };
+    for &k in &BATCH_KS {
+        let kk = n.min(k);
+        let mut cs = Changeset::<V1>::new();
+        for (i, key) in keys.iter().take(kk).enumerate() {
+            let slot = i % 10;
+            if all_update || slot < 8 {
+                cs.put(
+                    Key::from(key.raw.as_slice()),
+                    alt_entry10(&key.raw),
+                    meta10(key),
+                );
+            } else if slot == 8 {
+                let (iraw, _ip) = insert_key(2_000_000 + i);
+                cs.put(Key::from(iraw.as_slice()), entry10(&iraw), None);
+            } else {
+                cs.remove(Key::from(key.raw.as_slice()));
+            }
+        }
+        let before_p = store.puts();
+        let t = Instant::now();
+        let _ = block_on(apply(&store, &root, &cs))?;
+        let ns = t.elapsed().as_nanos() as u64;
+        let chunks = store.puts() - before_p;
+        batch_sweep.push(BatchPoint {
+            k: kk as u64,
+            mix: mix_label.to_string(),
+            chunks_rewritten: chunks,
+            wall_ns: ns,
+            write_amplification: if kk == 0 {
+                0.0
+            } else {
+                chunks as f64 / kk as f64
+            },
+            ns_per_op: if kk == 0 { 0.0 } else { ns as f64 / kk as f64 },
+        });
+    }
+
+    // --- subtree delete: remove every key under one listing prefix ---
+    let subtree_delete = subtree_delete_10(&store, &reader, &root, corpus, keys)?;
+
     let update = Update {
         single: Some(SingleUpdate {
             update: Some(op_cost(&upd)),
@@ -341,6 +557,8 @@ pub fn measure_10(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
             criterion_ns_per_op: None,
         }),
         batch: Some(batch),
+        batch_sweep,
+        subtree_delete: Some(subtree_delete),
     };
 
     Ok(Cell {
@@ -354,8 +572,63 @@ pub fn measure_10(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
         get: Some(get),
         listing: Some(listing),
         floor: Some(floor),
+        ceiling: Some(ceiling),
         range: Some(range),
+        iter_full: Some(iter_full),
+        value_read: Some(value_read),
         update: Some(update),
+        full_entries_walk_fetches: None,
+    })
+}
+
+/// The `[lo, hi)` sorted-key indices of a centred window of width `w`.
+fn window_indices(n: usize, w: f64) -> (usize, usize) {
+    if n == 0 {
+        return (0, 0);
+    }
+    let width = ((n as f64) * w).round() as usize;
+    let width = width.clamp(1, n);
+    let lo = (n - width) / 2;
+    let hi = (lo + width).min(n - 1);
+    (lo, hi)
+}
+
+/// Delete every key under the first listing prefix in one changeset.
+fn subtree_delete_10(
+    store: &CountingStore<StandardChunkSet>,
+    reader: &Reader<&CountingStore<StandardChunkSet>, V1>,
+    root: &ChunkAddress,
+    corpus: Corpus,
+    keys: &[GenKey],
+) -> Result<SubtreeDelete, Err> {
+    let prefixes = listing_prefixes(corpus, keys);
+    let Some(prefix) = prefixes.first() else {
+        return Ok(SubtreeDelete {
+            prefix_utf8: None,
+            keys_deleted: 0,
+            chunks_rewritten: 0,
+            wall_ns: 0,
+            reason: Some("no prefix available".to_string()),
+        });
+    };
+    let pk = Key::from(prefix.as_slice());
+    let mut cs = Changeset::<V1>::new();
+    let mut deleted = 0u64;
+    let mut cursor = block_on(reader.prefix(root, &pk))?;
+    while let Some((key, _entry)) = block_on(cursor.next())? {
+        cs.remove(key);
+        deleted += 1;
+    }
+    let before_p = store.puts();
+    let t = Instant::now();
+    let _ = block_on(apply(store, root, &cs))?;
+    let ns = t.elapsed().as_nanos() as u64;
+    Ok(SubtreeDelete {
+        prefix_utf8: String::from_utf8(prefix.clone()).ok(),
+        keys_deleted: deleted,
+        chunks_rewritten: store.puts() - before_p,
+        wall_ns: ns,
+        reason: None,
     })
 }
 
@@ -434,6 +707,31 @@ pub fn measure_02(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
     let rss_after = peak_rss_bytes();
     let snap = store.snapshot();
 
+    // Second identical build: 0.2 obfuscation randomisation may defeat dedup,
+    // so measure how many new distinct chunks a re-save produces.
+    let (dedup, dedup_reason) = if n <= 100_000 {
+        let first_distinct = snap.distinct_puts;
+        let before = store.snapshot().distinct_puts;
+        let mut m2: PlainManifest<&Store02> = Manifest::new(&store);
+        for k in keys {
+            let r = ref32(value_addr(k.path.as_bytes()));
+            block_on(m2.add(&k.path, r))?;
+        }
+        let _ = block_on(m2.save())?;
+        let after = store.snapshot().distinct_puts;
+        let ratio = if first_distinct == 0 {
+            0.0
+        } else {
+            (after - before) as f64 / first_distinct as f64
+        };
+        (Some(ratio), None)
+    } else {
+        (
+            None,
+            Some("second build skipped above 1e5 to bound wall-clock".to_string()),
+        )
+    };
+
     let build = Build {
         wall_ns: Some(build_ns),
         criterion_ns_per_op: None,
@@ -443,17 +741,15 @@ pub fn measure_02(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
         nodes_embedded: None,
         peak_rss_bytes: rss_after.or(rss_before),
         peak_live_store_bytes: Some(snap.peak_live_bytes),
+        // 0.2 holds the whole mutable trie in RAM at save: frontier = O(N).
+        builder_frontier_nodes: Some(snap.distinct_puts),
+        cpu_loglog: None,
+        dedup_ratio_second_build: dedup,
+        dedup_reason,
     };
     let total_chunks = snap.total_chunks;
-    let storage = Storage {
-        total_chunks: Some(total_chunks),
-        total_payload_bytes: Some(snap.live_bytes),
-        storage_utilisation: Some(if total_chunks == 0 {
-            0.0
-        } else {
-            snap.live_bytes as f64 / (total_chunks as f64 * BODY)
-        }),
-    };
+    // 0.2 never embeds children: pass None so embedding_ratio is explicit 0.0.
+    let storage = storage_block(total_chunks, snap.live_bytes, n as u64, None);
 
     // --- get hops over the sample (fresh open, no trie caching) ---
     let reader: PlainManifest<&Store02> = Manifest::open(root, &store);
@@ -466,37 +762,120 @@ pub fn measure_02(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
     }
     let get = get_block(&hops, cfg.rtt_ms);
     let mut depth_src = hops.clone();
-    let tree_depth = depth_from(&mut depth_src);
+    let mut tree_depth = depth_from(&mut depth_src);
 
-    // --- listing: full entries() walk fallback (no ordered prefix API) ---
+    // Fanout: mean live children over internal (forked) nodes, via a full walk.
+    let mut fork_sum = 0u64;
+    let mut internal = 0u64;
+    let mut mw: PlainManifest<&Store02> = Manifest::open(root, &store);
+    block_on(mw.walk(&mut |_path, node| {
+        let f = node.forks().len() as u64;
+        if f > 0 {
+            fork_sum += f;
+            internal += 1;
+        }
+        Ok(())
+    }))?;
+    tree_depth.fanout_mean = Some(if internal == 0 {
+        0.0
+    } else {
+        fork_sum as f64 / internal as f64
+    });
+
+    // --- listing: pessimal full entries() walk, plus the FAIR walk_from on the
+    //     same prefixes a 1.0 caller would list ---
     let before = store.gets();
     let entries = block_on(reader.entries())?;
     let walk_fetches = store.gets() - before;
     let keys_returned = entries.len() as u64;
-    let listing = Listing {
-        method: "full_walk_fallback".to_string(),
-        fetch_count: Some(walk_fetches),
-        keys_returned: Some(keys_returned),
-        fetches_per_key: Some(if keys_returned == 0 {
+    let full_entries = KfCount {
+        fetches: walk_fetches,
+        keys_returned,
+        fetches_per_key: if keys_returned == 0 {
             0.0
         } else {
             walk_fetches as f64 / keys_returned as f64
-        }),
+        },
+    };
+    // Fair fallback: walk_from(prefix) over the same logical prefixes as 1.0.
+    // walk_from only resolves an EXACT node-boundary path; a prefix that lands
+    // mid-edge raises NoForkFound. That is itself a 0.2 limitation, so such a
+    // prefix contributes nothing and is skipped rather than aborting the run.
+    let mut wf_fetches = 0u64;
+    let mut wf_keys = 0u64;
+    let mut wf_resolved = 0u64;
+    for pstr in listing_prefixes_02(corpus, keys) {
+        let before = store.gets();
+        let mut leaves = 0u64;
+        let mut mwf: PlainManifest<&Store02> = Manifest::open(root, &store);
+        let r = block_on(mwf.walk_from(&pstr, &mut |_p, node| {
+            if node.is_value() {
+                leaves += 1;
+            }
+            Ok(())
+        }));
+        if r.is_ok() {
+            wf_fetches += store.gets() - before;
+            wf_keys += leaves;
+            wf_resolved += 1;
+        }
+    }
+    let walk_from_opt = (wf_resolved > 0).then(|| KfCount {
+        fetches: wf_fetches,
+        keys_returned: wf_keys,
+        fetches_per_key: if wf_keys == 0 {
+            0.0
+        } else {
+            wf_fetches as f64 / wf_keys as f64
+        },
+    });
+    let listing = Listing {
+        method: "walk_from_fair + full_entries_pessimal".to_string(),
+        fetch_count: Some(wf_fetches),
+        keys_returned: Some(wf_keys),
+        fetches_per_key: walk_from_opt.as_ref().map(|k| k.fetches_per_key),
+        fallback_02_full_entries: Some(full_entries),
+        fallback_02_walk_from: walk_from_opt,
+        multiplier_fair: None,
     };
 
-    // floor / range: unsupported.
+    // floor / ceiling / range: no ordered/seekable API; the real 0.2 emulation
+    // is the full entries() walk (O(N)), whose fetch count == walk_fetches.
     let floor = Floor {
         supported: false,
-        reason: Some("no ordered API".to_string()),
+        reason: Some("no ordered/seekable API; emulated by full entries() walk".to_string()),
         hops_mean: None,
         hops_p95: None,
         hops_max: None,
+        hops_histogram: None,
+        fallback_02: None,
+    };
+    let ceiling = Ceiling {
+        supported: false,
+        class: "unsupported".to_string(),
+        native_seek_hops_mean: None,
+        native_seek_hops_max: None,
+        fallback_02: None,
     };
     let range = Range {
         supported: false,
-        reason: Some("no ordered API".to_string()),
-        fetch_count: None,
-        keys_returned: None,
+        reason: Some("no ordered/seekable API; emulated by full entries() walk".to_string()),
+        windows: Vec::new(),
+    };
+    let iter_full = IterFull {
+        native_fetch_to_first_key: None,
+        native_fetch_all: None,
+        fallback_02_materialise_fetches: Some(walk_fetches),
+        // entries() DFS order is undocumented and entries_concurrent is
+        // explicitly unordered: no ordered-iter guarantee.
+        ordered_guaranteed: false,
+    };
+    let value_read = ValueRead {
+        inline_fraction: None,
+        fetches_native_mean: None,
+        fetches_02_mean: None,
+        chunks_saved_by_inline: None,
+        reason: Some("no inline entries in 0.2; values are references".to_string()),
     };
 
     // --- single-key update / insert / delete: add/remove + save ---
@@ -556,6 +935,51 @@ pub fn measure_02(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
         criterion_ns_per_op: None,
     };
 
+    // --- batch-size sweep: K mutations + one save per K ---
+    let mut batch_sweep: Vec<BatchPoint> = Vec::with_capacity(BATCH_KS.len());
+    let mix_label = if all_update {
+        "100/0/0 (adds+save)"
+    } else {
+        "80/10/10 (adds+save)"
+    };
+    for &k in &BATCH_KS {
+        let kk = n.min(k);
+        let mut ms: PlainManifest<&Store02> = Manifest::open(root, &store);
+        let before_p = store.puts();
+        let t = Instant::now();
+        for (i, key) in keys.iter().take(kk).enumerate() {
+            let slot = i % 10;
+            if all_update || slot < 8 {
+                let r = ref32(tagged_addr(b"upd", key.path.as_bytes()));
+                block_on(ms.add(&key.path, r))?;
+            } else if slot == 8 {
+                let (_ir, ip) = insert_key(2_000_000 + i);
+                let r = ref32(value_addr(ip.as_bytes()));
+                block_on(ms.add(&ip, r))?;
+            } else {
+                block_on(ms.remove(&key.path))?;
+            }
+        }
+        let _ = block_on(ms.save())?;
+        let ns = t.elapsed().as_nanos() as u64;
+        let chunks = store.puts() - before_p;
+        batch_sweep.push(BatchPoint {
+            k: kk as u64,
+            mix: mix_label.to_string(),
+            chunks_rewritten: chunks,
+            wall_ns: ns,
+            write_amplification: if kk == 0 {
+                0.0
+            } else {
+                chunks as f64 / kk as f64
+            },
+            ns_per_op: if kk == 0 { 0.0 } else { ns as f64 / kk as f64 },
+        });
+    }
+
+    // --- subtree delete: remove every key under one listing prefix + save ---
+    let subtree_delete = subtree_delete_02(&store, root, corpus, keys)?;
+
     let update = Update {
         single: Some(SingleUpdate {
             update: Some(op_cost(&upd)),
@@ -564,6 +988,8 @@ pub fn measure_02(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
             criterion_ns_per_op: None,
         }),
         batch: Some(batch),
+        batch_sweep,
+        subtree_delete: Some(subtree_delete),
     };
 
     Ok(Cell {
@@ -577,8 +1003,73 @@ pub fn measure_02(corpus: Corpus, keys: &[GenKey], cfg: Cfg) -> Result<Cell, Err
         get: Some(get),
         listing: Some(listing),
         floor: Some(floor),
+        ceiling: Some(ceiling),
         range: Some(range),
+        iter_full: Some(iter_full),
+        value_read: Some(value_read),
         update: Some(update),
+        full_entries_walk_fetches: Some(walk_fetches),
+    })
+}
+
+/// 0.2 listing prefixes matching the 1.0 logical prefixes: for uniform (hex
+/// paths) the 1-raw-byte prefix maps to its 2-hex-char string; path corpora
+/// are byte-identical.
+fn listing_prefixes_02(corpus: Corpus, keys: &[GenKey]) -> Vec<String> {
+    listing_prefixes(corpus, keys)
+        .into_iter()
+        .filter_map(|p| match corpus {
+            Corpus::Uniform => Some(bytes_to_hex(&p)),
+            _ => String::from_utf8(p).ok(),
+        })
+        .collect()
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX[usize::from(b >> 4)] as char);
+        s.push(HEX[usize::from(b & 0x0f)] as char);
+    }
+    s
+}
+
+/// Delete every 0.2 key under the first listing prefix, one save.
+fn subtree_delete_02(
+    store: &Store02,
+    root: ChunkAddress,
+    corpus: Corpus,
+    keys: &[GenKey],
+) -> Result<SubtreeDelete, Err> {
+    let Some(prefix) = listing_prefixes_02(corpus, keys).into_iter().next() else {
+        return Ok(SubtreeDelete {
+            prefix_utf8: None,
+            keys_deleted: 0,
+            chunks_rewritten: 0,
+            wall_ns: 0,
+            reason: Some("no prefix available".to_string()),
+        });
+    };
+    let victims: Vec<&str> = keys
+        .iter()
+        .map(|k| k.path.as_str())
+        .filter(|p| p.starts_with(&prefix))
+        .collect();
+    let mut mm: PlainManifest<&Store02> = Manifest::open(root, store);
+    let before_p = store.puts();
+    let t = Instant::now();
+    for p in &victims {
+        block_on(mm.remove(p))?;
+    }
+    let _ = block_on(mm.save())?;
+    let ns = t.elapsed().as_nanos() as u64;
+    Ok(SubtreeDelete {
+        prefix_utf8: Some(prefix),
+        keys_deleted: victims.len() as u64,
+        chunks_rewritten: store.puts() - before_p,
+        wall_ns: ns,
+        reason: None,
     })
 }
 
