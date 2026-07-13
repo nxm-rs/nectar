@@ -1,0 +1,42 @@
+[package]
+name = "nectar-manifest-proof"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Inclusion and exclusion proofs over a mantaray 1.0 manifest, verified against a trusted root"
+documentation = "https://docs.rs/nectar-manifest-proof"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "manifest", "mantaray", "proof"]
+categories = ["data-structures", "cryptography"]
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives = { workspace = true }
+nectar-manifest = { workspace = true }
+nectar-primitives = { workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+bytes.workspace = true
+futures.workspace = true
+proptest.workspace = true
+
+[features]
+default = [ "std" ]
+std = [
+	"alloy-primitives/std",
+	"nectar-manifest/std",
+	"nectar-primitives/std",
+	"thiserror/std",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
