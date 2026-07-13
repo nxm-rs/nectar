@@ -270,17 +270,27 @@ mod tests {
     }
 
     #[test]
-    fn segmentation_ignores_insertion_order() {
-        // The partition is a pure function of the ordered fork run, so it does
-        // not depend on the order the same forks were presented in.
+    fn segmentation_is_history_independent_after_a_boundary() {
+        // A cut is keyed on each fork's own prefix and weight, so a run that
+        // opens on a fresh boundary segments the same wherever it sits.
+        // Prefixing a self-contained segment (its weight alone forces a cut,
+        // resetting the accumulator) leaves the worked run's internal
+        // boundaries untouched, only shifted by one.
         let forks = worked_forks();
-        let mut shuffled = forks.clone();
-        shuffled.reverse();
-        shuffled.reverse();
-        assert_eq!(
-            segment::<V1>(&forks, SegmentKind::Leaf),
-            segment::<V1>(&shuffled, SegmentKind::Leaf)
+        let base = segment::<V1>(&forks, SegmentKind::Leaf);
+
+        let lead = (
+            Prefix::try_from(&[0x00u8][..]).unwrap(),
+            SegmentWeight::new(V1::SEG_TARGET).unwrap(),
         );
+        let mut prefixed = vec![lead];
+        prefixed.extend(forks);
+        let shifted = segment::<V1>(&prefixed, SegmentKind::Leaf);
+
+        let expected: Vec<_> = core::iter::once(0..1)
+            .chain(base.iter().map(|r| r.start + 1..r.end + 1))
+            .collect();
+        assert_eq!(shifted, expected);
     }
 
     #[test]
