@@ -38,6 +38,13 @@
 //! opening) sits behind the feature. The key derivation is deterministic, so an
 //! encrypted tree keeps canonical bytes and cross-build dedup.
 //!
+//! The folder view ([`Reader::list`], [`Reader::serve`]) is a path
+//! interpretation over the flat KV core: the separator is [`Format::SEPARATOR`],
+//! derived from the key bytes at read time and never stored, and the website
+//! index- and error-document conventions ride in the root's typed metadata, not
+//! magic keys. A listing collapses deeper keys at the next separator and seeks
+//! past each named subtree, so it stays O(depth) and fetches no value chunk.
+//!
 //! PRIVACY: a ref64 IS a read capability for its whole subtree. Writing one
 //! into a PLAINTEXT parent publishes that key to anyone who reads the parent;
 //! confidentiality rests solely on the outermost ref64 being distributed
@@ -75,6 +82,7 @@ mod codec;
 #[cfg(feature = "encryption")]
 mod encryption;
 mod error;
+mod folder;
 mod fork;
 mod format;
 mod meta;
@@ -95,6 +103,7 @@ pub use encryption::{EncryptedNode, EncryptedNodeGet, EncryptedNodePut, derive_k
 pub use error::{
     CustomKeyError, ForkPrefixEmpty, MetadataTooLong, PrefixTooLong, ValueTooLong, WeightOverBudget,
 };
+pub use folder::{DirEntry, Listing, Served, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
