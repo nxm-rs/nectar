@@ -14,6 +14,7 @@ use alloy_primitives::keccak256;
 use nectar_primitives::{ChunkRef, EncryptedChunkRef};
 
 use crate::bounded::{Prefix, SegmentWeight};
+use crate::count::MAX_WIRE_BYTES;
 use crate::fork::Child;
 use crate::format::Format;
 use crate::value::Entry;
@@ -212,16 +213,20 @@ impl Directory {
 /// The packing weight of one directory fork: it routes a single first byte,
 /// with no tail, to one segment child, so its record is the flags and
 /// prefix-length bytes plus one reference of the domain's width, behind its
-/// fork-table index slot.
+/// fork-table index slot. A descriptor also trails a `seg_count`; its
+/// worst-case width is charged so a directory stays within one chunk by
+/// construction, as the leaf path charges the count on its records.
 const fn dir_entry_weight(domain: Domain) -> usize {
     let reference = match domain {
         Domain::Plain => ChunkRef::SIZE,
         Domain::Encrypted => EncryptedChunkRef::SIZE,
     };
+    let count = MAX_WIRE_BYTES;
     let slot = size_of::<u8>().saturating_add(size_of::<u16>());
     slot.saturating_add(size_of::<u8>()) // fflags
         .saturating_add(size_of::<u8>()) // plen (routes by the first byte)
         .saturating_add(reference)
+        .saturating_add(count)
 }
 
 /// Spill an oversized fork table into a <= depth-2 segment directory.
@@ -249,6 +254,19 @@ pub fn spill<F: Format>(forks: &[(Prefix<F>, SegmentWeight<F>)], domain: Domain)
 mod tests {
     use super::*;
     use crate::format::{V1, V1Read};
+
+    // The directory packing weight must cover the widest descriptor its segment
+    // chunk can actually carry, including the worst-case trailing seg_count,
+    // so a spilled directory stays within one chunk by construction.
+    #[test]
+    fn the_directory_weight_covers_the_widest_descriptor() {
+        // The on-wire descriptor: its first-key byte, the routed reference and
+        // a seg_count of up to MAX_WIRE_BYTES.
+        let widest = size_of::<u8>()
+            .saturating_add(ChunkRef::SIZE)
+            .saturating_add(MAX_WIRE_BYTES);
+        assert!(widest <= dir_entry_weight(Domain::Plain));
+    }
 
     // The eight worked forks a..h with the spec's weights and hash-cut bits.
     const ROWS: [(u8, u64, bool); 8] = [
