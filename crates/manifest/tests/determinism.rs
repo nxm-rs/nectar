@@ -70,6 +70,36 @@ fn to_forks(forks: &[(Vec<u8>, usize)]) -> Result<Vec<(Prefix, SegmentWeight)>, 
     Ok(out)
 }
 
+/// The forks of a weighted set in fork order, canonicalized through a real
+/// [`ForkTable`] built in the given insert order rather than a private sort:
+/// the wire order is then the library's radix order, so a table that leaked
+/// its insert order would show up as a segmentation difference.
+fn forks_through_table(
+    order: &[(Vec<u8>, usize)],
+) -> Result<Vec<(Prefix, SegmentWeight)>, TestCaseError> {
+    let mut table = ForkTable::new();
+    let mut weights = BTreeMap::new();
+    for (prefix, weight) in order {
+        let Some(&first) = prefix.first() else {
+            continue;
+        };
+        weights.insert(first, *weight);
+        table
+            .insert(to_prefix(prefix)?, Entry::from(ref32(0)).into(), None)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+    }
+    let mut out = Vec::with_capacity(table.len());
+    for (first, record) in table.iter() {
+        let tail = record.tail().as_bytes();
+        let mut full = Vec::with_capacity(tail.len().saturating_add(1));
+        full.push(first);
+        full.extend_from_slice(tail);
+        let weight = weights.get(&first).copied().unwrap_or_default();
+        out.push((to_prefix(&full)?, to_weight(weight)?));
+    }
+    Ok(out)
+}
+
 /// Encode a node whose fork table is built by inserting `forks` in the given
 /// order; distinct first bytes mean no insert ever replaces another.
 fn encode_in_order(forks: &[(Vec<u8>, u8)]) -> Result<Vec<u8>, TestCaseError> {
@@ -128,15 +158,27 @@ proptest! {
         prop_assert_eq!(first, second);
     }
 
-    // A leaf boundary is a pure function of the fork-relative key set, so the
-    // partition is the same however the keys were inserted.
+    // A leaf boundary is a pure function of the fork-relative key set. The two
+    // build orders reach the partition through a real fork table, so the order
+    // is the library's, not the test's; the ranges must also tile the run,
+    // contiguous, non-empty and covering, so an off-by-one in the partitioner
+    // surfaces here rather than as a silent gap or overlap.
     #[test]
     fn segmentation_is_a_pure_function_of_the_key_set(
         (base, shuffled) in set_and_shuffle(weighted_fork_set()),
     ) {
-        let from_base = segment::<V1>(&to_forks(&base)?, SegmentKind::Leaf);
-        let from_shuffled = segment::<V1>(&to_forks(&shuffled)?, SegmentKind::Leaf);
-        prop_assert_eq!(from_base, from_shuffled);
+        let ordered = forks_through_table(&base)?;
+        let from_base = segment::<V1>(&ordered, SegmentKind::Leaf);
+        let from_shuffled = segment::<V1>(&forks_through_table(&shuffled)?, SegmentKind::Leaf);
+        prop_assert_eq!(&from_base, &from_shuffled);
+
+        let mut next = 0usize;
+        for range in &from_base {
+            prop_assert_eq!(range.start, next);
+            prop_assert!(range.start < range.end);
+            next = range.end;
+        }
+        prop_assert_eq!(next, ordered.len());
     }
 
     // Below SEG_TARGET a cut is exactly the scaled-window comparison against
