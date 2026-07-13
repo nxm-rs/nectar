@@ -11,28 +11,28 @@
 //! (spec 6.2): an authenticated node's fork set is complete and edges maximal,
 //! so the index entry for a byte is the whole story for that byte.
 
-use nectar_manifest::{Entry, Format, InlineValue};
+use nectar_manifest::{CountError, Entry, Format, InlineValue};
 use nectar_primitives::wire::{Cursor, Underrun};
 use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef};
 
 /// Flags-byte facts of the node body grammar (spec 5.1). Restated here because
 /// they are wire structure, not a tunable the manifest crate exports.
-mod flag {
+pub(crate) mod flag {
     /// Bits 0-1: the entry presence and width discriminant.
-    pub(super) const ENTRY_MASK: u8 = 0b0000_0011;
+    pub(crate) const ENTRY_MASK: u8 = 0b0000_0011;
     /// Bits 2-3: the child presence and width discriminant.
-    pub(super) const CHILD_MASK: u8 = 0b0000_1100;
+    pub(crate) const CHILD_MASK: u8 = 0b0000_1100;
     /// Bit 4: a metadata block follows.
-    pub(super) const HAS_META: u8 = 0b0001_0000;
+    pub(crate) const HAS_META: u8 = 0b0001_0000;
     /// Bit 5: the fork table is a segment directory.
-    pub(super) const SEGMENTED: u8 = 0b0010_0000;
+    pub(crate) const SEGMENTED: u8 = 0b0010_0000;
     /// Bit 6: the body is a segment, not a node.
-    pub(super) const SEGMENT: u8 = 0b0100_0000;
+    pub(crate) const SEGMENT: u8 = 0b0100_0000;
 }
 
 /// A two-bit reference/value width discriminant.
 #[derive(Clone, Copy)]
-enum Width {
+pub(crate) enum Width {
     /// Absent field.
     None,
     /// A plain 32-byte reference.
@@ -44,7 +44,7 @@ enum Width {
 }
 
 /// The entry-position (bits 0-1) width of a flags byte.
-const fn entry_width(flags: u8) -> Width {
+pub(crate) const fn entry_width(flags: u8) -> Width {
     match flags & flag::ENTRY_MASK {
         0b01 => Width::Ref32,
         0b10 => Width::Ref64,
@@ -54,7 +54,7 @@ const fn entry_width(flags: u8) -> Width {
 }
 
 /// The child-position (bits 2-3) width of a flags byte.
-const fn child_width(flags: u8) -> Width {
+pub(crate) const fn child_width(flags: u8) -> Width {
     match flags & flag::CHILD_MASK {
         0b0100 => Width::Ref32,
         0b1000 => Width::Ref64,
@@ -84,6 +84,9 @@ pub enum DescentError {
     /// An inline value longer than the format admits.
     #[error("inline value over the format bound")]
     ValueTooLong,
+    /// A malformed subtree count on a counted-profile fork or descriptor.
+    #[error(transparent)]
+    Count(#[from] CountError),
 }
 
 /// Where the descent through one node lands for the key.
@@ -110,7 +113,7 @@ fn seek(bytes: &[u8], offset: usize) -> Result<Cursor<'_>, Underrun> {
 
 /// The little-endian u16 the node grammar uses for every count, offset and
 /// length, widened for arithmetic.
-fn take_u16(cur: &mut Cursor<'_>) -> Result<usize, Underrun> {
+pub(crate) fn take_u16(cur: &mut Cursor<'_>) -> Result<usize, Underrun> {
     cur.take::<[u8; 2]>()
         .map(|b| usize::from(u16::from_le_bytes(b)))
 }
@@ -128,7 +131,7 @@ fn bump(reached: &mut usize, to: usize) {
 /// Read a width-tagged reference or value, advancing past it. Returns the value
 /// only when the caller may terminate on it; the bytes are consumed regardless
 /// so the cursor lands on whatever follows.
-fn take_value<F: Format>(
+pub(crate) fn take_value<F: Format>(
     cur: &mut Cursor<'_>,
     width: Width,
 ) -> Result<Option<Entry<F>>, DescentError> {

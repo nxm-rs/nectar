@@ -33,6 +33,9 @@ pub enum ProveError {
     /// An exclusion proof was asked for a present key.
     #[error("key is present")]
     NotAbsent,
+    /// A select proof was asked for an index at or past the key count.
+    #[error("index is past the key count")]
+    IndexOutOfRange,
 }
 
 /// A proof-verification failure. A rejected proof always fails here rather than
@@ -74,4 +77,15 @@ pub enum VerifyError {
     /// The range spans an encrypted subtree the plain walk cannot enumerate.
     #[error("range reaches an encrypted subtree")]
     Encrypted,
+    /// A parent-asserted `child_count` did not equal the child node's derived
+    /// total: an on-path count inconsistency the counted proofs reject.
+    #[error("child_count does not match the child's derived total")]
+    CountMismatch,
+    /// A select or page descent resolved an index past the key count.
+    #[error("index is past the key count")]
+    IndexOutOfRange,
+    /// A page slice's length, ordering or bounds disagreed with the proven
+    /// window size.
+    #[error("page slice does not match the proven window")]
+    PageShape,
 }

@@ -29,6 +29,16 @@
 //! attests one key changed between two roots - an insertion, or its deletion and
 //! update duals - as its state under each root.
 //!
+//! A further family rides the authenticated subtree counts the node grammar
+//! carries: [`prove_rank`],
+//! [`prove_count`], [`prove_select`] and [`prove_page`] answer order-statistic
+//! questions in O(depth). These assume an HONEST BUILDER: a referenced child's
+//! count is author-asserted, bound to its parent chunk but not to the child's
+//! real subtree, so a counted proof establishes the count as committed by the
+//! root, not against an adversarial root. The strictly trustless answers ride
+//! the count-independent inclusion, exclusion and range-completeness proofs. See
+//! the [`prove_count`] trust-boundary notes for the full statement.
+//!
 //! The model is generic over [`Format`](nectar_manifest::Format) and defaults to
 //! the frozen `V1` plaintext layout.
 
@@ -45,6 +55,7 @@
     )
 )]
 
+mod counted;
 mod descent;
 mod error;
 mod proof;
@@ -53,6 +64,11 @@ mod range;
 mod transition;
 mod verify;
 
+pub use counted::{
+    CountProof, CountedPath, PageProof, RankProof, SelectProof, prove_count, prove_page,
+    prove_page_prefix, prove_rank, prove_select, verify_count, verify_page, verify_page_prefix,
+    verify_rank, verify_select,
+};
 pub use descent::DescentError;
 pub use error::{ProveError, VerifyError};
 pub use proof::{ForkPathProof, Granularity, PathStep, Verdict};
