@@ -391,7 +391,7 @@ mod tests {
     use bytes::Bytes;
     use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
-    use nectar_primitives::{ChunkAddress, ChunkRef};
+    use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
 
     use crate::bounded::Prefix;
     use crate::fork::{Child, ForkPayload, ForkTable};
@@ -604,6 +604,37 @@ mod tests {
             block_on(reader.subtree(&root, &Key::from(&b"zzz"[..]))).unwrap(),
             None,
         );
+    }
+
+    #[test]
+    fn subtree_through_an_encrypted_child_is_an_error() {
+        let store = MemoryStore::default();
+        // A "sec/" directory referenced through an encrypted (ref64) child: the
+        // plain reader cannot open it, and a 32-byte reference cannot carry it.
+        let mut forks = ForkTable::new();
+        forks
+            .insert(
+                prefix(b"sec/"),
+                Child::Ref64(EncryptedChunkRef::new(
+                    ChunkAddress::new([0x5E; 32]),
+                    EncryptionKey::from([0xA1; 32]),
+                ))
+                .into(),
+                None,
+            )
+            .unwrap();
+        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+        let reader: Reader<_> = Reader::new(&store);
+        // The boundary lands exactly on the encrypted edge.
+        assert!(matches!(
+            block_on(reader.subtree(&root, &Key::from(&b"sec/"[..]))),
+            Err(ReaderError::EncryptedChild),
+        ));
+        // A shorter prefix funnelling into the same encrypted child errs alike.
+        assert!(matches!(
+            block_on(reader.subtree(&root, &Key::from(&b"s"[..]))),
+            Err(ReaderError::EncryptedChild),
+        ));
     }
 
     #[test]
