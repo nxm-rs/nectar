@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f940676ff3c129a82784c35dac784b59de63b6aacf785fc03467e86d40c0e397 # shrinks to base = [([4, 2, 0], (false, 0, [], false)), ([4, 2], (false, 0, [], false))], changes = [([4, 2], None)]
+cc 1cb7761c5940b43f1ba16ee5d2964e105e2eae954c71502e25633f15858b588a # shrinks to base = [([1, 3, 4, 1], (false, 0, [], false))], changes = [([1], Some((false, 0, [], false))), ([1, 3, 4, 1], None)]
+cc 8e84fef34381739f0e73eaa5df42392f44fdc2538285a0eaa29cc51ed8f1c992 # shrinks to base = [([2, 2, 1, 1, 4], (false, 0, [], false))], changes = [([2, 0, 0, 0, 4], None), ([2, 2, 1, 1], Some((false, 0, [], false)))]
