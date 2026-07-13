@@ -355,6 +355,60 @@ proptest! {
 }
 
 #[test]
+fn read_ahead_never_fetches_past_the_upper_bound() -> TestResult {
+    let memory = MemoryStore::default();
+    let (root, oracle) = wide_build(&memory)?;
+    // The root fans out into one referenced child per leading byte, so there are
+    // more sibling subtrees than the window: an unbounded prefetch would pull
+    // whole subtrees the bounded walk never visits.
+    let siblings = memory.len().saturating_sub(1);
+    ensure(
+        siblings > V1::READ_AHEAD,
+        "more sibling subtrees than the window",
+    )?;
+
+    // A gated store is essential here: its fetches park on the first poll, so a
+    // future the window launches past the bound genuinely starts (and is
+    // counted), the way a real async store would. An immediately-ready store
+    // hides the over-fetch, because the awaited fetch completes before the
+    // executor ever polls the surplus futures.
+    let store = GatedStore {
+        inner: memory,
+        ..Default::default()
+    };
+    let reader: Reader<_> = Reader::new(&store);
+
+    // A range over the single leading byte 0x00: its subtree is in range; every
+    // sibling at 0x01.. is at or past the exclusive bound. Read-ahead must stop
+    // at the bound, so only the root and that one subtree are ever fetched.
+    let lo = Key::from(&[0u8][..]);
+    let hi = Key::from(&[1u8][..]);
+    let got: Rows = {
+        let mut cursor = block_on(reader.range(&root, &lo, &hi)).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        while let Some((key, value)) = block_on(cursor.next()).map_err(|e| e.to_string())? {
+            out.push((key.as_bytes().to_vec(), value));
+        }
+        out
+    };
+    let expected: Rows = oracle
+        .iter()
+        .filter(|(k, _)| k.as_slice() >= lo.as_bytes() && k.as_slice() < hi.as_bytes())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    ensure(!expected.is_empty(), "the range covers the first subtree")?;
+    ensure_eq(got, expected, "bounded read-ahead matches the range oracle")?;
+
+    // Exactly the root and the one in-range subtree: no sibling past the bound is
+    // prefetched, so the window respects the range at the serial fetch count.
+    ensure_eq(
+        store.gets.load(Ordering::Relaxed),
+        2,
+        "root and the one in-range subtree only",
+    )
+}
+
+#[test]
 fn floor_matches_the_oracle() -> TestResult {
     let store = MemoryStore::default();
     let (root, oracle) = build(&store)?;
