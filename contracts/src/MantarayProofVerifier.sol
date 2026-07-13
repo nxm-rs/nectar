@@ -91,6 +91,24 @@ library MantarayProofVerifier {
         return status == S_ABSENT;
     }
 
+    /// Whether `key` was inserted between `rootBefore` and `rootAfter`: provably
+    /// absent under the prior root, and present under the new root with `value`.
+    ///
+    /// The two halves are independent descents, each anchored at its own root, so
+    /// a proof that reuses one root for both, or mislabels the change, fails to
+    /// authenticate. This is the insertion shape a transparency log appends
+    /// under; the deletion and update duals swap which half is the inclusion.
+    function verifyTransition(
+        bytes32 rootBefore,
+        bytes32 rootAfter,
+        bytes memory key,
+        bytes memory value,
+        Proof memory before,
+        Proof memory afterProof
+    ) internal pure returns (bool) {
+        return verifyExclusion(rootBefore, key, before) && verifyInclusion(rootAfter, key, value, afterProof);
+    }
+
     /// Replay the authenticated descent, returning the terminal state and, when
     /// present, the entry value.
     function _walk(bytes32 root, bytes memory key, Proof memory proof) private pure returns (uint8, bytes memory) {

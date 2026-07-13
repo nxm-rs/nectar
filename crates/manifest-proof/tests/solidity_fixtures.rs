@@ -7,6 +7,13 @@
 //! file under `contracts/test/fixtures/`. The Foundry tests load these with
 //! `vm.readFileBinary` and replay the descent on-chain.
 //!
+//! Alongside the single-key inclusion and exclusion cases it emits the two
+//! composition families the demo contracts consume: a range-completeness
+//! listing (whole frontier node payloads plus the digest of the authenticated
+//! listing) and a state-transition (the exclusion half under the prior root and
+//! the inclusion half under the new root, each a segment proof). The extra wire
+//! shapes are stated with each encoder below.
+//!
 //! Wire layout (all multi-byte integers BIG-endian, chosen for cheap Solidity
 //! parsing; note the raw mantaray node bytes carried inside each segment keep
 //! their own little-endian u16 fields, which the on-chain descent reads as
@@ -37,9 +44,11 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
+use alloy_primitives::keccak256;
 use nectar_manifest::{Builder, Entry, Key, V1};
 use nectar_manifest_proof::{
-    ForkPathProof, Granularity, PathStep, Verdict, prove_exclusion, prove_inclusion, verify,
+    ForkPathProof, Granularity, PathStep, RangeProof, Verdict, prove_exclusion, prove_inclusion,
+    prove_range_complete, verify, verify_range,
 };
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef};
@@ -225,6 +234,119 @@ fn exclusion_fixture(
     encode_fixture(root, key, None, &proof)
 }
 
+/// The keccak digest over an ordered listing, byte-identical to the on-chain
+/// range verifier: each pair contributes a big-endian u32 key length and bytes,
+/// then a big-endian u32 value length and bytes, concatenated in listing order.
+fn listing_digest(pairs: &[(Key, Entry)]) -> Result<[u8; 32], Box<dyn Error>> {
+    let mut buf = Vec::new();
+    for (key, entry) in pairs {
+        let value = value_bytes(entry)?;
+        put_bytes(&mut buf, key.as_bytes())?;
+        put_bytes(&mut buf, &value)?;
+    }
+    Ok(keccak256(&buf).0)
+}
+
+/// Serialize a range-completeness fixture: the trusted root, the half-open
+/// bounds, the digest and length of the authenticated listing, then the
+/// frontier node payloads the verifier re-BMTs.
+///
+/// ```text
+/// range := root[32]
+///          u32 lo_len || lo || u32 hi_len || hi
+///          digest[32] || u32 count
+///          u32 n_nodes || (u32 payload_len || payload)[n_nodes]
+/// ```
+fn encode_range_fixture(
+    root: &ChunkAddress,
+    lo: &Key,
+    hi: &Key,
+    digest: &[u8; 32],
+    count: usize,
+    proof: &RangeProof,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut out = Vec::new();
+    out.extend_from_slice(root.as_bytes());
+    put_bytes(&mut out, lo.as_bytes())?;
+    put_bytes(&mut out, hi.as_bytes())?;
+    out.extend_from_slice(digest);
+    put_len(&mut out, count)?;
+    put_len(&mut out, proof.len())?;
+    for node in proof.nodes() {
+        put_bytes(&mut out, node)?;
+    }
+    Ok(out)
+}
+
+/// Prove `[lo, hi)` complete under `root`, verify the listing round trip, and
+/// serialize the range fixture.
+fn range_fixture(
+    map: &Map,
+    root: &ChunkAddress,
+    lo: &Key,
+    hi: &Key,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let proof = prove_range_complete(&source(map), root, lo, hi)?;
+    let listing = verify_range::<V1>(root, lo, hi, &proof)?;
+    let digest = listing_digest(&listing)?;
+    encode_range_fixture(root, lo, hi, &digest, listing.len(), &proof)
+}
+
+/// Serialize a state-transition fixture: the two roots, the key and its value
+/// under the new root, then the exclusion half (prior root) and inclusion half
+/// (new root), each a segment proof in the single-key wire.
+///
+/// ```text
+/// transition := root_before[32] || root_after[32]
+///               u32 key_len || key || u32 value_len || value
+///               u32 before_len || before_proof
+///               u32 after_len  || after_proof
+/// ```
+fn encode_transition_fixture(
+    root_before: &ChunkAddress,
+    root_after: &ChunkAddress,
+    key: &Key,
+    value: &[u8],
+    before: &ForkPathProof,
+    after: &ForkPathProof,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut out = Vec::new();
+    out.extend_from_slice(root_before.as_bytes());
+    out.extend_from_slice(root_after.as_bytes());
+    put_bytes(&mut out, key.as_bytes())?;
+    put_bytes(&mut out, value)?;
+    put_bytes(&mut out, &encode_proof(before)?)?;
+    put_bytes(&mut out, &encode_proof(after)?)?;
+    Ok(out)
+}
+
+/// Prove `key` inserted between two roots, verify both halves, and serialize the
+/// transition fixture: absent under `root_before`, present under `root_after`.
+fn transition_fixture(
+    store_before: &MemoryStore,
+    map_before: &Map,
+    root_before: &ChunkAddress,
+    store_after: &MemoryStore,
+    map_after: &Map,
+    root_after: &ChunkAddress,
+    key: &Key,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    if oracle(store_before, root_before, key)?.is_some() {
+        return Err("transition key must be absent under the prior root".into());
+    }
+    let before = prove_exclusion(&source(map_before), root_before, key, Granularity::Segment)?;
+    if verify::<V1>(root_before, key, &before)? != Verdict::Absent {
+        return Err("transition prior-root half did not verify absent".into());
+    }
+    let want = oracle(store_after, root_after, key)?.ok_or("transition key must be present")?;
+    let value = value_bytes(&want)?;
+    let after = prove_inclusion(&source(map_after), root_after, key, Granularity::Segment)?;
+    if verify::<V1>(root_after, key, &after)? != Verdict::Present(want) {
+        return Err("transition new-root half did not verify present".into());
+    }
+    encode_transition_fixture(root_before, root_after, key, &value, &before, &after)
+}
+
 /// Flip a byte inside the proof's first segment so no node authenticates.
 fn tamper(proof: &ForkPathProof) -> ForkPathProof {
     let mut steps: Vec<PathStep> = proof.steps().to_vec();
@@ -320,6 +442,55 @@ fn emit_solidity_fixtures() -> TestResult {
     files.push((
         "excl_referenced.bin",
         exclusion_fixture(&store_b, &map_b, &root_b, &Key::from(&[b'a', 200u8][..]))?,
+    ));
+
+    // Range completeness over the whole embedded node of manifest A: the bounds
+    // span every key, so the listing is the node's total contents in key order.
+    files.push((
+        "range_all.bin",
+        range_fixture(
+            &map_a,
+            &root_a,
+            &Key::from(&b"a"[..]),
+            &Key::from(&b"z"[..]),
+        )?,
+    ));
+
+    // Range completeness over a strict sub-range of manifest B: the `a` subtree
+    // is a referenced hop the frontier walk must cross, and the bounds admit
+    // only the first ten of its keys, so a withheld node cannot verify.
+    files.push((
+        "range_prefix.bin",
+        range_fixture(
+            &map_b,
+            &root_b,
+            &Key::from(&[b'a', 0u8][..]),
+            &Key::from(&[b'a', 10u8][..]),
+        )?,
+    ));
+
+    // State transition: a key absent under a prior root and present under the
+    // next. Manifest C omits the key; manifest D is C with the key inserted.
+    let pairs_c = vec![
+        (b"alpha".to_vec(), 0x11u8),
+        (b"beta".to_vec(), 0x22u8),
+        (b"gamma".to_vec(), 0x33u8),
+    ];
+    let (store_c, root_c, map_c) = build(&pairs_c).ok_or("manifest C unexpectedly spilled")?;
+    let mut pairs_d = pairs_c;
+    pairs_d.push((b"delta".to_vec(), 0xEEu8));
+    let (store_d, root_d, map_d) = build(&pairs_d).ok_or("manifest D unexpectedly spilled")?;
+    files.push((
+        "transition_insert.bin",
+        transition_fixture(
+            &store_c,
+            &map_c,
+            &root_c,
+            &store_d,
+            &map_d,
+            &root_d,
+            &Key::from(&b"delta"[..]),
+        )?,
     ));
 
     let Some(dir) = fixtures_dir() else {

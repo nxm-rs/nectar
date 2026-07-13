@@ -96,6 +96,40 @@ payload length as eight little-endian bytes. A segment step authenticates one
 segment with seven keccak; a covering run of `k` leading segments costs about
 `7k` keccak plus the descent.
 
+## Demo contracts
+
+Four minimal contracts first-class the accepted use cases over the verifier
+library. Each parses its arguments, calls the verifier, and applies the effect,
+so it shows the primitive without business logic of its own.
+
+- `Registrar.sol` (**exclusion**): claims a name only against a proof it is
+  absent under the current root, then advances the root. Availability is proven,
+  not trusted, so a squatting-proof registrar.
+- `RevocationRegistry.sol` (**exclusion** / **inclusion**): `isValid(serial)`
+  needs an exclusion proof the serial is not on the revocation manifest (a
+  trustless CRL/OCSP); `isRevoked` is the inclusion-gated dual.
+- `Listing.sol` (**range completeness**): accepts a directory listing only
+  against a range-completeness proof, so the listing provably omits nothing
+  under its bounds.
+- `Log.sol` (**state transition**): appends a key only against a proof it was
+  absent under the prior head and present under the new one, so a transparency
+  log that cannot equivocate.
+
+`MantarayRangeVerifier` is the companion the listing demo needs: it is
+chunk-granularity (it re-BMTs whole frontier node payloads and re-walks the
+frontier) rather than segment-granularity, because a complete listing needs the
+whole fork table of each node, not a single edge. `verifyTransition` rides the
+single-key segment machinery already in `MantarayProofVerifier`, being two
+descents anchored at different roots.
+
+The demo fixtures join the single-key ones under `test/fixtures/`, emitted by
+the same generator: `range_all.bin` and `range_prefix.bin` (a full embedded
+listing and a sub-range across a referenced hop) carry the digest of the
+authenticated listing the on-chain walk must reproduce; `transition_insert.bin`
+carries the two proof halves. Each suite asserts the happy path and that an
+invalid or incomplete proof is rejected (a taken name, an incomplete listing, a
+false transition).
+
 ## Building and testing
 
 Solidity is supplied by nix (no svm download). Run forge under a shell that has
