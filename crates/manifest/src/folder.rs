@@ -385,6 +385,26 @@ mod tests {
     }
 
     #[test]
+    fn list_collapses_consecutive_subdirectories() {
+        let store = MemoryStore::default();
+        // Two subdirectories in a row exercise the reseek-then-collapse-again
+        // path: each named subtree must be skipped without swallowing the next.
+        let root = manifest(
+            &store,
+            &[
+                (b"a/1", 0x01),
+                (b"a/2", 0x02),
+                (b"b/1", 0x03),
+                (b"c.txt", 0x04),
+            ],
+        );
+        let reader: Reader<_> = Reader::new(&store);
+
+        let got = entries(block_on(reader.list(&root, &Key::empty())).unwrap());
+        assert_eq!(got, vec![dir(b"a/"), dir(b"b/"), file(b"c.txt", 0x04)]);
+    }
+
+    #[test]
     fn list_skips_the_directory_key_itself() {
         let store = MemoryStore::default();
         // A key exactly equal to the listed directory path is the directory
