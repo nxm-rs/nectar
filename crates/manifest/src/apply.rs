@@ -5,10 +5,12 @@
 //! paths are rewritten, and a shared ancestor is rewritten once per apply, not
 //! once per changeset entry, so a wide batch amortizes over its overlap. An
 //! unchanged fork is spliced in verbatim; an untouched referenced subtree is
-//! reused by address without a fetch. Because embedding is child-local and a
-//! cut is keyed on the fork-relative prefix, re-rooting a reused subtree does
-//! not churn its shape, so `apply(root, delta)` and a from-scratch build of the
-//! merged keys agree bit for bit (invariant I6 under updates).
+//! reused by address without a fetch. Embedding is child-local and a cut is
+//! keyed on the fork-relative prefix, so a reused subtree keeps its shape;
+//! re-rooting only shifts where the `PLEN_MAX` edge cap falls, so a re-rooted or
+//! merged edge is re-compacted into the same chain a build at the new depth
+//! would. Hence `apply(root, delta)` and a from-scratch build of the merged keys
+//! agree bit for bit (invariant I6 under updates).
 //!
 //! Peak retained state is O(depth + changeset frontier): the descent holds one
 //! node per level on the current path, never a whole subtree.
@@ -334,7 +336,15 @@ where
 
     if deeper.is_empty() {
         // The child is untouched: reuse it verbatim.
-        return finish(edge, new_entry, new_meta, existing.child().cloned());
+        return finish(
+            store,
+            edge,
+            new_entry,
+            new_meta,
+            existing.child().cloned(),
+            stats,
+        )
+        .await;
     }
 
     let child_table = match existing.child() {
@@ -343,7 +353,7 @@ where
             if items.is_empty() {
                 // A deletion of an absent deeper key: the fork is unchanged bar
                 // its terminal value.
-                return finish(edge, new_entry, new_meta, None);
+                return finish(store, edge, new_entry, new_meta, None, stats).await;
             }
             build_table(store, &items, plen, stats).await?
         }
@@ -384,7 +394,7 @@ where
     F: Format,
 {
     if table.is_empty() {
-        return finish(edge, entry, meta, None);
+        return finish(store, edge, entry, meta, None, stats).await;
     }
     // Edge-compaction: a child-only fork over a single-fork child merges into
     // one edge, exactly as a from-scratch build would compact the shared run.
@@ -392,23 +402,10 @@ where
         && table.len() == 1
         && let Some((first, record)) = table.iter().next()
     {
-        let combined = edge
-            .len()
-            .saturating_add(1)
-            .saturating_add(record.tail().len());
-        if combined <= F::PLEN_MAX {
-            let mut merged = edge.to_vec();
-            merged.push(first);
-            merged.extend_from_slice(record.tail().as_bytes());
-            return make_fork(
-                &merged,
-                record.payload().clone(),
-                record.metadata().cloned(),
-            );
-        }
+        return compact(store, edge, first, record, stats).await;
     }
     let child = resolve(store, table, stats).await?.into_child();
-    finish(edge, entry, meta, Some(child))
+    finish(store, edge, entry, meta, Some(child), stats).await
 }
 
 /// An insertion diverges within the edge: branch at the divergence, re-rooting
@@ -449,16 +446,46 @@ where
         }
     }
 
-    // The existing subtree hangs verbatim under the remainder of its edge.
+    // The existing subtree hangs under the remainder of its edge. Shortening
+    // the edge can bring a chained child-only fork back within the prefix
+    // bound, so the re-root re-compacts exactly as a build at the new depth
+    // would rather than splicing the old shape in verbatim.
     let mut branch = ForkTable::new();
-    let remainder = Prefix::try_from(edge.get(cut..).ok_or(ApplyError::Internal)?)?;
-    branch.insert(
+    let remainder = edge.get(cut..).ok_or(ApplyError::Internal)?;
+    let first = *remainder.first().ok_or(ApplyError::Internal)?;
+    if let Some(record) = reroot(store, remainder, existing, stats).await? {
+        branch.insert_record(first, record);
+    }
+    let table = Box::pin(apply_forks(store, branch, boundary, &remaining, stats)).await?;
+    assemble(store, new_edge, split_entry, split_meta, table, stats).await
+}
+
+/// Re-root an existing fork under a shortened `remainder` edge, re-compacting a
+/// child-only chain fork that the shorter edge now brings within the prefix
+/// bound. A fork with a terminal value, or one whose single continuation still
+/// overruns the bound, is depth-independent and re-roots verbatim.
+async fn reroot<S, F>(
+    store: &S,
+    remainder: &[u8],
+    existing: ForkRecord<F>,
+    stats: &mut BuildStats,
+) -> Result<Option<ForkRecord<F>>, ApplyError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
+    if existing.entry().is_none()
+        && let Some(Child::Embedded(table)) = existing.child()
+        && table.len() == 1
+        && let Some((first, record)) = table.iter().next()
+    {
+        return compact(store, remainder, first, record, stats).await;
+    }
+    make_fork(
         remainder,
         existing.payload().clone(),
         existing.metadata().cloned(),
-    )?;
-    let table = Box::pin(apply_forks(store, branch, boundary, &remaining, stats)).await?;
-    assemble(store, new_edge, split_entry, split_meta, table, stats).await
+    )
 }
 
 /// Assemble a fork record from an intact edge, its terminal value and its child,
@@ -467,37 +494,86 @@ where
 /// A child-only fork over a single-fork embedded child compacts into one edge,
 /// so a deletion that strips a fork's terminal value re-inlines its lone
 /// remaining branch exactly as a from-scratch build would.
-fn finish<F: Format>(
+async fn finish<S, F>(
+    store: &S,
     edge: &[u8],
     entry: Option<Entry<F>>,
     meta: Option<Metadata<F>>,
     child: Option<Child<F>>,
-) -> Result<Option<ForkRecord<F>>, ApplyError> {
+    stats: &mut BuildStats,
+) -> Result<Option<ForkRecord<F>>, ApplyError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
     if entry.is_none()
         && let Some(Child::Embedded(table)) = &child
         && table.len() == 1
         && let Some((first, record)) = table.iter().next()
     {
-        let combined = edge
-            .len()
-            .saturating_add(1)
-            .saturating_add(record.tail().len());
-        if combined <= F::PLEN_MAX {
-            let mut merged = edge.to_vec();
-            merged.push(first);
-            merged.extend_from_slice(record.tail().as_bytes());
-            return make_fork(
-                &merged,
-                record.payload().clone(),
-                record.metadata().cloned(),
-            );
-        }
+        return compact(store, edge, first, record, stats).await;
     }
     let has_entry = entry.is_some();
     ForkPayload::new(entry, child).map_or_else(
         || Ok(None),
         |payload| make_fork(edge, payload, if has_entry { meta } else { None }),
     )
+}
+
+/// Merge a child-only `edge` into its lone child fork (index byte `first` plus
+/// `record`), emitting the compacted fork a from-scratch build would produce.
+async fn compact<S, F>(
+    store: &S,
+    edge: &[u8],
+    first: u8,
+    record: &ForkRecord<F>,
+    stats: &mut BuildStats,
+) -> Result<Option<ForkRecord<F>>, ApplyError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
+    let mut merged = edge.to_vec();
+    merged.push(first);
+    merged.extend_from_slice(record.tail().as_bytes());
+    chain(
+        store,
+        &merged,
+        record.payload().clone(),
+        record.metadata().cloned(),
+        stats,
+    )
+    .await
+}
+
+/// A fork record over `prefix`, split into a `PLEN_MAX`-capped chain of
+/// child-only nodes when it overruns the bound, exactly as the builder compacts
+/// an over-long shared run. The innermost fork carries the payload and its
+/// metadata; every wrapping fork carries only the continuation.
+async fn chain<S, F>(
+    store: &S,
+    prefix: &[u8],
+    payload: ForkPayload<F>,
+    meta: Option<Metadata<F>>,
+    stats: &mut BuildStats,
+) -> Result<Option<ForkRecord<F>>, ApplyError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
+    if prefix.len() <= F::PLEN_MAX {
+        return make_fork(prefix, payload, meta);
+    }
+    let head = prefix.get(..F::PLEN_MAX).ok_or(ApplyError::Internal)?;
+    let rest = prefix.get(F::PLEN_MAX..).ok_or(ApplyError::Internal)?;
+    let &first = rest.first().ok_or(ApplyError::Internal)?;
+    let inner = Box::pin(chain(store, rest, payload, meta, stats))
+        .await?
+        .ok_or(ApplyError::Internal)?;
+    let mut table = ForkTable::new();
+    table.insert_record(first, inner);
+    let child = resolve(store, table, stats).await?.into_child();
+    make_fork(head, ForkPayload::Child(child), None)
 }
 
 /// A fork record for `edge` (its index byte plus tail) carrying `payload`.
@@ -657,6 +733,23 @@ mod tests {
     }
 
     #[test]
+    fn a_split_above_a_chain_boundary_recompacts_like_a_rebuild() {
+        let store = MemoryStore::default();
+        // A 256-byte key sits behind a PLEN_MAX(255) chain: one 255-byte edge
+        // over a child holding its last byte. Inserting a key that shares only
+        // the first byte branches above that chain, shortening the existing edge
+        // so its final byte re-merges into the edge, no longer a child hop.
+        let mut base = vec![2u8];
+        base.extend(std::iter::repeat_n(0u8, 255));
+        let root = build(&store, &[(&base[..], 1)]);
+        let mut cs = Changeset::<V1>::new();
+        let branched = [2u8, 2, 1];
+        cs.put(Key::from(&branched[..]), entry(2), None);
+        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        assert_eq!(out, rebuilt(&[(&base[..], 1), (&branched[..], 2)]));
+    }
+
+    #[test]
     fn the_empty_key_sets_and_clears_the_root_value() {
         let store = MemoryStore::default();
         let root = build(&store, &[(b"a", 1)]);
@@ -676,6 +769,23 @@ mod tests {
         clear.remove(Key::empty());
         let cleared = block_on(apply(&store, &with_root, &clear)).unwrap();
         assert_eq!(cleared, rebuilt(&[(b"a", 1)]));
+    }
+
+    #[test]
+    fn a_collapse_past_the_prefix_bound_chains_like_a_rebuild() {
+        let store = MemoryStore::default();
+        // Two keys sharing a 200-byte prefix, total length 260: the fork over
+        // the shared run terminates one key and continues to the other. Deleting
+        // the terminal leaves a single 260-byte key whose from-scratch shape is
+        // a PLEN_MAX(255)-capped chain, not one over-long edge.
+        let short = vec![b'a'; 200];
+        let mut long = short.clone();
+        long.extend(std::iter::repeat_n(b'b', 60));
+        let root = build(&store, &[(&short[..], 1), (&long[..], 2)]);
+        let mut cs = Changeset::<V1>::new();
+        cs.remove(Key::from(&short[..]));
+        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
 
     #[test]

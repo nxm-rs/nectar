@@ -84,6 +84,79 @@ fn change_set() -> impl Strategy<Value = Vec<(Vec<u8>, Option<Parts>)>> {
     prop::collection::vec((key_bytes(), prop::option::of(value_parts())), 0..=40)
 }
 
+/// A long, low-entropy key: a binary alphabet over up to 400 bytes, so pairs
+/// share prefixes past the 255-byte bound while the two-way fanout keeps every
+/// node within budget. Chains form, and a split above a chain boundary
+/// re-compacts into a `PLEN_MAX`-capped chain rather than one over-long edge.
+fn long_key_bytes() -> impl Strategy<Value = Vec<u8>> {
+    prop::collection::vec(0u8..2, 1..=400)
+}
+
+/// A base key set of long keys.
+fn long_base_set() -> impl Strategy<Value = Vec<(Vec<u8>, Parts)>> {
+    prop::collection::vec((long_key_bytes(), value_parts()), 0..=8)
+}
+
+/// A changeset over long keys.
+fn long_change_set() -> impl Strategy<Value = Vec<(Vec<u8>, Option<Parts>)>> {
+    prop::collection::vec((long_key_bytes(), prop::option::of(value_parts())), 0..=6)
+}
+
+/// Fold `changes` into a manifest built from `base` and assert the applied root
+/// is byte-identical to a from-scratch build of the merged key set.
+fn assert_apply_equals_rebuild(
+    base: &[(Vec<u8>, Parts)],
+    changes: &[(Vec<u8>, Option<Parts>)],
+) -> Result<(), TestCaseError> {
+    // The base map and its published manifest.
+    let mut map: BTreeMap<Vec<u8>, Value> = BTreeMap::new();
+    for (key, (inline, fill, blob, meta)) in base {
+        map.insert(key.clone(), value(*inline, *fill, blob, *meta)?);
+    }
+    let store = MemoryStore::default();
+    let mut builder = Builder::<V1>::new();
+    for (key, val) in &map {
+        builder.insert(Key::from(key.clone()), val.0.clone(), val.1.clone());
+    }
+    let root = *block_on(builder.build(&store))
+        .map_err(|e| TestCaseError::fail(e.to_string()))?
+        .root();
+
+    // Stage the batch into a changeset and, in the same order, into the
+    // expected merged map so the last update per key wins in both.
+    let mut changeset = Changeset::<V1>::new();
+    let mut updates: Vec<Update> = Vec::new();
+    for (key, op) in changes {
+        match op {
+            Some((inline, fill, blob, meta)) => {
+                let val = value(*inline, *fill, blob, *meta)?;
+                changeset.put(Key::from(key.clone()), val.0.clone(), val.1.clone());
+                updates.push((key.clone(), Some(val)));
+            }
+            None => {
+                changeset.remove(Key::from(key.clone()));
+                updates.push((key.clone(), None));
+            }
+        }
+    }
+    for (key, op) in updates {
+        match op {
+            Some(val) => {
+                map.insert(key, val);
+            }
+            None => {
+                map.remove(&key);
+            }
+        }
+    }
+
+    let applied = block_on(apply(&store, &root, &changeset))
+        .map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let expected = rebuild(&map)?;
+    prop_assert_eq!(applied, expected);
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
@@ -92,47 +165,13 @@ proptest! {
     // inserts, updates and deletes, some overlapping near the root.
     #[test]
     fn apply_equals_rebuild(base in base_set(), changes in change_set()) {
-        // The base map and its published manifest.
-        let mut map: BTreeMap<Vec<u8>, Value> = BTreeMap::new();
-        for (key, (inline, fill, blob, meta)) in &base {
-            map.insert(key.clone(), value(*inline, *fill, blob, *meta)?);
-        }
-        let store = MemoryStore::default();
-        let mut builder = Builder::<V1>::new();
-        for (key, val) in &map {
-            builder.insert(Key::from(key.clone()), val.0.clone(), val.1.clone());
-        }
-        let root = *block_on(builder.build(&store))
-            .map_err(|e| TestCaseError::fail(e.to_string()))?
-            .root();
+        assert_apply_equals_rebuild(&base, &changes)?;
+    }
 
-        // Stage the batch into a changeset and, in the same order, into the
-        // expected merged map so the last update per key wins in both.
-        let mut changeset = Changeset::<V1>::new();
-        let mut updates: Vec<Update> = Vec::new();
-        for (key, op) in &changes {
-            match op {
-                Some((inline, fill, blob, meta)) => {
-                    let val = value(*inline, *fill, blob, *meta)?;
-                    changeset.put(Key::from(key.clone()), val.0.clone(), val.1.clone());
-                    updates.push((key.clone(), Some(val)));
-                }
-                None => {
-                    changeset.remove(Key::from(key.clone()));
-                    updates.push((key.clone(), None));
-                }
-            }
-        }
-        for (key, op) in updates {
-            match op {
-                Some(val) => { map.insert(key, val); }
-                None => { map.remove(&key); }
-            }
-        }
-
-        let applied = block_on(apply(&store, &root, &changeset))
-            .map_err(|e| TestCaseError::fail(e.to_string()))?;
-        let expected = rebuild(&map)?;
-        prop_assert_eq!(applied, expected);
+    // The same equation over long, low-entropy keys, so collapses cross the
+    // 255-byte prefix bound and exercise the chain-compaction path.
+    #[test]
+    fn apply_equals_rebuild_over_long_keys(base in long_base_set(), changes in long_change_set()) {
+        assert_apply_equals_rebuild(&base, &changes)?;
     }
 }
