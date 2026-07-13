@@ -1,0 +1,16 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = []
+# Solidity is supplied by nix, not svm: run under `nix-shell -p foundry solc`
+# and point forge at that solc with FOUNDRY_SOLC (see README), so no network
+# download is attempted. auto_detect_solc stays on as a fallback but the pinned
+# nix solc is authoritative.
+optimizer = true
+optimizer_runs = 200
+# The descent keeps many locals live at once; the IR pipeline avoids the legacy
+# "stack too deep" without contorting the code.
+via_ir = true
+# Fixtures are deterministic output of the nectar-manifest-proof generator.
+fs_permissions = [{ access = "read", path = "./test/fixtures" }]
