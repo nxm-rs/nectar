@@ -72,8 +72,9 @@ step    := u64 span || u32 n_seg || segment[n_seg]
 segment := data[32] || sibling[7][32]        (segment_index is implicit = position)
 ```
 
-`MantarayProofVerifier.decode(bytes) -> Proof` parses this wire. Issue #305
-reuses the same layout, so it is versioned here rather than in a test.
+`MantarayProofVerifier.decode(bytes) -> Proof` parses this wire. The counted
+on-chain verifier reuses the same layout, so it is versioned here rather than in
+a test.
 
 The fixture files wrap a proof with its inputs so a test needs one
 `readFileBinary`:

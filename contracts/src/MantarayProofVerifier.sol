@@ -419,7 +419,8 @@ library MantarayProofVerifier {
     }
 
     /// Decode the proof wire into a `Proof`. The layout is the Rust-to-Solidity
-    /// byte contract the fixture generator emits and issue #305 reuses:
+    /// byte contract the fixture generator emits and the counted on-chain
+    /// verifier reuses:
     ///
     ///   proof   := u32 n_steps || step[n_steps]
     ///   step    := u64 span || u32 n_seg || segment[n_seg]
