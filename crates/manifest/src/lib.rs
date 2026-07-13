@@ -55,6 +55,7 @@
 )]
 
 mod bounded;
+mod builder;
 mod codec;
 mod error;
 mod fork;
@@ -66,6 +67,7 @@ mod store;
 mod value;
 
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
+pub use builder::{BuildError, BuildStats, Builder, Built, build_files};
 pub use codec::{DecodeError, EncodeError};
 pub use error::{
     CustomKeyError, ForkPrefixEmpty, MetadataTooLong, PrefixTooLong, ValueTooLong, WeightOverBudget,
