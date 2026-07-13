@@ -3,7 +3,7 @@
 //!
 //! This is the authoritative Rust side of the Rust-to-Solidity byte contract:
 //! it builds manifests, proves inclusion and exclusion at segment granularity,
-//! and serialises each case (root, key, value, proof) into a single binary
+//! and serializes each case (root, key, value, proof) into a single binary
 //! file under `contracts/test/fixtures/`. The Foundry tests load these with
 //! `vm.readFileBinary` and replay the descent on-chain.
 //!
@@ -146,7 +146,7 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Serialise a segment-granularity proof into the on-chain wire.
+/// Serialize a segment-granularity proof into the on-chain wire.
 fn encode_proof(proof: &ForkPathProof) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut out = Vec::new();
     put_len(&mut out, proof.len())?;
@@ -173,7 +173,7 @@ fn encode_proof(proof: &ForkPathProof) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(out)
 }
 
-/// Serialise a whole fixture: root, key, presence, value, proof.
+/// Serialize a whole fixture: root, key, presence, value, proof.
 fn encode_fixture(
     root: &ChunkAddress,
     key: &Key,
@@ -190,7 +190,7 @@ fn encode_fixture(
 }
 
 /// Prove `key` present under `root`, verify the round trip, and return the
-/// serialised inclusion fixture alongside the proof it wraps.
+/// serialized inclusion fixture alongside the proof it wraps.
 fn inclusion_fixture(
     store: &MemoryStore,
     map: &Map,
@@ -208,7 +208,7 @@ fn inclusion_fixture(
 }
 
 /// Prove `key` absent under `root`, verify the round trip, and return the
-/// serialised exclusion fixture.
+/// serialized exclusion fixture.
 fn exclusion_fixture(
     store: &MemoryStore,
     map: &Map,
