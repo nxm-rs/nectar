@@ -79,6 +79,7 @@ mod apply;
 mod bounded;
 mod builder;
 mod codec;
+mod dx;
 #[cfg(feature = "encryption")]
 mod encryption;
 mod error;
@@ -97,6 +98,7 @@ pub use apply::{ApplyError, Changeset, apply};
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
 pub use builder::{BuildError, BuildStats, Builder, Built, build_files};
 pub use codec::{DecodeError, EncodeError};
+pub use dx::FetchError;
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use encryption::{EncryptedNode, EncryptedNodeGet, EncryptedNodePut, derive_key};
