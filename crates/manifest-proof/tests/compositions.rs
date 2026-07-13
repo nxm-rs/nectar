@@ -199,6 +199,95 @@ fn a_tampered_frontier_node_is_rejected() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn boundary_windows_over_a_multi_node_frontier_match_the_reader() -> TestResult {
+    // Two spilled letter-subtrees give the root two referenced children, so a
+    // window whose bound falls inside one subtree exercises the overlap test at
+    // a real referenced edge rather than only over the whole-map frontier.
+    let mut pairs: Vec<(Vec<u8>, u8)> = Vec::new();
+    for i in 0u8..60 {
+        pairs.push((vec![b'a', i], i));
+    }
+    for i in 0u8..60 {
+        pairs.push((vec![b'b', i], 100u8.wrapping_add(i)));
+    }
+    let (store, root, map) = build(&pairs).ok_or("unexpected spill")?;
+    let src = source(&map);
+
+    let full = prove_range_complete::<V1, _>(
+        &src,
+        &root,
+        &Key::from(&b""[..]),
+        &Key::from(&b"\xff\xff"[..]),
+    )?;
+    ensure(
+        full.len() >= 3,
+        "two spilled subtrees must give a root plus two child nodes",
+    )?;
+
+    // Bounds that cut through a subtree, span both, or land in the empty gap
+    // between them: each descends a referenced child on the boundary.
+    for (lo, hi) in [
+        (&b""[..], &b"b\x10"[..]),
+        (&b"a\x14"[..], &b"c"[..]),
+        (&b"a\x30"[..], &b"b\x05"[..]),
+        (&b"a\xff"[..], &b"b\x00"[..]),
+        (&b""[..], &b"a\x00"[..]),
+    ] {
+        let lo = Key::from(lo);
+        let hi = Key::from(hi);
+        let want = oracle(&store, &root, &lo, &hi)?;
+        let proof = prove_range_complete::<V1, _>(&src, &root, &lo, &hi)?;
+        let got = verify_range::<V1>(&root, &lo, &hi, &proof)?;
+        ensure_eq(&got, &want, "boundary window listing")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn adversarial_frontier_bytes_are_rejected_not_panicked() -> TestResult {
+    // verify_range decodes untrusted node bytes; truncated or malformed payloads
+    // must return an error, never panic or index out of bounds.
+    let root = ChunkAddress::new([7u8; 32]);
+    let lo = Key::from(&b""[..]);
+    let hi = Key::from(&b"\xff\xff"[..]);
+    let cases: Vec<Vec<u8>> = vec![
+        vec![],
+        vec![0],
+        vec![0x9a, 0x01],
+        vec![0x9a, 0x01, 0x00],
+        vec![0x40],
+        vec![0x20],
+        vec![1, 2, 3, 4, 5, 6, 7, 8],
+        vec![0xff; 5000],
+    ];
+    for bytes in &cases {
+        let proof = RangeProof::new(vec![bytes.clone()]);
+        ensure(
+            verify_range::<V1>(&root, &lo, &hi, &proof).is_err(),
+            "adversarial frontier bytes must be rejected",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_range_with_lo_above_hi_lists_nothing() -> TestResult {
+    let pairs = vec![
+        (b"a".to_vec(), 0x01),
+        (b"b".to_vec(), 0x02),
+        (b"c".to_vec(), 0x03),
+    ];
+    let (_store, root, map) = build(&pairs).ok_or("unexpected spill")?;
+    let src = source(&map);
+    let lo = Key::from(&b"z"[..]);
+    let hi = Key::from(&b"a"[..]);
+    let proof = prove_range_complete::<V1, _>(&src, &root, &lo, &hi)?;
+    let got = verify_range::<V1>(&root, &lo, &hi, &proof)?;
+    ensure(got.is_empty(), "a range with lo above hi lists nothing")?;
+    Ok(())
+}
+
 /// The two roots of a manifest with `key` inserted, plus their node sources.
 fn before_after(
     base: &[(Vec<u8>, u8)],
