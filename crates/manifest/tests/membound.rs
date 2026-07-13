@@ -287,6 +287,68 @@ fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> TestResult {
+    // History independence across the spill boundary: folding a changeset into a
+    // base whose root node spills must reach the exact root a from-scratch build
+    // of the merged key set reaches, byte for byte. This drives the whole
+    // materialize-then-re-spill path apply now takes over a segmented node.
+    let heavy = || Metadata::new(KeyId::ContentType, Bytes::from(vec![b'a'; 800]));
+
+    // The base: 200 single-byte keys whose root node overruns one chunk.
+    let base_store = MemoryStore::default();
+    let mut base_builder = Builder::<V1>::new();
+    for first in 0u16..200 {
+        let byte = u8::try_from(first)?;
+        base_builder.insert(
+            Key::from(vec![byte]),
+            entry(byte),
+            Some(heavy().map_err(|e| e.to_string())?),
+        );
+    }
+    let base = block_on(base_builder.build(&base_store)).map_err(|e| e.to_string())?;
+    ensure(
+        base.stats().nodes_written() > 1,
+        "the base root node must spill".to_owned(),
+    )?;
+
+    // The changeset overwrites the tail of the base and extends past it, so the
+    // merged key set is 0..256.
+    let mut changeset = Changeset::<V1>::new();
+    for first in 150u16..256 {
+        let byte = u8::try_from(first)?;
+        changeset.put(
+            Key::from(vec![byte]),
+            entry(byte),
+            Some(heavy().map_err(|e| e.to_string())?),
+        );
+    }
+    let applied =
+        block_on(apply(&base_store, base.root(), &changeset)).map_err(|e| e.to_string())?;
+
+    // A from-scratch build of the merged key set.
+    let scratch_store = MemoryStore::default();
+    let mut scratch_builder = Builder::<V1>::new();
+    for first in 0u16..256 {
+        let byte = u8::try_from(first)?;
+        scratch_builder.insert(
+            Key::from(vec![byte]),
+            entry(byte),
+            Some(heavy().map_err(|e| e.to_string())?),
+        );
+    }
+    let scratch = block_on(scratch_builder.build(&scratch_store)).map_err(|e| e.to_string())?;
+
+    ensure(
+        applied == *scratch.root(),
+        format!(
+            "apply root {applied:?} diverged from the from-scratch root {:?}",
+            scratch.root()
+        ),
+    )?;
+    Ok(())
+}
+
 /// Chunk payload lengths of a store, for the budget assertions below.
 fn chunk_lengths(store: &MemoryStore) -> Vec<usize> {
     store
