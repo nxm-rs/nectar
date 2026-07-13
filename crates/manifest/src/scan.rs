@@ -499,7 +499,7 @@ fn successor(prefix: &[u8]) -> Option<Bytes> {
 mod tests {
     use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
-    use nectar_primitives::{ChunkAddress, ChunkRef};
+    use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
 
     use crate::bounded::Prefix;
     use crate::fork::{Child, ForkTable};
@@ -644,6 +644,87 @@ mod tests {
             block_on(reader.floor(&root, &Key::from(&b"a"[..]))).unwrap(),
             None
         );
+    }
+
+    // An encrypted (ref64) child the plain reader cannot open.
+    fn encrypted(byte: u8) -> Child {
+        Child::Ref64(EncryptedChunkRef::new(
+            ChunkAddress::new([byte; 32]),
+            EncryptionKey::from([byte ^ 0xFF; 32]),
+        ))
+    }
+
+    // A root holding "a" and "z" as plain values with an encrypted subtree
+    // wedged between them under "m".
+    fn with_encrypted(store: &MemoryStore) -> ChunkAddress {
+        let mut forks = ForkTable::new();
+        forks
+            .insert(prefix(b"a"), entry(0xA1).into(), None)
+            .unwrap();
+        forks
+            .insert(prefix(b"m"), encrypted(0x4D).into(), None)
+            .unwrap();
+        forks
+            .insert(prefix(b"z"), entry(0x2C).into(), None)
+            .unwrap();
+        block_on(store.put_node(&Node::new(None, forks))).unwrap()
+    }
+
+    #[test]
+    fn iteration_surfaces_an_encrypted_subtree_as_an_error() {
+        let store = MemoryStore::default();
+        let root = with_encrypted(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        let mut cursor = block_on(reader.iter(&root)).unwrap();
+        // The plain value before the encrypted edge reads back.
+        assert_eq!(
+            block_on(cursor.next()).unwrap(),
+            Some((Key::from(&b"a"[..]), entry(0xA1)))
+        );
+        // Reaching the encrypted child stops the walk with an error.
+        assert!(matches!(
+            block_on(cursor.next()).unwrap_err(),
+            ReaderError::EncryptedChild
+        ));
+    }
+
+    #[test]
+    fn a_bound_short_of_the_encrypted_edge_prunes_it() {
+        let store = MemoryStore::default();
+        let root = with_encrypted(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        // "m" is the exclusive upper bound, so the encrypted child at "m" is
+        // pruned rather than fetched, and the scan completes without error.
+        let got = drain(
+            block_on(reader.range(&root, &Key::from(&b"a"[..]), &Key::from(&b"m"[..]))).unwrap(),
+        );
+        assert_eq!(got, vec![(b"a".to_vec(), entry(0xA1))]);
+    }
+
+    #[test]
+    fn floor_past_an_encrypted_edge_reads_the_plain_key() {
+        let store = MemoryStore::default();
+        let root = with_encrypted(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        // The floor of "z" is "z" itself; the encrypted subtree is left of the
+        // path and never opened.
+        assert_eq!(
+            block_on(reader.floor(&root, &Key::from(&b"z"[..]))).unwrap(),
+            Some((Key::from(&b"z"[..]), entry(0x2C)))
+        );
+    }
+
+    #[test]
+    fn floor_landing_in_an_encrypted_subtree_cannot_be_read() {
+        let store = MemoryStore::default();
+        let root = with_encrypted(&store);
+        let reader: Reader<_> = Reader::new(&store);
+        // Every key at or below "n" that could be the floor lives in the
+        // encrypted subtree under "m", so the answer is unreadable.
+        assert!(matches!(
+            block_on(reader.floor(&root, &Key::from(&b"n"[..]))).unwrap_err(),
+            ReaderError::EncryptedChild
+        ));
     }
 
     #[test]
