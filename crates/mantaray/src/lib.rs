@@ -109,6 +109,7 @@
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkRef;
 
+pub mod builder;
 pub mod codec;
 mod constants;
 pub mod entry;
@@ -123,6 +124,7 @@ pub use constants::metadata;
 pub(crate) use constants::*;
 
 // Re-export public types.
+pub use builder::ManifestBuilder;
 pub use entry::Entry;
 pub use error::{DecodeError, DecodeResult, MantarayError, Result};
 pub use manifest::{Manifest, ManifestIter};
