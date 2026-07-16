@@ -11,6 +11,8 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
+// The lookup benches deliberately measure the mutating `&mut self` lookup path.
+#![allow(deprecated)]
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use futures::executor::block_on;
 use nectar_mantaray::hazmat;
@@ -357,7 +359,7 @@ fn bench_iter(c: &mut Criterion) {
 
     // Compare with entries() (walk-based collection)
     group.bench_function("entries_spa_trie", |b| {
-        let mut m = build_spa_manifest();
+        let m = build_spa_manifest();
 
         b.iter(|| {
             let entries = block_on(m.entries()).unwrap();
