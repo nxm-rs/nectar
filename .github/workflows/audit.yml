@@ -18,7 +18,6 @@ on:
 permissions:
   contents: read
   issues: write
-  checks: write
 
 jobs:
   audit:
@@ -26,6 +25,28 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998  # v2.0.0
+      # Prebuilt binary: `cargo audit` only parses Cargo.lock, so it needs no
+      # toolchain. rustsec/audit-check instead compiled cargo-audit from source
+      # with the repo-pinned toolchain, which broke once cargo-audit's own
+      # dependency tree outgrew that toolchain's version.
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853  # v2.83.2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: Open or update advisory issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Security audit found vulnerable dependencies"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          body=$(printf 'The scheduled security audit failed: a RustSec advisory matches a dependency in Cargo.lock.\n\nFailed run: %s\n\nUpdate the affected dependency to a patched version shown in the run log.' "$run_url")
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

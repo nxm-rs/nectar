@@ -1,4 +1,4 @@
-# Runs unit tests.
+# Runs unit, integration and doc tests.
 name: unit
 
 on:
@@ -16,103 +16,49 @@ concurrency:
 
 jobs:
     test:
-        # name: test / ${{ matrix.type }} (${{ matrix.partition }}/${{ matrix.total_partitions }})
-        name: test / ${{ matrix.type }}
+        name: test / swarm
         runs-on: ubuntu-latest
         env:
             RUST_BACKTRACE: 1
-        strategy:
-            matrix:
-                include:
-                    - type: swarm
-                      args: ""
-                    # - type: ethereum
-                    #   args: --features "asm-keccak ethereum" --locked
-                    #   partition: 1
-                    #   total_partitions: 2
-                    # - type: ethereum
-                    #   args: --features "asm-keccak ethereum" --locked
-                    #   partition: 2
-                    #   total_partitions: 2
-                    # - type: optimism
-                    #   args: --features "asm-keccak optimism" --locked --exclude reth --exclude reth-bench --exclude "example-*" --exclude "reth-ethereum-*" --exclude "*-ethereum"
-                    #   partition: 1
-                    #   total_partitions: 2
-                    # - type: optimism
-                    #   args: --features "asm-keccak optimism" --locked --exclude reth --exclude reth-bench --exclude "example-*" --exclude "reth-ethereum-*" --exclude "*-ethereum"
-                    #   partition: 2
-                    #   total_partitions: 2
-                    # - type: book
-                    #   args: --manifest-path book/sources/Cargo.toml
-                    #   partition: 1
-                    #   total_partitions: 1
         timeout-minutes: 30
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            # mold is symlinked as `ld`, NOT put in RUSTFLAGS: it keeps linking
+            # fast (which sccache cannot cache anyway) without a linker flag in
+            # the compile cache key.
             - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
-            - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-            - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+            - uses: ./.github/actions/rust-setup
+            - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853  # v2.83.2
               with:
-                  cache-on-failure: true
-            - uses: taiki-e/install-action@1b57bc699ba2af96a06eb2a2a0d32b43a7d8e8b8  # nextest
-            - if: "${{ matrix.type == 'book' }}"
-              uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
-              with:
-                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+                  tool: nextest
             - name: Run tests
               run: |
                   cargo nextest run \
-                    ${{ matrix.args }} --workspace \
-                    --no-tests=warn \
-                    -E "!kind(test)"
-
-    doc:
-        name: doc tests (${{ matrix.network }})
-        runs-on: ubuntu-latest
-        env:
-            RUST_BACKTRACE: 1
-        timeout-minutes: 30
-        # strategy:
-        #     matrix:
-        #         network: ["ethereum", "optimism"]
-        steps:
-            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-            - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
-            - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
-            - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-              with:
-                  cache-on-failure: true
+                    --workspace --locked \
+                    --no-tests=warn --no-fail-fast
+            # nextest does not run doctests; cover them here on the warm target
+            # dir rather than in a separate job that rebuilds the workspace.
             - name: Run doctests
-              # run: cargo test --doc --workspace --features "${{ matrix.network }}"
-              run: cargo test --doc --workspace
+              run: cargo test --doc --workspace --locked
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The
         # thread pool (wasm-bindgen-rayon) is opt-in behind the primitives
         # `parallel` / `wasm-threads` features, so the crate builds for wasm32
-        # single-threaded by default. A plain stable check on the default
-        # features is therefore the faithful one.
+        # single-threaded by default. A plain check on the default features is
+        # therefore the faithful one.
         name: wasm / postage-usage
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-            - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
-            - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+            - uses: ./.github/actions/rust-setup
               with:
                   targets: wasm32-unknown-unknown
-            - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-              with:
-                  cache-on-failure: true
             - name: Check postage-usage builds for wasm32
-              env:
-                  # The workspace rust-toolchain.toml pins 1.92, which has no
-                  # wasm32 std installed here; use the stable toolchain the setup
-                  # step added the wasm32 target to.
-                  RUSTUP_TOOLCHAIN: stable
               run: |
                   cargo check \
-                    -p nectar-postage-usage --features client \
+                    -p nectar-postage-usage --features client --locked \
                     --target wasm32-unknown-unknown
 
     unit-success:

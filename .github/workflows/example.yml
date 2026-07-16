@@ -19,15 +19,9 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+            - uses: ./.github/actions/rust-setup
               with:
                   targets: wasm32-unknown-unknown
-
-            - name: Cache Rust dependencies
-              uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-              with:
-                  shared-key: "wasm-demo"
 
             - name: Install Trunk
               uses: jetli/trunk-action@1346cc09eace4beb84e403e199a471346d4684c9  # v0.5.1
@@ -37,9 +31,7 @@ jobs:
             - name: Build WASM Demo
               run: |
                   cd crates/primitives/examples/wasm-demo
-                  # rust-toolchain.toml pins 1.92, whose wasm32 std is not
-                  # installed here; build with the stable toolchain that has it.
-                  RUSTUP_TOOLCHAIN=stable trunk build --release --public-url /nectar/
+                  trunk build --release --public-url /nectar/
 
             - name: Deploy to GitHub Pages
               uses: JamesIves/github-pages-deploy-action@d92aa235d04922e8f08b40ce78cc5442fcfbfa2f  # v4.8.0
