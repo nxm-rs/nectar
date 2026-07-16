@@ -18,8 +18,9 @@
           inherit system overlays;
         };
 
-        # Stable toolchain for regular development
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        # Pinned to match CI and rust-toolchain.toml exactly. Develop with
+        # `nix develop` so the local toolchain matches CI/CD.
+        rustToolchain = pkgs.rust-bin.stable."1.94.0".default.override {
           extensions = [ "rust-analyzer" "rust-src" "clippy" "rustfmt" ];
           targets = [ "wasm32-unknown-unknown" ];
         };
@@ -45,6 +46,7 @@
           buildInputs = with pkgs; [
             rustToolchain
             rustNightly
+            cargo-nextest
             wasm-pack
             wasm-bindgen-cli
             miniserve
@@ -57,13 +59,28 @@
             git-cliff
             cargo-deny
             cargo-audit
-          ];
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.mold ];
 
           OPENSSL_DIR = "${pkgs.openssl.dev}";
           OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
 
+          # Link native Linux builds with mold. Scoped per-target so it never
+          # touches wasm linking, and set as env (not a committed .cargo config)
+          # so CI keeps its own linker setup.
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS =
+            pkgs.lib.optionalString pkgs.stdenv.isLinux "-Clink-arg=-fuse-ld=mold";
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS =
+            pkgs.lib.optionalString pkgs.stdenv.isLinux "-Clink-arg=-fuse-ld=mold";
+
           shellHook = ''
+            # Opt into sccache only when the host provides it: a client must
+            # match its server's version exactly, so a copy pinned by this flake
+            # would fight the host server for the socket.
+            if command -v sccache >/dev/null; then
+              export RUSTC_WRAPPER=sccache
+              export CARGO_INCREMENTAL=0 # sccache and incremental are exclusive
+            fi
             # Alias for building WASM with threading support
             alias wasm-build-threaded='RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals" cargo +nightly build --target wasm32-unknown-unknown -Z build-std=panic_abort,std'
           '';

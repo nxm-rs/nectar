@@ -1,5 +1,5 @@
 name: rust-setup
-description: Pinned Rust 1.92 + sccache (GitHub Actions cache backend) + registry-only Swatinem cache shared across jobs.
+description: Pinned Rust 1.94 + sccache (GitHub Actions cache backend) + registry-only Swatinem cache shared across jobs.
 
 inputs:
   targets:
@@ -31,7 +31,7 @@ runs:
     # per job and compiles with the file's pin anyway.
     - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master 2026-03-27
       with:
-        toolchain: "1.92"
+        toolchain: "1.94"
         targets: ${{ inputs.targets }}
         components: ${{ inputs.components }}
     # Content-addressed rustc cache shared across jobs AND runs, backed by the
