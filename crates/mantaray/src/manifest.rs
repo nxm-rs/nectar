@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use futures::{Stream, StreamExt, TryStreamExt, stream};
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
+use nectar_primitives::file::join;
 use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
 
 use crate::entry::Entry;
@@ -368,6 +369,26 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
     }
 }
 
+impl<S: ChunkGet<BS>, const BS: usize> Manifest<S, ChunkRef, BS> {
+    /// Look up `path` and join the file it references into memory.
+    ///
+    /// Shared-read (`&self`); `None` when the path is absent or is not a value.
+    /// One mode end to end: a plain manifest joins a plain reference, so a
+    /// plain-encrypted pairing surfaces as [`WrongRefKind`](MantarayError::WrongRefKind)
+    /// rather than a silent byte-width mismatch.
+    pub async fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        let Some(entry) = self.get(path).await? else {
+            return Ok(None);
+        };
+        let Some(entry_ref) = entry.reference else {
+            return Ok(None);
+        };
+        let reference = ChunkRef::from_entry_ref(entry_ref)?;
+        let data = join::<_, _, BS>(&self.store, reference.into_address()).await?;
+        Ok(Some(data))
+    }
+}
+
 impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkRef, BS> {
     /// Persist the plain manifest trie to storage, returning the root chunk address.
     pub async fn save(&mut self) -> Result<ChunkAddress> {
@@ -376,6 +397,28 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> Manifest<S, ChunkRef, BS> 
             .trie
             .reference()
             .ok_or(MantarayError::MissingReference)?)
+    }
+}
+
+#[cfg(feature = "encryption")]
+impl<S: ChunkGet<BS>, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
+    /// Look up `path` and join the encrypted file it references into memory.
+    ///
+    /// Shared-read (`&self`); `None` when the path is absent or is not a value.
+    /// One mode end to end: an encrypted manifest joins an encrypted reference,
+    /// so a plain-encrypted pairing surfaces as
+    /// [`WrongRefKind`](MantarayError::WrongRefKind) rather than a silent
+    /// byte-width mismatch.
+    pub async fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        let Some(entry) = self.get(path).await? else {
+            return Ok(None);
+        };
+        let Some(entry_ref) = entry.reference else {
+            return Ok(None);
+        };
+        let reference = nectar_primitives::EncryptedChunkRef::from_entry_ref(entry_ref)?;
+        let data = join::<_, _, BS>(&self.store, reference).await?;
+        Ok(Some(data))
     }
 }
 

@@ -273,6 +273,9 @@ pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<BODY_SIZE> {
 
     /// Split `data` into encrypted chunks and store them, returning the root reference.
     #[cfg(feature = "encryption")]
+    #[deprecated(
+        note = "select encrypted mode through the reference type: an encrypted `ManifestBuilder::put_file`, or the `EncryptedParallelSplitter`/`split_encrypted` primitives directly"
+    )]
     fn write_encrypted_file<D: ReadAt + Sync>(
         &self,
         data: D,

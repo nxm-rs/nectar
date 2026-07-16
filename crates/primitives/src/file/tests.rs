@@ -266,6 +266,7 @@ mod write_file_ext {
         use futures::executor::block_on;
 
         #[test]
+        #[allow(deprecated)] // pins the deprecated ergonomic wrapper's behaviour until removal
         fn write_encrypted_file_roundtrip() {
             let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
             let enc_ref = block_on(store.write_encrypted_file(b"secret data".to_vec())).unwrap();

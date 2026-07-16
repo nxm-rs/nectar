@@ -141,6 +141,9 @@ pub enum MantarayError {
     /// Error from primitives (chunk creation, BMT, etc.).
     #[error(transparent)]
     Primitives(#[from] PrimitivesError),
+    /// Error from the file splitter or joiner across the file/manifest seam.
+    #[error(transparent)]
+    File(#[from] nectar_primitives::file::FileError),
     /// Error from the typed chunk store during get operations.
     #[error("store get error: {source}")]
     StoreGet {

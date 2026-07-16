@@ -215,6 +215,39 @@ fn ergonomic_api_workflow() {
     }
 }
 
+/// Fused seam: `ManifestBuilder::put_file` splits, stores, and stages in one
+/// mode; `Manifest::read` looks up and joins, collapsing the manual
+/// write_file + add and get + join dance the earlier tests spell out.
+#[test]
+fn fused_put_file_read_workflow() {
+    use nectar_mantaray::ManifestBuilder;
+
+    let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+    block_on(builder.put_file("a.txt", b"file A contents".to_vec())).unwrap();
+    block_on(builder.put_file("nested/b.txt", b"file B contents".to_vec())).unwrap();
+
+    let (root, manifest) = block_on(builder.save()).unwrap();
+
+    // Read back through the handle the save returned.
+    assert_eq!(
+        block_on(manifest.read("a.txt")).unwrap().unwrap(),
+        b"file A contents"
+    );
+    assert_eq!(
+        block_on(manifest.read("nested/b.txt")).unwrap().unwrap(),
+        b"file B contents"
+    );
+    assert!(block_on(manifest.read("missing")).unwrap().is_none());
+
+    // Reopen from storage and read again, exercising the lazy-load path.
+    let (_, store) = manifest.into_parts();
+    let reopened = PlainManifest::open(root, store);
+    assert_eq!(
+        block_on(reopened.read("nested/b.txt")).unwrap().unwrap(),
+        b"file B contents"
+    );
+}
+
 /// Create a ChunkAddress from a string, right-padded with zeroes.
 fn make_addr(s: &str) -> ChunkAddress {
     let bytes = s.as_bytes();
