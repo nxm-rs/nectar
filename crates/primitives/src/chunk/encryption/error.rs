@@ -24,20 +24,6 @@ pub enum EncryptionError {
         max: usize,
     },
 
-    /// Reference byte slice is not 32 or 64 bytes.
-    #[error("invalid reference length: {len} bytes (expected 32 or 64)")]
-    InvalidReferenceLength {
-        /// Actual length.
-        len: usize,
-    },
-
-    /// Key byte slice is not 32 bytes.
-    #[error("invalid key length: {len} bytes (expected 32)")]
-    InvalidKeyLength {
-        /// Actual length.
-        len: usize,
-    },
-
     /// Output buffer is too small for decryption.
     #[error("output buffer too small: {len} bytes, need {required}")]
     OutputBufferTooSmall {

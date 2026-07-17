@@ -8,6 +8,7 @@
 use std::mem::size_of;
 
 use crate::chunk::ChunkAddress;
+use crate::error::WrongLength;
 use crate::file::EntryRef;
 use crate::wire::{Cursor, Underrun};
 
@@ -127,6 +128,18 @@ impl From<ChunkAddress> for ChunkRef {
     }
 }
 
+impl TryFrom<&[u8]> for ChunkRef {
+    type Error = WrongLength;
+
+    fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+        let bytes: [u8; Self::SIZE] = slice.try_into().map_err(|_| WrongLength {
+            expected: Self::SIZE,
+            got: slice.len(),
+        })?;
+        Ok(Self::new(ChunkAddress::from(bytes)))
+    }
+}
+
 impl sealed::Sealed for ChunkRef {}
 
 impl Reference for ChunkRef {
@@ -238,6 +251,34 @@ mod tests {
             WrongRefKind {
                 expected: RefKind::Plain,
                 got: RefKind::Encrypted,
+            }
+        );
+    }
+
+    #[test]
+    fn try_from_slice_round_trips() {
+        let addr = ChunkAddress::from(B256::repeat_byte(0x66));
+        let reference = ChunkRef::new(addr);
+        assert_eq!(ChunkRef::try_from(addr.as_bytes()).unwrap(), reference);
+    }
+
+    #[test]
+    fn try_from_slice_wrong_length() {
+        let short = [0u8; 31];
+        assert_eq!(
+            ChunkRef::try_from(short.as_slice()).unwrap_err(),
+            WrongLength {
+                expected: ChunkRef::SIZE,
+                got: 31
+            }
+        );
+
+        let long = [0u8; 64];
+        assert_eq!(
+            ChunkRef::try_from(long.as_slice()).unwrap_err(),
+            WrongLength {
+                expected: ChunkRef::SIZE,
+                got: 64
             }
         );
     }

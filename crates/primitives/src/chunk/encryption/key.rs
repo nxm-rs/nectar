@@ -6,7 +6,7 @@ use alloy_primitives::B256;
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use super::error::EncryptionError;
+use crate::error::WrongLength;
 
 /// 32-byte encryption key for chunk encryption.
 ///
@@ -72,14 +72,13 @@ impl AsRef<[u8]> for EncryptionKey {
 }
 
 impl TryFrom<&[u8]> for EncryptionKey {
-    type Error = EncryptionError;
+    type Error = WrongLength;
 
     fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
-        if slice.len() != Self::SIZE {
-            return Err(EncryptionError::InvalidKeyLength { len: slice.len() });
-        }
-        let mut bytes = [0u8; Self::SIZE];
-        bytes.copy_from_slice(slice);
+        let bytes: [u8; Self::SIZE] = slice.try_into().map_err(|_| WrongLength {
+            expected: Self::SIZE,
+            got: slice.len(),
+        })?;
         Ok(Self(bytes))
     }
 }
@@ -130,7 +129,23 @@ mod tests {
     fn try_from_slice_invalid() {
         let short = [0u8; 16];
         let err = EncryptionKey::try_from(short.as_slice()).unwrap_err();
-        assert!(matches!(err, EncryptionError::InvalidKeyLength { len: 16 }));
+        assert_eq!(
+            err,
+            WrongLength {
+                expected: EncryptionKey::SIZE,
+                got: 16
+            }
+        );
+
+        let long = [0u8; 64];
+        let err = EncryptionKey::try_from(long.as_slice()).unwrap_err();
+        assert_eq!(
+            err,
+            WrongLength {
+                expected: EncryptionKey::SIZE,
+                got: 64
+            }
+        );
     }
 
     #[test]

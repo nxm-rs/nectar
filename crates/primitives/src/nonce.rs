@@ -8,6 +8,8 @@
 use alloy_primitives::B256;
 use derive_more::{AsRef, Display, From, Into};
 
+use crate::error::WrongLength;
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +50,18 @@ impl Nonce {
     }
 }
 
+impl TryFrom<&[u8]> for Nonce {
+    type Error = WrongLength;
+
+    fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+        let bytes: [u8; 32] = slice.try_into().map_err(|_| WrongLength {
+            expected: 32,
+            got: slice.len(),
+        })?;
+        Ok(Self::new(bytes))
+    }
+}
+
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for Nonce {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -72,6 +86,36 @@ mod tests {
         assert_eq!(Nonce::from(B256::new(bytes)), n);
         assert_eq!(<[u8; 32]>::from(n), bytes);
         assert_eq!(Nonce::from(bytes), n);
+    }
+
+    #[test]
+    fn try_from_slice_valid() {
+        let bytes = [9u8; 32];
+        assert_eq!(
+            Nonce::try_from(bytes.as_slice()).unwrap(),
+            Nonce::new(bytes)
+        );
+    }
+
+    #[test]
+    fn try_from_slice_wrong_length() {
+        let short = [0u8; 16];
+        assert_eq!(
+            Nonce::try_from(short.as_slice()).unwrap_err(),
+            WrongLength {
+                expected: 32,
+                got: 16
+            }
+        );
+
+        let long = [0u8; 48];
+        assert_eq!(
+            Nonce::try_from(long.as_slice()).unwrap_err(),
+            WrongLength {
+                expected: 32,
+                got: 48
+            }
+        );
     }
 
     #[test]

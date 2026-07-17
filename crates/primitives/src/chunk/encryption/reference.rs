@@ -2,10 +2,10 @@
 
 use crate::chunk::reference::{RefKind, Reference, WrongRefKind, sealed};
 use crate::chunk::{ChunkAddress, ChunkRef};
+use crate::error::WrongLength;
 use crate::file::EntryRef;
 use crate::wire::{Cursor, Underrun};
 
-use super::error::EncryptionError;
 use super::key::EncryptionKey;
 
 /// An encrypted chunk reference: a plain reference plus the decryption key.
@@ -148,17 +148,14 @@ impl From<&EncryptedChunkRef> for Vec<u8> {
 }
 
 impl TryFrom<&[u8]> for EncryptedChunkRef {
-    type Error = EncryptionError;
+    type Error = WrongLength;
 
-    #[allow(clippy::indexing_slicing)] // slice.len() == Self::SIZE (64) is checked above with an error return, covering both the 32-byte address and 32-byte key slices
     fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
-        if slice.len() != Self::SIZE {
-            return Err(EncryptionError::InvalidReferenceLength { len: slice.len() });
-        }
-        let addr = ChunkAddress::from_slice(&slice[..ChunkRef::SIZE])
-            .map_err(|_| EncryptionError::InvalidReferenceLength { len: slice.len() })?;
-        let key = EncryptionKey::try_from(&slice[ChunkRef::SIZE..])?;
-        Ok(Self::new(addr, key))
+        let bytes: &[u8; Self::SIZE] = slice.try_into().map_err(|_| WrongLength {
+            expected: Self::SIZE,
+            got: slice.len(),
+        })?;
+        Ok(Self::from_bytes(bytes))
     }
 }
 
@@ -191,10 +188,23 @@ mod tests {
     fn invalid_length() {
         let bad = [0u8; 48];
         let err = EncryptedChunkRef::try_from(bad.as_slice()).unwrap_err();
-        assert!(matches!(
+        assert_eq!(
             err,
-            EncryptionError::InvalidReferenceLength { len: 48 }
-        ));
+            WrongLength {
+                expected: EncryptedChunkRef::SIZE,
+                got: 48
+            }
+        );
+
+        let long = [0u8; 80];
+        let err = EncryptedChunkRef::try_from(long.as_slice()).unwrap_err();
+        assert_eq!(
+            err,
+            WrongLength {
+                expected: EncryptedChunkRef::SIZE,
+                got: 80
+            }
+        );
     }
 
     #[test]

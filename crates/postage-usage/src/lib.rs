@@ -199,7 +199,6 @@ pub fn usage_chunk_address(batch_id: &BatchId, owner: &Address, index: u16) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::B256;
 
     #[test]
     fn chunk_ids_are_domain_separated_and_indexed() {
