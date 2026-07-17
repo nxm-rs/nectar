@@ -397,7 +397,7 @@ impl RootInfo {
         if payload[0..4] != MAGIC {
             return Err(UsageError::BadMagic);
         }
-        let batch_id = B256::from_slice(&payload[4..36]);
+        let batch_id = BatchId::from_slice(&payload[4..36]);
         let depth = payload[36];
         let bucket_depth = payload[37];
         validate_geometry(depth, bucket_depth).map_err(UsageError::into_corruption)?;
@@ -785,7 +785,7 @@ mod tests {
         // codec refuses it. The public path reaches encoding only through
         // `plan_persist`, which always allocates the root first.
         let table =
-            UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap();
+            UsageTable::new(BatchId::new([0x42; 32]), 20, 16, Mutability::Immutable).unwrap();
         assert_eq!(
             encode(&table, 0, &[]),
             Err(UsageError::Malformed("root slot not allocated")),
@@ -794,10 +794,8 @@ mod tests {
 
     #[test]
     fn flags_bit0_is_mutable_other_bits_rejected() {
-        use alloy_primitives::B256;
-
         // Build a minimal valid mutable root: width 0, one slot, no exceptions.
-        let table = UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Mutable).unwrap();
+        let table = UsageTable::new(BatchId::new([0x42; 32]), 20, 16, Mutability::Mutable).unwrap();
         let encoded = encode(&table, 1, &[0]).unwrap();
         let mut root = encoded.root.to_vec();
         assert_eq!(root[38], 0x01, "mutable flag must be set");
@@ -831,7 +829,7 @@ mod tests {
         // base so the encoder packs nothing inline.
         counts[5] = 16;
         let table = UsageTable::from_counts(
-            B256::repeat_byte(0x42),
+            BatchId::new([0x42; 32]),
             12,
             8,
             counts,
@@ -949,7 +947,7 @@ mod tests {
         // exceptions): every count is within the capacity of 16.
         let counts: Vec<u32> = (0..256u32).map(|b| b % 17).collect();
         let table = UsageTable::from_counts(
-            B256::repeat_byte(0x42),
+            BatchId::new([0x42; 32]),
             12,
             8,
             counts,
@@ -991,7 +989,7 @@ mod tests {
         let mut counts = vec![0u32; 256];
         counts[5] = 17; // capacity is 16
         let err = UsageTable::from_counts(
-            B256::repeat_byte(0x42),
+            BatchId::new([0x42; 32]),
             12,
             8,
             counts,

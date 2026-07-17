@@ -20,10 +20,10 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use alloy_primitives::{Address, B256, hex};
+use alloy_primitives::{Address, hex};
 use nectar_postage::calculate_bucket;
 use nectar_postage_usage::{
-    Mutability, PublishedSequence, RootInfo, Snapshot, UsageTable, usage_chunk_address,
+    BatchId, Mutability, PublishedSequence, RootInfo, Snapshot, UsageTable, usage_chunk_address,
     usage_chunk_id,
 };
 
@@ -37,7 +37,7 @@ const ROOT_ADDRESS_HEX: &str = "296daebd0b1cd7b78b83016fc9bc9cc62d378c2ff21fb934
 
 #[test]
 fn readme_worked_example_vector() {
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
     let owner = Address::repeat_byte(0x11);
     let mut counts: Vec<u32> = (0..256u32).map(|b| 3 + (b & 3)).collect();
     counts[200] = 16;
@@ -82,7 +82,7 @@ const LARGE_ROOT_PAYLOAD_HEX: &str = "534255314242424242424242424242424242424242
 
 #[test]
 fn readme_large_batch_multi_leaf_vector() {
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
     let owner = Address::repeat_byte(0x11);
     let mut counts: Vec<u32> = (0..65536u32).map(|b| 100 + (b % 50)).collect();
     counts[0x1234] = 5000;
@@ -137,7 +137,7 @@ const MUTABLE_ROOT_PAYLOAD_HEX: &str = "5342553142424242424242424242424242424242
 
 #[test]
 fn mutable_vector_flags_byte_and_round_trip() {
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
     let owner = Address::repeat_byte(0x11);
     let mut counts: Vec<u32> = (0..256u32).map(|b| 3 + (b & 3)).collect();
     counts[200] = 16;

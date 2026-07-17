@@ -261,7 +261,6 @@ impl StampIssuer for MemoryIssuer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::B256;
 
     fn test_address(leading: u16) -> SwarmAddress {
         let mut bytes = [0u8; 32];
@@ -277,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_basic() {
-        let batch_id = B256::ZERO;
+        let batch_id = BatchId::ZERO;
         let issuer = MemoryIssuer::new(batch_id, 20, 16);
 
         assert_eq!(issuer.batch_id(), batch_id);
@@ -291,12 +290,12 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_prepare_stamp() {
-        let mut issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
 
         let address = test_address(0xCBE5);
         let digest = issuer.prepare_stamp(&address, 12345).unwrap();
 
-        assert_eq!(digest.batch_id, B256::ZERO);
+        assert_eq!(digest.batch_id, BatchId::ZERO);
         assert_eq!(digest.index.bucket(), 0xCBE5);
         assert_eq!(digest.index.index(), 0);
         assert_eq!(digest.timestamp, 12345);
@@ -306,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_increments_index() {
-        let mut issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
 
         let address = test_address(0xCBE5);
 
@@ -323,7 +322,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_bucket_full() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket
-        let mut issuer = MemoryIssuer::new(B256::ZERO, 17, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, 16);
 
         let address = test_address(0xABCD);
 
@@ -344,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_bucket_utilization() {
-        let mut issuer = MemoryIssuer::new(B256::ZERO, 20, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
 
         let addr1 = test_address(0x1234);
         let addr2 = test_address(0x5678);
@@ -361,7 +360,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_capacity_check() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket
-        let mut issuer = MemoryIssuer::new(B256::ZERO, 17, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, 16);
 
         let address = test_address(0x0001);
 
@@ -377,7 +376,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_near_capacity() {
         // depth=18, bucket_depth=16 gives 4 slots per bucket
-        let mut issuer = MemoryIssuer::new(B256::ZERO, 18, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 18, 16);
 
         let address = test_address(0x0001);
 
@@ -403,7 +402,7 @@ mod tests {
         // A mutable batch must never yield an issuer: the obvious constructor
         // refuses it instead of handing back a reserved-blind ring that would
         // silently overwrite a self-hosted snapshot's own chunks.
-        let mutable = Batch::new(B256::ZERO, 0, 0, Default::default(), 20, 16, false);
+        let mutable = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, 16, false);
 
         assert!(matches!(
             MemoryIssuer::from_batch(&mutable),
@@ -417,7 +416,7 @@ mod tests {
 
         // An immutable batch yields a fill-only issuer byte-for-byte identical
         // to `new` for the same geometry: same indices and the same digest.
-        let batch_id = B256::from([0x11u8; 32]);
+        let batch_id = BatchId::new([0x11u8; 32]);
         let immutable = Batch::new(batch_id, 0, 0, Default::default(), 17, 16, true);
 
         let mut from_batch = MemoryIssuer::from_batch(&immutable).unwrap();
@@ -444,7 +443,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_dilute_grows_capacity_only() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer = MemoryIssuer::new(B256::ZERO, 17, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, 16);
         let address = test_address(0xABCD);
 
         // Fill the bucket, then a dilution to depth 18 (4 slots) reopens it

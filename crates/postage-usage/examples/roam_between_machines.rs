@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex};
 use alloy_primitives::{Address, B256, hex};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
-use nectar_postage::Batch;
+use nectar_postage::{Batch, BatchId};
 use nectar_postage_usage::{
     BatchStamper, Mutability, PublishedSequence, SealedChunk, Snapshot, SnapshotSink,
     SnapshotSource, SwarmAddress, UsageError, UsageTable,
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // address, so machine B can find the state without any local store.
     let signer = PrivateKeySigner::random();
     let owner: Address = signer.address();
-    let batch_id = B256::repeat_byte(0x42);
+    let batch_id = BatchId::new([0x42; 32]);
     let batch = Batch::new(batch_id, 0, 0, owner, DEPTH, BUCKET_DEPTH, true);
 
     println!("Postage batch usage: roaming between machines");
@@ -208,7 +208,7 @@ async fn machine_b(
 /// flush.
 fn stale_persist_is_rejected(
     owner: Address,
-    batch_id: B256,
+    batch_id: BatchId,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Stale persist: rejected by the published floor");
     println!("----------------------------------------------");

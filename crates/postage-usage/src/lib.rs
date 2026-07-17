@@ -27,10 +27,10 @@
 //! ```
 //! use alloy_primitives::{Address, B256};
 //! use nectar_postage_usage::{
-//!     Mutability, PublishedSequence, RootInfo, Snapshot, SwarmAddress, UsageTable,
+//!     BatchId, Mutability, PublishedSequence, RootInfo, Snapshot, SwarmAddress, UsageTable,
 //! };
 //!
-//! let batch_id = B256::repeat_byte(0x42);
+//! let batch_id = BatchId::new([0x42; 32]);
 //! let owner = Address::repeat_byte(0x11);
 //!
 //! // Issue a stamp for an uploaded chunk through the snapshot's issuing handle,
@@ -202,8 +202,8 @@ mod tests {
 
     #[test]
     fn chunk_ids_are_domain_separated_and_indexed() {
-        let a = B256::repeat_byte(1);
-        let b = B256::repeat_byte(2);
+        let a = BatchId::new([0x01; 32]);
+        let b = BatchId::new([0x02; 32]);
         assert_ne!(usage_chunk_id(&a, 0), usage_chunk_id(&b, 0));
         assert_ne!(usage_chunk_id(&a, 0), usage_chunk_id(&a, 1));
         // Deterministic.
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn chunk_address_binds_owner() {
-        let batch = B256::repeat_byte(1);
+        let batch = BatchId::new([0x01; 32]);
         let alice = Address::repeat_byte(0xaa);
         let bob = Address::repeat_byte(0xbb);
         assert_ne!(

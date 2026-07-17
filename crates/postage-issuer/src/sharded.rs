@@ -98,10 +98,9 @@ impl BucketShard {
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage_issuer::ShardedIssuer;
-/// use alloy_primitives::B256;
+/// use nectar_postage_issuer::{BatchId, ShardedIssuer};
 ///
-/// let issuer = ShardedIssuer::new(B256::ZERO, 20, 16);
+/// let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
 /// // Now safe to use from multiple threads via sign_stamps_parallel
 /// ```
 #[derive(Debug)]
@@ -379,11 +378,11 @@ pub struct StampResult {
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage_issuer::{sign_stamps_parallel, ShardedIssuer};
+/// use nectar_postage_issuer::{BatchId, ShardedIssuer, sign_stamps_parallel};
 /// use alloy_primitives::B256;
 /// use alloy_signer::SignerSync;
 ///
-/// let issuer = ShardedIssuer::new(B256::ZERO, 20, 16);
+/// let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
 /// let addresses: Vec<SwarmAddress> = /* ... */;
 /// // Use sign_message_sync for EIP-191 compatibility
 /// let signer_fn = |prehash: &B256| signer.sign_message_sync(prehash.as_slice());
@@ -450,7 +449,7 @@ mod tests {
         // The parallel constructor refuses a mutable batch for the same reason
         // as MemoryIssuer: a reserved-blind ring would silently overwrite a
         // self-hosted snapshot's own chunks.
-        let mutable = Batch::new(B256::ZERO, 0, 0, Default::default(), 20, 16, false);
+        let mutable = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, 16, false);
         assert!(matches!(
             ShardedIssuer::from_batch(&mutable),
             Err(IssuerError::MutableNotSupported)
@@ -461,15 +460,15 @@ mod tests {
     fn test_sharded_issuer_from_batch_immutable_ok() {
         use nectar_postage::Batch;
 
-        let immutable = Batch::new(B256::ZERO, 0, 0, Default::default(), 20, 16, true);
+        let immutable = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, 16, true);
         assert!(ShardedIssuer::from_batch(&immutable).is_ok());
     }
 
     #[test]
     fn test_sharded_issuer_basic() {
-        let issuer = ShardedIssuer::new(B256::ZERO, 20, 16);
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
 
-        assert_eq!(issuer.batch_id(), B256::ZERO);
+        assert_eq!(issuer.batch_id(), BatchId::ZERO);
         assert_eq!(issuer.batch_depth(), 20);
         assert_eq!(issuer.bucket_depth(), 16);
         assert_eq!(issuer.bucket_capacity(), 16); // 2^(20-16) = 16
@@ -478,12 +477,12 @@ mod tests {
 
     #[test]
     fn test_sharded_issuer_prepare_stamp() {
-        let issuer = ShardedIssuer::new(B256::ZERO, 20, 16);
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
         let address = SwarmAddress::from(B256::random());
 
         let digest = issuer.prepare_stamp(&address, 12345).unwrap();
 
-        assert_eq!(digest.batch_id, B256::ZERO);
+        assert_eq!(digest.batch_id, BatchId::ZERO);
         assert_eq!(digest.timestamp, 12345);
         assert_eq!(issuer.stamps_issued(), 1);
     }
@@ -491,7 +490,7 @@ mod tests {
     #[test]
     fn test_sharded_issuer_dilute_grows_capacity_only() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer = ShardedIssuer::new(B256::ZERO, 17, 16);
+        let mut issuer = ShardedIssuer::new(BatchId::ZERO, 17, 16);
         let address = SwarmAddress::from(B256::repeat_byte(0xAB));
         let bucket = calculate_bucket(&address, 16);
 
@@ -521,7 +520,7 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let issuer = Arc::new(ShardedIssuer::new(B256::ZERO, 24, 16));
+        let issuer = Arc::new(ShardedIssuer::new(BatchId::ZERO, 24, 16));
         let num_threads = 8;
         let stamps_per_thread = 1000;
 
@@ -554,7 +553,7 @@ mod tests {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
 
-        let issuer = ShardedIssuer::new(B256::ZERO, 24, 16);
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, 16);
         let signer = PrivateKeySigner::random();
 
         let addresses: Vec<_> = (0..100)

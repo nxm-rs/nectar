@@ -437,7 +437,7 @@ mod tests {
 
     fn test_batch(signer: &PrivateKeySigner, immutable: bool) -> Batch {
         Batch::new(
-            B256::repeat_byte(0x42),
+            BatchId::new([0x42; 32]),
             0,
             0,
             signer.address(),

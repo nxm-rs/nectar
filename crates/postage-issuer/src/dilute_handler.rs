@@ -170,10 +170,9 @@ impl BatchEventHandler for IssuerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::B256;
 
     fn batch_id(byte: u8) -> BatchId {
-        B256::repeat_byte(byte)
+        BatchId::new([byte; 32])
     }
 
     #[test]

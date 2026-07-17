@@ -232,7 +232,7 @@ impl Stamp {
     /// Returns an error if the signature bytes are invalid.
     #[inline]
     pub fn from_bytes(bytes: &StampBytes) -> Result<Self, StampError> {
-        let batch = B256::from_slice(&bytes[..32]);
+        let batch = BatchId::from_slice(&bytes[..32]);
         let bucket = BigEndian::read_u32(&bytes[32..36]);
         let index = BigEndian::read_u32(&bytes[36..40]);
         let timestamp = BigEndian::read_u64(&bytes[40..48]);
@@ -435,6 +435,16 @@ impl Stamp {
 /// The digest that must be signed to create a valid stamp.
 ///
 /// The digest is computed as: `keccak256(chunk_address || batch_id || index || timestamp)`
+///
+/// The address and batch id are nominal types, so a swapped construction is
+/// rejected at compile time:
+///
+/// ```compile_fail
+/// use nectar_postage::{BatchId, StampDigest, StampIndex};
+/// use nectar_primitives::SwarmAddress;
+///
+/// let _ = StampDigest::new(BatchId::ZERO, SwarmAddress::zero(), StampIndex::new(0, 0), 0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StampDigest {
     /// The chunk address being stamped.
@@ -510,7 +520,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Stamp {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         use alloy_primitives::U256;
 
-        let batch: B256 = u.arbitrary()?;
+        let batch: BatchId = u.arbitrary()?;
         let index = StampIndex::arbitrary(u)?;
         let timestamp: u64 = u.arbitrary()?;
 
@@ -561,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_stamp_roundtrip() {
-        let batch = B256::ZERO;
+        let batch = BatchId::ZERO;
         let sig = Signature::test_signature();
         let stamp = Stamp::new(batch, 100, 50, 1234567890, sig);
 
@@ -576,7 +586,7 @@ mod tests {
         let bytes = hex::decode(TEST_STAMP).unwrap();
         let stamp = Stamp::try_from_slice(&bytes).unwrap();
 
-        let expected_batch = B256::from_slice(&hex::decode(TEST_BATCH_ID).unwrap());
+        let expected_batch = BatchId::from_slice(&hex::decode(TEST_BATCH_ID).unwrap());
         assert_eq!(stamp.batch(), expected_batch);
         assert_eq!(stamp.bucket(), 52197); // 0x0000cbe5
         assert_eq!(stamp.index(), 0);
@@ -585,7 +595,7 @@ mod tests {
 
     #[test]
     fn test_stamp_with_index() {
-        let batch = B256::ZERO;
+        let batch = BatchId::ZERO;
         let idx = StampIndex::new(100, 50);
         let sig = Signature::test_signature();
         let stamp = Stamp::with_index(batch, idx, 1234567890, sig);
@@ -610,7 +620,7 @@ mod tests {
     #[test]
     fn test_from_conversions() {
         let sig = Signature::test_signature();
-        let stamp = Stamp::new(B256::ZERO, 1, 2, 3, sig);
+        let stamp = Stamp::new(BatchId::ZERO, 1, 2, 3, sig);
 
         // From<Stamp> for StampBytes
         let bytes: StampBytes = stamp.clone().into();
@@ -722,7 +732,7 @@ mod tests {
         // Create a stamp with one signer
         let signer = PrivateKeySigner::random();
         let chunk_address = SwarmAddress::new([0xAB; 32]);
-        let batch_id = B256::ZERO;
+        let batch_id = BatchId::ZERO;
         let index = StampIndex::new(0, 0);
         let timestamp = 12345u64;
 

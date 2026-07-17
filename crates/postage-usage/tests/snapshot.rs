@@ -13,17 +13,17 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use alloy_primitives::{Address, B256};
+use alloy_primitives::Address;
 use nectar_postage::calculate_bucket;
 use nectar_postage_usage::{
-    Batch, MAGIC, Mutability, PersistPlan, PublishedSequence, RootInfo, Snapshot, UsageError,
-    UsageTable, usage_chunk_address, usage_chunk_id,
+    Batch, BatchId, MAGIC, Mutability, PersistPlan, PublishedSequence, RootInfo, Snapshot,
+    UsageError, UsageTable, usage_chunk_address, usage_chunk_id,
 };
 
 const BUCKET_DEPTH: u8 = 16;
 
-const fn batch_id() -> B256 {
-    B256::repeat_byte(0x42)
+const fn batch_id() -> BatchId {
+    BatchId::new([0x42; 32])
 }
 
 const fn owner() -> Address {

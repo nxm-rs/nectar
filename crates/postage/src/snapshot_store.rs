@@ -84,7 +84,6 @@ pub trait SnapshotStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::B256;
     use std::collections::HashMap;
     use std::convert::Infallible;
     use std::sync::Mutex;
@@ -133,7 +132,7 @@ mod tests {
     }
 
     fn id(byte: u8) -> BatchId {
-        B256::repeat_byte(byte)
+        BatchId::new([byte; 32])
     }
 
     #[test]

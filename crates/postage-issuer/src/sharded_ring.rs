@@ -418,7 +418,6 @@ impl<R: Reservation> ShardedRingIssuer<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::B256;
 
     fn test_address(leading: u16) -> SwarmAddress {
         let mut bytes = [0u8; 32];
@@ -434,7 +433,7 @@ mod tests {
 
     fn mutable_batch(depth: u8, bucket_depth: u8) -> Batch {
         Batch::new(
-            B256::ZERO,
+            BatchId::ZERO,
             0,
             0,
             Default::default(),
@@ -446,7 +445,7 @@ mod tests {
 
     fn immutable_batch(depth: u8, bucket_depth: u8) -> Batch {
         Batch::new(
-            B256::ZERO,
+            BatchId::ZERO,
             0,
             0,
             Default::default(),

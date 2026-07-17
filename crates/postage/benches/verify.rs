@@ -15,12 +15,12 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use alloy_primitives::{Address, B256, Signature};
+use alloy_primitives::{Address, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nectar_postage::{
-    Batch, Stamp, StampBytes, StampDigest, StampIndex,
+    Batch, BatchId, Stamp, StampBytes, StampDigest, StampIndex,
     parallel::{verify_stamps_parallel, verify_stamps_parallel_with_pubkey},
 };
 use nectar_primitives::SwarmAddress;
@@ -31,7 +31,7 @@ fn random_stamp() -> Stamp {
     let mut rng = rand::rng();
     let mut batch_bytes = [0u8; 32];
     rng.fill(&mut batch_bytes);
-    let batch = B256::from(batch_bytes);
+    let batch = BatchId::new(batch_bytes);
 
     let bucket: u32 = rng.random();
     let index: u32 = rng.random();
@@ -55,7 +55,7 @@ fn random_address() -> SwarmAddress {
 fn create_signed_stamp(
     signer: &PrivateKeySigner,
     chunk_address: &SwarmAddress,
-    batch_id: B256,
+    batch_id: BatchId,
 ) -> Stamp {
     let index = StampIndex::new(0, 0);
     let timestamp = 12345u64;
@@ -123,7 +123,7 @@ fn bench_stamp_index_roundtrip(c: &mut Criterion) {
 // Validation Benchmarks
 
 fn bench_validate_index(c: &mut Criterion) {
-    let batch = Batch::new(B256::ZERO, 0, 0, Address::ZERO, 20, 16, false);
+    let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 20, 16, false);
     let valid_index = StampIndex::new(1000, 10);
     let invalid_bucket = StampIndex::new(70000, 0);
 
@@ -147,7 +147,7 @@ fn bench_stamp_digest_prehash(c: &mut Criterion) {
     let mut rng = rand::rng();
     let mut batch_bytes = [0u8; 32];
     rng.fill(&mut batch_bytes);
-    let batch_id = B256::from(batch_bytes);
+    let batch_id = BatchId::new(batch_bytes);
     let index = StampIndex::new(1000, 5);
     let timestamp = 1234567890u64;
     let digest = StampDigest::new(address, batch_id, index, timestamp);
@@ -182,7 +182,7 @@ fn recover_stamp_signer(
 fn bench_ecdsa_verify_sequential(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
     let expected_address = signer.address();
-    let batch_id = B256::ZERO;
+    let batch_id = BatchId::ZERO;
 
     let single_addr = random_address();
     let single_stamp = create_signed_stamp(&signer, &single_addr, batch_id);
@@ -223,7 +223,7 @@ fn bench_ecdsa_verify_sequential(c: &mut Criterion) {
 
 fn bench_ecdsa_verify_with_pubkey(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
-    let batch_id = B256::ZERO;
+    let batch_id = BatchId::ZERO;
 
     // Create stamps
     let addresses: Vec<SwarmAddress> = (0..100).map(|_| random_address()).collect();
@@ -262,7 +262,7 @@ fn bench_ecdsa_verify_with_pubkey(c: &mut Criterion) {
 
 fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
-    let batch_id = B256::ZERO;
+    let batch_id = BatchId::ZERO;
 
     // Pre-generate 100 stamps for verification
     let addresses_100: Vec<SwarmAddress> = (0..100).map(|_| random_address()).collect();
@@ -303,7 +303,7 @@ fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
 
 fn bench_ecdsa_verify_parallel_with_pubkey(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
-    let batch_id = B256::ZERO;
+    let batch_id = BatchId::ZERO;
 
     // Pre-generate 100 stamps for verification
     let addresses_100: Vec<SwarmAddress> = (0..100).map(|_| random_address()).collect();
@@ -357,7 +357,7 @@ fn bench_ecdsa_verify_parallel_with_pubkey(c: &mut Criterion) {
 
 fn bench_verify_comparison(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
-    let batch_id = B256::ZERO;
+    let batch_id = BatchId::ZERO;
 
     // Pre-generate 1000 stamps
     let addresses: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
