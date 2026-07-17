@@ -1,6 +1,6 @@
 //! High-level mantaray manifest and lazy iterator.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
 
 use futures::{Stream, StreamExt, TryStreamExt, stream};
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
@@ -455,8 +455,8 @@ pub struct ManifestIter<'a, S, R: Reference = ChunkRef, const BS: usize = DEFAUL
     root_visited: bool,
 }
 
-impl<S, R: Reference, const BS: usize> std::fmt::Debug for ManifestIter<'_, S, R, BS> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<S, R: Reference, const BS: usize> core::fmt::Debug for ManifestIter<'_, S, R, BS> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ManifestIter")
             .field("stack_depth", &self.stack.len())
             .field("root_visited", &self.root_visited)
@@ -514,7 +514,7 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
                 };
 
                 self.stack.push(IterFrame {
-                    node: std::ptr::from_mut(self.trie),
+                    node: core::ptr::from_mut(self.trie),
                     path_len_before: 0,
                     keys,
                     key_idx: 0,
@@ -554,7 +554,7 @@ impl<'a, S: ChunkGet<BS>, R: Reference, const BS: usize> ManifestIter<'a, S, R, 
                 }
             };
 
-            let child = std::ptr::from_mut(&mut fork.node);
+            let child = core::ptr::from_mut(&mut fork.node);
 
             // SAFETY: child is a descendant of the exclusively borrowed trie.
             let child_ref = unsafe { &mut *child };
@@ -1052,34 +1052,34 @@ mod tests {
     /// stays bounded by the chosen width.
     struct TrackingStore {
         inner: Store,
-        inflight: std::sync::atomic::AtomicUsize,
-        max_inflight: std::sync::atomic::AtomicUsize,
-        gets: std::sync::atomic::AtomicUsize,
+        inflight: core::sync::atomic::AtomicUsize,
+        max_inflight: core::sync::atomic::AtomicUsize,
+        gets: core::sync::atomic::AtomicUsize,
     }
 
     impl TrackingStore {
         fn new(inner: Store) -> Self {
             Self {
                 inner,
-                inflight: std::sync::atomic::AtomicUsize::new(0),
-                max_inflight: std::sync::atomic::AtomicUsize::new(0),
-                gets: std::sync::atomic::AtomicUsize::new(0),
+                inflight: core::sync::atomic::AtomicUsize::new(0),
+                max_inflight: core::sync::atomic::AtomicUsize::new(0),
+                gets: core::sync::atomic::AtomicUsize::new(0),
             }
         }
 
         fn max_inflight(&self) -> usize {
-            self.max_inflight.load(std::sync::atomic::Ordering::SeqCst)
+            self.max_inflight.load(core::sync::atomic::Ordering::SeqCst)
         }
 
         fn gets(&self) -> usize {
-            self.gets.load(std::sync::atomic::Ordering::SeqCst)
+            self.gets.load(core::sync::atomic::Ordering::SeqCst)
         }
     }
 
     /// Yield once so sibling fetches in the same `buffer_unordered` batch can
     /// ramp their in-flight count before any single fetch resolves.
     async fn yield_once() {
-        use std::task::Poll;
+        use core::task::Poll;
         let mut yielded = false;
         futures::future::poll_fn(|cx| {
             if yielded {
@@ -1099,9 +1099,9 @@ mod tests {
         async fn get(
             &self,
             address: &ChunkAddress,
-        ) -> std::result::Result<nectar_primitives::chunk::AnyChunk<DEFAULT_BODY_SIZE>, Self::Error>
+        ) -> core::result::Result<nectar_primitives::chunk::AnyChunk<DEFAULT_BODY_SIZE>, Self::Error>
         {
-            use std::sync::atomic::Ordering::SeqCst;
+            use core::sync::atomic::Ordering::SeqCst;
             self.gets.fetch_add(1, SeqCst);
             let cur = self.inflight.fetch_add(1, SeqCst) + 1;
             self.max_inflight.fetch_max(cur, SeqCst);
@@ -1391,8 +1391,8 @@ mod tests {
 
     #[test]
     fn stream_load_error_does_not_corrupt_sibling_paths() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
         use futures::StreamExt;
-        use std::sync::atomic::{AtomicUsize, Ordering};
 
         // Store injecting a single load failure on the `fail_on`-th get,
         // delegating every other get to the inner store.
@@ -1408,7 +1408,7 @@ mod tests {
             async fn get(
                 &self,
                 address: &ChunkAddress,
-            ) -> std::result::Result<
+            ) -> core::result::Result<
                 nectar_primitives::chunk::AnyChunk<DEFAULT_BODY_SIZE>,
                 Self::Error,
             > {

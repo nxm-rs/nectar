@@ -1,6 +1,6 @@
 //! Binary encoding for mantaray nodes (v0.1 and v0.2).
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
 
 use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
 use crate::node::{Fork, Node, NodeType, Prefix};

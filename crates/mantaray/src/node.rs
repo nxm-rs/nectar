@@ -1,8 +1,8 @@
 //! Node and Fork types for the mantaray trie.
 
-use std::collections::BTreeMap;
-use std::future::Future;
-use std::pin::Pin;
+use alloc::collections::BTreeMap;
+use core::future::Future;
+use core::pin::Pin;
 
 use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
 use crate::obfuscation::ObfuscationKey;
@@ -123,7 +123,7 @@ impl Prefix {
 impl FromCursor for Prefix {
     type Error = DecodeError;
 
-    fn take_from(cur: &mut Cursor<'_>) -> std::result::Result<Self, Self::Error> {
+    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Self::Error> {
         let len = cur.take::<u8>()?;
         let padded = cur.take::<[u8; PREFIX_MAX_LEN]>()?;
         Self::from_wire(&padded, len)
@@ -140,7 +140,7 @@ impl ToWriter for Prefix {
     }
 }
 
-impl std::ops::Deref for Prefix {
+impl core::ops::Deref for Prefix {
     type Target = [u8];
 
     #[inline]
@@ -150,8 +150,8 @@ impl std::ops::Deref for Prefix {
     }
 }
 
-impl std::fmt::Debug for Prefix {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Prefix {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Prefix({:?})", &**self)
     }
 }
@@ -389,7 +389,7 @@ impl<R: Reference> Node<R> {
             .get(&address)
             .await
             .map_err(|e| MantarayError::StoreGet {
-                source: std::sync::Arc::new(e),
+                source: alloc::sync::Arc::new(e),
             })?;
         let mut loaded = Self::decode(chunk.data().as_ref())
             .map_err(|source| MantarayError::Corrupt { address, source })?;
@@ -734,7 +734,7 @@ impl<R: Reference> Node<R> {
         }
 
         let mut stack: Vec<SaveFrame<R>> = vec![SaveFrame {
-            node: std::ptr::from_mut(self),
+            node: core::ptr::from_mut(self),
             keys: self.forks.keys().copied().collect(),
             key_idx: 0,
         }];
@@ -753,7 +753,7 @@ impl<R: Reference> Node<R> {
                 // key was collected from this node's fork map, which is not mutated while the frame is live
                 let child = node.forks.get_mut(&key).expect("key from this node");
                 if child.node.reference().is_none() {
-                    let child_ptr = std::ptr::from_mut(&mut child.node);
+                    let child_ptr = core::ptr::from_mut(&mut child.node);
                     let child_keys = child.node.forks.keys().copied().collect();
                     stack.push(SaveFrame {
                         node: child_ptr,
@@ -772,7 +772,7 @@ impl<R: Reference> Node<R> {
                 .put(chunk.into())
                 .await
                 .map_err(|e| MantarayError::StorePut {
-                    source: std::sync::Arc::new(e),
+                    source: alloc::sync::Arc::new(e),
                 })?;
             // Persist the address and drop the now-redundant forks: the node
             // becomes a stub, reloaded on demand.
@@ -845,7 +845,7 @@ where
     f(path_buf, node)?;
 
     let mut stack: Vec<WalkFrame> = vec![WalkFrame {
-        node: std::ptr::from_mut(node).cast::<()>(),
+        node: core::ptr::from_mut(node).cast::<()>(),
         path_len_before: path_buf.len(),
         keys: node.forks.keys().copied().collect(),
         key_idx: 0,
@@ -879,7 +879,7 @@ where
         child.ensure_loaded(store).await?;
         f(path_buf, child)?;
 
-        let child_ptr = std::ptr::from_mut(child).cast::<()>();
+        let child_ptr = core::ptr::from_mut(child).cast::<()>();
         let child_keys = child.forks.keys().copied().collect();
         stack.push(WalkFrame {
             node: child_ptr,

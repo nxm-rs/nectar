@@ -106,6 +106,10 @@
     )
 )]
 
+// `alloc` backs the fork maps (`BTreeMap`) and shared error sources (`Arc`).
+// `nectar-primitives`, a hard dependency, already requires an allocator.
+extern crate alloc;
+
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ChunkRef;
 
