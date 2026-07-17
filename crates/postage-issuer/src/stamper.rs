@@ -15,7 +15,7 @@ use alloy_signer::SignerSync;
 use crate::StampIssuer;
 use crate::error::SigningError;
 use nectar_postage::{BatchId, Stamp, StampDigest, StampError, current_timestamp};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 /// A trait for entities that can stamp chunks.
 ///
@@ -26,14 +26,14 @@ use nectar_primitives::SwarmAddress;
 ///
 /// ```ignore
 /// use nectar_postage_issuer::{Stamper, Stamp, StampError, BatchId};
-/// use nectar_primitives::SwarmAddress;
+/// use nectar_primitives::ChunkAddress;
 ///
 /// struct MyStamper { /* ... */ }
 ///
 /// impl Stamper for MyStamper {
 ///     type Error = StampError;
 ///
-///     fn stamp(&mut self, address: &SwarmAddress) -> Result<Stamp, Self::Error> {
+///     fn stamp(&mut self, address: &ChunkAddress) -> Result<Stamp, Self::Error> {
 ///         // Implementation details...
 ///     }
 ///
@@ -61,7 +61,7 @@ pub trait Stamper {
     /// - The bucket is full
     /// - Signature generation fails
     /// - Any other implementation-specific error occurs
-    fn stamp(&mut self, address: &SwarmAddress) -> Result<Stamp, Self::Error>;
+    fn stamp(&mut self, address: &ChunkAddress) -> Result<Stamp, Self::Error>;
 
     /// Returns the batch ID that stamps are issued for.
     fn batch_id(&self) -> BatchId;
@@ -155,7 +155,7 @@ where
     /// but does not sign it. Use this for async signing flows.
     pub fn prepare_stamp(
         &mut self,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
         self.issuer.prepare_stamp(address, timestamp)
@@ -169,7 +169,7 @@ where
 {
     type Error = SigningError;
 
-    fn stamp(&mut self, address: &SwarmAddress) -> Result<Stamp, Self::Error> {
+    fn stamp(&mut self, address: &ChunkAddress) -> Result<Stamp, Self::Error> {
         let timestamp = current_timestamp();
         let digest = self.issuer.prepare_stamp(address, timestamp)?;
         let prehash = digest.to_prehash();
@@ -221,7 +221,7 @@ mod tests {
         let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
-        let address = SwarmAddress::new([0xAB; 32]);
+        let address = ChunkAddress::new([0xAB; 32]);
         let stamp = stamper.stamp(&address).unwrap();
 
         assert_eq!(stamp.batch(), BatchId::ZERO);
@@ -235,7 +235,7 @@ mod tests {
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         // Use same address to hit same bucket
-        let address = SwarmAddress::new([0xAB; 32]);
+        let address = ChunkAddress::new([0xAB; 32]);
 
         let stamp1 = stamper.stamp(&address).unwrap();
         let stamp2 = stamper.stamp(&address).unwrap();
@@ -259,7 +259,7 @@ mod tests {
         let issuer = MemoryIssuer::new(BatchId::ZERO, 17, 16);
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
-        let address = SwarmAddress::new([0xAB; 32]);
+        let address = ChunkAddress::new([0xAB; 32]);
 
         // First two stamps should succeed
         assert!(stamper.stamp(&address).is_ok());
@@ -280,7 +280,7 @@ mod tests {
 
         assert_eq!(stamper.max_bucket_utilization(), 0);
 
-        let address = SwarmAddress::new([0xAB; 32]);
+        let address = ChunkAddress::new([0xAB; 32]);
         stamper.stamp(&address).unwrap();
         assert_eq!(stamper.max_bucket_utilization(), 1);
 
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_stamp_digest_prehash() {
-        let address = SwarmAddress::new([0xAB; 32]);
+        let address = ChunkAddress::new([0xAB; 32]);
         let batch_id = BatchId::ZERO;
         let index = StampIndex::new(100, 5);
         let timestamp = 1234567890u64;
@@ -395,7 +395,7 @@ mod tests {
             "Go uses v=28 (0x1c) for odd y parity"
         );
 
-        let chunk_address = SwarmAddress::new(chunk_addr_bytes.try_into().unwrap());
+        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
         let digest = StampDigest::new(
             chunk_address,
             stamp.batch(),

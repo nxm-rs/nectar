@@ -31,7 +31,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 use crate::StampIssuer;
 use crate::counter::{CounterError, CounterMode, CounterTable};
@@ -284,7 +284,7 @@ impl<R: Reservation> RingIssuer<R> {
     /// impossible at real batch depths.
     fn prepare_ring_stamp(
         &mut self,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, IssuerError> {
         let bucket = calculate_bucket(address, self.counters.bucket_depth());
@@ -322,7 +322,7 @@ impl<R: Reservation> RingIssuer<R> {
 impl<R: Reservation> StampIssuer for RingIssuer<R> {
     fn prepare_stamp(
         &mut self,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
         // A ring never reports BucketFull; the only failure is a fully reserved
@@ -393,7 +393,7 @@ impl<R: Reservation> StampIssuer for RingIssuer<R> {
 mod tests {
     use super::*;
 
-    fn test_address(leading: u16) -> SwarmAddress {
+    fn test_address(leading: u16) -> ChunkAddress {
         let mut bytes = [0u8; 32];
         // Big-endian split of a u16: `leading >> 8` is <= 0xFF and the low-byte
         // truncation is the intended extraction; both casts are lossless.
@@ -402,7 +402,7 @@ mod tests {
             bytes[0] = (leading >> 8) as u8;
             bytes[1] = leading as u8;
         }
-        SwarmAddress::new(bytes)
+        ChunkAddress::new(bytes)
     }
 
     fn mutable_batch(depth: u8, bucket_depth: u8) -> Batch {

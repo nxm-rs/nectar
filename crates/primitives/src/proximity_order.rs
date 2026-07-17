@@ -1,7 +1,7 @@
 //! Typed Kademlia proximity order (PO) in the range `0..=MAX_PO`.
 //!
 //! See [`MAX_PO`] for the standard cap (31) and
-//! [`address`](crate::address) for the derivation from two [`SwarmAddress`es](crate::SwarmAddress).
+//! [`xor_metric`](crate::xor_metric) for the derivation from two address-space points.
 
 use crate::MAX_PO;
 use derive_more::{Display, Into};
@@ -45,7 +45,7 @@ impl ProximityOrder {
     /// Construct without bounds checking. Caller must ensure `raw <= MAX_PO`.
     ///
     /// Used by internal code that already validated the range (e.g.
-    /// `SwarmAddress::proximity_order`, which can never exceed `MAX_PO`).
+    /// `XorMetric::proximity`, which can never exceed `MAX_PO`).
     #[inline]
     pub(crate) const fn new_unchecked(raw: u8) -> Self {
         debug_assert!(raw <= MAX_PO);

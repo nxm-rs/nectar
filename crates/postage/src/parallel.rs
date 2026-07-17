@@ -18,7 +18,7 @@ use alloy_signer::utils::public_key_to_address;
 use rayon::prelude::*;
 
 use crate::{Stamp, StampDigest, StampError};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 // Parallel Verification
 
@@ -50,7 +50,7 @@ pub struct VerifyResult {
 /// use nectar_postage::parallel::verify_stamps_parallel;
 ///
 /// let stamps: Vec<Stamp> = /* ... */;
-/// let addresses: Vec<SwarmAddress> = /* ... */;
+/// let addresses: Vec<ChunkAddress> = /* ... */;
 ///
 /// // Create tuples of references
 /// let items: Vec<_> = stamps.iter().zip(addresses.iter()).collect();
@@ -62,7 +62,7 @@ pub struct VerifyResult {
 ///     }
 /// }
 /// ```
-pub fn verify_stamps_parallel(stamps: &[(&Stamp, &SwarmAddress)]) -> Vec<VerifyResult> {
+pub fn verify_stamps_parallel(stamps: &[(&Stamp, &ChunkAddress)]) -> Vec<VerifyResult> {
     stamps
         .par_iter()
         .enumerate()
@@ -88,7 +88,7 @@ pub fn verify_stamps_parallel(stamps: &[(&Stamp, &SwarmAddress)]) -> Vec<VerifyR
 /// A vector of verification results. Each result contains either the recovered
 /// address if the stamp is valid and signed by the expected owner, or an error.
 pub fn verify_stamps_parallel_with_owner(
-    stamps: &[(&Stamp, &SwarmAddress)],
+    stamps: &[(&Stamp, &ChunkAddress)],
     expected_owner: Address,
 ) -> Vec<VerifyResult> {
     stamps
@@ -130,7 +130,7 @@ pub fn verify_stamps_parallel_with_owner(
 /// let results = verify_stamps_parallel_with_pubkey(&items, &pubkey);
 /// ```
 pub fn verify_stamps_parallel_with_pubkey(
-    stamps: &[(&Stamp, &SwarmAddress)],
+    stamps: &[(&Stamp, &ChunkAddress)],
     owner_pubkey: &VerifyingKey,
 ) -> Vec<VerifyResult> {
     let owner_address = public_key_to_address(owner_pubkey);
@@ -152,7 +152,7 @@ pub fn verify_stamps_parallel_with_pubkey(
 ///
 /// Uses EIP-191 message recovery for interoperability.
 /// The prehash (keccak256 of stamp data) is treated as the message.
-fn recover_stamp_signer(stamp: &Stamp, address: &SwarmAddress) -> Result<Address, StampError> {
+fn recover_stamp_signer(stamp: &Stamp, address: &ChunkAddress) -> Result<Address, StampError> {
     let digest = StampDigest::new(
         *address,
         stamp.batch(),
@@ -171,7 +171,7 @@ fn recover_stamp_signer(stamp: &Stamp, address: &SwarmAddress) -> Result<Address
 /// Verifies a stamp was signed by the expected owner.
 fn verify_stamp_owner(
     stamp: &Stamp,
-    address: &SwarmAddress,
+    address: &ChunkAddress,
     expected_owner: Address,
 ) -> Result<Address, StampError> {
     let recovered = recover_stamp_signer(stamp, address)?;
@@ -196,7 +196,7 @@ mod tests {
     /// Creates a stamp for testing verification.
     fn create_test_stamp(
         signer: &PrivateKeySigner,
-        chunk_address: &SwarmAddress,
+        chunk_address: &ChunkAddress,
         batch_id: BatchId,
     ) -> Stamp {
         let index = StampIndex::new(0, 0);
@@ -217,7 +217,7 @@ mod tests {
 
         // Create stamps
         let addresses: Vec<_> = (0..50)
-            .map(|_| SwarmAddress::from(B256::random()))
+            .map(|_| ChunkAddress::from(B256::random()))
             .collect();
         let stamps: Vec<_> = addresses
             .iter()
@@ -241,7 +241,7 @@ mod tests {
         let wrong_owner = Address::repeat_byte(0xFF);
         let batch_id = BatchId::ZERO;
 
-        let address = SwarmAddress::from(B256::random());
+        let address = ChunkAddress::from(B256::random());
         let stamp = create_test_stamp(&signer, &address, batch_id);
 
         // Use tuple syntax
@@ -260,7 +260,7 @@ mod tests {
         let expected_owner = signer.address();
         let batch_id = BatchId::ZERO;
 
-        let address = SwarmAddress::from(B256::random());
+        let address = ChunkAddress::from(B256::random());
         let stamp = create_test_stamp(&signer, &address, batch_id);
 
         let verify_input = [(&stamp, &address)];
@@ -278,7 +278,7 @@ mod tests {
 
         // Create stamps
         let addresses: Vec<_> = (0..50)
-            .map(|_| SwarmAddress::from(B256::random()))
+            .map(|_| ChunkAddress::from(B256::random()))
             .collect();
         let stamps: Vec<_> = addresses
             .iter()

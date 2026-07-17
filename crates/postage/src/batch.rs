@@ -2,7 +2,7 @@
 
 use alloy_primitives::{Address, B256};
 use derive_more::{AsRef, Display, From, Into};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 use crate::{StampError, StampIndex, calculate_bucket};
 
@@ -270,7 +270,7 @@ impl Batch {
     /// The bucket is determined by taking the first `bucket_depth` bits of the
     /// chunk address, interpreted as a big-endian unsigned integer.
     #[inline]
-    pub fn bucket_for_address(&self, address: &SwarmAddress) -> u32 {
+    pub fn bucket_for_address(&self, address: &ChunkAddress) -> u32 {
         calculate_bucket(address, self.bucket_depth)
     }
 
@@ -282,7 +282,7 @@ impl Batch {
     pub fn validate_bucket(
         &self,
         index: &StampIndex,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
     ) -> Result<(), StampError> {
         let expected_bucket = self.bucket_for_address(address);
         if index.bucket() != expected_bucket {

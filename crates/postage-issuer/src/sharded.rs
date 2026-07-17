@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::error::IssuerError;
 use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 #[cfg(feature = "parallel")]
 use {
@@ -256,7 +256,7 @@ impl ShardedIssuer {
     /// This is thread-safe and can be called concurrently from multiple threads.
     pub fn prepare_stamp(
         &self,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
         let bucket = calculate_bucket(address, self.bucket_depth);
@@ -349,7 +349,7 @@ impl ShardedIssuer {
 #[derive(Debug)]
 pub struct StampResult {
     /// The chunk address that was stamped.
-    pub address: SwarmAddress,
+    pub address: ChunkAddress,
     /// The resulting stamp, or error message.
     pub result: Result<Stamp, SigningError>,
 }
@@ -383,7 +383,7 @@ pub struct StampResult {
 /// use alloy_signer::SignerSync;
 ///
 /// let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
-/// let addresses: Vec<SwarmAddress> = /* ... */;
+/// let addresses: Vec<ChunkAddress> = /* ... */;
 /// // Use sign_message_sync for EIP-191 compatibility
 /// let signer_fn = |prehash: &B256| signer.sign_message_sync(prehash.as_slice());
 /// let results = sign_stamps_parallel(&issuer, &signer_fn, &addresses);
@@ -392,7 +392,7 @@ pub struct StampResult {
 pub fn sign_stamps_parallel<S, E>(
     issuer: &ShardedIssuer,
     signer: &S,
-    addresses: &[SwarmAddress],
+    addresses: &[ChunkAddress],
 ) -> Vec<StampResult>
 where
     S: Fn(&B256) -> Result<Signature, E> + Sync,
@@ -416,7 +416,7 @@ where
 fn sign_stamp_internal<S, E>(
     issuer: &ShardedIssuer,
     signer: &S,
-    address: &SwarmAddress,
+    address: &ChunkAddress,
 ) -> Result<Stamp, SigningError>
 where
     S: Fn(&B256) -> Result<Signature, E>,
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn test_sharded_issuer_prepare_stamp() {
         let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
-        let address = SwarmAddress::from(B256::random());
+        let address = ChunkAddress::from(B256::random());
 
         let digest = issuer.prepare_stamp(&address, 12345).unwrap();
 
@@ -491,7 +491,7 @@ mod tests {
     fn test_sharded_issuer_dilute_grows_capacity_only() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
         let mut issuer = ShardedIssuer::new(BatchId::ZERO, 17, 16);
-        let address = SwarmAddress::from(B256::repeat_byte(0xAB));
+        let address = ChunkAddress::from(B256::repeat_byte(0xAB));
         let bucket = calculate_bucket(&address, 16);
 
         issuer.prepare_stamp(&address, 1).unwrap();
@@ -529,7 +529,7 @@ mod tests {
                 let issuer = Arc::clone(&issuer);
                 thread::spawn(move || {
                     for _ in 0..stamps_per_thread {
-                        let addr = SwarmAddress::from(B256::random());
+                        let addr = ChunkAddress::from(B256::random());
                         issuer.prepare_stamp(&addr, 0).unwrap();
                     }
                 })
@@ -557,7 +557,7 @@ mod tests {
         let signer = PrivateKeySigner::random();
 
         let addresses: Vec<_> = (0..100)
-            .map(|_| SwarmAddress::from(B256::random()))
+            .map(|_| ChunkAddress::from(B256::random()))
             .collect();
 
         let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {

@@ -23,7 +23,7 @@ use nectar_postage::{
     Batch, BatchId, Stamp, StampBytes, StampDigest, StampIndex,
     parallel::{verify_stamps_parallel, verify_stamps_parallel_with_pubkey},
 };
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 use rand::RngExt;
 
 /// Generate a random stamp for benchmarking.
@@ -43,18 +43,18 @@ fn random_stamp() -> Stamp {
     Stamp::new(batch, bucket, index, timestamp, sig)
 }
 
-/// Generate a random SwarmAddress for benchmarking.
-fn random_address() -> SwarmAddress {
+/// Generate a random ChunkAddress for benchmarking.
+fn random_address() -> ChunkAddress {
     let mut rng = rand::rng();
     let mut bytes = [0u8; 32];
     rng.fill(&mut bytes);
-    SwarmAddress::new(bytes)
+    ChunkAddress::new(bytes)
 }
 
 /// Creates a valid stamp signed by the given signer.
 fn create_signed_stamp(
     signer: &PrivateKeySigner,
-    chunk_address: &SwarmAddress,
+    chunk_address: &ChunkAddress,
     batch_id: BatchId,
 ) -> Stamp {
     let index = StampIndex::new(0, 0);
@@ -163,7 +163,7 @@ fn bench_stamp_digest_prehash(c: &mut Criterion) {
 /// Uses EIP-191 message recovery for interoperability.
 fn recover_stamp_signer(
     stamp: &Stamp,
-    chunk_address: &SwarmAddress,
+    chunk_address: &ChunkAddress,
 ) -> Result<Address, alloy_primitives::SignatureError> {
     let digest = StampDigest::new(
         *chunk_address,
@@ -187,7 +187,7 @@ fn bench_ecdsa_verify_sequential(c: &mut Criterion) {
     let single_addr = random_address();
     let single_stamp = create_signed_stamp(&signer, &single_addr, batch_id);
 
-    let test_data: Vec<(SwarmAddress, Stamp)> = (0..100)
+    let test_data: Vec<(ChunkAddress, Stamp)> = (0..100)
         .map(|_| {
             let addr = random_address();
             let stamp = create_signed_stamp(&signer, &addr, batch_id);
@@ -226,7 +226,7 @@ fn bench_ecdsa_verify_with_pubkey(c: &mut Criterion) {
     let batch_id = BatchId::ZERO;
 
     // Create stamps
-    let addresses: Vec<SwarmAddress> = (0..100).map(|_| random_address()).collect();
+    let addresses: Vec<ChunkAddress> = (0..100).map(|_| random_address()).collect();
     let stamps: Vec<Stamp> = addresses
         .iter()
         .map(|addr| create_signed_stamp(&signer, addr, batch_id))
@@ -265,14 +265,14 @@ fn bench_ecdsa_verify_parallel(c: &mut Criterion) {
     let batch_id = BatchId::ZERO;
 
     // Pre-generate 100 stamps for verification
-    let addresses_100: Vec<SwarmAddress> = (0..100).map(|_| random_address()).collect();
+    let addresses_100: Vec<ChunkAddress> = (0..100).map(|_| random_address()).collect();
     let stamps_100: Vec<Stamp> = addresses_100
         .iter()
         .map(|addr| create_signed_stamp(&signer, addr, batch_id))
         .collect();
 
     // Pre-generate 1000 stamps for verification
-    let addresses_1000: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
+    let addresses_1000: Vec<ChunkAddress> = (0..1000).map(|_| random_address()).collect();
     let stamps_1000: Vec<Stamp> = addresses_1000
         .iter()
         .map(|addr| create_signed_stamp(&signer, addr, batch_id))
@@ -306,14 +306,14 @@ fn bench_ecdsa_verify_parallel_with_pubkey(c: &mut Criterion) {
     let batch_id = BatchId::ZERO;
 
     // Pre-generate 100 stamps for verification
-    let addresses_100: Vec<SwarmAddress> = (0..100).map(|_| random_address()).collect();
+    let addresses_100: Vec<ChunkAddress> = (0..100).map(|_| random_address()).collect();
     let stamps_100: Vec<Stamp> = addresses_100
         .iter()
         .map(|addr| create_signed_stamp(&signer, addr, batch_id))
         .collect();
 
     // Pre-generate 1000 stamps for verification
-    let addresses_1000: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
+    let addresses_1000: Vec<ChunkAddress> = (0..1000).map(|_| random_address()).collect();
     let stamps_1000: Vec<Stamp> = addresses_1000
         .iter()
         .map(|addr| create_signed_stamp(&signer, addr, batch_id))
@@ -360,7 +360,7 @@ fn bench_verify_comparison(c: &mut Criterion) {
     let batch_id = BatchId::ZERO;
 
     // Pre-generate 1000 stamps
-    let addresses: Vec<SwarmAddress> = (0..1000).map(|_| random_address()).collect();
+    let addresses: Vec<ChunkAddress> = (0..1000).map(|_| random_address()).collect();
     let stamps: Vec<Stamp> = addresses
         .iter()
         .map(|addr| create_signed_stamp(&signer, addr, batch_id))

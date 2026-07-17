@@ -25,7 +25,7 @@ impl WasmContentChunk {
     #[wasm_bindgen]
     pub fn address(&self) -> Uint8Array {
         let result = Uint8Array::new_with_length(32);
-        result.copy_from(self.0.address().as_slice());
+        result.copy_from(self.0.address().as_bytes());
         result
     }
 
@@ -105,7 +105,7 @@ impl WasmSplitResult {
         let arr = Array::new();
         for chunk in &self.chunks {
             let addr = Uint8Array::new_with_length(32);
-            addr.copy_from(chunk.address().as_slice());
+            addr.copy_from(chunk.address().as_bytes());
             arr.push(&addr);
         }
         arr

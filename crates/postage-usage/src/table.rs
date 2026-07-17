@@ -138,11 +138,11 @@ impl Mutability {
 ///
 /// ```compile_fail
 /// use alloy_primitives::B256;
-/// use nectar_postage_usage::{BatchId, Mutability, SwarmAddress, UsageTable};
+/// use nectar_postage_usage::{BatchId, Mutability, ChunkAddress, UsageTable};
 ///
 /// let mut table = UsageTable::new(BatchId::new([0x42; 32]), 18, 16, Mutability::Mutable).unwrap();
 /// // `record_address` no longer exists on the inert table.
-/// table.record_address(&SwarmAddress::from(B256::repeat_byte(0x99))).unwrap();
+/// table.record_address(&ChunkAddress::from(B256::repeat_byte(0x99))).unwrap();
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageTable {

@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use alloy_primitives::Address;
 use bytes::Bytes;
 use nectar_postage::{Batch, BatchId, StampIndex, calculate_bucket};
-use nectar_primitives::{SocId, SwarmAddress};
+use nectar_primitives::{ChunkAddress, SocId};
 
 use crate::codec::{self, Encoded, RootInfo};
 use crate::table::{TableView, UsageTable};
@@ -86,7 +86,7 @@ pub struct PlannedChunk {
     /// The single-owner chunk id.
     pub id: SocId,
     /// The single-owner chunk address.
-    pub address: SwarmAddress,
+    pub address: ChunkAddress,
     /// The stamp index to use. Constant across persists for a given chunk;
     /// reusing it with a newer timestamp overwrites the previous version in
     /// place instead of consuming another slot.
@@ -567,7 +567,7 @@ impl Snapshot {
     pub(crate) fn record_address(
         &mut self,
         owner: Address,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
     ) -> Result<StampIndex> {
         self.issuer(owner).record_address(address)
     }
@@ -846,7 +846,7 @@ impl Issuer<'_> {
     /// The only content-issuance entry point. The reserved set was installed at
     /// construction, so a mutable ring never re-emits a slot held by the
     /// snapshot's own chunks.
-    pub fn record_address(&mut self, address: &SwarmAddress) -> Result<StampIndex> {
+    pub fn record_address(&mut self, address: &ChunkAddress) -> Result<StampIndex> {
         Ok(self.record_address_reporting_wrap(address)?.0)
     }
 
@@ -866,7 +866,7 @@ impl Issuer<'_> {
     /// `true`.
     pub fn record_address_reporting_wrap(
         &mut self,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
     ) -> Result<(StampIndex, bool)> {
         let bucket = calculate_bucket(address, self.snapshot.table.bucket_depth());
         // Decide before the write: afterwards the cursor has already advanced.

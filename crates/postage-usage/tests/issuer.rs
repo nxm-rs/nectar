@@ -18,7 +18,7 @@ use alloy_primitives::Address;
 use nectar_postage::{BatchId, StampIndex, calculate_bucket};
 use nectar_postage_issuer::StampIssuer;
 use nectar_postage_usage::{Mutability, PublishedSequence, Snapshot, SnapshotIssuer, UsageTable};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 const BUCKET_DEPTH: u8 = 16;
 
@@ -28,7 +28,7 @@ const fn owner() -> Address {
 
 /// Returns a content chunk address whose top 16 bits select `bucket`, with
 /// `salt` mixed into lower bytes so distinct calls stay in the same bucket.
-fn content_address(bucket: u32, salt: u8) -> SwarmAddress {
+const fn content_address(bucket: u32, salt: u8) -> ChunkAddress {
     let mut bytes = [0u8; 32];
     // Take the low two big-endian bytes of the u32 (identical to the former
     // `>> 8` / truncating casts).
@@ -36,7 +36,7 @@ fn content_address(bucket: u32, salt: u8) -> SwarmAddress {
     bytes[0] = hi;
     bytes[1] = lo;
     bytes[31] = salt;
-    SwarmAddress::new(bytes)
+    ChunkAddress::new(bytes)
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn snapshot_issuer_issues_sequential_indices() {
     let snapshot = Snapshot::new(table);
     let mut issuer = SnapshotIssuer::new(snapshot, owner());
 
-    let address = SwarmAddress::new([0xCB; 32]);
+    let address = ChunkAddress::new([0xCB; 32]);
     let first = issuer.prepare_stamp(&address, 1).unwrap();
     let second = issuer.prepare_stamp(&address, 2).unwrap();
 

@@ -16,6 +16,7 @@
 //! The [`AnyChunk`] enum provides runtime polymorphism for chunks without
 //! requiring object-safe traits.
 
+mod address;
 mod any_chunk;
 mod bmt_body;
 mod chunk_type;
@@ -32,8 +33,9 @@ mod type_id;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-// Re-export the core traits
-pub use traits::{BmtChunk, Chunk, ChunkAddress, ChunkHeader, ChunkMetadata, ChunkSerialization};
+// Re-export the address type and core traits
+pub use address::ChunkAddress;
+pub use traits::{BmtChunk, Chunk, ChunkHeader, ChunkMetadata, ChunkSerialization};
 
 // Re-export the reference types
 pub use reference::{ChunkRef, RefKind, Reference, WrongRefKind};

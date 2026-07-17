@@ -34,7 +34,7 @@ use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use bytes::Bytes;
 use nectar_postage::{Batch, BatchId, StampIndex};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 use thiserror::Error;
 
 use crate::codec::RootInfo;
@@ -68,7 +68,7 @@ pub trait SnapshotSource {
     /// browser transport with a `!Send` future can still implement this trait.
     fn fetch(
         &self,
-        address: &SwarmAddress,
+        address: &ChunkAddress,
     ) -> impl core::future::Future<Output = Result<Option<Bytes>, Self::Error>>;
 }
 
@@ -240,7 +240,7 @@ where
     /// chunks. Persist the resulting state with [`flush`](Self::flush).
     pub fn stamp(
         &mut self,
-        content: &SwarmAddress,
+        content: &ChunkAddress,
     ) -> Result<StampIndex, ClientError<Src::Error, Snk::Error>> {
         Ok(self.snapshot.issuer(self.owner).record_address(content)?)
     }
@@ -345,7 +345,7 @@ mod tests {
     /// [`SnapshotSink`], keyed by single-owner-chunk address.
     #[derive(Debug, Default, Clone)]
     struct MemNet {
-        chunks: std::sync::Arc<Mutex<BTreeMap<SwarmAddress, Bytes>>>,
+        chunks: std::sync::Arc<Mutex<BTreeMap<ChunkAddress, Bytes>>>,
     }
 
     #[derive(Debug, Error)]
@@ -354,7 +354,7 @@ mod tests {
 
     impl SnapshotSource for MemNet {
         type Error = MemError;
-        async fn fetch(&self, address: &SwarmAddress) -> Result<Option<Bytes>, Self::Error> {
+        async fn fetch(&self, address: &ChunkAddress) -> Result<Option<Bytes>, Self::Error> {
             Ok(self.chunks.lock().unwrap().get(address).cloned())
         }
     }
@@ -377,7 +377,7 @@ mod tests {
 
     impl SnapshotSource for FailingSource {
         type Error = MemError;
-        async fn fetch(&self, _address: &SwarmAddress) -> Result<Option<Bytes>, Self::Error> {
+        async fn fetch(&self, _address: &ChunkAddress) -> Result<Option<Bytes>, Self::Error> {
             Err(MemError)
         }
     }
@@ -398,7 +398,7 @@ mod tests {
         type Error = MemError;
         fn fetch(
             &self,
-            _address: &SwarmAddress,
+            _address: &ChunkAddress,
         ) -> impl core::future::Future<Output = Result<Option<Bytes>, Self::Error>> {
             let hold = self.0.clone();
             async move {
@@ -458,7 +458,7 @@ mod tests {
             .unwrap();
         assert_eq!(stamper.snapshot().sequence(), 0);
 
-        let content = SwarmAddress::from(B256::repeat_byte(0x99));
+        let content = ChunkAddress::from(B256::repeat_byte(0x99));
         stamper.stamp(&content).unwrap();
         assert!(stamper.is_dirty());
 
@@ -483,7 +483,7 @@ mod tests {
             let mut a = BatchStamper::open(signer.clone(), &batch, net.clone(), net.clone())
                 .await
                 .unwrap();
-            a.stamp(&SwarmAddress::from(B256::repeat_byte(0x99)))
+            a.stamp(&ChunkAddress::from(B256::repeat_byte(0x99)))
                 .unwrap();
             a.flush().await.unwrap();
         }
@@ -532,7 +532,7 @@ mod tests {
             persisted_this_session: false,
         };
         stamper
-            .stamp(&SwarmAddress::from(B256::repeat_byte(0x99)))
+            .stamp(&ChunkAddress::from(B256::repeat_byte(0x99)))
             .unwrap();
 
         let result = stamper.flush().await;
@@ -554,14 +554,14 @@ mod tests {
             .await
             .unwrap();
         stamper
-            .stamp(&SwarmAddress::from(B256::repeat_byte(0x99)))
+            .stamp(&ChunkAddress::from(B256::repeat_byte(0x99)))
             .unwrap();
         stamper.flush().await.unwrap();
         let slots_after_first = stamper.snapshot().allocated_slots().to_vec();
         assert_eq!(stamper.snapshot().sequence(), 1);
 
         stamper
-            .stamp(&SwarmAddress::from(B256::repeat_byte(0xab)))
+            .stamp(&ChunkAddress::from(B256::repeat_byte(0xab)))
             .unwrap();
         stamper.flush().await.unwrap();
         assert_eq!(stamper.snapshot().sequence(), 2, "sequence advanced");
@@ -584,10 +584,10 @@ mod tests {
             let mut a = BatchStamper::open(signer.clone(), &batch, net.clone(), net.clone())
                 .await
                 .unwrap();
-            a.stamp(&SwarmAddress::from(B256::repeat_byte(0x01)))
+            a.stamp(&ChunkAddress::from(B256::repeat_byte(0x01)))
                 .unwrap();
             a.flush().await.unwrap();
-            a.stamp(&SwarmAddress::from(B256::repeat_byte(0x02)))
+            a.stamp(&ChunkAddress::from(B256::repeat_byte(0x02)))
                 .unwrap();
             a.flush().await.unwrap();
             assert_eq!(a.snapshot().sequence(), 2);
@@ -614,7 +614,7 @@ mod tests {
             snapshot: stale,
             persisted_this_session: false,
         };
-        b.stamp(&SwarmAddress::from(B256::repeat_byte(0x03)))
+        b.stamp(&ChunkAddress::from(B256::repeat_byte(0x03)))
             .unwrap();
         let result = b.flush().await;
         assert!(

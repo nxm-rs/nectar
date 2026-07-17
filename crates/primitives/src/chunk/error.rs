@@ -1,4 +1,4 @@
-use crate::SwarmAddress;
+use super::address::ChunkAddress;
 use thiserror::Error;
 
 use super::type_id::ChunkTypeId;
@@ -25,8 +25,8 @@ pub enum ChunkError {
     /// Chunk address verification failed
     #[error("Chunk address verification failed: expected {expected}, got {actual}")]
     VerificationFailed {
-        expected: SwarmAddress,
-        actual: SwarmAddress,
+        expected: ChunkAddress,
+        actual: ChunkAddress,
     },
 
     /// Signature errors from the crypto library
@@ -59,7 +59,7 @@ impl ChunkError {
         Self::InvalidFormat(msg.into())
     }
 
-    pub const fn verification_failed(expected: SwarmAddress, actual: SwarmAddress) -> Self {
+    pub const fn verification_failed(expected: ChunkAddress, actual: ChunkAddress) -> Self {
         Self::VerificationFailed { expected, actual }
     }
 

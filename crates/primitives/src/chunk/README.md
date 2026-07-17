@@ -62,7 +62,7 @@ To create a new chunk type, you need to:
 
 ```rust
 use nectar_primitives::chunk::{Chunk, ContentChunk, SingleOwnerChunk};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::ChunkAddress;
 
 // Create a content chunk
 let content_chunk = ContentChunk::new(b"Hello, world!").unwrap();

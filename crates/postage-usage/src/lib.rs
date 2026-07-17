@@ -27,7 +27,7 @@
 //! ```
 //! use alloy_primitives::{Address, B256};
 //! use nectar_postage_usage::{
-//!     BatchId, Mutability, PublishedSequence, RootInfo, Snapshot, SwarmAddress, UsageTable,
+//!     BatchId, Mutability, PublishedSequence, RootInfo, Snapshot, ChunkAddress, UsageTable,
 //! };
 //!
 //! let batch_id = BatchId::new([0x42; 32]);
@@ -37,7 +37,7 @@
 //! // then plan a persist.
 //! let table = UsageTable::new(batch_id, 20, 16, Mutability::Immutable).unwrap();
 //! let mut snapshot = Snapshot::new(table);
-//! let address = SwarmAddress::from(B256::repeat_byte(0x99));
+//! let address = ChunkAddress::from(B256::repeat_byte(0x99));
 //! snapshot.issuer(owner).record_address(&address).unwrap();
 //! // This table is fresh and was never published, so the live network read
 //! // returns no root chunk and the floor is `NONE`.
@@ -140,7 +140,7 @@ pub use seal::{SealError, SealedChunk, seal_plan};
 #[cfg(feature = "client")]
 pub use client::{BatchStamper, ClientError, SnapshotSink, SnapshotSource};
 
-pub use nectar_primitives::{SocId, SwarmAddress};
+pub use nectar_primitives::{ChunkAddress, SocId};
 
 /// Postage types re-exported so a downstream caller naming
 /// [`PlannedChunk::stamp_index`] or calling [`UsageTable::from_batch`] does not
@@ -189,11 +189,11 @@ pub fn usage_chunk_id(batch_id: &BatchId, index: u16) -> SocId {
 
 /// Returns the address of snapshot chunk `index` for a batch owned by
 /// `owner`, i.e. the single-owner chunk address `keccak256(id || owner)`.
-pub fn usage_chunk_address(batch_id: &BatchId, owner: &Address, index: u16) -> SwarmAddress {
+pub fn usage_chunk_address(batch_id: &BatchId, owner: &Address, index: u16) -> ChunkAddress {
     let mut hasher = Keccak256::new();
     hasher.update(usage_chunk_id(batch_id, index));
     hasher.update(owner);
-    SwarmAddress::from(hasher.finalize())
+    ChunkAddress::from(hasher.finalize())
 }
 
 #[cfg(test)]
