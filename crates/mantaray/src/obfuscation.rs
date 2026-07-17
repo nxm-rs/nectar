@@ -1,4 +1,4 @@
-//! XOR obfuscation key for mantaray node serialisation.
+//! XOR obfuscation key for mantaray node serialization.
 
 /// 32-byte XOR obfuscation key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

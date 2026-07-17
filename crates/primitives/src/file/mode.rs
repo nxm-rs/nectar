@@ -148,7 +148,10 @@ pub trait SplitMode: JoinMode {
     fn empty_chunk<const BS: usize>() -> Result<(ContentChunk<BS>, Self::RootRef)>;
 
     /// Append a reference's `REF_SIZE` wire bytes to `out`.
-    fn extend_ref_bytes(reference: &Self::Ref, out: &mut Vec<u8>);
+    #[inline]
+    fn extend_ref_bytes(reference: &Self::Ref, out: &mut Vec<u8>) {
+        reference.write_to(out);
+    }
 
     /// The root reference of a finished tree from its sole top reference.
     fn root_ref(reference: Self::Ref) -> Self::RootRef;
@@ -206,11 +209,6 @@ impl SplitMode for PlainMode {
         let chunk = ContentChunk::<BS>::new(Bytes::new()).map_err(chunk_creation_error)?;
         let address = *chunk.address();
         Ok((chunk, address))
-    }
-
-    #[inline]
-    fn extend_ref_bytes(reference: &ChunkRef, out: &mut Vec<u8>) {
-        out.extend_from_slice(reference.address().as_bytes());
     }
 
     #[inline]
@@ -309,10 +307,6 @@ impl SplitMode for EncryptedMode {
         let chunk = create_chunk::<BS>(Bytes::from(ciphertext))?;
         let address = *chunk.address();
         Ok((chunk, EncryptedChunkRef::new(address, key)))
-    }
-
-    fn extend_ref_bytes(reference: &EncryptedChunkRef, out: &mut Vec<u8>) {
-        out.extend_from_slice(&<[u8; EncryptedChunkRef::SIZE]>::from(reference));
     }
 
     fn root_ref(reference: EncryptedChunkRef) -> EncryptedChunkRef {

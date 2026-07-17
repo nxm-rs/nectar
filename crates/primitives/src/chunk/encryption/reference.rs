@@ -51,7 +51,7 @@ impl EncryptedChunkRef {
         (self.reference.into_address(), self.key)
     }
 
-    /// Serialise to the fixed wire form: address followed by decryption key.
+    /// Serialize to the fixed wire form: address followed by decryption key.
     pub const fn to_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let (address, key) = buf.split_at_mut(ChunkRef::SIZE);
@@ -89,7 +89,7 @@ impl Reference for EncryptedChunkRef {
             EntryRef::Encrypted(enc) => Ok(enc),
             EntryRef::Plain(_) => Err(WrongRefKind {
                 expected: Self::KIND,
-                got: RefKind::Unencrypted,
+                got: RefKind::Plain,
             }),
         }
     }

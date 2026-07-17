@@ -5,13 +5,13 @@
 //!
 //! Mantaray is a trie-based manifest structure that maps human-readable paths
 //! (e.g. `index.html`, `img/logo.png`) to content-addressed chunk references.
-//! It supports XOR obfuscation, versioned binary serialisation (v0.1 and v0.2),
+//! It supports XOR obfuscation, versioned binary serialization (v0.1 and v0.2),
 //! and metadata per path.
 //!
 //! # Efficient Partial Updates
 //!
 //! The trie uses lazy loading and dirty-reference tracking so that updating a
-//! single path in a million-entry manifest only re-serialises O(depth) nodes:
+//! single path in a million-entry manifest only re-serializes O(depth) nodes:
 //!
 //! 1. [`Manifest::add`] lazily loads only the affected path branch.
 //! 2. Modified nodes have their reference cleared (dirty flag).

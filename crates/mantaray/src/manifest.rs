@@ -188,7 +188,8 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> Manifest<S, R, 
     /// Collect all value entries from the manifest.
     ///
     /// Shared-read (`&self`) accessor: depth-first over owned clones, leaving
-    /// the trie untouched. Convenience wrapper around [`stream`](Self::stream).
+    /// the trie untouched. Drives the same shared-read traversal as
+    /// [`stream`](Self::stream), collecting into a `Vec`.
     pub async fn entries(&self) -> Result<Vec<Entry>> {
         let mut iter = self.shared_iter();
         let mut out = Vec::new();
