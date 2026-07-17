@@ -13,7 +13,7 @@
 )]
 use alloy_primitives::{B256, b256};
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use nectar_primitives::{SwarmAddress, XorMetric};
+use nectar_primitives::{OverlayAddress, XorMetric};
 use rand::prelude::*;
 
 pub fn address_benchmarks(c: &mut Criterion) {
@@ -21,22 +21,22 @@ pub fn address_benchmarks(c: &mut Criterion) {
     let mut rng = rand::rng();
 
     // Generate random addresses for benchmarking
-    let addresses: Vec<SwarmAddress> = (0..1000)
+    let addresses: Vec<OverlayAddress> = (0..1000)
         .map(|_| {
             let mut bytes = [0u8; 32];
             rng.fill(&mut bytes);
-            SwarmAddress::from(B256::from_slice(&bytes))
+            OverlayAddress::from(B256::from_slice(&bytes))
         })
         .collect();
 
     // Define some fixed addresses for consistent benchmarks
-    let base_addr = SwarmAddress::from(b256!(
+    let base_addr = OverlayAddress::from(b256!(
         "9100000000000000000000000000000000000000000000000000000000000000"
     ));
-    let near_addr = SwarmAddress::from(b256!(
+    let near_addr = OverlayAddress::from(b256!(
         "9180000000000000000000000000000000000000000000000000000000000000"
     ));
-    let far_addr = SwarmAddress::from(b256!(
+    let far_addr = OverlayAddress::from(b256!(
         "1100000000000000000000000000000000000000000000000000000000000000"
     ));
 
@@ -109,11 +109,11 @@ pub fn address_benchmarks(c: &mut Criterion) {
 
     for (i, &addr_bytes) in po_test_cases.iter().enumerate() {
         let expected_po = i * 8;
-        let test_addr = SwarmAddress::from(addr_bytes);
+        let test_addr = OverlayAddress::from(addr_bytes);
         group.bench_with_input(
             BenchmarkId::new("proximity_po", expected_po),
             &expected_po,
-            |b, _| b.iter(|| black_box(SwarmAddress::zero().proximity(&test_addr))),
+            |b, _| b.iter(|| black_box(OverlayAddress::zero().proximity(&test_addr))),
         );
     }
 

@@ -2,7 +2,7 @@
 //!
 //! Kademlia routing measures closeness between two 256-bit points as the
 //! number of leading matching bits (the proximity order, PO) or as the full
-//! XOR distance. The address kinds ([`SwarmAddress`](crate::SwarmAddress),
+//! XOR distance. The address kinds ([`OverlayAddress`](crate::OverlayAddress),
 //! [`ChunkAddress`](crate::ChunkAddress)) are distinct nominal types over the
 //! same point space, and the protocol compares across kinds (a chunk address
 //! against a node overlay for the storage radius and pushsync targeting), so
@@ -21,16 +21,16 @@
 //! ## Example
 //!
 //! ```
-//! use nectar_primitives::{SwarmAddress, XorMetric};
+//! use nectar_primitives::{OverlayAddress, XorMetric};
 //! use alloy_primitives::B256;
 //!
-//! let addr1 = SwarmAddress::from(B256::random());
-//! let addr2 = SwarmAddress::from(B256::random());
+//! let addr1 = OverlayAddress::from(B256::random());
+//! let addr2 = OverlayAddress::from(B256::random());
 //!
 //! let po = addr1.proximity(&addr2);
 //! let distance = addr1.distance(&addr2);
 //!
-//! let addr3 = SwarmAddress::from(B256::random());
+//! let addr3 = OverlayAddress::from(B256::random());
 //! if addr1.closer(&addr2, &addr3) {
 //!     println!("addr1 is closer to addr2 than addr3");
 //! }
@@ -89,12 +89,12 @@ pub trait XorMetric {
     /// the point closest to `self`:
     ///
     /// ```
-    /// # use nectar_primitives::{SwarmAddress, XorMetric};
+    /// # use nectar_primitives::{OverlayAddress, XorMetric};
     /// # use alloy_primitives::B256;
-    /// let target = SwarmAddress::zero();
+    /// let target = OverlayAddress::zero();
     /// let addresses = vec![
-    ///     SwarmAddress::from(B256::repeat_byte(0x01)),
-    ///     SwarmAddress::from(B256::repeat_byte(0x02)),
+    ///     OverlayAddress::from(B256::repeat_byte(0x01)),
+    ///     OverlayAddress::from(B256::repeat_byte(0x02)),
     /// ];
     /// let closest = addresses.iter().min_by(|a, b| target.distance_cmp(a, b));
     /// ```
@@ -244,30 +244,30 @@ fn proximity_up_to(bytes1: &[u8; 32], bytes2: &[u8; 32], max: usize) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChunkAddress, SwarmAddress};
+    use crate::{ChunkAddress, OverlayAddress};
     use alloy_primitives::B256;
 
     #[test]
     fn proximity_counts_leading_matching_bits() {
-        let base = SwarmAddress::with_first_byte(0b0000_0000);
-        let one_bit = SwarmAddress::with_first_byte(0b0100_0000);
+        let base = OverlayAddress::with_first_byte(0b0000_0000);
+        let one_bit = OverlayAddress::with_first_byte(0b0100_0000);
         assert_eq!(base.proximity(&one_bit).get(), 1);
 
-        let full_match = SwarmAddress::zero();
+        let full_match = OverlayAddress::zero();
         assert_eq!(base.proximity(&full_match).get(), MAX_PO);
     }
 
     #[test]
     fn extended_proximity_exceeds_standard_cap() {
-        let base = SwarmAddress::zero();
+        let base = OverlayAddress::zero();
         assert_eq!(base.extended_proximity(&base), EXTENDED_PO);
         assert_eq!(base.proximity(&base).get(), MAX_PO);
     }
 
     #[test]
     fn distance_is_symmetric_xor() {
-        let a = SwarmAddress::from(B256::repeat_byte(0x0f));
-        let b = SwarmAddress::from(B256::repeat_byte(0xf0));
+        let a = OverlayAddress::from(B256::repeat_byte(0x0f));
+        let b = OverlayAddress::from(B256::repeat_byte(0xf0));
         assert_eq!(a.distance(&b), b.distance(&a));
         assert_eq!(
             a.distance(&b),
@@ -278,9 +278,9 @@ mod tests {
 
     #[test]
     fn distance_cmp_orders_by_closeness() {
-        let target = SwarmAddress::zero();
-        let near = SwarmAddress::from(B256::repeat_byte(0x01));
-        let far = SwarmAddress::from(B256::repeat_byte(0x02));
+        let target = OverlayAddress::zero();
+        let near = OverlayAddress::from(B256::repeat_byte(0x01));
+        let far = OverlayAddress::from(B256::repeat_byte(0x02));
         assert_eq!(target.distance_cmp(&near, &far), Ordering::Greater);
         assert_eq!(target.distance_cmp(&far, &near), Ordering::Less);
         assert_eq!(target.distance_cmp(&near, &near), Ordering::Equal);
@@ -293,7 +293,7 @@ mod tests {
         // (storage radius, pushsync targeting); the trait keeps that legal
         // across the distinct kinds.
         let chunk = ChunkAddress::from(B256::repeat_byte(0xaa));
-        let overlay = SwarmAddress::from(B256::repeat_byte(0xaa));
+        let overlay = OverlayAddress::from(B256::repeat_byte(0xaa));
         assert_eq!(chunk.proximity(&overlay).get(), MAX_PO);
         assert_eq!(chunk.distance(&overlay), U256::ZERO);
         assert_eq!(overlay.bin(&chunk), Bin::from(overlay.proximity(&chunk)));
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn xor_returns_receiver_kind() {
         let a = ChunkAddress::from(B256::repeat_byte(0x0f));
-        let b = SwarmAddress::from(B256::repeat_byte(0xf0));
+        let b = OverlayAddress::from(B256::repeat_byte(0xf0));
         let d: ChunkAddress = a.xor(&b);
         assert_eq!(d, ChunkAddress::from(B256::repeat_byte(0xff)));
     }

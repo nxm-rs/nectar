@@ -7,7 +7,7 @@
 
 use alloy_primitives::{Address, Keccak256};
 
-use crate::{NetworkId, Nonce, SwarmAddress};
+use crate::{NetworkId, Nonce, OverlayAddress};
 
 /// Compute the Swarm overlay address from `eth_addr`, `network_id`, `nonce`.
 ///
@@ -16,12 +16,12 @@ use crate::{NetworkId, Nonce, SwarmAddress};
 /// This is the **only** canonical derivation - any other formula creates a
 /// peer with a different overlay that won't be reachable on the same network.
 #[must_use]
-pub fn compute_overlay(eth_addr: &Address, network_id: NetworkId, nonce: &Nonce) -> SwarmAddress {
+pub fn compute_overlay(eth_addr: &Address, network_id: NetworkId, nonce: &Nonce) -> OverlayAddress {
     let mut hasher = Keccak256::new();
     hasher.update(eth_addr.as_slice());
     hasher.update(network_id.to_le_bytes());
     hasher.update(nonce.as_slice());
-    SwarmAddress::from(hasher.finalize())
+    OverlayAddress::from(hasher.finalize())
 }
 
 #[cfg(test)]
@@ -40,7 +40,7 @@ mod tests {
         h.update([0u8; 20]);
         h.update(1u64.to_le_bytes());
         h.update([0u8; 32]);
-        let expected = SwarmAddress::from(h.finalize());
+        let expected = OverlayAddress::from(h.finalize());
         assert_eq!(overlay, expected);
     }
 
@@ -73,14 +73,14 @@ mod tests {
         h.update(eth.as_slice());
         h.update([0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]); // LE bytes
         h.update(nonce.as_slice());
-        assert_eq!(overlay, SwarmAddress::from(h.finalize()));
+        assert_eq!(overlay, OverlayAddress::from(h.finalize()));
 
         // Sanity-check the BE encoding would have produced a different overlay.
         let mut h_be = Keccak256::new();
         h_be.update(eth.as_slice());
         h_be.update([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]); // BE bytes
         h_be.update(nonce.as_slice());
-        let be_overlay = SwarmAddress::from(h_be.finalize());
+        let be_overlay = OverlayAddress::from(h_be.finalize());
         assert_ne!(overlay, be_overlay);
         let _ = b256!("0000000000000000000000000000000000000000000000000000000000000000");
     }
