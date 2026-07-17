@@ -44,9 +44,9 @@ impl<S, const BS: usize> Manifest<S, ChunkRef, BS> {
     }
 }
 
-#[cfg(feature = "encryption")]
 impl<S, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
     /// Create a new encrypted manifest (random obfuscation key, 64-byte refs).
+    #[cfg(feature = "std")]
     pub fn new_encrypted(store: S) -> Self {
         use crate::obfuscation::ObfuscationKey;
         let trie = Node {
@@ -423,7 +423,6 @@ impl<S: ChunkGet<BS>, const BS: usize> Manifest<S, nectar_primitives::EncryptedC
     }
 }
 
-#[cfg(feature = "encryption")]
 impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
     Manifest<S, nectar_primitives::EncryptedChunkRef, BS>
 {

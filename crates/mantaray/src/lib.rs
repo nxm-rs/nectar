@@ -170,6 +170,5 @@ pub type DefaultManifest<S> = PlainManifest<S, DEFAULT_BODY_SIZE>;
 pub type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = Manifest<S, ChunkRef, BS>;
 
 /// Encrypted manifest: 64-byte refs, random obfuscation key.
-#[cfg(feature = "encryption")]
 pub type EncryptedManifest<S, const BS: usize = DEFAULT_BODY_SIZE> =
     Manifest<S, nectar_primitives::EncryptedChunkRef, BS>;
