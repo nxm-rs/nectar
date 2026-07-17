@@ -3,7 +3,7 @@
 //! This module provides the implementation of single-owner chunks,
 //! which are chunks that include an owner identifier and signature.
 
-use alloy_primitives::{Address, B256, FixedBytes, Keccak256, Signature, address, b256, hex};
+use alloy_primitives::{Address, B256, Keccak256, Signature, address, b256, hex};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use bytes::{Bytes, BytesMut};
@@ -18,6 +18,7 @@ use crate::error::Result;
 
 use super::bmt_body::BmtBody;
 use super::content::ContentChunk;
+use super::soc_id::SocId;
 use super::traits::{BmtChunk, Chunk, ChunkAddress, ChunkHeader, ChunkMetadata};
 
 // Constants for field sizes
@@ -51,19 +52,19 @@ pub struct SingleOwnerChunk<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
 #[derive(Debug, Clone)]
 pub struct SingleOwnerChunkMetadata {
     /// Unique identifier for this chunk
-    id: B256,
+    id: SocId,
     /// Digital signature of the chunk's ID and body hash
     signature: Signature,
 }
 
 impl SingleOwnerChunkMetadata {
     /// Create a new metadata instance with the given ID and signature
-    pub const fn new(id: B256, signature: Signature) -> Self {
+    pub const fn new(id: SocId, signature: Signature) -> Self {
         Self { id, signature }
     }
 
     /// Get the unique ID of this chunk
-    pub const fn id(&self) -> B256 {
+    pub const fn id(&self) -> SocId {
         self.id
     }
 
@@ -131,7 +132,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     ///
     /// A Result containing the new SingleOwnerChunk, or an error if creation fails.
     #[must_use = "this returns a new chunk without modifying the input"]
-    pub fn new(id: B256, data: impl Into<Bytes>, signer: &impl SignerSync) -> Result<Self> {
+    pub fn new(id: SocId, data: impl Into<Bytes>, signer: &impl SignerSync) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::<BODY_SIZE, Initial>::default()
             .auto_from_data(data)?
             .with_id(id)
@@ -154,7 +155,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     ///
     /// A Result containing the new SingleOwnerChunk, or an error if creation fails.
     #[must_use = "this returns a new chunk without modifying the input"]
-    pub fn with_signature(id: B256, signature: Signature, data: impl Into<Bytes>) -> Result<Self> {
+    pub fn with_signature(id: SocId, signature: Signature, data: impl Into<Bytes>) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::<BODY_SIZE, Initial>::default()
             .auto_from_data(data)?
             .with_id(id)
@@ -186,7 +187,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// * `signature` - The digital signature.
     /// * `body` - The BMT body containing the data.
     #[must_use]
-    pub const fn from_parts(id: B256, signature: Signature, body: BmtBody<BODY_SIZE>) -> Self {
+    pub const fn from_parts(id: SocId, signature: Signature, body: BmtBody<BODY_SIZE>) -> Self {
         let metadata = SingleOwnerChunkMetadata::new(id, signature);
         let header = SingleOwnerChunkHeader::new(metadata);
 
@@ -204,7 +205,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// the chunk address and owner address.
     #[must_use]
     pub fn from_parts_with_caches(
-        id: B256,
+        id: SocId,
         signature: Signature,
         body: BmtBody<BODY_SIZE>,
         address: ChunkAddress,
@@ -272,7 +273,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// # Returns
     ///
     /// A 32-byte hash representing the data to sign.
-    fn to_sign(id: &B256, body: &BmtBody<BODY_SIZE>) -> B256 {
+    fn to_sign(id: &SocId, body: &BmtBody<BODY_SIZE>) -> B256 {
         let mut hasher = Keccak256::new();
         hasher.update(id);
         hasher.update(body.hash());
@@ -282,11 +283,11 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     // Checks if the chunk is a valid dispersed replica
     #[allow(clippy::indexing_slicing)] // both id and body hash are fixed 32-byte values, so [1..] holds
     fn is_valid_replica(&self) -> bool {
-        self.id()[1..] == self.body.hash().as_slice()[1..]
+        self.id().as_slice()[1..] == self.body.hash().as_slice()[1..]
     }
 
     /// Get the ID of this chunk.
-    pub const fn id(&self) -> B256 {
+    pub const fn id(&self) -> SocId {
         self.header.metadata.id
     }
 
@@ -396,8 +397,9 @@ impl<const BODY_SIZE: usize> TryFrom<Bytes> for SingleOwnerChunk<BODY_SIZE> {
 
         // Extract ID
         let id_slice = &bytes.slice(0..ID_SIZE);
-        let mut id = FixedBytes::<32>::default();
+        let mut id = B256::default();
         id.copy_from_slice(id_slice);
+        let id = SocId::from(id);
 
         // Extract signature
         let sig_slice = &bytes.slice(ID_SIZE..ID_SIZE + SIGNATURE_SIZE);
@@ -438,7 +440,7 @@ impl<const BODY_SIZE: usize> fmt::Display for SingleOwnerChunk<BODY_SIZE> {
         write!(
             f,
             "SingleOwnerChunk[id={}, owner={}]",
-            hex::encode(&self.id()[..8]),
+            hex::encode(&self.id().as_slice()[..8]),
             owner_str
         )
     }
@@ -486,7 +488,7 @@ struct SingleOwnerChunkBuilderImpl<const BODY_SIZE: usize, S: BuilderState = Ini
     /// The body to use for the chunk
     body: Option<BmtBody<BODY_SIZE>>,
     /// The ID to use for the chunk
-    id: Option<B256>,
+    id: Option<SocId>,
     /// The signature to use for the chunk
     signature: Option<Signature>,
     /// Marker for the builder state
@@ -541,7 +543,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, Initial> {
 
 impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
     /// Set the ID for this chunk
-    fn with_id(mut self, id: B256) -> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithId> {
+    fn with_id(mut self, id: SocId) -> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithId> {
         self.id = Some(id);
 
         SingleOwnerChunkBuilderImpl {
@@ -565,7 +567,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
 
         let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
 
-        self.with_id(id).with_signer(&signer)
+        self.with_id(SocId::from(id)).with_signer(&signer)
     }
 }
 
@@ -632,7 +634,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     ) -> arbitrary::Result<Self> {
         use arbitrary::Arbitrary;
 
-        let id = B256::arbitrary(u)?;
+        let id = SocId::arbitrary(u)?;
         let body = BmtBody::<BODY_SIZE>::arbitrary(u)?;
 
         SingleOwnerChunkBuilderImpl::<BODY_SIZE, Initial>::default()
@@ -651,7 +653,7 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for SingleOwnerChunk<B
         // not a signature over the id and body, so ownership recovery and
         // address verification may fail. Use [`Self::arbitrary_signed`] or
         // `crate::generators` for a valid-by-construction chunk.
-        let id = B256::arbitrary(u)?;
+        let id = SocId::arbitrary(u)?;
         let signature = Signature::arbitrary(u)?;
         let body = BmtBody::<BODY_SIZE>::arbitrary(u)?;
         Ok(Self::from_parts(id, signature, body))
@@ -724,7 +726,7 @@ mod tests {
 
             // Verify it's recognised as a dispersed replica
             prop_assert!(chunk.is_valid_replica());
-            prop_assert_eq!(chunk.id()[0], first_byte);
+            prop_assert_eq!(chunk.id().as_slice()[0], first_byte);
             prop_assert_eq!(chunk.owner().unwrap(), DISPERSED_REPLICA_OWNER);
 
             // Verify chunk address
@@ -732,7 +734,7 @@ mod tests {
         }
 
         #[test]
-        fn test_chunk_creation(id in arb::<B256>(), data in proptest::collection::vec(any::<u8>(), 1..DEFAULT_BODY_SIZE)) {
+        fn test_chunk_creation(id in arb::<SocId>(), data in proptest::collection::vec(any::<u8>(), 1..DEFAULT_BODY_SIZE)) {
             let wallet = get_test_wallet();
 
             // Test creation through builder
@@ -779,7 +781,7 @@ mod tests {
         }
 
         #[test]
-        fn test_chunk_invalid_signature(id in arb::<B256>(), data in proptest::collection::vec(any::<u8>(), 1..DEFAULT_BODY_SIZE)) {
+        fn test_chunk_invalid_signature(id in arb::<SocId>(), data in proptest::collection::vec(any::<u8>(), 1..DEFAULT_BODY_SIZE)) {
             let wallet = get_test_wallet();
 
             // Test creation through builder
@@ -810,7 +812,7 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let id = B256::ZERO;
+        let id = SocId::ZERO;
         let data = b"foo".to_vec();
         let wallet = get_test_wallet();
 
@@ -822,7 +824,7 @@ mod tests {
 
     #[test]
     fn test_new_signed() {
-        let id = B256::ZERO;
+        let id = SocId::ZERO;
         let data = b"foo".to_vec();
 
         // Known good signature from Go tests
@@ -886,7 +888,7 @@ mod tests {
                     .auto_from_data(test_data)?
                     .build()?,
             )
-            .with_id(B256::ZERO)
+            .with_id(SocId::ZERO)
             .with_signer(&dispersed_replica_wallet)?
             .build()?;
         let replica_address = chunk.address();

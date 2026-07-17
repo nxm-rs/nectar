@@ -15,12 +15,11 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use alloy_primitives::B256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
 
 use nectar_primitives::chunk::{BmtChunk, Chunk};
-use nectar_primitives::{DefaultContentChunk, DefaultSingleOwnerChunk};
+use nectar_primitives::{DefaultContentChunk, DefaultSingleOwnerChunk, SocId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Nectar Primitives - Creation Pattern Examples");
@@ -74,13 +73,16 @@ fn single_owner_creation_methods(
 
     // Basic creation
     println!("\n1. Basic creation with signer");
-    let id = B256::random();
+    let id = SocId::random();
     let data = b"Single owner chunk".to_vec();
 
     let chunk = DefaultSingleOwnerChunk::new(id, data, wallet)?;
 
     println!("  - Created chunk with address: {}", chunk.address());
-    println!("  - ID: {}", alloy_primitives::hex::encode(&id[..8]));
+    println!(
+        "  - ID: {}",
+        alloy_primitives::hex::encode(&id.as_slice()[..8])
+    );
     println!(
         "  - Owner: {}",
         alloy_primitives::hex::encode(chunk.owner()?.as_slice())
@@ -109,7 +111,7 @@ fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error:
     println!("\n1. Reconstructing chunks from storage");
 
     // Simulate stored chunk data
-    let original_id = B256::random();
+    let original_id = SocId::random();
     let original_data = b"Original chunk data".to_vec();
     let original_chunk = DefaultSingleOwnerChunk::new(original_id, original_data, wallet)?;
     let stored_data = original_chunk.data().clone();
@@ -158,7 +160,7 @@ fn special_use_cases(wallet: &impl SignerSync) -> Result<(), Box<dyn std::error:
 
     // Verify a single-owner chunk's signature - verify against its own address
     let owner_chunk =
-        DefaultSingleOwnerChunk::new(B256::random(), b"Signed data".to_vec(), wallet)?;
+        DefaultSingleOwnerChunk::new(SocId::random(), b"Signed data".to_vec(), wallet)?;
     println!("  - Verifying signature on single-owner chunk");
     owner_chunk.verify(owner_chunk.address())?;
     println!("  - Signature verification successful ✅");

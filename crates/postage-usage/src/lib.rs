@@ -140,14 +140,14 @@ pub use seal::{SealError, SealedChunk, seal_plan};
 #[cfg(feature = "client")]
 pub use client::{BatchStamper, ClientError, SnapshotSink, SnapshotSource};
 
-pub use nectar_primitives::SwarmAddress;
+pub use nectar_primitives::{SocId, SwarmAddress};
 
 /// Postage types re-exported so a downstream caller naming
 /// [`PlannedChunk::stamp_index`] or calling [`UsageTable::from_batch`] does not
 /// need a direct `nectar-postage` dependency.
 pub use nectar_postage::{Batch, BatchId, StampIndex};
 
-use alloy_primitives::{Address, B256, Keccak256};
+use alloy_primitives::{Address, Keccak256};
 
 /// Result alias for this crate.
 pub type Result<T> = core::result::Result<T, UsageError>;
@@ -179,12 +179,12 @@ pub(crate) const MAX_WIDTH: u8 = 32;
 
 /// Returns the single-owner chunk id of snapshot chunk `index` (0 is the
 /// root, `n >= 1` is leaf `n - 1`).
-pub fn usage_chunk_id(batch_id: &BatchId, index: u16) -> B256 {
+pub fn usage_chunk_id(batch_id: &BatchId, index: u16) -> SocId {
     let mut hasher = Keccak256::new();
     hasher.update(USAGE_DOMAIN);
     hasher.update(batch_id);
     hasher.update(index.to_be_bytes());
-    hasher.finalize()
+    SocId::from(hasher.finalize())
 }
 
 /// Returns the address of snapshot chunk `index` for a batch owned by
@@ -199,6 +199,7 @@ pub fn usage_chunk_address(batch_id: &BatchId, owner: &Address, index: u16) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::B256;
 
     #[test]
     fn chunk_ids_are_domain_separated_and_indexed() {

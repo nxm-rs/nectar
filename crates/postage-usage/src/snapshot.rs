@@ -3,10 +3,10 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::Address;
 use bytes::Bytes;
 use nectar_postage::{Batch, BatchId, StampIndex, calculate_bucket};
-use nectar_primitives::SwarmAddress;
+use nectar_primitives::{SocId, SwarmAddress};
 
 use crate::codec::{self, Encoded, RootInfo};
 use crate::table::{TableView, UsageTable};
@@ -84,7 +84,7 @@ pub struct PlannedChunk {
     /// The snapshot chunk index (0 is the root).
     pub index: u16,
     /// The single-owner chunk id.
-    pub id: B256,
+    pub id: SocId,
     /// The single-owner chunk address.
     pub address: SwarmAddress,
     /// The stamp index to use. Constant across persists for a given chunk;

@@ -427,7 +427,7 @@ mod tests {
     }
 
     fn sample_single_owner() -> DefaultSingleOwnerChunk {
-        let id = alloy_primitives::B256::ZERO;
+        let id = crate::SocId::ZERO;
         DefaultSingleOwnerChunk::new(id, b"single owner payload".to_vec(), &test_signer()).unwrap()
     }
 

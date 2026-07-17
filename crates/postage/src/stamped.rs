@@ -176,7 +176,7 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for StampedChunk<BODY_
 mod tests {
     use alloy_primitives::{B256, Signature};
     use alloy_signer_local::PrivateKeySigner;
-    use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk, bytes::Bytes};
+    use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk, SocId, bytes::Bytes};
 
     use super::*;
 
@@ -193,8 +193,12 @@ mod tests {
 
     fn single_owner_chunk() -> SingleOwnerChunk<DEFAULT_BODY_SIZE> {
         let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("valid signer");
-        SingleOwnerChunk::new(B256::repeat_byte(0x22), &b"soc payload"[..], &signer)
-            .expect("valid soc")
+        SingleOwnerChunk::new(
+            SocId::from(B256::repeat_byte(0x22)),
+            &b"soc payload"[..],
+            &signer,
+        )
+        .expect("valid soc")
     }
 
     #[test]

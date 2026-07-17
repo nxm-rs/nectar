@@ -25,6 +25,7 @@ pub mod encryption;
 pub(crate) mod error;
 mod reference;
 mod single_owner;
+mod soc_id;
 mod traits;
 mod type_id;
 
@@ -50,3 +51,4 @@ pub use content::EncryptedContentChunk;
 #[cfg(feature = "encryption")]
 pub use encryption::ChunkEncrypt;
 pub use single_owner::SingleOwnerChunk;
+pub use soc_id::SocId;

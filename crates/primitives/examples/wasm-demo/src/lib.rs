@@ -8,7 +8,7 @@ use alloy_primitives::{hex, Address, B256};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use nectar_primitives::{
-    Chunk, ChunkAddress, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk,
+    Chunk, ChunkAddress, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk, SocId,
 };
 use wasm_bindgen::prelude::*;
 
@@ -835,7 +835,7 @@ pub fn create_single_owner_chunk(
     };
 
     // Create the single owner chunk
-    let chunk = match DefaultSingleOwnerChunk::new(chunk_id, data.to_vec(), &signer) {
+    let chunk = match DefaultSingleOwnerChunk::new(SocId::from(chunk_id), data.to_vec(), &signer) {
         Ok(chunk) => chunk,
         Err(e) => {
             return Err(JsValue::from_str(&format!(
@@ -920,7 +920,7 @@ pub fn analyze_chunk(
                 chunk_type: ChunkType::SingleOwner,
                 address: *single_owner_chunk.address().deref(),
                 data: single_owner_chunk.data().to_vec(),
-                id: Some(single_owner_chunk.id()),
+                id: Some(single_owner_chunk.id().into()),
                 owner: single_owner_chunk.owner().ok(),
                 signature: Some(single_owner_chunk.signature().as_bytes().to_vec()),
                 error_message: None,
@@ -946,7 +946,7 @@ pub fn analyze_chunk(
             chunk_type: ChunkType::SingleOwner,
             address: *single_owner_chunk.address().deref(),
             data: single_owner_chunk.data().to_vec(),
-            id: Some(single_owner_chunk.id()),
+            id: Some(single_owner_chunk.id().into()),
             owner: single_owner_chunk.owner().ok(),
             signature: Some(single_owner_chunk.signature().as_bytes().to_vec()),
             error_message: Some(format!(
