@@ -11,6 +11,7 @@ use bytes::Bytes;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkRef, ContentChunk, Reference};
 use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
+use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
 
 /// Boxed recursion future: `Send` on native, unbounded on wasm32 so `!Send`
 /// browser stores stay usable. `MaybeSend` cannot appear in a `dyn` bound
@@ -175,16 +176,40 @@ bitflags::bitflags! {
 ///
 /// Collapses the former `(reference, loaded)` pair so the stale-address
 /// combinations a bool cannot forbid are unrepresentable: only a stub is
-/// unloaded, and only a dirty node lacks an address, so `save` re-serializes
+/// unloaded, and only a dirty node lacks a reference, so `save` re-serializes
 /// exactly the mutated nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NodeState {
-    /// Persisted at this address; forks are not yet loaded from storage.
-    Stub(ChunkAddress),
-    /// Held in memory with unsaved mutations; carries no persisted address.
+///
+/// The reference is held at its full wire width, so a decoded encrypted fork
+/// keeps its decryption key across a re-encode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NodeState<R: Reference> {
+    /// Persisted under this reference; forks are not yet loaded from storage.
+    Stub(R),
+    /// Held in memory with unsaved mutations; carries no persisted reference.
     Dirty,
-    /// Persisted at this address with its forks loaded from storage.
-    Clean(ChunkAddress),
+    /// Persisted under this reference with its forks loaded from storage.
+    Clean(R),
+}
+
+/// Constructor for the reference `save` records for a persisted node chunk.
+///
+/// Node chunks are stored as plain content chunks, so the encrypted width
+/// carries an all-zero key alongside the address.
+pub(crate) trait StoredReference: Reference {
+    /// Full-width reference for a node chunk persisted at `address`.
+    fn from_stored(address: ChunkAddress) -> Self;
+}
+
+impl StoredReference for ChunkRef {
+    fn from_stored(address: ChunkAddress) -> Self {
+        Self::new(address)
+    }
+}
+
+impl StoredReference for EncryptedChunkRef {
+    fn from_stored(address: ChunkAddress) -> Self {
+        Self::new(address, EncryptionKey::from([0u8; EncryptionKey::SIZE]))
+    }
 }
 
 /// A node in the mantaray trie.
@@ -201,7 +226,7 @@ pub struct Node<R: Reference = ChunkRef> {
     /// Child forks keyed by the first byte of their prefix.
     pub(crate) forks: BTreeMap<u8, Fork<R>>,
     /// Persistence state (stub, dirty, or clean) relative to storage.
-    pub(crate) state: NodeState,
+    pub(crate) state: NodeState<R>,
 }
 
 impl<R: Reference> Default for Node<R> {
@@ -267,7 +292,7 @@ impl<R: Reference> Node<R> {
     }
 
     /// Create a node that references persisted data.
-    pub fn from_reference(reference: ChunkAddress) -> Self {
+    pub fn from_reference(reference: R) -> Self {
         Self {
             state: NodeState::Stub(reference),
             ..Default::default()
@@ -289,10 +314,11 @@ impl<R: Reference> Node<R> {
         &mut self.metadata
     }
 
-    /// Content-addressed reference for this node, absent only while it is dirty.
-    pub const fn reference(&self) -> Option<&ChunkAddress> {
+    /// Full-width persisted reference for this node, absent only while it is
+    /// dirty.
+    pub const fn reference(&self) -> Option<&R> {
         match &self.state {
-            NodeState::Stub(address) | NodeState::Clean(address) => Some(address),
+            NodeState::Stub(reference) | NodeState::Clean(reference) => Some(reference),
             NodeState::Dirty => None,
         }
     }
@@ -352,15 +378,16 @@ impl<R: Reference> Node<R> {
         }
     }
 
-    /// Drop any persisted address, marking this node for re-serialization on
+    /// Drop any persisted reference, marking this node for re-serialization on
     /// the next save.
-    pub(crate) const fn mark_dirty(&mut self) {
+    pub(crate) fn mark_dirty(&mut self) {
         self.state = NodeState::Dirty;
     }
 
-    /// Record that this node is persisted at `address` with its forks loaded.
-    pub(crate) const fn mark_persisted(&mut self, address: ChunkAddress) {
-        self.state = NodeState::Clean(address);
+    /// Record that this node is persisted under `reference` with its forks
+    /// loaded.
+    pub(crate) fn mark_persisted(&mut self, reference: R) {
+        self.state = NodeState::Clean(reference);
     }
 
     /// Whether this node's forks are resident in memory (true for every state
@@ -379,12 +406,13 @@ impl<R: Reference> Node<R> {
 
     /// Load this node from storage by its reference.
     pub(crate) async fn load<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
-        let address = match self.state {
-            NodeState::Stub(address) | NodeState::Clean(address) => address,
+        let reference = match &self.state {
+            NodeState::Stub(reference) | NodeState::Clean(reference) => reference.clone(),
             // A dirty node holds its content in memory; nothing to fetch.
             NodeState::Dirty => return Ok(()),
         };
 
+        let address = *reference.address();
         let chunk = store
             .get(&address)
             .await
@@ -393,7 +421,7 @@ impl<R: Reference> Node<R> {
             })?;
         let mut loaded = Self::decode(chunk.data().as_ref())
             .map_err(|source| MantarayError::Corrupt { address, source })?;
-        loaded.mark_persisted(address);
+        loaded.mark_persisted(reference);
         // Preserve fields that live in the parent's fork data, not in this node's chunk:
         // node_type flags and metadata key-value pairs.
         loaded.node_type |= self.node_type;
@@ -420,7 +448,7 @@ impl<R: Reference> Node<R> {
             }
 
             let first = rest[0];
-            let reference = current.reference().copied();
+            let reference = current.reference().map(|r| *r.address());
             let fork = current
                 .forks
                 .get_mut(&first)
@@ -482,7 +510,7 @@ impl<R: Reference> Node<R> {
         let node = self.lookup_node(path, store).await?;
         if !node.is_value() && !path.is_empty() {
             return Err(MantarayError::NoEntryFound {
-                reference: node.reference().copied(),
+                reference: node.reference().map(|r| *r.address()),
             });
         }
         Ok(node.entry.as_ref())
@@ -719,7 +747,10 @@ impl<R: Reference> Node<R> {
     /// recursion: each frame visits its forks (pushing unsaved children) before
     /// the node itself is encoded and put.
     #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
-    pub(crate) async fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
+    pub(crate) async fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, store: &S) -> Result<()>
+    where
+        R: StoredReference,
+    {
         if self.reference().is_some() {
             return Ok(());
         }
@@ -774,9 +805,9 @@ impl<R: Reference> Node<R> {
                 .map_err(|e| MantarayError::StorePut {
                     source: alloc::sync::Arc::new(e),
                 })?;
-            // Persist the address and drop the now-redundant forks: the node
+            // Persist the reference and drop the now-redundant forks: the node
             // becomes a stub, reloaded on demand.
-            node.state = NodeState::Stub(address);
+            node.state = NodeState::Stub(R::from_stored(address));
             node.forks.clear();
             stack.pop();
         }
@@ -866,7 +897,7 @@ where
         // node appears in exactly one frame and is only dereferenced while at
         // the top of the stack, so no two live references alias.
         let parent = unsafe { &mut *frame.node.cast::<Node<R>>() };
-        let reference = parent.reference().copied();
+        let reference = parent.reference().map(|r| *r.address());
         let fork = parent
             .forks
             .get_mut(&key)
@@ -904,7 +935,7 @@ where
 /// - Fork prefixes are 1..=30 bytes (`Prefix::from_wire` rejects empty ones)
 ///   and each fork is keyed by its prefix's first byte, as the encoder's forks
 ///   index expects.
-/// - Fork children carry a chunk reference (a reference-less child is not
+/// - Fork children carry a full-width reference (a reference-less child is not
 ///   encodable) plus flags, and metadata only when the METADATA flag is set.
 /// - The root's own flags are not serialized; the v0.2 decoder derives EDGE
 ///   from a non-empty forks index and nothing else, so the root's `node_type`
@@ -916,6 +947,15 @@ mod arbitrary_impls {
     use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
 
     use super::*;
+
+    /// Draw a full-width reference: `R::SIZE` raw bytes, so the encrypted
+    /// width exercises nonzero decryption keys.
+    fn arbitrary_reference<R: Reference>(u: &mut Unstructured<'_>) -> ArbitraryResult<R> {
+        let mut bytes = alloc::vec![0u8; R::SIZE];
+        u.fill_buffer(&mut bytes)?;
+        // The buffer is exactly R::SIZE bytes, so the constructor cannot fail.
+        R::from_wire_bytes(&bytes).ok_or(arbitrary::Error::IncorrectFormat)
+    }
 
     impl<'a> Arbitrary<'a> for Prefix {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
@@ -938,14 +978,13 @@ mod arbitrary_impls {
 
     impl<'a, R> Arbitrary<'a> for Fork<R>
     where
-        R: Reference + Arbitrary<'a>,
+        R: Reference,
     {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
             let prefix = Prefix::arbitrary(u)?;
-            // On the wire a fork child is flags + a chunk reference (plus
+            // On the wire a fork child is flags + a full-width reference (plus
             // optional metadata); a reference-less child is not encodable.
-            let mut node =
-                Node::<R>::from_reference(ChunkAddress::from(u.arbitrary::<[u8; 32]>()?));
+            let mut node = Node::<R>::from_reference(arbitrary_reference(u)?);
             node.node_type = NodeType::arbitrary(u)?;
             if node.node_type.contains(NodeType::METADATA) {
                 // Keep pairs small: the encoder caps the padded metadata JSON
@@ -963,7 +1002,7 @@ mod arbitrary_impls {
 
     impl<'a, R> Arbitrary<'a> for Node<R>
     where
-        R: Reference + Arbitrary<'a>,
+        R: Reference,
     {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
             let obfuscation_key = ObfuscationKey::arbitrary(u)?;
@@ -971,7 +1010,7 @@ mod arbitrary_impls {
             // An all-zero entry encodes as the "no entry" sentinel, so it
             // cannot round-trip as `Some`; map it to `None`.
             let entry = if u.arbitrary::<bool>()? {
-                let e = R::arbitrary(u)?;
+                let e: R = arbitrary_reference(u)?;
                 e.to_bytes().iter().any(|&b| b != 0).then_some(e)
             } else {
                 None
@@ -1426,7 +1465,7 @@ mod tests {
         let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
         block_on(store.put(chunk.into())).unwrap();
 
-        let mut node: Node = Node::from_reference(address);
+        let mut node: Node = Node::from_reference(ChunkRef::from(address));
         let err = block_on(node.load(&store)).unwrap_err();
         assert!(
             matches!(

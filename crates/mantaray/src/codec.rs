@@ -1,4 +1,10 @@
 //! Binary encoding for mantaray nodes (v0.1 and v0.2).
+//!
+//! Wire behaviour: fork reference slots are carried at their full declared
+//! width, so the encrypted width writes and reads the child's address and
+//! decryption key (bee-spec node.md stores the full reference). Earlier
+//! encoders zero-padded the key half; those images still decode, yielding an
+//! all-zero key. Plain manifests are unaffected.
 
 use alloc::collections::BTreeMap;
 
@@ -7,7 +13,7 @@ use crate::node::{Fork, Node, NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 
 use alloy_primitives::{U256, hex};
-use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
+use nectar_primitives::chunk::Reference;
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 /// Mantaray wire format version (truncated keccak256, 31 bytes).
@@ -350,7 +356,7 @@ fn decode_body<R: Reference>(
     let mut forks = BTreeMap::new();
     for b in 0..=u8::MAX {
         if index.bit(usize::from(b)) {
-            forks.insert(b, parse_fork::<R>(cur, version, ref_size, b, total)?);
+            forks.insert(b, parse_fork::<R>(cur, version, b, total)?);
         }
     }
 
@@ -372,7 +378,6 @@ fn decode_body<R: Reference>(
 fn parse_fork<R: Reference>(
     cur: &mut Cursor<'_>,
     version: VersionHash,
-    ref_size: usize,
     byte_index: u8,
     total: usize,
 ) -> DecodeResult<Fork<R>> {
@@ -387,46 +392,37 @@ fn parse_fork<R: Reference>(
     let body_size = if has_metadata {
         // The metadata length field follows the pre-reference region and the
         // reference; skip past them (node_type is already consumed) to read it.
-        peek.take_slice(ForkHeader::PRE_REFERENCE_SIZE - size_of::<u8>() + ref_size)
+        peek.take_slice(ForkHeader::PRE_REFERENCE_SIZE - size_of::<u8>() + R::SIZE)
             .map_err(|u| insufficient_fork(u, total, byte_index))?;
         let metadata_len = peek
             .take::<MetadataLen>()
             .map_err(|u| insufficient_fork(u, total, byte_index))?
             .get();
-        ForkHeader::PRE_REFERENCE_SIZE + ref_size + ForkHeader::METADATA_LEN_SIZE + metadata_len
+        ForkHeader::PRE_REFERENCE_SIZE + R::SIZE + ForkHeader::METADATA_LEN_SIZE + metadata_len
     } else {
-        ForkHeader::PRE_REFERENCE_SIZE + ref_size
+        ForkHeader::PRE_REFERENCE_SIZE + R::SIZE
     };
 
     let body = cur
         .take_slice(body_size)
         .map_err(|u| insufficient_fork(u, total, byte_index))?;
-    parse_fork_body::<R>(body, ref_size, has_metadata)
+    parse_fork_body::<R>(body, has_metadata)
 }
 
-/// Parse a complete, correctly sized fork body: header, reference (address
-/// only), and optional metadata.
+/// Parse a complete, correctly sized fork body: header, full-width reference,
+/// and optional metadata.
 ///
-/// Only the first 32 bytes of the reference slot are retained: a fork child is
-/// addressed by its chunk address, so the encryption-key half of a 64-byte
-/// reference is dropped.
-fn parse_fork_body<R: Reference>(
-    body: &[u8],
-    ref_size: usize,
-    has_metadata: bool,
-) -> DecodeResult<Fork<R>> {
+/// The whole reference slot is retained: the encrypted width carries the
+/// child's address and decryption key, so nothing is truncated on decode.
+fn parse_fork_body<R: Reference>(body: &[u8], has_metadata: bool) -> DecodeResult<Fork<R>> {
     let mut cur = Cursor::new(body);
     let ForkHeader { node_type, prefix } = cur.take::<ForkHeader>()?;
 
-    let ref_region = cur
-        .take_slice(ref_size)
-        .map_err(|_| DecodeError::TooShort)?;
-    let mut ref_cur = Cursor::new(ref_region);
-    let addr = ref_cur
-        .take::<[u8; ChunkRef::SIZE]>()
-        .map_err(|_| DecodeError::TooShort)?;
+    let ref_region = cur.take_slice(R::SIZE).map_err(|_| DecodeError::TooShort)?;
+    // The slice is exactly R::SIZE bytes, so the constructor cannot fail.
+    let reference = R::from_wire_bytes(ref_region).ok_or(DecodeError::TooShort)?;
 
-    let mut node = Node::from_reference(ChunkAddress::from(addr));
+    let mut node = Node::from_reference(reference);
     node.node_type = node_type;
 
     if has_metadata {
@@ -448,16 +444,13 @@ fn parse_fork_body<R: Reference>(
 /// persisted has no reference, and oversized metadata cannot be sized into the
 /// `u16` length field. Once built, [`emit`](Self::emit) cannot produce a
 /// misaligned image. bee-spec node.md: fork layout is node_type, prefix_len, a
-/// 30-byte prefix region, the reference, then optional metadata.
-struct WireFork<'a> {
+/// 30-byte prefix region, the full-width reference, then optional metadata.
+struct WireFork<'a, R: Reference> {
     node_type: NodeType,
     prefix: &'a Prefix,
-    /// Child chunk address; mandatory by construction, filling the reference
-    /// slot within the fork's pre-reference region.
-    address: &'a ChunkAddress,
-    /// Uniform reference width; the 32-byte address is right-padded with zeros
-    /// to it (encrypted mode carries a 64-byte reference slot).
-    ref_size: usize,
+    /// Child reference; mandatory by construction, emitted at its full wire
+    /// width so an encrypted child's decryption key is written, not zeroed.
+    reference: &'a R,
     /// Length-prefixed, padded metadata payload, present only when the child
     /// carries metadata.
     metadata: Option<WireMetadata>,
@@ -507,14 +500,14 @@ impl WireMetadata {
     }
 }
 
-impl<'a, R: Reference> TryFrom<&'a Fork<R>> for WireFork<'a> {
+impl<'a, R: Reference> TryFrom<&'a Fork<R>> for WireFork<'a, R> {
     type Error = MantarayError;
 
     /// Resolve a fork into an emittable record. A child without a saved
     /// reference cannot be encoded into a decodable stream, so it is rejected
     /// here, before any bytes are written.
     fn try_from(fork: &'a Fork<R>) -> Result<Self> {
-        let address = fork
+        let reference = fork
             .node
             .reference()
             .ok_or(MantarayError::MissingReference)?;
@@ -526,22 +519,20 @@ impl<'a, R: Reference> TryFrom<&'a Fork<R>> for WireFork<'a> {
         Ok(Self {
             node_type: fork.node.node_type,
             prefix: &fork.prefix,
-            address,
-            ref_size: R::SIZE,
+            reference,
             metadata,
         })
     }
 }
 
-impl WireFork<'_> {
-    /// Emit this fork: node_type, the prefix record, the reference padded to
-    /// `ref_size`, then any metadata. Total by construction.
+impl<R: Reference> WireFork<'_, R> {
+    /// Emit this fork: node_type, the prefix record, the full-width
+    /// reference, then any metadata. Total by construction.
     fn emit(&self, w: &mut Writer<'_>) {
         w.put(&self.node_type.bits());
         w.put(self.prefix);
 
-        w.put(self.address.as_bytes());
-        w.put_zeros(self.ref_size.saturating_sub(ChunkRef::SIZE));
+        w.put(self.reference.to_bytes().as_slice());
 
         if let Some(metadata) = &self.metadata {
             w.put(&metadata.len);
@@ -555,7 +546,7 @@ mod tests {
     use super::*;
     use alloy_primitives::hex;
     use alloy_primitives::utils::keccak256;
-    use nectar_primitives::chunk::ChunkRef;
+    use nectar_primitives::chunk::{ChunkAddress, ChunkRef};
 
     const ENCODED_V01: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950ac787fbce1061870e8d34e0a638bc7e812c7ca4ebd31d626a572ba47b06f6952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64950fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
     const ENCODED_V02: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64905954fb18659339d0b25e0fb9723d3cd5d528fb3c8d495fd157bd7b7a210496952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64940fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952e3872548ec012a6e123b60f9177017fb12e57732621d2c1ada267adbe8cc4350f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
@@ -1034,13 +1025,14 @@ mod tests {
 
     /// Replay the `mantaray_record_roundtrip` seed corpus through the exact
     /// fixed-point round trip the fuzz target runs, at both reference widths.
-    /// The corpus carries a v0.1 and a v0.2 plain manifest plus a `ref_size`
-    /// 64 encrypted case, so this pins record round-tripping across both wire
-    /// versions and both widths on stable, without running the fuzzer. Each
-    /// width must actually decode at least the seeds it claims, not merely be
-    /// skipped: the two plain manifests at the `ChunkRef` width and the
-    /// encrypted case at the `EncryptedChunkRef` width. Counting decodes is
-    /// what keeps the fixed-point assertions from passing vacuously.
+    /// The corpus carries a v0.1 and a v0.2 plain manifest plus two `ref_size`
+    /// 64 encrypted cases (an empty node and a keyed fork), so this pins
+    /// record round-tripping across both wire versions and both widths on
+    /// stable, without running the fuzzer. Each width must actually decode at
+    /// least the seeds it claims, not merely be skipped: the two plain
+    /// manifests at the `ChunkRef` width and the encrypted cases at the
+    /// `EncryptedChunkRef` width. Counting decodes is what keeps the
+    /// fixed-point assertions from passing vacuously.
     #[test]
     fn seed_replay_mantaray_record_roundtrip() {
         let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1063,16 +1055,16 @@ mod tests {
             replayed += 1;
         }
         assert!(
-            replayed >= 3,
-            "expected at least the 3 curated seeds, found {replayed}"
+            replayed >= 4,
+            "expected at least the 4 curated seeds, found {replayed}"
         );
         assert!(
             plain_decoded >= 2,
             "expected the v0.1 and v0.2 manifests to round-trip at the ChunkRef width, decoded {plain_decoded}"
         );
         assert!(
-            wide_decoded >= 1,
-            "expected the ref_size=64 seed to decode at the EncryptedChunkRef width"
+            wide_decoded >= 2,
+            "expected the ref_size=64 seeds (empty and keyed fork) to decode at the EncryptedChunkRef width, decoded {wide_decoded}"
         );
     }
 
@@ -1082,22 +1074,21 @@ mod tests {
     /// property the structured round-trip fuzz target relies on. The buffer
     /// is deterministic, so this pins the impls on stable without running the
     /// fuzzer.
-    #[test]
-    fn arbitrary_node_encode_decode_round_trip() {
+    fn run_arbitrary_round_trip<R: Reference>() {
         use arbitrary::{Arbitrary, Unstructured};
 
-        // Deterministic pseudo-random bytes (Knuth multiplicative hash).
-        #[allow(clippy::as_conversions)] // u32 >> 24 is always <= 0xFF, fits u8
+        // Deterministic pseudo-random bytes (Knuth multiplicative hash): the
+        // top byte of the hash is exactly `hash >> 24`, taken cast-free.
         let raw: Vec<u8> = (0u32..8192)
-            .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+            .map(|i| i.wrapping_mul(2654435761).to_be_bytes()[0])
             .collect();
         let mut u = Unstructured::new(&raw);
 
         let mut checked = 0usize;
         while !u.is_empty() && checked < 16 {
-            let node = Node::<ChunkRef>::arbitrary(&mut u).unwrap();
+            let node = Node::<R>::arbitrary(&mut u).unwrap();
             let encoded = node.encode().unwrap();
-            let decoded = Node::<ChunkRef>::decode(encoded.as_slice()).unwrap();
+            let decoded = Node::<R>::decode(encoded.as_slice()).unwrap();
             assert_eq!(
                 decoded, node,
                 "decode(encode(node)) must reproduce the node"
@@ -1108,6 +1099,18 @@ mod tests {
             checked >= 8,
             "expected at least 8 arbitrary nodes, got {checked}"
         );
+    }
+
+    #[test]
+    fn arbitrary_node_encode_decode_round_trip() {
+        run_arbitrary_round_trip::<ChunkRef>();
+    }
+
+    /// The encrypted width round-trips arbitrary full-width fork references,
+    /// so nonzero decryption keys survive encode and decode.
+    #[test]
+    fn arbitrary_encrypted_node_encode_decode_round_trip() {
+        run_arbitrary_round_trip::<nectar_primitives::EncryptedChunkRef>();
     }
 
     /// Encoding a fork whose child has no saved reference must error rather
@@ -1146,7 +1149,7 @@ mod tests {
     ) -> Fork<ChunkRef> {
         let mut addr = [0u8; 32];
         addr[31] = addr_byte;
-        let mut node = Node::from_reference(ChunkAddress::from(addr));
+        let mut node = Node::from_reference(ChunkRef::from(ChunkAddress::from(addr)));
         node.node_type = node_type;
         node.metadata = metadata;
         Fork {
@@ -1176,11 +1179,86 @@ mod tests {
                 .unwrap()
                 .emit(&mut Writer::new(&mut buf));
 
-            let parsed =
-                parse_fork_body::<ChunkRef>(&buf, <ChunkRef as Reference>::SIZE, has_metadata)
-                    .unwrap();
+            let parsed = parse_fork_body::<ChunkRef>(&buf, has_metadata).unwrap();
             assert_eq!(parsed, fork, "parse(emit(fork)) must reproduce the fork");
         }
+    }
+
+    /// The fix this codec pins: an encrypted fork child's decryption key is
+    /// written at its wire position and read back, not zero-padded away.
+    #[test]
+    fn encrypted_fork_reference_round_trips_key() {
+        use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
+
+        let child_ref = EncryptedChunkRef::new(
+            ChunkAddress::from([0xaa; 32]),
+            EncryptionKey::from([0xbb; 32]),
+        );
+        let mut child = Node::<EncryptedChunkRef>::from_reference(child_ref.clone());
+        child.node_type = NodeType::VALUE;
+
+        let mut n = Node::<EncryptedChunkRef>::new_unencrypted();
+        n.forks.insert(
+            b'a',
+            Fork {
+                prefix: Prefix::from_slice(b"a"),
+                node: child,
+            },
+        );
+
+        let encoded = n.encode().unwrap();
+        let decoded = Node::<EncryptedChunkRef>::decode(encoded.as_slice()).unwrap();
+        assert_eq!(
+            decoded.forks()[&b'a'].node().reference(),
+            Some(&child_ref),
+            "fork decryption key must survive encode and decode"
+        );
+    }
+
+    /// Zero-key images (what earlier encoders emitted by zero-padding the key
+    /// half) must keep decoding, the key read back as all-zero, and a zero-key
+    /// reference must re-encode to the same zero-padded slot.
+    #[test]
+    fn zero_padded_fork_key_decodes_as_zero_key() {
+        use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
+
+        let child_ref = EncryptedChunkRef::new(
+            ChunkAddress::from([0xaa; 32]),
+            EncryptionKey::from([0u8; 32]),
+        );
+        let mut child = Node::<EncryptedChunkRef>::from_reference(child_ref.clone());
+        child.node_type = NodeType::VALUE;
+
+        let mut n = Node::<EncryptedChunkRef>::new_unencrypted();
+        n.forks.insert(
+            b'a',
+            Fork {
+                prefix: Prefix::from_slice(b"a"),
+                node: child,
+            },
+        );
+
+        // The zero obfuscation key makes the XOR a no-op, so the image is the
+        // cleartext layout: the fork record starts after the node header, the
+        // 64-byte entry slot and the 32-byte forks index, and its reference
+        // slot follows the 32-byte pre-reference region.
+        let encoded = n.encode().unwrap();
+        let ref_slot_offset = NodeHeader::SIZE
+            + EncryptedChunkRef::SIZE
+            + FORK_INDEX_SIZE
+            + ForkHeader::PRE_REFERENCE_SIZE;
+        let slot = encoded
+            .get(ref_slot_offset..ref_slot_offset + EncryptedChunkRef::SIZE)
+            .unwrap();
+        assert_eq!(&slot[..32], &[0xaa; 32], "address half of the slot");
+        assert_eq!(&slot[32..], &[0u8; 32], "key half stays zero-padded");
+
+        let decoded = Node::<EncryptedChunkRef>::decode(encoded.as_slice()).unwrap();
+        assert_eq!(
+            decoded.forks()[&b'a'].node().reference(),
+            Some(&child_ref),
+            "a zero-padded key half must decode as an all-zero key"
+        );
     }
 
     /// Encode-decode round-trip preserves entries and metadata.
@@ -1212,7 +1290,7 @@ mod tests {
             let counter_byte = counter as u8;
             addr[31] = counter_byte;
             fork.node
-                .mark_persisted(nectar_primitives::chunk::ChunkAddress::from(addr));
+                .mark_persisted(ChunkRef::from(ChunkAddress::from(addr)));
         }
 
         let encoded = n.encode().unwrap();
