@@ -2,6 +2,7 @@
 
 use crate::BatchId;
 use alloy_primitives::Address;
+use nectar_primitives::wire::Underrun;
 use thiserror::Error;
 
 /// Errors that can occur when working with stamps.
@@ -68,6 +69,15 @@ pub enum StampError {
     #[error("invalid signature")]
     InvalidSignature,
 
+    /// The wire buffer ended before a field was fully read.
+    #[error("buffer underrun: need {expected} bytes, have {available}")]
+    Underrun {
+        /// Bytes the field required.
+        expected: usize,
+        /// Bytes remaining in the buffer.
+        available: usize,
+    },
+
     /// A chunk operation in `nectar-primitives` failed (for example decoding or
     /// address verification of the chunk half of a stamped chunk).
     ///
@@ -78,4 +88,13 @@ pub enum StampError {
     /// without `alloc`, so an owned `String` message is not available either.
     #[error("chunk error: {0}")]
     Chunk(&'static str),
+}
+
+impl From<Underrun> for StampError {
+    fn from(underrun: Underrun) -> Self {
+        Self::Underrun {
+            expected: underrun.expected,
+            available: underrun.available,
+        }
+    }
 }

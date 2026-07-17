@@ -2082,7 +2082,6 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "arbitrary",
- "byteorder",
  "codspeed-criterion-compat",
  "derive_more",
  "k256",
