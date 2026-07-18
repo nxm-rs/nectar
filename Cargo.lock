@@ -2065,6 +2065,7 @@ dependencies = [
  "alloy-primitives",
  "bytes",
  "nectar-primitives",
+ "proptest",
  "thiserror",
 ]
 

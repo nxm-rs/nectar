@@ -23,6 +23,9 @@ bytes.workspace = true
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [features]
 default = [ "std" ]
 std = [
