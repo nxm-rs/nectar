@@ -40,6 +40,7 @@ use alloc::collections::BTreeMap;
 
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
+#[allow(deprecated)]
 use nectar_primitives::file::{ChunkPutExt, ReadAt};
 use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedGet};
 use nectar_primitives::{AnyChunkSet, Chunk};
@@ -145,6 +146,7 @@ impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize
     ///
     /// One mode end to end: a plain builder splits in plain mode and stages a
     /// plain reference, so a plain-encrypted pairing cannot be expressed.
+    #[allow(deprecated)]
     pub async fn put_file<D: ReadAt + Sync>(&mut self, path: &str, data: D) -> Result<()> {
         let root = self.store().write_file(data).await?;
         self.add(path, root).await

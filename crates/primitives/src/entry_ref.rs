@@ -3,7 +3,8 @@
 use crate::chunk::encryption::EncryptedChunkRef;
 use crate::chunk::{ChunkAddress, ChunkRef};
 
-use super::error::FileError;
+#[allow(deprecated)]
+use crate::file::error::FileError;
 
 /// A typed chunk reference: either a plain 32-byte address or an encrypted 64-byte ref.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +15,7 @@ pub enum EntryRef {
     Encrypted(EncryptedChunkRef),
 }
 
+#[allow(deprecated)]
 impl EntryRef {
     /// Parse an entry reference from raw bytes.
     ///
@@ -91,6 +93,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn rejects_other_widths() {
         for len in [0usize, 31, 33, 63, 65, 96] {
             let bytes = vec![0u8; len];

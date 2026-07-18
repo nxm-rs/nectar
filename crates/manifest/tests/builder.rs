@@ -4,6 +4,9 @@
 //! buffers track the trie depth rather than the key count, and the files path
 //! splits through BMT and references the stored roots.
 
+// The legacy splitter seeds fixtures until the nectar-file bridge lands.
+#![allow(deprecated)]
+
 use std::error::Error;
 
 use bytes::Bytes;

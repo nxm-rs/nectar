@@ -2,8 +2,8 @@
 
 use crate::chunk::reference::{RefKind, Reference, WrongRefKind, sealed};
 use crate::chunk::{ChunkAddress, ChunkRef};
+use crate::entry_ref::EntryRef;
 use crate::error::WrongLength;
-use crate::file::EntryRef;
 use crate::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 use super::key::EncryptionKey;

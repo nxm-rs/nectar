@@ -1,4 +1,6 @@
 #![allow(missing_docs)]
+// Exercises the legacy pipeline until its nectar-file replacement lands.
+#![allow(deprecated)]
 //! End-to-end upload pipeline benchmarks.
 //!
 //! Measures the complete upload processing flow:

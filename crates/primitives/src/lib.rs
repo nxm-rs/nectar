@@ -44,6 +44,9 @@
         clippy::as_conversions
     )
 )]
+// The synthesized test harness references every `#[test]` inside the
+// deprecated legacy file module, so the warning would fire on each of them.
+#![cfg_attr(test, allow(deprecated))]
 
 extern crate alloc;
 
@@ -56,7 +59,9 @@ pub mod bmt;
 mod cache;
 mod cast;
 pub mod chunk;
+pub mod entry_ref;
 pub mod error;
+#[deprecated(note = "superseded by the nectar-file streaming pipeline")]
 pub mod file;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod generators;
@@ -160,22 +165,32 @@ pub use store::{
     Sleeper, TrustedGet,
 };
 
+// The width-agnostic reference union: the manifest-to-file bridge type.
+pub use entry_ref::EntryRef;
+
 // File joining (async)
+#[allow(deprecated)]
 #[cfg(feature = "encryption")]
 pub use file::EncryptedJoiner;
+#[allow(deprecated)]
 #[cfg(feature = "tokio")]
 pub use file::JoinerReader;
+#[allow(deprecated)]
 pub use file::{
-    ChunkGetExt, ChunkPutExt, ChunkRange, EntryRef, FileError, GenericJoiner, JoinRef, Joiner,
-    TreeParams, join,
+    ChunkGetExt, ChunkPutExt, ChunkRange, FileError, GenericJoiner, JoinRef, Joiner, TreeParams,
+    join,
 };
 
 // File splitting (CPU-bound, rayon)
+#[allow(deprecated)]
 #[cfg(feature = "encryption")]
 pub use file::{EncryptedParallelSplitter, EncryptedSplitter, split_encrypted};
+#[allow(deprecated)]
 pub use file::{ParallelSplitter, ReadAt, Splitter, split};
 
 /// Default sync file splitter.
+#[allow(deprecated)]
 pub type DefaultSplitter = file::Splitter<DEFAULT_BODY_SIZE>;
 /// Default async file joiner.
+#[allow(deprecated)]
 pub type DefaultJoiner<G> = file::Joiner<G, DEFAULT_BODY_SIZE>;
