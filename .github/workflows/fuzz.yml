@@ -67,6 +67,7 @@ jobs:
                     - usage_snapshot_decode
                     - mantaray_node_roundtrip
                     - chunk_roundtrip
+                    - chunk_domain_separation
                     - stamp_roundtrip
                     - usage_snapshot_roundtrip
         steps:
@@ -113,6 +114,7 @@ jobs:
                     - usage_snapshot_decode
                     - mantaray_node_roundtrip
                     - chunk_roundtrip
+                    - chunk_domain_separation
                     - stamp_roundtrip
                     - usage_snapshot_roundtrip
         steps:
