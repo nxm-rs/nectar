@@ -1046,23 +1046,21 @@ where
     }
 }
 
-#[cfg(all(test, feature = "tokio"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::chunk::{Chunk, ChunkOps, StandardChunkSet, Verified};
     use crate::file::split;
     use crate::store::ChunkGet;
+    use nectar_testing::{run, yield_now};
     use std::collections::HashMap;
 
-    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, Chunk>) {
+    pub(super) fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, Chunk>) {
         let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
         (root, store.into_chunks())
     }
 
-    // --- Generated shared tests (async variants) ---
-    generate_plain_joiner_tests!(tokio::test, Joiner, [async], [await]);
-
-    // --- Lazy streaming open (`open_streaming`) ---
+    generate_plain_joiner_tests!(Joiner);
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1104,90 +1102,96 @@ mod tests {
 
     /// The lazy open seeds the chunked stream from the root and reproduces a
     /// multi-level file byte-for-byte.
-    #[tokio::test]
-    async fn streaming_open_assembles_byte_exact() {
-        // ~600 leaves -> root over an intermediate level, so the lazy seed must
-        // descend intermediates rather than emit a single leaf.
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 600 + 123)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
+    #[test]
+    fn streaming_open_assembles_byte_exact() {
+        run(async {
+            // ~600 leaves -> root over an intermediate level, so the lazy seed must
+            // descend intermediates rather than emit a single leaf.
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 600 + 123)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
 
-        let joiner = Joiner::open_streaming(store, root).await.unwrap();
-        let total = joiner.size() as usize;
-        let got = drain_chunked_to_buf(joiner, total).await;
-        assert_eq!(got, data);
+            let joiner = Joiner::open_streaming(store, root).await.unwrap();
+            let total = joiner.size() as usize;
+            let got = drain_chunked_to_buf(joiner, total).await;
+            assert_eq!(got, data);
+        })
     }
 
     /// The lazy open fetches only the root before returning: no level-synchronous
     /// frontier expansion, so no intermediate can stall the open. The eager
     /// [`new`](Joiner::new) over the same tree fetches strictly more.
-    #[tokio::test]
-    async fn streaming_open_fetches_only_the_root() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 600)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-        let store = Arc::new(store);
+    #[test]
+    fn streaming_open_fetches_only_the_root() {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 600)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
+            let store = Arc::new(store);
 
-        let lazy_gets = Arc::new(AtomicUsize::new(0));
-        let lazy = ProbeStore {
-            inner: Arc::clone(&store),
-            gets: Arc::clone(&lazy_gets),
-        };
-        let _joiner = Joiner::open_streaming(lazy, root).await.unwrap();
-        assert_eq!(
-            lazy_gets.load(Ordering::SeqCst),
-            1,
-            "lazy open fetches only the root"
-        );
+            let lazy_gets = Arc::new(AtomicUsize::new(0));
+            let lazy = ProbeStore {
+                inner: Arc::clone(&store),
+                gets: Arc::clone(&lazy_gets),
+            };
+            let _joiner = Joiner::open_streaming(lazy, root).await.unwrap();
+            assert_eq!(
+                lazy_gets.load(Ordering::SeqCst),
+                1,
+                "lazy open fetches only the root"
+            );
 
-        let eager_gets = Arc::new(AtomicUsize::new(0));
-        let eager = ProbeStore {
-            inner: store,
-            gets: Arc::clone(&eager_gets),
-        };
-        let _joiner = Joiner::new(eager, root).await.unwrap();
-        assert!(
-            eager_gets.load(Ordering::SeqCst) > 1,
-            "eager open pre-expands the frontier (root + intermediates)"
-        );
+            let eager_gets = Arc::new(AtomicUsize::new(0));
+            let eager = ProbeStore {
+                inner: store,
+                gets: Arc::clone(&eager_gets),
+            };
+            let _joiner = Joiner::new(eager, root).await.unwrap();
+            assert!(
+                eager_gets.load(Ordering::SeqCst) > 1,
+                "eager open pre-expands the frontier (root + intermediates)"
+            );
+        })
     }
 
     /// A lazily-opened stream reassembles byte-exact even when every fetch is
     /// delayed, proving the descent is correct under latency and reordering.
-    #[tokio::test]
-    async fn streaming_open_is_byte_exact_under_latency() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 300 + 7)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-        let joiner = Joiner::open_streaming(store, root)
-            .await
-            .unwrap()
-            .with_concurrency(4);
-        let total = joiner.size() as usize;
-        let got = drain_chunked_to_buf(joiner, total).await;
-        assert_eq!(got, data);
+    #[test]
+    fn streaming_open_is_byte_exact_under_latency() {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 300 + 7)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
+            let joiner = Joiner::open_streaming(store, root)
+                .await
+                .unwrap()
+                .with_concurrency(4);
+            let total = joiner.size() as usize;
+            let got = drain_chunked_to_buf(joiner, total).await;
+            assert_eq!(got, data);
+        })
     }
 
-    // --- Async-only tests: Stream, AsyncRead, AsyncSeek ---
+    #[test]
+    fn test_joiner_stream() {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
 
-    #[tokio::test]
-    async fn test_joiner_stream() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
+            let joiner = Joiner::new(store, root).await.unwrap();
+            let chunks: Vec<Result<Bytes>> = joiner.into_stream().collect().await;
 
-        let joiner = Joiner::new(store, root).await.unwrap();
-        let chunks: Vec<Result<Bytes>> = joiner.into_stream().collect().await;
-
-        let mut recovered = Vec::new();
-        for chunk in chunks {
-            recovered.extend_from_slice(&chunk.unwrap());
-        }
-        assert_eq!(recovered, data);
+            let mut recovered = Vec::new();
+            for chunk in chunks {
+                recovered.extend_from_slice(&chunk.unwrap());
+            }
+            assert_eq!(recovered, data);
+        })
     }
 
     /// Drain `into_offset_stream` into an offset-keyed map, asserting every leaf
@@ -1226,52 +1230,62 @@ mod tests {
         assert_eq!(reassembled, data, "offset reassembly equals input");
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_small() {
-        assert_offset_stream_matches(b"hello world").await;
+    #[test]
+    fn test_offset_stream_small() {
+        run(async {
+            assert_offset_stream_matches(b"hello world").await;
+        })
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_exact_chunk() {
-        assert_offset_stream_matches(&vec![0xAB; DEFAULT_BODY_SIZE]).await;
+    #[test]
+    fn test_offset_stream_exact_chunk() {
+        run(async {
+            assert_offset_stream_matches(&vec![0xAB; DEFAULT_BODY_SIZE]).await;
+        })
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_multi_chunk() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        assert_offset_stream_matches(&data).await;
+    #[test]
+    fn test_offset_stream_multi_chunk() {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            assert_offset_stream_matches(&data).await;
+        })
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_129_chunks() {
-        let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * (refs_per_chunk + 1))
-            .map(|i| (i % 256) as u8)
-            .collect();
-        assert_offset_stream_matches(&data).await;
+    #[test]
+    fn test_offset_stream_129_chunks() {
+        run(async {
+            let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * (refs_per_chunk + 1))
+                .map(|i| (i % 256) as u8)
+                .collect();
+            assert_offset_stream_matches(&data).await;
+        })
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_concurrency_one() {
-        // Width 1 still yields every leaf with the right offset (degenerate
-        // concurrent path), so the reassembly invariant holds independent of fan.
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 7)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-        let joiner = Joiner::new(store, root).await.unwrap().with_concurrency(1);
-        let total = joiner.size();
-        let mut reassembled = vec![0u8; total as usize];
-        let stream = joiner.into_offset_stream();
-        futures::pin_mut!(stream);
-        while let Some(pair) = stream.next().await {
-            let (offset, body) = pair.unwrap();
-            let start = offset as usize;
-            reassembled[start..start + body.len()].copy_from_slice(&body);
-        }
-        assert_eq!(reassembled, data);
+    #[test]
+    fn test_offset_stream_concurrency_one() {
+        run(async {
+            // Width 1 still yields every leaf with the right offset (degenerate
+            // concurrent path), so the reassembly invariant holds independent of fan.
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 7)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
+            let joiner = Joiner::new(store, root).await.unwrap().with_concurrency(1);
+            let total = joiner.size();
+            let mut reassembled = vec![0u8; total as usize];
+            let stream = joiner.into_offset_stream();
+            futures::pin_mut!(stream);
+            while let Some(pair) = stream.next().await {
+                let (offset, body) = pair.unwrap();
+                let start = offset as usize;
+                reassembled[start..start + body.len()].copy_from_slice(&body);
+            }
+            assert_eq!(reassembled, data);
+        })
     }
 
     /// Drain `into_offset_stream_chunked` into an offset-keyed buffer, asserting
@@ -1310,53 +1324,63 @@ mod tests {
         assert_eq!(reassembled, data, "chunked reassembly equals input");
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_chunked_small() {
-        assert_offset_stream_chunked_matches(b"hello world").await;
+    #[test]
+    fn test_offset_stream_chunked_small() {
+        run(async {
+            assert_offset_stream_chunked_matches(b"hello world").await;
+        })
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_chunked_exact_chunk() {
-        assert_offset_stream_chunked_matches(&vec![0xAB; DEFAULT_BODY_SIZE]).await;
+    #[test]
+    fn test_offset_stream_chunked_exact_chunk() {
+        run(async {
+            assert_offset_stream_chunked_matches(&vec![0xAB; DEFAULT_BODY_SIZE]).await;
+        })
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_chunked_multi_chunk() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        assert_offset_stream_chunked_matches(&data).await;
+    #[test]
+    fn test_offset_stream_chunked_multi_chunk() {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            assert_offset_stream_chunked_matches(&data).await;
+        })
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_chunked_three_level_tree() {
-        // 129 leaves needs a three-level tree, exercising intermediate-node
-        // re-queueing in the chunk-granular walk.
-        let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * (refs_per_chunk + 1))
-            .map(|i| (i % 256) as u8)
-            .collect();
-        assert_offset_stream_chunked_matches(&data).await;
+    #[test]
+    fn test_offset_stream_chunked_three_level_tree() {
+        run(async {
+            // 129 leaves needs a three-level tree, exercising intermediate-node
+            // re-queueing in the chunk-granular walk.
+            let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * (refs_per_chunk + 1))
+                .map(|i| (i % 256) as u8)
+                .collect();
+            assert_offset_stream_chunked_matches(&data).await;
+        })
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_chunked_concurrency_one() {
-        // Width 1 still yields every leaf with the right offset.
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 7)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-        let joiner = Joiner::new(store, root).await.unwrap().with_concurrency(1);
-        let total = joiner.size();
-        let mut reassembled = vec![0u8; total as usize];
-        let stream = joiner.into_offset_stream_chunked();
-        futures::pin_mut!(stream);
-        while let Some(pair) = stream.next().await {
-            let (offset, body) = pair.unwrap();
-            let start = offset as usize;
-            reassembled[start..start + body.len()].copy_from_slice(&body);
-        }
-        assert_eq!(reassembled, data);
+    #[test]
+    fn test_offset_stream_chunked_concurrency_one() {
+        run(async {
+            // Width 1 still yields every leaf with the right offset.
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 7)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
+            let joiner = Joiner::new(store, root).await.unwrap().with_concurrency(1);
+            let total = joiner.size();
+            let mut reassembled = vec![0u8; total as usize];
+            let stream = joiner.into_offset_stream_chunked();
+            futures::pin_mut!(stream);
+            while let Some(pair) = stream.next().await {
+                let (offset, body) = pair.unwrap();
+                let start = offset as usize;
+                reassembled[start..start + body.len()].copy_from_slice(&body);
+            }
+            assert_eq!(reassembled, data);
+        })
     }
 
     /// A getter that holds each fetch open across several executor yields so the
@@ -1380,7 +1404,7 @@ mod tests {
             // Yield several times so concurrently-admitted fetches overlap here
             // before any resolves; the peak counter then reflects pool width.
             for _ in 0..8 {
-                tokio::task::yield_now().await;
+                yield_now().await;
             }
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             self.chunks
@@ -1390,50 +1414,50 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_offset_stream_chunked_per_chunk_concurrency() {
-        // A flat two-level tree: one intermediate over many leaves. The
-        // subtree-granular stream would walk it as a single sequential descent
-        // (in-flight = 1 leaf at a time); the chunk-granular stream fans the
-        // leaves across the width.
-        let leaves = 40usize;
-        let width = 16usize;
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * leaves)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
+    #[test]
+    fn test_offset_stream_chunked_per_chunk_concurrency() {
+        run(async {
+            // A flat two-level tree: one intermediate over many leaves. The
+            // subtree-granular stream would walk it as a single sequential descent
+            // (in-flight = 1 leaf at a time); the chunk-granular stream fans the
+            // leaves across the width.
+            let leaves = 40usize;
+            let width = 16usize;
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * leaves)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
 
-        let probe = ConcurrencyProbe {
-            chunks: Arc::new(store),
-            in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            max_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        };
-        let max_seen = Arc::clone(&probe.max_in_flight);
+            let probe = ConcurrencyProbe {
+                chunks: Arc::new(store),
+                in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            };
+            let max_seen = Arc::clone(&probe.max_in_flight);
 
-        let joiner = Joiner::new(probe, root)
-            .await
-            .unwrap()
-            .with_concurrency(width);
+            let joiner = Joiner::new(probe, root)
+                .await
+                .unwrap()
+                .with_concurrency(width);
 
-        let total = joiner.size();
-        let mut reassembled = vec![0u8; total as usize];
-        let stream = joiner.into_offset_stream_chunked();
-        futures::pin_mut!(stream);
-        while let Some(pair) = stream.next().await {
-            let (offset, body) = pair.unwrap();
-            let start = offset as usize;
-            reassembled[start..start + body.len()].copy_from_slice(&body);
-        }
-        assert_eq!(reassembled, data, "concurrency probe still reassembles");
+            let total = joiner.size();
+            let mut reassembled = vec![0u8; total as usize];
+            let stream = joiner.into_offset_stream_chunked();
+            futures::pin_mut!(stream);
+            while let Some(pair) = stream.next().await {
+                let (offset, body) = pair.unwrap();
+                let start = offset as usize;
+                reassembled[start..start + body.len()].copy_from_slice(&body);
+            }
+            assert_eq!(reassembled, data, "concurrency probe still reassembles");
 
-        let peak = max_seen.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(
-            peak >= width,
-            "chunk-granular stream should reach width {width} in-flight, saw {peak}"
-        );
+            let peak = max_seen.load(std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                peak >= width,
+                "chunk-granular stream should reach width {width} in-flight, saw {peak}"
+            );
+        })
     }
-
-    // --- Front-load / intermediate-cap guards (small body size = deep tree) ---
 
     /// Branching for a 256-byte body is `256 / REF_SIZE` = 8, so a few hundred
     /// leaves build a wide intermediate frontier with little data. This keeps the
@@ -1520,11 +1544,11 @@ mod tests {
             }
             if self.slow_addr == Some(*address) {
                 while self.delivered_leaves.load(Ordering::SeqCst) < self.slow_gate {
-                    tokio::task::yield_now().await;
+                    yield_now().await;
                 }
             }
             for _ in 0..4 {
-                tokio::task::yield_now().await;
+                yield_now().await;
             }
             if !is_leaf {
                 self.intermediate_in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -1544,120 +1568,126 @@ mod tests {
     /// fetched after only a short descent (a few intermediates), never after the
     /// whole frontier is drained. The breadth-first walk fetched every
     /// intermediate first, so the first leaf landed ~frontier-size fetches in.
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_offset_stream_chunked_first_leaf_before_frontier() {
-        let data = tiny_deep_data(900);
-        let (root, store) = split::<TINY_BODY>(&data).unwrap();
-        let probe = OrderProbe::new(store.into_chunks(), &data);
+    #[test]
+    fn test_offset_stream_chunked_first_leaf_before_frontier() {
+        run(async {
+            let data = tiny_deep_data(900);
+            let (root, store) = split::<TINY_BODY>(&data).unwrap();
+            let probe = OrderProbe::new(store.into_chunks(), &data);
 
-        let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
-            .await
-            .unwrap();
-        // Measure only the streaming walk, not the upfront frontier expansion.
-        probe.reset();
+            let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
+                .await
+                .unwrap();
+            // Measure only the streaming walk, not the upfront frontier expansion.
+            probe.reset();
 
-        let total = joiner.size();
-        let mut reassembled = vec![0u8; total as usize];
-        let stream = joiner.into_offset_stream_chunked();
-        futures::pin_mut!(stream);
-        while let Some(pair) = stream.next().await {
-            let (offset, body) = pair.unwrap();
-            reassembled[offset as usize..offset as usize + body.len()].copy_from_slice(&body);
-        }
-        assert_eq!(reassembled, data, "deep-tree reassembly is byte-exact");
+            let total = joiner.size();
+            let mut reassembled = vec![0u8; total as usize];
+            let stream = joiner.into_offset_stream_chunked();
+            futures::pin_mut!(stream);
+            while let Some(pair) = stream.next().await {
+                let (offset, body) = pair.unwrap();
+                reassembled[offset as usize..offset as usize + body.len()].copy_from_slice(&body);
+            }
+            assert_eq!(reassembled, data, "deep-tree reassembly is byte-exact");
 
-        let frontier = probe.intermediate_fetches();
-        assert!(
-            frontier >= 40,
-            "test needs a frontier far larger than the cap, saw {frontier}"
-        );
-        let before = probe.intermediates_before_first_leaf();
-        assert!(
-            before <= 4 * MAX_INTERMEDIATE_IN_FLIGHT,
-            "first leaf fetched after {before} intermediates (frontier {frontier}); \
+            let frontier = probe.intermediate_fetches();
+            assert!(
+                frontier >= 40,
+                "test needs a frontier far larger than the cap, saw {frontier}"
+            );
+            let before = probe.intermediates_before_first_leaf();
+            assert!(
+                before <= 4 * MAX_INTERMEDIATE_IN_FLIGHT,
+                "first leaf fetched after {before} intermediates (frontier {frontier}); \
              expected a short descent, not the whole frontier"
-        );
+            );
+        })
     }
 
     /// Intermediate fetches in flight never exceed the cap.
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_offset_stream_chunked_intermediate_cap() {
-        let data = tiny_deep_data(900);
-        let (root, store) = split::<TINY_BODY>(&data).unwrap();
-        let probe = OrderProbe::new(store.into_chunks(), &data);
+    #[test]
+    fn test_offset_stream_chunked_intermediate_cap() {
+        run(async {
+            let data = tiny_deep_data(900);
+            let (root, store) = split::<TINY_BODY>(&data).unwrap();
+            let probe = OrderProbe::new(store.into_chunks(), &data);
 
-        let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
-            .await
-            .unwrap()
-            .with_concurrency(16);
-        probe.reset();
+            let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
+                .await
+                .unwrap()
+                .with_concurrency(16);
+            probe.reset();
 
-        let stream = joiner.into_offset_stream_chunked();
-        futures::pin_mut!(stream);
-        while let Some(pair) = stream.next().await {
-            pair.unwrap();
-        }
+            let stream = joiner.into_offset_stream_chunked();
+            futures::pin_mut!(stream);
+            while let Some(pair) = stream.next().await {
+                pair.unwrap();
+            }
 
-        let peak = probe
-            .peak_intermediate_in_flight
-            .load(std::sync::atomic::Ordering::SeqCst);
-        assert!(
-            peak <= MAX_INTERMEDIATE_IN_FLIGHT,
-            "intermediate in-flight peak {peak} exceeds cap {MAX_INTERMEDIATE_IN_FLIGHT}"
-        );
+            let peak = probe
+                .peak_intermediate_in_flight
+                .load(std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                peak <= MAX_INTERMEDIATE_IN_FLIGHT,
+                "intermediate in-flight peak {peak} exceeds cap {MAX_INTERMEDIATE_IN_FLIGHT}"
+            );
+        })
     }
 
     /// A single slow intermediate must not stall the rest of the stream: leaves
     /// from other subtrees keep flowing while it is parked. The slow node parks
     /// until the consumer has delivered a batch of leaves, so completion proves
     /// those leaves were delivered without it.
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_offset_stream_chunked_slow_intermediate_does_not_stall() {
-        let data = tiny_deep_data(900);
-        let (root, store) = split::<TINY_BODY>(&data).unwrap();
-        let store = store.into_chunks();
+    #[test]
+    fn test_offset_stream_chunked_slow_intermediate_does_not_stall() {
+        run(async {
+            let data = tiny_deep_data(900);
+            let (root, store) = split::<TINY_BODY>(&data).unwrap();
+            let store = store.into_chunks();
 
-        // Park an intermediate that only the streaming walk fetches: a leaf
-        // parent, every child a data leaf. An upper intermediate is read by
-        // the upfront frontier expansion in `new`, before any leaf can be
-        // delivered, so parking one there deadlocks the gate below.
-        let leaves = tiny_leaf_addresses(&data);
-        let slow = *store
-            .iter()
-            .find(|(addr, chunk)| {
-                let body = chunk.envelope().data();
-                !leaves.contains(*addr)
-                    && **addr != root
-                    && body.len() % super::super::constants::REF_SIZE == 0
-                    && body.chunks(super::super::constants::REF_SIZE).all(|child| {
-                        ChunkAddress::from_slice(child).is_ok_and(|a| leaves.contains(&a))
-                    })
-            })
-            .expect("a leaf-parent intermediate exists")
-            .0;
+            // Park an intermediate that only the streaming walk fetches: a leaf
+            // parent, every child a data leaf. An upper intermediate is read by
+            // the upfront frontier expansion in `new`, before any leaf can be
+            // delivered, so parking one there deadlocks the gate below.
+            let leaves = tiny_leaf_addresses(&data);
+            let slow = *store
+                .iter()
+                .find(|(addr, chunk)| {
+                    let body = chunk.envelope().data();
+                    !leaves.contains(*addr)
+                        && **addr != root
+                        && body.len() % super::super::constants::REF_SIZE == 0
+                        && body.chunks(super::super::constants::REF_SIZE).all(|child| {
+                            ChunkAddress::from_slice(child).is_ok_and(|a| leaves.contains(&a))
+                        })
+                })
+                .expect("a leaf-parent intermediate exists")
+                .0;
 
-        let mut probe = OrderProbe::new(store, &data);
-        probe.slow_addr = Some(slow);
-        probe.slow_gate = 100;
-        let delivered = Arc::clone(&probe.delivered_leaves);
+            let mut probe = OrderProbe::new(store, &data);
+            probe.slow_addr = Some(slow);
+            probe.slow_gate = 100;
+            let delivered = Arc::clone(&probe.delivered_leaves);
 
-        let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
-            .await
-            .unwrap();
+            let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
+                .await
+                .unwrap();
 
-        let total = joiner.size();
-        let mut reassembled = vec![0u8; total as usize];
-        let stream = joiner.into_offset_stream_chunked();
-        futures::pin_mut!(stream);
-        while let Some(pair) = stream.next().await {
-            let (offset, body) = pair.unwrap();
-            reassembled[offset as usize..offset as usize + body.len()].copy_from_slice(&body);
-            delivered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-        assert_eq!(
-            reassembled, data,
-            "stream completes past the slow intermediate"
-        );
+            let total = joiner.size();
+            let mut reassembled = vec![0u8; total as usize];
+            let stream = joiner.into_offset_stream_chunked();
+            futures::pin_mut!(stream);
+            while let Some(pair) = stream.next().await {
+                let (offset, body) = pair.unwrap();
+                reassembled[offset as usize..offset as usize + body.len()].copy_from_slice(&body);
+                delivered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            assert_eq!(
+                reassembled, data,
+                "stream completes past the slow intermediate"
+            );
+        })
     }
 
     /// Drain `into_offset_stream_chunked_range(start, len)`, reassemble the
@@ -1709,165 +1739,85 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_chunked_range_windows() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let bs = DEFAULT_BODY_SIZE as u64;
-        let total = data.len() as u64;
+    #[test]
+    fn test_offset_stream_chunked_range_windows() {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let bs = DEFAULT_BODY_SIZE as u64;
+            let total = data.len() as u64;
 
-        // sub-leaf: start and len both inside one leaf
-        assert_offset_stream_chunked_range_matches(&data, bs + 10, 50).await;
-        // leaf-aligned single leaf
-        assert_offset_stream_chunked_range_matches(&data, bs, bs).await;
-        // spans several leaves, partial at both ends
-        assert_offset_stream_chunked_range_matches(&data, bs / 2, bs * 3 + 7).await;
-        // last partial leaf
-        assert_offset_stream_chunked_range_matches(&data, bs * 5, total - bs * 5).await;
-        // whole file (must equal read_all)
-        assert_offset_stream_chunked_range_matches(&data, 0, total).await;
-        // zero-len (empty)
-        assert_offset_stream_chunked_range_matches(&data, bs, 0).await;
+            // sub-leaf: start and len both inside one leaf
+            assert_offset_stream_chunked_range_matches(&data, bs + 10, 50).await;
+            // leaf-aligned single leaf
+            assert_offset_stream_chunked_range_matches(&data, bs, bs).await;
+            // spans several leaves, partial at both ends
+            assert_offset_stream_chunked_range_matches(&data, bs / 2, bs * 3 + 7).await;
+            // last partial leaf
+            assert_offset_stream_chunked_range_matches(&data, bs * 5, total - bs * 5).await;
+            // whole file (must equal read_all)
+            assert_offset_stream_chunked_range_matches(&data, 0, total).await;
+            // zero-len (empty)
+            assert_offset_stream_chunked_range_matches(&data, bs, 0).await;
+        })
     }
 
-    #[tokio::test]
-    async fn test_offset_stream_chunked_range_whole_equals_chunked() {
-        // A whole-file range must reproduce `into_offset_stream_chunked` exactly:
-        // same leaves, same absolute offsets, same bodies.
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 99)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
+    #[test]
+    fn test_offset_stream_chunked_range_whole_equals_chunked() {
+        run(async {
+            // A whole-file range must reproduce `into_offset_stream_chunked` exactly:
+            // same leaves, same absolute offsets, same bodies.
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 99)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
 
-        let full = Joiner::new(store.clone(), root).await.unwrap();
-        let total = full.size();
-        let mut from_full: Vec<(u64, Vec<u8>)> = full
-            .into_offset_stream_chunked()
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .map(|p| {
-                let (o, b) = p.unwrap();
-                (o, b.to_vec())
-            })
-            .collect();
-        from_full.sort_by_key(|(o, _)| *o);
+            let full = Joiner::new(store.clone(), root).await.unwrap();
+            let total = full.size();
+            let mut from_full: Vec<(u64, Vec<u8>)> = full
+                .into_offset_stream_chunked()
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .map(|p| {
+                    let (o, b) = p.unwrap();
+                    (o, b.to_vec())
+                })
+                .collect();
+            from_full.sort_by_key(|(o, _)| *o);
 
-        let ranged = Joiner::new(store, root).await.unwrap();
-        let mut from_range: Vec<(u64, Vec<u8>)> = ranged
-            .into_offset_stream_chunked_range(0, total)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .map(|p| {
-                let (o, b) = p.unwrap();
-                (o, b.to_vec())
-            })
-            .collect();
-        from_range.sort_by_key(|(o, _)| *o);
+            let ranged = Joiner::new(store, root).await.unwrap();
+            let mut from_range: Vec<(u64, Vec<u8>)> = ranged
+                .into_offset_stream_chunked_range(0, total)
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .map(|p| {
+                    let (o, b) = p.unwrap();
+                    (o, b.to_vec())
+                })
+                .collect();
+            from_range.sort_by_key(|(o, _)| *o);
 
-        assert_eq!(
-            from_range, from_full,
-            "whole-file range equals chunked walk"
-        );
+            assert_eq!(
+                from_range, from_full,
+                "whole-file range equals chunked walk"
+            );
 
-        // And the reassembly equals read_all.
-        let expected = Joiner::new(split_and_store(&data).1, root)
-            .await
-            .unwrap()
-            .read_all()
-            .await
-            .unwrap();
-        let mut reassembled = vec![0u8; total as usize];
-        for (o, b) in &from_range {
-            reassembled[*o as usize..*o as usize + b.len()].copy_from_slice(b);
-        }
-        assert_eq!(reassembled, expected);
-    }
-
-    #[cfg(feature = "tokio")]
-    #[tokio::test]
-    async fn test_reader_small() {
-        use tokio::io::AsyncReadExt;
-
-        let data = b"hello world";
-        let (root, store) = split_and_store(data);
-
-        let joiner = Joiner::new(store, root).await.unwrap();
-        let mut reader = joiner.into_reader();
-        let mut result = Vec::new();
-        reader.read_to_end(&mut result).await.unwrap();
-        assert_eq!(result, data);
-    }
-
-    #[cfg(feature = "tokio")]
-    #[tokio::test]
-    async fn test_reader_multi_chunk() {
-        use tokio::io::AsyncReadExt;
-
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-
-        let joiner = Joiner::new(store, root).await.unwrap();
-        let mut reader = joiner.into_reader();
-        let mut result = Vec::new();
-        reader.read_to_end(&mut result).await.unwrap();
-        assert_eq!(result, data);
-    }
-
-    #[cfg(feature = "tokio")]
-    #[tokio::test]
-    async fn test_reader_seek() {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
-        let data = b"hello world";
-        let (root, store) = split_and_store(data);
-
-        let joiner = Joiner::new(store, root).await.unwrap();
-        let mut reader = joiner.into_reader();
-
-        reader.seek(SeekFrom::Start(6)).await.unwrap();
-        let mut buf = vec![0u8; 5];
-        reader.read_exact(&mut buf).await.unwrap();
-        assert_eq!(&buf, b"world");
-    }
-
-    #[cfg(feature = "tokio")]
-    #[tokio::test]
-    async fn test_reader_seek_back_and_forth() {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-
-        let joiner = Joiner::new(store, root).await.unwrap();
-        let mut reader = joiner.into_reader();
-
-        // Read from middle
-        reader
-            .seek(SeekFrom::Start(DEFAULT_BODY_SIZE as u64))
-            .await
-            .unwrap();
-        let mut buf1 = vec![0u8; 100];
-        reader.read_exact(&mut buf1).await.unwrap();
-        assert_eq!(&buf1, &data[DEFAULT_BODY_SIZE..DEFAULT_BODY_SIZE + 100]);
-
-        // Seek back to start
-        reader.seek(SeekFrom::Start(0)).await.unwrap();
-        let mut buf2 = vec![0u8; 100];
-        reader.read_exact(&mut buf2).await.unwrap();
-        assert_eq!(&buf2, &data[..100]);
-
-        // Seek to near-end
-        reader.seek(SeekFrom::End(-50)).await.unwrap();
-        let mut buf3 = vec![0u8; 50];
-        reader.read_exact(&mut buf3).await.unwrap();
-        assert_eq!(&buf3, &data[data.len() - 50..]);
+            // And the reassembly equals read_all.
+            let expected = Joiner::new(split_and_store(&data).1, root)
+                .await
+                .unwrap()
+                .read_all()
+                .await
+                .unwrap();
+            let mut reassembled = vec![0u8; total as usize];
+            for (o, b) in &from_range {
+                reassembled[*o as usize..*o as usize + b.len()].copy_from_slice(b);
+            }
+            assert_eq!(reassembled, expected);
+        })
     }
 
     #[cfg(feature = "encryption")]
@@ -1885,26 +1835,25 @@ mod tests {
             (root_ref, store.into_chunks())
         }
 
-        // --- Generated shared tests (async variants) ---
-        generate_encrypted_joiner_tests!(tokio::test, EncryptedJoiner, [async], [await]);
+        generate_encrypted_joiner_tests!(EncryptedJoiner);
 
-        // --- Async-only tests: Stream ---
+        #[test]
+        fn test_encrypted_joiner_stream() {
+            run(async {
+                let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
+                    .map(|i| (i % 256) as u8)
+                    .collect();
+                let (root_ref, store) = encrypted_split_and_store(&data);
 
-        #[tokio::test]
-        async fn test_encrypted_joiner_stream() {
-            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
-                .map(|i| (i % 256) as u8)
-                .collect();
-            let (root_ref, store) = encrypted_split_and_store(&data);
+                let joiner = EncryptedJoiner::new(store, root_ref).await.unwrap();
+                let chunks: Vec<Result<Bytes>> = joiner.into_stream().collect().await;
 
-            let joiner = EncryptedJoiner::new(store, root_ref).await.unwrap();
-            let chunks: Vec<Result<Bytes>> = joiner.into_stream().collect().await;
-
-            let mut recovered = Vec::new();
-            for chunk in chunks {
-                recovered.extend_from_slice(&chunk.unwrap());
-            }
-            assert_eq!(recovered, data);
+                let mut recovered = Vec::new();
+                for chunk in chunks {
+                    recovered.extend_from_slice(&chunk.unwrap());
+                }
+                assert_eq!(recovered, data);
+            })
         }
 
         /// Encrypted analogue of `assert_offset_stream_chunked_range_matches`.
@@ -1955,26 +1904,114 @@ mod tests {
             }
         }
 
-        #[tokio::test]
-        async fn test_encrypted_offset_stream_chunked_range_windows() {
-            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
-                .map(|i| (i % 256) as u8)
-                .collect();
-            let bs = DEFAULT_BODY_SIZE as u64;
-            let total = data.len() as u64;
+        #[test]
+        fn test_encrypted_offset_stream_chunked_range_windows() {
+            run(async {
+                let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
+                    .map(|i| (i % 256) as u8)
+                    .collect();
+                let bs = DEFAULT_BODY_SIZE as u64;
+                let total = data.len() as u64;
 
-            // sub-leaf
-            assert_encrypted_range_matches(&data, bs + 10, 50).await;
-            // leaf-aligned single leaf
-            assert_encrypted_range_matches(&data, bs, bs).await;
-            // spans several leaves
-            assert_encrypted_range_matches(&data, bs / 2, bs * 3 + 7).await;
-            // last partial leaf
-            assert_encrypted_range_matches(&data, bs * 5, total - bs * 5).await;
-            // whole file
-            assert_encrypted_range_matches(&data, 0, total).await;
-            // zero-len
-            assert_encrypted_range_matches(&data, bs, 0).await;
+                // sub-leaf
+                assert_encrypted_range_matches(&data, bs + 10, 50).await;
+                // leaf-aligned single leaf
+                assert_encrypted_range_matches(&data, bs, bs).await;
+                // spans several leaves
+                assert_encrypted_range_matches(&data, bs / 2, bs * 3 + 7).await;
+                // last partial leaf
+                assert_encrypted_range_matches(&data, bs * 5, total - bs * 5).await;
+                // whole file
+                assert_encrypted_range_matches(&data, 0, total).await;
+                // zero-len
+                assert_encrypted_range_matches(&data, bs, 0).await;
+            })
         }
+    }
+}
+
+#[cfg(all(test, feature = "tokio"))]
+mod tokio_tests {
+    use super::tests::split_and_store;
+    use super::*;
+
+    #[tokio::test]
+    async fn test_reader_small() {
+        use tokio::io::AsyncReadExt;
+
+        let data = b"hello world";
+        let (root, store) = split_and_store(data);
+
+        let joiner = Joiner::new(store, root).await.unwrap();
+        let mut reader = joiner.into_reader();
+        let mut result = Vec::new();
+        reader.read_to_end(&mut result).await.unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[tokio::test]
+    async fn test_reader_multi_chunk() {
+        use tokio::io::AsyncReadExt;
+
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+
+        let joiner = Joiner::new(store, root).await.unwrap();
+        let mut reader = joiner.into_reader();
+        let mut result = Vec::new();
+        reader.read_to_end(&mut result).await.unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[tokio::test]
+    async fn test_reader_seek() {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let data = b"hello world";
+        let (root, store) = split_and_store(data);
+
+        let joiner = Joiner::new(store, root).await.unwrap();
+        let mut reader = joiner.into_reader();
+
+        reader.seek(SeekFrom::Start(6)).await.unwrap();
+        let mut buf = vec![0u8; 5];
+        reader.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"world");
+    }
+
+    #[tokio::test]
+    async fn test_reader_seek_back_and_forth() {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let (root, store) = split_and_store(&data);
+
+        let joiner = Joiner::new(store, root).await.unwrap();
+        let mut reader = joiner.into_reader();
+
+        // Read from middle
+        reader
+            .seek(SeekFrom::Start(DEFAULT_BODY_SIZE as u64))
+            .await
+            .unwrap();
+        let mut buf1 = vec![0u8; 100];
+        reader.read_exact(&mut buf1).await.unwrap();
+        assert_eq!(&buf1, &data[DEFAULT_BODY_SIZE..DEFAULT_BODY_SIZE + 100]);
+
+        // Seek back to start
+        reader.seek(SeekFrom::Start(0)).await.unwrap();
+        let mut buf2 = vec![0u8; 100];
+        reader.read_exact(&mut buf2).await.unwrap();
+        assert_eq!(&buf2, &data[..100]);
+
+        // Seek to near-end
+        reader.seek(SeekFrom::End(-50)).await.unwrap();
+        let mut buf3 = vec![0u8; 50];
+        reader.read_exact(&mut buf3).await.unwrap();
+        assert_eq!(&buf3, &data[data.len() - 50..]);
     }
 }

@@ -169,7 +169,7 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use futures::executor::block_on;
+    use nectar_testing::run;
 
     use crate::DefaultContentChunk;
     use crate::chunk::StandardChunkSet;
@@ -242,37 +242,46 @@ mod tests {
 
     #[test]
     fn recovers_when_failures_below_budget() {
-        // 7 failures, then success on the 8th (== max_attempts) get.
-        let store = RetryingChunkGet::with_default(FlakyStore::new(7), NoSleep);
-        let address = *store.inner.chunk.address();
+        run(async {
+            // 7 failures, then success on the 8th (== max_attempts) get.
+            let store = RetryingChunkGet::with_default(FlakyStore::new(7), NoSleep);
+            let address = *store.inner.chunk.address();
 
-        let got = block_on(store.get(&address)).expect("recovered within budget");
-        assert_eq!(got.address(), &address);
-        assert_eq!(store.inner.get_calls.load(Ordering::SeqCst), 8);
+            let got = store.get(&address).await.expect("recovered within budget");
+            assert_eq!(got.address(), &address);
+            assert_eq!(store.inner.get_calls.load(Ordering::SeqCst), 8);
+        })
     }
 
     #[test]
     fn propagates_after_exactly_max_attempts() {
-        // Always fails: expect exactly max_attempts gets, then the error.
-        let store = RetryingChunkGet::with_default(FlakyStore::new(u32::MAX), NoSleep);
-        let address = *store.inner.chunk.address();
+        run(async {
+            // Always fails: expect exactly max_attempts gets, then the error.
+            let store = RetryingChunkGet::with_default(FlakyStore::new(u32::MAX), NoSleep);
+            let address = *store.inner.chunk.address();
 
-        let err = block_on(store.get(&address));
-        assert!(err.is_err(), "budget exhausted, error must propagate");
-        assert_eq!(
-            store.inner.get_calls.load(Ordering::SeqCst),
-            RetryConfig::default().max_attempts
-        );
+            let err = store.get(&address).await;
+            assert!(err.is_err(), "budget exhausted, error must propagate");
+            assert_eq!(
+                store.inner.get_calls.load(Ordering::SeqCst),
+                RetryConfig::default().max_attempts
+            );
+        })
     }
 
     #[test]
     fn put_and_has_are_not_retried() {
-        let store = RetryingChunkGet::with_default(FlakyStore::new(u32::MAX), NoSleep);
-        let address = *store.inner.chunk.address();
+        run(async {
+            let store = RetryingChunkGet::with_default(FlakyStore::new(u32::MAX), NoSleep);
+            let address = *store.inner.chunk.address();
 
-        assert!(block_on(store.has(&address)));
-        block_on(store.put(store.inner.chunk.clone())).expect("put delegates");
-        assert_eq!(store.inner.has_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(store.inner.put_calls.load(Ordering::SeqCst), 1);
+            assert!(store.has(&address).await);
+            store
+                .put(store.inner.chunk.clone())
+                .await
+                .expect("put delegates");
+            assert_eq!(store.inner.has_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(store.inner.put_calls.load(Ordering::SeqCst), 1);
+        })
     }
 }

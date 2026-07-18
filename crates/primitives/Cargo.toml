@@ -83,6 +83,7 @@ alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "as
 
 arbitrary = { workspace = true, features = ["derive"] }
 criterion.workspace = true
+nectar-testing.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true

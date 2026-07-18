@@ -120,20 +120,22 @@ impl<R: ChunkRegistry> ChunkHas for HashMap<ChunkAddress, Chunk<Verified, R>> {
 mod tests {
     use super::*;
     use crate::chunk::{ChunkOps, ContentChunk};
-    use futures::executor::block_on;
+    use nectar_testing::run;
 
     #[test]
     fn test_memory_store() {
-        let store = MemoryStore::<StandardChunkSet>::new();
-        assert!(store.is_empty());
+        run(async {
+            let store = MemoryStore::<StandardChunkSet>::new();
+            assert!(store.is_empty());
 
-        let chunk = ContentChunk::new(b"hello".as_slice()).unwrap();
-        let addr = *chunk.address();
-        let sealed: Chunk = Chunk::from_envelope(chunk.into()).unwrap();
+            let chunk = ContentChunk::new(b"hello".as_slice()).unwrap();
+            let addr = *chunk.address();
+            let sealed: Chunk = Chunk::from_envelope(chunk.into()).unwrap();
 
-        block_on(ChunkPut::put(&store, sealed)).unwrap();
-        assert_eq!(store.len(), 1);
-        assert!(block_on(ChunkHas::has(&store, &addr)));
-        assert_eq!(store.get(&addr).map(|c| *c.address()), Some(addr));
+            ChunkPut::put(&store, sealed).await.unwrap();
+            assert_eq!(store.len(), 1);
+            assert!(ChunkHas::has(&store, &addr).await);
+            assert_eq!(store.get(&addr).map(|c| *c.address()), Some(addr));
+        })
     }
 }

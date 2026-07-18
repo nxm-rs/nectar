@@ -59,12 +59,14 @@ macro_rules! generate_plain_splitter_tests {
 
         #[test]
         fn test_splitter_roundtrip_varying() {
-            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 123)
-                .map(|i| (i % 256) as u8)
-                .collect();
-            let (root, store) = $split_fn(&data);
-            let recovered = futures::executor::block_on(crate::file::join(&store, root)).unwrap();
-            assert_eq!(recovered, data);
+            nectar_testing::run(async {
+                let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 123)
+                    .map(|i| (i % 256) as u8)
+                    .collect();
+                let (root, store) = $split_fn(&data);
+                let recovered = crate::file::join(&store, root).await.unwrap();
+                assert_eq!(recovered, data);
+            })
         }
     };
 }
@@ -76,6 +78,7 @@ macro_rules! generate_plain_splitter_tests {
 /// fn encrypted_split_and_store(data: &[u8])
 ///     -> (EncryptedChunkRef, MemoryStore<StandardChunkSet>);
 /// ```
+#[cfg(feature = "encryption")]
 macro_rules! generate_encrypted_splitter_tests {
     ($split_fn:ident) => {
         #[test]
@@ -95,25 +98,27 @@ macro_rules! generate_encrypted_splitter_tests {
 
         #[test]
         fn test_encrypted_splitter_two_chunks() {
-            let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
-            let (root_ref, store) = $split_fn(&data);
-            assert_eq!(store.len(), 3);
+            nectar_testing::run(async {
+                let data = vec![0xCD; DEFAULT_BODY_SIZE + 1];
+                let (root_ref, store) = $split_fn(&data);
+                assert_eq!(store.len(), 3);
 
-            let recovered =
-                futures::executor::block_on(crate::file::join(&store, root_ref)).unwrap();
-            assert_eq!(recovered, data);
+                let recovered = crate::file::join(&store, root_ref).await.unwrap();
+                assert_eq!(recovered, data);
+            })
         }
 
         #[test]
         fn test_encrypted_splitter_roundtrip() {
-            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 123)
-                .map(|i| (i % 256) as u8)
-                .collect();
-            let (root_ref, store) = $split_fn(&data);
+            nectar_testing::run(async {
+                let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 123)
+                    .map(|i| (i % 256) as u8)
+                    .collect();
+                let (root_ref, store) = $split_fn(&data);
 
-            let recovered =
-                futures::executor::block_on(crate::file::join(&store, root_ref)).unwrap();
-            assert_eq!(recovered, data);
+                let recovered = crate::file::join(&store, root_ref).await.unwrap();
+                assert_eq!(recovered, data);
+            })
         }
     };
 }

@@ -112,7 +112,7 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
 # For tests and examples
 arbitrary = "1.4"
-criterion = { package = "codspeed-criterion-compat", version = "2.10.1" }
+criterion = { package = "codspeed-criterion-compat", version = "2.10.1", features = ["async_futures"] }
 proptest = "1"
 proptest-arbitrary-interop = "0.1"
 proptest-derive = "0.5"

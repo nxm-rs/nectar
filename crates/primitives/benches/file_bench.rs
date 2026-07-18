@@ -20,10 +20,9 @@
 use std::collections::HashMap;
 use std::io::Write;
 
+use criterion::async_executor::FuturesExecutor;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use rand::{Rng, rng};
-
-use futures::executor::block_on;
 
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress};
@@ -177,9 +176,9 @@ fn bench_joiner(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(size));
         group.bench_with_input(BenchmarkId::from_parameter(name), &root, |b, root| {
-            b.iter(|| {
-                let joiner = block_on(Joiner::new(store.clone(), *root)).unwrap();
-                black_box(block_on(joiner.read_all()).unwrap())
+            b.to_async(FuturesExecutor).iter(|| async {
+                let joiner = Joiner::new(store.clone(), *root).await.unwrap();
+                black_box(joiner.read_all().await.unwrap())
             });
         });
     }
@@ -206,16 +205,16 @@ fn bench_roundtrip(c: &mut Criterion) {
             BenchmarkId::new("streaming_split", name),
             &data,
             |b, data| {
-                b.iter(|| {
+                b.to_async(FuturesExecutor).iter(|| async {
                     let (root, store) = split_to_store(data);
-                    let joiner = block_on(Joiner::new(store, root)).unwrap();
-                    black_box(block_on(joiner.read_all()).unwrap())
+                    let joiner = Joiner::new(store, root).await.unwrap();
+                    black_box(joiner.read_all().await.unwrap())
                 });
             },
         );
 
         group.bench_with_input(BenchmarkId::new("direct_split", name), &data, |b, data| {
-            b.iter(|| {
+            b.to_async(FuturesExecutor).iter(|| async {
                 let (root, chunks) =
                     ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
                 let store = MemoryStore::from_chunks(
@@ -223,8 +222,8 @@ fn bench_roundtrip(c: &mut Criterion) {
                         .into_iter()
                         .map(|c| Chunk::from_envelope(c.into()).unwrap()),
                 );
-                let joiner = block_on(Joiner::new(store, root)).unwrap();
-                black_box(block_on(joiner.read_all()).unwrap())
+                let joiner = Joiner::new(store, root).await.unwrap();
+                black_box(joiner.read_all().await.unwrap())
             });
         });
     }

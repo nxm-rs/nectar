@@ -206,6 +206,7 @@ mod tests {
     use super::*;
     use crate::file::join;
     use crate::store::MemoryStore;
+    use nectar_testing::run;
 
     fn split_and_store(
         data: &[u8],
@@ -224,17 +225,19 @@ mod tests {
 
     #[test]
     fn test_parallel_splitter_varying_data() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 123)
-            .map(|i| (i % 256) as u8)
-            .collect();
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 123)
+                .map(|i| (i % 256) as u8)
+                .collect();
 
-        let (root, store) = split_and_store(&data);
+            let (root, store) = split_and_store(&data);
 
-        let (seq_root, _) = crate::file::split::<DEFAULT_BODY_SIZE>(&data).unwrap();
-        assert_eq!(root, seq_root);
+            let (seq_root, _) = crate::file::split::<DEFAULT_BODY_SIZE>(&data).unwrap();
+            assert_eq!(root, seq_root);
 
-        let recovered = futures::executor::block_on(join(&store, root)).unwrap();
-        assert_eq!(recovered, data);
+            let recovered = join(&store, root).await.unwrap();
+            assert_eq!(recovered, data);
+        })
     }
 
     #[test]
@@ -275,20 +278,22 @@ mod tests {
 
         #[test]
         fn test_encrypted_parallel_matches_sequential() {
-            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 123)
-                .map(|i| (i % 256) as u8)
-                .collect();
+            run(async {
+                let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 123)
+                    .map(|i| (i % 256) as u8)
+                    .collect();
 
-            let (par_ref, par_store) = encrypted_split_and_store(&data);
-            let (seq_ref, seq_store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+                let (par_ref, par_store) = encrypted_split_and_store(&data);
+                let (seq_ref, seq_store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
 
-            assert_eq!(par_store.len(), seq_store.len());
+                assert_eq!(par_store.len(), seq_store.len());
 
-            let par_recovered = futures::executor::block_on(join(&par_store, par_ref)).unwrap();
-            assert_eq!(par_recovered, data);
+                let par_recovered = join(&par_store, par_ref).await.unwrap();
+                assert_eq!(par_recovered, data);
 
-            let seq_recovered = futures::executor::block_on(join(&seq_store, seq_ref)).unwrap();
-            assert_eq!(seq_recovered, data);
+                let seq_recovered = join(&seq_store, seq_ref).await.unwrap();
+                assert_eq!(seq_recovered, data);
+            })
         }
 
         #[test]

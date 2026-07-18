@@ -607,7 +607,7 @@ mod tests {
     use crate::file::Joiner;
     use crate::file::split;
     use crate::store::ChunkGet;
-    use futures::executor::block_on;
+    use nectar_testing::run;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -630,27 +630,27 @@ mod tests {
 
     #[test]
     fn stream_from_zero_equals_whole_file() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-        block_on(async {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
             let joiner = Joiner::new(store, root).await.unwrap();
             let mut reader = joiner.into_windowed_reader(16);
             let got = drain(&mut reader).await;
             assert_eq!(got, data);
-        });
+        })
     }
 
     #[test]
     fn seek_then_stream_yields_suffix() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let bs = DEFAULT_BODY_SIZE as u64;
-        let cases = [bs + 10, bs, bs * 3, bs / 2, data.len() as u64 - 1];
-        let (root, store) = split_and_store(&data);
-        block_on(async {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let bs = DEFAULT_BODY_SIZE as u64;
+            let cases = [bs + 10, bs, bs * 3, bs / 2, data.len() as u64 - 1];
+            let (root, store) = split_and_store(&data);
             for k in cases {
                 let joiner = Joiner::new(store.clone(), root).await.unwrap();
                 let mut reader = joiner.into_windowed_reader(16);
@@ -658,17 +658,17 @@ mod tests {
                 let got = drain(&mut reader).await;
                 assert_eq!(got, &data[k as usize..], "suffix from {k}");
             }
-        });
+        })
     }
 
     #[test]
     fn backward_seek_then_read_is_correct() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 4 + 17)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let bs = DEFAULT_BODY_SIZE as u64;
-        let (root, store) = split_and_store(&data);
-        block_on(async {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 4 + 17)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let bs = DEFAULT_BODY_SIZE as u64;
+            let (root, store) = split_and_store(&data);
             let joiner = Joiner::new(store, root).await.unwrap();
             let mut reader = joiner.into_windowed_reader(16);
             reader.seek(SeekFrom::Start(bs * 3)).unwrap();
@@ -676,21 +676,21 @@ mod tests {
             reader.seek(SeekFrom::Start(bs)).unwrap();
             let got = drain(&mut reader).await;
             assert_eq!(got, &data[bs as usize..]);
-        });
+        })
     }
 
     #[test]
     fn width_one_correct() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 7)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-        block_on(async {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 7)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
             let joiner = Joiner::new(store, root).await.unwrap().with_concurrency(1);
             let mut reader = joiner.into_windowed_reader(1);
             let got = drain(&mut reader).await;
             assert_eq!(got, data);
-        });
+        })
     }
 
     /// A self-waking yield: returns `Pending` once and immediately schedules a
@@ -746,23 +746,23 @@ mod tests {
 
     #[test]
     fn reorder_buffer_never_exceeds_window() {
-        // Many leaves, small window: leaf fetches overlap, so without the bound
-        // the in-flight peak would climb to the leaf count. The window caps it.
-        let leaves = 40usize;
-        let window = 6usize;
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * leaves)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
+        run(async {
+            // Many leaves, small window: leaf fetches overlap, so without the bound
+            // the in-flight peak would climb to the leaf count. The window caps it.
+            let leaves = 40usize;
+            let window = 6usize;
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * leaves)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
 
-        let probe = BoundProbe {
-            chunks: Arc::new(store),
-            in_flight: Arc::new(AtomicUsize::new(0)),
-            max_in_flight: Arc::new(AtomicUsize::new(0)),
-        };
-        let max_seen = Arc::clone(&probe.max_in_flight);
+            let probe = BoundProbe {
+                chunks: Arc::new(store),
+                in_flight: Arc::new(AtomicUsize::new(0)),
+                max_in_flight: Arc::new(AtomicUsize::new(0)),
+            };
+            let max_seen = Arc::clone(&probe.max_in_flight);
 
-        block_on(async {
             let joiner = Joiner::new(probe, root)
                 .await
                 .unwrap()
@@ -775,17 +775,17 @@ mod tests {
                 total += item.unwrap().len();
             }
             assert_eq!(total, data.len());
-        });
 
-        // The reorder buffer admits at most `window` leaves, so concurrent leaf
-        // fetches (plus the intermediate node fetches that seed children) never
-        // climb far above the window. Allow a small slack for in-flight
-        // intermediates, but assert it is nowhere near the leaf count.
-        let peak = max_seen.load(Ordering::SeqCst);
-        assert!(
-            peak <= window + 2,
-            "in-flight peak {peak} exceeds window {window} (+slack)"
-        );
+            // The reorder buffer admits at most `window` leaves, so concurrent leaf
+            // fetches (plus the intermediate node fetches that seed children) never
+            // climb far above the window. Allow a small slack for in-flight
+            // intermediates, but assert it is nowhere near the leaf count.
+            let peak = max_seen.load(Ordering::SeqCst);
+            assert!(
+                peak <= window + 2,
+                "in-flight peak {peak} exceeds window {window} (+slack)"
+            );
+        })
     }
 
     /// A getter that delays the leaf at `slow_offset` until `gate` other leaves
@@ -865,32 +865,32 @@ mod tests {
 
     #[test]
     fn head_slowest_in_order_and_bounded() {
-        // The head leaf at `position` resolves last among the leaves in its
-        // window. Under the old buffer this leaks: with the head missing, the
-        // walk kept `window` leaf fetches in flight while also buffering the
-        // resolved stragglers, so resident leaf bodies reached roughly twice the
-        // window. The sliding window keeps in-flight plus buffered at `window` and
-        // delivery in order. A naive run at `gate = window` instead would deadlock
-        // the correct walk (the head can never release), so the gate is the most a
-        // non-deadlocking adversary can demand, and the old buffer still overruns
-        // it.
-        let leaves = 40usize;
-        let window = 6usize;
-        let total = (DEFAULT_BODY_SIZE * leaves) as u64;
-        let data: Vec<u8> = (0..total).map(unique_byte).collect();
-        let (root, store) = split_and_store(&data);
+        run(async {
+            // The head leaf at `position` resolves last among the leaves in its
+            // window. Under the old buffer this leaks: with the head missing, the
+            // walk kept `window` leaf fetches in flight while also buffering the
+            // resolved stragglers, so resident leaf bodies reached roughly twice the
+            // window. The sliding window keeps in-flight plus buffered at `window` and
+            // delivery in order. A naive run at `gate = window` instead would deadlock
+            // the correct walk (the head can never release), so the gate is the most a
+            // non-deadlocking adversary can demand, and the old buffer still overruns
+            // it.
+            let leaves = 40usize;
+            let window = 6usize;
+            let total = (DEFAULT_BODY_SIZE * leaves) as u64;
+            let data: Vec<u8> = (0..total).map(unique_byte).collect();
+            let (root, store) = split_and_store(&data);
 
-        PEAK_LEAF_OCCUPANCY.with(|p| p.set(0));
-        let leaf_offsets = leaf_offsets_of(total);
-        let getter = HeadSlow {
-            chunks: Arc::new(store),
-            slow_offset: 0,
-            released: Arc::new(AtomicUsize::new(0)),
-            gate: window - 1,
-            leaf_offsets: Arc::new(leaf_offsets),
-        };
+            PEAK_LEAF_OCCUPANCY.with(|p| p.set(0));
+            let leaf_offsets = leaf_offsets_of(total);
+            let getter = HeadSlow {
+                chunks: Arc::new(store),
+                slow_offset: 0,
+                released: Arc::new(AtomicUsize::new(0)),
+                gate: window - 1,
+                leaf_offsets: Arc::new(leaf_offsets),
+            };
 
-        block_on(async {
             let joiner = Joiner::new(getter, root)
                 .await
                 .unwrap()
@@ -903,13 +903,13 @@ mod tests {
                 got.extend_from_slice(&item.unwrap());
             }
             assert_eq!(got, data, "head-slowest still yields whole file in order");
-        });
 
-        let peak = PEAK_LEAF_OCCUPANCY.with(std::cell::Cell::get);
-        assert!(
-            peak <= window,
-            "leaf-body occupancy peak {peak} exceeds window {window}"
-        );
+            let peak = PEAK_LEAF_OCCUPANCY.with(std::cell::Cell::get);
+            assert!(
+                peak <= window,
+                "leaf-body occupancy peak {peak} exceeds window {window}"
+            );
+        })
     }
 
     // --- Front-load / deep-frontier guards (small body size = deep tree) ---
@@ -1004,11 +1004,11 @@ mod tests {
     /// fetched after only a short descent, not after the whole frontier drains.
     #[test]
     fn windowed_first_leaf_before_frontier() {
-        let data = tiny_deep_data(900);
-        let (root, store) = split::<TINY_BODY>(&data).unwrap();
-        let probe = TinyOrderProbe::new(store.into_chunks(), &data);
+        run(async {
+            let data = tiny_deep_data(900);
+            let (root, store) = split::<TINY_BODY>(&data).unwrap();
+            let probe = TinyOrderProbe::new(store.into_chunks(), &data);
 
-        block_on(async {
             let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
                 .await
                 .unwrap();
@@ -1022,24 +1022,24 @@ mod tests {
                 got.extend_from_slice(&item.unwrap());
             }
             assert_eq!(got, data, "deep-tree in-order reassembly is byte-exact");
-        });
 
-        let frontier = probe.intermediate_fetches();
-        assert!(
-            frontier >= 40,
-            "test needs a frontier far larger than the cap, saw {frontier}"
-        );
-        let before = probe.intermediates_before_first_leaf();
-        assert!(
-            before <= 4 * MAX_INTERMEDIATE_IN_FLIGHT,
-            "first leaf fetched after {before} intermediates (frontier {frontier}); \
+            let frontier = probe.intermediate_fetches();
+            assert!(
+                frontier >= 40,
+                "test needs a frontier far larger than the cap, saw {frontier}"
+            );
+            let before = probe.intermediates_before_first_leaf();
+            assert!(
+                before <= 4 * MAX_INTERMEDIATE_IN_FLIGHT,
+                "first leaf fetched after {before} intermediates (frontier {frontier}); \
              expected a short descent, not the whole frontier"
-        );
-        let peak = probe.peak_intermediate.load(Ordering::SeqCst);
-        assert!(
-            peak <= MAX_INTERMEDIATE_IN_FLIGHT,
-            "intermediate in-flight peak {peak} exceeds cap {MAX_INTERMEDIATE_IN_FLIGHT}"
-        );
+            );
+            let peak = probe.peak_intermediate.load(Ordering::SeqCst);
+            assert!(
+                peak <= MAX_INTERMEDIATE_IN_FLIGHT,
+                "intermediate in-flight peak {peak} exceeds cap {MAX_INTERMEDIATE_IN_FLIGHT}"
+            );
+        })
     }
 
     /// A multi-level frontier (intermediates whose children are themselves
@@ -1048,14 +1048,14 @@ mod tests {
     /// contiguous emittable prefix, so the head is never starved.
     #[test]
     fn windowed_deep_frontier_in_order_and_bounded() {
-        let leaves = 2000usize;
-        let window = 5usize;
-        let data = tiny_deep_data(leaves);
-        let (root, store) = split::<TINY_BODY>(&data).unwrap();
-        let probe = TinyOrderProbe::new(store.into_chunks(), &data);
+        run(async {
+            let leaves = 2000usize;
+            let window = 5usize;
+            let data = tiny_deep_data(leaves);
+            let (root, store) = split::<TINY_BODY>(&data).unwrap();
+            let probe = TinyOrderProbe::new(store.into_chunks(), &data);
 
-        PEAK_LEAF_OCCUPANCY.with(|p| p.set(0));
-        block_on(async {
+            PEAK_LEAF_OCCUPANCY.with(|p| p.set(0));
             let joiner = Joiner::<_, TINY_BODY>::new(probe.clone(), root)
                 .await
                 .unwrap()
@@ -1069,45 +1069,45 @@ mod tests {
                 got.extend_from_slice(&item.unwrap());
             }
             assert_eq!(got, data, "deep frontier still yields whole file in order");
-        });
 
-        let occupancy = PEAK_LEAF_OCCUPANCY.with(std::cell::Cell::get);
-        assert!(
-            occupancy <= window,
-            "leaf-body occupancy peak {occupancy} exceeds window {window}"
-        );
-        let peak = probe.peak_intermediate.load(Ordering::SeqCst);
-        assert!(
-            peak <= MAX_INTERMEDIATE_IN_FLIGHT,
-            "intermediate in-flight peak {peak} exceeds cap {MAX_INTERMEDIATE_IN_FLIGHT}"
-        );
+            let occupancy = PEAK_LEAF_OCCUPANCY.with(std::cell::Cell::get);
+            assert!(
+                occupancy <= window,
+                "leaf-body occupancy peak {occupancy} exceeds window {window}"
+            );
+            let peak = probe.peak_intermediate.load(Ordering::SeqCst);
+            assert!(
+                peak <= MAX_INTERMEDIATE_IN_FLIGHT,
+                "intermediate in-flight peak {peak} exceeds cap {MAX_INTERMEDIATE_IN_FLIGHT}"
+            );
+        })
     }
 
     #[cfg(feature = "encryption")]
     #[test]
     fn head_slowest_encrypted_in_order_and_bounded() {
-        // Encrypted leaf bodies are shorter than BODY_SIZE, so the slide must
-        // advance by body.len(), not the stride. Encrypted leaf addresses hash
-        // the ciphertext and are not reconstructible from plaintext here, so the
-        // head cannot be singled out; a uniform delay across all fetches still
-        // overlaps concurrently admitted leaves, and the occupancy hook proves a
-        // correct walk holds at most `window` leaf bodies on short bodies.
-        use crate::file::EncryptedJoiner;
-        use crate::file::split_encrypted;
+        run(async {
+            // Encrypted leaf bodies are shorter than BODY_SIZE, so the slide must
+            // advance by body.len(), not the stride. Encrypted leaf addresses hash
+            // the ciphertext and are not reconstructible from plaintext here, so the
+            // head cannot be singled out; a uniform delay across all fetches still
+            // overlaps concurrently admitted leaves, and the occupancy hook proves a
+            // correct walk holds at most `window` leaf bodies on short bodies.
+            use crate::file::EncryptedJoiner;
+            use crate::file::split_encrypted;
 
-        let leaves = 30usize;
-        let window = 5usize;
-        let total = (DEFAULT_BODY_SIZE * leaves) as u64;
-        let data: Vec<u8> = (0..total).map(unique_byte).collect();
-        let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
-        let store = store.into_chunks();
+            let leaves = 30usize;
+            let window = 5usize;
+            let total = (DEFAULT_BODY_SIZE * leaves) as u64;
+            let data: Vec<u8> = (0..total).map(unique_byte).collect();
+            let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+            let store = store.into_chunks();
 
-        PEAK_LEAF_OCCUPANCY.with(|p| p.set(0));
-        let getter = UniformSlow {
-            chunks: Arc::new(store),
-        };
+            PEAK_LEAF_OCCUPANCY.with(|p| p.set(0));
+            let getter = UniformSlow {
+                chunks: Arc::new(store),
+            };
 
-        block_on(async {
             let joiner = EncryptedJoiner::new(getter, root_ref)
                 .await
                 .unwrap()
@@ -1120,13 +1120,13 @@ mod tests {
                 out.extend_from_slice(&item.unwrap());
             }
             assert_eq!(out, data, "encrypted short-body slide stays in order");
-        });
 
-        let peak = PEAK_LEAF_OCCUPANCY.with(std::cell::Cell::get);
-        assert!(
-            peak <= window,
-            "encrypted leaf-body occupancy peak {peak} exceeds window {window}"
-        );
+            let peak = PEAK_LEAF_OCCUPANCY.with(std::cell::Cell::get);
+            assert!(
+                peak <= window,
+                "encrypted leaf-body occupancy peak {peak} exceeds window {window}"
+            );
+        })
     }
 
     /// A getter that holds every fetch open across several self-waking yields so
@@ -1178,13 +1178,13 @@ mod tests {
 
         #[test]
         fn encrypted_stream_and_seek() {
-            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
-                .map(|i| (i % 256) as u8)
-                .collect();
-            let bs = DEFAULT_BODY_SIZE as u64;
-            let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
-            let store = store.into_chunks();
-            block_on(async {
+            run(async {
+                let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
+                    .map(|i| (i % 256) as u8)
+                    .collect();
+                let bs = DEFAULT_BODY_SIZE as u64;
+                let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
+                let store = store.into_chunks();
                 // whole file
                 let joiner = EncryptedJoiner::new(store.clone(), root_ref.clone())
                     .await
@@ -1201,7 +1201,7 @@ mod tests {
                     reader.seek(SeekFrom::Start(k)).unwrap();
                     assert_eq!(drain_enc(&mut reader).await, &data[k as usize..]);
                 }
-            });
+            })
         }
     }
 

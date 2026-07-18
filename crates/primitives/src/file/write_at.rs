@@ -179,11 +179,11 @@ where
 mod tests {
     use super::*;
 
-    use futures::executor::block_on;
+    use nectar_testing::run;
 
     #[test]
     fn sparse_writes_reassemble() {
-        block_on(async {
+        run(async {
             let sink = Mutex::new(Vec::new());
             sink.set_len(10).await.unwrap();
             // High offset first, then a low offset.
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn out_of_order_full_coverage() {
-        block_on(async {
+        run(async {
             let sink = Mutex::new(Vec::new());
             sink.set_len(6).await.unwrap();
             sink.write_at(4, b"23").await.unwrap();
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn ref_forwarding_writes_through() {
-        block_on(async {
+        run(async {
             let sink = Mutex::new(Vec::new());
             let r = &sink;
             r.set_len(4).await.unwrap();
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn flush_default_is_noop() {
-        block_on(async {
+        run(async {
             let sink = Mutex::new(Vec::new());
             sink.write_at(0, b"complete").await.unwrap();
             sink.flush().await.unwrap();
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn set_len_presizes() {
-        block_on(async {
+        run(async {
             let sink = Mutex::new(Vec::new());
             sink.set_len(8).await.unwrap();
             assert_eq!(sink.into_inner().unwrap(), vec![0u8; 8]);
@@ -244,7 +244,7 @@ mod download_tests {
     use crate::DEFAULT_BODY_SIZE;
     use crate::chunk::Chunk;
     use crate::file::{Joiner, split};
-    use futures::executor::block_on;
+    use nectar_testing::run;
     use std::collections::HashMap;
 
     type Store = HashMap<crate::ChunkAddress, Chunk>;
@@ -259,52 +259,59 @@ mod download_tests {
     }
 
     /// `download_into` reassembles bytes equal to `read_all` across tree shapes.
-    fn assert_download_matches(data: &[u8], width: usize) {
-        block_on(async {
-            let (root, store) = split_and_store(data);
+    async fn assert_download_matches(data: &[u8], width: usize) {
+        let (root, store) = split_and_store(data);
 
-            let expected = Joiner::new(store.clone(), root)
-                .await
-                .unwrap()
-                .read_all()
-                .await
-                .unwrap();
+        let expected = Joiner::new(store.clone(), root)
+            .await
+            .unwrap()
+            .read_all()
+            .await
+            .unwrap();
 
-            let joiner = Joiner::new(store, root)
-                .await
-                .unwrap()
-                .with_concurrency(width);
-            let sink = Mutex::new(Vec::new());
-            joiner.download_into(&sink).await.unwrap();
+        let joiner = Joiner::new(store, root)
+            .await
+            .unwrap()
+            .with_concurrency(width);
+        let sink = Mutex::new(Vec::new());
+        joiner.download_into(&sink).await.unwrap();
 
-            assert_eq!(sink.into_inner().unwrap(), expected);
-        });
+        assert_eq!(sink.into_inner().unwrap(), expected);
     }
 
     #[test]
     fn download_into_small() {
-        assert_download_matches(b"hello world", DEFAULT_BODY_SIZE);
+        run(async {
+            assert_download_matches(b"hello world", DEFAULT_BODY_SIZE).await;
+        })
     }
 
     #[test]
     fn download_into_exact_chunk() {
-        assert_download_matches(&sample(DEFAULT_BODY_SIZE), 8);
+        run(async {
+            assert_download_matches(&sample(DEFAULT_BODY_SIZE), 8).await;
+        })
     }
 
     #[test]
     fn download_into_multi_level() {
-        let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
-        assert_download_matches(&sample(DEFAULT_BODY_SIZE * (refs_per_chunk + 1) + 17), 8);
+        run(async {
+            let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::constants::REF_SIZE;
+            assert_download_matches(&sample(DEFAULT_BODY_SIZE * (refs_per_chunk + 1) + 17), 8)
+                .await;
+        })
     }
 
     #[test]
     fn download_into_width_one() {
-        assert_download_matches(&sample(DEFAULT_BODY_SIZE * 5 + 7), 1);
+        run(async {
+            assert_download_matches(&sample(DEFAULT_BODY_SIZE * 5 + 7), 1).await;
+        })
     }
 
     #[test]
     fn download_with_progress_monotonic() {
-        block_on(async {
+        run(async {
             let data = sample(DEFAULT_BODY_SIZE * 4 + 99);
             let (root, store) = split_and_store(&data);
             let joiner = Joiner::new(store, root).await.unwrap();
@@ -340,45 +347,50 @@ mod download_tests {
             (root_ref, store.into_chunks())
         }
 
-        fn assert_encrypted_download_matches(data: &[u8], width: usize) {
-            block_on(async {
-                let (root_ref, store) = encrypted_split_and_store(data);
+        async fn assert_encrypted_download_matches(data: &[u8], width: usize) {
+            let (root_ref, store) = encrypted_split_and_store(data);
 
-                let expected = EncryptedJoiner::new(store.clone(), root_ref.clone())
-                    .await
-                    .unwrap()
-                    .read_all()
-                    .await
-                    .unwrap();
+            let expected = EncryptedJoiner::new(store.clone(), root_ref.clone())
+                .await
+                .unwrap()
+                .read_all()
+                .await
+                .unwrap();
 
-                let joiner = EncryptedJoiner::new(store, root_ref)
-                    .await
-                    .unwrap()
-                    .with_concurrency(width);
-                let sink = Mutex::new(Vec::new());
-                joiner.download_into(&sink).await.unwrap();
+            let joiner = EncryptedJoiner::new(store, root_ref)
+                .await
+                .unwrap()
+                .with_concurrency(width);
+            let sink = Mutex::new(Vec::new());
+            joiner.download_into(&sink).await.unwrap();
 
-                assert_eq!(sink.into_inner().unwrap(), expected);
-            });
+            assert_eq!(sink.into_inner().unwrap(), expected);
         }
 
         #[test]
         fn encrypted_download_into_small() {
-            assert_encrypted_download_matches(b"hello world", DEFAULT_BODY_SIZE);
+            run(async {
+                assert_encrypted_download_matches(b"hello world", DEFAULT_BODY_SIZE).await;
+            })
         }
 
         #[test]
         fn encrypted_download_into_multi_level() {
-            let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::super::constants::REF_SIZE;
-            assert_encrypted_download_matches(
-                &sample(DEFAULT_BODY_SIZE * (refs_per_chunk + 1) + 17),
-                8,
-            );
+            run(async {
+                let refs_per_chunk = DEFAULT_BODY_SIZE / super::super::super::constants::REF_SIZE;
+                assert_encrypted_download_matches(
+                    &sample(DEFAULT_BODY_SIZE * (refs_per_chunk + 1) + 17),
+                    8,
+                )
+                .await;
+            })
         }
 
         #[test]
         fn encrypted_download_into_width_one() {
-            assert_encrypted_download_matches(&sample(DEFAULT_BODY_SIZE * 5 + 7), 1);
+            run(async {
+                assert_encrypted_download_matches(&sample(DEFAULT_BODY_SIZE * 5 + 7), 1).await;
+            })
         }
     }
 }

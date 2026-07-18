@@ -146,7 +146,7 @@ fn test_go_vectors_large() {
 mod encrypted {
     use crate::bmt::DEFAULT_BODY_SIZE;
     use crate::file::{join, split_encrypted};
-    use futures::executor::block_on;
+    use nectar_testing::run;
 
     /// Test sizes covering various boundary conditions.
     const TEST_SIZES: &[usize] = &[
@@ -164,7 +164,7 @@ mod encrypted {
         1_000_000,
     ];
 
-    fn run_encrypted_roundtrip(size: usize) {
+    async fn run_encrypted_roundtrip(size: usize) {
         let data: Vec<u8> = (0..size).map(|i| (i % 255) as u8).collect();
 
         let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(&data).unwrap();
@@ -175,16 +175,18 @@ mod encrypted {
             "Root ref must be 64 bytes for size {size}"
         );
 
-        let recovered = block_on(join(&store, root_ref)).unwrap();
+        let recovered = join(&store, root_ref).await.unwrap();
         assert_eq!(recovered, data, "Round-trip failed for size {size}");
     }
 
     #[test]
     fn encrypted_roundtrip_all_sizes() {
-        for &size in TEST_SIZES {
-            run_encrypted_roundtrip(size);
-            eprintln!("  encrypted roundtrip: {size} bytes OK");
-        }
+        run(async {
+            for &size in TEST_SIZES {
+                run_encrypted_roundtrip(size).await;
+                eprintln!("  encrypted roundtrip: {size} bytes OK");
+            }
+        })
     }
 
     #[test]
@@ -220,58 +222,69 @@ mod write_file_ext {
     use crate::bmt::DEFAULT_BODY_SIZE;
     use crate::file::{ChunkGetExt, ChunkPutExt};
     use crate::store::MemoryStore;
-    use futures::executor::block_on;
+    use nectar_testing::run;
 
     #[test]
     fn write_file_roundtrip() {
-        let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
-        let addr = block_on(store.write_file(b"hello swarm".to_vec())).unwrap();
-        let recovered = block_on(store.read_file(addr)).unwrap();
-        assert_eq!(recovered, b"hello swarm");
+        run(async {
+            let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
+            let addr = store.write_file(b"hello swarm".to_vec()).await.unwrap();
+            let recovered = store.read_file(addr).await.unwrap();
+            assert_eq!(recovered, b"hello swarm");
+        })
     }
 
     #[test]
     fn write_file_large() {
-        let data = vec![0xAB; 8192];
-        let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
-        let addr = block_on(store.write_file(data.clone())).unwrap();
-        let recovered = block_on(store.read_file(addr)).unwrap();
-        assert_eq!(recovered, data);
+        run(async {
+            let data = vec![0xAB; 8192];
+            let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
+            let addr = store.write_file(data.clone()).await.unwrap();
+            let recovered = store.read_file(addr).await.unwrap();
+            assert_eq!(recovered, data);
+        })
     }
 
     #[test]
     fn splitter_chunks_roundtrip() {
-        use std::io::Write;
+        run(async {
+            use std::io::Write;
 
-        use crate::file::Splitter;
-        use crate::store::ChunkPut;
+            use crate::file::Splitter;
+            use crate::store::ChunkPut;
 
-        let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
-        let data = b"streaming via splitter";
-        let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
-        splitter.write_all(data).unwrap();
-        let (root, chunks) = splitter.finish().unwrap();
-        for chunk in chunks {
-            let sealed = crate::chunk::Chunk::from_envelope(chunk.into()).unwrap();
-            block_on(store.put(sealed)).unwrap();
-        }
-        let recovered = block_on(store.read_file(root)).unwrap();
-        assert_eq!(recovered, data);
+            let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
+            let data = b"streaming via splitter";
+            let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
+            splitter.write_all(data).unwrap();
+            let (root, chunks) = splitter.finish().unwrap();
+            for chunk in chunks {
+                let sealed = crate::chunk::Chunk::from_envelope(chunk.into()).unwrap();
+                store.put(sealed).await.unwrap();
+            }
+            let recovered = store.read_file(root).await.unwrap();
+            assert_eq!(recovered, data);
+        })
     }
 
     #[cfg(feature = "encryption")]
     mod encrypted {
         use crate::file::{ChunkGetExt, ChunkPutExt};
         use crate::store::MemoryStore;
-        use futures::executor::block_on;
+        use nectar_testing::run;
 
         #[test]
         #[allow(deprecated)] // pins the deprecated ergonomic wrapper's behaviour until removal
         fn write_encrypted_file_roundtrip() {
-            let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
-            let enc_ref = block_on(store.write_encrypted_file(b"secret data".to_vec())).unwrap();
-            let recovered = block_on(store.read_file(enc_ref)).unwrap();
-            assert_eq!(recovered, b"secret data");
+            run(async {
+                let store = MemoryStore::<crate::chunk::StandardChunkSet>::new();
+                let enc_ref = store
+                    .write_encrypted_file(b"secret data".to_vec())
+                    .await
+                    .unwrap();
+                let recovered = store.read_file(enc_ref).await.unwrap();
+                assert_eq!(recovered, b"secret data");
+            })
         }
     }
 }

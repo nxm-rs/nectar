@@ -72,7 +72,7 @@ mod tests {
     use crate::chunk::{Chunk, ChunkAddress};
     use crate::file::Joiner;
     use crate::file::split;
-    use futures::executor::block_on;
+    use nectar_testing::run;
     use std::collections::HashMap;
 
     fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, Chunk>) {
@@ -82,60 +82,60 @@ mod tests {
 
     /// `for_each_chunk` visits every leaf exactly once; reassembling by offset
     /// equals `read_all`.
-    fn assert_for_each_chunk_matches(data: &[u8], width: usize) {
+    async fn assert_for_each_chunk_matches(data: &[u8], width: usize) {
         let (root, store) = split_and_store(data);
-        block_on(async {
-            let expected = Joiner::new(store.clone(), root)
-                .await
-                .unwrap()
-                .read_all()
-                .await
-                .unwrap();
+        let expected = Joiner::new(store.clone(), root)
+            .await
+            .unwrap()
+            .read_all()
+            .await
+            .unwrap();
 
-            let joiner = Joiner::new(store, root)
-                .await
-                .unwrap()
-                .with_concurrency(width);
-            let total = joiner.size();
+        let joiner = Joiner::new(store, root)
+            .await
+            .unwrap()
+            .with_concurrency(width);
+        let total = joiner.size();
 
-            let mut reassembled = vec![0u8; total as usize];
-            let mut covered = 0u64;
-            let mut seen = std::collections::HashSet::new();
-            joiner
-                .for_each_chunk(|off, body| {
-                    assert!(seen.insert(off), "offset {off} visited more than once");
-                    let start = off as usize;
-                    reassembled[start..start + body.len()].copy_from_slice(body);
-                    covered += body.len() as u64;
-                    ControlFlow::Continue(())
-                })
-                .await
-                .unwrap();
+        let mut reassembled = vec![0u8; total as usize];
+        let mut covered = 0u64;
+        let mut seen = std::collections::HashSet::new();
+        joiner
+            .for_each_chunk(|off, body| {
+                assert!(seen.insert(off), "offset {off} visited more than once");
+                let start = off as usize;
+                reassembled[start..start + body.len()].copy_from_slice(body);
+                covered += body.len() as u64;
+                ControlFlow::Continue(())
+            })
+            .await
+            .unwrap();
 
-            assert_eq!(covered, total, "every byte covered exactly once");
-            assert_eq!(reassembled, expected, "reassembly equals read_all");
-            assert_eq!(reassembled, data, "reassembly equals input");
-        });
+        assert_eq!(covered, total, "every byte covered exactly once");
+        assert_eq!(reassembled, expected, "reassembly equals read_all");
+        assert_eq!(reassembled, data, "reassembly equals input");
     }
 
     #[test]
     fn for_each_chunk_reassembles() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        assert_for_each_chunk_matches(b"hello world", 8);
-        assert_for_each_chunk_matches(&data, 8);
-        // width 1 (degenerate concurrent path) still visits every leaf.
-        assert_for_each_chunk_matches(&data, 1);
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            assert_for_each_chunk_matches(b"hello world", 8).await;
+            assert_for_each_chunk_matches(&data, 8).await;
+            // width 1 (degenerate concurrent path) still visits every leaf.
+            assert_for_each_chunk_matches(&data, 1).await;
+        })
     }
 
     #[test]
     fn for_each_chunk_break_stops_early() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-        block_on(async {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
             let joiner = Joiner::new(store, root).await.unwrap();
             let mut visited = 0usize;
             let res = joiner
@@ -150,42 +150,42 @@ mod tests {
                 .await;
             assert!(res.is_ok(), "early break returns Ok");
             assert_eq!(visited, 2, "stops on the breaking leaf");
-        });
+        })
     }
 
     /// Concatenating the in-order runs equals the file.
-    fn assert_window_concat_matches(data: &[u8], window: usize) {
+    async fn assert_window_concat_matches(data: &[u8], window: usize) {
         let (root, store) = split_and_store(data);
-        block_on(async {
-            let joiner = Joiner::new(store, root).await.unwrap();
-            let out = joiner
-                .try_for_each_window(window, Vec::new(), |mut acc: Vec<u8>, run| {
-                    acc.extend_from_slice(run);
-                    ControlFlow::Continue(acc)
-                })
-                .await
-                .unwrap();
-            assert_eq!(out, data, "window concat equals file (window {window})");
-        });
+        let joiner = Joiner::new(store, root).await.unwrap();
+        let out = joiner
+            .try_for_each_window(window, Vec::new(), |mut acc: Vec<u8>, run| {
+                acc.extend_from_slice(run);
+                ControlFlow::Continue(acc)
+            })
+            .await
+            .unwrap();
+        assert_eq!(out, data, "window concat equals file (window {window})");
     }
 
     #[test]
     fn try_for_each_window_concat_equals_file() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        assert_window_concat_matches(&data, 16);
-        // window 1 is the tightest in-order path.
-        assert_window_concat_matches(&data, 1);
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            assert_window_concat_matches(&data, 16).await;
+            // window 1 is the tightest in-order path.
+            assert_window_concat_matches(&data, 1).await;
+        })
     }
 
     #[test]
     fn try_for_each_window_byte_count_equals_size() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 4 + 7)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-        block_on(async {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 4 + 7)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
             let joiner = Joiner::new(store, root).await.unwrap();
             let size = joiner.size();
             let count = joiner
@@ -195,16 +195,16 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(count, size, "folded byte count equals size()");
-        });
+        })
     }
 
     #[test]
     fn try_for_each_window_break_returns_accumulator() {
-        let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5)
-            .map(|i| (i % 256) as u8)
-            .collect();
-        let (root, store) = split_and_store(&data);
-        block_on(async {
+        run(async {
+            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5)
+                .map(|i| (i % 256) as u8)
+                .collect();
+            let (root, store) = split_and_store(&data);
             let joiner = Joiner::new(store, root).await.unwrap();
             // Stop once at least one body has been seen; the carried count comes
             // back through `Break`.
@@ -216,7 +216,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(count, 1, "break carries the accumulator and stops");
-        });
+        })
     }
 
     #[cfg(feature = "encryption")]
@@ -237,11 +237,11 @@ mod tests {
 
         #[test]
         fn for_each_chunk_reassembles_encrypted() {
-            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
-                .map(|i| (i % 256) as u8)
-                .collect();
-            let (root_ref, store) = enc_split_and_store(&data);
-            block_on(async {
+            run(async {
+                let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 3 + 123)
+                    .map(|i| (i % 256) as u8)
+                    .collect();
+                let (root_ref, store) = enc_split_and_store(&data);
                 let expected = EncryptedJoiner::new(store.clone(), root_ref.clone())
                     .await
                     .unwrap()
@@ -266,16 +266,16 @@ mod tests {
                     reassembled, expected,
                     "encrypted reassembly equals read_all"
                 );
-            });
+            })
         }
 
         #[test]
         fn try_for_each_window_concat_equals_file_encrypted() {
-            let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
-                .map(|i| (i % 256) as u8)
-                .collect();
-            let (root_ref, store) = enc_split_and_store(&data);
-            block_on(async {
+            run(async {
+                let data: Vec<u8> = (0..DEFAULT_BODY_SIZE * 5 + 321)
+                    .map(|i| (i % 256) as u8)
+                    .collect();
+                let (root_ref, store) = enc_split_and_store(&data);
                 let joiner = EncryptedJoiner::new(store, root_ref).await.unwrap();
                 let out = joiner
                     .try_for_each_window(16, Vec::new(), |mut acc: Vec<u8>, run| {
@@ -285,7 +285,7 @@ mod tests {
                     .await
                     .unwrap();
                 assert_eq!(out, data, "encrypted window concat equals file");
-            });
+            })
         }
     }
 }

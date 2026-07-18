@@ -1006,6 +1006,7 @@ dependencies = [
  "codspeed",
  "codspeed-criterion-compat-walltime",
  "colored",
+ "futures",
 ]
 
 [[package]]
@@ -1020,6 +1021,7 @@ dependencies = [
  "clap",
  "codspeed",
  "criterion-plot",
+ "futures",
  "is-terminal",
  "itertools 0.10.5",
  "num-traits",
@@ -2076,6 +2078,7 @@ dependencies = [
  "bytes",
  "futures",
  "nectar-primitives",
+ "nectar-testing",
  "proptest",
  "thiserror",
 ]
@@ -2091,6 +2094,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "futures",
  "nectar-primitives",
+ "nectar-testing",
  "rand 0.10.1",
  "serde_json",
  "thiserror",
@@ -2172,6 +2176,7 @@ dependencies = [
  "hybrid-array",
  "js-sys",
  "keccak-batch",
+ "nectar-testing",
  "parking_lot",
  "proptest",
  "proptest-arbitrary-interop",
