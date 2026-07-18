@@ -94,6 +94,7 @@ mod fork;
 mod format;
 mod meta;
 mod node;
+mod order;
 mod packing;
 mod reader;
 mod scan;
