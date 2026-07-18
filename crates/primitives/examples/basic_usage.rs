@@ -81,15 +81,16 @@ fn content_chunk_example() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(chunk.address(), parsed.address());
     println!("Addresses match \u{2705}");
 
-    // Create with a pre-computed address
+    // Certify against a known address (e.g. one read from storage)
     let address = *chunk.address(); // Pretend we know this in advance
     let data_copy = chunk.data().clone();
-    let chunk_with_address = DefaultContentChunk::with_address(data_copy, address)?;
-    println!("\nCreated chunk with pre-computed address:");
-    println!("  - Address: {}", chunk_with_address.address());
+    let rebuilt = DefaultContentChunk::new(data_copy)?;
+    rebuilt.verify(&address)?;
+    println!("\nRebuilt chunk certifies against the known address:");
+    println!("  - Address: {}", rebuilt.address());
 
     // Verify it matches our expected address
-    assert_eq!(chunk.address(), chunk_with_address.address());
+    assert_eq!(chunk.address(), rebuilt.address());
     println!("Addresses match \u{2705}");
 
     Ok(())

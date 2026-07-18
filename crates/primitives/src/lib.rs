@@ -15,13 +15,13 @@
 //! use nectar_primitives::{Chunk, DefaultContentChunk, DefaultSingleOwnerChunk, SocId};
 //! use alloy_signer_local::LocalSigner;
 //!
-//! // Creating content chunks
+//! // Creating content chunks; the address is derived from the content
 //! let chunk = DefaultContentChunk::new(b"Hello, world!".as_slice()).unwrap();
-//! let address = chunk.address();
+//! let address = *chunk.address();
 //!
-//! // Creating content chunks with pre-computed address (e.g., from storage)
-//! let address_copy = *address;
-//! let chunk2 = DefaultContentChunk::with_address(b"Hello, world!".as_slice(), address_copy).unwrap();
+//! // Reconstructing a chunk (e.g. from storage) and certifying it
+//! let chunk2 = DefaultContentChunk::new(b"Hello, world!".as_slice()).unwrap();
+//! chunk2.verify(&address).unwrap();
 //!
 //! // Creating signed chunks
 //! let wallet = LocalSigner::random();
@@ -113,6 +113,7 @@ pub use chunk::{
     ChunkError,
     ChunkHeader,
     // Concrete chunk types
+    ChunkInner,
     ChunkRef,
     ChunkType,
     ChunkTypeId,

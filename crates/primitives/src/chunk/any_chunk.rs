@@ -121,11 +121,11 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     ///
     /// # Borrowing
     ///
-    /// The CAC and SOC paths dispatch through borrowed body accessors
-    /// ([`ContentChunk::body`] and [`SingleOwnerChunk::inner_body`]), so no
-    /// chunk or body is cloned. For a SOC the wrapped body already *is* the
-    /// content chunk's `span || payload`, so the inner root needs no
-    /// `32 + 65` (id + signature) header slicing.
+    /// Both paths dispatch through the carrier's borrowed body accessor
+    /// ([`ChunkInner::body`](super::inner::ChunkInner::body)), so no chunk or
+    /// body is cloned. For a SOC the wrapped body already *is* the content
+    /// chunk's `span || payload`, so the inner root needs no `32 + 65`
+    /// (id + signature) header slicing.
     pub fn transformed_address(&self, anchor: &[u8]) -> ChunkAddress {
         match self {
             Self::Content(c) => c
@@ -133,7 +133,7 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
                 .seal_transformed(c.address(), c.body().transformed_root(anchor)),
             Self::SingleOwner(c) => c
                 .header()
-                .seal_transformed(c.address(), c.inner_body().transformed_root(anchor)),
+                .seal_transformed(c.address(), c.body().transformed_root(anchor)),
         }
     }
 
@@ -328,9 +328,14 @@ impl<const BODY_SIZE: usize> From<SingleOwnerChunk<BODY_SIZE>> for AnyChunk<BODY
     }
 }
 
+/// Structural equality: same variant, equal header and body.
 impl<const BODY_SIZE: usize> PartialEq for AnyChunk<BODY_SIZE> {
     fn eq(&self, other: &Self) -> bool {
-        self.address() == other.address()
+        match (self, other) {
+            (Self::Content(a), Self::Content(b)) => a == b,
+            (Self::SingleOwner(a), Self::SingleOwner(b)) => a == b,
+            _ => false,
+        }
     }
 }
 
@@ -647,8 +652,8 @@ mod tests {
         // `unwrap_cac` must expose the wrapped content body with no manual
         // 32 + 65 header slicing; its span/payload feed the inner BMT.
         let cac = soc.unwrap_cac();
-        assert_eq!(cac.span(), soc.inner_body().span());
-        assert_eq!(cac.data(), soc.inner_body().data());
+        assert_eq!(cac.span(), soc.body().span());
+        assert_eq!(cac.data(), soc.body().data());
 
         let any: DefaultAnyChunk = soc.into();
         let tr = any.transformed_address(ANCHOR);

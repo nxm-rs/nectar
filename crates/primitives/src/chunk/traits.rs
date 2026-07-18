@@ -128,14 +128,12 @@ pub trait Chunk: Send + Sync + 'static {
         Self::Header::SIZE.saturating_add(self.data().len())
     }
 
-    /// Verify that this chunk matches an expected address
-    fn verify(&self, expected: &ChunkAddress) -> Result<(), PrimitivesError> {
-        let actual = self.address();
-        if actual != expected {
-            return Err(ChunkError::verification_failed(*expected, *actual).into());
-        }
-        Ok(())
-    }
+    /// Certify this chunk against an expected address.
+    ///
+    /// Required, deliberately without a default: verification must run the
+    /// header's full acceptance rule ([`ChunkHeader::validate`]), never a bare
+    /// compare against the chunk's own derived address.
+    fn verify(&self, expected: &ChunkAddress) -> Result<(), PrimitivesError>;
 }
 
 /// Trait for chunks that contain a BMT body
