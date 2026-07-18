@@ -7,6 +7,8 @@
 //!
 //! The chunk system is built around a hierarchy of traits:
 //!
+//! - [`ChunkHeader`] - Address-derivation and self-certification predicate of
+//!   a chunk type ([`CacHeader`], [`SocHeader`])
 //! - [`Chunk`] - Core trait for all chunk types
 //! - [`ChunkType`] - Adds compile-time type identification
 //! - [`ChunkTypeSet`] - Defines which chunk types a system supports
@@ -34,8 +36,9 @@ mod type_tag;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-// Re-export the address type and core traits
+// Re-export the address type, error type, and core traits
 pub use address::ChunkAddress;
+pub use error::ChunkError;
 pub use traits::{BmtChunk, Chunk, ChunkHeader};
 
 // Re-export the reference types
@@ -48,11 +51,11 @@ pub use chunk_type_set::{ChunkTypeSet, ContentOnlyChunkSet, StandardChunkSet};
 pub use type_id::ChunkTypeId;
 pub use type_tag::{ChunkTypeTag, ChunkVersion, TagWireError};
 
-// Re-export the concrete chunk types
-pub use content::ContentChunk;
+// Re-export the concrete chunk types and their headers
 #[cfg(feature = "encryption")]
 pub use content::EncryptedContentChunk;
+pub use content::{CacHeader, ContentChunk};
 #[cfg(feature = "encryption")]
 pub use encryption::ChunkEncrypt;
-pub use single_owner::SingleOwnerChunk;
+pub use single_owner::{SingleOwnerChunk, SocHeader};
 pub use soc_id::SocId;

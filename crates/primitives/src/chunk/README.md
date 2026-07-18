@@ -9,7 +9,7 @@ The chunk module is built around a trait-based architecture that allows for diff
 ### Core Traits
 
 - `Chunk`: The main trait that all chunk types implement, defining common operations (address, header, data, verify)
-- `ChunkHeader`: The wire header bytes that precede a chunk's BMT body
+- `ChunkHeader`: The unsealed predicate a chunk type is: address derivation (`commit`), self-certification (`validate`), transformed-address sealing, and the wire header codec (`CacHeader` is empty, `SocHeader` is `id || signature`)
 - `BmtChunk`: A trait for chunks that contain a BMT body (most chunk types)
 - `ChunkType`: Compile-time type identification (type ID and name)
 - `ChunkTypeSet`: The set of chunk types a system supports

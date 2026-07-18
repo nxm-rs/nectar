@@ -107,8 +107,11 @@ pub use chunk::{
     AnyChunk,
     // Core traits
     BmtChunk,
+    CacHeader,
     Chunk,
     ChunkAddress,
+    ChunkError,
+    ChunkHeader,
     // Concrete chunk types
     ChunkRef,
     ChunkType,
@@ -121,6 +124,7 @@ pub use chunk::{
     RefKind,
     Reference,
     SingleOwnerChunk,
+    SocHeader,
     SocId,
     StandardChunkSet,
     TagWireError,

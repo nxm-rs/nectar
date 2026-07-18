@@ -13,8 +13,11 @@ pub enum ChunkError {
     /// Chunk size is invalid
     #[error("Invalid chunk size: {message} (expected: {expected}, got: {actual})")]
     InvalidSize {
+        /// What was being sized when the mismatch was found
         message: &'static str,
+        /// Byte width the format requires
         expected: usize,
+        /// Byte width actually observed
         actual: usize,
     },
 
@@ -25,7 +28,9 @@ pub enum ChunkError {
     /// Chunk address verification failed
     #[error("Chunk address verification failed: expected {expected}, got {actual}")]
     VerificationFailed {
+        /// Address the chunk was checked against
         expected: ChunkAddress,
+        /// Address the chunk actually derives
         actual: ChunkAddress,
     },
 
@@ -44,9 +49,14 @@ pub enum ChunkError {
     /// Unsupported chunk type
     #[error("Unsupported chunk type: {0}")]
     UnsupportedType(ChunkTypeId),
+
+    /// Wire buffer underrun
+    #[error(transparent)]
+    Underrun(#[from] crate::wire::Underrun),
 }
 
 impl ChunkError {
+    /// Construct an [`InvalidSize`](Self::InvalidSize) error
     pub const fn invalid_size(message: &'static str, expected: usize, actual: usize) -> Self {
         Self::InvalidSize {
             message,
@@ -55,18 +65,22 @@ impl ChunkError {
         }
     }
 
+    /// Construct an [`InvalidFormat`](Self::InvalidFormat) error
     pub fn invalid_format<S: Into<String>>(msg: S) -> Self {
         Self::InvalidFormat(msg.into())
     }
 
+    /// Construct a [`VerificationFailed`](Self::VerificationFailed) error
     pub const fn verification_failed(expected: ChunkAddress, actual: ChunkAddress) -> Self {
         Self::VerificationFailed { expected, actual }
     }
 
+    /// Construct an [`InvalidSignature`](Self::InvalidSignature) error
     pub fn invalid_signature<S: Into<String>>(msg: S) -> Self {
         Self::InvalidSignature(msg.into())
     }
 
+    /// Construct an [`UnsupportedType`](Self::UnsupportedType) error
     pub const fn unsupported_type(type_id: ChunkTypeId) -> Self {
         Self::UnsupportedType(type_id)
     }
