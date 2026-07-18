@@ -41,7 +41,8 @@ use alloc::collections::BTreeMap;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::file::{ChunkPutExt, ReadAt};
-use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
+use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedStore};
+use nectar_primitives::{AnyChunkSet, Chunk};
 
 use crate::entry::Entry;
 use crate::manifest::Manifest;
@@ -93,7 +94,9 @@ impl<S, R: Reference, const BS: usize> ManifestBuilder<S, R, BS> {
     }
 }
 
-impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> ManifestBuilder<S, R, BS> {
+impl<S: TrustedStore<AnyChunkSet<BS>>, R: Reference + MaybeSend, const BS: usize>
+    ManifestBuilder<S, R, BS>
+{
     /// Stage a path with a typed reference.
     pub async fn add(&mut self, path: &str, reference: impl Into<R>) -> Result<()> {
         self.manifest.add(path, reference).await
@@ -135,7 +138,9 @@ impl<S: ChunkGet<BS>, R: Reference + MaybeSend, const BS: usize> ManifestBuilder
     }
 }
 
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> ManifestBuilder<S, ChunkRef, BS> {
+impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
+    ManifestBuilder<S, ChunkRef, BS>
+{
     /// Split `data`, store its chunks, and stage the resulting root at `path`.
     ///
     /// One mode end to end: a plain builder splits in plain mode and stages a
@@ -156,7 +161,7 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize> ManifestBuilder<S, ChunkRe
 }
 
 #[cfg(feature = "encryption")]
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
+impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
     ManifestBuilder<S, nectar_primitives::EncryptedChunkRef, BS>
 {
     /// Split `data` in encrypted mode, store its chunks, and stage the root at `path`.
@@ -173,13 +178,14 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
         let (root, chunks) = EncryptedParallelSplitter::<BS>::split_to_vec(&data)?;
         drop(data);
         for chunk in chunks {
-            self.store().put(chunk).await.map_err(FileError::store)?;
+            let sealed: Chunk<_, AnyChunkSet<BS>> = Chunk::from_envelope(chunk)?;
+            self.store().put(sealed).await.map_err(FileError::store)?;
         }
         self.add(path, root).await
     }
 }
 
-impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
+impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
     ManifestBuilder<S, nectar_primitives::EncryptedChunkRef, BS>
 {
     /// Persist the encrypted manifest, consuming the builder.
@@ -201,6 +207,7 @@ impl<S: ChunkGet<BS> + ChunkPut<BS>, const BS: usize>
 #[cfg(test)]
 mod tests {
     use futures::executor::block_on;
+    use nectar_primitives::StandardChunkSet;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
     use nectar_primitives::chunk::ChunkAddress;
     use nectar_primitives::store::MemoryStore;
@@ -208,7 +215,7 @@ mod tests {
     use super::*;
     use crate::metadata;
 
-    type Store = MemoryStore<DEFAULT_BODY_SIZE>;
+    type Store = MemoryStore<StandardChunkSet>;
 
     fn make_addr(s: &str) -> ChunkAddress {
         let bytes = s.as_bytes();

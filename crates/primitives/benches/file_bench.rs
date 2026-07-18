@@ -26,7 +26,7 @@ use rand::{Rng, rng};
 use futures::executor::block_on;
 
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
+use nectar_primitives::chunk::{Chunk, ChunkAddress};
 use nectar_primitives::file::{Joiner, ParallelSplitter, Splitter, split};
 use nectar_primitives::store::MemoryStore;
 
@@ -58,7 +58,7 @@ fn random_data(size: u64) -> Vec<u8> {
     data
 }
 
-fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
+fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, Chunk>) {
     let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
     (root, store.into_chunks())
 }
@@ -218,7 +218,9 @@ fn bench_roundtrip(c: &mut Criterion) {
             b.iter(|| {
                 let (root, chunks) =
                     ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
-                let store = MemoryStore::from_chunks(chunks);
+                let store = MemoryStore::from_chunks(
+                    chunks.into_iter().map(|c| Chunk::from_envelope(c).unwrap()),
+                );
                 let joiner = block_on(Joiner::new(store, root)).unwrap();
                 black_box(block_on(joiner.read_all()).unwrap())
             });

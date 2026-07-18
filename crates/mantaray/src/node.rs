@@ -9,9 +9,9 @@ use crate::obfuscation::ObfuscationKey;
 use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 use bytes::Bytes;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ChunkRef, ContentChunk, Reference};
-use nectar_primitives::store::{ChunkGet, ChunkPut, MaybeSend};
+use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedStore};
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
-use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
+use nectar_primitives::{AnyChunkSet, Chunk, EncryptedChunkRef, EncryptionKey};
 
 /// Boxed recursion future: `Send` on native, unbounded on wasm32 so `!Send`
 /// browser stores stay usable. `MaybeSend` cannot appear in a `dyn` bound
@@ -397,7 +397,10 @@ impl<R: Reference> Node<R> {
     }
 
     /// Load forks from storage if the node hasn't been loaded yet.
-    async fn ensure_loaded<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
+    async fn ensure_loaded<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+        &mut self,
+        store: &S,
+    ) -> Result<()> {
         if !self.is_loaded() {
             self.load(store).await?;
         }
@@ -405,7 +408,10 @@ impl<R: Reference> Node<R> {
     }
 
     /// Load this node from storage by its reference.
-    pub(crate) async fn load<S: ChunkGet<BS>, const BS: usize>(&mut self, store: &S) -> Result<()> {
+    pub(crate) async fn load<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+        &mut self,
+        store: &S,
+    ) -> Result<()> {
         let reference = match &self.state {
             NodeState::Stub(reference) | NodeState::Clean(reference) => reference.clone(),
             // A dirty node holds its content in memory; nothing to fetch.
@@ -419,7 +425,7 @@ impl<R: Reference> Node<R> {
             .map_err(|e| MantarayError::StoreGet {
                 source: alloc::sync::Arc::new(e),
             })?;
-        let mut loaded = Self::decode(chunk.data().as_ref())
+        let mut loaded = Self::decode(chunk.envelope().data().as_ref())
             .map_err(|source| MantarayError::Corrupt { address, source })?;
         loaded.mark_persisted(reference);
         // Preserve fields that live in the parent's fork data, not in this node's chunk:
@@ -432,7 +438,7 @@ impl<R: Reference> Node<R> {
 
     /// Look up the node at the given path, loading from storage as needed.
     #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-    pub(crate) async fn lookup_node<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) async fn lookup_node<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -470,7 +476,7 @@ impl<R: Reference> Node<R> {
     /// `&self` and clones each descended fork, so reading a persisted manifest
     /// leaves the trie untouched. Returns `None` for an absent path.
     #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-    pub(crate) async fn get_node<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) async fn get_node<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
         &self,
         path: &[u8],
         store: &S,
@@ -502,7 +508,7 @@ impl<R: Reference> Node<R> {
 
     /// Look up the entry at the given path, loading from storage as needed.
     #[cfg(test)]
-    pub(crate) async fn lookup<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) async fn lookup<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -525,7 +531,7 @@ impl<R: Reference> Node<R> {
     // <= min(prefix.len(), path.len()), bounding every split; the fork at
     // `path[0]` is checked present (`contains_key`) before each get/expect.
     #[allow(clippy::indexing_slicing, clippy::expect_used)]
-    pub(crate) fn add<'a, S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn add<'a, S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
         &'a mut self,
         path: &'a [u8],
         entry: Option<R>,
@@ -655,7 +661,7 @@ impl<R: Reference> Node<R> {
     // `path.starts_with(&prefix)` guarantees `prefix.len() <= path.len()`;
     // the fork at `first` is checked present before the get_mut/expect.
     #[allow(clippy::indexing_slicing, clippy::expect_used)]
-    pub(crate) fn remove<'a, S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) fn remove<'a, S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
         &'a mut self,
         path: &'a [u8],
         store: &'a S,
@@ -705,7 +711,7 @@ impl<R: Reference> Node<R> {
 
     /// Test whether a prefix exists in the trie, loading from storage as needed.
     #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-    pub(crate) async fn has_prefix<S: ChunkGet<BS>, const BS: usize>(
+    pub(crate) async fn has_prefix<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -747,7 +753,10 @@ impl<R: Reference> Node<R> {
     /// recursion: each frame visits its forks (pushing unsaved children) before
     /// the node itself is encoded and put.
     #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
-    pub(crate) async fn save<S: ChunkPut<BS>, const BS: usize>(&mut self, store: &S) -> Result<()>
+    pub(crate) async fn save<S: ChunkPut<AnyChunkSet<BS>>, const BS: usize>(
+        &mut self,
+        store: &S,
+    ) -> Result<()>
     where
         R: StoredReference,
     {
@@ -799,8 +808,9 @@ impl<R: Reference> Node<R> {
             let data = node.encode()?;
             let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
             let address = *chunk.address();
+            let sealed: Chunk<_, AnyChunkSet<BS>> = Chunk::from_envelope(chunk.into())?;
             store
-                .put(chunk.into())
+                .put(sealed)
                 .await
                 .map_err(|e| MantarayError::StorePut {
                     source: alloc::sync::Arc::new(e),
@@ -816,7 +826,7 @@ impl<R: Reference> Node<R> {
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
-    pub(crate) async fn walk<S: ChunkGet<BS>, const BS: usize, F>(
+    pub(crate) async fn walk<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize, F>(
         &mut self,
         store: &S,
         f: &mut F,
@@ -829,7 +839,7 @@ impl<R: Reference> Node<R> {
     }
 
     /// Walk the subtree at `root`, calling `f` for each node.
-    pub(crate) async fn walk_from<S: ChunkGet<BS>, const BS: usize, F>(
+    pub(crate) async fn walk_from<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize, F>(
         &mut self,
         root: &[u8],
         store: &S,
@@ -852,7 +862,7 @@ impl<R: Reference> Node<R> {
 ///
 /// The visitor `f` only reads loaded nodes, so it stays a synchronous `FnMut`.
 #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
-async fn walk_inner<R: Reference, S: ChunkGet<BS>, const BS: usize, F>(
+async fn walk_inner<R: Reference, S: TrustedStore<AnyChunkSet<BS>>, const BS: usize, F>(
     path_buf: &mut Vec<u8>,
     node: &mut Node<R>,
     store: &S,
@@ -1049,6 +1059,7 @@ mod arbitrary_impls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nectar_primitives::StandardChunkSet;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
     use nectar_primitives::store::{MemoryStore, NullLoader};
 
@@ -1440,7 +1451,7 @@ mod tests {
             node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
         }
 
-        let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
+        let store = MemoryStore::<StandardChunkSet>::new();
         block_on(n.save(&store)).unwrap();
 
         let mut n2: Node = Node::from_reference(*n.reference().unwrap());
@@ -1462,8 +1473,8 @@ mod tests {
         let chunk = ContentChunk::<{ DEFAULT_BODY_SIZE }>::new(Bytes::from(vec![1u8; 8])).unwrap();
         let address = *chunk.address();
 
-        let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
-        block_on(store.put(chunk.into())).unwrap();
+        let store = MemoryStore::<StandardChunkSet>::new();
+        block_on(store.put(Chunk::from_envelope(chunk.into()).unwrap())).unwrap();
 
         let mut node: Node = Node::from_reference(ChunkRef::from(address));
         let err = block_on(node.load(&store)).unwrap_err();
@@ -1565,7 +1576,7 @@ mod tests {
     // Tests save->reload->remove->save->reload->verify-removed cycle.
 
     fn run_persist_remove(tc: RemoveTestCase) {
-        let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
+        let store = MemoryStore::<StandardChunkSet>::new();
 
         // add entries and persist
         let mut n = Node::default();
@@ -1756,7 +1767,7 @@ mod tests {
             node_add(&mut n, path, entry, BTreeMap::new());
         }
 
-        let store = MemoryStore::<{ DEFAULT_BODY_SIZE }>::new();
+        let store = MemoryStore::<StandardChunkSet>::new();
         block_on(n.save(&store)).unwrap();
 
         let mut n2: Node = Node::from_reference(*n.reference().unwrap());

@@ -32,7 +32,7 @@ use bytes::Bytes;
 use futures::stream::{self, FuturesUnordered, Stream, StreamExt};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::ChunkAddress;
+use crate::chunk::{AnyChunkSet, ChunkAddress};
 
 use super::error::{FileError, Result};
 use super::frontier::{
@@ -40,7 +40,7 @@ use super::frontier::{
 };
 use super::mode::{JoinMode, PlainMode};
 use super::tree::{ChunkRange, TreeParams};
-use crate::store::{ChunkGet, MaybeSend};
+use crate::store::{MaybeSend, TrustedStore};
 
 #[cfg(feature = "encryption")]
 use super::mode::EncryptedMode;
@@ -48,7 +48,7 @@ use super::mode::EncryptedMode;
 /// Generic async joiner parameterized by chunk mode.
 pub struct GenericJoiner<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
 {
     getter: Arc<G>,
     root: ChunkAddress,
@@ -73,7 +73,7 @@ pub type EncryptedJoiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
 
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for GenericJoiner<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -94,7 +94,7 @@ async fn collect_subtree_bodies<G, M, const BODY_SIZE: usize>(
     concurrency: usize,
 ) -> Result<Vec<Bytes>>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode + MaybeSend + Sync,
 {
     let bodies: Vec<Bytes> = stream::iter(subtrees)
@@ -115,7 +115,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode + MaybeSend + Sync,
 {
     /// Create an async joiner from a root reference.
@@ -269,21 +269,24 @@ where
     ) -> Result<Vec<u8>> {
         use super::helpers::{ReadRangeCheck, validate_read_range};
 
-        let (offset, actual_len) = match validate_read_range::<BODY_SIZE>(offset, len, span) {
-            ReadRangeCheck::Empty => return Ok(Vec::new()),
-            ReadRangeCheck::SingleChunk { offset, actual_len } => {
-                let chunk = getter.get(root).await.map_err(FileError::getter)?;
-                let chunk = chunk.into_content().ok_or(FileError::InvalidChunkType {
-                    type_name: "non-content",
-                })?;
-                let body = M::decode_body::<BODY_SIZE>(chunk, context, span)?;
-                // offset < span <= BODY_SIZE in the single-chunk case.
-                let start = crate::cast::usize_from_u64(offset);
-                let end = start + actual_len;
-                return Ok(body[start..end].to_vec());
-            }
-            ReadRangeCheck::MultiChunk { offset, actual_len } => (offset, actual_len),
-        };
+        let (offset, actual_len) =
+            match validate_read_range::<BODY_SIZE>(offset, len, span) {
+                ReadRangeCheck::Empty => return Ok(Vec::new()),
+                ReadRangeCheck::SingleChunk { offset, actual_len } => {
+                    let chunk = getter.get(root).await.map_err(FileError::getter)?;
+                    let chunk = chunk.into_envelope().into_content().ok_or(
+                        FileError::InvalidChunkType {
+                            type_name: "non-content",
+                        },
+                    )?;
+                    let body = M::decode_body::<BODY_SIZE>(chunk, context, span)?;
+                    // offset < span <= BODY_SIZE in the single-chunk case.
+                    let start = crate::cast::usize_from_u64(offset);
+                    let end = start + actual_len;
+                    return Ok(body[start..end].to_vec());
+                }
+                ReadRangeCheck::MultiChunk { offset, actual_len } => (offset, actual_len),
+            };
 
         let chunk_range = tree.chunks_for_range(offset, crate::cast::u64_from_usize(actual_len));
         let range_start_byte = chunk_range.start * crate::cast::u64_from_usize(BODY_SIZE);
@@ -502,7 +505,7 @@ where
             pending: Pending<M>,
         ) -> Resolved<M>
         where
-            G: ChunkGet<BS>,
+            G: TrustedStore<AnyChunkSet<BS>>,
             M: JoinMode + MaybeSend + Sync,
         {
             let node = &pending.node;
@@ -698,7 +701,7 @@ pub(crate) fn chunked_range_stream_from<G, M, const BODY_SIZE: usize>(
     len: u64,
 ) -> impl Stream<Item = Result<(u64, Bytes)>> + 'static
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     let width = concurrency.max(1);
@@ -744,7 +747,7 @@ where
         pending: Pending<M>,
     ) -> Resolved<M>
     where
-        G: ChunkGet<BS>,
+        G: TrustedStore<AnyChunkSet<BS>>,
         M: JoinMode + MaybeSend + Sync,
     {
         let node = &pending.node;
@@ -909,7 +912,7 @@ where
 #[cfg(feature = "tokio")]
 pub struct JoinerReader<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
 {
     joiner: GenericJoiner<G, M, BODY_SIZE>,
     buffer: Bytes,
@@ -920,7 +923,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for JoinerReader<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE>,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -935,7 +938,7 @@ where
 // Safety: JoinerReader contains no self-referential data.
 // The boxed future is heap-allocated and all other fields are plain data.
 #[cfg(feature = "tokio")]
-impl<G: ChunkGet<BODY_SIZE>, M: JoinMode, const BODY_SIZE: usize> Unpin
+impl<G: TrustedStore<AnyChunkSet<BODY_SIZE>>, M: JoinMode, const BODY_SIZE: usize> Unpin
     for JoinerReader<G, M, BODY_SIZE>
 {
 }
@@ -943,7 +946,7 @@ impl<G: ChunkGet<BODY_SIZE>, M: JoinMode, const BODY_SIZE: usize> Unpin
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncRead for JoinerReader<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     #[allow(
@@ -1029,7 +1032,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncSeek for JoinerReader<G, M, BODY_SIZE>
 where
-    G: ChunkGet<BODY_SIZE> + 'static,
+    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     fn start_seek(self: std::pin::Pin<&mut Self>, pos: SeekFrom) -> std::io::Result<()> {
@@ -1052,12 +1055,12 @@ where
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
-    use crate::chunk::AnyChunk;
-    use crate::chunk::ChunkOps;
+    use crate::chunk::{Chunk, ChunkOps, StandardChunkSet, Verified};
     use crate::file::split;
+    use crate::store::ChunkGet;
     use std::collections::HashMap;
 
-    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
+    fn split_and_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, Chunk>) {
         let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
         (root, store.into_chunks())
     }
@@ -1074,13 +1077,14 @@ mod tests {
     /// the frontier nor lets a slow intermediate stall other subtrees.
     #[derive(Clone)]
     struct ProbeStore {
-        inner: Arc<HashMap<ChunkAddress, AnyChunk>>,
+        inner: Arc<HashMap<ChunkAddress, Chunk>>,
         gets: Arc<AtomicUsize>,
     }
 
-    impl ChunkGet<DEFAULT_BODY_SIZE> for ProbeStore {
+    impl ChunkGet<StandardChunkSet> for ProbeStore {
+        type Trust = Verified;
         type Error = crate::store::ChunkStoreError;
-        async fn get(&self, address: &ChunkAddress) -> std::result::Result<AnyChunk, Self::Error> {
+        async fn get(&self, address: &ChunkAddress) -> std::result::Result<Chunk, Self::Error> {
             self.gets.fetch_add(1, Ordering::SeqCst);
             self.inner
                 .get(address)
@@ -1091,7 +1095,7 @@ mod tests {
 
     async fn drain_chunked_to_buf<G>(joiner: GenericJoiner<G, PlainMode>, total: usize) -> Vec<u8>
     where
-        G: ChunkGet<DEFAULT_BODY_SIZE> + 'static,
+        G: TrustedStore + 'static,
     {
         let stream = joiner.into_offset_stream_chunked();
         futures::pin_mut!(stream);
@@ -1366,15 +1370,16 @@ mod tests {
     /// chunk-granular stream reaches per-chunk (not per-subtree) concurrency.
     #[derive(Clone)]
     struct ConcurrencyProbe {
-        chunks: Arc<HashMap<ChunkAddress, AnyChunk>>,
+        chunks: Arc<HashMap<ChunkAddress, Chunk>>,
         in_flight: Arc<std::sync::atomic::AtomicUsize>,
         max_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl crate::store::ChunkGet<DEFAULT_BODY_SIZE> for ConcurrencyProbe {
+    impl crate::store::ChunkGet<StandardChunkSet> for ConcurrencyProbe {
+        type Trust = Verified;
         type Error = crate::store::ChunkStoreError;
 
-        async fn get(&self, address: &ChunkAddress) -> std::result::Result<AnyChunk, Self::Error> {
+        async fn get(&self, address: &ChunkAddress) -> std::result::Result<Chunk, Self::Error> {
             use std::sync::atomic::Ordering;
             let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_in_flight.fetch_max(now, Ordering::SeqCst);
@@ -1442,6 +1447,9 @@ mod tests {
     /// the intermediate cap.
     const TINY_BODY: usize = 256;
 
+    /// Sealed chunk currency at the tiny body size.
+    type TinyChunk = Chunk<Verified, AnyChunkSet<TINY_BODY>>;
+
     /// Content addresses of every data leaf for `data` under `TINY_BODY`, so a
     /// probe getter can tell a leaf fetch from an intermediate fetch.
     fn tiny_leaf_addresses(data: &[u8]) -> std::collections::HashSet<ChunkAddress> {
@@ -1458,7 +1466,7 @@ mod tests {
     /// chosen intermediate until the consumer has delivered `slow_gate` leaves.
     #[derive(Clone)]
     struct OrderProbe {
-        chunks: Arc<HashMap<ChunkAddress, AnyChunk<TINY_BODY>>>,
+        chunks: Arc<HashMap<ChunkAddress, TinyChunk>>,
         leaves: Arc<std::collections::HashSet<ChunkAddress>>,
         /// One entry per fetch in start order: `true` for a leaf fetch.
         kinds: Arc<std::sync::Mutex<Vec<bool>>>,
@@ -1470,7 +1478,7 @@ mod tests {
     }
 
     impl OrderProbe {
-        fn new(store: HashMap<ChunkAddress, AnyChunk<TINY_BODY>>, data: &[u8]) -> Self {
+        fn new(store: HashMap<ChunkAddress, TinyChunk>, data: &[u8]) -> Self {
             Self {
                 chunks: Arc::new(store),
                 leaves: Arc::new(tiny_leaf_addresses(data)),
@@ -1503,13 +1511,11 @@ mod tests {
         }
     }
 
-    impl crate::store::ChunkGet<TINY_BODY> for OrderProbe {
+    impl crate::store::ChunkGet<AnyChunkSet<TINY_BODY>> for OrderProbe {
+        type Trust = Verified;
         type Error = crate::store::ChunkStoreError;
 
-        async fn get(
-            &self,
-            address: &ChunkAddress,
-        ) -> std::result::Result<AnyChunk<TINY_BODY>, Self::Error> {
+        async fn get(&self, address: &ChunkAddress) -> std::result::Result<TinyChunk, Self::Error> {
             use std::sync::atomic::Ordering;
             let is_leaf = self.leaves.contains(address);
             self.kinds.lock().unwrap().push(is_leaf);
@@ -1625,7 +1631,7 @@ mod tests {
         let slow = *store
             .iter()
             .find(|(addr, chunk)| {
-                let body = chunk.data();
+                let body = chunk.envelope().data();
                 !leaves.contains(*addr)
                     && **addr != root
                     && body.len() % super::super::constants::REF_SIZE == 0
@@ -1879,7 +1885,7 @@ mod tests {
             data: &[u8],
         ) -> (
             crate::chunk::encryption::EncryptedChunkRef,
-            HashMap<ChunkAddress, AnyChunk>,
+            HashMap<ChunkAddress, Chunk>,
         ) {
             let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
             (root_ref, store.into_chunks())

@@ -180,7 +180,7 @@ pub(crate) async fn expand_frontier<G, M, const BS: usize>(
     target_subtrees: usize,
 ) -> Result<Vec<SubtreeNode<M>>>
 where
-    G: crate::store::ChunkGet<BS>,
+    G: crate::store::TrustedStore<crate::chunk::AnyChunkSet<BS>>,
     M: JoinMode + MaybeSend + Sync,
 {
     use futures::stream::{self, StreamExt};
@@ -231,7 +231,7 @@ pub(crate) async fn read_subtree_bodies<G, M, const BS: usize>(
     chunk_range: &ChunkRange,
 ) -> Result<Vec<Bytes>>
 where
-    G: crate::store::ChunkGet<BS>,
+    G: crate::store::TrustedStore<crate::chunk::AnyChunkSet<BS>>,
     M: JoinMode + MaybeSend + Sync,
 {
     let mut out = Vec::new();

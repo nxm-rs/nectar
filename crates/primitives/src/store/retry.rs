@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use super::maybe_send::{MaybeSend, MaybeSync};
 use super::typed::{ChunkGet, ChunkHas, ChunkPut};
-use crate::chunk::{AnyChunk, ChunkAddress};
+use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
 
 /// Injected async delay so the decorator owns its timer: nectar takes no new
 /// timer dependency and each consumer supplies its platform sleep.
@@ -120,11 +120,14 @@ impl<G, S> RetryingChunkGet<G, S> {
     }
 }
 
-impl<const BS: usize, G: ChunkGet<BS>, S: Sleeper> ChunkGet<BS> for RetryingChunkGet<G, S> {
+impl<R: ChunkRegistry, G: ChunkGet<R>, S: Sleeper> ChunkGet<R> for RetryingChunkGet<G, S> {
+    /// Retrying changes nothing about the medium: the inner trust level
+    /// passes through.
+    type Trust = G::Trust;
     type Error = G::Error;
 
     #[allow(clippy::arithmetic_side_effects)] // attempt only increments while < max_attempts (u32), so + 1 cannot overflow
-    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BS>, Self::Error> {
+    async fn get(&self, address: &ChunkAddress) -> Result<Chunk<G::Trust, R>, Self::Error> {
         let mut attempt = 1;
         loop {
             match self.inner.get(address).await {
@@ -143,19 +146,17 @@ impl<const BS: usize, G: ChunkGet<BS>, S: Sleeper> ChunkGet<BS> for RetryingChun
     }
 }
 
-impl<const BS: usize, G: ChunkPut<BS>, S: MaybeSend + MaybeSync> ChunkPut<BS>
+impl<R: ChunkRegistry, G: ChunkPut<R>, S: MaybeSend + MaybeSync> ChunkPut<R>
     for RetryingChunkGet<G, S>
 {
     type Error = G::Error;
 
-    async fn put(&self, chunk: AnyChunk<BS>) -> Result<(), Self::Error> {
+    async fn put(&self, chunk: Chunk<Verified, R>) -> Result<(), Self::Error> {
         self.inner.put(chunk).await
     }
 }
 
-impl<const BS: usize, G: ChunkHas<BS>, S: MaybeSend + MaybeSync> ChunkHas<BS>
-    for RetryingChunkGet<G, S>
-{
+impl<G: ChunkHas, S: MaybeSend + MaybeSync> ChunkHas for RetryingChunkGet<G, S> {
     async fn has(&self, address: &ChunkAddress) -> bool {
         self.inner.has(address).await
     }
@@ -171,8 +172,7 @@ mod tests {
     use futures::executor::block_on;
 
     use crate::DefaultContentChunk;
-    use crate::bmt::DEFAULT_BODY_SIZE;
-    use crate::chunk::ChunkOps;
+    use crate::chunk::StandardChunkSet;
 
     /// A [`Sleeper`] that returns immediately, so tests never wait real time.
     struct NoSleep;
@@ -188,7 +188,7 @@ mod tests {
     /// A store that fails its first `remaining_failures` gets then succeeds,
     /// counting every `get`, `put`, and `has` call.
     struct FlakyStore {
-        chunk: AnyChunk<DEFAULT_BODY_SIZE>,
+        chunk: Chunk,
         remaining_failures: Mutex<u32>,
         get_calls: AtomicU32,
         put_calls: AtomicU32,
@@ -197,9 +197,8 @@ mod tests {
 
     impl FlakyStore {
         fn new(remaining_failures: u32) -> Self {
-            let chunk = DefaultContentChunk::new("retry probe")
-                .expect("build content chunk")
-                .into();
+            let content = DefaultContentChunk::new("retry probe").expect("build content chunk");
+            let chunk = Chunk::from_envelope(content.into()).expect("seal content chunk");
             Self {
                 chunk,
                 remaining_failures: Mutex::new(remaining_failures),
@@ -210,13 +209,11 @@ mod tests {
         }
     }
 
-    impl ChunkGet<DEFAULT_BODY_SIZE> for FlakyStore {
+    impl ChunkGet<StandardChunkSet> for FlakyStore {
+        type Trust = Verified;
         type Error = Transient;
 
-        async fn get(
-            &self,
-            _address: &ChunkAddress,
-        ) -> Result<AnyChunk<DEFAULT_BODY_SIZE>, Self::Error> {
+        async fn get(&self, _address: &ChunkAddress) -> Result<Chunk, Self::Error> {
             self.get_calls.fetch_add(1, Ordering::SeqCst);
             let mut left = self.remaining_failures.lock().expect("lock");
             if *left > 0 {
@@ -227,16 +224,16 @@ mod tests {
         }
     }
 
-    impl ChunkPut<DEFAULT_BODY_SIZE> for FlakyStore {
+    impl ChunkPut<StandardChunkSet> for FlakyStore {
         type Error = Transient;
 
-        async fn put(&self, _chunk: AnyChunk<DEFAULT_BODY_SIZE>) -> Result<(), Self::Error> {
+        async fn put(&self, _chunk: Chunk) -> Result<(), Self::Error> {
             self.put_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
 
-    impl ChunkHas<DEFAULT_BODY_SIZE> for FlakyStore {
+    impl ChunkHas for FlakyStore {
         async fn has(&self, _address: &ChunkAddress) -> bool {
             self.has_calls.fetch_add(1, Ordering::SeqCst);
             true

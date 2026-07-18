@@ -21,7 +21,7 @@ use rand::{Rng, rng};
 use nectar_primitives::chunk::encryption::{
     self, ChunkEncrypt, EncryptionKey, transcrypt, transcrypt_in_place,
 };
-use nectar_primitives::chunk::{AnyChunk, ChunkAddress};
+use nectar_primitives::chunk::{Chunk, ChunkAddress};
 use nectar_primitives::file::{
     EncryptedJoiner, EncryptedParallelSplitter, EncryptedSplitter, Joiner, ParallelSplitter,
     Splitter, split, split_encrypted,
@@ -144,17 +144,14 @@ fn random_data(size: u64) -> Vec<u8> {
     data
 }
 
-fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, AnyChunk>) {
+fn split_to_store(data: &[u8]) -> (ChunkAddress, HashMap<ChunkAddress, Chunk>) {
     let (root, store) = split::<DEFAULT_BODY_SIZE>(data).unwrap();
     (root, store.into_chunks())
 }
 
 fn encrypted_split_to_store(
     data: &[u8],
-) -> (
-    encryption::EncryptedChunkRef,
-    HashMap<ChunkAddress, AnyChunk>,
-) {
+) -> (encryption::EncryptedChunkRef, HashMap<ChunkAddress, Chunk>) {
     let (root_ref, store) = split_encrypted::<DEFAULT_BODY_SIZE>(data).unwrap();
     (root_ref, store.into_chunks())
 }
@@ -340,7 +337,9 @@ fn bench_encrypted_roundtrip(c: &mut Criterion) {
             b.iter(|| {
                 let (root_ref, chunks) =
                     EncryptedParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
-                let store = MemoryStore::from_chunks(chunks);
+                let store = MemoryStore::from_chunks(
+                    chunks.into_iter().map(|c| Chunk::from_envelope(c).unwrap()),
+                );
                 let joiner = block_on(EncryptedJoiner::new(store, root_ref)).unwrap();
                 black_box(block_on(joiner.read_all()).unwrap())
             });

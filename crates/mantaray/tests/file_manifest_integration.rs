@@ -14,12 +14,12 @@
 )]
 use futures::executor::block_on;
 use nectar_mantaray::PlainManifest;
-use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::file::{ChunkPutExt, join};
 use nectar_primitives::store::MemoryStore;
 
-type Store = MemoryStore<DEFAULT_BODY_SIZE>;
+type Store = MemoryStore<StandardChunkSet>;
 
 /// Split files into a MemoryStore, create a manifest in the same store,
 /// then verify lookup and round-trip.

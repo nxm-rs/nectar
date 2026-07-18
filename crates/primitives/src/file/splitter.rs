@@ -142,10 +142,16 @@ mod tests {
 
     fn split_and_store(
         data: &[u8],
-    ) -> (crate::chunk::ChunkAddress, MemoryStore<DEFAULT_BODY_SIZE>) {
+    ) -> (
+        crate::chunk::ChunkAddress,
+        MemoryStore<crate::chunk::StandardChunkSet>,
+    ) {
         let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
         splitter.write_all(data).unwrap();
         let (root, chunks) = splitter.finish().unwrap();
+        let chunks = chunks
+            .into_iter()
+            .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap());
         (root, MemoryStore::from_chunks(chunks))
     }
 
@@ -161,7 +167,11 @@ mod tests {
             splitter.write_all(chunk).unwrap();
         }
         let (root, chunks) = splitter.finish().unwrap();
-        let store = MemoryStore::from_chunks(chunks);
+        let store = MemoryStore::<crate::chunk::StandardChunkSet>::from_chunks(
+            chunks
+                .into_iter()
+                .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap()),
+        );
 
         assert_eq!(store.len(), 4);
         assert!(!root.is_zero());
@@ -212,11 +222,14 @@ mod tests {
             data: &[u8],
         ) -> (
             crate::chunk::encryption::EncryptedChunkRef,
-            MemoryStore<DEFAULT_BODY_SIZE>,
+            MemoryStore<crate::chunk::StandardChunkSet>,
         ) {
             let mut splitter = EncryptedSplitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
             splitter.write_all(data).unwrap();
             let (root_ref, chunks) = splitter.finish().unwrap();
+            let chunks = chunks
+                .into_iter()
+                .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap());
             (root_ref, MemoryStore::from_chunks(chunks))
         }
 

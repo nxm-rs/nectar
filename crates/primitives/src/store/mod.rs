@@ -11,10 +11,9 @@ mod typed;
 pub use maybe_send::{MaybeSend, MaybeSync};
 pub use memory::MemoryStore;
 pub use retry::{RetryConfig, RetryingChunkGet, Sleeper};
-pub use typed::{ChunkGet, ChunkHas, ChunkPut};
+pub use typed::{ChunkGet, ChunkHas, ChunkPut, TrustedStore};
 
-use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::{AnyChunk, ChunkAddress};
+use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
 
 /// Errors from chunk storage operations.
 #[non_exhaustive]
@@ -38,14 +37,16 @@ impl ChunkStoreError {
 /// A no-op loader that always returns [`ChunkStoreError::NotFound`].
 ///
 /// Used by `Node`'s public convenience methods to satisfy the generic
-/// constraint without requiring callers to specify a store type.
+/// constraint without requiring callers to specify a store type. It yields
+/// nothing, so its `Verified` trust declaration is vacuously true.
 #[derive(Debug)]
-pub struct NullLoader<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>;
+pub struct NullLoader;
 
-impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for NullLoader<BODY_SIZE> {
+impl<R: ChunkRegistry> ChunkGet<R> for NullLoader {
+    type Trust = Verified;
     type Error = ChunkStoreError;
 
-    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
+    async fn get(&self, address: &ChunkAddress) -> Result<Chunk<Verified, R>, Self::Error> {
         Err(ChunkStoreError::not_found(address))
     }
 }

@@ -4,22 +4,24 @@ use std::collections::HashMap;
 
 use parking_lot::RwLock;
 
-use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::{AnyChunk, ChunkAddress, ChunkOps};
+use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, Verified};
 
 use super::ChunkStoreError;
 use super::typed::{ChunkGet, ChunkHas, ChunkPut};
 
 /// In-memory chunk storage using a `RwLock<HashMap>`.
 ///
+/// Holds only sealed chunks and is process-private, so reads are `Verified`:
+/// nothing can alter a chunk between put and get.
+///
 /// Uses interior mutability so `ChunkPut::put(&self)` works without
 /// external synchronization.
 #[derive(Debug)]
-pub struct MemoryStore<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
-    chunks: RwLock<HashMap<ChunkAddress, AnyChunk<BODY_SIZE>>>,
+pub struct MemoryStore<R: ChunkRegistry = StandardChunkSet> {
+    chunks: RwLock<HashMap<ChunkAddress, Chunk<Verified, R>>>,
 }
 
-impl<const BODY_SIZE: usize> Clone for MemoryStore<BODY_SIZE> {
+impl<R: ChunkRegistry> Clone for MemoryStore<R> {
     fn clone(&self) -> Self {
         Self {
             chunks: RwLock::new(self.chunks.read().clone()),
@@ -27,13 +29,13 @@ impl<const BODY_SIZE: usize> Clone for MemoryStore<BODY_SIZE> {
     }
 }
 
-impl<const BODY_SIZE: usize> Default for MemoryStore<BODY_SIZE> {
+impl<R: ChunkRegistry> Default for MemoryStore<R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const BODY_SIZE: usize> MemoryStore<BODY_SIZE> {
+impl<R: ChunkRegistry> MemoryStore<R> {
     /// Create an empty memory store.
     pub fn new() -> Self {
         Self {
@@ -41,15 +43,15 @@ impl<const BODY_SIZE: usize> MemoryStore<BODY_SIZE> {
         }
     }
 
-    /// Build a store from a collection of chunks, keyed by address.
-    pub fn from_chunks(chunks: impl IntoIterator<Item = AnyChunk<BODY_SIZE>>) -> Self {
+    /// Build a store from a collection of sealed chunks, keyed by address.
+    pub fn from_chunks(chunks: impl IntoIterator<Item = Chunk<Verified, R>>) -> Self {
         Self {
             chunks: RwLock::new(chunks.into_iter().map(|c| (*c.address(), c)).collect()),
         }
     }
 
     /// Get a cloned chunk by address.
-    pub fn get(&self, address: &ChunkAddress) -> Option<AnyChunk<BODY_SIZE>> {
+    pub fn get(&self, address: &ChunkAddress) -> Option<Chunk<Verified, R>> {
         self.chunks.read().get(address).cloned()
     }
 
@@ -64,24 +66,25 @@ impl<const BODY_SIZE: usize> MemoryStore<BODY_SIZE> {
     }
 
     /// Consume the store and return all chunks.
-    pub fn into_chunks(self) -> HashMap<ChunkAddress, AnyChunk<BODY_SIZE>> {
+    pub fn into_chunks(self) -> HashMap<ChunkAddress, Chunk<Verified, R>> {
         self.chunks.into_inner()
     }
 }
 
-impl<const BODY_SIZE: usize> ChunkPut<BODY_SIZE> for MemoryStore<BODY_SIZE> {
+impl<R: ChunkRegistry> ChunkPut<R> for MemoryStore<R> {
     type Error = std::convert::Infallible;
 
-    async fn put(&self, chunk: AnyChunk<BODY_SIZE>) -> Result<(), Self::Error> {
+    async fn put(&self, chunk: Chunk<Verified, R>) -> Result<(), Self::Error> {
         self.chunks.write().insert(*chunk.address(), chunk);
         Ok(())
     }
 }
 
-impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for MemoryStore<BODY_SIZE> {
+impl<R: ChunkRegistry> ChunkGet<R> for MemoryStore<R> {
+    type Trust = Verified;
     type Error = ChunkStoreError;
 
-    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
+    async fn get(&self, address: &ChunkAddress) -> Result<Chunk<Verified, R>, Self::Error> {
         self.chunks
             .read()
             .get(address)
@@ -90,23 +93,24 @@ impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for MemoryStore<BODY_SIZE> {
     }
 }
 
-impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for MemoryStore<BODY_SIZE> {
+impl<R: ChunkRegistry> ChunkHas for MemoryStore<R> {
     async fn has(&self, address: &ChunkAddress) -> bool {
         self.chunks.read().contains_key(address)
     }
 }
 
-impl<const BODY_SIZE: usize> ChunkGet<BODY_SIZE> for HashMap<ChunkAddress, AnyChunk<BODY_SIZE>> {
+impl<R: ChunkRegistry> ChunkGet<R> for HashMap<ChunkAddress, Chunk<Verified, R>> {
+    type Trust = Verified;
     type Error = ChunkStoreError;
 
-    async fn get(&self, address: &ChunkAddress) -> Result<AnyChunk<BODY_SIZE>, Self::Error> {
+    async fn get(&self, address: &ChunkAddress) -> Result<Chunk<Verified, R>, Self::Error> {
         self.get(address)
             .cloned()
             .ok_or_else(|| ChunkStoreError::not_found(address))
     }
 }
 
-impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for HashMap<ChunkAddress, AnyChunk<BODY_SIZE>> {
+impl<R: ChunkRegistry> ChunkHas for HashMap<ChunkAddress, Chunk<Verified, R>> {
     async fn has(&self, address: &ChunkAddress) -> bool {
         self.contains_key(address)
     }
@@ -120,16 +124,16 @@ mod tests {
 
     #[test]
     fn test_memory_store() {
-        let store = MemoryStore::<DEFAULT_BODY_SIZE>::new();
+        let store = MemoryStore::<StandardChunkSet>::new();
         assert!(store.is_empty());
 
         let chunk = ContentChunk::new(b"hello".as_slice()).unwrap();
         let addr = *chunk.address();
-        let any: AnyChunk = chunk.into();
+        let sealed: Chunk = Chunk::from_envelope(chunk.into()).unwrap();
 
-        block_on(ChunkPut::put(&store, any.clone())).unwrap();
+        block_on(ChunkPut::put(&store, sealed)).unwrap();
         assert_eq!(store.len(), 1);
         assert!(block_on(ChunkHas::has(&store, &addr)));
-        assert_eq!(store.get(&addr), Some(any));
+        assert_eq!(store.get(&addr).map(|c| *c.address()), Some(addr));
     }
 }

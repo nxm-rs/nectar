@@ -161,7 +161,7 @@ pub mod hazmat {
 
 // Re-export typed storage traits from primitives.
 pub use nectar_primitives::DefaultMemoryStore;
-pub use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore};
+pub use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore, TrustedStore};
 
 /// Default manifest type using [`DEFAULT_BODY_SIZE`] and plain mode.
 pub type DefaultManifest<S> = PlainManifest<S, DEFAULT_BODY_SIZE>;
