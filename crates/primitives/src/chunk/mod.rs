@@ -35,7 +35,7 @@ pub mod wasm;
 
 // Re-export the address type and core traits
 pub use address::ChunkAddress;
-pub use traits::{BmtChunk, Chunk, ChunkHeader, ChunkMetadata, ChunkSerialization};
+pub use traits::{BmtChunk, Chunk, ChunkHeader};
 
 // Re-export the reference types
 pub use reference::{ChunkRef, RefKind, Reference, WrongRefKind};

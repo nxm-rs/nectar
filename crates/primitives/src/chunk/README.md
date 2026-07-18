@@ -1,6 +1,6 @@
 # Chunk Module
 
-The chunk module provides implementations of different chunk types used in the storage system.
+The chunk module provides implementations of the chunk types used in the storage system.
 
 ## Architecture
 
@@ -8,15 +8,18 @@ The chunk module is built around a trait-based architecture that allows for diff
 
 ### Core Traits
 
-- `Chunk`: The main trait that all chunk types implement, defining common operations
-- `DeserializableChunk`: A super trait that provides deserialization capabilities
-- `ChunkSerialization`: A trait for serializing chunks with type prefixes
-- `BMTChunk`: A trait for chunks that contain a BMT body (most chunk types)
+- `Chunk`: The main trait that all chunk types implement, defining common operations (address, header, data, verify)
+- `ChunkHeader`: The wire header bytes that precede a chunk's BMT body
+- `BmtChunk`: A trait for chunks that contain a BMT body (most chunk types)
+- `ChunkType`: Compile-time type identification (type ID and name)
+- `ChunkTypeSet`: The set of chunk types a system supports
 
 ### Chunk Types
 
 - `ContentChunk`: A chunk whose address is derived from its content hash
 - `SingleOwnerChunk`: A chunk owned by a specific account, with signature verification
+
+`AnyChunk` is the type-erased enum over these for runtime polymorphism.
 
 ## Content-Addressed Chunks
 
@@ -38,41 +41,25 @@ Key features:
 
 ## Serialization and Deserialization
 
-Chunks support two forms of serialization:
+Serializing a chunk (`Into<Bytes>`) produces its bare wire bytes: `span || payload` for a content chunk, `id || signature || span || payload` for a single-owner chunk.
 
-1. **Raw serialization**: Just the chunk data without type information
-2. **Prefixed serialization**: Includes type ID and version prefix
+For deserialization, you can:
 
-For deserialization, you can either:
-
-1. Use `deserialize_chunk` with prefixed data
-2. Use type-specific parsing with `try_from` for raw data
-3. Use `infer_and_deserialize` to attempt automatic type detection
-
-## Extending with New Chunk Types
-
-To create a new chunk type, you need to:
-
-1. Create a struct that implements the `Chunk` trait
-2. Define the `ID`, `VERSION`, and `TYPE_NAME` constants
-3. Implement parsing and serialization logic
-4. Update the `deserialize_chunk` function to handle your new type
+1. Use type-specific parsing with `try_from` when the chunk type is known
+2. Use `AnyChunk::from_wire_bytes` when only the expected address is known: the address disambiguates content vs single-owner
+3. Use `AnyChunk::from_typed_bytes` for the self-describing `[type_id][wire bytes]` storage form produced by `AnyChunk::to_typed_bytes`
 
 ## Usage Examples
 
 ```rust
-use nectar_primitives::chunk::{Chunk, ContentChunk, SingleOwnerChunk};
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{AnyChunk, Chunk, ContentChunk};
 
 // Create a content chunk
-let content_chunk = ContentChunk::new(b"Hello, world!").unwrap();
-let address = content_chunk.address();
+let chunk = ContentChunk::new(&b"Hello, world!"[..]).unwrap();
+let address = *chunk.address();
 
-// Create a single-owner chunk
-let wallet = LocalWallet::random();
-let id = FixedBytes::random();
-let owner_chunk = SingleOwnerChunk::new(id, b"My data", &wallet).unwrap();
-
-// Verify ownership
-owner_chunk.verify_signature().unwrap();
+// Serialize, then recover it from the wire bytes and its address
+let wire: bytes::Bytes = chunk.into();
+let recovered = AnyChunk::from_wire_bytes(&address, wire).unwrap();
+assert_eq!(*recovered.address(), address);
 ```

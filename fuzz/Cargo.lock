@@ -1919,6 +1919,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
  "arbitrary",
+ "bytes",
  "libfuzzer-sys",
  "nectar-mantaray",
  "nectar-postage",

@@ -1,48 +1,24 @@
 //! Traits for chunk types and operations
 //!
-//! This module defines the core traits that all chunk types must implement,
-//! along with serialization and deserialization functionality.
+//! This module defines the core traits that all chunk types must implement.
 
 use crate::chunk::error;
 use crate::error::Result;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 
 use super::address::ChunkAddress;
 
-/// Core trait for chunk metadata
-pub trait ChunkMetadata {
-    /// Get the metadata bytes for this chunk
-    fn bytes(&self) -> Bytes;
-}
-
 /// Core trait for chunk header
 pub trait ChunkHeader {
-    /// The metadata type for this chunk
-    type Metadata: ChunkMetadata;
-
-    /// Get the identifier byte for this chunk type
-    fn id(&self) -> u8;
-
-    /// Get the version byte for this chunk type
-    fn version(&self) -> u8;
-
-    /// Get the metadata bytes for this chunk
-    fn metadata(&self) -> &Self::Metadata;
-
-    /// Get the header bytes for this chunk
-    fn bytes(&self) -> Bytes {
-        let mut buf = BytesMut::with_capacity(2);
-        buf.put_u8(self.id());
-        buf.put_u8(self.version());
-        buf.put_slice(self.metadata().bytes().as_ref());
-        buf.freeze()
-    }
+    /// Get the wire header bytes for this chunk: everything that precedes the
+    /// BMT body in the chunk's encoding (empty for a content chunk,
+    /// `id || signature` for a single-owner chunk).
+    fn bytes(&self) -> Bytes;
 }
 
 /// Core trait for all chunk types in the system.
 ///
 /// This trait defines the common interface that all chunk implementations must provide.
-/// Each implementation must specify its type ID and version as associated constants.
 pub trait Chunk: Send + Sync + 'static {
     /// The header type for this chunk
     type Header: ChunkHeader;
@@ -69,25 +45,6 @@ pub trait Chunk: Send + Sync + 'static {
             return Err(error::ChunkError::verification_failed(*expected, *actual).into());
         }
         Ok(())
-    }
-}
-
-/// Trait for serializing chunks with type prefix.
-///
-/// This trait provides methods for serializing a chunk with its type
-/// ID and version prefix.
-pub trait ChunkSerialization {
-    /// Serialize this chunk with its type ID and version prefix
-    fn serialize_with_prefix(&self) -> Bytes;
-}
-
-impl<T: Chunk> ChunkSerialization for T {
-    #[allow(clippy::arithmetic_side_effects)] // 2 + a chunk size bounded by the wire format is a capacity hint far below usize::MAX
-    fn serialize_with_prefix(&self) -> Bytes {
-        let mut bytes = BytesMut::with_capacity(2 + self.size());
-        bytes.extend(self.header().bytes());
-        bytes.extend(self.data());
-        bytes.freeze()
     }
 }
 
