@@ -12,6 +12,12 @@
 //! reference or an inline value; absence is `Option` at the use site) and
 //! [`Metadata`] (typed key-registry pairs, sorted-unique and bounded).
 //!
+//! The data model is [`Node`]: an optional [`RootExtension`] (the root's
+//! own entry and manifest metadata, complete in the root's own bytes) over
+//! a [`ForkTable`] of [`ForkRecord`]s keyed on the first prefix byte, so
+//! fork order and the radix-256 bound are structural. No flags are stored;
+//! presence bits are derived from the structure at encode time.
+//!
 //! ```
 //! use nectar_manifest::{Format, Prefix, V1};
 //!
@@ -39,12 +45,18 @@
 
 mod bounded;
 mod error;
+mod fork;
 mod format;
 mod meta;
+mod node;
 mod value;
 
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
-pub use error::{CustomKeyError, MetadataTooLong, PrefixTooLong, ValueTooLong, WeightOverBudget};
+pub use error::{
+    CustomKeyError, ForkPrefixEmpty, MetadataTooLong, PrefixTooLong, ValueTooLong, WeightOverBudget,
+};
+pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
+pub use node::{Node, RootExtension};
 pub use value::{Entry, InlineValue, Key};

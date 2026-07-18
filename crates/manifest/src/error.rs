@@ -51,6 +51,11 @@ pub enum CustomKeyError {
     Registered(KeyId),
 }
 
+/// Fork prefix rejected: the empty prefix has no first byte to index under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("fork prefix is empty")]
+pub struct ForkPrefixEmpty;
+
 /// Segment weight rejected: exceeds the format's `BUDGET`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("segment weight {actual} exceeds the format budget {max}")]
