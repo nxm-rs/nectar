@@ -63,6 +63,7 @@ mod format;
 mod meta;
 mod node;
 mod packing;
+mod reader;
 mod store;
 mod value;
 
@@ -77,5 +78,6 @@ pub use format::{Format, V1};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, RootExtension};
 pub use packing::{Directory, Domain, SegmentKind, cut, embed, h64, segment, spill};
+pub use reader::{Reader, ReaderError};
 pub use store::{NodeChunk, NodeGet, NodePut, StoreError};
 pub use value::{Entry, InlineValue, Key};
