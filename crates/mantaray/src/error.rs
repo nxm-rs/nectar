@@ -71,6 +71,37 @@ pub enum DecodeError {
     Metadata(#[from] serde_json::Error),
 }
 
+/// Failures of the depth-guarded reader.
+///
+/// Absent paths are not errors: lookups report them as `Ok(None)` or
+/// `Ok(false)`.
+#[non_exhaustive]
+#[derive(thiserror::Error, Debug)]
+pub enum ReaderError {
+    /// The store failed to produce the node chunk at `address`.
+    #[error("store get error for {address}: {source}")]
+    Store {
+        /// Address of the node chunk the store could not produce.
+        address: ChunkAddress,
+        /// Original store error, preserved for downcasting.
+        source: SharedError,
+    },
+    /// A fetched chunk's bytes are not a decodable mantaray node.
+    #[error("corrupt chunk {address}: {source}")]
+    Corrupt {
+        /// Address of the chunk whose bytes failed to decode.
+        address: ChunkAddress,
+        /// The underlying wire decode failure.
+        source: DecodeError,
+    },
+    /// A lookup needed more node fetches than the reader's budget allows.
+    #[error("max depth exceeded: {max_depth}")]
+    MaxDepth {
+        /// The node-fetch budget that was exhausted.
+        max_depth: usize,
+    },
+}
+
 /// Errors that can occur during mantaray trie operations.
 #[non_exhaustive]
 #[derive(thiserror::Error, Debug)]
