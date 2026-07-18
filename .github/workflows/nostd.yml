@@ -1,0 +1,54 @@
+# Gates the no_std core on a bare-metal rv64 target (the zkVM-guest shape)
+# and on wasm32 (the browser shape). Only the crates that already build
+# without std are listed; extend the -p list as crates flip to no_std. The
+# spike crate pins the streaming pipeline's dependency base (futures-util
+# with alloc only, bytes with default features off) on both targets.
+name: no_std
+
+on:
+    pull_request:
+    merge_group:
+    push:
+        branches: [main]
+
+env:
+    CARGO_TERM_COLOR: always
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+    cancel-in-progress: true
+
+jobs:
+    check:
+        name: no_std / ${{ matrix.target }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            matrix:
+                target:
+                    - riscv64imac-unknown-none-elf
+                    - wasm32-unknown-unknown
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            - uses: ./.github/actions/rust-setup
+              with:
+                  targets: ${{ matrix.target }}
+            - name: Check no_std crates without std
+              run: |
+                  cargo check --locked \
+                    -p nectar-swarms -p nectar-contracts -p nectar-nostd-spike \
+                    --no-default-features \
+                    --target ${{ matrix.target }}
+
+    nostd-success:
+        name: no_std success
+        runs-on: ubuntu-latest
+        if: always()
+        needs: [check]
+        timeout-minutes: 30
+        steps:
+            - name: Decide whether the needed jobs succeeded or failed
+              uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe  # release/v1
+              with:
+                  jobs: ${{ toJSON(needs) }}

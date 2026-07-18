@@ -1,0 +1,18 @@
+[package]
+name = "nectar-nostd-spike"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Spike proving the no_std dependency base for the streaming file pipeline"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+futures-util = { workspace = true }
