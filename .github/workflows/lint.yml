@@ -40,7 +40,7 @@ jobs:
               run: |
                   for crate in nectar-primitives nectar-mantaray nectar-postage \
                                nectar-postage-issuer nectar-postage-usage \
-                               nectar-swarms nectar-contracts; do
+                               nectar-swarms nectar-contracts nectar-file; do
                       cargo rustc --locked -p "$crate" --lib -- -D unused_crate_dependencies
                   done
 
