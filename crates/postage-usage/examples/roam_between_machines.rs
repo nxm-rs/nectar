@@ -86,7 +86,9 @@ impl SnapshotSink for MemNet {
     }
 }
 
+// Sanctioned tokio entry point: the main macro expands to `Runtime::block_on`.
 #[tokio::main(flavor = "current_thread")]
+#[allow(clippy::disallowed_methods)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The owner key is the one secret a user carries between machines. The batch
     // id is public and recoverable; together they pin every snapshot chunk

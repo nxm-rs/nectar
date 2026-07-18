@@ -143,7 +143,9 @@ impl BatchFactory for MemoryBatchFactory {
     }
 }
 
+// Sanctioned tokio adapter tests: the test macro expands to `Runtime::block_on`.
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use alloy_primitives::Address;

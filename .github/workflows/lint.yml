@@ -25,23 +25,29 @@ jobs:
             - uses: ./.github/actions/rust-setup
               with:
                   components: clippy
-            # Lints lib+bins with default features; the `deny`-level restriction
-            # lints in `[workspace.lints.clippy]` make this fail on any
-            # panicking/overflowing operation in production code.
+            # Lints every target (libs, bins, tests, benches, examples) with
+            # default features; the `deny`-level restriction lints in
+            # `[workspace.lints.clippy]` fail on panicking/overflowing
+            # operations, with test code exempted per crate.
             - name: cargo clippy
-              run: cargo clippy --workspace --locked
+              run: cargo clippy --workspace --all-targets --locked
             # The async io adapters sit behind the tokio feature, outside the
             # default-features pass above.
             - name: cargo clippy (tokio adapters)
-              run: cargo clippy --locked -p nectar-file --features tokio
+              run: cargo clippy --locked --all-targets -p nectar-file --features tokio
             # The batch ingest sits behind the rayon feature, likewise
             # outside the default-features pass.
             - name: cargo clippy (rayon ingest)
-              run: cargo clippy --locked -p nectar-file --features rayon
+              run: cargo clippy --locked --all-targets -p nectar-file --features rayon
             # The encrypted split mode sits behind the encryption feature,
             # likewise outside the default-features pass.
             - name: cargo clippy (encrypted split)
-              run: cargo clippy --locked -p nectar-file --features encryption
+              run: cargo clippy --locked --all-targets -p nectar-file --features encryption
+            # The postage-usage tokio surfaces are feature-gated, so their tests
+            # are invisible to the passes above; compile them in so the
+            # disallowed-methods gate sees them.
+            - name: cargo clippy (postage-usage surfaces)
+              run: cargo clippy --workspace --all-targets --locked --features nectar-postage-usage/client,nectar-postage-usage/issuer
             # `unused_crate_dependencies` is enforced per-library via `cargo
             # rustc` (not `[workspace.lints]`) so the flag applies only to each
             # crate's own lib target — never to benches/examples/tests (which

@@ -47,7 +47,9 @@
 mod reader;
 #[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
 mod spawned;
+// Sanctioned tokio adapter tests: the test macro expands to `Runtime::block_on`.
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests;
 // The writer maps split failures into `io::Error`, which boxes them
 // `Send + Sync`; the wasm32 and `unsync` error chains are not.
