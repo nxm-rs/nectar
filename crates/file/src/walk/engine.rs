@@ -18,6 +18,7 @@ use super::error::{ShapeError, WalkError};
 use super::mode::WalkMode;
 use super::{Frame, WalkStats};
 use crate::config::{BranchBudget, Window};
+use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 
 /// One pending tree node: where its bytes live and what fetches it.
 struct Node<M: WalkMode> {
@@ -510,34 +511,6 @@ where
             .field("branch_in_flight", &self.branch_in_flight)
             .field("done", &self.done)
             .finish_non_exhaustive()
-    }
-}
-
-/// Lossless widening; `From` is not const-callable here.
-#[cfg(target_pointer_width = "64")]
-const fn u64_from_usize(value: usize) -> u64 {
-    u64::from_le_bytes(value.to_le_bytes())
-}
-
-/// Lossless widening; `From` is not const-callable here.
-#[cfg(target_pointer_width = "32")]
-const fn u64_from_usize(value: usize) -> u64 {
-    let [a, b, c, d] = value.to_le_bytes();
-    u64::from_le_bytes([a, b, c, d, 0, 0, 0, 0])
-}
-
-/// Lossless widening; `From` is not const-callable.
-const fn u64_from_u32(value: u32) -> u64 {
-    let [a, b, c, d] = value.to_le_bytes();
-    u64::from_le_bytes([a, b, c, d, 0, 0, 0, 0])
-}
-
-/// References per intermediate body; zero only for a degenerate profile the
-/// compile-time guard rejects.
-const fn fan_out(body: u64, ref_size: u64) -> u64 {
-    match body.checked_div(ref_size) {
-        Some(fan) => fan,
-        None => 0,
     }
 }
 
