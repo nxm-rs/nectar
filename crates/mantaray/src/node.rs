@@ -544,6 +544,12 @@ impl<R: Reference> Node<R> {
         Box::pin(async move {
             // empty path; set this node as a value
             if path.is_empty() {
+                // A persisted stub must load its forks before taking the
+                // value, or the overwrite would drop its subtree at the next
+                // save.
+                if !self.is_loaded() {
+                    self.load(store).await?;
+                }
                 self.entry = entry;
                 self.make_value();
 
