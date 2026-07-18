@@ -23,9 +23,8 @@ use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 /// One pending tree node: where its bytes live and what fetches it.
 struct Node<M: WalkMode> {
     address: ChunkAddress,
-    /// Reference context routed with the node; the encrypted mode's body
-    /// decoder consumes it.
-    #[allow(dead_code, reason = "consumed once the encrypted decoder lands")]
+    /// Reference context routed with the node; the mode's body decoder
+    /// consumes it.
     context: M::Context,
     /// Absolute offset of the subtree's first byte.
     start: u64,
@@ -403,6 +402,11 @@ where
             });
         }
         let data = chunk.into_envelope().data().clone();
+        let data = M::decode_body(&node.context, B, self.plaintext_len(&node, leaf), data)
+            .map_err(|source| WalkError::Decode {
+                offset: node.start,
+                source,
+            })?;
         if leaf {
             let len = u64_from_usize(data.len());
             if len != node.span {
@@ -418,6 +422,20 @@ where
         } else {
             self.expand(&node, &data).map_err(WalkError::from)
         }
+    }
+
+    /// Plaintext bytes a node's body carries: a leaf's span, or an
+    /// intermediate's packed references, never past the profile's body.
+    fn plaintext_len(&self, node: &Node<M>, leaf: bool) -> usize {
+        let take = if leaf {
+            node.span
+        } else {
+            let sub = child_subspan(node.span, self.body, self.branches);
+            let ref_size = u64_from_u32(M::MODE.ref_size());
+            node.span.div_ceil(sub).saturating_mul(ref_size)
+        };
+        // take is capped at the body size, which is the usize B.
+        usize::try_from(take.min(self.body)).unwrap_or(B)
     }
 
     /// Expand an intermediate body into its overlapping children.

@@ -25,6 +25,9 @@ thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
 futures.workspace = true
+# The differential oracles split and join through the legacy read paths,
+# including the encrypted width.
+nectar-primitives = { workspace = true, features = ["std", "encryption"] }
 
 [features]
 default = [ "std" ]

@@ -24,6 +24,14 @@ pub enum WalkError<E> {
     /// The tree's bytes contradict its declared spans.
     #[error(transparent)]
     Shape(#[from] ShapeError),
+    /// A fetched body failed the mode's decode step.
+    #[error("body decode failed at {offset}")]
+    Decode {
+        /// Absolute offset of the failing node's first byte.
+        offset: u64,
+        /// Decode failure behind the error.
+        source: DecodeError,
+    },
     /// The engine could neither admit nor await work; a walk invariant is
     /// broken.
     #[error("walk stalled with {pending} pending nodes and occupancy {occupancy}")]
@@ -32,6 +40,20 @@ pub enum WalkError<E> {
         pending: usize,
         /// Leaf bodies held (in flight plus buffered).
         occupancy: usize,
+    },
+}
+
+/// A fetched body's bytes cannot be decoded under the mode's reference
+/// grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DecodeError {
+    /// An encrypted node must arrive as one full ciphertext body.
+    #[error("ciphertext body of {len} bytes where the profile demands {expected}")]
+    CiphertextLength {
+        /// Bytes the fetched body actually carries.
+        len: usize,
+        /// The profile's full body size.
+        expected: usize,
     },
 }
 
