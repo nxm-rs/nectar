@@ -22,12 +22,18 @@ bytes = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 nectar-primitives = { workspace = true, optional = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"], optional = true }
 
 [dev-dependencies]
+axum.workspace = true
 futures.workspace = true
+http-body-util.workspace = true
 # The differential oracles split and join through the legacy read paths,
 # including the encrypted width.
 nectar-primitives = { workspace = true, features = ["std", "encryption"] }
+tokio = { workspace = true, features = ["io-util"] }
+tokio-util.workspace = true
+tower.workspace = true
 
 [features]
 default = [ "std" ]
@@ -46,7 +52,7 @@ std = [
 ]
 
 # Async reader and writer adapters over the poll surface. Implies `std`.
-tokio = [ "std" ]
+tokio = [ "dep:tokio", "std" ]
 
 # Batch leaf hashing and read-at ingest. Implies `std`; rayon on wasm32 is a
 # compile error, never a silent fallback.
