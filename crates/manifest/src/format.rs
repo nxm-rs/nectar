@@ -77,6 +77,12 @@ pub trait Format:
     /// `usize`: the value exceeds a 32-bit `usize` on wasm32.
     const CUT_SCALE: u64;
 
+    /// Ordered-scan read-ahead window: the most trie-node fetches a cursor
+    /// keeps in flight at once while prefetching the covering frontier. A
+    /// reader tuning bounded by memory, not a wire parameter; the sliding
+    /// window keeps peak retained state O(depth) at this fetch count.
+    const READ_AHEAD: usize = 16;
+
     /// Domain-separation tag for the deterministic per-reference key
     /// derivation `keccak256(DERIVE_TAG || secret || plaintext)`. Frozen per
     /// version so encrypting the same plaintext under the same secret always

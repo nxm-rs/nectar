@@ -2,15 +2,19 @@
 //! that iteration fetches trie nodes on the frontier only, never a value chunk,
 //! and a std map oracles the key order of iteration, ranges, prefixes and floor.
 
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use futures::executor::block_on;
-use nectar_manifest::{Builder, Cursor, Entry, Key, Reader};
+use nectar_manifest::{Builder, Cursor, Entry, Format, Key, Reader, V1};
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, StandardChunkSet, Verified};
+use proptest::prelude::*;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -191,6 +195,217 @@ fn prefix_matches_the_oracle() -> TestResult {
         ensure_eq(got, expected, "prefix matches the oracle")?;
     }
     Ok(())
+}
+
+/// A future that yields once: `Pending` on the first poll, `Ready` after. It
+/// forces the executor to poll the other in-flight fetches before any completes,
+/// so the gated store below witnesses their true overlap.
+#[derive(Debug)]
+struct YieldOnce(bool);
+
+impl Future for YieldOnce {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.0 {
+            Poll::Ready(())
+        } else {
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
+
+/// A trusted store that records the peak number of concurrent `get` calls and
+/// the total, so a test reads off both the in-flight bound and the fetch count.
+/// Each `get` yields once while counted, so concurrent fetches genuinely overlap
+/// under the single-threaded test executor.
+#[derive(Debug, Default)]
+struct GatedStore {
+    inner: MemoryStore,
+    inflight: AtomicUsize,
+    peak: AtomicUsize,
+    gets: AtomicUsize,
+}
+
+impl ChunkGet<StandardChunkSet> for GatedStore {
+    type Trust = Verified;
+    type Error = <MemoryStore as ChunkGet>::Error;
+
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<Chunk<Verified, StandardChunkSet>, Self::Error> {
+        self.gets.fetch_add(1, Ordering::Relaxed);
+        let now = self
+            .inflight
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.peak.fetch_max(now, Ordering::Relaxed);
+        YieldOnce(false).await;
+        let chunk = ChunkGet::get(&self.inner, address).await;
+        self.inflight.fetch_sub(1, Ordering::Relaxed);
+        chunk
+    }
+}
+
+/// Build a wide manifest whose first-byte subtrees each outgrow the inline bound
+/// and become referenced children, so the root fans out into many sibling nodes
+/// a scan must fetch. Returns the root and an ordered oracle.
+fn wide_build(store: &MemoryStore) -> Result<(ChunkAddress, Oracle), Box<dyn Error>> {
+    let mut builder = Builder::new();
+    let mut oracle = Oracle::new();
+    for a in 0u8..48 {
+        for b in 0u8..96 {
+            let key = vec![a, b];
+            let value = Entry::inline(Bytes::from(vec![a ^ b; 32])).map_err(|e| e.to_string())?;
+            builder.insert(Key::from(key.clone()), value.clone(), None);
+            oracle.insert(key, value);
+        }
+    }
+    let built = block_on(builder.build(store)).map_err(|e| e.to_string())?;
+    Ok((*built.root(), oracle))
+}
+
+#[test]
+fn read_ahead_bounds_in_flight_and_matches_the_oracle() -> TestResult {
+    let memory = MemoryStore::default();
+    let (root, oracle) = wide_build(&memory)?;
+    // The root fans out into referenced children, so the walk crosses many
+    // sibling hops rather than reading one embedded root.
+    let nodes = memory.len();
+    ensure(nodes > 8, "manifest fans out into many referenced children")?;
+
+    let store = GatedStore {
+        inner: memory,
+        ..Default::default()
+    };
+    let reader: Reader<_> = Reader::new(&store);
+
+    let got: Rows = {
+        let mut cursor = block_on(reader.iter(&root)).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        while let Some((key, value)) = block_on(cursor.next()).map_err(|e| e.to_string())? {
+            out.push((key.as_bytes().to_vec(), value));
+        }
+        out
+    };
+    let expected: Rows = oracle.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    ensure_eq(got, expected, "read-ahead iteration matches the oracle")?;
+
+    // The concurrent walk fetches exactly the trie nodes a serial walk would,
+    // once each: read-ahead cuts round trips, not fetch count.
+    ensure_eq(
+        store.gets.load(Ordering::Relaxed),
+        nodes,
+        "one fetch per trie node",
+    )?;
+
+    let peak = store.peak.load(Ordering::Relaxed);
+    let cap = V1::READ_AHEAD;
+    // The window overlapped fetches: read-ahead is genuinely concurrent.
+    ensure(peak > 1, "read-ahead ran fetches concurrently")?;
+    // Peak in-flight never exceeds the cap: the window is bounded, not O(width).
+    ensure(
+        peak <= cap,
+        &format!("peak in-flight {peak} exceeded the read-ahead cap {cap}"),
+    )
+}
+
+proptest! {
+    // The concurrent cursor returns byte-identical key/value sequences to the
+    // ordered oracle over arbitrary key sets: read-ahead reorders fetches, never
+    // results.
+    #[test]
+    fn read_ahead_iteration_matches_any_ordered_oracle(
+        pairs in prop::collection::vec(
+            (prop::collection::vec(any::<u8>(), 1..6), any::<u8>()),
+            0..300,
+        ),
+    ) {
+        let mut oracle = Oracle::new();
+        for (key, fill) in pairs {
+            let value = Entry::inline(Bytes::from(vec![fill; 32]))
+                .map_err(|e| TestCaseError::fail(e.to_string()))?;
+            oracle.insert(key, value);
+        }
+        let store = MemoryStore::default();
+        let mut builder = Builder::new();
+        for (key, value) in &oracle {
+            builder.insert(Key::from(key.clone()), value.clone(), None);
+        }
+        let built = block_on(builder.build(&store))
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let reader: Reader<_> = Reader::new(&store);
+        let got: Rows = {
+            let mut cursor = block_on(reader.iter(built.root()))
+                .map_err(|e| TestCaseError::fail(e.to_string()))?;
+            let mut out = Vec::new();
+            while let Some((key, value)) = block_on(cursor.next())
+                .map_err(|e| TestCaseError::fail(e.to_string()))?
+            {
+                out.push((key.as_bytes().to_vec(), value));
+            }
+            out
+        };
+        let expected: Rows = oracle.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        prop_assert_eq!(got, expected);
+    }
+}
+
+#[test]
+fn read_ahead_never_fetches_past_the_upper_bound() -> TestResult {
+    let memory = MemoryStore::default();
+    let (root, oracle) = wide_build(&memory)?;
+    // The root fans out into one referenced child per leading byte, so there are
+    // more sibling subtrees than the window: an unbounded prefetch would pull
+    // whole subtrees the bounded walk never visits.
+    let siblings = memory.len().saturating_sub(1);
+    ensure(
+        siblings > V1::READ_AHEAD,
+        "more sibling subtrees than the window",
+    )?;
+
+    // A gated store is essential here: its fetches park on the first poll, so a
+    // future the window launches past the bound genuinely starts (and is
+    // counted), the way a real async store would. An immediately-ready store
+    // hides the over-fetch, because the awaited fetch completes before the
+    // executor ever polls the surplus futures.
+    let store = GatedStore {
+        inner: memory,
+        ..Default::default()
+    };
+    let reader: Reader<_> = Reader::new(&store);
+
+    // A range over the single leading byte 0x00: its subtree is in range; every
+    // sibling at 0x01.. is at or past the exclusive bound. Read-ahead must stop
+    // at the bound, so only the root and that one subtree are ever fetched.
+    let lo = Key::from(&[0u8][..]);
+    let hi = Key::from(&[1u8][..]);
+    let got: Rows = {
+        let mut cursor = block_on(reader.range(&root, &lo, &hi)).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        while let Some((key, value)) = block_on(cursor.next()).map_err(|e| e.to_string())? {
+            out.push((key.as_bytes().to_vec(), value));
+        }
+        out
+    };
+    let expected: Rows = oracle
+        .iter()
+        .filter(|(k, _)| k.as_slice() >= lo.as_bytes() && k.as_slice() < hi.as_bytes())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    ensure(!expected.is_empty(), "the range covers the first subtree")?;
+    ensure_eq(got, expected, "bounded read-ahead matches the range oracle")?;
+
+    // Exactly the root and the one in-range subtree: no sibling past the bound is
+    // prefetched, so the window respects the range at the serial fetch count.
+    ensure_eq(
+        store.gets.load(Ordering::Relaxed),
+        2,
+        "root and the one in-range subtree only",
+    )
 }
 
 #[test]
