@@ -1,0 +1,18 @@
+# No [lints] table on purpose: the harness panics by design (budget
+# exhaustion turns would-be hangs into failures), which the workspace
+# restriction lints forbid.
+
+[package]
+name = "nectar-testing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Deterministic async test harness for the nectar workspace"
+publish = false
+
+[dependencies]
+futures-executor.workspace = true
