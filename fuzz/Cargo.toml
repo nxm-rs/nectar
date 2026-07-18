@@ -127,6 +127,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "mantaray_view_differential"
+path = "fuzz_targets/mantaray_view_differential.rs"
+test = false
+doc = false
+bench = false
+
 # Make arithmetic overflow and debug_assert! act as fuzz oracles even in the
 # optimised builds cargo-fuzz produces.
 [profile.release]
