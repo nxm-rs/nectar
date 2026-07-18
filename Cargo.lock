@@ -2260,6 +2260,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-testing"
+version = "0.4.0"
+dependencies = [
+ "futures-executor",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

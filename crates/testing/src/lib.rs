@@ -1,0 +1,284 @@
+//! Deterministic async test harness: the sanctioned executor entry point,
+//! budgeted cooperative yields, a manual-poll driver, and a gate for
+//! stepwise backpressure probes. Panics are the point: a deadlock becomes a
+//! failure instead of a hang, hence the opt-out from the workspace lints.
+
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::Wake;
+
+/// Drives a future to completion on the calling thread.
+///
+/// The sole sanctioned `block_on` call site in the workspace.
+#[allow(clippy::disallowed_methods)]
+pub fn run<F: Future>(f: F) -> F::Output {
+    futures_executor::block_on(f)
+}
+
+/// Yields once so sibling futures in the same combinator get re-polled.
+pub async fn yield_now() {
+    struct YieldNow(bool);
+    impl Future for YieldNow {
+        type Output = ();
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                Poll::Ready(())
+            } else {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+    YieldNow(false).await;
+}
+
+/// Yields up to `budget` times waiting for `cond`; panics on exhaustion so a
+/// would-be hang becomes a failure.
+pub async fn yield_until(budget: usize, cond: impl Fn() -> bool) {
+    for _ in 0..budget {
+        if cond() {
+            return;
+        }
+        yield_now().await;
+    }
+    assert!(
+        cond(),
+        "yield_until: condition still false after {budget} yields"
+    );
+}
+
+struct CountWaker(AtomicUsize);
+
+impl Wake for CountWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Manual-poll driver: single-steps a future so invariants can be asserted
+/// between polls.
+pub struct Drive<F> {
+    fut: Pin<Box<F>>,
+    counter: Arc<CountWaker>,
+    waker: Waker,
+}
+
+impl<F: Future> Drive<F> {
+    /// Wraps `f` for manual polling.
+    pub fn new(f: F) -> Self {
+        let counter = Arc::new(CountWaker(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        Self {
+            fut: Box::pin(f),
+            counter,
+            waker,
+        }
+    }
+
+    /// Polls the future once.
+    pub fn poll(&mut self) -> Poll<F::Output> {
+        self.fut
+            .as_mut()
+            .poll(&mut Context::from_waker(&self.waker))
+    }
+
+    /// Wakes recorded so far. Diagnostic only: exact counts couple tests to
+    /// combinator internals, so never assert equality on this.
+    pub fn wakes(&self) -> usize {
+        self.counter.0.load(Ordering::Relaxed)
+    }
+}
+
+fn lock(m: &Mutex<State>) -> MutexGuard<'_, State> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[derive(Default)]
+struct State {
+    next_id: u64,
+    queue: VecDeque<(u64, Option<Waker>)>,
+    granted: Vec<u64>,
+    peak: usize,
+}
+
+/// FIFO gate for probe stores: [`enter`](Self::enter) parks until a matching
+/// [`release`](Self::release), so backpressure is exercised at each step
+/// rather than only on the initial burst. Accounting is drop-aware: a parked
+/// waiter that is cancelled leaves the queue.
+///
+/// ```
+/// use nectar_testing::{Drive, GateStore};
+///
+/// let gate = GateStore::new();
+/// let mut d = Drive::new({
+///     let g = gate.clone();
+///     async move {
+///         g.enter().await;
+///         g.enter().await;
+///     }
+/// });
+/// assert!(d.poll().is_pending());
+/// assert_eq!(gate.waiting(), 1);
+/// gate.release(1);
+/// assert!(d.poll().is_pending()); // the second enter parks: stepwise, not burst
+/// assert_eq!(gate.waiting(), 1);
+/// gate.release(1);
+/// assert!(d.poll().is_ready());
+/// ```
+#[derive(Clone, Default)]
+pub struct GateStore {
+    state: Arc<Mutex<State>>,
+}
+
+impl GateStore {
+    /// New gate with no waiters.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Parks until granted by a later [`release`](Self::release).
+    pub fn enter(&self) -> Enter {
+        Enter {
+            gate: Arc::clone(&self.state),
+            state: EnterState::Idle,
+        }
+    }
+
+    /// Grants the `n` oldest parked waiters and wakes them.
+    pub fn release(&self, n: usize) {
+        let mut wakers = Vec::new();
+        {
+            let mut s = lock(&self.state);
+            for _ in 0..n {
+                if let Some((id, waker)) = s.queue.pop_front() {
+                    s.granted.push(id);
+                    wakers.extend(waker);
+                }
+            }
+        }
+        for w in wakers {
+            w.wake();
+        }
+    }
+
+    /// Currently parked waiters.
+    pub fn waiting(&self) -> usize {
+        lock(&self.state).queue.len()
+    }
+
+    /// High-water mark of concurrently parked waiters.
+    pub fn peak(&self) -> usize {
+        lock(&self.state).peak
+    }
+}
+
+enum EnterState {
+    Idle,
+    Parked(u64),
+    Done,
+}
+
+/// Future returned by [`GateStore::enter`].
+pub struct Enter {
+    gate: Arc<Mutex<State>>,
+    state: EnterState,
+}
+
+impl Future for Enter {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        let mut s = lock(&this.gate);
+        match this.state {
+            EnterState::Idle => {
+                let id = s.next_id;
+                s.next_id += 1;
+                s.queue.push_back((id, Some(cx.waker().clone())));
+                s.peak = s.peak.max(s.queue.len());
+                this.state = EnterState::Parked(id);
+                Poll::Pending
+            }
+            EnterState::Parked(id) => {
+                if let Some(pos) = s.granted.iter().position(|&g| g == id) {
+                    s.granted.swap_remove(pos);
+                    this.state = EnterState::Done;
+                    Poll::Ready(())
+                } else {
+                    if let Some(slot) = s.queue.iter_mut().find(|(q, _)| *q == id) {
+                        slot.1 = Some(cx.waker().clone());
+                    }
+                    Poll::Pending
+                }
+            }
+            EnterState::Done => Poll::Ready(()),
+        }
+    }
+}
+
+impl Drop for Enter {
+    fn drop(&mut self) {
+        if let EnterState::Parked(id) = self.state {
+            let mut s = lock(&self.gate);
+            s.queue.retain(|(q, _)| *q != id);
+            if let Some(pos) = s.granted.iter().position(|&g| g == id) {
+                s.granted.swap_remove(pos);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::cell::Cell;
+
+    #[test]
+    fn yield_now_parks_once_then_completes() {
+        let mut d = Drive::new(yield_now());
+        assert!(d.poll().is_pending());
+        assert!(d.wakes() >= 1);
+        assert!(d.poll().is_ready());
+    }
+
+    #[test]
+    fn yield_until_returns_once_condition_holds() {
+        let polls = Cell::new(0_usize);
+        run(yield_until(10, || {
+            polls.set(polls.get() + 1);
+            polls.get() >= 3
+        }));
+        assert_eq!(polls.get(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "yield_until")]
+    fn yield_until_panics_on_exhaustion() {
+        run(yield_until(3, || false));
+    }
+
+    #[test]
+    fn gate_grants_fifo_and_cancellation_unparks() {
+        let gate = GateStore::new();
+        let mut a = Drive::new(gate.enter());
+        let mut b = Drive::new(gate.enter());
+        assert!(a.poll().is_pending());
+        assert!(b.poll().is_pending());
+        assert_eq!((gate.waiting(), gate.peak()), (2, 2));
+        gate.release(1);
+        assert!(a.poll().is_ready());
+        assert!(b.poll().is_pending());
+        drop(b);
+        assert_eq!(gate.waiting(), 0);
+        gate.release(1);
+        let mut c = Drive::new(gate.enter());
+        assert!(c.poll().is_pending());
+    }
+}
