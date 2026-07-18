@@ -104,7 +104,7 @@ where
 {
     /// Position a cursor at the least key `>= start`, streaming forward until
     /// `end` (exclusive), descending only the referenced hops on the seek path.
-    async fn seek(
+    pub(crate) async fn seek(
         store: &'a S,
         root: &ChunkAddress,
         start: &[u8],
@@ -479,7 +479,7 @@ fn join(base: &[u8], suffix: &[u8]) -> Vec<u8> {
 /// The least byte string strictly greater than every string starting with
 /// `prefix`: increment the last byte below `0xFF` after dropping the trailing
 /// `0xFF` run. `None` when the prefix is empty or all `0xFF`, i.e. unbounded.
-fn successor(prefix: &[u8]) -> Option<Bytes> {
+pub(crate) fn successor(prefix: &[u8]) -> Option<Bytes> {
     let mut bytes = prefix.to_vec();
     while let Some(&last) = bytes.last() {
         if last == 0xFF {

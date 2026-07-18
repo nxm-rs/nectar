@@ -31,6 +31,11 @@ pub trait Format:
     /// The two payload bytes preceding the node body: `MAGIC || VERSION`.
     const PREAMBLE: [u8; 2] = [Self::MAGIC, Self::VERSION];
 
+    /// Folder-view path separator (ASCII `/`). The byte the folder and website
+    /// views split keys into path segments on; a view-layer interpretation,
+    /// never stored in the trie.
+    const SEPARATOR: u8 = b'/';
+
     /// Max node body bytes: the chunk body minus [`Self::PREAMBLE`].
     const BUDGET: usize;
 
@@ -140,6 +145,7 @@ mod tests {
     fn v1_parameters_are_frozen() {
         assert_eq!(V1::MAGIC, 0x6D);
         assert_eq!(V1::VERSION, 0x01);
+        assert_eq!(V1::SEPARATOR, b'/');
         assert_eq!(V1::BUDGET, 4094);
         assert_eq!(V1::PLEN_MAX, 255);
         assert_eq!(V1::VINLINE_MAX, 128);
