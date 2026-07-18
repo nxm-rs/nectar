@@ -6,9 +6,9 @@
 use std::error::Error;
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{Builder, Changeset, Entry, Key, Reader, V1, V1Read, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, MemoryStore};
+use nectar_testing::run;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -30,115 +30,129 @@ fn windowed_keys() -> Vec<(Key, u8)> {
 
 /// Build the windowed key set under `F`, returning the root and the number of
 /// distinct chunks the build stored.
-fn build_windowed<F: nectar_manifest::Format>() -> Result<(ChunkAddress, usize), Box<dyn Error>> {
+async fn build_windowed<F: nectar_manifest::Format>()
+-> Result<(ChunkAddress, usize), Box<dyn Error>> {
     let store = MemoryStore::default();
     let mut builder = Builder::<F>::new();
     for (key, fill) in windowed_keys() {
         builder.insert(key, ref_entry::<F>(fill), None);
     }
-    let built = block_on(builder.build(&store))?;
+    let built = builder.build(&store).await?;
     Ok((*built.root(), store.len()))
 }
 
 #[test]
 fn the_read_profile_stores_fewer_chunks_for_a_windowed_subtree() -> TestResult {
-    let (_, v1_chunks) = build_windowed::<V1>()?;
-    let (_, read_chunks) = build_windowed::<V1Read>()?;
-    // The sub-node is referenced under V1 (its own chunk) but embedded under
-    // the read profile (folded into the root), so the read build stores fewer.
-    ensure(
-        read_chunks < v1_chunks,
-        "read profile must store fewer chunks than V1 for the windowed subtree",
-    )?;
-    Ok(())
+    run(async {
+        let (_, v1_chunks) = build_windowed::<V1>().await?;
+        let (_, read_chunks) = build_windowed::<V1Read>().await?;
+        // The sub-node is referenced under V1 (its own chunk) but embedded under
+        // the read profile (folded into the root), so the read build stores fewer.
+        ensure(
+            read_chunks < v1_chunks,
+            "read profile must store fewer chunks than V1 for the windowed subtree",
+        )?;
+        Ok(())
+    })
 }
 
 #[test]
 fn the_read_profile_and_v1_produce_distinct_roots() -> TestResult {
-    let (v1_root, _) = build_windowed::<V1>()?;
-    let (read_root, _) = build_windowed::<V1Read>()?;
-    // A distinct wire version and a distinct shape: byte-distinct manifests.
-    ensure(
-        v1_root != read_root,
-        "the two profiles must root differently",
-    )?;
-    Ok(())
+    run(async {
+        let (v1_root, _) = build_windowed::<V1>().await?;
+        let (read_root, _) = build_windowed::<V1Read>().await?;
+        // A distinct wire version and a distinct shape: byte-distinct manifests.
+        ensure(
+            v1_root != read_root,
+            "the two profiles must root differently",
+        )?;
+        Ok(())
+    })
 }
 
 #[test]
 fn build_then_read_round_trips_every_key_under_the_read_profile() -> TestResult {
-    let store = MemoryStore::default();
-    let mut builder = Builder::<V1Read>::new();
-    for (key, fill) in windowed_keys() {
-        builder.insert(key, ref_entry::<V1Read>(fill), None);
-    }
-    let root = *block_on(builder.build(&store))?.root();
+    run(async {
+        let store = MemoryStore::default();
+        let mut builder = Builder::<V1Read>::new();
+        for (key, fill) in windowed_keys() {
+            builder.insert(key, ref_entry::<V1Read>(fill), None);
+        }
+        let root = *builder.build(&store).await?.root();
 
-    let reader = Reader::<MemoryStore, V1Read>::new(store);
-    for (key, fill) in windowed_keys() {
-        let got = block_on(reader.get(&root, &key))?;
+        let reader = Reader::<MemoryStore, V1Read>::new(store);
+        for (key, fill) in windowed_keys() {
+            let got = reader.get(&root, &key).await?;
+            ensure(
+                got == Some(ref_entry::<V1Read>(fill)),
+                "read value mismatch",
+            )?;
+        }
+        // An absent key still reads as absent under the profile.
         ensure(
-            got == Some(ref_entry::<V1Read>(fill)),
-            "read value mismatch",
+            reader
+                .get(&root, &Key::from(&b"absent"[..]))
+                .await?
+                .is_none(),
+            "absent key must read as None",
         )?;
-    }
-    // An absent key still reads as absent under the profile.
-    ensure(
-        block_on(reader.get(&root, &Key::from(&b"absent"[..])))?.is_none(),
-        "absent key must read as None",
-    )?;
-    Ok(())
+        Ok(())
+    })
 }
 
 #[test]
 fn apply_matches_a_from_scratch_build_under_the_read_profile() -> TestResult {
-    let all = windowed_keys();
-    let split = 40usize;
+    run(async {
+        let all = windowed_keys();
+        let split = 40usize;
 
-    // A base of the first keys, then a changeset staging the rest.
-    let store = MemoryStore::default();
-    let mut base = Builder::<V1Read>::new();
-    for (key, fill) in all.iter().take(split) {
-        base.insert(key.clone(), ref_entry::<V1Read>(*fill), None);
-    }
-    let base_root = *block_on(base.build(&store))?.root();
+        // A base of the first keys, then a changeset staging the rest.
+        let store = MemoryStore::default();
+        let mut base = Builder::<V1Read>::new();
+        for (key, fill) in all.iter().take(split) {
+            base.insert(key.clone(), ref_entry::<V1Read>(*fill), None);
+        }
+        let base_root = *base.build(&store).await?.root();
 
-    let mut changeset = Changeset::<V1Read>::new();
-    for (key, fill) in all.iter().skip(split) {
-        changeset.put(key.clone(), ref_entry::<V1Read>(*fill), None);
-    }
-    let applied = block_on(apply(&store, &base_root, &changeset))?;
+        let mut changeset = Changeset::<V1Read>::new();
+        for (key, fill) in all.iter().skip(split) {
+            changeset.put(key.clone(), ref_entry::<V1Read>(*fill), None);
+        }
+        let applied = apply(&store, &base_root, &changeset).await?;
 
-    // A from-scratch build of the merged key set lands on the same root, byte
-    // for byte: history independence holds under the read profile too.
-    let (scratch_root, _) = build_windowed::<V1Read>()?;
-    ensure(
-        applied == scratch_root,
-        "apply must match a from-scratch build under the read profile",
-    )?;
-
-    // The applied manifest reads back the full key set.
-    let reader = Reader::<MemoryStore, V1Read>::new(store);
-    for (key, fill) in &all {
-        let got = block_on(reader.get(&applied, key))?;
+        // A from-scratch build of the merged key set lands on the same root, byte
+        // for byte: history independence holds under the read profile too.
+        let (scratch_root, _) = build_windowed::<V1Read>().await?;
         ensure(
-            got == Some(ref_entry::<V1Read>(*fill)),
-            "applied value mismatch",
+            applied == scratch_root,
+            "apply must match a from-scratch build under the read profile",
         )?;
-    }
-    Ok(())
+
+        // The applied manifest reads back the full key set.
+        let reader = Reader::<MemoryStore, V1Read>::new(store);
+        for (key, fill) in &all {
+            let got = reader.get(&applied, key).await?;
+            ensure(
+                got == Some(ref_entry::<V1Read>(*fill)),
+                "applied value mismatch",
+            )?;
+        }
+        Ok(())
+    })
 }
 
 #[test]
 fn an_inline_value_round_trips_under_the_read_profile() -> TestResult {
-    let store = MemoryStore::default();
-    let mut builder = Builder::<V1Read>::new();
-    let value = Entry::<V1Read>::inline(Bytes::from_static(b"<h1>hi</h1>"))?;
-    builder.insert(Key::from(&b"index.html"[..]), value.clone(), None);
-    let root = *block_on(builder.build(&store))?.root();
+    run(async {
+        let store = MemoryStore::default();
+        let mut builder = Builder::<V1Read>::new();
+        let value = Entry::<V1Read>::inline(Bytes::from_static(b"<h1>hi</h1>"))?;
+        builder.insert(Key::from(&b"index.html"[..]), value.clone(), None);
+        let root = *builder.build(&store).await?.root();
 
-    let reader = Reader::<MemoryStore, V1Read>::new(store);
-    let got = block_on(reader.get(&root, &Key::from(&b"index.html"[..])))?;
-    ensure(got == Some(value), "inline value must round-trip")?;
-    Ok(())
+        let reader = Reader::<MemoryStore, V1Read>::new(store);
+        let got = reader.get(&root, &Key::from(&b"index.html"[..])).await?;
+        ensure(got == Some(value), "inline value must round-trip")?;
+        Ok(())
+    })
 }

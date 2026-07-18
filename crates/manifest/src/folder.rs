@@ -337,9 +337,9 @@ fn directory_index<F: Format>(path: &[u8], index: &[u8]) -> Key {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef};
+    use nectar_testing::run;
 
     use crate::builder::Builder;
     use crate::meta::{KeyId, Metadata};
@@ -351,18 +351,18 @@ mod tests {
     }
 
     /// Build a manifest from `(key, value)` pairs and return its root address.
-    fn manifest(store: &MemoryStore, pairs: &[(&[u8], u8)]) -> ChunkAddress {
+    async fn manifest(store: &MemoryStore, pairs: &[(&[u8], u8)]) -> ChunkAddress {
         let mut builder = Builder::new();
         for (key, byte) in pairs {
             builder.insert(Key::from(&key[..]), entry(*byte), None);
         }
-        *block_on(builder.build(store)).unwrap().root()
+        *builder.build(store).await.unwrap().root()
     }
 
     /// Drain a listing into its entries.
-    fn entries(mut listing: Listing<'_, &MemoryStore>) -> Vec<DirEntry> {
+    async fn entries(mut listing: Listing<'_, &MemoryStore>) -> Vec<DirEntry> {
         let mut out = Vec::new();
-        while let Some(item) = block_on(listing.next()).unwrap() {
+        while let Some(item) = listing.next().await.unwrap() {
             out.push(item);
         }
         out
@@ -383,263 +383,298 @@ mod tests {
 
     #[test]
     fn list_collapses_subdirectories_at_the_separator() {
-        let store = MemoryStore::default();
-        let root = manifest(
-            &store,
-            &[
-                (b"index.html", 0x01),
-                (b"img/logo.png", 0x02),
-                (b"img/icons/a.png", 0x03),
-                (b"style.css", 0x04),
-            ],
-        );
-        let reader: Reader<_> = Reader::new(&store);
+        run(async {
+            let store = MemoryStore::default();
+            let root = manifest(
+                &store,
+                &[
+                    (b"index.html", 0x01),
+                    (b"img/logo.png", 0x02),
+                    (b"img/icons/a.png", 0x03),
+                    (b"style.css", 0x04),
+                ],
+            )
+            .await;
+            let reader: Reader<_> = Reader::new(&store);
 
-        // The root lists two files and one collapsed directory, in key order.
-        let got = entries(block_on(reader.list(&root, &Key::empty())).unwrap());
-        assert_eq!(
-            got,
-            vec![
-                dir(b"img/"),
-                file(b"index.html", 0x01),
-                file(b"style.css", 0x04),
-            ]
-        );
+            // The root lists two files and one collapsed directory, in key order.
+            let got = entries(reader.list(&root, &Key::empty()).await.unwrap()).await;
+            assert_eq!(
+                got,
+                vec![
+                    dir(b"img/"),
+                    file(b"index.html", 0x01),
+                    file(b"style.css", 0x04),
+                ]
+            );
+        })
     }
 
     #[test]
     fn list_of_a_nested_directory_reads_one_level() {
-        let store = MemoryStore::default();
-        let root = manifest(
-            &store,
-            &[
-                (b"img/logo.png", 0x02),
-                (b"img/icons/a.png", 0x03),
-                (b"img/icons/b.png", 0x05),
-                (b"other.txt", 0x06),
-            ],
-        );
-        let reader: Reader<_> = Reader::new(&store);
+        run(async {
+            let store = MemoryStore::default();
+            let root = manifest(
+                &store,
+                &[
+                    (b"img/logo.png", 0x02),
+                    (b"img/icons/a.png", 0x03),
+                    (b"img/icons/b.png", 0x05),
+                    (b"other.txt", 0x06),
+                ],
+            )
+            .await;
+            let reader: Reader<_> = Reader::new(&store);
 
-        let got = entries(block_on(reader.list(&root, &Key::from(&b"img/"[..]))).unwrap());
-        assert_eq!(got, vec![dir(b"img/icons/"), file(b"img/logo.png", 0x02)]);
+            let got = entries(reader.list(&root, &Key::from(&b"img/"[..])).await.unwrap()).await;
+            assert_eq!(got, vec![dir(b"img/icons/"), file(b"img/logo.png", 0x02)]);
+        })
     }
 
     #[test]
     fn list_collapses_consecutive_subdirectories() {
-        let store = MemoryStore::default();
-        // Two subdirectories in a row exercise the reseek-then-collapse-again
-        // path: each named subtree must be skipped without swallowing the next.
-        let root = manifest(
-            &store,
-            &[
-                (b"a/1", 0x01),
-                (b"a/2", 0x02),
-                (b"b/1", 0x03),
-                (b"c.txt", 0x04),
-            ],
-        );
-        let reader: Reader<_> = Reader::new(&store);
+        run(async {
+            let store = MemoryStore::default();
+            // Two subdirectories in a row exercise the reseek-then-collapse-again
+            // path: each named subtree must be skipped without swallowing the next.
+            let root = manifest(
+                &store,
+                &[
+                    (b"a/1", 0x01),
+                    (b"a/2", 0x02),
+                    (b"b/1", 0x03),
+                    (b"c.txt", 0x04),
+                ],
+            )
+            .await;
+            let reader: Reader<_> = Reader::new(&store);
 
-        let got = entries(block_on(reader.list(&root, &Key::empty())).unwrap());
-        assert_eq!(got, vec![dir(b"a/"), dir(b"b/"), file(b"c.txt", 0x04)]);
+            let got = entries(reader.list(&root, &Key::empty()).await.unwrap()).await;
+            assert_eq!(got, vec![dir(b"a/"), dir(b"b/"), file(b"c.txt", 0x04)]);
+        })
     }
 
     #[test]
     fn list_skips_the_directory_key_itself() {
-        let store = MemoryStore::default();
-        // A key exactly equal to the listed directory path is the directory
-        // itself, not a child.
-        let root = manifest(&store, &[(b"dir/", 0x01), (b"dir/a", 0x02)]);
-        let reader: Reader<_> = Reader::new(&store);
+        run(async {
+            let store = MemoryStore::default();
+            // A key exactly equal to the listed directory path is the directory
+            // itself, not a child.
+            let root = manifest(&store, &[(b"dir/", 0x01), (b"dir/a", 0x02)]).await;
+            let reader: Reader<_> = Reader::new(&store);
 
-        let got = entries(block_on(reader.list(&root, &Key::from(&b"dir/"[..]))).unwrap());
-        assert_eq!(got, vec![file(b"dir/a", 0x02)]);
+            let got = entries(reader.list(&root, &Key::from(&b"dir/"[..])).await.unwrap()).await;
+            assert_eq!(got, vec![file(b"dir/a", 0x02)]);
+        })
     }
 
     #[test]
     fn list_does_not_fetch_deeper_subtrees() {
-        let store = CountingStore::default();
-        // A wide, deep subdirectory the listing must not descend into.
-        let mut pairs: Vec<(Vec<u8>, u8)> = Vec::new();
-        for i in 0u8..64 {
-            pairs.push((format!("deep/{i:03}/leaf").into_bytes(), i));
-        }
-        pairs.push((b"top.txt".to_vec(), 0xFF));
-        let refs: Vec<(&[u8], u8)> = pairs.iter().map(|(k, v)| (k.as_slice(), *v)).collect();
-        let root = manifest(&store.inner, &refs);
-        store.reset();
+        run(async {
+            let store = CountingStore::default();
+            // A wide, deep subdirectory the listing must not descend into.
+            let mut pairs: Vec<(Vec<u8>, u8)> = Vec::new();
+            for i in 0u8..64 {
+                pairs.push((format!("deep/{i:03}/leaf").into_bytes(), i));
+            }
+            pairs.push((b"top.txt".to_vec(), 0xFF));
+            let refs: Vec<(&[u8], u8)> = pairs.iter().map(|(k, v)| (k.as_slice(), *v)).collect();
+            let root = manifest(&store.inner, &refs).await;
+            store.reset();
 
-        let reader: Reader<_> = Reader::new(&store);
-        let got = entries_counting(block_on(reader.list(&root, &Key::empty())).unwrap());
-        assert_eq!(got, vec![dir(b"deep/"), file(b"top.txt", 0xFF)]);
-        // Seeking past the subtree keeps the fetch count to the frontier, far
-        // below the 64 leaves under it.
-        assert!(store.gets() < 16, "fetched {} nodes", store.gets());
+            let reader: Reader<_> = Reader::new(&store);
+            let got = entries_counting(reader.list(&root, &Key::empty()).await.unwrap()).await;
+            assert_eq!(got, vec![dir(b"deep/"), file(b"top.txt", 0xFF)]);
+            // Seeking past the subtree keeps the fetch count to the frontier, far
+            // below the 64 leaves under it.
+            assert!(store.gets() < 16, "fetched {} nodes", store.gets());
+        })
     }
 
     #[test]
     fn list_delegates_a_referenced_subtree() {
-        use crate::bounded::Prefix;
-        use crate::fork::{Child, ForkTable};
-        use crate::node::Node;
-        use crate::store::NodePut;
+        run(async {
+            use crate::bounded::Prefix;
+            use crate::fork::{Child, ForkTable};
+            use crate::node::Node;
+            use crate::store::NodePut;
 
-        let store = MemoryStore::default();
-        // A referenced "mg/" subtree holding a nested subdirectory and a file,
-        // so listing it delegates to the subtree root and still collapses and
-        // reseeks in the subtree's own key space.
-        let mut inner = ForkTable::new();
-        inner
-            .insert(
-                Prefix::try_from(&b"1"[..]).unwrap(),
-                entry(0x01).into(),
+            let store = MemoryStore::default();
+            // A referenced "mg/" subtree holding a nested subdirectory and a file,
+            // so listing it delegates to the subtree root and still collapses and
+            // reseeks in the subtree's own key space.
+            let mut inner = ForkTable::new();
+            inner
+                .insert(
+                    Prefix::try_from(&b"1"[..]).unwrap(),
+                    entry(0x01).into(),
+                    None,
+                )
+                .unwrap();
+            inner
+                .insert(
+                    Prefix::try_from(&b"2"[..]).unwrap(),
+                    entry(0x02).into(),
+                    None,
+                )
+                .unwrap();
+            let mut leaf = ForkTable::new();
+            leaf.insert(
+                Prefix::try_from(&b"a/"[..]).unwrap(),
+                Child::Embedded(inner).into(),
                 None,
             )
             .unwrap();
-        inner
-            .insert(
-                Prefix::try_from(&b"2"[..]).unwrap(),
-                entry(0x02).into(),
+            leaf.insert(
+                Prefix::try_from(&b"logo.png"[..]).unwrap(),
+                entry(0xBB).into(),
                 None,
             )
             .unwrap();
-        let mut leaf = ForkTable::new();
-        leaf.insert(
-            Prefix::try_from(&b"a/"[..]).unwrap(),
-            Child::Embedded(inner).into(),
-            None,
-        )
-        .unwrap();
-        leaf.insert(
-            Prefix::try_from(&b"logo.png"[..]).unwrap(),
-            entry(0xBB).into(),
-            None,
-        )
-        .unwrap();
-        let leaf_ref = block_on(store.put_node(&Node::new(None, leaf))).unwrap();
+            let leaf_ref = store.put_node(&Node::new(None, leaf)).await.unwrap();
 
-        let mut forks: ForkTable = ForkTable::new();
-        forks
-            .insert(
-                Prefix::try_from(&b"mg/"[..]).unwrap(),
-                Child::Ref32(ChunkRef::new(leaf_ref)).into(),
-                None,
-            )
-            .unwrap();
-        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+            let mut forks: ForkTable = ForkTable::new();
+            forks
+                .insert(
+                    Prefix::try_from(&b"mg/"[..]).unwrap(),
+                    Child::Ref32(ChunkRef::new(leaf_ref)).into(),
+                    None,
+                )
+                .unwrap();
+            let root = store.put_node(&Node::new(None, forks)).await.unwrap();
 
-        let reader: Reader<_> = Reader::new(&store);
-        let got = entries(block_on(reader.list(&root, &Key::from(&b"mg/"[..]))).unwrap());
-        assert_eq!(got, vec![dir(b"mg/a/"), file(b"mg/logo.png", 0xBB)]);
+            let reader: Reader<_> = Reader::new(&store);
+            let got = entries(reader.list(&root, &Key::from(&b"mg/"[..])).await.unwrap()).await;
+            assert_eq!(got, vec![dir(b"mg/a/"), file(b"mg/logo.png", 0xBB)]);
+        })
     }
 
     #[test]
     fn serve_prefers_an_exact_key() {
-        let store = MemoryStore::default();
-        let root = manifest(&store, &[(b"a.html", 0x01)]);
-        let reader: Reader<_> = Reader::new(&store);
-        assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"a.html"[..]))).unwrap(),
-            Served::Exact {
-                key: Key::from(&b"a.html"[..]),
-                entry: entry(0x01),
-            }
-        );
+        run(async {
+            let store = MemoryStore::default();
+            let root = manifest(&store, &[(b"a.html", 0x01)]).await;
+            let reader: Reader<_> = Reader::new(&store);
+            assert_eq!(
+                reader
+                    .serve(&root, &Key::from(&b"a.html"[..]))
+                    .await
+                    .unwrap(),
+                Served::Exact {
+                    key: Key::from(&b"a.html"[..]),
+                    entry: entry(0x01),
+                }
+            );
+        })
     }
 
     #[test]
     fn serve_falls_back_to_the_index_document() {
-        let store = MemoryStore::default();
-        let mut builder = Builder::new();
-        builder.insert(Key::from(&b"index.html"[..]), entry(0x01), None);
-        builder.insert(Key::from(&b"docs/index.html"[..]), entry(0x02), None);
-        builder.manifest_metadata(
-            Metadata::new(
-                KeyId::WebsiteIndexDocument,
-                Bytes::from_static(b"index.html"),
-            )
-            .unwrap(),
-        );
-        let root = *block_on(builder.build(&store)).unwrap().root();
-        let reader: Reader<_> = Reader::new(&store);
+        run(async {
+            let store = MemoryStore::default();
+            let mut builder = Builder::new();
+            builder.insert(Key::from(&b"index.html"[..]), entry(0x01), None);
+            builder.insert(Key::from(&b"docs/index.html"[..]), entry(0x02), None);
+            builder.manifest_metadata(
+                Metadata::new(
+                    KeyId::WebsiteIndexDocument,
+                    Bytes::from_static(b"index.html"),
+                )
+                .unwrap(),
+            );
+            let root = *builder.build(&store).await.unwrap().root();
+            let reader: Reader<_> = Reader::new(&store);
 
-        // The root path resolves to the top-level index document.
-        assert_eq!(
-            block_on(reader.serve(&root, &Key::empty())).unwrap(),
-            Served::Index {
-                key: Key::from(&b"index.html"[..]),
-                entry: entry(0x01),
-            }
-        );
-        // A directory path (trailing separator) resolves to its index document.
-        assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"docs/"[..]))).unwrap(),
-            Served::Index {
-                key: Key::from(&b"docs/index.html"[..]),
-                entry: entry(0x02),
-            }
-        );
-        // A directory path without a trailing separator is read as one too.
-        assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"docs"[..]))).unwrap(),
-            Served::Index {
-                key: Key::from(&b"docs/index.html"[..]),
-                entry: entry(0x02),
-            }
-        );
+            // The root path resolves to the top-level index document.
+            assert_eq!(
+                reader.serve(&root, &Key::empty()).await.unwrap(),
+                Served::Index {
+                    key: Key::from(&b"index.html"[..]),
+                    entry: entry(0x01),
+                }
+            );
+            // A directory path (trailing separator) resolves to its index document.
+            assert_eq!(
+                reader
+                    .serve(&root, &Key::from(&b"docs/"[..]))
+                    .await
+                    .unwrap(),
+                Served::Index {
+                    key: Key::from(&b"docs/index.html"[..]),
+                    entry: entry(0x02),
+                }
+            );
+            // A directory path without a trailing separator is read as one too.
+            assert_eq!(
+                reader.serve(&root, &Key::from(&b"docs"[..])).await.unwrap(),
+                Served::Index {
+                    key: Key::from(&b"docs/index.html"[..]),
+                    entry: entry(0x02),
+                }
+            );
+        })
     }
 
     #[test]
     fn serve_falls_back_to_the_error_document() {
-        let store = MemoryStore::default();
-        let mut builder = Builder::new();
-        builder.insert(Key::from(&b"404.html"[..]), entry(0x09), None);
-        builder.manifest_metadata(
-            Metadata::new(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html")).unwrap(),
-        );
-        let root = *block_on(builder.build(&store)).unwrap().root();
-        let reader: Reader<_> = Reader::new(&store);
+        run(async {
+            let store = MemoryStore::default();
+            let mut builder = Builder::new();
+            builder.insert(Key::from(&b"404.html"[..]), entry(0x09), None);
+            builder.manifest_metadata(
+                Metadata::new(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html"))
+                    .unwrap(),
+            );
+            let root = *builder.build(&store).await.unwrap().root();
+            let reader: Reader<_> = Reader::new(&store);
 
-        assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"missing"[..]))).unwrap(),
-            Served::Error {
-                key: Key::from(&b"404.html"[..]),
-                entry: entry(0x09),
-            }
-        );
+            assert_eq!(
+                reader
+                    .serve(&root, &Key::from(&b"missing"[..]))
+                    .await
+                    .unwrap(),
+                Served::Error {
+                    key: Key::from(&b"404.html"[..]),
+                    entry: entry(0x09),
+                }
+            );
+        })
     }
 
     #[test]
     fn serve_missing_without_conventions_is_missing() {
-        let store = MemoryStore::default();
-        let root = manifest(&store, &[(b"a.html", 0x01)]);
-        let reader: Reader<_> = Reader::new(&store);
-        assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"nope"[..]))).unwrap(),
-            Served::Missing
-        );
+        run(async {
+            let store = MemoryStore::default();
+            let root = manifest(&store, &[(b"a.html", 0x01)]).await;
+            let reader: Reader<_> = Reader::new(&store);
+            assert_eq!(
+                reader.serve(&root, &Key::from(&b"nope"[..])).await.unwrap(),
+                Served::Missing
+            );
+        })
     }
 
     #[test]
     fn website_reads_the_root_conventions() {
-        let store = MemoryStore::default();
-        let mut builder = Builder::new();
-        builder.insert(Key::from(&b"index.html"[..]), entry(0x01), None);
-        let mut meta = Metadata::new(
-            KeyId::WebsiteIndexDocument,
-            Bytes::from_static(b"index.html"),
-        )
-        .unwrap();
-        meta.insert(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html"))
+        run(async {
+            let store = MemoryStore::default();
+            let mut builder = Builder::new();
+            builder.insert(Key::from(&b"index.html"[..]), entry(0x01), None);
+            let mut meta = Metadata::new(
+                KeyId::WebsiteIndexDocument,
+                Bytes::from_static(b"index.html"),
+            )
             .unwrap();
-        builder.manifest_metadata(meta);
-        let root = *block_on(builder.build(&store)).unwrap().root();
-        let reader: Reader<_> = Reader::new(&store);
+            meta.insert(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html"))
+                .unwrap();
+            builder.manifest_metadata(meta);
+            let root = *builder.build(&store).await.unwrap().root();
+            let reader: Reader<_> = Reader::new(&store);
 
-        let site = block_on(reader.website(&root)).unwrap();
-        assert_eq!(site.index(), Some(&b"index.html"[..]));
-        assert_eq!(site.error(), Some(&b"404.html"[..]));
+            let site = reader.website(&root).await.unwrap();
+            assert_eq!(site.index(), Some(&b"index.html"[..]));
+            assert_eq!(site.error(), Some(&b"404.html"[..]));
+        })
     }
 
     // A trusted store that counts each fetch, so a test can read off how many
@@ -678,9 +713,9 @@ mod tests {
         }
     }
 
-    fn entries_counting(mut listing: Listing<'_, &CountingStore>) -> Vec<DirEntry> {
+    async fn entries_counting(mut listing: Listing<'_, &CountingStore>) -> Vec<DirEntry> {
         let mut out = Vec::new();
-        while let Some(item) = block_on(listing.next()).unwrap() {
+        while let Some(item) = listing.next().await.unwrap() {
             out.push(item);
         }
         out

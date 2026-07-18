@@ -65,7 +65,7 @@ where
     /// exact bytes [`build_files`](crate::build_files) streamed in under it.
     ///
     /// ```
-    /// use futures::executor::block_on;
+    /// use nectar_testing::run;
     /// use nectar_manifest::{build_files, Key, Reader};
     /// use nectar_primitives::MemoryStore;
     ///
@@ -91,8 +91,8 @@ where
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
+    use nectar_testing::run;
 
     use crate::builder::{Builder, build_files};
     use crate::value::{Entry, Key};
@@ -101,56 +101,71 @@ mod tests {
 
     #[test]
     fn publish_then_fetch_round_trips_file_bytes() {
-        let store = MemoryStore::default();
-        let files = [
-            (
-                Key::from(&b"index.html"[..]),
-                Bytes::from_static(b"<h1>hi</h1>"),
-            ),
-            (
-                Key::from(&b"img/logo.png"[..]),
-                Bytes::from(vec![0xAB; 9000]),
-            ),
-        ];
-        let root = *block_on(build_files(&store, files)).unwrap().root();
+        run(async {
+            let store = MemoryStore::default();
+            let files = [
+                (
+                    Key::from(&b"index.html"[..]),
+                    Bytes::from_static(b"<h1>hi</h1>"),
+                ),
+                (
+                    Key::from(&b"img/logo.png"[..]),
+                    Bytes::from(vec![0xAB; 9000]),
+                ),
+            ];
+            let root = *build_files(&store, files).await.unwrap().root();
 
-        let reader: Reader<_> = Reader::new(&store);
-        assert_eq!(
-            block_on(reader.fetch(&root, &Key::from(&b"index.html"[..]))).unwrap(),
-            Some(Bytes::from_static(b"<h1>hi</h1>")),
-        );
-        // A multi-chunk file rejoins byte-exact through the shared BMT.
-        assert_eq!(
-            block_on(reader.fetch(&root, &Key::from(&b"img/logo.png"[..]))).unwrap(),
-            Some(Bytes::from(vec![0xAB; 9000])),
-        );
+            let reader: Reader<_> = Reader::new(&store);
+            assert_eq!(
+                reader
+                    .fetch(&root, &Key::from(&b"index.html"[..]))
+                    .await
+                    .unwrap(),
+                Some(Bytes::from_static(b"<h1>hi</h1>")),
+            );
+            // A multi-chunk file rejoins byte-exact through the shared BMT.
+            assert_eq!(
+                reader
+                    .fetch(&root, &Key::from(&b"img/logo.png"[..]))
+                    .await
+                    .unwrap(),
+                Some(Bytes::from(vec![0xAB; 9000])),
+            );
+        })
     }
 
     #[test]
     fn fetch_of_an_absent_key_is_none() {
-        let store = MemoryStore::default();
-        let files = [(Key::from(&b"a"[..]), Bytes::from_static(b"x"))];
-        let root = *block_on(build_files(&store, files)).unwrap().root();
+        run(async {
+            let store = MemoryStore::default();
+            let files = [(Key::from(&b"a"[..]), Bytes::from_static(b"x"))];
+            let root = *build_files(&store, files).await.unwrap().root();
 
-        let reader: Reader<_> = Reader::new(&store);
-        assert_eq!(
-            block_on(reader.fetch(&root, &Key::from(&b"missing"[..]))).unwrap(),
-            None,
-        );
+            let reader: Reader<_> = Reader::new(&store);
+            assert_eq!(
+                reader
+                    .fetch(&root, &Key::from(&b"missing"[..]))
+                    .await
+                    .unwrap(),
+                None,
+            );
+        })
     }
 
     #[test]
     fn read_returns_inline_bytes_directly() {
-        let store = MemoryStore::default();
-        let mut builder = Builder::new();
-        let value: Entry = Entry::inline(Bytes::from_static(b"inline")).unwrap();
-        builder.insert(Key::from(&b"k"[..]), value, None);
-        let root = *block_on(builder.build(&store)).unwrap().root();
+        run(async {
+            let store = MemoryStore::default();
+            let mut builder = Builder::new();
+            let value: Entry = Entry::inline(Bytes::from_static(b"inline")).unwrap();
+            builder.insert(Key::from(&b"k"[..]), value, None);
+            let root = *builder.build(&store).await.unwrap().root();
 
-        let reader: Reader<_> = Reader::new(&store);
-        assert_eq!(
-            block_on(reader.fetch(&root, &Key::from(&b"k"[..]))).unwrap(),
-            Some(Bytes::from_static(b"inline")),
-        );
+            let reader: Reader<_> = Reader::new(&store);
+            assert_eq!(
+                reader.fetch(&root, &Key::from(&b"k"[..])).await.unwrap(),
+                Some(Bytes::from_static(b"inline")),
+            );
+        })
     }
 }

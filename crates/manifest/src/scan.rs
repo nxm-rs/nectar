@@ -658,9 +658,9 @@ pub(crate) fn successor(prefix: &[u8]) -> Option<Bytes> {
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
+    use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::fork::{Child, ForkTable};
@@ -678,9 +678,9 @@ mod tests {
         Prefix::try_from(bytes).unwrap()
     }
 
-    fn drain(mut cursor: Cursor<'_, &MemoryStore>) -> Vec<(Vec<u8>, Entry)> {
+    async fn drain(mut cursor: Cursor<'_, &MemoryStore>) -> Vec<(Vec<u8>, Entry)> {
         let mut out = Vec::new();
-        while let Some((key, value)) = block_on(cursor.next()).unwrap() {
+        while let Some((key, value)) = cursor.next().await.unwrap() {
             out.push((key.as_bytes().to_vec(), value));
         }
         out
@@ -688,10 +688,10 @@ mod tests {
 
     // A two-level manifest: a root fork "a" behind an embedded child holding
     // "aa"/"ab", and "b" behind a referenced leaf holding "ba".
-    fn sample(store: &MemoryStore) -> ChunkAddress {
+    async fn sample(store: &MemoryStore) -> ChunkAddress {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
-        let leaf_ref = block_on(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_ref = store.put_node(&Node::new(None, leaf)).await.unwrap();
 
         let mut embedded = ForkTable::new();
         embedded
@@ -711,100 +711,120 @@ mod tests {
                 None,
             )
             .unwrap();
-        block_on(store.put_node(&Node::new(None, forks))).unwrap()
+        store.put_node(&Node::new(None, forks)).await.unwrap()
     }
 
     #[test]
     fn iteration_is_ascending_across_embedded_and_referenced_children() {
-        let store = MemoryStore::default();
-        let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        let got = drain(block_on(reader.iter(&root)).unwrap());
-        assert_eq!(
-            got,
-            vec![
-                (b"aa".to_vec(), entry(0xAA)),
-                (b"ab".to_vec(), entry(0xAB)),
-                (b"ba".to_vec(), entry(0xBA)),
-            ]
-        );
+        run(async {
+            let store = MemoryStore::default();
+            let root = sample(&store).await;
+            let reader: Reader<_> = Reader::new(&store);
+            let got = drain(reader.iter(&root).await.unwrap()).await;
+            assert_eq!(
+                got,
+                vec![
+                    (b"aa".to_vec(), entry(0xAA)),
+                    (b"ab".to_vec(), entry(0xAB)),
+                    (b"ba".to_vec(), entry(0xBA)),
+                ]
+            );
+        })
     }
 
     #[test]
     fn the_root_value_is_the_empty_key_and_leads_iteration() {
-        let store = MemoryStore::default();
-        let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
-        let mut forks = ForkTable::new();
-        forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
-        let root = block_on(store.put_node(&Node::new(root_ext, forks))).unwrap();
-        let reader: Reader<_> = Reader::new(&store);
-        let got = drain(block_on(reader.iter(&root)).unwrap());
-        assert_eq!(got, vec![(Vec::new(), entry(9)), (b"k".to_vec(), entry(1))]);
+        run(async {
+            let store = MemoryStore::default();
+            let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
+            let mut forks = ForkTable::new();
+            forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
+            let root = store.put_node(&Node::new(root_ext, forks)).await.unwrap();
+            let reader: Reader<_> = Reader::new(&store);
+            let got = drain(reader.iter(&root).await.unwrap()).await;
+            assert_eq!(got, vec![(Vec::new(), entry(9)), (b"k".to_vec(), entry(1))]);
+        })
     }
 
     #[test]
     fn range_is_half_open() {
-        let store = MemoryStore::default();
-        let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        let got = drain(
-            block_on(reader.range(&root, &Key::from(&b"aa"[..]), &Key::from(&b"ba"[..]))).unwrap(),
-        );
-        // "aa" is included, "ba" is the excluded upper bound.
-        assert_eq!(
-            got,
-            vec![(b"aa".to_vec(), entry(0xAA)), (b"ab".to_vec(), entry(0xAB))]
-        );
+        run(async {
+            let store = MemoryStore::default();
+            let root = sample(&store).await;
+            let reader: Reader<_> = Reader::new(&store);
+            let got = drain(
+                reader
+                    .range(&root, &Key::from(&b"aa"[..]), &Key::from(&b"ba"[..]))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            // "aa" is included, "ba" is the excluded upper bound.
+            assert_eq!(
+                got,
+                vec![(b"aa".to_vec(), entry(0xAA)), (b"ab".to_vec(), entry(0xAB))]
+            );
+        })
     }
 
     #[test]
     fn range_starting_between_keys_seeks_to_the_ceiling() {
-        let store = MemoryStore::default();
-        let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        let got = drain(
-            block_on(reader.range(&root, &Key::from(&b"ac"[..]), &Key::from(&b"z"[..]))).unwrap(),
-        );
-        assert_eq!(got, vec![(b"ba".to_vec(), entry(0xBA))]);
+        run(async {
+            let store = MemoryStore::default();
+            let root = sample(&store).await;
+            let reader: Reader<_> = Reader::new(&store);
+            let got = drain(
+                reader
+                    .range(&root, &Key::from(&b"ac"[..]), &Key::from(&b"z"[..]))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(got, vec![(b"ba".to_vec(), entry(0xBA))]);
+        })
     }
 
     #[test]
     fn prefix_selects_one_subtree() {
-        let store = MemoryStore::default();
-        let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        let got = drain(block_on(reader.prefix(&root, &Key::from(&b"a"[..]))).unwrap());
-        assert_eq!(
-            got,
-            vec![(b"aa".to_vec(), entry(0xAA)), (b"ab".to_vec(), entry(0xAB))]
-        );
+        run(async {
+            let store = MemoryStore::default();
+            let root = sample(&store).await;
+            let reader: Reader<_> = Reader::new(&store);
+            let got = drain(reader.prefix(&root, &Key::from(&b"a"[..])).await.unwrap()).await;
+            assert_eq!(
+                got,
+                vec![(b"aa".to_vec(), entry(0xAA)), (b"ab".to_vec(), entry(0xAB))]
+            );
+        })
     }
 
     #[test]
     fn floor_resolves_present_absent_and_below_all_keys() {
-        let store = MemoryStore::default();
-        let root = sample(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        // Exact hit.
-        assert_eq!(
-            block_on(reader.floor(&root, &Key::from(&b"ab"[..]))).unwrap(),
-            Some((Key::from(&b"ab"[..]), entry(0xAB)))
-        );
-        // Between "ab" and "ba": floor is "ab".
-        assert_eq!(
-            block_on(reader.floor(&root, &Key::from(&b"az"[..]))).unwrap(),
-            Some((Key::from(&b"ab"[..]), entry(0xAB)))
-        );
-        // Past the last key: floor is the greatest key, reached through the ref.
-        assert_eq!(
-            block_on(reader.floor(&root, &Key::from(&b"zz"[..]))).unwrap(),
-            Some((Key::from(&b"ba"[..]), entry(0xBA)))
-        );
-        // Below every key: nothing.
-        assert_eq!(
-            block_on(reader.floor(&root, &Key::from(&b"a"[..]))).unwrap(),
-            None
-        );
+        run(async {
+            let store = MemoryStore::default();
+            let root = sample(&store).await;
+            let reader: Reader<_> = Reader::new(&store);
+            // Exact hit.
+            assert_eq!(
+                reader.floor(&root, &Key::from(&b"ab"[..])).await.unwrap(),
+                Some((Key::from(&b"ab"[..]), entry(0xAB)))
+            );
+            // Between "ab" and "ba": floor is "ab".
+            assert_eq!(
+                reader.floor(&root, &Key::from(&b"az"[..])).await.unwrap(),
+                Some((Key::from(&b"ab"[..]), entry(0xAB)))
+            );
+            // Past the last key: floor is the greatest key, reached through the ref.
+            assert_eq!(
+                reader.floor(&root, &Key::from(&b"zz"[..])).await.unwrap(),
+                Some((Key::from(&b"ba"[..]), entry(0xBA)))
+            );
+            // Below every key: nothing.
+            assert_eq!(
+                reader.floor(&root, &Key::from(&b"a"[..])).await.unwrap(),
+                None
+            );
+        })
     }
 
     // An encrypted (ref64) child the plain reader cannot open.
@@ -817,7 +837,7 @@ mod tests {
 
     // A root holding "a" and "z" as plain values with an encrypted subtree
     // wedged between them under "m".
-    fn with_encrypted(store: &MemoryStore) -> ChunkAddress {
+    async fn with_encrypted(store: &MemoryStore) -> ChunkAddress {
         let mut forks = ForkTable::new();
         forks
             .insert(prefix(b"a"), entry(0xA1).into(), None)
@@ -828,64 +848,79 @@ mod tests {
         forks
             .insert(prefix(b"z"), entry(0x2C).into(), None)
             .unwrap();
-        block_on(store.put_node(&Node::new(None, forks))).unwrap()
+        store.put_node(&Node::new(None, forks)).await.unwrap()
     }
 
     #[test]
     fn iteration_surfaces_an_encrypted_subtree_as_an_error() {
-        let store = MemoryStore::default();
-        let root = with_encrypted(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        let mut cursor = block_on(reader.iter(&root)).unwrap();
-        // The plain value before the encrypted edge reads back.
-        assert_eq!(
-            block_on(cursor.next()).unwrap(),
-            Some((Key::from(&b"a"[..]), entry(0xA1)))
-        );
-        // Reaching the encrypted child stops the walk with an error.
-        assert!(matches!(
-            block_on(cursor.next()).unwrap_err(),
-            ReaderError::EncryptedChild
-        ));
+        run(async {
+            let store = MemoryStore::default();
+            let root = with_encrypted(&store).await;
+            let reader: Reader<_> = Reader::new(&store);
+            let mut cursor = reader.iter(&root).await.unwrap();
+            // The plain value before the encrypted edge reads back.
+            assert_eq!(
+                cursor.next().await.unwrap(),
+                Some((Key::from(&b"a"[..]), entry(0xA1)))
+            );
+            // Reaching the encrypted child stops the walk with an error.
+            assert!(matches!(
+                cursor.next().await.unwrap_err(),
+                ReaderError::EncryptedChild
+            ));
+        })
     }
 
     #[test]
     fn a_bound_short_of_the_encrypted_edge_prunes_it() {
-        let store = MemoryStore::default();
-        let root = with_encrypted(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        // "m" is the exclusive upper bound, so the encrypted child at "m" is
-        // pruned rather than fetched, and the scan completes without error.
-        let got = drain(
-            block_on(reader.range(&root, &Key::from(&b"a"[..]), &Key::from(&b"m"[..]))).unwrap(),
-        );
-        assert_eq!(got, vec![(b"a".to_vec(), entry(0xA1))]);
+        run(async {
+            let store = MemoryStore::default();
+            let root = with_encrypted(&store).await;
+            let reader: Reader<_> = Reader::new(&store);
+            // "m" is the exclusive upper bound, so the encrypted child at "m" is
+            // pruned rather than fetched, and the scan completes without error.
+            let got = drain(
+                reader
+                    .range(&root, &Key::from(&b"a"[..]), &Key::from(&b"m"[..]))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(got, vec![(b"a".to_vec(), entry(0xA1))]);
+        })
     }
 
     #[test]
     fn floor_past_an_encrypted_edge_reads_the_plain_key() {
-        let store = MemoryStore::default();
-        let root = with_encrypted(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        // The floor of "z" is "z" itself; the encrypted subtree is left of the
-        // path and never opened.
-        assert_eq!(
-            block_on(reader.floor(&root, &Key::from(&b"z"[..]))).unwrap(),
-            Some((Key::from(&b"z"[..]), entry(0x2C)))
-        );
+        run(async {
+            let store = MemoryStore::default();
+            let root = with_encrypted(&store).await;
+            let reader: Reader<_> = Reader::new(&store);
+            // The floor of "z" is "z" itself; the encrypted subtree is left of the
+            // path and never opened.
+            assert_eq!(
+                reader.floor(&root, &Key::from(&b"z"[..])).await.unwrap(),
+                Some((Key::from(&b"z"[..]), entry(0x2C)))
+            );
+        })
     }
 
     #[test]
     fn floor_landing_in_an_encrypted_subtree_cannot_be_read() {
-        let store = MemoryStore::default();
-        let root = with_encrypted(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        // Every key at or below "n" that could be the floor lives in the
-        // encrypted subtree under "m", so the answer is unreadable.
-        assert!(matches!(
-            block_on(reader.floor(&root, &Key::from(&b"n"[..]))).unwrap_err(),
-            ReaderError::EncryptedChild
-        ));
+        run(async {
+            let store = MemoryStore::default();
+            let root = with_encrypted(&store).await;
+            let reader: Reader<_> = Reader::new(&store);
+            // Every key at or below "n" that could be the floor lives in the
+            // encrypted subtree under "m", so the answer is unreadable.
+            assert!(matches!(
+                reader
+                    .floor(&root, &Key::from(&b"n"[..]))
+                    .await
+                    .unwrap_err(),
+                ReaderError::EncryptedChild
+            ));
+        })
     }
 
     #[test]

@@ -173,9 +173,9 @@ impl<T: TrustedStore> EncryptedNodeGet for T {}
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef};
+    use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::fork::Child;
@@ -265,38 +265,42 @@ mod tests {
 
     #[test]
     fn round_trips_through_a_memory_store() {
-        let store = MemoryStore::default();
-        let node = sample();
-        let reference = block_on(store.put_node_encrypted(&node, SECRET)).unwrap();
-        let opened: Node = block_on(store.get_node_encrypted(&reference)).unwrap();
-        assert_eq!(opened, node);
+        run(async {
+            let store = MemoryStore::default();
+            let node = sample();
+            let reference = store.put_node_encrypted(&node, SECRET).await.unwrap();
+            let opened: Node = store.get_node_encrypted(&reference).await.unwrap();
+            assert_eq!(opened, node);
+        })
     }
 
     #[test]
     fn a_ref64_transports_the_child_key_into_its_parent() {
-        // The privacy rule made concrete: sealing a child yields a ref64 whose
-        // key is exactly the child's derived key, so a parent that records the
-        // ref64 carries that key in its own bytes.
-        let store = MemoryStore::default();
-        let child = sample();
-        let reference = block_on(store.put_node_encrypted(&child, SECRET)).unwrap();
-        assert_eq!(
-            reference.key(),
-            &derive_key::<crate::V1>(SECRET, &child.encode().unwrap())
-        );
+        run(async {
+            // The privacy rule made concrete: sealing a child yields a ref64 whose
+            // key is exactly the child's derived key, so a parent that records the
+            // ref64 carries that key in its own bytes.
+            let store = MemoryStore::default();
+            let child = sample();
+            let reference = store.put_node_encrypted(&child, SECRET).await.unwrap();
+            assert_eq!(
+                reference.key(),
+                &derive_key::<crate::V1>(SECRET, &child.encode().unwrap())
+            );
 
-        let mut parent = Node::empty();
-        parent
-            .forks_mut()
-            .insert(
-                Prefix::try_from(&b"dir/"[..]).unwrap(),
-                Child::Ref64(reference).into(),
-                None,
-            )
-            .unwrap();
-        // The child key round-trips through the parent's own wire bytes.
-        let bytes = parent.encode().unwrap();
-        let decoded: Node = Node::decode(&bytes).unwrap();
-        assert_eq!(decoded, parent);
+            let mut parent = Node::empty();
+            parent
+                .forks_mut()
+                .insert(
+                    Prefix::try_from(&b"dir/"[..]).unwrap(),
+                    Child::Ref64(reference).into(),
+                    None,
+                )
+                .unwrap();
+            // The child key round-trips through the parent's own wire bytes.
+            let bytes = parent.encode().unwrap();
+            let decoded: Node = Node::decode(&bytes).unwrap();
+            assert_eq!(decoded, parent);
+        })
     }
 }

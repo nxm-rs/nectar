@@ -531,9 +531,9 @@ fn select_fragment<F: Format>(steps: Vec<Ranked<F>>, index: &mut u64) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
+    use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::count::SubtreeCount;
@@ -555,44 +555,46 @@ mod tests {
 
     #[test]
     fn the_root_entry_is_index_zero_and_lifts_every_rank() {
-        let store = MemoryStore::default();
-        let root_ext = RootExtension::new(Some(entry(9)), None);
-        let mut forks = ForkTable::new();
-        forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
-        let root = block_on(store.put_node(&Node::<V1>::new(root_ext, forks))).unwrap();
-        let reader = Reader::<&MemoryStore, V1>::new(&store);
+        run(async {
+            let store = MemoryStore::default();
+            let root_ext = RootExtension::new(Some(entry(9)), None);
+            let mut forks = ForkTable::new();
+            forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
+            let root = store
+                .put_node(&Node::<V1>::new(root_ext, forks))
+                .await
+                .unwrap();
+            let reader = Reader::<&MemoryStore, V1>::new(&store);
 
-        // The empty key leads iteration at index 0; "k" follows at index 1.
-        assert_eq!(
-            block_on(reader.select(&root, 0)).unwrap(),
-            Some((Key::empty(), entry(9)))
-        );
-        assert_eq!(
-            block_on(reader.select(&root, 1)).unwrap(),
-            Some((Key::from(&b"k"[..]), entry(1)))
-        );
-        assert_eq!(block_on(reader.select(&root, 2)).unwrap(), None);
+            // The empty key leads iteration at index 0; "k" follows at index 1.
+            assert_eq!(
+                reader.select(&root, 0).await.unwrap(),
+                Some((Key::empty(), entry(9)))
+            );
+            assert_eq!(
+                reader.select(&root, 1).await.unwrap(),
+                Some((Key::from(&b"k"[..]), entry(1)))
+            );
+            assert_eq!(reader.select(&root, 2).await.unwrap(), None);
 
-        // Nothing is strictly before the empty key; the root entry sits before
-        // every other key, so it lifts their ranks by one.
-        assert_eq!(block_on(reader.rank(&root, &Key::empty())).unwrap(), 0);
-        assert_eq!(
-            block_on(reader.rank(&root, &Key::from(&b"k"[..]))).unwrap(),
-            1
-        );
-        assert_eq!(
-            block_on(reader.rank(&root, &Key::from(&b"z"[..]))).unwrap(),
-            2
-        );
-        assert_eq!(
-            block_on(reader.count(&root, &Key::empty(), &Key::from(&b"z"[..]))).unwrap(),
-            2
-        );
+            // Nothing is strictly before the empty key; the root entry sits before
+            // every other key, so it lifts their ranks by one.
+            assert_eq!(reader.rank(&root, &Key::empty()).await.unwrap(), 0);
+            assert_eq!(reader.rank(&root, &Key::from(&b"k"[..])).await.unwrap(), 1);
+            assert_eq!(reader.rank(&root, &Key::from(&b"z"[..])).await.unwrap(), 2);
+            assert_eq!(
+                reader
+                    .count(&root, &Key::empty(), &Key::from(&b"z"[..]))
+                    .await
+                    .unwrap(),
+                2
+            );
+        })
     }
 
     // A root holding "a" and "z" as plain values with an encrypted five-key
     // subtree wedged between them under "m"; the count rides the fork record.
-    fn with_encrypted(store: &MemoryStore) -> ChunkAddress {
+    async fn with_encrypted(store: &MemoryStore) -> ChunkAddress {
         let mut forks = ForkTable::new();
         forks
             .insert(prefix(b"a"), entry(0xA1).into(), None)
@@ -615,62 +617,62 @@ mod tests {
         forks
             .insert(prefix(b"z"), entry(0x2C).into(), None)
             .unwrap();
-        block_on(store.put_node(&Node::<V1>::new(None, forks))).unwrap()
+        store.put_node(&Node::<V1>::new(None, forks)).await.unwrap()
     }
 
     #[test]
     fn an_encrypted_subtree_is_counted_without_being_opened() {
-        let store = MemoryStore::default();
-        let root = with_encrypted(&store);
-        let reader = Reader::<&MemoryStore, V1>::new(&store);
+        run(async {
+            let store = MemoryStore::default();
+            let root = with_encrypted(&store).await;
+            let reader = Reader::<&MemoryStore, V1>::new(&store);
 
-        // Ranking past the encrypted subtree adds its stored count: "a", then its
-        // five keys, all strictly before "z".
-        assert_eq!(
-            block_on(reader.rank(&root, &Key::from(&b"z"[..]))).unwrap(),
-            6
-        );
-        // A key at the encrypted prefix does not descend; its keys are longer.
-        assert_eq!(
-            block_on(reader.rank(&root, &Key::from(&b"m"[..]))).unwrap(),
-            1
-        );
-        // Selecting the key just past the subtree skips all five by count.
-        assert_eq!(
-            block_on(reader.select(&root, 6)).unwrap(),
-            Some((Key::from(&b"z"[..]), entry(0x2C)))
-        );
+            // Ranking past the encrypted subtree adds its stored count: "a", then its
+            // five keys, all strictly before "z".
+            assert_eq!(reader.rank(&root, &Key::from(&b"z"[..])).await.unwrap(), 6);
+            // A key at the encrypted prefix does not descend; its keys are longer.
+            assert_eq!(reader.rank(&root, &Key::from(&b"m"[..])).await.unwrap(), 1);
+            // Selecting the key just past the subtree skips all five by count.
+            assert_eq!(
+                reader.select(&root, 6).await.unwrap(),
+                Some((Key::from(&b"z"[..]), entry(0x2C)))
+            );
+        })
     }
 
     #[test]
     fn descending_into_an_encrypted_subtree_is_an_error() {
-        let store = MemoryStore::default();
-        let root = with_encrypted(&store);
-        let reader = Reader::<&MemoryStore, V1>::new(&store);
+        run(async {
+            let store = MemoryStore::default();
+            let root = with_encrypted(&store).await;
+            let reader = Reader::<&MemoryStore, V1>::new(&store);
 
-        // A rank whose key funnels into the encrypted subtree cannot be answered.
-        assert!(matches!(
-            block_on(reader.rank(&root, &Key::from(&b"mx"[..]))),
-            Err(ReaderError::EncryptedChild)
-        ));
-        // An index landing inside the encrypted subtree cannot be opened.
-        assert!(matches!(
-            block_on(reader.select(&root, 3)),
-            Err(ReaderError::EncryptedChild)
-        ));
+            // A rank whose key funnels into the encrypted subtree cannot be answered.
+            assert!(matches!(
+                reader.rank(&root, &Key::from(&b"mx"[..])).await,
+                Err(ReaderError::EncryptedChild)
+            ));
+            // An index landing inside the encrypted subtree cannot be opened.
+            assert!(matches!(
+                reader.select(&root, 3).await,
+                Err(ReaderError::EncryptedChild)
+            ));
+        })
     }
 
     #[test]
     fn an_empty_manifest_has_no_keys() {
-        let store = MemoryStore::default();
-        let root = block_on(store.put_node(&Node::<V1>::empty())).unwrap();
-        let reader = Reader::<&MemoryStore, V1>::new(&store);
-        assert_eq!(
-            block_on(reader.rank(&root, &Key::from(&b"x"[..]))).unwrap(),
-            0
-        );
-        assert_eq!(block_on(reader.select(&root, 0)).unwrap(), None);
-        let mut cursor = block_on(reader.paginate_prefix(&root, &Key::empty(), 0, 10)).unwrap();
-        assert!(block_on(cursor.next()).unwrap().is_none());
+        run(async {
+            let store = MemoryStore::default();
+            let root = store.put_node(&Node::<V1>::empty()).await.unwrap();
+            let reader = Reader::<&MemoryStore, V1>::new(&store);
+            assert_eq!(reader.rank(&root, &Key::from(&b"x"[..])).await.unwrap(), 0);
+            assert_eq!(reader.select(&root, 0).await.unwrap(), None);
+            let mut cursor = reader
+                .paginate_prefix(&root, &Key::empty(), 0, 10)
+                .await
+                .unwrap();
+            assert!(cursor.next().await.unwrap().is_none());
+        })
     }
 }

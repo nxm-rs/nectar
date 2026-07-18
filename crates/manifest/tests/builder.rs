@@ -7,12 +7,12 @@
 use std::error::Error;
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{
     BuildStats, Builder, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node, NodeGet,
     Prefix, RootExtension, V1, build_files,
 };
 use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, DEFAULT_BODY_SIZE, MemoryStore, split};
+use nectar_testing::run;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -78,74 +78,82 @@ fn worked_example_node() -> Result<Node, Box<dyn Error>> {
 
 #[test]
 fn builds_the_worked_example_byte_for_byte() -> TestResult {
-    let store = MemoryStore::default();
-    let mut builder: Builder = Builder::new();
-    builder
-        .insert(
-            Key::from(&b"index.html"[..]),
-            Entry::from(ref32(0xAA)),
-            Some(content_type(b"text/html")?),
-        )
-        .insert(
-            Key::from(&b"img/logo.png"[..]),
-            Entry::from(ref32(0xBB)),
-            Some(content_type(b"image/png")?),
-        )
-        .manifest_metadata(website_index()?);
+    run(async {
+        let store = MemoryStore::default();
+        let mut builder: Builder = Builder::new();
+        builder
+            .insert(
+                Key::from(&b"index.html"[..]),
+                Entry::from(ref32(0xAA)),
+                Some(content_type(b"text/html")?),
+            )
+            .insert(
+                Key::from(&b"img/logo.png"[..]),
+                Entry::from(ref32(0xBB)),
+                Some(content_type(b"image/png")?),
+            )
+            .manifest_metadata(website_index()?);
 
-    let built = block_on(builder.build(&store))?;
+        let built = builder.build(&store).await?;
 
-    // The shared child is inlined, so the whole manifest is one chunk.
-    ensure_eq(built.stats().nodes_written(), 1, "one node written")?;
-    ensure_eq(built.stats().nodes_embedded(), 1, "one child embedded")?;
+        // The shared child is inlined, so the whole manifest is one chunk.
+        ensure_eq(built.stats().nodes_written(), 1, "one node written")?;
+        ensure_eq(built.stats().nodes_embedded(), 1, "one child embedded")?;
 
-    let chunk = store.get(built.root()).ok_or("root not stored")?;
-    let expected = worked_example_node()?.encode()?;
-    ensure_eq(expected.len(), 150, "worked example is 150 bytes")?;
-    ensure_eq(
-        chunk.envelope().data().as_ref(),
-        expected.as_slice(),
-        "root payload",
-    )?;
+        let chunk = store.get(built.root()).ok_or("root not stored")?;
+        let expected = worked_example_node()?.encode()?;
+        ensure_eq(expected.len(), 150, "worked example is 150 bytes")?;
+        ensure_eq(
+            chunk.envelope().data().as_ref(),
+            expected.as_slice(),
+            "root payload",
+        )?;
 
-    let decoded: Node = block_on(store.get_node(built.root()))?;
-    ensure_eq(decoded, worked_example_node()?, "decoded root")
+        let decoded: Node = store.get_node(built.root()).await?;
+        ensure_eq(decoded, worked_example_node()?, "decoded root")
+    })
 }
 
-fn root_of(order: &[(&[u8], u8)]) -> Result<ChunkAddress, Box<dyn Error>> {
+async fn root_of(order: &[(&[u8], u8)]) -> Result<ChunkAddress, Box<dyn Error>> {
     let store = MemoryStore::default();
     let mut builder: Builder = Builder::new();
     for (key, fill) in order {
         builder.insert(Key::from(*key), Entry::from(ref32(*fill)), None);
     }
-    Ok(*block_on(builder.build(&store))?.root())
+    Ok(*builder.build(&store).await?.root())
 }
 
 #[test]
 fn the_published_root_is_history_independent() -> TestResult {
-    // A key set that exercises a terminating-and-continuing fork ("a" under
-    // "about"), a nested shared edge ("about-us"), and a shared directory
-    // ("img/").
-    let order: [(&[u8], u8); 6] = [
-        (b"a", 1),
-        (b"about", 2),
-        (b"about-us", 3),
-        (b"img/logo.png", 4),
-        (b"img/icon.svg", 5),
-        (b"index.html", 6),
-    ];
-    let forward = root_of(&order)?;
+    run(async {
+        // A key set that exercises a terminating-and-continuing fork ("a" under
+        // "about"), a nested shared edge ("about-us"), and a shared directory
+        // ("img/").
+        let order: [(&[u8], u8); 6] = [
+            (b"a", 1),
+            (b"about", 2),
+            (b"about-us", 3),
+            (b"img/logo.png", 4),
+            (b"img/icon.svg", 5),
+            (b"index.html", 6),
+        ];
+        let forward = root_of(&order).await?;
 
-    let mut reversed = order;
-    reversed.reverse();
-    ensure_eq(root_of(&reversed)?, forward, "reversed order")?;
+        let mut reversed = order;
+        reversed.reverse();
+        ensure_eq(root_of(&reversed).await?, forward, "reversed order")?;
 
-    let mut rotated = order;
-    rotated.rotate_left(3);
-    ensure_eq(root_of(&rotated)?, forward, "rotated order")
+        let mut rotated = order;
+        rotated.rotate_left(3);
+        ensure_eq(root_of(&rotated).await?, forward, "rotated order")
+    })
 }
 
-fn two_level_stats(store: &MemoryStore, fan: u16, width: u8) -> Result<BuildStats, Box<dyn Error>> {
+async fn two_level_stats(
+    store: &MemoryStore,
+    fan: u16,
+    width: u8,
+) -> Result<BuildStats, Box<dyn Error>> {
     let mut builder: Builder<V1> = Builder::new();
     for hi in 0..fan {
         let hi = u8::try_from(hi)?;
@@ -153,108 +161,116 @@ fn two_level_stats(store: &MemoryStore, fan: u16, width: u8) -> Result<BuildStat
             builder.insert(Key::from(&[hi, lo][..]), Entry::from(ref32(hi)), None);
         }
     }
-    Ok(*block_on(builder.build(store))?.stats())
+    Ok(*builder.build(store).await?.stats())
 }
 
 #[test]
 fn peak_node_buffers_track_depth_not_key_count() -> TestResult {
-    // Two two-level manifests whose second level is wide enough that each child
-    // spills to its own chunk. The narrow build has 8 subtrees, the wide one 64;
-    // the wide build stores many more nodes, yet both keep the same tiny number
-    // of nodes open at once, so peak memory follows depth, not key count.
-    let narrow = MemoryStore::default();
-    let wide = MemoryStore::default();
-    let narrow_stats = two_level_stats(&narrow, 8, 80)?;
-    let wide_stats = two_level_stats(&wide, 64, 80)?;
+    run(async {
+        // Two two-level manifests whose second level is wide enough that each child
+        // spills to its own chunk. The narrow build has 8 subtrees, the wide one 64;
+        // the wide build stores many more nodes, yet both keep the same tiny number
+        // of nodes open at once, so peak memory follows depth, not key count.
+        let narrow = MemoryStore::default();
+        let wide = MemoryStore::default();
+        let narrow_stats = two_level_stats(&narrow, 8, 80).await?;
+        let wide_stats = two_level_stats(&wide, 64, 80).await?;
 
-    // Root plus one open child: never a whole level or frontier.
-    ensure_eq(narrow_stats.peak_open_nodes(), 2, "narrow peak")?;
-    ensure_eq(wide_stats.peak_open_nodes(), 2, "wide peak")?;
+        // Root plus one open child: never a whole level or frontier.
+        ensure_eq(narrow_stats.peak_open_nodes(), 2, "narrow peak")?;
+        ensure_eq(wide_stats.peak_open_nodes(), 2, "wide peak")?;
 
-    // The children are spilled, not embedded, so work scales with the fan.
-    ensure_eq(narrow_stats.nodes_embedded(), 0, "narrow spills all")?;
-    ensure_eq(narrow_stats.nodes_written(), 9, "narrow node count")?;
-    ensure_eq(wide_stats.nodes_written(), 65, "wide node count")?;
+        // The children are spilled, not embedded, so work scales with the fan.
+        ensure_eq(narrow_stats.nodes_embedded(), 0, "narrow spills all")?;
+        ensure_eq(narrow_stats.nodes_written(), 9, "narrow node count")?;
+        ensure_eq(wide_stats.nodes_written(), 65, "wide node count")?;
 
-    // Eight times the keys, eight times the stored nodes, identical peak.
-    ensure(
-        wide_stats.nodes_written() > narrow_stats.nodes_written().saturating_mul(7),
-        "work scales with keys",
-    )?;
-    ensure_eq(
-        narrow_stats.peak_open_nodes(),
-        wide_stats.peak_open_nodes(),
-        "peak is key-count independent",
-    )
+        // Eight times the keys, eight times the stored nodes, identical peak.
+        ensure(
+            wide_stats.nodes_written() > narrow_stats.nodes_written().saturating_mul(7),
+            "work scales with keys",
+        )?;
+        ensure_eq(
+            narrow_stats.peak_open_nodes(),
+            wide_stats.peak_open_nodes(),
+            "peak is key-count independent",
+        )
+    })
 }
 
 #[test]
 fn the_empty_builder_publishes_the_empty_root() -> TestResult {
-    let store = MemoryStore::default();
-    let builder: Builder = Builder::new();
-    let built = block_on(builder.build(&store))?;
+    run(async {
+        let store = MemoryStore::default();
+        let builder: Builder = Builder::new();
+        let built = builder.build(&store).await?;
 
-    ensure_eq(built.stats().peak_open_nodes(), 1, "one open node")?;
-    ensure_eq(built.stats().nodes_written(), 1, "one node written")?;
+        ensure_eq(built.stats().peak_open_nodes(), 1, "one open node")?;
+        ensure_eq(built.stats().nodes_written(), 1, "one node written")?;
 
-    let node: Node = block_on(store.get_node(built.root()))?;
-    ensure(node.is_empty(), "root is the empty map")
+        let node: Node = store.get_node(built.root()).await?;
+        ensure(node.is_empty(), "root is the empty map")
+    })
 }
 
 #[test]
 fn build_files_splits_through_bmt_and_references_the_stored_roots() -> TestResult {
-    let store = MemoryStore::default();
-    let logo = Bytes::from(vec![0x42u8; 12_000]); // several chunks
-    let page = Bytes::from_static(b"<h1>hello</h1>");
-    let files = [
-        (Key::from(&b"index.html"[..]), page.clone()),
-        (Key::from(&b"logo.png"[..]), logo.clone()),
-    ];
+    run(async {
+        let store = MemoryStore::default();
+        let logo = Bytes::from(vec![0x42u8; 12_000]); // several chunks
+        let page = Bytes::from_static(b"<h1>hello</h1>");
+        let files = [
+            (Key::from(&b"index.html"[..]), page.clone()),
+            (Key::from(&b"logo.png"[..]), logo.clone()),
+        ];
 
-    let built = block_on(build_files(&store, files))?;
-    let node: Node = block_on(store.get_node(built.root()))?;
+        let built = build_files(&store, files).await?;
+        let node: Node = store.get_node(built.root()).await?;
 
-    // Each file's manifest entry is its independent BMT root, and every file
-    // chunk is present in the same store.
-    for (first, tail, data) in [
-        (b'i', &b"ndex.html"[..], page),
-        (b'l', &b"ogo.png"[..], logo),
-    ] {
-        let record = node.forks().get(first).ok_or("missing fork")?;
-        ensure_eq(record.tail().as_bytes(), tail, "fork tail")?;
-        let address = record
-            .entry()
-            .ok_or("fork has no entry")?
-            .address()
-            .ok_or("entry is not a reference")?;
+        // Each file's manifest entry is its independent BMT root, and every file
+        // chunk is present in the same store.
+        for (first, tail, data) in [
+            (b'i', &b"ndex.html"[..], page),
+            (b'l', &b"ogo.png"[..], logo),
+        ] {
+            let record = node.forks().get(first).ok_or("missing fork")?;
+            ensure_eq(record.tail().as_bytes(), tail, "fork tail")?;
+            let address = record
+                .entry()
+                .ok_or("fork has no entry")?
+                .address()
+                .ok_or("entry is not a reference")?;
 
-        let (expected_root, _) = split::<DEFAULT_BODY_SIZE>(&data)?;
-        ensure_eq(address, &expected_root, "file root reference")?;
-        ensure(store.get(address).is_some(), "file root stored")?;
-    }
-    Ok(())
+            let (expected_root, _) = split::<DEFAULT_BODY_SIZE>(&data)?;
+            ensure_eq(address, &expected_root, "file root reference")?;
+            ensure(store.get(address).is_some(), "file root stored")?;
+        }
+        Ok(())
+    })
 }
 
 #[test]
 fn a_key_that_prefixes_another_shares_a_fork() -> TestResult {
-    let store = MemoryStore::default();
-    let mut builder: Builder = Builder::new();
-    builder
-        .insert(Key::from(&b"a"[..]), Entry::from(ref32(1)), None)
-        .insert(Key::from(&b"ab"[..]), Entry::from(ref32(2)), None);
-    let built = block_on(builder.build(&store))?;
+    run(async {
+        let store = MemoryStore::default();
+        let mut builder: Builder = Builder::new();
+        builder
+            .insert(Key::from(&b"a"[..]), Entry::from(ref32(1)), None)
+            .insert(Key::from(&b"ab"[..]), Entry::from(ref32(2)), None);
+        let built = builder.build(&store).await?;
 
-    let node: Node = block_on(store.get_node(built.root()))?;
-    let record = node.forks().get(b'a').ok_or("missing fork a")?;
-    ensure(record.tail().is_empty(), "single-byte edge")?;
-    // "a" terminates here and the trie continues to "ab".
-    ensure(
-        matches!(record.payload(), ForkPayload::Both { .. }),
-        "fork is entry-and-child",
-    )?;
-    ensure_eq(
-        record.entry(),
-        Some(&Entry::from(ref32(1))),
-        "terminating value",
-    )
+        let node: Node = store.get_node(built.root()).await?;
+        let record = node.forks().get(b'a').ok_or("missing fork a")?;
+        ensure(record.tail().is_empty(), "single-byte edge")?;
+        // "a" terminates here and the trie continues to "ab".
+        ensure(
+            matches!(record.payload(), ForkPayload::Both { .. }),
+            "fork is entry-and-child",
+        )?;
+        ensure_eq(
+            record.entry(),
+            Some(&Entry::from(ref32(1))),
+            "terminating value",
+        )
+    })
 }

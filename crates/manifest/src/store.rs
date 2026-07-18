@@ -189,9 +189,9 @@ impl<T: ChunkPut> NodePut for T {}
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef, DefaultContentChunk};
+    use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::meta::{KeyId, Metadata};
@@ -224,13 +224,15 @@ mod tests {
 
     #[test]
     fn round_trips_through_a_memory_store() {
-        let store = MemoryStore::default();
-        let node = sample();
+        run(async {
+            let store = MemoryStore::default();
+            let node = sample();
 
-        let address = block_on(store.put_node(&node)).unwrap();
-        let loaded: Node = block_on(store.get_node(&address)).unwrap();
+            let address = store.put_node(&node).await.unwrap();
+            let loaded: Node = store.get_node(&address).await.unwrap();
 
-        assert_eq!(loaded, node);
+            assert_eq!(loaded, node);
+        })
     }
 
     #[test]
@@ -252,8 +254,13 @@ mod tests {
 
     #[test]
     fn missing_address_is_a_store_error() {
-        let store = MemoryStore::default();
-        let err = block_on(store.get_node::<crate::V1>(&ChunkAddress::new([0; 32]))).unwrap_err();
-        assert!(matches!(err, StoreError::Store(_)));
+        run(async {
+            let store = MemoryStore::default();
+            let err = store
+                .get_node::<crate::V1>(&ChunkAddress::new([0; 32]))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, StoreError::Store(_)));
+        })
     }
 }

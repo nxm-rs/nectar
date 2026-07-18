@@ -642,9 +642,9 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef};
+    use nectar_testing::run;
 
     use crate::builder::Builder;
     use crate::format::V1;
@@ -658,256 +658,286 @@ mod tests {
 
     // Walk the counted tree, asserting every stored referenced-child count
     // equals the walked subtree size, and return the subtree's key count.
-    fn walk_counts(store: &MemoryStore, table: &ForkTable<V1>) -> u64 {
-        let mut total = 0u64;
-        for (_, record) in table.iter() {
-            let child = match record.child() {
-                None => 0,
-                Some(Child::Embedded(inner)) => walk_counts(store, inner),
-                Some(Child::Ref32(reference)) => {
-                    let node = block_on(store.get_node::<V1>(reference.address())).unwrap();
-                    let actual = walk_counts(store, node.forks());
-                    assert_eq!(
-                        record.child_count(),
-                        Some(SubtreeCount::new(actual)),
-                        "stored count must equal the walked subtree size"
-                    );
-                    actual
-                }
-                Some(Child::Ref64(_)) => unreachable!("a plaintext build has no encrypted child"),
-            };
-            total += u64::from(record.entry().is_some()) + child;
-        }
-        total
+    // Boxed return: the recursion needs an indirected future type.
+    fn walk_counts<'a>(
+        store: &'a MemoryStore,
+        table: &'a ForkTable<V1>,
+    ) -> futures::future::LocalBoxFuture<'a, u64> {
+        Box::pin(async move {
+            let mut total = 0u64;
+            for (_, record) in table.iter() {
+                let child = match record.child() {
+                    None => 0,
+                    Some(Child::Embedded(inner)) => walk_counts(store, inner).await,
+                    Some(Child::Ref32(reference)) => {
+                        let node = store.get_node::<V1>(reference.address()).await.unwrap();
+                        let actual = walk_counts(store, node.forks()).await;
+                        assert_eq!(
+                            record.child_count(),
+                            Some(SubtreeCount::new(actual)),
+                            "stored count must equal the walked subtree size"
+                        );
+                        actual
+                    }
+                    Some(Child::Ref64(_)) => {
+                        unreachable!("a plaintext build has no encrypted child")
+                    }
+                };
+                total += u64::from(record.entry().is_some()) + child;
+            }
+            total
+        })
     }
 
     #[test]
     fn counted_child_counts_match_a_full_walk_oracle() {
-        let store = MemoryStore::default();
-        let mut builder = Builder::<V1>::new();
-        let mut expected = 0u64;
-        // Many wide sub-trees, each referenced (over the embedding budget), under
-        // enough root forks to spill the root into a segment directory: exercises
-        // referenced-child counts and the segment path at once.
-        for p in 0u8..128 {
-            for x in 0u8..44 {
-                builder.insert(Key::from(&[p, x][..]), entry(x), None);
-                expected += 1;
+        run(async {
+            let store = MemoryStore::default();
+            let mut builder = Builder::<V1>::new();
+            let mut expected = 0u64;
+            // Many wide sub-trees, each referenced (over the embedding budget), under
+            // enough root forks to spill the root into a segment directory: exercises
+            // referenced-child counts and the segment path at once.
+            for p in 0u8..128 {
+                for x in 0u8..44 {
+                    builder.insert(Key::from(&[p, x][..]), entry(x), None);
+                    expected += 1;
+                }
             }
-        }
-        let root = *block_on(builder.build(&store)).unwrap().root();
-        let node = block_on(store.get_node::<V1>(&root)).unwrap();
-        let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks());
-        assert_eq!(total, expected);
+            let root = *builder.build(&store).await.unwrap().root();
+            let node = store.get_node::<V1>(&root).await.unwrap();
+            let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks()).await;
+            assert_eq!(total, expected);
+        })
     }
 
     #[test]
     fn counted_apply_matches_a_rebuild_and_preserves_counts() {
-        let store = MemoryStore::default();
-        // A base that references a wide sub-tree under "a", then a changeset that
-        // deepens it: apply must reproduce the from-scratch counted root.
-        let mut base = Builder::<V1>::new();
-        for x in 0u8..40 {
-            base.insert(Key::from(&[b'a', x][..]), entry(x), None);
-        }
-        let base_root = *block_on(base.build(&store)).unwrap().root();
+        run(async {
+            let store = MemoryStore::default();
+            // A base that references a wide sub-tree under "a", then a changeset that
+            // deepens it: apply must reproduce the from-scratch counted root.
+            let mut base = Builder::<V1>::new();
+            for x in 0u8..40 {
+                base.insert(Key::from(&[b'a', x][..]), entry(x), None);
+            }
+            let base_root = *base.build(&store).await.unwrap().root();
 
-        let mut cs = Changeset::<V1>::new();
-        for x in 40u8..64 {
-            cs.put(Key::from(&[b'a', x][..]), entry(x), None);
-        }
-        let applied = block_on(apply(&store, &base_root, &cs)).unwrap();
+            let mut cs = Changeset::<V1>::new();
+            for x in 40u8..64 {
+                cs.put(Key::from(&[b'a', x][..]), entry(x), None);
+            }
+            let applied = apply(&store, &base_root, &cs).await.unwrap();
 
-        let mut scratch = Builder::<V1>::new();
-        for x in 0u8..64 {
-            scratch.insert(Key::from(&[b'a', x][..]), entry(x), None);
-        }
-        let scratch_root = *block_on(scratch.build(&MemoryStore::default()))
-            .unwrap()
-            .root();
-        assert_eq!(applied, scratch_root, "apply must match a counted rebuild");
+            let mut scratch = Builder::<V1>::new();
+            for x in 0u8..64 {
+                scratch.insert(Key::from(&[b'a', x][..]), entry(x), None);
+            }
+            let scratch_root = *scratch.build(&MemoryStore::default()).await.unwrap().root();
+            assert_eq!(applied, scratch_root, "apply must match a counted rebuild");
 
-        // The applied tree's stored counts still equal the walked subtree sizes.
-        let node = block_on(store.get_node::<V1>(&applied)).unwrap();
-        let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks());
-        assert_eq!(total, 64);
+            // The applied tree's stored counts still equal the walked subtree sizes.
+            let node = store.get_node::<V1>(&applied).await.unwrap();
+            let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks()).await;
+            assert_eq!(total, 64);
+        })
     }
 
     // Build a manifest from `keys` and return its root.
-    fn build(store: &MemoryStore, keys: &[(&[u8], u8)]) -> ChunkAddress {
+    async fn build(store: &MemoryStore, keys: &[(&[u8], u8)]) -> ChunkAddress {
         let mut builder = Builder::<V1>::new();
         for (key, fill) in keys {
             builder.insert(Key::from(*key), entry(*fill), None);
         }
-        *block_on(builder.build(store)).unwrap().root()
+        *builder.build(store).await.unwrap().root()
     }
 
     // The root a from-scratch build of `keys` produces, for the byte-identity
     // check: a fresh store makes the address depend on the bytes alone.
-    fn rebuilt(keys: &[(&[u8], u8)]) -> ChunkAddress {
-        build(&MemoryStore::default(), keys)
+    async fn rebuilt(keys: &[(&[u8], u8)]) -> ChunkAddress {
+        build(&MemoryStore::default(), keys).await
     }
 
     #[test]
     fn an_empty_changeset_returns_the_root_unchanged() {
-        let store = MemoryStore::default();
-        let root = build(&store, &[(b"a", 1), (b"b", 2)]);
-        let out = block_on(apply(&store, &root, &Changeset::<V1>::new())).unwrap();
-        assert_eq!(out, root);
+        run(async {
+            let store = MemoryStore::default();
+            let root = build(&store, &[(b"a", 1), (b"b", 2)]).await;
+            let out = apply(&store, &root, &Changeset::<V1>::new()).await.unwrap();
+            assert_eq!(out, root);
+        })
     }
 
     #[test]
     fn a_single_insert_equals_a_rebuild() {
-        let store = MemoryStore::default();
-        let root = build(&store, &[(b"a", 1), (b"c", 3)]);
-        let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"b"[..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
-        assert_eq!(out, rebuilt(&[(b"a", 1), (b"b", 2), (b"c", 3)]));
+        run(async {
+            let store = MemoryStore::default();
+            let root = build(&store, &[(b"a", 1), (b"c", 3)]).await;
+            let mut cs = Changeset::<V1>::new();
+            cs.put(Key::from(&b"b"[..]), entry(2), None);
+            let out = apply(&store, &root, &cs).await.unwrap();
+            assert_eq!(out, rebuilt(&[(b"a", 1), (b"b", 2), (b"c", 3)]).await);
+        })
     }
 
     #[test]
     fn a_batch_touching_one_ancestor_equals_a_rebuild() {
-        let store = MemoryStore::default();
-        let root = build(&store, &[(b"road", 1), (b"roam", 2)]);
-        // Two inserts under the shared "ro" ancestor, rewritten in one pass.
-        let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"rock"[..]), entry(3), None);
-        cs.put(Key::from(&b"rose"[..]), entry(4), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
-        assert_eq!(
-            out,
-            rebuilt(&[(b"road", 1), (b"roam", 2), (b"rock", 3), (b"rose", 4)])
-        );
+        run(async {
+            let store = MemoryStore::default();
+            let root = build(&store, &[(b"road", 1), (b"roam", 2)]).await;
+            // Two inserts under the shared "ro" ancestor, rewritten in one pass.
+            let mut cs = Changeset::<V1>::new();
+            cs.put(Key::from(&b"rock"[..]), entry(3), None);
+            cs.put(Key::from(&b"rose"[..]), entry(4), None);
+            let out = apply(&store, &root, &cs).await.unwrap();
+            assert_eq!(
+                out,
+                rebuilt(&[(b"road", 1), (b"roam", 2), (b"rock", 3), (b"rose", 4)]).await
+            );
+        })
     }
 
     #[test]
     fn an_update_overwrites_in_place() {
-        let store = MemoryStore::default();
-        let root = build(&store, &[(b"a", 1), (b"b", 2)]);
-        let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"a"[..]), entry(9), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
-        assert_eq!(out, rebuilt(&[(b"a", 9), (b"b", 2)]));
+        run(async {
+            let store = MemoryStore::default();
+            let root = build(&store, &[(b"a", 1), (b"b", 2)]).await;
+            let mut cs = Changeset::<V1>::new();
+            cs.put(Key::from(&b"a"[..]), entry(9), None);
+            let out = apply(&store, &root, &cs).await.unwrap();
+            assert_eq!(out, rebuilt(&[(b"a", 9), (b"b", 2)]).await);
+        })
     }
 
     #[test]
     fn a_deletion_that_re_inlines_a_sibling_equals_a_rebuild() {
-        let store = MemoryStore::default();
-        // "roam"/"road" share a "roa" branch; deleting one collapses the branch
-        // back into a single compacted edge.
-        let root = build(&store, &[(b"roam", 1), (b"road", 2), (b"x", 3)]);
-        let mut cs = Changeset::<V1>::new();
-        cs.remove(Key::from(&b"road"[..]));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
-        assert_eq!(out, rebuilt(&[(b"roam", 1), (b"x", 3)]));
+        run(async {
+            let store = MemoryStore::default();
+            // "roam"/"road" share a "roa" branch; deleting one collapses the branch
+            // back into a single compacted edge.
+            let root = build(&store, &[(b"roam", 1), (b"road", 2), (b"x", 3)]).await;
+            let mut cs = Changeset::<V1>::new();
+            cs.remove(Key::from(&b"road"[..]));
+            let out = apply(&store, &root, &cs).await.unwrap();
+            assert_eq!(out, rebuilt(&[(b"roam", 1), (b"x", 3)]).await);
+        })
     }
 
     #[test]
     fn deleting_the_last_child_removes_the_fork() {
-        let store = MemoryStore::default();
-        let root = build(&store, &[(b"a", 1), (b"b", 2)]);
-        let mut cs = Changeset::<V1>::new();
-        cs.remove(Key::from(&b"a"[..]));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
-        assert_eq!(out, rebuilt(&[(b"b", 2)]));
+        run(async {
+            let store = MemoryStore::default();
+            let root = build(&store, &[(b"a", 1), (b"b", 2)]).await;
+            let mut cs = Changeset::<V1>::new();
+            cs.remove(Key::from(&b"a"[..]));
+            let out = apply(&store, &root, &cs).await.unwrap();
+            assert_eq!(out, rebuilt(&[(b"b", 2)]).await);
+        })
     }
 
     #[test]
     fn deleting_an_absent_key_is_a_no_op() {
-        let store = MemoryStore::default();
-        let root = build(&store, &[(b"a", 1), (b"ab", 2)]);
-        let mut cs = Changeset::<V1>::new();
-        cs.remove(Key::from(&b"absent"[..]));
-        cs.remove(Key::from(&b"a"[..]));
-        cs.put(Key::from(&b"a"[..]), entry(1), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
-        assert_eq!(out, rebuilt(&[(b"a", 1), (b"ab", 2)]));
+        run(async {
+            let store = MemoryStore::default();
+            let root = build(&store, &[(b"a", 1), (b"ab", 2)]).await;
+            let mut cs = Changeset::<V1>::new();
+            cs.remove(Key::from(&b"absent"[..]));
+            cs.remove(Key::from(&b"a"[..]));
+            cs.put(Key::from(&b"a"[..]), entry(1), None);
+            let out = apply(&store, &root, &cs).await.unwrap();
+            assert_eq!(out, rebuilt(&[(b"a", 1), (b"ab", 2)]).await);
+        })
     }
 
     #[test]
     fn a_split_within_an_edge_equals_a_rebuild() {
-        let store = MemoryStore::default();
-        // "abcdef" sits behind a long compacted edge; inserting "abz" branches
-        // inside that edge.
-        let root = build(&store, &[(b"abcdef", 1)]);
-        let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"abz"[..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
-        assert_eq!(out, rebuilt(&[(b"abcdef", 1), (b"abz", 2)]));
+        run(async {
+            let store = MemoryStore::default();
+            // "abcdef" sits behind a long compacted edge; inserting "abz" branches
+            // inside that edge.
+            let root = build(&store, &[(b"abcdef", 1)]).await;
+            let mut cs = Changeset::<V1>::new();
+            cs.put(Key::from(&b"abz"[..]), entry(2), None);
+            let out = apply(&store, &root, &cs).await.unwrap();
+            assert_eq!(out, rebuilt(&[(b"abcdef", 1), (b"abz", 2)]).await);
+        })
     }
 
     #[test]
     fn a_split_above_a_chain_boundary_recompacts_like_a_rebuild() {
-        let store = MemoryStore::default();
-        // A 256-byte key sits behind a PLEN_MAX(255) chain: one 255-byte edge
-        // over a child holding its last byte. Inserting a key that shares only
-        // the first byte branches above that chain, shortening the existing edge
-        // so its final byte re-merges into the edge, no longer a child hop.
-        let mut base = vec![2u8];
-        base.extend(std::iter::repeat_n(0u8, 255));
-        let root = build(&store, &[(&base[..], 1)]);
-        let mut cs = Changeset::<V1>::new();
-        let branched = [2u8, 2, 1];
-        cs.put(Key::from(&branched[..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
-        assert_eq!(out, rebuilt(&[(&base[..], 1), (&branched[..], 2)]));
+        run(async {
+            let store = MemoryStore::default();
+            // A 256-byte key sits behind a PLEN_MAX(255) chain: one 255-byte edge
+            // over a child holding its last byte. Inserting a key that shares only
+            // the first byte branches above that chain, shortening the existing edge
+            // so its final byte re-merges into the edge, no longer a child hop.
+            let mut base = vec![2u8];
+            base.extend(std::iter::repeat_n(0u8, 255));
+            let root = build(&store, &[(&base[..], 1)]).await;
+            let mut cs = Changeset::<V1>::new();
+            let branched = [2u8, 2, 1];
+            cs.put(Key::from(&branched[..]), entry(2), None);
+            let out = apply(&store, &root, &cs).await.unwrap();
+            assert_eq!(out, rebuilt(&[(&base[..], 1), (&branched[..], 2)]).await);
+        })
     }
 
     #[test]
     fn the_empty_key_sets_and_clears_the_root_value() {
-        let store = MemoryStore::default();
-        let root = build(&store, &[(b"a", 1)]);
-        let mut set = Changeset::<V1>::new();
-        set.put(Key::empty(), entry(7), None);
-        let with_root = block_on(apply(&store, &root, &set)).unwrap();
+        run(async {
+            let store = MemoryStore::default();
+            let root = build(&store, &[(b"a", 1)]).await;
+            let mut set = Changeset::<V1>::new();
+            set.put(Key::empty(), entry(7), None);
+            let with_root = apply(&store, &root, &set).await.unwrap();
 
-        let mut expect = Builder::<V1>::new();
-        expect.insert(Key::empty(), entry(7), None);
-        expect.insert(Key::from(&b"a"[..]), entry(1), None);
-        let rebuilt_root = *block_on(expect.build(&MemoryStore::default()))
-            .unwrap()
-            .root();
-        assert_eq!(with_root, rebuilt_root);
+            let mut expect = Builder::<V1>::new();
+            expect.insert(Key::empty(), entry(7), None);
+            expect.insert(Key::from(&b"a"[..]), entry(1), None);
+            let rebuilt_root = *expect.build(&MemoryStore::default()).await.unwrap().root();
+            assert_eq!(with_root, rebuilt_root);
 
-        let mut clear = Changeset::<V1>::new();
-        clear.remove(Key::empty());
-        let cleared = block_on(apply(&store, &with_root, &clear)).unwrap();
-        assert_eq!(cleared, rebuilt(&[(b"a", 1)]));
+            let mut clear = Changeset::<V1>::new();
+            clear.remove(Key::empty());
+            let cleared = apply(&store, &with_root, &clear).await.unwrap();
+            assert_eq!(cleared, rebuilt(&[(b"a", 1)]).await);
+        })
     }
 
     #[test]
     fn a_collapse_past_the_prefix_bound_chains_like_a_rebuild() {
-        let store = MemoryStore::default();
-        // Two keys sharing a 200-byte prefix, total length 260: the fork over
-        // the shared run terminates one key and continues to the other. Deleting
-        // the terminal leaves a single 260-byte key whose from-scratch shape is
-        // a PLEN_MAX(255)-capped chain, not one over-long edge.
-        let short = vec![b'a'; 200];
-        let mut long = short.clone();
-        long.extend(std::iter::repeat_n(b'b', 60));
-        let root = build(&store, &[(&short[..], 1), (&long[..], 2)]);
-        let mut cs = Changeset::<V1>::new();
-        cs.remove(Key::from(&short[..]));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
-        assert_eq!(out, rebuilt(&[(&long[..], 2)]));
+        run(async {
+            let store = MemoryStore::default();
+            // Two keys sharing a 200-byte prefix, total length 260: the fork over
+            // the shared run terminates one key and continues to the other. Deleting
+            // the terminal leaves a single 260-byte key whose from-scratch shape is
+            // a PLEN_MAX(255)-capped chain, not one over-long edge.
+            let short = vec![b'a'; 200];
+            let mut long = short.clone();
+            long.extend(std::iter::repeat_n(b'b', 60));
+            let root = build(&store, &[(&short[..], 1), (&long[..], 2)]).await;
+            let mut cs = Changeset::<V1>::new();
+            cs.remove(Key::from(&short[..]));
+            let out = apply(&store, &root, &cs).await.unwrap();
+            assert_eq!(out, rebuilt(&[(&long[..], 2)]).await);
+        })
     }
 
     #[test]
     fn carried_metadata_survives_a_rebuild() {
-        let store = MemoryStore::default();
-        let meta = Metadata::new(KeyId::ContentType, Bytes::from_static(b"text/html")).unwrap();
-        let root = build(&store, &[(b"a", 1)]);
-        let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"index.html"[..]), entry(2), Some(meta.clone()));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        run(async {
+            let store = MemoryStore::default();
+            let meta = Metadata::new(KeyId::ContentType, Bytes::from_static(b"text/html")).unwrap();
+            let root = build(&store, &[(b"a", 1)]).await;
+            let mut cs = Changeset::<V1>::new();
+            cs.put(Key::from(&b"index.html"[..]), entry(2), Some(meta.clone()));
+            let out = apply(&store, &root, &cs).await.unwrap();
 
-        let mut expect = Builder::<V1>::new();
-        expect.insert(Key::from(&b"a"[..]), entry(1), None);
-        expect.insert(Key::from(&b"index.html"[..]), entry(2), Some(meta));
-        let rebuilt_root = *block_on(expect.build(&MemoryStore::default()))
-            .unwrap()
-            .root();
-        assert_eq!(out, rebuilt_root);
+            let mut expect = Builder::<V1>::new();
+            expect.insert(Key::from(&b"a"[..]), entry(1), None);
+            expect.insert(Key::from(&b"index.html"[..]), entry(2), Some(meta));
+            let rebuilt_root = *expect.build(&MemoryStore::default()).await.unwrap().root();
+            assert_eq!(out, rebuilt_root);
+        })
     }
 }

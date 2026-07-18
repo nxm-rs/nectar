@@ -8,9 +8,9 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{Builder, Changeset, Entry, Key, KeyId, Metadata, V1, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, MemoryStore};
+use nectar_testing::run;
 use proptest::prelude::*;
 
 /// A key's value plus optional metadata, the payload both paths carry.
@@ -48,13 +48,16 @@ fn value(inline: bool, fill: u8, blob: &[u8], meta: bool) -> Result<Value, TestC
 
 /// The root a from-scratch build of `map` produces in a fresh store, so the
 /// address depends on the merged bytes alone.
-fn rebuild(map: &BTreeMap<Vec<u8>, Value>) -> Result<ChunkAddress, TestCaseError> {
+async fn rebuild(map: &BTreeMap<Vec<u8>, Value>) -> Result<ChunkAddress, TestCaseError> {
     let store = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
     for (key, (entry, meta)) in map {
         builder.insert(Key::from(key.clone()), entry.clone(), meta.clone());
     }
-    let built = block_on(builder.build(&store)).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let built = builder
+        .build(&store)
+        .await
+        .map_err(|e| TestCaseError::fail(e.to_string()))?;
     Ok(*built.root())
 }
 
@@ -104,7 +107,7 @@ fn long_change_set() -> impl Strategy<Value = Vec<(Vec<u8>, Option<Parts>)>> {
 
 /// Fold `changes` into a manifest built from `base` and assert the applied root
 /// is byte-identical to a from-scratch build of the merged key set.
-fn assert_apply_equals_rebuild(
+async fn assert_apply_equals_rebuild(
     base: &[(Vec<u8>, Parts)],
     changes: &[(Vec<u8>, Option<Parts>)],
 ) -> Result<(), TestCaseError> {
@@ -118,7 +121,9 @@ fn assert_apply_equals_rebuild(
     for (key, val) in &map {
         builder.insert(Key::from(key.clone()), val.0.clone(), val.1.clone());
     }
-    let root = *block_on(builder.build(&store))
+    let root = *builder
+        .build(&store)
+        .await
         .map_err(|e| TestCaseError::fail(e.to_string()))?
         .root();
 
@@ -150,9 +155,10 @@ fn assert_apply_equals_rebuild(
         }
     }
 
-    let applied = block_on(apply(&store, &root, &changeset))
+    let applied = apply(&store, &root, &changeset)
+        .await
         .map_err(|e| TestCaseError::fail(e.to_string()))?;
-    let expected = rebuild(&map)?;
+    let expected = rebuild(&map).await?;
     prop_assert_eq!(applied, expected);
     Ok(())
 }
@@ -165,13 +171,19 @@ proptest! {
     // inserts, updates and deletes, some overlapping near the root.
     #[test]
     fn apply_equals_rebuild(base in base_set(), changes in change_set()) {
-        assert_apply_equals_rebuild(&base, &changes)?;
+        run(async {
+            assert_apply_equals_rebuild(&base, &changes).await?;
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 
     // The same equation over long, low-entropy keys, so collapses cross the
     // 255-byte prefix bound and exercise the chain-compaction path.
     #[test]
     fn apply_equals_rebuild_over_long_keys(base in long_base_set(), changes in long_change_set()) {
-        assert_apply_equals_rebuild(&base, &changes)?;
+        run(async {
+            assert_apply_equals_rebuild(&base, &changes).await?;
+            Ok::<(), TestCaseError>(())
+        })?;
     }
 }
