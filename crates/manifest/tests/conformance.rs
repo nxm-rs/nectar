@@ -8,8 +8,9 @@ use std::error::Error;
 use alloy_primitives::{b256, keccak256};
 use bytes::Bytes;
 use nectar_manifest::{
-    Child, CustomKeyError, DecodeError, Entry, ForkPayload, ForkTable, Format, KeyId, Metadata,
-    Node, Prefix, RootExtension, V1,
+    Child, CustomKeyError, DecodeError, Domain, Entry, ForkPayload, ForkTable, Format, KeyId,
+    Metadata, Node, Prefix, RootExtension, SegmentKind, SegmentWeight, V1, cut, embed, h64,
+    segment,
 };
 use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
 
@@ -27,12 +28,6 @@ fn ensure_eq<T: PartialEq + core::fmt::Debug>(left: T, right: T, what: &str) -> 
     } else {
         Err(format!("{what}: {left:?} != {right:?}").into())
     }
-}
-
-/// The boundary hash: the first eight keccak256 output bytes, little-endian.
-fn h64(input: &[u8]) -> u64 {
-    let [b0, b1, b2, b3, b4, b5, b6, b7, ..] = keccak256(input).0;
-    u64::from_le_bytes([b0, b1, b2, b3, b4, b5, b6, b7])
 }
 
 const fn ref32(byte: u8) -> ChunkRef {
@@ -213,8 +208,6 @@ fn worked_leaf_partition_reproduces_the_spec_trace() -> TestResult {
     ];
 
     let seg_target = u64::try_from(V1::SEG_TARGET)?;
-    let seg_min = u64::try_from(V1::SEG_MIN)?;
-    let cap_fork = u64::try_from(V1::CAP_FORK)?;
 
     for ((key, w, hash, hash_cut), threshold) in rows.into_iter().zip(thresholds) {
         let name = char::from(key);
@@ -226,29 +219,32 @@ fn worked_leaf_partition_reproduces_the_spec_trace() -> TestResult {
         )?;
         ensure(w < seg_target, "every worked weight is below SEG_TARGET")?;
         ensure_eq(hash < threshold, hash_cut, &format!("cut bit of {name}"))?;
+        // Below SEG_TARGET the real predicate reduces to the hash comparison.
+        ensure_eq(
+            cut::<V1>(&[key], usize::try_from(w)?),
+            hash_cut,
+            &format!("cut predicate of {name}"),
+        )?;
     }
 
-    // The normative partition algorithm over (key, w), CAP = CAP_FORK.
+    // The real leaf partition over (fork-relative prefix, weight), CAP_FORK.
+    let forks: Vec<(Prefix, SegmentWeight)> = rows
+        .into_iter()
+        .map(|(key, w, _, _)| {
+            Ok::<_, Box<dyn Error>>((prefix(&[key])?, SegmentWeight::new(usize::try_from(w)?)?))
+        })
+        .collect::<Result<_, _>>()?;
+    let ranges = segment::<V1>(&forks, SegmentKind::Leaf);
+
+    // Reconstruct the key groups from the returned index ranges.
     let mut segments: Vec<Vec<u8>> = Vec::new();
-    let mut cur: Vec<u8> = Vec::new();
-    let mut curw = 0u64;
-    for (key, w, _, _) in rows {
-        let next = curw.checked_add(w).ok_or("weight overflow")?;
-        if curw > 0 && next > cap_fork {
-            segments.push(std::mem::take(&mut cur)); // forced cut (capacity)
-            curw = 0;
+    for range in &ranges {
+        let mut group: Vec<u8> = Vec::new();
+        for i in range.clone() {
+            let (key, ..) = *rows.get(i).ok_or("segment index out of range")?;
+            group.push(key);
         }
-        cur.push(key);
-        curw = curw.checked_add(w).ok_or("weight overflow")?;
-        let cut =
-            w >= seg_target || h64(&[key]) < w.checked_mul(V1::CUT_SCALE).ok_or("overflow")?;
-        if curw >= seg_min && cut {
-            segments.push(std::mem::take(&mut cur)); // content cut
-            curw = 0;
-        }
-    }
-    if !cur.is_empty() {
-        segments.push(cur); // remainder flush
+        segments.push(group);
     }
 
     let expected = [b"abc".to_vec(), b"defg".to_vec(), b"h".to_vec()];
@@ -285,6 +281,30 @@ fn cut_thresholds_are_exact_integer_comparisons() {
     assert_eq!(h, 10_407_480_227_324_454_567);
     assert!(1155u64.checked_mul(V1::CUT_SCALE).is_some_and(|t| h >= t));
     assert!(1156u64.checked_mul(V1::CUT_SCALE).is_some_and(|t| h < t));
+}
+
+// Child-local embedding: a child inlines iff its flat body fits INLINE_MAX
+// and shares its parent's encryption domain. The worked example's shared
+// child is a 123-byte plaintext body, so it embeds (its ilen is 123 there).
+#[test]
+fn child_embedding_gates_on_inline_max_and_domain() -> TestResult {
+    ensure(
+        embed::<V1>(123, Domain::Plain, Domain::Plain),
+        "the worked child within INLINE_MAX embeds",
+    )?;
+    ensure(
+        embed::<V1>(V1::INLINE_MAX, Domain::Plain, Domain::Plain),
+        "a body at INLINE_MAX embeds",
+    )?;
+    ensure(
+        !embed::<V1>(V1::INLINE_MAX + 1, Domain::Plain, Domain::Plain),
+        "a body over INLINE_MAX spills",
+    )?;
+    ensure(
+        !embed::<V1>(123, Domain::Plain, Domain::Encrypted),
+        "a cross-domain child spills",
+    )?;
+    Ok(())
 }
 
 /// The bijection family: pairwise-distinct logical trees, including the
