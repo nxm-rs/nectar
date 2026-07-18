@@ -29,11 +29,14 @@ proptest.workspace = true
 
 [features]
 default = [ "std" ]
-# Per-reference encryption crypto (deterministic key derivation, sealing and
+# Per-reference node encryption (deterministic key derivation, sealing and
 # opening). The 64-byte ref representation is always available; this feature
 # only adds the crypto over it, so a default build still decodes and
-# re-serializes encrypted manifests losslessly.
-encryption = [ "nectar-primitives/encryption" ]
+# re-serializes encrypted manifests losslessly. The crypto rides on
+# always-available primitives (transcrypt, keccak, the ref types), so it enables
+# no primitives feature and drags in no rng: the module is gated purely to keep
+# the surface opt-in.
+encryption = []
 std = [
 	"alloy-primitives/std",
 	"bytes/std",

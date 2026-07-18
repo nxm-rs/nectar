@@ -12,6 +12,10 @@ workflows:
         "--left-side-feature-missing=ignore",
         "--left-side-outside-workspace=ignore",
         "--dep-kinds=normal:check,dev:ignore",
+        # The manifest encryption crypto rides on always-available primitives
+        # (transcrypt, keccak, the ref types), so the feature deliberately
+        # enables no primitives feature.
+        "--ignore-missing-propagate=nectar-manifest/encryption:nectar-primitives/encryption",
         "--workspace",
         "--show-path",
         "--quiet",

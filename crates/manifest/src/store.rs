@@ -14,7 +14,8 @@ use core::future::Future;
 use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkOps, ContentChunk, Verified};
 
-use crate::codec::{DecodeError, EncodeError};
+use crate::codec::{DecodeError, DecodedChunk, EncodeError};
+use crate::fork::ForkTable;
 use crate::format::Format;
 use crate::node::Node;
 
@@ -42,7 +43,7 @@ pub enum StoreError {
 
 impl StoreError {
     /// Box a backend error behind the seam.
-    fn store<E: core::error::Error + Send + Sync + 'static>(err: E) -> Self {
+    pub(crate) fn store<E: core::error::Error + Send + Sync + 'static>(err: E) -> Self {
         Self::Store(Box::new(err))
     }
 }
@@ -70,7 +71,12 @@ impl<F: Format> Node<F> {
 /// Blanket-implemented for every [`TrustedStore`]; the `Trust = Verified`
 /// bound is what lets [`get_node`](Self::get_node) skip re-hashing.
 pub trait NodeGet: TrustedStore {
-    /// Load and decode the node at `address`.
+    /// Load and decode the node at `address`, materializing a spilled node's
+    /// forks from its segments so the caller always sees one logical node.
+    ///
+    /// Reassembling a segmented node fetches its segment chunks and holds only
+    /// that one node's forks, bounded by the fork count, so peak retained state
+    /// stays O(depth).
     fn get_node<F: Format>(
         &self,
         address: &ChunkAddress,
@@ -78,14 +84,82 @@ pub trait NodeGet: TrustedStore {
     where
         Self: Sized + MaybeSync,
     {
-        async move {
-            let chunk = self.get(address).await.map_err(StoreError::store)?;
-            Ok(Node::from_chunk(&chunk)?)
-        }
+        materialize_node::<Self, F>(self, address)
     }
 }
 
 impl<T: TrustedStore> NodeGet for T {}
+
+/// The greatest legal segment-directory depth (spec 5.4); a deeper nesting is a
+/// malformed image, not a tree this format ever produces.
+const MAX_DIR_DEPTH: usize = 2;
+
+/// Load the node at `address`, reassembling a segmented node's forks in place.
+async fn materialize_node<S, F>(store: &S, address: &ChunkAddress) -> Result<Node<F>, StoreError>
+where
+    S: TrustedStore + MaybeSync,
+    F: Format,
+{
+    let chunk = store.get(address).await.map_err(StoreError::store)?;
+    match Node::<F>::decode_chunk(chunk.envelope().data())? {
+        DecodedChunk::Node(node) => Ok(node),
+        DecodedChunk::Segmented(root, dir) => {
+            let forks = Box::pin(collect_segment_forks::<S, F>(store, &dir, 0)).await?;
+            Ok(Node::new(root, forks))
+        }
+        // A fork child reference names a node, never a bare segment.
+        DecodedChunk::Leaf(_) | DecodedChunk::Directory(_) => {
+            Err(StoreError::Decode(DecodeError::SegmentContext))
+        }
+    }
+}
+
+/// Gather every fork of a spilled node by fetching the segments its directory
+/// routes to, descending one directory level at a time.
+async fn collect_segment_forks<S, F>(
+    store: &S,
+    dir: &crate::codec::SegmentDir,
+    depth: usize,
+) -> Result<ForkTable<F>, StoreError>
+where
+    S: TrustedStore + MaybeSync,
+    F: Format,
+{
+    if depth >= MAX_DIR_DEPTH {
+        return Err(StoreError::Decode(DecodeError::SegmentContext));
+    }
+    let mut table = ForkTable::new();
+    for descriptor in &dir.descriptors {
+        // The plain read path cannot open an encrypted segment tree.
+        if descriptor.key.is_some() {
+            return Err(StoreError::Decode(DecodeError::SegmentContext));
+        }
+        let chunk = store
+            .get(&descriptor.address)
+            .await
+            .map_err(StoreError::store)?;
+        let sub = match Node::<F>::decode_chunk(chunk.envelope().data())? {
+            DecodedChunk::Leaf(sub) => sub,
+            DecodedChunk::Directory(inner) => {
+                Box::pin(collect_segment_forks::<S, F>(
+                    store,
+                    &inner,
+                    depth.saturating_add(1),
+                ))
+                .await?
+            }
+            DecodedChunk::Node(_) | DecodedChunk::Segmented(_, _) => {
+                return Err(StoreError::Decode(DecodeError::SegmentContext));
+            }
+        };
+        for (first, record) in sub.into_records() {
+            if table.insert_record(first, record).is_some() {
+                return Err(StoreError::Decode(DecodeError::SegmentContext));
+            }
+        }
+    }
+    Ok(table)
+}
 
 /// Async node storage over a chunk putter.
 ///

@@ -14,7 +14,7 @@
 use bytes::Bytes;
 use futures::executor::block_on;
 use libfuzzer_sys::fuzz_target;
-use nectar_manifest::{Builder, Entry, Key, Node, V1};
+use nectar_manifest::{Builder, Entry, Key, V1, recanonicalize};
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, DEFAULT_BODY_SIZE};
 
@@ -62,22 +62,22 @@ fuzz_target!(|input: Vec<(Vec<u8>, Val)>| {
         return;
     };
 
-    // Every emitted node chunk round-trips through the codec byte for byte and
-    // fits one chunk body: no builder output can be an over-budget or
-    // non-canonical image.
+    // Every emitted chunk round-trips through the codec byte for byte and fits
+    // one chunk body: no builder output, plain node or spilled segment, can be
+    // an over-budget or non-canonical image.
     for chunk in store.into_chunks().into_values() {
         let payload = chunk.envelope().data();
         assert!(
             payload.len() <= DEFAULT_BODY_SIZE,
-            "node chunk {} bytes exceeds one chunk body",
+            "chunk {} bytes exceeds one chunk body",
             payload.len(),
         );
-        let node = Node::<V1>::decode(payload.as_ref()).expect("a stored node must decode");
-        let reencoded = node.encode().expect("a decoded node must re-encode");
+        let reencoded =
+            recanonicalize::<V1>(payload.as_ref()).expect("a stored chunk must decode");
         assert_eq!(
             reencoded.as_slice(),
             payload.as_ref(),
-            "node encoding must be canonical",
+            "chunk encoding must be canonical",
         );
     }
 

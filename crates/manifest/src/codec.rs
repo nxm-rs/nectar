@@ -12,7 +12,7 @@ use core::mem::size_of;
 
 use bytes::Bytes;
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
-use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef};
+use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
 
 use crate::bounded::{MetadataLen, Prefix};
 use crate::error::{CustomKeyError, ForkPrefixEmpty, MetadataTooLong, PrefixTooLong, ValueTooLong};
@@ -243,6 +243,19 @@ pub enum DecodeError {
     /// Bytes remain after the body's last record.
     #[error("{0} trailing bytes after the body")]
     Trailing(usize),
+    /// A segment directory sflags byte sets a reserved bit.
+    #[error("illegal segment directory flags {0:#04x}")]
+    SegmentFlags(u8),
+    /// A segment directory descriptor count of zero or over `FORKS_MAX`.
+    #[error("segment descriptor count {0} outside the format bounds")]
+    SegmentCount(usize),
+    /// Segment directory first keys are not strictly ascending.
+    #[error("segment directory keys not strictly ascending")]
+    SegmentOrder,
+    /// A reference reached a bare segment, or a directory nested past depth two;
+    /// segments are plumbing, never a node a fork points at (spec 5.3).
+    #[error("segment reached out of directory context")]
+    SegmentContext,
 }
 
 /// Rejections from [`Node::encode`]: the in-memory tree cannot form a legal
@@ -328,8 +341,15 @@ fn table_len<F: Format>(table: &ForkTable<F>) -> usize {
     len
 }
 
+/// The packing weight of one fork: its record bytes plus the three-byte fork
+/// index slot the record sits behind (spec 5.2).
+pub(crate) fn record_weight<F: Format>(record: &ForkRecord<F>) -> usize {
+    let slot = size_of::<u8>().saturating_add(size_of::<u16>());
+    slot.saturating_add(record_len(record))
+}
+
 /// Exact encoded bytes of a node body: flags, root extension, fork table.
-fn body_len<F: Format>(node: &Node<F>) -> usize {
+pub(crate) fn body_len<F: Format>(node: &Node<F>) -> usize {
     let mut len = size_of::<u8>();
     if let Some(entry) = node.entry() {
         len = len.saturating_add(entry_len(entry));
@@ -456,15 +476,21 @@ impl<F: Format> FromCursor for Node<F> {
             return Err(DecodeError::NotAManifest { found });
         }
         let flags = node_flags_checked(cur.take::<u8>()?)?;
-        let entry = take_entry(cur, WireFmt::from_entry(flags))?;
-        let metadata = if flags & Wire::HAS_META != 0 {
-            Some(cur.take::<Metadata<F>>()?)
-        } else {
-            None
-        };
-        let forks = take_fork_table(cur)?;
-        Ok(Self::new(RootExtension::new(entry, metadata), forks))
+        take_plain_body(cur, flags)
     }
+}
+
+/// Reads a plain node body (root extension then fork table) behind an already
+/// validated, already consumed flags byte.
+fn take_plain_body<F: Format>(cur: &mut Cursor<'_>, flags: u8) -> Result<Node<F>, DecodeError> {
+    let entry = take_entry(cur, WireFmt::from_entry(flags))?;
+    let metadata = if flags & Wire::HAS_META != 0 {
+        Some(cur.take::<Metadata<F>>()?)
+    } else {
+        None
+    };
+    let forks = take_fork_table(cur)?;
+    Ok(Node::new(RootExtension::new(entry, metadata), forks))
 }
 
 impl<F: Format> ToWriter for Node<F> {
@@ -789,6 +815,259 @@ impl<F: Format> ToWriter for Metadata<F> {
             w.put(value.as_ref());
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Segment directories (spec 5.2, 5.3): the wire form an oversized node spills
+// into. A leaf segment carries a fork-table fragment; a directory segment
+// routes a first-byte range to its children; a SEGMENTED node holds the top
+// directory in place of its fork table. Widths are uniform per directory tree.
+// ---------------------------------------------------------------------------
+
+/// Node/segment flags for a leaf segment body: the `SEGMENT` bit alone.
+const SEG_LEAF: u8 = Wire::SEGMENT;
+/// Node/segment flags for a directory segment body: `SEGMENT | SEGMENTED`.
+const SEG_DIR: u8 = Wire::SEGMENT | Wire::SEGMENTED;
+/// Segment-directory sflags bit 0: descriptors carry ref64, not ref32.
+const WIDE_REFS: u8 = 0b0000_0001;
+
+/// One segment-directory descriptor: the first fork key of the child segment
+/// it routes to, and the reference that reaches that segment chunk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SegDesc {
+    /// The key of the child segment's first fork; the segment covers keys from
+    /// here up to the next descriptor's key.
+    pub(crate) first_key: u8,
+    /// The child segment chunk address.
+    pub(crate) address: ChunkAddress,
+    /// The child's decryption key, present iff the directory is wide.
+    pub(crate) key: Option<EncryptionKey>,
+}
+
+/// A decoded segment directory: uniform-width descriptors in ascending key
+/// order. Directory depth never exceeds two by the frozen bounds (spec 5.4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SegmentDir {
+    /// Whether the descriptors carry ref64; set iff the node's chunks are
+    /// encrypted, so a tree's descriptor widths stay uniform.
+    pub(crate) wide: bool,
+    /// The descriptors, strictly ascending by `first_key`.
+    pub(crate) descriptors: Vec<SegDesc>,
+}
+
+impl SegmentDir {
+    /// A plaintext directory over `(first_key, address)` descriptors.
+    pub(crate) fn plain(descriptors: Vec<(u8, ChunkAddress)>) -> Self {
+        Self {
+            wide: false,
+            descriptors: descriptors
+                .into_iter()
+                .map(|(first_key, address)| SegDesc {
+                    first_key,
+                    address,
+                    key: None,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// A decoded manifest chunk: a plain node, a segmented node, or a segment.
+///
+/// Every kind round-trips through [`reencode`](Self::reencode) to its exact
+/// bytes, so canonical-form validation is decode-then-re-encode-and-compare
+/// (spec 6.2) whatever the chunk kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DecodedChunk<F: Format> {
+    /// A one-chunk node: root extension over a fork table.
+    Node(Node<F>),
+    /// An oversized node: root extension over the top segment directory.
+    Segmented(Option<RootExtension<F>>, SegmentDir),
+    /// A leaf segment: a fork-table fragment of a spilled node.
+    Leaf(ForkTable<F>),
+    /// A directory segment: an inner level of a spilled node's directory.
+    Directory(SegmentDir),
+}
+
+impl<F: Format> DecodedChunk<F> {
+    /// Re-encode to the exact chunk bytes; total, so it never rejects a value
+    /// decode already accepted.
+    pub(crate) fn reencode(&self) -> Vec<u8> {
+        match self {
+            Self::Node(node) => {
+                let mut payload = Vec::with_capacity(node.encoded_len());
+                Writer::new(&mut payload).put(node);
+                payload
+            }
+            Self::Segmented(root, dir) => encode_segmented_node::<F>(root.as_ref(), dir),
+            Self::Leaf(table) => encode_leaf_segment(table),
+            Self::Directory(dir) => encode_dir_segment::<F>(dir),
+        }
+    }
+}
+
+/// Emit a segment directory body: sflags, count, the ascending keys, then the
+/// uniform-width references.
+fn put_segment_dir(w: &mut Writer<'_>, dir: &SegmentDir) {
+    w.put(&(if dir.wide { WIDE_REFS } else { 0u8 }));
+    w.put(&U16Le::of(dir.descriptors.len()));
+    for desc in &dir.descriptors {
+        w.put(&desc.first_key);
+    }
+    for desc in &dir.descriptors {
+        w.put(desc.address.as_bytes());
+        if let Some(key) = &desc.key {
+            w.put(key.as_bytes());
+        }
+    }
+}
+
+/// Encode a leaf segment chunk: preamble, the leaf marker, then the fragment's
+/// fork table.
+pub(crate) fn encode_leaf_segment<F: Format>(table: &ForkTable<F>) -> Vec<u8> {
+    let mut payload = Vec::new();
+    let mut w = Writer::new(&mut payload);
+    w.put(&F::PREAMBLE);
+    w.put(&SEG_LEAF);
+    put_fork_table(&mut w, table);
+    payload
+}
+
+/// Encode a directory segment chunk: preamble, the directory marker, then the
+/// segment directory.
+pub(crate) fn encode_dir_segment<F: Format>(dir: &SegmentDir) -> Vec<u8> {
+    let mut payload = Vec::new();
+    let mut w = Writer::new(&mut payload);
+    w.put(&F::PREAMBLE);
+    w.put(&SEG_DIR);
+    put_segment_dir(&mut w, dir);
+    payload
+}
+
+/// Encode a segmented node chunk: preamble, `SEGMENTED` flags with any root
+/// extension bits, the root extension, then the top segment directory.
+pub(crate) fn encode_segmented_node<F: Format>(
+    root: Option<&RootExtension<F>>,
+    dir: &SegmentDir,
+) -> Vec<u8> {
+    let entry = root.and_then(RootExtension::entry);
+    let metadata = root.and_then(RootExtension::metadata);
+    let mut flags = WireFmt::of_entry(entry).entry_bits() | Wire::SEGMENTED;
+    if metadata.is_some() {
+        flags |= Wire::HAS_META;
+    }
+    let mut payload = Vec::new();
+    let mut w = Writer::new(&mut payload);
+    w.put(&F::PREAMBLE);
+    w.put(&flags);
+    if let Some(entry) = entry {
+        w.put(entry);
+    }
+    if let Some(metadata) = metadata {
+        w.put(metadata);
+    }
+    put_segment_dir(&mut w, dir);
+    payload
+}
+
+/// Read a segment directory body behind an already consumed marker.
+fn take_segment_dir<F: Format>(cur: &mut Cursor<'_>) -> Result<SegmentDir, DecodeError> {
+    let sflags = cur.take::<u8>()?;
+    if sflags & !WIDE_REFS != 0 {
+        return Err(DecodeError::SegmentFlags(sflags));
+    }
+    let wide = sflags & WIDE_REFS != 0;
+    let scount = cur.take::<U16Le>()?.get();
+    if scount == 0 || scount > F::FORKS_MAX {
+        return Err(DecodeError::SegmentCount(scount));
+    }
+    let mut keys = Vec::with_capacity(scount);
+    let mut previous: Option<u8> = None;
+    for _ in 0..scount {
+        let key = cur.take::<u8>()?;
+        if previous.is_some_and(|p| p >= key) {
+            return Err(DecodeError::SegmentOrder);
+        }
+        previous = Some(key);
+        keys.push(key);
+    }
+    let mut descriptors = Vec::with_capacity(scount);
+    for &first_key in &keys {
+        let address = ChunkAddress::new(cur.take::<[u8; ChunkAddress::SIZE]>()?);
+        let key = if wide {
+            Some(EncryptionKey::from(
+                cur.take::<[u8; EncryptionKey::SIZE]>()?,
+            ))
+        } else {
+            None
+        };
+        descriptors.push(SegDesc {
+            first_key,
+            address,
+            key,
+        });
+    }
+    Ok(SegmentDir { wide, descriptors })
+}
+
+/// A leaf segment carries a fork table that must hold at least one fork; the
+/// empty-map root is never a segment.
+fn take_leaf_segment<F: Format>(cur: &mut Cursor<'_>) -> Result<ForkTable<F>, DecodeError> {
+    let table = take_fork_table(cur)?;
+    if table.is_empty() {
+        return Err(DecodeError::EmbeddedEmpty);
+    }
+    Ok(table)
+}
+
+impl<F: Format> Node<F> {
+    /// Decode any manifest chunk: a plain node, a segmented node, or a segment.
+    ///
+    /// Dispatches on the flags byte after the preamble. A plain node decodes
+    /// through [`decode`](Self::decode); the segmented and segment bodies carry
+    /// the packing grammar and decode here into a [`DecodedChunk`].
+    pub(crate) fn decode_chunk(payload: &[u8]) -> Result<DecodedChunk<F>, DecodeError> {
+        let mut cur = Cursor::new(payload);
+        let found = cur.take::<[u8; 2]>()?;
+        if found != F::PREAMBLE {
+            return Err(DecodeError::NotAManifest { found });
+        }
+        let flags = cur.take::<u8>()?;
+        let decoded = if flags & Wire::SEGMENT != 0 {
+            match flags {
+                SEG_LEAF => DecodedChunk::Leaf(take_leaf_segment(&mut cur)?),
+                SEG_DIR => DecodedChunk::Directory(take_segment_dir::<F>(&mut cur)?),
+                _ => return Err(DecodeError::NodeFlags(flags)),
+            }
+        } else if flags & Wire::SEGMENTED != 0 {
+            if flags & (Wire::RESERVED | Wire::CHILD_MASK) != 0 {
+                return Err(DecodeError::NodeFlags(flags));
+            }
+            let entry = take_entry(&mut cur, WireFmt::from_entry(flags))?;
+            let metadata = if flags & Wire::HAS_META != 0 {
+                Some(cur.take::<Metadata<F>>()?)
+            } else {
+                None
+            };
+            let dir = take_segment_dir::<F>(&mut cur)?;
+            DecodedChunk::Segmented(RootExtension::new(entry, metadata), dir)
+        } else {
+            DecodedChunk::Node(take_plain_body(&mut cur, node_flags_checked(flags)?)?)
+        };
+        if !cur.is_empty() {
+            return Err(DecodeError::Trailing(cur.remaining().len()));
+        }
+        Ok(decoded)
+    }
+}
+
+/// Re-encode a manifest chunk to its canonical bytes, whatever its kind.
+///
+/// The spec's canonical-form check (`encode(decode(bytes)) == bytes`, spec 6.2)
+/// for a whole stored chunk set, including the segmented nodes and segments a
+/// spilled node produces.
+pub fn recanonicalize<F: Format>(payload: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    Ok(Node::<F>::decode_chunk(payload)?.reencode())
 }
 
 #[cfg(test)]
@@ -1446,5 +1725,71 @@ mod tests {
             }
             let _ = Node::<V1>::decode(&image);
         }
+    }
+
+    #[test]
+    fn segment_chunks_round_trip_and_classify() {
+        let mut leaf_table = ForkTable::new();
+        leaf_table
+            .insert(prefix(b"ab"), Entry::from(ref32(1)).into(), None)
+            .unwrap();
+        leaf_table
+            .insert(prefix(b"cd"), Entry::from(ref32(2)).into(), None)
+            .unwrap();
+        let leaf = encode_leaf_segment::<V1>(&leaf_table);
+        assert!(matches!(
+            Node::<V1>::decode_chunk(&leaf).unwrap(),
+            DecodedChunk::Leaf(_)
+        ));
+        assert_eq!(recanonicalize::<V1>(&leaf).unwrap(), leaf);
+
+        let dir = SegmentDir::plain(vec![(b'a', addr(1)), (b'c', addr(2))]);
+        let directory = encode_dir_segment::<V1>(&dir);
+        assert!(matches!(
+            Node::<V1>::decode_chunk(&directory).unwrap(),
+            DecodedChunk::Directory(_)
+        ));
+        assert_eq!(recanonicalize::<V1>(&directory).unwrap(), directory);
+
+        let root = RootExtension::new(Some(Entry::from(ref32(9))), None);
+        let segmented = encode_segmented_node::<V1>(root.as_ref(), &dir);
+        assert!(matches!(
+            Node::<V1>::decode_chunk(&segmented).unwrap(),
+            DecodedChunk::Segmented(Some(_), _)
+        ));
+        assert_eq!(recanonicalize::<V1>(&segmented).unwrap(), segmented);
+    }
+
+    #[test]
+    fn segment_bodies_reject_malformed_images() {
+        // A leaf segment with no forks: an empty node never rides a segment.
+        assert!(matches!(
+            Node::<V1>::decode_chunk(&[0x6D, 0x01, 0x40, 0x00, 0x00]),
+            Err(DecodeError::EmbeddedEmpty)
+        ));
+        // A segment directory with a reserved sflags bit set.
+        assert!(matches!(
+            Node::<V1>::decode_chunk(&[0x6D, 0x01, 0x60, 0x02]),
+            Err(DecodeError::SegmentFlags(0x02))
+        ));
+        // A segment directory of zero descriptors.
+        assert!(matches!(
+            Node::<V1>::decode_chunk(&[0x6D, 0x01, 0x60, 0x00, 0x00, 0x00]),
+            Err(DecodeError::SegmentCount(0))
+        ));
+        // The segment bit with an illegal extra bit is neither leaf nor
+        // directory.
+        assert!(matches!(
+            Node::<V1>::decode_chunk(&[0x6D, 0x01, 0x41]),
+            Err(DecodeError::NodeFlags(0x41))
+        ));
+        // Non-ascending directory keys.
+        let mut image = vec![0x6D, 0x01, 0x60, 0x00, 0x02, 0x00, b'b', b'a'];
+        image.extend_from_slice(&[0x11; 32]);
+        image.extend_from_slice(&[0x22; 32]);
+        assert!(matches!(
+            Node::<V1>::decode_chunk(&image),
+            Err(DecodeError::SegmentOrder)
+        ));
     }
 }

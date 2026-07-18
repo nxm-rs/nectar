@@ -8,11 +8,13 @@
 
 use core::marker::PhantomData;
 
-use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::MaybeSync;
+use nectar_primitives::{ChunkAddress, ChunkOps};
 
+use crate::codec::{DecodedChunk, SegmentDir};
 use crate::fork::{Child, ForkTable};
 use crate::format::{Format, V1};
+use crate::node::{Node, RootExtension};
 use crate::store::{NodeGet, StoreError};
 use crate::value::{Entry, Key};
 
@@ -77,24 +79,112 @@ where
         root: &ChunkAddress,
         key: &Key,
     ) -> Result<Option<Entry<F>>, ReaderError> {
-        let mut node = self.store.get_node::<F>(root).await?;
         let key = key.as_bytes();
-        if key.is_empty() {
-            return Ok(node.entry().cloned());
-        }
+        let mut address = *root;
         let mut pos = 0usize;
+        let mut is_root = true;
         loop {
-            match descend(node.forks(), key, pos) {
+            let chunk = self.store.get(&address).await.map_err(StoreError::store)?;
+            let decoded =
+                Node::<F>::decode_chunk(chunk.envelope().data()).map_err(StoreError::Decode)?;
+            // The empty key reads the root's own value; a spilled root carries
+            // it in the segmented node's bytes just as a plain root does.
+            if is_root && key.is_empty() {
+                return Ok(root_entry(&decoded));
+            }
+            let descent = match &decoded {
+                DecodedChunk::Node(node) => descend(node.forks(), key, pos),
+                DecodedChunk::Segmented(_, dir) => {
+                    covering_leaf::<S, F>(&self.store, dir, key, pos)
+                        .await?
+                        .map_or(Descent::Absent, |table| descend(&table, key, pos))
+                }
+                DecodedChunk::Leaf(_) | DecodedChunk::Directory(_) => {
+                    return Err(ReaderError::Store(StoreError::Decode(
+                        crate::codec::DecodeError::SegmentContext,
+                    )));
+                }
+            };
+            match descent {
                 Descent::Absent => return Ok(None),
                 Descent::Found(entry) => return Ok(Some(entry)),
                 Descent::Encrypted => return Err(ReaderError::EncryptedChild),
-                Descent::Follow(address, next) => {
-                    node = self.store.get_node::<F>(&address).await?;
+                Descent::Follow(next_address, next) => {
+                    address = next_address;
                     pos = next;
+                    is_root = false;
                 }
             }
         }
     }
+}
+
+/// The empty-key value a decoded root carries: its root extension entry.
+fn root_entry<F: Format>(decoded: &DecodedChunk<F>) -> Option<Entry<F>> {
+    match decoded {
+        DecodedChunk::Node(node) => node.entry().cloned(),
+        DecodedChunk::Segmented(root, _) => root.as_ref().and_then(RootExtension::entry).cloned(),
+        DecodedChunk::Leaf(_) | DecodedChunk::Directory(_) => None,
+    }
+}
+
+/// The descriptor covering `byte`: the one with the greatest first key not past
+/// it. `None` when `byte` precedes the first fork, so the key is absent.
+fn covering_desc(dir: &SegmentDir, byte: u8) -> Option<&crate::codec::SegDesc> {
+    dir.descriptors
+        .iter()
+        .take_while(|desc| desc.first_key <= byte)
+        .last()
+}
+
+/// Fetch the one leaf segment of a spilled node that covers `key[pos]`,
+/// descending at most one intermediate directory level (spec 5.4).
+///
+/// One segment per directory level, never the whole node, so a lookup through a
+/// spilled node stays O(depth) in fetches, not O(node width).
+async fn covering_leaf<S, F>(
+    store: &S,
+    top: &SegmentDir,
+    key: &[u8],
+    pos: usize,
+) -> Result<Option<ForkTable<F>>, ReaderError>
+where
+    S: NodeGet + MaybeSync,
+    F: Format,
+{
+    let Some(&byte) = key.get(pos) else {
+        return Ok(None);
+    };
+    // Route through the top directory, then, when it points at another
+    // directory, once more; a leaf ends the descent.
+    let mut current = match covering_desc(top, byte) {
+        Some(desc) => desc.clone(),
+        None => return Ok(None),
+    };
+    for _ in 0..2 {
+        if current.key.is_some() {
+            return Err(ReaderError::EncryptedChild);
+        }
+        let chunk = store
+            .get(&current.address)
+            .await
+            .map_err(StoreError::store)?;
+        match Node::<F>::decode_chunk(chunk.envelope().data()).map_err(StoreError::Decode)? {
+            DecodedChunk::Leaf(table) => return Ok(Some(table)),
+            DecodedChunk::Directory(dir) => match covering_desc(&dir, byte) {
+                Some(desc) => current = desc.clone(),
+                None => return Ok(None),
+            },
+            _ => {
+                return Err(ReaderError::Store(StoreError::Decode(
+                    crate::codec::DecodeError::SegmentContext,
+                )));
+            }
+        }
+    }
+    Err(ReaderError::Store(StoreError::Decode(
+        crate::codec::DecodeError::SegmentContext,
+    )))
 }
 
 /// The outcome of walking one node's embedded tables as far as they reach.
