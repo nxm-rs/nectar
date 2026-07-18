@@ -71,6 +71,13 @@ pub trait Format:
     /// product fits u64 for every sub-target weight. Typed `u64`, not
     /// `usize`: the value exceeds a 32-bit `usize` on wasm32.
     const CUT_SCALE: u64;
+
+    /// Domain-separation tag for the deterministic per-reference key
+    /// derivation `keccak256(DERIVE_TAG || secret || plaintext)`. Frozen per
+    /// version so encrypting the same plaintext under the same secret always
+    /// yields the same key, ciphertext and address, keeping canonical bytes
+    /// and cross-build dedup intact for encrypted trees.
+    const DERIVE_TAG: &'static [u8];
 }
 
 /// The frozen `tag_version 0x01` parameter set.
@@ -91,6 +98,7 @@ impl Format for V1 {
     const CAP_FORK: usize = 4091;
     const CAP_DIR: usize = 4090;
     const CUT_SCALE: u64 = 9_007_199_254_740_992;
+    const DERIVE_TAG: &'static [u8] = b"mantaray-1.0-encryption";
 }
 
 // Frozen cross-parameter facts, kept honest at compile time.
@@ -144,6 +152,7 @@ mod tests {
         assert_eq!(V1::CAP_FORK, 4091);
         assert_eq!(V1::CAP_DIR, 4090);
         assert_eq!(V1::CUT_SCALE, 9_007_199_254_740_992);
+        assert_eq!(V1::DERIVE_TAG, b"mantaray-1.0-encryption");
     }
 
     #[test]

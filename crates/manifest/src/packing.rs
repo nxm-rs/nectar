@@ -14,7 +14,9 @@ use alloy_primitives::keccak256;
 use nectar_primitives::{ChunkRef, EncryptedChunkRef};
 
 use crate::bounded::{Prefix, SegmentWeight};
+use crate::fork::Child;
 use crate::format::Format;
+use crate::value::Entry;
 
 /// The encryption regime of a subtree: plaintext 32-byte references, or
 /// encrypted 64-byte references carrying in-band keys.
@@ -27,6 +29,34 @@ pub enum Domain {
     Plain,
     /// Encrypted subtree: 64-byte references carrying in-band keys.
     Encrypted,
+}
+
+impl Domain {
+    /// The domain a resolved entry reference belongs to: plaintext for a
+    /// 32-byte reference, encrypted for a key-carrying 64-byte reference.
+    /// `None` for inline bytes, which are not a reference and so have no
+    /// independent domain.
+    #[must_use]
+    pub const fn of_entry<F: Format>(entry: &Entry<F>) -> Option<Self> {
+        match entry {
+            Entry::Ref32(_) => Some(Self::Plain),
+            Entry::Ref64(_) => Some(Self::Encrypted),
+            Entry::Inline(_) => None,
+        }
+    }
+
+    /// The domain a resolved child reference belongs to: plaintext for a
+    /// 32-byte reference, encrypted for a key-carrying 64-byte reference.
+    /// `None` for an embedded subtree, which carries no reference and inherits
+    /// its parent's domain.
+    #[must_use]
+    pub const fn of_child<F: Format>(child: &Child<F>) -> Option<Self> {
+        match child {
+            Child::Ref32(_) => Some(Self::Plain),
+            Child::Ref64(_) => Some(Self::Encrypted),
+            Child::Embedded(_) => None,
+        }
+    }
 }
 
 /// Which capacity a segment run is held to: a leaf run of fork records, or a
@@ -291,6 +321,35 @@ mod tests {
             .chain(base.iter().map(|r| r.start + 1..r.end + 1))
             .collect();
         assert_eq!(shifted, expected);
+    }
+
+    #[test]
+    fn reference_domains_gate_cross_boundary_embedding() {
+        use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
+
+        let addr = ChunkAddress::new([7; 32]);
+        let plain = Entry::<V1>::from(ChunkRef::new(addr));
+        let encrypted =
+            Entry::<V1>::from(EncryptedChunkRef::new(addr, EncryptionKey::from([9; 32])));
+
+        let plain_dom = Domain::of_entry(&plain).unwrap();
+        let enc_dom = Domain::of_entry(&encrypted).unwrap();
+        assert_eq!(plain_dom, Domain::Plain);
+        assert_eq!(enc_dom, Domain::Encrypted);
+        // Inline bytes carry no reference, so no domain.
+        let inline = Entry::<V1>::inline(bytes::Bytes::from_static(b"v")).unwrap();
+        assert_eq!(Domain::of_entry(&inline), None);
+
+        let plain_child = Child::<V1>::from(ChunkRef::new(addr));
+        let enc_child =
+            Child::<V1>::from(EncryptedChunkRef::new(addr, EncryptionKey::from([9; 32])));
+        assert_eq!(Domain::of_child(&plain_child), Some(Domain::Plain));
+        assert_eq!(Domain::of_child(&enc_child), Some(Domain::Encrypted));
+
+        // An encrypted child never inlines into a plaintext parent, however
+        // small: the boundary is structural, not a size decision.
+        assert!(!embed::<V1>(1, plain_dom, enc_dom));
+        assert!(embed::<V1>(1, enc_dom, enc_dom));
     }
 
     #[test]

@@ -77,7 +77,7 @@ pub mod wasm;
 pub use bmt::DEFAULT_BODY_SIZE;
 
 // Re-export core encryption types
-pub use chunk::encryption::{EncryptedChunkRef, EncryptionKey};
+pub use chunk::encryption::{EncryptedChunkRef, EncryptionKey, transcrypt, transcrypt_in_place};
 #[cfg(feature = "encryption")]
 pub use chunk::{ChunkEncrypt, EncryptedContentChunk};
 
