@@ -4,9 +4,10 @@
 //! This crate carries the pipeline's foundations: per-profile tree
 //! [`geometry`] pinned at compile time, the [`config`] admission budgets the
 //! engines drain against, the poll-native [`walk`] engine every read mode
-//! drains, the poll-native [`split`] engine every write mode feeds, and the
+//! drains, the poll-native [`split`] engine every write mode feeds, the
 //! [`read`] facade that opens files by either reference width and drains the
-//! walk in file order.
+//! walk in file order, and the [`sink`] targets a restartable download
+//! writes into.
 
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -29,9 +30,8 @@
     )
 )]
 
-#[cfg(feature = "std")]
 extern crate alloc;
-#[cfg(test)]
+#[cfg(any(test, feature = "std"))]
 extern crate std;
 
 pub mod config;
@@ -41,6 +41,7 @@ mod num;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod read;
+pub mod sink;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod split;
@@ -51,7 +52,13 @@ pub mod walk;
 pub use config::{BranchBudget, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
 #[cfg(feature = "std")]
-pub use read::{AnyFile, File, FileReader, FileStream, OpenError, ReadBuilder, SeekPastEnd};
+pub use read::{
+    AnyFile, DownloadBuilder, DownloadError, File, FileFrames, FileReader, FileStream, OpenError,
+    Progress, ProgressFn, ReadBuilder, SeekPastEnd,
+};
+#[cfg(feature = "std")]
+pub use sink::FsSink;
+pub use sink::{DataSink, MemSink, MemSinkError};
 #[cfg(feature = "std")]
 pub use split::{Sealed, Split, SplitError, SplitMode, SplitStats};
 #[cfg(feature = "std")]

@@ -14,6 +14,7 @@ use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::TrustedGet;
 
 use super::error::SeekPastEnd;
+use super::frames::FileFrames;
 use crate::config::Window;
 use crate::num::u64_from_usize;
 use crate::walk::{Walk, WalkError, WalkMode, WalkStats};
@@ -99,6 +100,18 @@ where
     /// Build the ordered stream directly.
     pub fn stream(self) -> FileStream<S, M, B> {
         self.build().into_stream()
+    }
+
+    /// Build the completion-order frames drain.
+    pub fn frames(self) -> FileFrames<S, M, B> {
+        FileFrames::new(Walk::new(
+            self.store,
+            self.root,
+            self.context,
+            self.span,
+            self.range,
+            self.window,
+        ))
     }
 }
 

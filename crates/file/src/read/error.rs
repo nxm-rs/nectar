@@ -2,7 +2,7 @@
 
 use nectar_primitives::chunk::ChunkAddress;
 
-use crate::walk::DecodeError;
+use crate::walk::{DecodeError, WalkError};
 
 /// Failure opening a file at its root chunk.
 #[derive(Debug, thiserror::Error)]
@@ -27,6 +27,22 @@ pub enum OpenError<E> {
     /// The root body cannot be decoded under the mode's reference grammar.
     #[error(transparent)]
     Decode(#[from] DecodeError),
+}
+
+/// Terminal failure of one download run; a full re-run restarts it.
+#[derive(Debug, thiserror::Error)]
+pub enum DownloadError<E, SE> {
+    /// The walk failed before the range was tiled.
+    #[error(transparent)]
+    Walk(#[from] WalkError<E>),
+    /// The sink rejected a write.
+    #[error("sink write failed at {offset}")]
+    Sink {
+        /// Range-relative offset of the failed write.
+        offset: u64,
+        /// Sink error behind the failure.
+        source: SE,
+    },
 }
 
 /// A seek past the reader's effective length; the reader never clamps.

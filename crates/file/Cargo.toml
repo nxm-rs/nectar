@@ -21,7 +21,7 @@ workspace = true
 bytes = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 nectar-primitives = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 futures.workspace = true
@@ -40,10 +40,9 @@ std = [
 	"dep:bytes",
 	"dep:futures-util",
 	"dep:nectar-primitives",
-	"dep:thiserror",
 	"futures-util?/std",
 	"nectar-primitives?/std",
-	"thiserror?/std",
+	"thiserror/std",
 ]
 
 # Async reader and writer adapters over the poll surface. Implies `std`.
