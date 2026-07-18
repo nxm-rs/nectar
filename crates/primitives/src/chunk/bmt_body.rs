@@ -7,7 +7,7 @@ use bytes::{Bytes, BytesMut};
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
-use crate::bmt::{DEFAULT_BODY_SIZE, Hasher, SPAN_SIZE};
+use crate::bmt::{DEFAULT_BODY_SIZE, DerivedAddress, Hasher, SPAN_SIZE};
 use crate::chunk::ChunkAddress;
 use crate::chunk::error::{self, ChunkError};
 use crate::error::{PrimitivesError, Result};
@@ -17,7 +17,7 @@ use crate::error::{PrimitivesError, Result};
 pub struct BmtBody<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     span: u64,
     data: Bytes,
-    cached_hash: OnceLock<ChunkAddress>,
+    cached_hash: OnceLock<DerivedAddress>,
 }
 
 /// Structural equality over span and payload. Never derives the hash: when
@@ -75,14 +75,19 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
 
     /// Compute the BMT hash of this body
     pub fn hash(&self) -> ChunkAddress {
+        ChunkAddress::from(self.derived_hash())
+    }
+
+    /// The body's BMT root with hasher provenance; computed once, cached.
+    pub(crate) fn derived_hash(&self) -> DerivedAddress {
         *self.cached_hash.get_or_init(|| self.calculate_hash())
     }
 
-    fn calculate_hash(&self) -> ChunkAddress {
+    fn calculate_hash(&self) -> DerivedAddress {
         let mut hasher: Hasher<BODY_SIZE> = Hasher::new();
         hasher.set_span(self.span);
         hasher.update(self.data.as_ref());
-        hasher.sum().into()
+        hasher.sum_derived()
     }
 
     /// Compute the anchor-keyed *transformed* BMT root of this body.

@@ -16,7 +16,9 @@ use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::error::ChunkError;
 use super::inner::ChunkInner;
+use super::registry::ChunkRegistry;
 use super::traits::{ChunkHeader, ChunkOps};
+use super::trust::{Chunk, Verified};
 use super::type_id::ChunkTypeId;
 use super::type_tag::ChunkVersion;
 
@@ -94,6 +96,26 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
     #[must_use]
     pub const fn from_body(body: BmtBody<BODY_SIZE>) -> Self {
         Self::from_header_and_body(CacHeader, body)
+    }
+
+    /// Seal into the verified currency at the derived address, hashing once.
+    ///
+    /// Sound for content chunks only: the acceptance rule is exactly
+    /// `address == body hash`, and the sealed address is a hasher-derived
+    /// [`DerivedAddress`](crate::bmt::DerivedAddress), never supplied. Debug
+    /// builds retain a full rehash assertion through [`ChunkOps::verify`].
+    #[must_use]
+    pub fn seal<R>(self) -> Chunk<Verified, R>
+    where
+        R: ChunkRegistry,
+        R::Envelope: From<Self>,
+    {
+        let address = ChunkAddress::from(self.body().derived_hash());
+        debug_assert!(
+            self.verify(&address).is_ok(),
+            "a content chunk must certify at its derived address"
+        );
+        Chunk::from_verified_parts(address, R::Envelope::from(self))
     }
 }
 
@@ -212,7 +234,7 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for ContentChunk<BODY_
 mod tests {
     use crate::{
         DEFAULT_BODY_SIZE,
-        chunk::{ChunkOps, error::ChunkError},
+        chunk::{ChunkOps, ContentOnlyChunkSet, StandardChunkSet, error::ChunkError},
         error::PrimitivesError,
     };
 
@@ -288,6 +310,24 @@ mod tests {
         fn test_deserialize_invalid_chunks(data in proptest::collection::vec(any::<u8>(), 0..8)) {
             let result = DefaultContentChunk::try_from(data.as_slice());
             prop_assert_eq!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))), true);
+        }
+
+        /// Differential accept set: seal certifies exactly the (chunk, address)
+        /// pairs verify accepts. Everything seal emits passes verify; the
+        /// verify-certified constructor lands on the same address and bytes;
+        /// off the derived address verify accepts nothing, and seal never
+        /// seals there.
+        #[test]
+        fn seal_accept_set_matches_verify(chunk in chunk_strategy(), lie in arb::<ChunkAddress>()) {
+            let sealed = chunk.clone().seal::<StandardChunkSet>();
+            prop_assert!(sealed.envelope().verify(sealed.address()).is_ok());
+
+            let verified = Chunk::<Verified>::from_envelope(chunk.clone().into()).unwrap();
+            prop_assert_eq!(sealed.address(), verified.address());
+            prop_assert_eq!(sealed.typed_bytes(), verified.typed_bytes());
+
+            prop_assume!(lie != *sealed.address());
+            prop_assert!(chunk.verify(&lie).is_err());
         }
     }
 
@@ -388,6 +428,15 @@ mod tests {
             CacHeader.seal_transformed(&address, root),
             ChunkAddress::from(root)
         );
+    }
+
+    #[test]
+    fn seal_supports_single_member_registries() {
+        let chunk = DefaultContentChunk::new(b"content only".to_vec()).unwrap();
+        let expected = *chunk.address();
+        let sealed = chunk.seal::<ContentOnlyChunkSet>();
+        assert_eq!(sealed.address(), &expected);
+        assert!(sealed.envelope().verify(&expected).is_ok());
     }
 
     #[test]
