@@ -7,6 +7,8 @@
 //! out-of-file bounds shrink the read instead of failing, and the clipped
 //! length is readable as [`FileReader::effective_len`]. Only
 //! [`FileReader::seek`] is typed-strict: it never clamps.
+//! [`ReadBuilder::collect`] assembles a bounded in-memory copy, typed
+//! [`CollectError::TooLarge`] past its bound.
 
 mod download;
 mod error;
@@ -17,7 +19,7 @@ mod reader;
 mod tests;
 
 pub use download::{DownloadBuilder, Progress, ProgressFn};
-pub use error::{DownloadError, OpenError, SeekPastEnd};
+pub use error::{CollectError, DownloadError, OpenError, SeekPastEnd};
 pub use file::{AnyFile, File};
 pub use frames::FileFrames;
 pub use reader::{FileReader, FileStream, ReadBuilder};

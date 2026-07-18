@@ -6,8 +6,9 @@
 //! engines drain against, the poll-native [`walk`] engine every read mode
 //! drains, the poll-native [`split`] engine every write mode feeds, the
 //! [`read`] facade that opens files by either reference width and drains the
-//! walk in file order, and the [`sink`] targets a restartable download
-//! writes into.
+//! walk in file order, the [`sink`] targets a restartable download writes
+//! into, the [`store`] erasure that makes file handles nameable, and the
+//! [`sync`] driver for Ready-only guests.
 
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -45,6 +46,10 @@ pub mod sink;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod split;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod store;
+pub mod sync;
 #[cfg(feature = "tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub mod tokio;
@@ -63,14 +68,16 @@ pub use config::{BranchBudget, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
 #[cfg(feature = "std")]
 pub use read::{
-    AnyFile, DownloadBuilder, DownloadError, File, FileFrames, FileReader, FileStream, OpenError,
-    Progress, ProgressFn, ReadBuilder, SeekPastEnd,
+    AnyFile, CollectError, DownloadBuilder, DownloadError, File, FileFrames, FileReader,
+    FileStream, OpenError, Progress, ProgressFn, ReadBuilder, SeekPastEnd,
 };
 #[cfg(feature = "std")]
 pub use sink::FsSink;
 pub use sink::{DataSink, MemSink, MemSinkError};
 #[cfg(feature = "std")]
 pub use split::{Sealed, Split, SplitError, SplitMode, SplitStats};
+#[cfg(feature = "std")]
+pub use store::{BoxedStore, BoxedStoreError, DynAnyFile, DynFile, DynFileReader, DynFileStream};
 #[cfg(feature = "std")]
 pub use walk::{
     DecodeError, Encrypted, Frame, Plain, ShapeError, Walk, WalkError, WalkMode, WalkStats,

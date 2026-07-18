@@ -1,5 +1,7 @@
 //! Typed failures of the read facade.
 
+use alloc::collections::TryReserveError;
+
 use nectar_primitives::chunk::ChunkAddress;
 
 use crate::walk::{DecodeError, WalkError};
@@ -43,6 +45,25 @@ pub enum DownloadError<E, SE> {
         /// Sink error behind the failure.
         source: SE,
     },
+}
+
+/// Failure assembling a bounded in-memory read.
+#[derive(Debug, thiserror::Error)]
+pub enum CollectError<E> {
+    /// The clipped read exceeds the collect bound.
+    #[error("read of {len} bytes exceeds the collect bound {max}")]
+    TooLarge {
+        /// Bytes the clipped read covers.
+        len: u64,
+        /// Effective bound; saturates at the address width.
+        max: u64,
+    },
+    /// The assembly buffer reservation failed.
+    #[error("assembly buffer reservation failed")]
+    Reserve(#[from] TryReserveError),
+    /// The walk failed before the range was tiled.
+    #[error(transparent)]
+    Walk(#[from] WalkError<E>),
 }
 
 /// A seek past the reader's effective length; the reader never clamps.
