@@ -16,7 +16,12 @@ alloy-signer-local = { version = "2.0", default-features = false }
 # Chunk wire payloads are `Bytes`; the chunk targets build them from the
 # fuzzer's raw input.
 bytes = "1"
+# The manifest build/apply targets drive the async builder and reader to
+# completion on the current thread.
+futures = "0.3"
 libfuzzer-sys = "0.4"
+# The mantaray 1.0 manifest codec, builder and apply path under test.
+nectar-manifest = { path = "../crates/manifest" }
 # No `encryption` feature: the `EncryptedChunkRef` representation the
 # mantaray targets drive for the 64-byte entry path is unconditional.
 # `hazmat` exposes the raw node types and codec the mantaray targets
@@ -97,6 +102,27 @@ bench = false
 [[bin]]
 name = "chunk_domain_separation"
 path = "fuzz_targets/chunk_domain_separation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest_node_decode"
+path = "fuzz_targets/manifest_node_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest_build_roundtrip"
+path = "fuzz_targets/manifest_build_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest_apply_rebuild"
+path = "fuzz_targets/manifest_apply_rebuild.rs"
 test = false
 doc = false
 bench = false

@@ -47,7 +47,7 @@ jobs:
         # `parallel` / `wasm-threads` features, so the crate builds for wasm32
         # single-threaded by default. A plain check on the default features is
         # therefore the faithful one.
-        name: wasm / postage-usage
+        name: wasm / browser crates
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
@@ -59,6 +59,13 @@ jobs:
               run: |
                   cargo check \
                     -p nectar-postage-usage --features client --locked \
+                    --target wasm32-unknown-unknown
+            - name: Check manifest builds for wasm32
+              # The mantaray 1.0 manifest is memory-bounded and browser-facing,
+              # so its default build must stay wasm32-clean.
+              run: |
+                  cargo check \
+                    -p nectar-manifest --locked \
                     --target wasm32-unknown-unknown
 
     unit-success:

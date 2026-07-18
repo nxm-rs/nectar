@@ -1920,11 +1920,23 @@ dependencies = [
  "alloy-signer-local",
  "arbitrary",
  "bytes",
+ "futures",
  "libfuzzer-sys",
+ "nectar-manifest",
  "nectar-mantaray",
  "nectar-postage",
  "nectar-postage-usage",
  "nectar-primitives",
+]
+
+[[package]]
+name = "nectar-manifest"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "bytes",
+ "nectar-primitives",
+ "thiserror",
 ]
 
 [[package]]
