@@ -17,12 +17,31 @@ categories = ["no-std", "asynchronous", "data-structures"]
 [lints]
 workspace = true
 
+[dependencies]
+bytes = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+nectar-primitives = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures.workspace = true
+
 [features]
 default = [ "std" ]
 
 # Standard library interop; the filesystem and io adapters land with the
-# engines.
-std = []
+# write engine. The walk engine rides this feature until the primitives core
+# builds bare-metal.
+std = [
+	"bytes?/std",
+	"dep:bytes",
+	"dep:futures-util",
+	"dep:nectar-primitives",
+	"dep:thiserror",
+	"futures-util?/std",
+	"nectar-primitives?/std",
+	"thiserror?/std",
+]
 
 # Async reader and writer adapters over the poll surface. Implies `std`.
 tokio = [ "std" ]
@@ -32,7 +51,11 @@ tokio = [ "std" ]
 rayon = [ "std" ]
 
 # Split-side encrypted mode. Joining encrypted references stays unconditional.
-encryption = []
+encryption = [ "nectar-primitives?/encryption" ]
+
+# Single-thread send escape: relaxes the boxed fetch future off `Send` in
+# lockstep with the primitives store traits.
+unsync = [ "nectar-primitives?/unsync" ]
 
 [package.metadata.docs.rs]
 all-features = true

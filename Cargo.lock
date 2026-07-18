@@ -2061,6 +2061,13 @@ dependencies = [
 [[package]]
 name = "nectar-file"
 version = "0.4.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "futures-util",
+ "nectar-primitives",
+ "thiserror",
+]
 
 [[package]]
 name = "nectar-manifest"
