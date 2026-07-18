@@ -111,6 +111,11 @@ serde = [ "dep:serde" ]
 arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "dep:rand", "std" ]
 encryption = [ "dep:rand" ]
 tokio = [ "dep:tokio" ]
+# Single-thread send escape for non-wasm targets (e.g. zkVM guests): applies
+# the wasm32 relaxation of MaybeSend/MaybeSync and the boxed error aliases on
+# any target. An explicit feature rather than a target cfg so CI can exercise
+# the relaxed shape off-wasm.
+unsync = []
 
 [[bench]]
 name = "primitives"
