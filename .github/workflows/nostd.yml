@@ -37,7 +37,8 @@ jobs:
             - name: Check no_std crates without std
               run: |
                   cargo check --locked \
-                    -p nectar-swarms -p nectar-contracts -p nectar-nostd-spike \
+                    -p nectar-swarms -p nectar-contracts -p nectar-file \
+                    -p nectar-nostd-spike \
                     --no-default-features \
                     --target ${{ matrix.target }}
             # nectar-primitives does not yet build bare-metal, so the
