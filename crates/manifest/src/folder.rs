@@ -72,6 +72,10 @@ pub struct Listing<'a, S, F: Format = V1> {
     root: ChunkAddress,
     /// The exclusive bound of the directory's prefix range.
     end: Option<Bytes>,
+    /// Key bytes the cursor walks below; prepended to each cursor key to
+    /// recover the full key. Empty unless the listing delegated to a subtree
+    /// root, where the cursor walks the subtree's own key space.
+    base: Bytes,
     /// Key bytes consumed by the directory prefix; a child's segment starts
     /// here.
     dir_len: usize,
@@ -99,23 +103,26 @@ where
             let Some((key, entry)) = self.cursor.next().await? else {
                 return Ok(None);
             };
-            let bytes = key.as_bytes();
+            let full = self.full_key(key);
+            let bytes = full.as_bytes();
             let suffix = bytes.get(self.dir_len..).unwrap_or(&[]);
             // The directory path itself is not one of its own children.
             if suffix.is_empty() {
                 continue;
             }
             match suffix.iter().position(|&byte| byte == F::SEPARATOR) {
-                None => return Ok(Some(DirEntry::File { key, entry })),
+                None => return Ok(Some(DirEntry::File { key: full, entry })),
                 Some(cut) => {
                     let through = self.dir_len.saturating_add(cut).saturating_add(1);
                     let dir = bytes.get(..through).unwrap_or(bytes);
                     let dir_key = Key::from(dir);
                     match successor(dir) {
                         Some(start) => {
+                            // The cursor walks below `base`, so a reseek strips
+                            // the shared base the delegated subtree omits.
+                            let rel = start.get(self.base.len()..).unwrap_or(&[]);
                             self.cursor =
-                                Cursor::seek(self.store, &self.root, &start, self.end.clone())
-                                    .await?;
+                                Cursor::seek(self.store, &self.root, rel, self.end.clone()).await?;
                         }
                         None => self.done = true,
                     }
@@ -123,6 +130,19 @@ where
                 }
             }
         }
+    }
+
+    /// The full key of a cursor step: the delegated base followed by the cursor
+    /// key, which is the cursor key itself when the walk is rooted at the
+    /// manifest and no base was stripped.
+    fn full_key(&self, key: Key) -> Key {
+        if self.base.is_empty() {
+            return key;
+        }
+        let mut bytes = Vec::with_capacity(self.base.len().saturating_add(key.len()));
+        bytes.extend_from_slice(&self.base);
+        bytes.extend_from_slice(key.as_bytes());
+        Key::from(bytes)
     }
 }
 
@@ -219,12 +239,33 @@ where
         dir: &Key,
     ) -> Result<Listing<'_, S, F>, ReaderError> {
         let prefix = dir.as_bytes();
+        // When the directory's keys are exactly one referenced chunk reached at
+        // the prefix boundary, delegate the walk to that subtree root: it holds
+        // precisely the directory's keys, so the walk starts there and needs no
+        // upper bound. A boundary deeper than the prefix, or none, walks from
+        // the manifest root as before.
+        if let Some(found) = self.descend_subtree(root, prefix).await?
+            && found.base == prefix.len()
+        {
+            let subtree = *found.reference.address();
+            let cursor = Cursor::seek(self.store(), &subtree, &[], None).await?;
+            return Ok(Listing {
+                store: self.store(),
+                root: subtree,
+                end: None,
+                base: Bytes::copy_from_slice(prefix),
+                dir_len: prefix.len(),
+                done: false,
+                cursor,
+            });
+        }
         let end = successor(prefix);
         let cursor = Cursor::seek(self.store(), root, prefix, end.clone()).await?;
         Ok(Listing {
             store: self.store(),
             root: *root,
             end,
+            base: Bytes::new(),
             dir_len: prefix.len(),
             done: false,
             cursor,
@@ -435,6 +476,62 @@ mod tests {
         // Seeking past the subtree keeps the fetch count to the frontier, far
         // below the 64 leaves under it.
         assert!(store.gets() < 16, "fetched {} nodes", store.gets());
+    }
+
+    #[test]
+    fn list_delegates_a_referenced_subtree() {
+        use crate::bounded::Prefix;
+        use crate::fork::{Child, ForkTable};
+        use crate::node::Node;
+        use crate::store::NodePut;
+
+        let store = MemoryStore::default();
+        // A referenced "mg/" subtree holding a nested subdirectory and a file,
+        // so listing it delegates to the subtree root and still collapses and
+        // reseeks in the subtree's own key space.
+        let mut inner = ForkTable::new();
+        inner
+            .insert(
+                Prefix::try_from(&b"1"[..]).unwrap(),
+                entry(0x01).into(),
+                None,
+            )
+            .unwrap();
+        inner
+            .insert(
+                Prefix::try_from(&b"2"[..]).unwrap(),
+                entry(0x02).into(),
+                None,
+            )
+            .unwrap();
+        let mut leaf = ForkTable::new();
+        leaf.insert(
+            Prefix::try_from(&b"a/"[..]).unwrap(),
+            Child::Embedded(inner).into(),
+            None,
+        )
+        .unwrap();
+        leaf.insert(
+            Prefix::try_from(&b"logo.png"[..]).unwrap(),
+            entry(0xBB).into(),
+            None,
+        )
+        .unwrap();
+        let leaf_ref = block_on(store.put_node(&Node::new(None, leaf))).unwrap();
+
+        let mut forks: ForkTable = ForkTable::new();
+        forks
+            .insert(
+                Prefix::try_from(&b"mg/"[..]).unwrap(),
+                Child::Ref32(ChunkRef::new(leaf_ref)).into(),
+                None,
+            )
+            .unwrap();
+        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+
+        let reader: Reader<_> = Reader::new(&store);
+        let got = entries(block_on(reader.list(&root, &Key::from(&b"mg/"[..]))).unwrap());
+        assert_eq!(got, vec![dir(b"mg/a/"), file(b"mg/logo.png", 0xBB)]);
     }
 
     #[test]
