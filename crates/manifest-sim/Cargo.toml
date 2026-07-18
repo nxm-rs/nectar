@@ -1,0 +1,49 @@
+[package]
+name = "nectar-manifest-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+description = "Empirical performance harness comparing mantaray 1.0 (nectar-manifest) and mantaray 0.2 (nectar-mantaray)"
+
+# NOTE: this harness crate deliberately does NOT inherit the workspace
+# restriction lints (`[lints] workspace = true` is omitted). A measurement
+# harness is test/bench code: fallible `?` is used throughout, but the
+# arithmetic and unwrap restriction lints that guard production wire paths are
+# not appropriate here, and the house rules forbid `#[allow]` to suppress them
+# one by one. `cargo clippy -D warnings` still holds the crate to the default
+# clippy correctness/style/complexity/perf lints.
+
+[dependencies]
+bytes.workspace = true
+nectar-manifest = { workspace = true }
+nectar-mantaray = { workspace = true }
+nectar-primitives = { workspace = true }
+futures.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["std"] }
+sha2 = "0.10"
+# Paused virtual clock: models one RTT per node fetch so the bounded-concurrency
+# ordered cursor's parallel rounds are read off tokio's auto-advancing test
+# clock, never guessed. `test-util` supplies `start_paused`.
+tokio = { version = "1", features = ["rt", "time", "macros", "test-util"] }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bin]]
+name = "manifest-sim"
+path = "src/bin/manifest_sim.rs"
+
+[[bin]]
+name = "manifest-perf-v3"
+path = "src/bin/manifest_perf_v3.rs"
+
+[[bench]]
+name = "manifest_perf"
+path = "benches/manifest_perf.rs"
+harness = false
