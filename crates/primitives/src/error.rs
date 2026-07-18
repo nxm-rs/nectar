@@ -71,6 +71,7 @@ pub enum PrimitivesError {
     Chunk(#[from] crate::chunk::error::ChunkError),
 
     /// Errors from file operations
+    #[allow(deprecated)]
     #[error(transparent)]
     File(#[from] crate::file::error::FileError),
 

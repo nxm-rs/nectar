@@ -6,6 +6,7 @@
 //! # Store-centric API (extension traits)
 //!
 //! ```
+//! # #![allow(deprecated)]
 //! use futures::executor::block_on;
 //! use nectar_primitives::file::{ChunkGetExt, ChunkPutExt};
 //! use nectar_primitives::DefaultMemoryStore;
@@ -19,6 +20,7 @@
 //! # Free function API
 //!
 //! ```
+//! # #![allow(deprecated)]
 //! use futures::executor::block_on;
 //! use nectar_primitives::file::{split, join};
 //! use nectar_primitives::DEFAULT_BODY_SIZE;
@@ -32,6 +34,7 @@
 //! # Encrypted split and join
 //!
 //! ```
+//! # #![allow(deprecated)]
 //! # #[cfg(feature = "encryption")] {
 //! use futures::executor::block_on;
 //! use nectar_primitives::file::{split_encrypted, join};
@@ -45,7 +48,6 @@
 //! ```
 
 mod constants;
-pub mod entry_ref;
 pub mod error;
 mod fold;
 mod frontier;
@@ -89,7 +91,7 @@ pub use splitter_parallel::EncryptedParallelSplitter;
 pub use splitter_parallel::ParallelSplitter;
 pub use write_at::WriteAt;
 
-pub use entry_ref::EntryRef;
+pub use crate::entry_ref::{self, EntryRef};
 pub use error::FileError;
 pub use tree::{ChunkRange, TreeParams};
 
@@ -261,6 +263,7 @@ impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where
 /// Uses [`JoinRef`] for unified plain/encrypted dispatch on read-back.
 ///
 /// ```
+/// # #![allow(deprecated)]
 /// use futures::executor::block_on;
 /// use nectar_primitives::file::{ChunkGetExt, ChunkPutExt};
 /// use nectar_primitives::DefaultMemoryStore;

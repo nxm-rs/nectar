@@ -9,6 +9,7 @@
 
 use bytes::Bytes;
 use nectar_primitives::store::MaybeSync;
+#[allow(deprecated)]
 use nectar_primitives::{ChunkAddress, DEFAULT_BODY_SIZE, FileError, join};
 
 use crate::format::Format;
@@ -24,6 +25,7 @@ pub enum FetchError {
     #[error(transparent)]
     Read(#[from] ReaderError),
     /// Reassembling the referenced file from its chunks failed.
+    #[allow(deprecated)]
     #[error("join file")]
     Join(#[source] FileError),
     /// The entry names an encrypted file body. Per-reference node encryption
@@ -44,6 +46,7 @@ where
     /// Inline bytes return directly; a plain reference is joined from its BMT
     /// chunks over the reader's store. A ref64 names an encrypted file body,
     /// which the manifest does not reassemble.
+    #[allow(deprecated)]
     pub async fn read(&self, entry: &Entry<F>) -> Result<Bytes, FetchError> {
         match entry {
             Entry::Inline(value) => Ok(value.clone().into_bytes()),

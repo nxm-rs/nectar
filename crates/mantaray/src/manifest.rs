@@ -6,6 +6,7 @@ use futures::{Stream, StreamExt, TryStreamExt, stream};
 use nectar_primitives::AnyChunkSet;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
+#[allow(deprecated)]
 use nectar_primitives::file::join;
 use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedGet};
 
@@ -380,6 +381,7 @@ impl<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize> Manifest<S, ChunkRef, BS> 
     /// One mode end to end: a plain manifest joins a plain reference, so a
     /// plain-encrypted pairing surfaces as [`WrongRefKind`](MantarayError::WrongRefKind)
     /// rather than a silent byte-width mismatch.
+    #[allow(deprecated)]
     pub async fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
         let Some(entry) = self.get(path).await? else {
             return Ok(None);
