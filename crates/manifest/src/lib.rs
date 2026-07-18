@@ -54,6 +54,7 @@
     )
 )]
 
+mod apply;
 mod bounded;
 mod builder;
 mod codec;
@@ -68,6 +69,7 @@ mod scan;
 mod store;
 mod value;
 
+pub use apply::{ApplyError, Changeset, apply};
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
 pub use builder::{BuildError, BuildStats, Builder, Built, build_files};
 pub use codec::{DecodeError, EncodeError};

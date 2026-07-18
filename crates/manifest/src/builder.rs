@@ -186,52 +186,80 @@ impl<F: Format> Builder<F> {
                 meta: meta.clone(),
             })
             .collect();
-        let mut root_ext = RootExtension::new(self.root_entry.clone(), self.root_metadata.clone());
+        let root_ext = RootExtension::new(self.root_entry.clone(), self.root_metadata.clone());
         let mut stats = BuildStats::default();
+        let table = build_table(store, &items, 0, &mut stats).await?;
+        let node = Node::new(root_ext, table);
+        let root = put_counted(store, &node, &mut stats).await?;
+        Ok(Built { root, stats })
+    }
+}
 
-        let mut stack: Vec<Frame<'_, F>> = Vec::new();
-        stack.push(Frame::new(0, &items));
-        let mut returned: Option<Resolved<F>> = None;
+/// Assemble the top fork table for `items` at depth `consumed`, resolving every
+/// finished subtree to an embedded table or a spilled reference as it closes.
+///
+/// The returned table is the caller's to wrap: a root wears its extension and
+/// always spills, a subtree defers its own embed decision to [`resolve`].
+pub(crate) async fn build_table<S, F>(
+    store: &S,
+    items: &[Item<F>],
+    consumed: usize,
+    stats: &mut BuildStats,
+) -> Result<ForkTable<F>, BuildError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
+    let mut stack: Vec<Frame<'_, F>> = Vec::new();
+    stack.push(Frame::new(consumed, items));
+    let mut returned: Option<Resolved<F>> = None;
 
-        loop {
-            stats.peak_open_nodes = stats.peak_open_nodes.max(stack.len());
-            let action = {
-                let frame = stack.last_mut().ok_or(BuildError::Internal)?;
-                if let Some(resolved) = returned.take() {
-                    frame.attach(resolved)?;
+    loop {
+        stats.peak_open_nodes = stats.peak_open_nodes.max(stack.len());
+        let action = {
+            let frame = stack.last_mut().ok_or(BuildError::Internal)?;
+            if let Some(resolved) = returned.take() {
+                frame.attach(resolved)?;
+            }
+            frame.step()?
+        };
+        match action {
+            Action::Continue => {}
+            Action::Descend(child_items, plen) => stack.push(Frame::new(plen, child_items)),
+            Action::Finalize => {
+                let frame = stack.pop().ok_or(BuildError::Internal)?;
+                if stack.is_empty() {
+                    return Ok(frame.table);
                 }
-                frame.step()?
-            };
-            match action {
-                Action::Continue => {}
-                Action::Descend(child_items, plen) => stack.push(Frame::new(plen, child_items)),
-                Action::Finalize => {
-                    let frame = stack.pop().ok_or(BuildError::Internal)?;
-                    if stack.is_empty() {
-                        let node = Node::new(root_ext.take(), frame.table);
-                        let root = put_counted(store, &node, &mut stats).await?;
-                        return Ok(Built { root, stats });
-                    }
-                    returned = Some(resolve(store, frame.table, &mut stats).await?);
-                }
+                returned = Some(resolve(store, frame.table, stats).await?);
             }
         }
     }
 }
 
 /// One key-value binding, cloned into a linear array for indexed descent.
-struct Item<F: Format> {
-    key: Bytes,
-    entry: Entry<F>,
-    meta: Option<Metadata<F>>,
+pub(crate) struct Item<F: Format> {
+    pub(crate) key: Bytes,
+    pub(crate) entry: Entry<F>,
+    pub(crate) meta: Option<Metadata<F>>,
 }
 
 /// A resolved subtree bubbling up to its parent fork.
-enum Resolved<F: Format> {
+pub(crate) enum Resolved<F: Format> {
     /// Small enough to inline into the parent's chunk.
     Embedded(ForkTable<F>),
     /// Spilled to a chunk of its own.
     Reference(ChunkRef),
+}
+
+impl<F: Format> Resolved<F> {
+    /// The child a parent fork holds for this resolved subtree.
+    pub(crate) fn into_child(self) -> Child<F> {
+        match self {
+            Self::Embedded(table) => Child::Embedded(table),
+            Self::Reference(reference) => Child::Ref32(reference),
+        }
+    }
 }
 
 /// A fork awaiting the subtree currently under construction.
@@ -396,7 +424,7 @@ fn common_prefix_len(a: &Bytes, b: &Bytes, consumed: usize, cap: usize) -> usize
 ///
 /// The embed decision is child-local: it reads the subtree's flat length alone,
 /// so it is stable under re-rooting and history-independent.
-async fn resolve<S, F>(
+pub(crate) async fn resolve<S, F>(
     store: &S,
     table: ForkTable<F>,
     stats: &mut BuildStats,
