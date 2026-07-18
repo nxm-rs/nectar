@@ -65,7 +65,7 @@ where
     /// exact bytes [`build_files`](crate::build_files) streamed in under it.
     ///
     /// ```
-    /// use nectar_testing::run;
+    /// use futures::executor::block_on;
     /// use nectar_manifest::{build_files, Key, Reader};
     /// use nectar_primitives::MemoryStore;
     ///
