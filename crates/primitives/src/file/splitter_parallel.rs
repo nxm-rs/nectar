@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use rayon::prelude::*;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::AnyChunk;
+use crate::chunk::ContentChunk;
 
 use super::constants::{LEVEL_LIMIT, compute_spans_inline};
 use super::error::{FileError, Result};
@@ -55,7 +55,7 @@ where
     pub fn split_into<R, F>(source: &R, sink: F) -> Result<M::RootRef>
     where
         R: ReadAt + Sync,
-        F: Fn(AnyChunk<BODY_SIZE>) + Sync,
+        F: Fn(ContentChunk<BODY_SIZE>) + Sync,
     {
         const { super::constants::assert_valid_body_size::<BODY_SIZE>() };
         let size = source.len();
@@ -63,7 +63,7 @@ where
 
         if size == 0 {
             let (chunk, root) = M::empty_chunk::<BODY_SIZE>()?;
-            sink(chunk.into());
+            sink(chunk);
             return Ok(root);
         }
 
@@ -83,7 +83,7 @@ where
     #[allow(clippy::unwrap_used)] // Mutex poisoning requires a sink panic, which itself already aborts the rayon join; both unwraps are on that same local mutex
     pub fn split_to_vec<R: ReadAt + Sync>(
         source: &R,
-    ) -> Result<(M::RootRef, Vec<AnyChunk<BODY_SIZE>>)> {
+    ) -> Result<(M::RootRef, Vec<ContentChunk<BODY_SIZE>>)> {
         let chunks = std::sync::Mutex::new(Vec::new());
         let root = Self::split_into(source, |chunk| chunks.lock().unwrap().push(chunk))?;
         Ok((root, chunks.into_inner().unwrap()))
@@ -97,7 +97,7 @@ where
     ) -> Result<Vec<M::Ref>>
     where
         R: ReadAt + Sync,
-        F: Fn(AnyChunk<BODY_SIZE>) + Sync,
+        F: Fn(ContentChunk<BODY_SIZE>) + Sync,
     {
         let data_chunks = tree.data_chunks();
         let size = tree.size();
@@ -123,7 +123,7 @@ where
                 let chunk_bytes = super::helpers::build_intermediate_payload(span, &buf);
 
                 let (chunk, reference) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
-                sink(chunk.into());
+                sink(chunk);
                 Ok(reference)
             })
             .collect();
@@ -139,7 +139,7 @@ where
         sink: &F,
     ) -> Result<M::RootRef>
     where
-        F: Fn(AnyChunk<BODY_SIZE>) + Sync,
+        F: Fn(ContentChunk<BODY_SIZE>) + Sync,
     {
         let mut level = 1;
 
@@ -161,7 +161,7 @@ where
         sink: &F,
     ) -> Result<Vec<M::Ref>>
     where
-        F: Fn(AnyChunk<BODY_SIZE>) + Sync,
+        F: Fn(ContentChunk<BODY_SIZE>) + Sync,
     {
         let refs_per_chunk = M::refs_per_chunk(BODY_SIZE);
         let chunks_at_level = refs.len().div_ceil(refs_per_chunk);
@@ -192,7 +192,7 @@ where
                 let chunk_bytes = super::helpers::build_intermediate_payload(span, &ref_data);
 
                 let (chunk, reference) = M::prepare_chunk::<BODY_SIZE>(chunk_bytes)?;
-                sink(chunk.into());
+                sink(chunk);
                 Ok(reference)
             })
             .collect();
@@ -216,7 +216,7 @@ mod tests {
         let (root, chunks) = ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
         let chunks = chunks
             .into_iter()
-            .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap());
+            .map(|c| crate::chunk::Chunk::from_envelope(c.into()).unwrap());
         (root, MemoryStore::from_chunks(chunks))
     }
 
@@ -267,7 +267,7 @@ mod tests {
                 EncryptedParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
             let chunks = chunks
                 .into_iter()
-                .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap());
+                .map(|c| crate::chunk::Chunk::from_envelope(c.into()).unwrap());
             (root_ref, MemoryStore::from_chunks(chunks))
         }
 

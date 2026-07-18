@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::marker::PhantomData;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::AnyChunk;
+use crate::chunk::ContentChunk;
 
 use super::error::{FileError, Result};
 use super::mode::{PlainMode, SplitMode};
@@ -89,7 +89,7 @@ where
     M: SplitMode + Send + Sync,
 {
     /// Finalize, returning the root reference and the produced chunks.
-    pub fn finish(self) -> Result<(M::RootRef, Vec<AnyChunk<BODY_SIZE>>)> {
+    pub fn finish(self) -> Result<(M::RootRef, Vec<ContentChunk<BODY_SIZE>>)> {
         if crate::cast::u64_from_usize(self.buffer.len()) != self.span_length {
             return Err(FileError::SpanMismatch {
                 expected: self.span_length,
@@ -99,7 +99,7 @@ where
 
         if self.buffer.is_empty() {
             let (chunk, root) = M::empty_chunk::<BODY_SIZE>()?;
-            return Ok((root, vec![chunk.into()]));
+            return Ok((root, vec![chunk]));
         }
 
         GenericParallelSplitter::<M, BODY_SIZE>::split_to_vec(&self.buffer)
@@ -151,7 +151,7 @@ mod tests {
         let (root, chunks) = splitter.finish().unwrap();
         let chunks = chunks
             .into_iter()
-            .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap());
+            .map(|c| crate::chunk::Chunk::from_envelope(c.into()).unwrap());
         (root, MemoryStore::from_chunks(chunks))
     }
 
@@ -170,7 +170,7 @@ mod tests {
         let store = MemoryStore::<crate::chunk::StandardChunkSet>::from_chunks(
             chunks
                 .into_iter()
-                .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap()),
+                .map(|c| crate::chunk::Chunk::from_envelope(c.into()).unwrap()),
         );
 
         assert_eq!(store.len(), 4);
@@ -229,7 +229,7 @@ mod tests {
             let (root_ref, chunks) = splitter.finish().unwrap();
             let chunks = chunks
                 .into_iter()
-                .map(|c| crate::chunk::Chunk::from_envelope(c).unwrap());
+                .map(|c| crate::chunk::Chunk::from_envelope(c.into()).unwrap());
             (root_ref, MemoryStore::from_chunks(chunks))
         }
 
