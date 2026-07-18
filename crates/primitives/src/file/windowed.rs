@@ -847,7 +847,7 @@ mod tests {
     /// content-addressed, so rebuilding each leaf from `unique_byte` reproduces
     /// the stored address.
     fn leaf_offsets_of(total: u64) -> HashMap<ChunkAddress, u64> {
-        use crate::chunk::Chunk;
+        use crate::chunk::ChunkOps;
         let mut map = HashMap::new();
         let leaves = total.div_ceil(DEFAULT_BODY_SIZE as u64);
         for i in 0..leaves {
@@ -916,7 +916,7 @@ mod tests {
     const TINY_BODY: usize = 256;
 
     fn tiny_leaf_addresses(data: &[u8]) -> HashMap<ChunkAddress, ()> {
-        use crate::chunk::Chunk;
+        use crate::chunk::ChunkOps;
         let mut set = HashMap::new();
         for block in data.chunks(TINY_BODY) {
             let chunk = crate::chunk::ContentChunk::<TINY_BODY>::new(block.to_vec()).unwrap();

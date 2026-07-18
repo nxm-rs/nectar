@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use parking_lot::RwLock;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
-use crate::chunk::{AnyChunk, ChunkAddress};
+use crate::chunk::{AnyChunk, ChunkAddress, ChunkOps};
 
 use super::ChunkStoreError;
 use super::typed::{ChunkGet, ChunkHas, ChunkPut};
@@ -115,7 +115,7 @@ impl<const BODY_SIZE: usize> ChunkHas<BODY_SIZE> for HashMap<ChunkAddress, AnyCh
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::{Chunk, ContentChunk};
+    use crate::chunk::{ChunkOps, ContentChunk};
     use futures::executor::block_on;
 
     #[test]

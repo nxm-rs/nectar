@@ -2,7 +2,7 @@
 
 use super::any_chunk::AnyChunk;
 use super::content::ContentChunk;
-use super::traits::{BmtChunk, Chunk};
+use super::traits::ChunkOps;
 use crate::bmt::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE};
 use js_sys::{Array, Uint8Array};
 use wasm_bindgen::prelude::*;

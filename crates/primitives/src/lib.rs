@@ -12,7 +12,7 @@
 //! ## Usage Examples
 //!
 //! ```
-//! use nectar_primitives::{Chunk, DefaultContentChunk, DefaultSingleOwnerChunk, SocId};
+//! use nectar_primitives::{ChunkOps, DefaultContentChunk, DefaultSingleOwnerChunk, SocId};
 //! use alloy_signer_local::LocalSigner;
 //!
 //! // Creating content chunks; the address is derived from the content
@@ -105,15 +105,15 @@ pub use bmt::{Hasher, HasherFactory, Proof, Prover};
 pub use chunk::{
     // Type system
     AnyChunk,
-    // Core traits
-    BmtChunk,
     CacHeader,
+    // Core traits
     Chunk,
     ChunkAddress,
     ChunkError,
     ChunkHeader,
     // Concrete chunk types
     ChunkInner,
+    ChunkOps,
     ChunkRef,
     ChunkType,
     ChunkTypeId,

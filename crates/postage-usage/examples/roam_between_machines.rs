@@ -48,7 +48,7 @@ use nectar_postage_usage::{
     BatchStamper, ChunkAddress, Mutability, PublishedSequence, SealedChunk, Snapshot, SnapshotSink,
     SnapshotSource, UsageError, UsageTable,
 };
-use nectar_primitives::Chunk;
+use nectar_primitives::ChunkOps;
 
 /// A depth-20 batch with 65536 buckets of 16 slots each. Small enough that the
 /// whole snapshot fits inline in a single root chunk, so the cross-machine hop

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use alloy_signer::SignerSync;
 use nectar_postage::{Stamp, StampDigest};
-use nectar_primitives::{Chunk, SingleOwnerChunk};
+use nectar_primitives::{ChunkOps, SingleOwnerChunk};
 use thiserror::Error;
 
 use crate::snapshot::{PersistPlan, Snapshot};

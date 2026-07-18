@@ -19,7 +19,7 @@ use nectar_postage_usage::{
     BatchId, Mutability, PublishedSequence, SealError, Snapshot, UsageTable, seal_plan,
     usage_chunk_address,
 };
-use nectar_primitives::Chunk;
+use nectar_primitives::ChunkOps;
 
 const BUCKET_DEPTH: u8 = 16;
 

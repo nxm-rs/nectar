@@ -172,6 +172,7 @@ mod tests {
 
     use crate::DefaultContentChunk;
     use crate::bmt::DEFAULT_BODY_SIZE;
+    use crate::chunk::ChunkOps;
 
     /// A [`Sleeper`] that returns immediately, so tests never wait real time.
     struct NoSleep;

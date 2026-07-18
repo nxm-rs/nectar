@@ -6,7 +6,7 @@ use alloy_primitives::{hex, Address, B256};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use nectar_primitives::{
-    Chunk, ChunkAddress, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk, SocId,
+    ChunkAddress, ChunkOps, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk, SocId,
 };
 use wasm_bindgen::prelude::*;
 

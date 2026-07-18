@@ -15,7 +15,7 @@ use crate::wire;
 use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::chunk_type::ChunkType;
-use super::traits::{BmtChunk, Chunk, ChunkHeader};
+use super::traits::{Chunk, ChunkHeader, ChunkOps};
 
 /// A chunk: a wire header committing to a BMT body.
 ///
@@ -65,16 +65,10 @@ impl<H: ChunkHeader, const BODY_SIZE: usize> ChunkInner<H, BODY_SIZE> {
     }
 }
 
-impl<H: ChunkHeader, const BODY_SIZE: usize> Chunk for ChunkInner<H, BODY_SIZE> {
-    type Header = H;
-
+impl<H: ChunkHeader, const BODY_SIZE: usize> ChunkOps for ChunkInner<H, BODY_SIZE> {
     fn address(&self) -> &ChunkAddress {
         self.address
             .get_or_compute(|| self.header.commit(self.body.hash().into()))
-    }
-
-    fn header(&self) -> &H {
-        &self.header
     }
 
     fn data(&self) -> &Bytes {
@@ -86,16 +80,35 @@ impl<H: ChunkHeader, const BODY_SIZE: usize> Chunk for ChunkInner<H, BODY_SIZE> 
         H::SIZE.saturating_add(self.body.size())
     }
 
+    fn span(&self) -> u64 {
+        self.body.span()
+    }
+
     /// Certify through [`ChunkHeader::validate`]: the header's full acceptance
     /// rule runs, not an address compare against the cached address.
     fn verify(&self, expected: &ChunkAddress) -> Result<()> {
         Ok(self.header.validate(self.body.hash().into(), expected)?)
     }
+
+    /// Runs on the carrier's borrowed body ([`ChunkInner::body`]), so no
+    /// chunk or body is cloned. For a SOC the wrapped body already *is* the
+    /// content chunk's `span || payload`, so the inner root needs no
+    /// `32 + 65` (id + signature) header slicing.
+    fn transformed_address(&self, anchor: &[u8]) -> ChunkAddress {
+        self.header
+            .seal_transformed(self.address(), self.body.transformed_root(anchor))
+    }
+
+    fn into_bytes(self) -> Bytes {
+        self.into()
+    }
 }
 
-impl<H: ChunkHeader, const BODY_SIZE: usize> BmtChunk for ChunkInner<H, BODY_SIZE> {
-    fn span(&self) -> u64 {
-        self.body.span()
+impl<H: ChunkHeader, const BODY_SIZE: usize> Chunk for ChunkInner<H, BODY_SIZE> {
+    type Header = H;
+
+    fn header(&self) -> &H {
+        &self.header
     }
 }
 

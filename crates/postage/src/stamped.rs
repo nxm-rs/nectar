@@ -12,7 +12,9 @@
 
 use alloc::vec::Vec;
 
-use nectar_primitives::{AnyChunk, ChunkAddress, DEFAULT_BODY_SIZE, bytes::Bytes, wire::Cursor};
+use nectar_primitives::{
+    AnyChunk, ChunkAddress, ChunkOps, DEFAULT_BODY_SIZE, bytes::Bytes, wire::Cursor,
+};
 
 use crate::{BatchId, Stamp, StampError};
 
@@ -78,9 +80,9 @@ impl<const BODY_SIZE: usize> StampedChunk<BODY_SIZE> {
     /// Encode to a self-describing byte string: the stamp followed by the
     /// type-tagged chunk.
     ///
-    /// The layout is `[stamp: STAMP_SIZE][type_id: 1][chunk wire bytes]`, the
-    /// stamp's fixed-size encoding ([`Stamp::to_bytes`], `STAMP_SIZE = 113`
-    /// bytes) followed by the chunk's type-tagged encoding
+    /// The layout is `[stamp: STAMP_SIZE][id: 1][version: 1][chunk wire
+    /// bytes]`, the stamp's fixed-size encoding ([`Stamp::to_bytes`],
+    /// `STAMP_SIZE = 113` bytes) followed by the chunk's type-tagged encoding
     /// ([`AnyChunk::to_typed_bytes`]). Decode with
     /// [`from_typed_bytes`](Self::from_typed_bytes).
     #[must_use]
@@ -168,7 +170,7 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for StampedChunk<BODY_
 mod tests {
     use alloy_primitives::{B256, Signature};
     use alloy_signer_local::PrivateKeySigner;
-    use nectar_primitives::{Chunk, ContentChunk, SingleOwnerChunk, SocId, bytes::Bytes};
+    use nectar_primitives::{ChunkOps, ContentChunk, SingleOwnerChunk, SocId, bytes::Bytes};
 
     use super::*;
     use crate::STAMP_SIZE;

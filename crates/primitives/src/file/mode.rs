@@ -6,7 +6,7 @@ use bytes::Bytes;
 
 use crate::bmt::SPAN_SIZE;
 use crate::chunk::encryption::{EncryptedChunkRef, EncryptionKey, decrypt_chunk_data};
-use crate::chunk::{BmtChunk, Chunk, ChunkAddress, ChunkRef, ContentChunk, Reference};
+use crate::chunk::{ChunkAddress, ChunkOps, ChunkRef, ContentChunk, Reference};
 use crate::store::MaybeSend;
 use crate::wire::Cursor;
 

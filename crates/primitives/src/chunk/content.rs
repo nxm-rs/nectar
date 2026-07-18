@@ -16,7 +16,7 @@ use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::error::ChunkError;
 use super::inner::ChunkInner;
-use super::traits::{Chunk, ChunkHeader};
+use super::traits::{ChunkHeader, ChunkOps};
 use super::type_id::ChunkTypeId;
 use super::type_tag::ChunkVersion;
 
@@ -162,7 +162,7 @@ impl<const BODY_SIZE: usize> super::encryption::ChunkEncrypt for ContentChunk<BO
     /// - `encrypted_ref`: the 64-byte reference (new address + decryption key)
     ///
     /// ```
-    /// # use nectar_primitives::{Chunk, ContentChunk};
+    /// # use nectar_primitives::{ChunkOps, ContentChunk};
     /// # use nectar_primitives::chunk::encryption::{ChunkEncrypt, EncryptionKey};
     /// # use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
     /// let chunk = ContentChunk::<DEFAULT_BODY_SIZE>::new(b"secret data".to_vec()).unwrap();
@@ -212,7 +212,7 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for ContentChunk<BODY_
 mod tests {
     use crate::{
         DEFAULT_BODY_SIZE,
-        chunk::{BmtChunk, error::ChunkError},
+        chunk::{ChunkOps, error::ChunkError},
         error::PrimitivesError,
     };
 

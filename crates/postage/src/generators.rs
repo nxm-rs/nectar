@@ -14,7 +14,7 @@
 use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use arbitrary::Unstructured;
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, ChunkOps};
 
 use crate::{Batch, BatchId, Stamp, StampDigest, StampIndex, StampedChunk};
 

@@ -20,7 +20,7 @@ use alloy_signer_local::LocalSigner;
 use bytes::Bytes;
 
 use nectar_primitives::bmt::Prover;
-use nectar_primitives::chunk::{BmtChunk, Chunk};
+use nectar_primitives::chunk::ChunkOps;
 use nectar_primitives::{DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk, SocId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

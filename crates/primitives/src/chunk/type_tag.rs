@@ -46,7 +46,8 @@ impl ChunkVersion {
 /// assert_eq!(tag.to_bytes(), [0x01, 0x02]);
 /// assert_eq!(ChunkTypeTag::try_from(u32::from(tag)), Ok(tag));
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display)]
+#[display("{id} v{version}")]
 pub struct ChunkTypeTag {
     /// Wire-level chunk type identifier.
     pub id: ChunkTypeId,

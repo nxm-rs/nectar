@@ -493,7 +493,7 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for SingleOwnerChunk<B
 
 #[cfg(test)]
 mod tests {
-    use crate::{DEFAULT_BODY_SIZE, PrimitivesError, chunk::Chunk};
+    use crate::{DEFAULT_BODY_SIZE, PrimitivesError, chunk::ChunkOps};
 
     use super::*;
     use alloy_primitives::hex;

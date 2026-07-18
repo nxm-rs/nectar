@@ -1,7 +1,7 @@
 use super::address::ChunkAddress;
 use thiserror::Error;
 
-use super::type_id::ChunkTypeId;
+use super::type_tag::ChunkTypeTag;
 
 /// Result type for chunk operations
 pub(crate) type Result<T> = std::result::Result<T, ChunkError>;
@@ -46,9 +46,10 @@ pub enum ChunkError {
     #[error("Invalid chunk signature: {0}")]
     InvalidSignature(String),
 
-    /// Unsupported chunk type
-    #[error("Unsupported chunk type: {0}")]
-    UnsupportedType(ChunkTypeId),
+    /// Unsupported chunk type tag: an unknown id, or an unknown version of a
+    /// known id (each `(id, version)` pair is a distinct acceptance rule)
+    #[error("Unsupported chunk type tag: {0}")]
+    UnsupportedTag(ChunkTypeTag),
 
     /// Wire buffer underrun
     #[error(transparent)]
@@ -80,8 +81,8 @@ impl ChunkError {
         Self::InvalidSignature(msg.into())
     }
 
-    /// Construct an [`UnsupportedType`](Self::UnsupportedType) error
-    pub const fn unsupported_type(type_id: ChunkTypeId) -> Self {
-        Self::UnsupportedType(type_id)
+    /// Construct an [`UnsupportedTag`](Self::UnsupportedTag) error
+    pub const fn unsupported_tag(tag: ChunkTypeTag) -> Self {
+        Self::UnsupportedTag(tag)
     }
 }
