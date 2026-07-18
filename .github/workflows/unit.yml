@@ -68,11 +68,37 @@ jobs:
                     -p nectar-manifest --locked \
                     --target wasm32-unknown-unknown
 
+    wasm-smoke:
+        # Executable proof of the wasm store-trait relaxation: a !Send store
+        # satisfies ChunkGet only on wasm32, so the smoke test must actually run
+        # there. Executes under Node via wasm-bindgen-test-runner, which nextest
+        # cannot host; hence a separate plain-cargo job. The runner version must
+        # equal the locked wasm-bindgen version (kept in lockstep by the
+        # workspace's exact wasm-bindgen-test pin).
+        name: wasm / node smoke
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            - uses: ./.github/actions/rust-setup
+              with:
+                  targets: wasm32-unknown-unknown
+            - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853  # v2.83.2
+              with:
+                  tool: wasm-bindgen@0.2.122
+            - name: Run wasm smoke tests
+              env:
+                  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+              run: |
+                  cargo test \
+                    -p nectar-testing --test wasm_smoke --locked \
+                    --target wasm32-unknown-unknown
+
     unit-success:
         name: unit success
         runs-on: ubuntu-latest
         if: always()
-        needs: [test, wasm]
+        needs: [test, wasm, wasm-smoke]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed

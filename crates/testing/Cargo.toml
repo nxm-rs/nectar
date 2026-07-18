@@ -16,3 +16,10 @@ publish = false
 
 [dependencies]
 futures-executor.workspace = true
+
+# The wasm smoke test is the executable proof that a !Send store satisfies the
+# chunk traits on wasm32; the same store cannot compile on native targets.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+futures.workspace = true
+nectar-primitives.workspace = true
+wasm-bindgen-test.workspace = true
