@@ -118,10 +118,12 @@ pub mod codec;
 mod constants;
 pub mod entry;
 pub mod error;
+mod format;
 pub mod manifest;
 pub mod manifest_ref;
 mod node;
 pub mod obfuscation;
+pub mod view;
 
 // Re-export constants.
 pub use constants::metadata;
@@ -135,6 +137,7 @@ pub use manifest::{Manifest, ManifestIter};
 pub use manifest_ref::ManifestRef;
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
+pub use view::{ForkView, NodeView, RefWidth, Version};
 
 /// Raw node internals for fuzz harnesses and benches only.
 ///
