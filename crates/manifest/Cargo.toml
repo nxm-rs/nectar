@@ -1,0 +1,31 @@
+[package]
+name = "nectar-manifest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Mantaray 1.0 content-addressed key-value manifest for Ethereum Swarm"
+documentation = "https://docs.rs/nectar-manifest"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "manifest", "mantaray", "key-value"]
+categories = ["data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes.workspace = true
+nectar-primitives = { workspace = true }
+thiserror.workspace = true
+
+[features]
+default = [ "std" ]
+std = [ "bytes/std", "nectar-primitives/std", "thiserror/std" ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
