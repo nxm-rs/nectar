@@ -24,7 +24,7 @@ use super::frontier::{SubtreeNode, overlapping_children};
 use super::joiner::{GenericJoiner, MAX_INTERMEDIATE_IN_FLIGHT};
 use super::mode::JoinMode;
 use super::tree::{ChunkRange, TreeParams};
-use crate::store::{MaybeSend, TrustedStore};
+use crate::store::{MaybeSend, TrustedGet};
 
 /// Number of times a failed leaf fetch is re-enqueued before the walk surfaces
 /// the error.
@@ -54,7 +54,7 @@ fn record_occupancy(occupancy: usize) {
 /// only repositions; it never re-fetches intermediates.
 pub struct WindowedReader<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
 {
     getter: Arc<G>,
     subtrees: Vec<SubtreeNode<M>>,
@@ -72,7 +72,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for WindowedReader<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -86,7 +86,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     /// Seek-and-play reader over a window that slides with the read cursor. Peak
@@ -110,7 +110,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> WindowedReader<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     /// In-order leaf bodies from the current position to EOF. Each item is one
@@ -190,7 +190,7 @@ async fn fetch_one<G, M, const BS: usize>(
     pending: Pending<M>,
 ) -> Resolved<M>
 where
-    G: TrustedStore<AnyChunkSet<BS>>,
+    G: TrustedGet<AnyChunkSet<BS>>,
     M: JoinMode + MaybeSend + Sync,
 {
     let node = &pending.node;
@@ -264,7 +264,7 @@ fn windowed_walk<G, M, const BODY_SIZE: usize>(
     window: usize,
 ) -> impl Stream<Item = Result<Bytes>>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     let width = concurrency.max(1);
@@ -470,7 +470,7 @@ where
 #[cfg(feature = "tokio")]
 pub struct WindowedJoinerReader<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
 {
     reader: WindowedReader<G, M, BODY_SIZE>,
     residual: Bytes,
@@ -481,7 +481,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for WindowedJoinerReader<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -496,7 +496,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> WindowedReader<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     /// Wrap as a tokio `AsyncRead` + `AsyncSeek` reader. Native-only.
@@ -510,7 +510,7 @@ where
 }
 
 #[cfg(feature = "tokio")]
-impl<G: TrustedStore<AnyChunkSet<BODY_SIZE>>, M: JoinMode, const BODY_SIZE: usize> Unpin
+impl<G: TrustedGet<AnyChunkSet<BODY_SIZE>>, M: JoinMode, const BODY_SIZE: usize> Unpin
     for WindowedJoinerReader<G, M, BODY_SIZE>
 {
 }
@@ -518,7 +518,7 @@ impl<G: TrustedStore<AnyChunkSet<BODY_SIZE>>, M: JoinMode, const BODY_SIZE: usiz
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncRead for WindowedJoinerReader<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     #[allow(
@@ -580,7 +580,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncSeek for WindowedJoinerReader<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     fn start_seek(self: Pin<&mut Self>, pos: SeekFrom) -> std::io::Result<()> {

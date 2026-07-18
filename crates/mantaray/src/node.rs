@@ -9,7 +9,7 @@ use crate::obfuscation::ObfuscationKey;
 use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 use bytes::Bytes;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ChunkRef, ContentChunk, Reference};
-use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedStore};
+use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedGet};
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
 use nectar_primitives::{AnyChunkSet, Chunk, EncryptedChunkRef, EncryptionKey};
 
@@ -397,7 +397,7 @@ impl<R: Reference> Node<R> {
     }
 
     /// Load forks from storage if the node hasn't been loaded yet.
-    async fn ensure_loaded<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+    async fn ensure_loaded<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
         &mut self,
         store: &S,
     ) -> Result<()> {
@@ -408,7 +408,7 @@ impl<R: Reference> Node<R> {
     }
 
     /// Load this node from storage by its reference.
-    pub(crate) async fn load<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+    pub(crate) async fn load<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
         &mut self,
         store: &S,
     ) -> Result<()> {
@@ -438,7 +438,7 @@ impl<R: Reference> Node<R> {
 
     /// Look up the node at the given path, loading from storage as needed.
     #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-    pub(crate) async fn lookup_node<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+    pub(crate) async fn lookup_node<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -476,7 +476,7 @@ impl<R: Reference> Node<R> {
     /// `&self` and clones each descended fork, so reading a persisted manifest
     /// leaves the trie untouched. Returns `None` for an absent path.
     #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-    pub(crate) async fn get_node<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+    pub(crate) async fn get_node<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
         &self,
         path: &[u8],
         store: &S,
@@ -508,7 +508,7 @@ impl<R: Reference> Node<R> {
 
     /// Look up the entry at the given path, loading from storage as needed.
     #[cfg(test)]
-    pub(crate) async fn lookup<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+    pub(crate) async fn lookup<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -531,7 +531,7 @@ impl<R: Reference> Node<R> {
     // <= min(prefix.len(), path.len()), bounding every split; the fork at
     // `path[0]` is checked present (`contains_key`) before each get/expect.
     #[allow(clippy::indexing_slicing, clippy::expect_used)]
-    pub(crate) fn add<'a, S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+    pub(crate) fn add<'a, S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
         &'a mut self,
         path: &'a [u8],
         entry: Option<R>,
@@ -661,7 +661,7 @@ impl<R: Reference> Node<R> {
     // `path.starts_with(&prefix)` guarantees `prefix.len() <= path.len()`;
     // the fork at `first` is checked present before the get_mut/expect.
     #[allow(clippy::indexing_slicing, clippy::expect_used)]
-    pub(crate) fn remove<'a, S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+    pub(crate) fn remove<'a, S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
         &'a mut self,
         path: &'a [u8],
         store: &'a S,
@@ -711,7 +711,7 @@ impl<R: Reference> Node<R> {
 
     /// Test whether a prefix exists in the trie, loading from storage as needed.
     #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-    pub(crate) async fn has_prefix<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize>(
+    pub(crate) async fn has_prefix<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
         &mut self,
         path: &[u8],
         store: &S,
@@ -826,7 +826,7 @@ impl<R: Reference> Node<R> {
     }
 
     /// Walk all nodes depth-first, calling `f` for each node with its path.
-    pub(crate) async fn walk<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize, F>(
+    pub(crate) async fn walk<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize, F>(
         &mut self,
         store: &S,
         f: &mut F,
@@ -839,7 +839,7 @@ impl<R: Reference> Node<R> {
     }
 
     /// Walk the subtree at `root`, calling `f` for each node.
-    pub(crate) async fn walk_from<S: TrustedStore<AnyChunkSet<BS>>, const BS: usize, F>(
+    pub(crate) async fn walk_from<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize, F>(
         &mut self,
         root: &[u8],
         store: &S,
@@ -862,7 +862,7 @@ impl<R: Reference> Node<R> {
 ///
 /// The visitor `f` only reads loaded nodes, so it stays a synchronous `FnMut`.
 #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
-async fn walk_inner<R: Reference, S: TrustedStore<AnyChunkSet<BS>>, const BS: usize, F>(
+async fn walk_inner<R: Reference, S: TrustedGet<AnyChunkSet<BS>>, const BS: usize, F>(
     path_buf: &mut Vec<u8>,
     node: &mut Node<R>,
     store: &S,

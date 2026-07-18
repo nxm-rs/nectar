@@ -11,9 +11,27 @@ mod typed;
 pub use maybe_send::{MaybeSend, MaybeSync};
 pub use memory::MemoryStore;
 pub use retry::{RetryConfig, RetryingChunkGet, Sleeper};
-pub use typed::{ChunkGet, ChunkHas, ChunkPut, TrustedStore};
+pub use typed::{ChunkGet, ChunkHas, ChunkPut, TrustedGet};
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
+
+/// Boxed store error: `Send + Sync` on native, unbounded on wasm32 where a
+/// backend error may hold a JS handle.
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxedError = Box<dyn core::error::Error + Send + Sync>;
+/// Boxed store error: `Send + Sync` on native, unbounded on wasm32 where a
+/// backend error may hold a JS handle.
+#[cfg(target_arch = "wasm32")]
+pub type BoxedError = Box<dyn core::error::Error>;
+
+/// Shared store error: `Send + Sync` on native, unbounded on wasm32 where a
+/// backend error may hold a JS handle.
+#[cfg(not(target_arch = "wasm32"))]
+pub type SharedError = std::sync::Arc<dyn core::error::Error + Send + Sync>;
+/// Shared store error: `Send + Sync` on native, unbounded on wasm32 where a
+/// backend error may hold a JS handle.
+#[cfg(target_arch = "wasm32")]
+pub type SharedError = std::sync::Arc<dyn core::error::Error>;
 
 /// Errors from chunk storage operations.
 #[non_exhaustive]
@@ -24,7 +42,7 @@ pub enum ChunkStoreError {
     NotFound(ChunkAddress),
     /// Catch-all for backend-specific errors.
     #[error("{0}")]
-    Other(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Other(#[source] BoxedError),
 }
 
 impl ChunkStoreError {

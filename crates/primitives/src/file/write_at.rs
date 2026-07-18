@@ -9,7 +9,7 @@ use super::error::FileError;
 use super::joiner::GenericJoiner;
 use super::mode::JoinMode;
 use crate::chunk::AnyChunkSet;
-use crate::store::{MaybeSend, MaybeSync, TrustedStore};
+use crate::store::{MaybeSend, MaybeSync, TrustedGet};
 
 /// Async random-access write sink. Each leaf body is written at its absolute
 /// offset; when every offset is written the sink is whole. Not `Send`-bound so
@@ -138,7 +138,7 @@ impl<T: WriteAt + ?Sized> WriteAt for &T {
 
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     /// Reassemble the whole file into `sink`, writing each out-of-order leaf at

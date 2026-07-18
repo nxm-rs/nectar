@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use bytes::Bytes;
-use nectar_primitives::store::{ChunkPut, MaybeSync};
+use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkRef, ContentChunk, DefaultSplitter, FileError, PrimitivesError,
 };
@@ -50,7 +50,7 @@ pub enum BuildError {
     Seal(#[source] PrimitivesError),
     /// The backing store rejected a file chunk.
     #[error("store file chunk")]
-    Backend(#[source] Box<dyn core::error::Error + Send + Sync>),
+    Backend(#[source] BoxedError),
     /// A compacted edge exceeded the format's prefix bound.
     #[error(transparent)]
     Prefix(#[from] PrefixTooLong),
@@ -69,7 +69,7 @@ pub enum BuildError {
 
 impl BuildError {
     /// Box a backend error behind the seam.
-    fn backend<E: core::error::Error + Send + Sync + 'static>(err: E) -> Self {
+    fn backend<E: core::error::Error + MaybeSend + MaybeSync + 'static>(err: E) -> Self {
         Self::Backend(Box::new(err))
     }
 }

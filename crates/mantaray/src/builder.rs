@@ -41,7 +41,7 @@ use alloc::collections::BTreeMap;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::file::{ChunkPutExt, ReadAt};
-use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedStore};
+use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedGet};
 use nectar_primitives::{AnyChunkSet, Chunk};
 
 use crate::entry::Entry;
@@ -94,7 +94,7 @@ impl<S, R: Reference, const BS: usize> ManifestBuilder<S, R, BS> {
     }
 }
 
-impl<S: TrustedStore<AnyChunkSet<BS>>, R: Reference + MaybeSend, const BS: usize>
+impl<S: TrustedGet<AnyChunkSet<BS>>, R: Reference + MaybeSend, const BS: usize>
     ManifestBuilder<S, R, BS>
 {
     /// Stage a path with a typed reference.
@@ -138,7 +138,7 @@ impl<S: TrustedStore<AnyChunkSet<BS>>, R: Reference + MaybeSend, const BS: usize
     }
 }
 
-impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
+impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
     ManifestBuilder<S, ChunkRef, BS>
 {
     /// Split `data`, store its chunks, and stage the resulting root at `path`.
@@ -161,7 +161,7 @@ impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usi
 }
 
 #[cfg(feature = "encryption")]
-impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
+impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
     ManifestBuilder<S, nectar_primitives::EncryptedChunkRef, BS>
 {
     /// Split `data` in encrypted mode, store its chunks, and stage the root at `path`.
@@ -185,7 +185,7 @@ impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usi
     }
 }
 
-impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
+impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
     ManifestBuilder<S, nectar_primitives::EncryptedChunkRef, BS>
 {
     /// Persist the encrypted manifest, consuming the builder.

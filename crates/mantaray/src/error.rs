@@ -1,9 +1,8 @@
 //! Error types for mantaray operations.
 
-use alloc::sync::Arc;
-
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::error::PrimitivesError;
+use nectar_primitives::store::SharedError;
 
 /// Result type alias for mantaray operations.
 pub type Result<T> = core::result::Result<T, MantarayError>;
@@ -148,13 +147,13 @@ pub enum MantarayError {
     #[error("store get error: {source}")]
     StoreGet {
         /// Original store error, preserved for downcasting.
-        source: Arc<dyn core::error::Error + Send + Sync>,
+        source: SharedError,
     },
     /// Error from the typed chunk store during put operations.
     #[error("store put error: {source}")]
     StorePut {
         /// Original store error, preserved for downcasting.
-        source: Arc<dyn core::error::Error + Send + Sync>,
+        source: SharedError,
     },
 }
 

@@ -16,11 +16,11 @@ use super::error::Result;
 use super::joiner::GenericJoiner;
 use super::mode::JoinMode;
 use crate::chunk::AnyChunkSet;
-use crate::store::{MaybeSend, TrustedStore};
+use crate::store::{MaybeSend, TrustedGet};
 
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     /// Visit each leaf body as it lands, out of order, tagged with its absolute

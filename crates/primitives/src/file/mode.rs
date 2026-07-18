@@ -108,7 +108,7 @@ pub trait JoinMode: Sized + 'static {
 /// Initialize joiner: fetch root chunk, extract span and context.
 pub(crate) async fn joiner_init<
     M: JoinMode + MaybeSend + Sync,
-    G: crate::store::TrustedStore<AnyChunkSet<BS>>,
+    G: crate::store::TrustedGet<AnyChunkSet<BS>>,
     const BS: usize,
 >(
     getter: &G,
@@ -126,7 +126,7 @@ pub(crate) async fn joiner_init<
 /// Read chunk body at address with context. Returns body bytes (after decryption if needed).
 pub(crate) async fn read_chunk_body<
     M: JoinMode + MaybeSend + Sync,
-    G: crate::store::TrustedStore<AnyChunkSet<BS>>,
+    G: crate::store::TrustedGet<AnyChunkSet<BS>>,
     const BS: usize,
 >(
     getter: &G,

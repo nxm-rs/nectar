@@ -31,7 +31,7 @@
 use core::future::Future;
 
 use alloy_primitives::Keccak256;
-use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedStore};
+use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
     Chunk, ChunkOps, ContentChunk, EncryptedChunkRef, EncryptionKey, transcrypt_in_place,
 };
@@ -147,9 +147,9 @@ impl<T: ChunkPut> EncryptedNodePut for T {}
 
 /// Async encrypted-node retrieval over a trusted store.
 ///
-/// Blanket-implemented for every [`TrustedStore`]; the ref64 carries both the
+/// Blanket-implemented for every [`TrustedGet`]; the ref64 carries both the
 /// address to fetch and the key to decrypt with.
-pub trait EncryptedNodeGet: TrustedStore {
+pub trait EncryptedNodeGet: TrustedGet {
     /// Load the chunk at `reference`'s address and decrypt it with its key.
     fn get_node_encrypted<F: Format>(
         &self,
@@ -168,7 +168,7 @@ pub trait EncryptedNodeGet: TrustedStore {
     }
 }
 
-impl<T: TrustedStore> EncryptedNodeGet for T {}
+impl<T: TrustedGet> EncryptedNodeGet for T {}
 
 #[cfg(test)]
 mod tests {

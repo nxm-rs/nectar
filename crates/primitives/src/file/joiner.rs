@@ -40,7 +40,7 @@ use super::frontier::{
 };
 use super::mode::{JoinMode, PlainMode};
 use super::tree::{ChunkRange, TreeParams};
-use crate::store::{MaybeSend, TrustedStore};
+use crate::store::{MaybeSend, TrustedGet};
 
 #[cfg(feature = "encryption")]
 use super::mode::EncryptedMode;
@@ -48,7 +48,7 @@ use super::mode::EncryptedMode;
 /// Generic async joiner parameterized by chunk mode.
 pub struct GenericJoiner<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
 {
     getter: Arc<G>,
     root: ChunkAddress,
@@ -73,7 +73,7 @@ pub type EncryptedJoiner<G, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> =
 
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for GenericJoiner<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -94,7 +94,7 @@ async fn collect_subtree_bodies<G, M, const BODY_SIZE: usize>(
     concurrency: usize,
 ) -> Result<Vec<Bytes>>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode + MaybeSend + Sync,
 {
     let bodies: Vec<Bytes> = stream::iter(subtrees)
@@ -115,7 +115,7 @@ where
 
 impl<G, M, const BODY_SIZE: usize> GenericJoiner<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode + MaybeSend + Sync,
 {
     /// Create an async joiner from a root reference.
@@ -499,7 +499,7 @@ where
             pending: Pending<M>,
         ) -> Resolved<M>
         where
-            G: TrustedStore<AnyChunkSet<BS>>,
+            G: TrustedGet<AnyChunkSet<BS>>,
             M: JoinMode + MaybeSend + Sync,
         {
             let node = &pending.node;
@@ -695,7 +695,7 @@ pub(crate) fn chunked_range_stream_from<G, M, const BODY_SIZE: usize>(
     len: u64,
 ) -> impl Stream<Item = Result<(u64, Bytes)>> + 'static
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + MaybeSend + Sync,
 {
     let width = concurrency.max(1);
@@ -741,7 +741,7 @@ where
         pending: Pending<M>,
     ) -> Resolved<M>
     where
-        G: TrustedStore<AnyChunkSet<BS>>,
+        G: TrustedGet<AnyChunkSet<BS>>,
         M: JoinMode + MaybeSend + Sync,
     {
         let node = &pending.node;
@@ -906,7 +906,7 @@ where
 #[cfg(feature = "tokio")]
 pub struct JoinerReader<G, M: JoinMode, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
 {
     joiner: GenericJoiner<G, M, BODY_SIZE>,
     buffer: Bytes,
@@ -917,7 +917,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> std::fmt::Debug for JoinerReader<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
     M: JoinMode,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -932,7 +932,7 @@ where
 // Safety: JoinerReader contains no self-referential data.
 // The boxed future is heap-allocated and all other fields are plain data.
 #[cfg(feature = "tokio")]
-impl<G: TrustedStore<AnyChunkSet<BODY_SIZE>>, M: JoinMode, const BODY_SIZE: usize> Unpin
+impl<G: TrustedGet<AnyChunkSet<BODY_SIZE>>, M: JoinMode, const BODY_SIZE: usize> Unpin
     for JoinerReader<G, M, BODY_SIZE>
 {
 }
@@ -940,7 +940,7 @@ impl<G: TrustedStore<AnyChunkSet<BODY_SIZE>>, M: JoinMode, const BODY_SIZE: usiz
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncRead for JoinerReader<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     #[allow(
@@ -1026,7 +1026,7 @@ where
 #[cfg(feature = "tokio")]
 impl<G, M, const BODY_SIZE: usize> tokio::io::AsyncSeek for JoinerReader<G, M, BODY_SIZE>
 where
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>> + 'static,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>> + 'static,
     M: JoinMode + Send + Sync + 'static,
 {
     fn start_seek(self: std::pin::Pin<&mut Self>, pos: SeekFrom) -> std::io::Result<()> {
@@ -1089,7 +1089,7 @@ mod tests {
 
     async fn drain_chunked_to_buf<G>(joiner: GenericJoiner<G, PlainMode>, total: usize) -> Vec<u8>
     where
-        G: TrustedStore + 'static,
+        G: TrustedGet + 'static,
     {
         let stream = joiner.into_offset_stream_chunked();
         futures::pin_mut!(stream);
