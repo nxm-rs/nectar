@@ -1,26 +1,12 @@
-//! Proof-related traits and structures for the Binary Merkle Tree
-//!
-//! This module provides functionality for generating and verifying inclusion proofs
-//! for specific segments within a binary merkle tree.
+//! Inclusion proofs for segments of a Binary Merkle Tree.
 
-use alloy_primitives::{B256, Keccak256};
+use alloc::{vec, vec::Vec};
+use alloy_primitives::B256;
 
-use super::hasher::hash_pairs;
-use crate::bmt::{Hasher, constants::*, error::BmtError};
+use super::error::BmtError;
+use super::hasher::{hash_pairs, node_hasher};
+use crate::bmt::{Hasher, constants::*};
 use crate::error::Result;
-
-/// Construct a Keccak256 seeded with the prefix when one is present.
-///
-/// Mirrors the hasher's per-node prefixing so that every node in a proof path is
-/// `keccak(prefix || data)`, byte-identical to bee's prefix BMT.
-#[inline(always)]
-fn new_node_hasher(prefix: Option<&[u8]>) -> Keccak256 {
-    let mut hasher = Keccak256::new();
-    if let Some(p) = prefix {
-        hasher.update(p);
-    }
-    hasher
-}
 
 /// Represents a proof for a specific segment in a Binary Merkle Tree
 #[derive(Clone, Debug)]
@@ -71,10 +57,10 @@ impl Proof {
 
         // Apply each proof segment to compute the root
         for proof_segment in &self.proof_segments {
-            // Every intermediate node is keccak(prefix || left || right) to match
-            // bee's per-node prefix hasher; verifying without the prefix at each
-            // level would reject a valid anchor-keyed proof on-chain.
-            let mut hasher = new_node_hasher(prefix);
+            // Every intermediate node is keccak(prefix || left || right);
+            // verifying without the prefix at each level would reject a valid
+            // anchor-keyed proof.
+            let mut hasher = node_hasher(prefix);
 
             // Order matters - left then right
             if current_index.is_multiple_of(2) {
@@ -91,12 +77,7 @@ impl Proof {
         }
 
         // Final step: add prefix (if any) and span to compute the root hash
-        let mut hasher = Keccak256::new();
-
-        // Add prefix if present
-        if let Some(prefix) = &self.prefix {
-            hasher.update(prefix);
-        }
+        let mut hasher = node_hasher(prefix);
 
         // Add span as little-endian bytes
         hasher.update(self.span.to_le_bytes());
@@ -121,24 +102,25 @@ pub trait Prover {
 }
 
 impl Prover for Hasher {
-    #[allow(clippy::indexing_slicing)] // n = min(data.len(), ..) bounds data[..n], chunk.len() <= SEGMENT_SIZE bounds leaf[..], segment_index < BRANCHES is checked above, from_fn yields exactly PROOF_LENGTH levels so levels[level] is in range, and index halves in lockstep with each level's width so levels[level][index ^ 1] is in range
     fn generate_proof(&self, data: &[u8], segment_index: usize) -> Result<Proof> {
-        if segment_index >= BRANCHES {
-            return Err(self::BmtError::invalid_input_size(format!(
-                "Segment index {segment_index} out of bounds for BRANCHES"
-            ))
-            .into());
-        }
-
-        // Materialise the BRANCHES zero-padded 32-byte leaf segments.
+        // Materialise the BRANCHES zero-padded 32-byte leaf segments; data
+        // past the tree width is ignored, matching the hashing geometry.
         let mut leaves = [[0u8; SEGMENT_SIZE]; BRANCHES];
-        let n = data.len().min(BRANCHES * SEGMENT_SIZE);
-        for (leaf, chunk) in leaves.iter_mut().zip(data[..n].chunks(SEGMENT_SIZE)) {
-            leaf[..chunk.len()].copy_from_slice(chunk);
+        for (leaf, chunk) in leaves.iter_mut().zip(data.chunks(SEGMENT_SIZE)) {
+            for (dst, src) in leaf.iter_mut().zip(chunk) {
+                *dst = *src;
+            }
         }
 
         // Get the segment being proven
-        let segment = B256::from(leaves[segment_index]);
+        let Some(&segment_bytes) = leaves.get(segment_index) else {
+            return Err(BmtError::SegmentOutOfBounds {
+                index: segment_index,
+                branches: BRANCHES,
+            }
+            .into());
+        };
+        let segment = B256::from(segment_bytes);
 
         // Include the prefix in the proof if there is one
         let prefix = if self.prefix().is_empty() {
@@ -148,26 +130,36 @@ impl Prover for Hasher {
         };
         let prefix_ref = prefix.as_deref();
 
-        // Build every tree level below the root, batching each level's sibling
-        // pairs across SIMD lanes. Zero padding is hashed literally, so under a
-        // prefix every zero subtree comes out as keccak(prefix || ...).
-        let mut levels: Vec<Vec<[u8; 32]>> = Vec::with_capacity(PROOF_LENGTH);
-        let mut current = leaves.to_vec();
-        while current.len() > 1 {
-            let mut next = vec![[0u8; 32]; current.len() / 2];
-            hash_pairs(prefix_ref, current.as_flattened(), &mut next);
-            levels.push(current);
-            current = next;
-        }
-
-        // The proof is the sibling of the proven node at every level. One
-        // sibling per level, so the level count fixes the array length.
+        // Walk the tree bottom-up, batching each level's sibling pairs across
+        // SIMD lanes. Zero padding is hashed literally, so under a prefix
+        // every zero subtree comes out as keccak(prefix || ...). At each
+        // level the sibling of the proven node is recorded before the level
+        // is folded into the next.
+        let mut current: Vec<[u8; 32]> = leaves.to_vec();
         let mut index = segment_index;
-        let proof_segments = core::array::from_fn(|level| {
-            let sibling = B256::from(levels[level][index ^ 1]);
+        let mut proof_segments = [B256::ZERO; PROOF_LENGTH];
+        for slot in &mut proof_segments {
+            let (level_pairs, _) = current.as_chunks::<2>();
+            for (pair, pair_index) in level_pairs.iter().zip(0usize..) {
+                if pair_index == index / 2 {
+                    let [left, right] = pair;
+                    *slot = B256::from(if index.is_multiple_of(2) {
+                        *right
+                    } else {
+                        *left
+                    });
+                }
+            }
+
+            let mut next = vec![[0u8; 32]; current.len() / 2];
+            hash_pairs(
+                prefix_ref,
+                current.as_flattened().chunks_exact(SEGMENT_PAIR_LENGTH),
+                &mut next,
+            );
+            current = next;
             index /= 2;
-            sibling
-        });
+        }
 
         Ok(Proof::new(
             segment_index,

@@ -106,6 +106,8 @@ rayon = "1.10"
 # Core dependencies
 bytes = { version = "1.11", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+# race::OnceBox: lazy statics without std synchronization
+once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
 thiserror = { version = "2.0", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
