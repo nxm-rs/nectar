@@ -116,6 +116,7 @@ use nectar_primitives::chunk::ChunkRef;
 pub mod builder;
 pub mod codec;
 mod constants;
+pub mod editor;
 pub mod entry;
 pub mod error;
 mod format;
@@ -132,8 +133,9 @@ pub(crate) use constants::*;
 
 // Re-export public types.
 pub use builder::ManifestBuilder;
+pub use editor::{DEFAULT_PUT_WIDTH, ManifestEditor, Op};
 pub use entry::Entry;
-pub use error::{DecodeError, DecodeResult, MantarayError, ReaderError, Result};
+pub use error::{DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result};
 pub use manifest::{Manifest, ManifestIter};
 pub use manifest_ref::ManifestRef;
 pub use node::NodeType;
