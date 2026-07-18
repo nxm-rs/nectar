@@ -3,9 +3,9 @@
 use core::marker::PhantomData;
 
 use bytes::Bytes;
-use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef};
+use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EntryRef};
 
-use crate::error::ValueTooLong;
+use crate::error::{NotAReference, ValueTooLong};
 use crate::format::{Format, V1};
 
 /// An arbitrary-byte map key, ordered bytewise.
@@ -236,6 +236,29 @@ impl<F: Format> From<InlineValue<F>> for Entry<F> {
     }
 }
 
+impl<F: Format> From<EntryRef> for Entry<F> {
+    fn from(reference: EntryRef) -> Self {
+        match reference {
+            EntryRef::Plain(r) => Self::Ref32(r),
+            EntryRef::Encrypted(r) => Self::Ref64(r),
+        }
+    }
+}
+
+impl<F: Format> TryFrom<Entry<F>> for EntryRef {
+    type Error = NotAReference;
+
+    fn try_from(entry: Entry<F>) -> Result<Self, Self::Error> {
+        match entry {
+            Entry::Ref32(r) => Ok(Self::Plain(r)),
+            Entry::Ref64(r) => Ok(Self::Encrypted(r)),
+            Entry::Inline(value) => Err(NotAReference {
+                len: value.as_ref().len(),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use nectar_primitives::EncryptionKey;
@@ -323,5 +346,27 @@ mod tests {
     fn entry_inline_rejects_over_vinline_max() {
         let err = Entry::<V1>::inline(Bytes::from(vec![0; V1::VINLINE_MAX + 1])).unwrap_err();
         assert_eq!(err.max, V1::VINLINE_MAX);
+    }
+
+    #[test]
+    fn entry_round_trips_entry_ref_both_widths() {
+        let plain = EntryRef::Plain(ChunkRef::new(address(0x33)));
+        let entry = Entry::<V1>::from(plain.clone());
+        assert_eq!(entry, Entry::Ref32(ChunkRef::new(address(0x33))));
+        assert_eq!(EntryRef::try_from(entry).unwrap(), plain);
+
+        let encrypted = EntryRef::Encrypted(EncryptedChunkRef::new(
+            address(0x44),
+            EncryptionKey::from([0x55; 32]),
+        ));
+        let entry = Entry::<V1>::from(encrypted.clone());
+        assert_eq!(EntryRef::try_from(entry).unwrap(), encrypted);
+    }
+
+    #[test]
+    fn inline_entry_is_not_a_reference() {
+        let entry: Entry = Entry::inline(Bytes::from(vec![0xAA; 3])).unwrap();
+        let err = EntryRef::try_from(entry).unwrap_err();
+        assert_eq!(err, NotAReference { len: 3 });
     }
 }

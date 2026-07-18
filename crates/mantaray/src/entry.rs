@@ -104,6 +104,12 @@ impl Entry {
     }
 }
 
+impl From<EntryRef> for Entry {
+    fn from(reference: EntryRef) -> Self {
+        Self::new(reference)
+    }
+}
+
 impl From<ChunkAddress> for Entry {
     fn from(address: ChunkAddress) -> Self {
         Self::new(address)
