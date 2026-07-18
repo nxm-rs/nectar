@@ -10,6 +10,8 @@
 //! [`ReadBuilder::collect`] assembles a bounded in-memory copy, typed
 //! [`CollectError::TooLarge`] past its bound.
 
+#[cfg(test)]
+mod cancel;
 mod download;
 mod error;
 mod file;
