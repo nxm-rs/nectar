@@ -95,7 +95,8 @@ impl<S, const BS: usize> ManifestEditor<S, ChunkRef, BS> {
 
 impl<S, const BS: usize> ManifestEditor<S, nectar_primitives::EncryptedChunkRef, BS> {
     /// Editor over an empty encrypted manifest with a random obfuscation key.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "rand")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rand")))]
     pub fn new_encrypted(store: S) -> Self {
         let trie = Node {
             obfuscation_key: crate::obfuscation::ObfuscationKey::generate(),

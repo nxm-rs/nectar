@@ -18,6 +18,7 @@ use crate::{MantarayError, Result, metadata};
 ///
 /// Matches the file joiner's async width, balancing round-trip overlap against
 /// peak in-flight store load.
+#[deprecated(note = "superseded by the Cursor window")]
 pub const DEFAULT_LIST_CONCURRENCY: usize = 8;
 
 /// High-level mantaray manifest backed by a typed chunk store.
@@ -26,6 +27,9 @@ pub const DEFAULT_LIST_CONCURRENCY: usize = 8;
 /// - What reference types `add()` accepts (compile-time enforcement)
 /// - The reference byte size via `R::SIZE`
 /// - What `save()` returns (specialized per entry type)
+#[deprecated(
+    note = "superseded by Reader, Cursor, and ManifestEditor; removal is gated on the manifest 1.0 store"
+)]
 #[derive(Debug)]
 pub struct Manifest<S, R: Reference = ChunkRef, const BS: usize = DEFAULT_BODY_SIZE> {
     trie: Node<R>,
@@ -48,7 +52,7 @@ impl<S, const BS: usize> Manifest<S, ChunkRef, BS> {
 
 impl<S, const BS: usize> Manifest<S, nectar_primitives::EncryptedChunkRef, BS> {
     /// Create a new encrypted manifest (random obfuscation key, 64-byte refs).
-    #[cfg(feature = "std")]
+    #[cfg(feature = "rand")]
     pub fn new_encrypted(store: S) -> Self {
         use crate::obfuscation::ObfuscationKey;
         let trie = Node {
@@ -206,7 +210,7 @@ impl<S: TrustedGet<AnyChunkSet<BS>>, R: Reference + MaybeSend, const BS: usize> 
     /// Collect all value entries, fetching sibling forks concurrently.
     ///
     /// Walks the trie level by level, keeping up to `concurrency` node loads in
-    /// flight through the shared [`ChunkGet`]. Where [`entries`](Self::entries)
+    /// flight through the shared [`ChunkGet`](crate::ChunkGet). Where [`entries`](Self::entries)
     /// fetches one node per `await` in depth-first order, this fans out each
     /// level's sibling forks at once, collapsing a folder's N sequential round
     /// trips into ceil(N / concurrency) batched ones.
@@ -457,6 +461,7 @@ impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize
 /// the trie is exclusively borrowed (`&'a mut Node`) for the iterator's
 /// lifetime, and `BTreeMap` values are stable (we never insert into or remove
 /// from a parent's fork map during iteration).
+#[deprecated(note = "superseded by Cursor")]
 pub struct ManifestIter<'a, S, R: Reference = ChunkRef, const BS: usize = DEFAULT_BODY_SIZE> {
     trie: &'a mut Node<R>,
     store: &'a S,

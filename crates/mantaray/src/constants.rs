@@ -19,7 +19,9 @@ pub mod metadata {
 }
 
 // Path separator used in Swarm manifests.
+#[cfg(feature = "std")]
 pub(crate) const PATH_SEPARATOR: &str = "/";
 
 // Maximum prefix length in a fork (constrained by the 32-byte pre-reference region).
+#[cfg(feature = "std")]
 pub(crate) const PREFIX_MAX_LEN: usize = 30;
