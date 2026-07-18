@@ -29,6 +29,7 @@ mod single_owner;
 mod soc_id;
 mod traits;
 mod type_id;
+mod type_tag;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -45,6 +46,7 @@ pub use any_chunk::AnyChunk;
 pub use chunk_type::ChunkType;
 pub use chunk_type_set::{ChunkTypeSet, ContentOnlyChunkSet, StandardChunkSet};
 pub use type_id::ChunkTypeId;
+pub use type_tag::{ChunkTypeTag, ChunkVersion, TagWireError};
 
 // Re-export the concrete chunk types
 pub use content::ContentChunk;

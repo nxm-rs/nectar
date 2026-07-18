@@ -114,6 +114,8 @@ pub use chunk::{
     ChunkType,
     ChunkTypeId,
     ChunkTypeSet,
+    ChunkTypeTag,
+    ChunkVersion,
     ContentChunk,
     ContentOnlyChunkSet,
     RefKind,
@@ -121,6 +123,7 @@ pub use chunk::{
     SingleOwnerChunk,
     SocId,
     StandardChunkSet,
+    TagWireError,
     WrongRefKind,
 };
 

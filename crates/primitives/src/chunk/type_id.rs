@@ -45,10 +45,7 @@ impl ChunkTypeId {
     /// These chunks include owner identification and a digital signature.
     pub const SINGLE_OWNER: Self = Self(1);
 
-    // Reserved type IDs for future standard types:
-    // 2 - Encrypted chunk (planned)
-    // 3 - Manifest chunk (planned)
-    // 4-127 - Reserved for future standard types
+    // Ids 2-127 are unassigned within the standard range; 128-255 are custom.
 
     /// Create a new chunk type ID from a raw byte value.
     ///
