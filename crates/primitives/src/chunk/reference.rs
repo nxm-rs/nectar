@@ -10,7 +10,7 @@ use std::mem::size_of;
 use crate::chunk::ChunkAddress;
 use crate::error::WrongLength;
 use crate::file::EntryRef;
-use crate::wire::{Cursor, Underrun};
+use crate::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 pub(crate) mod sealed {
     pub trait Sealed {}
@@ -119,6 +119,23 @@ impl ChunkRef {
     /// Consume the reference, returning its address.
     pub const fn into_address(self) -> ChunkAddress {
         self.0
+    }
+}
+
+/// Reads the 32 address bytes.
+impl FromCursor for ChunkRef {
+    type Error = Underrun;
+
+    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
+        cur.take::<[u8; ChunkAddress::SIZE]>()
+            .map(|bytes| Self::new(ChunkAddress::new(bytes)))
+    }
+}
+
+/// Writes the 32 address bytes, the mirror of the `FromCursor` impl above.
+impl ToWriter for ChunkRef {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(self.address().as_bytes());
     }
 }
 

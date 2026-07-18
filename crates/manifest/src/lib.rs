@@ -18,6 +18,11 @@
 //! fork order and the radix-256 bound are structural. No flags are stored;
 //! presence bits are derived from the structure at encode time.
 //!
+//! The codec is [`Node::encode`] and [`Node::decode`] over the primitives
+//! wire cursor and writer. Decode is reject-or-accept and dispatches on the
+//! in-payload preamble, failing loud on anything that is not a 1.0
+//! manifest; no other format is co-decoded.
+//!
 //! ```
 //! use nectar_manifest::{Format, Prefix, V1};
 //!
@@ -44,6 +49,7 @@
 )]
 
 mod bounded;
+mod codec;
 mod error;
 mod fork;
 mod format;
@@ -52,6 +58,7 @@ mod node;
 mod value;
 
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
+pub use codec::{DecodeError, EncodeError};
 pub use error::{
     CustomKeyError, ForkPrefixEmpty, MetadataTooLong, PrefixTooLong, ValueTooLong, WeightOverBudget,
 };

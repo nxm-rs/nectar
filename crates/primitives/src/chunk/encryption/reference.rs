@@ -4,7 +4,7 @@ use crate::chunk::reference::{RefKind, Reference, WrongRefKind, sealed};
 use crate::chunk::{ChunkAddress, ChunkRef};
 use crate::error::WrongLength;
 use crate::file::EntryRef;
-use crate::wire::{Cursor, Underrun};
+use crate::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 use super::key::EncryptionKey;
 
@@ -68,6 +68,22 @@ impl EncryptedChunkRef {
         address.copy_from_slice(a);
         key.copy_from_slice(k);
         Self::new(ChunkAddress::from(address), EncryptionKey::from(key))
+    }
+}
+
+/// Reads the 64 wire bytes: the address, then the key.
+impl FromCursor for EncryptedChunkRef {
+    type Error = Underrun;
+
+    fn take_from(cur: &mut Cursor<'_>) -> Result<Self, Underrun> {
+        cur.take::<[u8; Self::SIZE]>().map(Self::from)
+    }
+}
+
+/// Writes the 64 wire bytes, the mirror of the `FromCursor` impl above.
+impl ToWriter for EncryptedChunkRef {
+    fn put_into(&self, w: &mut Writer<'_>) {
+        w.put(&self.to_bytes());
     }
 }
 
