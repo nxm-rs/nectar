@@ -71,6 +71,14 @@ pub struct Drive<F> {
     waker: Waker,
 }
 
+impl<F> core::fmt::Debug for Drive<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Drive")
+            .field("wakes", &self.counter.0.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
 impl<F: Future> Drive<F> {
     /// Wraps `f` for manual polling.
     pub fn new(f: F) -> Self {
@@ -138,6 +146,12 @@ pub struct GateStore {
     state: Arc<Mutex<State>>,
 }
 
+impl core::fmt::Debug for GateStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GateStore").finish_non_exhaustive()
+    }
+}
+
 impl GateStore {
     /// New gate with no waiters.
     pub fn new() -> Self {
@@ -152,7 +166,9 @@ impl GateStore {
         }
     }
 
-    /// Grants the `n` oldest parked waiters and wakes them.
+    /// Grants the `n` oldest parked waiters and wakes them. No stored permits:
+    /// any `n` beyond the parked count is dropped, so releasing before a waiter
+    /// parks is a no-op.
     pub fn release(&self, n: usize) {
         let mut wakers = Vec::new();
         {
@@ -190,6 +206,12 @@ enum EnterState {
 pub struct Enter {
     gate: Arc<Mutex<State>>,
     state: EnterState,
+}
+
+impl core::fmt::Debug for Enter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Enter").finish_non_exhaustive()
+    }
 }
 
 impl Future for Enter {
