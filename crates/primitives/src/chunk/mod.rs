@@ -15,7 +15,8 @@
 //!   [`AnyChunk`]
 //! - [`Chunk`] - Ties a carrier to its header type
 //! - [`ChunkType`] - Adds compile-time type identification
-//! - [`ChunkTypeSet`] - Defines which chunk types a system supports
+//! - [`ChunkRegistry`] - Compile-time registry of the chunk types a network
+//!   accepts, keyed by its closed envelope type
 //!
 //! # Type-Erased Chunks
 //!
@@ -26,12 +27,12 @@ mod address;
 mod any_chunk;
 mod bmt_body;
 mod chunk_type;
-mod chunk_type_set;
 mod content;
 pub mod encryption;
 pub(crate) mod error;
 mod inner;
 mod reference;
+mod registry;
 mod single_owner;
 mod soc_id;
 mod traits;
@@ -53,7 +54,7 @@ pub use reference::{ChunkRef, RefKind, Reference, WrongRefKind};
 // Re-export the type system
 pub use any_chunk::AnyChunk;
 pub use chunk_type::ChunkType;
-pub use chunk_type_set::{ChunkTypeSet, ContentOnlyChunkSet, StandardChunkSet};
+pub use registry::{ChunkRegistry, ChunkTypeInfo, ContentOnlyChunkSet, StandardChunkSet};
 pub use type_id::ChunkTypeId;
 pub use type_tag::{ChunkTypeTag, ChunkVersion, TagWireError};
 
