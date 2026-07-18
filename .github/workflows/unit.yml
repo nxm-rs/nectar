@@ -40,6 +40,15 @@ jobs:
             # dir rather than in a separate job that rebuilds the workspace.
             - name: Run doctests
               run: cargo test --doc --workspace --locked
+            # The async io adapters are feature-gated off the default build;
+            # cover their tests and the range-request doctest here.
+            - name: Run tokio adapter tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-file --features tokio --locked \
+                    --no-tests=warn --no-fail-fast
+            - name: Run tokio adapter doctests
+              run: cargo test --doc -p nectar-file --features tokio --locked
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The
