@@ -3,7 +3,8 @@
 //! runtime width dispatch.
 #![allow(deprecated)]
 
-use std::string::String;
+use std::boxed::Box;
+use std::string::{String, ToString};
 use std::vec;
 use std::vec::Vec;
 
@@ -418,4 +419,190 @@ fn debug_never_leaks_the_decryption_key() {
     key_free(std::format!("{file:?}"));
     key_free(std::format!("{:?}", file.read()));
     key_free(std::format!("{:?}", file.read().build()));
+    key_free(std::format!("{:?}", file.read().frames()));
+    key_free(std::format!("{:?}", file.download()));
+}
+
+fn collect_frames<S, M>(mut frames: super::FileFrames<S, M, TINY>) -> Vec<crate::walk::Frame>
+where
+    S: TrustedGet<AnyChunkSet<TINY>, Error = ChunkStoreError> + Clone + 'static,
+    M: WalkMode,
+{
+    block_on(async {
+        use futures::StreamExt;
+        let mut out = Vec::new();
+        while let Some(frame) = frames.next().await {
+            out.push(frame.unwrap());
+        }
+        out
+    })
+}
+
+#[test]
+fn frames_tile_the_clipped_range_exactly_once() {
+    let data = fill(17 * TINY + 29);
+    let (root, store) = split::<TINY>(&data).unwrap();
+    let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
+
+    let range = 100u64..(13 * TINY + 7) as u64;
+    let builder = file
+        .read()
+        .range(range.clone())
+        .window(Window::new(3).unwrap());
+    let mut frames = collect_frames(builder.frames());
+    frames.sort_by_key(|frame| frame.offset);
+
+    let mut expect = range.start;
+    let mut assembled = Vec::new();
+    for frame in &frames {
+        assert_eq!(frame.offset, expect, "frames must tile without overlap");
+        assert!(!frame.data.is_empty(), "no empty frames");
+        assembled.extend_from_slice(&frame.data);
+        expect += frame.data.len() as u64;
+    }
+    assert_eq!(expect, range.end);
+    assert_eq!(assembled, &data[100..13 * TINY + 7]);
+}
+
+#[test]
+fn download_fills_a_sink_and_reports_progress_both_widths() {
+    use std::sync::{Arc, Mutex};
+
+    use crate::sink::{DataSink as _, MemSink};
+
+    let data = fill(11 * TINY + 63);
+    let (plain_root, plain_store) = split::<TINY>(&data).unwrap();
+    let (enc_root, enc_store) = split_encrypted::<TINY>(&data).unwrap();
+    let plain_file = block_on(File::<_, Plain, TINY>::open(plain_store, plain_root)).unwrap();
+    let enc_file = block_on(File::<_, Encrypted, TINY>::open_encrypted(
+        enc_store, enc_root,
+    ))
+    .unwrap();
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    let mut sink = MemSink::new();
+    let written = block_on(
+        plain_file
+            .download()
+            .window(Window::new(4).unwrap())
+            .progress(Box::new(move |progress| log.lock().unwrap().push(progress)))
+            .run(&mut sink),
+    )
+    .unwrap();
+    assert_eq!(written, data.len() as u64);
+    assert_eq!(sink.as_ref(), data);
+
+    let seen = seen.lock().unwrap();
+    assert!(!seen.is_empty());
+    for pair in seen.windows(2) {
+        assert!(pair[0].written < pair[1].written, "monotone progress");
+    }
+    for progress in seen.iter() {
+        assert_eq!(progress.total, data.len() as u64);
+    }
+    assert_eq!(seen.last().unwrap().written, data.len() as u64);
+
+    // The encrypted width lands the same bytes, and a sink pre-filled with
+    // garbage is fully overwritten (idempotent full re-run semantics).
+    let mut sink = MemSink::new();
+    sink.write_at(0, &vec![0xa5; data.len()]).unwrap();
+    let written = block_on(enc_file.download().run(&mut sink)).unwrap();
+    assert_eq!(written, data.len() as u64);
+    assert_eq!(sink.as_ref(), data);
+}
+
+#[test]
+fn range_download_writes_range_relative_offsets() {
+    use crate::sink::MemSink;
+
+    let data = fill(9 * TINY + 11);
+    let (root, store) = split::<TINY>(&data).unwrap();
+    let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
+
+    let range = 300u64..(5 * TINY) as u64;
+    let mut sink = MemSink::new();
+    let written = block_on(file.download().range(range.clone()).run(&mut sink)).unwrap();
+    assert_eq!(written, range.end - range.start);
+    assert_eq!(sink.as_ref(), &data[300..5 * TINY]);
+
+    // Clip semantics: an out-of-file range shrinks instead of failing.
+    let mut sink = MemSink::new();
+    let written = block_on(file.download().range(500..u64::MAX).run(&mut sink)).unwrap();
+    assert_eq!(written, data.len() as u64 - 500);
+    assert_eq!(sink.as_ref(), &data[500..]);
+}
+
+/// Store failing exactly one fetch (the countdown-th), healthy afterwards.
+#[derive(Clone)]
+struct FailOnce {
+    inner: std::sync::Arc<TinyStore>,
+    countdown: std::sync::Arc<std::sync::Mutex<Option<usize>>>,
+}
+
+impl nectar_primitives::store::ChunkGet<AnyChunkSet<TINY>> for FailOnce {
+    type Trust = nectar_primitives::chunk::Verified;
+    type Error = ChunkStoreError;
+
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<Chunk<nectar_primitives::chunk::Verified, AnyChunkSet<TINY>>, ChunkStoreError> {
+        let fail = {
+            let mut slot = self.countdown.lock().unwrap();
+            match slot.as_mut() {
+                Some(0) => {
+                    *slot = None;
+                    true
+                }
+                Some(left) => {
+                    *left -= 1;
+                    false
+                }
+                None => false,
+            }
+        };
+        if fail {
+            return Err(ChunkStoreError::Other(
+                "transient outage".to_string().into(),
+            ));
+        }
+        nectar_primitives::store::ChunkGet::get(self.inner.as_ref(), address).await
+    }
+}
+
+#[test]
+fn download_restart_after_transient_failure_is_idempotent() {
+    use super::DownloadError;
+    use crate::sink::MemSink;
+
+    let data = fill(19 * TINY + 41);
+    let (root, store) = split::<TINY>(&data).unwrap();
+    let store = FailOnce {
+        inner: std::sync::Arc::new(store),
+        // Let several leaves land before the outage so the failed run
+        // leaves partial bytes behind.
+        countdown: std::sync::Arc::new(std::sync::Mutex::new(Some(9))),
+    };
+
+    let mut sink = MemSink::new();
+    let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
+    let err = block_on(
+        file.download()
+            .window(Window::new(2).unwrap())
+            .run(&mut sink),
+    )
+    .unwrap_err();
+    assert!(matches!(err, DownloadError::Walk(WalkError::Fetch { .. })));
+    assert!(
+        !sink.is_empty() && sink.len() < data.len(),
+        "the failed run must stop partway ({} of {})",
+        sink.len(),
+        data.len(),
+    );
+
+    // Restart: the full re-run overwrites the partial bytes idempotently.
+    let written = block_on(file.download().run(&mut sink)).unwrap();
+    assert_eq!(written, data.len() as u64);
+    assert_eq!(sink.as_ref(), data);
 }
