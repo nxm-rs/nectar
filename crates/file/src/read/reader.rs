@@ -1,0 +1,306 @@
+//! Ordered reader and stream over one walk.
+
+use core::fmt;
+use core::future::poll_fn;
+use core::mem;
+use core::ops::Range;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+
+use bytes::Bytes;
+use futures_util::stream::Stream;
+use nectar_primitives::DEFAULT_BODY_SIZE;
+use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
+use nectar_primitives::store::TrustedGet;
+
+use super::error::SeekPastEnd;
+use crate::config::Window;
+use crate::num::u64_from_usize;
+use crate::walk::{Walk, WalkError, WalkMode, WalkStats};
+
+/// Builder of one ordered read; construction is infallible.
+///
+/// Ranges use clip semantics: the built reader covers the intersection of
+/// the requested range and the file, and the clipped length is readable as
+/// [`FileReader::effective_len`].
+pub struct ReadBuilder<S, M: WalkMode, const B: usize = DEFAULT_BODY_SIZE> {
+    store: S,
+    root: ChunkAddress,
+    context: M::Context,
+    span: u64,
+    window: Window,
+    range: Range<u64>,
+}
+
+impl<S, M: WalkMode, const B: usize> ReadBuilder<S, M, B> {
+    pub(super) const fn new(
+        store: S,
+        root: ChunkAddress,
+        context: M::Context,
+        span: u64,
+        window: Window,
+        range: Range<u64>,
+    ) -> Self {
+        Self {
+            store,
+            root,
+            context,
+            span,
+            window,
+            range,
+        }
+    }
+
+    /// Fetch window the read drains against.
+    #[must_use]
+    pub const fn window(mut self, window: Window) -> Self {
+        self.window = window;
+        self
+    }
+
+    /// Absolute byte range to read, clipped to the file.
+    #[must_use]
+    pub const fn range(mut self, range: Range<u64>) -> Self {
+        self.range = range;
+        self
+    }
+}
+
+impl<S, M, const B: usize> ReadBuilder<S, M, B>
+where
+    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    M: WalkMode,
+{
+    /// Build the ordered, seekable reader.
+    pub fn build(self) -> FileReader<S, M, B> {
+        let walk = Walk::new(
+            self.store.clone(),
+            self.root,
+            self.context.clone(),
+            self.span,
+            self.range,
+            self.window,
+        );
+        let clipped = walk.range();
+        FileReader {
+            store: self.store,
+            root: self.root,
+            context: self.context,
+            span: self.span,
+            window: self.window,
+            start: clipped.start,
+            end: clipped.end,
+            position: clipped.start,
+            current: Bytes::new(),
+            walk,
+        }
+    }
+
+    /// Build the ordered stream directly.
+    pub fn stream(self) -> FileStream<S, M, B> {
+        self.build().into_stream()
+    }
+}
+
+impl<S, M: WalkMode, const B: usize> fmt::Debug for ReadBuilder<S, M, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReadBuilder")
+            .field("root", &self.root)
+            .field("span", &self.span)
+            .field("window", &self.window)
+            .field("range", &self.range)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Ordered, seekable reader over one clipped range.
+///
+/// Positions are zero-based offsets within the clipped range. Reads are
+/// cancel-safe: all progress lives in the reader, and the position advances
+/// only when a call returns.
+pub struct FileReader<S, M, const B: usize = DEFAULT_BODY_SIZE>
+where
+    S: TrustedGet<AnyChunkSet<B>>,
+    M: WalkMode,
+{
+    store: S,
+    root: ChunkAddress,
+    context: M::Context,
+    span: u64,
+    window: Window,
+    /// Absolute first byte of the clipped range.
+    start: u64,
+    /// Absolute end of the clipped range.
+    end: u64,
+    /// Absolute offset of the next undelivered byte.
+    position: u64,
+    /// Unconsumed tail of the last delivered frame.
+    current: Bytes,
+    walk: Walk<S, M, B>,
+}
+
+impl<S, M, const B: usize> FileReader<S, M, B>
+where
+    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    M: WalkMode,
+{
+    /// Current position within the clipped range.
+    pub const fn position(&self) -> u64 {
+        self.position.saturating_sub(self.start)
+    }
+
+    /// Bytes the clipped range covers.
+    pub const fn effective_len(&self) -> u64 {
+        self.end.saturating_sub(self.start)
+    }
+
+    /// Occupancy witnesses of the underlying walk.
+    pub const fn stats(&self) -> WalkStats {
+        self.walk.stats()
+    }
+
+    /// Move to `pos` within the clipped range; synchronous and typed, never
+    /// clamps. Seeking to the effective length is legal and reads as
+    /// end-of-range. A seek away from the current position abandons the
+    /// walk's prefetched frames.
+    pub fn seek(&mut self, pos: u64) -> Result<(), SeekPastEnd> {
+        let effective_len = self.effective_len();
+        if pos > effective_len {
+            return Err(SeekPastEnd {
+                requested: pos,
+                effective_len,
+            });
+        }
+        let target = self.start.saturating_add(pos);
+        if target != self.position {
+            self.current = Bytes::new();
+            self.walk = Walk::new(
+                self.store.clone(),
+                self.root,
+                self.context.clone(),
+                self.span,
+                target..self.end,
+                self.window,
+            );
+            self.position = target;
+        }
+        Ok(())
+    }
+
+    /// Copy the next in-order bytes into `buf`, returning the count; zero
+    /// means end of range (or an empty `buf`).
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, WalkError<S::Error>> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.current.is_empty() {
+            let Some(frame) = poll_fn(|cx| self.walk.poll_next_ordered(cx))
+                .await
+                .transpose()?
+            else {
+                return Ok(0);
+            };
+            self.current = frame.data;
+        }
+        let take = self.current.len().min(buf.len());
+        let (head, _) = buf.split_at_mut(take);
+        head.copy_from_slice(self.current.split_to(take).as_ref());
+        self.position = self.position.saturating_add(u64_from_usize(take));
+        Ok(take)
+    }
+
+    /// The next in-order run of bytes without copying; `None` at end of
+    /// range.
+    pub async fn next_segment(&mut self) -> Option<Result<Bytes, WalkError<S::Error>>> {
+        if !self.current.is_empty() {
+            let rest = mem::take(&mut self.current);
+            self.position = self.position.saturating_add(u64_from_usize(rest.len()));
+            return Some(Ok(rest));
+        }
+        match poll_fn(|cx| self.walk.poll_next_ordered(cx)).await? {
+            Ok(frame) => {
+                self.position = self
+                    .position
+                    .saturating_add(u64_from_usize(frame.data.len()));
+                Some(Ok(frame.data))
+            }
+            Err(error) => Some(Err(error)),
+        }
+    }
+
+    /// Continue as a stream from the current position, delivering any
+    /// partially consumed frame first.
+    pub fn into_stream(self) -> FileStream<S, M, B> {
+        FileStream {
+            lead: self.current,
+            walk: self.walk,
+        }
+    }
+}
+
+impl<S, M, const B: usize> fmt::Debug for FileReader<S, M, B>
+where
+    S: TrustedGet<AnyChunkSet<B>>,
+    M: WalkMode,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileReader")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("position", &self.position)
+            .field("buffered", &self.current.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Ordered stream of byte runs over one clipped range; consecutive items
+/// tile the range gaplessly.
+pub struct FileStream<S, M, const B: usize = DEFAULT_BODY_SIZE>
+where
+    S: TrustedGet<AnyChunkSet<B>>,
+    M: WalkMode,
+{
+    /// Partially consumed frame handed over by a reader, delivered first.
+    lead: Bytes,
+    walk: Walk<S, M, B>,
+}
+
+/// Movable regardless of the store or context types: the stream owns plain
+/// state and boxed futures, never a self-reference.
+impl<S, M, const B: usize> Unpin for FileStream<S, M, B>
+where
+    S: TrustedGet<AnyChunkSet<B>>,
+    M: WalkMode,
+{
+}
+
+impl<S, M, const B: usize> Stream for FileStream<S, M, B>
+where
+    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    M: WalkMode,
+{
+    type Item = Result<Bytes, WalkError<S::Error>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if !this.lead.is_empty() {
+            return Poll::Ready(Some(Ok(mem::take(&mut this.lead))));
+        }
+        this.walk
+            .poll_next_ordered(cx)
+            .map(|next| next.map(|frame| frame.map(|frame| frame.data)))
+    }
+}
+
+impl<S, M, const B: usize> fmt::Debug for FileStream<S, M, B>
+where
+    S: TrustedGet<AnyChunkSet<B>>,
+    M: WalkMode,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileStream")
+            .field("lead", &self.lead.len())
+            .field("walk", &self.walk)
+            .finish_non_exhaustive()
+    }
+}
