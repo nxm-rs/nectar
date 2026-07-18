@@ -32,6 +32,15 @@ pub struct ValueTooLong {
     pub max: usize,
 }
 
+/// Entry-to-reference conversion rejected: an inline entry carries opaque
+/// bytes, not a chunk reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("inline entry of {len} bytes carries no chunk reference")]
+pub struct NotAReference {
+    /// Inline value length in bytes.
+    pub len: usize,
+}
+
 /// Custom metadata key rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum CustomKeyError {

@@ -167,12 +167,12 @@ impl Reference for ChunkRef {
     }
 
     fn into_entry_ref(self) -> EntryRef {
-        EntryRef::Plain(self.into_address())
+        EntryRef::Plain(self)
     }
 
     fn from_entry_ref(entry: EntryRef) -> Result<Self, WrongRefKind> {
         match entry {
-            EntryRef::Plain(address) => Ok(Self::new(address)),
+            EntryRef::Plain(reference) => Ok(reference),
             EntryRef::Encrypted(_) => Err(WrongRefKind {
                 expected: Self::KIND,
                 got: RefKind::Encrypted,
@@ -236,7 +236,7 @@ mod tests {
         let addr = ChunkAddress::from(B256::repeat_byte(0x11));
         let reference = ChunkRef::new(addr);
         let entry = reference.into_entry_ref();
-        assert_eq!(entry, EntryRef::Plain(addr));
+        assert_eq!(entry, EntryRef::Plain(reference));
         assert_eq!(ChunkRef::from_entry_ref(entry).unwrap(), reference);
     }
 
