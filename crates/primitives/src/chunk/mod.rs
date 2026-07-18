@@ -13,10 +13,13 @@
 //!   [`ContentChunk`] and [`SingleOwnerChunk`] are its aliases
 //! - [`ChunkOps`] - Header-free behaviour shared by concrete chunks and
 //!   [`AnyChunk`]
-//! - [`Chunk`] - Ties a carrier to its header type
+//! - [`HeaderedChunk`] - Ties a carrier to its header type
 //! - [`ChunkType`] - Adds compile-time type identification
 //! - [`ChunkRegistry`] - Compile-time registry of the chunk types a network
 //!   accepts, keyed by its closed envelope type
+//! - [`Chunk`] - The public chunk currency: a registry envelope under a
+//!   sealed [`TrustState`], parse then verify from every source, with
+//!   [`TrustedSource`] gating the single trusted-store skip
 //!
 //! # Type-Erased Chunks
 //!
@@ -36,6 +39,7 @@ mod registry;
 mod single_owner;
 mod soc_id;
 mod traits;
+mod trust;
 mod type_id;
 mod type_tag;
 
@@ -46,7 +50,10 @@ pub mod wasm;
 pub use address::ChunkAddress;
 pub use error::ChunkError;
 pub use inner::ChunkInner;
-pub use traits::{Chunk, ChunkHeader, ChunkOps};
+pub use traits::{ChunkHeader, ChunkOps, HeaderedChunk};
+
+// Re-export the typestate trust carrier
+pub use trust::{Chunk, IntoVerified, TrustState, TrustedSource, Unverified, Verified};
 
 // Re-export the reference types
 pub use reference::{ChunkRef, RefKind, Reference, WrongRefKind};

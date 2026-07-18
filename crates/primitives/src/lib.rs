@@ -106,10 +106,11 @@ pub use chunk::{
     // Type system
     AnyChunk,
     CacHeader,
-    // Core traits
+    // The typestate chunk currency
     Chunk,
     ChunkAddress,
     ChunkError,
+    // Core traits
     ChunkHeader,
     // Concrete chunk types
     ChunkInner,
@@ -123,6 +124,8 @@ pub use chunk::{
     ChunkVersion,
     ContentChunk,
     ContentOnlyChunkSet,
+    HeaderedChunk,
+    IntoVerified,
     RefKind,
     Reference,
     SingleOwnerChunk,
@@ -130,6 +133,10 @@ pub use chunk::{
     SocId,
     StandardChunkSet,
     TagWireError,
+    TrustState,
+    TrustedSource,
+    Unverified,
+    Verified,
     WrongRefKind,
 };
 

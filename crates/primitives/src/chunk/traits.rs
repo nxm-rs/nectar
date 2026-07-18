@@ -2,9 +2,10 @@
 //!
 //! [`ChunkHeader`] is the predicate a chunk type *is*: its address derivation
 //! and self-certification rule. [`ChunkOps`] is the header-free behaviour
-//! every chunk value offers; [`Chunk`] ties a carrier to its header type.
+//! every chunk value offers; [`HeaderedChunk`] ties a carrier to its header
+//! type.
 
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use bytes::{Bytes, BytesMut};
 
 use crate::error::PrimitivesError;
@@ -93,6 +94,15 @@ pub trait ChunkHeader: Sized + Send + Sync + 'static {
     /// not recover, so every header must state its full acceptance rule.
     fn validate(&self, body_hash: B256, expected: &ChunkAddress) -> Result<(), ChunkError>;
 
+    /// Recover the owner this header binds the body to.
+    ///
+    /// `None` for ownerless types (the default) and for a signature that
+    /// does not recover; [`validate`](Self::validate), not this hook,
+    /// decides whether that is an error.
+    fn recover_owner(&self, _body_hash: B256) -> Option<Address> {
+        None
+    }
+
     /// Seal the anchor-keyed `transformed_root` of the body into the chunk's
     /// transformed address (the redistribution sampler's re-hash).
     fn seal_transformed(&self, address: &ChunkAddress, transformed_root: B256) -> ChunkAddress;
@@ -124,6 +134,10 @@ pub trait ChunkOps: Send + Sync + 'static {
     /// Get the span (logical data length) of this chunk: the BMT span of its
     /// underlying body.
     fn span(&self) -> u64;
+
+    /// Get the owner this chunk's type binds, if it has one and the
+    /// signature recovers ([`ChunkHeader::recover_owner`]).
+    fn owner(&self) -> Option<Address>;
 
     /// Certify this chunk against an expected address.
     ///
@@ -169,7 +183,7 @@ pub trait ChunkOps: Send + Sync + 'static {
 /// The behaviour surface lives on the [`ChunkOps`] supertrait; this trait adds
 /// only the header association, so it is exactly the part the header-free
 /// boundary enum cannot implement.
-pub trait Chunk: ChunkOps {
+pub trait HeaderedChunk: ChunkOps {
     /// The header type for this chunk
     type Header: ChunkHeader;
 

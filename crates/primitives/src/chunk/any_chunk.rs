@@ -84,6 +84,13 @@ impl<const BODY_SIZE: usize> ChunkOps for AnyChunk<BODY_SIZE> {
         }
     }
 
+    fn owner(&self) -> Option<alloy_primitives::Address> {
+        match self {
+            Self::Content(c) => ChunkOps::owner(c),
+            Self::SingleOwner(c) => ChunkOps::owner(c),
+        }
+    }
+
     fn verify(&self, expected: &ChunkAddress) -> Result<()> {
         match self {
             Self::Content(c) => c.verify(expected),
@@ -240,6 +247,15 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     /// - the payload cannot be decoded as the tagged chunk type, or
     /// - the chunk's computed address does not match `address`.
     pub fn from_typed_bytes(address: &ChunkAddress, bytes: &[u8]) -> crate::error::Result<Self> {
+        let chunk = Self::parse_typed(bytes)?;
+        chunk.verify(address)?;
+        Ok(chunk)
+    }
+
+    /// Structurally decode the typed form: the tag routes to a variant and
+    /// the payload is decoded, but nothing certifies. Callers must certify
+    /// the result against an expected address before trusting it.
+    pub(crate) fn parse_typed(bytes: &[u8]) -> crate::error::Result<Self> {
         let (tag, payload) = bytes.split_first_chunk::<2>().ok_or_else(|| {
             super::error::ChunkError::invalid_format(
                 "typed-chunk encoding shorter than the two-byte type tag",
@@ -248,16 +264,12 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
 
         let tag = ChunkTypeTag::from(*tag);
         match tag {
-            t if t == ChunkTypeTag::new(CacHeader::TYPE_ID, CacHeader::VERSION) => {
-                let chunk = ContentChunk::try_from(Bytes::copy_from_slice(payload))?;
-                chunk.verify(address)?;
-                Ok(Self::Content(chunk))
-            }
-            t if t == ChunkTypeTag::new(SocHeader::TYPE_ID, SocHeader::VERSION) => {
-                let chunk = SingleOwnerChunk::try_from(Bytes::copy_from_slice(payload))?;
-                chunk.verify(address)?;
-                Ok(Self::SingleOwner(chunk))
-            }
+            t if t == ChunkTypeTag::new(CacHeader::TYPE_ID, CacHeader::VERSION) => Ok(
+                Self::Content(ContentChunk::try_from(Bytes::copy_from_slice(payload))?),
+            ),
+            t if t == ChunkTypeTag::new(SocHeader::TYPE_ID, SocHeader::VERSION) => Ok(
+                Self::SingleOwner(SingleOwnerChunk::try_from(Bytes::copy_from_slice(payload))?),
+            ),
             other => Err(super::error::ChunkError::unsupported_tag(other).into()),
         }
     }
@@ -406,6 +418,19 @@ mod tests {
     fn sample_single_owner() -> DefaultSingleOwnerChunk {
         let id = crate::SocId::ZERO;
         DefaultSingleOwnerChunk::new(id, b"single owner payload".to_vec(), &test_signer()).unwrap()
+    }
+
+    /// [`ChunkOps::owner`] delegates by variant: content chunks bind no
+    /// owner, single-owner chunks recover the signer.
+    #[test]
+    fn chunk_ops_owner_delegates_by_variant() {
+        let content: DefaultAnyChunk = DefaultContentChunk::new(&b"ownerless"[..]).unwrap().into();
+        assert_eq!(content.owner(), None);
+
+        let soc = sample_single_owner();
+        let expected = soc.owner().unwrap();
+        let any: DefaultAnyChunk = soc.into();
+        assert_eq!(ChunkOps::owner(&any), Some(expected));
     }
 
     #[test]
