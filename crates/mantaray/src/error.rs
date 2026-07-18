@@ -102,6 +102,45 @@ pub enum ReaderError {
     },
 }
 
+/// Failures of the listing cursor and address stream.
+///
+/// Exhaustion is not an error: a finished walk ends with `None`.
+#[non_exhaustive]
+#[derive(thiserror::Error, Debug)]
+pub enum CursorError {
+    /// The store failed to produce the node chunk at `address`.
+    #[error("store get error for {address}: {source}")]
+    Store {
+        /// Address of the node chunk the store could not produce.
+        address: ChunkAddress,
+        /// Original store error, preserved for downcasting.
+        source: SharedError,
+    },
+    /// A fetched chunk's bytes are not a decodable mantaray node.
+    #[error("corrupt chunk {address}: {source}")]
+    Corrupt {
+        /// Address of the chunk whose bytes failed to decode.
+        address: ChunkAddress,
+        /// The underlying wire decode failure.
+        source: DecodeError,
+    },
+    /// The store returned a chunk other than the requested one.
+    #[error("address mismatch: requested {requested}, returned {returned}")]
+    AddressMismatch {
+        /// Address the walk requested.
+        requested: ChunkAddress,
+        /// Address of the chunk the store returned.
+        returned: ChunkAddress,
+    },
+    /// No fetch in flight while nodes remain queued; the walk cannot
+    /// progress.
+    #[error("walk stalled with {pending} nodes queued")]
+    Stalled {
+        /// Frontier nodes still awaiting a fetch.
+        pending: usize,
+    },
+}
+
 /// Failures of the submission-order editor.
 #[non_exhaustive]
 #[derive(thiserror::Error, Debug)]
