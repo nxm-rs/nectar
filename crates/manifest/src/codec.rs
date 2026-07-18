@@ -15,6 +15,7 @@ use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
 
 use crate::bounded::{MetadataLen, Prefix};
+use crate::count::{CountError, SubtreeCount};
 use crate::error::{CustomKeyError, ForkPrefixEmpty, MetadataTooLong, PrefixTooLong, ValueTooLong};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::Format;
@@ -256,6 +257,10 @@ pub enum DecodeError {
     /// segments are plumbing, never a node a fork points at (spec 5.3).
     #[error("segment reached out of directory context")]
     SegmentContext,
+    /// A counted-grammar subtree count was malformed: overlong, over-wide, or
+    /// short.
+    #[error(transparent)]
+    Count(#[from] CountError),
 }
 
 /// Rejections from [`Node::encode`]: the in-memory tree cannot form a legal
@@ -314,7 +319,7 @@ fn embedded_len<F: Format>(table: &ForkTable<F>) -> usize {
     size_of::<u8>().saturating_add(table_len(table))
 }
 
-/// Exact encoded bytes of one fork record.
+/// Exact encoded bytes of one fork record, including any trailing count.
 fn record_len<F: Format>(record: &ForkRecord<F>) -> usize {
     let mut len = size_of::<u8>() // fflags
         .saturating_add(size_of::<u8>()) // plen
@@ -328,7 +333,40 @@ fn record_len<F: Format>(record: &ForkRecord<F>) -> usize {
     if let Some(metadata) = record.metadata() {
         len = len.saturating_add(meta_len(metadata));
     }
-    len
+    len.saturating_add(child_count_len(record))
+}
+
+/// The trailing count bytes a fork record carries: a referenced child's
+/// `child_count`; an embedded or leaf fork carries none.
+fn child_count_len<F: Format>(record: &ForkRecord<F>) -> usize {
+    if record.child().is_some_and(Child::is_reference) {
+        record.child_count().unwrap_or_default().wire_len()
+    } else {
+        0
+    }
+}
+
+/// The subtree key-count of one fork: its terminal key, plus its child's count.
+/// A referenced child's count is the stored annotation; an embedded child's is
+/// walked in place, so a node's total is the in-buffer sum of its fork counts.
+pub(crate) fn fork_count<F: Format>(record: &ForkRecord<F>) -> u64 {
+    let entry = u64::from(record.entry().is_some());
+    let child = match record.child() {
+        None => 0,
+        Some(Child::Embedded(table)) => table_count(table),
+        Some(Child::Ref32(_) | Child::Ref64(_)) => {
+            record.child_count().map_or(0, SubtreeCount::get)
+        }
+    };
+    entry.saturating_add(child)
+}
+
+/// The subtree key-count of a fork table: the sum of its forks' counts.
+pub(crate) fn table_count<F: Format>(table: &ForkTable<F>) -> u64 {
+    table
+        .iter()
+        .map(|(_, record)| fork_count(record))
+        .fold(0, u64::saturating_add)
 }
 
 /// Exact encoded bytes of a fork table: count, index, records.
@@ -616,14 +654,21 @@ impl<F: Format> FromCursor for ForkRecord<F> {
         } else {
             None
         };
+        let referenced_child = matches!(child_fmt, WireFmt::Ref32 | WireFmt::Ref64);
         let payload = ForkPayload::new(entry, child).ok_or(DecodeError::ForkFlags(flags))?;
-        Ok(Self::from_tail_parts(tail, payload, metadata))
+        let mut record = Self::from_tail_parts(tail, payload, metadata);
+        // The trailing count rides only a referenced child; an embedded or
+        // leaf fork recomputes it in place.
+        if referenced_child {
+            record.set_child_count(Some(cur.take::<SubtreeCount>()?));
+        }
+        Ok(record)
     }
 }
 
 impl<F: Format> ToWriter for ForkRecord<F> {
     /// Emits the flags, the tail behind its count, then the flag-gated
-    /// fields.
+    /// fields, and last the trailing referenced-child count.
     fn put_into(&self, w: &mut Writer<'_>) {
         w.put(&fork_flag_bits(self));
         w.put(self.tail());
@@ -635,6 +680,9 @@ impl<F: Format> ToWriter for ForkRecord<F> {
         }
         if let Some(metadata) = self.metadata() {
             w.put(metadata);
+        }
+        if self.child().is_some_and(Child::is_reference) {
+            w.put(&self.child_count().unwrap_or_default());
         }
     }
 }
@@ -842,6 +890,9 @@ pub(crate) struct SegDesc {
     pub(crate) address: ChunkAddress,
     /// The child's decryption key, present iff the directory is wide.
     pub(crate) key: Option<EncryptionKey>,
+    /// The sum of the covered forks' subtree counts, so a spilled node routes a
+    /// whole segment by rank without fetching it.
+    pub(crate) seg_count: SubtreeCount,
 }
 
 /// A decoded segment directory: uniform-width descriptors in ascending key
@@ -856,16 +907,18 @@ pub(crate) struct SegmentDir {
 }
 
 impl SegmentDir {
-    /// A plaintext directory over `(first_key, address)` descriptors.
-    pub(crate) fn plain(descriptors: Vec<(u8, ChunkAddress)>) -> Self {
+    /// A plaintext directory over `(first_key, address)` descriptors, with the
+    /// subtree count each descriptor routes.
+    pub(crate) fn plain(descriptors: Vec<(u8, ChunkAddress, SubtreeCount)>) -> Self {
         Self {
             wide: false,
             descriptors: descriptors
                 .into_iter()
-                .map(|(first_key, address)| SegDesc {
+                .map(|(first_key, address, seg_count)| SegDesc {
                     first_key,
                     address,
                     key: None,
+                    seg_count,
                 })
                 .collect(),
         }
@@ -907,7 +960,7 @@ impl<F: Format> DecodedChunk<F> {
 }
 
 /// Emit a segment directory body: sflags, count, the ascending keys, then the
-/// uniform-width references.
+/// uniform-width references, each trailed by its `seg_count`.
 fn put_segment_dir(w: &mut Writer<'_>, dir: &SegmentDir) {
     w.put(&(if dir.wide { WIDE_REFS } else { 0u8 }));
     w.put(&U16Le::of(dir.descriptors.len()));
@@ -919,6 +972,7 @@ fn put_segment_dir(w: &mut Writer<'_>, dir: &SegmentDir) {
         if let Some(key) = &desc.key {
             w.put(key.as_bytes());
         }
+        w.put(&desc.seg_count);
     }
 }
 
@@ -1001,10 +1055,12 @@ fn take_segment_dir<F: Format>(cur: &mut Cursor<'_>) -> Result<SegmentDir, Decod
         } else {
             None
         };
+        let seg_count = cur.take::<SubtreeCount>()?;
         descriptors.push(SegDesc {
             first_key,
             address,
             key,
+            seg_count,
         });
     }
     Ok(SegmentDir { wide, descriptors })
@@ -1743,7 +1799,10 @@ mod tests {
         ));
         assert_eq!(recanonicalize::<V1>(&leaf).unwrap(), leaf);
 
-        let dir = SegmentDir::plain(vec![(b'a', addr(1)), (b'c', addr(2))]);
+        let dir = SegmentDir::plain(vec![
+            (b'a', addr(1), SubtreeCount::default()),
+            (b'c', addr(2), SubtreeCount::default()),
+        ]);
         let directory = encode_dir_segment::<V1>(&dir);
         assert!(matches!(
             Node::<V1>::decode_chunk(&directory).unwrap(),
@@ -1758,6 +1817,91 @@ mod tests {
             DecodedChunk::Segmented(Some(_), _)
         ));
         assert_eq!(recanonicalize::<V1>(&segmented).unwrap(), segmented);
+    }
+
+    // A node carrying one referenced-child fork: the child count rides as a
+    // trailing uleb128 after the reference.
+    #[test]
+    fn counted_referenced_child_carries_a_trailing_count() {
+        let mut forks: ForkTable<V1> = ForkTable::new();
+        forks
+            .insert(
+                Prefix::try_from(&b"a"[..]).unwrap(),
+                Child::Ref32(ChunkRef::new(addr(0x11))).into(),
+                None,
+            )
+            .unwrap();
+        forks
+            .get_mut(b'a')
+            .unwrap()
+            .set_child_count(Some(SubtreeCount::new(5)));
+        let node = Node::new(None, forks);
+
+        let mut expected = vec![0x6D, 0x01, 0x00, 0x01, 0x00, b'a', 0x00, 0x00, 0x04, 0x01];
+        expected.extend_from_slice(&[0x11; 32]);
+        expected.push(0x05);
+        let payload = node.encode().unwrap();
+        assert_eq!(payload, expected);
+        assert_eq!(node.encoded_len(), payload.len());
+
+        let decoded = Node::<V1>::decode(&payload).unwrap();
+        assert_eq!(decoded, node);
+        assert_eq!(
+            decoded.forks().get(b'a').unwrap().child_count(),
+            Some(SubtreeCount::new(5))
+        );
+        assert_eq!(fork_count(decoded.forks().get(b'a').unwrap()), 5);
+    }
+
+    // A non-canonical (overlong) child count is rejected: canonical minimal
+    // length only.
+    #[test]
+    fn an_overlong_count_rejects() {
+        let mut image = vec![0x6D, 0x01, 0x00, 0x01, 0x00, b'a', 0x00, 0x00, 0x04, 0x01];
+        image.extend_from_slice(&[0x11; 32]);
+        // 0x80 0x00 encodes zero in two bytes: a non-minimal run.
+        image.extend_from_slice(&[0x80, 0x00]);
+        assert!(matches!(
+            Node::<V1>::decode(&image),
+            Err(DecodeError::Count(CountError::Overlong))
+        ));
+    }
+
+    // A segment directory carries a seg_count after every descriptor, and the
+    // whole segment chunk set round-trips through recanonicalize.
+    #[test]
+    fn counted_segments_carry_seg_counts_and_round_trip() {
+        let mut leaf: ForkTable<V1> = ForkTable::new();
+        leaf.insert(
+            Prefix::<V1>::try_from(&b"ab"[..]).unwrap(),
+            Entry::from(ref32(1)).into(),
+            None,
+        )
+        .unwrap();
+        leaf.insert(
+            Prefix::<V1>::try_from(&b"cd"[..]).unwrap(),
+            Entry::from(ref32(2)).into(),
+            None,
+        )
+        .unwrap();
+        let leaf_chunk = encode_leaf_segment::<V1>(&leaf);
+        assert_eq!(recanonicalize::<V1>(&leaf_chunk).unwrap(), leaf_chunk);
+
+        let dir = SegmentDir::plain(vec![
+            (b'a', addr(1), SubtreeCount::new(3)),
+            (b'c', addr(2), SubtreeCount::new(4)),
+        ]);
+        let dir_chunk = encode_dir_segment::<V1>(&dir);
+        // The descriptor's seg_count follows its address: ...addr(32) 03, addr(32) 04.
+        assert_eq!(dir_chunk.last(), Some(&0x04));
+        match Node::<V1>::decode_chunk(&dir_chunk).unwrap() {
+            DecodedChunk::Directory(decoded) => {
+                assert_eq!(decoded.descriptors[0].seg_count, SubtreeCount::new(3));
+                assert_eq!(decoded.descriptors[1].seg_count, SubtreeCount::new(4));
+            }
+            _ => panic!("expected a directory"),
+        }
+        assert_eq!(recanonicalize::<V1>(&dir_chunk).unwrap(), dir_chunk);
     }
 
     #[test]

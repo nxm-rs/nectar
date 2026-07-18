@@ -6,9 +6,12 @@
 //! 0x01` parameter set, and public types default their format parameter to
 //! [`V1`]. Bounded newtypes ([`Prefix`], [`MetadataLen`], [`SegmentWeight`])
 //! check a format bound once at construction and carry it as a type
-//! invariant. [`V1Read`] is an opt-in read-optimized sibling: the same layout
-//! with a heavier embedding budget, trading single-update write-amplification
-//! for fewer chunks touched per range or listing window.
+//! invariant. The node grammar weaves order-statistic [`SubtreeCount`]s into
+//! every referenced child and segment descriptor, so navigation by rank costs
+//! O(depth) instead of O(window). [`V1Read`] is an opt-in read-optimized
+//! sibling: the same layout with a heavier embedding budget, trading
+//! single-update write-amplification for fewer chunks touched per range or
+//! listing window.
 //!
 //! The value model is [`Key`] (arbitrary bytes), [`Entry`] (a chunk
 //! reference or an inline value; absence is `Option` at the use site) and
@@ -81,6 +84,7 @@ mod apply;
 mod bounded;
 mod builder;
 mod codec;
+mod count;
 mod dx;
 #[cfg(feature = "encryption")]
 mod encryption;
@@ -100,6 +104,7 @@ pub use apply::{ApplyError, Changeset, apply};
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
 pub use builder::{BuildError, BuildStats, Builder, Built, build_files};
 pub use codec::{DecodeError, EncodeError, recanonicalize};
+pub use count::{CountError, SubtreeCount};
 pub use dx::FetchError;
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]

@@ -19,8 +19,9 @@ use nectar_primitives::{
 use crate::bounded::{Prefix, SegmentWeight};
 use crate::codec::{
     SegmentDir, body_len, encode_dir_segment, encode_leaf_segment, encode_segmented_node,
-    record_weight,
+    fork_count, record_weight, table_count,
 };
+use crate::count::SubtreeCount;
 use crate::error::{ForkPrefixEmpty, PrefixTooLong, WeightOverBudget};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::{Format, V1};
@@ -257,8 +258,9 @@ pub(crate) struct Item<F: Format> {
 pub(crate) enum Resolved<F: Format> {
     /// Small enough to inline into the parent's chunk.
     Embedded(ForkTable<F>),
-    /// Spilled to a chunk of its own.
-    Reference(ChunkRef),
+    /// Spilled to a chunk of its own, carrying its subtree count so the
+    /// parent fork stamps it on the reference.
+    Reference(ChunkRef, Option<SubtreeCount>),
 }
 
 impl<F: Format> Resolved<F> {
@@ -266,7 +268,16 @@ impl<F: Format> Resolved<F> {
     pub(crate) fn into_child(self) -> Child<F> {
         match self {
             Self::Embedded(table) => Child::Embedded(table),
-            Self::Reference(reference) => Child::Ref32(reference),
+            Self::Reference(reference, _) => Child::Ref32(reference),
+        }
+    }
+
+    /// The subtree count to stamp on the parent fork: present only for a
+    /// referenced child.
+    pub(crate) const fn child_count(&self) -> Option<SubtreeCount> {
+        match self {
+            Self::Embedded(_) => None,
+            Self::Reference(_, count) => *count,
         }
     }
 }
@@ -309,18 +320,19 @@ impl<'a, F: Format> Frame<'a, F> {
         }
     }
 
-    /// Close the open fork with its resolved child.
+    /// Close the open fork with its resolved child, stamping the referenced
+    /// child's subtree count onto the record.
     fn attach(&mut self, resolved: Resolved<F>) -> Result<(), BuildError> {
         let open = self.open.take().ok_or(BuildError::Internal)?;
-        let child = match resolved {
-            Resolved::Embedded(table) => Child::Embedded(table),
-            Resolved::Reference(reference) => Child::Ref32(reference),
-        };
+        let count = resolved.child_count();
+        let child = resolved.into_child();
         let payload = match open.entry {
             Some(entry) => ForkPayload::Both { entry, child },
             None => ForkPayload::Child(child),
         };
-        self.table.insert(open.prefix, payload, open.meta)?;
+        let (first, mut record) = ForkRecord::new(open.prefix, payload, open.meta)?;
+        record.set_child_count(count);
+        self.table.insert_record(first, record);
         Ok(())
     }
 
@@ -449,9 +461,12 @@ where
         stats.nodes_embedded = stats.nodes_embedded.saturating_add(1);
         return Ok(Resolved::Embedded(table));
     }
+    // The spilled subtree's count is the in-buffer sum of its fork counts, read
+    // before the table is consumed; the parent stamps it on the reference.
+    let count = Some(SubtreeCount::new(table_count(&table)));
     let node = Node::new(None, table);
     let address = emit_node(store, &node, stats).await?;
-    Ok(Resolved::Reference(ChunkRef::new(address)))
+    Ok(Resolved::Reference(ChunkRef::new(address), count))
 }
 
 /// Publish `node` as one chunk, or, when its flat body overruns the format
@@ -501,7 +516,8 @@ where
     }
 
     let directory = spill::<F>(&items, Domain::Plain);
-    let mut leaf_descs: Vec<(u8, ChunkAddress)> = Vec::with_capacity(directory.leaves().len());
+    let mut leaf_descs: Vec<(u8, ChunkAddress, SubtreeCount)> =
+        Vec::with_capacity(directory.leaves().len());
     for range in directory.leaves() {
         let slice = forks.get(range.clone()).ok_or(BuildError::Internal)?;
         let &(first_key, _) = slice.first().ok_or(BuildError::Internal)?;
@@ -509,29 +525,41 @@ where
         for (byte, record) in slice {
             leaf.insert_record(*byte, (*record).clone());
         }
+        // The descriptor routes the segment's whole subtree count: the sum of
+        // its covered forks' counts, so a reader descends by rank without a
+        // fetch.
+        let seg_count = descriptor_count(slice.iter().map(|(_, record)| fork_count(record)));
         let address = put_payload(store, encode_leaf_segment(&leaf), stats).await?;
-        leaf_descs.push((first_key, address));
+        leaf_descs.push((first_key, address, seg_count));
     }
 
     let top = if directory.dirs().len() <= 1 {
         SegmentDir::plain(leaf_descs)
     } else {
-        let mut dir_descs: Vec<(u8, ChunkAddress)> = Vec::with_capacity(directory.dirs().len());
+        let mut dir_descs: Vec<(u8, ChunkAddress, SubtreeCount)> =
+            Vec::with_capacity(directory.dirs().len());
         for range in directory.dirs() {
             let group = leaf_descs.get(range.clone()).ok_or(BuildError::Internal)?;
-            let &(first_key, _) = group.first().ok_or(BuildError::Internal)?;
+            let &(first_key, _, _) = group.first().ok_or(BuildError::Internal)?;
+            let seg_count = descriptor_count(group.iter().map(|(_, _, count)| count.get()));
             let address = put_payload(
                 store,
                 encode_dir_segment::<F>(&SegmentDir::plain(group.to_vec())),
                 stats,
             )
             .await?;
-            dir_descs.push((first_key, address));
+            dir_descs.push((first_key, address, seg_count));
         }
         SegmentDir::plain(dir_descs)
     };
 
     put_payload(store, encode_segmented_node::<F>(node.root(), &top), stats).await
+}
+
+/// The subtree count a segment descriptor routes: the sum of the covered
+/// forks' (or nested descriptors') counts.
+fn descriptor_count(counts: impl Iterator<Item = u64>) -> SubtreeCount {
+    SubtreeCount::new(counts.fold(0, u64::saturating_add))
 }
 
 /// Seal a ready payload into a content chunk, store it, and count it.
