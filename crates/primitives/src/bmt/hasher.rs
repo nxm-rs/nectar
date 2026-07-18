@@ -11,6 +11,7 @@ use hybrid_array::{Array, sizes::U32};
 use once_cell::race::OnceBox;
 
 use super::constants::*;
+use super::derived::DerivedAddress;
 
 /// Number of zero tree levels for the default body size.
 const ZERO_TREE_LEVELS: usize = zero_tree_levels(DEFAULT_BODY_SIZE);
@@ -205,6 +206,15 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     #[must_use]
     pub fn sum(&self) -> B256 {
         self.finalize_with_prefix(self.hash_internal())
+    }
+
+    /// Compute the BMT root as a [`DerivedAddress`]: the value of
+    /// [`sum`](Self::sum) carried with hasher provenance. A configured
+    /// prefix participates, making the result the transformed root.
+    #[inline]
+    #[must_use]
+    pub fn sum_derived(&self) -> DerivedAddress {
+        DerivedAddress::new(self.sum())
     }
 
     /// Check if a byte slice is all zeros.
