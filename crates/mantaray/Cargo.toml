@@ -18,13 +18,13 @@ categories = ["data-structures"]
 workspace = true
 
 [dependencies]
-alloy-primitives = { workspace = true, features = ["map"] }
-bitflags.workspace = true
-bytes.workspace = true
-futures.workspace = true
-nectar-primitives = { workspace = true }
-thiserror.workspace = true
-serde_json.workspace = true
+alloy-primitives = { workspace = true, features = ["map"], optional = true }
+bitflags = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+nectar-primitives = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 rand = { workspace = true, optional = true }
 
@@ -47,26 +47,37 @@ harness = false
 required-features = ["hazmat"]
 
 [features]
-default = [ "std" ]
+default = [ "rand", "std" ]
+# The trie modules ride this feature until the primitives core builds
+# bare-metal; without it only the metadata keys and the obfuscation key
+# remain.
 std = [
-	"alloy-primitives/std",
-	"nectar-primitives/std",
-	"rand",
-	"serde_json/std",
-	"thiserror/std",
+	"alloy-primitives?/std",
+	"dep:alloy-primitives",
+	"dep:bitflags",
+	"dep:bytes",
+	"dep:futures",
+	"dep:nectar-primitives",
+	"dep:serde_json",
+	"dep:thiserror",
+	"nectar-primitives?/std",
+	"serde_json?/std",
+	"thiserror?/std",
 ]
+# Random obfuscation-key generation for encrypted manifests. Implies `std`.
+rand = [ "dep:rand", "std" ]
 # Valid-by-construction `arbitrary::Arbitrary` impls for `Node`, `Fork`,
 # `Prefix`, `NodeType`, and `ObfuscationKey`, for structured (round-trip)
 # fuzz targets.
 arbitrary = [
-	"alloy-primitives/arbitrary",
+	"alloy-primitives?/arbitrary",
 	"dep:arbitrary",
-	"nectar-primitives/arbitrary",
+	"nectar-primitives?/arbitrary",
 	"std",
 ]
-encryption = [ "nectar-primitives/encryption" ]
+encryption = [ "nectar-primitives?/encryption" ]
 # Raw node internals (the `hazmat` module) for fuzz harnesses and benches.
-hazmat = []
+hazmat = [ "std" ]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -11,6 +11,7 @@
 //! silently.
 //!
 //! ```
+//! # #![allow(deprecated)]
 //! # use nectar_mantaray::{ManifestBuilder, DefaultMemoryStore};
 //! # use nectar_primitives::chunk::ChunkAddress;
 //! # futures::executor::block_on(async {
@@ -45,8 +46,8 @@ use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::file::{ChunkPutExt, ReadAt};
 use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedGet};
 
+use super::manifest::Manifest;
 use crate::entry::Entry;
-use crate::manifest::Manifest;
 use crate::{MantarayError, Result};
 
 /// Staging buffer for a mantaray manifest whose `save` consumes the builder.
@@ -54,6 +55,7 @@ use crate::{MantarayError, Result};
 /// The reference type parameter `R` fixes what `add` accepts and what `save`
 /// returns (a plain [`ChunkAddress`] or an encrypted
 /// [`ManifestRef`](crate::ManifestRef)), mirroring [`Manifest`].
+#[deprecated(note = "superseded by ManifestEditor; removal is gated on the manifest 1.0 store")]
 #[derive(Debug)]
 pub struct ManifestBuilder<S, R: Reference = ChunkRef, const BS: usize = DEFAULT_BODY_SIZE> {
     manifest: Manifest<S, R, BS>,
@@ -68,7 +70,7 @@ impl<S, const BS: usize> ManifestBuilder<S, ChunkRef, BS> {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "rand")]
 impl<S, const BS: usize> ManifestBuilder<S, nectar_primitives::EncryptedChunkRef, BS> {
     /// Create a new encrypted builder (random obfuscation key, 64-byte refs).
     pub fn new_encrypted(store: S) -> Self {
@@ -176,7 +178,6 @@ impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize
     /// `data` is dropped before the first store await, mirroring `write_file`,
     /// so the returned future never holds the source across a suspension point.
     pub async fn put_file<D: ReadAt + Sync>(&mut self, path: &str, data: D) -> Result<()> {
-        use nectar_primitives::Chunk;
         use nectar_primitives::file::{EncryptedParallelSplitter, FileError};
         let (root, chunks) = EncryptedParallelSplitter::<BS>::split_to_vec(&data)?;
         drop(data);
@@ -306,7 +307,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "rand")]
     #[test]
     fn encrypted_builder_round_trips_the_reference() {
         use nectar_primitives::file::EntryRef;
@@ -328,7 +329,7 @@ mod tests {
         assert_eq!(entry.reference(), Some(&EntryRef::Encrypted(eref)));
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "rand")]
     #[test]
     fn encrypted_builder_rejects_root_metadata() {
         use nectar_primitives::{EncryptedChunkRef, EncryptionKey};

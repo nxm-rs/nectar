@@ -8,43 +8,39 @@
 //! It supports XOR obfuscation, versioned binary serialization (v0.1 and v0.2),
 //! and metadata per path.
 //!
-//! # Efficient Partial Updates
+//! # Streaming Surface
 //!
-//! The trie uses lazy loading and dirty-reference tracking so that updating a
-//! single path in a million-entry manifest only re-serializes O(depth) nodes:
+//! Three complementary handles over a typed chunk store cover the manifest
+//! lifecycle:
 //!
-//! 1. [`Manifest::add`] lazily loads only the affected path branch.
-//! 2. Modified nodes have their reference cleared (dirty flag).
-//! 3. [`Manifest::save`] skips nodes with non-empty references (unmodified).
-//! 4. After save, child forks are dropped from memory.
-//! 5. The next operation lazily reloads from the new state.
-//!
-//! # Unified Store
-//!
-//! Manifest operations use the async typed chunk store traits from
-//! `nectar_primitives`: [`ChunkGet`](nectar_primitives::store::ChunkGet) for
-//! loading and [`ChunkPut`](nectar_primitives::store::ChunkPut) for saving.
-//! This means a single [`MemoryStore`] can hold both file chunks and manifest
-//! trie nodes.
+//! - [`Reader`]: depth-guarded point lookups ([`Reader::get`],
+//!   [`Reader::has_prefix`]) with `Ok(None)` on a miss.
+//! - [`Cursor`] and [`AddressStream`]: ordered listing with bounded
+//!   read-ahead.
+//! - [`ManifestEditor`]: records puts and removes, then commits them in
+//!   submission order with a bounded number of puts in flight.
 //!
 //! ```no_run
-//! # use nectar_mantaray::{PlainManifest, Entry, DefaultMemoryStore};
-//! let store = DefaultMemoryStore::new();
-//! let mut manifest: PlainManifest<_> = PlainManifest::new(store);
+//! # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
+//! let mut editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
 //! ```
+//!
+//! The store traits come from `nectar_primitives` ([`ChunkGet`],
+//! [`ChunkPut`]), so a single [`MemoryStore`] can hold both file chunks and
+//! manifest trie nodes.
+//!
+//! The former lazy-trie surface lives in [`legacy`] with a migration table;
+//! its removal is gated on the manifest 1.0 key-value store replacing it.
 //!
 //! # Website Manifests
 //!
 //! Configure index and error documents for Swarm-hosted websites:
 //!
 //! ```no_run
-//! # use nectar_mantaray::{PlainManifest, Entry, metadata, DefaultMemoryStore};
-//! # let store = DefaultMemoryStore::new();
-//! # let mut manifest = PlainManifest::new(store);
-//! # futures::executor::block_on(async {
-//! manifest.set_index_document("index.html").await.unwrap();
-//! manifest.set_error_document("404.html").await.unwrap();
-//! # });
+//! # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
+//! let mut editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
+//! editor.set_index_document("index.html");
+//! editor.set_error_document("404.html");
 //! ```
 //!
 //! # Metadata Constants
@@ -58,15 +54,14 @@
 //!
 //! # Raw encode containment
 //!
-//! Node bytes are produced only inside [`Manifest::save`] and consumed only
-//! on load; a node handed out by [`Manifest::root`], [`Manifest::walk`], or
-//! [`Manifest::into_parts`] carries no public encode:
+//! Node bytes are produced only inside a save or commit and consumed only on
+//! load; no public handle carries an encode:
 //!
 //! ```compile_fail
-//! use nectar_mantaray::{DefaultMemoryStore, PlainManifest};
+//! use nectar_mantaray::{DefaultMemoryStore, ManifestEditor};
 //!
-//! let manifest: PlainManifest<_> = PlainManifest::new(DefaultMemoryStore::new());
-//! let bytes: Vec<u8> = Vec::try_from(manifest.root()).unwrap();
+//! let editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
+//! let bytes: Vec<u8> = Vec::try_from(editor).unwrap();
 //! ```
 //!
 //! The raw node internals exist only under the `hazmat` feature, for fuzz
@@ -91,6 +86,8 @@
 //! number should be removed. Run `git grep -n BEE-WORKAROUND` to enumerate
 //! them.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(
     test,
     allow(
@@ -105,46 +102,83 @@
         clippy::panic_in_result_fn
     )
 )]
+// The in-crate tests drive the deprecated legacy surface as the differential
+// oracle for the streaming modules.
+#![cfg_attr(test, allow(deprecated))]
 
 // `alloc` backs the fork maps (`BTreeMap`) and shared error sources (`Arc`).
-// `nectar-primitives`, a hard dependency, already requires an allocator.
+// `nectar-primitives`, a hard dependency of the trie modules, already
+// requires an allocator.
+#[cfg(feature = "std")]
 extern crate alloc;
 
+#[cfg(feature = "std")]
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+#[cfg(feature = "std")]
 use nectar_primitives::chunk::ChunkRef;
 
-pub mod builder;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod codec;
 mod constants;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod cursor;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod editor;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod entry;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod error;
+#[cfg(feature = "std")]
 mod format;
-pub mod manifest;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[deprecated(note = "superseded by Reader, Cursor, and ManifestEditor")]
+pub mod legacy;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod manifest_ref;
+#[cfg(feature = "std")]
 mod node;
 pub mod obfuscation;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod reader;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod view;
 
 // Re-export constants.
 pub use constants::metadata;
+#[cfg(feature = "std")]
 pub(crate) use constants::*;
 
 // Re-export public types.
-pub use builder::ManifestBuilder;
+#[cfg(feature = "std")]
 pub use cursor::{AddressStream, Cursor, Window};
+#[cfg(feature = "std")]
 pub use editor::{DEFAULT_PUT_WIDTH, ManifestEditor, Op};
+#[cfg(feature = "std")]
 pub use entry::Entry;
+#[cfg(feature = "std")]
 pub use error::{
     CursorError, DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result,
 };
-pub use manifest::{Manifest, ManifestIter};
+#[allow(deprecated)]
+#[cfg(feature = "std")]
+pub use legacy::{DEFAULT_LIST_CONCURRENCY, Manifest, ManifestBuilder, ManifestIter};
+#[cfg(feature = "std")]
 pub use manifest_ref::ManifestRef;
+#[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
+#[cfg(feature = "std")]
 pub use reader::{DEFAULT_MAX_DEPTH, Reader};
+#[cfg(feature = "std")]
 pub use view::{ForkView, NodeView, RefWidth, Version};
 
 /// Raw node internals for fuzz harnesses and benches only.
@@ -171,15 +205,26 @@ pub mod hazmat {
 }
 
 // Re-export typed storage traits from primitives.
+#[cfg(feature = "std")]
 pub use nectar_primitives::DefaultMemoryStore;
+#[cfg(feature = "std")]
 pub use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore, TrustedGet};
 
 /// Default manifest type using [`DEFAULT_BODY_SIZE`] and plain mode.
+#[allow(deprecated)]
+#[deprecated(note = "superseded by ManifestEditor and Reader")]
+#[cfg(feature = "std")]
 pub type DefaultManifest<S> = PlainManifest<S, DEFAULT_BODY_SIZE>;
 
 /// Plain manifest: 32-byte refs, no obfuscation.
+#[allow(deprecated)]
+#[deprecated(note = "superseded by ManifestEditor and Reader")]
+#[cfg(feature = "std")]
 pub type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = Manifest<S, ChunkRef, BS>;
 
 /// Encrypted manifest: 64-byte refs, random obfuscation key.
+#[allow(deprecated)]
+#[deprecated(note = "superseded by ManifestEditor and Reader")]
+#[cfg(feature = "std")]
 pub type EncryptedManifest<S, const BS: usize = DEFAULT_BODY_SIZE> =
     Manifest<S, nectar_primitives::EncryptedChunkRef, BS>;

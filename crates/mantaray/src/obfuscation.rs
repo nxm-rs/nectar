@@ -17,7 +17,8 @@ impl ObfuscationKey {
     }
 
     /// Generate a random obfuscation key.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "rand")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rand")))]
     pub fn generate() -> Self {
         use rand::RngExt;
         let mut bytes = [0u8; 32];
