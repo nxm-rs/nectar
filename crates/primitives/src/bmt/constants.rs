@@ -6,9 +6,6 @@ pub const HASH_SIZE: usize = crate::chunk::ChunkRef::SIZE;
 /// Size of a segment in the BMT (same as hash size).
 pub(crate) const SEGMENT_SIZE: usize = HASH_SIZE;
 
-/// Log2 of segment size for bit shifting.
-pub(crate) const SEGMENT_SIZE_LOG2: usize = 5; // 32 = 2^5
-
 /// Length of a segment pair (two segments).
 pub(crate) const SEGMENT_PAIR_LENGTH: usize = 2 * SEGMENT_SIZE;
 
@@ -19,7 +16,7 @@ pub const BRANCHES: usize = 128;
 pub const DEFAULT_BODY_SIZE: usize = BRANCHES * SEGMENT_SIZE;
 
 /// Span header size in bytes (u64).
-pub const SPAN_SIZE: usize = std::mem::size_of::<u64>();
+pub const SPAN_SIZE: usize = size_of::<u64>();
 
 /// Proof length in segments (log2(128) = 7).
 pub(crate) const PROOF_LENGTH: usize = 7;

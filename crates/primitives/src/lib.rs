@@ -45,6 +45,8 @@
     )
 )]
 
+extern crate alloc;
+
 // Re-export dependencies that are part of our public API
 pub use bytes;
 
