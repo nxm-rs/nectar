@@ -13,12 +13,15 @@
 )]
 // The lookup benches deliberately measure the mutating `&mut self` lookup path.
 #![allow(deprecated)]
+use std::cell::RefCell;
+
+use criterion::async_executor::FuturesExecutor;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use futures::executor::block_on;
 use nectar_mantaray::hazmat;
 use nectar_mantaray::{MemoryStore, PlainManifest};
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::ChunkAddress;
+use nectar_testing::run;
 
 type Store = MemoryStore<StandardChunkSet>;
 
@@ -47,25 +50,29 @@ const SPA_PATHS: &[&str] = &[
 
 /// Build a PlainManifest with the SPA website dataset.
 fn build_spa_manifest() -> PlainManifest<Store> {
-    let store = Store::new();
-    let mut m = PlainManifest::new(store);
-    for &p in SPA_PATHS {
-        let addr = make_addr(p.as_bytes());
-        block_on(m.add(p, addr)).unwrap();
-    }
-    m
+    run(async {
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        for &p in SPA_PATHS {
+            let addr = make_addr(p.as_bytes());
+            m.add(p, addr).await.unwrap();
+        }
+        m
+    })
 }
 
 /// Build a PlainManifest with many paths for larger-scale benchmarks.
 fn build_large_manifest(count: usize) -> PlainManifest<Store> {
-    let store = Store::new();
-    let mut m = PlainManifest::new(store);
-    for i in 0..count {
-        let path = format!("dir{}/subdir{}/file{}.dat", i / 100, i / 10, i);
-        let addr = make_addr(path.as_bytes());
-        block_on(m.add(&path, addr)).unwrap();
-    }
-    m
+    run(async {
+        let store = Store::new();
+        let mut m = PlainManifest::new(store);
+        for i in 0..count {
+            let path = format!("dir{}/subdir{}/file{}.dat", i / 100, i / 10, i);
+            let addr = make_addr(path.as_bytes());
+            m.add(&path, addr).await.unwrap();
+        }
+        m
+    })
 }
 
 fn bench_add(c: &mut Criterion) {
@@ -83,12 +90,12 @@ fn bench_add(c: &mut Criterion) {
     ];
 
     group.bench_function("8_paths", |b| {
-        b.iter(|| {
+        b.to_async(FuturesExecutor).iter(|| async {
             let store = Store::new();
             let mut m = PlainManifest::new(store);
             for &p in paths {
                 let addr = make_addr(p.as_bytes());
-                block_on(m.add(p, addr)).unwrap();
+                m.add(p, addr).await.unwrap();
             }
             m
         });
@@ -104,11 +111,11 @@ fn bench_add(c: &mut Criterion) {
             .collect();
 
         group.bench_with_input(BenchmarkId::new("paths", count), &entries, |b, entries| {
-            b.iter(|| {
+            b.to_async(FuturesExecutor).iter(|| async {
                 let store = Store::new();
                 let mut m = PlainManifest::new(store);
                 for (path, addr) in entries {
-                    block_on(m.add(path, *addr)).unwrap();
+                    m.add(path, *addr).await.unwrap();
                 }
                 m
             });
@@ -121,21 +128,27 @@ fn bench_add(c: &mut Criterion) {
 fn bench_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("lookup");
 
-    let mut m = build_spa_manifest();
+    // RefCell hands the mutating lookup path a shared handle, so each polled
+    // iteration future can reborrow the same warm manifest.
+    let m = RefCell::new(build_spa_manifest());
 
     group.bench_function("existing_path", |b| {
-        b.iter(|| {
-            let entry = block_on(m.lookup("js/app.js")).unwrap();
+        b.to_async(FuturesExecutor).iter(|| async {
+            let entry = m.borrow_mut().lookup("js/app.js").await.unwrap();
             entry.address().is_some()
         });
     });
 
     // lookup in a larger trie
-    let mut large = build_large_manifest(500);
+    let large = RefCell::new(build_large_manifest(500));
 
     group.bench_function("500_paths_deep", |b| {
-        b.iter(|| {
-            let entry = block_on(large.lookup("dir4/subdir49/file499.dat")).unwrap();
+        b.to_async(FuturesExecutor).iter(|| async {
+            let entry = large
+                .borrow_mut()
+                .lookup("dir4/subdir49/file499.dat")
+                .await
+                .unwrap();
             entry.address().is_some()
         });
     });
@@ -147,10 +160,10 @@ fn bench_remove(c: &mut Criterion) {
     let mut group = c.benchmark_group("remove");
 
     group.bench_function("single_leaf", |b| {
-        b.iter_batched(
+        b.to_async(FuturesExecutor).iter_batched(
             build_spa_manifest,
-            |mut m| {
-                block_on(m.remove("js/app.js")).unwrap();
+            |mut m| async move {
+                m.remove("js/app.js").await.unwrap();
                 m
             },
             criterion::BatchSize::SmallInput,
@@ -163,30 +176,38 @@ fn bench_remove(c: &mut Criterion) {
 fn bench_has_prefix(c: &mut Criterion) {
     let mut group = c.benchmark_group("has_prefix");
 
-    let mut m = build_spa_manifest();
+    let m = RefCell::new(build_spa_manifest());
 
     group.bench_function("existing_prefix", |b| {
-        b.iter(|| block_on(m.has_prefix("js/")).unwrap());
+        b.to_async(FuturesExecutor)
+            .iter(|| async { m.borrow_mut().has_prefix("js/").await.unwrap() });
     });
 
     group.bench_function("missing_prefix", |b| {
-        b.iter(|| block_on(m.has_prefix("nonexistent/")).unwrap());
+        b.to_async(FuturesExecutor)
+            .iter(|| async { m.borrow_mut().has_prefix("nonexistent/").await.unwrap() });
     });
 
     group.finish();
 }
 
+/// Save the SPA trie, reload it, and force-load every node.
+fn loaded_spa_trie() -> hazmat::Node<nectar_primitives::chunk::ChunkRef> {
+    run(async {
+        let mut m = build_spa_manifest();
+        let root_ref = m.save().await.unwrap();
+        let (_, store) = m.into_parts();
+        let mut m2 = PlainManifest::open(root_ref, store);
+        m2.walk(&mut |_, _| Ok(())).await.unwrap();
+        let (n, _) = m2.into_parts();
+        n
+    })
+}
+
 fn bench_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode");
 
-    // Build a trie via PlainManifest, save to get references assigned, reload.
-    let mut m = build_spa_manifest();
-    let root_ref = block_on(m.save()).unwrap();
-    let (_, store) = m.into_parts();
-    let mut m2 = PlainManifest::open(root_ref, store);
-    // Force-load the entire trie
-    block_on(m2.walk(&mut |_, _| Ok(()))).unwrap();
-    let (n, _) = m2.into_parts();
+    let n = loaded_spa_trie();
 
     group.bench_function("spa_trie", |b| {
         b.iter(|| hazmat::encode(&n).unwrap());
@@ -198,13 +219,7 @@ fn bench_encode(c: &mut Criterion) {
 fn bench_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("decode");
 
-    // Build trie via PlainManifest, save, encode to get binary data.
-    let mut m = build_spa_manifest();
-    let root_ref = block_on(m.save()).unwrap();
-    let (_, store) = m.into_parts();
-    let mut m2 = PlainManifest::open(root_ref, store);
-    block_on(m2.walk(&mut |_, _| Ok(()))).unwrap();
-    let (n, _) = m2.into_parts();
+    let n = loaded_spa_trie();
     let data = hazmat::encode(&n).unwrap();
 
     group.bench_function("spa_trie", |b| {
@@ -218,28 +233,32 @@ fn bench_walk(c: &mut Criterion) {
     let mut group = c.benchmark_group("walk");
 
     group.bench_function("spa_trie", |b| {
-        let mut m = build_spa_manifest();
-        b.iter(|| {
+        let m = RefCell::new(build_spa_manifest());
+        b.to_async(FuturesExecutor).iter(|| async {
             let mut count = 0u32;
-            block_on(m.walk(&mut |_path, _node| {
-                count += 1;
-                Ok(())
-            }))
-            .unwrap();
+            m.borrow_mut()
+                .walk(&mut |_path, _node| {
+                    count += 1;
+                    Ok(())
+                })
+                .await
+                .unwrap();
             count
         });
     });
 
     for &count in &[100, 500] {
         group.bench_with_input(BenchmarkId::new("paths", count), &count, |b, &count| {
-            let mut m = build_large_manifest(count);
-            b.iter(|| {
+            let m = RefCell::new(build_large_manifest(count));
+            b.to_async(FuturesExecutor).iter(|| async {
                 let mut visited = 0u32;
-                block_on(m.walk(&mut |_path, _node| {
-                    visited += 1;
-                    Ok(())
-                }))
-                .unwrap();
+                m.borrow_mut()
+                    .walk(&mut |_path, _node| {
+                        visited += 1;
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
                 visited
             });
         });
@@ -252,10 +271,10 @@ fn bench_save_load(c: &mut Criterion) {
     let mut group = c.benchmark_group("save_load");
 
     group.bench_function("save_spa_trie", |b| {
-        b.iter_batched(
+        b.to_async(FuturesExecutor).iter_batched(
             build_spa_manifest,
-            |mut m| {
-                block_on(m.save()).unwrap();
+            |mut m| async move {
+                m.save().await.unwrap();
                 m
             },
             criterion::BatchSize::SmallInput,
@@ -263,25 +282,28 @@ fn bench_save_load(c: &mut Criterion) {
     });
 
     group.bench_function("load_spa_trie", |b| {
-        let mut m = build_spa_manifest();
-        let root_ref = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
+        let (root_ref, store) = run(async {
+            let mut m = build_spa_manifest();
+            let root_ref = m.save().await.unwrap();
+            let (_, store) = m.into_parts();
+            (root_ref, store)
+        });
 
-        b.iter(|| {
+        b.to_async(FuturesExecutor).iter(|| async {
             let mut m2 = PlainManifest::open(root_ref, store.clone());
-            let _ = block_on(m2.lookup("index.html")).unwrap();
+            let _ = m2.lookup("index.html").await.unwrap();
             m2
         });
     });
 
     group.bench_function("save_load_roundtrip", |b| {
-        b.iter_batched(
+        b.to_async(FuturesExecutor).iter_batched(
             build_spa_manifest,
-            |mut m| {
-                let root_ref = block_on(m.save()).unwrap();
+            |mut m| async move {
+                let root_ref = m.save().await.unwrap();
                 let (_, store) = m.into_parts();
                 let mut m2 = PlainManifest::open(root_ref, store);
-                let _ = block_on(m2.lookup("index.html")).unwrap();
+                let _ = m2.lookup("index.html").await.unwrap();
                 m2
             },
             criterion::BatchSize::SmallInput,
@@ -295,9 +317,9 @@ fn bench_full_workflow(c: &mut Criterion) {
     let mut group = c.benchmark_group("full_workflow");
 
     group.bench_function("add_save_load_lookup", |b| {
-        b.iter(|| {
+        b.to_async(FuturesExecutor).iter(|| async {
             let mut m = build_spa_manifest();
-            let root_ref = block_on(m.save()).unwrap();
+            let root_ref = m.save().await.unwrap();
             let (_, store) = m.into_parts();
             let mut m2 = PlainManifest::open(root_ref, store);
 
@@ -309,7 +331,7 @@ fn bench_full_workflow(c: &mut Criterion) {
                 "js/app.js",
             ];
             for &p in paths {
-                block_on(m2.lookup(p)).unwrap();
+                m2.lookup(p).await.unwrap();
             }
         });
     });
@@ -322,38 +344,38 @@ fn bench_iter(c: &mut Criterion) {
 
     // In-memory iteration (no save/load)
     group.bench_function("spa_trie_in_memory", |b| {
-        let mut m = build_spa_manifest();
+        let m = RefCell::new(build_spa_manifest());
 
-        b.iter(|| {
-            block_on(async {
-                let mut count = 0u32;
-                let mut iter = m.iter();
-                while let Some(result) = iter.next().await {
-                    result.unwrap();
-                    count += 1;
-                }
-                count
-            })
+        b.to_async(FuturesExecutor).iter(|| async {
+            let mut m = m.borrow_mut();
+            let mut count = 0u32;
+            let mut iter = m.iter();
+            while let Some(result) = iter.next().await {
+                result.unwrap();
+                count += 1;
+            }
+            count
         });
     });
 
     // Lazy iteration after save/load (exercises storage loading)
     group.bench_function("spa_trie_lazy", |b| {
-        let mut m = build_spa_manifest();
-        let root_ref = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
+        let (root_ref, store) = run(async {
+            let mut m = build_spa_manifest();
+            let root_ref = m.save().await.unwrap();
+            let (_, store) = m.into_parts();
+            (root_ref, store)
+        });
 
-        b.iter(|| {
+        b.to_async(FuturesExecutor).iter(|| async {
             let mut m2 = PlainManifest::open(root_ref, store.clone());
-            block_on(async {
-                let mut count = 0u32;
-                let mut iter = m2.iter();
-                while let Some(result) = iter.next().await {
-                    result.unwrap();
-                    count += 1;
-                }
-                count
-            })
+            let mut count = 0u32;
+            let mut iter = m2.iter();
+            while let Some(result) = iter.next().await {
+                result.unwrap();
+                count += 1;
+            }
+            count
         });
     });
 
@@ -361,8 +383,8 @@ fn bench_iter(c: &mut Criterion) {
     group.bench_function("entries_spa_trie", |b| {
         let m = build_spa_manifest();
 
-        b.iter(|| {
-            let entries = block_on(m.entries()).unwrap();
+        b.to_async(FuturesExecutor).iter(|| async {
+            let entries = m.entries().await.unwrap();
             entries.len()
         });
     });

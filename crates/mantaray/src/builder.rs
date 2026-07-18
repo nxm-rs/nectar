@@ -206,11 +206,11 @@ impl<S: TrustedStore<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usi
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
     use nectar_primitives::StandardChunkSet;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
     use nectar_primitives::chunk::ChunkAddress;
     use nectar_primitives::store::MemoryStore;
+    use nectar_testing::run;
 
     use super::*;
     use crate::metadata;
@@ -227,186 +227,220 @@ mod tests {
 
     #[test]
     fn save_returns_root_and_read_handle() {
-        let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
-        let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
-        for &path in paths {
-            block_on(builder.add(path, make_addr(path))).unwrap();
-        }
+        run(async {
+            let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+            let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
+            for &path in paths {
+                builder.add(path, make_addr(path)).await.unwrap();
+            }
 
-        let (root, manifest) = block_on(builder.save()).unwrap();
-        assert_eq!(manifest.reference(), Some(&root));
+            let (root, manifest) = builder.save().await.unwrap();
+            assert_eq!(manifest.reference(), Some(&root));
 
-        for &path in paths {
-            let entry = block_on(manifest.get(path)).unwrap().unwrap();
-            assert_eq!(entry.address(), Some(&make_addr(path)));
-        }
+            for &path in paths {
+                let entry = manifest.get(path).await.unwrap().unwrap();
+                assert_eq!(entry.address(), Some(&make_addr(path)));
+            }
+        })
     }
 
     #[test]
     fn empty_builder_saves_to_a_root() {
-        let builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
-        let (_root, manifest) = block_on(builder.save()).unwrap();
-        assert!(block_on(manifest.entries()).unwrap().is_empty());
+        run(async {
+            let builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+            let (_root, manifest) = builder.save().await.unwrap();
+            assert!(manifest.entries().await.unwrap().is_empty());
+        })
     }
 
     #[test]
     fn root_metadata_is_rejected_at_save() {
-        let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
-        // The empty path targets the root node itself; attaching metadata there
-        // produces the unserializable shape the guard must catch.
-        let mut meta = BTreeMap::new();
-        meta.insert("k".to_string(), "v".to_string());
-        block_on(builder.add_with_metadata("", make_addr("root"), meta)).unwrap();
+        run(async {
+            let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+            // The empty path targets the root node itself; attaching metadata there
+            // produces the unserializable shape the guard must catch.
+            let mut meta = BTreeMap::new();
+            meta.insert("k".to_string(), "v".to_string());
+            builder
+                .add_with_metadata("", make_addr("root"), meta)
+                .await
+                .unwrap();
 
-        let err = block_on(builder.save()).unwrap_err();
-        assert!(matches!(err, MantarayError::RootMetadata));
+            let err = builder.save().await.unwrap_err();
+            assert!(matches!(err, MantarayError::RootMetadata));
+        })
     }
 
     #[test]
     fn root_entry_without_metadata_saves() {
-        // A root value with no metadata is serializable (the entry slot lives
-        // in the node header); only root metadata is rejected.
-        let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
-        block_on(builder.add("", make_addr("root"))).unwrap();
-        assert!(block_on(builder.save()).is_ok());
+        run(async {
+            // A root value with no metadata is serializable (the entry slot lives
+            // in the node header); only root metadata is rejected.
+            let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+            builder.add("", make_addr("root")).await.unwrap();
+            assert!(builder.save().await.is_ok());
+        })
     }
 
     #[test]
     fn oversized_metadata_is_rejected_at_save() {
-        let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
-        let mut meta = BTreeMap::new();
-        meta.insert("k".to_string(), "a".repeat(usize::from(u16::MAX) + 16));
-        block_on(builder.add_with_metadata("file", make_addr("file"), meta)).unwrap();
+        run(async {
+            let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+            let mut meta = BTreeMap::new();
+            meta.insert("k".to_string(), "a".repeat(usize::from(u16::MAX) + 16));
+            builder
+                .add_with_metadata("file", make_addr("file"), meta)
+                .await
+                .unwrap();
 
-        let err = block_on(builder.save()).unwrap_err();
-        assert!(matches!(err, MantarayError::MetadataTooLarge { .. }));
+            let err = builder.save().await.unwrap_err();
+            assert!(matches!(err, MantarayError::MetadataTooLarge { .. }));
+        })
     }
 
     #[test]
     fn website_documents_round_trip_through_the_handle() {
-        let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
-        block_on(builder.add("index.html", make_addr("index.html"))).unwrap();
-        block_on(builder.set_index_document("index.html")).unwrap();
-        block_on(builder.set_error_document("404.html")).unwrap();
+        run(async {
+            let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+            builder
+                .add("index.html", make_addr("index.html"))
+                .await
+                .unwrap();
+            builder.set_index_document("index.html").await.unwrap();
+            builder.set_error_document("404.html").await.unwrap();
 
-        let (_root, manifest) = block_on(builder.save()).unwrap();
-        let index = block_on(manifest.get(metadata::ROOT_PATH))
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            index.metadata().get(metadata::WEBSITE_INDEX_DOCUMENT),
-            Some(&"index.html".to_string())
-        );
-        assert_eq!(
-            index.metadata().get(metadata::WEBSITE_ERROR_DOCUMENT),
-            Some(&"404.html".to_string())
-        );
+            let (_root, manifest) = builder.save().await.unwrap();
+            let index = manifest.get(metadata::ROOT_PATH).await.unwrap().unwrap();
+            assert_eq!(
+                index.metadata().get(metadata::WEBSITE_INDEX_DOCUMENT),
+                Some(&"index.html".to_string())
+            );
+            assert_eq!(
+                index.metadata().get(metadata::WEBSITE_ERROR_DOCUMENT),
+                Some(&"404.html".to_string())
+            );
+        })
     }
 
     #[cfg(feature = "std")]
     #[test]
     fn encrypted_builder_round_trips_the_reference() {
-        use nectar_primitives::file::EntryRef;
-        use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
+        run(async {
+            use nectar_primitives::file::EntryRef;
+            use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
 
-        let mut builder = ManifestBuilder::<Store, EncryptedChunkRef>::new_encrypted(Store::new());
-        let eref = EncryptedChunkRef::new(
-            make_addr("index.html"),
-            EncryptionKey::from([7u8; EncryptionKey::SIZE]),
-        );
-        block_on(builder.add("index.html", eref.clone())).unwrap();
+            let mut builder =
+                ManifestBuilder::<Store, EncryptedChunkRef>::new_encrypted(Store::new());
+            let eref = EncryptedChunkRef::new(
+                make_addr("index.html"),
+                EncryptionKey::from([7u8; EncryptionKey::SIZE]),
+            );
+            builder.add("index.html", eref.clone()).await.unwrap();
 
-        let (root, manifest) = block_on(builder.save()).unwrap();
-        // The returned reference addresses the saved root.
-        assert_eq!(manifest.reference(), Some(root.address()));
+            let (root, manifest) = builder.save().await.unwrap();
+            // The returned reference addresses the saved root.
+            assert_eq!(manifest.reference(), Some(root.address()));
 
-        // Address and decryption key both survive encode and decode.
-        let entry = block_on(manifest.get("index.html")).unwrap().unwrap();
-        assert_eq!(entry.reference(), Some(&EntryRef::Encrypted(eref)));
+            // Address and decryption key both survive encode and decode.
+            let entry = manifest.get("index.html").await.unwrap().unwrap();
+            assert_eq!(entry.reference(), Some(&EntryRef::Encrypted(eref)));
+        })
     }
 
     #[cfg(feature = "std")]
     #[test]
     fn encrypted_builder_rejects_root_metadata() {
-        use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
+        run(async {
+            use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
 
-        let mut builder = ManifestBuilder::<Store, EncryptedChunkRef>::new_encrypted(Store::new());
-        let eref = EncryptedChunkRef::new(
-            make_addr("root"),
-            EncryptionKey::from([9u8; EncryptionKey::SIZE]),
-        );
-        let mut meta = BTreeMap::new();
-        meta.insert("k".to_string(), "v".to_string());
-        block_on(builder.add_with_metadata("", eref, meta)).unwrap();
+            let mut builder =
+                ManifestBuilder::<Store, EncryptedChunkRef>::new_encrypted(Store::new());
+            let eref = EncryptedChunkRef::new(
+                make_addr("root"),
+                EncryptionKey::from([9u8; EncryptionKey::SIZE]),
+            );
+            let mut meta = BTreeMap::new();
+            meta.insert("k".to_string(), "v".to_string());
+            builder.add_with_metadata("", eref, meta).await.unwrap();
 
-        let err = block_on(builder.save()).unwrap_err();
-        assert!(matches!(err, MantarayError::RootMetadata));
+            let err = builder.save().await.unwrap_err();
+            assert!(matches!(err, MantarayError::RootMetadata));
+        })
     }
 
     #[test]
     fn put_file_round_trips_through_read() {
-        let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
-        // A multi-chunk payload exercises the splitter and joiner, not just a
-        // single content chunk.
-        let big = vec![0xabu8; DEFAULT_BODY_SIZE * 3 + 17];
-        block_on(builder.put_file("a.txt", b"file A contents".to_vec())).unwrap();
-        block_on(builder.put_file("dir/big.bin", big.clone())).unwrap();
+        run(async {
+            let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+            // A multi-chunk payload exercises the splitter and joiner, not just a
+            // single content chunk.
+            let big = vec![0xabu8; DEFAULT_BODY_SIZE * 3 + 17];
+            builder
+                .put_file("a.txt", b"file A contents".to_vec())
+                .await
+                .unwrap();
+            builder.put_file("dir/big.bin", big.clone()).await.unwrap();
 
-        let (root, manifest) = block_on(builder.save()).unwrap();
+            let (root, manifest) = builder.save().await.unwrap();
 
-        assert_eq!(
-            block_on(manifest.read("a.txt")).unwrap().unwrap(),
-            b"file A contents"
-        );
-        assert_eq!(
-            block_on(manifest.read("dir/big.bin")).unwrap().unwrap(),
-            big
-        );
-        // Absent path reads as None, not an error.
-        assert!(block_on(manifest.read("missing.txt")).unwrap().is_none());
+            assert_eq!(
+                manifest.read("a.txt").await.unwrap().unwrap(),
+                b"file A contents"
+            );
+            assert_eq!(manifest.read("dir/big.bin").await.unwrap().unwrap(), big);
+            // Absent path reads as None, not an error.
+            assert!(manifest.read("missing.txt").await.unwrap().is_none());
 
-        // Reopen from storage: read drives the lazy-load path.
-        let (_, store) = manifest.into_parts();
-        let reopened = super::Manifest::<Store, ChunkRef>::open(root, store);
-        assert_eq!(
-            block_on(reopened.read("dir/big.bin")).unwrap().unwrap(),
-            big
-        );
+            // Reopen from storage: read drives the lazy-load path.
+            let (_, store) = manifest.into_parts();
+            let reopened = super::Manifest::<Store, ChunkRef>::open(root, store);
+            assert_eq!(reopened.read("dir/big.bin").await.unwrap().unwrap(), big);
+        })
     }
 
     #[cfg(feature = "encryption")]
     #[test]
     fn encrypted_put_file_round_trips_through_read() {
-        use nectar_primitives::EncryptedChunkRef;
+        run(async {
+            use nectar_primitives::EncryptedChunkRef;
 
-        let mut builder = ManifestBuilder::<Store, EncryptedChunkRef>::new_encrypted(Store::new());
-        let big = vec![0x5cu8; DEFAULT_BODY_SIZE * 2 + 5];
-        block_on(builder.put_file("secret.txt", b"secret data".to_vec())).unwrap();
-        block_on(builder.put_file("blob.bin", big.clone())).unwrap();
+            let mut builder =
+                ManifestBuilder::<Store, EncryptedChunkRef>::new_encrypted(Store::new());
+            let big = vec![0x5cu8; DEFAULT_BODY_SIZE * 2 + 5];
+            builder
+                .put_file("secret.txt", b"secret data".to_vec())
+                .await
+                .unwrap();
+            builder.put_file("blob.bin", big.clone()).await.unwrap();
 
-        let (_root, manifest) = block_on(builder.save()).unwrap();
+            let (_root, manifest) = builder.save().await.unwrap();
 
-        assert_eq!(
-            block_on(manifest.read("secret.txt")).unwrap().unwrap(),
-            b"secret data"
-        );
-        assert_eq!(block_on(manifest.read("blob.bin")).unwrap().unwrap(), big);
-        assert!(block_on(manifest.read("absent")).unwrap().is_none());
+            assert_eq!(
+                manifest.read("secret.txt").await.unwrap().unwrap(),
+                b"secret data"
+            );
+            assert_eq!(manifest.read("blob.bin").await.unwrap().unwrap(), big);
+            assert!(manifest.read("absent").await.unwrap().is_none());
+        })
     }
 
     #[test]
     fn remove_before_save_drops_the_path() {
-        let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
-        block_on(builder.add("a.txt", make_addr("a"))).unwrap();
-        block_on(builder.add("b.txt", make_addr("b"))).unwrap();
-        block_on(builder.remove("a.txt")).unwrap();
+        run(async {
+            let mut builder: ManifestBuilder<Store> = ManifestBuilder::new(Store::new());
+            builder.add("a.txt", make_addr("a")).await.unwrap();
+            builder.add("b.txt", make_addr("b")).await.unwrap();
+            builder.remove("a.txt").await.unwrap();
 
-        let (_root, manifest) = block_on(builder.save()).unwrap();
-        let paths: Vec<_> = block_on(manifest.entries())
-            .unwrap()
-            .into_iter()
-            .map(|e| e.path().to_vec())
-            .collect();
-        assert_eq!(paths, vec![b"b.txt".to_vec()]);
+            let (_root, manifest) = builder.save().await.unwrap();
+            let paths: Vec<_> = manifest
+                .entries()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|e| e.path().to_vec())
+                .collect();
+            assert_eq!(paths, vec![b"b.txt".to_vec()]);
+        })
     }
 }

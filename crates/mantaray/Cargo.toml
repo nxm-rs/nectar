@@ -32,6 +32,7 @@ rand = { workspace = true, optional = true }
 arbitrary = { workspace = true, features = ["derive"] }
 criterion.workspace = true
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
+nectar-testing.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 

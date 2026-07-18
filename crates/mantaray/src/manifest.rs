@@ -716,11 +716,11 @@ impl<'a, S: TrustedStore<AnyChunkSet<BS>>, R: Reference, const BS: usize> Shared
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
     use nectar_primitives::chunk::ChunkAddress;
     use nectar_primitives::store::{ChunkGet, MemoryStore};
     use nectar_primitives::{StandardChunkSet, Verified};
+    use nectar_testing::run;
 
     use super::*;
 
@@ -728,16 +728,14 @@ mod tests {
     type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = super::Manifest<S, ChunkRef, BS>;
 
     /// Drain an async manifest iterator into a `Vec`, propagating the first error.
-    fn drain<S: TrustedStore<AnyChunkSet<BS>>, R: Reference, const BS: usize>(
+    async fn drain<S: TrustedStore<AnyChunkSet<BS>>, R: Reference, const BS: usize>(
         mut iter: ManifestIter<'_, S, R, BS>,
     ) -> Result<Vec<Entry>> {
-        block_on(async move {
-            let mut out = Vec::new();
-            while let Some(item) = iter.next().await {
-                out.push(item?);
-            }
-            Ok(out)
-        })
+        let mut out = Vec::new();
+        while let Some(item) = iter.next().await {
+            out.push(item?);
+        }
+        Ok(out)
     }
 
     /// Create a ChunkAddress from a string, right-padded with zeroes.
@@ -758,307 +756,333 @@ mod tests {
 
     #[test]
     fn persist_idempotence() {
-        let store = Store::new();
+        run(async {
+            let store = Store::new();
 
-        let mut m = PlainManifest::new(store);
+            let mut m = PlainManifest::new(store);
 
-        let paths = &[
-            "aa", "b", "aaaaaa", "aaaaab", "abbbb", "abbba", "bbbbba", "bbbaaa", "bbbaab",
-        ];
+            let paths = &[
+                "aa", "b", "aaaaaa", "aaaaab", "abbbb", "abbba", "bbbbba", "bbbaaa", "bbbaab",
+            ];
 
-        for &path in paths {
-            block_on(m.save()).unwrap();
-            let addr = make_addr(path);
-            block_on(m.add(path, addr)).unwrap();
-        }
+            for &path in paths {
+                m.save().await.unwrap();
+                let addr = make_addr(path);
+                m.add(path, addr).await.unwrap();
+            }
 
-        block_on(m.save()).unwrap();
+            m.save().await.unwrap();
 
-        for &path in paths {
-            let entry = block_on(m.get(path)).unwrap().unwrap();
-            let expected = make_addr(path);
-            assert_eq!(entry.address(), Some(&expected));
-        }
+            for &path in paths {
+                let entry = m.get(path).await.unwrap().unwrap();
+                let expected = make_addr(path);
+                assert_eq!(entry.address(), Some(&expected));
+            }
+        })
     }
 
     #[test]
     fn manifest_entries() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
-        for &path in paths {
-            let addr = make_addr(path);
-            block_on(m.add(path, addr)).unwrap();
-        }
+            let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
+            for &path in paths {
+                let addr = make_addr(path);
+                m.add(path, addr).await.unwrap();
+            }
 
-        let entries = block_on(m.entries()).unwrap();
-        assert_eq!(entries.len(), paths.len());
+            let entries = m.entries().await.unwrap();
+            assert_eq!(entries.len(), paths.len());
 
-        for &path in paths {
-            assert!(
-                entries.iter().any(|e| e.path() == path.as_bytes()),
-                "path {path} not found in entries"
-            );
-        }
+            for &path in paths {
+                assert!(
+                    entries.iter().any(|e| e.path() == path.as_bytes()),
+                    "path {path} not found in entries"
+                );
+            }
+        })
     }
 
     #[test]
     fn website_document_helpers() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        // Add a dummy entry so the root "/" path has an entry
-        block_on(m.add("/", ChunkAddress::from([0u8; 32]))).unwrap();
+            // Add a dummy entry so the root "/" path has an entry
+            m.add("/", ChunkAddress::from([0u8; 32])).await.unwrap();
 
-        block_on(m.set_index_document("index.html")).unwrap();
-        block_on(m.set_error_document("404.html")).unwrap();
+            m.set_index_document("index.html").await.unwrap();
+            m.set_error_document("404.html").await.unwrap();
 
-        assert_eq!(
-            block_on(m.index_document()).unwrap(),
-            Some("index.html".to_string())
-        );
-        assert_eq!(
-            block_on(m.error_document()).unwrap(),
-            Some("404.html".to_string())
-        );
+            assert_eq!(
+                m.index_document().await.unwrap(),
+                Some("index.html".to_string())
+            );
+            assert_eq!(
+                m.error_document().await.unwrap(),
+                Some("404.html".to_string())
+            );
+        })
     }
 
     #[test]
     fn website_document_helpers_merge_metadata() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        block_on(m.set_index_document("index.html")).unwrap();
-        block_on(m.set_error_document("404.html")).unwrap();
+            m.set_index_document("index.html").await.unwrap();
+            m.set_error_document("404.html").await.unwrap();
 
-        assert_eq!(
-            block_on(m.index_document()).unwrap(),
-            Some("index.html".to_string())
-        );
-        assert_eq!(
-            block_on(m.error_document()).unwrap(),
-            Some("404.html".to_string())
-        );
+            assert_eq!(
+                m.index_document().await.unwrap(),
+                Some("index.html".to_string())
+            );
+            assert_eq!(
+                m.error_document().await.unwrap(),
+                Some("404.html".to_string())
+            );
+        })
     }
 
     #[test]
     fn website_document_helpers_none_when_missing() {
-        let store = Store::new();
-        let m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let m = PlainManifest::new(store);
 
-        assert_eq!(block_on(m.index_document()).unwrap(), None);
-        assert_eq!(block_on(m.error_document()).unwrap(), None);
+            assert_eq!(m.index_document().await.unwrap(), None);
+            assert_eq!(m.error_document().await.unwrap(), None);
+        })
     }
 
     #[test]
     fn iterate_addresses_yields_all_refs() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
-        for &path in paths {
-            let addr = make_addr(path);
-            block_on(m.add(path, addr)).unwrap();
-        }
+            let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
+            for &path in paths {
+                let addr = make_addr(path);
+                m.add(path, addr).await.unwrap();
+            }
 
-        let root_ref = block_on(m.save()).unwrap();
+            let root_ref = m.save().await.unwrap();
 
-        let (_, store) = m.into_parts();
-        let mut m2 = PlainManifest::open(root_ref, store);
-        let mut addresses = Vec::new();
-        block_on(m2.iterate_addresses(|addr| {
-            addresses.push(addr.to_vec());
-            Ok(())
-        }))
-        .unwrap();
+            let (_, store) = m.into_parts();
+            let mut m2 = PlainManifest::open(root_ref, store);
+            let mut addresses = Vec::new();
+            m2.iterate_addresses(|addr| {
+                addresses.push(addr.to_vec());
+                Ok(())
+            })
+            .await
+            .unwrap();
 
-        assert!(!addresses.is_empty());
+            assert!(!addresses.is_empty());
 
-        for &path in paths {
-            let expected = make_addr(path);
-            assert!(
-                addresses.iter().any(|a| a == expected.as_bytes()),
-                "entry ref for {path} not found in addresses"
-            );
-        }
+            for &path in paths {
+                let expected = make_addr(path);
+                assert!(
+                    addresses.iter().any(|a| a == expected.as_bytes()),
+                    "entry ref for {path} not found in addresses"
+                );
+            }
+        })
     }
 
     #[test]
     fn partial_update_workflow() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        // Build a manifest with 100 entries
-        for i in 0..100u32 {
-            let path = format!("dir{}/file{}.txt", i / 10, i);
-            let addr = make_addr_u32(i);
-            block_on(m.add(&path, addr)).unwrap();
-        }
-        let root_ref_1 = block_on(m.save()).unwrap();
+            // Build a manifest with 100 entries
+            for i in 0..100u32 {
+                let path = format!("dir{}/file{}.txt", i / 10, i);
+                let addr = make_addr_u32(i);
+                m.add(&path, addr).await.unwrap();
+            }
+            let root_ref_1 = m.save().await.unwrap();
 
-        // Update a single path
-        let updated_addr = make_addr_u32(999);
-        block_on(m.add("dir0/file0.txt", updated_addr)).unwrap();
-        let root_ref_2 = block_on(m.save()).unwrap();
+            // Update a single path
+            let updated_addr = make_addr_u32(999);
+            m.add("dir0/file0.txt", updated_addr).await.unwrap();
+            let root_ref_2 = m.save().await.unwrap();
 
-        assert_ne!(root_ref_1, root_ref_2);
+            assert_ne!(root_ref_1, root_ref_2);
 
-        let entry = block_on(m.get("dir0/file0.txt")).unwrap().unwrap();
-        assert_eq!(entry.address(), Some(&updated_addr));
+            let entry = m.get("dir0/file0.txt").await.unwrap().unwrap();
+            assert_eq!(entry.address(), Some(&updated_addr));
 
-        for i in 1..100u32 {
-            let path = format!("dir{}/file{}.txt", i / 10, i);
-            let entry = block_on(m.get(&path)).unwrap().unwrap();
-            let expected = make_addr_u32(i);
-            assert_eq!(
-                entry.address(),
-                Some(&expected),
-                "entry at {path} was corrupted"
-            );
-        }
+            for i in 1..100u32 {
+                let path = format!("dir{}/file{}.txt", i / 10, i);
+                let entry = m.get(&path).await.unwrap().unwrap();
+                let expected = make_addr_u32(i);
+                assert_eq!(
+                    entry.address(),
+                    Some(&expected),
+                    "entry at {path} was corrupted"
+                );
+            }
+        })
     }
 
     #[test]
     fn stream_yields_all_entries() {
-        use futures::StreamExt;
+        run(async {
+            use futures::StreamExt;
 
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
-        for &path in paths {
-            let addr = make_addr(path);
-            block_on(m.add(path, addr)).unwrap();
-        }
+            let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
+            for &path in paths {
+                let addr = make_addr(path);
+                m.add(path, addr).await.unwrap();
+            }
 
-        let all_entries: Vec<_> =
-            block_on(async { m.stream().map(|r| r.unwrap()).collect::<Vec<_>>().await });
+            let all_entries: Vec<_> = m.stream().map(|r| r.unwrap()).collect::<Vec<_>>().await;
 
-        assert_eq!(all_entries.len(), paths.len());
-        for &path in paths {
-            assert!(
-                all_entries.iter().any(|e| e.path() == path.as_bytes()),
-                "path {path} not found via stream"
-            );
-        }
+            assert_eq!(all_entries.len(), paths.len());
+            for &path in paths {
+                assert!(
+                    all_entries.iter().any(|e| e.path() == path.as_bytes()),
+                    "path {path} not found via stream"
+                );
+            }
+        })
     }
 
     #[test]
     fn manifest_iter_lazy() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
-        for &path in paths {
-            let addr = make_addr(path);
-            block_on(m.add(path, addr)).unwrap();
-        }
+            let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
+            for &path in paths {
+                let addr = make_addr(path);
+                m.add(path, addr).await.unwrap();
+            }
 
-        // Save and reload to exercise lazy loading
-        let root_ref = block_on(m.save()).unwrap();
+            // Save and reload to exercise lazy loading
+            let root_ref = m.save().await.unwrap();
 
-        let (_, store) = m.into_parts();
-        let mut m2 = PlainManifest::open(root_ref, store);
+            let (_, store) = m.into_parts();
+            let mut m2 = PlainManifest::open(root_ref, store);
 
-        let mut visited = Vec::new();
-        if let Some(result) = block_on(m2.iter().next()) {
-            let entry = result.unwrap();
-            visited.push(entry.path);
-        }
-        assert_eq!(visited.len(), 1);
+            let mut visited = Vec::new();
+            if let Some(result) = m2.iter().next().await {
+                let entry = result.unwrap();
+                visited.push(entry.path);
+            }
+            assert_eq!(visited.len(), 1);
 
-        // Full iteration
-        let (_, store) = m2.into_parts();
-        let mut m3 = PlainManifest::open(root_ref, store);
-        let all_entries = drain(m3.iter()).unwrap();
+            // Full iteration
+            let (_, store) = m2.into_parts();
+            let mut m3 = PlainManifest::open(root_ref, store);
+            let all_entries = drain(m3.iter()).await.unwrap();
 
-        assert_eq!(all_entries.len(), paths.len());
-        for &path in paths {
-            assert!(
-                all_entries.iter().any(|e| e.path() == path.as_bytes()),
-                "path {path} not found via iterator"
-            );
-        }
+            assert_eq!(all_entries.len(), paths.len());
+            for &path in paths {
+                assert!(
+                    all_entries.iter().any(|e| e.path() == path.as_bytes()),
+                    "path {path} not found via iterator"
+                );
+            }
+        })
     }
 
     #[test]
     fn iter_empty_manifest() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
-        let entries = drain(m.iter()).unwrap();
-        assert!(entries.is_empty(), "empty manifest should yield no entries");
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
+            let entries = drain(m.iter()).await.unwrap();
+            assert!(entries.is_empty(), "empty manifest should yield no entries");
+        })
     }
 
     #[test]
     fn iter_single_entry() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
-        let addr = make_addr("only");
-        block_on(m.add("only.txt", addr)).unwrap();
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
+            let addr = make_addr("only");
+            m.add("only.txt", addr).await.unwrap();
 
-        let entries = drain(m.iter()).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].path(), b"only.txt");
-        assert_eq!(entries[0].address(), Some(&addr));
+            let entries = drain(m.iter()).await.unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].path(), b"only.txt");
+            assert_eq!(entries[0].address(), Some(&addr));
+        })
     }
 
     #[test]
     fn iter_deep_trie_with_lazy_loading() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        // Build a deep trie: paths share long prefixes, forcing multiple
-        // trie levels. After save+reload, iteration must lazily load each
-        // intermediate node via raw-pointer traversal.
-        let deep_paths: Vec<String> = (0..20)
-            .map(|i| format!("a/b/c/d/e/f/g/h/file{i:02}.dat"))
-            .collect();
-        for path in &deep_paths {
-            block_on(m.add(path, make_addr(path))).unwrap();
-        }
+            // Build a deep trie: paths share long prefixes, forcing multiple
+            // trie levels. After save+reload, iteration must lazily load each
+            // intermediate node via raw-pointer traversal.
+            let deep_paths: Vec<String> = (0..20)
+                .map(|i| format!("a/b/c/d/e/f/g/h/file{i:02}.dat"))
+                .collect();
+            for path in &deep_paths {
+                m.add(path, make_addr(path)).await.unwrap();
+            }
 
-        let root_ref = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
-        let mut m2 = PlainManifest::open(root_ref, store);
+            let root_ref = m.save().await.unwrap();
+            let (_, store) = m.into_parts();
+            let mut m2 = PlainManifest::open(root_ref, store);
 
-        let entries = drain(m2.iter()).unwrap();
-        assert_eq!(entries.len(), deep_paths.len());
-        for path in &deep_paths {
-            assert!(
-                entries.iter().any(|e| e.path() == path.as_bytes()),
-                "deep path {path} not found via iterator"
-            );
-        }
+            let entries = drain(m2.iter()).await.unwrap();
+            assert_eq!(entries.len(), deep_paths.len());
+            for path in &deep_paths {
+                assert!(
+                    entries.iter().any(|e| e.path() == path.as_bytes()),
+                    "deep path {path} not found via iterator"
+                );
+            }
+        })
     }
 
     #[test]
     fn iter_partial_then_reiterate() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        let paths = &["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"];
-        for &path in paths {
-            block_on(m.add(path, make_addr(path))).unwrap();
-        }
+            let paths = &["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"];
+            for &path in paths {
+                m.add(path, make_addr(path)).await.unwrap();
+            }
 
-        // Partial iteration: take only 2 entries, then drop iterator.
-        {
-            let mut iter = m.iter();
-            let _first = block_on(iter.next()).unwrap().unwrap();
-            let _second = block_on(iter.next()).unwrap().unwrap();
-            // Iterator dropped here; must not corrupt trie state.
-        }
+            // Partial iteration: take only 2 entries, then drop iterator.
+            {
+                let mut iter = m.iter();
+                let _first = iter.next().await.unwrap().unwrap();
+                let _second = iter.next().await.unwrap().unwrap();
+                // Iterator dropped here; must not corrupt trie state.
+            }
 
-        // Full re-iteration should still yield all entries.
-        let all = drain(m.iter()).unwrap();
-        assert_eq!(all.len(), paths.len());
-        for &path in paths {
-            assert!(
-                all.iter().any(|e| e.path() == path.as_bytes()),
-                "path {path} missing after partial iteration + re-iteration"
-            );
-        }
+            // Full re-iteration should still yield all entries.
+            let all = drain(m.iter()).await.unwrap();
+            assert_eq!(all.len(), paths.len());
+            for &path in paths {
+                assert!(
+                    all.iter().any(|e| e.path() == path.as_bytes()),
+                    "path {path} missing after partial iteration + re-iteration"
+                );
+            }
+        })
     }
 
     /// A `ChunkGet` wrapper that records the peak number of concurrent
@@ -1128,13 +1152,15 @@ mod tests {
 
     /// Build a saved manifest, reopen it over a `TrackingStore`, and return it
     /// alongside the recorded paths.
-    fn saved_tracking_manifest(paths: &[&str]) -> (PlainManifest<TrackingStore>, Vec<Vec<u8>>) {
+    async fn saved_tracking_manifest(
+        paths: &[&str],
+    ) -> (PlainManifest<TrackingStore>, Vec<Vec<u8>>) {
         let store = Store::new();
         let mut m = PlainManifest::new(store);
         for &path in paths {
-            block_on(m.add(path, make_addr(path))).unwrap();
+            m.add(path, make_addr(path)).await.unwrap();
         }
-        let root_ref = block_on(m.save()).unwrap();
+        let root_ref = m.save().await.unwrap();
         let (_, store) = m.into_parts();
         let expected = paths.iter().map(|p| p.as_bytes().to_vec()).collect();
         (
@@ -1151,318 +1177,363 @@ mod tests {
 
     #[test]
     fn entries_concurrent_matches_serial() {
-        let paths = &[
-            "index.html",
-            "img/1.png",
-            "img/2.png",
-            "img/sub/deep.png",
-            "robots.txt",
-            "css/main.css",
-        ];
+        run(async {
+            let paths = &[
+                "index.html",
+                "img/1.png",
+                "img/2.png",
+                "img/sub/deep.png",
+                "robots.txt",
+                "css/main.css",
+            ];
 
-        // Serial reference set.
-        let store = Store::new();
-        let mut serial = PlainManifest::new(store);
-        for &path in paths {
-            block_on(serial.add(path, make_addr(path))).unwrap();
-        }
-        let serial_entries = block_on(serial.entries()).unwrap();
+            // Serial reference set.
+            let store = Store::new();
+            let mut serial = PlainManifest::new(store);
+            for &path in paths {
+                serial.add(path, make_addr(path)).await.unwrap();
+            }
+            let serial_entries = serial.entries().await.unwrap();
 
-        let (m, _) = saved_tracking_manifest(paths);
-        let conc = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
+            let (m, _) = saved_tracking_manifest(paths).await;
+            let conc = m
+                .entries_concurrent(DEFAULT_LIST_CONCURRENCY)
+                .await
+                .unwrap();
 
-        assert_eq!(
-            sorted_paths(&serial_entries),
-            sorted_paths(&conc),
-            "concurrent listing must yield the same entry set as serial"
-        );
-        assert_eq!(conc.len(), paths.len());
+            assert_eq!(
+                sorted_paths(&serial_entries),
+                sorted_paths(&conc),
+                "concurrent listing must yield the same entry set as serial"
+            );
+            assert_eq!(conc.len(), paths.len());
+        })
     }
 
     #[test]
     fn entries_concurrent_is_bounded_and_parallel() {
-        // Twenty sibling files share the "file" prefix, so the widest trie
-        // level has many forks fetched in one batch.
-        let owned: Vec<String> = (0..20).map(|i| format!("file{i:02}.dat")).collect();
-        let paths: Vec<&str> = owned.iter().map(String::as_str).collect();
+        run(async {
+            // Twenty sibling files share the "file" prefix, so the widest trie
+            // level has many forks fetched in one batch.
+            let owned: Vec<String> = (0..20).map(|i| format!("file{i:02}.dat")).collect();
+            let paths: Vec<&str> = owned.iter().map(String::as_str).collect();
 
-        let (m, expected) = saved_tracking_manifest(&paths);
-        let width = 4;
-        let entries = block_on(m.entries_concurrent(width)).unwrap();
+            let (m, expected) = saved_tracking_manifest(&paths).await;
+            let width = 4;
+            let entries = m.entries_concurrent(width).await.unwrap();
 
-        let mut got = sorted_paths(&entries);
-        let mut want = expected;
-        want.sort();
-        assert_eq!(got.len(), paths.len());
-        got.dedup();
-        assert_eq!(got, want, "all sibling files must be listed exactly once");
+            let mut got = sorted_paths(&entries);
+            let mut want = expected;
+            want.sort();
+            assert_eq!(got.len(), paths.len());
+            got.dedup();
+            assert_eq!(got, want, "all sibling files must be listed exactly once");
 
-        let store = m.store();
-        assert!(store.gets() > 1, "listing must perform multiple fetches");
-        assert!(
-            store.max_inflight() > 1,
-            "concurrent listing must overlap fetches (got {})",
-            store.max_inflight()
-        );
-        assert!(
-            store.max_inflight() <= width,
-            "in-flight fetches must stay bounded by width {width} (got {})",
-            store.max_inflight()
-        );
+            let store = m.store();
+            assert!(store.gets() > 1, "listing must perform multiple fetches");
+            assert!(
+                store.max_inflight() > 1,
+                "concurrent listing must overlap fetches (got {})",
+                store.max_inflight()
+            );
+            assert!(
+                store.max_inflight() <= width,
+                "in-flight fetches must stay bounded by width {width} (got {})",
+                store.max_inflight()
+            );
+        })
     }
 
     #[test]
     fn entries_concurrent_width_one_is_serial() {
-        let owned: Vec<String> = (0..12).map(|i| format!("file{i:02}.dat")).collect();
-        let paths: Vec<&str> = owned.iter().map(String::as_str).collect();
+        run(async {
+            let owned: Vec<String> = (0..12).map(|i| format!("file{i:02}.dat")).collect();
+            let paths: Vec<&str> = owned.iter().map(String::as_str).collect();
 
-        let (m, _) = saved_tracking_manifest(&paths);
-        let entries = block_on(m.entries_concurrent(1)).unwrap();
+            let (m, _) = saved_tracking_manifest(&paths).await;
+            let entries = m.entries_concurrent(1).await.unwrap();
 
-        assert_eq!(entries.len(), paths.len());
-        assert_eq!(
-            m.store().max_inflight(),
-            1,
-            "width 1 must never overlap fetches"
-        );
+            assert_eq!(entries.len(), paths.len());
+            assert_eq!(
+                m.store().max_inflight(),
+                1,
+                "width 1 must never overlap fetches"
+            );
+        })
     }
 
     #[test]
     fn entries_concurrent_clamps_zero_width() {
-        let (m, _) = saved_tracking_manifest(&["a.txt", "b.txt"]);
-        let entries = block_on(m.entries_concurrent(0)).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(m.store().max_inflight(), 1, "zero width clamps to serial");
+        run(async {
+            let (m, _) = saved_tracking_manifest(&["a.txt", "b.txt"]).await;
+            let entries = m.entries_concurrent(0).await.unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(m.store().max_inflight(), 1, "zero width clamps to serial");
+        })
     }
 
     #[test]
     fn entries_concurrent_empty_manifest() {
-        let store = Store::new();
-        let m = PlainManifest::new(store);
-        let entries = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
-        assert!(entries.is_empty(), "empty manifest yields no entries");
+        run(async {
+            let store = Store::new();
+            let m = PlainManifest::new(store);
+            let entries = m
+                .entries_concurrent(DEFAULT_LIST_CONCURRENCY)
+                .await
+                .unwrap();
+            assert!(entries.is_empty(), "empty manifest yields no entries");
+        })
     }
 
     #[test]
     fn entries_concurrent_single_entry() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
-        let addr = make_addr("only");
-        block_on(m.add("only.txt", addr)).unwrap();
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
+            let addr = make_addr("only");
+            m.add("only.txt", addr).await.unwrap();
 
-        let entries = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].path(), b"only.txt");
-        assert_eq!(entries[0].address(), Some(&addr));
+            let entries = m
+                .entries_concurrent(DEFAULT_LIST_CONCURRENCY)
+                .await
+                .unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].path(), b"only.txt");
+            assert_eq!(entries[0].address(), Some(&addr));
+        })
     }
 
     #[test]
     fn entries_concurrent_deep_trie() {
-        let deep_paths: Vec<String> = (0..20)
-            .map(|i| format!("a/b/c/d/e/f/g/h/file{i:02}.dat"))
-            .collect();
-        let paths: Vec<&str> = deep_paths.iter().map(String::as_str).collect();
+        run(async {
+            let deep_paths: Vec<String> = (0..20)
+                .map(|i| format!("a/b/c/d/e/f/g/h/file{i:02}.dat"))
+                .collect();
+            let paths: Vec<&str> = deep_paths.iter().map(String::as_str).collect();
 
-        let (m, _) = saved_tracking_manifest(&paths);
-        let entries = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
+            let (m, _) = saved_tracking_manifest(&paths).await;
+            let entries = m
+                .entries_concurrent(DEFAULT_LIST_CONCURRENCY)
+                .await
+                .unwrap();
 
-        assert_eq!(entries.len(), deep_paths.len());
-        let got = sorted_paths(&entries);
-        for path in &deep_paths {
-            assert!(
-                got.iter().any(|p| p == path.as_bytes()),
-                "deep path {path} missing from concurrent listing"
-            );
-        }
+            assert_eq!(entries.len(), deep_paths.len());
+            let got = sorted_paths(&entries);
+            for path in &deep_paths {
+                assert!(
+                    got.iter().any(|p| p == path.as_bytes()),
+                    "deep path {path} missing from concurrent listing"
+                );
+            }
+        })
     }
 
     #[test]
     fn entries_concurrent_shared_prefix_branches() {
-        // Shared-prefix branches force the trie to split mid-prefix, exercising
-        // sibling fan-out at several levels.
-        let paths = &[
-            "aaaaaa", "aaaaab", "aaabbb", "abbbbb", "abbbba", "bbbbba", "bbbaaa", "bbbaab",
-        ];
-        let (m, _) = saved_tracking_manifest(paths);
-        let entries = block_on(m.entries_concurrent(DEFAULT_LIST_CONCURRENCY)).unwrap();
+        run(async {
+            // Shared-prefix branches force the trie to split mid-prefix, exercising
+            // sibling fan-out at several levels.
+            let paths = &[
+                "aaaaaa", "aaaaab", "aaabbb", "abbbbb", "abbbba", "bbbbba", "bbbaaa", "bbbaab",
+            ];
+            let (m, _) = saved_tracking_manifest(paths).await;
+            let entries = m
+                .entries_concurrent(DEFAULT_LIST_CONCURRENCY)
+                .await
+                .unwrap();
 
-        assert_eq!(sorted_paths(&entries), {
-            let mut v: Vec<Vec<u8>> = paths.iter().map(|p| p.as_bytes().to_vec()).collect();
-            v.sort();
-            v
-        });
+            assert_eq!(sorted_paths(&entries), {
+                let mut v: Vec<Vec<u8>> = paths.iter().map(|p| p.as_bytes().to_vec()).collect();
+                v.sort();
+                v
+            });
+        })
     }
 
     #[test]
     fn iter_partial_then_reiterate_lazy() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
 
-        let paths = &["x/1.txt", "x/2.txt", "y/1.txt", "y/2.txt", "z.txt"];
-        for &path in paths {
-            block_on(m.add(path, make_addr(path))).unwrap();
-        }
+            let paths = &["x/1.txt", "x/2.txt", "y/1.txt", "y/2.txt", "z.txt"];
+            for &path in paths {
+                m.add(path, make_addr(path)).await.unwrap();
+            }
 
-        let root_ref = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
-        let mut m2 = PlainManifest::open(root_ref, store);
+            let root_ref = m.save().await.unwrap();
+            let (_, store) = m.into_parts();
+            let mut m2 = PlainManifest::open(root_ref, store);
 
-        // Partial iteration on a lazy-loaded manifest.
-        {
-            let mut iter = m2.iter();
-            let _first = block_on(iter.next()).unwrap().unwrap();
-        }
+            // Partial iteration on a lazy-loaded manifest.
+            {
+                let mut iter = m2.iter();
+                let _first = iter.next().await.unwrap().unwrap();
+            }
 
-        // Re-iterate: previously loaded nodes stay loaded, the rest
-        // are lazily fetched again through the raw-pointer path.
-        let all = drain(m2.iter()).unwrap();
-        assert_eq!(all.len(), paths.len());
-        for &path in paths {
-            assert!(
-                all.iter().any(|e| e.path() == path.as_bytes()),
-                "path {path} missing after partial lazy iteration"
-            );
-        }
+            // Re-iterate: previously loaded nodes stay loaded, the rest
+            // are lazily fetched again through the raw-pointer path.
+            let all = drain(m2.iter()).await.unwrap();
+            assert_eq!(all.len(), paths.len());
+            for &path in paths {
+                assert!(
+                    all.iter().any(|e| e.path() == path.as_bytes()),
+                    "path {path} missing after partial lazy iteration"
+                );
+            }
+        })
     }
 
     #[test]
     fn get_returns_some_for_present_path() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
-        let addr = make_addr("only");
-        block_on(m.add("only.txt", addr)).unwrap();
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
+            let addr = make_addr("only");
+            m.add("only.txt", addr).await.unwrap();
 
-        let entry = block_on(m.get("only.txt")).unwrap().unwrap();
-        assert_eq!(entry.address(), Some(&addr));
+            let entry = m.get("only.txt").await.unwrap().unwrap();
+            assert_eq!(entry.address(), Some(&addr));
+        })
     }
 
     #[test]
     fn get_returns_none_for_absent_path() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
-        block_on(m.add("present.txt", make_addr("present"))).unwrap();
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
+            m.add("present.txt", make_addr("present")).await.unwrap();
 
-        assert!(block_on(m.get("absent.txt")).unwrap().is_none());
-        // A pure prefix of an existing path is an edge, not a value.
-        assert!(block_on(m.get("present")).unwrap().is_none());
+            assert!(m.get("absent.txt").await.unwrap().is_none());
+            // A pure prefix of an existing path is an edge, not a value.
+            assert!(m.get("present").await.unwrap().is_none());
+        })
     }
 
     #[test]
     fn get_resolves_after_save_reload() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
-        let paths = &["index.html", "img/1.png", "img/2.png"];
-        for &path in paths {
-            block_on(m.add(path, make_addr(path))).unwrap();
-        }
-        let root_ref = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
-        let m2 = PlainManifest::open(root_ref, store);
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
+            let paths = &["index.html", "img/1.png", "img/2.png"];
+            for &path in paths {
+                m.add(path, make_addr(path)).await.unwrap();
+            }
+            let root_ref = m.save().await.unwrap();
+            let (_, store) = m.into_parts();
+            let m2 = PlainManifest::open(root_ref, store);
 
-        // Shared reference: several reads share `&m2` without exclusive borrow.
-        let read = |p: &str| block_on(m2.get(p)).unwrap();
-        assert_eq!(
-            read("img/1.png").unwrap().address(),
-            Some(&make_addr("img/1.png"))
-        );
-        assert!(read("img/3.png").is_none());
-        assert_eq!(
-            read("index.html").unwrap().address(),
-            Some(&make_addr("index.html"))
-        );
+            // Shared reference: several reads share `&m2` without exclusive borrow.
+            let read = async |p: &str| m2.get(p).await.unwrap();
+            assert_eq!(
+                read("img/1.png").await.unwrap().address(),
+                Some(&make_addr("img/1.png"))
+            );
+            assert!(read("img/3.png").await.is_none());
+            assert_eq!(
+                read("index.html").await.unwrap().address(),
+                Some(&make_addr("index.html"))
+            );
+        })
     }
 
     #[test]
     fn shared_reads_take_shared_reference() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
-        block_on(m.add("/", ChunkAddress::from([0u8; 32]))).unwrap();
-        block_on(m.set_index_document("index.html")).unwrap();
-        block_on(m.add("a.txt", make_addr("a"))).unwrap();
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
+            m.add("/", ChunkAddress::from([0u8; 32])).await.unwrap();
+            m.set_index_document("index.html").await.unwrap();
+            m.add("a.txt", make_addr("a")).await.unwrap();
 
-        // All read accessors are callable through a shared borrow.
-        fn read_all<S: TrustedStore<StandardChunkSet>>(m: &PlainManifest<S>) {
-            assert!(block_on(m.get("a.txt")).unwrap().is_some());
-            assert_eq!(block_on(m.entries()).unwrap().len(), 2);
-            assert_eq!(
-                block_on(m.index_document()).unwrap(),
-                Some("index.html".to_string())
-            );
-        }
-        read_all(&m);
+            // All read accessors are callable through a shared borrow.
+            async fn read_all<S: TrustedStore<StandardChunkSet>>(m: &PlainManifest<S>) {
+                assert!(m.get("a.txt").await.unwrap().is_some());
+                assert_eq!(m.entries().await.unwrap().len(), 2);
+                assert_eq!(
+                    m.index_document().await.unwrap(),
+                    Some("index.html".to_string())
+                );
+            }
+            read_all(&m).await;
+        })
     }
 
     #[test]
     #[allow(deprecated)]
     fn deprecated_lookup_still_errors_on_miss() {
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
-        block_on(m.add("present.txt", make_addr("present"))).unwrap();
+        run(async {
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
+            m.add("present.txt", make_addr("present")).await.unwrap();
 
-        assert!(block_on(m.lookup("present.txt")).is_ok());
-        assert!(block_on(m.lookup("absent.txt")).is_err());
+            assert!(m.lookup("present.txt").await.is_ok());
+            assert!(m.lookup("absent.txt").await.is_err());
+        })
     }
 
     #[test]
     fn stream_load_error_does_not_corrupt_sibling_paths() {
-        use core::sync::atomic::{AtomicUsize, Ordering};
-        use futures::StreamExt;
+        run(async {
+            use core::sync::atomic::{AtomicUsize, Ordering};
+            use futures::StreamExt;
 
-        // Store injecting a single load failure on the `fail_on`-th get,
-        // delegating every other get to the inner store.
-        struct FailOnceStore {
-            inner: Store,
-            fail_on: usize,
-            count: AtomicUsize,
-        }
-
-        impl ChunkGet<StandardChunkSet> for FailOnceStore {
-            type Trust = Verified;
-            type Error = nectar_primitives::store::ChunkStoreError;
-
-            async fn get(
-                &self,
-                address: &ChunkAddress,
-            ) -> core::result::Result<nectar_primitives::Chunk, Self::Error> {
-                let n = self.count.fetch_add(1, Ordering::SeqCst) + 1;
-                if n == self.fail_on {
-                    // Force a miss to surface a load error mid-traversal.
-                    return ChunkGet::get(&self.inner, &ChunkAddress::from([0xffu8; 32])).await;
-                }
-                ChunkGet::get(&self.inner, address).await
+            // Store injecting a single load failure on the `fail_on`-th get,
+            // delegating every other get to the inner store.
+            struct FailOnceStore {
+                inner: Store,
+                fail_on: usize,
+                count: AtomicUsize,
             }
-        }
 
-        // Two top-level leaves; 'a' sorts before 'b', so the depth-first
-        // traversal descends the 'a' fork first.
-        let store = Store::new();
-        let mut m = PlainManifest::new(store);
-        block_on(m.add("a.txt", make_addr("a.txt"))).unwrap();
-        block_on(m.add("b.txt", make_addr("b.txt"))).unwrap();
-        let root_ref = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
+            impl ChunkGet<StandardChunkSet> for FailOnceStore {
+                type Trust = Verified;
+                type Error = nectar_primitives::store::ChunkStoreError;
 
-        // get #1 loads the root; get #2 is the 'a' leaf and is failed; get #3
-        // is the sibling 'b' leaf and succeeds. A resumed traversal must not
-        // carry the failed fork's prefix into the sibling's path.
-        let failing = FailOnceStore {
-            inner: store,
-            fail_on: 2,
-            count: AtomicUsize::new(0),
-        };
-        let m2 = PlainManifest::open(root_ref, failing);
+                async fn get(
+                    &self,
+                    address: &ChunkAddress,
+                ) -> core::result::Result<nectar_primitives::Chunk, Self::Error> {
+                    let n = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n == self.fail_on {
+                        // Force a miss to surface a load error mid-traversal.
+                        return ChunkGet::get(&self.inner, &ChunkAddress::from([0xffu8; 32])).await;
+                    }
+                    ChunkGet::get(&self.inner, address).await
+                }
+            }
 
-        let items: Vec<Result<Entry>> = block_on(m2.stream().collect::<Vec<_>>());
+            // Two top-level leaves; 'a' sorts before 'b', so the depth-first
+            // traversal descends the 'a' fork first.
+            let store = Store::new();
+            let mut m = PlainManifest::new(store);
+            m.add("a.txt", make_addr("a.txt")).await.unwrap();
+            m.add("b.txt", make_addr("b.txt")).await.unwrap();
+            let root_ref = m.save().await.unwrap();
+            let (_, store) = m.into_parts();
 
-        assert_eq!(items.len(), 2);
-        assert!(
-            items[0].is_err(),
-            "first descent should surface the injected load error"
-        );
-        assert_eq!(
-            items[1].as_ref().unwrap().path(),
-            b"b.txt",
-            "sibling path must not be prefixed by the failed fork"
-        );
+            // get #1 loads the root; get #2 is the 'a' leaf and is failed; get #3
+            // is the sibling 'b' leaf and succeeds. A resumed traversal must not
+            // carry the failed fork's prefix into the sibling's path.
+            let failing = FailOnceStore {
+                inner: store,
+                fail_on: 2,
+                count: AtomicUsize::new(0),
+            };
+            let m2 = PlainManifest::open(root_ref, failing);
+
+            let items: Vec<Result<Entry>> = m2.stream().collect::<Vec<_>>().await;
+
+            assert_eq!(items.len(), 2);
+            assert!(
+                items[0].is_err(),
+                "first descent should surface the injected load error"
+            );
+            assert_eq!(
+                items[1].as_ref().unwrap().path(),
+                b"b.txt",
+                "sibling path must not be prefixed by the failed fork"
+            );
+        })
     }
 }

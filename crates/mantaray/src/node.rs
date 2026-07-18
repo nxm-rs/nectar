@@ -1225,7 +1225,7 @@ mod tests {
         ]
     }
 
-    use futures::executor::block_on;
+    use nectar_testing::run;
 
     const NL: NullLoader = NullLoader;
     const BS: usize = DEFAULT_BODY_SIZE;
@@ -1240,50 +1240,54 @@ mod tests {
     }
 
     /// In-memory add: delegates to `add` with NullLoader.
-    fn node_add(n: &mut Node, path: &[u8], entry: ChunkRef, meta: BTreeMap<String, String>) {
-        block_on(n.add::<NullLoader, BS>(path, Some(entry), meta, &NL)).unwrap();
+    async fn node_add(n: &mut Node, path: &[u8], entry: ChunkRef, meta: BTreeMap<String, String>) {
+        n.add::<NullLoader, BS>(path, Some(entry), meta, &NL)
+            .await
+            .unwrap();
     }
 
     /// In-memory lookup: delegates to `lookup` with NullLoader.
-    fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<Option<&'n ChunkRef>> {
-        block_on(n.lookup::<NullLoader, BS>(path, &NL))
+    async fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<Option<&'n ChunkRef>> {
+        n.lookup::<NullLoader, BS>(path, &NL).await
     }
 
     /// In-memory lookup_node: delegates to `lookup_node` with NullLoader.
-    fn node_lookup_node<'n>(n: &'n mut Node, path: &[u8]) -> Result<&'n mut Node> {
-        block_on(n.lookup_node::<NullLoader, BS>(path, &NL))
+    async fn node_lookup_node<'n>(n: &'n mut Node, path: &[u8]) -> Result<&'n mut Node> {
+        n.lookup_node::<NullLoader, BS>(path, &NL).await
     }
 
     /// In-memory remove: delegates to `remove` with NullLoader.
-    fn node_remove(n: &mut Node, path: &[u8]) -> Result<()> {
-        block_on(n.remove::<NullLoader, BS>(path, &NL))
+    async fn node_remove(n: &mut Node, path: &[u8]) -> Result<()> {
+        n.remove::<NullLoader, BS>(path, &NL).await
     }
 
     /// In-memory has_prefix: delegates to `has_prefix` with NullLoader.
-    fn node_has_prefix(n: &mut Node, path: &[u8]) -> Result<bool> {
-        block_on(n.has_prefix::<NullLoader, BS>(path, &NL))
+    async fn node_has_prefix(n: &mut Node, path: &[u8]) -> Result<bool> {
+        n.has_prefix::<NullLoader, BS>(path, &NL).await
     }
 
     /// In-memory walk: delegates to `walk` with NullLoader.
-    fn node_walk<F>(n: &mut Node, f: &mut F) -> Result<()>
+    async fn node_walk<F>(n: &mut Node, f: &mut F) -> Result<()>
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        block_on(n.walk::<NullLoader, BS, _>(&NL, f))
+        n.walk::<NullLoader, BS, _>(&NL, f).await
     }
 
     /// In-memory walk_node: delegates to `walk_from` with NullLoader.
-    fn node_walk_node<F>(n: &mut Node, root: &[u8], f: &mut F) -> Result<()>
+    async fn node_walk_node<F>(n: &mut Node, root: &[u8], f: &mut F) -> Result<()>
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        block_on(n.walk_from::<NullLoader, BS, _>(root, &NL, f))
+        n.walk_from::<NullLoader, BS, _>(root, &NL, f).await
     }
 
     #[test]
     fn nil_path() {
-        let mut n = Node::default();
-        assert!(node_lookup(&mut n, b"").is_ok());
+        run(async {
+            let mut n = Node::default();
+            assert!(node_lookup(&mut n, b"").await.is_ok());
+        })
     }
 
     #[test]
@@ -1384,29 +1388,31 @@ mod tests {
 
     #[test]
     fn add_and_lookup() {
-        let mut n = Node::default();
-        let items = &test_case_data()[0].items;
+        run(async {
+            let mut n = Node::default();
+            let items = &test_case_data()[0].items;
 
-        for (i, c) in items.iter().enumerate() {
-            let e = make_entry(c);
-            node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
+            for (i, c) in items.iter().enumerate() {
+                let e = make_entry(c);
+                node_add(&mut n, c.as_bytes(), e, BTreeMap::new()).await;
 
-            for &d in items.iter().take(i) {
-                let r = node_lookup(&mut n, d.as_bytes()).unwrap();
-                assert_eq!(r, Some(&make_entry(d)));
+                for &d in items.iter().take(i) {
+                    let r = node_lookup(&mut n, d.as_bytes()).await.unwrap();
+                    assert_eq!(r, Some(&make_entry(d)));
+                }
             }
-        }
+        })
     }
 
-    fn run_add_and_lookup_node(items: &[&str]) {
+    async fn run_add_and_lookup_node(items: &[&str]) {
         let mut n = Node::default();
 
         for (i, c) in items.iter().enumerate() {
             let e = make_entry(c);
-            node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
+            node_add(&mut n, c.as_bytes(), e, BTreeMap::new()).await;
 
             for &d in items.iter().take(i) {
-                let node = node_lookup_node(&mut n, d.as_bytes()).unwrap();
+                let node = node_lookup_node(&mut n, d.as_bytes()).await.unwrap();
                 assert!(node.is_value());
                 assert_eq!(node.entry(), Some(&make_entry(d)));
             }
@@ -1415,49 +1421,61 @@ mod tests {
 
     #[test]
     fn add_and_lookup_node_a() {
-        run_add_and_lookup_node(&test_case_data()[0].items);
+        run(async {
+            run_add_and_lookup_node(&test_case_data()[0].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_node_simple() {
-        run_add_and_lookup_node(&test_case_data()[1].items);
+        run(async {
+            run_add_and_lookup_node(&test_case_data()[1].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_node_nested_value() {
-        run_add_and_lookup_node(&test_case_data()[2].items);
+        run(async {
+            run_add_and_lookup_node(&test_case_data()[2].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_node_nested_prefix() {
-        run_add_and_lookup_node(&test_case_data()[3].items);
+        run(async {
+            run_add_and_lookup_node(&test_case_data()[3].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_node_conflicting_path() {
-        run_add_and_lookup_node(&test_case_data()[4].items);
+        run(async {
+            run_add_and_lookup_node(&test_case_data()[4].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_node_spa_website() {
-        run_add_and_lookup_node(&test_case_data()[5].items);
+        run(async {
+            run_add_and_lookup_node(&test_case_data()[5].items).await;
+        })
     }
 
-    fn run_add_and_lookup_with_load_save(items: &[&str]) {
+    async fn run_add_and_lookup_with_load_save(items: &[&str]) {
         let mut n = Node::default();
 
         for c in items {
             let e = make_entry(c);
-            node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
+            node_add(&mut n, c.as_bytes(), e, BTreeMap::new()).await;
         }
 
         let store = MemoryStore::<StandardChunkSet>::new();
-        block_on(n.save(&store)).unwrap();
+        n.save(&store).await.unwrap();
 
         let mut n2: Node = Node::from_reference(*n.reference().unwrap());
 
         for &d in items {
-            let node = block_on(n2.lookup_node(d.as_bytes(), &store)).unwrap();
+            let node = n2.lookup_node(d.as_bytes(), &store).await.unwrap();
             assert!(node.is_value());
             assert_eq!(node.entry(), Some(&make_entry(d)));
         }
@@ -1468,96 +1486,120 @@ mod tests {
     /// diagnosable rather than an anonymous wire error.
     #[test]
     fn load_corrupt_chunk_reports_address() {
-        // Fewer bytes than the obfuscation-key header cannot decode: the
-        // wire failure is `TooShort`, wrapped with the chunk's address.
-        let chunk = ContentChunk::<{ DEFAULT_BODY_SIZE }>::new(Bytes::from(vec![1u8; 8])).unwrap();
-        let address = *chunk.address();
+        run(async {
+            // Fewer bytes than the obfuscation-key header cannot decode: the
+            // wire failure is `TooShort`, wrapped with the chunk's address.
+            let chunk =
+                ContentChunk::<{ DEFAULT_BODY_SIZE }>::new(Bytes::from(vec![1u8; 8])).unwrap();
+            let address = *chunk.address();
 
-        let store = MemoryStore::<StandardChunkSet>::new();
-        block_on(store.put(Chunk::from_envelope(chunk.into()).unwrap())).unwrap();
+            let store = MemoryStore::<StandardChunkSet>::new();
+            store
+                .put(Chunk::from_envelope(chunk.into()).unwrap())
+                .await
+                .unwrap();
 
-        let mut node: Node = Node::from_reference(ChunkRef::from(address));
-        let err = block_on(node.load(&store)).unwrap_err();
-        assert!(
-            matches!(
-                err,
-                MantarayError::Corrupt { address: a, source: DecodeError::TooShort }
-                    if a == address
-            ),
-            "expected Corrupt naming the chunk address, got {err:?}"
-        );
+            let mut node: Node = Node::from_reference(ChunkRef::from(address));
+            let err = node.load(&store).await.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    MantarayError::Corrupt { address: a, source: DecodeError::TooShort }
+                        if a == address
+                ),
+                "expected Corrupt naming the chunk address, got {err:?}"
+            );
+        })
     }
 
     #[test]
     fn add_and_lookup_with_load_save_a() {
-        run_add_and_lookup_with_load_save(&test_case_data()[0].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[0].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_with_load_save_simple() {
-        run_add_and_lookup_with_load_save(&test_case_data()[1].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[1].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_with_load_save_nested_value() {
-        run_add_and_lookup_with_load_save(&test_case_data()[2].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[2].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_with_load_save_nested_prefix() {
-        run_add_and_lookup_with_load_save(&test_case_data()[3].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[3].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_with_load_save_conflicting_path() {
-        run_add_and_lookup_with_load_save(&test_case_data()[4].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[4].items).await;
+        })
     }
 
     #[test]
     fn add_and_lookup_with_load_save_spa_website() {
-        run_add_and_lookup_with_load_save(&test_case_data()[5].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[5].items).await;
+        })
     }
 
-    fn run_remove(tc: RemoveTestCase) {
+    async fn run_remove(tc: RemoveTestCase) {
         let mut n = Node::default();
 
         for (i, c) in tc.items.iter().enumerate() {
             let e = make_entry(&c.path);
-            node_add(&mut n, c.path.as_bytes(), e, c.metadata.clone());
+            node_add(&mut n, c.path.as_bytes(), e, c.metadata.clone()).await;
 
             for item in tc.items.iter().take(i) {
-                let r = node_lookup(&mut n, item.path.as_bytes()).unwrap();
+                let r = node_lookup(&mut n, item.path.as_bytes()).await.unwrap();
                 assert_eq!(r, Some(&make_entry(&item.path)));
             }
         }
 
         for c in &tc.remove {
-            node_remove(&mut n, c.as_bytes()).unwrap();
-            assert!(node_lookup(&mut n, c.as_bytes()).is_err());
+            node_remove(&mut n, c.as_bytes()).await.unwrap();
+            assert!(node_lookup(&mut n, c.as_bytes()).await.is_err());
         }
     }
 
     #[test]
     fn remove_simple() {
-        run_remove(remove_test_case_data()[0].clone());
+        run(async {
+            run_remove(remove_test_case_data()[0].clone()).await;
+        })
     }
 
     #[test]
     fn remove_nested_prefix() {
-        run_remove(remove_test_case_data()[1].clone());
+        run(async {
+            run_remove(remove_test_case_data()[1].clone()).await;
+        })
     }
 
-    fn run_has_prefix(tc: HasPrefixTestCase) {
+    async fn run_has_prefix(tc: HasPrefixTestCase) {
         let mut n = Node::default();
 
         for c in &tc.paths {
             let e = make_entry(c);
-            node_add(&mut n, c.as_bytes(), e, BTreeMap::default());
+            node_add(&mut n, c.as_bytes(), e, BTreeMap::default()).await;
         }
 
         for (i, test_prefix) in tc.test_paths.iter().enumerate() {
             assert_eq!(
-                node_has_prefix(&mut n, test_prefix.as_bytes()).unwrap(),
+                node_has_prefix(&mut n, test_prefix.as_bytes())
+                    .await
+                    .unwrap(),
                 tc.should_exist[i],
             );
         }
@@ -1565,40 +1607,46 @@ mod tests {
 
     #[test]
     fn has_prefix_simple() {
-        run_has_prefix(has_prefix_test_case_data()[0].clone());
+        run(async {
+            run_has_prefix(has_prefix_test_case_data()[0].clone()).await;
+        })
     }
 
     #[test]
     fn has_prefix_nested_single() {
-        run_has_prefix(has_prefix_test_case_data()[1].clone());
+        run(async {
+            run_has_prefix(has_prefix_test_case_data()[1].clone()).await;
+        })
     }
 
     // Tests save->reload->remove->save->reload->verify-removed cycle.
 
-    fn run_persist_remove(tc: RemoveTestCase) {
+    async fn run_persist_remove(tc: RemoveTestCase) {
         let store = MemoryStore::<StandardChunkSet>::new();
 
         // add entries and persist
         let mut n = Node::default();
         for c in &tc.items {
             let e = make_entry(&c.path);
-            block_on(n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)).unwrap();
+            n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)
+                .await
+                .unwrap();
         }
-        block_on(n.save(&store)).unwrap();
+        n.save(&store).await.unwrap();
         let ref_ = *n.reference().unwrap();
 
         // reload and remove
         let mut nn: Node = Node::from_reference(ref_);
         for path in &tc.remove {
-            block_on(nn.remove(path.as_bytes(), &store)).unwrap();
+            nn.remove(path.as_bytes(), &store).await.unwrap();
         }
-        block_on(nn.save(&store)).unwrap();
+        nn.save(&store).await.unwrap();
         let ref2 = *nn.reference().unwrap();
 
         // reload and verify removed paths are gone
         let mut nnn: Node = Node::from_reference(ref2);
         for path in &tc.remove {
-            let result = block_on(nnn.lookup_node(path.as_bytes(), &store));
+            let result = nnn.lookup_node(path.as_bytes(), &store).await;
             assert!(
                 result.is_err(),
                 "expected removed path '{path}' to be not found"
@@ -1608,12 +1656,16 @@ mod tests {
 
     #[test]
     fn persist_remove_simple() {
-        run_persist_remove(remove_test_case_data()[0].clone());
+        run(async {
+            run_persist_remove(remove_test_case_data()[0].clone()).await;
+        })
     }
 
     #[test]
     fn persist_remove_nested_prefix() {
-        run_persist_remove(remove_test_case_data()[1].clone());
+        run(async {
+            run_persist_remove(remove_test_case_data()[1].clone()).await;
+        })
     }
 
     fn make_entry_bytes(s: &[u8]) -> ChunkRef {
@@ -1625,176 +1677,188 @@ mod tests {
 
     #[test]
     fn walk_visits_all_nodes() {
-        let mut root = Node::default();
+        run(async {
+            let mut root = Node::default();
 
-        let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
-        for &p in paths {
-            let entry = make_entry_bytes(p.as_bytes());
-            node_add(&mut root, p.as_bytes(), entry, BTreeMap::new());
-        }
+            let paths = &["index.html", "img/1.png", "img/2.png", "robots.txt"];
+            for &p in paths {
+                let entry = make_entry_bytes(p.as_bytes());
+                node_add(&mut root, p.as_bytes(), entry, BTreeMap::new()).await;
+            }
 
-        let mut visited: Vec<(Vec<u8>, bool)> = Vec::new();
-        node_walk(&mut root, &mut |path, node| {
-            visited.push((path.to_vec(), node.is_value()));
-            Ok(())
+            let mut visited: Vec<(Vec<u8>, bool)> = Vec::new();
+            node_walk(&mut root, &mut |path, node| {
+                visited.push((path.to_vec(), node.is_value()));
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+            for &p in paths {
+                assert!(
+                    visited
+                        .iter()
+                        .any(|(vp, is_val)| vp == p.as_bytes() && *is_val),
+                    "path {p} not visited as value"
+                );
+            }
         })
-        .unwrap();
-
-        for &p in paths {
-            assert!(
-                visited
-                    .iter()
-                    .any(|(vp, is_val)| vp == p.as_bytes() && *is_val),
-                "path {p} not visited as value"
-            );
-        }
     }
 
     #[test]
     fn walk_node_exact_order() {
-        let to_add: &[&[u8]] = &[
-            b"index.html.backup",
-            b"index.html",
-            b"img/test/oho.png",
-            b"img/test/old/test.png.backup",
-            b"img/test/old/test.png",
-            b"img/2.png",
-            b"img/1.png",
-            b"robots.txt",
-        ];
+        run(async {
+            let to_add: &[&[u8]] = &[
+                b"index.html.backup",
+                b"index.html",
+                b"img/test/oho.png",
+                b"img/test/old/test.png.backup",
+                b"img/test/old/test.png",
+                b"img/2.png",
+                b"img/1.png",
+                b"robots.txt",
+            ];
 
-        let expected: &[&[u8]] = &[
-            b"",
-            b"i",
-            b"img/",
-            b"img/1.png",
-            b"img/2.png",
-            b"img/test/o",
-            b"img/test/oho.png",
-            b"img/test/old/test.png",
-            b"img/test/old/test.png.backup",
-            b"index.html",
-            b"index.html.backup",
-            b"robots.txt",
-        ];
+            let expected: &[&[u8]] = &[
+                b"",
+                b"i",
+                b"img/",
+                b"img/1.png",
+                b"img/2.png",
+                b"img/test/o",
+                b"img/test/oho.png",
+                b"img/test/old/test.png",
+                b"img/test/old/test.png.backup",
+                b"index.html",
+                b"index.html.backup",
+                b"robots.txt",
+            ];
 
-        let mut n = Node::default();
-        for &path in to_add {
-            let entry = make_entry_bytes(path);
-            node_add(&mut n, path, entry, BTreeMap::new());
-        }
+            let mut n = Node::default();
+            for &path in to_add {
+                let entry = make_entry_bytes(path);
+                node_add(&mut n, path, entry, BTreeMap::new()).await;
+            }
 
-        let mut walked: Vec<Vec<u8>> = Vec::new();
-        node_walk_node(&mut n, b"", &mut |path, _node| {
-            walked.push(path.to_vec());
-            Ok(())
-        })
-        .unwrap();
+            let mut walked: Vec<Vec<u8>> = Vec::new();
+            node_walk_node(&mut n, b"", &mut |path, _node| {
+                walked.push(path.to_vec());
+                Ok(())
+            })
+            .await
+            .unwrap();
 
-        assert_eq!(
-            walked.len(),
-            expected.len(),
-            "expected {} nodes, got {}",
-            expected.len(),
-            walked.len()
-        );
-
-        for (i, (got, &want)) in walked.iter().zip(expected.iter()).enumerate() {
             assert_eq!(
-                got.as_slice(),
-                want,
-                "walk step {i}: expected {:?}, got {:?}",
-                core::str::from_utf8(want).unwrap_or("<non-utf8>"),
-                core::str::from_utf8(got).unwrap_or("<non-utf8>"),
+                walked.len(),
+                expected.len(),
+                "expected {} nodes, got {}",
+                expected.len(),
+                walked.len()
             );
-        }
+
+            for (i, (got, &want)) in walked.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(
+                    got.as_slice(),
+                    want,
+                    "walk step {i}: expected {:?}, got {:?}",
+                    core::str::from_utf8(want).unwrap_or("<non-utf8>"),
+                    core::str::from_utf8(got).unwrap_or("<non-utf8>"),
+                );
+            }
+        })
     }
 
     #[test]
     fn walk_node_from_subtree() {
-        let to_add: &[&[u8]] = &[b"index.html", b"img/1.png", b"img/2.png", b"robots.txt"];
+        run(async {
+            let to_add: &[&[u8]] = &[b"index.html", b"img/1.png", b"img/2.png", b"robots.txt"];
 
-        let mut n = Node::default();
-        for &path in to_add {
-            let entry = make_entry_bytes(path);
-            node_add(&mut n, path, entry, BTreeMap::new());
-        }
+            let mut n = Node::default();
+            for &path in to_add {
+                let entry = make_entry_bytes(path);
+                node_add(&mut n, path, entry, BTreeMap::new()).await;
+            }
 
-        let mut walked: Vec<Vec<u8>> = Vec::new();
-        node_walk_node(&mut n, b"img/", &mut |path, _node| {
-            walked.push(path.to_vec());
-            Ok(())
+            let mut walked: Vec<Vec<u8>> = Vec::new();
+            node_walk_node(&mut n, b"img/", &mut |path, _node| {
+                walked.push(path.to_vec());
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+            assert!(walked.iter().any(|p| p == b"img/1.png"));
+            assert!(walked.iter().any(|p| p == b"img/2.png"));
+            assert!(!walked.iter().any(|p| p == b"index.html"));
+            assert!(!walked.iter().any(|p| p == b"robots.txt"));
         })
-        .unwrap();
-
-        assert!(walked.iter().any(|p| p == b"img/1.png"));
-        assert!(walked.iter().any(|p| p == b"img/2.png"));
-        assert!(!walked.iter().any(|p| p == b"index.html"));
-        assert!(!walked.iter().any(|p| p == b"robots.txt"));
     }
 
     #[test]
     fn walk_node_exact_order_with_load_save() {
-        let to_add: &[&[u8]] = &[
-            b"index.html.backup",
-            b"index.html",
-            b"img/test/oho.png",
-            b"img/test/old/test.png.backup",
-            b"img/test/old/test.png",
-            b"img/2.png",
-            b"img/1.png",
-            b"robots.txt",
-        ];
+        run(async {
+            let to_add: &[&[u8]] = &[
+                b"index.html.backup",
+                b"index.html",
+                b"img/test/oho.png",
+                b"img/test/old/test.png.backup",
+                b"img/test/old/test.png",
+                b"img/2.png",
+                b"img/1.png",
+                b"robots.txt",
+            ];
 
-        let expected: &[&[u8]] = &[
-            b"",
-            b"i",
-            b"img/",
-            b"img/1.png",
-            b"img/2.png",
-            b"img/test/o",
-            b"img/test/oho.png",
-            b"img/test/old/test.png",
-            b"img/test/old/test.png.backup",
-            b"index.html",
-            b"index.html.backup",
-            b"robots.txt",
-        ];
+            let expected: &[&[u8]] = &[
+                b"",
+                b"i",
+                b"img/",
+                b"img/1.png",
+                b"img/2.png",
+                b"img/test/o",
+                b"img/test/oho.png",
+                b"img/test/old/test.png",
+                b"img/test/old/test.png.backup",
+                b"index.html",
+                b"index.html.backup",
+                b"robots.txt",
+            ];
 
-        let mut n = Node::default();
-        for &path in to_add {
-            let entry = make_entry_bytes(path);
-            node_add(&mut n, path, entry, BTreeMap::new());
-        }
+            let mut n = Node::default();
+            for &path in to_add {
+                let entry = make_entry_bytes(path);
+                node_add(&mut n, path, entry, BTreeMap::new()).await;
+            }
 
-        let store = MemoryStore::<StandardChunkSet>::new();
-        block_on(n.save(&store)).unwrap();
+            let store = MemoryStore::<StandardChunkSet>::new();
+            n.save(&store).await.unwrap();
 
-        let mut n2: Node = Node::from_reference(*n.reference().unwrap());
+            let mut n2: Node = Node::from_reference(*n.reference().unwrap());
 
-        let mut walked: Vec<Vec<u8>> = Vec::new();
-        block_on(n2.walk_from(b"", &store, &mut |path: &[u8], _node: &Node| {
-            walked.push(path.to_vec());
-            Ok(())
-        }))
-        .unwrap();
+            let mut walked: Vec<Vec<u8>> = Vec::new();
+            n2.walk_from(b"", &store, &mut |path: &[u8], _node: &Node| {
+                walked.push(path.to_vec());
+                Ok(())
+            })
+            .await
+            .unwrap();
 
-        assert_eq!(
-            walked.len(),
-            expected.len(),
-            "expected {} nodes, got {}",
-            expected.len(),
-            walked.len()
-        );
-
-        for (i, (got, &want)) in walked.iter().zip(expected.iter()).enumerate() {
             assert_eq!(
-                got.as_slice(),
-                want,
-                "walk step {i}: expected {:?}, got {:?}",
-                core::str::from_utf8(want).unwrap_or("<non-utf8>"),
-                core::str::from_utf8(got).unwrap_or("<non-utf8>"),
+                walked.len(),
+                expected.len(),
+                "expected {} nodes, got {}",
+                expected.len(),
+                walked.len()
             );
-        }
+
+            for (i, (got, &want)) in walked.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(
+                    got.as_slice(),
+                    want,
+                    "walk step {i}: expected {:?}, got {:?}",
+                    core::str::from_utf8(want).unwrap_or("<non-utf8>"),
+                    core::str::from_utf8(got).unwrap_or("<non-utf8>"),
+                );
+            }
+        })
     }
 }

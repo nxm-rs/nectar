@@ -547,6 +547,7 @@ mod tests {
     use alloy_primitives::hex;
     use alloy_primitives::utils::keccak256;
     use nectar_primitives::chunk::{ChunkAddress, ChunkRef};
+    use nectar_testing::run;
 
     const ENCODED_V01: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950ac787fbce1061870e8d34e0a638bc7e812c7ca4ebd31d626a572ba47b06f6952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64950fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
     const ENCODED_V02: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64905954fb18659339d0b25e0fb9723d3cd5d528fb3c8d495fd157bd7b7a210496952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64940fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952e3872548ec012a6e123b60f9177017fb12e57732621d2c1ada267adbe8cc4350f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
@@ -1117,25 +1118,27 @@ mod tests {
     /// than emit a truncated, undecodable stream.
     #[test]
     fn encode_fork_with_unsaved_child_errors() {
-        let mut n = Node::<ChunkRef>::new_unencrypted();
+        run(async {
+            let mut n = Node::<ChunkRef>::new_unencrypted();
 
-        let path = b"aaaaa";
-        let e = {
-            let mut buf = [0u8; 32];
-            buf[32 - path.len()..].copy_from_slice(path);
-            ChunkRef::from(ChunkAddress::from(buf))
-        };
-        futures::executor::block_on(n.add::<
+            let path = b"aaaaa";
+            let e = {
+                let mut buf = [0u8; 32];
+                buf[32 - path.len()..].copy_from_slice(path);
+                ChunkRef::from(ChunkAddress::from(buf))
+            };
+            n.add::<
             nectar_primitives::store::NullLoader,
             { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
         >(
             path, Some(e), BTreeMap::new(), &nectar_primitives::store::NullLoader,
-        ))
+        ).await
         .unwrap();
 
-        // The fork's child node has no reference assigned (never persisted).
-        let result = n.encode();
-        assert!(matches!(result, Err(MantarayError::MissingReference)));
+            // The fork's child node has no reference assigned (never persisted).
+            let result = n.encode();
+            assert!(matches!(result, Err(MantarayError::MissingReference)));
+        })
     }
 
     /// Build a leaf fork whose child is exactly what the single body decoder
@@ -1264,49 +1267,51 @@ mod tests {
     /// Encode-decode round-trip preserves entries and metadata.
     #[test]
     fn encode_decode_round_trip() {
-        let mut n = Node::<ChunkRef>::new_unencrypted();
+        run(async {
+            let mut n = Node::<ChunkRef>::new_unencrypted();
 
-        for entry in test_entries() {
-            let path = entry.path.as_bytes();
-            let e = {
-                let mut buf = [0u8; 32];
-                let len = path.len().min(32);
-                buf[32 - len..].copy_from_slice(&path[..len]);
-                ChunkRef::from(ChunkAddress::from(buf))
-            };
-            futures::executor::block_on(n.add::<
+            for entry in test_entries() {
+                let path = entry.path.as_bytes();
+                let e = {
+                    let mut buf = [0u8; 32];
+                    let len = path.len().min(32);
+                    buf[32 - len..].copy_from_slice(&path[..len]);
+                    ChunkRef::from(ChunkAddress::from(buf))
+                };
+                n.add::<
                 nectar_primitives::store::NullLoader,
                 { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
             >(
                 path, Some(e), entry.metadata, &nectar_primitives::store::NullLoader,
-            ))
+            ).await
             .unwrap();
-        }
-
-        // assign deterministic references to forks so encoding works
-        for (counter, fork) in n.forks.values_mut().enumerate() {
-            let mut addr = [0u8; 32];
-            #[allow(clippy::as_conversions)] // forks are keyed by u8, so counter <= 255
-            let counter_byte = counter as u8;
-            addr[31] = counter_byte;
-            fork.node
-                .mark_persisted(ChunkRef::from(ChunkAddress::from(addr)));
-        }
-
-        let encoded = n.encode().unwrap();
-        let n2 = Node::<ChunkRef>::decode(encoded.as_slice()).unwrap();
-
-        // Root has no entry; encoding writes zero bytes, decoding reads them back as None
-        assert!(n2.entry().is_none());
-        assert_eq!(n.forks().len(), n2.forks().len());
-
-        for entry in test_entries() {
-            let key = entry.path.as_bytes()[0];
-            assert!(n2.forks().contains_key(&key));
-            assert_eq!(n2.forks()[&key].prefix(), entry.path.as_bytes());
-            if !entry.metadata.is_empty() {
-                assert_eq!(n2.forks()[&key].node().metadata(), &entry.metadata);
             }
-        }
+
+            // assign deterministic references to forks so encoding works
+            for (counter, fork) in n.forks.values_mut().enumerate() {
+                let mut addr = [0u8; 32];
+                #[allow(clippy::as_conversions)] // forks are keyed by u8, so counter <= 255
+                let counter_byte = counter as u8;
+                addr[31] = counter_byte;
+                fork.node
+                    .mark_persisted(ChunkRef::from(ChunkAddress::from(addr)));
+            }
+
+            let encoded = n.encode().unwrap();
+            let n2 = Node::<ChunkRef>::decode(encoded.as_slice()).unwrap();
+
+            // Root has no entry; encoding writes zero bytes, decoding reads them back as None
+            assert!(n2.entry().is_none());
+            assert_eq!(n.forks().len(), n2.forks().len());
+
+            for entry in test_entries() {
+                let key = entry.path.as_bytes()[0];
+                assert!(n2.forks().contains_key(&key));
+                assert_eq!(n2.forks()[&key].prefix(), entry.path.as_bytes());
+                if !entry.metadata.is_empty() {
+                    assert_eq!(n2.forks()[&key].node().metadata(), &entry.metadata);
+                }
+            }
+        })
     }
 }
