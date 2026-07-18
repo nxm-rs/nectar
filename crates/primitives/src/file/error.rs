@@ -30,9 +30,9 @@ pub enum FileError {
     #[error("store error")]
     Store(#[source] BoxedError),
 
-    /// Write sink failed. Rendered to a string so the error stays `Send + Sync`
-    /// even when the sink's own error is not (a single-threaded browser
-    /// writable).
+    /// Write sink failed. Rendered to a string so the sink's own error type,
+    /// which may be `!Send` (a single-threaded browser writable), never
+    /// enters `FileError`.
     #[error("sink error: {0}")]
     Sink(String),
 
@@ -91,10 +91,27 @@ impl FileError {
         Self::Getter(Box::new(err))
     }
 
-    /// Create a sink error by rendering any sink error to a string. Keeps
-    /// `FileError: Send + Sync` while accepting a `!Send` wasm sink error.
+    /// Create a sink error by rendering any sink error to a string, so a
+    /// `!Send` sink error never enters `FileError`.
     pub fn sink<E: std::error::Error>(err: E) -> Self {
         Self::Sink(err.to_string())
+    }
+}
+
+/// Carries the typed error as the payload.
+#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+impl From<FileError> for std::io::Error {
+    fn from(e: FileError) -> Self {
+        Self::other(e)
+    }
+}
+
+/// The relaxed shape may hold a `!Send` source, which `std::io::Error` cannot
+/// carry, so the error is rendered to a string.
+#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
+impl From<FileError> for std::io::Error {
+    fn from(e: FileError) -> Self {
+        Self::other(e.to_string())
     }
 }
 

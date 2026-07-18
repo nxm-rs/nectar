@@ -1,7 +1,8 @@
 //! Chunk storage traits and implementations.
 //!
 //! `ChunkGet`, `ChunkPut`, and `ChunkHas` are async and carry `MaybeSend`/
-//! `MaybeSync` bounds so a store may be `!Send` on wasm.
+//! `MaybeSync` bounds so a store may be `!Send` on single-threaded targets
+//! (wasm32, or any target under the `unsync` feature).
 
 mod maybe_send;
 mod memory;
@@ -15,22 +16,26 @@ pub use typed::{ChunkGet, ChunkHas, ChunkPut, TrustedGet};
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
 
-/// Boxed store error: `Send + Sync` on native, unbounded on wasm32 where a
-/// backend error may hold a JS handle.
-#[cfg(not(target_arch = "wasm32"))]
+/// Boxed store error: `Send + Sync` on multi-threaded targets, unbounded on
+/// wasm32 and under the `unsync` feature where a backend error may hold
+/// single-thread state (a JS handle).
+#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
 pub type BoxedError = Box<dyn core::error::Error + Send + Sync>;
-/// Boxed store error: `Send + Sync` on native, unbounded on wasm32 where a
-/// backend error may hold a JS handle.
-#[cfg(target_arch = "wasm32")]
+/// Boxed store error: `Send + Sync` on multi-threaded targets, unbounded on
+/// wasm32 and under the `unsync` feature where a backend error may hold
+/// single-thread state (a JS handle).
+#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
 pub type BoxedError = Box<dyn core::error::Error>;
 
-/// Shared store error: `Send + Sync` on native, unbounded on wasm32 where a
-/// backend error may hold a JS handle.
-#[cfg(not(target_arch = "wasm32"))]
+/// Shared store error: `Send + Sync` on multi-threaded targets, unbounded on
+/// wasm32 and under the `unsync` feature where a backend error may hold
+/// single-thread state (a JS handle).
+#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
 pub type SharedError = std::sync::Arc<dyn core::error::Error + Send + Sync>;
-/// Shared store error: `Send + Sync` on native, unbounded on wasm32 where a
-/// backend error may hold a JS handle.
-#[cfg(target_arch = "wasm32")]
+/// Shared store error: `Send + Sync` on multi-threaded targets, unbounded on
+/// wasm32 and under the `unsync` feature where a backend error may hold
+/// single-thread state (a JS handle).
+#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
 pub type SharedError = std::sync::Arc<dyn core::error::Error>;
 
 /// Errors from chunk storage operations.

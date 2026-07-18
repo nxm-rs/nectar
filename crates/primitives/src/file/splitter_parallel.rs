@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
 use rayon::prelude::*;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
@@ -126,11 +126,12 @@ where
             Ok(reference)
         };
 
-        // Rayon lanes carry `Send` items; on wasm32 `FileError` may hold a
-        // `!Send` store error, so drive the same closure inline there.
-        #[cfg(not(target_arch = "wasm32"))]
+        // Rayon lanes carry `Send` items; on wasm32 and under `unsync`
+        // `FileError` may hold a `!Send` store error, so drive the same
+        // closure inline there.
+        #[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
         let results: Vec<Result<M::Ref>> = (0..data_chunks).into_par_iter().map(produce).collect();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", feature = "unsync"))]
         let results: Vec<Result<M::Ref>> = (0..data_chunks).map(produce).collect();
 
         results.into_iter().collect()
@@ -199,12 +200,13 @@ where
             Ok(reference)
         };
 
-        // Rayon lanes carry `Send` items; on wasm32 `FileError` may hold a
-        // `!Send` store error, so drive the same closure inline there.
-        #[cfg(not(target_arch = "wasm32"))]
+        // Rayon lanes carry `Send` items; on wasm32 and under `unsync`
+        // `FileError` may hold a `!Send` store error, so drive the same
+        // closure inline there.
+        #[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
         let results: Vec<Result<M::Ref>> =
             (0..chunks_at_level).into_par_iter().map(produce).collect();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", feature = "unsync"))]
         let results: Vec<Result<M::Ref>> = (0..chunks_at_level).map(produce).collect();
 
         results.into_iter().collect()
