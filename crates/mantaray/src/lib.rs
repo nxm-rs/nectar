@@ -123,6 +123,7 @@ pub mod manifest;
 pub mod manifest_ref;
 mod node;
 pub mod obfuscation;
+pub mod reader;
 pub mod view;
 
 // Re-export constants.
@@ -132,11 +133,12 @@ pub(crate) use constants::*;
 // Re-export public types.
 pub use builder::ManifestBuilder;
 pub use entry::Entry;
-pub use error::{DecodeError, DecodeResult, MantarayError, Result};
+pub use error::{DecodeError, DecodeResult, MantarayError, ReaderError, Result};
 pub use manifest::{Manifest, ManifestIter};
 pub use manifest_ref::ManifestRef;
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
+pub use reader::{DEFAULT_MAX_DEPTH, Reader};
 pub use view::{ForkView, NodeView, RefWidth, Version};
 
 /// Raw node internals for fuzz harnesses and benches only.
