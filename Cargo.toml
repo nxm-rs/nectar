@@ -127,6 +127,9 @@ futures-executor = "0.3"
 
 # wasm
 wasm-bindgen = "0.2"
+# Exact pin: 0.3.72 requires wasm-bindgen =0.2.122, so the resolved wasm-bindgen
+# stays in lockstep with the wasm-bindgen-test-runner version CI installs.
+wasm-bindgen-test = "=0.3.72"
 wasm-bindgen-rayon = "1.3"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
