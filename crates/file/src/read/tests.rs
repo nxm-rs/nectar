@@ -18,7 +18,7 @@ use nectar_primitives::file::{ChunkGetExt, join, split, split_encrypted};
 use nectar_primitives::store::{ChunkStoreError, MemoryStore, TrustedGet};
 use nectar_primitives::{EntryRef, transcrypt};
 
-use super::{AnyFile, File, FileReader, OpenError, SeekPastEnd};
+use super::{AnyFile, CollectError, File, FileReader, OpenError, SeekPastEnd};
 use crate::config::Window;
 use crate::geometry::Mode;
 use crate::walk::{DecodeError, Encrypted, Plain, WalkError, WalkMode};
@@ -531,6 +531,141 @@ fn range_download_writes_range_relative_offsets() {
     let written = block_on(file.download().range(500..u64::MAX).run(&mut sink)).unwrap();
     assert_eq!(written, data.len() as u64 - 500);
     assert_eq!(sink.as_ref(), &data[500..]);
+}
+
+#[test]
+fn collect_assembles_the_clipped_range_both_widths() {
+    let data = fill(9 * TINY + 21);
+    let (plain_root, plain_store) = split::<TINY>(&data).unwrap();
+    let (enc_root, enc_store) = split_encrypted::<TINY>(&data).unwrap();
+    let plain_file = block_on(File::<_, Plain, TINY>::open(
+        plain_store.clone(),
+        plain_root,
+    ))
+    .unwrap();
+    let enc_file = block_on(File::<_, Encrypted, TINY>::open_encrypted(
+        enc_store, enc_root,
+    ))
+    .unwrap();
+
+    // The bound is inclusive: max equal to the length succeeds.
+    assert_eq!(
+        block_on(plain_file.collect(data.len() as u64)).unwrap(),
+        data
+    );
+    assert_eq!(block_on(enc_file.collect(u64::MAX)).unwrap(), data);
+
+    // The runtime-dispatched file collects through the same bound.
+    let entry = EntryRef::Plain(ChunkRef::new(plain_root));
+    let any = block_on(AnyFile::<_, TINY>::open(plain_store, entry)).unwrap();
+    assert_eq!(block_on(any.collect(u64::MAX)).unwrap(), data);
+
+    // A range collect bounds the clipped length, not the file length.
+    let range = 100u64..(5 * TINY) as u64;
+    let got = block_on(
+        plain_file
+            .read()
+            .range(range.clone())
+            .collect(range.end - range.start),
+    )
+    .unwrap();
+    assert_eq!(got, &data[100..5 * TINY]);
+
+    // An empty file collects empty under a zero bound.
+    let (root, store) = split::<TINY>(&[]).unwrap();
+    let empty = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
+    assert!(block_on(empty.collect(0)).unwrap().is_empty());
+}
+
+/// Store counting every fetch it serves.
+#[derive(Clone)]
+struct CountingStore {
+    inner: std::sync::Arc<TinyStore>,
+    gets: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl nectar_primitives::store::ChunkGet<AnyChunkSet<TINY>> for CountingStore {
+    type Trust = nectar_primitives::chunk::Verified;
+    type Error = ChunkStoreError;
+
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<Chunk<nectar_primitives::chunk::Verified, AnyChunkSet<TINY>>, ChunkStoreError> {
+        self.gets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        nectar_primitives::store::ChunkGet::get(self.inner.as_ref(), address).await
+    }
+}
+
+#[test]
+fn collect_past_the_bound_is_typed_and_fetches_nothing() {
+    let data = fill(4 * TINY);
+    let (root, store) = split::<TINY>(&data).unwrap();
+    let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let store = CountingStore {
+        inner: std::sync::Arc::new(store),
+        gets: std::sync::Arc::clone(&gets),
+    };
+
+    let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
+    let after_open = gets.load(std::sync::atomic::Ordering::Relaxed);
+    let err = block_on(file.collect(data.len() as u64 - 1)).unwrap_err();
+    assert!(matches!(
+        err,
+        CollectError::TooLarge { len, max }
+            if len == data.len() as u64 && max == data.len() as u64 - 1
+    ));
+    assert_eq!(
+        gets.load(std::sync::atomic::Ordering::Relaxed),
+        after_open,
+        "a failed bound must not fetch"
+    );
+}
+
+#[test]
+fn boxed_store_erases_behind_nameable_aliases() {
+    use crate::store::{BoxedStore, DynAnyFile, DynFile, DynFileReader, DynFileStream};
+
+    /// Struct-field nameability: no store type parameter anywhere.
+    struct Held {
+        file: DynFile<Plain, TINY>,
+    }
+
+    let data = fill(7 * TINY + 13);
+    let (root, store) = split::<TINY>(&data).unwrap();
+    let boxed = BoxedStore::<TINY>::new(store);
+
+    let file = block_on(DynFile::<Plain, TINY>::open(boxed.clone(), root)).unwrap();
+    let held = Held { file };
+    assert_eq!(block_on(held.file.collect(u64::MAX)).unwrap(), data);
+
+    // The erased reader and stream are nameable and drain the same bytes.
+    let mut reader: DynFileReader<Plain, TINY> = held.file.read().build();
+    let mut buf = [0u8; 64];
+    block_on(async {
+        reader.read(&mut buf).await.unwrap();
+    });
+    assert_eq!(&buf[..], &data[..64]);
+    let _stream: DynFileStream<Plain, TINY> = reader.into_stream();
+
+    let any: DynAnyFile<TINY> = block_on(AnyFile::open(
+        boxed.clone(),
+        EntryRef::Plain(ChunkRef::new(root)),
+    ))
+    .unwrap();
+    assert_eq!(block_on(any.collect(u64::MAX)).unwrap(), data);
+
+    // The concrete store error survives as the source of the erased error.
+    let missing = ChunkAddress::from([0x5a; 32]);
+    let err = block_on(DynFile::<Plain, TINY>::open(boxed, missing)).unwrap_err();
+    let OpenError::Fetch { source, .. } = err else {
+        panic!("a missing root must fail the fetch");
+    };
+    let source = std::error::Error::source(&source).expect("erased source retained");
+    assert!(matches!(
+        source.downcast_ref::<ChunkStoreError>(),
+        Some(ChunkStoreError::NotFound(address)) if *address == missing
+    ));
 }
 
 /// Store failing exactly one fetch (the countdown-th), healthy afterwards.
