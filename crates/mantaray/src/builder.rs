@@ -42,7 +42,7 @@ use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::file::{ChunkPutExt, ReadAt};
 use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedStore};
-use nectar_primitives::{AnyChunkSet, Chunk};
+use nectar_primitives::AnyChunkSet;
 
 use crate::entry::Entry;
 use crate::manifest::Manifest;

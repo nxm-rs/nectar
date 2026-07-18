@@ -25,11 +25,12 @@ jobs:
             - uses: ./.github/actions/rust-setup
               with:
                   components: clippy
-            # Lints lib+bins with default features; the `deny`-level restriction
-            # lints in `[workspace.lints.clippy]` make this fail on any
-            # panicking/overflowing operation in production code.
+            # Lints every target (libs, bins, tests, benches, examples) with
+            # default features; the `deny`-level restriction lints in
+            # `[workspace.lints.clippy]` fail on panicking/overflowing
+            # operations, with test code exempted per crate.
             - name: cargo clippy
-              run: cargo clippy --workspace --locked
+              run: cargo clippy --workspace --all-targets --locked
             # `unused_crate_dependencies` is enforced per-library via `cargo
             # rustc` (not `[workspace.lints]`) so the flag applies only to each
             # crate's own lib target — never to benches/examples/tests (which
