@@ -1,0 +1,34 @@
+[package]
+name = "nectar-benches-intrinsic"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[dependencies]
+futures = "0.3"
+nectar-file = { path = "../crates/file" }
+nectar-manifest = { path = "../crates/manifest" }
+nectar-mantaray = { path = "../crates/mantaray" }
+nectar-primitives = { path = "../crates/primitives" }
+
+[dev-dependencies]
+criterion = { package = "codspeed-criterion-compat", version = "2.10.1" }
+
+[[bench]]
+name = "manifest"
+harness = false
+
+[[bench]]
+name = "file"
+harness = false
+
+[[bin]]
+name = "memprofile"
+path = "src/bin/memprofile.rs"
+test = false
+bench = false
+
+# Self-contained workspace root, like fuzz/: keeps the parent workspace
+# lockfile and lint battery untouched.
+[workspace]
+resolver = "2"
