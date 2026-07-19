@@ -356,6 +356,17 @@ fn put_window_witnesses_hold() {
 }
 
 #[test]
+fn a_synchronous_store_never_occupies_the_put_window() {
+    // Every put settles on its opening poll, so no chunk is ever parked: the
+    // whole tree is sealed and stored with an empty window throughout.
+    let data = fill(200 * TINY + 63);
+    let (_, store, stats) = stream_split::<TINY>(&data, 8, 997, 0);
+    assert_eq!(stats.peak_put_in_flight, 0, "a settled put occupied a slot");
+    assert_eq!(stats.leaves + stats.intermediates, stats.puts);
+    assert_eq!(store.log().len() as u64, stats.puts);
+}
+
+#[test]
 fn write_secures_capacity_before_consuming() {
     let gate = Arc::new(Mutex::new(false));
     let store = TestStore::<TINY>::gated(Arc::clone(&gate));
