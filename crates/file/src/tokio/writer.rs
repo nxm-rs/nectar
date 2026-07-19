@@ -19,7 +19,11 @@ use crate::split::{Split, SplitMode, SplitStats};
 /// drives the finish to the root, which [`into_inner`](Self::into_inner)
 /// then hands back.
 ///
+/// Streaming an upload from any [`AsyncRead`](::tokio::io::AsyncRead)
+/// source:
+///
 /// ```
+/// # #![allow(deprecated)]
 /// use nectar_file::{Plain, PutWindow, Split, TokioWriter};
 /// use nectar_primitives::chunk::AnyChunkSet;
 /// use nectar_primitives::store::MemoryStore;
@@ -27,13 +31,18 @@ use crate::split::{Split, SplitMode, SplitStats};
 ///
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() {
+/// let data: Vec<u8> = (0u32..100_000)
+///     .map(|i| u8::try_from(i % 251).unwrap())
+///     .collect();
 /// let store = MemoryStore::<AnyChunkSet<4096>>::new();
 /// let split = Split::<_, Plain, 4096>::new(store, PutWindow::DEFAULT);
 /// let mut writer = TokioWriter::from(split);
-/// writer.write_all(&vec![7u8; 10_000]).await.unwrap();
+/// let mut source = &data[..];
+/// tokio::io::copy(&mut source, &mut writer).await.unwrap();
 /// writer.shutdown().await.unwrap();
 /// let root = writer.into_inner().unwrap();
-/// assert_eq!(root.as_bytes().len(), 32);
+/// # let (expected, _) = nectar_primitives::file::split::<4096>(&data).unwrap();
+/// assert_eq!(root, expected);
 /// # }
 /// ```
 pub struct TokioWriter<S, M, const B: usize = DEFAULT_BODY_SIZE>

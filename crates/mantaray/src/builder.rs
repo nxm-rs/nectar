@@ -38,12 +38,12 @@
 
 use alloc::collections::BTreeMap;
 
+use nectar_primitives::AnyChunkSet;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 #[allow(deprecated)]
 use nectar_primitives::file::{ChunkPutExt, ReadAt};
 use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedGet};
-use nectar_primitives::{AnyChunkSet, Chunk};
 
 use crate::entry::Entry;
 use crate::manifest::Manifest;
@@ -176,6 +176,7 @@ impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize
     /// `data` is dropped before the first store await, mirroring `write_file`,
     /// so the returned future never holds the source across a suspension point.
     pub async fn put_file<D: ReadAt + Sync>(&mut self, path: &str, data: D) -> Result<()> {
+        use nectar_primitives::Chunk;
         use nectar_primitives::file::{EncryptedParallelSplitter, FileError};
         let (root, chunks) = EncryptedParallelSplitter::<BS>::split_to_vec(&data)?;
         drop(data);

@@ -2228,6 +2228,7 @@ dependencies = [
  "futures",
  "futures-util",
  "http-body-util",
+ "nectar-mantaray",
  "nectar-primitives",
  "rayon",
  "thiserror",
