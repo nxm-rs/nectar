@@ -2228,6 +2228,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "nectar-primitives",
+ "rayon",
  "thiserror",
  "tokio",
  "tokio-util",
