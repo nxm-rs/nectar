@@ -1,4 +1,4 @@
-//! Async io adapters over the poll-native read surface.
+//! Async io adapters over the poll-native read and write surfaces.
 //!
 //! [`TokioReader`] shims [`AsyncRead`](::tokio::io::AsyncRead) and
 //! [`AsyncSeek`](::tokio::io::AsyncSeek) straight over a
@@ -7,7 +7,9 @@
 //! created per call. [`SpawnedReader`] opts into a runtime task that keeps
 //! the walk advancing between reads. Positions are zero-based within the
 //! clipped range, so [`SeekFrom::End`] resolves against the effective
-//! length.
+//! length. [`TokioWriter`] shims [`AsyncWrite`](::tokio::io::AsyncWrite)
+//! over a [`Split`](crate::Split): `poll_shutdown` drives the finish and
+//! `into_inner` hands back the delivered root.
 //!
 //! Serving one http range request through the shim:
 //!
@@ -83,12 +85,18 @@ mod reader;
 mod spawned;
 #[cfg(test)]
 mod tests;
+// The writer maps split failures into `io::Error`, which boxes them
+// `Send + Sync`; the wasm32 and `unsync` error chains are not.
+#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+mod writer;
 
 use std::io::SeekFrom;
 
 pub use reader::TokioReader;
 #[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
 pub use spawned::SpawnedReader;
+#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+pub use writer::TokioWriter;
 
 /// A relative seek whose resolved target leaves the unsigned position
 /// space.
