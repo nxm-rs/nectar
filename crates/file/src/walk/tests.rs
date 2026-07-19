@@ -627,3 +627,59 @@ fn mid_leaf_range_is_clipped() {
     // Root plus the single overlapping leaf.
     assert_eq!(store.log().len(), 2);
 }
+
+#[test]
+fn encrypted_decode_reuses_a_uniquely_owned_body() {
+    use nectar_primitives::chunk::encryption::{EncryptionKey, transcrypt_in_place};
+
+    use super::{Encrypted, WalkMode};
+
+    let key = EncryptionKey::from([7u8; 32]);
+    let plain = fill(TINY);
+    let mut cipher = plain.clone();
+    transcrypt_in_place(&key, 0, &mut cipher);
+    let data = Bytes::from(cipher);
+    let ptr = data.as_ptr();
+    let out = <Encrypted as WalkMode>::decode_body(&key, TINY, TINY, data).unwrap();
+    assert_eq!(out.as_ref(), plain.as_slice());
+    assert_eq!(
+        out.as_ptr(),
+        ptr,
+        "unique buffer must be decrypted in place"
+    );
+}
+
+#[test]
+fn encrypted_decode_truncates_a_uniquely_owned_body_to_take() {
+    use nectar_primitives::chunk::encryption::{EncryptionKey, transcrypt_in_place};
+
+    use super::{Encrypted, WalkMode};
+
+    let key = EncryptionKey::from([9u8; 32]);
+    let plain = fill(TINY);
+    let mut cipher = plain.clone();
+    transcrypt_in_place(&key, 0, &mut cipher);
+    let out = <Encrypted as WalkMode>::decode_body(&key, TINY, 100, Bytes::from(cipher)).unwrap();
+    assert_eq!(out.as_ref(), &plain[..100]);
+}
+
+#[test]
+fn encrypted_decode_leaves_a_shared_body_intact() {
+    use nectar_primitives::chunk::encryption::{EncryptionKey, transcrypt_in_place};
+
+    use super::{Encrypted, WalkMode};
+
+    let key = EncryptionKey::from([11u8; 32]);
+    let plain = fill(TINY);
+    let mut cipher = plain.clone();
+    transcrypt_in_place(&key, 0, &mut cipher);
+    let data = Bytes::from(cipher.clone());
+    let held = data.clone();
+    let out = <Encrypted as WalkMode>::decode_body(&key, TINY, 100, data).unwrap();
+    assert_eq!(out.as_ref(), &plain[..100]);
+    assert_eq!(
+        held.as_ref(),
+        cipher.as_slice(),
+        "shared holder must keep ciphertext"
+    );
+}

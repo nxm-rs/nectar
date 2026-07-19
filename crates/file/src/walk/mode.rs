@@ -1,10 +1,9 @@
 //! Reference grammar seam: how a walk reads child references and node
 //! bodies.
 
-use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey, transcrypt_in_place};
 use nectar_primitives::store::{MaybeSend, MaybeSync};
@@ -102,6 +101,10 @@ impl<K: MaybeSend + MaybeSync + 'static> WalkMode for Encrypted<K> {
 
     /// A ciphertext body is always full-size (short leaves are padded), so
     /// only the first `take` bytes are decrypted and returned.
+    ///
+    /// Decrypts in place when the fetched buffer is uniquely owned; a shared
+    /// buffer is copied first, leaving the ciphertext other holders see
+    /// untouched.
     fn decode_body(
         context: &EncryptionKey,
         body_size: usize,
@@ -114,8 +117,13 @@ impl<K: MaybeSend + MaybeSync + 'static> WalkMode for Encrypted<K> {
                 expected: body_size,
             });
         }
-        let mut plain = Vec::from(data.slice(..take.min(body_size)).as_ref());
+        let take = take.min(body_size);
+        let mut plain = match data.try_into_mut() {
+            Ok(owned) => owned,
+            Err(shared) => BytesMut::from(shared.slice(..take).as_ref()),
+        };
+        plain.truncate(take);
         transcrypt_in_place(context, 0, &mut plain);
-        Ok(Bytes::from(plain))
+        Ok(plain.freeze())
     }
 }
