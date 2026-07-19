@@ -4,7 +4,8 @@
 //! retains one body, a read holds at most the fetch window in leaf bodies
 //! plus the derived branch budget, buffered leaf references stay within the
 //! window plus twice the fan-out, a bounded collect refuses an oversized
-//! range before any fetch, and a write holds at most the put window in
+//! range before any fetch and tiles its buffer whatever the completion
+//! order, and a write holds at most the put window in
 //! flight with spill bounded by the spine height. Peaks are read off the
 //! engines' stats and off a gauge store metering concurrent operations
 //! independently of the engines' own accounting. The bounds are witnessed
@@ -540,6 +541,29 @@ fn collect_refuses_an_oversized_range_before_any_fetch() {
     let store = built.fresh(0);
     let file = open_plain(store, root);
     assert!(block_on(file.collect(0)).unwrap().is_empty());
+}
+
+#[test]
+fn collect_assembles_out_of_order_within_the_window() {
+    // The head leaf resolves last among the fetches the window admits, so
+    // frames land far from file order; the ranged buffer is still tiled
+    // exactly once at range-relative offsets, within the window.
+    let size = 40 * TINY + 13;
+    let data = fill(size);
+    let (root, built, _) = split_plain(&data, 8, 0);
+    let head = built.first_put();
+    let window = 4u16;
+    let store = built.fresh(3).parked(head, usize::from(window) - 1);
+    let file = open_plain(store.clone(), root);
+    let out = block_on(
+        file.read()
+            .window(Window::new(window).unwrap())
+            .range(100..size as u64 - 7)
+            .collect(size as u64),
+    )
+    .unwrap();
+    assert_eq!(out, &data[100..size - 7]);
+    assert!(store.gets.peak() <= usize::from(window) + budget(window, BRANCHES as u32));
 }
 
 #[test]
