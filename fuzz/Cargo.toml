@@ -20,6 +20,9 @@ bytes = "1"
 # completion on the current thread.
 futures = "0.3"
 libfuzzer-sys = "0.4"
+# The streaming file pipeline under test: read facade, reader and split
+# engine driven against the legacy joiner and splitter oracles.
+nectar-file = { path = "../crates/file" }
 # The mantaray 1.0 manifest codec, builder and apply path under test.
 nectar-manifest = { path = "../crates/manifest" }
 # No `encryption` feature: the `EncryptedChunkRef` representation the
@@ -130,6 +133,41 @@ bench = false
 [[bin]]
 name = "mantaray_view_differential"
 path = "fuzz_targets/mantaray_view_differential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_join_differential"
+path = "fuzz_targets/file_join_differential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_reader_seek"
+path = "fuzz_targets/file_reader_seek.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_split_root"
+path = "fuzz_targets/file_split_root.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_malformed_intermediate"
+path = "fuzz_targets/file_malformed_intermediate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mantaray_editor_differential"
+path = "fuzz_targets/mantaray_editor_differential.rs"
 test = false
 doc = false
 bench = false

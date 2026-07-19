@@ -1,4 +1,5 @@
-# Fuzzes the wire-format decoders. Targets build once under nightly plus the
+# Fuzzes the wire-format decoders and the file and manifest differential
+# properties. Targets build once under nightly plus the
 # sanitizer; each run job then executes the prebuilt binary, so nothing is
 # rebuilt and the run jobs need no toolchain.
 name: fuzz
@@ -63,6 +64,11 @@ jobs:
                 target:
                     - mantaray_node_decode
                     - mantaray_view_differential
+                    - mantaray_record_roundtrip
+                    - mantaray_editor_differential
+                    - manifest_node_decode
+                    - manifest_build_roundtrip
+                    - manifest_apply_rebuild
                     - chunk_decode
                     - stamp_decode
                     - usage_snapshot_decode
@@ -71,6 +77,10 @@ jobs:
                     - chunk_domain_separation
                     - stamp_roundtrip
                     - usage_snapshot_roundtrip
+                    - file_join_differential
+                    - file_reader_seek
+                    - file_split_root
+                    - file_malformed_intermediate
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
             - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -111,6 +121,11 @@ jobs:
                 target:
                     - mantaray_node_decode
                     - mantaray_view_differential
+                    - mantaray_record_roundtrip
+                    - mantaray_editor_differential
+                    - manifest_node_decode
+                    - manifest_build_roundtrip
+                    - manifest_apply_rebuild
                     - chunk_decode
                     - stamp_decode
                     - usage_snapshot_decode
@@ -119,6 +134,10 @@ jobs:
                     - chunk_domain_separation
                     - stamp_roundtrip
                     - usage_snapshot_roundtrip
+                    - file_join_differential
+                    - file_reader_seek
+                    - file_split_root
+                    - file_malformed_intermediate
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
             - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
