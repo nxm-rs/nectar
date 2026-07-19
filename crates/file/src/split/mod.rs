@@ -1,7 +1,8 @@
 //! Poll-native split engine: the one bounded ascent building a chunk tree.
 //!
-//! Every write mode feeds this engine; nothing else in the crate seals tree
-//! nodes. The engine is push-driven and io-free (no spawns, channels or
+//! Every write mode feeds this engine, and only its ascent seals
+//! intermediates; the batch ingest pre-seals leaves but threads them through
+//! this same ascent. The engine is push-driven and io-free (no spawns, channels or
 //! timers), all state lives in the [`Split`], and sealed chunks flow to the
 //! store through a bounded put window.
 //!
