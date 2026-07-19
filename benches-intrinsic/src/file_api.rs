@@ -4,7 +4,7 @@ use core::future::poll_fn;
 
 use futures::executor::block_on;
 use nectar_file::{
-    Encrypted, File, MemSink, Plain, PutWindow, RandomKeys, Split, SplitMode,
+    Encrypted, File, MemSink, Plain, PutWindow, RandomKeys, Split, SplitMode, Window,
 };
 use nectar_primitives::EncryptedChunkRef;
 use nectar_primitives::chunk::{ChunkAddress, StandardChunkSet, Verified};
@@ -45,6 +45,10 @@ pub trait FilePipeline {
 
     /// Join the tree at `root` back into bytes.
     fn join<S: BenchStore>(store: &S, root: &ChunkAddress) -> Vec<u8>;
+
+    /// Join with an explicit fetch depth, so both pipelines can run at a
+    /// matched in-flight budget rather than their as-shipped defaults.
+    fn join_depth<S: BenchStore>(store: &S, root: &ChunkAddress, depth: u16) -> Vec<u8>;
 
     /// Split `data` into encrypted chunks; the root reference.
     fn split_encrypted<S: BenchStore>(store: &S, data: &[u8]) -> EncryptedChunkRef;
@@ -92,6 +96,17 @@ impl FilePipeline for FileStreaming {
         })
     }
 
+    fn join_depth<S: BenchStore>(store: &S, root: &ChunkAddress, depth: u16) -> Vec<u8> {
+        block_on(async {
+            let file = File::<_, Plain>::open(store.clone(), *root).await.unwrap();
+            file.read()
+                .window(Window::new(depth).unwrap())
+                .collect(u64::MAX)
+                .await
+                .unwrap()
+        })
+    }
+
     fn split_encrypted<S: BenchStore>(store: &S, data: &[u8]) -> EncryptedChunkRef {
         stream_split::<S, Encrypted<RandomKeys>>(store, data)
     }
@@ -130,6 +145,7 @@ pub fn streaming_download_unordered<S: BenchStore>(store: &S, root: &ChunkAddres
         let file = File::<_, Plain>::open(store.clone(), *root).await.unwrap();
         let mut sink = MemSink::new();
         file.download().run(&mut sink).await.unwrap();
+        // Moves the backing buffer out of the sink; no copy is charged.
         Vec::from(sink)
     })
 }
@@ -163,6 +179,19 @@ impl FilePipeline for FileLegacy {
     #[allow(deprecated)]
     fn join<S: BenchStore>(store: &S, root: &ChunkAddress) -> Vec<u8> {
         block_on(async { nectar_primitives::file::join(store.clone(), *root).await.unwrap() })
+    }
+
+    #[allow(deprecated)]
+    fn join_depth<S: BenchStore>(store: &S, root: &ChunkAddress, depth: u16) -> Vec<u8> {
+        use nectar_primitives::file::Joiner;
+
+        block_on(async {
+            let joiner = Joiner::new(store.clone(), *root)
+                .await
+                .unwrap()
+                .with_concurrency(usize::from(depth));
+            joiner.read_all().await.unwrap()
+        })
     }
 
     #[allow(deprecated)]

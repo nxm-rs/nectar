@@ -4,8 +4,10 @@
 //! deadline is its registration instant plus the configured RTT, so
 //! concurrent gets genuinely overlap in wall time while a serial fetch
 //! discipline pays one full RTT per chunk. Condvar timeout granularity is
-//! tens of microseconds on Linux, so keep RTTs at 0.2 ms or above and
-//! sub-10 ms so timed runs stay bounded.
+//! tens of microseconds on Linux, so keep timed RTTs at 0.5 ms or above
+//! and sub-10 ms so runs stay bounded. The single timer queue means lock
+//! traffic grows with in-flight depth; that biases against the deeper
+//! window, never for it.
 
 use std::future::Future;
 use std::pin::Pin;

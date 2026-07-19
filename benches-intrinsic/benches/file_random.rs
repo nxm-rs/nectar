@@ -1,5 +1,10 @@
 //! Random access over a 32 MiB file, both pipelines, plus the streaming
 //! ordered-drain (collect) versus completion-order (download) comparison.
+//!
+//! Random access is default-idiom versus default-idiom: the streaming
+//! reader re-walks from the root on every range (a seek abandons its
+//! window), while the legacy joiner's frontier caches across calls. The
+//! numbers compare documented usage, not a shared descent-cache design.
 
 #![allow(missing_docs)]
 #![allow(
@@ -37,7 +42,7 @@ fn random_access_suite<P: FilePipeline>(c: &mut Criterion) {
     assert_eq!(out, expected, "range read mismatch");
 
     let mut group = c.benchmark_group("random-access");
-    group.sample_size(10);
+    group.sample_size(20);
     group.throughput(Throughput::Bytes((READS * READ_LEN) as u64));
     group.bench_function(
         BenchmarkId::new(P::NAME, format!("{FILE_LEN}/{READS}x{READ_LEN}")),
@@ -53,7 +58,7 @@ fn drain_suite(c: &mut Criterion) {
     assert_eq!(streaming_download_unordered(&store, &root), data, "download mismatch");
 
     let mut group = c.benchmark_group("drain");
-    group.sample_size(10);
+    group.sample_size(30);
     group.throughput(Throughput::Bytes(FILE_LEN as u64));
     group.bench_function(BenchmarkId::new("collect-ordered", FILE_LEN), |b| {
         b.iter(|| black_box(FileStreaming::join(&store, &root)));

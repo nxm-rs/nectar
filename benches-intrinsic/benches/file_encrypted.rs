@@ -22,13 +22,18 @@ use nectar_benches_intrinsic::store::CountingStore;
 
 const PAYLOADS: [usize; 2] = [1 << 20, 32 << 20];
 
+/// Samples per cell, scaled down only where iterations run long.
+const fn samples(len: usize) -> usize {
+    if len >= 32 << 20 { 10 } else { 30 }
+}
+
 fn encrypted_suite<P: FilePipeline>(c: &mut Criterion) {
     for &len in &PAYLOADS {
         let data = payload(len, SEED);
 
         {
             let mut group = c.benchmark_group("split-encrypted");
-            group.sample_size(10);
+            group.sample_size(samples(len));
             group.throughput(Throughput::Bytes(len as u64));
             group.bench_function(BenchmarkId::new(P::NAME, len), |b| {
                 b.iter_batched(
@@ -45,7 +50,7 @@ fn encrypted_suite<P: FilePipeline>(c: &mut Criterion) {
 
         {
             let mut group = c.benchmark_group("join-encrypted");
-            group.sample_size(10);
+            group.sample_size(samples(len));
             group.throughput(Throughput::Bytes(len as u64));
             group.bench_function(BenchmarkId::new(P::NAME, len), |b| {
                 b.iter(|| black_box(P::join_encrypted(&store, &root)));
