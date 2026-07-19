@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use libfuzzer_sys::fuzz_target;
 use nectar_file::sync::drive;
 use nectar_file::{File, Plain, PutWindow, Split};
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ChunkOps, Verified};
+use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
 
 /// Tiny body size: fan-out 8, so a few KiB already builds a deep tree.
