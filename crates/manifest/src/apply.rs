@@ -577,6 +577,15 @@ where
     F: Format,
 {
     if prefix.len() <= F::PLEN_MAX {
+        // Re-capping a chain moves the edge boundary, which can leave the tail
+        // as a child-only fork over a single embedded fork: merge that run into
+        // one edge, as a from-scratch build at the new boundary would.
+        if let ForkPayload::Child(Child::Embedded(table)) = &payload
+            && table.len() == 1
+            && let Some((first, record)) = table.iter().next()
+        {
+            return Box::pin(compact(store, prefix, first, record, stats)).await;
+        }
         return make_fork(prefix, payload, meta, child_count);
     }
     let head = prefix.get(..F::PLEN_MAX).ok_or(ApplyError::Internal)?;
@@ -852,6 +861,24 @@ mod tests {
         cs.put(Key::from(&branched[..]), entry(2), None);
         let out = block_on(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&base[..], 1), (&branched[..], 2)]));
+    }
+
+    #[test]
+    fn a_remove_beside_a_recapped_chain_insert_equals_a_rebuild() {
+        let store = MemoryStore::default();
+        // Removing the only key while inserting a 257-byte sibling splits the
+        // shared first byte, and the re-capped PLEN_MAX(255) chain boundary
+        // lands one byte earlier than the inserted subtree's own cap: the tail
+        // beyond the new boundary must merge into one edge rather than keep
+        // the stale one-byte chain hop.
+        let root = build(&store, &[(&[0u8, 0][..], 1)]);
+        let mut long = vec![0u8, 1];
+        long.extend(std::iter::repeat_n(0u8, 255));
+        let mut cs = Changeset::<V1>::new();
+        cs.remove(Key::from(&[0u8, 0][..]));
+        cs.put(Key::from(&long[..]), entry(2), None);
+        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
 
     #[test]
