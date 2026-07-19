@@ -16,6 +16,10 @@ workflows:
         # (transcrypt, keccak, the ref types), so the feature deliberately
         # enables no primitives feature.
         "--ignore-missing-propagate=nectar-manifest/encryption:nectar-primitives/encryption",
+        # Manifest encryption is node-level; the build bridge splits files in
+        # plain mode only, so it deliberately leaves the file crate's
+        # encrypted split mode off.
+        "--ignore-missing-propagate=nectar-manifest/encryption:nectar-file/encryption",
         "--workspace",
         "--show-path",
         "--quiet",
