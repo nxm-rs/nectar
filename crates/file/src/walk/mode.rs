@@ -31,11 +31,16 @@ pub trait WalkMode: MaybeSend + MaybeSync + 'static {
     /// Decode one fetched body into the plaintext the tree grammar reads:
     /// `take` bytes (a leaf's span, or an intermediate's packed references)
     /// out of a `body_size`-byte profile.
+    ///
+    /// `scratch` is the walk's staging buffer, reused across nodes; a
+    /// transforming mode writes its output there and splits it off, a
+    /// pass-through mode leaves it untouched.
     fn decode_body(
         context: &Self::Context,
         body_size: usize,
         take: usize,
         data: Bytes,
+        scratch: &mut BytesMut,
     ) -> Result<Bytes, DecodeError>;
 }
 
@@ -60,6 +65,7 @@ impl WalkMode for Plain {
         _body_size: usize,
         _take: usize,
         data: Bytes,
+        _scratch: &mut BytesMut,
     ) -> Result<Bytes, DecodeError> {
         Ok(data)
     }
@@ -102,14 +108,15 @@ impl<K: MaybeSend + MaybeSync + 'static> WalkMode for Encrypted<K> {
     /// A ciphertext body is always full-size (short leaves are padded), so
     /// only the first `take` bytes are decrypted and returned.
     ///
-    /// Decrypts in place when the fetched buffer is uniquely owned; a shared
-    /// buffer is copied first, leaving the ciphertext other holders see
-    /// untouched.
+    /// The plaintext is staged in `scratch` and split off as the frame; the
+    /// shared ciphertext is never touched, and the staging allocation is
+    /// reclaimed once earlier frames drop.
     fn decode_body(
         context: &EncryptionKey,
         body_size: usize,
         take: usize,
-        data: Bytes,
+        mut data: Bytes,
+        scratch: &mut BytesMut,
     ) -> Result<Bytes, DecodeError> {
         if data.len() != body_size {
             return Err(DecodeError::CiphertextLength {
@@ -117,13 +124,10 @@ impl<K: MaybeSend + MaybeSync + 'static> WalkMode for Encrypted<K> {
                 expected: body_size,
             });
         }
-        let take = take.min(body_size);
-        let mut plain = match data.try_into_mut() {
-            Ok(owned) => owned,
-            Err(shared) => BytesMut::from(shared.slice(..take).as_ref()),
-        };
-        plain.truncate(take);
-        transcrypt_in_place(context, 0, &mut plain);
-        Ok(plain.freeze())
+        data.truncate(take.min(body_size));
+        scratch.clear();
+        scratch.extend_from_slice(data.as_ref());
+        transcrypt_in_place(context, 0, scratch.as_mut());
+        Ok(scratch.split().freeze())
     }
 }
