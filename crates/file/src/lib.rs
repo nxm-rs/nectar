@@ -8,7 +8,7 @@
 //! [`read`] facade that opens files by either reference width and drains the
 //! walk in file order, the [`sink`] targets a restartable download writes
 //! into, the [`store`] erasure that makes file handles nameable, the
-//! [`sync`] driver for Ready-only guests, and the `parallel` batch ingest
+//! [`sync`] driver for Ready-only guests, and the `parallel` read-at ingest
 //! over a random-access source (behind the `rayon` feature).
 //!
 //! # Exhibits
@@ -127,7 +127,7 @@ pub use self::tokio::{SeekOverflow, TokioReader};
     not(any(target_arch = "wasm32", feature = "unsync"))
 ))]
 pub use self::tokio::{SpawnedReader, TokioWriter};
-pub use config::{BranchBudget, PutWindow, Window};
+pub use config::{BranchBudget, HashWindow, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
 #[cfg(all(
     feature = "rayon",

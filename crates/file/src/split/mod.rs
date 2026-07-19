@@ -1,10 +1,11 @@
 //! Poll-native split engine: the one bounded ascent building a chunk tree.
 //!
 //! Every write mode feeds this engine, and only its ascent seals
-//! intermediates; the batch ingest pre-seals leaves but threads them through
-//! this same ascent. The engine is push-driven and io-free (no spawns, channels or
-//! timers), all state lives in the [`Split`], and sealed chunks flow to the
-//! store through a bounded put window.
+//! intermediates; the optional hash window fans leaf seals onto the rayon
+//! pool and admits them in leaf order through this same ascent. The engine
+//! is push-driven and io-free (no spawns, channels or timers, beyond the
+//! opt-in pool handoff), all state lives in the [`Split`], and sealed chunks
+//! flow to the store through a bounded put window.
 //!
 //! Normative invariants, each pinned by a test:
 //!
@@ -22,11 +23,21 @@
 //!    store seam.
 //! 5. Fused finish: `poll_finish` is cancel-safe and re-callable; after the
 //!    root is delivered every later call returns the same root.
+//! 6. Bounded hash window: pool leaf seals in flight never exceed the
+//!    [`HashWindow`](crate::HashWindow), and sealed leaves are admitted in
+//!    leaf order, so a deterministic mode's chunk stream matches the serial
+//!    engine.
 
 #[cfg(feature = "encryption")]
 mod encrypted;
 mod engine;
 mod error;
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+mod handoff;
 mod mode;
 #[cfg(test)]
 mod tests;
@@ -109,6 +120,12 @@ fn widen<E>(error: SplitError<Infallible>) -> SplitError<E> {
         SplitError::SpanOverflow { span, add } => SplitError::SpanOverflow { span, add },
         SplitError::Finished => SplitError::Finished,
         SplitError::Poisoned => SplitError::Poisoned,
+        #[cfg(all(
+            feature = "rayon",
+            not(target_arch = "wasm32"),
+            not(feature = "unsync")
+        ))]
+        SplitError::PoolDropped => SplitError::PoolDropped,
         SplitError::SpineDepleted => SplitError::SpineDepleted,
     }
 }
@@ -178,6 +195,9 @@ pub struct SplitStats {
     pub puts: u64,
     /// Peak puts in flight.
     pub peak_put_in_flight: usize,
+    /// Peak leaf seals in flight on the hash pool; zero on the serial
+    /// engine.
+    pub peak_hash_in_flight: usize,
     /// Peak sealed chunks awaiting a put slot.
     pub peak_pending: usize,
     /// Spine levels touched.

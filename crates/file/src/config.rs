@@ -92,6 +92,47 @@ impl From<PutWindow> for NonZeroU16 {
     }
 }
 
+/// Hash window: leaf seals a split may hold in flight on the thread pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HashWindow(NonZeroU16);
+
+impl HashWindow {
+    /// Default window of sixteen seal slots.
+    pub const DEFAULT: Self = Self(DEFAULT_SLOTS);
+
+    /// `None` when `slots` is zero; const twin of the `NonZeroU16`
+    /// conversion.
+    pub const fn new(slots: u16) -> Option<Self> {
+        match NonZeroU16::new(slots) {
+            Some(slots) => Some(Self(slots)),
+            None => None,
+        }
+    }
+
+    /// Window depth in slots.
+    pub const fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl Default for HashWindow {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl From<NonZeroU16> for HashWindow {
+    fn from(slots: NonZeroU16) -> Self {
+        Self(slots)
+    }
+}
+
+impl From<HashWindow> for NonZeroU16 {
+    fn from(window: HashWindow) -> Self {
+        window.0
+    }
+}
+
 /// Branch budget: intermediate fetches a walk may hold in flight. Derived
 /// from the fetch window, never configured directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -138,6 +179,7 @@ mod tests {
     fn windows_reject_zero() {
         assert!(Window::new(0).is_none());
         assert!(PutWindow::new(0).is_none());
+        assert!(HashWindow::new(0).is_none());
     }
 
     #[test]
@@ -146,6 +188,8 @@ mod tests {
         assert_eq!(Window::default(), Window::DEFAULT);
         assert_eq!(PutWindow::DEFAULT.get(), 16);
         assert_eq!(PutWindow::default(), PutWindow::DEFAULT);
+        assert_eq!(HashWindow::DEFAULT.get(), 16);
+        assert_eq!(HashWindow::default(), HashWindow::DEFAULT);
     }
 
     #[test]
@@ -153,6 +197,7 @@ mod tests {
         let slots = NonZeroU16::new(5).unwrap();
         assert_eq!(NonZeroU16::from(Window::from(slots)), slots);
         assert_eq!(NonZeroU16::from(PutWindow::from(slots)), slots);
+        assert_eq!(NonZeroU16::from(HashWindow::from(slots)), slots);
     }
 
     #[test]

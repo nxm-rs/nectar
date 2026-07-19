@@ -54,8 +54,9 @@ std = [
 # Async reader and writer adapters over the poll surface. Implies `std`.
 tokio = [ "dep:tokio", "std" ]
 
-# Batch leaf hashing and read-at ingest. Implies `std`; rayon on wasm32 or
-# under `unsync` is a compile error, never a silent fallback.
+# Pool leaf hashing: the split hash window and the read-at ingest. Implies
+# `std`; rayon on wasm32 or under `unsync` is a compile error, never a
+# silent fallback.
 rayon = [ "dep:rayon", "std" ]
 
 # Split-side encrypted mode. Joining encrypted references stays unconditional.

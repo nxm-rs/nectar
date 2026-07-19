@@ -2,7 +2,7 @@
 
 use std::io;
 
-use crate::split::{SealError, SplitError};
+use crate::split::SplitError;
 
 /// Terminal read-at ingest failure.
 #[derive(Debug, thiserror::Error)]
@@ -39,46 +39,8 @@ pub enum ReadAtError<E> {
         /// Buffer bytes the read had to fill.
         capacity: usize,
     },
-    /// The split ascent failed.
+    /// The split ascent failed; a dropped pool seal arrives here as
+    /// [`SplitError::PoolDropped`].
     #[error(transparent)]
     Split(#[from] SplitError<E>),
-    /// The pool dropped a batch without replying; a worker died mid-job.
-    #[error("hash pool dropped a batch")]
-    PoolDropped,
-}
-
-/// A failure sealing one leaf on a pool worker; carried across the handoff.
-#[derive(Debug)]
-pub(super) enum LeafError {
-    /// Reading the leaf body failed.
-    Read { offset: u64, source: io::Error },
-    /// The source ended before the leaf filled.
-    Short { offset: u64, remaining: usize },
-    /// The source reported more bytes than the buffer holds.
-    Overrun {
-        offset: u64,
-        count: usize,
-        capacity: usize,
-    },
-    /// Sealing the leaf payload failed.
-    Seal(SealError),
-}
-
-impl<E> From<LeafError> for ReadAtError<E> {
-    fn from(error: LeafError) -> Self {
-        match error {
-            LeafError::Read { offset, source } => Self::Read { offset, source },
-            LeafError::Short { offset, remaining } => Self::ShortRead { offset, remaining },
-            LeafError::Overrun {
-                offset,
-                count,
-                capacity,
-            } => Self::ReadOverrun {
-                offset,
-                count,
-                capacity,
-            },
-            LeafError::Seal(source) => Self::Split(SplitError::Seal(source)),
-        }
-    }
 }

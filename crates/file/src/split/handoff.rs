@@ -1,8 +1,9 @@
 //! Bounded handoff from the thread pool back to the polling future.
 
-use std::sync::{Arc, Mutex, PoisonError};
-
 use core::task::{Context, Poll};
+
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use futures_util::task::AtomicWaker;
 
@@ -20,14 +21,14 @@ impl<T> Slot<T> {
     }
 }
 
-/// Receiving half of one submitted job; polled by the ingest future.
+/// Receiving half of one submitted job; polled by the split engine.
 pub(super) struct Handoff<T> {
     slot: Arc<Slot<T>>,
 }
 
 impl<T> Handoff<T> {
-    /// Ready with the reply, or `None` when the pool dropped the job
-    /// without replying (a worker died mid-job).
+    /// Ready with the reply, or `None` when the job finished without one:
+    /// the job panicked, or the pool dropped it.
     ///
     /// The waker is registered before the slot is checked, so a reply
     /// landing between the two is never missed.
@@ -39,7 +40,7 @@ impl<T> Handoff<T> {
         if Arc::strong_count(&self.slot) == 1 {
             // The reply half is gone, but it may have written its value
             // before dropping; re-check so that ordering never turns a
-            // delivered batch into a spurious drop.
+            // delivered reply into a spurious drop.
             return Poll::Ready(self.slot.value().take());
         }
         Poll::Pending
@@ -47,7 +48,7 @@ impl<T> Handoff<T> {
 }
 
 /// Sending half held by the pool job; waking on drop covers both delivery
-/// and a job that unwinds before replying.
+/// and a job that finished without replying.
 struct Reply<T> {
     slot: Arc<Slot<T>>,
 }
@@ -61,7 +62,9 @@ impl<T> Drop for Reply<T> {
 /// Queue `job` on the pool, returning the handoff its reply arrives on.
 ///
 /// Submission only enqueues, so neither building nor polling the caller's
-/// future ever blocks on the pool.
+/// future ever blocks on the pool. A panicking job is caught here and leaves
+/// its slot empty, so the receiver sees a dropped job instead of a process
+/// abort.
 pub(super) fn submit<T, F>(job: F) -> Handoff<T>
 where
     T: Send + 'static,
@@ -75,7 +78,9 @@ where
         slot: Arc::clone(&slot),
     };
     rayon::spawn(move || {
-        *reply.slot.value() = Some(job());
+        if let Ok(value) = catch_unwind(AssertUnwindSafe(job)) {
+            *reply.slot.value() = Some(value);
+        }
         drop(reply);
     });
     Handoff { slot }

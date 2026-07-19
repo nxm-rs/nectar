@@ -730,12 +730,14 @@ mod encrypted {
     }
 }
 
-/// The batch ingest pre-seals leaves on the pool but drains the same put
-/// window; the write-side bound survives the parallel path.
+/// The pooled paths seal leaves on the pool but drain the same put window;
+/// the write-side bounds survive the fan-out, plus the hash window's own.
 #[cfg(feature = "rayon")]
 mod batch {
+    use core::future::poll_fn;
+
     use futures::executor::block_on;
-    use nectar_file::{Plain, PutWindow, split_read_at};
+    use nectar_file::{HashWindow, Plain, PutWindow, Split, split_read_at};
 
     use super::{BRANCHES, GaugeStore, TINY, fill, split_plain};
 
@@ -758,6 +760,48 @@ mod batch {
                 "{} concurrent puts exceeded window {window}",
                 store.puts.peak()
             );
+            assert_eq!(store.chunk_count(), streamed_store.chunk_count());
+        }
+    }
+
+    #[test]
+    fn pooled_writer_holds_all_three_windows() {
+        let size = BRANCHES * BRANCHES * TINY + 999;
+        let data = fill(size);
+        let (streamed_root, streamed_store, _) = split_plain(&data, 4, 0);
+        for (put_window, hash_window) in [(1u16, 1u16), (2, 4), (16, 8)] {
+            let store = GaugeStore::<TINY>::new(2);
+            let mut split: Split<GaugeStore<TINY>, Plain, TINY> =
+                Split::new(store.clone(), PutWindow::new(put_window).unwrap())
+                    .with_hash_window(HashWindow::new(hash_window).unwrap());
+            let root = block_on(async {
+                let mut buf = data.as_slice();
+                while !buf.is_empty() {
+                    let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+                    buf = &buf[n..];
+                }
+                poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+            });
+            let stats = split.stats();
+            assert_eq!(root, streamed_root, "pooled root diverged at {put_window}");
+            assert!(
+                store.puts.peak() <= usize::from(put_window),
+                "{} concurrent puts exceeded window {put_window}",
+                store.puts.peak()
+            );
+            assert!(
+                stats.peak_put_in_flight <= usize::from(put_window),
+                "in flight {} exceeded window {put_window}",
+                stats.peak_put_in_flight
+            );
+            assert!(
+                stats.peak_hash_in_flight <= usize::from(hash_window),
+                "seals in flight {} exceeded the hash window {hash_window}",
+                stats.peak_hash_in_flight
+            );
+            assert!(stats.peak_pending <= stats.peak_spine);
+            assert_eq!(stats.bytes, size as u64);
+            assert_eq!(stats.puts, stats.leaves + stats.intermediates);
             assert_eq!(store.chunk_count(), streamed_store.chunk_count());
         }
     }
