@@ -157,16 +157,9 @@ pub struct Corpus {
 impl Corpus {
     /// Generate the workload for `n` entries of `shape` from `seed`.
     ///
-    /// The generator, not the adapters, neutralizes every semantic divergence
-    /// between the two manifest implementations, so both sides run the same
-    /// byte-identical driver over natively legal inputs:
-    /// - removes only ever name existing keys: a 0.2 commit fails on an
-    ///   absent-path remove, while 1.0 treats it as a no-op;
-    /// - no per-entry metadata anywhere: the typed-registry model of 1.0 and
-    ///   the string-map model of 0.2 are not comparable;
-    /// - values are plain 32-byte references only: the encryption models
-    ///   (per-reference ref64 vs whole-trie obfuscation) differ;
-    /// - no empty key: 1.0 stores it in the root extension, 0.2 rejects it.
+    /// Invariants keeping both implementations on natively legal inputs:
+    /// removes name existing keys only, no per-entry metadata, values are
+    /// plain 32-byte references, no empty key.
     #[must_use]
     pub fn generate(n: usize, shape: Shape, seed: u64) -> Self {
         let mut rng = SplitMix64::new(seed);

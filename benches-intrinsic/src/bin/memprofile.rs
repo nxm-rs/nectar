@@ -15,7 +15,6 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
 
 use nectar_benches_intrinsic::corpus::{self, Corpus, Shape, SplitMix64};
 use nectar_benches_intrinsic::file_api::{FileLegacy, FilePipeline, FileStreaming};
@@ -69,7 +68,6 @@ unsafe impl GlobalAlloc for CountingAlloc {
                 track_alloc(new_size - layout.size());
             } else {
                 CURRENT.fetch_sub(layout.size() - new_size, Ordering::Relaxed);
-                ALLOCS.fetch_add(1, Ordering::Relaxed);
             }
         }
         new_ptr
@@ -79,10 +77,11 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
-/// One scenario's cost: wall time, peak heap over baseline, allocations.
+/// One scenario's cost: peak heap over baseline and allocation count.
+/// No timing here: the counting allocator would contaminate it. Criterion
+/// owns all speed numbers.
 #[derive(Clone, Copy, Debug)]
 struct Cost {
-    wall_ns: u64,
     peak_bytes: u64,
     allocs: u64,
 }
@@ -93,13 +92,10 @@ fn measured<T>(f: impl FnOnce() -> T) -> (T, Cost) {
     BASELINE.store(base, Ordering::Relaxed);
     PEAK.store(base, Ordering::Relaxed);
     ALLOCS.store(0, Ordering::Relaxed);
-    let start = Instant::now();
     let out = std::hint::black_box(f());
-    let wall_ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let peak = PEAK.load(Ordering::Relaxed);
     let base = BASELINE.load(Ordering::Relaxed);
     let cost = Cost {
-        wall_ns,
         peak_bytes: u64::try_from(peak.saturating_sub(base)).unwrap_or(u64::MAX),
         allocs: ALLOCS.load(Ordering::Relaxed),
     };
@@ -107,7 +103,6 @@ fn measured<T>(f: impl FnOnce() -> T) -> (T, Cost) {
 }
 
 fn emit_cost(out: &mut Suite, impl_name: &str, scenario: &str, cost: Cost) {
-    out.emit(impl_name, scenario, "wall_ns", cost.wall_ns as f64, "ns");
     out.emit(
         impl_name,
         scenario,
@@ -226,13 +221,6 @@ fn file_impl<P: FilePipeline>(out: &mut Suite, data: &[u8], label: &str) {
     emit_cost(out, P::NAME, &scenario, cost);
     out.emit(P::NAME, &scenario, "chunks_written", store.puts() as f64, "chunks");
     out.emit(P::NAME, &scenario, "bytes_written", store.put_bytes() as f64, "bytes");
-    out.emit(
-        P::NAME,
-        &scenario,
-        "throughput",
-        mb_per_s(data.len(), cost.wall_ns),
-        "MB/s",
-    );
 
     let scenario = format!("join/{label}");
     store.reset_counters();
@@ -240,17 +228,6 @@ fn file_impl<P: FilePipeline>(out: &mut Suite, data: &[u8], label: &str) {
     assert_eq!(joined, data, "join mismatch");
     emit_cost(out, P::NAME, &scenario, cost);
     out.emit(P::NAME, &scenario, "chunks_fetched", store.gets() as f64, "chunks");
-    out.emit(
-        P::NAME,
-        &scenario,
-        "throughput",
-        mb_per_s(data.len(), cost.wall_ns),
-        "MB/s",
-    );
-}
-
-fn mb_per_s(bytes: usize, wall_ns: u64) -> f64 {
-    (bytes as f64 / 1e6) / (wall_ns.max(1) as f64 / 1e9)
 }
 
 fn file_suite(out: &mut Suite, payloads: &[usize]) {

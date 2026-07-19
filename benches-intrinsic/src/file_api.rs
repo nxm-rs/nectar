@@ -4,7 +4,7 @@ use core::future::poll_fn;
 
 use futures::executor::block_on;
 use nectar_file::{File, Plain, PutWindow, Split};
-use nectar_primitives::chunk::{Chunk, ChunkAddress};
+use nectar_primitives::chunk::{ChunkAddress, StandardChunkSet};
 use nectar_primitives::store::ChunkPut;
 
 use crate::store::CountingStore;
@@ -67,7 +67,8 @@ impl FilePipeline for FileLegacy {
             splitter.write_all(data).unwrap();
             let (root, chunks) = splitter.finish().unwrap();
             for content in chunks {
-                let chunk = Chunk::from_envelope(content.into()).unwrap();
+                // Seal once, matching the streaming engine's trust posture.
+                let chunk = content.seal::<StandardChunkSet>();
                 ChunkPut::put(store, chunk).await.unwrap();
             }
             root

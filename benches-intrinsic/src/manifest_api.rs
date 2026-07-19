@@ -186,7 +186,8 @@ impl ManifestApi for Mantaray02 {
     // 0.2 has no bounded range scan; this is the idiomatic 0.2 spelling, run
     // entirely inside the timed region: a point get decides the inclusive
     // lower bound, then a cursor resumes strictly after it with the upper
-    // bound enforced by the caller.
+    // bound enforced by the caller. Matches `lo <= key < hi` whether or not
+    // `lo` is present (the corpus guarantees it is, at rank n/4).
     fn iter_range(store: &CountingStore, root: &ChunkAddress, lo: &[u8], hi: &[u8]) -> u64 {
         block_on(async {
             let mut count = 0u64;

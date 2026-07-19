@@ -110,7 +110,7 @@ impl ChunkPut<StandardChunkSet> for CountingStore {
 
     async fn put(&self, chunk: Chunk<Verified, StandardChunkSet>) -> Result<(), Self::Error> {
         self.counters.puts.fetch_add(1, Ordering::Relaxed);
-        if self.inner.get(chunk.address()).is_none() {
+        if !<MemoryStore<StandardChunkSet> as ChunkHas>::has(&self.inner, chunk.address()).await {
             self.counters.puts_new.fetch_add(1, Ordering::Relaxed);
         }
         let bytes = u64::try_from(chunk.envelope().data().len()).unwrap_or(u64::MAX);
