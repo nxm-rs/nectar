@@ -5,18 +5,6 @@
 //! references, and the stored chunk address set must match exactly. Chunks
 //! are content-addressed, so address equality pins the stored bytes.
 
-// Bench, example, and integration-test code: unwraps, direct indexing,
-// casts, and assertions are setup and illustration, not shipped surface.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    clippy::panic,
-    clippy::panic_in_result_fn,
-    clippy::as_conversions,
-    clippy::missing_panics_doc
-)]
 // The legacy whole-buffer splitter is the differential oracle here.
 #![allow(deprecated)]
 
@@ -62,9 +50,11 @@ const SIZES: &[usize] = &[
     2 * FAN * B + 3,
 ];
 
-/// Non-uniform bytes so leaf boundaries cut through varying content.
+/// Non-uniform bytes so leaf boundaries cut through varying content. The
+/// 251-byte cycle is coprime with the body size, so no two leaves repeat.
 fn pattern(size: usize) -> Bytes {
-    Bytes::from((0..size).map(|i| (i % 251) as u8).collect::<Vec<u8>>())
+    let cycle = (0u16..251).map(|byte| u8::try_from(byte).unwrap_or_default());
+    Bytes::from(cycle.cycle().take(size).collect::<Vec<u8>>())
 }
 
 #[test]
