@@ -2242,6 +2242,7 @@ dependencies = [
  "alloy-primitives",
  "bytes",
  "futures",
+ "nectar-file",
  "nectar-primitives",
  "proptest",
  "thiserror",

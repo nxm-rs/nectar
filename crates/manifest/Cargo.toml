@@ -21,6 +21,7 @@ workspace = true
 alloy-primitives = { workspace = true }
 bytes.workspace = true
 futures.workspace = true
+nectar-file = { workspace = true }
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
 
@@ -40,6 +41,7 @@ encryption = []
 std = [
 	"alloy-primitives/std",
 	"bytes/std",
+	"nectar-file/std",
 	"nectar-primitives/std",
 	"thiserror/std",
 ]

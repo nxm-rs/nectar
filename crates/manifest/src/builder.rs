@@ -7,15 +7,15 @@
 //! key set enters through a sorted map, so the published tree is a pure function
 //! of the keys, identical whatever order the caller streamed them in.
 
-use std::collections::BTreeMap;
-use std::io::Write;
+use core::convert::Infallible;
+use core::future::poll_fn;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use bytes::Bytes;
+use nectar_file::{Plain, PutWindow, Split, SplitError};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
-#[allow(deprecated)]
-use nectar_primitives::{
-    Chunk, ChunkAddress, ChunkRef, ContentChunk, DefaultSplitter, FileError, PrimitivesError,
-};
+use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentChunk, PrimitivesError};
 
 use crate::bounded::{Prefix, SegmentWeight};
 use crate::codec::{
@@ -40,13 +40,10 @@ pub enum BuildError {
     /// here as an encode error.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// Splitting a file into BMT chunks failed.
-    #[allow(deprecated)]
+    /// Splitting a file into BMT chunks failed. The relay put is infallible,
+    /// so every failure here is an engine or seal error.
     #[error("split file")]
-    Split(#[source] FileError),
-    /// Buffering a file for splitting failed.
-    #[error("buffer file")]
-    Buffer(#[source] std::io::Error),
+    Split(#[from] SplitError<Infallible>),
     /// Sealing a file chunk failed.
     #[error("seal file chunk")]
     Seal(#[source] PrimitivesError),
@@ -596,29 +593,79 @@ where
     Ok(address)
 }
 
-/// Split `data` through BMT, spill its chunks to `store`, and return its plain
-/// root reference. Reuses the primitives splitter, so the BMT is shared.
-#[allow(deprecated)]
+/// Shared put queue bridging the borrowed caller store to the owned-handle
+/// store the splitter clones per put: puts land here synchronously and
+/// [`drain`] forwards them between polls, so the splitter never parks and its
+/// memory bound carries over.
+#[derive(Clone, Debug, Default)]
+struct Relay {
+    queue: Arc<Mutex<VecDeque<Chunk>>>,
+}
+
+impl Relay {
+    /// The oldest queued chunk; a poisoned lock hands back its inner queue,
+    /// which a single push or pop cannot leave inconsistent.
+    fn pop(&self) -> Option<Chunk> {
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front()
+    }
+}
+
+impl ChunkPut for Relay {
+    type Error = Infallible;
+
+    async fn put(&self, chunk: Chunk) -> Result<(), Self::Error> {
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(chunk);
+        Ok(())
+    }
+}
+
+/// Forward every queued chunk to the caller's store in seal order.
+async fn drain<S>(relay: &Relay, store: &S) -> Result<(), BuildError>
+where
+    S: ChunkPut + MaybeSync,
+{
+    while let Some(chunk) = relay.pop() {
+        store.put(chunk).await.map_err(BuildError::backend)?;
+    }
+    Ok(())
+}
+
+/// Split `data` through the streaming splitter, forwarding each sealed chunk
+/// to `store` as it spills, and return the file's plain root reference.
 async fn split_file<S>(store: &S, data: &[u8]) -> Result<ChunkRef, BuildError>
 where
     S: ChunkPut + MaybeSync,
 {
-    let span = u64::try_from(data.len()).map_err(|_| BuildError::Internal)?;
-    let mut splitter = DefaultSplitter::new(span);
-    splitter.write_all(data).map_err(BuildError::Buffer)?;
-    let (root, chunks) = splitter.finish().map_err(BuildError::Split)?;
-    for chunk in chunks {
-        let sealed = Chunk::from_envelope(chunk.into()).map_err(BuildError::Seal)?;
-        store.put(sealed).await.map_err(BuildError::backend)?;
+    let relay = Relay::default();
+    let mut split: Split<Relay, Plain> = Split::new(relay.clone(), PutWindow::DEFAULT);
+    let mut rest = data;
+    while !rest.is_empty() {
+        // Relay puts complete in place, so the splitter always accepts bytes
+        // and every sealed chunk is forwarded before more bytes go in.
+        let taken = poll_fn(|cx| split.poll_write(cx, rest)).await?;
+        rest = match rest.split_at_checked(taken) {
+            Some((consumed, tail)) if !consumed.is_empty() => tail,
+            _ => return Err(BuildError::Internal),
+        };
+        drain(&relay, store).await?;
     }
+    let root = poll_fn(|cx| split.poll_finish(cx)).await?;
+    drain(&relay, store).await?;
     Ok(ChunkRef::new(root))
 }
 
 /// Stream files through BMT into one published manifest.
 ///
-/// Each `(key, file)` pair is split into content chunks, stored, and bound to
-/// the file's root reference; the manifest is then assembled and published. The
-/// iteration order does not affect the published root.
+/// Each `(key, file)` pair streams through the bounded splitter into stored
+/// content chunks and binds to the file's root reference; the manifest is then
+/// assembled and published. The iteration order does not affect the published
+/// root.
 ///
 /// ```
 /// use nectar_manifest::{build_files, Key};
