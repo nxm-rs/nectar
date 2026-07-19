@@ -62,6 +62,8 @@ encryption = [ "nectar-primitives?/encryption" ]
 # lockstep with the primitives store traits.
 unsync = [ "nectar-primitives?/unsync" ]
 
+# `rayon` and `unsync` are mutually exclusive, so the doc build lists
+# features explicitly rather than enabling all at once.
 [package.metadata.docs.rs]
-all-features = true
+features = ["std", "tokio", "rayon", "encryption"]
 rustdoc-args = ["--cfg", "docsrs"]

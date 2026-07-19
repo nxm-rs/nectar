@@ -37,7 +37,10 @@ impl<T> Handoff<T> {
             return Poll::Ready(Some(value));
         }
         if Arc::strong_count(&self.slot) == 1 {
-            return Poll::Ready(None);
+            // The reply half is gone, but it may have written its value
+            // before dropping; re-check so that ordering never turns a
+            // delivered batch into a spurious drop.
+            return Poll::Ready(self.slot.value().take());
         }
         Poll::Pending
     }
