@@ -250,3 +250,13 @@ pub fn payload(len: usize, seed: u64) -> Vec<u8> {
     rng.fill(&mut data);
     data
 }
+
+/// Deterministic `(offset, len)` read ranges within a `file_len` file.
+#[must_use]
+pub fn read_ranges(file_len: usize, count: usize, len: usize, seed: u64) -> Vec<(u64, usize)> {
+    assert!(len < file_len, "read length must fit the file");
+    let mut rng = SplitMix64::new(seed);
+    (0..count)
+        .map(|_| (u64::try_from(rng.below(file_len - len)).unwrap(), len))
+        .collect()
+}

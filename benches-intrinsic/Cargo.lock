@@ -2045,6 +2045,7 @@ dependencies = [
  "keccak-batch",
  "once_cell",
  "parking_lot",
+ "rand 0.10.1",
  "rayon",
  "subtle",
  "thiserror",

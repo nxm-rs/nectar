@@ -16,6 +16,7 @@
 )]
 
 pub mod corpus;
+pub mod delay;
 pub mod file_api;
 pub mod manifest_api;
 pub mod results;

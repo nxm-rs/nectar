@@ -16,7 +16,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use std::time::Duration;
+
 use nectar_benches_intrinsic::corpus::{self, Corpus, Shape, SplitMix64};
+use nectar_benches_intrinsic::delay::DelayStore;
 use nectar_benches_intrinsic::file_api::{FileLegacy, FilePipeline, FileStreaming};
 use nectar_benches_intrinsic::manifest_api::{
     Manifest10, ManifestApi, Mantaray02, manifest10_count, manifest10_select,
@@ -230,13 +233,88 @@ fn file_impl<P: FilePipeline>(out: &mut Suite, data: &[u8], label: &str) {
     out.emit(P::NAME, &scenario, "chunks_fetched", store.gets() as f64, "chunks");
 }
 
-fn file_suite(out: &mut Suite, payloads: &[usize]) {
+fn file_encrypted_impl<P: FilePipeline>(out: &mut Suite, data: &[u8], label: &str) {
+    let store = CountingStore::new();
+    let scenario = format!("split-encrypted/{label}");
+    let (root, cost) = measured(|| P::split_encrypted(&store, data));
+    emit_cost(out, P::NAME, &scenario, cost);
+    out.emit(P::NAME, &scenario, "chunks_written", store.puts() as f64, "chunks");
+    out.emit(P::NAME, &scenario, "bytes_written", store.put_bytes() as f64, "bytes");
+
+    let scenario = format!("join-encrypted/{label}");
+    store.reset_counters();
+    let (joined, cost) = measured(|| P::join_encrypted(&store, &root));
+    assert_eq!(joined, data, "encrypted join mismatch");
+    emit_cost(out, P::NAME, &scenario, cost);
+    out.emit(P::NAME, &scenario, "chunks_fetched", store.gets() as f64, "chunks");
+}
+
+fn file_random_impl<P: FilePipeline>(out: &mut Suite, data: &[u8], reads: usize, label: &str) {
+    const READ_LEN: usize = 16 << 10;
+
+    let store = CountingStore::new();
+    let root = P::split(&store, data);
+    let ranges = corpus::read_ranges(data.len(), reads, READ_LEN, corpus::SEED);
+    store.reset_counters();
+    let scenario = format!("random-access/{label}/{reads}x{READ_LEN}");
+    let (bytes, cost) = measured(|| P::read_ranges(&store, &root, &ranges).len());
+    assert_eq!(bytes, reads * READ_LEN, "range read short");
+    emit_cost(out, P::NAME, &scenario, cost);
+    out.emit(P::NAME, &scenario, "chunks_fetched", store.gets() as f64, "chunks");
+    out.emit(
+        P::NAME,
+        &scenario,
+        "chunks_fetched_per_read",
+        store.gets() as f64 / reads as f64,
+        "chunks",
+    );
+}
+
+/// Fetch concurrency of one latency-shaped join; wall time stays with the
+/// criterion latency suite.
+fn file_delay_impl<P: FilePipeline>(out: &mut Suite, data: &[u8], label: &str) {
+    const RTT: Duration = Duration::from_micros(200);
+
+    let base = CountingStore::new();
+    let root = P::split(&base, data);
+    let store = DelayStore::new(base, RTT);
+    let joined = P::join(&store, &root);
+    assert_eq!(joined, data, "delayed join mismatch");
+    let scenario = format!("delay-join/{label}/rtt-200us");
+    out.emit(
+        P::NAME,
+        &scenario,
+        "max_in_flight",
+        store.gauge().max_in_flight() as f64,
+        "gets",
+    );
+}
+
+fn file_suite(out: &mut Suite, payloads: &[usize], smoke: bool) {
     for &len in payloads {
         let data = corpus::payload(len, corpus::SEED);
         let label = format!("{len}");
         file_impl::<FileStreaming>(out, &data, &label);
         file_impl::<FileLegacy>(out, &data, &label);
     }
+
+    let encrypted: &[usize] = if smoke { &[4 << 10] } else { &[1 << 20, 32 << 20] };
+    for &len in encrypted {
+        let data = corpus::payload(len, corpus::SEED);
+        let label = format!("{len}");
+        file_encrypted_impl::<FileStreaming>(out, &data, &label);
+        file_encrypted_impl::<FileLegacy>(out, &data, &label);
+    }
+
+    let (random_len, reads) = if smoke { (1 << 20, 32) } else { (32 << 20, 256) };
+    let data = corpus::payload(random_len, corpus::SEED);
+    let label = format!("{random_len}");
+    file_random_impl::<FileStreaming>(out, &data, reads, &label);
+    file_random_impl::<FileLegacy>(out, &data, reads, &label);
+
+    let data = corpus::payload(1 << 20, corpus::SEED);
+    file_delay_impl::<FileStreaming>(out, &data, "1048576");
+    file_delay_impl::<FileLegacy>(out, &data, "1048576");
 }
 
 fn main() {
@@ -246,10 +324,11 @@ fn main() {
     } else {
         corpus::SIZES.to_vec()
     };
+    // 128 MiB rides only here: the boundedness axis is peak heap, not time.
     let payloads: Vec<usize> = if smoke {
         vec![4 << 10]
     } else {
-        vec![4 << 10, 1 << 20, 32 << 20]
+        vec![4 << 10, 1 << 20, 32 << 20, 128 << 20]
     };
 
     // Exercise the RNG once so a broken stream fails loud before any suite.
@@ -259,7 +338,7 @@ fn main() {
     let mut manifest_out = Suite::create("manifest");
     manifest_suite(&mut manifest_out, &sizes);
     let mut file_out = Suite::create("file");
-    file_suite(&mut file_out, &payloads);
+    file_suite(&mut file_out, &payloads, smoke);
     println!(
         "wrote {}",
         nectar_benches_intrinsic::results::results_dir().display()
