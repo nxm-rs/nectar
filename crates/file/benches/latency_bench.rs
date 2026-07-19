@@ -104,7 +104,7 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for LatencyStore<B> {
     }
 }
 
-/// Distinct byte per file position so every node address is unique.
+/// Position-varying fill so leaf chunks differ across the file.
 fn fill(len: usize) -> Vec<u8> {
     (0..len as u64)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8)
