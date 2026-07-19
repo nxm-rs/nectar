@@ -23,7 +23,6 @@ use crate::split::{Split, SplitMode, SplitStats};
 /// source:
 ///
 /// ```
-/// # #![allow(deprecated)]
 /// use nectar_file::{Plain, PutWindow, Split, TokioWriter};
 /// use nectar_primitives::chunk::AnyChunkSet;
 /// use nectar_primitives::store::MemoryStore;
@@ -41,8 +40,20 @@ use crate::split::{Split, SplitMode, SplitStats};
 /// tokio::io::copy(&mut source, &mut writer).await.unwrap();
 /// writer.shutdown().await.unwrap();
 /// let root = writer.into_inner().unwrap();
-/// # let (expected, _) = nectar_primitives::file::split::<4096>(&data).unwrap();
-/// assert_eq!(root, expected);
+/// # // Root equality with an independent whole-buffer split of the same bytes.
+/// # let mut check = Split::<_, Plain, 4096>::new(
+/// #     MemoryStore::<AnyChunkSet<4096>>::new(),
+/// #     PutWindow::DEFAULT,
+/// # );
+/// # let expected = {
+/// #     let mut buf = data.as_slice();
+/// #     while !buf.is_empty() {
+/// #         let n = core::future::poll_fn(|cx| check.poll_write(cx, buf)).await.unwrap();
+/// #         buf = &buf[n..];
+/// #     }
+/// #     core::future::poll_fn(|cx| check.poll_finish(cx)).await.unwrap()
+/// # };
+/// # assert_eq!(root, expected);
 /// # }
 /// ```
 pub struct TokioWriter<S, M, const B: usize = DEFAULT_BODY_SIZE>

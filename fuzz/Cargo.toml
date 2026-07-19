@@ -21,7 +21,7 @@ bytes = "1"
 futures = "0.3"
 libfuzzer-sys = "0.4"
 # The streaming file pipeline under test: read facade, reader and split
-# engine driven against the legacy joiner and splitter oracles.
+# engine driven for split-then-read consistency.
 nectar-file = { path = "../crates/file" }
 # The mantaray 1.0 manifest codec, builder and apply path under test.
 nectar-manifest = { path = "../crates/manifest" }

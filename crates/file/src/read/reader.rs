@@ -360,7 +360,6 @@ where
 /// any single-threaded executor, wasm32 included.
 ///
 /// ```
-/// # #![allow(deprecated)]
 /// use futures::StreamExt;
 /// use nectar_file::File;
 ///
@@ -368,7 +367,20 @@ where
 /// let data: Vec<u8> = (0u32..20_000)
 ///     .map(|i| u8::try_from(i % 251).unwrap())
 ///     .collect();
-/// # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
+/// # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
+/// # let mut split = nectar_file::Split::<_, nectar_file::Plain, 4096>::new(
+/// #     std::sync::Arc::clone(&store),
+/// #     nectar_file::PutWindow::DEFAULT,
+/// # );
+/// # let root = {
+/// #     let mut buf = data.as_slice();
+/// #     while !buf.is_empty() {
+/// #         let n = core::future::poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+/// #         buf = &buf[n..];
+/// #     }
+/// #     core::future::poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+/// # };
+/// # drop(split);
 /// let file = File::open(store, root).await.unwrap();
 /// let mut stream = file.read().range(4_096..12_288).stream();
 /// let mut out = Vec::new();

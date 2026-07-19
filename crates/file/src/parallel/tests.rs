@@ -1,26 +1,22 @@
-//! Ingest oracles: root and chunk-set differentials against the legacy
-//! buffered splitter, put-window witnesses, and typed failure paths.
+//! Ingest oracles: root and chunk-set differentials against the streaming
+//! split engine, put-window witnesses, and typed failure paths.
 
-#![allow(deprecated)]
-
-use core::future::Future;
+use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use std::collections::HashMap;
 use std::format;
-use std::io::Write as _;
 use std::string::ToString;
 use std::sync::{Arc, Mutex};
 use std::vec;
 use std::vec::Vec;
 
 use futures::executor::block_on;
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ChunkOps, Verified};
-use nectar_primitives::file::Splitter;
+use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkPut, ChunkStoreError};
 
 use super::{ReadAt, ReadAtError, split_read_at};
 use crate::config::PutWindow;
-use crate::split::SplitError;
+use crate::split::{Split, SplitError};
 use crate::walk::Plain;
 
 /// Tiny body size: fan-out 8, so a few dozen leaves already build a deep
@@ -134,14 +130,21 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
     }
 }
 
-/// The legacy buffered splitter as the oracle: root plus every produced
-/// chunk address.
-fn legacy_split<const B: usize>(data: &[u8]) -> (ChunkAddress, Vec<ChunkAddress>) {
-    let mut splitter = Splitter::<B>::new(data.len() as u64);
-    splitter.write_all(data).unwrap();
-    let (root, chunks) = splitter.finish().unwrap();
-    let addresses = chunks.iter().map(|chunk| *chunk.address()).collect();
-    (root, addresses)
+/// The streaming split engine as the oracle: an independent ingest of the
+/// same bytes, returning root plus every sealed chunk address.
+fn stream_split<const B: usize>(data: &[u8]) -> (ChunkAddress, Vec<ChunkAddress>) {
+    let store = TestStore::<B>::new(0);
+    let mut split: Split<TestStore<B>, Plain, B> = Split::new(store.clone(), PutWindow::DEFAULT);
+    let root = block_on(async {
+        let mut buf = data;
+        while !buf.is_empty() {
+            let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+            buf = &buf[n..];
+        }
+        poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+    });
+    let log = store.log();
+    (root, log)
 }
 
 fn ingest<const B: usize>(
@@ -165,7 +168,7 @@ fn sorted(mut addresses: Vec<ChunkAddress>) -> Vec<ChunkAddress> {
 }
 
 #[test]
-fn roots_and_chunk_sets_match_the_legacy_splitter() {
+fn roots_and_chunk_sets_match_the_streaming_engine() {
     let b = TINY;
     let kb = BRANCHES * b;
     let k2b = BRANCHES * kb;
@@ -185,26 +188,26 @@ fn roots_and_chunk_sets_match_the_legacy_splitter() {
     ];
     for size in sizes {
         let data = fill(size);
-        let (legacy_root, legacy_chunks) = legacy_split::<TINY>(&data);
+        let (streamed_root, streamed_chunks) = stream_split::<TINY>(&data);
         let (root, store) = ingest::<TINY>(data, 4, 1);
-        assert_eq!(root, legacy_root, "root diverged at {size}");
+        assert_eq!(root, streamed_root, "root diverged at {size}");
         assert_eq!(
             sorted(store.log()),
-            sorted(legacy_chunks),
+            sorted(streamed_chunks),
             "chunk set diverged at {size}"
         );
     }
 }
 
 #[test]
-fn default_profile_roots_match_the_legacy_splitter() {
+fn default_profile_roots_match_the_streaming_engine() {
     const B: usize = nectar_primitives::DEFAULT_BODY_SIZE;
     let sizes = [0, 1, B - 1, B, B + 1, 5 * B + 123];
     for size in sizes {
         let data = fill(size);
-        let (legacy_root, _) = legacy_split::<B>(&data);
+        let (streamed_root, _) = stream_split::<B>(&data);
         let (root, _) = ingest::<B>(data, 8, 0);
-        assert_eq!(root, legacy_root, "root diverged at {size}");
+        assert_eq!(root, streamed_root, "root diverged at {size}");
     }
 }
 
@@ -212,10 +215,10 @@ fn default_profile_roots_match_the_legacy_splitter() {
 fn put_window_bounds_concurrent_puts() {
     let data = fill(200 * TINY + 63);
     for window in [1u16, 4, 16] {
-        let (legacy_root, legacy_chunks) = legacy_split::<TINY>(&data);
+        let (streamed_root, streamed_chunks) = stream_split::<TINY>(&data);
         let (root, store) = ingest::<TINY>(data.clone(), window, 3);
-        assert_eq!(root, legacy_root);
-        assert_eq!(store.log().len(), legacy_chunks.len());
+        assert_eq!(root, streamed_root);
+        assert_eq!(store.log().len(), streamed_chunks.len());
         assert!(
             store.peak_active() <= usize::from(window),
             "puts in flight {} exceeded window {window}",
@@ -224,7 +227,7 @@ fn put_window_bounds_concurrent_puts() {
     }
 }
 
-/// The legacy joiner reads the shared chunk map, so the pooled encrypted
+/// The ordered walk reads the shared chunk map, so the pooled encrypted
 /// ingest is checked end to end.
 #[cfg(feature = "encryption")]
 impl<const B: usize> nectar_primitives::store::ChunkGet<AnyChunkSet<B>> for TestStore<B> {
@@ -244,14 +247,13 @@ impl<const B: usize> nectar_primitives::store::ChunkGet<AnyChunkSet<B>> for Test
     }
 }
 
-/// The pooled encrypted ingest hands the legacy joiner a readable root.
+/// The pooled encrypted ingest hands the ordered walk a readable root.
 #[cfg(feature = "encryption")]
 #[test]
-fn encrypted_ingest_joins_through_the_legacy_joiner() {
-    use nectar_primitives::file::join;
-
+fn encrypted_ingest_reads_back_through_the_walk() {
+    use crate::config::Window;
     use crate::split::RandomKeys;
-    use crate::walk::Encrypted;
+    use crate::walk::{Encrypted, Walk};
 
     let data = fill(17 * TINY + 43);
     let store = TestStore::<TINY>::new(0);
@@ -261,7 +263,21 @@ fn encrypted_ingest_joins_through_the_legacy_joiner() {
         PutWindow::DEFAULT,
     ))
     .unwrap();
-    let plaintext = block_on(join(&store, root)).unwrap();
+    let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
+        store,
+        *root.address(),
+        root.key().clone(),
+        data.len() as u64,
+        0..u64::MAX,
+        Window::new(4).unwrap(),
+    );
+    let plaintext = block_on(async {
+        let mut bytes = Vec::new();
+        while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+            bytes.extend_from_slice(&frame.unwrap().data);
+        }
+        bytes
+    });
     assert_eq!(plaintext, data);
 }
 

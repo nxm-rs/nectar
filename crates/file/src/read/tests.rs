@@ -1,10 +1,11 @@
-//! Facade oracles: differential equality against the legacy read paths over
-//! both reference widths, clip-with-effective-length ranges, seek, and the
+//! Facade oracles: byte equality against the source bytes over both
+//! reference widths, clip-with-effective-length ranges, seek, and the
 //! runtime width dispatch.
-#![allow(deprecated)]
 
 use std::boxed::Box;
-use std::string::{String, ToString};
+#[cfg(feature = "encryption")]
+use std::string::String;
+use std::string::ToString;
 use std::vec;
 use std::vec::Vec;
 
@@ -14,17 +15,20 @@ use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
 use nectar_primitives::chunk::{
     AnyChunk, AnyChunkSet, Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk,
 };
-use nectar_primitives::file::{ChunkGetExt, join, split, split_encrypted};
 use nectar_primitives::store::{ChunkStoreError, MemoryStore, TrustedGet};
 use nectar_primitives::{EntryRef, transcrypt};
+
+#[cfg(feature = "encryption")]
+use crate::testutil::split_encrypted_fixture;
+use crate::testutil::split_fixture;
 
 use super::{AnyFile, CollectError, File, FileReader, OpenError, SeekPastEnd};
 use crate::config::Window;
 use crate::geometry::Mode;
 use crate::walk::{DecodeError, Encrypted, Plain, WalkError, WalkMode};
 
-/// Tiny body size shared with the legacy joiner tests: fan-out 8 plain and 4
-/// encrypted, so small files already build deep trees.
+/// Tiny body size: fan-out 8 plain and 4 encrypted, so small files already
+/// build deep trees.
 const TINY: usize = 256;
 
 type TinyStore = MemoryStore<AnyChunkSet<TINY>>;
@@ -73,33 +77,28 @@ where
 }
 
 #[test]
-fn plain_reader_matches_legacy_join() {
+fn plain_reader_matches_the_source_bytes() {
     for len in edge_sizes() {
         let data = fill(len);
-        let (root, store) = split::<TINY>(&data).unwrap();
-        let legacy = block_on(join(&store, root)).unwrap();
-        assert_eq!(legacy, data, "legacy oracle diverged at {len}");
-
+        let (root, store) = split_fixture::<TINY>(&data);
         for window in [1u16, 4] {
             let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
             assert_eq!(file.len(), len as u64);
             assert_eq!(file.is_empty(), len == 0);
             let mut reader = file.read().window(Window::new(window).unwrap()).build();
             assert_eq!(reader.effective_len(), len as u64);
-            assert_eq!(drain_reader(&mut reader), legacy, "diverged at {len}");
+            assert_eq!(drain_reader(&mut reader), data, "diverged at {len}");
             assert_eq!(reader.position(), len as u64);
         }
     }
 }
 
+#[cfg(feature = "encryption")]
 #[test]
-fn encrypted_reader_matches_legacy_join() {
+fn encrypted_reader_matches_the_source_bytes() {
     for len in edge_sizes() {
         let data = fill(len);
-        let (root_ref, store) = split_encrypted::<TINY>(&data).unwrap();
-        let legacy = block_on(join(&store, root_ref.clone())).unwrap();
-        assert_eq!(legacy, data, "legacy oracle diverged at {len}");
-
+        let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
         for window in [1u16, 4] {
             let file = block_on(File::<_, Encrypted, TINY>::open_encrypted(
                 store.clone(),
@@ -108,17 +107,15 @@ fn encrypted_reader_matches_legacy_join() {
             .unwrap();
             assert_eq!(file.len(), len as u64);
             let mut reader = file.read().window(Window::new(window).unwrap()).build();
-            assert_eq!(drain_reader(&mut reader), legacy, "diverged at {len}");
+            assert_eq!(drain_reader(&mut reader), data, "diverged at {len}");
         }
     }
 }
 
-#[test]
-fn range_reads_match_legacy_read_range_both_widths() {
-    let len = 33 * TINY + 17;
-    let data = fill(len);
-    let span = len as u64;
-    let ranges = [
+/// Range battery over one 33-and-a-bit-leaf file: interior, empty,
+/// boundary-straddling and end-hugging clips.
+fn ranges(span: u64) -> [core::ops::Range<u64>; 8] {
+    [
         0..10u64,
         0..span,
         100..3 * TINY as u64,
@@ -127,34 +124,42 @@ fn range_reads_match_legacy_read_range_both_widths() {
         511..(TINY as u64) * 9 + 1,
         span - 1..span,
         span / 2..span,
-    ];
+    ]
+}
 
-    let (plain_root, plain_store) = split::<TINY>(&data).unwrap();
-    let (enc_root, enc_store) = split_encrypted::<TINY>(&data).unwrap();
-    let plain_joiner = block_on(plain_store.clone().joiner(plain_root)).unwrap();
-    let enc_joiner = block_on(enc_store.clone().joiner(enc_root.clone())).unwrap();
-    let plain_file = block_on(File::<_, Plain, TINY>::open(plain_store, plain_root)).unwrap();
-    let enc_file = block_on(File::<_, Encrypted, TINY>::open_encrypted(
-        enc_store, enc_root,
-    ))
-    .unwrap();
+#[test]
+fn range_reads_match_the_source_slices() {
+    let len = 33 * TINY + 17;
+    let data = fill(len);
+    let (root, store) = split_fixture::<TINY>(&data);
+    let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
 
-    for range in ranges {
-        let want = usize::try_from(range.end - range.start).unwrap();
-        let legacy_plain = block_on(plain_joiner.read_range(range.start, want)).unwrap();
-        let legacy_enc = block_on(enc_joiner.read_range(range.start, want)).unwrap();
-        assert_eq!(legacy_plain, legacy_enc, "oracles diverged for {range:?}");
-
-        let mut reader = plain_file.read().range(range.clone()).build();
+    for range in ranges(len as u64) {
+        let expect =
+            &data[usize::try_from(range.start).unwrap()..usize::try_from(range.end).unwrap()];
+        let mut reader = file.read().range(range.clone()).build();
         assert_eq!(reader.effective_len(), range.end - range.start);
-        assert_eq!(drain_reader(&mut reader), legacy_plain, "plain {range:?}");
+        assert_eq!(drain_reader(&mut reader), expect, "plain {range:?}");
+    }
+}
 
-        let mut reader = enc_file
+#[cfg(feature = "encryption")]
+#[test]
+fn encrypted_range_reads_match_the_source_slices() {
+    let len = 33 * TINY + 17;
+    let data = fill(len);
+    let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
+    let file = block_on(File::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+
+    for range in ranges(len as u64) {
+        let expect =
+            &data[usize::try_from(range.start).unwrap()..usize::try_from(range.end).unwrap()];
+        let mut reader = file
             .read()
             .range(range.clone())
             .window(Window::new(3).unwrap())
             .build();
-        assert_eq!(drain_reader(&mut reader), legacy_enc, "encrypted {range:?}");
+        assert_eq!(drain_reader(&mut reader), expect, "encrypted {range:?}");
     }
 }
 
@@ -163,7 +168,7 @@ fn out_of_file_ranges_clip_to_effective_length() {
     let len = 5 * TINY + 9;
     let data = fill(len);
     let span = len as u64;
-    let (root, store) = split::<TINY>(&data).unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
     let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
 
     // End past the file clips to the span.
@@ -232,38 +237,44 @@ fn run_seek_script<M: WalkMode>(
 }
 
 #[test]
-fn seek_reads_match_oracle_slices_both_widths() {
+fn seek_reads_match_oracle_slices() {
     let data = fill(21 * TINY + 100);
-    let (plain_root, plain_store) = split::<TINY>(&data).unwrap();
-    let plain_file = block_on(File::<_, Plain, TINY>::open(plain_store, plain_root)).unwrap();
-    let (enc_root, enc_store) = split_encrypted::<TINY>(&data).unwrap();
-    let enc_file = block_on(File::<_, Encrypted, TINY>::open_encrypted(
-        enc_store, enc_root,
-    ))
-    .unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
+    let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
+    run_seek_script(file.read().build(), &data, "plain");
+}
 
-    run_seek_script(plain_file.read().build(), &data, "plain");
-    run_seek_script(enc_file.read().build(), &data, "encrypted");
+#[cfg(feature = "encryption")]
+#[test]
+fn encrypted_seek_reads_match_oracle_slices() {
+    let data = fill(21 * TINY + 100);
+    let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
+    let file = block_on(File::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+    run_seek_script(file.read().build(), &data, "encrypted");
 }
 
 #[test]
-fn any_file_dispatches_on_the_wire_reference_width() {
+fn any_file_opens_plain_on_a_32_byte_reference() {
     let data = fill(9 * TINY + 5);
-    let (plain_root, plain_store) = split::<TINY>(&data).unwrap();
-    let (enc_root, enc_store) = split_encrypted::<TINY>(&data).unwrap();
-
-    let plain_entry = EntryRef::Plain(ChunkRef::new(plain_root));
-    let any = block_on(AnyFile::<_, TINY>::open(plain_store, plain_entry)).unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
+    let entry = EntryRef::Plain(ChunkRef::new(root));
+    let any = block_on(AnyFile::<_, TINY>::open(store, entry)).unwrap();
     assert_eq!(any.mode(), Mode::Plain);
     assert_eq!(any.len(), data.len() as u64);
-    assert_eq!(any.root(), &plain_root);
+    assert_eq!(any.root(), &root);
     let AnyFile::Plain(file) = any else {
         panic!("32-byte reference must open plain");
     };
     assert_eq!(drain_reader(&mut file.read().build()), data);
+}
 
-    let enc_entry = EntryRef::from(enc_root);
-    let any = block_on(AnyFile::<_, TINY>::open(enc_store, enc_entry)).unwrap();
+#[cfg(feature = "encryption")]
+#[test]
+fn any_file_opens_encrypted_on_a_64_byte_reference() {
+    let data = fill(9 * TINY + 5);
+    let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
+    let entry = EntryRef::from(root_ref);
+    let any = block_on(AnyFile::<_, TINY>::open(store, entry)).unwrap();
     assert_eq!(any.mode(), Mode::Encrypted);
     assert_eq!(any.len(), data.len() as u64);
     let AnyFile::Encrypted(file) = any else {
@@ -275,7 +286,7 @@ fn any_file_dispatches_on_the_wire_reference_width() {
 #[test]
 fn stream_tiles_the_range_and_carries_reader_leftovers() {
     let data = fill(13 * TINY + 40);
-    let (root, store) = split::<TINY>(&data).unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
     let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
 
     // Fresh stream over a mid-file range.
@@ -312,10 +323,11 @@ fn stream_tiles_the_range_and_carries_reader_leftovers() {
     assert_eq!(rest, &data[100..]);
 }
 
+#[cfg(feature = "encryption")]
 #[test]
 fn next_segment_is_gapless_and_zero_copy_sized() {
     let data = fill(6 * TINY + 30);
-    let (root_ref, store) = split_encrypted::<TINY>(&data).unwrap();
+    let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
     let file = block_on(File::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
     let mut reader = file.read().build();
     let collected = block_on(async {
@@ -407,6 +419,7 @@ fn truncated_ciphertext_is_a_typed_decode_error() {
     ));
 }
 
+#[cfg(feature = "encryption")]
 #[test]
 fn debug_never_leaks_the_decryption_key() {
     let data = fill(2 * TINY);
@@ -414,7 +427,7 @@ fn debug_never_leaks_the_decryption_key() {
         // The reader's Debug output must stay structural.
         assert!(!rendered.contains("key"), "{rendered}");
     };
-    let (root_ref, store) = split_encrypted::<TINY>(&data).unwrap();
+    let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
     let file = block_on(File::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
     key_free(std::format!("{file:?}"));
     key_free(std::format!("{:?}", file.read()));
@@ -441,7 +454,7 @@ where
 #[test]
 fn frames_tile_the_clipped_range_exactly_once() {
     let data = fill(17 * TINY + 29);
-    let (root, store) = split::<TINY>(&data).unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
     let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
 
     let range = 100u64..(13 * TINY + 7) as u64;
@@ -465,19 +478,14 @@ fn frames_tile_the_clipped_range_exactly_once() {
 }
 
 #[test]
-fn download_fills_a_sink_and_reports_progress_both_widths() {
+fn download_fills_a_sink_and_reports_progress() {
     use std::sync::{Arc, Mutex};
 
-    use crate::sink::{DataSink as _, MemSink};
+    use crate::sink::MemSink;
 
     let data = fill(11 * TINY + 63);
-    let (plain_root, plain_store) = split::<TINY>(&data).unwrap();
-    let (enc_root, enc_store) = split_encrypted::<TINY>(&data).unwrap();
-    let plain_file = block_on(File::<_, Plain, TINY>::open(plain_store, plain_root)).unwrap();
-    let enc_file = block_on(File::<_, Encrypted, TINY>::open_encrypted(
-        enc_store, enc_root,
-    ))
-    .unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
+    let plain_file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);
@@ -502,9 +510,19 @@ fn download_fills_a_sink_and_reports_progress_both_widths() {
         assert_eq!(progress.total, data.len() as u64);
     }
     assert_eq!(seen.last().unwrap().written, data.len() as u64);
+}
 
-    // The encrypted width lands the same bytes, and a sink pre-filled with
-    // garbage is fully overwritten (idempotent full re-run semantics).
+/// The encrypted width lands the same bytes, and a sink pre-filled with
+/// garbage is fully overwritten (idempotent full re-run semantics).
+#[cfg(feature = "encryption")]
+#[test]
+fn encrypted_download_overwrites_a_prefilled_sink() {
+    use crate::sink::{DataSink as _, MemSink};
+
+    let data = fill(11 * TINY + 63);
+    let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
+    let enc_file = block_on(File::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+
     let mut sink = MemSink::new();
     sink.write_at(0, &vec![0xa5; data.len()]).unwrap();
     let written = block_on(enc_file.download().run(&mut sink)).unwrap();
@@ -517,7 +535,7 @@ fn range_download_writes_range_relative_offsets() {
     use crate::sink::MemSink;
 
     let data = fill(9 * TINY + 11);
-    let (root, store) = split::<TINY>(&data).unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
     let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
 
     let range = 300u64..(5 * TINY) as u64;
@@ -534,17 +552,12 @@ fn range_download_writes_range_relative_offsets() {
 }
 
 #[test]
-fn collect_assembles_the_clipped_range_both_widths() {
+fn collect_assembles_the_clipped_range() {
     let data = fill(9 * TINY + 21);
-    let (plain_root, plain_store) = split::<TINY>(&data).unwrap();
-    let (enc_root, enc_store) = split_encrypted::<TINY>(&data).unwrap();
+    let (plain_root, plain_store) = split_fixture::<TINY>(&data);
     let plain_file = block_on(File::<_, Plain, TINY>::open(
         plain_store.clone(),
         plain_root,
-    ))
-    .unwrap();
-    let enc_file = block_on(File::<_, Encrypted, TINY>::open_encrypted(
-        enc_store, enc_root,
     ))
     .unwrap();
 
@@ -553,7 +566,6 @@ fn collect_assembles_the_clipped_range_both_widths() {
         block_on(plain_file.collect(data.len() as u64)).unwrap(),
         data
     );
-    assert_eq!(block_on(enc_file.collect(u64::MAX)).unwrap(), data);
 
     // The runtime-dispatched file collects through the same bound.
     let entry = EntryRef::Plain(ChunkRef::new(plain_root));
@@ -572,9 +584,19 @@ fn collect_assembles_the_clipped_range_both_widths() {
     assert_eq!(got, &data[100..5 * TINY]);
 
     // An empty file collects empty under a zero bound.
-    let (root, store) = split::<TINY>(&[]).unwrap();
+    let (root, store) = split_fixture::<TINY>(&[]);
     let empty = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
     assert!(block_on(empty.collect(0)).unwrap().is_empty());
+}
+
+/// The encrypted width collects the same bytes through the same bound.
+#[cfg(feature = "encryption")]
+#[test]
+fn encrypted_collect_assembles_the_file() {
+    let data = fill(9 * TINY + 21);
+    let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
+    let enc_file = block_on(File::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+    assert_eq!(block_on(enc_file.collect(u64::MAX)).unwrap(), data);
 }
 
 /// Store counting every fetch it serves.
@@ -600,7 +622,7 @@ impl nectar_primitives::store::ChunkGet<AnyChunkSet<TINY>> for CountingStore {
 #[test]
 fn collect_past_the_bound_is_typed_and_fetches_nothing() {
     let data = fill(4 * TINY);
-    let (root, store) = split::<TINY>(&data).unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
     let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let store = CountingStore {
         inner: std::sync::Arc::new(store),
@@ -632,7 +654,7 @@ fn boxed_store_erases_behind_nameable_aliases() {
     }
 
     let data = fill(7 * TINY + 13);
-    let (root, store) = split::<TINY>(&data).unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
     let boxed = BoxedStore::<TINY>::new(store);
 
     let file = block_on(DynFile::<Plain, TINY>::open(boxed.clone(), root)).unwrap();
@@ -712,7 +734,7 @@ fn download_restart_after_transient_failure_is_idempotent() {
     use crate::sink::MemSink;
 
     let data = fill(19 * TINY + 41);
-    let (root, store) = split::<TINY>(&data).unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
     let store = FailOnce {
         inner: std::sync::Arc::new(store),
         // Let several leaves land before the outage so the failed run

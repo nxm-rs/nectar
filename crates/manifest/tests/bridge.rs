@@ -1,19 +1,17 @@
-//! Byte pin of the streaming build bridge against the legacy split path.
+//! Byte pin of the streaming build bridge against a direct split.
 //!
 //! For a battery of boundary sizes, `build_files` must publish the same
-//! manifest root as a build over the legacy whole-buffer splitter's
-//! references, and the stored chunk address set must match exactly. Chunks
-//! are content-addressed, so address equality pins the stored bytes.
-
-// The legacy whole-buffer splitter is the differential oracle here.
-#![allow(deprecated)]
+//! manifest root as a build over a direct whole-buffer split's references,
+//! and the stored chunk address set must match exactly. Chunks are
+//! content-addressed, so address equality pins the stored bytes.
 
 use std::error::Error;
 
 use bytes::Bytes;
 use futures::executor::block_on;
+use nectar_file::{Plain, PutWindow, Split};
 use nectar_manifest::{Builder, Entry, Key, Reader, build_files};
-use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, MemoryStore, split};
+use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -57,8 +55,28 @@ fn pattern(size: usize) -> Bytes {
     Bytes::from(cycle.cycle().take(size).collect::<Vec<u8>>())
 }
 
+/// Split `data` whole through the streaming engine into a fresh store,
+/// returning the root and the split store.
+async fn split_whole(data: &[u8]) -> Result<(ChunkAddress, MemoryStore), Box<dyn Error>> {
+    let store = std::sync::Arc::new(MemoryStore::default());
+    let mut split: Split<std::sync::Arc<MemoryStore>, Plain, DEFAULT_BODY_SIZE> =
+        Split::new(std::sync::Arc::clone(&store), PutWindow::DEFAULT);
+    let mut rest = data;
+    while !rest.is_empty() {
+        let taken = core::future::poll_fn(|cx| split.poll_write(cx, rest)).await?;
+        rest = rest
+            .split_at_checked(taken)
+            .map(|(_, tail)| tail)
+            .ok_or("write consumed past the buffer")?;
+    }
+    let root = core::future::poll_fn(|cx| split.poll_finish(cx)).await?;
+    drop(split);
+    let store = std::sync::Arc::into_inner(store).ok_or("split still holds the store")?;
+    Ok((root, store))
+}
+
 #[test]
-fn streaming_bridge_pins_the_legacy_split_bytes() -> TestResult {
+fn streaming_bridge_pins_the_direct_split_bytes() -> TestResult {
     for &size in SIZES {
         let data = pattern(size);
         let key = Key::from(&b"file"[..]);
@@ -66,26 +84,26 @@ fn streaming_bridge_pins_the_legacy_split_bytes() -> TestResult {
         let store = MemoryStore::default();
         let built = block_on(build_files(&store, [(key.clone(), data.clone())]))?;
 
-        // The prior bridge: the same manifest over the legacy splitter's
-        // reference, with the legacy chunk set as the file bytes oracle.
-        let (legacy_root, legacy_chunks) = split::<DEFAULT_BODY_SIZE>(&data)?;
+        // The reference bridge: the same manifest over a direct split's
+        // reference, with the direct chunk set as the file bytes oracle.
+        let (direct_root, direct_store) = block_on(split_whole(&data))?;
         let node_store = MemoryStore::default();
         let mut builder: Builder = Builder::new();
-        builder.insert(key, Entry::from(ChunkRef::new(legacy_root)), None);
-        let legacy_built = block_on(builder.build(&node_store))?;
-        ensure_eq(built.root(), legacy_built.root(), "manifest root")?;
+        builder.insert(key, Entry::from(ChunkRef::new(direct_root)), None);
+        let direct_built = block_on(builder.build(&node_store))?;
+        ensure_eq(built.root(), direct_built.root(), "manifest root")?;
 
-        let legacy = legacy_chunks.into_chunks();
+        let direct = direct_store.into_chunks();
         let nodes = node_store.into_chunks();
-        for address in legacy.keys() {
-            ensure(store.get(address).is_some(), "legacy chunk stored")?;
+        for address in direct.keys() {
+            ensure(store.get(address).is_some(), "direct-split chunk stored")?;
         }
         // Exact set equality: with the file chunks and manifest nodes both
         // pinned, no other chunk may appear.
         for address in store.into_chunks().keys() {
             ensure(
-                legacy.contains_key(address) || nodes.contains_key(address),
-                "no chunk beyond the legacy set and the manifest nodes",
+                direct.contains_key(address) || nodes.contains_key(address),
+                "no chunk beyond the direct split set and the manifest nodes",
             )?;
         }
     }
@@ -102,7 +120,7 @@ fn bridged_files_round_trip_byte_exact() -> TestResult {
     ];
     let root = *block_on(build_files(&store, files))?.root();
 
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: Reader<_> = Reader::new(store);
     ensure_eq(
         block_on(reader.fetch(&root, &Key::from(&b"a/big"[..])))?,
         Some(big),

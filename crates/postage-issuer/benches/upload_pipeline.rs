@@ -1,6 +1,4 @@
 #![allow(missing_docs)]
-// Exercises the legacy pipeline until its nectar-file replacement lands.
-#![allow(deprecated)]
 //! End-to-end upload pipeline benchmarks.
 //!
 //! Measures the complete upload processing flow:
@@ -22,19 +20,85 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use std::io::Write;
+use core::future::poll_fn;
+use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{B256, Signature, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use futures::executor::block_on;
 use rand::{Rng, rng};
 
+use nectar_file::{Plain, PutWindow, ReadAt, Split, split_read_at};
 use nectar_postage_issuer::{
     BatchId, BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
-use nectar_primitives::file::{ParallelSplitter, Splitter};
+use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
+use nectar_primitives::store::ChunkPut;
 use nectar_primitives::{ChunkOps, DEFAULT_BODY_SIZE};
+
+type SealedChunk = Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>;
+
+/// Collecting put target: appends every sealed chunk to a shared list.
+#[derive(Clone, Default)]
+struct Collect(Arc<Mutex<Vec<SealedChunk>>>);
+
+impl ChunkPut<AnyChunkSet<DEFAULT_BODY_SIZE>> for Collect {
+    type Error = std::convert::Infallible;
+
+    async fn put(&self, chunk: SealedChunk) -> Result<(), Self::Error> {
+        self.0.lock().unwrap().push(chunk);
+        Ok(())
+    }
+}
+
+/// Zero-copy shared buffer source for the batch ingest.
+#[derive(Clone)]
+struct SharedBuf(Arc<Vec<u8>>);
+
+impl ReadAt for SharedBuf {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+        let start = (offset as usize).min(self.0.len());
+        let take = buf.len().min(self.0.len() - start);
+        buf[..take].copy_from_slice(&self.0[start..start + take]);
+        Ok(take)
+    }
+
+    fn len(&self) -> std::io::Result<u64> {
+        Ok(self.0.len() as u64)
+    }
+}
+
+/// Sequential streaming split of the whole buffer.
+fn split_sequential(data: &[u8]) -> (ChunkAddress, Vec<SealedChunk>) {
+    let sink = Collect::default();
+    let mut split: Split<Collect, Plain, DEFAULT_BODY_SIZE> =
+        Split::new(sink.clone(), PutWindow::DEFAULT);
+    let root = block_on(async {
+        let mut buf = data;
+        while !buf.is_empty() {
+            let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+            buf = &buf[n..];
+        }
+        poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+    });
+    let chunks = std::mem::take(&mut *sink.0.lock().unwrap());
+    (root, chunks)
+}
+
+/// Parallel batch ingest of the whole shared buffer.
+fn split_parallel(source: &SharedBuf) -> (ChunkAddress, Vec<SealedChunk>) {
+    let sink = Collect::default();
+    let root = block_on(split_read_at::<_, _, Plain, DEFAULT_BODY_SIZE>(
+        source.clone(),
+        sink.clone(),
+        PutWindow::DEFAULT,
+    ))
+    .unwrap();
+    let chunks = std::mem::take(&mut *sink.0.lock().unwrap());
+    (root, chunks)
+}
 
 /// File sizes to benchmark, representing realistic upload scenarios.
 const SIZES: &[(u64, &str)] = &[
@@ -76,9 +140,7 @@ fn bench_pipeline_mock_sequential(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Split file into chunks
-                let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
-                splitter.write_all(data).unwrap();
-                let (root, chunks) = splitter.finish().unwrap();
+                let (root, chunks) = split_sequential(data);
 
                 // Stamp each chunk
                 let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
@@ -106,11 +168,11 @@ fn bench_pipeline_mock_parallel_split(c: &mut Criterion) {
         rng().fill_bytes(&mut data);
 
         group.throughput(Throughput::Bytes(size));
-        group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
+        let source = SharedBuf(Arc::new(data.clone()));
+        group.bench_with_input(BenchmarkId::from_parameter(name), &source, |b, source| {
             b.iter(|| {
                 // Parallel split
-                let (root, chunks) =
-                    ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
+                let (root, chunks) = split_parallel(source);
 
                 // Stamp each chunk (sequential)
                 let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
@@ -145,9 +207,7 @@ fn bench_pipeline_ecdsa_sequential(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
             b.iter(|| {
                 // Split file into chunks
-                let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
-                splitter.write_all(data).unwrap();
-                let (root, chunks) = splitter.finish().unwrap();
+                let (root, chunks) = split_sequential(data);
 
                 // Stamp each chunk with real signatures
                 let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
@@ -185,11 +245,11 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
         rng().fill_bytes(&mut data);
 
         group.throughput(Throughput::Bytes(size));
-        group.bench_with_input(BenchmarkId::from_parameter(name), &data, |b, data| {
+        let source = SharedBuf(Arc::new(data.clone()));
+        group.bench_with_input(BenchmarkId::from_parameter(name), &source, |b, source| {
             b.iter(|| {
                 // Parallel split
-                let (root, chunks) =
-                    ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(data).unwrap();
+                let (root, chunks) = split_parallel(source);
 
                 // Collect addresses for parallel signing
                 let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
@@ -223,12 +283,12 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("upload_pipeline_4mb_comparison");
     group.throughput(Throughput::Bytes(size));
 
+    let source = SharedBuf(Arc::new(data.clone()));
+
     // Fully sequential
     group.bench_function("sequential", |b| {
         b.iter(|| {
-            let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
-            splitter.write_all(&data).unwrap();
-            let (root, chunks) = splitter.finish().unwrap();
+            let (root, chunks) = split_sequential(&data);
 
             let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
@@ -245,8 +305,7 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     // Parallel split only
     group.bench_function("parallel_split", |b| {
         b.iter(|| {
-            let (root, chunks) =
-                ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
+            let (root, chunks) = split_parallel(&source);
 
             let issuer = MemoryIssuer::new(BatchId::ZERO, 32, 16);
             let mut stamper = BatchStamper::new(issuer, &signer);
@@ -263,8 +322,7 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
     // Fully parallel
     group.bench_function("fully_parallel", |b| {
         b.iter(|| {
-            let (root, chunks) =
-                ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap();
+            let (root, chunks) = split_parallel(&source);
 
             let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
 
@@ -289,24 +347,20 @@ fn bench_pipeline_stages(c: &mut Criterion) {
     let mut group = c.benchmark_group("upload_pipeline_stages_4mb");
     group.throughput(Throughput::Bytes(size));
 
+    let source = SharedBuf(Arc::new(data.clone()));
+
     // Stage 1: Split only (sequential)
     group.bench_function("1_split_sequential", |b| {
-        b.iter(|| {
-            let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
-            splitter.write_all(&data).unwrap();
-            black_box(splitter.finish().unwrap())
-        });
+        b.iter(|| black_box(split_sequential(&data)));
     });
 
     // Stage 1: Split only (parallel)
     group.bench_function("1_split_parallel", |b| {
-        b.iter(|| black_box(ParallelSplitter::<DEFAULT_BODY_SIZE>::split_to_vec(&data).unwrap()));
+        b.iter(|| black_box(split_parallel(&source)));
     });
 
     // Pre-split for stamp benchmarks
-    let mut splitter = Splitter::<DEFAULT_BODY_SIZE>::new(data.len() as u64);
-    splitter.write_all(&data).unwrap();
-    let (_, chunks) = splitter.finish().unwrap();
+    let (_, chunks) = split_sequential(&data);
     let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
     let num_chunks = addresses.len();
 

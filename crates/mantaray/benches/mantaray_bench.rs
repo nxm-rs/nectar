@@ -11,16 +11,15 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-// The lookup benches deliberately measure the mutating `&mut self` lookup path.
-#![allow(deprecated)]
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use futures::executor::block_on;
-use nectar_mantaray::hazmat;
-use nectar_mantaray::{MemoryStore, PlainManifest};
+use nectar_mantaray::{Cursor, ManifestEditor, MemoryStore, Reader, hazmat};
 use nectar_primitives::StandardChunkSet;
-use nectar_primitives::chunk::ChunkAddress;
+use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
+use nectar_primitives::store::ChunkGet;
 
 type Store = MemoryStore<StandardChunkSet>;
+type Editor = ManifestEditor<Store>;
 
 /// Create a ChunkAddress from a path, left-padded with zeroes.
 fn make_addr(path: &[u8]) -> ChunkAddress {
@@ -45,72 +44,51 @@ const SPA_PATHS: &[&str] = &[
     "js/app.js",
 ];
 
-/// Build a PlainManifest with the SPA website dataset.
-fn build_spa_manifest() -> PlainManifest<Store> {
-    let store = Store::new();
-    let mut m = PlainManifest::new(store);
+/// Paths for the larger-scale benchmarks.
+fn large_paths(count: usize) -> Vec<(String, ChunkAddress)> {
+    (0..count)
+        .map(|i| {
+            let path = format!("dir{}/subdir{}/file{}.dat", i / 100, i / 10, i);
+            let addr = make_addr(path.as_bytes());
+            (path, addr)
+        })
+        .collect()
+}
+
+/// Commit the SPA website dataset, returning root and store.
+fn build_spa() -> (ChunkAddress, Store) {
+    let mut editor = Editor::new(Store::new());
     for &p in SPA_PATHS {
-        let addr = make_addr(p.as_bytes());
-        block_on(m.add(p, addr)).unwrap();
+        editor.put(p, make_addr(p.as_bytes()));
     }
-    m
+    block_on(editor.commit()).unwrap()
 }
 
-/// Build a PlainManifest with many paths for larger-scale benchmarks.
-fn build_large_manifest(count: usize) -> PlainManifest<Store> {
-    let store = Store::new();
-    let mut m = PlainManifest::new(store);
-    for i in 0..count {
-        let path = format!("dir{}/subdir{}/file{}.dat", i / 100, i / 10, i);
-        let addr = make_addr(path.as_bytes());
-        block_on(m.add(&path, addr)).unwrap();
+/// Commit `count` generated paths, returning root and store.
+fn build_large(count: usize) -> (ChunkAddress, Store) {
+    let mut editor = Editor::new(Store::new());
+    for (path, addr) in large_paths(count) {
+        editor.put(path, addr);
     }
-    m
+    block_on(editor.commit()).unwrap()
 }
 
-fn bench_add(c: &mut Criterion) {
-    let mut group = c.benchmark_group("add");
+fn bench_commit(c: &mut Criterion) {
+    let mut group = c.benchmark_group("commit");
 
-    let paths: &[&str] = &[
-        "index.html",
-        "img/1.png",
-        "img/2.png",
-        "img/test/oho.png",
-        "img/test/old/test.png",
-        "robots.txt",
-        "css/app.css",
-        "js/app.js",
-    ];
-
-    group.bench_function("8_paths", |b| {
-        b.iter(|| {
-            let store = Store::new();
-            let mut m = PlainManifest::new(store);
-            for &p in paths {
-                let addr = make_addr(p.as_bytes());
-                block_on(m.add(p, addr)).unwrap();
-            }
-            m
-        });
+    group.bench_function("spa_paths", |b| {
+        b.iter(build_spa);
     });
 
     for &count in &[100, 500, 1000] {
-        let entries: Vec<(String, ChunkAddress)> = (0..count)
-            .map(|i| {
-                let path = format!("dir{}/subdir{}/file{}.dat", i / 100, i / 10, i);
-                let addr = make_addr(path.as_bytes());
-                (path, addr)
-            })
-            .collect();
-
+        let entries = large_paths(count);
         group.bench_with_input(BenchmarkId::new("paths", count), &entries, |b, entries| {
             b.iter(|| {
-                let store = Store::new();
-                let mut m = PlainManifest::new(store);
+                let mut editor = Editor::new(Store::new());
                 for (path, addr) in entries {
-                    block_on(m.add(path, *addr)).unwrap();
+                    editor.put(path, *addr);
                 }
-                m
+                block_on(editor.commit()).unwrap()
             });
         });
     }
@@ -118,25 +96,27 @@ fn bench_add(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_lookup(c: &mut Criterion) {
-    let mut group = c.benchmark_group("lookup");
+fn bench_get(c: &mut Criterion) {
+    let mut group = c.benchmark_group("get");
 
-    let mut m = build_spa_manifest();
+    let (root, store) = build_spa();
+    let reader = Reader::new(store);
 
     group.bench_function("existing_path", |b| {
         b.iter(|| {
-            let entry = block_on(m.lookup("js/app.js")).unwrap();
-            entry.address().is_some()
+            let entry = block_on(reader.get(&root, b"js/app.js")).unwrap();
+            entry.is_some()
         });
     });
 
-    // lookup in a larger trie
-    let mut large = build_large_manifest(500);
+    let (large_root, large_store) = build_large(500);
+    let large_reader = Reader::new(large_store);
 
     group.bench_function("500_paths_deep", |b| {
         b.iter(|| {
-            let entry = block_on(large.lookup("dir4/subdir49/file499.dat")).unwrap();
-            entry.address().is_some()
+            let entry =
+                block_on(large_reader.get(&large_root, b"dir4/subdir49/file499.dat")).unwrap();
+            entry.is_some()
         });
     });
 
@@ -148,10 +128,11 @@ fn bench_remove(c: &mut Criterion) {
 
     group.bench_function("single_leaf", |b| {
         b.iter_batched(
-            build_spa_manifest,
-            |mut m| {
-                block_on(m.remove("js/app.js")).unwrap();
-                m
+            build_spa,
+            |(root, store)| {
+                let mut editor = Editor::open(root, store);
+                editor.remove("js/app.js");
+                block_on(editor.commit()).unwrap()
             },
             criterion::BatchSize::SmallInput,
         );
@@ -163,33 +144,35 @@ fn bench_remove(c: &mut Criterion) {
 fn bench_has_prefix(c: &mut Criterion) {
     let mut group = c.benchmark_group("has_prefix");
 
-    let mut m = build_spa_manifest();
+    let (root, store) = build_spa();
+    let reader = Reader::new(store);
 
     group.bench_function("existing_prefix", |b| {
-        b.iter(|| block_on(m.has_prefix("js/")).unwrap());
+        b.iter(|| block_on(reader.has_prefix(&root, b"js/")).unwrap());
     });
 
     group.bench_function("missing_prefix", |b| {
-        b.iter(|| block_on(m.has_prefix("nonexistent/")).unwrap());
+        b.iter(|| block_on(reader.has_prefix(&root, b"nonexistent/")).unwrap());
     });
 
     group.finish();
 }
 
+/// The committed root node's wire image, for the raw codec benches.
+fn root_node_bytes() -> Vec<u8> {
+    let (root, store) = build_spa();
+    let chunk = block_on(ChunkGet::get(&store, &root)).unwrap();
+    chunk.envelope().data().to_vec()
+}
+
 fn bench_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode");
 
-    // Build a trie via PlainManifest, save to get references assigned, reload.
-    let mut m = build_spa_manifest();
-    let root_ref = block_on(m.save()).unwrap();
-    let (_, store) = m.into_parts();
-    let mut m2 = PlainManifest::open(root_ref, store);
-    // Force-load the entire trie
-    block_on(m2.walk(&mut |_, _| Ok(()))).unwrap();
-    let (n, _) = m2.into_parts();
+    let data = root_node_bytes();
+    let node = hazmat::decode::<nectar_primitives::chunk::ChunkRef>(&data).unwrap();
 
-    group.bench_function("spa_trie", |b| {
-        b.iter(|| hazmat::encode(&n).unwrap());
+    group.bench_function("spa_root_node", |b| {
+        b.iter(|| hazmat::encode(&node).unwrap());
     });
 
     group.finish();
@@ -198,95 +181,42 @@ fn bench_encode(c: &mut Criterion) {
 fn bench_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("decode");
 
-    // Build trie via PlainManifest, save, encode to get binary data.
-    let mut m = build_spa_manifest();
-    let root_ref = block_on(m.save()).unwrap();
-    let (_, store) = m.into_parts();
-    let mut m2 = PlainManifest::open(root_ref, store);
-    block_on(m2.walk(&mut |_, _| Ok(()))).unwrap();
-    let (n, _) = m2.into_parts();
-    let data = hazmat::encode(&n).unwrap();
+    let data = root_node_bytes();
 
-    group.bench_function("spa_trie", |b| {
+    group.bench_function("spa_root_node", |b| {
         b.iter(|| hazmat::decode::<nectar_primitives::chunk::ChunkRef>(data.as_slice()).unwrap());
     });
 
     group.finish();
 }
 
-fn bench_walk(c: &mut Criterion) {
-    let mut group = c.benchmark_group("walk");
+/// Drain the ordered listing cursor, returning the entry count.
+fn drain_cursor(root: ChunkAddress, store: &Store) -> u32 {
+    block_on(async {
+        let mut cursor: Cursor<Store> = Cursor::new(store.clone(), root);
+        let mut count = 0u32;
+        while let Some(entry) = cursor.next().await {
+            entry.unwrap();
+            count += 1;
+        }
+        count
+    })
+}
+
+fn bench_list(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list");
 
     group.bench_function("spa_trie", |b| {
-        let mut m = build_spa_manifest();
-        b.iter(|| {
-            let mut count = 0u32;
-            block_on(m.walk(&mut |_path, _node| {
-                count += 1;
-                Ok(())
-            }))
-            .unwrap();
-            count
-        });
+        let (root, store) = build_spa();
+        b.iter(|| drain_cursor(root, &store));
     });
 
     for &count in &[100, 500] {
         group.bench_with_input(BenchmarkId::new("paths", count), &count, |b, &count| {
-            let mut m = build_large_manifest(count);
-            b.iter(|| {
-                let mut visited = 0u32;
-                block_on(m.walk(&mut |_path, _node| {
-                    visited += 1;
-                    Ok(())
-                }))
-                .unwrap();
-                visited
-            });
+            let (root, store) = build_large(count);
+            b.iter(|| drain_cursor(root, &store));
         });
     }
-
-    group.finish();
-}
-
-fn bench_save_load(c: &mut Criterion) {
-    let mut group = c.benchmark_group("save_load");
-
-    group.bench_function("save_spa_trie", |b| {
-        b.iter_batched(
-            build_spa_manifest,
-            |mut m| {
-                block_on(m.save()).unwrap();
-                m
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-
-    group.bench_function("load_spa_trie", |b| {
-        let mut m = build_spa_manifest();
-        let root_ref = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
-
-        b.iter(|| {
-            let mut m2 = PlainManifest::open(root_ref, store.clone());
-            let _ = block_on(m2.lookup("index.html")).unwrap();
-            m2
-        });
-    });
-
-    group.bench_function("save_load_roundtrip", |b| {
-        b.iter_batched(
-            build_spa_manifest,
-            |mut m| {
-                let root_ref = block_on(m.save()).unwrap();
-                let (_, store) = m.into_parts();
-                let mut m2 = PlainManifest::open(root_ref, store);
-                let _ = block_on(m2.lookup("index.html")).unwrap();
-                m2
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
 
     group.finish();
 }
@@ -294,76 +224,20 @@ fn bench_save_load(c: &mut Criterion) {
 fn bench_full_workflow(c: &mut Criterion) {
     let mut group = c.benchmark_group("full_workflow");
 
-    group.bench_function("add_save_load_lookup", |b| {
+    group.bench_function("commit_then_lookup", |b| {
         b.iter(|| {
-            let mut m = build_spa_manifest();
-            let root_ref = block_on(m.save()).unwrap();
-            let (_, store) = m.into_parts();
-            let mut m2 = PlainManifest::open(root_ref, store);
-
-            let paths: &[&str] = &[
-                "css/app.css",
-                "favicon.ico",
-                "img/logo.png",
-                "index.html",
-                "js/app.js",
+            let (root, store) = build_spa();
+            let reader = Reader::new(store);
+            let paths: &[&[u8]] = &[
+                b"css/app.css",
+                b"favicon.ico",
+                b"img/logo.png",
+                b"index.html",
+                b"js/app.js",
             ];
             for &p in paths {
-                block_on(m2.lookup(p)).unwrap();
+                block_on(reader.get(&root, p)).unwrap();
             }
-        });
-    });
-
-    group.finish();
-}
-
-fn bench_iter(c: &mut Criterion) {
-    let mut group = c.benchmark_group("iter");
-
-    // In-memory iteration (no save/load)
-    group.bench_function("spa_trie_in_memory", |b| {
-        let mut m = build_spa_manifest();
-
-        b.iter(|| {
-            block_on(async {
-                let mut count = 0u32;
-                let mut iter = m.iter();
-                while let Some(result) = iter.next().await {
-                    result.unwrap();
-                    count += 1;
-                }
-                count
-            })
-        });
-    });
-
-    // Lazy iteration after save/load (exercises storage loading)
-    group.bench_function("spa_trie_lazy", |b| {
-        let mut m = build_spa_manifest();
-        let root_ref = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
-
-        b.iter(|| {
-            let mut m2 = PlainManifest::open(root_ref, store.clone());
-            block_on(async {
-                let mut count = 0u32;
-                let mut iter = m2.iter();
-                while let Some(result) = iter.next().await {
-                    result.unwrap();
-                    count += 1;
-                }
-                count
-            })
-        });
-    });
-
-    // Compare with entries() (walk-based collection)
-    group.bench_function("entries_spa_trie", |b| {
-        let m = build_spa_manifest();
-
-        b.iter(|| {
-            let entries = block_on(m.entries()).unwrap();
-            entries.len()
         });
     });
 
@@ -372,15 +246,13 @@ fn bench_iter(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_add,
-    bench_lookup,
+    bench_commit,
+    bench_get,
     bench_remove,
     bench_has_prefix,
     bench_encode,
     bench_decode,
-    bench_walk,
-    bench_save_load,
+    bench_list,
     bench_full_workflow,
-    bench_iter,
 );
 criterion_main!(benches);

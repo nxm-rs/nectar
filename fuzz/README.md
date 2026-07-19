@@ -57,21 +57,21 @@ structure-canonical fixed point:
 | Target | Invariant |
 |---|---|
 | `mantaray_node_roundtrip` | `decode(encode(node)) == node`, canonical re-encode |
-| `mantaray_editor_differential` | a committed op log lands on the root the legacy mutation path produces for the same sequence, fails at the same submission index otherwise, and two commits of one log agree |
+| `mantaray_editor_differential` | a committed op log exposes exactly the model's surviving paths to the reader, with removed paths absent and root documents at their last set values, and two commits of one log agree |
 | `mantaray_record_roundtrip` | decoded manifests re-encode to a byte- and structure-canonical fixed point, both ref widths, both wire versions |
 | `chunk_roundtrip` | decoded CAC/SOC preserves address, span, data (+ signature/owner for SOC) |
 | `stamp_roundtrip` | `from_bytes(to_bytes(stamp)) == stamp`, canonical re-encode |
 | `usage_snapshot_roundtrip` | `revalidate → plan_persist → parse + assemble` reproduces the snapshot |
 | `chunk_domain_separation` | a valid chunk of one `StandardChunkSet` member never certifies under the other member's predicate, so typeless-wire disambiguation by address stays sound |
 
-The file targets drive the streaming pipeline against the legacy split and
-join paths over one in-memory store:
+The file targets drive the streaming pipeline end to end over one
+in-memory store:
 
 | Target | Invariant |
 |---|---|
-| `file_join_differential` | the streaming collect equals the legacy join and the source bytes over one legacy-split store |
+| `file_join_differential` | the whole-file collect and a buffered reader drain both equal the source bytes over one split store |
 | `file_reader_seek` | arbitrary seek/read/segment sequences over a fuzzed clip range track a model cursor exactly; past-end seeks fail typed and move nothing |
-| `file_split_root` | one root regardless of write segmentation or put window, equal to the legacy splitter's, fused across repeated finishes, and the written store reads back to the source |
+| `file_split_root` | one root regardless of write segmentation or put window, fused across repeated finishes, and the written store reads back to the source |
 | `file_malformed_intermediate` | fuzzer-authored chunk trees with lying spans, short reference lists and absent children are rejected typed; an accepted tree delivers exactly its declared span |
 
 Every decode target has a stable-gated **seed replay test in the library

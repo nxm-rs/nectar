@@ -1,17 +1,20 @@
 //! Fuzz arbitrary seek and read sequences on the ordered reader.
 //!
 //! A fuzzed clip range and op sequence drive one reader over a store built
-//! by the legacy splitter. The model is a cursor over the clipped source
+//! by the streaming split. The model is a cursor over the clipped source
 //! slice: every read must deliver the model's bytes at the model's position,
 //! a seek past the effective length must fail typed and move nothing, and a
 //! final drain from zero must reproduce the whole clipped slice.
 
 #![no_main]
 
+use core::future::poll_fn;
+use std::sync::Arc;
+
 use arbitrary::Arbitrary;
 use futures::executor::block_on;
 use libfuzzer_sys::fuzz_target;
-use nectar_file::{File, Plain};
+use nectar_file::{File, Plain, PutWindow, Split};
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::MemoryStore;
 
@@ -47,10 +50,24 @@ fn tile(seed: &[u8], copies: u16) -> Vec<u8> {
     seed.iter().copied().cycle().take(len).collect()
 }
 
-/// Legacy split of the whole buffer: the store the reader walks.
-#[allow(deprecated)]
-fn legacy_split(data: &[u8]) -> (ChunkAddress, MemoryStore<AnyChunkSet<BODY>>) {
-    nectar_primitives::file::split::<BODY>(data).expect("legacy split accepts any buffer")
+/// Whole-buffer streaming split into a shared store.
+fn split(data: &[u8]) -> (ChunkAddress, Arc<MemoryStore<AnyChunkSet<BODY>>>) {
+    let store = Arc::new(MemoryStore::new());
+    let mut split: Split<Arc<MemoryStore<AnyChunkSet<BODY>>>, Plain, BODY> =
+        Split::new(Arc::clone(&store), PutWindow::DEFAULT);
+    let root = block_on(async {
+        let mut buf = data;
+        while !buf.is_empty() {
+            let n = poll_fn(|cx| split.poll_write(cx, buf))
+                .await
+                .expect("memory puts never fail");
+            buf = &buf[n..];
+        }
+        poll_fn(|cx| split.poll_finish(cx))
+            .await
+            .expect("finish over a memory store succeeds")
+    });
+    (root, store)
 }
 
 fn to_usize(value: u64) -> usize {
@@ -71,7 +88,7 @@ fuzz_target!(|input: (Vec<u8>, u16, (u64, u64), Vec<Op>)| {
     let window = &data[to_usize(clip_start)..to_usize(clip_end)];
     let eff = clip_end - clip_start;
 
-    let (root, store) = legacy_split(&data);
+    let (root, store) = split(&data);
     block_on(async move {
         let file = File::<_, Plain, BODY>::open(store, root)
             .await

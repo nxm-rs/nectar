@@ -1,9 +1,9 @@
 //! Fuzz the split engine's root idempotence over write segmentation.
 //!
 //! The same bytes are streamed through two independent splits under fuzzed
-//! segmentations and put windows. The oracle is one root: both runs, the
-//! legacy buffered splitter, and every repeated finish must agree, and the
-//! written store must read back to the source bytes.
+//! segmentations and put windows. The oracle is one root: both runs and
+//! every repeated finish must agree, and the written store must read back
+//! to the source bytes.
 
 #![no_main]
 
@@ -80,14 +80,6 @@ impl ChunkGet<AnyChunkSet<BODY>> for SharedStore {
     }
 }
 
-/// Legacy buffered split: the root oracle.
-#[allow(deprecated)]
-fn legacy_root(data: &[u8]) -> ChunkAddress {
-    let (root, _) =
-        nectar_primitives::file::split::<BODY>(data).expect("legacy split accepts any buffer");
-    root
-}
-
 /// Poll to completion under a no-op waker; a ready store re-polls to
 /// progress, so exhausting the budget is a stall finding.
 fn drive_poll<T>(mut poll: impl FnMut(&mut Context<'_>) -> Poll<T>) -> T {
@@ -134,11 +126,6 @@ fuzz_target!(|input: (Vec<u8>, u16, Vec<u16>, Vec<u16>, u16, u16)| {
     let (root_a, store) = stream_split(&data, win_a, &steps_a);
     let (root_b, _) = stream_split(&data, win_b, &steps_b);
     assert_eq!(root_a, root_b, "root diverged across write segmentations");
-    assert_eq!(
-        root_a,
-        legacy_root(&data),
-        "root diverged from the legacy splitter"
-    );
 
     let read_back = drive(async move {
         let file = File::<_, Plain, BODY>::open(store, root_a)

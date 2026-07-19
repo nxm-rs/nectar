@@ -17,28 +17,47 @@
 //! `tokio` adapter module, streaming upload on `TokioWriter`, restartable
 //! download on [`DownloadBuilder`], the executor-agnostic stream on
 //! [`FileStream`], and a whole-file guest read under [`sync::drive`].
-//! Publishing a root under a manifest path rides the legacy mantaray edit
-//! surface:
+//! Publishing a root under a manifest path rides the mantaray edit surface:
 //!
 //! ```
-//! # #![allow(deprecated)]
 //! use nectar_file::AnyFile;
-//! use nectar_mantaray::Manifest;
+//! use nectar_mantaray::{ManifestEditor, Reader};
 //!
 //! # futures::executor::block_on(async {
 //! let data = b"hello swarm".to_vec();
-//! # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
-//! let mut manifest = Manifest::new(store);
-//! manifest.add("hello.txt", root).await.unwrap();
-//! manifest.add("stale.txt", root).await.unwrap();
-//! manifest.remove("stale.txt").await.unwrap();
-//! let manifest_root = manifest.save().await.unwrap();
+//! # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
+//! # let mut split = nectar_file::Split::<_, nectar_file::Plain, 4096>::new(
+//! #     std::sync::Arc::clone(&store),
+//! #     nectar_file::PutWindow::DEFAULT,
+//! # );
+//! # let root = {
+//! #     let mut buf = data.as_slice();
+//! #     while !buf.is_empty() {
+//! #         let n = core::future::poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+//! #         buf = &buf[n..];
+//! #     }
+//! #     core::future::poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+//! # };
+//! # drop(split);
+//! let mut editor = ManifestEditor::new(store);
+//! editor.put("hello.txt", root);
+//! editor.put("stale.txt", root);
+//! editor.remove("stale.txt");
+//! let (manifest_root, store) = editor.commit().await.unwrap();
 //!
-//! let (_, store) = manifest.into_parts();
-//! let manifest = Manifest::open(manifest_root, store);
-//! assert!(manifest.get("stale.txt").await.unwrap().is_none());
-//! let entry = manifest.get("hello.txt").await.unwrap().unwrap();
-//! let (_, store) = manifest.into_parts();
+//! let reader = Reader::new(store.clone());
+//! assert!(
+//!     reader
+//!         .get(&manifest_root, b"stale.txt")
+//!         .await
+//!         .unwrap()
+//!         .is_none()
+//! );
+//! let entry = reader
+//!     .get(&manifest_root, b"hello.txt")
+//!     .await
+//!     .unwrap()
+//!     .unwrap();
 //! let file = AnyFile::open(store, entry.reference().unwrap().clone())
 //!     .await
 //!     .unwrap();
@@ -99,6 +118,8 @@ pub mod split;
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod store;
 pub mod sync;
+#[cfg(all(test, feature = "std"))]
+mod testutil;
 #[cfg(feature = "tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub mod tokio;

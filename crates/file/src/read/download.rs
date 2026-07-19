@@ -42,14 +42,26 @@ pub type ProgressFn = Box<dyn FnMut(Progress)>;
 /// the re-run safe.
 ///
 /// ```
-/// # #![allow(deprecated)]
 /// use nectar_file::{File, MemSink};
 ///
 /// # futures::executor::block_on(async {
 /// let data: Vec<u8> = (0u32..40_000)
 ///     .map(|i| u8::try_from(i % 251).unwrap())
 ///     .collect();
-/// # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
+/// # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
+/// # let mut split = nectar_file::Split::<_, nectar_file::Plain, 4096>::new(
+/// #     std::sync::Arc::clone(&store),
+/// #     nectar_file::PutWindow::DEFAULT,
+/// # );
+/// # let root = {
+/// #     let mut buf = data.as_slice();
+/// #     while !buf.is_empty() {
+/// #         let n = core::future::poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+/// #         buf = &buf[n..];
+/// #     }
+/// #     core::future::poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+/// # };
+/// # drop(split);
 /// let file = File::open(store, root).await.unwrap();
 /// let mut sink = MemSink::new();
 /// let written = file

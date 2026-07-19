@@ -4,20 +4,38 @@
 //! buffers track the trie depth rather than the key count, and the files path
 //! splits through BMT and references the stored roots.
 
-// The legacy splitter is the differential oracle for the streaming bridge.
-#![allow(deprecated)]
-
 use std::error::Error;
 
 use bytes::Bytes;
 use futures::executor::block_on;
+use nectar_file::{Plain, PutWindow, Split};
 use nectar_manifest::{
     BuildStats, Builder, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node, NodeGet,
     Prefix, RootExtension, V1, build_files,
 };
-use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, DEFAULT_BODY_SIZE, MemoryStore, split};
+use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+/// Split `data` whole through the streaming engine into a fresh store,
+/// returning the root and the split store.
+async fn split_whole(data: &[u8]) -> Result<(ChunkAddress, MemoryStore), Box<dyn Error>> {
+    let store = std::sync::Arc::new(MemoryStore::default());
+    let mut split: Split<std::sync::Arc<MemoryStore>, Plain, DEFAULT_BODY_SIZE> =
+        Split::new(std::sync::Arc::clone(&store), PutWindow::DEFAULT);
+    let mut rest = data;
+    while !rest.is_empty() {
+        let taken = core::future::poll_fn(|cx| split.poll_write(cx, rest)).await?;
+        rest = rest
+            .split_at_checked(taken)
+            .map(|(_, tail)| tail)
+            .ok_or("write consumed past the buffer")?;
+    }
+    let root = core::future::poll_fn(|cx| split.poll_finish(cx)).await?;
+    drop(split);
+    let store = std::sync::Arc::into_inner(store).ok_or("split still holds the store")?;
+    Ok((root, store))
+}
 
 /// A fallible assertion: Result-returning tests report failures as errors.
 fn ensure(cond: bool, what: &str) -> TestResult {
@@ -231,7 +249,7 @@ fn build_files_splits_through_bmt_and_references_the_stored_roots() -> TestResul
             .address()
             .ok_or("entry is not a reference")?;
 
-        let (expected_root, _) = split::<DEFAULT_BODY_SIZE>(&data)?;
+        let (expected_root, _) = block_on(split_whole(&data))?;
         ensure_eq(address, &expected_root, "file root reference")?;
         ensure(store.get(address).is_some(), "file root stored")?;
     }

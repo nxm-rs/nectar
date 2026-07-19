@@ -4,7 +4,6 @@
 //!
 //! Local drive harness; a shared workspace testing crate can absorb it once
 //! one lands.
-#![allow(deprecated)]
 
 use core::future::Future;
 use core::pin::{Pin, pin};
@@ -16,12 +15,17 @@ use futures::Stream;
 use futures::executor::block_on;
 use futures::task::noop_waker;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::file::{split, split_encrypted};
 use nectar_primitives::store::{ChunkGet, ChunkStoreError, MemoryStore, TrustedGet};
+
+#[cfg(feature = "encryption")]
+use crate::testutil::split_encrypted_fixture;
+use crate::testutil::split_fixture;
 
 use super::{File, FileReader, FileStream};
 use crate::config::Window;
-use crate::walk::{Encrypted, Plain, WalkMode};
+#[cfg(feature = "encryption")]
+use crate::walk::Encrypted;
+use crate::walk::{Plain, WalkMode};
 
 /// Tiny body size shared with the sibling oracles: deep trees from small
 /// files.
@@ -341,17 +345,18 @@ where
 #[test]
 fn reader_poll_n_then_drop_delivers_a_prefix_and_cancels_cleanly() {
     let data = fill(21 * TINY + 57);
-    let (root, chunks) = split::<TINY>(&data).unwrap();
+    let (root, chunks) = split_fixture::<TINY>(&data);
     let chunks = Arc::new(chunks);
     reader_poll_n_drop_battery::<Plain, _>(&data, &chunks, 2, |store| {
         block_on(File::<_, Plain, TINY>::open(store, root)).unwrap()
     });
 }
 
+#[cfg(feature = "encryption")]
 #[test]
 fn encrypted_reader_poll_n_then_drop_matches_the_plain_contract() {
     let data = fill(9 * TINY + 33);
-    let (root_ref, chunks) = split_encrypted::<TINY>(&data).unwrap();
+    let (root_ref, chunks) = split_encrypted_fixture::<TINY>(&data);
     let chunks = Arc::new(chunks);
     reader_poll_n_drop_battery::<Encrypted, _>(&data, &chunks, 2, |store| {
         block_on(File::<_, Encrypted, TINY>::open_encrypted(
@@ -365,7 +370,7 @@ fn encrypted_reader_poll_n_then_drop_matches_the_plain_contract() {
 #[test]
 fn stream_poll_n_then_drop_delivers_a_prefix_and_cancels_cleanly() {
     let data = fill(17 * TINY + 21);
-    let (root, chunks) = split::<TINY>(&data).unwrap();
+    let (root, chunks) = split_fixture::<TINY>(&data);
     let chunks = Arc::new(chunks);
     let window = Window::new(3).unwrap();
 
@@ -409,7 +414,7 @@ fn stream_poll_n_then_drop_delivers_a_prefix_and_cancels_cleanly() {
 #[test]
 fn abandoned_read_futures_lose_no_bytes_and_cancel_nothing() {
     let data = fill(13 * TINY + 5);
-    let (root, chunks) = split::<TINY>(&data).unwrap();
+    let (root, chunks) = split_fixture::<TINY>(&data);
     let store = EffectStore::new(Arc::new(chunks), 3);
     let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
     let mut reader = file.read().window(Window::new(2).unwrap()).build();
@@ -457,7 +462,7 @@ fn abandoned_read_futures_lose_no_bytes_and_cancel_nothing() {
 #[test]
 fn seek_during_in_flight_drops_the_old_window_and_rewalks() {
     let data = fill(25 * TINY + 9);
-    let (root, chunks) = split::<TINY>(&data).unwrap();
+    let (root, chunks) = split_fixture::<TINY>(&data);
     let store = EffectStore::new(Arc::new(chunks), 6);
     let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
     let mut reader = file.read().window(Window::new(4).unwrap()).build();
@@ -511,7 +516,7 @@ fn seek_during_in_flight_drops_the_old_window_and_rewalks() {
 #[test]
 fn seek_to_the_current_position_keeps_the_walk_and_window() {
     let data = fill(15 * TINY + 31);
-    let (root, chunks) = split::<TINY>(&data).unwrap();
+    let (root, chunks) = split_fixture::<TINY>(&data);
     let store = EffectStore::new(Arc::new(chunks), 2);
     let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
     let mut reader = file.read().window(Window::new(3).unwrap()).build();
@@ -556,7 +561,7 @@ fn seek_to_the_current_position_keeps_the_walk_and_window() {
 fn drop_with_a_parked_window_cancels_every_fetch() {
     // One branch level: the root resolves, all four leaves park in flight.
     let data = fill(4 * TINY);
-    let (root, chunks) = split::<TINY>(&data).unwrap();
+    let (root, chunks) = split_fixture::<TINY>(&data);
     let store = EffectStore::parked_all_but(root, Arc::new(chunks));
     let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
     let mut reader = file.read().window(Window::new(4).unwrap()).build();
