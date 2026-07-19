@@ -23,14 +23,19 @@
 //! 5. Fused finish: `poll_finish` is cancel-safe and re-callable; after the
 //!    root is delivered every later call returns the same root.
 
+#[cfg(feature = "encryption")]
+mod encrypted;
 mod engine;
 mod error;
 mod mode;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "encryption")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
+pub use encrypted::{KeyError, KeySource, RandomKeys};
 pub use engine::Split;
-pub use error::SplitError;
+pub use error::{SealError, SplitError};
 pub use mode::{Sealed, SplitMode};
 
 /// Occupancy witnesses of one split.

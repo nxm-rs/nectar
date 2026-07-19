@@ -45,7 +45,9 @@ struct SealedLeaf<M: SplitMode, const B: usize> {
 /// Split `source` into the tree under `store`, hashing leaves in pool-wide
 /// batches on the rayon pool; the mode `M` picks the reference grammar.
 ///
-/// The root and chunk set equal the streaming split of the same bytes.
+/// The root and chunk set equal the streaming split of the same bytes. The
+/// mode is default-constructed once and cloned across the ascent and pool
+/// workers, so a key-sourcing mode draws every key from one stream.
 /// Dropping the future abandons in-flight puts; a batch already queued on
 /// the pool finishes and is discarded.
 ///
@@ -71,21 +73,28 @@ pub async fn split_read_at<R, S, M, const B: usize>(
 where
     R: ReadAt + Send + Sync + 'static,
     S: ChunkPut<AnyChunkSet<B>> + Clone + 'static,
-    M: SplitMode,
+    M: SplitMode + Default + Clone,
     M::Ref: Send,
 {
     let source = Arc::new(source);
     let size = source
         .len()
         .map_err(|source| ReadAtError::Length { source })?;
-    let mut split = Split::<S, M, B>::new(store, window);
+    let mode = M::default();
+    let mut split = Split::<S, M, B>::with_mode(store, mode.clone(), window);
     let leaves = size.div_ceil(u64_from_usize(B));
     let batch = rayon::current_num_threads().max(1);
     let mut next = 0u64;
     let mut inflight = None;
     if next < leaves {
         let count = batch_len(leaves, next, batch);
-        inflight = Some(submit_batch::<R, M, B>(&source, next, count, size));
+        inflight = Some(submit_batch::<R, M, B>(
+            &source,
+            mode.clone(),
+            next,
+            count,
+            size,
+        ));
         next = next.saturating_add(u64_from_usize(count));
     }
     while let Some(mut handoff) = inflight.take() {
@@ -105,7 +114,13 @@ where
         // Queue the next batch first, so it hashes while this one drains.
         if next < leaves {
             let count = batch_len(leaves, next, batch);
-            inflight = Some(submit_batch::<R, M, B>(&source, next, count, size));
+            inflight = Some(submit_batch::<R, M, B>(
+                &source,
+                mode.clone(),
+                next,
+                count,
+                size,
+            ));
             next = next.saturating_add(u64_from_usize(count));
         }
         for leaf in sealed {
@@ -128,6 +143,7 @@ fn batch_len(leaves: u64, next: u64, batch: usize) -> usize {
 /// Queue one batch of leaf reads and seals on the pool.
 fn submit_batch<R, M, const B: usize>(
     source: &Arc<R>,
+    mode: M,
     start: u64,
     count: usize,
     size: u64,
@@ -143,7 +159,7 @@ where
             .into_par_iter()
             .map(|item| {
                 let index = start.saturating_add(u64_from_usize(item));
-                seal_leaf::<R, M, B>(source.as_ref(), index, size)
+                seal_leaf::<R, M, B>(source.as_ref(), &mode, index, size)
             })
             .collect()
     })
@@ -152,6 +168,7 @@ where
 /// Read and seal the leaf at `index`; its span is its byte length.
 fn seal_leaf<R, M, const B: usize>(
     source: &R,
+    mode: &M,
     index: u64,
     size: u64,
 ) -> Result<SealedLeaf<M, B>, LeafError>
@@ -169,7 +186,9 @@ where
     let mut payload = Vec::with_capacity(SPAN_SIZE.saturating_add(take));
     payload.extend_from_slice(&span.to_le_bytes());
     payload.extend_from_slice(&data);
-    let (chunk, reference) = M::seal::<B>(Bytes::from(payload)).map_err(LeafError::Seal)?;
+    let (chunk, reference) = mode
+        .seal::<B>(Bytes::from(payload))
+        .map_err(LeafError::Seal)?;
     Ok(SealedLeaf {
         chunk,
         reference,
