@@ -77,6 +77,7 @@ where
     M: SplitMode,
 {
     store: S,
+    mode: M,
     /// Data-carrying reference slots per intermediate, from the mode.
     slots: u64,
     window: usize,
@@ -110,13 +111,23 @@ where
 
     /// Split a byte stream into the tree under `store`, holding at most
     /// `window` puts in flight.
-    pub fn new(store: S, window: PutWindow) -> Self {
+    pub fn new(store: S, window: PutWindow) -> Self
+    where
+        M: Default,
+    {
+        Self::with_mode(store, M::default(), window)
+    }
+
+    /// Split through an explicitly constructed `mode` (a keyed encrypted
+    /// mode); otherwise identical to [`new`](Self::new).
+    pub fn with_mode(store: S, mode: M, window: PutWindow) -> Self {
         const { Self::PROFILE };
         let branches = fan_out(u64_from_usize(B), u64_from_u32(M::MODE.ref_size()));
         // A close must shrink its level, so the seam floors at two slots.
         let slots = M::data_slots(branches).max(2);
         Self {
             store,
+            mode,
             slots,
             window: usize::from(window.get()),
             leaf: Vec::new(),
@@ -296,7 +307,7 @@ where
         let mut payload = Vec::with_capacity(SPAN_SIZE.saturating_add(data.len()));
         payload.extend_from_slice(&span.to_le_bytes());
         payload.extend_from_slice(&data);
-        let (chunk, reference) = M::seal::<B>(Bytes::from(payload))?;
+        let (chunk, reference) = self.mode.seal::<B>(Bytes::from(payload))?;
         self.stats.leaves = self.stats.leaves.saturating_add(1);
         self.enqueue(chunk);
         self.push_ref(0, reference, span)
@@ -369,7 +380,7 @@ where
         for reference in refs {
             M::write_ref(reference, &mut payload);
         }
-        let (chunk, reference) = M::seal::<B>(Bytes::from(payload))?;
+        let (chunk, reference) = self.mode.seal::<B>(Bytes::from(payload))?;
         self.stats.intermediates = self.stats.intermediates.saturating_add(1);
         self.enqueue(chunk);
         Ok(reference)

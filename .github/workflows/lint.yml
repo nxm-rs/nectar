@@ -38,6 +38,10 @@ jobs:
             # outside the default-features pass.
             - name: cargo clippy (rayon ingest)
               run: cargo clippy --locked -p nectar-file --features rayon
+            # The encrypted split mode sits behind the encryption feature,
+            # likewise outside the default-features pass.
+            - name: cargo clippy (encrypted split)
+              run: cargo clippy --locked -p nectar-file --features encryption
             # `unused_crate_dependencies` is enforced per-library via `cargo
             # rustc` (not `[workspace.lints]`) so the flag applies only to each
             # crate's own lib target — never to benches/examples/tests (which

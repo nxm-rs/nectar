@@ -397,6 +397,239 @@ fn finish_is_fused_and_recallable() {
     assert_eq!(root, legacy_root);
 }
 
+/// Encrypted-mode oracles: legacy joiner and splitter differentials, walk
+/// round trip, per-mode geometry witnesses, key-source injection and
+/// exhaustion.
+#[cfg(feature = "encryption")]
+mod encrypted {
+    use core::future::poll_fn;
+    use core::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::vec::Vec;
+
+    use futures::executor::block_on;
+    use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
+    use nectar_primitives::file::{EncryptedParallelSplitter, join};
+
+    use super::{BRANCHES, TINY, TestStore, fill, sorted};
+    use crate::config::{PutWindow, Window};
+    use crate::geometry::{Mode, branches, max_depth};
+    use crate::split::{KeyError, KeySource, RandomKeys, SealError, Split, SplitError, SplitStats};
+    use crate::walk::{Encrypted, Walk};
+
+    /// Encrypted fan-out at the tiny body: four 64-byte references.
+    const ENC_BRANCHES: usize = 4;
+
+    /// Deterministic source: counter keys starting at one, shared across
+    /// clones.
+    #[derive(Debug, Clone, Default)]
+    struct SeqKeys(Arc<AtomicU64>);
+
+    impl KeySource for SeqKeys {
+        fn next_key(&self) -> Result<EncryptionKey, KeyError> {
+            let n = self.0.fetch_add(1, Ordering::Relaxed) + 1;
+            let mut bytes = [0u8; EncryptionKey::SIZE];
+            bytes[..8].copy_from_slice(&n.to_le_bytes());
+            Ok(EncryptionKey::from(bytes))
+        }
+    }
+
+    /// Finite source: refuses every key past `limit`.
+    #[derive(Debug, Clone)]
+    struct LimitedKeys {
+        limit: u64,
+        issued: Arc<AtomicU64>,
+    }
+
+    impl KeySource for LimitedKeys {
+        fn next_key(&self) -> Result<EncryptionKey, KeyError> {
+            let n = self.issued.fetch_add(1, Ordering::Relaxed);
+            if n >= self.limit {
+                return Err(KeyError::Exhausted { issued: self.limit });
+            }
+            let mut bytes = [0u8; EncryptionKey::SIZE];
+            bytes[..8].copy_from_slice(&(n + 1).to_le_bytes());
+            Ok(EncryptionKey::from(bytes))
+        }
+    }
+
+    /// Stream `data` through a fresh encrypted split in `step`-byte writes.
+    fn stream_split_encrypted<K: KeySource>(
+        data: &[u8],
+        mode: Encrypted<K>,
+        step: usize,
+    ) -> (EncryptedChunkRef, TestStore<TINY>, SplitStats) {
+        let store = TestStore::<TINY>::new(1);
+        let mut split: Split<TestStore<TINY>, Encrypted<K>, TINY> =
+            Split::with_mode(store.clone(), mode, PutWindow::new(4).unwrap());
+        let root = block_on(async {
+            for piece in data.chunks(step.max(1)) {
+                let mut buf = piece;
+                while !buf.is_empty() {
+                    let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+                    buf = &buf[n..];
+                }
+            }
+            poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+        });
+        let stats = split.stats();
+        (root, store, stats)
+    }
+
+    /// Depth-boundary sizes for the encrypted fan-out.
+    fn sizes() -> Vec<usize> {
+        let b = TINY;
+        let kb = ENC_BRANCHES * b;
+        let k2b = ENC_BRANCHES * kb;
+        std::vec![
+            0,
+            1,
+            b - 1,
+            b,
+            b + 1,
+            kb - 1,
+            kb,
+            kb + 1,
+            k2b - 1,
+            k2b,
+            k2b + 1,
+            3 * kb + 517,
+        ]
+    }
+
+    #[test]
+    fn encrypted_roots_join_through_the_legacy_joiner() {
+        for size in sizes() {
+            let data = fill(size);
+            // The rand-gated default source through the `Default` mode.
+            let store = TestStore::<TINY>::new(1);
+            let mut split: Split<TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
+                Split::new(store.clone(), PutWindow::new(4).unwrap());
+            let root = block_on(async {
+                let mut buf = data.as_slice();
+                while !buf.is_empty() {
+                    let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+                    buf = &buf[n..];
+                }
+                poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+            });
+            let plaintext = block_on(join(&store, root)).unwrap();
+            assert_eq!(plaintext, data, "plaintext diverged at {size}");
+
+            // The tree shape matches the legacy encrypted splitter.
+            let (_, legacy_chunks) =
+                EncryptedParallelSplitter::<TINY>::split_to_vec(&data).unwrap();
+            let stats = split.stats();
+            assert_eq!(
+                stats.puts as usize,
+                legacy_chunks.len(),
+                "chunk count diverged at {size}"
+            );
+            assert_eq!(stats.bytes, size as u64);
+            assert_eq!(stats.leaves + stats.intermediates, stats.puts);
+        }
+    }
+
+    #[test]
+    fn encrypted_split_then_walk_round_trips() {
+        let size = 13 * TINY + 29;
+        let data = fill(size);
+        let (root, store, _) =
+            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719);
+        let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
+            store,
+            *root.address(),
+            root.key().clone(),
+            size as u64,
+            0..u64::MAX,
+            Window::new(4).unwrap(),
+        );
+        let bytes = block_on(async {
+            let mut bytes = Vec::new();
+            while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+                bytes.extend_from_slice(&frame.unwrap().data);
+            }
+            bytes
+        });
+        assert_eq!(bytes, data);
+    }
+
+    #[test]
+    fn per_mode_geometry_diverges_at_the_shared_body() {
+        let body = TINY as u32;
+        assert_eq!(branches(body, Mode::Plain), BRANCHES as u32);
+        assert_eq!(branches(body, Mode::Encrypted), ENC_BRANCHES as u32);
+        assert_eq!(max_depth(body, Mode::Plain), 20);
+        assert_eq!(max_depth(body, Mode::Encrypted), 29);
+
+        // Sixty-four leaves: a two-level plain tree against a three-level
+        // encrypted tree over the same bytes.
+        let data = fill(64 * TINY);
+        let (_, _, plain_stats) = super::stream_split::<TINY>(&data, 4, 719, 1);
+        assert_eq!(plain_stats.leaves, 64);
+        assert_eq!(plain_stats.intermediates, 9);
+        assert_eq!(plain_stats.peak_spine, 3);
+
+        let (_, _, enc_stats) =
+            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719);
+        assert_eq!(enc_stats.leaves, 64);
+        assert_eq!(enc_stats.intermediates, 21);
+        assert_eq!(enc_stats.peak_spine, 4);
+    }
+
+    #[test]
+    fn a_deterministic_source_pins_the_padless_tree() {
+        // Every node is full at this size, so no random padding enters the
+        // ciphertexts and the whole tree is a function of the key stream.
+        let data = fill(16 * TINY);
+        let (first_root, first_store, _) =
+            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719);
+        let (second_root, second_store, _) =
+            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 97);
+        assert_eq!(first_root, second_root);
+        assert_eq!(sorted(first_store.log()), sorted(second_store.log()));
+    }
+
+    #[test]
+    fn an_exhausted_key_source_poisons_the_split() {
+        let data = fill(3 * TINY);
+        let source = LimitedKeys {
+            limit: 2,
+            issued: Arc::new(AtomicU64::new(0)),
+        };
+        let store = TestStore::<TINY>::new(0);
+        let mut split: Split<TestStore<TINY>, Encrypted<LimitedKeys>, TINY> =
+            Split::with_mode(store, Encrypted::new(source), PutWindow::new(4).unwrap());
+        let error = block_on(async {
+            let mut buf = data.as_slice();
+            loop {
+                match poll_fn(|cx| split.poll_write(cx, buf)).await {
+                    Ok(n) => buf = &buf[n..],
+                    Err(error) => break error,
+                }
+                if buf.is_empty() {
+                    break poll_fn(|cx| split.poll_finish(cx)).await.unwrap_err();
+                }
+            }
+        });
+        assert!(
+            matches!(
+                error,
+                SplitError::Seal(SealError::Key(KeyError::Exhausted { issued: 2 }))
+            ),
+            "got {error:?}"
+        );
+
+        // The fuse is shut for good.
+        let waker = futures::task::noop_waker();
+        let mut cx = core::task::Context::from_waker(&waker);
+        assert!(matches!(
+            split.poll_finish(&mut cx),
+            core::task::Poll::Ready(Err(SplitError::Poisoned))
+        ));
+    }
+}
+
 /// Nightly gate: a stream past the `u32` span boundary keeps root equality
 /// with the legacy splitter while memory stays bounded.
 #[test]

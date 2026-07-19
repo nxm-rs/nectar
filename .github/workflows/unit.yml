@@ -50,14 +50,24 @@ jobs:
             - name: Run tokio adapter doctests
               run: cargo test --doc -p nectar-file --features tokio --locked
             # The batch ingest is likewise feature-gated off the default
-            # build; cover its tests and doctest here.
+            # build; cover its tests and doctest here, with the encrypted
+            # mode enabled so the pooled encrypted ingest runs too.
             - name: Run rayon ingest tests
               run: |
                   cargo nextest run \
-                    -p nectar-file --features rayon --locked \
+                    -p nectar-file --features rayon,encryption --locked \
                     --no-tests=warn --no-fail-fast
             - name: Run rayon ingest doctests
-              run: cargo test --doc -p nectar-file --features rayon --locked
+              run: cargo test --doc -p nectar-file --features rayon,encryption --locked
+            # The encrypted split mode sits behind the encryption feature;
+            # cover its tests and doctest here.
+            - name: Run encrypted split tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-file --features encryption --locked \
+                    --no-tests=warn --no-fail-fast
+            - name: Run encrypted split doctests
+              run: cargo test --doc -p nectar-file --features encryption --locked
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The

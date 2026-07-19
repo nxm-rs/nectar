@@ -94,8 +94,11 @@ pub use read::{
 #[cfg(feature = "std")]
 pub use sink::FsSink;
 pub use sink::{DataSink, MemSink, MemSinkError};
+#[cfg(all(feature = "std", feature = "encryption"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
+pub use split::{KeyError, KeySource, RandomKeys};
 #[cfg(feature = "std")]
-pub use split::{Sealed, Split, SplitError, SplitMode, SplitStats};
+pub use split::{SealError, Sealed, Split, SplitError, SplitMode, SplitStats};
 #[cfg(feature = "std")]
 pub use store::{BoxedStore, BoxedStoreError, DynAnyFile, DynFile, DynFileReader, DynFileStream};
 #[cfg(feature = "std")]
