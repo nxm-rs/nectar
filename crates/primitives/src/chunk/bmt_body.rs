@@ -66,11 +66,16 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
 
     /// Append the body wire bytes (`span || payload`) to `out`.
     ///
-    /// The sole body encoder: the span is serialised little-endian here so the
-    /// standalone [`Bytes`] conversion and the chunk carrier share one copy.
+    /// The sole body encoder: the standalone [`Bytes`] conversion and the
+    /// chunk carrier share one copy.
     pub(crate) fn encode(&self, out: &mut BytesMut) {
-        out.extend_from_slice(&self.span.to_le_bytes());
+        out.extend_from_slice(&self.span_bytes());
         out.extend_from_slice(self.data.as_ref());
+    }
+
+    /// The span half of the body wire encoding, serialised little-endian.
+    pub(crate) const fn span_bytes(&self) -> [u8; SPAN_SIZE] {
+        self.span.to_le_bytes()
     }
 
     /// Compute the BMT hash of this body

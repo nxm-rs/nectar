@@ -197,8 +197,12 @@ impl<const BODY_SIZE: usize> super::encryption::ChunkEncrypt for ContentChunk<BO
         &self,
         key: &super::encryption::EncryptionKey,
     ) -> Result<EncryptedContentChunk<BODY_SIZE>> {
-        let raw: Bytes = self.clone().into(); // span || data
-        let ciphertext = super::encryption::encrypt_chunk::<BODY_SIZE>(&raw, key)?;
+        let body = self.body();
+        let ciphertext = super::encryption::encrypt_chunk::<BODY_SIZE>(
+            &body.span_bytes(),
+            body.data().as_ref(),
+            key,
+        )?;
         let encrypted_chunk = Self::try_from(Bytes::from(ciphertext))?;
         let encrypted_ref =
             super::encryption::EncryptedChunkRef::new(*encrypted_chunk.address(), key.clone());
