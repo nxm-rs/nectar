@@ -9,49 +9,16 @@
 //! clipped range, so [`SeekFrom::End`] resolves against the effective
 //! length.
 //!
-//! Serving one http range request through the shim:
+//! Reading a byte range through the shim:
 //!
 //! ```
 //! # #![allow(deprecated)]
-//! use std::sync::Arc;
-//!
-//! use axum::Router;
-//! use axum::body::Body;
-//! use axum::extract::State;
-//! use axum::http::{HeaderMap, Request, StatusCode, header};
-//! use axum::response::Response;
-//! use axum::routing::get;
-//! use http_body_util::BodyExt;
 //! use nectar_file::{File, TokioReader};
 //! use nectar_primitives::chunk::AnyChunkSet;
 //! use nectar_primitives::store::MemoryStore;
 //! use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-//! use tokio_util::io::ReaderStream;
-//! use tower::util::ServiceExt;
 //!
 //! type Store = MemoryStore<AnyChunkSet<4096>>;
-//!
-//! async fn blob(State(file): State<Arc<File<Store>>>, headers: HeaderMap) -> Response {
-//!     let (start, end): (u64, u64) = headers[header::RANGE]
-//!         .to_str()
-//!         .ok()
-//!         .and_then(|range| range.strip_prefix("bytes="))
-//!         .and_then(|range| range.split_once('-'))
-//!         .map(|(start, end)| (start.parse().unwrap(), end.parse().unwrap()))
-//!         .unwrap();
-//!     let mut reader = TokioReader::from(file.read().build());
-//!     reader.seek(SeekFrom::Start(start)).await.unwrap();
-//!     Response::builder()
-//!         .status(StatusCode::PARTIAL_CONTENT)
-//!         .header(
-//!             header::CONTENT_RANGE,
-//!             format!("bytes {start}-{end}/{}", file.len()),
-//!         )
-//!         .body(Body::from_stream(ReaderStream::new(
-//!             reader.take(end - start + 1),
-//!         )))
-//!         .unwrap()
-//! }
 //!
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() {
@@ -59,24 +26,19 @@
 //!     .map(|i| u8::try_from(i % 251).unwrap())
 //!     .collect();
 //! # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
-//! let file = Arc::new(File::open(store, root).await.unwrap());
-//! let app = Router::new().route("/blob", get(blob)).with_state(file);
+//! let file: File<Store> = File::open(store, root).await.unwrap();
 //!
-//! let response = app
-//!     .oneshot(
-//!         Request::builder()
-//!             .uri("/blob")
-//!             .header(header::RANGE, "bytes=5000-9999")
-//!             .body(Body::empty())
-//!             .unwrap(),
-//!     )
-//!     .await
-//!     .unwrap();
-//! assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
-//! let body = response.into_body().collect().await.unwrap().to_bytes();
-//! assert_eq!(&body[..], &data[5000..10_000]);
+//! // A plain AsyncRead + AsyncSeek: seek to a range, then read it back.
+//! let mut reader = TokioReader::from(file.read().build());
+//! reader.seek(SeekFrom::Start(5_000)).await.unwrap();
+//! let mut range = vec![0u8; 5_000];
+//! reader.read_exact(&mut range).await.unwrap();
+//! assert_eq!(range, data[5_000..10_000]);
 //! # }
 //! ```
+//!
+//! `tokio_util::io::ReaderStream` turns the reader into a `Stream` of
+//! `Bytes` for a streaming http body.
 
 mod reader;
 #[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]

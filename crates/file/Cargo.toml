@@ -25,15 +25,11 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"], optional = true }
 
 [dev-dependencies]
-axum.workspace = true
 futures.workspace = true
-http-body-util.workspace = true
 # The differential oracles split and join through the legacy read paths,
 # including the encrypted width.
 nectar-primitives = { workspace = true, features = ["std", "encryption"] }
 tokio = { workspace = true, features = ["io-util"] }
-tokio-util.workspace = true
-tower.workspace = true
 
 [features]
 default = [ "std" ]
