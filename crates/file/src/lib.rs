@@ -3,8 +3,8 @@
 //!
 //! This crate carries the pipeline's foundations: per-profile tree
 //! [`geometry`] pinned at compile time, the [`config`] admission budgets the
-//! engines drain against, and the poll-native [`walk`] engine every read
-//! mode drains.
+//! engines drain against, the poll-native [`walk`] engine every read mode
+//! drains, and the poll-native [`split`] engine every write mode feeds.
 
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -35,10 +35,17 @@ extern crate std;
 pub mod config;
 pub mod geometry;
 #[cfg(feature = "std")]
+mod num;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod split;
+#[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod walk;
 
 pub use config::{BranchBudget, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
+#[cfg(feature = "std")]
+pub use split::{Sealed, Split, SplitError, SplitMode, SplitStats};
 #[cfg(feature = "std")]
 pub use walk::{Frame, Plain, ShapeError, Walk, WalkError, WalkMode, WalkStats};
