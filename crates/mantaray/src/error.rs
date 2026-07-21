@@ -102,10 +102,34 @@ pub enum ReaderError {
     },
 }
 
+/// Failures of the submission-order editor.
+#[non_exhaustive]
+#[derive(thiserror::Error, Debug)]
+pub enum EditorError {
+    /// Applying one recorded op to the trie failed; `index` is its zero-based
+    /// position in the submission-order log.
+    #[error("apply op {index} at path {}: {source}", String::from_utf8_lossy(path))]
+    Apply {
+        /// Zero-based position of the failed op in the log.
+        index: usize,
+        /// Path the failed op targets.
+        path: Vec<u8>,
+        /// The underlying trie failure.
+        source: MantarayError,
+    },
+    /// Persisting the applied trie to the store failed.
+    #[error(transparent)]
+    Commit(#[from] MantarayError),
+}
+
 /// Errors that can occur during mantaray trie operations.
 #[non_exhaustive]
 #[derive(thiserror::Error, Debug)]
 pub enum MantarayError {
+    /// The wire reads an all-zero entry slot as absent, so the all-zero
+    /// reference cannot be stored.
+    #[error("all-zero reference encodes as an absent entry")]
+    ZeroReference,
     /// Node is not a value type (has no entry).
     #[error("not a value type")]
     NotValueType,
