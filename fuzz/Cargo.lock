@@ -1932,6 +1932,7 @@ dependencies = [
  "bytes",
  "futures",
  "libfuzzer-sys",
+ "nectar-file",
  "nectar-manifest",
  "nectar-mantaray",
  "nectar-postage",
