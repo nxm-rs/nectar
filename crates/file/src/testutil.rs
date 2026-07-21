@@ -1,6 +1,5 @@
 //! Shared test fixtures: whole-buffer splits into a fresh memory store.
 
-use core::future::poll_fn;
 use std::sync::Arc;
 
 use futures::executor::block_on;
@@ -9,7 +8,6 @@ use nectar_primitives::chunk::encryption::EncryptedChunkRef;
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::MemoryStore;
 
-use crate::config::PutWindow;
 #[cfg(feature = "encryption")]
 use crate::split::RandomKeys;
 use crate::split::{Split, SplitMode};
@@ -25,17 +23,11 @@ where
     M: SplitMode + Default,
 {
     let store = Arc::new(MemoryStore::new());
-    let mut split: Split<Arc<MemoryStore<AnyChunkSet<B>>>, M, B> =
-        Split::new(Arc::clone(&store), PutWindow::DEFAULT);
-    let root = block_on(async {
-        let mut buf = data;
-        while !buf.is_empty() {
-            let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-            buf = &buf[n..];
-        }
-        poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-    });
-    drop(split);
+    let root = block_on(Split::<Arc<MemoryStore<AnyChunkSet<B>>>, M, B>::collect(
+        Arc::clone(&store),
+        data,
+    ))
+    .unwrap();
     (root, Arc::into_inner(store).unwrap())
 }
 

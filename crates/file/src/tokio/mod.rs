@@ -16,7 +16,7 @@
 //! ```
 //! use std::sync::Arc;
 //!
-//! use nectar_file::{File, Plain, PutWindow, Split, TokioReader};
+//! use nectar_file::{File, Plain, Split, TokioReader};
 //! use nectar_primitives::chunk::AnyChunkSet;
 //! use nectar_primitives::store::MemoryStore;
 //! use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
@@ -29,15 +29,7 @@
 //!     .map(|i| u8::try_from(i % 251).unwrap())
 //!     .collect();
 //! # let store: Store = Arc::new(MemoryStore::new());
-//! # let root = {
-//! #     let mut split = Split::<_, Plain, 4096>::new(Arc::clone(&store), PutWindow::DEFAULT);
-//! #     let mut buf = data.as_slice();
-//! #     while !buf.is_empty() {
-//! #         let n = core::future::poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-//! #         buf = &buf[n..];
-//! #     }
-//! #     core::future::poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-//! # };
+//! # let root = Split::<_, Plain, 4096>::collect(Arc::clone(&store), &data).await.unwrap();
 //! let file: File<Store> = File::open(store, root).await.unwrap();
 //!
 //! // A plain AsyncRead + AsyncSeek: seek to a range, then read it back.

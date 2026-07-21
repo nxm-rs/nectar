@@ -5,6 +5,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::fmt;
 use core::future::Future;
+use core::future::poll_fn;
 use core::mem;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -233,6 +234,41 @@ where
                 }
             }
         }
+    }
+
+    /// Split all of `data`, store its chunks, and return the root.
+    ///
+    /// A one-shot convenience over [`poll_write`](Self::poll_write) and
+    /// [`poll_finish`](Self::poll_finish), driven to completion in place under
+    /// the default put window. Drive the poll surface directly for
+    /// back-pressure control or incremental input.
+    ///
+    /// ```
+    /// # futures::executor::block_on(async {
+    /// use std::sync::Arc;
+    ///
+    /// use nectar_file::{Plain, Split};
+    /// use nectar_primitives::chunk::AnyChunkSet;
+    /// use nectar_primitives::store::MemoryStore;
+    ///
+    /// let store = Arc::new(MemoryStore::<AnyChunkSet<4096>>::new());
+    /// let root = Split::<_, Plain, 4096>::collect(Arc::clone(&store), b"hello swarm")
+    ///     .await
+    ///     .unwrap();
+    /// # let _ = root;
+    /// # });
+    /// ```
+    pub async fn collect(store: S, data: &[u8]) -> Result<M::Root, SplitError<S::Error>>
+    where
+        M: Default,
+    {
+        let mut split = Self::new(store, PutWindow::DEFAULT);
+        let mut rest = data;
+        while !rest.is_empty() {
+            let taken = poll_fn(|cx| split.poll_write(cx, rest)).await?;
+            rest = rest.get(taken..).unwrap_or(&[]);
+        }
+        poll_fn(|cx| split.poll_finish(cx)).await
     }
 
     /// The fused root; its absence past the finish is a broken invariant.
