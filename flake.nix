@@ -22,7 +22,7 @@
         # `nix develop` so the local toolchain matches CI/CD.
         rustToolchain = pkgs.rust-bin.stable."1.94.0".default.override {
           extensions = [ "rust-analyzer" "rust-src" "clippy" "rustfmt" ];
-          targets = [ "wasm32-unknown-unknown" ];
+          targets = [ "wasm32-unknown-unknown" "riscv64imac-unknown-none-elf" ];
         };
 
         # Nightly toolchain for WASM threading (wasm-bindgen-rayon)
