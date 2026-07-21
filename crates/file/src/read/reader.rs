@@ -1,5 +1,6 @@
 //! Ordered reader and stream over one walk.
 
+use alloc::vec::Vec;
 use core::fmt;
 use core::future::poll_fn;
 use core::mem;
@@ -13,7 +14,7 @@ use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::TrustedGet;
 
-use super::error::SeekPastEnd;
+use super::error::{CollectError, SeekPastEnd};
 use super::frames::FileFrames;
 use crate::config::Window;
 use crate::num::u64_from_usize;
@@ -112,6 +113,35 @@ where
             self.range,
             self.window,
         ))
+    }
+
+    /// Assemble the clipped range in memory, at most `max` bytes.
+    ///
+    /// The buffer is reserved up front with `try_reserve_exact`, so an
+    /// oversized range fails typed before any fetch; the bound saturates at
+    /// the address width.
+    pub async fn collect(self, max: u64) -> Result<Vec<u8>, CollectError<S::Error>> {
+        let mut walk: Walk<S, M, B> = Walk::new(
+            self.store,
+            self.root,
+            self.context,
+            self.span,
+            self.range,
+            self.window,
+        );
+        let clipped = walk.range();
+        let len = clipped.end.saturating_sub(clipped.start);
+        let bound = max.min(u64_from_usize(usize::MAX));
+        let capacity = match usize::try_from(len) {
+            Ok(capacity) if len <= bound => capacity,
+            _ => return Err(CollectError::TooLarge { len, max: bound }),
+        };
+        let mut out = Vec::new();
+        out.try_reserve_exact(capacity)?;
+        while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+            out.extend_from_slice(&frame?.data);
+        }
+        Ok(out)
     }
 }
 

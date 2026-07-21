@@ -1,5 +1,6 @@
 //! File handles: one opened chunk tree, mode pinned or runtime-dispatched.
 
+use alloc::vec::Vec;
 use core::fmt;
 
 use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey, transcrypt_in_place};
@@ -8,7 +9,7 @@ use nectar_primitives::store::TrustedGet;
 use nectar_primitives::{DEFAULT_BODY_SIZE, EntryRef};
 
 use super::download::DownloadBuilder;
-use super::error::OpenError;
+use super::error::{CollectError, OpenError};
 use super::reader::ReadBuilder;
 use crate::config::Window;
 use crate::geometry::Mode;
@@ -64,6 +65,17 @@ impl<S: Clone, M: WalkMode, const B: usize> File<S, M, B> {
             Window::DEFAULT,
             0..u64::MAX,
         )
+    }
+}
+
+impl<S, M, const B: usize> File<S, M, B>
+where
+    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    M: WalkMode,
+{
+    /// Assemble the whole file in memory, at most `max` bytes.
+    pub async fn collect(&self, max: u64) -> Result<Vec<u8>, CollectError<S::Error>> {
+        self.read().collect(max).await
     }
 }
 
@@ -148,6 +160,14 @@ where
             EntryRef::Encrypted(reference) => File::open_encrypted(store, reference)
                 .await
                 .map(Self::Encrypted),
+        }
+    }
+
+    /// Assemble the whole file in memory, at most `max` bytes.
+    pub async fn collect(&self, max: u64) -> Result<Vec<u8>, CollectError<S::Error>> {
+        match self {
+            Self::Plain(file) => file.collect(max).await,
+            Self::Encrypted(file) => file.collect(max).await,
         }
     }
 }
