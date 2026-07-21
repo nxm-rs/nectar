@@ -12,6 +12,7 @@ use derive_more::{AsRef, Display, From, Into};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::bmt::DerivedAddress;
 use crate::error::{Result, WrongLength};
 use crate::xor_metric::XorMetric;
 
@@ -66,6 +67,13 @@ impl ChunkAddress {
     /// Create a new zero-filled address.
     pub const fn zero() -> Self {
         Self::ZERO
+    }
+}
+
+/// Adopt a hasher-derived BMT root as an address; the conversion is one-way.
+impl From<DerivedAddress> for ChunkAddress {
+    fn from(derived: DerivedAddress) -> Self {
+        Self(derived.into())
     }
 }
 

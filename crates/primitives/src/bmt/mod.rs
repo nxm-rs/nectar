@@ -31,11 +31,13 @@
 //! ```
 
 mod constants;
+mod derived;
 pub(crate) mod error;
 mod hasher;
 mod proof;
 
 pub use constants::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE};
+pub use derived::DerivedAddress;
 pub use error::BmtError;
 pub use hasher::{Hasher, HasherFactory};
 pub use proof::{Proof, Prover};
