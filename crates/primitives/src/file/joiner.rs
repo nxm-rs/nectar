@@ -484,10 +484,10 @@ where
             Failed(FileError),
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
         type BoxResolvedFuture<M> =
             std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>> + Send>>;
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", feature = "unsync"))]
         type BoxResolvedFuture<M> =
             std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>>>>;
 
@@ -726,10 +726,10 @@ where
         Failed(FileError),
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
     type BoxResolvedFuture<M> =
         std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>> + Send>>;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", feature = "unsync"))]
     type BoxResolvedFuture<M> = std::pin::Pin<Box<dyn std::future::Future<Output = Resolved<M>>>>;
 
     // Fetch one node: a leaf yields its body, an intermediate yields its
@@ -900,6 +900,16 @@ where
     })
 }
 
+/// Cfg-gated boxed read-future alias: `+ Send` on multi-threaded targets,
+/// unbounded on wasm32 and under the `unsync` feature.
+#[cfg(all(
+    feature = "tokio",
+    not(any(target_arch = "wasm32", feature = "unsync"))
+))]
+type BoxReadFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>;
+#[cfg(all(feature = "tokio", any(target_arch = "wasm32", feature = "unsync")))]
+type BoxReadFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>>>>;
+
 /// Wrapper providing `tokio::io::AsyncRead` over a [`GenericJoiner`].
 ///
 /// Created via [`GenericJoiner::into_reader`].
@@ -910,8 +920,7 @@ where
 {
     joiner: GenericJoiner<G, M, BODY_SIZE>,
     buffer: Bytes,
-    #[allow(clippy::type_complexity)]
-    future: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>>,
+    future: Option<BoxReadFuture>,
 }
 
 #[cfg(feature = "tokio")]
@@ -1016,7 +1025,7 @@ where
             }
             Poll::Ready(Err(e)) => {
                 this.future = None;
-                Poll::Ready(Err(std::io::Error::other(e)))
+                Poll::Ready(Err(std::io::Error::from(e)))
             }
             Poll::Pending => Poll::Pending,
         }

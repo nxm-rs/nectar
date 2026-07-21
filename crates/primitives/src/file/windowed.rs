@@ -149,10 +149,11 @@ where
     }
 }
 
-/// Cfg-gated boxed resolved-future alias: `+ Send` on native, unbounded on wasm.
-#[cfg(not(target_arch = "wasm32"))]
+/// Cfg-gated boxed resolved-future alias: `+ Send` on multi-threaded targets,
+/// unbounded on wasm32 and under the `unsync` feature.
+#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
 type BoxResolvedFuture<M> = Pin<Box<dyn std::future::Future<Output = Resolved<M>> + Send>>;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
 type BoxResolvedFuture<M> = Pin<Box<dyn std::future::Future<Output = Resolved<M>>>>;
 
 /// One unit of pending work: a tree node plus its remaining retry budget. The
@@ -465,6 +466,16 @@ where
     })
 }
 
+/// Cfg-gated boxed body-stream alias: `+ Send` on multi-threaded targets,
+/// unbounded on wasm32 and under the `unsync` feature.
+#[cfg(all(
+    feature = "tokio",
+    not(any(target_arch = "wasm32", feature = "unsync"))
+))]
+type BoxBodyStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>;
+#[cfg(all(feature = "tokio", any(target_arch = "wasm32", feature = "unsync")))]
+type BoxBodyStream = Pin<Box<dyn Stream<Item = Result<Bytes>>>>;
+
 /// Native `AsyncRead` + `AsyncSeek` shim, draining [`WindowedReader::stream`]
 /// into a residual buffer.
 #[cfg(feature = "tokio")]
@@ -474,8 +485,7 @@ where
 {
     reader: WindowedReader<G, M, BODY_SIZE>,
     residual: Bytes,
-    #[allow(clippy::type_complexity)]
-    stream: Option<Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>>,
+    stream: Option<BoxBodyStream>,
 }
 
 #[cfg(feature = "tokio")]
@@ -570,7 +580,7 @@ where
                 }
                 Poll::Ready(Ok(()))
             }
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Err(std::io::Error::other(e))),
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Err(std::io::Error::from(e))),
             Poll::Ready(None) => Poll::Ready(Ok(())),
             Poll::Pending => Poll::Pending,
         }

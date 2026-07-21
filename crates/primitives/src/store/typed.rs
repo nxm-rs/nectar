@@ -2,7 +2,7 @@
 //!
 //! `ChunkGet`, `ChunkPut`, and `ChunkHas` are async and carry `MaybeSend`/
 //! `MaybeSync` bounds (on the traits and their error types) so a store may be
-//! `!Send` on wasm. Writes are uniformly sealed ([`ChunkPut`] only accepts
+//! `!Send` on single-threaded targets. Writes are uniformly sealed ([`ChunkPut`] only accepts
 //! `Chunk<Verified, R>`); trust is a property of the read medium, declared
 //! once per backend through [`ChunkGet::Trust`].
 
@@ -90,11 +90,12 @@ pub trait TrustedGet<R: ChunkRegistry = StandardChunkSet>: ChunkGet<R, Trust = V
 
 impl<R: ChunkRegistry, T: ChunkGet<R, Trust = Verified> + ?Sized> TrustedGet<R> for T {}
 
-#[cfg(target_arch = "wasm32")]
-mod wasm_send_sync_proof {
+#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
+mod send_sync_relaxation_proof {
     // A store that is neither Send nor Sync (raw pointer marker) must still
-    // satisfy ChunkGet on wasm32, proving the MaybeSend + MaybeSync relaxation
-    // for the store and for its error type alike.
+    // satisfy ChunkGet wherever the relaxation applies (wasm32, or the unsync
+    // feature), proving the MaybeSend + MaybeSync relaxation for the store
+    // and for its error type alike.
     use super::*;
     use crate::chunk::Unverified;
 
@@ -115,10 +116,10 @@ mod wasm_send_sync_proof {
         }
     }
 
-    fn _assert<S: ChunkGet<StandardChunkSet>>() {}
+    const fn _assert<S: ChunkGet<StandardChunkSet>>() {}
 
     #[allow(dead_code)]
-    fn _proof() {
+    const fn _proof() {
         _assert::<NotSendSync>()
     }
 }
