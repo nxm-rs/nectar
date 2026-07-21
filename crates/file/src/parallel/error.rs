@@ -2,9 +2,7 @@
 
 use std::io;
 
-use nectar_primitives::PrimitivesError;
-
-use crate::split::SplitError;
+use crate::split::{SealError, SplitError};
 
 /// Terminal read-at ingest failure.
 #[derive(Debug, thiserror::Error)]
@@ -63,7 +61,7 @@ pub(super) enum LeafError {
         capacity: usize,
     },
     /// Sealing the leaf payload failed.
-    Seal(PrimitivesError),
+    Seal(SealError),
 }
 
 impl<E> From<LeafError> for ReadAtError<E> {

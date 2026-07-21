@@ -3,6 +3,18 @@
 use nectar_primitives::PrimitivesError;
 use nectar_primitives::chunk::ChunkAddress;
 
+/// Failure sealing one payload into a chunk.
+#[derive(Debug, thiserror::Error)]
+pub enum SealError {
+    /// Chunk construction or encryption rejected the payload.
+    #[error("chunk construction failed")]
+    Chunk(#[from] PrimitivesError),
+    /// The key source yielded no key for the chunk.
+    #[cfg(feature = "encryption")]
+    #[error("key source failed")]
+    Key(#[from] super::encrypted::KeyError),
+}
+
 /// Terminal split failure.
 #[derive(Debug, thiserror::Error)]
 pub enum SplitError<E> {
@@ -16,7 +28,7 @@ pub enum SplitError<E> {
     },
     /// Sealing a payload into a chunk failed.
     #[error("seal failed")]
-    Seal(#[from] PrimitivesError),
+    Seal(#[from] SealError),
     /// Accumulated child spans overflowed the `u64` length domain.
     #[error("span overflow adding {add} to {span}")]
     SpanOverflow {

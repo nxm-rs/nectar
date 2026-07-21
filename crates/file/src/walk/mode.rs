@@ -68,10 +68,28 @@ impl WalkMode for Plain {
 
 /// Encrypted mode: a reference carries an address plus the decryption key of
 /// a keccak counter-mode ciphertext body.
+///
+/// Joining needs no keys beyond the references, so the default `K = ()`
+/// serves every read path; the split side instantiates `K` with a key
+/// source behind the `encryption` feature.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Encrypted;
+pub struct Encrypted<K = ()> {
+    source: K,
+}
 
-impl WalkMode for Encrypted {
+impl<K> Encrypted<K> {
+    /// Wrap a split-side key source; `Encrypted::default()` covers reads.
+    pub const fn new(source: K) -> Self {
+        Self { source }
+    }
+
+    /// The wrapped key source.
+    pub const fn source(&self) -> &K {
+        &self.source
+    }
+}
+
+impl<K: MaybeSend + MaybeSync + 'static> WalkMode for Encrypted<K> {
     const MODE: Mode = Mode::Encrypted;
 
     type Context = EncryptionKey;

@@ -4,10 +4,10 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use bytes::Bytes;
-use nectar_primitives::PrimitivesError;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentChunk, Verified};
 use nectar_primitives::store::{MaybeSend, MaybeSync};
 
+use super::error::SealError;
 use crate::geometry::Mode;
 use crate::walk::Plain;
 
@@ -37,7 +37,7 @@ pub trait SplitMode: MaybeSend + MaybeSync + 'static {
     ///
     /// The payload is the chunk's wire body: a little-endian `u64` span
     /// followed by the spanned content (leaf bytes or packed references).
-    fn seal<const B: usize>(payload: Bytes) -> Result<Sealed<Self, B>, PrimitivesError>;
+    fn seal<const B: usize>(&self, payload: Bytes) -> Result<Sealed<Self, B>, SealError>;
 
     /// Append one reference's wire bytes to a parent payload under build.
     fn write_ref(reference: &Self::Ref, out: &mut Vec<u8>);
@@ -58,7 +58,7 @@ impl SplitMode for Plain {
         branches
     }
 
-    fn seal<const B: usize>(payload: Bytes) -> Result<Sealed<Self, B>, PrimitivesError> {
+    fn seal<const B: usize>(&self, payload: Bytes) -> Result<Sealed<Self, B>, SealError> {
         let chunk = ContentChunk::<B>::try_from(payload)?.seal::<AnyChunkSet<B>>();
         let address = *chunk.address();
         Ok((chunk, address))

@@ -224,6 +224,47 @@ fn put_window_bounds_concurrent_puts() {
     }
 }
 
+/// The legacy joiner reads the shared chunk map, so the pooled encrypted
+/// ingest is checked end to end.
+#[cfg(feature = "encryption")]
+impl<const B: usize> nectar_primitives::store::ChunkGet<AnyChunkSet<B>> for TestStore<B> {
+    type Trust = Verified;
+    type Error = ChunkStoreError;
+
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<Chunk<Verified, AnyChunkSet<B>>, ChunkStoreError> {
+        self.chunks
+            .lock()
+            .unwrap()
+            .get(address)
+            .cloned()
+            .ok_or_else(|| ChunkStoreError::not_found(address))
+    }
+}
+
+/// The pooled encrypted ingest hands the legacy joiner a readable root.
+#[cfg(feature = "encryption")]
+#[test]
+fn encrypted_ingest_joins_through_the_legacy_joiner() {
+    use nectar_primitives::file::join;
+
+    use crate::split::RandomKeys;
+    use crate::walk::Encrypted;
+
+    let data = fill(17 * TINY + 43);
+    let store = TestStore::<TINY>::new(0);
+    let root = block_on(split_read_at::<_, _, Encrypted<RandomKeys>, TINY>(
+        data.clone(),
+        store.clone(),
+        PutWindow::DEFAULT,
+    ))
+    .unwrap();
+    let plaintext = block_on(join(&store, root)).unwrap();
+    assert_eq!(plaintext, data);
+}
+
 #[test]
 fn bytes_and_slice_sources_agree() {
     let data = fill(11 * TINY + 7);
