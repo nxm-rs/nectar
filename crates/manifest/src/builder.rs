@@ -12,6 +12,7 @@ use std::io::Write;
 
 use bytes::Bytes;
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
+#[allow(deprecated)]
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkRef, ContentChunk, DefaultSplitter, FileError, PrimitivesError,
 };
@@ -40,6 +41,7 @@ pub enum BuildError {
     #[error(transparent)]
     Store(#[from] StoreError),
     /// Splitting a file into BMT chunks failed.
+    #[allow(deprecated)]
     #[error("split file")]
     Split(#[source] FileError),
     /// Buffering a file for splitting failed.
@@ -596,6 +598,7 @@ where
 
 /// Split `data` through BMT, spill its chunks to `store`, and return its plain
 /// root reference. Reuses the primitives splitter, so the BMT is shared.
+#[allow(deprecated)]
 async fn split_file<S>(store: &S, data: &[u8]) -> Result<ChunkRef, BuildError>
 where
     S: ChunkPut + MaybeSync,

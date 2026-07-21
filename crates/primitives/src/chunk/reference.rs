@@ -8,8 +8,8 @@
 use std::mem::size_of;
 
 use crate::chunk::ChunkAddress;
+use crate::entry_ref::EntryRef;
 use crate::error::WrongLength;
-use crate::file::EntryRef;
 use crate::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 pub(crate) mod sealed {

@@ -1,4 +1,6 @@
 #![allow(missing_docs)]
+// Exercises the legacy pipeline until its nectar-file replacement lands.
+#![allow(deprecated)]
 // Bench and example code: unwraps, direct indexing, casts, and assertions
 // are setup and illustration, not shipped surface.
 #![allow(

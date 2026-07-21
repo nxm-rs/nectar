@@ -1,4 +1,6 @@
 #![allow(missing_docs)]
+// Exercises the legacy pipeline until its nectar-file replacement lands.
+#![allow(deprecated)]
 //! Benchmarks for file splitting and joining operations.
 //!
 //! Measures throughput (bytes/sec) for splitting files into chunks and

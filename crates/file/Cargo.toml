@@ -1,0 +1,39 @@
+[package]
+name = "nectar-file"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Streaming file pipeline for Ethereum Swarm: bounded chunk-tree reads and writes"
+documentation = "https://docs.rs/nectar-file"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "file", "streaming", "no_std"]
+categories = ["no-std", "asynchronous", "data-structures"]
+
+[lints]
+workspace = true
+
+[features]
+default = [ "std" ]
+
+# Standard library interop; the filesystem and io adapters land with the
+# engines.
+std = []
+
+# Async reader and writer adapters over the poll surface. Implies `std`.
+tokio = [ "std" ]
+
+# Batch leaf hashing and read-at ingest. Implies `std`; rayon on wasm32 is a
+# compile error, never a silent fallback.
+rayon = [ "std" ]
+
+# Split-side encrypted mode. Joining encrypted references stays unconditional.
+encryption = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

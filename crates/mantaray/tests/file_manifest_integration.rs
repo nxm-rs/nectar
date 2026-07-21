@@ -1,5 +1,7 @@
 //! Integration test: unified store for file splitting and manifest creation.
 
+// Exercises the legacy pipeline until its nectar-file replacement lands.
+#![allow(deprecated)]
 // Bench, example, and integration-test code: unwraps, direct indexing,
 // casts, and assertions are setup and illustration, not shipped surface.
 #![allow(

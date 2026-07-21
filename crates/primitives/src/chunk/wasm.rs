@@ -115,6 +115,7 @@ impl WasmSplitResult {
 /// Split data into BMT chunks.
 ///
 /// Returns a SplitResult containing the root address and all generated chunks.
+#[allow(deprecated)]
 #[wasm_bindgen(js_name = splitFile)]
 pub fn split_file(data: &Uint8Array) -> Result<WasmSplitResult, JsValue> {
     let bytes = data.to_vec();
