@@ -1,63 +1,82 @@
-//! Binary Merkle Tree hasher implementation
+//! Binary Merkle Tree hasher.
 //!
-//! This module provides an implementation of a BMT hasher that uses Keccak256
-//! for computing content-addressed hashes of arbitrary data.
+//! Keccak256 over a fixed-geometry binary tree of 32-byte segments, with an
+//! optional per-node prefix and a little-endian span wrap at the root.
 
+use alloc::{boxed::Box, vec, vec::Vec};
 use alloy_primitives::{B256, Keccak256};
 use bytes::Bytes;
 use digest::{FixedOutput, FixedOutputReset, OutputSizeUser, Reset, Update};
 use hybrid_array::{Array, sizes::U32};
-use std::io::{self, Write};
-use std::sync::LazyLock;
+use once_cell::race::OnceBox;
 
 use super::constants::*;
 
 /// Number of zero tree levels for the default body size.
 const ZERO_TREE_LEVELS: usize = zero_tree_levels(DEFAULT_BODY_SIZE);
 
-/// Pre-computed zero hashes for the default body size tree.
-#[allow(clippy::indexing_slicing)] // indices 0, i and i-1 with 1 <= i < ZERO_TREE_LEVELS, the array length
-static ZERO_HASHES: LazyLock<[B256; ZERO_TREE_LEVELS]> = LazyLock::new(|| {
-    let mut hashes = [B256::ZERO; ZERO_TREE_LEVELS];
+/// Per-level zero-subtree hashes for plain (unprefixed) hashing, computed once
+/// on first use.
+static ZERO_HASHES: OnceBox<[B256; ZERO_TREE_LEVELS]> = OnceBox::new();
 
-    // Level 0: hash of 64 zero bytes (one segment pair)
-    let mut hasher = Keccak256::new();
+/// The shared plain zero-hash table.
+fn zero_hash_table() -> &'static [B256; ZERO_TREE_LEVELS] {
+    ZERO_HASHES.get_or_init(|| Box::new(zero_hash_levels(None)))
+}
+
+/// Compute the per-level zero-subtree hashes: level 0 is the hash of one
+/// all-zero segment pair, level n the hash of two level n-1 digests.
+fn zero_hash_levels(prefix: Option<&[u8]>) -> [B256; ZERO_TREE_LEVELS] {
+    let mut hasher = node_hasher(prefix);
     hasher.update([0u8; SEGMENT_PAIR_LENGTH]);
-    hashes[0] = B256::from_slice(hasher.finalize().as_slice());
+    let mut current = B256::from_slice(hasher.finalize().as_slice());
 
-    // Each subsequent level: hash of two copies of previous level's hash
-    for i in 1..ZERO_TREE_LEVELS {
-        let mut hasher = Keccak256::new();
-        hasher.update(hashes[i - 1].as_slice());
-        hasher.update(hashes[i - 1].as_slice());
-        hashes[i] = B256::from_slice(hasher.finalize().as_slice());
+    let mut hashes = [B256::ZERO; ZERO_TREE_LEVELS];
+    let [levels @ .., top] = &mut hashes;
+    for slot in levels {
+        *slot = current;
+        let mut hasher = node_hasher(prefix);
+        hasher.update(current.as_slice());
+        hasher.update(current.as_slice());
+        current = B256::from_slice(hasher.finalize().as_slice());
     }
-
+    *top = current;
     hashes
-});
+}
 
-/// Hash consecutive 64-byte sibling pairs of a tree level, batched across SIMD
-/// lanes.
+/// Construct a fresh Keccak256, seeded with the prefix when one is set.
 ///
-/// `pairs` is the flat byte view of the level (`out.len()` pairs of two
-/// 32-byte nodes); each output is `keccak(prefix || left || right)`.
-#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // entry = prefix len + 64 and entry * out.len() size the scratch Vec that is then sliced by the same bounds; each `slot` is exactly `entry` bytes long
-pub(super) fn hash_pairs(prefix: Option<&[u8]>, pairs: &[u8], out: &mut [[u8; 32]]) {
-    debug_assert_eq!(pairs.len(), out.len() * SEGMENT_PAIR_LENGTH);
+/// Every node in the tree is hashed as `keccak(prefix || data)`; this helper
+/// centralises that so the prefix can never be forgotten at a hash site.
+#[inline(always)]
+pub(super) fn node_hasher(prefix: Option<&[u8]>) -> Keccak256 {
+    let mut hasher = Keccak256::new();
+    if let Some(p) = prefix {
+        hasher.update(p);
+    }
+    hasher
+}
 
+/// Hash 64-byte sibling pairs, batched across SIMD lanes.
+///
+/// Consumes exactly `out.len()` pairs from `pairs` (the caller guarantees the
+/// iterator yields that many); each output is `keccak(prefix || left || right)`.
+pub(super) fn hash_pairs<'a>(
+    prefix: Option<&[u8]>,
+    pairs: impl Iterator<Item = &'a [u8]>,
+    out: &mut [[u8; 32]],
+) {
     let Some(p) = prefix else {
-        let inputs: Vec<&[u8]> = pairs.chunks_exact(SEGMENT_PAIR_LENGTH).collect();
+        let inputs: Vec<&[u8]> = pairs.collect();
         return keccak_batch::keccak256_many_into(&inputs, out);
     };
 
-    let entry = p.len() + SEGMENT_PAIR_LENGTH;
-    let mut scratch = vec![0u8; entry * out.len()];
-    for (slot, pair) in scratch
-        .chunks_exact_mut(entry)
-        .zip(pairs.chunks_exact(SEGMENT_PAIR_LENGTH))
-    {
-        slot[..p.len()].copy_from_slice(p);
-        slot[p.len()..].copy_from_slice(pair);
+    let entry = p.len().saturating_add(SEGMENT_PAIR_LENGTH);
+    let mut scratch = vec![0u8; entry.saturating_mul(out.len())];
+    for (slot, pair) in scratch.chunks_exact_mut(entry).zip(pairs) {
+        for (dst, src) in slot.iter_mut().zip(p.iter().chain(pair)) {
+            *dst = *src;
+        }
     }
     let inputs: Vec<&[u8]> = scratch.chunks_exact(entry).collect();
     keccak_batch::keccak256_many_into(&inputs, out);
@@ -105,11 +124,9 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
 
     /// Add a prefix to the hash calculation.
     ///
-    /// The prefix is applied to *every* Keccak256 invocation in the tree (leaf
-    /// sections, internal nodes and the final span wrap), matching bee's
-    /// `swarm.NewPrefixHasher` semantics where `Reset()` re-writes the prefix as
-    /// the first bytes before each node hash. This makes the resulting root
-    /// byte-identical to bee's `transformedAddress`.
+    /// The prefix is mixed into *every* Keccak256 invocation in the tree (leaf
+    /// sections, internal nodes and the final span wrap), so the root is the
+    /// anchor-keyed transformed address rather than the plain chunk address.
     #[inline]
     pub fn prefix_with(&mut self, prefix: &[u8]) {
         self.prefix = Some(prefix.to_vec());
@@ -117,27 +134,11 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
 
     /// Create a new BMT hasher pre-configured with an anchor `prefix`.
     ///
-    /// Equivalent to [`Hasher::new`] followed by [`Hasher::prefix_with`]. The
-    /// prefix is mixed into every node hash (see [`Hasher::prefix_with`]), so
-    /// the produced root matches bee's anchor-keyed `transformedAddress`.
+    /// Equivalent to [`Hasher::new`] followed by [`Hasher::prefix_with`].
     #[inline]
     pub fn with_prefix(prefix: &[u8]) -> Self {
         let mut hasher = Self::new();
         hasher.prefix_with(prefix);
-        hasher
-    }
-
-    /// Construct a fresh Keccak256, seeded with the prefix when one is set.
-    ///
-    /// Every node in the tree is hashed as `keccak(prefix || data)`; this helper
-    /// centralises that so the prefix can never be forgotten at an individual
-    /// hash site.
-    #[inline(always)]
-    fn node_hasher(prefix: Option<&[u8]>) -> Keccak256 {
-        let mut hasher = Keccak256::new();
-        if let Some(p) = prefix {
-            hasher.update(p);
-        }
         hasher
     }
 
@@ -165,27 +166,30 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         self.cursor == 0
     }
 
+    /// Copy as much of `data` as fits after the cursor; returns the copied
+    /// count (zero once the buffer is full).
+    #[inline]
+    fn fill(&mut self, data: &[u8]) -> usize {
+        let n = data.len().min(BODY_SIZE.saturating_sub(self.cursor));
+        match (
+            self.buffer
+                .get_mut(self.cursor..)
+                .and_then(|b| b.get_mut(..n)),
+            data.get(..n),
+        ) {
+            (Some(dst), Some(src)) => {
+                dst.copy_from_slice(src);
+                self.cursor = self.cursor.saturating_add(n);
+                n
+            }
+            _ => 0,
+        }
+    }
+
     /// Update the hasher with more data (non-destructive)
-    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
-    // cursor <= BODY_SIZE invariant: bytes_to_copy = min(data.len(), BODY_SIZE - cursor), so the subtraction, the cursor bump and the buffer slice all stay within BODY_SIZE
     #[inline]
     pub fn update(&mut self, data: &[u8]) {
-        if data.is_empty() {
-            return;
-        }
-
-        // Calculate how much data we can actually copy
-        let available_space = BODY_SIZE - self.cursor;
-        let bytes_to_copy = data.len().min(available_space);
-
-        if bytes_to_copy > 0 {
-            // Copy data at cursor position
-            self.buffer[self.cursor..self.cursor + bytes_to_copy]
-                .copy_from_slice(&data[..bytes_to_copy]);
-
-            // Update cursor position
-            self.cursor += bytes_to_copy;
-        }
+        let _ = self.fill(data);
     }
 
     /// Compute the BMT hash and write to output buffer.
@@ -204,11 +208,9 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     }
 
     /// Check if a byte slice is all zeros.
-    /// Uses chunk-based iteration which LLVM optimizes to SIMD on supported platforms.
+    /// Uses a bitwise-OR fold, which LLVM vectorizes on supported platforms.
     #[inline(always)]
     fn is_all_zeros(data: &[u8]) -> bool {
-        // Fold with bitwise OR - any non-zero byte makes the result non-zero
-        // LLVM vectorizes this pattern into efficient SIMD code
         data.iter().fold(0u8, |acc, &b| acc | b) == 0
     }
 
@@ -218,28 +220,22 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     /// 1. Finds the smallest power-of-2 subtree containing all data
     /// 2. Hashes only that subtree
     /// 3. Iteratively combines with pre-computed zero hashes to reach the root
-    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
-    // cursor <= BODY_SIZE, effective_size is clamped to [64, BODY_SIZE], zero-hash indices are < ZERO_TREE_LEVELS by construction, and current_size *= 2 stops at BODY_SIZE
     #[inline(always)]
     fn hash_internal(&self) -> B256 {
         let prefix = self.prefix.as_deref();
 
-        // Zero fast paths rely on the precomputed prefix-independent ZERO_HASHES
+        // Zero fast paths rely on the precomputed prefix-independent zero-hash
         // table, which is only valid for plain (unprefixed) hashing. Under a
         // non-empty prefix every zero section hashes as keccak(prefix||zeros),
-        // so we must compute the zero subtrees with the prefix instead.
+        // so the zero subtrees are computed with the prefix instead.
         let zero_hashes = self.zero_hashes(prefix);
+        let [.., zero_root] = zero_hashes;
 
-        // Special case: no data means entire tree is zeros
-        if self.cursor == 0 {
-            return zero_hashes[ZERO_TREE_LEVELS - 1];
-        }
-
-        // Fast path: if all data is zeros, return the zero tree root.
-        // Valid for both plain and prefixed hashing because `zero_hashes`
-        // already accounts for the prefix.
-        if Self::is_all_zeros(&self.buffer[..self.cursor]) {
-            return zero_hashes[ZERO_TREE_LEVELS - 1];
+        // Fast path: no data, or all data zero, means the whole tree is the
+        // zero tree. `zero_hashes` already accounts for the prefix.
+        let live = self.buffer.get(..self.cursor).unwrap_or_default();
+        if Self::is_all_zeros(live) {
+            return zero_root;
         }
 
         // Find the smallest power-of-2 subtree that contains all data
@@ -250,18 +246,24 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
             .min(BODY_SIZE);
 
         // Hash only the effective subtree (which contains all actual data).
-        let mut result = self.hash_subtree(&self.buffer[..effective_size], &zero_hashes);
+        let mut result = self.hash_subtree(effective_size, &zero_hashes);
 
-        // Roll up with zero hashes until we reach the full tree size
+        // Roll up with zero hashes until we reach the full tree size: at each
+        // level the result is a left child whose right sibling is that level's
+        // zero-subtree hash.
         let mut current_size = effective_size;
-        while current_size < BODY_SIZE {
-            // The current result is a left child, combine with zero hash for right sibling
-            let sibling_level = Self::zero_tree_level(current_size);
-            let mut hasher = Self::node_hasher(prefix);
+        for sibling in zero_hashes
+            .iter()
+            .skip(Self::zero_tree_level(effective_size))
+        {
+            if current_size >= BODY_SIZE {
+                break;
+            }
+            let mut hasher = node_hasher(prefix);
             hasher.update(result.as_slice());
-            hasher.update(zero_hashes[sibling_level].as_slice());
+            hasher.update(sibling.as_slice());
             result = B256::from_slice(hasher.finalize().as_slice());
-            current_size *= 2;
+            current_size = current_size.saturating_mul(2);
         }
 
         result
@@ -269,83 +271,79 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
 
     /// Return the per-level zero subtree hashes for the current prefix.
     ///
-    /// With no prefix this returns the shared precomputed [`ZERO_HASHES`]. With
-    /// a prefix set it computes the table on demand so that each level is
-    /// `keccak(prefix || left || right)` (the level-0 entry being
-    /// `keccak(prefix || 64 zero bytes)`), matching bee's per-prefix
-    /// `zerohashes`.
-    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices 0, i and i-1 with 1 <= i < ZERO_TREE_LEVELS, the array length
+    /// With no prefix this returns the shared precomputed table; with a prefix
+    /// set the table is computed on demand so each level is
+    /// `keccak(prefix || left || right)`.
     #[inline(always)]
     fn zero_hashes(&self, prefix: Option<&[u8]>) -> [B256; ZERO_TREE_LEVELS] {
-        let Some(p) = prefix else {
-            return *ZERO_HASHES;
-        };
-
-        let mut hashes = [B256::ZERO; ZERO_TREE_LEVELS];
-
-        let mut hasher = Self::node_hasher(Some(p));
-        hasher.update([0u8; SEGMENT_PAIR_LENGTH]);
-        hashes[0] = B256::from_slice(hasher.finalize().as_slice());
-
-        for i in 1..ZERO_TREE_LEVELS {
-            let mut hasher = Self::node_hasher(Some(p));
-            hasher.update(hashes[i - 1].as_slice());
-            hasher.update(hashes[i - 1].as_slice());
-            hashes[i] = B256::from_slice(hasher.finalize().as_slice());
-        }
-
-        hashes
+        prefix.map_or_else(|| *zero_hash_table(), |p| zero_hash_levels(Some(p)))
     }
 
-    /// Hash a power-of-two subtree (>= 64 bytes) level by level, batching each
-    /// level's sibling pairs across SIMD lanes.
+    /// Hash a power-of-two subtree of `size` bytes (>= 64, taken from the
+    /// front of the buffer) level by level, batching each level's sibling
+    /// pairs across SIMD lanes.
     ///
-    /// Only pairs that overlap live data (the cursor) cost a Keccak; everything
-    /// past them is an all-zero subtree taken from `zero_hashes`, which the
-    /// caller has already made prefix-aware.
-    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // data.len() is a power of two >= 64, live <= pairs = data.len()/64 (so live*64 <= data.len() and level/next slices hold), depth < ZERO_TREE_LEVELS as count halves from pairs, and count > 1 guarantees level[0] exists
-    fn hash_subtree(&self, data: &[u8], zero_hashes: &[B256; ZERO_TREE_LEVELS]) -> B256 {
-        debug_assert!(data.len().is_power_of_two());
-        debug_assert!(data.len() >= SEGMENT_PAIR_LENGTH);
+    /// Only pairs that overlap live data (the cursor) cost a Keccak; a live
+    /// row with an odd node count is padded with that level's zero-subtree
+    /// hash, so everything past the live nodes stays un-hashed.
+    fn hash_subtree(&self, size: usize, zero_hashes: &[B256; ZERO_TREE_LEVELS]) -> B256 {
+        debug_assert!(size.is_power_of_two());
+        debug_assert!(size >= SEGMENT_PAIR_LENGTH);
 
         let prefix = self.prefix.as_deref();
 
-        if data.len() == SEGMENT_PAIR_LENGTH {
-            let mut hasher = Self::node_hasher(prefix);
-            hasher.update(data);
+        if size == SEGMENT_PAIR_LENGTH
+            && let Some(pair) = self.buffer.first_chunk::<SEGMENT_PAIR_LENGTH>()
+        {
+            let mut hasher = node_hasher(prefix);
+            hasher.update(pair);
             return B256::from_slice(hasher.finalize().as_slice());
         }
 
-        // Level 0: pairs that overlap live data (the caller guarantees
-        // cursor > 0); the rest of the level is zero pairs.
-        let pairs = data.len() / SEGMENT_PAIR_LENGTH;
-        let mut live = self.cursor.div_ceil(SEGMENT_PAIR_LENGTH).min(pairs);
-        let mut level = vec![[0u8; 32]; pairs];
+        // Level 0: hash only the pairs that overlap live data (the caller
+        // guarantees cursor > 0, so at least one pair is live).
+        let pairs = size.checked_div(SEGMENT_PAIR_LENGTH).unwrap_or_default();
+        let live = self.cursor.div_ceil(SEGMENT_PAIR_LENGTH).min(pairs);
+        let mut level = vec![[0u8; 32]; live];
         hash_pairs(
             prefix,
-            &data[..live * SEGMENT_PAIR_LENGTH],
-            &mut level[..live],
+            self.buffer.chunks_exact(SEGMENT_PAIR_LENGTH).take(live),
+            &mut level,
         );
-        for slot in &mut level[live..] {
-            slot.copy_from_slice(zero_hashes[0].as_slice());
-        }
 
-        // Combine sibling digests level by level until one root remains.
-        let mut next = vec![[0u8; 32]; pairs / 2];
+        // Combine sibling digests level by level until one pair remains,
+        // walking the zero-hash table in lockstep for odd-row padding. The
+        // table always covers the tree depth, so the iterator never runs dry.
+        let mut depth_zeros = zero_hashes.iter();
         let mut count = pairs;
-        let mut depth = 1;
-        while count > 1 {
-            count /= 2;
-            live = live.div_ceil(2);
-            hash_pairs(prefix, level[..live * 2].as_flattened(), &mut next[..live]);
-            for slot in &mut next[live..count] {
-                slot.copy_from_slice(zero_hashes[depth].as_slice());
+        while count > 2 {
+            let zero = depth_zeros.next().copied().unwrap_or_default();
+            if !level.len().is_multiple_of(2) {
+                level.push(zero.0);
             }
-            std::mem::swap(&mut level, &mut next);
-            depth += 1;
+            let mut next = vec![[0u8; 32]; level.len() / 2];
+            hash_pairs(
+                prefix,
+                level.as_flattened().chunks_exact(SEGMENT_PAIR_LENGTH),
+                &mut next,
+            );
+            level = next;
+            count /= 2;
         }
 
-        B256::from(level[0])
+        // Final combine: exactly one pair remains at full width two.
+        let zero = depth_zeros.next().copied().unwrap_or_default();
+        if level.len() < 2 {
+            level.push(zero.0);
+        }
+        let mut root = [[0u8; 32]; 1];
+        hash_pairs(
+            prefix,
+            level.as_flattened().chunks_exact(SEGMENT_PAIR_LENGTH),
+            &mut root,
+        );
+        let [root] = root;
+        B256::from(root)
     }
 
     /// Calculate the zero-tree level for a given subtree length.
@@ -361,12 +359,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     /// Finalize with span and optional prefix
     #[inline(always)]
     fn finalize_with_prefix(&self, intermediate_hash: B256) -> B256 {
-        let mut hasher = Keccak256::new();
-
-        // Add prefix if present
-        if let Some(prefix) = &self.prefix {
-            hasher.update(prefix);
-        }
+        let mut hasher = node_hasher(self.prefix.as_deref());
 
         // Add span as little-endian bytes
         hasher.update(self.span.to_le_bytes());
@@ -391,12 +384,11 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     #[inline]
     #[must_use]
     pub fn data(&self) -> Bytes {
-        if self.cursor == 0 {
+        let live = self.buffer.get(..self.cursor).unwrap_or_default();
+        if live.is_empty() {
             return Bytes::new();
         }
-
-        // Create Bytes from slice
-        Bytes::copy_from_slice(&self.buffer[..self.cursor])
+        Bytes::copy_from_slice(live)
     }
 
     /// Get segments for the current level of data
@@ -422,49 +414,30 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
     }
 
     /// Compute the hash for a single segment at given index
-    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
-    // start < data.len() is checked before slicing, end is clamped to data.len(), and segment_data.len() < SEGMENT_SIZE guards the zero-padding subtraction
     #[inline(always)]
     fn compute_segment_hash(&self, data: &[u8], i: usize) -> B256 {
-        let start = i << SEGMENT_SIZE_LOG2; // Equivalent to i * SEGMENT_SIZE
-        let mut hasher = Self::node_hasher(self.prefix.as_deref());
-
-        if start < data.len() {
-            let end = (start + SEGMENT_SIZE).min(data.len());
-            let segment_data = &data[start..end];
-
-            // Update with segment data
-            hasher.update(segment_data);
-
-            // If segment is shorter than SEGMENT_SIZE, the remaining bytes are zeros
-            if segment_data.len() < SEGMENT_SIZE {
-                hasher.update(&[0u8; SEGMENT_SIZE][..(SEGMENT_SIZE - segment_data.len())]);
-            }
-        } else {
-            // Empty segment (all zeros)
-            hasher.update([0u8; SEGMENT_SIZE]);
+        // Zero-pad the segment: bytes past the end of `data` stay zero.
+        let mut segment = [0u8; SEGMENT_SIZE];
+        let start = i.saturating_mul(SEGMENT_SIZE);
+        for (dst, src) in segment.iter_mut().zip(data.iter().skip(start)) {
+            *dst = *src;
         }
 
+        let mut hasher = node_hasher(self.prefix.as_deref());
+        hasher.update(segment);
         B256::from_slice(hasher.finalize().as_slice())
     }
 }
 
-impl<const BODY_SIZE: usize> Write for Hasher<BODY_SIZE> {
-    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
-    // cursor <= BODY_SIZE invariant: to_write = min(buf.len(), BODY_SIZE - cursor), so the subtraction, the cursor bump and the buffer slice all stay within BODY_SIZE
+#[cfg(feature = "std")]
+impl<const BODY_SIZE: usize> std::io::Write for Hasher<BODY_SIZE> {
     #[inline]
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let available = BODY_SIZE - self.cursor;
-        let to_write = buf.len().min(available);
-        if to_write > 0 {
-            self.buffer[self.cursor..self.cursor + to_write].copy_from_slice(&buf[..to_write]);
-            self.cursor += to_write;
-        }
-        Ok(to_write)
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(self.fill(buf))
     }
 
     #[inline]
-    fn flush(&mut self) -> io::Result<()> {
+    fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }

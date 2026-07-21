@@ -624,3 +624,138 @@ fn test_write_returns_actual_bytes_written() {
         "Should return 0 when buffer is already full"
     );
 }
+
+/// Pinned root vectors: a byte-identical regression oracle for the hasher.
+///
+/// Payload byte i is i % 256 and the span equals the payload length, covering
+/// every subtree size class (sub-pair, single pair, partial and full trees).
+#[test]
+fn test_pinned_root_vectors() {
+    let vectors = [
+        (
+            0usize,
+            "b34ca8c22b9e982354f9c7f50b470d66db428d880c8a904d5fe4ec9713171526",
+        ),
+        (
+            1,
+            "fe60ba40b87599ddfb9e8947c1c872a4a1a5b56f7d1b80f0a646005b38db52a5",
+        ),
+        (
+            3,
+            "abc95807648ca3fc753b6f8a557d5ad3fe88d8c898f9ebffc12e149a3f233e20",
+        ),
+        (
+            31,
+            "ece86edb20669cc60d142789d464d57bdf5e33cb789d443f608cbd81cfa5697d",
+        ),
+        (
+            32,
+            "0be77f0bb7abc9cd0abed640ee29849a3072ccfd1020019fe03658c38f087e02",
+        ),
+        (
+            33,
+            "3463b46d4f9d5bfcbf9a23224d635e51896c1daef7d225b86679db17c5fd868e",
+        ),
+        (
+            63,
+            "95510c2ff18276ed94be2160aed4e69c9116573b6f69faaeed1b426fea6a3db8",
+        ),
+        (
+            64,
+            "490072cc55b8ad381335ff882ac51303cc069cbcb8d8d3f7aa152d9c617829fe",
+        ),
+        (
+            65,
+            "541552bae05e9a63a6cb561f69edf36ffe073e441667dbf7a0e9a3864bb744ea",
+        ),
+        (
+            127,
+            "d80c3347053158ae2917fcde392d50b6f46c1b79d5aa4fff033aa209590ec423",
+        ),
+        (
+            128,
+            "cd80756bba344aa93f29c21fe0b09433036f82ca7f133131e55e61e9d5dcf3c3",
+        ),
+        (
+            4095,
+            "993b76a7701c48ba2f2b701628e1af266ec5ad2cc88a203c2814c403dc25a7d6",
+        ),
+        (
+            4096,
+            "902406053a7a2f3a17f16097e1d0b4b6a4abeae6b84968f5503ae621f9522e16",
+        ),
+    ];
+
+    for (len, want) in vectors {
+        let payload: Vec<u8> = (0..len).map(|i| (i % 256) as u8).collect();
+        let mut hasher = DefaultHasher::new();
+        hasher.set_span(len as u64);
+        hasher.update(&payload);
+        assert_eq!(
+            hasher.sum().encode_hex(),
+            want,
+            "pinned root mismatch for payload length {len}"
+        );
+    }
+}
+
+/// Pinned zero-tree and prefixed root vectors: the zero fast paths and the
+/// per-prefix zero tables must stay byte-identical.
+#[test]
+fn test_pinned_zero_and_prefix_vectors() {
+    const ANCHOR: &[u8] = b"swarm-test-anchor-deterministic!";
+
+    // Empty hasher (span 0) and an all-zero full body hash to the same tree,
+    // wrapped with their respective spans.
+    let empty = DefaultHasher::new();
+    assert_eq!(
+        empty.sum().encode_hex(),
+        "b34ca8c22b9e982354f9c7f50b470d66db428d880c8a904d5fe4ec9713171526"
+    );
+
+    let mut all_zero = DefaultHasher::new();
+    all_zero.set_span(DEFAULT_BODY_SIZE as u64);
+    all_zero.update(&vec![0u8; DEFAULT_BODY_SIZE]);
+    assert_eq!(
+        all_zero.sum().encode_hex(),
+        "09ae927d0f3aaa37324df178928d3826820f3dd3388ce4aaebfc3af410bde23a"
+    );
+
+    // Sparse prefixed chunk: forces the prefixed zero subtrees.
+    let mut payload = vec![0u8; DEFAULT_BODY_SIZE];
+    payload[..5].copy_from_slice(b"hello");
+    let mut sparse = DefaultHasher::with_prefix(ANCHOR);
+    sparse.set_span(DEFAULT_BODY_SIZE as u64);
+    sparse.update(&payload);
+    assert_eq!(
+        sparse.sum().encode_hex(),
+        "7e7cd97d913012790d752642363df11019b0db1fdd45052e8a5886f68fae524d"
+    );
+
+    // Short prefixed payload: prefixed subtree plus prefixed roll-up.
+    let payload: Vec<u8> = (0..100u32).map(|i| (i % 256) as u8).collect();
+    let mut short = DefaultHasher::with_prefix(ANCHOR);
+    short.set_span(100);
+    short.update(&payload);
+    assert_eq!(
+        short.sum().encode_hex(),
+        "ea08da374226a0788462f70afa21e0137b99a9213b816797b55880428a8e5011"
+    );
+}
+
+/// An out-of-tree segment index is a typed error carrying the offending
+/// index and the tree width.
+#[test]
+fn test_proof_segment_out_of_bounds_error() {
+    let hasher = DefaultHasher::new();
+    let err = hasher
+        .generate_proof(b"data", crate::bmt::BRANCHES)
+        .unwrap_err();
+    match err {
+        PrimitivesError::Bmt(BmtError::SegmentOutOfBounds { index, branches }) => {
+            assert_eq!(index, crate::bmt::BRANCHES);
+            assert_eq!(branches, crate::bmt::BRANCHES);
+        }
+        other => panic!("expected SegmentOutOfBounds, got {other:?}"),
+    }
+}
