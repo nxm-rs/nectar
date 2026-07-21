@@ -26,19 +26,12 @@
 //! # futures::executor::block_on(async {
 //! let data = b"hello swarm".to_vec();
 //! # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
-//! # let mut split = nectar_file::Split::<_, nectar_file::Plain, 4096>::new(
+//! # let root = nectar_file::Split::<_, nectar_file::Plain, 4096>::collect(
 //! #     std::sync::Arc::clone(&store),
-//! #     nectar_file::PutWindow::DEFAULT,
-//! # );
-//! # let root = {
-//! #     let mut buf = data.as_slice();
-//! #     while !buf.is_empty() {
-//! #         let n = core::future::poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-//! #         buf = &buf[n..];
-//! #     }
-//! #     core::future::poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-//! # };
-//! # drop(split);
+//! #     &data,
+//! # )
+//! # .await
+//! # .unwrap();
 //! let mut editor = ManifestEditor::new(store);
 //! editor.put("hello.txt", root);
 //! editor.put("stale.txt", root);

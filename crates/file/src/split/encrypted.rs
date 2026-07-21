@@ -37,20 +37,15 @@ pub enum KeyError {
 /// Default source: an independent random key per chunk.
 ///
 /// ```
-/// use core::future::poll_fn;
-/// use nectar_file::{Encrypted, PutWindow, RandomKeys, Split};
+/// use nectar_file::{Encrypted, RandomKeys, Split};
 /// use nectar_primitives::chunk::AnyChunkSet;
 /// use nectar_primitives::store::MemoryStore;
 ///
 /// # futures::executor::block_on(async {
 /// let store = MemoryStore::<AnyChunkSet<4096>>::new();
-/// let mut split = Split::<_, Encrypted<RandomKeys>, 4096>::new(store, PutWindow::DEFAULT);
-/// let mut buf = &b"secret"[..];
-/// while !buf.is_empty() {
-///     let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-///     buf = &buf[n..];
-/// }
-/// let root = poll_fn(|cx| split.poll_finish(cx)).await.unwrap();
+/// let root = Split::<_, Encrypted<RandomKeys>, 4096>::collect(store, b"secret")
+///     .await
+///     .unwrap();
 /// assert_eq!(root.to_bytes().len(), 64);
 /// # });
 /// ```

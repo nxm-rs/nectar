@@ -41,18 +41,12 @@ use crate::split::{Split, SplitMode, SplitStats};
 /// writer.shutdown().await.unwrap();
 /// let root = writer.into_inner().unwrap();
 /// # // Root equality with an independent whole-buffer split of the same bytes.
-/// # let mut check = Split::<_, Plain, 4096>::new(
+/// # let expected = Split::<_, Plain, 4096>::collect(
 /// #     MemoryStore::<AnyChunkSet<4096>>::new(),
-/// #     PutWindow::DEFAULT,
-/// # );
-/// # let expected = {
-/// #     let mut buf = data.as_slice();
-/// #     while !buf.is_empty() {
-/// #         let n = core::future::poll_fn(|cx| check.poll_write(cx, buf)).await.unwrap();
-/// #         buf = &buf[n..];
-/// #     }
-/// #     core::future::poll_fn(|cx| check.poll_finish(cx)).await.unwrap()
-/// # };
+/// #     &data,
+/// # )
+/// # .await
+/// # .unwrap();
 /// # assert_eq!(root, expected);
 /// # }
 /// ```

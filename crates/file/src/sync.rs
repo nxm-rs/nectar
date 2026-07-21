@@ -30,20 +30,12 @@ pub struct Pending;
 ///
 /// let data = b"guest payload".to_vec();
 /// # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
-/// # let mut split = nectar_file::Split::<_, nectar_file::Plain, 4096>::new(
+/// # let root = drive(nectar_file::Split::<_, nectar_file::Plain, 4096>::collect(
 /// #     std::sync::Arc::clone(&store),
-/// #     nectar_file::PutWindow::DEFAULT,
-/// # );
-/// # let root = drive(async {
-/// #     let mut buf = data.as_slice();
-/// #     while !buf.is_empty() {
-/// #         let n = core::future::poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-/// #         buf = &buf[n..];
-/// #     }
-/// #     core::future::poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-/// # })
+/// #     &data,
+/// # ))
+/// # .unwrap()
 /// # .unwrap();
-/// # drop(split);
 /// let bytes = drive(async {
 ///     let file = File::open(store, root).await.unwrap();
 ///     file.collect(u64::MAX).await.unwrap()
