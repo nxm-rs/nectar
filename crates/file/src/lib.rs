@@ -71,13 +71,13 @@ pub mod tokio;
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod walk;
 
+#[cfg(feature = "tokio")]
+pub use self::tokio::{SeekOverflow, TokioReader};
 #[cfg(all(
     feature = "tokio",
     not(any(target_arch = "wasm32", feature = "unsync"))
 ))]
-pub use self::tokio::SpawnedReader;
-#[cfg(feature = "tokio")]
-pub use self::tokio::{SeekOverflow, TokioReader};
+pub use self::tokio::{SpawnedReader, TokioWriter};
 pub use config::{BranchBudget, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
 #[cfg(all(
