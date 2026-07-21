@@ -7,6 +7,7 @@ use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress, ChunkOps};
 use nectar_primitives::store::TrustedGet;
 use nectar_primitives::{DEFAULT_BODY_SIZE, EntryRef};
 
+use super::download::DownloadBuilder;
 use super::error::OpenError;
 use super::reader::ReadBuilder;
 use crate::config::Window;
@@ -44,6 +45,18 @@ impl<S: Clone, M: WalkMode, const B: usize> File<S, M, B> {
     /// Start building an ordered, seekable read over the whole file.
     pub fn read(&self) -> ReadBuilder<S, M, B> {
         ReadBuilder::new(
+            self.store.clone(),
+            self.root,
+            self.context.clone(),
+            self.span,
+            Window::DEFAULT,
+            0..u64::MAX,
+        )
+    }
+
+    /// Start building a restartable download of the whole file.
+    pub fn download(&self) -> DownloadBuilder<S, M, B> {
+        DownloadBuilder::new(
             self.store.clone(),
             self.root,
             self.context.clone(),
