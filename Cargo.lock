@@ -2067,6 +2067,7 @@ dependencies = [
  "futures-util",
  "nectar-primitives",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

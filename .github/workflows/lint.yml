@@ -30,6 +30,10 @@ jobs:
             # panicking/overflowing operation in production code.
             - name: cargo clippy
               run: cargo clippy --workspace --locked
+            # The async io adapters sit behind the tokio feature, outside the
+            # default-features pass above.
+            - name: cargo clippy (tokio adapters)
+              run: cargo clippy --locked -p nectar-file --features tokio
             # `unused_crate_dependencies` is enforced per-library via `cargo
             # rustc` (not `[workspace.lints]`) so the flag applies only to each
             # crate's own lib target — never to benches/examples/tests (which

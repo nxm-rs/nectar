@@ -200,26 +200,39 @@ where
         Ok(())
     }
 
-    /// Copy the next in-order bytes into `buf`, returning the count; zero
-    /// means end of range (or an empty `buf`).
-    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, WalkError<S::Error>> {
+    /// Poll twin of [`read`](Self::read): copy the next in-order bytes into
+    /// `buf`, delivering the count; zero means end of range (or an empty
+    /// `buf`).
+    ///
+    /// The walk's fetch window stays in flight across polls, and no future
+    /// is created per call.
+    pub fn poll_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, WalkError<S::Error>>> {
         if buf.is_empty() {
-            return Ok(0);
+            return Poll::Ready(Ok(0));
         }
         if self.current.is_empty() {
-            let Some(frame) = poll_fn(|cx| self.walk.poll_next_ordered(cx))
-                .await
-                .transpose()?
-            else {
-                return Ok(0);
-            };
-            self.current = frame.data;
+            match self.walk.poll_next_ordered(cx) {
+                Poll::Ready(Some(Ok(frame))) => self.current = frame.data,
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Err(error)),
+                Poll::Ready(None) => return Poll::Ready(Ok(0)),
+                Poll::Pending => return Poll::Pending,
+            }
         }
         let take = self.current.len().min(buf.len());
         let (head, _) = buf.split_at_mut(take);
         head.copy_from_slice(self.current.split_to(take).as_ref());
         self.position = self.position.saturating_add(u64_from_usize(take));
-        Ok(take)
+        Poll::Ready(Ok(take))
+    }
+
+    /// Copy the next in-order bytes into `buf`, returning the count; zero
+    /// means end of range (or an empty `buf`).
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, WalkError<S::Error>> {
+        poll_fn(|cx| self.poll_read(cx, buf)).await
     }
 
     /// The next in-order run of bytes without copying; `None` at end of
@@ -249,6 +262,50 @@ where
             walk: self.walk,
         }
     }
+
+    /// Decompose into the io adapters' state: the live walk and lead bytes
+    /// plus the rebuild recipe a seek re-walks from.
+    #[cfg(all(
+        feature = "tokio",
+        not(any(target_arch = "wasm32", feature = "unsync"))
+    ))]
+    pub(crate) fn into_parts(self) -> ReaderParts<S, M, B> {
+        ReaderParts {
+            store: self.store,
+            root: self.root,
+            context: self.context,
+            span: self.span,
+            window: self.window,
+            start: self.start,
+            end: self.end,
+            position: self.position,
+            current: self.current,
+            walk: self.walk,
+        }
+    }
+}
+
+/// Decomposed reader state for the io adapters; fields mirror
+/// [`FileReader`].
+#[cfg(all(
+    feature = "tokio",
+    not(any(target_arch = "wasm32", feature = "unsync"))
+))]
+pub(crate) struct ReaderParts<S, M, const B: usize>
+where
+    S: TrustedGet<AnyChunkSet<B>>,
+    M: WalkMode,
+{
+    pub(crate) store: S,
+    pub(crate) root: ChunkAddress,
+    pub(crate) context: M::Context,
+    pub(crate) span: u64,
+    pub(crate) window: Window,
+    pub(crate) start: u64,
+    pub(crate) end: u64,
+    pub(crate) position: u64,
+    pub(crate) current: Bytes,
+    pub(crate) walk: Walk<S, M, B>,
 }
 
 impl<S, M, const B: usize> fmt::Debug for FileReader<S, M, B>
