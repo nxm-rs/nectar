@@ -2063,6 +2063,7 @@ name = "nectar-file"
 version = "0.4.0"
 dependencies = [
  "bytes",
+ "codspeed-criterion-compat",
  "futures",
  "futures-util",
  "nectar-primitives",
