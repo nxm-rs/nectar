@@ -111,7 +111,8 @@ pub use dx::FetchError;
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use encryption::{EncryptedNode, EncryptedNodeGet, EncryptedNodePut, derive_key};
 pub use error::{
-    CustomKeyError, ForkPrefixEmpty, MetadataTooLong, PrefixTooLong, ValueTooLong, WeightOverBudget,
+    CustomKeyError, ForkPrefixEmpty, MetadataTooLong, NotAReference, PrefixTooLong, ValueTooLong,
+    WeightOverBudget,
 };
 pub use folder::{DirEntry, Listing, Served, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};

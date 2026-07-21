@@ -1,0 +1,19 @@
+//! File facade over the walk engine: open a tree by either reference width
+//! and read it in order.
+//!
+//! [`File`] pins the mode at the type level; [`AnyFile`] dispatches it at
+//! runtime from an [`EntryRef`](nectar_primitives::EntryRef) wire reference.
+//! [`ReadBuilder`] ranges use clip semantics: out-of-file bounds shrink the
+//! read instead of failing, and the clipped length is readable as
+//! [`FileReader::effective_len`]. Only [`FileReader::seek`] is typed-strict:
+//! it never clamps.
+
+mod error;
+mod file;
+mod reader;
+#[cfg(test)]
+mod tests;
+
+pub use error::{OpenError, SeekPastEnd};
+pub use file::{AnyFile, File};
+pub use reader::{FileReader, FileStream, ReadBuilder};

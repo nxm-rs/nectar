@@ -33,8 +33,8 @@ mod tests;
 use bytes::Bytes;
 
 pub use engine::Walk;
-pub use error::{ShapeError, WalkError};
-pub use mode::{Plain, WalkMode};
+pub use error::{DecodeError, ShapeError, WalkError};
+pub use mode::{Encrypted, Plain, WalkMode};
 
 /// One delivered run of file bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]

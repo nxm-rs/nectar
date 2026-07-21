@@ -300,6 +300,8 @@ pub trait ChunkPutExt<const BODY_SIZE: usize>: ChunkPut<AnyChunkSet<BODY_SIZE>> 
     #[deprecated(
         note = "select encrypted mode through the reference type: an encrypted `ManifestBuilder::put_file`, or the `EncryptedParallelSplitter`/`split_encrypted` primitives directly"
     )]
+    // The body may keep calling its deprecated siblings until the module goes.
+    #[allow(deprecated)]
     fn write_encrypted_file<D: ReadAt + Sync>(
         &self,
         data: D,
