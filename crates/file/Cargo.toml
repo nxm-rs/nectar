@@ -28,6 +28,8 @@ tokio = { workspace = true, features = ["sync"], optional = true }
 [dev-dependencies]
 criterion.workspace = true
 futures.workspace = true
+# The manifest-edit exhibit publishes a file root under a path.
+nectar-mantaray.workspace = true
 # The differential oracles split and join through the legacy read paths,
 # including the encrypted width.
 nectar-primitives = { workspace = true, features = ["std", "encryption"] }

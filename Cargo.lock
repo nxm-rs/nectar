@@ -2066,6 +2066,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "futures",
  "futures-util",
+ "nectar-mantaray",
  "nectar-primitives",
  "rayon",
  "thiserror",

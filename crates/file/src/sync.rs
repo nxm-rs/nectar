@@ -22,8 +22,21 @@ pub struct Pending;
 ///
 /// # Examples
 ///
+/// A whole-file read over a synchronous store completes in the single poll:
+///
 /// ```
-/// assert_eq!(nectar_file::sync::drive(async { 7u8 }), Ok(7));
+/// # #![allow(deprecated)]
+/// use nectar_file::File;
+/// use nectar_file::sync::drive;
+///
+/// let data = b"guest payload".to_vec();
+/// # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
+/// let bytes = drive(async {
+///     let file = File::open(store, root).await.unwrap();
+///     file.collect(u64::MAX).await.unwrap()
+/// })
+/// .unwrap();
+/// assert_eq!(bytes, data);
 /// ```
 pub fn drive<F: Future>(future: F) -> Result<F::Output, Pending> {
     let future = pin!(future);

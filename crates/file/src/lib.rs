@@ -10,6 +10,41 @@
 //! into, the [`store`] erasure that makes file handles nameable, the
 //! [`sync`] driver for Ready-only guests, and the `parallel` batch ingest
 //! over a random-access source (behind the `rayon` feature).
+//!
+//! # Exhibits
+//!
+//! Runnable exhibits sit on their surfaces: http range serving on the
+//! `tokio` adapter module, streaming upload on `TokioWriter`, restartable
+//! download on [`DownloadBuilder`], the executor-agnostic stream on
+//! [`FileStream`], and a whole-file guest read under [`sync::drive`].
+//! Publishing a root under a manifest path rides the legacy mantaray edit
+//! surface:
+//!
+//! ```
+//! # #![allow(deprecated)]
+//! use nectar_file::AnyFile;
+//! use nectar_mantaray::Manifest;
+//!
+//! # futures::executor::block_on(async {
+//! let data = b"hello swarm".to_vec();
+//! # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
+//! let mut manifest = Manifest::new(store);
+//! manifest.add("hello.txt", root).await.unwrap();
+//! manifest.add("stale.txt", root).await.unwrap();
+//! manifest.remove("stale.txt").await.unwrap();
+//! let manifest_root = manifest.save().await.unwrap();
+//!
+//! let (_, store) = manifest.into_parts();
+//! let manifest = Manifest::open(manifest_root, store);
+//! assert!(manifest.get("stale.txt").await.unwrap().is_none());
+//! let entry = manifest.get("hello.txt").await.unwrap().unwrap();
+//! let (_, store) = manifest.into_parts();
+//! let file = AnyFile::open(store, entry.reference().unwrap().clone())
+//!     .await
+//!     .unwrap();
+//! assert_eq!(file.collect(u64::MAX).await.unwrap(), data);
+//! # });
+//! ```
 
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]

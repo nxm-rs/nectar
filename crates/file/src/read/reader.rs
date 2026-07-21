@@ -355,6 +355,29 @@ where
 
 /// Ordered stream of byte runs over one clipped range; consecutive items
 /// tile the range gaplessly.
+///
+/// Runtime-free: no spawns, threads or timers, so the stream drains under
+/// any single-threaded executor, wasm32 included.
+///
+/// ```
+/// # #![allow(deprecated)]
+/// use futures::StreamExt;
+/// use nectar_file::File;
+///
+/// # futures::executor::block_on(async {
+/// let data: Vec<u8> = (0u32..20_000)
+///     .map(|i| u8::try_from(i % 251).unwrap())
+///     .collect();
+/// # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
+/// let file = File::open(store, root).await.unwrap();
+/// let mut stream = file.read().range(4_096..12_288).stream();
+/// let mut out = Vec::new();
+/// while let Some(run) = stream.next().await {
+///     out.extend_from_slice(&run.unwrap());
+/// }
+/// assert_eq!(out, &data[4_096..12_288]);
+/// # });
+/// ```
 pub struct FileStream<S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
     S: TrustedGet<AnyChunkSet<B>>,
