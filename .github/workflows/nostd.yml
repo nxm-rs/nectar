@@ -38,7 +38,7 @@ jobs:
               run: |
                   cargo check --locked \
                     -p nectar-swarms -p nectar-contracts -p nectar-file \
-                    -p nectar-nostd-spike \
+                    -p nectar-mantaray@0.4.0 -p nectar-nostd-spike \
                     --no-default-features \
                     --target ${{ matrix.target }}
             # nectar-primitives does not yet build bare-metal, so the
