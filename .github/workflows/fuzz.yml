@@ -62,6 +62,7 @@ jobs:
             matrix:
                 target:
                     - mantaray_node_decode
+                    - mantaray_view_differential
                     - chunk_decode
                     - stamp_decode
                     - usage_snapshot_decode
@@ -109,6 +110,7 @@ jobs:
             matrix:
                 target:
                     - mantaray_node_decode
+                    - mantaray_view_differential
                     - chunk_decode
                     - stamp_decode
                     - usage_snapshot_decode

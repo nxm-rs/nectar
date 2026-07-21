@@ -33,6 +33,15 @@ pub enum DecodeError {
         /// Width declared by the node header.
         actual: usize,
     },
+    /// Header-declared reference width matches no known reference kind.
+    #[error("unsupported reference width: {actual}")]
+    UnsupportedRefWidth {
+        /// The header's `ref_size` byte.
+        actual: u8,
+    },
+    /// A zero-width node declares forks, whose reference slots would be empty.
+    #[error("zero reference width with a non-empty fork index")]
+    ZeroWidthForks,
     /// Fork data has insufficient bytes.
     #[error("insufficient fork bytes: expected {expected}, got {actual} at byte {byte_index}")]
     InsufficientForkBytes {

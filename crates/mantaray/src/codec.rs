@@ -9,139 +9,13 @@
 use alloc::collections::BTreeMap;
 
 use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
+use crate::format::{FORK_INDEX_SIZE, ForkHeader, MetadataLen, NodeHeader, Version, xor_in_place};
 use crate::node::{Fork, Node, NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 
-use alloy_primitives::{U256, hex};
+use alloy_primitives::U256;
 use nectar_primitives::chunk::Reference;
-use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
-
-/// Mantaray wire format version (truncated keccak256, 31 bytes).
-#[derive(Clone, Copy)]
-enum VersionHash {
-    V01,
-    V02,
-}
-
-impl VersionHash {
-    /// Wire size of a truncated version hash.
-    const SIZE: usize = 31;
-
-    const V01_BYTES: [u8; Self::SIZE] =
-        hex!("025184789d63635766d78c41900196b57d7400875ebe4d9b5d1e76bd9652a9");
-    const V02_BYTES: [u8; Self::SIZE] =
-        hex!("5768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f");
-
-    const fn as_bytes(&self) -> &[u8; Self::SIZE] {
-        match self {
-            Self::V01 => &Self::V01_BYTES,
-            Self::V02 => &Self::V02_BYTES,
-        }
-    }
-
-    fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes == Self::V01_BYTES {
-            Some(Self::V01)
-        } else if bytes == Self::V02_BYTES {
-            Some(Self::V02)
-        } else {
-            None
-        }
-    }
-}
-
-/// Wire layout descriptor for a serialized node header.
-struct NodeHeader;
-
-impl NodeHeader {
-    const SIZE: usize = ObfuscationKey::SIZE + VersionHash::SIZE + size_of::<u8>();
-    const VERSION_HASH_OFFSET: usize = ObfuscationKey::SIZE;
-    const REF_SIZE_OFFSET: usize = ObfuscationKey::SIZE + VersionHash::SIZE;
-}
-
-/// A fork's fixed wire header: the node type byte, then the prefix record.
-struct ForkHeader {
-    node_type: NodeType,
-    prefix: Prefix,
-}
-
-impl ForkHeader {
-    /// Protocol anchor: total pre-reference bytes in a fork.
-    const PRE_REFERENCE_SIZE: usize = 32;
-    /// Size of the metadata length field.
-    const METADATA_LEN_SIZE: usize = size_of::<u16>();
-}
-
-impl FromCursor for ForkHeader {
-    type Error = DecodeError;
-
-    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Self::Error> {
-        let node_type = NodeType::from_bits_truncate(cur.take::<u8>()?);
-        let prefix = cur.take::<Prefix>()?;
-        Ok(Self { node_type, prefix })
-    }
-}
-
-/// Length of a fork's metadata region, stored big-endian on the wire.
-#[derive(Clone, Copy)]
-struct MetadataLen(u16);
-
-impl MetadataLen {
-    /// The length in bytes.
-    fn get(self) -> usize {
-        usize::from(self.0)
-    }
-}
-
-impl FromCursor for MetadataLen {
-    type Error = Underrun;
-
-    fn take_from(cur: &mut Cursor<'_>) -> core::result::Result<Self, Underrun> {
-        cur.take::<[u8; ForkHeader::METADATA_LEN_SIZE]>()
-            .map(|bytes| Self(u16::from_be_bytes(bytes)))
-    }
-}
-
-/// Writes the length big-endian, the mirror of the `FromCursor` impl above;
-/// the byte order never leaves this type.
-impl ToWriter for MetadataLen {
-    fn put_into(&self, w: &mut Writer<'_>) {
-        w.put(&self.0.to_be_bytes());
-    }
-}
-
-/// Size of the 256-bit forks presence bitfield following the entry slot.
-const FORK_INDEX_SIZE: usize = size_of::<U256>();
-
-// Compile-time layout assertions.
-const _: () = assert!(NodeHeader::SIZE == 64);
-const _: () = assert!(ForkHeader::PRE_REFERENCE_SIZE == 32);
-// node_type byte + prefix length byte + padded prefix block fill the
-// pre-reference region exactly.
-const _: () = assert!(2 * size_of::<u8>() + Prefix::MAX_LEN == ForkHeader::PRE_REFERENCE_SIZE);
-const _: () = assert!(ObfuscationKey::SIZE == 32);
-const _: () = assert!(NodeHeader::VERSION_HASH_OFFSET == ObfuscationKey::SIZE);
-const _: () = assert!(NodeHeader::REF_SIZE_OFFSET == NodeHeader::SIZE - size_of::<u8>());
-const _: () = assert!(FORK_INDEX_SIZE == 32);
-
-#[cfg(test)]
-const VERSION_HASH_01_BYTES: [u8; 32] =
-    hex!("025184789d63635766d78c41900196b57d7400875ebe4d9b5d1e76bd9652a9b7");
-#[cfg(test)]
-const VERSION_HASH_02_BYTES: [u8; 32] =
-    hex!("5768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f7b");
-
-#[cfg(test)]
-const VERSION_STRING_01: &str = "mantaray:0.1";
-#[cfg(test)]
-const VERSION_STRING_02: &str = "mantaray:0.2";
-
-/// XOR `data` in place with a repeating `key`.
-fn xor_in_place(data: &mut [u8], key: &[u8]) {
-    for (byte, mask) in data.iter_mut().zip(key.iter().cycle()) {
-        *byte ^= *mask;
-    }
-}
+use nectar_primitives::wire::{Cursor, Underrun, Writer};
 
 impl<R: Reference> Node<R> {
     /// Encode this node into its wire image.
@@ -192,7 +66,7 @@ fn encode_node<R: Reference>(node: &Node<R>) -> Result<Vec<u8>> {
 
     // Header: obfuscation key, version hash, ref_size byte (NodeHeader::SIZE).
     data.extend_from_slice(obfuscation_key);
-    data.extend_from_slice(VersionHash::V02.as_bytes());
+    data.extend_from_slice(Version::V02.as_bytes());
     #[allow(clippy::as_conversions)] // ref_size = R::SIZE (32 or 64), always fits u8
     let ref_size_byte = ref_size as u8;
     data.push(ref_size_byte);
@@ -269,15 +143,15 @@ fn decode_node<R: Reference>(data: &[u8]) -> DecodeResult<Node<R>> {
 /// The version hash is validated only after the ref_size byte is confirmed
 /// present, so a header truncated at that byte reports `TooShort` rather
 /// than an invalid-version error.
-fn parse_header(cur: &mut Cursor<'_>) -> DecodeResult<(VersionHash, RefSize)> {
+fn parse_header(cur: &mut Cursor<'_>) -> DecodeResult<(Version, RefSize)> {
     // The obfuscation key was already consumed by the caller for decryption.
     cur.take::<[u8; ObfuscationKey::SIZE]>()
         .map_err(|_| DecodeError::TooShort)?;
     let version_bytes = cur
-        .take::<[u8; VersionHash::SIZE]>()
+        .take::<[u8; Version::SIZE]>()
         .map_err(|_| DecodeError::TooShort)?;
     let ref_size = cur.take::<u8>().map_err(|_| DecodeError::TooShort)?;
-    let version = VersionHash::from_bytes(&version_bytes).ok_or(DecodeError::InvalidVersionHash)?;
+    let version = Version::from_bytes(&version_bytes).ok_or(DecodeError::InvalidVersionHash)?;
     let ref_size = if ref_size == 0 {
         RefSize::EmptyTerminal
     } else {
@@ -328,7 +202,7 @@ fn insufficient_fork(underrun: Underrun, total: usize, byte_index: u8) -> Decode
 /// v0.2 derives the root EDGE flag from a non-empty index; v0.1 leaves it unset.
 fn decode_body<R: Reference>(
     cur: &mut Cursor<'_>,
-    version: VersionHash,
+    version: Version,
     ref_size: usize,
     total: usize,
 ) -> DecodeResult<Node<R>> {
@@ -348,7 +222,7 @@ fn decode_body<R: Reference>(
         .map_err(|_| DecodeError::TooShort)?;
 
     let mut node_type = NodeType::empty();
-    if matches!(version, VersionHash::V02) && index_bytes.iter().any(|&b| b != 0) {
+    if matches!(version, Version::V02) && index_bytes.iter().any(|&b| b != 0) {
         node_type |= NodeType::EDGE;
     }
 
@@ -377,7 +251,7 @@ fn decode_body<R: Reference>(
 #[allow(clippy::arithmetic_side_effects)] // fork widths sum header constants, R::SIZE (<= 64) and a u16-bounded metadata length; the running cursor never exceeds the buffer
 fn parse_fork<R: Reference>(
     cur: &mut Cursor<'_>,
-    version: VersionHash,
+    version: Version,
     byte_index: u8,
     total: usize,
 ) -> DecodeResult<Fork<R>> {
@@ -386,8 +260,7 @@ fn parse_fork<R: Reference>(
         peek.take::<u8>()
             .map_err(|u| insufficient_fork(u, total, byte_index))?,
     );
-    let has_metadata =
-        matches!(version, VersionHash::V02) && node_type.contains(NodeType::METADATA);
+    let has_metadata = matches!(version, Version::V02) && node_type.contains(NodeType::METADATA);
 
     let body_size = if has_metadata {
         // The metadata length field follows the pre-reference region and the
@@ -545,7 +418,6 @@ impl<R: Reference> WireFork<'_, R> {
 mod tests {
     use super::*;
     use alloy_primitives::hex;
-    use alloy_primitives::utils::keccak256;
     use nectar_primitives::chunk::{ChunkAddress, ChunkRef};
 
     const ENCODED_V01: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950ac787fbce1061870e8d34e0a638bc7e812c7ca4ebd31d626a572ba47b06f6952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64950fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
@@ -580,22 +452,6 @@ mod tests {
                 ..Default::default()
             },
         ]
-    }
-
-    #[test]
-    fn version_hash_01() {
-        assert_eq!(
-            keccak256(VERSION_STRING_01.as_bytes()),
-            VERSION_HASH_01_BYTES,
-        );
-    }
-
-    #[test]
-    fn version_hash_02() {
-        assert_eq!(
-            keccak256(VERSION_STRING_02.as_bytes()),
-            VERSION_HASH_02_BYTES,
-        );
     }
 
     #[test]
@@ -646,39 +502,6 @@ mod tests {
                 assert_eq!(n.forks()[&key].node().metadata(), &entry.metadata);
             }
         }
-    }
-
-    #[test]
-    fn fork_header_take_consumes_the_pre_reference_region() {
-        let mut wire = vec![NodeType::VALUE.bits(), 2];
-        wire.extend_from_slice(b"ab");
-        wire.resize(ForkHeader::PRE_REFERENCE_SIZE, 0);
-        let mut cur = Cursor::new(&wire);
-        let header = cur.take::<ForkHeader>().unwrap();
-        assert_eq!(header.node_type, NodeType::VALUE);
-        assert_eq!(&*header.prefix, b"ab");
-        assert!(cur.is_empty());
-    }
-
-    #[test]
-    fn fork_header_take_underrun_is_too_short() {
-        let wire = [NodeType::VALUE.bits()];
-        let mut cur = Cursor::new(&wire);
-        assert!(matches!(
-            cur.take::<ForkHeader>(),
-            Err(DecodeError::TooShort)
-        ));
-    }
-
-    #[test]
-    fn metadata_len_wire_round_trips_through_put_and_take() {
-        let mut buf = Vec::new();
-        Writer::new(&mut buf).put(&MetadataLen(0x1234));
-        assert_eq!(buf, [0x12, 0x34]);
-
-        let mut cur = Cursor::new(&buf);
-        assert_eq!(cur.take::<MetadataLen>().unwrap().get(), 0x1234);
-        assert!(cur.is_empty());
     }
 
     #[test]
@@ -751,8 +574,8 @@ mod tests {
     fn decode_bee_legacy_ref_size_zero_empty_node() {
         // v0.2 layout: 32 obfuscation key zeros || 31 version hash || ref_size=0 || 32 index zeros = 96 bytes
         let mut data = vec![0u8; 96];
-        data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + VersionHash::SIZE]
-            .copy_from_slice(VersionHash::V02.as_bytes());
+        data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + Version::SIZE]
+            .copy_from_slice(Version::V02.as_bytes());
         // ref_size at offset 63 is left as 0; index (offset 64..96) is all zero.
 
         let n = Node::<ChunkRef>::decode(data.as_slice())
@@ -768,8 +591,8 @@ mod tests {
     #[test]
     fn decode_bee_legacy_ref_size_zero_with_forks_is_rejected() {
         let mut data = vec![0u8; 96];
-        data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + VersionHash::SIZE]
-            .copy_from_slice(VersionHash::V02.as_bytes());
+        data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + Version::SIZE]
+            .copy_from_slice(Version::V02.as_bytes());
         // ref_size = 0 (offset 63 already zero), but flip one bit in the index.
         data[NodeHeader::SIZE] = 0x01;
 
@@ -788,8 +611,8 @@ mod tests {
     #[test]
     fn decode_bee_legacy_ref_size_zero_v01_empty_node() {
         let mut data = vec![0u8; 96];
-        data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + VersionHash::SIZE]
-            .copy_from_slice(VersionHash::V01.as_bytes());
+        data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + Version::SIZE]
+            .copy_from_slice(Version::V01.as_bytes());
 
         let n = Node::<ChunkRef>::decode(data.as_slice())
             .expect("v0.1 ref_size=0 with empty forks should decode as terminal node");
@@ -822,10 +645,10 @@ mod tests {
     /// Build a header-only prefix of a node: zero obfuscation key (XOR is
     /// identity), the given raw version hash, `ref_size = 32`, then zero
     /// padding up to `len` bytes.
-    fn truncated_node_bytes(version: &VersionHash, len: usize) -> Vec<u8> {
+    fn truncated_node_bytes(version: &Version, len: usize) -> Vec<u8> {
         assert!(len >= NodeHeader::SIZE);
         let mut data = vec![0u8; len];
-        data[NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + VersionHash::SIZE]
+        data[NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + Version::SIZE]
             .copy_from_slice(version.as_bytes());
         data[NodeHeader::REF_SIZE_OFFSET] = 32;
         data
@@ -836,7 +659,7 @@ mod tests {
     /// `Err`, never panic. Exact minimal crash case.
     #[test]
     fn decode_v01_header_only_64_bytes_returns_err() {
-        let data = truncated_node_bytes(&VersionHash::V01, NodeHeader::SIZE);
+        let data = truncated_node_bytes(&Version::V01, NodeHeader::SIZE);
         let result = Node::<ChunkRef>::decode(data.as_slice());
         assert!(matches!(result, Err(DecodeError::TooShort)));
     }
@@ -844,7 +667,7 @@ mod tests {
     /// Regression: same minimal 64-byte crash case for the v0.2 decoder.
     #[test]
     fn decode_v02_header_only_64_bytes_returns_err() {
-        let data = truncated_node_bytes(&VersionHash::V02, NodeHeader::SIZE);
+        let data = truncated_node_bytes(&Version::V02, NodeHeader::SIZE);
         let result = Node::<ChunkRef>::decode(data.as_slice());
         assert!(matches!(result, Err(DecodeError::TooShort)));
     }
@@ -855,7 +678,7 @@ mod tests {
     #[test]
     fn decode_v01_truncated_lengths_return_err() {
         for len in NodeHeader::SIZE..NodeHeader::SIZE + 32 + 32 {
-            let data = truncated_node_bytes(&VersionHash::V01, len);
+            let data = truncated_node_bytes(&Version::V01, len);
             let result = Node::<ChunkRef>::decode(data.as_slice());
             assert!(
                 matches!(result, Err(DecodeError::TooShort)),
@@ -869,7 +692,7 @@ mod tests {
     #[test]
     fn decode_v02_truncated_lengths_return_err() {
         for len in NodeHeader::SIZE..NodeHeader::SIZE + 32 + 32 {
-            let data = truncated_node_bytes(&VersionHash::V02, len);
+            let data = truncated_node_bytes(&Version::V02, len);
             let result = Node::<ChunkRef>::decode(data.as_slice());
             assert!(
                 matches!(result, Err(DecodeError::TooShort)),
@@ -882,7 +705,7 @@ mod tests {
     /// ref that is not present must hit the existing guarded error path.
     #[test]
     fn decode_v01_index_demands_missing_fork_returns_err() {
-        let mut data = truncated_node_bytes(&VersionHash::V01, NodeHeader::SIZE + 32 + 32);
+        let mut data = truncated_node_bytes(&Version::V01, NodeHeader::SIZE + 32 + 32);
         // Set bit 0 of the forks index (LE bitfield at offset 96).
         data[NodeHeader::SIZE + 32] = 0x01;
         let result = Node::<ChunkRef>::decode(data.as_slice());
@@ -895,7 +718,7 @@ mod tests {
     /// Same as above for the v0.2 decoder.
     #[test]
     fn decode_v02_index_demands_missing_fork_returns_err() {
-        let mut data = truncated_node_bytes(&VersionHash::V02, NodeHeader::SIZE + 32 + 32);
+        let mut data = truncated_node_bytes(&Version::V02, NodeHeader::SIZE + 32 + 32);
         data[NodeHeader::SIZE + 32] = 0x01;
         let result = Node::<ChunkRef>::decode(data.as_slice());
         assert!(matches!(
@@ -908,10 +731,10 @@ mod tests {
     /// the `EncryptedChunkRef` entry, so the 64-byte slicing arithmetic in
     /// `decode_v01`/`decode_v02` is exercised on stable (the fuzz target
     /// drives this width too, but only under libfuzzer mutation on nightly).
-    fn truncated_encref_node_bytes(version: &VersionHash, len: usize) -> Vec<u8> {
+    fn truncated_encref_node_bytes(version: &Version, len: usize) -> Vec<u8> {
         assert!(len >= NodeHeader::SIZE);
         let mut data = vec![0u8; len];
-        data[NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + VersionHash::SIZE]
+        data[NodeHeader::VERSION_HASH_OFFSET..NodeHeader::VERSION_HASH_OFFSET + Version::SIZE]
             .copy_from_slice(version.as_bytes());
         data[NodeHeader::REF_SIZE_OFFSET] = 64;
         data
@@ -924,7 +747,7 @@ mod tests {
     #[test]
     fn decode_encref_truncated_lengths_return_err() {
         use nectar_primitives::EncryptedChunkRef;
-        for (label, version) in [("v01", VersionHash::V01), ("v02", VersionHash::V02)] {
+        for (label, version) in [("v01", Version::V01), ("v02", Version::V02)] {
             for len in NodeHeader::SIZE..NodeHeader::SIZE + 64 + 32 {
                 let data = truncated_encref_node_bytes(&version, len);
                 let result = Node::<EncryptedChunkRef>::decode(data.as_slice());
@@ -941,7 +764,7 @@ mod tests {
     #[test]
     fn decode_encref_index_demands_missing_fork_returns_err() {
         use nectar_primitives::EncryptedChunkRef;
-        for (label, version) in [("v01", VersionHash::V01), ("v02", VersionHash::V02)] {
+        for (label, version) in [("v01", Version::V01), ("v02", Version::V02)] {
             let mut data = truncated_encref_node_bytes(&version, NodeHeader::SIZE + 64 + 32);
             // Set bit 0 of the forks index (LE bitfield at offset 128).
             data[NodeHeader::SIZE + 64] = 0x01;
