@@ -50,14 +50,17 @@ jobs:
             # that also covers non-lib targets.
             - name: unused lib dependencies
               run: |
-                  # nectar-mantaray is version-qualified: the editor's differential
-                  # gate pins nectar-mantaray 0.3.0 as an oracle, so a bare spec is
-                  # ambiguous against the workspace's 0.4.0.
-                  for crate in nectar-primitives nectar-mantaray@0.4.0 nectar-postage \
+                  for crate in nectar-primitives nectar-postage \
                                nectar-postage-issuer nectar-postage-usage \
                                nectar-swarms nectar-contracts nectar-file; do
                       cargo rustc --locked -p "$crate" --lib -- -D unused_crate_dependencies
                   done
+                  # nectar-mantaray by path: the editor's differential gate pins a
+                  # second nectar-mantaray (0.3.0) as an oracle, so a bare -p spec is
+                  # ambiguous. The manifest path selects the workspace member
+                  # regardless of version, so this needs no revisiting when the oracle
+                  # is removed or the workspace version bumps.
+                  cargo rustc --locked --manifest-path crates/mantaray/Cargo.toml --lib -- -D unused_crate_dependencies
 
     unused-deps:
         name: unused-deps (machete)
