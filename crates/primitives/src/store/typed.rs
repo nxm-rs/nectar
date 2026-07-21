@@ -1,10 +1,10 @@
 //! Typed chunk storage traits.
 //!
 //! `ChunkGet`, `ChunkPut`, and `ChunkHas` are async and carry `MaybeSend`/
-//! `MaybeSync` bounds so a store may be `!Send` on wasm. Writes are uniformly
-//! sealed ([`ChunkPut`] only accepts `Chunk<Verified, R>`); trust is a
-//! property of the read medium, declared once per backend through
-//! [`ChunkGet::Trust`].
+//! `MaybeSync` bounds (on the traits and their error types) so a store may be
+//! `!Send` on wasm. Writes are uniformly sealed ([`ChunkPut`] only accepts
+//! `Chunk<Verified, R>`); trust is a property of the read medium, declared
+//! once per backend through [`ChunkGet::Trust`].
 
 use std::future::Future;
 
@@ -21,7 +21,7 @@ pub trait ChunkGet<R: ChunkRegistry = StandardChunkSet>: MaybeSend + MaybeSync {
     type Trust: TrustState;
 
     /// Error type for get operations.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// Get a chunk by address.
     fn get(
@@ -61,7 +61,7 @@ impl<T: ChunkHas + ?Sized> ChunkHas for &T {
 /// mutability (e.g. `Mutex`, `RwLock`).
 pub trait ChunkPut<R: ChunkRegistry = StandardChunkSet>: MaybeSend + MaybeSync {
     /// Error type for put operations.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// Store a sealed chunk.
     fn put(
@@ -81,32 +81,37 @@ impl<R: ChunkRegistry, T: ChunkPut<R> + ?Sized> ChunkPut<R> for &T {
     }
 }
 
-/// Marker for stores whose read medium hands back exactly what was sealed:
+/// Marker for getters whose read medium hands back exactly what was sealed:
 /// [`ChunkGet`] with `Trust = Verified`.
 ///
 /// Blanket-implemented. Consensus consumers bound on this, so feeding them
 /// from an untrusted medium is a type error, not a runtime concern.
-pub trait TrustedStore<R: ChunkRegistry = StandardChunkSet>: ChunkGet<R, Trust = Verified> {}
+pub trait TrustedGet<R: ChunkRegistry = StandardChunkSet>: ChunkGet<R, Trust = Verified> {}
 
-impl<R: ChunkRegistry, T: ChunkGet<R, Trust = Verified> + ?Sized> TrustedStore<R> for T {}
+impl<R: ChunkRegistry, T: ChunkGet<R, Trust = Verified> + ?Sized> TrustedGet<R> for T {}
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_send_sync_proof {
     // A store that is neither Send nor Sync (raw pointer marker) must still
-    // satisfy ChunkGet on wasm32, proving the MaybeSend + MaybeSync relaxation.
+    // satisfy ChunkGet on wasm32, proving the MaybeSend + MaybeSync relaxation
+    // for the store and for its error type alike.
     use super::*;
     use crate::chunk::Unverified;
 
     struct NotSendSync(core::marker::PhantomData<*const ()>);
 
+    #[derive(Debug, thiserror::Error)]
+    #[error("not send")]
+    struct NotSendError(core::marker::PhantomData<*const ()>);
+
     impl ChunkGet<StandardChunkSet> for NotSendSync {
         type Trust = Unverified;
-        type Error = std::io::Error;
+        type Error = NotSendError;
         async fn get(
             &self,
             _addr: &ChunkAddress,
         ) -> Result<Chunk<Unverified, StandardChunkSet>, Self::Error> {
-            unreachable!()
+            Err(NotSendError(core::marker::PhantomData))
         }
     }
 

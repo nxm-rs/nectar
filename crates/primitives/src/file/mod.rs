@@ -68,7 +68,7 @@ mod write_at;
 #[cfg(feature = "encryption")]
 use crate::chunk::encryption::EncryptedChunkRef;
 use crate::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentChunk, Verified};
-use crate::store::{ChunkPut, MaybeSend, MaybeSync, TrustedStore};
+use crate::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 
 // Async (primary) re-exports
 #[cfg(feature = "encryption")]
@@ -162,7 +162,7 @@ pub(crate) fn resolve_seek_position(
 pub async fn join<R, G, const BODY_SIZE: usize>(getter: G, root: R) -> error::Result<Vec<u8>>
 where
     R: JoinRef,
-    G: TrustedStore<AnyChunkSet<BODY_SIZE>>,
+    G: TrustedGet<AnyChunkSet<BODY_SIZE>>,
 {
     GenericJoiner::<G, R::Mode, BODY_SIZE>::new(getter, root.into_root_ref())
         .await?
@@ -225,7 +225,7 @@ pub(crate) const fn levels(length: u64, chunk_size: usize) -> usize {
 /// Extension methods for async chunk getters.
 ///
 /// Uses [`JoinRef`] for unified plain/encrypted dispatch.
-pub trait ChunkGetExt<const BODY_SIZE: usize>: TrustedStore<AnyChunkSet<BODY_SIZE>> {
+pub trait ChunkGetExt<const BODY_SIZE: usize>: TrustedGet<AnyChunkSet<BODY_SIZE>> {
     /// Open a file for async reading.
     fn joiner<R: JoinRef>(
         self,
@@ -251,7 +251,7 @@ pub trait ChunkGetExt<const BODY_SIZE: usize>: TrustedStore<AnyChunkSet<BODY_SIZ
 }
 
 impl<T, const BODY_SIZE: usize> ChunkGetExt<BODY_SIZE> for T where
-    T: TrustedStore<AnyChunkSet<BODY_SIZE>>
+    T: TrustedGet<AnyChunkSet<BODY_SIZE>>
 {
 }
 

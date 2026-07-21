@@ -2,7 +2,7 @@
 //!
 //! A node is a content-addressed chunk whose address is the BMT of its encoded
 //! payload. The store is the trust boundary: a node read back from a
-//! [`TrustedStore`] is decoded straight from the certified bytes, so the read
+//! [`TrustedGet`] is decoded straight from the certified bytes, so the read
 //! path never re-hashes. The write path seals a freshly built payload into a
 //! [`Verified`] content chunk, deriving the address rather than trusting one.
 //!
@@ -11,7 +11,7 @@
 
 use core::future::Future;
 
-use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedStore};
+use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkOps, ContentChunk, Verified};
 
 use crate::codec::{DecodeError, DecodedChunk, EncodeError};
@@ -38,12 +38,12 @@ pub enum StoreError {
     Seal(#[source] nectar_primitives::PrimitivesError),
     /// The backing store failed.
     #[error("store")]
-    Store(#[source] Box<dyn core::error::Error + Send + Sync>),
+    Store(#[source] BoxedError),
 }
 
 impl StoreError {
     /// Box a backend error behind the seam.
-    pub(crate) fn store<E: core::error::Error + Send + Sync + 'static>(err: E) -> Self {
+    pub(crate) fn store<E: core::error::Error + MaybeSend + MaybeSync + 'static>(err: E) -> Self {
         Self::Store(Box::new(err))
     }
 }
@@ -68,9 +68,9 @@ impl<F: Format> Node<F> {
 
 /// Async node retrieval over a trusted store.
 ///
-/// Blanket-implemented for every [`TrustedStore`]; the `Trust = Verified`
+/// Blanket-implemented for every [`TrustedGet`]; the `Trust = Verified`
 /// bound is what lets [`get_node`](Self::get_node) skip re-hashing.
-pub trait NodeGet: TrustedStore {
+pub trait NodeGet: TrustedGet {
     /// Load and decode the node at `address`, materializing a spilled node's
     /// forks from its segments so the caller always sees one logical node.
     ///
@@ -88,7 +88,7 @@ pub trait NodeGet: TrustedStore {
     }
 }
 
-impl<T: TrustedStore> NodeGet for T {}
+impl<T: TrustedGet> NodeGet for T {}
 
 /// The greatest legal segment-directory depth (spec 5.4); a deeper nesting is a
 /// malformed image, not a tree this format ever produces.
@@ -97,7 +97,7 @@ const MAX_DIR_DEPTH: usize = 2;
 /// Load the node at `address`, reassembling a segmented node's forks in place.
 async fn materialize_node<S, F>(store: &S, address: &ChunkAddress) -> Result<Node<F>, StoreError>
 where
-    S: TrustedStore + MaybeSync,
+    S: TrustedGet + MaybeSync,
     F: Format,
 {
     let chunk = store.get(address).await.map_err(StoreError::store)?;
@@ -122,7 +122,7 @@ async fn collect_segment_forks<S, F>(
     depth: usize,
 ) -> Result<ForkTable<F>, StoreError>
 where
-    S: TrustedStore + MaybeSync,
+    S: TrustedGet + MaybeSync,
     F: Format,
 {
     if depth >= MAX_DIR_DEPTH {

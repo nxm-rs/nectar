@@ -1,6 +1,7 @@
 //! Error types for file splitting and joining operations.
 
 use crate::ChunkAddress;
+use crate::store::{BoxedError, MaybeSend, MaybeSync};
 use thiserror::Error;
 
 /// Errors from file splitting and joining operations.
@@ -27,7 +28,7 @@ pub enum FileError {
 
     /// Chunk store failed to store a chunk.
     #[error("store error")]
-    Store(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Store(#[source] BoxedError),
 
     /// Write sink failed. Rendered to a string so the error stays `Send + Sync`
     /// even when the sink's own error is not (a single-threaded browser
@@ -37,7 +38,7 @@ pub enum FileError {
 
     /// Chunk getter failed to retrieve a chunk.
     #[error("getter error")]
-    Getter(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Getter(#[source] BoxedError),
 
     /// Invalid chunk reference encountered during tree traversal.
     #[error("invalid reference at level {level}")]
@@ -81,12 +82,12 @@ pub enum FileError {
 
 impl FileError {
     /// Create a store error from any error type.
-    pub fn store<E: std::error::Error + Send + Sync + 'static>(err: E) -> Self {
+    pub fn store<E: core::error::Error + MaybeSend + MaybeSync + 'static>(err: E) -> Self {
         Self::Store(Box::new(err))
     }
 
     /// Create a getter error from any error type.
-    pub fn getter<E: std::error::Error + Send + Sync + 'static>(err: E) -> Self {
+    pub fn getter<E: core::error::Error + MaybeSend + MaybeSync + 'static>(err: E) -> Self {
         Self::Getter(Box::new(err))
     }
 

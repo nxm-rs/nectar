@@ -155,7 +155,7 @@ pub type DefaultMemoryStore = MemoryStore<StandardChunkSet>;
 // Chunk storage traits
 pub use store::{
     ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, RetryConfig, RetryingChunkGet,
-    Sleeper, TrustedStore,
+    Sleeper, TrustedGet,
 };
 
 // File joining (async)
