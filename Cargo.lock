@@ -2066,6 +2066,7 @@ dependencies = [
  "futures",
  "futures-util",
  "nectar-primitives",
+ "rayon",
  "thiserror",
  "tokio",
 ]

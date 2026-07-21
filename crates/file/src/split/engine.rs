@@ -405,6 +405,73 @@ where
         self.stats.peak_put_in_flight = self.stats.peak_put_in_flight.max(self.in_flight.len());
     }
 
+    /// Drive the put window without consuming input.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    pub(crate) fn pump(&mut self, cx: &mut Context<'_>) -> Result<(), SplitError<S::Error>> {
+        if matches!(self.phase, Phase::Poisoned) {
+            return Err(SplitError::Poisoned);
+        }
+        self.step_puts(cx).map_err(|error| self.poison(error))
+    }
+
+    /// Secure admission for one externally sealed leaf: pending drained and
+    /// a put slot free. `Pending` admits nothing.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    pub(crate) fn poll_admit(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), SplitError<S::Error>>> {
+        match self.phase {
+            Phase::Writing => {}
+            Phase::Poisoned => return Poll::Ready(Err(SplitError::Poisoned)),
+            Phase::Closing | Phase::Draining | Phase::Finished => {
+                return Poll::Ready(Err(SplitError::Finished));
+            }
+        }
+        if let Err(error) = self.step_puts(cx) {
+            return Poll::Ready(Err(self.poison(error)));
+        }
+        if !self.pending.is_empty() || self.in_flight.len() >= self.window {
+            return Poll::Pending;
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    /// Thread one externally sealed leaf into the ascent; the caller has
+    /// secured capacity through `poll_admit`.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    pub(crate) fn push_sealed(
+        &mut self,
+        chunk: Chunk<Verified, AnyChunkSet<B>>,
+        reference: M::Ref,
+        span: u64,
+    ) -> Result<(), SplitError<S::Error>> {
+        match self.phase {
+            Phase::Writing => {}
+            Phase::Poisoned => return Err(SplitError::Poisoned),
+            Phase::Closing | Phase::Draining | Phase::Finished => {
+                return Err(SplitError::Finished);
+            }
+        }
+        self.stats.bytes = self.stats.bytes.saturating_add(span);
+        self.stats.leaves = self.stats.leaves.saturating_add(1);
+        self.enqueue(chunk);
+        self.push_ref(0, reference, span)
+            .map_err(|error| self.poison(error))
+    }
+
     /// Fold completed puts back in and admit pending chunks; a failed put
     /// is terminal.
     fn step_puts(&mut self, cx: &mut Context<'_>) -> Result<(), SplitError<S::Error>> {

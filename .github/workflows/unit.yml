@@ -49,6 +49,15 @@ jobs:
                     --no-tests=warn --no-fail-fast
             - name: Run tokio adapter doctests
               run: cargo test --doc -p nectar-file --features tokio --locked
+            # The batch ingest is likewise feature-gated off the default
+            # build; cover its tests and doctest here.
+            - name: Run rayon ingest tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-file --features rayon --locked \
+                    --no-tests=warn --no-fail-fast
+            - name: Run rayon ingest doctests
+              run: cargo test --doc -p nectar-file --features rayon --locked
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The

@@ -7,8 +7,9 @@
 //! drains, the poll-native [`split`] engine every write mode feeds, the
 //! [`read`] facade that opens files by either reference width and drains the
 //! walk in file order, the [`sink`] targets a restartable download writes
-//! into, the [`store`] erasure that makes file handles nameable, and the
-//! [`sync`] driver for Ready-only guests.
+//! into, the [`store`] erasure that makes file handles nameable, the
+//! [`sync`] driver for Ready-only guests, and the `parallel` batch ingest
+//! over a random-access source (behind the `rayon` feature).
 
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -35,10 +36,23 @@ extern crate alloc;
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
+#[cfg(all(feature = "rayon", target_arch = "wasm32"))]
+compile_error!("feature `rayon` needs a native thread pool; wasm32 builds must disable it");
+
+#[cfg(all(feature = "rayon", feature = "unsync"))]
+compile_error!("feature `rayon` needs `Send` chunks and errors; it excludes the `unsync` escape");
+
 pub mod config;
 pub mod geometry;
 #[cfg(feature = "std")]
 mod num;
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+pub mod parallel;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod read;
@@ -66,6 +80,12 @@ pub use self::tokio::SpawnedReader;
 pub use self::tokio::{SeekOverflow, TokioReader};
 pub use config::{BranchBudget, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+pub use parallel::{ReadAt, ReadAtError, split_read_at};
 #[cfg(feature = "std")]
 pub use read::{
     AnyFile, CollectError, DownloadBuilder, DownloadError, File, FileFrames, FileReader,
