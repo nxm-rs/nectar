@@ -2127,14 +2127,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nectar-nostd-spike"
-version = "0.4.0"
-dependencies = [
- "bytes",
- "futures-util",
-]
-
-[[package]]
 name = "nectar-postage"
 version = "0.4.0"
 dependencies = [
