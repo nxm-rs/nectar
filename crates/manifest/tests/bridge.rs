@@ -9,7 +9,7 @@ use std::error::Error;
 
 use bytes::Bytes;
 use futures::executor::block_on;
-use nectar_file::{Plain, PutWindow, Split};
+use nectar_file::{Plain, Split};
 use nectar_manifest::{Builder, Entry, Key, Reader, build_files};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
 
@@ -59,18 +59,11 @@ fn pattern(size: usize) -> Bytes {
 /// returning the root and the split store.
 async fn split_whole(data: &[u8]) -> Result<(ChunkAddress, MemoryStore), Box<dyn Error>> {
     let store = std::sync::Arc::new(MemoryStore::default());
-    let mut split: Split<std::sync::Arc<MemoryStore>, Plain, DEFAULT_BODY_SIZE> =
-        Split::new(std::sync::Arc::clone(&store), PutWindow::DEFAULT);
-    let mut rest = data;
-    while !rest.is_empty() {
-        let taken = core::future::poll_fn(|cx| split.poll_write(cx, rest)).await?;
-        rest = rest
-            .split_at_checked(taken)
-            .map(|(_, tail)| tail)
-            .ok_or("write consumed past the buffer")?;
-    }
-    let root = core::future::poll_fn(|cx| split.poll_finish(cx)).await?;
-    drop(split);
+    let root = Split::<std::sync::Arc<MemoryStore>, Plain, DEFAULT_BODY_SIZE>::collect(
+        std::sync::Arc::clone(&store),
+        data,
+    )
+    .await?;
     let store = std::sync::Arc::into_inner(store).ok_or("split still holds the store")?;
     Ok((root, store))
 }

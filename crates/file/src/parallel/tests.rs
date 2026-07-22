@@ -120,17 +120,12 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
 /// same bytes, returning root plus every sealed chunk address.
 fn stream_split<const B: usize>(data: &[u8]) -> (ChunkAddress, Vec<ChunkAddress>) {
     let store = TestStore::<B>::new(0);
-    let mut split: Split<TestStore<B>, Plain, B> = Split::new(store.clone(), PutWindow::DEFAULT);
-    let root = block_on(async {
-        let mut buf = data;
-        while !buf.is_empty() {
-            let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-            buf = &buf[n..];
-        }
-        poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-    });
-    let log = store.log();
-    (root, log)
+    let root = block_on(Split::<TestStore<B>, Plain, B>::collect(
+        store.clone(),
+        data,
+    ))
+    .unwrap();
+    (root, store.log())
 }
 
 fn ingest<const B: usize>(

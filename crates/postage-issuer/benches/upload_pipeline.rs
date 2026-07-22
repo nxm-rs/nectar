@@ -20,7 +20,6 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use core::future::poll_fn;
 use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{B256, Signature, U256};
@@ -34,9 +33,9 @@ use nectar_file::{Plain, PutWindow, ReadAt, Split, split_read_at};
 use nectar_postage_issuer::{
     BatchId, BatchStamper, MemoryIssuer, ShardedIssuer, SigningError, Stamper, sign_stamps_parallel,
 };
+use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::ChunkPut;
-use nectar_primitives::{ChunkOps, DEFAULT_BODY_SIZE};
 
 type SealedChunk = Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>;
 
@@ -73,16 +72,11 @@ impl ReadAt for SharedBuf {
 /// Sequential streaming split of the whole buffer.
 fn split_sequential(data: &[u8]) -> (ChunkAddress, Vec<SealedChunk>) {
     let sink = Collect::default();
-    let mut split: Split<Collect, Plain, DEFAULT_BODY_SIZE> =
-        Split::new(sink.clone(), PutWindow::DEFAULT);
-    let root = block_on(async {
-        let mut buf = data;
-        while !buf.is_empty() {
-            let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-            buf = &buf[n..];
-        }
-        poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-    });
+    let root = block_on(Split::<Collect, Plain, DEFAULT_BODY_SIZE>::collect(
+        sink.clone(),
+        data,
+    ))
+    .unwrap();
     let chunks = std::mem::take(&mut *sink.0.lock().unwrap());
     (root, chunks)
 }
