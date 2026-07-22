@@ -535,6 +535,11 @@ where
 
 /// Merge a child-only `edge` into its lone child fork (index byte `first` plus
 /// `record`), emitting the compacted fork a from-scratch build would produce.
+///
+/// The lone child may itself head a child-only chain, so the whole run is
+/// flattened before re-segmenting: stopping after one link would re-split a
+/// short run and dangle the chain's tail as a separate hop, diverging from a
+/// build.
 async fn compact<S, F>(
     store: &S,
     edge: &[u8],
@@ -547,17 +552,45 @@ where
     F: Format,
 {
     let mut merged = edge.to_vec();
-    merged.push(first);
-    merged.extend_from_slice(record.tail().as_bytes());
+    let terminal = flatten_run(&mut merged, first, record);
     chain(
         store,
         &merged,
-        record.payload().clone(),
-        record.metadata().cloned(),
-        record.child_count(),
+        terminal.payload().clone(),
+        terminal.metadata().cloned(),
+        terminal.child_count(),
         stats,
     )
     .await
+}
+
+/// Flatten a child-only single-fork chain rooted at (`first`, `record`) into
+/// `run`, appending every edge byte the collapsed run spans, and return the
+/// terminal fork whose payload the run carries.
+///
+/// The walk descends while a fork has no terminal value and exactly one
+/// embedded continuation: the shape a from-scratch build fuses into one
+/// `PLEN_MAX`-segmented run. It stops at a terminal value, a branch, or a
+/// referenced child, the boundaries a build keeps.
+fn flatten_run<'r, F: Format>(
+    run: &mut Vec<u8>,
+    mut first: u8,
+    mut record: &'r ForkRecord<F>,
+) -> &'r ForkRecord<F> {
+    loop {
+        run.push(first);
+        run.extend_from_slice(record.tail().as_bytes());
+        if record.entry().is_none()
+            && let Some(Child::Embedded(table)) = record.child()
+            && table.len() == 1
+            && let Some((next_first, next_record)) = table.iter().next()
+        {
+            first = next_first;
+            record = next_record;
+            continue;
+        }
+        return record;
+    }
 }
 
 /// A fork record over `prefix`, split into a `PLEN_MAX`-capped chain of
@@ -852,6 +885,56 @@ mod tests {
         cs.put(Key::from(&branched[..]), entry(2), None);
         let out = block_on(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&base[..], 1), (&branched[..], 2)]));
+    }
+
+    #[test]
+    fn a_split_above_a_multi_fork_chain_recompacts_like_a_rebuild() {
+        let store = MemoryStore::default();
+        // A 511-byte key sits behind a PLEN_MAX(255) chain of three forks
+        // (255 + 255 + 1). Inserting its one-byte prefix branches at the head,
+        // leaving a 510-byte continuation run whose canonical shape is a
+        // 255 + 255 chain, not the 255 + 254 + 1 a single-level re-compaction
+        // stops at.
+        let long = vec![0xffu8; 511];
+        let prefix = [0xffu8];
+        let root = build(&store, &[(&long[..], 1)]);
+        let mut cs = Changeset::<V1>::new();
+        cs.put(Key::from(&prefix[..]), entry(2), None);
+        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        assert_eq!(out, rebuilt(&[(&long[..], 1), (&prefix[..], 2)]));
+    }
+
+    #[test]
+    fn a_split_above_a_deep_chain_recompacts_like_a_rebuild() {
+        let store = MemoryStore::default();
+        // A 766-byte key is a four-fork chain (255 + 255 + 255 + 1); branching
+        // at its head must re-segment the whole 765-byte run, not just the top
+        // link.
+        let long = vec![0xffu8; 766];
+        let prefix = [0xffu8];
+        let root = build(&store, &[(&long[..], 1)]);
+        let mut cs = Changeset::<V1>::new();
+        cs.put(Key::from(&prefix[..]), entry(2), None);
+        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        assert_eq!(out, rebuilt(&[(&long[..], 1), (&prefix[..], 2)]));
+    }
+
+    #[test]
+    fn a_remove_beside_a_recapped_chain_insert_equals_a_rebuild() {
+        let store = MemoryStore::default();
+        // Removing the only key while inserting a 257-byte sibling splits the
+        // shared first byte, and the re-capped PLEN_MAX(255) chain boundary
+        // lands one byte earlier than the inserted subtree's own cap: the tail
+        // beyond the new boundary must merge into one edge rather than keep
+        // the stale one-byte chain hop.
+        let root = build(&store, &[(&[0u8, 0][..], 1)]);
+        let mut long = vec![0u8, 1];
+        long.extend(std::iter::repeat_n(0u8, 255));
+        let mut cs = Changeset::<V1>::new();
+        cs.remove(Key::from(&[0u8, 0][..]));
+        cs.put(Key::from(&long[..]), entry(2), None);
+        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
 
     #[test]
