@@ -1,8 +1,7 @@
 //! Split-engine oracles: pinned root vectors, segmentation invariance,
 //! put-window witnesses, cancellation and fuse behaviour.
 
-use core::future::{Future, poll_fn};
-use core::pin::Pin;
+use core::future::poll_fn;
 use core::task::{Context, Poll};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -17,7 +16,7 @@ use std::vec::Vec;
 use futures::task::noop_waker;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
-use nectar_testing::run;
+use nectar_testing::{run, yield_now};
 
 use super::{Split, SplitError, SplitStats};
 use crate::config::{PutWindow, Window};
@@ -39,25 +38,6 @@ fn fill(len: usize) -> Vec<u8> {
 /// The byte at absolute file position `i`.
 fn pattern(i: u64) -> u8 {
     (i.wrapping_mul(2_654_435_761) >> 11) as u8
-}
-
-/// A self-waking yield: `Pending` once with an immediate wake, so
-/// `block_on` keeps polling.
-fn yield_now() -> impl Future<Output = ()> {
-    struct YieldNow(bool);
-    impl Future for YieldNow {
-        type Output = ();
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-            if self.0 {
-                Poll::Ready(())
-            } else {
-                self.0 = true;
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        }
-    }
-    YieldNow(false)
 }
 
 /// Shared put store: logs accepted puts in order, resolves after `delay`

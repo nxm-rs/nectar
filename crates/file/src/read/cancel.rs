@@ -15,7 +15,7 @@ use futures::Stream;
 use futures::task::noop_waker;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkStoreError, MemoryStore, TrustedGet};
-use nectar_testing::run;
+use nectar_testing::{run, yield_now};
 
 #[cfg(feature = "encryption")]
 use crate::testutil::split_encrypted_fixture;
@@ -43,25 +43,6 @@ fn fill(len: usize) -> Vec<u8> {
     (0..len as u64)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8)
         .collect()
-}
-
-/// A self-waking yield: `Pending` once with an immediate wake, so manual
-/// polling keeps progressing.
-fn yield_now() -> impl Future<Output = ()> {
-    struct YieldNow(bool);
-    impl Future for YieldNow {
-        type Output = ();
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-            if self.0 {
-                Poll::Ready(())
-            } else {
-                self.0 = true;
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        }
-    }
-    YieldNow(false)
 }
 
 /// `Pending` forever without a wake; legal because the battery polls

@@ -1,8 +1,6 @@
 //! Ingest oracles: root and chunk-set differentials against the streaming
 //! split engine, put-window witnesses, and typed failure paths.
 
-use core::future::{Future, poll_fn};
-use core::pin::Pin;
 use std::collections::HashMap;
 use std::format;
 use std::sync::{Arc, Mutex};
@@ -11,7 +9,7 @@ use std::vec::Vec;
 
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkPut, ChunkStoreError};
-use nectar_testing::run;
+use nectar_testing::{run, yield_now};
 
 use super::{ReadAt, ReadAtError, split_read_at};
 use crate::config::PutWindow;
@@ -72,28 +70,6 @@ impl<const B: usize> TestStore<B> {
     fn peak_active(&self) -> usize {
         self.active.lock().unwrap().1
     }
-}
-
-/// A self-waking yield: `Pending` once with an immediate wake, so
-/// `block_on` keeps polling.
-fn yield_now() -> impl Future<Output = ()> {
-    struct YieldNow(bool);
-    impl Future for YieldNow {
-        type Output = ();
-        fn poll(
-            mut self: Pin<&mut Self>,
-            cx: &mut core::task::Context<'_>,
-        ) -> core::task::Poll<()> {
-            if self.0 {
-                core::task::Poll::Ready(())
-            } else {
-                self.0 = true;
-                cx.waker().wake_by_ref();
-                core::task::Poll::Pending
-            }
-        }
-    }
-    YieldNow(false)
 }
 
 impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
@@ -232,6 +208,8 @@ impl<const B: usize> nectar_primitives::store::ChunkGet<AnyChunkSet<B>> for Test
 #[cfg(feature = "encryption")]
 #[test]
 fn encrypted_ingest_reads_back_through_the_walk() {
+    use core::future::poll_fn;
+
     use crate::config::Window;
     use crate::split::RandomKeys;
     use crate::walk::{Encrypted, Walk};
