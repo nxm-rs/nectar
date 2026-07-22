@@ -28,7 +28,7 @@ use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
 use crate::node::{Node, RootExtension};
-use crate::packing::{Domain, embed, spill};
+use crate::packing::{Domain, cut_allowance, embed, spill};
 use crate::store::{NodePut, StoreError};
 use crate::value::{Entry, Key};
 
@@ -397,7 +397,12 @@ fn next_group<'a, F: Format>(
     let last = items
         .get(end.saturating_sub(1))
         .ok_or(BuildError::Internal)?;
-    let lcp = common_prefix_len(&first.key, &last.key, consumed, F::PLEN_MAX);
+    let lcp = common_prefix_len(
+        &first.key,
+        &last.key,
+        consumed,
+        cut_allowance::<F>(consumed),
+    );
     let plen = consumed.saturating_add(lcp);
     let edge = first.key.get(consumed..plen).ok_or(BuildError::Internal)?;
     let prefix = Prefix::try_from(edge)?;
