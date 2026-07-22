@@ -19,13 +19,12 @@
     clippy::missing_panics_doc
 )]
 
-use core::future::poll_fn;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use nectar_file::{Encrypted, File, PutWindow, RandomKeys, Split};
+use nectar_file::{Encrypted, File, RandomKeys, Split};
 use nectar_primitives::chunk::AnyChunkSet;
 use nectar_primitives::chunk::encryption::EncryptedChunkRef;
 use nectar_primitives::store::MemoryStore;
@@ -80,19 +79,9 @@ fn fill(len: usize) -> Vec<u8> {
 /// Stream `data` through an encrypted split into a fresh memory store.
 fn split_encrypted(data: &[u8]) -> (EncryptedChunkRef, Store) {
     let store: Store = Arc::new(MemoryStore::new());
-    let mut split: Split<Store, Encrypted<RandomKeys>, BODY> = Split::with_mode(
-        Arc::clone(&store),
-        Encrypted::new(RandomKeys),
-        PutWindow::DEFAULT,
-    );
-    let root = block_on(async {
-        let mut buf = data;
-        while !buf.is_empty() {
-            let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-            buf = &buf[n..];
-        }
-        poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-    });
+    let root =
+        block_on(Split::<Store, Encrypted<RandomKeys>, BODY>::collect(Arc::clone(&store), data))
+            .unwrap();
     (root, store)
 }
 
