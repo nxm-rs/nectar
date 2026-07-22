@@ -33,6 +33,7 @@ nectar-mantaray.workspace = true
 # The oracle stores and chunk fixtures ride the primitives store surface,
 # including the encrypted reference width.
 nectar-primitives = { workspace = true, features = ["std", "encryption"] }
+nectar-testing.workspace = true
 tokio = { workspace = true, features = ["io-util", "time"] }
 
 [features]

@@ -6,9 +6,9 @@
 //! content-addressed, so address equality pins the stored bytes.
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{Builder, Entry, Key, Reader, build_files};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
+use nectar_testing::run;
 
 mod common;
 use common::{TestResult, ensure, ensure_eq, split_whole};
@@ -46,15 +46,15 @@ fn streaming_bridge_pins_the_direct_split_bytes() -> TestResult {
         let key = Key::from(&b"file"[..]);
 
         let store = MemoryStore::default();
-        let built = block_on(build_files(&store, [(key.clone(), data.clone())]))?;
+        let built = run(build_files(&store, [(key.clone(), data.clone())]))?;
 
         // The reference bridge: the same manifest over a direct split's
         // reference, with the direct chunk set as the file bytes oracle.
-        let (direct_root, direct_store) = block_on(split_whole(&data))?;
+        let (direct_root, direct_store) = run(split_whole(&data))?;
         let node_store = MemoryStore::default();
         let mut builder: Builder = Builder::new();
         builder.insert(key, Entry::from(ChunkRef::new(direct_root)), None);
-        let direct_built = block_on(builder.build(&node_store))?;
+        let direct_built = run(builder.build(&node_store))?;
         ensure_eq(built.root(), direct_built.root(), "manifest root")?;
 
         let direct = direct_store.into_chunks();
@@ -82,16 +82,16 @@ fn bridged_files_round_trip_byte_exact() -> TestResult {
         (Key::from(&b"a/big"[..]), big.clone()),
         (Key::from(&b"a/small"[..]), Bytes::from_static(b"x")),
     ];
-    let root = *block_on(build_files(&store, files))?.root();
+    let root = *run(build_files(&store, files))?.root();
 
     let reader: Reader<_> = Reader::new(store);
     ensure_eq(
-        block_on(reader.fetch(&root, &Key::from(&b"a/big"[..])))?,
+        run(reader.fetch(&root, &Key::from(&b"a/big"[..])))?,
         Some(big),
         "deep file round trip",
     )?;
     ensure_eq(
-        block_on(reader.fetch(&root, &Key::from(&b"a/small"[..])))?,
+        run(reader.fetch(&root, &Key::from(&b"a/small"[..])))?,
         Some(Bytes::from_static(b"x")),
         "single-leaf round trip",
     )

@@ -23,11 +23,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 
-use futures::executor::block_on;
 use nectar_file::{Encrypted, File, RandomKeys, Split};
 use nectar_primitives::chunk::AnyChunkSet;
 use nectar_primitives::chunk::encryption::EncryptedChunkRef;
 use nectar_primitives::store::MemoryStore;
+use nectar_testing::run;
 
 /// Body size of the default profile.
 const BODY: usize = nectar_primitives::DEFAULT_BODY_SIZE;
@@ -79,9 +79,11 @@ fn fill(len: usize) -> Vec<u8> {
 /// Stream `data` through an encrypted split into a fresh memory store.
 fn split_encrypted(data: &[u8]) -> (EncryptedChunkRef, Store) {
     let store: Store = Arc::new(MemoryStore::new());
-    let root =
-        block_on(Split::<Store, Encrypted<RandomKeys>, BODY>::collect(Arc::clone(&store), data))
-            .unwrap();
+    let root = run(Split::<Store, Encrypted<RandomKeys>, BODY>::collect(
+        Arc::clone(&store),
+        data,
+    ))
+    .unwrap();
     (root, store)
 }
 
@@ -93,7 +95,7 @@ fn probe(leaves: usize) -> (u64, u64) {
 
     let calls = CALLS.load(Ordering::Relaxed);
     let body_calls = BODY_CALLS.load(Ordering::Relaxed);
-    let out = block_on(async {
+    let out = run(async {
         let file: File<Store, Encrypted, BODY> = File::open_encrypted(store, root).await.unwrap();
         file.collect(u64::MAX).await.unwrap()
     });

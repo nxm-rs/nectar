@@ -72,7 +72,7 @@ where
     /// exact bytes [`build_files`](crate::build_files) streamed in under it.
     ///
     /// ```
-    /// use futures::executor::block_on;
+    /// use nectar_testing::run;
     /// use nectar_manifest::{build_files, Key, Reader};
     /// use nectar_primitives::MemoryStore;
     ///
@@ -81,10 +81,10 @@ where
     ///     Key::from(&b"index.html"[..]),
     ///     bytes::Bytes::from_static(b"<h1>hi</h1>"),
     /// )];
-    /// let root = *block_on(build_files(&store, files)).unwrap().root();
+    /// let root = *run(build_files(&store, files)).unwrap().root();
     ///
     /// let reader: Reader<_> = Reader::new(store.clone());
-    /// let page = block_on(reader.fetch(&root, &Key::from(&b"index.html"[..]))).unwrap();
+    /// let page = run(reader.fetch(&root, &Key::from(&b"index.html"[..]))).unwrap();
     /// assert_eq!(page.as_deref(), Some(&b"<h1>hi</h1>"[..]));
     /// ```
     pub async fn fetch(
@@ -102,8 +102,8 @@ where
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
+    use nectar_testing::run;
 
     use crate::builder::{Builder, build_files};
     use crate::value::{Entry, Key};
@@ -123,16 +123,16 @@ mod tests {
                 Bytes::from(vec![0xAB; 9000]),
             ),
         ];
-        let root = *block_on(build_files(&store, files)).unwrap().root();
+        let root = *run(build_files(&store, files)).unwrap().root();
 
         let reader: Reader<_> = Reader::new(store);
         assert_eq!(
-            block_on(reader.fetch(&root, &Key::from(&b"index.html"[..]))).unwrap(),
+            run(reader.fetch(&root, &Key::from(&b"index.html"[..]))).unwrap(),
             Some(Bytes::from_static(b"<h1>hi</h1>")),
         );
         // A multi-chunk file rejoins byte-exact through the shared BMT.
         assert_eq!(
-            block_on(reader.fetch(&root, &Key::from(&b"img/logo.png"[..]))).unwrap(),
+            run(reader.fetch(&root, &Key::from(&b"img/logo.png"[..]))).unwrap(),
             Some(Bytes::from(vec![0xAB; 9000])),
         );
     }
@@ -141,11 +141,11 @@ mod tests {
     fn fetch_of_an_absent_key_is_none() {
         let store = MemoryStore::default();
         let files = [(Key::from(&b"a"[..]), Bytes::from_static(b"x"))];
-        let root = *block_on(build_files(&store, files)).unwrap().root();
+        let root = *run(build_files(&store, files)).unwrap().root();
 
         let reader: Reader<_> = Reader::new(store);
         assert_eq!(
-            block_on(reader.fetch(&root, &Key::from(&b"missing"[..]))).unwrap(),
+            run(reader.fetch(&root, &Key::from(&b"missing"[..]))).unwrap(),
             None,
         );
     }
@@ -156,11 +156,11 @@ mod tests {
         let mut builder = Builder::new();
         let value: Entry = Entry::inline(Bytes::from_static(b"inline")).unwrap();
         builder.insert(Key::from(&b"k"[..]), value, None);
-        let root = *block_on(builder.build(&store)).unwrap().root();
+        let root = *run(builder.build(&store)).unwrap().root();
 
         let reader: Reader<_> = Reader::new(store);
         assert_eq!(
-            block_on(reader.fetch(&root, &Key::from(&b"k"[..]))).unwrap(),
+            run(reader.fetch(&root, &Key::from(&b"k"[..]))).unwrap(),
             Some(Bytes::from_static(b"inline")),
         );
     }

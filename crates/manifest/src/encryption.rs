@@ -173,9 +173,9 @@ impl<T: TrustedGet> EncryptedNodeGet for T {}
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef};
+    use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::fork::Child;
@@ -267,8 +267,8 @@ mod tests {
     fn round_trips_through_a_memory_store() {
         let store = MemoryStore::default();
         let node = sample();
-        let reference = block_on(store.put_node_encrypted(&node, SECRET)).unwrap();
-        let opened: Node = block_on(store.get_node_encrypted(&reference)).unwrap();
+        let reference = run(store.put_node_encrypted(&node, SECRET)).unwrap();
+        let opened: Node = run(store.get_node_encrypted(&reference)).unwrap();
         assert_eq!(opened, node);
     }
 
@@ -279,7 +279,7 @@ mod tests {
         // ref64 carries that key in its own bytes.
         let store = MemoryStore::default();
         let child = sample();
-        let reference = block_on(store.put_node_encrypted(&child, SECRET)).unwrap();
+        let reference = run(store.put_node_encrypted(&child, SECRET)).unwrap();
         assert_eq!(
             reference.key(),
             &derive_key::<crate::V1>(SECRET, &child.encode().unwrap())

@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use arbitrary::Arbitrary;
-use futures::executor::block_on;
+use nectar_testing::run;
 use libfuzzer_sys::fuzz_target;
 use nectar_mantaray::{DefaultMemoryStore, ManifestEditor, Reader};
 use nectar_primitives::chunk::ChunkAddress;
@@ -142,8 +142,8 @@ fn model(ops: &[FuzzOp]) -> Model {
 fuzz_target!(|ops: Vec<FuzzOp>| {
     let ops = &ops[..ops.len().min(MAX_OPS)];
 
-    let first = block_on(record(ops).commit());
-    let second = block_on(record(ops).commit());
+    let first = run(record(ops).commit());
+    let second = run(record(ops).commit());
     match (&first, &second) {
         (Ok((root_a, _)), Ok((root_b, _))) => {
             assert_eq!(root_a, root_b, "two commits of one log diverged");
@@ -160,7 +160,7 @@ fuzz_target!(|ops: Vec<FuzzOp>| {
         if p.is_empty() {
             continue;
         }
-        let entry = block_on(reader.get(&root, p.as_bytes()))
+        let entry = run(reader.get(&root, p.as_bytes()))
             .expect("lookup over a complete store succeeds")
             .unwrap_or_else(|| panic!("committed path {p:?} is unreadable"));
         assert_eq!(
@@ -178,7 +178,7 @@ fuzz_target!(|ops: Vec<FuzzOp>| {
             if p.is_empty() || want.entries.contains_key(&p) {
                 continue;
             }
-            let got = block_on(reader.get(&root, p.as_bytes()))
+            let got = run(reader.get(&root, p.as_bytes()))
                 .expect("lookup over a complete store succeeds");
             if p == "/" {
                 assert!(
@@ -200,7 +200,7 @@ fuzz_target!(|ops: Vec<FuzzOp>| {
         FuzzOp::SetIndex { .. } | FuzzOp::SetError { .. } => false,
     });
     if !slash_touched && (want.index_document.is_some() || want.error_document.is_some()) {
-        let root_entry = block_on(reader.get(&root, b"/"))
+        let root_entry = run(reader.get(&root, b"/"))
             .expect("lookup over a complete store succeeds")
             .unwrap_or_else(|| panic!("root documents set but no root entry"));
         assert_eq!(

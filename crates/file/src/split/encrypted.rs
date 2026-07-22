@@ -41,7 +41,7 @@ pub enum KeyError {
 /// use nectar_primitives::chunk::AnyChunkSet;
 /// use nectar_primitives::store::MemoryStore;
 ///
-/// # futures::executor::block_on(async {
+/// # nectar_testing::run(async {
 /// let store = MemoryStore::<AnyChunkSet<4096>>::new();
 /// let root = Split::<_, Encrypted<RandomKeys>, 4096>::collect(store, b"secret")
 ///     .await

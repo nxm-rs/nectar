@@ -8,9 +8,9 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{Builder, Changeset, Entry, Key, KeyId, Metadata, V1, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, MemoryStore};
+use nectar_testing::run;
 use proptest::prelude::*;
 
 /// A key's value plus optional metadata, the payload both paths carry.
@@ -54,7 +54,7 @@ fn rebuild(map: &BTreeMap<Vec<u8>, Value>) -> Result<ChunkAddress, TestCaseError
     for (key, (entry, meta)) in map {
         builder.insert(Key::from(key.clone()), entry.clone(), meta.clone());
     }
-    let built = block_on(builder.build(&store)).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let built = run(builder.build(&store)).map_err(|e| TestCaseError::fail(e.to_string()))?;
     Ok(*built.root())
 }
 
@@ -119,7 +119,7 @@ fn assert_apply_equals_rebuild(
     for (key, val) in &map {
         builder.insert(Key::from(key.clone()), val.0.clone(), val.1.clone());
     }
-    let root = *block_on(builder.build(&store))
+    let root = *run(builder.build(&store))
         .map_err(|e| TestCaseError::fail(e.to_string()))?
         .root();
 
@@ -151,8 +151,8 @@ fn assert_apply_equals_rebuild(
         }
     }
 
-    let applied = block_on(apply(&store, &root, &changeset))
-        .map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let applied =
+        run(apply(&store, &root, &changeset)).map_err(|e| TestCaseError::fail(e.to_string()))?;
     let expected = rebuild(&map)?;
     prop_assert_eq!(applied, expected);
     Ok(())

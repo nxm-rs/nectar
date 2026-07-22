@@ -1,21 +1,19 @@
 //! Walk-engine oracles: fetch-set equality against a serial walk, counting
 //! store, liveness under an adversarial store, occupancy witnesses.
 
-use core::future::{Future, poll_fn};
+use core::future::poll_fn;
 use core::ops::Range;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::vec;
 use std::vec::Vec;
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_primitives::chunk::{
     AnyChunk, AnyChunkSet, Chunk, ChunkAddress, ChunkOps, ContentChunk, Verified,
 };
 use nectar_primitives::store::{ChunkGet, ChunkStoreError, TrustedGet};
+use nectar_testing::{run, yield_now};
 
 use super::{Frame, Plain, ShapeError, Walk, WalkError};
 use crate::config::Window;
@@ -142,25 +140,6 @@ fn serial_walk(tree: &Tree, range: Range<u64>) -> Vec<ChunkAddress> {
     fetched
 }
 
-/// A self-waking yield: `Pending` once with an immediate wake, so
-/// `block_on` keeps polling.
-fn yield_now() -> impl Future<Output = ()> {
-    struct YieldNow(bool);
-    impl Future for YieldNow {
-        type Output = ();
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-            if self.0 {
-                Poll::Ready(())
-            } else {
-                self.0 = true;
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        }
-    }
-    YieldNow(false)
-}
-
 /// Counting store: logs every fetch, resolving after `delay` yields.
 #[derive(Clone)]
 struct Recording {
@@ -283,7 +262,7 @@ fn collect_ordered<S>(walk: &mut TinyWalk<S>) -> Result<Vec<Frame>, WalkError<Ch
 where
     S: TrustedGet<TinyRegistry, Error = ChunkStoreError> + Clone + 'static,
 {
-    block_on(async {
+    run(async {
         let mut frames = Vec::new();
         while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
             frames.push(frame?);
@@ -296,7 +275,7 @@ fn collect_any<S>(walk: &mut TinyWalk<S>) -> Result<Vec<Frame>, WalkError<ChunkS
 where
     S: TrustedGet<TinyRegistry, Error = ChunkStoreError> + Clone + 'static,
 {
-    block_on(async {
+    run(async {
         let mut frames = Vec::new();
         while let Some(frame) = poll_fn(|cx| walk.poll_next_any(cx)).await {
             frames.push(frame?);
@@ -474,7 +453,7 @@ fn store_error_is_terminal_without_retry() {
     let attempts = store.log().iter().filter(|a| **a == missing).count();
     assert_eq!(attempts, 1, "the engine must not retry");
     assert!(walk.is_finished());
-    block_on(async {
+    run(async {
         assert!(poll_fn(|cx| walk.poll_next_ordered(cx)).await.is_none());
     });
 }
@@ -496,7 +475,7 @@ fn head_last_liveness_under_slow_consumer() {
         gate: usize::from(window) - 1,
     };
     let mut walk = walk_range(store, &tree, 0..tree.span, window);
-    let frames = block_on(async {
+    let frames = run(async {
         let mut frames = Vec::new();
         while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
             frames.push(frame.unwrap());

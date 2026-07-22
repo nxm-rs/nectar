@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
 use futures::Stream;
-use futures::executor::block_on;
 use futures::task::noop_waker;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkStoreError, MemoryStore, TrustedGet};
+use nectar_testing::{run, yield_now};
 
 #[cfg(feature = "encryption")]
 use crate::testutil::split_encrypted_fixture;
@@ -43,25 +43,6 @@ fn fill(len: usize) -> Vec<u8> {
     (0..len as u64)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8)
         .collect()
-}
-
-/// A self-waking yield: `Pending` once with an immediate wake, so manual
-/// polling keeps progressing.
-fn yield_now() -> impl Future<Output = ()> {
-    struct YieldNow(bool);
-    impl Future for YieldNow {
-        type Output = ();
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-            if self.0 {
-                Poll::Ready(())
-            } else {
-                self.0 = true;
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        }
-    }
-    YieldNow(false)
 }
 
 /// `Pending` forever without a wake; legal because the battery polls
@@ -348,7 +329,7 @@ fn reader_poll_n_then_drop_delivers_a_prefix_and_cancels_cleanly() {
     let (root, chunks) = split_fixture::<TINY>(&data);
     let chunks = Arc::new(chunks);
     reader_poll_n_drop_battery::<Plain, _>(&data, &chunks, 2, |store| {
-        block_on(File::<_, Plain, TINY>::open(store, root)).unwrap()
+        run(File::<_, Plain, TINY>::open(store, root)).unwrap()
     });
 }
 
@@ -359,7 +340,7 @@ fn encrypted_reader_poll_n_then_drop_matches_the_plain_contract() {
     let (root_ref, chunks) = split_encrypted_fixture::<TINY>(&data);
     let chunks = Arc::new(chunks);
     reader_poll_n_drop_battery::<Encrypted, _>(&data, &chunks, 2, |store| {
-        block_on(File::<_, Encrypted, TINY>::open_encrypted(
+        run(File::<_, Encrypted, TINY>::open_encrypted(
             store,
             root_ref.clone(),
         ))
@@ -376,7 +357,7 @@ fn stream_poll_n_then_drop_delivers_a_prefix_and_cancels_cleanly() {
 
     let total = {
         let store = EffectStore::new(Arc::clone(&chunks), 2);
-        let file = block_on(File::<_, Plain, TINY>::open(store, root)).unwrap();
+        let file = run(File::<_, Plain, TINY>::open(store, root)).unwrap();
         let mut stream = file.read().window(window).stream();
         let full = drain(stream_step(&mut stream));
         assert_eq!(full.bytes, data, "the full drain must be byte-exact");
@@ -385,7 +366,7 @@ fn stream_poll_n_then_drop_delivers_a_prefix_and_cancels_cleanly() {
 
     for n in 0..total {
         let store = EffectStore::new(Arc::clone(&chunks), 2);
-        let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
+        let file = run(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
         let mut stream = file.read().window(window).stream();
         let cut = drive(n, stream_step(&mut stream));
         assert!(!cut.finished, "{n} polls must stop before the end");
@@ -416,7 +397,7 @@ fn abandoned_read_futures_lose_no_bytes_and_cancel_nothing() {
     let data = fill(13 * TINY + 5);
     let (root, chunks) = split_fixture::<TINY>(&data);
     let store = EffectStore::new(Arc::new(chunks), 3);
-    let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
+    let file = run(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
     let mut reader = file.read().window(Window::new(2).unwrap()).build();
 
     let waker = noop_waker();
@@ -464,7 +445,7 @@ fn seek_during_in_flight_drops_the_old_window_and_rewalks() {
     let data = fill(25 * TINY + 9);
     let (root, chunks) = split_fixture::<TINY>(&data);
     let store = EffectStore::new(Arc::new(chunks), 6);
-    let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
+    let file = run(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
     let mut reader = file.read().window(Window::new(4).unwrap()).build();
 
     // Drive until the window is genuinely in flight.
@@ -518,7 +499,7 @@ fn seek_to_the_current_position_keeps_the_walk_and_window() {
     let data = fill(15 * TINY + 31);
     let (root, chunks) = split_fixture::<TINY>(&data);
     let store = EffectStore::new(Arc::new(chunks), 2);
-    let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
+    let file = run(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
     let mut reader = file.read().window(Window::new(3).unwrap()).build();
 
     // Deliver past the first frame so the position sits mid frame.
@@ -563,7 +544,7 @@ fn drop_with_a_parked_window_cancels_every_fetch() {
     let data = fill(4 * TINY);
     let (root, chunks) = split_fixture::<TINY>(&data);
     let store = EffectStore::parked_all_but(root, Arc::new(chunks));
-    let file = block_on(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
+    let file = run(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
     let mut reader = file.read().window(Window::new(4).unwrap()).build();
 
     let cut = drive(16, reader_step(&mut reader));

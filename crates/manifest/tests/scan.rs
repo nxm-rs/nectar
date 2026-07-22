@@ -10,10 +10,10 @@ use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{Builder, Cursor, Entry, Format, Key, Reader, V1};
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, StandardChunkSet, Verified};
+use nectar_testing::run;
 use proptest::prelude::*;
 
 mod common;
@@ -81,14 +81,14 @@ fn build(store: &MemoryStore) -> Result<(ChunkAddress, Oracle), Box<dyn Error>> 
         builder.insert(key.clone(), value.clone(), None);
         oracle.insert(key.as_bytes().to_vec(), value);
     }
-    let built = block_on(builder.build(store)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(store)).map_err(|e| e.to_string())?;
     Ok((*built.root(), oracle))
 }
 
 /// Collect a whole cursor into an ordered vector.
 fn collect(mut cursor: Cursor<'_, &CountingStore>) -> Result<Rows, Box<dyn Error>> {
     let mut out = Vec::new();
-    while let Some((key, value)) = block_on(cursor.next()).map_err(|e| e.to_string())? {
+    while let Some((key, value)) = run(cursor.next()).map_err(|e| e.to_string())? {
         out.push((key.as_bytes().to_vec(), value));
     }
     Ok(out)
@@ -112,7 +112,7 @@ fn iteration_fetches_nodes_not_values() -> TestResult {
     };
     let reader: Reader<_> = Reader::new(&store);
 
-    let got = collect(block_on(reader.iter(&root)).map_err(|e| e.to_string())?)?;
+    let got = collect(run(reader.iter(&root)).map_err(|e| e.to_string())?)?;
     let expected: Rows = oracle.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     ensure_eq(got, expected, "iteration matches the ordered oracle")?;
 
@@ -140,8 +140,7 @@ fn range_matches_the_oracle() -> TestResult {
         (&b"dir11/file0039.txt"[..], &b"zzz"[..]),
     ] {
         let got = collect(
-            block_on(reader.range(&root, &Key::from(lo), &Key::from(hi)))
-                .map_err(|e| e.to_string())?,
+            run(reader.range(&root, &Key::from(lo), &Key::from(hi))).map_err(|e| e.to_string())?,
         )?;
         let expected: Rows = oracle
             .range(lo.to_vec()..hi.to_vec())
@@ -166,10 +165,9 @@ fn prefix_matches_the_oracle() -> TestResult {
         &b""[..],
     ] {
         let got: Rows = {
-            let mut cursor =
-                block_on(reader.prefix(&root, &Key::from(p))).map_err(|e| e.to_string())?;
+            let mut cursor = run(reader.prefix(&root, &Key::from(p))).map_err(|e| e.to_string())?;
             let mut out = Vec::new();
-            while let Some((key, value)) = block_on(cursor.next()).map_err(|e| e.to_string())? {
+            while let Some((key, value)) = run(cursor.next()).map_err(|e| e.to_string())? {
                 out.push((key.as_bytes().to_vec(), value));
             }
             out
@@ -251,7 +249,7 @@ fn wide_build(store: &MemoryStore) -> Result<(ChunkAddress, Oracle), Box<dyn Err
             oracle.insert(key, value);
         }
     }
-    let built = block_on(builder.build(store)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(store)).map_err(|e| e.to_string())?;
     Ok((*built.root(), oracle))
 }
 
@@ -271,9 +269,9 @@ fn read_ahead_bounds_in_flight_and_matches_the_oracle() -> TestResult {
     let reader: Reader<_> = Reader::new(&store);
 
     let got: Rows = {
-        let mut cursor = block_on(reader.iter(&root)).map_err(|e| e.to_string())?;
+        let mut cursor = run(reader.iter(&root)).map_err(|e| e.to_string())?;
         let mut out = Vec::new();
-        while let Some((key, value)) = block_on(cursor.next()).map_err(|e| e.to_string())? {
+        while let Some((key, value)) = run(cursor.next()).map_err(|e| e.to_string())? {
             out.push((key.as_bytes().to_vec(), value));
         }
         out
@@ -322,14 +320,14 @@ proptest! {
         for (key, value) in &oracle {
             builder.insert(Key::from(key.clone()), value.clone(), None);
         }
-        let built = block_on(builder.build(&store))
+        let built = run(builder.build(&store))
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
         let reader: Reader<_> = Reader::new(&store);
         let got: Rows = {
-            let mut cursor = block_on(reader.iter(built.root()))
+            let mut cursor = run(reader.iter(built.root()))
                 .map_err(|e| TestCaseError::fail(e.to_string()))?;
             let mut out = Vec::new();
-            while let Some((key, value)) = block_on(cursor.next())
+            while let Some((key, value)) = run(cursor.next())
                 .map_err(|e| TestCaseError::fail(e.to_string()))?
             {
                 out.push((key.as_bytes().to_vec(), value));
@@ -371,9 +369,9 @@ fn read_ahead_never_fetches_past_the_upper_bound() -> TestResult {
     let lo = Key::from(&[0u8][..]);
     let hi = Key::from(&[1u8][..]);
     let got: Rows = {
-        let mut cursor = block_on(reader.range(&root, &lo, &hi)).map_err(|e| e.to_string())?;
+        let mut cursor = run(reader.range(&root, &lo, &hi)).map_err(|e| e.to_string())?;
         let mut out = Vec::new();
-        while let Some((key, value)) = block_on(cursor.next()).map_err(|e| e.to_string())? {
+        while let Some((key, value)) = run(cursor.next()).map_err(|e| e.to_string())? {
             out.push((key.as_bytes().to_vec(), value));
         }
         out
@@ -412,7 +410,7 @@ fn floor_matches_the_oracle() -> TestResult {
         &b"prefiy"[..],
         &b"zzzzz"[..],
     ] {
-        let got = block_on(reader.floor(&root, &Key::from(target)))
+        let got = run(reader.floor(&root, &Key::from(target)))
             .map_err(|e| e.to_string())?
             .map(|(k, v)| (k.as_bytes().to_vec(), v));
         let expected = oracle

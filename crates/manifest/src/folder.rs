@@ -337,9 +337,9 @@ fn directory_index<F: Format>(path: &[u8], index: &[u8]) -> Key {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef};
+    use nectar_testing::run;
 
     use crate::builder::Builder;
     use crate::meta::{KeyId, Metadata};
@@ -356,13 +356,13 @@ mod tests {
         for (key, byte) in pairs {
             builder.insert(Key::from(&key[..]), entry(*byte), None);
         }
-        *block_on(builder.build(store)).unwrap().root()
+        *run(builder.build(store)).unwrap().root()
     }
 
     /// Drain a listing into its entries.
     fn entries(mut listing: Listing<'_, &MemoryStore>) -> Vec<DirEntry> {
         let mut out = Vec::new();
-        while let Some(item) = block_on(listing.next()).unwrap() {
+        while let Some(item) = run(listing.next()).unwrap() {
             out.push(item);
         }
         out
@@ -396,7 +396,7 @@ mod tests {
         let reader: Reader<_> = Reader::new(&store);
 
         // The root lists two files and one collapsed directory, in key order.
-        let got = entries(block_on(reader.list(&root, &Key::empty())).unwrap());
+        let got = entries(run(reader.list(&root, &Key::empty())).unwrap());
         assert_eq!(
             got,
             vec![
@@ -421,7 +421,7 @@ mod tests {
         );
         let reader: Reader<_> = Reader::new(&store);
 
-        let got = entries(block_on(reader.list(&root, &Key::from(&b"img/"[..]))).unwrap());
+        let got = entries(run(reader.list(&root, &Key::from(&b"img/"[..]))).unwrap());
         assert_eq!(got, vec![dir(b"img/icons/"), file(b"img/logo.png", 0x02)]);
     }
 
@@ -441,7 +441,7 @@ mod tests {
         );
         let reader: Reader<_> = Reader::new(&store);
 
-        let got = entries(block_on(reader.list(&root, &Key::empty())).unwrap());
+        let got = entries(run(reader.list(&root, &Key::empty())).unwrap());
         assert_eq!(got, vec![dir(b"a/"), dir(b"b/"), file(b"c.txt", 0x04)]);
     }
 
@@ -453,7 +453,7 @@ mod tests {
         let root = manifest(&store, &[(b"dir/", 0x01), (b"dir/a", 0x02)]);
         let reader: Reader<_> = Reader::new(&store);
 
-        let got = entries(block_on(reader.list(&root, &Key::from(&b"dir/"[..]))).unwrap());
+        let got = entries(run(reader.list(&root, &Key::from(&b"dir/"[..]))).unwrap());
         assert_eq!(got, vec![file(b"dir/a", 0x02)]);
     }
 
@@ -471,7 +471,7 @@ mod tests {
         store.reset();
 
         let reader: Reader<_> = Reader::new(&store);
-        let got = entries_counting(block_on(reader.list(&root, &Key::empty())).unwrap());
+        let got = entries_counting(run(reader.list(&root, &Key::empty())).unwrap());
         assert_eq!(got, vec![dir(b"deep/"), file(b"top.txt", 0xFF)]);
         // Seeking past the subtree keeps the fetch count to the frontier, far
         // below the 64 leaves under it.
@@ -517,7 +517,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let leaf_ref = block_on(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_ref = run(store.put_node(&Node::new(None, leaf))).unwrap();
 
         let mut forks: ForkTable = ForkTable::new();
         forks
@@ -527,10 +527,10 @@ mod tests {
                 None,
             )
             .unwrap();
-        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
-        let got = entries(block_on(reader.list(&root, &Key::from(&b"mg/"[..]))).unwrap());
+        let got = entries(run(reader.list(&root, &Key::from(&b"mg/"[..]))).unwrap());
         assert_eq!(got, vec![dir(b"mg/a/"), file(b"mg/logo.png", 0xBB)]);
     }
 
@@ -540,7 +540,7 @@ mod tests {
         let root = manifest(&store, &[(b"a.html", 0x01)]);
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"a.html"[..]))).unwrap(),
+            run(reader.serve(&root, &Key::from(&b"a.html"[..]))).unwrap(),
             Served::Exact {
                 key: Key::from(&b"a.html"[..]),
                 entry: entry(0x01),
@@ -561,12 +561,12 @@ mod tests {
             )
             .unwrap(),
         );
-        let root = *block_on(builder.build(&store)).unwrap().root();
+        let root = *run(builder.build(&store)).unwrap().root();
         let reader: Reader<_> = Reader::new(&store);
 
         // The root path resolves to the top-level index document.
         assert_eq!(
-            block_on(reader.serve(&root, &Key::empty())).unwrap(),
+            run(reader.serve(&root, &Key::empty())).unwrap(),
             Served::Index {
                 key: Key::from(&b"index.html"[..]),
                 entry: entry(0x01),
@@ -574,7 +574,7 @@ mod tests {
         );
         // A directory path (trailing separator) resolves to its index document.
         assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"docs/"[..]))).unwrap(),
+            run(reader.serve(&root, &Key::from(&b"docs/"[..]))).unwrap(),
             Served::Index {
                 key: Key::from(&b"docs/index.html"[..]),
                 entry: entry(0x02),
@@ -582,7 +582,7 @@ mod tests {
         );
         // A directory path without a trailing separator is read as one too.
         assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"docs"[..]))).unwrap(),
+            run(reader.serve(&root, &Key::from(&b"docs"[..]))).unwrap(),
             Served::Index {
                 key: Key::from(&b"docs/index.html"[..]),
                 entry: entry(0x02),
@@ -598,11 +598,11 @@ mod tests {
         builder.manifest_metadata(
             Metadata::new(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html")).unwrap(),
         );
-        let root = *block_on(builder.build(&store)).unwrap().root();
+        let root = *run(builder.build(&store)).unwrap().root();
         let reader: Reader<_> = Reader::new(&store);
 
         assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"missing"[..]))).unwrap(),
+            run(reader.serve(&root, &Key::from(&b"missing"[..]))).unwrap(),
             Served::Error {
                 key: Key::from(&b"404.html"[..]),
                 entry: entry(0x09),
@@ -616,7 +616,7 @@ mod tests {
         let root = manifest(&store, &[(b"a.html", 0x01)]);
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
-            block_on(reader.serve(&root, &Key::from(&b"nope"[..]))).unwrap(),
+            run(reader.serve(&root, &Key::from(&b"nope"[..]))).unwrap(),
             Served::Missing
         );
     }
@@ -634,10 +634,10 @@ mod tests {
         meta.insert(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html"))
             .unwrap();
         builder.manifest_metadata(meta);
-        let root = *block_on(builder.build(&store)).unwrap().root();
+        let root = *run(builder.build(&store)).unwrap().root();
         let reader: Reader<_> = Reader::new(&store);
 
-        let site = block_on(reader.website(&root)).unwrap();
+        let site = run(reader.website(&root)).unwrap();
         assert_eq!(site.index(), Some(&b"index.html"[..]));
         assert_eq!(site.error(), Some(&b"404.html"[..]));
     }
@@ -680,7 +680,7 @@ mod tests {
 
     fn entries_counting(mut listing: Listing<'_, &CountingStore>) -> Vec<DirEntry> {
         let mut out = Vec::new();
-        while let Some(item) = block_on(listing.next()).unwrap() {
+        while let Some(item) = run(listing.next()).unwrap() {
             out.push(item);
         }
         out

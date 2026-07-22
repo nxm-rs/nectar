@@ -169,7 +169,7 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use futures::executor::block_on;
+    use nectar_testing::run;
 
     use crate::DefaultContentChunk;
     use crate::chunk::StandardChunkSet;
@@ -246,7 +246,7 @@ mod tests {
         let store = RetryingChunkGet::with_default(FlakyStore::new(7), NoSleep);
         let address = *store.inner.chunk.address();
 
-        let got = block_on(store.get(&address)).expect("recovered within budget");
+        let got = run(store.get(&address)).expect("recovered within budget");
         assert_eq!(got.address(), &address);
         assert_eq!(store.inner.get_calls.load(Ordering::SeqCst), 8);
     }
@@ -257,7 +257,7 @@ mod tests {
         let store = RetryingChunkGet::with_default(FlakyStore::new(u32::MAX), NoSleep);
         let address = *store.inner.chunk.address();
 
-        let err = block_on(store.get(&address));
+        let err = run(store.get(&address));
         assert!(err.is_err(), "budget exhausted, error must propagate");
         assert_eq!(
             store.inner.get_calls.load(Ordering::SeqCst),
@@ -270,8 +270,8 @@ mod tests {
         let store = RetryingChunkGet::with_default(FlakyStore::new(u32::MAX), NoSleep);
         let address = *store.inner.chunk.address();
 
-        assert!(block_on(store.has(&address)));
-        block_on(store.put(store.inner.chunk.clone())).expect("put delegates");
+        assert!(run(store.has(&address)));
+        run(store.put(store.inner.chunk.clone())).expect("put delegates");
         assert_eq!(store.inner.has_calls.load(Ordering::SeqCst), 1);
         assert_eq!(store.inner.put_calls.load(Ordering::SeqCst), 1);
     }

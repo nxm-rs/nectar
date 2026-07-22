@@ -1930,7 +1930,6 @@ dependencies = [
  "alloy-signer-local",
  "arbitrary",
  "bytes",
- "futures",
  "libfuzzer-sys",
  "nectar-file",
  "nectar-manifest",
@@ -1938,6 +1937,7 @@ dependencies = [
  "nectar-postage",
  "nectar-postage-usage",
  "nectar-primitives",
+ "nectar-testing",
 ]
 
 [[package]]
@@ -2032,6 +2032,13 @@ dependencies = [
  "wasm-bindgen",
  "web-time",
  "zeroize",
+]
+
+[[package]]
+name = "nectar-testing"
+version = "0.4.0"
+dependencies = [
+ "futures-executor",
 ]
 
 [[package]]

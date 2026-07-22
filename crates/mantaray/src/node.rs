@@ -1212,7 +1212,7 @@ mod tests {
         ]
     }
 
-    use futures::executor::block_on;
+    use nectar_testing::run;
 
     const NL: NullLoader = NullLoader;
     const BS: usize = DEFAULT_BODY_SIZE;
@@ -1228,27 +1228,27 @@ mod tests {
 
     /// In-memory add: delegates to `add` with NullLoader.
     fn node_add(n: &mut Node, path: &[u8], entry: ChunkRef, meta: BTreeMap<String, String>) {
-        block_on(n.add::<NullLoader, BS>(path, Some(entry), meta, &NL)).unwrap();
+        run(n.add::<NullLoader, BS>(path, Some(entry), meta, &NL)).unwrap();
     }
 
     /// In-memory lookup: delegates to `lookup` with NullLoader.
     fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<Option<&'n ChunkRef>> {
-        block_on(n.lookup::<NullLoader, BS>(path, &NL))
+        run(n.lookup::<NullLoader, BS>(path, &NL))
     }
 
     /// In-memory lookup_node: delegates to `lookup_node` with NullLoader.
     fn node_lookup_node<'n>(n: &'n mut Node, path: &[u8]) -> Result<&'n mut Node> {
-        block_on(n.lookup_node::<NullLoader, BS>(path, &NL))
+        run(n.lookup_node::<NullLoader, BS>(path, &NL))
     }
 
     /// In-memory remove: delegates to `remove` with NullLoader.
     fn node_remove(n: &mut Node, path: &[u8]) -> Result<()> {
-        block_on(n.remove::<NullLoader, BS>(path, &NL))
+        run(n.remove::<NullLoader, BS>(path, &NL))
     }
 
     /// In-memory has_prefix: delegates to `has_prefix` with NullLoader.
     fn node_has_prefix(n: &mut Node, path: &[u8]) -> Result<bool> {
-        block_on(n.has_prefix::<NullLoader, BS>(path, &NL))
+        run(n.has_prefix::<NullLoader, BS>(path, &NL))
     }
 
     /// In-memory walk: delegates to `walk` with NullLoader.
@@ -1256,7 +1256,7 @@ mod tests {
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        block_on(n.walk::<NullLoader, BS, _>(&NL, f))
+        run(n.walk::<NullLoader, BS, _>(&NL, f))
     }
 
     /// In-memory walk_node: delegates to `walk_from` with NullLoader.
@@ -1264,7 +1264,7 @@ mod tests {
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        block_on(n.walk_from::<NullLoader, BS, _>(root, &NL, f))
+        run(n.walk_from::<NullLoader, BS, _>(root, &NL, f))
     }
 
     #[test]
@@ -1439,12 +1439,12 @@ mod tests {
         }
 
         let store = MemoryStore::<StandardChunkSet>::new();
-        block_on(n.save(&store)).unwrap();
+        run(n.save(&store)).unwrap();
 
         let mut n2: Node = Node::from_reference(*n.reference().unwrap());
 
         for &d in items {
-            let node = block_on(n2.lookup_node(d.as_bytes(), &store)).unwrap();
+            let node = run(n2.lookup_node(d.as_bytes(), &store)).unwrap();
             assert!(node.is_value());
             assert_eq!(node.entry(), Some(&make_entry(d)));
         }
@@ -1461,10 +1461,10 @@ mod tests {
         let address = *chunk.address();
 
         let store = MemoryStore::<StandardChunkSet>::new();
-        block_on(store.put(Chunk::from_envelope(chunk.into()).unwrap())).unwrap();
+        run(store.put(Chunk::from_envelope(chunk.into()).unwrap())).unwrap();
 
         let mut node: Node = Node::from_reference(ChunkRef::from(address));
-        let err = block_on(node.load(&store)).unwrap_err();
+        let err = run(node.load(&store)).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1569,23 +1569,23 @@ mod tests {
         let mut n = Node::default();
         for c in &tc.items {
             let e = make_entry(&c.path);
-            block_on(n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)).unwrap();
+            run(n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)).unwrap();
         }
-        block_on(n.save(&store)).unwrap();
+        run(n.save(&store)).unwrap();
         let ref_ = *n.reference().unwrap();
 
         // reload and remove
         let mut nn: Node = Node::from_reference(ref_);
         for path in &tc.remove {
-            block_on(nn.remove(path.as_bytes(), &store)).unwrap();
+            run(nn.remove(path.as_bytes(), &store)).unwrap();
         }
-        block_on(nn.save(&store)).unwrap();
+        run(nn.save(&store)).unwrap();
         let ref2 = *nn.reference().unwrap();
 
         // reload and verify removed paths are gone
         let mut nnn: Node = Node::from_reference(ref2);
         for path in &tc.remove {
-            let result = block_on(nnn.lookup_node(path.as_bytes(), &store));
+            let result = run(nnn.lookup_node(path.as_bytes(), &store));
             assert!(
                 result.is_err(),
                 "expected removed path '{path}' to be not found"
@@ -1755,12 +1755,12 @@ mod tests {
         }
 
         let store = MemoryStore::<StandardChunkSet>::new();
-        block_on(n.save(&store)).unwrap();
+        run(n.save(&store)).unwrap();
 
         let mut n2: Node = Node::from_reference(*n.reference().unwrap());
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
-        block_on(n2.walk_from(b"", &store, &mut |path: &[u8], _node: &Node| {
+        run(n2.walk_from(b"", &store, &mut |path: &[u8], _node: &Node| {
             walked.push(path.to_vec());
             Ok(())
         }))

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use futures::executor::block_on;
+use nectar_testing::run;
 use nectar_file::{Plain, Split};
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::MemoryStore;
@@ -26,9 +26,7 @@ pub fn tile(seed: &[u8], copies: u16) -> Vec<u8> {
 /// and the store.
 pub fn split<const B: usize>(data: &[u8]) -> (ChunkAddress, Arc<MemoryStore<AnyChunkSet<B>>>) {
     let store = Arc::new(MemoryStore::new());
-    let root = block_on(
-        Split::<Arc<MemoryStore<AnyChunkSet<B>>>, Plain, B>::collect(Arc::clone(&store), data),
-    )
+    let root = run(Split::<Arc<MemoryStore<AnyChunkSet<B>>>, Plain, B>::collect(Arc::clone(&store), data))
     .expect("split over a memory store succeeds");
     (root, store)
 }

@@ -12,7 +12,7 @@
 #![no_main]
 
 use bytes::Bytes;
-use futures::executor::block_on;
+use nectar_testing::run;
 use libfuzzer_sys::fuzz_target;
 use nectar_manifest::{Builder, Entry, Key, V1, recanonicalize};
 use nectar_primitives::store::MemoryStore;
@@ -48,7 +48,7 @@ fn build(pairs: &[(Key, Entry<V1>)]) -> Option<(ChunkAddress, MemoryStore)> {
     for (key, entry) in pairs {
         builder.insert(key.clone(), entry.clone(), None);
     }
-    let built = block_on(builder.build(&store)).ok()?;
+    let built = run(builder.build(&store)).ok()?;
     Some((*built.root(), store))
 }
 

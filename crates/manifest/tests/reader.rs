@@ -6,10 +6,10 @@ use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{Builder, Child, Entry, ForkTable, Key, Node, NodePut, Prefix, Reader, V1};
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, StandardChunkSet, Verified};
+use nectar_testing::run;
 
 mod common;
 use common::{TestResult, ensure, ensure_eq};
@@ -54,14 +54,14 @@ fn wide_manifest(store: &MemoryStore, width: u16) -> Result<ChunkAddress, Box<dy
         let first = u8::try_from(first)?;
         let mut leaf = ForkTable::new();
         leaf.insert(Prefix::try_from(&[0xFFu8][..])?, entry(first).into(), None)?;
-        let leaf_ref = block_on(store.put_node(&Node::new(None, leaf)))?;
+        let leaf_ref = run(store.put_node(&Node::new(None, leaf)))?;
         forks.insert(
             Prefix::try_from(&[first][..])?,
             Child::Ref32(ChunkRef::new(leaf_ref)).into(),
             None,
         )?;
     }
-    Ok(block_on(store.put_node(&Node::new(None, forks)))?)
+    Ok(run(store.put_node(&Node::new(None, forks)))?)
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn a_lookup_fetches_depth_nodes_not_the_wide_level() -> TestResult {
 
     // Look up one key: first byte 0x2A, then the leaf's 0xFF fork.
     let key = Key::from(&[0x2Au8, 0xFF][..]);
-    let value = block_on(reader.get(&root, &key))?;
+    let value = run(reader.get(&root, &key))?;
     ensure_eq(value, Some(entry(0x2A)), "looked-up value")?;
 
     // Two hops: the root and the single leaf on the path. Never the wide
@@ -97,7 +97,7 @@ fn a_lookup_fetches_depth_nodes_not_the_wide_level() -> TestResult {
     // A second lookup on a different branch is again two hops: the frontier is
     // never widened, each key pays only its own path.
     store.gets.store(0, Ordering::Relaxed);
-    let value = block_on(reader.get(&root, &Key::from(&[0x50u8, 0xFF][..])))?;
+    let value = run(reader.get(&root, &Key::from(&[0x50u8, 0xFF][..])))?;
     ensure_eq(value, Some(entry(0x50)), "second value")?;
     ensure_eq(store.gets(), 2, "second lookup is also depth-bounded")
 }
@@ -133,7 +133,7 @@ fn every_builder_key_reads_back_through_referenced_hops() -> TestResult {
     // The empty key sets the manifest's own value in the root extension.
     builder.insert(Key::empty(), entry(0x99), None);
 
-    let built = block_on(builder.build(&memory)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(&memory)).map_err(|e| e.to_string())?;
     let root = *built.root();
     // More than one node spilled: the builder emitted referenced children, so
     // reading keys beneath them genuinely drives the fetch-and-descend path.
@@ -150,7 +150,7 @@ fn every_builder_key_reads_back_through_referenced_hops() -> TestResult {
 
     // The root extension answers the empty key.
     ensure_eq(
-        block_on(reader.get(&root, &Key::empty())).map_err(|e| e.to_string())?,
+        run(reader.get(&root, &Key::empty())).map_err(|e| e.to_string())?,
         Some(entry(0x99)),
         "empty key reads the root value",
     )?;
@@ -161,7 +161,7 @@ fn every_builder_key_reads_back_through_referenced_hops() -> TestResult {
     let mut deepest = 0usize;
     for (key, value) in &expected {
         store.gets.store(0, Ordering::Relaxed);
-        let got = block_on(reader.get(&root, &Key::from(key.clone().into_bytes())))
+        let got = run(reader.get(&root, &Key::from(key.clone().into_bytes())))
             .map_err(|e| e.to_string())?;
         ensure_eq(got.as_ref(), Some(value), key)?;
         deepest = deepest.max(store.gets());
@@ -181,8 +181,7 @@ fn every_builder_key_reads_back_through_referenced_hops() -> TestResult {
         "prefixed",
     ] {
         ensure_eq(
-            block_on(reader.get(&root, &Key::from(absent.as_bytes())))
-                .map_err(|e| e.to_string())?,
+            run(reader.get(&root, &Key::from(absent.as_bytes()))).map_err(|e| e.to_string())?,
             None,
             absent,
         )?;
@@ -204,7 +203,7 @@ fn an_absent_key_stops_at_the_first_unmatched_fork() -> TestResult {
 
     // A first byte no root fork carries: the walk stops at the root without
     // fetching any leaf.
-    let value = block_on(reader.get(&root, &Key::from(&[0xFFu8, 0x00][..])))?;
+    let value = run(reader.get(&root, &Key::from(&[0xFFu8, 0x00][..])))?;
     ensure_eq(value, None, "absent value")?;
     ensure_eq(store.gets(), 1, "only the root is fetched")
 }

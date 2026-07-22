@@ -364,7 +364,7 @@ where
 /// use futures::StreamExt;
 /// use nectar_file::File;
 ///
-/// # futures::executor::block_on(async {
+/// # nectar_testing::run(async {
 /// let data: Vec<u8> = (0u32..20_000)
 ///     .map(|i| u8::try_from(i % 251).unwrap())
 ///     .collect();

@@ -360,7 +360,7 @@ fn narrow_after(after: Option<&[u8]>, edge: &[u8]) -> Option<Option<Vec<u8>>> {
 /// ```
 /// # use nectar_mantaray::{Cursor, ManifestEditor, DefaultMemoryStore};
 /// # use nectar_primitives::chunk::ChunkAddress;
-/// # futures::executor::block_on(async {
+/// # nectar_testing::run(async {
 /// let mut editor = ManifestEditor::new(DefaultMemoryStore::new());
 /// editor.put("a.txt", ChunkAddress::from([1u8; 32]));
 /// editor.put("b/c.txt", ChunkAddress::from([2u8; 32]));
@@ -610,10 +610,10 @@ mod tests {
     use std::sync::Mutex;
 
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::chunk::{ChunkRef, ContentChunk};
     use nectar_primitives::store::{ChunkGet, ChunkPut, MemoryStore};
     use nectar_primitives::{EncryptedChunkRef, EncryptionKey, EntryRef, StandardChunkSet};
+    use nectar_testing::run;
 
     use crate::ManifestEditor;
     use crate::node::{Fork, Node, Prefix};
@@ -658,14 +658,14 @@ mod tests {
         for &p in paths {
             editor.put(p, make_addr(p));
         }
-        block_on(editor.commit()).unwrap()
+        run(editor.commit()).unwrap()
     }
 
     fn collect_entries<S>(mut cursor: Cursor<S>) -> Vec<Entry>
     where
         S: TrustedGet<AnyChunkSet<DEFAULT_BODY_SIZE>> + Clone + 'static,
     {
-        block_on(async {
+        run(async {
             let mut out = Vec::new();
             while let Some(item) = cursor.next().await {
                 out.push(item.unwrap());
@@ -678,7 +678,7 @@ mod tests {
     where
         S: TrustedGet<AnyChunkSet<DEFAULT_BODY_SIZE>> + Clone + 'static,
     {
-        block_on(async {
+        run(async {
             let mut out = Vec::new();
             while let Some(item) = cursor.next().await {
                 match item {
@@ -694,7 +694,7 @@ mod tests {
     where
         S: TrustedGet<AnyChunkSet<DEFAULT_BODY_SIZE>> + Clone + 'static,
     {
-        block_on(async {
+        run(async {
             let mut out = Vec::new();
             while let Some(item) = stream.next().await {
                 out.push(item.unwrap());
@@ -814,7 +814,7 @@ mod tests {
         let mut cursor: Cursor<RecordingStore> =
             Cursor::new(rec.clone(), root).with_window(window(1));
         let mut counts = Vec::new();
-        block_on(async {
+        run(async {
             while let Some(item) = cursor.next().await {
                 item.unwrap();
                 counts.push(rec.fetch_count());
@@ -851,7 +851,7 @@ mod tests {
             [("Content-Type".to_string(), "image/png".to_string())].into();
         editor.put_with_metadata("logo.png", make_addr("logo"), meta.clone());
         editor.set_index_document("index.html");
-        let (root, store) = block_on(editor.commit()).unwrap();
+        let (root, store) = run(editor.commit()).unwrap();
 
         let got = collect_entries(Cursor::new(store, root));
         assert_eq!(got.len(), 3);
@@ -879,7 +879,7 @@ mod tests {
         for p in paths {
             editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
         }
-        let (manifest_ref, store) = block_on(editor.commit()).unwrap();
+        let (manifest_ref, store) = run(editor.commit()).unwrap();
         let (root, _key) = manifest_ref.into_parts();
 
         let got = collect_entries(Cursor::new(store, root));
@@ -1110,7 +1110,7 @@ mod tests {
                 .unwrap();
         let gaddr = *garbage.address();
         let sealed: Chunk = Chunk::from_envelope(garbage.into()).unwrap();
-        block_on(store.put(sealed)).unwrap();
+        run(store.put(sealed)).unwrap();
 
         let mut child = Node::<ChunkRef>::from_reference(ChunkRef::from(gaddr));
         child.node_type = NodeType::VALUE;
@@ -1126,7 +1126,7 @@ mod tests {
         let root_chunk = ContentChunk::<DEFAULT_BODY_SIZE>::new(Bytes::from(image)).unwrap();
         let root = *root_chunk.address();
         let sealed: Chunk = Chunk::from_envelope(root_chunk.into()).unwrap();
-        block_on(store.put(sealed)).unwrap();
+        run(store.put(sealed)).unwrap();
 
         let (entries, err) = collect_until_err(Cursor::new(store, root));
         assert!(entries.is_empty());
@@ -1182,7 +1182,7 @@ mod tests {
                 EncryptedChunkRef::new(make_addr(p), EncryptionKey::from([0x5a; 32])),
             );
         }
-        let (manifest_ref, store) = block_on(editor.commit()).unwrap();
+        let (manifest_ref, store) = run(editor.commit()).unwrap();
         let (root, _key) = manifest_ref.into_parts();
 
         // Value entries ride the full encrypted width on the wire; the
@@ -1198,7 +1198,7 @@ mod tests {
     #[test]
     fn empty_trie_lists_nothing_and_streams_only_the_root() {
         let editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
-        let (root, store) = block_on(editor.commit()).unwrap();
+        let (root, store) = run(editor.commit()).unwrap();
         assert!(collect_entries(Cursor::new(store.clone(), root)).is_empty());
         assert_eq!(
             collect_addresses(AddressStream::new(store, root)),
@@ -1218,10 +1218,10 @@ mod tests {
     fn cursor_and_address_stream_drive_as_streams() {
         use futures::StreamExt;
         let (root, store) = build(&["a", "b", "c"]);
-        let entries: Vec<_> = block_on(Cursor::new(store.clone(), root).collect::<Vec<_>>());
+        let entries: Vec<_> = run(Cursor::new(store.clone(), root).collect::<Vec<_>>());
         assert_eq!(entries.len(), 3);
         assert!(entries.iter().all(Result::is_ok));
-        let addresses: Vec<_> = block_on(AddressStream::new(store, root).collect::<Vec<_>>());
+        let addresses: Vec<_> = run(AddressStream::new(store, root).collect::<Vec<_>>());
         assert!(addresses.len() > 3);
         assert!(addresses.iter().all(Result::is_ok));
     }

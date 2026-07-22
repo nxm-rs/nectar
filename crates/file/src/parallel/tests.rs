@@ -1,17 +1,15 @@
 //! Ingest oracles: root and chunk-set differentials against the streaming
 //! split engine, put-window witnesses, and typed failure paths.
 
-use core::future::{Future, poll_fn};
-use core::pin::Pin;
 use std::collections::HashMap;
 use std::format;
 use std::sync::{Arc, Mutex};
 use std::vec;
 use std::vec::Vec;
 
-use futures::executor::block_on;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkPut, ChunkStoreError};
+use nectar_testing::{run, yield_now};
 
 use super::{ReadAt, ReadAtError, split_read_at};
 use crate::config::PutWindow;
@@ -74,28 +72,6 @@ impl<const B: usize> TestStore<B> {
     }
 }
 
-/// A self-waking yield: `Pending` once with an immediate wake, so
-/// `block_on` keeps polling.
-fn yield_now() -> impl Future<Output = ()> {
-    struct YieldNow(bool);
-    impl Future for YieldNow {
-        type Output = ();
-        fn poll(
-            mut self: Pin<&mut Self>,
-            cx: &mut core::task::Context<'_>,
-        ) -> core::task::Poll<()> {
-            if self.0 {
-                core::task::Poll::Ready(())
-            } else {
-                self.0 = true;
-                cx.waker().wake_by_ref();
-                core::task::Poll::Pending
-            }
-        }
-    }
-    YieldNow(false)
-}
-
 impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
     type Error = ChunkStoreError;
 
@@ -120,7 +96,7 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
 /// same bytes, returning root plus every sealed chunk address.
 fn stream_split<const B: usize>(data: &[u8]) -> (ChunkAddress, Vec<ChunkAddress>) {
     let store = TestStore::<B>::new(0);
-    let root = block_on(Split::<TestStore<B>, Plain, B>::collect(
+    let root = run(Split::<TestStore<B>, Plain, B>::collect(
         store.clone(),
         data,
     ))
@@ -134,7 +110,7 @@ fn ingest<const B: usize>(
     delay: usize,
 ) -> (ChunkAddress, TestStore<B>) {
     let store = TestStore::<B>::new(delay);
-    let root = block_on(split_read_at::<_, _, Plain, B>(
+    let root = run(split_read_at::<_, _, Plain, B>(
         data,
         store.clone(),
         PutWindow::new(window).unwrap(),
@@ -232,13 +208,15 @@ impl<const B: usize> nectar_primitives::store::ChunkGet<AnyChunkSet<B>> for Test
 #[cfg(feature = "encryption")]
 #[test]
 fn encrypted_ingest_reads_back_through_the_walk() {
+    use core::future::poll_fn;
+
     use crate::config::Window;
     use crate::split::RandomKeys;
     use crate::walk::{Encrypted, Walk};
 
     let data = fill(17 * TINY + 43);
     let store = TestStore::<TINY>::new(0);
-    let root = block_on(split_read_at::<_, _, Encrypted<RandomKeys>, TINY>(
+    let root = run(split_read_at::<_, _, Encrypted<RandomKeys>, TINY>(
         data.clone(),
         store.clone(),
         PutWindow::DEFAULT,
@@ -252,7 +230,7 @@ fn encrypted_ingest_reads_back_through_the_walk() {
         0..u64::MAX,
         Window::new(4).unwrap(),
     );
-    let plaintext = block_on(async {
+    let plaintext = run(async {
         let mut bytes = Vec::new();
         while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
             bytes.extend_from_slice(&frame.unwrap().data);
@@ -267,7 +245,7 @@ fn bytes_and_slice_sources_agree() {
     let data = fill(11 * TINY + 7);
     let (from_vec, _) = ingest::<TINY>(data.clone(), 4, 0);
     let store = TestStore::<TINY>::new(0);
-    let from_bytes = block_on(split_read_at::<_, _, Plain, TINY>(
+    let from_bytes = run(split_read_at::<_, _, Plain, TINY>(
         bytes::Bytes::from(data),
         store,
         PutWindow::DEFAULT,
@@ -285,7 +263,7 @@ fn a_filesystem_source_matches_the_buffer_path() {
     std::fs::write(&path, &data).unwrap();
     let file = std::fs::File::open(&path).unwrap();
     let store = TestStore::<TINY>::new(0);
-    let root = block_on(split_read_at::<_, _, Plain, TINY>(
+    let root = run(split_read_at::<_, _, Plain, TINY>(
         file,
         store,
         PutWindow::DEFAULT,
@@ -323,7 +301,7 @@ fn a_read_failure_is_typed_with_its_offset() {
         fail_at: u64::try_from(TINY).unwrap(),
     };
     let store = TestStore::<TINY>::new(0);
-    let error = block_on(split_read_at::<_, _, Plain, TINY>(
+    let error = run(split_read_at::<_, _, Plain, TINY>(
         source,
         store,
         PutWindow::DEFAULT,
@@ -358,7 +336,7 @@ fn a_source_ending_early_is_a_short_read() {
         claimed: u64::try_from(2 * TINY).unwrap(),
     };
     let store = TestStore::<TINY>::new(0);
-    let error = block_on(split_read_at::<_, _, Plain, TINY>(
+    let error = run(split_read_at::<_, _, Plain, TINY>(
         source,
         store,
         PutWindow::DEFAULT,
@@ -387,7 +365,7 @@ impl ReadAt for OverrunSource {
 #[test]
 fn an_overlong_read_count_is_refused() {
     let store = TestStore::<TINY>::new(0);
-    let error = block_on(split_read_at::<_, _, Plain, TINY>(
+    let error = run(split_read_at::<_, _, Plain, TINY>(
         OverrunSource,
         store,
         PutWindow::DEFAULT,
@@ -416,7 +394,7 @@ impl ReadAt for UnsizedSource {
 #[test]
 fn a_sizing_failure_is_typed() {
     let store = TestStore::<TINY>::new(0);
-    let error = block_on(split_read_at::<_, _, Plain, TINY>(
+    let error = run(split_read_at::<_, _, Plain, TINY>(
         UnsizedSource,
         store,
         PutWindow::DEFAULT,
@@ -428,7 +406,7 @@ fn a_sizing_failure_is_typed() {
 #[test]
 fn a_failed_put_surfaces_as_a_split_error() {
     let store = reject_all::<_, TINY>(TestStore::<TINY>::new(0));
-    let error = block_on(split_read_at::<_, _, Plain, TINY>(
+    let error = run(split_read_at::<_, _, Plain, TINY>(
         fill(6 * TINY),
         store,
         PutWindow::new(2).unwrap(),
