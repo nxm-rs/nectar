@@ -620,6 +620,7 @@ where
         }
         SplitError::Finished => BuildError::Split(SplitError::Finished),
         SplitError::Poisoned => BuildError::Split(SplitError::Poisoned),
+        SplitError::PoolDropped => BuildError::Split(SplitError::PoolDropped),
         SplitError::SpineDepleted => BuildError::Split(SplitError::SpineDepleted),
     }
 }
