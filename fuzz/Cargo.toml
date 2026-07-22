@@ -16,9 +16,6 @@ alloy-signer-local = { version = "2.0", default-features = false }
 # Chunk wire payloads are `Bytes`; the chunk targets build them from the
 # fuzzer's raw input.
 bytes = "1"
-# The manifest build/apply targets drive the async builder and reader to
-# completion on the current thread.
-futures = "0.3"
 libfuzzer-sys = "0.4"
 # The streaming file pipeline under test: read facade, reader and split
 # engine driven for split-then-read consistency.
@@ -38,6 +35,9 @@ nectar-postage-usage = { path = "../crates/postage-usage", features = [
 	"arbitrary",
 ] }
 nectar-primitives = { path = "../crates/primitives", features = ["arbitrary"] }
+# The sanctioned executor entry point the targets drive futures to completion
+# with.
+nectar-testing = { path = "../crates/testing" }
 
 [[bin]]
 name = "mantaray_node_decode"

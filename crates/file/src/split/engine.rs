@@ -231,7 +231,7 @@ where
     /// use nectar_primitives::chunk::AnyChunkSet;
     /// use nectar_primitives::store::MemoryStore;
     ///
-    /// # futures::executor::block_on(async {
+    /// # nectar_testing::run(async {
     /// let store = MemoryStore::<AnyChunkSet<4096>>::new();
     /// let mut split = Split::<_, Plain, 4096>::new(store, PutWindow::DEFAULT)
     ///     .with_hash_window(HashWindow::DEFAULT);
@@ -398,7 +398,7 @@ where
     /// back-pressure control or incremental input.
     ///
     /// ```
-    /// # futures::executor::block_on(async {
+    /// # nectar_testing::run(async {
     /// use std::sync::Arc;
     ///
     /// use nectar_file::{Plain, Split};
@@ -426,7 +426,7 @@ where
     /// back-pressure the one-shot drives under.
     ///
     /// ```
-    /// # futures::executor::block_on(async {
+    /// # nectar_testing::run(async {
     /// use std::sync::Arc;
     ///
     /// use nectar_file::{Plain, PutWindow, Split};

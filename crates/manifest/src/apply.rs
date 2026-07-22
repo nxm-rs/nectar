@@ -769,9 +769,9 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef};
+    use nectar_testing::run;
 
     use crate::builder::Builder;
     use crate::format::V1;
@@ -792,7 +792,7 @@ mod tests {
                 None => 0,
                 Some(Child::Embedded(inner)) => walk_counts(store, inner),
                 Some(Child::Ref32(reference)) => {
-                    let node = block_on(store.get_node::<V1>(reference.address())).unwrap();
+                    let node = run(store.get_node::<V1>(reference.address())).unwrap();
                     let actual = walk_counts(store, node.forks());
                     assert_eq!(
                         record.child_count(),
@@ -822,8 +822,8 @@ mod tests {
                 expected += 1;
             }
         }
-        let root = *block_on(builder.build(&store)).unwrap().root();
-        let node = block_on(store.get_node::<V1>(&root)).unwrap();
+        let root = *run(builder.build(&store)).unwrap().root();
+        let node = run(store.get_node::<V1>(&root)).unwrap();
         let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks());
         assert_eq!(total, expected);
     }
@@ -837,25 +837,23 @@ mod tests {
         for x in 0u8..40 {
             base.insert(Key::from(&[b'a', x][..]), entry(x), None);
         }
-        let base_root = *block_on(base.build(&store)).unwrap().root();
+        let base_root = *run(base.build(&store)).unwrap().root();
 
         let mut cs = Changeset::<V1>::new();
         for x in 40u8..64 {
             cs.put(Key::from(&[b'a', x][..]), entry(x), None);
         }
-        let applied = block_on(apply(&store, &base_root, &cs)).unwrap();
+        let applied = run(apply(&store, &base_root, &cs)).unwrap();
 
         let mut scratch = Builder::<V1>::new();
         for x in 0u8..64 {
             scratch.insert(Key::from(&[b'a', x][..]), entry(x), None);
         }
-        let scratch_root = *block_on(scratch.build(&MemoryStore::default()))
-            .unwrap()
-            .root();
+        let scratch_root = *run(scratch.build(&MemoryStore::default())).unwrap().root();
         assert_eq!(applied, scratch_root, "apply must match a counted rebuild");
 
         // The applied tree's stored counts still equal the walked subtree sizes.
-        let node = block_on(store.get_node::<V1>(&applied)).unwrap();
+        let node = run(store.get_node::<V1>(&applied)).unwrap();
         let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks());
         assert_eq!(total, 64);
     }
@@ -866,7 +864,7 @@ mod tests {
         for (key, fill) in keys {
             builder.insert(Key::from(*key), entry(*fill), None);
         }
-        *block_on(builder.build(store)).unwrap().root()
+        *run(builder.build(store)).unwrap().root()
     }
 
     // The root a from-scratch build of `keys` produces, for the byte-identity
@@ -879,7 +877,7 @@ mod tests {
     fn an_empty_changeset_returns_the_root_unchanged() {
         let store = MemoryStore::default();
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
-        let out = block_on(apply(&store, &root, &Changeset::<V1>::new())).unwrap();
+        let out = run(apply(&store, &root, &Changeset::<V1>::new())).unwrap();
         assert_eq!(out, root);
     }
 
@@ -889,7 +887,7 @@ mod tests {
         let root = build(&store, &[(b"a", 1), (b"c", 3)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"b"[..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"a", 1), (b"b", 2), (b"c", 3)]));
     }
 
@@ -901,7 +899,7 @@ mod tests {
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"rock"[..]), entry(3), None);
         cs.put(Key::from(&b"rose"[..]), entry(4), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(
             out,
             rebuilt(&[(b"road", 1), (b"roam", 2), (b"rock", 3), (b"rose", 4)])
@@ -914,7 +912,7 @@ mod tests {
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"a"[..]), entry(9), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"a", 9), (b"b", 2)]));
     }
 
@@ -926,7 +924,7 @@ mod tests {
         let root = build(&store, &[(b"roam", 1), (b"road", 2), (b"x", 3)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&b"road"[..]));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"roam", 1), (b"x", 3)]));
     }
 
@@ -936,7 +934,7 @@ mod tests {
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&b"a"[..]));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"b", 2)]));
     }
 
@@ -948,7 +946,7 @@ mod tests {
         cs.remove(Key::from(&b"absent"[..]));
         cs.remove(Key::from(&b"a"[..]));
         cs.put(Key::from(&b"a"[..]), entry(1), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"a", 1), (b"ab", 2)]));
     }
 
@@ -960,7 +958,7 @@ mod tests {
         let root = build(&store, &[(b"abcdef", 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"abz"[..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"abcdef", 1), (b"abz", 2)]));
     }
 
@@ -977,7 +975,7 @@ mod tests {
         let mut cs = Changeset::<V1>::new();
         let branched = [2u8, 2, 1];
         cs.put(Key::from(&branched[..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&base[..], 1), (&branched[..], 2)]));
     }
 
@@ -994,7 +992,7 @@ mod tests {
         let root = build(&store, &[(&long[..], 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&prefix[..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 1), (&prefix[..], 2)]));
     }
 
@@ -1009,7 +1007,7 @@ mod tests {
         let root = build(&store, &[(&long[..], 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&prefix[..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 1), (&prefix[..], 2)]));
     }
 
@@ -1027,7 +1025,7 @@ mod tests {
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&[0u8, 0][..]));
         cs.put(Key::from(&long[..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
 
@@ -1037,19 +1035,17 @@ mod tests {
         let root = build(&store, &[(b"a", 1)]);
         let mut set = Changeset::<V1>::new();
         set.put(Key::empty(), entry(7), None);
-        let with_root = block_on(apply(&store, &root, &set)).unwrap();
+        let with_root = run(apply(&store, &root, &set)).unwrap();
 
         let mut expect = Builder::<V1>::new();
         expect.insert(Key::empty(), entry(7), None);
         expect.insert(Key::from(&b"a"[..]), entry(1), None);
-        let rebuilt_root = *block_on(expect.build(&MemoryStore::default()))
-            .unwrap()
-            .root();
+        let rebuilt_root = *run(expect.build(&MemoryStore::default())).unwrap().root();
         assert_eq!(with_root, rebuilt_root);
 
         let mut clear = Changeset::<V1>::new();
         clear.remove(Key::empty());
-        let cleared = block_on(apply(&store, &with_root, &clear)).unwrap();
+        let cleared = run(apply(&store, &with_root, &clear)).unwrap();
         assert_eq!(cleared, rebuilt(&[(b"a", 1)]));
     }
 
@@ -1066,7 +1062,7 @@ mod tests {
         let root = build(&store, &[(&short[..], 1), (&long[..], 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&short[..]));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
 
@@ -1079,7 +1075,7 @@ mod tests {
         let root = build(&store, &[(&long[..], 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&[0x07u8][..]), entry(2), None);
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 1), (&[0x07u8][..], 2)]));
     }
 
@@ -1094,7 +1090,7 @@ mod tests {
         let root = build(&store, &[(&short[..], 1), (&long[..], 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&short[..]));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
 
@@ -1106,10 +1102,10 @@ mod tests {
         // stripped terminal here merges nothing.
         // A 305-byte shared run over a 40-way branch: the node past the cut is
         // too heavy to embed, so the root's continuation is a reference.
-        let run = vec![0x09u8; 305];
+        let shared = vec![0x09u8; 305];
         let keys: Vec<(Vec<u8>, u8)> = (0u8..40)
             .map(|x| {
-                let mut key = run.clone();
+                let mut key = shared.clone();
                 key.push(x);
                 (key, x)
             })
@@ -1117,8 +1113,8 @@ mod tests {
         let borrowed: Vec<(&[u8], u8)> = keys.iter().map(|(k, x)| (&k[..], *x)).collect();
         let root = build(&store, &borrowed);
         let mut cs = Changeset::<V1>::new();
-        cs.remove(Key::from(&run[..V1::PLEN_MAX]));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        cs.remove(Key::from(&shared[..V1::PLEN_MAX]));
+        let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&borrowed));
         assert_eq!(out, root);
     }
@@ -1130,14 +1126,12 @@ mod tests {
         let root = build(&store, &[(b"a", 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"index.html"[..]), entry(2), Some(meta.clone()));
-        let out = block_on(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &root, &cs)).unwrap();
 
         let mut expect = Builder::<V1>::new();
         expect.insert(Key::from(&b"a"[..]), entry(1), None);
         expect.insert(Key::from(&b"index.html"[..]), entry(2), Some(meta));
-        let rebuilt_root = *block_on(expect.build(&MemoryStore::default()))
-            .unwrap()
-            .root();
+        let rebuilt_root = *run(expect.build(&MemoryStore::default())).unwrap().root();
         assert_eq!(out, rebuilt_root);
     }
 }

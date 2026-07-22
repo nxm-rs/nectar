@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::vec;
 use std::vec::Vec;
 
-use futures::executor::block_on;
 use futures::task::noop_waker;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
+use nectar_testing::run;
 
 use super::{Split, SplitError, SplitStats};
 use crate::config::{PutWindow, Window};
@@ -227,7 +227,7 @@ fn stream_split<const B: usize>(
     let store = TestStore::<B>::new(delay);
     let mut split: Split<TestStore<B>, Plain, B> =
         Split::new(store.clone(), PutWindow::new(window).unwrap());
-    let root = block_on(async {
+    let root = run(async {
         for piece in data.chunks(step.max(1)) {
             let mut buf = piece;
             while !buf.is_empty() {
@@ -324,7 +324,7 @@ fn split_then_walk_round_trips() {
         0..u64::MAX,
         Window::new(4).unwrap(),
     );
-    let bytes = block_on(async {
+    let bytes = run(async {
         let mut bytes = Vec::new();
         while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
             bytes.extend_from_slice(&frame.unwrap().data);
@@ -408,7 +408,7 @@ fn a_failed_put_poisons_the_fuse() {
     let store = reject_all::<_, TINY>(TestStore::<TINY>::new(0));
     let mut split = Split::<_, Plain, TINY>::new(store, PutWindow::new(2).unwrap());
     let data = fill(3 * TINY);
-    let error = block_on(async {
+    let error = run(async {
         let mut buf = data.as_slice();
         loop {
             match poll_fn(|cx| split.poll_write(cx, buf)).await {
@@ -443,7 +443,7 @@ fn a_failed_put_poisons_the_fuse() {
 fn collect_with_surfaces_a_put_failure() {
     let data = fill(3 * TINY);
     let store: FaultStore<_, _, TINY> = failing_at(TestStore::<TINY>::new(0), 3);
-    let error = block_on(Split::<_, Plain, TINY>::collect_with(
+    let error = run(Split::<_, Plain, TINY>::collect_with(
         store,
         PutWindow::new(2).unwrap(),
         &data,
@@ -506,8 +506,8 @@ mod encrypted {
     use std::sync::Arc;
     use std::vec::Vec;
 
-    use futures::executor::block_on;
     use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
+    use nectar_testing::run;
 
     use super::{BRANCHES, TINY, TestStore, fill, sorted, tree_chunks};
     use crate::config::{PutWindow, Window};
@@ -560,7 +560,7 @@ mod encrypted {
         let store = TestStore::<TINY>::new(1);
         let mut split: Split<TestStore<TINY>, Encrypted<K>, TINY> =
             Split::with_mode(store.clone(), mode, PutWindow::new(4).unwrap());
-        let root = block_on(async {
+        let root = run(async {
             for piece in data.chunks(step.max(1)) {
                 let mut buf = piece;
                 while !buf.is_empty() {
@@ -603,7 +603,7 @@ mod encrypted {
             let store = TestStore::<TINY>::new(1);
             let mut split: Split<TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
                 Split::new(store.clone(), PutWindow::new(4).unwrap());
-            let root = block_on(async {
+            let root = run(async {
                 let mut buf = data.as_slice();
                 while !buf.is_empty() {
                     let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
@@ -619,7 +619,7 @@ mod encrypted {
                 0..u64::MAX,
                 Window::new(4).unwrap(),
             );
-            let plaintext = block_on(async {
+            let plaintext = run(async {
                 let mut bytes = Vec::new();
                 while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
                     bytes.extend_from_slice(&frame.unwrap().data);
@@ -653,7 +653,7 @@ mod encrypted {
             0..u64::MAX,
             Window::new(4).unwrap(),
         );
-        let bytes = block_on(async {
+        let bytes = run(async {
             let mut bytes = Vec::new();
             while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
                 bytes.extend_from_slice(&frame.unwrap().data);
@@ -716,7 +716,7 @@ mod encrypted {
         let mut split: Split<TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
             Split::new(store.clone(), PutWindow::new(4).unwrap())
                 .with_hash_window(HashWindow::new(4).unwrap());
-        let root = block_on(async {
+        let root = run(async {
             let mut buf = data.as_slice();
             while !buf.is_empty() {
                 let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
@@ -732,7 +732,7 @@ mod encrypted {
             0..u64::MAX,
             Window::new(4).unwrap(),
         );
-        let plaintext = block_on(async {
+        let plaintext = run(async {
             let mut bytes = Vec::new();
             while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
                 bytes.extend_from_slice(&frame.unwrap().data);
@@ -752,7 +752,7 @@ mod encrypted {
         let store = TestStore::<TINY>::new(0);
         let mut split: Split<TestStore<TINY>, Encrypted<LimitedKeys>, TINY> =
             Split::with_mode(store, Encrypted::new(source), PutWindow::new(4).unwrap());
-        let error = block_on(async {
+        let error = run(async {
             let mut buf = data.as_slice();
             loop {
                 match poll_fn(|cx| split.poll_write(cx, buf)).await {
@@ -797,9 +797,9 @@ mod pooled {
     use std::vec::Vec;
 
     use bytes::Bytes;
-    use futures::executor::block_on;
     use futures::task::noop_waker;
     use nectar_primitives::chunk::{ChunkAddress, ContentChunk};
+    use nectar_testing::run;
 
     use super::{BRANCHES, TINY, TestStore, fill, sorted, stream_split, tree_chunks};
     use crate::config::{HashWindow, PutWindow};
@@ -819,7 +819,7 @@ mod pooled {
         let mut split: Split<TestStore<TINY>, Plain, TINY> =
             Split::new(store.clone(), PutWindow::new(put_window).unwrap())
                 .with_hash_window(HashWindow::new(hash_window).unwrap());
-        let root = block_on(async {
+        let root = run(async {
             for piece in data.chunks(step.max(1)) {
                 let mut buf = piece;
                 while !buf.is_empty() {
@@ -936,7 +936,7 @@ mod pooled {
 
         // Opening the gate drains the chain and the split finishes.
         *gate.lock().unwrap() = true;
-        let root = block_on(async {
+        let root = run(async {
             let mut buf = &data[consumed..];
             while !buf.is_empty() {
                 let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
@@ -982,7 +982,7 @@ mod pooled {
         let mut split: Split<TestStore<TINY>, PanicMode, TINY> =
             Split::new(store, PutWindow::DEFAULT).with_hash_window(HashWindow::new(2).unwrap());
         let data = fill(TINY);
-        let error = block_on(async {
+        let error = run(async {
             let mut buf = data.as_slice();
             while !buf.is_empty() {
                 match poll_fn(|cx| split.poll_write(cx, buf)).await {
@@ -1106,7 +1106,7 @@ fn huge_stream_root_matches_the_batch_ingest() {
         }
     }
 
-    let batch_root = block_on(split_read_at::<_, _, Plain, B>(
+    let batch_root = run(split_read_at::<_, _, Plain, B>(
         Pattern { len: size },
         Discard,
         PutWindow::new(16).unwrap(),
@@ -1114,7 +1114,7 @@ fn huge_stream_root_matches_the_batch_ingest() {
     .unwrap();
 
     let mut split: Split<Discard, Plain, B> = Split::new(Discard, PutWindow::new(16).unwrap());
-    let root = block_on(async {
+    let root = run(async {
         let mut buf = vec![0u8; 1 << 20];
         let mut offset = 0u64;
         while offset < size {

@@ -33,6 +33,7 @@ futures = { workspace = true }
 # The upload pipeline bench splits through the streaming engine and the
 # rayon batch ingest.
 nectar-file = { workspace = true, features = ["rayon"] }
+nectar-testing = { workspace = true }
 proptest = { workspace = true }
 proptest-arbitrary-interop = { workspace = true }
 criterion = { workspace = true }

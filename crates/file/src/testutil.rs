@@ -6,11 +6,11 @@ use std::boxed::Box;
 use std::string::ToString;
 use std::sync::Arc;
 
-use futures::executor::block_on;
 #[cfg(feature = "encryption")]
 use nectar_primitives::chunk::encryption::EncryptedChunkRef;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkPut, ChunkStoreError, MaybeSend, MaybeSync, MemoryStore};
+use nectar_testing::run;
 
 #[cfg(feature = "encryption")]
 use crate::split::RandomKeys;
@@ -107,7 +107,7 @@ where
     M: SplitMode + Default,
 {
     let store = Arc::new(MemoryStore::new());
-    let root = block_on(Split::<Arc<MemoryStore<AnyChunkSet<B>>>, M, B>::collect(
+    let root = run(Split::<Arc<MemoryStore<AnyChunkSet<B>>>, M, B>::collect(
         Arc::clone(&store),
         data,
     ))

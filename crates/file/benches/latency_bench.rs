@@ -20,6 +20,9 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
+// The latency model is wall clock under a real tokio runtime, so the runtime's
+// own `block_on` is the entry point here.
+#![allow(clippy::disallowed_methods)]
 
 use core::time::Duration;
 use std::collections::HashMap;

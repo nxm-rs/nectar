@@ -189,9 +189,9 @@ impl<T: ChunkPut> NodePut for T {}
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef, DefaultContentChunk};
+    use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::meta::{KeyId, Metadata};
@@ -227,8 +227,8 @@ mod tests {
         let store = MemoryStore::default();
         let node = sample();
 
-        let address = block_on(store.put_node(&node)).unwrap();
-        let loaded: Node = block_on(store.get_node(&address)).unwrap();
+        let address = run(store.put_node(&node)).unwrap();
+        let loaded: Node = run(store.get_node(&address)).unwrap();
 
         assert_eq!(loaded, node);
     }
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn missing_address_is_a_store_error() {
         let store = MemoryStore::default();
-        let err = block_on(store.get_node::<crate::V1>(&ChunkAddress::new([0; 32]))).unwrap_err();
+        let err = run(store.get_node::<crate::V1>(&ChunkAddress::new([0; 32]))).unwrap_err();
         assert!(matches!(err, StoreError::Store(_)));
     }
 }

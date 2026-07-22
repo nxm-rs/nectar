@@ -948,7 +948,7 @@ mod tests {
             buf[32 - path.len()..].copy_from_slice(path);
             ChunkRef::from(ChunkAddress::from(buf))
         };
-        futures::executor::block_on(n.add::<
+        nectar_testing::run(n.add::<
             nectar_primitives::store::NullLoader,
             { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
         >(
@@ -1097,7 +1097,7 @@ mod tests {
                 buf[32 - len..].copy_from_slice(&path[..len]);
                 ChunkRef::from(ChunkAddress::from(buf))
             };
-            futures::executor::block_on(n.add::<
+            nectar_testing::run(n.add::<
                 nectar_primitives::store::NullLoader,
                 { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
             >(

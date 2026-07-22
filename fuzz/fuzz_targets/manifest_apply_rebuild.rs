@@ -11,7 +11,7 @@
 #![no_main]
 
 use bytes::Bytes;
-use futures::executor::block_on;
+use nectar_testing::run;
 use libfuzzer_sys::fuzz_target;
 use nectar_manifest::{Builder, Changeset, Entry, Key, V1, apply};
 use nectar_primitives::store::MemoryStore;
@@ -48,7 +48,7 @@ fn build(pairs: &BTreeMap<Vec<u8>, Entry<V1>>) -> Option<(MemoryStore, ChunkAddr
     for (key, entry) in pairs {
         builder.insert(Key::from(key.clone()), entry.clone(), None);
     }
-    let built = block_on(builder.build(&store)).ok()?;
+    let built = run(builder.build(&store)).ok()?;
     Some((store, *built.root()))
 }
 
@@ -80,7 +80,7 @@ fuzz_target!(
             }
         }
 
-        let applied = block_on(apply(&store, &root, &changeset));
+        let applied = run(apply(&store, &root, &changeset));
         let rebuilt = build(&merged).map(|(_, root)| root);
 
         if let (Ok(applied), Some(rebuilt)) = (applied, rebuilt) {

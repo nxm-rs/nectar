@@ -389,9 +389,9 @@ fn descend<F: Format>(table: &ForkTable<F>, key: &[u8], pos: usize) -> Descent<F
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
+    use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::fork::{Child, ForkPayload, ForkTable};
@@ -417,7 +417,7 @@ mod tests {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"logo.png"), entry(0xBB).into(), None)
             .unwrap();
-        let leaf_ref = block_on(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_ref = run(store.put_node(&Node::new(None, leaf))).unwrap();
 
         // The root: "index.html" behind an embedded child, "mg/" behind the
         // referenced leaf.
@@ -436,25 +436,25 @@ mod tests {
                 None,
             )
             .unwrap();
-        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
-            block_on(reader.get(&root, &Key::from(&b"index.html"[..]))).unwrap(),
+            run(reader.get(&root, &Key::from(&b"index.html"[..]))).unwrap(),
             Some(entry(0xAA)),
         );
         assert_eq!(
-            block_on(reader.get(&root, &Key::from(&b"mg/logo.png"[..]))).unwrap(),
+            run(reader.get(&root, &Key::from(&b"mg/logo.png"[..]))).unwrap(),
             Some(entry(0xBB)),
         );
         // A key that prefixes an edge without reaching its end is absent.
         assert_eq!(
-            block_on(reader.get(&root, &Key::from(&b"mg/logo"[..]))).unwrap(),
+            run(reader.get(&root, &Key::from(&b"mg/logo"[..]))).unwrap(),
             None,
         );
         // A key past a fork with no matching continuation is absent.
         assert_eq!(
-            block_on(reader.get(&root, &Key::from(&b"other"[..]))).unwrap(),
+            run(reader.get(&root, &Key::from(&b"other"[..]))).unwrap(),
             None,
         );
     }
@@ -468,29 +468,26 @@ mod tests {
         forks
             .insert(prefix(b"a"), Child::Embedded(child).into(), None)
             .unwrap();
-        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         // "ab" terminates, "a" is only a branch.
         assert_eq!(
-            block_on(reader.get(&root, &Key::from(&b"ab"[..]))).unwrap(),
+            run(reader.get(&root, &Key::from(&b"ab"[..]))).unwrap(),
             Some(entry(1)),
         );
-        assert_eq!(
-            block_on(reader.get(&root, &Key::from(&b"a"[..]))).unwrap(),
-            None,
-        );
+        assert_eq!(run(reader.get(&root, &Key::from(&b"a"[..]))).unwrap(), None,);
     }
 
     #[test]
     fn the_empty_key_reads_the_root_extension_value() {
         let store = MemoryStore::default();
         let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
-        let root = block_on(store.put_node(&Node::new(root_ext, ForkTable::new()))).unwrap();
+        let root = run(store.put_node(&Node::new(root_ext, ForkTable::new()))).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
-            block_on(reader.get(&root, &Key::empty())).unwrap(),
+            run(reader.get(&root, &Key::empty())).unwrap(),
             Some(entry(9)),
         );
     }
@@ -503,11 +500,11 @@ mod tests {
         forks
             .insert(prefix(b"k"), ForkPayload::Entry(value.clone()), None)
             .unwrap();
-        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
-            block_on(reader.get(&root, &Key::from(&b"k"[..]))).unwrap(),
+            run(reader.get(&root, &Key::from(&b"k"[..]))).unwrap(),
             Some(value),
         );
     }
@@ -518,7 +515,7 @@ mod tests {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"logo.png"), entry(0xBB).into(), None)
             .unwrap();
-        let leaf_ref = block_on(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_ref = run(store.put_node(&Node::new(None, leaf))).unwrap();
 
         let mut embedded = ForkTable::new();
         embedded
@@ -535,7 +532,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
         (root, leaf_ref)
     }
 
@@ -545,7 +542,7 @@ mod tests {
         let (root, _) = subtree_sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
-            block_on(reader.subtree(&root, &Key::empty())).unwrap(),
+            run(reader.subtree(&root, &Key::empty())).unwrap(),
             Some(ChunkRef::new(root)),
         );
     }
@@ -558,13 +555,13 @@ mod tests {
         // The prefix ends exactly at the referenced edge: the child is the
         // subtree root, and its key set is exactly the "mg/" keys.
         assert_eq!(
-            block_on(reader.subtree(&root, &Key::from(&b"mg/"[..]))).unwrap(),
+            run(reader.subtree(&root, &Key::from(&b"mg/"[..]))).unwrap(),
             Some(ChunkRef::new(leaf_ref)),
         );
         // A shorter prefix funnels into the same lone child with no branch or
         // key between: still one node boundary, still the child.
         assert_eq!(
-            block_on(reader.subtree(&root, &Key::from(&b"m"[..]))).unwrap(),
+            run(reader.subtree(&root, &Key::from(&b"m"[..]))).unwrap(),
             Some(ChunkRef::new(leaf_ref)),
         );
     }
@@ -577,7 +574,7 @@ mod tests {
         // "mg/logo" lands within the leaf's "logo.png" edge, which terminates a
         // key rather than referencing a child: no chunk holds exactly its keys.
         assert_eq!(
-            block_on(reader.subtree(&root, &Key::from(&b"mg/logo"[..]))).unwrap(),
+            run(reader.subtree(&root, &Key::from(&b"mg/logo"[..]))).unwrap(),
             None,
         );
     }
@@ -590,7 +587,7 @@ mod tests {
         // "index.html" lives embedded in the root chunk, with no chunk of its
         // own to hand off.
         assert_eq!(
-            block_on(reader.subtree(&root, &Key::from(&b"i"[..]))).unwrap(),
+            run(reader.subtree(&root, &Key::from(&b"i"[..]))).unwrap(),
             None,
         );
     }
@@ -601,7 +598,7 @@ mod tests {
         let (root, _) = subtree_sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
-            block_on(reader.subtree(&root, &Key::from(&b"zzz"[..]))).unwrap(),
+            run(reader.subtree(&root, &Key::from(&b"zzz"[..]))).unwrap(),
             None,
         );
     }
@@ -623,16 +620,16 @@ mod tests {
                 None,
             )
             .unwrap();
-        let root = block_on(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
         let reader: Reader<_> = Reader::new(&store);
         // The boundary lands exactly on the encrypted edge.
         assert!(matches!(
-            block_on(reader.subtree(&root, &Key::from(&b"sec/"[..]))),
+            run(reader.subtree(&root, &Key::from(&b"sec/"[..]))),
             Err(ReaderError::EncryptedChild),
         ));
         // A shorter prefix funnelling into the same encrypted child errs alike.
         assert!(matches!(
-            block_on(reader.subtree(&root, &Key::from(&b"s"[..]))),
+            run(reader.subtree(&root, &Key::from(&b"s"[..]))),
             Err(ReaderError::EncryptedChild),
         ));
     }
@@ -642,7 +639,7 @@ mod tests {
         let store = MemoryStore::default();
         let (root, leaf_ref) = subtree_sample(&store);
         let reader: Reader<_> = Reader::new(&store);
-        let sub = block_on(reader.subtree(&root, &Key::from(&b"mg/"[..])))
+        let sub = run(reader.subtree(&root, &Key::from(&b"mg/"[..])))
             .unwrap()
             .unwrap();
         assert_eq!(sub.address(), &leaf_ref);
@@ -650,16 +647,16 @@ mod tests {
         // The delegated subtree, walked from its own root, yields the same keys
         // as the prefix range walked from the manifest root.
         let mut delegated = Vec::new();
-        let mut cursor = block_on(reader.iter(sub.address())).unwrap();
-        while let Some((key, value)) = block_on(cursor.next()).unwrap() {
+        let mut cursor = run(reader.iter(sub.address())).unwrap();
+        while let Some((key, value)) = run(cursor.next()).unwrap() {
             let mut full = b"mg/".to_vec();
             full.extend_from_slice(key.as_bytes());
             delegated.push((full, value));
         }
 
         let mut walked = Vec::new();
-        let mut cursor = block_on(reader.prefix(&root, &Key::from(&b"mg/"[..]))).unwrap();
-        while let Some((key, value)) = block_on(cursor.next()).unwrap() {
+        let mut cursor = run(reader.prefix(&root, &Key::from(&b"mg/"[..]))).unwrap();
+        while let Some((key, value)) = run(cursor.next()).unwrap() {
             walked.push((key.as_bytes().to_vec(), value));
         }
         assert_eq!(delegated, walked);
@@ -669,8 +666,7 @@ mod tests {
     fn a_missing_root_is_a_store_error() {
         let store = MemoryStore::default();
         let reader: Reader<_> = Reader::new(&store);
-        let err =
-            block_on(reader.get(&ChunkAddress::new([0; 32]), &Key::from(&b"x"[..]))).unwrap_err();
+        let err = run(reader.get(&ChunkAddress::new([0; 32]), &Key::from(&b"x"[..]))).unwrap_err();
         assert!(matches!(err, ReaderError::Store(StoreError::Store(_))));
     }
 }

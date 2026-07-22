@@ -69,7 +69,7 @@ pub use mode::{Sealed, SplitMode};
 /// stay within `window` and buffered chunks within the spine height.
 ///
 /// ```
-/// # futures::executor::block_on(async {
+/// # nectar_testing::run(async {
 /// use nectar_file::split::collect_into;
 /// use nectar_file::{Plain, PutWindow};
 /// use nectar_primitives::chunk::AnyChunkSet;

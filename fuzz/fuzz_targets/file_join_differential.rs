@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use futures::executor::block_on;
+use nectar_testing::run;
 use libfuzzer_sys::fuzz_target;
 use nectar_file::{File, Plain};
 use nectar_fuzz::{split, tile};
@@ -23,7 +23,7 @@ fuzz_target!(|input: (Vec<u8>, u16)| {
 
     let (root, store) = split(&data);
 
-    let collected = block_on(async {
+    let collected = run(async {
         let file = File::<_, Plain, BODY>::open(Arc::clone(&store), root)
             .await
             .expect("open must succeed over a complete store");
@@ -34,7 +34,7 @@ fuzz_target!(|input: (Vec<u8>, u16)| {
     assert_eq!(collected, data, "collect diverged from the source bytes");
 
     // The buffered reader drains the same bytes through its own path.
-    let drained = block_on(async {
+    let drained = run(async {
         let file = File::<_, Plain, BODY>::open(store, root)
             .await
             .expect("reopen must succeed over a complete store");

@@ -20,11 +20,11 @@
 
 use std::collections::BTreeMap;
 
-use futures::executor::block_on;
 use nectar_mantaray::ManifestEditor;
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::store::MemoryStore;
+use nectar_testing::run;
 use proptest::prelude::*;
 
 type Store = MemoryStore<StandardChunkSet>;
@@ -66,20 +66,20 @@ fn legacy_outcome(script: &[ScriptOp]) -> Outcome {
     let mut m = OldManifest::new(OldStore::new());
     for (index, op) in script.iter().enumerate() {
         let result = match op {
-            ScriptOp::Add(p, a) => block_on(m.add(p, *a)),
+            ScriptOp::Add(p, a) => run(m.add(p, *a)),
             ScriptOp::AddMeta(p, a, k, v) => {
                 let meta: BTreeMap<String, String> = [(k.clone(), v.clone())].into();
-                block_on(m.add_with_metadata(p, *a, meta))
+                run(m.add_with_metadata(p, *a, meta))
             }
-            ScriptOp::Rm(p) => block_on(m.remove(p)),
-            ScriptOp::SetIndex(v) => block_on(m.set_index_document(v)),
-            ScriptOp::SetError(v) => block_on(m.set_error_document(v)),
+            ScriptOp::Rm(p) => run(m.remove(p)),
+            ScriptOp::SetIndex(v) => run(m.set_index_document(v)),
+            ScriptOp::SetError(v) => run(m.set_error_document(v)),
         };
         if result.is_err() {
             return Outcome::FailedAt(index);
         }
     }
-    let root = block_on(m.save()).unwrap();
+    let root = run(m.save()).unwrap();
     let mut out = [0u8; 32];
     out.copy_from_slice(root.as_bytes());
     Outcome::Root(out)
@@ -136,7 +136,7 @@ fn outcome_from(
 fn editor_outcome(script: &[ScriptOp]) -> Outcome {
     let mut editor = Editor::new(Store::new());
     record(&mut editor, script);
-    match outcome_from(block_on(editor.commit()), 0) {
+    match outcome_from(run(editor.commit()), 0) {
         Ok((root, _)) => {
             let mut out = [0u8; 32];
             out.copy_from_slice(root.as_bytes());
@@ -151,13 +151,13 @@ fn editor_outcome_split(script: &[ScriptOp], split: usize) -> Outcome {
     let (head, tail) = script.split_at(split.min(script.len()));
     let mut editor = Editor::new(Store::new());
     record(&mut editor, head);
-    let (root, store) = match outcome_from(block_on(editor.commit()), 0) {
+    let (root, store) = match outcome_from(run(editor.commit()), 0) {
         Ok(ok) => ok,
         Err(failed) => return failed,
     };
     let mut editor = Editor::open(root, store);
     record(&mut editor, tail);
-    match outcome_from(block_on(editor.commit()), head.len()) {
+    match outcome_from(run(editor.commit()), head.len()) {
         Ok((root, _)) => {
             let mut out = [0u8; 32];
             out.copy_from_slice(root.as_bytes());
@@ -317,11 +317,11 @@ fn permutations_match_legacy() {
 #[test]
 fn clean_ancestor_hazard_regression() {
     let mut legacy = OldManifest::new(OldStore::new());
-    block_on(legacy.add("index.html", addr_bytes("index.html"))).unwrap();
-    let stale = block_on(legacy.save()).unwrap();
-    block_on(legacy.set_index_document("index.html")).unwrap();
+    run(legacy.add("index.html", addr_bytes("index.html"))).unwrap();
+    let stale = run(legacy.save()).unwrap();
+    run(legacy.set_index_document("index.html")).unwrap();
     assert_eq!(
-        block_on(legacy.save()).unwrap(),
+        run(legacy.save()).unwrap(),
         stale,
         "the pinned legacy no longer exhibits the clean-ancestor hazard"
     );

@@ -23,7 +23,7 @@
 //! use nectar_file::AnyFile;
 //! use nectar_mantaray::{ManifestEditor, Reader};
 //!
-//! # futures::executor::block_on(async {
+//! # nectar_testing::run(async {
 //! let data = b"hello swarm".to_vec();
 //! # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
 //! # let root = nectar_file::Split::<_, nectar_file::Plain, 4096>::collect(

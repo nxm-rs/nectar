@@ -11,11 +11,11 @@ use std::vec;
 use std::vec::Vec;
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_primitives::chunk::{
     AnyChunk, AnyChunkSet, Chunk, ChunkAddress, ChunkOps, ContentChunk, Verified,
 };
 use nectar_primitives::store::{ChunkGet, ChunkStoreError, TrustedGet};
+use nectar_testing::run;
 
 use super::{Frame, Plain, ShapeError, Walk, WalkError};
 use crate::config::Window;
@@ -283,7 +283,7 @@ fn collect_ordered<S>(walk: &mut TinyWalk<S>) -> Result<Vec<Frame>, WalkError<Ch
 where
     S: TrustedGet<TinyRegistry, Error = ChunkStoreError> + Clone + 'static,
 {
-    block_on(async {
+    run(async {
         let mut frames = Vec::new();
         while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
             frames.push(frame?);
@@ -296,7 +296,7 @@ fn collect_any<S>(walk: &mut TinyWalk<S>) -> Result<Vec<Frame>, WalkError<ChunkS
 where
     S: TrustedGet<TinyRegistry, Error = ChunkStoreError> + Clone + 'static,
 {
-    block_on(async {
+    run(async {
         let mut frames = Vec::new();
         while let Some(frame) = poll_fn(|cx| walk.poll_next_any(cx)).await {
             frames.push(frame?);
@@ -474,7 +474,7 @@ fn store_error_is_terminal_without_retry() {
     let attempts = store.log().iter().filter(|a| **a == missing).count();
     assert_eq!(attempts, 1, "the engine must not retry");
     assert!(walk.is_finished());
-    block_on(async {
+    run(async {
         assert!(poll_fn(|cx| walk.poll_next_ordered(cx)).await.is_none());
     });
 }
@@ -496,7 +496,7 @@ fn head_last_liveness_under_slow_consumer() {
         gate: usize::from(window) - 1,
     };
     let mut walk = walk_range(store, &tree, 0..tree.span, window);
-    let frames = block_on(async {
+    let frames = run(async {
         let mut frames = Vec::new();
         while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
             frames.push(frame.unwrap());

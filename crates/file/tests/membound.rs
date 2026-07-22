@@ -33,13 +33,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
-use futures::executor::block_on;
 use nectar_file::{
     BranchBudget, CollectError, File, FileReader, Frame, MemSink, Plain, PutWindow, Split,
     SplitStats, WalkMode, WalkStats, Window,
 };
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
+use nectar_testing::run;
 
 /// Tiny body size: fan-out 8, so a few hundred leaves already build a deep
 /// tree.
@@ -236,7 +236,7 @@ fn split_plain(
     let store = GaugeStore::new(delay);
     let mut split: Split<GaugeStore<TINY>, Plain, TINY> =
         Split::new(store.clone(), PutWindow::new(window).unwrap());
-    let root = block_on(async {
+    let root = run(async {
         let mut buf = data;
         while !buf.is_empty() {
             let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
@@ -249,7 +249,7 @@ fn split_plain(
 }
 
 fn open_plain(store: GaugeStore<TINY>, root: ChunkAddress) -> PlainFile {
-    block_on(File::open(store, root)).unwrap()
+    run(File::open(store, root)).unwrap()
 }
 
 /// Drain a reader in order, pausing `pause` yields per segment to model a
@@ -258,7 +258,7 @@ fn drain_reader<M: WalkMode>(
     reader: &mut FileReader<GaugeStore<TINY>, M, TINY>,
     pause: usize,
 ) -> Vec<u8> {
-    block_on(async {
+    run(async {
         let mut out = Vec::new();
         while let Some(segment) = reader.next_segment().await {
             out.extend_from_slice(&segment.unwrap());
@@ -441,7 +441,7 @@ fn frames_and_download_hold_the_window_out_of_order() {
         .range(100..15_000)
         .frames();
     let clipped = frames.range();
-    let mut collected: Vec<Frame> = block_on(async {
+    let mut collected: Vec<Frame> = run(async {
         let mut out = Vec::new();
         while let Some(frame) = frames.next().await {
             out.push(frame.unwrap());
@@ -466,12 +466,11 @@ fn frames_and_download_hold_the_window_out_of_order() {
     let store = built.fresh(3);
     let file = open_plain(store.clone(), root);
     let mut sink = MemSink::new();
-    let written = block_on(
-        file.download()
-            .window(Window::new(window).unwrap())
-            .range(100..15_000)
-            .run(&mut sink),
-    )
+    let written = run(file
+        .download()
+        .window(Window::new(window).unwrap())
+        .range(100..15_000)
+        .run(&mut sink))
     .unwrap();
     assert_eq!(written, 14_900);
     assert_eq!(sink.as_ref(), &data[100..15_000]);
@@ -510,7 +509,7 @@ fn collect_refuses_an_oversized_range_before_any_fetch() {
     // One byte under the length: a typed refusal before the walk fetches.
     let store = built.fresh(0);
     let file = open_plain(store.clone(), root);
-    let error = block_on(file.read().collect(size as u64 - 1)).unwrap_err();
+    let error = run(file.read().collect(size as u64 - 1)).unwrap_err();
     match error {
         CollectError::TooLarge { len, max } => {
             assert_eq!((len, max), (size as u64, size as u64 - 1));
@@ -527,11 +526,10 @@ fn collect_refuses_an_oversized_range_before_any_fetch() {
     let store = built.fresh(2);
     let file = open_plain(store.clone(), root);
     let window = 4u16;
-    let out = block_on(
-        file.read()
-            .window(Window::new(window).unwrap())
-            .collect(size as u64),
-    )
+    let out = run(file
+        .read()
+        .window(Window::new(window).unwrap())
+        .collect(size as u64))
     .unwrap();
     assert_eq!(out, data);
     assert!(store.gets.peak() <= usize::from(window) + budget(window, BRANCHES as u32));
@@ -540,7 +538,7 @@ fn collect_refuses_an_oversized_range_before_any_fetch() {
     let (root, built, _) = split_plain(&[], 4, 0);
     let store = built.fresh(0);
     let file = open_plain(store, root);
-    assert!(block_on(file.collect(0)).unwrap().is_empty());
+    assert!(run(file.collect(0)).unwrap().is_empty());
 }
 
 #[test]
@@ -555,12 +553,11 @@ fn collect_assembles_out_of_order_within_the_window() {
     let window = 4u16;
     let store = built.fresh(3).parked(head, usize::from(window) - 1);
     let file = open_plain(store.clone(), root);
-    let out = block_on(
-        file.read()
-            .window(Window::new(window).unwrap())
-            .range(100..size as u64 - 7)
-            .collect(size as u64),
-    )
+    let out = run(file
+        .read()
+        .window(Window::new(window).unwrap())
+        .range(100..size as u64 - 7)
+        .collect(size as u64))
     .unwrap();
     assert_eq!(out, &data[100..size - 7]);
     assert!(store.gets.peak() <= usize::from(window) + budget(window, BRANCHES as u32));
@@ -646,9 +643,9 @@ mod encrypted {
     use core::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    use futures::executor::block_on;
     use nectar_file::{Encrypted, File, KeyError, KeySource, PutWindow, Split, SplitStats, Window};
     use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
+    use nectar_testing::run;
 
     use super::{
         GaugeStore, TINY, assert_read_bounds, boundary_sizes, chunk_depth, drain_reader, fill,
@@ -684,7 +681,7 @@ mod encrypted {
             Encrypted::new(SeqKeys::default()),
             PutWindow::new(window).unwrap(),
         );
-        let root = block_on(async {
+        let root = run(async {
             let mut buf = data;
             while !buf.is_empty() {
                 let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
@@ -717,7 +714,7 @@ mod encrypted {
 
             let store = built.fresh(2);
             let file: File<GaugeStore<TINY>, Encrypted, TINY> =
-                block_on(File::open_encrypted(store.clone(), root)).unwrap();
+                run(File::open_encrypted(store.clone(), root)).unwrap();
             assert_eq!(store.gets.total(), 1, "open fetched more than the root");
             assert_eq!(file.len(), size as u64);
             let window = 3u16;
@@ -736,8 +733,8 @@ mod encrypted {
 mod batch {
     use core::future::poll_fn;
 
-    use futures::executor::block_on;
     use nectar_file::{HashWindow, Plain, PutWindow, Split, split_read_at};
+    use nectar_testing::run;
 
     use super::{BRANCHES, GaugeStore, TINY, fill, split_plain};
 
@@ -748,7 +745,7 @@ mod batch {
         let (streamed_root, streamed_store, _) = split_plain(&data, 4, 0);
         for window in [1u16, 4] {
             let store = GaugeStore::<TINY>::new(2);
-            let root = block_on(split_read_at::<_, _, Plain, TINY>(
+            let root = run(split_read_at::<_, _, Plain, TINY>(
                 data.clone(),
                 store.clone(),
                 PutWindow::new(window).unwrap(),
@@ -774,7 +771,7 @@ mod batch {
             let mut split: Split<GaugeStore<TINY>, Plain, TINY> =
                 Split::new(store.clone(), PutWindow::new(put_window).unwrap())
                     .with_hash_window(HashWindow::new(hash_window).unwrap());
-            let root = block_on(async {
+            let root = run(async {
                 let mut buf = data.as_slice();
                 while !buf.is_empty() {
                     let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();

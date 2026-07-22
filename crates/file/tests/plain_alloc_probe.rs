@@ -24,10 +24,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 
-use futures::executor::block_on;
 use nectar_file::{File, Plain, PutWindow, Split};
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::MemoryStore;
+use nectar_testing::run;
 
 /// Body size of the default profile.
 const BODY: usize = nectar_primitives::DEFAULT_BODY_SIZE;
@@ -80,7 +80,7 @@ fn fill(len: usize) -> Vec<u8> {
 fn split_plain(data: &[u8]) -> (ChunkAddress, Store) {
     let store: Store = Arc::new(MemoryStore::new());
     let mut split: Split<Store, Plain, BODY> = Split::new(Arc::clone(&store), PutWindow::DEFAULT);
-    let root = block_on(async {
+    let root = run(async {
         let mut buf = data;
         while !buf.is_empty() {
             let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
@@ -99,7 +99,7 @@ fn probe(leaves: usize) -> (u64, u64, u64) {
 
     let calls = CALLS.load(Ordering::Relaxed);
     let body_calls = BODY_CALLS.load(Ordering::Relaxed);
-    let (read, fetches) = block_on(async {
+    let (read, fetches) = run(async {
         let file: File<Store, Plain, BODY> = File::open(store, root).await.unwrap();
         let mut reader = file.read().build();
         let mut read = 0usize;

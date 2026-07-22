@@ -11,7 +11,6 @@ use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{
     ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, Metadata, Reader, V1, apply,
     recanonicalize,
@@ -20,6 +19,7 @@ use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkOps, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet, Verified,
 };
+use nectar_testing::run;
 use proptest::prelude::*;
 
 mod common;
@@ -78,7 +78,7 @@ fn fill_radix(builder: &mut Builder<V1>, radix: u8, remaining: u32, key: &mut Ve
 fn build_radix(store: &MemoryStore, radix: u8, len: u32) -> Result<BuildStats, Box<dyn Error>> {
     let mut builder = Builder::<V1>::new();
     fill_radix(&mut builder, radix, len, &mut Vec::new(), 0x11);
-    let built = block_on(builder.build(store)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(store)).map_err(|e| e.to_string())?;
     Ok(*built.stats())
 }
 
@@ -160,7 +160,7 @@ fn a_million_key_manifest_is_depth_bounded() -> TestResult {
     let inner = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
     fill_radix256(&mut builder, 16, 0x22)?;
-    let built = block_on(builder.build(&inner)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(&inner)).map_err(|e| e.to_string())?;
     let stats = *built.stats();
     let root = *built.root();
 
@@ -195,8 +195,7 @@ fn a_million_key_manifest_is_depth_bounded() -> TestResult {
     let reader: Reader<_> = Reader::new(&store);
     for probe in [[0u8, 0, 0], [255, 255, 15], [128, 64, 8], [7, 200, 3]] {
         store.gets.store(0, Ordering::Relaxed);
-        let value =
-            block_on(reader.get(&root, &Key::from(&probe[..]))).map_err(|e| e.to_string())?;
+        let value = run(reader.get(&root, &Key::from(&probe[..]))).map_err(|e| e.to_string())?;
         ensure(
             value == Some(entry(0x22)),
             &format!("missing key {probe:?}"),
@@ -224,7 +223,7 @@ fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> TestResult {
             .map_err(|e| e.to_string())?;
         builder.insert(Key::from(vec![byte]), entry(byte), Some(meta));
     }
-    let built = block_on(builder.build(&store)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(&store)).map_err(|e| e.to_string())?;
 
     // The node did not fit one chunk, so it was spilled across several.
     ensure(
@@ -235,8 +234,8 @@ fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> TestResult {
 
     let reader: Reader<_> = Reader::new(&store);
     for first in [0u8, 1, 127, 200, 255] {
-        let value = block_on(reader.get(built.root(), &Key::from(vec![first])))
-            .map_err(|e| e.to_string())?;
+        let value =
+            run(reader.get(built.root(), &Key::from(vec![first]))).map_err(|e| e.to_string())?;
         ensure(
             value == Some(entry(first)),
             &format!("missing key {first} after spill"),
@@ -259,7 +258,7 @@ fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> TestResult {
             .map_err(|e| e.to_string())?;
         builder.insert(Key::from(vec![byte]), entry(byte), Some(meta));
     }
-    block_on(builder.build(&store)).map_err(|e| e.to_string())?;
+    run(builder.build(&store)).map_err(|e| e.to_string())?;
 
     let mut saw_segment = false;
     for chunk in store.into_chunks().into_values() {
@@ -302,7 +301,7 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> TestResult {
             Some(heavy().map_err(|e| e.to_string())?),
         );
     }
-    let base = block_on(base_builder.build(&base_store)).map_err(|e| e.to_string())?;
+    let base = run(base_builder.build(&base_store)).map_err(|e| e.to_string())?;
     ensure(
         base.stats().nodes_written() > 1,
         "the base root node must spill",
@@ -319,8 +318,7 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> TestResult {
             Some(heavy().map_err(|e| e.to_string())?),
         );
     }
-    let applied =
-        block_on(apply(&base_store, base.root(), &changeset)).map_err(|e| e.to_string())?;
+    let applied = run(apply(&base_store, base.root(), &changeset)).map_err(|e| e.to_string())?;
 
     // A from-scratch build of the merged key set.
     let scratch_store = MemoryStore::default();
@@ -333,7 +331,7 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> TestResult {
             Some(heavy().map_err(|e| e.to_string())?),
         );
     }
-    let scratch = block_on(scratch_builder.build(&scratch_store)).map_err(|e| e.to_string())?;
+    let scratch = run(scratch_builder.build(&scratch_store)).map_err(|e| e.to_string())?;
 
     ensure(
         applied == *scratch.root(),
@@ -386,7 +384,7 @@ proptest! {
             };
             builder.insert(Key::from(key.clone()), entry(*fill), metadata);
         }
-        let built = block_on(builder.build(&store));
+        let built = run(builder.build(&store));
         prop_assert!(built.is_ok(), "a wide/heavy set must spill, not error: {built:?}");
         for len in chunk_lengths(&store) {
             prop_assert!(len <= DEFAULT_BODY_SIZE, "built node over one chunk body");
@@ -405,14 +403,14 @@ proptest! {
         for (key, fill, _) in &base {
             builder.insert(Key::from(key.clone()), entry(*fill), None);
         }
-        let Ok(built) = block_on(builder.build(&store)) else {
+        let Ok(built) = run(builder.build(&store)) else {
             return Ok(());
         };
         let mut changeset = Changeset::<V1>::new();
         for (key, fill, _) in &delta {
             changeset.put(Key::from(key.clone()), entry(*fill), None);
         }
-        match block_on(apply(&store, built.root(), &changeset)) {
+        match run(apply(&store, built.root(), &changeset)) {
             Ok(_) => {
                 for len in chunk_lengths(&store) {
                     prop_assert!(len <= DEFAULT_BODY_SIZE, "applied node over one chunk body");

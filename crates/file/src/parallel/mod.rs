@@ -39,7 +39,7 @@ use crate::split::{Split, SplitMode};
 /// use nectar_primitives::chunk::AnyChunkSet;
 /// use nectar_primitives::store::MemoryStore;
 ///
-/// # futures::executor::block_on(async {
+/// # nectar_testing::run(async {
 /// let data = vec![7u8; 10_000];
 /// let store = MemoryStore::<AnyChunkSet<4096>>::new();
 /// let root = split_read_at::<_, _, Plain, 4096>(data, store, PutWindow::DEFAULT)

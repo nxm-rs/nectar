@@ -26,6 +26,7 @@ nectar-primitives = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]
+nectar-testing.workspace = true
 proptest.workspace = true
 
 [features]

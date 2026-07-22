@@ -7,12 +7,12 @@
 use std::error::Error;
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{
     BuildStats, Builder, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node, NodeGet,
     Prefix, RootExtension, V1, build_files,
 };
 use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, MemoryStore};
+use nectar_testing::run;
 
 mod common;
 use common::{TestResult, ensure, ensure_eq, split_whole};
@@ -80,7 +80,7 @@ fn builds_the_worked_example_byte_for_byte() -> TestResult {
         )
         .manifest_metadata(website_index()?);
 
-    let built = block_on(builder.build(&store))?;
+    let built = run(builder.build(&store))?;
 
     // The shared child is inlined, so the whole manifest is one chunk.
     ensure_eq(built.stats().nodes_written(), 1, "one node written")?;
@@ -95,7 +95,7 @@ fn builds_the_worked_example_byte_for_byte() -> TestResult {
         "root payload",
     )?;
 
-    let decoded: Node = block_on(store.get_node(built.root()))?;
+    let decoded: Node = run(store.get_node(built.root()))?;
     ensure_eq(decoded, worked_example_node()?, "decoded root")
 }
 
@@ -105,7 +105,7 @@ fn root_of(order: &[(&[u8], u8)]) -> Result<ChunkAddress, Box<dyn Error>> {
     for (key, fill) in order {
         builder.insert(Key::from(*key), Entry::from(ref32(*fill)), None);
     }
-    Ok(*block_on(builder.build(&store))?.root())
+    Ok(*run(builder.build(&store))?.root())
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn two_level_stats(store: &MemoryStore, fan: u16, width: u8) -> Result<BuildStat
             builder.insert(Key::from(&[hi, lo][..]), Entry::from(ref32(hi)), None);
         }
     }
-    Ok(*block_on(builder.build(store))?.stats())
+    Ok(*run(builder.build(store))?.stats())
 }
 
 #[test]
@@ -179,12 +179,12 @@ fn peak_node_buffers_track_depth_not_key_count() -> TestResult {
 fn the_empty_builder_publishes_the_empty_root() -> TestResult {
     let store = MemoryStore::default();
     let builder: Builder = Builder::new();
-    let built = block_on(builder.build(&store))?;
+    let built = run(builder.build(&store))?;
 
     ensure_eq(built.stats().peak_open_nodes(), 1, "one open node")?;
     ensure_eq(built.stats().nodes_written(), 1, "one node written")?;
 
-    let node: Node = block_on(store.get_node(built.root()))?;
+    let node: Node = run(store.get_node(built.root()))?;
     ensure(node.is_empty(), "root is the empty map")
 }
 
@@ -198,8 +198,8 @@ fn build_files_splits_through_bmt_and_references_the_stored_roots() -> TestResul
         (Key::from(&b"logo.png"[..]), logo.clone()),
     ];
 
-    let built = block_on(build_files(&store, files))?;
-    let node: Node = block_on(store.get_node(built.root()))?;
+    let built = run(build_files(&store, files))?;
+    let node: Node = run(store.get_node(built.root()))?;
 
     // Each file's manifest entry is its independent BMT root, and every file
     // chunk is present in the same store.
@@ -215,7 +215,7 @@ fn build_files_splits_through_bmt_and_references_the_stored_roots() -> TestResul
             .address()
             .ok_or("entry is not a reference")?;
 
-        let (expected_root, _) = block_on(split_whole(&data))?;
+        let (expected_root, _) = run(split_whole(&data))?;
         ensure_eq(address, &expected_root, "file root reference")?;
         ensure(store.get(address).is_some(), "file root stored")?;
     }
@@ -229,9 +229,9 @@ fn a_key_that_prefixes_another_shares_a_fork() -> TestResult {
     builder
         .insert(Key::from(&b"a"[..]), Entry::from(ref32(1)), None)
         .insert(Key::from(&b"ab"[..]), Entry::from(ref32(2)), None);
-    let built = block_on(builder.build(&store))?;
+    let built = run(builder.build(&store))?;
 
-    let node: Node = block_on(store.get_node(built.root()))?;
+    let node: Node = run(store.get_node(built.root()))?;
     let record = node.forks().get(b'a').ok_or("missing fork a")?;
     ensure(record.tail().is_empty(), "single-byte edge")?;
     // "a" terminates here and the trie continues to "ab".

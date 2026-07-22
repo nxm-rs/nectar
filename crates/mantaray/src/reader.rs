@@ -190,12 +190,12 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use bytes::Bytes;
-    use futures::executor::block_on;
     use nectar_primitives::chunk::{ChunkOps, ContentChunk};
     use nectar_primitives::store::{ChunkGet, ChunkPut, MemoryStore};
     use nectar_primitives::{
         Chunk, EncryptedChunkRef, EncryptionKey, EntryRef, StandardChunkSet, Verified,
     };
+    use nectar_testing::run;
 
     use crate::ManifestEditor;
 
@@ -251,7 +251,7 @@ mod tests {
         for &p in paths {
             editor.put(p, make_addr(p));
         }
-        block_on(editor.commit()).unwrap()
+        run(editor.commit()).unwrap()
     }
 
     /// Build a persisted manifest, then check the reader against the
@@ -261,7 +261,7 @@ mod tests {
         let (root, store) = build(paths);
         let reader = Reader::new(store);
         for probe in probes(paths) {
-            let got = block_on(reader.get(&root, probe.as_bytes())).unwrap();
+            let got = run(reader.get(&root, probe.as_bytes())).unwrap();
             assert_eq!(
                 got.is_some(),
                 paths.contains(&probe.as_str()),
@@ -274,7 +274,7 @@ mod tests {
                     "reference for {probe:?}"
                 );
             }
-            let has = block_on(reader.has_prefix(&root, probe.as_bytes())).unwrap();
+            let has = run(reader.has_prefix(&root, probe.as_bytes())).unwrap();
             let want_has = probe.is_empty() || paths.iter().any(|p| p.starts_with(&probe));
             assert_eq!(has, want_has, "has_prefix({probe:?})");
         }
@@ -296,12 +296,12 @@ mod tests {
         for p in paths {
             editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
         }
-        let (manifest_ref, store) = block_on(editor.commit()).unwrap();
+        let (manifest_ref, store) = run(editor.commit()).unwrap();
         let (root, _key) = manifest_ref.into_parts();
 
         let reader = Reader::new(store);
         for p in paths {
-            let got = block_on(reader.get(&root, p.as_bytes())).unwrap().unwrap();
+            let got = run(reader.get(&root, p.as_bytes())).unwrap().unwrap();
             match got.reference() {
                 Some(EntryRef::Encrypted(reference)) => {
                     assert_eq!(reference.address(), &make_addr(p), "address for {p:?}");
@@ -310,9 +310,9 @@ mod tests {
                 other => panic!("encrypted get({p:?}) returned {other:?}"),
             }
         }
-        assert!(block_on(reader.has_prefix(&root, b"secret/")).unwrap());
-        assert!(!block_on(reader.has_prefix(&root, b"secrets")).unwrap());
-        assert_eq!(block_on(reader.get(&root, b"secret/")).unwrap(), None);
+        assert!(run(reader.has_prefix(&root, b"secret/")).unwrap());
+        assert!(!run(reader.has_prefix(&root, b"secrets")).unwrap());
+        assert_eq!(run(reader.get(&root, b"secret/")).unwrap(), None);
     }
 
     #[test]
@@ -323,19 +323,19 @@ mod tests {
             [("Content-Type".to_string(), "image/png".to_string())].into();
         editor.put_with_metadata("logo.png", make_addr("logo"), meta.clone());
         editor.set_index_document("index.html");
-        let (root, store) = block_on(editor.commit()).unwrap();
+        let (root, store) = run(editor.commit()).unwrap();
 
         let reader = Reader::new(store);
-        let plain = block_on(reader.get(&root, b"plain.txt")).unwrap().unwrap();
+        let plain = run(reader.get(&root, b"plain.txt")).unwrap().unwrap();
         assert_eq!(
             plain.reference().map(|r| *r.address()),
             Some(make_addr("plain"))
         );
         assert!(plain.metadata().is_empty());
-        let logo = block_on(reader.get(&root, b"logo.png")).unwrap().unwrap();
+        let logo = run(reader.get(&root, b"logo.png")).unwrap().unwrap();
         assert_eq!(logo.metadata(), &meta);
         // The root path node carries metadata but no reference.
-        let root_entry = block_on(reader.get(&root, b"/")).unwrap().unwrap();
+        let root_entry = run(reader.get(&root, b"/")).unwrap().unwrap();
         assert!(root_entry.reference().is_none());
         assert_eq!(
             root_entry.metadata().get("website-index-document").cloned(),
@@ -378,18 +378,18 @@ mod tests {
         let reader = Reader::new(CountingStore::new(store));
 
         // Value hit: root plus the terminal node.
-        assert!(block_on(reader.get(&root, b"abc")).unwrap().is_some());
+        assert!(run(reader.get(&root, b"abc")).unwrap().is_some());
         assert_eq!(reader.store().take(), 2);
         // Mid-edge miss: decided at the root.
-        assert!(block_on(reader.get(&root, b"ab")).unwrap().is_none());
+        assert!(run(reader.get(&root, b"ab")).unwrap().is_none());
         assert_eq!(reader.store().take(), 1);
         // Prefix probes never fetch the boundary node.
-        assert!(block_on(reader.has_prefix(&root, b"abc")).unwrap());
+        assert!(run(reader.has_prefix(&root, b"abc")).unwrap());
         assert_eq!(reader.store().take(), 1);
-        assert!(block_on(reader.has_prefix(&root, b"ab")).unwrap());
+        assert!(run(reader.has_prefix(&root, b"ab")).unwrap());
         assert_eq!(reader.store().take(), 1);
         // The empty prefix is answered without touching the store.
-        assert!(block_on(reader.has_prefix(&root, b"")).unwrap());
+        assert!(run(reader.has_prefix(&root, b"")).unwrap());
         assert_eq!(reader.store().take(), 0);
     }
 
@@ -400,12 +400,12 @@ mod tests {
         let reader = Reader::new(CountingStore::new(store));
 
         for p in paths {
-            assert!(block_on(reader.get(&root, p.as_bytes())).unwrap().is_some());
+            assert!(run(reader.get(&root, p.as_bytes())).unwrap().is_some());
             assert!(
                 reader.store().take() <= p.len() + 1,
                 "get({p:?}) exceeded the depth bound"
             );
-            assert!(block_on(reader.has_prefix(&root, p.as_bytes())).unwrap());
+            assert!(run(reader.has_prefix(&root, p.as_bytes())).unwrap());
             assert!(
                 reader.store().take() <= p.len(),
                 "has_prefix({p:?}) exceeded the depth bound"
@@ -419,19 +419,19 @@ mod tests {
         let (root, store) = build(&["a", "ab", "abc", "abcd", "abcde"]);
 
         let exact = Reader::with_max_depth(store, 6);
-        assert!(block_on(exact.get(&root, b"abcde")).unwrap().is_some());
-        assert!(block_on(exact.has_prefix(&root, b"abcde")).unwrap());
+        assert!(run(exact.get(&root, b"abcde")).unwrap().is_some());
+        assert!(run(exact.has_prefix(&root, b"abcde")).unwrap());
 
         let short = Reader::with_max_depth(exact.into_store(), 5);
         assert!(matches!(
-            block_on(short.get(&root, b"abcde")),
+            run(short.get(&root, b"abcde")),
             Err(ReaderError::MaxDepth { max_depth: 5 })
         ));
-        assert!(block_on(short.has_prefix(&root, b"abcde")).unwrap());
+        assert!(run(short.has_prefix(&root, b"abcde")).unwrap());
 
         let shorter = Reader::with_max_depth(short.into_store(), 4);
         assert!(matches!(
-            block_on(shorter.has_prefix(&root, b"abcde")),
+            run(shorter.has_prefix(&root, b"abcde")),
             Err(ReaderError::MaxDepth { max_depth: 4 })
         ));
 
@@ -439,17 +439,17 @@ mod tests {
         // needs none.
         let zero = Reader::with_max_depth(shorter.into_store(), 0);
         assert!(matches!(
-            block_on(zero.get(&root, b"")),
+            run(zero.get(&root, b"")),
             Err(ReaderError::MaxDepth { max_depth: 0 })
         ));
-        assert!(block_on(zero.has_prefix(&root, b"")).unwrap());
+        assert!(run(zero.has_prefix(&root, b"")).unwrap());
     }
 
     #[test]
     fn empty_path_is_not_a_value() {
         let (root, store) = build(&["a"]);
         let reader = Reader::new(store);
-        assert_eq!(block_on(reader.get(&root, b"")).unwrap(), None);
+        assert_eq!(run(reader.get(&root, b"")).unwrap(), None);
     }
 
     #[test]
@@ -457,11 +457,11 @@ mod tests {
         let reader: Reader<Store> = Reader::new(Store::new());
         let root = make_addr("nowhere");
         assert!(matches!(
-            block_on(reader.get(&root, b"x")),
+            run(reader.get(&root, b"x")),
             Err(ReaderError::Store { address, .. }) if address == root
         ));
         assert!(matches!(
-            block_on(reader.has_prefix(&root, b"x")),
+            run(reader.has_prefix(&root, b"x")),
             Err(ReaderError::Store { address, .. }) if address == root
         ));
     }
@@ -475,11 +475,11 @@ mod tests {
         .unwrap();
         let root = *chunk.address();
         let sealed: Chunk = Chunk::from_envelope(chunk.into()).unwrap();
-        block_on(store.put(sealed)).unwrap();
+        run(store.put(sealed)).unwrap();
 
         let reader = Reader::new(store);
         assert!(matches!(
-            block_on(reader.get(&root, b"x")),
+            run(reader.get(&root, b"x")),
             Err(ReaderError::Corrupt { address, .. }) if address == root
         ));
     }

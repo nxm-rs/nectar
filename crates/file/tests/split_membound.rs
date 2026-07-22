@@ -29,10 +29,10 @@ use core::task::{Context, Poll};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::{Arc, Mutex};
 
-use futures::executor::block_on;
 use nectar_file::{Plain, PutWindow, Split};
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 use nectar_primitives::store::{ChunkPut, ChunkStoreError};
+use nectar_testing::run;
 
 /// Tiny body: fan-out 8, so a few thousand leaves build a deep tree at a
 /// modest byte count.
@@ -128,7 +128,7 @@ fn split_peak_delta(total: usize) -> usize {
     let mut block = vec![0u8; BLOCK];
     let baseline = LIVE.load(Ordering::Relaxed);
     reset_peak();
-    block_on(async {
+    run(async {
         let mut produced = 0usize;
         while produced < total {
             let take = BLOCK.min(total - produced);

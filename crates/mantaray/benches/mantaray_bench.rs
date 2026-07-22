@@ -12,11 +12,11 @@
     clippy::missing_panics_doc
 )]
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use futures::executor::block_on;
 use nectar_mantaray::{Cursor, ManifestEditor, MemoryStore, Reader, hazmat};
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
 use nectar_primitives::store::ChunkGet;
+use nectar_testing::run;
 
 type Store = MemoryStore<StandardChunkSet>;
 type Editor = ManifestEditor<Store>;
@@ -61,7 +61,7 @@ fn build_spa() -> (ChunkAddress, Store) {
     for &p in SPA_PATHS {
         editor.put(p, make_addr(p.as_bytes()));
     }
-    block_on(editor.commit()).unwrap()
+    run(editor.commit()).unwrap()
 }
 
 /// Commit `count` generated paths, returning root and store.
@@ -70,7 +70,7 @@ fn build_large(count: usize) -> (ChunkAddress, Store) {
     for (path, addr) in large_paths(count) {
         editor.put(path, addr);
     }
-    block_on(editor.commit()).unwrap()
+    run(editor.commit()).unwrap()
 }
 
 fn bench_commit(c: &mut Criterion) {
@@ -88,7 +88,7 @@ fn bench_commit(c: &mut Criterion) {
                 for (path, addr) in entries {
                     editor.put(path, *addr);
                 }
-                block_on(editor.commit()).unwrap()
+                run(editor.commit()).unwrap()
             });
         });
     }
@@ -104,7 +104,7 @@ fn bench_get(c: &mut Criterion) {
 
     group.bench_function("existing_path", |b| {
         b.iter(|| {
-            let entry = block_on(reader.get(&root, b"js/app.js")).unwrap();
+            let entry = run(reader.get(&root, b"js/app.js")).unwrap();
             entry.is_some()
         });
     });
@@ -114,8 +114,7 @@ fn bench_get(c: &mut Criterion) {
 
     group.bench_function("500_paths_deep", |b| {
         b.iter(|| {
-            let entry =
-                block_on(large_reader.get(&large_root, b"dir4/subdir49/file499.dat")).unwrap();
+            let entry = run(large_reader.get(&large_root, b"dir4/subdir49/file499.dat")).unwrap();
             entry.is_some()
         });
     });
@@ -132,7 +131,7 @@ fn bench_remove(c: &mut Criterion) {
             |(root, store)| {
                 let mut editor = Editor::open(root, store);
                 editor.remove("js/app.js");
-                block_on(editor.commit()).unwrap()
+                run(editor.commit()).unwrap()
             },
             criterion::BatchSize::SmallInput,
         );
@@ -148,11 +147,11 @@ fn bench_has_prefix(c: &mut Criterion) {
     let reader = Reader::new(store);
 
     group.bench_function("existing_prefix", |b| {
-        b.iter(|| block_on(reader.has_prefix(&root, b"js/")).unwrap());
+        b.iter(|| run(reader.has_prefix(&root, b"js/")).unwrap());
     });
 
     group.bench_function("missing_prefix", |b| {
-        b.iter(|| block_on(reader.has_prefix(&root, b"nonexistent/")).unwrap());
+        b.iter(|| run(reader.has_prefix(&root, b"nonexistent/")).unwrap());
     });
 
     group.finish();
@@ -161,7 +160,7 @@ fn bench_has_prefix(c: &mut Criterion) {
 /// The committed root node's wire image, for the raw codec benches.
 fn root_node_bytes() -> Vec<u8> {
     let (root, store) = build_spa();
-    let chunk = block_on(ChunkGet::get(&store, &root)).unwrap();
+    let chunk = run(ChunkGet::get(&store, &root)).unwrap();
     chunk.envelope().data().to_vec()
 }
 
@@ -192,7 +191,7 @@ fn bench_decode(c: &mut Criterion) {
 
 /// Drain the ordered listing cursor, returning the entry count.
 fn drain_cursor(root: ChunkAddress, store: &Store) -> u32 {
-    block_on(async {
+    run(async {
         let mut cursor: Cursor<Store> = Cursor::new(store.clone(), root);
         let mut count = 0u32;
         while let Some(entry) = cursor.next().await {
@@ -236,7 +235,7 @@ fn bench_full_workflow(c: &mut Criterion) {
                 b"js/app.js",
             ];
             for &p in paths {
-                block_on(reader.get(&root, p)).unwrap();
+                run(reader.get(&root, p)).unwrap();
             }
         });
     });

@@ -26,7 +26,7 @@ use alloy_primitives::{B256, Signature, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use futures::executor::block_on;
+use nectar_testing::run;
 use rand::{Rng, rng};
 
 use nectar_file::{Plain, PutWindow, ReadAt, Split, split_read_at};
@@ -72,7 +72,7 @@ impl ReadAt for SharedBuf {
 /// Sequential streaming split of the whole buffer.
 fn split_sequential(data: &[u8]) -> (ChunkAddress, Vec<SealedChunk>) {
     let sink = Collect::default();
-    let root = block_on(Split::<Collect, Plain, DEFAULT_BODY_SIZE>::collect(
+    let root = run(Split::<Collect, Plain, DEFAULT_BODY_SIZE>::collect(
         sink.clone(),
         data,
     ))
@@ -84,7 +84,7 @@ fn split_sequential(data: &[u8]) -> (ChunkAddress, Vec<SealedChunk>) {
 /// Parallel batch ingest of the whole shared buffer.
 fn split_parallel(source: &SharedBuf) -> (ChunkAddress, Vec<SealedChunk>) {
     let sink = Collect::default();
-    let root = block_on(split_read_at::<_, _, Plain, DEFAULT_BODY_SIZE>(
+    let root = run(split_read_at::<_, _, Plain, DEFAULT_BODY_SIZE>(
         source.clone(),
         sink.clone(),
         PutWindow::DEFAULT,

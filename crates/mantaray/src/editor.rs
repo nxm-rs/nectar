@@ -66,7 +66,7 @@ pub enum Op<R: Reference = ChunkRef> {
 /// ```
 /// # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
 /// # use nectar_primitives::chunk::ChunkAddress;
-/// # futures::executor::block_on(async {
+/// # nectar_testing::run(async {
 /// let mut editor = ManifestEditor::new(DefaultMemoryStore::new());
 /// editor.put("index.html", ChunkAddress::from([7u8; 32]));
 /// editor.set_index_document("index.html");
@@ -484,9 +484,9 @@ mod tests {
     use super::*;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use futures::executor::block_on;
     use nectar_primitives::store::{ChunkGet, MemoryStore};
     use nectar_primitives::{EncryptedChunkRef, EncryptionKey, StandardChunkSet, Verified};
+    use nectar_testing::run;
 
     type Store = MemoryStore<StandardChunkSet>;
     type Editor = ManifestEditor<Store>;
@@ -538,7 +538,7 @@ mod tests {
     fn editor_replay(script: &[Script]) -> (ChunkAddress, Store) {
         let mut editor = Editor::new(Store::new());
         record(&mut editor, script);
-        block_on(editor.commit()).unwrap()
+        run(editor.commit()).unwrap()
     }
 
     /// Editor replay with a commit boundary after `split` ops, continuing
@@ -547,10 +547,10 @@ mod tests {
         let (head, tail) = script.split_at(split.min(script.len()));
         let mut editor = Editor::new(Store::new());
         record(&mut editor, head);
-        let (root, store) = block_on(editor.commit()).unwrap();
+        let (root, store) = run(editor.commit()).unwrap();
         let mut editor = Editor::open(root, store);
         record(&mut editor, tail);
-        block_on(editor.commit()).unwrap()
+        run(editor.commit()).unwrap()
     }
 
     /// Hostile shapes: prefix splits at and around values, removes that
@@ -641,13 +641,13 @@ mod tests {
         let script = corpora().swap_remove(4);
         let (root, store) = editor_replay(&script);
         let reader = crate::Reader::new(store);
-        let entry = block_on(reader.get(&root, b"img/1.png")).unwrap().unwrap();
+        let entry = run(reader.get(&root, b"img/1.png")).unwrap().unwrap();
         assert_eq!(
             entry.reference().map(|r| *r.address()),
             Some(make_addr("1v2"))
         );
-        assert!(block_on(reader.get(&root, b"img/2.png")).unwrap().is_some());
-        assert!(block_on(reader.get(&root, b"absent")).unwrap().is_none());
+        assert!(run(reader.get(&root, b"img/2.png")).unwrap().is_some());
+        assert!(run(reader.get(&root, b"absent")).unwrap().is_none());
     }
 
     #[test]
@@ -656,8 +656,8 @@ mod tests {
         editor.put("/c", make_addr("c"));
         editor.put("//", make_addr("s"));
         editor.set_index_document("doc");
-        let (root, store) = block_on(editor.commit()).unwrap();
-        let entry = block_on(crate::Reader::new(store).get(&root, b"/"))
+        let (root, store) = run(editor.commit()).unwrap();
+        let entry = run(crate::Reader::new(store).get(&root, b"/"))
             .unwrap()
             .expect("metadata-carrying edge reads back");
         assert!(entry.reference().is_none());
@@ -674,7 +674,7 @@ mod tests {
     fn zero_reference_put_fails_commit() {
         let mut editor = Editor::new(Store::new());
         editor.put("a", ChunkAddress::from([0u8; 32]));
-        let err = block_on(editor.commit()).unwrap_err();
+        let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
             err,
             EditorError::Apply {
@@ -690,7 +690,7 @@ mod tests {
         let mut editor = Editor::new(Store::new());
         editor.put("present", make_addr("p"));
         editor.remove("absent");
-        let err = block_on(editor.commit()).unwrap_err();
+        let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
             err,
             EditorError::Apply { index: 1, ref path, .. } if path == b"absent"
@@ -710,15 +710,15 @@ mod tests {
         // The editor commits the metadata across a reopen boundary.
         let mut editor = Editor::new(Store::new());
         editor.put("index.html", make_addr("i"));
-        let (root, store) = block_on(editor.commit()).unwrap();
+        let (root, store) = run(editor.commit()).unwrap();
         assert_ne!(root, want, "the metadata must change the root");
         let mut editor = Editor::open(root, store);
         editor.set_index_document("index.html");
-        let (got, store) = block_on(editor.commit()).unwrap();
+        let (got, store) = run(editor.commit()).unwrap();
         assert_eq!(got, want);
 
         let reader = crate::Reader::new(store);
-        let entry = block_on(reader.get(&got, b"/")).unwrap().unwrap();
+        let entry = run(reader.get(&got, b"/")).unwrap().unwrap();
         assert_eq!(
             entry.metadata().get("website-index-document").cloned(),
             Some("index.html".to_string())
@@ -730,7 +730,7 @@ mod tests {
         let (root, store) = editor_replay(&[Script::Add("a", "1"), Script::Add("b", "2")]);
         let counting = CountingPutStore::new(store);
         let editor: ManifestEditor<_> = ManifestEditor::open(root, counting);
-        let (again, counting) = block_on(editor.commit()).unwrap();
+        let (again, counting) = run(editor.commit()).unwrap();
         assert_eq!(again, root);
         assert_eq!(counting.puts.load(Ordering::SeqCst), 0);
     }
@@ -741,7 +741,7 @@ mod tests {
         // one obfuscation key.
         let seed: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::new_encrypted(Store::new());
-        let (seed_ref, store) = block_on(seed.commit()).unwrap();
+        let (seed_ref, store) = run(seed.commit()).unwrap();
         let enc = |s: &str| EncryptedChunkRef::new(make_addr(s), EncryptionKey::from([0x5a; 32]));
 
         // Single-session replay from the seed.
@@ -750,18 +750,18 @@ mod tests {
         single.put("secret/a.txt", enc("a"));
         single.put("secret/b.txt", enc("b"));
         single.remove("secret/a.txt");
-        let (want, store) = block_on(single.commit()).unwrap();
+        let (want, store) = run(single.commit()).unwrap();
 
         // The same ops across a commit boundary land on the same root.
         let mut editor: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(seed_ref, store);
         editor.put("secret/a.txt", enc("a"));
         editor.put("secret/b.txt", enc("b"));
-        let (mid, store) = block_on(editor.commit()).unwrap();
+        let (mid, store) = run(editor.commit()).unwrap();
         let mut editor: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(mid, store);
         editor.remove("secret/a.txt");
-        let (got, _) = block_on(editor.commit()).unwrap();
+        let (got, _) = run(editor.commit()).unwrap();
         assert_eq!(got, want);
     }
 
@@ -834,7 +834,7 @@ mod tests {
             editor.put(path.as_str(), make_addr(&path));
         }
         let width = 4;
-        let (_, store) = block_on(editor.with_put_width(width).commit()).unwrap();
+        let (_, store) = run(editor.with_put_width(width).commit()).unwrap();
         assert!(store.puts.load(Ordering::SeqCst) > 1);
         let peak = store.max_inflight.load(Ordering::SeqCst);
         assert!(peak > 1, "commit puts must overlap (peak {peak})");
@@ -849,7 +849,7 @@ mod tests {
             let path = format!("file{i:02}.dat");
             editor.put(path.as_str(), make_addr(&path));
         }
-        let (_, store) = block_on(editor.with_put_width(0).commit()).unwrap();
+        let (_, store) = run(editor.with_put_width(0).commit()).unwrap();
         assert_eq!(store.max_inflight.load(Ordering::SeqCst), 1);
     }
 }

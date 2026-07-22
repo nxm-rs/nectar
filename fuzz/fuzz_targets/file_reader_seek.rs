@@ -9,7 +9,7 @@
 #![no_main]
 
 use arbitrary::Arbitrary;
-use futures::executor::block_on;
+use nectar_testing::run;
 use libfuzzer_sys::fuzz_target;
 use nectar_file::{File, Plain};
 use nectar_fuzz::{split, tile};
@@ -51,7 +51,7 @@ fuzz_target!(|input: (Vec<u8>, u16, (u64, u64), Vec<Op>)| {
     let eff = clip_end - clip_start;
 
     let (root, store) = split(&data);
-    block_on(async move {
+    run(async move {
         let file = File::<_, Plain, BODY>::open(store, root)
             .await
             .expect("open must succeed over a complete store");

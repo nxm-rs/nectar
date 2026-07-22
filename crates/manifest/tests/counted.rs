@@ -6,9 +6,9 @@
 use std::error::Error;
 
 use bytes::Bytes;
-use futures::executor::block_on;
 use nectar_manifest::{Builder, Changeset, Entry, Key, Reader, V1, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, MemoryStore};
+use nectar_testing::run;
 
 mod common;
 use common::{TestResult, ensure};
@@ -35,7 +35,7 @@ fn build<F: nectar_manifest::Format>(order: &[(Key, u8)]) -> Result<ChunkAddress
     for (key, fill) in order {
         builder.insert(key.clone(), ref_entry::<F>(*fill), None);
     }
-    Ok(*block_on(builder.build(&store))?.root())
+    Ok(*run(builder.build(&store))?.root())
 }
 
 #[test]
@@ -57,15 +57,15 @@ fn build_then_read_round_trips_every_key() -> TestResult {
     for (key, fill) in &all {
         builder.insert(key.clone(), ref_entry::<V1>(*fill), None);
     }
-    let root = *block_on(builder.build(&store))?.root();
+    let root = *run(builder.build(&store))?.root();
 
     let reader = Reader::<MemoryStore, V1>::new(store);
     for (key, fill) in &all {
-        let got = block_on(reader.get(&root, key))?;
+        let got = run(reader.get(&root, key))?;
         ensure(got == Some(ref_entry::<V1>(*fill)), "read value mismatch")?;
     }
     ensure(
-        block_on(reader.get(&root, &Key::from(&b"absent"[..])))?.is_none(),
+        run(reader.get(&root, &Key::from(&b"absent"[..])))?.is_none(),
         "absent key must read as None",
     )?;
     Ok(())
@@ -81,13 +81,13 @@ fn apply_matches_a_from_scratch_build() -> TestResult {
     for (key, fill) in all.iter().take(split) {
         base.insert(key.clone(), ref_entry::<V1>(*fill), None);
     }
-    let base_root = *block_on(base.build(&store))?.root();
+    let base_root = *run(base.build(&store))?.root();
 
     let mut changeset = Changeset::<V1>::new();
     for (key, fill) in all.iter().skip(split) {
         changeset.put(key.clone(), ref_entry::<V1>(*fill), None);
     }
-    let applied = block_on(apply(&store, &base_root, &changeset))?;
+    let applied = run(apply(&store, &base_root, &changeset))?;
 
     let scratch = build::<V1>(&all)?;
     ensure(applied == scratch, "apply must match a from-scratch build")?;
@@ -100,10 +100,10 @@ fn an_inline_value_round_trips() -> TestResult {
     let mut builder = Builder::<V1>::new();
     let value = Entry::<V1>::inline(Bytes::from_static(b"<h1>hi</h1>"))?;
     builder.insert(Key::from(&b"index.html"[..]), value.clone(), None);
-    let root = *block_on(builder.build(&store))?.root();
+    let root = *run(builder.build(&store))?.root();
 
     let reader = Reader::<MemoryStore, V1>::new(store);
-    let got = block_on(reader.get(&root, &Key::from(&b"index.html"[..])))?;
+    let got = run(reader.get(&root, &Key::from(&b"index.html"[..])))?;
     ensure(got == Some(value), "inline value must round-trip")?;
     Ok(())
 }
