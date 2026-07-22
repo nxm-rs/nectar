@@ -5,31 +5,13 @@
 //! and the stored chunk address set must match exactly. Chunks are
 //! content-addressed, so address equality pins the stored bytes.
 
-use std::error::Error;
-
 use bytes::Bytes;
 use futures::executor::block_on;
 use nectar_manifest::{Builder, Entry, Key, Reader, build_files};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
 
 mod common;
-use common::split_whole;
-
-type TestResult = Result<(), Box<dyn Error>>;
-
-/// A fallible assertion: Result-returning tests report failures as errors.
-fn ensure(cond: bool, what: &str) -> TestResult {
-    if cond { Ok(()) } else { Err(what.into()) }
-}
-
-/// A fallible equality assertion.
-fn ensure_eq<T: PartialEq + core::fmt::Debug>(left: T, right: T, what: &str) -> TestResult {
-    if left == right {
-        Ok(())
-    } else {
-        Err(format!("{what}: {left:?} != {right:?}").into())
-    }
-}
+use common::{TestResult, ensure, ensure_eq, split_whole};
 
 const B: usize = DEFAULT_BODY_SIZE;
 /// Reference fan-out of one intermediate chunk at the default body size.

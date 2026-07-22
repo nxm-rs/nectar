@@ -8,7 +8,6 @@
 
 use core::ops::Range;
 use std::collections::BTreeMap;
-use std::error::Error;
 
 use nectar_manifest::{
     Domain, Entry, ForkTable, Format, Node, Prefix, SegmentKind, SegmentWeight, V1, cut, h64,
@@ -17,21 +16,8 @@ use nectar_manifest::{
 use nectar_primitives::{ChunkAddress, ChunkRef};
 use proptest::prelude::*;
 
-type TestResult = Result<(), Box<dyn Error>>;
-
-/// A fallible assertion for the Result-returning anchor tests.
-fn ensure(cond: bool, what: &str) -> TestResult {
-    if cond { Ok(()) } else { Err(what.into()) }
-}
-
-/// A fallible equality assertion.
-fn ensure_eq<T: PartialEq + core::fmt::Debug>(left: T, right: T, what: &str) -> TestResult {
-    if left == right {
-        Ok(())
-    } else {
-        Err(format!("{what}: {left:?} != {right:?}").into())
-    }
-}
+mod common;
+use common::{TestResult, ensure, ensure_eq};
 
 const fn ref32(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))

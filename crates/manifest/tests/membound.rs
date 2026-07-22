@@ -22,12 +22,8 @@ use nectar_primitives::{
 };
 use proptest::prelude::*;
 
-type TestResult = Result<(), Box<dyn Error>>;
-
-/// A fallible assertion.
-fn ensure(cond: bool, what: String) -> TestResult {
-    if cond { Ok(()) } else { Err(what.into()) }
-}
+mod common;
+use common::{TestResult, ensure};
 
 /// A reference-valued entry keyed on one byte.
 fn entry(byte: u8) -> Entry<V1> {
@@ -93,7 +89,7 @@ fn assert_single_chunk_nodes(store: &MemoryStore) -> TestResult {
         let len = chunk.envelope().data().len();
         ensure(
             len <= DEFAULT_BODY_SIZE,
-            format!("emitted node is {len} bytes, over one chunk body"),
+            &format!("emitted node is {len} bytes, over one chunk body"),
         )?;
     }
     Ok(())
@@ -111,7 +107,7 @@ fn peak_open_nodes_tracks_depth_not_width() -> TestResult {
     // Same depth, very different width: identical peak, whatever the fan.
     ensure(
         shallow_narrow.peak_open_nodes() == shallow_wide.peak_open_nodes(),
-        format!(
+        &format!(
             "peak {} != {} across widths at equal depth",
             shallow_narrow.peak_open_nodes(),
             shallow_wide.peak_open_nodes(),
@@ -120,7 +116,7 @@ fn peak_open_nodes_tracks_depth_not_width() -> TestResult {
     // Greater depth raises the peak; width alone never does.
     ensure(
         deep.peak_open_nodes() > shallow_wide.peak_open_nodes(),
-        format!(
+        &format!(
             "deeper build peak {} did not exceed shallow peak {}",
             deep.peak_open_nodes(),
             shallow_wide.peak_open_nodes(),
@@ -130,7 +126,7 @@ fn peak_open_nodes_tracks_depth_not_width() -> TestResult {
     // retained frontier is O(depth).
     ensure(
         shallow_wide.nodes_written() > shallow_wide.peak_open_nodes().saturating_mul(10),
-        "wide build node count is not far above its peak".to_owned(),
+        "wide build node count is not far above its peak",
     )
 }
 
@@ -170,7 +166,7 @@ fn a_million_key_manifest_is_depth_bounded() -> TestResult {
 
     ensure(
         stats.peak_open_nodes() <= 8,
-        format!(
+        &format!(
             "peak {} open nodes is not O(depth) at 10^6 keys",
             stats.peak_open_nodes(),
         ),
@@ -179,7 +175,7 @@ fn a_million_key_manifest_is_depth_bounded() -> TestResult {
     // peak, so the bound is a genuine streaming bound, not a small tree.
     ensure(
         stats.nodes_written() > stats.peak_open_nodes().saturating_mul(100),
-        format!(
+        &format!(
             "only {} nodes written, no wider than the peak",
             stats.nodes_written(),
         ),
@@ -201,11 +197,14 @@ fn a_million_key_manifest_is_depth_bounded() -> TestResult {
         store.gets.store(0, Ordering::Relaxed);
         let value =
             block_on(reader.get(&root, &Key::from(&probe[..]))).map_err(|e| e.to_string())?;
-        ensure(value == Some(entry(0x22)), format!("missing key {probe:?}"))?;
+        ensure(
+            value == Some(entry(0x22)),
+            &format!("missing key {probe:?}"),
+        )?;
         // Three levels, each at most a segmented node and its covering segments.
         ensure(
             store.gets() <= 24,
-            format!("lookup fetched {} nodes, not O(depth)", store.gets()),
+            &format!("lookup fetched {} nodes, not O(depth)", store.gets()),
         )?;
     }
     Ok(())
@@ -230,7 +229,7 @@ fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> TestResult {
     // The node did not fit one chunk, so it was spilled across several.
     ensure(
         built.stats().nodes_written() > 1,
-        "a full radix-256 heavy node must spill into several chunks".to_owned(),
+        "a full radix-256 heavy node must spill into several chunks",
     )?;
     assert_single_chunk_nodes(&store)?;
 
@@ -240,7 +239,7 @@ fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> TestResult {
             .map_err(|e| e.to_string())?;
         ensure(
             value == Some(entry(first)),
-            format!("missing key {first} after spill"),
+            &format!("missing key {first} after spill"),
         )?;
     }
     Ok(())
@@ -268,7 +267,7 @@ fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> TestResult {
         let reencoded = recanonicalize::<V1>(payload.as_ref()).map_err(|e| e.to_string())?;
         ensure(
             reencoded.as_slice() == payload.as_ref(),
-            "a stored chunk did not re-encode to its own bytes".to_owned(),
+            "a stored chunk did not re-encode to its own bytes",
         )?;
         // The flags byte follows the two preamble bytes; a set SEGMENTED or
         // SEGMENT bit witnesses that spill actually fired.
@@ -280,10 +279,7 @@ fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> TestResult {
             saw_segment = true;
         }
     }
-    ensure(
-        saw_segment,
-        "the heavy set did not spill into segments".to_owned(),
-    )?;
+    ensure(saw_segment, "the heavy set did not spill into segments")?;
     Ok(())
 }
 
@@ -309,7 +305,7 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> TestResult {
     let base = block_on(base_builder.build(&base_store)).map_err(|e| e.to_string())?;
     ensure(
         base.stats().nodes_written() > 1,
-        "the base root node must spill".to_owned(),
+        "the base root node must spill",
     )?;
 
     // The changeset overwrites the tail of the base and extends past it, so the
@@ -341,7 +337,7 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> TestResult {
 
     ensure(
         applied == *scratch.root(),
-        format!(
+        &format!(
             "apply root {applied:?} diverged from the from-scratch root {:?}",
             scratch.root()
         ),

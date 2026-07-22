@@ -15,23 +15,7 @@ use nectar_manifest::{
 use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, MemoryStore};
 
 mod common;
-use common::split_whole;
-
-type TestResult = Result<(), Box<dyn Error>>;
-
-/// A fallible assertion: Result-returning tests report failures as errors.
-fn ensure(cond: bool, what: &str) -> TestResult {
-    if cond { Ok(()) } else { Err(what.into()) }
-}
-
-/// A fallible equality assertion.
-fn ensure_eq<T: PartialEq + core::fmt::Debug>(left: T, right: T, what: &str) -> TestResult {
-    if left == right {
-        Ok(())
-    } else {
-        Err(format!("{what}: {left:?} != {right:?}").into())
-    }
-}
+use common::{TestResult, ensure, ensure_eq, split_whole};
 
 const fn ref32(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))
