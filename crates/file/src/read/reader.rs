@@ -9,7 +9,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use bytes::Bytes;
-use futures_util::stream::Stream;
+use futures_util::stream::{Stream, StreamExt};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::TrustedGet;
@@ -119,17 +119,12 @@ where
     ///
     /// The buffer is reserved up front with `try_reserve_exact`, so an
     /// oversized range fails typed before any fetch; the bound saturates at
-    /// the address width.
+    /// the address width. Frames land at their range-relative offsets in
+    /// completion order, tiling the buffer exactly once with no reorder
+    /// buffering.
     pub async fn collect(self, max: u64) -> Result<Vec<u8>, CollectError<S::Error>> {
-        let mut walk: Walk<S, M, B> = Walk::new(
-            self.store,
-            self.root,
-            self.context,
-            self.span,
-            self.range,
-            self.window,
-        );
-        let clipped = walk.range();
+        let mut frames = self.frames();
+        let clipped = frames.range();
         let len = clipped.end.saturating_sub(clipped.start);
         let bound = max.min(u64_from_usize(usize::MAX));
         let capacity = match usize::try_from(len) {
@@ -138,8 +133,14 @@ where
         };
         let mut out = Vec::new();
         out.try_reserve_exact(capacity)?;
-        while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
-            out.extend_from_slice(&frame?.data);
+        out.resize(capacity, 0);
+        while let Some(frame) = frames.next().await {
+            let frame = frame?;
+            let offset = frame.offset.saturating_sub(clipped.start);
+            let start = usize::try_from(offset).unwrap_or(usize::MAX);
+            for (slot, byte) in out.iter_mut().skip(start).zip(frame.data.as_ref()) {
+                *slot = *byte;
+            }
         }
         Ok(out)
     }
