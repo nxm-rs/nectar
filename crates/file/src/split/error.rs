@@ -45,13 +45,9 @@ pub enum SplitError<E> {
     #[error("poisoned by an earlier failure")]
     Poisoned,
     /// The pool dropped a leaf seal without replying; the worker panicked
-    /// or died.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+    /// or died. Only the rayon batch ingest raises it, but the variant is
+    /// always present so a cross-crate match over `SplitError` stays
+    /// exhaustive regardless of the file crate's feature resolution.
     #[error("hash pool dropped a leaf seal")]
     PoolDropped,
     /// The spine emptied without yielding a root; a split invariant is

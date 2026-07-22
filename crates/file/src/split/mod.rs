@@ -120,11 +120,6 @@ fn widen<E>(error: SplitError<Infallible>) -> SplitError<E> {
         SplitError::SpanOverflow { span, add } => SplitError::SpanOverflow { span, add },
         SplitError::Finished => SplitError::Finished,
         SplitError::Poisoned => SplitError::Poisoned,
-        #[cfg(all(
-            feature = "rayon",
-            not(target_arch = "wasm32"),
-            not(feature = "unsync")
-        ))]
         SplitError::PoolDropped => SplitError::PoolDropped,
         SplitError::SpineDepleted => SplitError::SpineDepleted,
     }
