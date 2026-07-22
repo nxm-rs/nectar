@@ -72,8 +72,7 @@ fuzz_target!(|input: Vec<(Vec<u8>, Val)>| {
             "chunk {} bytes exceeds one chunk body",
             payload.len(),
         );
-        let reencoded =
-            recanonicalize::<V1>(payload.as_ref()).expect("a stored chunk must decode");
+        let reencoded = recanonicalize::<V1>(payload.as_ref()).expect("a stored chunk must decode");
         assert_eq!(
             reencoded.as_slice(),
             payload.as_ref(),

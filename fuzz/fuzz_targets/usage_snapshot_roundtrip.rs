@@ -36,8 +36,13 @@ fuzz_target!(|snapshot: Snapshot| {
     };
 
     let root = RootInfo::parse(&plan.chunks[0].payload).expect("planned root must parse");
-    let leaves: Vec<&[u8]> = plan.chunks[1..].iter().map(|c| c.payload.as_ref()).collect();
-    let recovered = root.assemble(&leaves).expect("planned leaves must assemble");
+    let leaves: Vec<&[u8]> = plan.chunks[1..]
+        .iter()
+        .map(|c| c.payload.as_ref())
+        .collect();
+    let recovered = root
+        .assemble(&leaves)
+        .expect("planned leaves must assemble");
     assert_eq!(
         recovered, snapshot,
         "parse+assemble must recover the persisted snapshot"

@@ -8,20 +8,14 @@
 
 #![no_main]
 
-use core::future::poll_fn;
-use std::sync::Arc;
-
 use arbitrary::Arbitrary;
 use futures::executor::block_on;
 use libfuzzer_sys::fuzz_target;
-use nectar_file::{File, Plain, PutWindow, Split};
-use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
-use nectar_primitives::store::MemoryStore;
+use nectar_file::{File, Plain};
+use nectar_fuzz::{split, tile};
 
 /// Tiny body size: fan-out 8, so a few KiB already builds a deep tree.
 const BODY: usize = 256;
-/// Source-length cap; four tree levels at the tiny body size.
-const MAX_LEN: usize = 32 * 1024;
 /// Op-sequence cap per exec.
 const MAX_OPS: usize = 64;
 /// Per-read buffer cap, past one body so reads cross leaf boundaries.
@@ -36,38 +30,6 @@ enum Op {
     Read(u16),
     /// Take the next uncopied in-order run.
     Segment,
-}
-
-/// Tile `seed` to `copies` repetitions, capped at [`MAX_LEN`] bytes.
-fn tile(seed: &[u8], copies: u16) -> Vec<u8> {
-    if seed.is_empty() {
-        return Vec::new();
-    }
-    let len = seed
-        .len()
-        .saturating_mul(usize::from(copies.max(1)))
-        .min(MAX_LEN);
-    seed.iter().copied().cycle().take(len).collect()
-}
-
-/// Whole-buffer streaming split into a shared store.
-fn split(data: &[u8]) -> (ChunkAddress, Arc<MemoryStore<AnyChunkSet<BODY>>>) {
-    let store = Arc::new(MemoryStore::new());
-    let mut split: Split<Arc<MemoryStore<AnyChunkSet<BODY>>>, Plain, BODY> =
-        Split::new(Arc::clone(&store), PutWindow::DEFAULT);
-    let root = block_on(async {
-        let mut buf = data;
-        while !buf.is_empty() {
-            let n = poll_fn(|cx| split.poll_write(cx, buf))
-                .await
-                .expect("memory puts never fail");
-            buf = &buf[n..];
-        }
-        poll_fn(|cx| split.poll_finish(cx))
-            .await
-            .expect("finish over a memory store succeeds")
-    });
-    (root, store)
 }
 
 fn to_usize(value: u64) -> usize {

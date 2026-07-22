@@ -19,7 +19,10 @@ use nectar_postage::Stamp;
 fuzz_target!(|stamp: Stamp| {
     let encoded = stamp.to_bytes();
     let decoded = Stamp::from_bytes(&encoded).expect("encoded stamps must decode");
-    assert_eq!(decoded, stamp, "decode(encode(stamp)) must reproduce the stamp");
+    assert_eq!(
+        decoded, stamp,
+        "decode(encode(stamp)) must reproduce the stamp"
+    );
 
     // Canonical form: re-encoding the decoded stamp must be byte-identical.
     assert_eq!(decoded.to_bytes(), encoded, "encoding must be canonical");

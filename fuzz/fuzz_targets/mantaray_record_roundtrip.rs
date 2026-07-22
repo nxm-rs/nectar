@@ -43,7 +43,10 @@ fn round_trip<R: Reference>(data: &[u8]) {
         hazmat::decode::<R>(encoded.as_slice()).expect("the canonical image must decode");
 
     let reencoded = hazmat::encode(&redecoded).expect("a re-decoded node must re-encode");
-    assert_eq!(reencoded, encoded, "encode/decode must reach a byte-canonical fixed point");
+    assert_eq!(
+        reencoded, encoded,
+        "encode/decode must reach a byte-canonical fixed point"
+    );
 
     let redecoded_again =
         hazmat::decode::<R>(reencoded.as_slice()).expect("the canonical image must re-decode");

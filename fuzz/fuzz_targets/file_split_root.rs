@@ -14,27 +14,14 @@ use std::sync::{Arc, Mutex};
 use libfuzzer_sys::fuzz_target;
 use nectar_file::sync::drive;
 use nectar_file::{File, Plain, PutWindow, Split};
+use nectar_fuzz::tile;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
 
 /// Tiny body size: fan-out 8, so a few KiB already builds a deep tree.
 const BODY: usize = 256;
-/// Source-length cap; four tree levels at the tiny body size.
-const MAX_LEN: usize = 32 * 1024;
 /// Poll budget per drive; a ready store must finish well within it.
 const SPIN_BOUND: u32 = 1 << 20;
-
-/// Tile `seed` to `copies` repetitions, capped at [`MAX_LEN`] bytes.
-fn tile(seed: &[u8], copies: u16) -> Vec<u8> {
-    if seed.is_empty() {
-        return Vec::new();
-    }
-    let len = seed
-        .len()
-        .saturating_mul(usize::from(copies.max(1)))
-        .min(MAX_LEN);
-    seed.iter().copied().cycle().take(len).collect()
-}
 
 /// Shared ready store: clones alias one map, so the engine's per-put clones
 /// and the read-back handle see the same chunks.

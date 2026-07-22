@@ -116,7 +116,10 @@ fn model(ops: &[FuzzOp]) -> Model {
     let mut error_document = None;
     for op in ops {
         match op {
-            FuzzOp::Put { path: raw, fill } | FuzzOp::PutMeta { path: raw, fill, .. } => {
+            FuzzOp::Put { path: raw, fill }
+            | FuzzOp::PutMeta {
+                path: raw, fill, ..
+            } => {
                 entries.insert(path(raw), address(*fill));
             }
             FuzzOp::Remove { path: raw } => {
