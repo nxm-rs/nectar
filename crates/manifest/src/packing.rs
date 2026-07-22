@@ -19,6 +19,22 @@ use crate::fork::Child;
 use crate::format::Format;
 use crate::value::Entry;
 
+/// Bytes an edge starting at `consumed` may span before the next forced cut.
+///
+/// The forced cap is anchored to the absolute key offset, not to the edge's
+/// own start, so splitting or merging an edge never moves a boundary below it:
+/// a re-rooted run keeps every cut a build would place, and the subtree under
+/// the first shifted segment stays byte-identical. Always `1..=F::PLEN_MAX`.
+///
+/// Both the builder and `apply` cut through here, so the two cannot drift.
+pub(crate) const fn cut_allowance<F: Format>(consumed: usize) -> usize {
+    match consumed.checked_rem(F::PLEN_MAX) {
+        Some(spent) => F::PLEN_MAX.saturating_sub(spent),
+        // A zero cap admits no edge byte at all; the format forbids it.
+        None => F::PLEN_MAX,
+    }
+}
+
 /// The encryption regime of a subtree: plaintext 32-byte references, or
 /// encrypted 64-byte references carrying in-band keys.
 ///
