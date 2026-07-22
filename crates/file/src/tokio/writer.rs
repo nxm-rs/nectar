@@ -23,7 +23,6 @@ use crate::split::{Split, SplitMode, SplitStats};
 /// source:
 ///
 /// ```
-/// # #![allow(deprecated)]
 /// use nectar_file::{Plain, PutWindow, Split, TokioWriter};
 /// use nectar_primitives::chunk::AnyChunkSet;
 /// use nectar_primitives::store::MemoryStore;
@@ -41,8 +40,14 @@ use crate::split::{Split, SplitMode, SplitStats};
 /// tokio::io::copy(&mut source, &mut writer).await.unwrap();
 /// writer.shutdown().await.unwrap();
 /// let root = writer.into_inner().unwrap();
-/// # let (expected, _) = nectar_primitives::file::split::<4096>(&data).unwrap();
-/// assert_eq!(root, expected);
+/// # // Root equality with an independent whole-buffer split of the same bytes.
+/// # let expected = Split::<_, Plain, 4096>::collect(
+/// #     MemoryStore::<AnyChunkSet<4096>>::new(),
+/// #     &data,
+/// # )
+/// # .await
+/// # .unwrap();
+/// # assert_eq!(root, expected);
 /// # }
 /// ```
 pub struct TokioWriter<S, M, const B: usize = DEFAULT_BODY_SIZE>

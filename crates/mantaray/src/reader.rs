@@ -197,10 +197,9 @@ mod tests {
         Chunk, EncryptedChunkRef, EncryptionKey, EntryRef, StandardChunkSet, Verified,
     };
 
-    use crate::{EncryptedManifest, PlainManifest};
+    use crate::ManifestEditor;
 
     type Store = MemoryStore<StandardChunkSet>;
-    type Manifest = PlainManifest<Store>;
 
     /// A ChunkAddress from a string, right-padded with zeroes.
     fn make_addr(s: &str) -> ChunkAddress {
@@ -246,91 +245,70 @@ mod tests {
         out
     }
 
-    /// Build a persisted manifest, record the legacy answers for every probe,
-    /// then compare the reader against them over the same store.
-    fn assert_differential(paths: &[&str]) {
-        let mut m = Manifest::new(Store::new());
+    /// Build a persisted manifest over the paths through the editor.
+    fn build(paths: &[&str]) -> (ChunkAddress, Store) {
+        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
         for &p in paths {
-            block_on(m.add(p, make_addr(p))).unwrap();
+            editor.put(p, make_addr(p));
         }
-        let root = block_on(m.save()).unwrap();
+        block_on(editor.commit()).unwrap()
+    }
 
-        let probes = probes(paths);
-        let expected: Vec<_> = probes
-            .iter()
-            .map(|p| {
-                (
-                    block_on(m.get(p)).unwrap(),
-                    block_on(m.has_prefix(p)).unwrap(),
-                )
-            })
-            .collect();
-
-        let (_, store) = m.into_parts();
+    /// Build a persisted manifest, then check the reader against the
+    /// path-set model over the same store: a get hits exactly the stored
+    /// paths, a prefix probe hits exactly the stored extensions.
+    fn assert_model(paths: &[&str]) {
+        let (root, store) = build(paths);
         let reader = Reader::new(store);
-        for (probe, (want_get, want_has)) in probes.iter().zip(expected) {
+        for probe in probes(paths) {
             let got = block_on(reader.get(&root, probe.as_bytes())).unwrap();
-            assert_eq!(got, want_get, "get({probe:?}) diverges from legacy");
+            assert_eq!(
+                got.is_some(),
+                paths.contains(&probe.as_str()),
+                "get({probe:?})"
+            );
+            if let Some(entry) = got {
+                assert_eq!(
+                    entry.reference().map(|r| *r.address()),
+                    Some(make_addr(&probe)),
+                    "reference for {probe:?}"
+                );
+            }
             let has = block_on(reader.has_prefix(&root, probe.as_bytes())).unwrap();
-            assert_eq!(has, want_has, "has_prefix({probe:?}) diverges from legacy");
+            let want_has = probe.is_empty() || paths.iter().any(|p| p.starts_with(&probe));
+            assert_eq!(has, want_has, "has_prefix({probe:?})");
         }
     }
 
     #[test]
-    fn differential_get_and_has_prefix_vs_legacy() {
+    fn get_and_has_prefix_match_the_path_set_model() {
         for paths in corpora() {
-            assert_differential(&paths);
+            assert_model(&paths);
         }
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn differential_vs_deprecated_lookup() {
-        let paths = ["index.html", "img/1.png", "img/2.png", "robots.txt"];
-        let mut m = Manifest::new(Store::new());
-        for p in paths {
-            block_on(m.add(p, make_addr(p))).unwrap();
-        }
-        let root = block_on(m.save()).unwrap();
-
-        let hits: Vec<_> = paths
-            .iter()
-            .map(|p| block_on(m.lookup(p)).unwrap())
-            .collect();
-        assert!(block_on(m.lookup("absent.txt")).is_err());
-
-        let (_, store) = m.into_parts();
-        let reader = Reader::new(store);
-        for (p, want) in paths.iter().zip(hits) {
-            let got = block_on(reader.get(&root, p.as_bytes())).unwrap();
-            assert_eq!(got, Some(want), "get({p:?}) diverges from legacy lookup");
-        }
-        // Where the legacy lookup errs on a miss, the reader reports Ok(None).
-        assert_eq!(block_on(reader.get(&root, b"absent.txt")).unwrap(), None);
-    }
-
-    #[test]
-    fn encrypted_trie_differential() {
-        let mut m = EncryptedManifest::new_encrypted(Store::new());
+    fn encrypted_trie_lookups_return_the_stored_references() {
         let paths = ["secret/a.txt", "secret/b.txt", "top.txt"];
+        let key = EncryptionKey::from([0x5a; 32]);
+        let mut editor: ManifestEditor<Store, EncryptedChunkRef> =
+            ManifestEditor::new_encrypted(Store::new());
         for p in paths {
-            let r = EncryptedChunkRef::new(make_addr(p), EncryptionKey::from([0x5a; 32]));
-            block_on(m.add(p, r)).unwrap();
+            editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
         }
-        let manifest_ref = block_on(m.save()).unwrap();
+        let (manifest_ref, store) = block_on(editor.commit()).unwrap();
         let (root, _key) = manifest_ref.into_parts();
 
-        let expected: Vec<_> = paths.iter().map(|p| block_on(m.get(p)).unwrap()).collect();
-
-        let (_, store) = m.into_parts();
         let reader = Reader::new(store);
-        for (p, want) in paths.iter().zip(expected) {
-            let got = block_on(reader.get(&root, p.as_bytes())).unwrap();
-            assert_eq!(got, want, "encrypted get({p:?}) diverges from legacy");
-            assert!(matches!(
-                got.as_ref().and_then(Entry::reference),
-                Some(EntryRef::Encrypted(_))
-            ));
+        for p in paths {
+            let got = block_on(reader.get(&root, p.as_bytes())).unwrap().unwrap();
+            match got.reference() {
+                Some(EntryRef::Encrypted(reference)) => {
+                    assert_eq!(reference.address(), &make_addr(p), "address for {p:?}");
+                    assert_eq!(reference.key(), &key, "key for {p:?}");
+                }
+                other => panic!("encrypted get({p:?}) returned {other:?}"),
+            }
         }
         assert!(block_on(reader.has_prefix(&root, b"secret/")).unwrap());
         assert!(!block_on(reader.has_prefix(&root, b"secrets")).unwrap());
@@ -338,26 +316,22 @@ mod tests {
     }
 
     #[test]
-    fn metadata_differential() {
-        let mut m = Manifest::new(Store::new());
-        block_on(m.add("plain.txt", make_addr("plain"))).unwrap();
+    fn metadata_and_the_root_document_read_back() {
+        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
+        editor.put("plain.txt", make_addr("plain"));
         let meta: BTreeMap<String, String> =
             [("Content-Type".to_string(), "image/png".to_string())].into();
-        block_on(m.add_with_metadata("logo.png", make_addr("logo"), meta.clone())).unwrap();
-        block_on(m.set_index_document("index.html")).unwrap();
-        let root = block_on(m.save()).unwrap();
+        editor.put_with_metadata("logo.png", make_addr("logo"), meta.clone());
+        editor.set_index_document("index.html");
+        let (root, store) = block_on(editor.commit()).unwrap();
 
-        let expected: Vec<_> = ["plain.txt", "logo.png", "/"]
-            .iter()
-            .map(|p| block_on(m.get(p)).unwrap())
-            .collect();
-
-        let (_, store) = m.into_parts();
         let reader = Reader::new(store);
-        for (p, want) in ["plain.txt", "logo.png", "/"].iter().zip(expected) {
-            let got = block_on(reader.get(&root, p.as_bytes())).unwrap();
-            assert_eq!(got, want, "get({p:?}) diverges from legacy");
-        }
+        let plain = block_on(reader.get(&root, b"plain.txt")).unwrap().unwrap();
+        assert_eq!(
+            plain.reference().map(|r| *r.address()),
+            Some(make_addr("plain"))
+        );
+        assert!(plain.metadata().is_empty());
         let logo = block_on(reader.get(&root, b"logo.png")).unwrap().unwrap();
         assert_eq!(logo.metadata(), &meta);
         // The root path node carries metadata but no reference.
@@ -400,10 +374,7 @@ mod tests {
 
     #[test]
     fn fetch_costs_are_depth_bounded() {
-        let mut m = Manifest::new(Store::new());
-        block_on(m.add("abc", make_addr("abc"))).unwrap();
-        let root = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
+        let (root, store) = build(&["abc"]);
         let reader = Reader::new(CountingStore::new(store));
 
         // Value hit: root plus the terminal node.
@@ -425,12 +396,7 @@ mod tests {
     #[test]
     fn fetch_costs_stay_linear_in_path_length() {
         let paths = ["a", "ab", "abc", "abcd", "abcde"];
-        let mut m = Manifest::new(Store::new());
-        for p in paths {
-            block_on(m.add(p, make_addr(p))).unwrap();
-        }
-        let root = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
+        let (root, store) = build(&paths);
         let reader = Reader::new(CountingStore::new(store));
 
         for p in paths {
@@ -450,13 +416,7 @@ mod tests {
     #[test]
     fn max_depth_is_a_typed_error() {
         // One-byte edge chain: get("abcde") costs 6 fetches, has_prefix 5.
-        let paths = ["a", "ab", "abc", "abcd", "abcde"];
-        let mut m = Manifest::new(Store::new());
-        for p in paths {
-            block_on(m.add(p, make_addr(p))).unwrap();
-        }
-        let root = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
+        let (root, store) = build(&["a", "ab", "abc", "abcd", "abcde"]);
 
         let exact = Reader::with_max_depth(store, 6);
         assert!(block_on(exact.get(&root, b"abcde")).unwrap().is_some());
@@ -487,10 +447,7 @@ mod tests {
 
     #[test]
     fn empty_path_is_not_a_value() {
-        let mut m = Manifest::new(Store::new());
-        block_on(m.add("a", make_addr("a"))).unwrap();
-        let root = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
+        let (root, store) = build(&["a"]);
         let reader = Reader::new(store);
         assert_eq!(block_on(reader.get(&root, b"")).unwrap(), None);
     }

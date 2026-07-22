@@ -2,11 +2,10 @@
 
 use alloc::collections::BTreeMap;
 
-use nectar_primitives::chunk::{ChunkAddress, Reference};
-use nectar_primitives::file::EntryRef;
+use nectar_primitives::EntryRef;
+use nectar_primitives::chunk::ChunkAddress;
 
 use crate::metadata;
-use crate::node::Node;
 
 /// A manifest entry: a path, typed reference, and optional metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -83,24 +82,6 @@ impl Entry {
     /// Chunk address from the reference.
     pub fn address(&self) -> Option<&ChunkAddress> {
         self.reference.as_ref().map(|r| r.address())
-    }
-
-    /// Reconstruct an `Entry` from a trie node and its accumulated path.
-    ///
-    /// Flows the node's typed reference straight into an [`EntryRef`], keeping
-    /// `Entry` non-generic for the public API without a wire round-trip.
-    pub(crate) fn from_node<R: Reference>(path: &[u8], node: &Node<R>) -> Self {
-        let reference = node.entry().cloned().map(Reference::into_entry_ref);
-        let metadata = if node.metadata().is_empty() {
-            BTreeMap::new()
-        } else {
-            node.metadata().clone()
-        };
-        Self {
-            path: path.to_vec(),
-            reference,
-            metadata,
-        }
     }
 }
 

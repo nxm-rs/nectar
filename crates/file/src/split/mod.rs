@@ -31,12 +31,134 @@ mod mode;
 #[cfg(test)]
 mod tests;
 
+use core::convert::Infallible;
+use core::future::poll_fn;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
+use nectar_primitives::store::{ChunkPut, MaybeSync};
+
+use crate::config::PutWindow;
+
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use encrypted::{KeyError, KeySource, RandomKeys};
 pub use engine::Split;
 pub use error::{SealError, SplitError};
 pub use mode::{Sealed, SplitMode};
+
+/// Split `data` under put `window` into the tree, storing every chunk in the
+/// borrowed `store`, and return the root.
+///
+/// The borrowed-store companion to [`Split::collect`]: where `collect` owns
+/// its store, this drives the split through an internal relay and forwards
+/// each sealed chunk to `store` between poll rounds. At most one put window of
+/// chunks is retained, so the memory bound is the split's own: puts in flight
+/// stay within `window` and buffered chunks within the spine height.
+///
+/// ```
+/// # futures::executor::block_on(async {
+/// use nectar_file::split::collect_into;
+/// use nectar_file::{Plain, PutWindow};
+/// use nectar_primitives::chunk::AnyChunkSet;
+/// use nectar_primitives::store::MemoryStore;
+///
+/// let store = MemoryStore::<AnyChunkSet<4096>>::new();
+/// let window = PutWindow::new(4).unwrap();
+/// let root = collect_into::<_, Plain, 4096>(&store, window, b"hello swarm")
+///     .await
+///     .unwrap();
+/// # let _ = root;
+/// # });
+/// ```
+pub async fn collect_into<T, M, const B: usize>(
+    store: &T,
+    window: PutWindow,
+    data: &[u8],
+) -> Result<M::Root, SplitError<T::Error>>
+where
+    T: ChunkPut<AnyChunkSet<B>> + MaybeSync,
+    M: SplitMode + Default,
+{
+    let relay = Relay::<B>::default();
+    let mut split: Split<Relay<B>, M, B> = Split::new(relay.clone(), window);
+    let mut rest = data;
+    while !rest.is_empty() {
+        let taken = poll_fn(|cx| split.poll_write(cx, rest))
+            .await
+            .map_err(widen::<T::Error>)?;
+        rest = rest.get(taken..).unwrap_or(&[]);
+        // Forward every chunk sealed this round before more bytes enter, so
+        // the relay never holds more than the window.
+        drain(&relay, store).await?;
+    }
+    let root = poll_fn(|cx| split.poll_finish(cx))
+        .await
+        .map_err(widen::<T::Error>)?;
+    drain(&relay, store).await?;
+    Ok(root)
+}
+
+/// Widen the relay-backed split's error to the borrowed store's error. The
+/// relay is infallible, so the `Put` arm is unreachable.
+fn widen<E>(error: SplitError<Infallible>) -> SplitError<E> {
+    match error {
+        SplitError::Put { source, .. } => match source {},
+        SplitError::Seal(seal) => SplitError::Seal(seal),
+        SplitError::SpanOverflow { span, add } => SplitError::SpanOverflow { span, add },
+        SplitError::Finished => SplitError::Finished,
+        SplitError::Poisoned => SplitError::Poisoned,
+        SplitError::SpineDepleted => SplitError::SpineDepleted,
+    }
+}
+
+/// Forward every queued chunk to the borrowed store in seal order, capturing
+/// each address before the put consumes the chunk.
+async fn drain<T, const B: usize>(relay: &Relay<B>, store: &T) -> Result<(), SplitError<T::Error>>
+where
+    T: ChunkPut<AnyChunkSet<B>> + MaybeSync,
+{
+    while let Some(chunk) = relay.pop() {
+        let address = *chunk.address();
+        store
+            .put(chunk)
+            .await
+            .map_err(|source| SplitError::Put { address, source })?;
+    }
+    Ok(())
+}
+
+/// Shared put queue bridging a borrowed store to the owned-handle store the
+/// split clones per put: relay puts land here in seal order and [`drain`]
+/// forwards them, so the split never parks and its memory bound carries over.
+#[derive(Clone, Default)]
+struct Relay<const B: usize> {
+    queue: Arc<Mutex<VecDeque<Chunk<Verified, AnyChunkSet<B>>>>>,
+}
+
+impl<const B: usize> Relay<B> {
+    /// The oldest queued chunk; a poisoned lock hands back its inner queue,
+    /// which a single push or pop cannot leave inconsistent.
+    fn pop(&self) -> Option<Chunk<Verified, AnyChunkSet<B>>> {
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front()
+    }
+}
+
+impl<const B: usize> ChunkPut<AnyChunkSet<B>> for Relay<B> {
+    type Error = Infallible;
+
+    async fn put(&self, chunk: Chunk<Verified, AnyChunkSet<B>>) -> Result<(), Infallible> {
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(chunk);
+        Ok(())
+    }
+}
 
 /// Occupancy witnesses of one split.
 ///

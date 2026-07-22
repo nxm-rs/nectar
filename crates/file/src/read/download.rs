@@ -42,14 +42,19 @@ pub type ProgressFn = Box<dyn FnMut(Progress)>;
 /// the re-run safe.
 ///
 /// ```
-/// # #![allow(deprecated)]
 /// use nectar_file::{File, MemSink};
 ///
 /// # futures::executor::block_on(async {
 /// let data: Vec<u8> = (0u32..40_000)
 ///     .map(|i| u8::try_from(i % 251).unwrap())
 ///     .collect();
-/// # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
+/// # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
+/// # let root = nectar_file::Split::<_, nectar_file::Plain, 4096>::collect(
+/// #     std::sync::Arc::clone(&store),
+/// #     &data,
+/// # )
+/// # .await
+/// # .unwrap();
 /// let file = File::open(store, root).await.unwrap();
 /// let mut sink = MemSink::new();
 /// let written = file

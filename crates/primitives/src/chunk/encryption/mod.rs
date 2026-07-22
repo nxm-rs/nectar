@@ -6,9 +6,8 @@ mod error;
 mod key;
 mod reference;
 
-pub(crate) use chunk::decrypt_chunk_data;
 #[cfg(feature = "encryption")]
-pub(crate) use chunk::encrypt_chunk;
+pub(crate) use chunk::{decrypt_chunk_data, encrypt_chunk};
 pub use cipher::{transcrypt, transcrypt_in_place};
 pub use error::EncryptionError;
 pub use key::EncryptionKey;

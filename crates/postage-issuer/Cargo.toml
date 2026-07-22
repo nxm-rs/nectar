@@ -29,6 +29,10 @@ alloy-signer-local = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
+futures = { workspace = true }
+# The upload pipeline bench splits through the streaming engine and the
+# rayon batch ingest.
+nectar-file = { workspace = true, features = ["rayon"] }
 proptest = { workspace = true }
 proptest-arbitrary-interop = { workspace = true }
 criterion = { workspace = true }

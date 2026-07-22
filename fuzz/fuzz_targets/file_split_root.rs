@@ -1,9 +1,9 @@
 //! Fuzz the split engine's root idempotence over write segmentation.
 //!
 //! The same bytes are streamed through two independent splits under fuzzed
-//! segmentations and put windows. The oracle is one root: both runs, the
-//! legacy buffered splitter, and every repeated finish must agree, and the
-//! written store must read back to the source bytes.
+//! segmentations and put windows. The oracle is one root: both runs and
+//! every repeated finish must agree, and the written store must read back
+//! to the source bytes.
 
 #![no_main]
 
@@ -14,27 +14,14 @@ use std::sync::{Arc, Mutex};
 use libfuzzer_sys::fuzz_target;
 use nectar_file::sync::drive;
 use nectar_file::{File, Plain, PutWindow, Split};
+use nectar_fuzz::tile;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
 
 /// Tiny body size: fan-out 8, so a few KiB already builds a deep tree.
 const BODY: usize = 256;
-/// Source-length cap; four tree levels at the tiny body size.
-const MAX_LEN: usize = 32 * 1024;
 /// Poll budget per drive; a ready store must finish well within it.
 const SPIN_BOUND: u32 = 1 << 20;
-
-/// Tile `seed` to `copies` repetitions, capped at [`MAX_LEN`] bytes.
-fn tile(seed: &[u8], copies: u16) -> Vec<u8> {
-    if seed.is_empty() {
-        return Vec::new();
-    }
-    let len = seed
-        .len()
-        .saturating_mul(usize::from(copies.max(1)))
-        .min(MAX_LEN);
-    seed.iter().copied().cycle().take(len).collect()
-}
 
 /// Shared ready store: clones alias one map, so the engine's per-put clones
 /// and the read-back handle see the same chunks.
@@ -78,14 +65,6 @@ impl ChunkGet<AnyChunkSet<BODY>> for SharedStore {
             .cloned()
             .ok_or_else(|| ChunkStoreError::not_found(address))
     }
-}
-
-/// Legacy buffered split: the root oracle.
-#[allow(deprecated)]
-fn legacy_root(data: &[u8]) -> ChunkAddress {
-    let (root, _) =
-        nectar_primitives::file::split::<BODY>(data).expect("legacy split accepts any buffer");
-    root
 }
 
 /// Poll to completion under a no-op waker; a ready store re-polls to
@@ -134,11 +113,6 @@ fuzz_target!(|input: (Vec<u8>, u16, Vec<u16>, Vec<u16>, u16, u16)| {
     let (root_a, store) = stream_split(&data, win_a, &steps_a);
     let (root_b, _) = stream_split(&data, win_b, &steps_b);
     assert_eq!(root_a, root_b, "root diverged across write segmentations");
-    assert_eq!(
-        root_a,
-        legacy_root(&data),
-        "root diverged from the legacy splitter"
-    );
 
     let read_back = drive(async move {
         let file = File::<_, Plain, BODY>::open(store, root_a)

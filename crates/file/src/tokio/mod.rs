@@ -14,20 +14,22 @@
 //! Reading a byte range through the shim:
 //!
 //! ```
-//! # #![allow(deprecated)]
-//! use nectar_file::{File, TokioReader};
+//! use std::sync::Arc;
+//!
+//! use nectar_file::{File, Plain, Split, TokioReader};
 //! use nectar_primitives::chunk::AnyChunkSet;
 //! use nectar_primitives::store::MemoryStore;
 //! use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 //!
-//! type Store = MemoryStore<AnyChunkSet<4096>>;
+//! type Store = Arc<MemoryStore<AnyChunkSet<4096>>>;
 //!
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() {
 //! let data: Vec<u8> = (0u32..20_000)
 //!     .map(|i| u8::try_from(i % 251).unwrap())
 //!     .collect();
-//! # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
+//! # let store: Store = Arc::new(MemoryStore::new());
+//! # let root = Split::<_, Plain, 4096>::collect(Arc::clone(&store), &data).await.unwrap();
 //! let file: File<Store> = File::open(store, root).await.unwrap();
 //!
 //! // A plain AsyncRead + AsyncSeek: seek to a range, then read it back.

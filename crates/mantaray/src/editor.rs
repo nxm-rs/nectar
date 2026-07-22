@@ -2,8 +2,9 @@
 //!
 //! Ops are recorded synchronously into a `(path, op)` log and applied one at
 //! a time at commit, in submission order. The committed root is defined as
-//! the root the legacy mutation path produces for the same sequence, shape
-//! quirks included; ops are never reordered or batched.
+//! the root the reference mutation path produces for the same sequence
+//! (pinned by the registry-crate differential gate), shape quirks included;
+//! ops are never reordered or batched.
 
 use alloc::collections::BTreeMap;
 use alloc::collections::btree_map;
@@ -304,7 +305,7 @@ enum MergeOutcome {
 
 /// Merge one metadata key into the node at `path`, creating it when absent.
 ///
-/// Shape-exact twin of the legacy root-metadata merge: an existing node keeps
+/// Shape-exact twin of the reference root-metadata merge: an existing node keeps
 /// its entry and gains the key; an absent one is created as a metadata-only
 /// value. Every node on the descent is marked dirty so a clean ancestor can
 /// never shadow the merged metadata at commit.
@@ -487,10 +488,7 @@ mod tests {
     use nectar_primitives::store::{ChunkGet, MemoryStore};
     use nectar_primitives::{EncryptedChunkRef, EncryptionKey, StandardChunkSet, Verified};
 
-    use crate::{EncryptedManifest, PlainManifest};
-
     type Store = MemoryStore<StandardChunkSet>;
-    type Legacy = PlainManifest<Store>;
     type Editor = ManifestEditor<Store>;
 
     /// A ChunkAddress from a string, right-padded with zeroes.
@@ -502,7 +500,7 @@ mod tests {
         ChunkAddress::from(buf)
     }
 
-    /// One scripted mutation, replayable on the legacy manifest and the editor.
+    /// One scripted mutation, replayable on the editor.
     #[derive(Clone, Copy)]
     enum Script {
         Add(&'static str, &'static str),
@@ -510,27 +508,6 @@ mod tests {
         Rm(&'static str),
         SetIndex(&'static str),
         SetError(&'static str),
-    }
-
-    /// Fresh single-session legacy replay: build in memory, save once. All
-    /// nodes are dirty at save, so the legacy root is the well-defined one.
-    fn legacy_replay(script: &[Script]) -> (ChunkAddress, Store) {
-        let mut m = Legacy::new(Store::new());
-        for op in script {
-            match *op {
-                Script::Add(p, seed) => block_on(m.add(p, make_addr(seed))).unwrap(),
-                Script::AddMeta(p, seed, k, v) => {
-                    let meta = [(k.to_string(), v.to_string())].into();
-                    block_on(m.add_with_metadata(p, make_addr(seed), meta)).unwrap();
-                }
-                Script::Rm(p) => block_on(m.remove(p)).unwrap(),
-                Script::SetIndex(v) => block_on(m.set_index_document(v)).unwrap(),
-                Script::SetError(v) => block_on(m.set_error_document(v)).unwrap(),
-            }
-        }
-        let root = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
-        (root, store)
     }
 
     /// Record a script into an editor.
@@ -646,37 +623,31 @@ mod tests {
     }
 
     #[test]
-    fn commit_matches_legacy_fresh_replay() {
+    fn split_commit_matches_the_fresh_replay() {
         for (i, script) in corpora().iter().enumerate() {
-            let (want, _) = legacy_replay(script);
-            let (got, _) = editor_replay(script);
-            assert_eq!(got, want, "corpus {i} diverges from the legacy root");
-        }
-    }
-
-    #[test]
-    fn split_commit_matches_legacy_fresh_replay() {
-        for (i, script) in corpora().iter().enumerate() {
-            let (want, _) = legacy_replay(script);
+            let (want, _) = editor_replay(script);
             for split in 0..=script.len() {
                 let (got, _) = editor_replay_split(script, split);
                 assert_eq!(
                     got, want,
-                    "corpus {i} split {split} diverges from the legacy root"
+                    "corpus {i} split {split} diverges from the fresh replay"
                 );
             }
         }
     }
 
     #[test]
-    fn committed_root_is_readable_by_the_legacy_manifest() {
+    fn committed_root_is_readable() {
         let script = corpora().swap_remove(4);
         let (root, store) = editor_replay(&script);
-        let m = Legacy::open(root, store);
-        let entry = block_on(m.get("img/1.png")).unwrap().unwrap();
-        assert_eq!(entry.address(), Some(&make_addr("1v2")));
-        assert!(block_on(m.get("img/2.png")).unwrap().is_some());
-        assert!(block_on(m.get("absent")).unwrap().is_none());
+        let reader = crate::Reader::new(store);
+        let entry = block_on(reader.get(&root, b"img/1.png")).unwrap().unwrap();
+        assert_eq!(
+            entry.reference().map(|r| *r.address()),
+            Some(make_addr("1v2"))
+        );
+        assert!(block_on(reader.get(&root, b"img/2.png")).unwrap().is_some());
+        assert!(block_on(reader.get(&root, b"absent")).unwrap().is_none());
     }
 
     #[test]
@@ -726,38 +697,30 @@ mod tests {
         ));
     }
 
-    /// The clean-ancestor hazard: legacy root metadata set after a save is
-    /// dropped, because the loaded-but-clean root shadows the dirty child at
-    /// the next save. The editor commit must not reproduce it.
+    /// The clean-ancestor hazard: root metadata set after a persist boundary
+    /// must not be shadowed by the loaded-but-clean root at the next commit.
     #[test]
     fn clean_ancestor_hazard_regression() {
-        // Legacy exhibits the hazard: the second save returns the stale root.
-        let mut legacy = Legacy::new(Store::new());
-        block_on(legacy.add("index.html", make_addr("i"))).unwrap();
-        let stale = block_on(legacy.save()).unwrap();
-        block_on(legacy.set_index_document("index.html")).unwrap();
-        assert_eq!(block_on(legacy.save()).unwrap(), stale);
-
-        // The well-defined root for the same sequence, from a fresh replay.
-        let (want, _) = legacy_replay(&[
+        // The well-defined root for the sequence, from a fresh replay.
+        let (want, _) = editor_replay(&[
             Script::Add("index.html", "i"),
             Script::SetIndex("index.html"),
         ]);
-        assert_ne!(want, stale);
 
-        // The editor commits the metadata across the same boundary.
+        // The editor commits the metadata across a reopen boundary.
         let mut editor = Editor::new(Store::new());
         editor.put("index.html", make_addr("i"));
         let (root, store) = block_on(editor.commit()).unwrap();
-        assert_eq!(root, stale);
+        assert_ne!(root, want, "the metadata must change the root");
         let mut editor = Editor::open(root, store);
         editor.set_index_document("index.html");
         let (got, store) = block_on(editor.commit()).unwrap();
         assert_eq!(got, want);
 
-        let m = Legacy::open(got, store);
+        let reader = crate::Reader::new(store);
+        let entry = block_on(reader.get(&got, b"/")).unwrap().unwrap();
         assert_eq!(
-            block_on(m.index_document()).unwrap(),
+            entry.metadata().get("website-index-document").cloned(),
             Some("index.html".to_string())
         );
     }
@@ -773,23 +736,30 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_commit_matches_legacy_from_shared_seed() {
-        // Seed a persisted encrypted manifest so both sides share one
-        // obfuscation key; the legacy continuation is safe (no lookups, so
-        // no clean ancestors) and defines the expected root.
-        let mut legacy = EncryptedManifest::new_encrypted(Store::new());
-        let seed_ref = block_on(legacy.save()).unwrap();
+    fn encrypted_split_commit_matches_the_fresh_replay() {
+        // Seed a persisted empty encrypted manifest so both replays share
+        // one obfuscation key.
+        let seed: ManifestEditor<_, EncryptedChunkRef> =
+            ManifestEditor::new_encrypted(Store::new());
+        let (seed_ref, store) = block_on(seed.commit()).unwrap();
         let enc = |s: &str| EncryptedChunkRef::new(make_addr(s), EncryptionKey::from([0x5a; 32]));
-        block_on(legacy.add("secret/a.txt", enc("a"))).unwrap();
-        block_on(legacy.add("secret/b.txt", enc("b"))).unwrap();
-        block_on(legacy.remove("secret/a.txt")).unwrap();
-        let want = block_on(legacy.save()).unwrap();
-        let (_, store) = legacy.into_parts();
 
+        // Single-session replay from the seed.
+        let mut single: ManifestEditor<_, EncryptedChunkRef> =
+            ManifestEditor::open_encrypted(seed_ref, store);
+        single.put("secret/a.txt", enc("a"));
+        single.put("secret/b.txt", enc("b"));
+        single.remove("secret/a.txt");
+        let (want, store) = block_on(single.commit()).unwrap();
+
+        // The same ops across a commit boundary land on the same root.
         let mut editor: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(seed_ref, store);
         editor.put("secret/a.txt", enc("a"));
         editor.put("secret/b.txt", enc("b"));
+        let (mid, store) = block_on(editor.commit()).unwrap();
+        let mut editor: ManifestEditor<_, EncryptedChunkRef> =
+            ManifestEditor::open_encrypted(mid, store);
         editor.remove("secret/a.txt");
         let (got, _) = block_on(editor.commit()).unwrap();
         assert_eq!(got, want);

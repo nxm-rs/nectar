@@ -1,7 +1,7 @@
 //! Fuzz arbitrary seek and read sequences on the ordered reader.
 //!
 //! A fuzzed clip range and op sequence drive one reader over a store built
-//! by the legacy splitter. The model is a cursor over the clipped source
+//! by the streaming split. The model is a cursor over the clipped source
 //! slice: every read must deliver the model's bytes at the model's position,
 //! a seek past the effective length must fail typed and move nothing, and a
 //! final drain from zero must reproduce the whole clipped slice.
@@ -12,13 +12,10 @@ use arbitrary::Arbitrary;
 use futures::executor::block_on;
 use libfuzzer_sys::fuzz_target;
 use nectar_file::{File, Plain};
-use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
-use nectar_primitives::store::MemoryStore;
+use nectar_fuzz::{split, tile};
 
 /// Tiny body size: fan-out 8, so a few KiB already builds a deep tree.
 const BODY: usize = 256;
-/// Source-length cap; four tree levels at the tiny body size.
-const MAX_LEN: usize = 32 * 1024;
 /// Op-sequence cap per exec.
 const MAX_OPS: usize = 64;
 /// Per-read buffer cap, past one body so reads cross leaf boundaries.
@@ -33,24 +30,6 @@ enum Op {
     Read(u16),
     /// Take the next uncopied in-order run.
     Segment,
-}
-
-/// Tile `seed` to `copies` repetitions, capped at [`MAX_LEN`] bytes.
-fn tile(seed: &[u8], copies: u16) -> Vec<u8> {
-    if seed.is_empty() {
-        return Vec::new();
-    }
-    let len = seed
-        .len()
-        .saturating_mul(usize::from(copies.max(1)))
-        .min(MAX_LEN);
-    seed.iter().copied().cycle().take(len).collect()
-}
-
-/// Legacy split of the whole buffer: the store the reader walks.
-#[allow(deprecated)]
-fn legacy_split(data: &[u8]) -> (ChunkAddress, MemoryStore<AnyChunkSet<BODY>>) {
-    nectar_primitives::file::split::<BODY>(data).expect("legacy split accepts any buffer")
 }
 
 fn to_usize(value: u64) -> usize {
@@ -71,7 +50,7 @@ fuzz_target!(|input: (Vec<u8>, u16, (u64, u64), Vec<Op>)| {
     let window = &data[to_usize(clip_start)..to_usize(clip_end)];
     let eff = clip_end - clip_start;
 
-    let (root, store) = legacy_split(&data);
+    let (root, store) = split(&data);
     block_on(async move {
         let file = File::<_, Plain, BODY>::open(store, root)
             .await

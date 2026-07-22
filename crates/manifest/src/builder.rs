@@ -8,14 +8,14 @@
 //! of the keys, identical whatever order the caller streamed them in.
 
 use core::convert::Infallible;
-use core::future::poll_fn;
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use nectar_file::{Plain, PutWindow, Split, SplitError};
+use nectar_file::{Plain, PutWindow, SplitError, collect_into};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
-use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentChunk, PrimitivesError};
+use nectar_primitives::{
+    Chunk, ChunkAddress, ChunkRef, ContentChunk, DEFAULT_BODY_SIZE, PrimitivesError,
+};
 
 use crate::bounded::{Prefix, SegmentWeight};
 use crate::codec::{
@@ -593,71 +593,35 @@ where
     Ok(address)
 }
 
-/// Shared put queue bridging the borrowed caller store to the owned-handle
-/// store the splitter clones per put: puts land here synchronously and
-/// [`drain`] forwards them between polls, so the splitter never parks and its
-/// memory bound carries over.
-#[derive(Clone, Debug, Default)]
-struct Relay {
-    queue: Arc<Mutex<VecDeque<Chunk>>>,
-}
-
-impl Relay {
-    /// The oldest queued chunk; a poisoned lock hands back its inner queue,
-    /// which a single push or pop cannot leave inconsistent.
-    fn pop(&self) -> Option<Chunk> {
-        self.queue
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop_front()
-    }
-}
-
-impl ChunkPut for Relay {
-    type Error = Infallible;
-
-    async fn put(&self, chunk: Chunk) -> Result<(), Self::Error> {
-        self.queue
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push_back(chunk);
-        Ok(())
-    }
-}
-
-/// Forward every queued chunk to the caller's store in seal order.
-async fn drain<S>(relay: &Relay, store: &S) -> Result<(), BuildError>
-where
-    S: ChunkPut + MaybeSync,
-{
-    while let Some(chunk) = relay.pop() {
-        store.put(chunk).await.map_err(BuildError::backend)?;
-    }
-    Ok(())
-}
-
-/// Split `data` through the streaming splitter, forwarding each sealed chunk
-/// to `store` as it spills, and return the file's plain root reference.
+/// Split `data` through the bounded splitter into the borrowed `store`,
+/// returning the file's plain root reference. Memory stays bounded: the split
+/// forwards each sealed chunk before consuming more bytes.
 async fn split_file<S>(store: &S, data: &[u8]) -> Result<ChunkRef, BuildError>
 where
     S: ChunkPut + MaybeSync,
 {
-    let relay = Relay::default();
-    let mut split: Split<Relay, Plain> = Split::new(relay.clone(), PutWindow::DEFAULT);
-    let mut rest = data;
-    while !rest.is_empty() {
-        // Relay puts complete in place, so the splitter always accepts bytes
-        // and every sealed chunk is forwarded before more bytes go in.
-        let taken = poll_fn(|cx| split.poll_write(cx, rest)).await?;
-        rest = match rest.split_at_checked(taken) {
-            Some((consumed, tail)) if !consumed.is_empty() => tail,
-            _ => return Err(BuildError::Internal),
-        };
-        drain(&relay, store).await?;
-    }
-    let root = poll_fn(|cx| split.poll_finish(cx)).await?;
-    drain(&relay, store).await?;
+    let root = collect_into::<_, Plain, DEFAULT_BODY_SIZE>(store, PutWindow::DEFAULT, data)
+        .await
+        .map_err(split_error::<S::Error>)?;
     Ok(ChunkRef::new(root))
+}
+
+/// Map a file-split failure into a build failure: a store put becomes a
+/// backend error, every engine or seal fault keeps its typed shape.
+fn split_error<E>(error: SplitError<E>) -> BuildError
+where
+    E: core::error::Error + MaybeSend + MaybeSync + 'static,
+{
+    match error {
+        SplitError::Put { source, .. } => BuildError::backend(source),
+        SplitError::Seal(seal) => BuildError::Split(SplitError::Seal(seal)),
+        SplitError::SpanOverflow { span, add } => {
+            BuildError::Split(SplitError::SpanOverflow { span, add })
+        }
+        SplitError::Finished => BuildError::Split(SplitError::Finished),
+        SplitError::Poisoned => BuildError::Split(SplitError::Poisoned),
+        SplitError::SpineDepleted => BuildError::Split(SplitError::SpineDepleted),
+    }
 }
 
 /// Stream files through BMT into one published manifest.

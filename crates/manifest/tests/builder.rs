@@ -4,9 +4,6 @@
 //! buffers track the trie depth rather than the key count, and the files path
 //! splits through BMT and references the stored roots.
 
-// The legacy splitter is the differential oracle for the streaming bridge.
-#![allow(deprecated)]
-
 use std::error::Error;
 
 use bytes::Bytes;
@@ -15,23 +12,10 @@ use nectar_manifest::{
     BuildStats, Builder, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node, NodeGet,
     Prefix, RootExtension, V1, build_files,
 };
-use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, DEFAULT_BODY_SIZE, MemoryStore, split};
+use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, MemoryStore};
 
-type TestResult = Result<(), Box<dyn Error>>;
-
-/// A fallible assertion: Result-returning tests report failures as errors.
-fn ensure(cond: bool, what: &str) -> TestResult {
-    if cond { Ok(()) } else { Err(what.into()) }
-}
-
-/// A fallible equality assertion.
-fn ensure_eq<T: PartialEq + core::fmt::Debug>(left: T, right: T, what: &str) -> TestResult {
-    if left == right {
-        Ok(())
-    } else {
-        Err(format!("{what}: {left:?} != {right:?}").into())
-    }
-}
+mod common;
+use common::{TestResult, ensure, ensure_eq, split_whole};
 
 const fn ref32(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))
@@ -231,7 +215,7 @@ fn build_files_splits_through_bmt_and_references_the_stored_roots() -> TestResul
             .address()
             .ok_or("entry is not a reference")?;
 
-        let (expected_root, _) = split::<DEFAULT_BODY_SIZE>(&data)?;
+        let (expected_root, _) = block_on(split_whole(&data))?;
         ensure_eq(address, &expected_root, "file root reference")?;
         ensure(store.get(address).is_some(), "file root stored")?;
     }

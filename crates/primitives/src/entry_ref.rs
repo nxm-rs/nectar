@@ -3,8 +3,13 @@
 use crate::chunk::encryption::EncryptedChunkRef;
 use crate::chunk::{ChunkAddress, ChunkRef};
 
-#[allow(deprecated)]
-use crate::file::error::FileError;
+/// A byte slice whose width is neither reference width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid entry reference length: {len} (expected 32 or 64)")]
+pub struct InvalidEntryRef {
+    /// Actual byte length of the reference.
+    pub len: usize,
+}
 
 /// A typed chunk reference: either a plain 32-byte reference or an encrypted
 /// 64-byte reference.
@@ -16,22 +21,21 @@ pub enum EntryRef {
     Encrypted(EncryptedChunkRef),
 }
 
-#[allow(deprecated)]
 impl EntryRef {
     /// Parse an entry reference from raw bytes.
     ///
     /// - [`ChunkRef::SIZE`] bytes → `Plain`
     /// - [`EncryptedChunkRef::SIZE`] bytes → `Encrypted`
-    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, FileError> {
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, InvalidEntryRef> {
         if let Ok(addr_bytes) = <[u8; ChunkRef::SIZE]>::try_from(bytes) {
             return Ok(Self::Plain(ChunkRef::new(ChunkAddress::from(addr_bytes))));
         }
         if bytes.len() == EncryptedChunkRef::SIZE {
             let enc_ref = EncryptedChunkRef::try_from(bytes)
-                .map_err(|_| FileError::InvalidEntryRef { len: bytes.len() })?;
+                .map_err(|_| InvalidEntryRef { len: bytes.len() })?;
             return Ok(Self::Encrypted(enc_ref));
         }
-        Err(FileError::InvalidEntryRef { len: bytes.len() })
+        Err(InvalidEntryRef { len: bytes.len() })
     }
 
     /// The chunk address (first 32 bytes of any reference).
@@ -103,12 +107,11 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn rejects_other_widths() {
         for len in [0usize, 31, 33, 63, 65, 96] {
             let bytes = vec![0u8; len];
             let err = EntryRef::try_from_bytes(&bytes).unwrap_err();
-            assert!(matches!(err, FileError::InvalidEntryRef { len: got } if got == len));
+            assert_eq!(err, InvalidEntryRef { len });
         }
     }
 

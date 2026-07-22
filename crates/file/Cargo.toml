@@ -30,8 +30,8 @@ criterion.workspace = true
 futures.workspace = true
 # The manifest-edit exhibit publishes a file root under a path.
 nectar-mantaray.workspace = true
-# The differential oracles split and join through the legacy read paths,
-# including the encrypted width.
+# The oracle stores and chunk fixtures ride the primitives store surface,
+# including the encrypted reference width.
 nectar-primitives = { workspace = true, features = ["std", "encryption"] }
 tokio = { workspace = true, features = ["io-util", "time"] }
 

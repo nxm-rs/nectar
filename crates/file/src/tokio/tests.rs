@@ -1,7 +1,6 @@
 //! Adapter battery: differential reads over both drivers, seek semantics,
 //! typed-to-io error mapping, driver handover and the writer shim's
 //! shutdown-to-root path.
-#![allow(deprecated)]
 
 use std::io::{ErrorKind, SeekFrom};
 use std::string::ToString;
@@ -9,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::file::split;
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, MemoryStore};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -17,6 +15,7 @@ use super::{SpawnedReader, TokioReader, TokioWriter};
 use crate::config::PutWindow;
 use crate::read::File;
 use crate::split::Split;
+use crate::testutil::{reject_all, split_fixture};
 use crate::walk::Plain;
 
 /// Tiny body size shared with the facade tests: fan-out 8, so small files
@@ -33,7 +32,7 @@ fn fill(len: usize) -> Vec<u8> {
 }
 
 async fn open(data: &[u8]) -> File<TinyStore, Plain, TINY> {
-    let (root, store) = split::<TINY>(data).unwrap();
+    let (root, store) = split_fixture::<TINY>(data);
     File::open(store, root).await.unwrap()
 }
 
@@ -208,7 +207,7 @@ impl ChunkGet<AnyChunkSet<TINY>> for FailAfter {
 #[tokio::test]
 async fn walk_failures_surface_as_io_errors_on_both_drivers() {
     let data = fill(9 * TINY);
-    let (root, store) = split::<TINY>(&data).unwrap();
+    let (root, store) = split_fixture::<TINY>(&data);
     let store = FailAfter {
         inner: Arc::new(store),
         countdown: Arc::new(Mutex::new(3)),
@@ -228,18 +227,6 @@ async fn walk_failures_surface_as_io_errors_on_both_drivers() {
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Other);
-}
-
-/// Store refusing every put.
-#[derive(Clone)]
-struct RejectPuts;
-
-impl ChunkPut<AnyChunkSet<TINY>> for RejectPuts {
-    type Error = ChunkStoreError;
-
-    async fn put(&self, _chunk: Chunk<Verified, AnyChunkSet<TINY>>) -> Result<(), ChunkStoreError> {
-        Err(ChunkStoreError::Other("outage".to_string().into()))
-    }
 }
 
 /// Shared store handle: clones share one map, unlike the snapshot-cloning
@@ -275,7 +262,7 @@ fn writer(store: SharedStore) -> TokioWriter<SharedStore, Plain, TINY> {
 }
 
 #[tokio::test]
-async fn writer_roots_match_the_legacy_split() {
+async fn writer_roots_match_the_whole_buffer_split() {
     for len in [
         0usize,
         1,
@@ -294,7 +281,7 @@ async fn writer_roots_match_the_legacy_split() {
         assert!(writer.is_finished());
         assert_eq!(writer.stats().bytes, len as u64);
         let root = writer.into_inner().unwrap();
-        let (expected, _) = split::<TINY>(&data).unwrap();
+        let (expected, _) = split_fixture::<TINY>(&data);
         assert_eq!(root, expected, "diverged at {len}");
 
         let file = File::<_, Plain, TINY>::open(store, root).await.unwrap();
@@ -320,14 +307,14 @@ async fn writer_shutdown_is_fused_and_later_writes_fail() {
     let error = writer.write_all(b"late").await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Other);
 
-    let (expected, _) = split::<TINY>(&data).unwrap();
+    let (expected, _) = split_fixture::<TINY>(&data);
     assert_eq!(writer.into_inner().unwrap(), expected);
 }
 
 #[tokio::test]
 async fn writer_put_failures_surface_as_io_errors() {
-    let mut writer =
-        TokioWriter::from(Split::<_, Plain, TINY>::new(RejectPuts, PutWindow::DEFAULT));
+    let store = reject_all::<_, TINY>(TinyStore::default());
+    let mut writer = TokioWriter::from(Split::<_, Plain, TINY>::new(store, PutWindow::DEFAULT));
     let data = fill(2 * TINY);
     let error = async {
         writer.write_all(&data).await?;

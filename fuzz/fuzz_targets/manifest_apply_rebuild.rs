@@ -52,37 +52,39 @@ fn build(pairs: &BTreeMap<Vec<u8>, Entry<V1>>) -> Option<(MemoryStore, ChunkAddr
     Some((store, *built.root()))
 }
 
-fuzz_target!(|input: (Vec<(Vec<u8>, Val)>, Vec<(Vec<u8>, Option<Val>)>)| {
-    let (base, delta) = input;
+fuzz_target!(
+    |input: (Vec<(Vec<u8>, Val)>, Vec<(Vec<u8>, Option<Val>)>)| {
+        let (base, delta) = input;
 
-    // The base state, deduplicated the way the builder's sorted map would.
-    let mut merged: BTreeMap<Vec<u8>, Entry<V1>> =
-        base.into_iter().map(|(k, v)| (k, entry(v))).collect();
+        // The base state, deduplicated the way the builder's sorted map would.
+        let mut merged: BTreeMap<Vec<u8>, Entry<V1>> =
+            base.into_iter().map(|(k, v)| (k, entry(v))).collect();
 
-    let Some((store, root)) = build(&merged) else {
-        return;
-    };
+        let Some((store, root)) = build(&merged) else {
+            return;
+        };
 
-    // Stage the changeset and fold the same ops into the expected merged state.
-    let mut changeset = Changeset::<V1>::new();
-    for (key, op) in delta {
-        match op {
-            Some(val) => {
-                let e = entry(val);
-                changeset.put(Key::from(key.clone()), e.clone(), None);
-                merged.insert(key, e);
-            }
-            None => {
-                changeset.remove(Key::from(key.clone()));
-                merged.remove(&key);
+        // Stage the changeset and fold the same ops into the expected merged state.
+        let mut changeset = Changeset::<V1>::new();
+        for (key, op) in delta {
+            match op {
+                Some(val) => {
+                    let e = entry(val);
+                    changeset.put(Key::from(key.clone()), e.clone(), None);
+                    merged.insert(key, e);
+                }
+                None => {
+                    changeset.remove(Key::from(key.clone()));
+                    merged.remove(&key);
+                }
             }
         }
-    }
 
-    let applied = block_on(apply(&store, &root, &changeset));
-    let rebuilt = build(&merged).map(|(_, root)| root);
+        let applied = block_on(apply(&store, &root, &changeset));
+        let rebuilt = build(&merged).map(|(_, root)| root);
 
-    if let (Ok(applied), Some(rebuilt)) = (applied, rebuilt) {
-        assert_eq!(applied, rebuilt, "apply must equal a from-scratch rebuild");
+        if let (Ok(applied), Some(rebuilt)) = (applied, rebuilt) {
+            assert_eq!(applied, rebuilt, "apply must equal a from-scratch rebuild");
+        }
     }
-});
+);

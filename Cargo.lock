@@ -2127,14 +2127,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nectar-nostd-spike"
-version = "0.4.0"
-dependencies = [
- "bytes",
- "futures-util",
-]
-
-[[package]]
 name = "nectar-postage"
 version = "0.4.0"
 dependencies = [
@@ -2163,6 +2155,8 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "codspeed-criterion-compat",
+ "futures",
+ "nectar-file",
  "nectar-postage",
  "nectar-primitives 0.4.0",
  "proptest",
@@ -2247,7 +2241,6 @@ dependencies = [
  "serde",
  "subtle",
  "thiserror",
- "tokio",
  "wasm-bindgen",
  "wasm-bindgen-rayon",
  "web-time",

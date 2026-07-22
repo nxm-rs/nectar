@@ -193,6 +193,7 @@ impl ChunkGet<TinyRegistry> for Recording {
             yield_now().await;
         }
         self.chunks
+            .as_ref()
             .get(address)
             .cloned()
             .ok_or_else(|| ChunkStoreError::not_found(address))
@@ -231,6 +232,7 @@ impl ChunkGet<TinyRegistry> for HeadLast {
             }
         }
         self.chunks
+            .as_ref()
             .get(address)
             .cloned()
             .ok_or_else(|| ChunkStoreError::not_found(address))
@@ -256,6 +258,7 @@ impl ChunkGet<TinyRegistry> for Swapped {
             *address
         };
         self.chunks
+            .as_ref()
             .get(&target)
             .cloned()
             .ok_or_else(|| ChunkStoreError::not_found(address))

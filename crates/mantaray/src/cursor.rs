@@ -615,11 +615,10 @@ mod tests {
     use nectar_primitives::store::{ChunkGet, ChunkPut, MemoryStore};
     use nectar_primitives::{EncryptedChunkRef, EncryptionKey, EntryRef, StandardChunkSet};
 
+    use crate::ManifestEditor;
     use crate::node::{Fork, Node, Prefix};
-    use crate::{EncryptedManifest, PlainManifest};
 
     type Store = MemoryStore<StandardChunkSet>;
-    type Manifest = PlainManifest<Store>;
 
     /// A ChunkAddress from a string, right-padded with zeroes.
     fn make_addr(s: &str) -> ChunkAddress {
@@ -653,21 +652,13 @@ mod tests {
         ]
     }
 
-    /// Build a persisted plain manifest over the paths.
+    /// Build a persisted plain manifest over the paths through the editor.
     fn build(paths: &[&str]) -> (ChunkAddress, Store) {
-        let mut m = Manifest::new(Store::new());
+        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
         for &p in paths {
-            block_on(m.add(p, make_addr(p))).unwrap();
+            editor.put(p, make_addr(p));
         }
-        let root = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
-        (root, store)
-    }
-
-    /// The legacy shared-read listing over the same persisted trie.
-    fn legacy_entries(root: ChunkAddress, store: &Store) -> Vec<Entry> {
-        let m = Manifest::open(root, store.clone());
-        block_on(m.entries()).unwrap()
+        block_on(editor.commit()).unwrap()
     }
 
     fn collect_entries<S>(mut cursor: Cursor<S>) -> Vec<Entry>
@@ -833,34 +824,42 @@ mod tests {
     }
 
     #[test]
-    fn listing_matches_legacy_entries_in_path_order() {
+    fn listing_yields_every_path_in_path_order() {
         for paths in corpora() {
             let (root, store) = build(&paths);
-            let want = legacy_entries(root, &store);
-            assert_eq!(want.len(), paths.len());
             let got = collect_entries(Cursor::new(store, root));
-            assert_eq!(got, want, "corpus {paths:?}");
-            assert!(
-                got.windows(2).all(|pair| pair[0].path() < pair[1].path()),
-                "listing must be strictly path-ordered"
-            );
+            let mut want = paths.clone();
+            want.sort_unstable();
+            assert_eq!(got.len(), want.len(), "corpus {paths:?}");
+            for (entry, path) in got.iter().zip(&want) {
+                assert_eq!(entry.path(), path.as_bytes(), "corpus {paths:?}");
+                assert_eq!(
+                    entry.reference().map(|r| *r.address()),
+                    Some(make_addr(path)),
+                    "reference for {path:?}"
+                );
+                assert!(entry.metadata().is_empty(), "metadata for {path:?}");
+            }
         }
     }
 
     #[test]
     fn metadata_and_root_document_survive_the_listing() {
-        let mut m = Manifest::new(Store::new());
-        block_on(m.add("plain.txt", make_addr("plain"))).unwrap();
+        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
+        editor.put("plain.txt", make_addr("plain"));
         let meta: BTreeMap<String, String> =
             [("Content-Type".to_string(), "image/png".to_string())].into();
-        block_on(m.add_with_metadata("logo.png", make_addr("logo"), meta.clone())).unwrap();
-        block_on(m.set_index_document("index.html")).unwrap();
-        let root = block_on(m.save()).unwrap();
-        let want = block_on(m.entries()).unwrap();
-        let (_, store) = m.into_parts();
+        editor.put_with_metadata("logo.png", make_addr("logo"), meta.clone());
+        editor.set_index_document("index.html");
+        let (root, store) = block_on(editor.commit()).unwrap();
 
         let got = collect_entries(Cursor::new(store, root));
-        assert_eq!(got, want);
+        assert_eq!(got.len(), 3);
+        let plain = got.iter().find(|e| e.path() == b"plain.txt").unwrap();
+        assert_eq!(
+            plain.reference().map(|r| *r.address()),
+            Some(make_addr("plain"))
+        );
         let logo = got.iter().find(|e| e.path() == b"logo.png").unwrap();
         assert_eq!(logo.metadata(), &meta);
         let doc = got.iter().find(|e| e.path() == b"/").unwrap();
@@ -872,24 +871,31 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_listing_matches_legacy_entries() {
-        let mut m = EncryptedManifest::new_encrypted(Store::new());
+    fn encrypted_listing_yields_the_stored_references() {
         let paths = ["secret/a.txt", "secret/b.txt", "top.txt"];
+        let key = EncryptionKey::from([0x5a; 32]);
+        let mut editor: ManifestEditor<Store, EncryptedChunkRef> =
+            ManifestEditor::new_encrypted(Store::new());
         for p in paths {
-            let r = EncryptedChunkRef::new(make_addr(p), EncryptionKey::from([0x5a; 32]));
-            block_on(m.add(p, r)).unwrap();
+            editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
         }
-        let manifest_ref = block_on(m.save()).unwrap();
+        let (manifest_ref, store) = block_on(editor.commit()).unwrap();
         let (root, _key) = manifest_ref.into_parts();
-        let want = block_on(m.entries()).unwrap();
-        let (_, store) = m.into_parts();
 
         let got = collect_entries(Cursor::new(store, root));
-        assert_eq!(got, want);
-        assert!(
-            got.iter()
-                .all(|e| matches!(e.reference(), Some(EntryRef::Encrypted(_))))
-        );
+        let mut want = paths.to_vec();
+        want.sort_unstable();
+        assert_eq!(got.len(), want.len());
+        for (entry, path) in got.iter().zip(&want) {
+            assert_eq!(entry.path(), path.as_bytes());
+            match entry.reference() {
+                Some(EntryRef::Encrypted(reference)) => {
+                    assert_eq!(reference.address(), &make_addr(path));
+                    assert_eq!(reference.key(), &key);
+                }
+                other => panic!("expected an encrypted reference, got {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -1144,16 +1150,9 @@ mod tests {
     }
 
     #[test]
-    fn address_stream_matches_the_legacy_address_walk() {
+    fn address_stream_covers_nodes_and_entries() {
         for paths in corpora() {
             let (root, store) = build(&paths);
-            let mut m = Manifest::open(root, store.clone());
-            let mut want: Vec<Vec<u8>> = Vec::new();
-            block_on(m.iterate_addresses(|bytes| {
-                want.push(bytes.to_vec());
-                Ok(())
-            }))
-            .unwrap();
             let ordered = collect_addresses(AddressStream::new(store.clone(), root));
             let windowed =
                 collect_addresses(AddressStream::new(store.clone(), root).with_window(window(8)));
@@ -1161,8 +1160,12 @@ mod tests {
                 ordered, windowed,
                 "delivery order must not depend on the window"
             );
-            let mut got: Vec<Vec<u8>> = ordered.iter().map(|a| a.as_bytes().to_vec()).collect();
+            // The commit stored exactly the trie nodes, so the stream must
+            // cover every stored node plus every value reference.
+            let mut got = ordered;
             got.sort();
+            let mut want: Vec<ChunkAddress> = store.into_chunks().keys().copied().collect();
+            want.extend(paths.iter().map(|p| make_addr(p)));
             want.sort();
             assert_eq!(got, want, "corpus {paths:?}");
         }
@@ -1170,38 +1173,32 @@ mod tests {
 
     #[test]
     fn encrypted_address_stream_covers_nodes_and_entries() {
-        let mut m = EncryptedManifest::new_encrypted(Store::new());
         let paths = ["secret/a.txt", "secret/b.txt", "top.txt"];
+        let mut editor: ManifestEditor<Store, EncryptedChunkRef> =
+            ManifestEditor::new_encrypted(Store::new());
         for p in paths {
-            let r = EncryptedChunkRef::new(make_addr(p), EncryptionKey::from([0x5a; 32]));
-            block_on(m.add(p, r)).unwrap();
+            editor.put(
+                p,
+                EncryptedChunkRef::new(make_addr(p), EncryptionKey::from([0x5a; 32])),
+            );
         }
-        let manifest_ref = block_on(m.save()).unwrap();
+        let (manifest_ref, store) = block_on(editor.commit()).unwrap();
         let (root, _key) = manifest_ref.into_parts();
-        let mut want: Vec<Vec<u8>> = Vec::new();
-        block_on(m.iterate_addresses(|bytes| {
-            // Node references arrive as 32 addresses, value entries at the
-            // full encrypted width; the stream carries addresses only.
-            want.push(bytes[..32].to_vec());
-            Ok(())
-        }))
-        .unwrap();
-        let (_, store) = m.into_parts();
 
-        let mut got: Vec<Vec<u8>> = collect_addresses(AddressStream::new(store, root))
-            .iter()
-            .map(|a| a.as_bytes().to_vec())
-            .collect();
+        // Value entries ride the full encrypted width on the wire; the
+        // stream carries their 32-byte addresses next to every node address.
+        let mut got = collect_addresses(AddressStream::new(store.clone(), root));
         got.sort();
+        let mut want: Vec<ChunkAddress> = store.into_chunks().keys().copied().collect();
+        want.extend(paths.iter().map(|p| make_addr(p)));
         want.sort();
         assert_eq!(got, want);
     }
 
     #[test]
     fn empty_trie_lists_nothing_and_streams_only_the_root() {
-        let mut m = Manifest::new(Store::new());
-        let root = block_on(m.save()).unwrap();
-        let (_, store) = m.into_parts();
+        let editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
+        let (root, store) = block_on(editor.commit()).unwrap();
         assert!(collect_entries(Cursor::new(store.clone(), root)).is_empty());
         assert_eq!(
             collect_addresses(AddressStream::new(store, root)),

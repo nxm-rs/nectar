@@ -10,11 +10,8 @@ use futures::executor::block_on;
 use nectar_manifest::{Builder, Changeset, Entry, Key, Reader, V1, V1Read, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, MemoryStore};
 
-type TestResult = Result<(), Box<dyn Error>>;
-
-fn ensure(cond: bool, what: &str) -> TestResult {
-    if cond { Ok(()) } else { Err(what.into()) }
-}
+mod common;
+use common::{TestResult, ensure};
 
 fn ref_entry<F: nectar_manifest::Format>(fill: u8) -> Entry<F> {
     Entry::from(ChunkRef::new(ChunkAddress::new([fill; 32])))

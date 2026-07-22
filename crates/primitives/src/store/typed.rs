@@ -42,6 +42,18 @@ impl<R: ChunkRegistry, T: ChunkGet<R> + ?Sized> ChunkGet<R> for &T {
     }
 }
 
+impl<R: ChunkRegistry, T: ChunkGet<R> + ?Sized> ChunkGet<R> for alloc::sync::Arc<T> {
+    type Trust = T::Trust;
+    type Error = T::Error;
+
+    fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> impl Future<Output = Result<Chunk<Self::Trust, R>, Self::Error>> + MaybeSend {
+        (**self).get(address)
+    }
+}
+
 /// Async chunk existence check (primary API).
 pub trait ChunkHas: MaybeSend + MaybeSync {
     /// Check if a chunk exists.
@@ -49,6 +61,12 @@ pub trait ChunkHas: MaybeSend + MaybeSync {
 }
 
 impl<T: ChunkHas + ?Sized> ChunkHas for &T {
+    fn has(&self, address: &ChunkAddress) -> impl Future<Output = bool> + MaybeSend {
+        (**self).has(address)
+    }
+}
+
+impl<T: ChunkHas + ?Sized> ChunkHas for alloc::sync::Arc<T> {
     fn has(&self, address: &ChunkAddress) -> impl Future<Output = bool> + MaybeSend {
         (**self).has(address)
     }
@@ -71,6 +89,17 @@ pub trait ChunkPut<R: ChunkRegistry = StandardChunkSet>: MaybeSend + MaybeSync {
 }
 
 impl<R: ChunkRegistry, T: ChunkPut<R> + ?Sized> ChunkPut<R> for &T {
+    type Error = T::Error;
+
+    fn put(
+        &self,
+        chunk: Chunk<Verified, R>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
+        (**self).put(chunk)
+    }
+}
+
+impl<R: ChunkRegistry, T: ChunkPut<R> + ?Sized> ChunkPut<R> for alloc::sync::Arc<T> {
     type Error = T::Error;
 
     fn put(

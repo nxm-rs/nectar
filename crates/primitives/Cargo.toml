@@ -47,10 +47,6 @@ parking_lot = "0.12"
 # wall clock: std::time on native, browser clock on wasm32 (see Timestamp::now)
 web-time.workspace = true
 
-# async support
-futures.workspace = true
-tokio = { workspace = true, features = ["io-util"], optional = true }
-
 # arbitrary
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 rand = { workspace = true, optional = true }
@@ -84,6 +80,7 @@ alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "as
 
 arbitrary = { workspace = true, features = ["derive"] }
 criterion.workspace = true
+futures.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true
@@ -110,7 +107,6 @@ parallel = [ "wasm-threads" ]
 serde = [ "dep:serde" ]
 arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "dep:rand", "std" ]
 encryption = [ "dep:rand" ]
-tokio = [ "dep:tokio" ]
 # Single-thread send escape for non-wasm targets (e.g. zkVM guests): applies
 # the wasm32 relaxation of MaybeSend/MaybeSync and the boxed error aliases on
 # any target. An explicit feature rather than a target cfg so CI can exercise
@@ -131,10 +127,6 @@ harness = false
 
 [[bench]]
 name = "bmt_bench"
-harness = false
-
-[[bench]]
-name = "file_bench"
 harness = false
 
 [[bench]]

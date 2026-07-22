@@ -16,21 +16,8 @@ use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, StandardChunkSet, Verified};
 use proptest::prelude::*;
 
-type TestResult = Result<(), Box<dyn Error>>;
-
-/// A fallible assertion.
-fn ensure(cond: bool, what: &str) -> TestResult {
-    if cond { Ok(()) } else { Err(what.into()) }
-}
-
-/// A fallible equality assertion.
-fn ensure_eq<T: PartialEq + core::fmt::Debug>(left: T, right: T, what: &str) -> TestResult {
-    if left == right {
-        Ok(())
-    } else {
-        Err(format!("{what}: {left:?} != {right:?}").into())
-    }
-}
+mod common;
+use common::{TestResult, ensure, ensure_eq};
 
 /// A trusted store that counts every `get`, so a test can read off how many
 /// nodes a walk fetched.

@@ -3,13 +3,18 @@
 //! Encrypts a chunk's span and data separately with different initial counters,
 //! matching Go's `ChunkEncrypter` in `pkg/encryption/chunk_encryption.go`.
 
+#[cfg(any(test, feature = "encryption"))]
 use crate::bmt::SPAN_SIZE;
 
+#[cfg(any(test, feature = "encryption"))]
 use super::cipher::transcrypt;
+#[cfg(any(test, feature = "encryption"))]
 use super::error::EncryptionError;
+#[cfg(any(test, feature = "encryption"))]
 use super::key::EncryptionKey;
 
 /// Span encryption counter: `BODY_SIZE / EncryptionKey::SIZE` (128 for default 4096).
+#[cfg(any(test, feature = "encryption"))]
 #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)] // EncryptionKey::SIZE is the nonzero constant 32; body_size / 32 is 128 for the default 4096-byte body and stays far below u32::MAX for any chunk-sized body (u32::try_from is not const-callable)
 const fn span_ctr(body_size: usize) -> u32 {
     (body_size / EncryptionKey::SIZE) as u32
@@ -66,6 +71,7 @@ pub(crate) fn encrypt_chunk<const BODY_SIZE: usize>(
 ///
 /// `encrypted_data` must be exactly `SPAN_SIZE + BODY_SIZE` bytes.
 /// `data_length` specifies the actual data length (excluding padding).
+#[cfg(any(test, feature = "encryption"))]
 #[allow(clippy::arithmetic_side_effects)] // SPAN_SIZE (8) + data_length (<= BODY_SIZE, checked in decrypt_chunk_into) cannot overflow usize
 pub(crate) fn decrypt_chunk_data<const BODY_SIZE: usize>(
     encrypted_data: &[u8],
@@ -81,6 +87,7 @@ pub(crate) fn decrypt_chunk_data<const BODY_SIZE: usize>(
 ///
 /// `output` must be at least `SPAN_SIZE + data_length` bytes.
 /// `encrypted_data` must be exactly `SPAN_SIZE + BODY_SIZE` bytes.
+#[cfg(any(test, feature = "encryption"))]
 #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // the three length checks above guarantee data_length <= BODY_SIZE, encrypted_data.len() == SPAN_SIZE + BODY_SIZE and output.len() >= SPAN_SIZE + data_length, bounding every sum and slice
 pub(crate) fn decrypt_chunk_into<const BODY_SIZE: usize>(
     encrypted_data: &[u8],

@@ -11,17 +11,14 @@ use nectar_manifest::{Builder, Entry, Key, Reader, V1};
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, StandardChunkSet, Verified};
 
-type TestResult = Result<(), Box<dyn Error>>;
+mod common;
+use common::{TestResult, ensure};
 
 /// A key set paired with the value each key carries.
 type KeySet = Vec<(Key, u8)>;
 
 /// The `(key, value)` pairs a walk yields, in key order.
 type Pairs = Vec<(Key, Entry<V1>)>;
-
-fn ensure(cond: bool, what: String) -> TestResult {
-    if cond { Ok(()) } else { Err(what.into()) }
-}
 
 fn entry(fill: u8) -> Entry<V1> {
     Entry::from(ChunkRef::new(ChunkAddress::new([fill; 32])))
@@ -124,7 +121,7 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> TestResult {
     let root = build(&store, &keys)?;
     let reader = Reader::<MemoryStore, V1>::new(store);
     let all = oracle(&reader, &root)?;
-    ensure(all.len() == keys.len(), "oracle lost keys".to_owned())?;
+    ensure(all.len() == keys.len(), "oracle lost keys")?;
 
     // select(i) is the i-th key; one past the end is None.
     for (i, (key, value)) in all.iter().enumerate() {
@@ -132,7 +129,7 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> TestResult {
         let got = block_on(reader.select(&root, index)).map_err(|e| e.to_string())?;
         ensure(
             got.as_ref() == Some(&(key.clone(), value.clone())),
-            format!("select({i}) mismatch"),
+            &format!("select({i}) mismatch"),
         )?;
     }
     let end = u64::try_from(all.len())?;
@@ -140,7 +137,7 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> TestResult {
         block_on(reader.select(&root, end))
             .map_err(|e| e.to_string())?
             .is_none(),
-        "select past the end must be None".to_owned(),
+        "select past the end must be None",
     )?;
 
     // rank(key) is the count of strictly-smaller keys, checked at present keys
@@ -161,7 +158,7 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> TestResult {
         let got = block_on(reader.rank(&root, probe)).map_err(|e| e.to_string())?;
         ensure(
             got == expected,
-            format!("rank mismatch: {got} != {expected}"),
+            &format!("rank mismatch: {got} != {expected}"),
         )?;
     }
 
@@ -176,7 +173,7 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> TestResult {
         let got = block_on(reader.count(&root, &lo, &hi)).map_err(|e| e.to_string())?;
         ensure(
             got == expected,
-            format!("count mismatch: {got} != {expected}"),
+            &format!("count mismatch: {got} != {expected}"),
         )?;
     }
     Ok(())
@@ -191,7 +188,7 @@ fn spilled_node_order_statistics_agree_with_the_oracle() -> TestResult {
     let root = build(&store, &keys)?;
     let reader = Reader::<MemoryStore, V1>::new(store);
     let all = oracle(&reader, &root)?;
-    ensure(all.len() == keys.len(), "oracle lost keys".to_owned())?;
+    ensure(all.len() == keys.len(), "oracle lost keys")?;
 
     // Sampled select and its inverse rank agree with the oracle across the whole
     // spilled listing, including both ends.
@@ -202,10 +199,10 @@ fn spilled_node_order_statistics_agree_with_the_oracle() -> TestResult {
         let got = block_on(reader.select(&root, index)).map_err(|e| e.to_string())?;
         ensure(
             got.as_ref() == Some(&(key.clone(), value.clone())),
-            format!("spilled select({i}) mismatch"),
+            &format!("spilled select({i}) mismatch"),
         )?;
         let rank = block_on(reader.rank(&root, key)).map_err(|e| e.to_string())?;
-        ensure(rank == index, format!("spilled rank at {i} mismatch"))?;
+        ensure(rank == index, &format!("spilled rank at {i} mismatch"))?;
     }
 
     // Windows spanning several segments count exactly.
@@ -218,7 +215,7 @@ fn spilled_node_order_statistics_agree_with_the_oracle() -> TestResult {
         let got = block_on(reader.count(&root, &lo, &hi)).map_err(|e| e.to_string())?;
         ensure(
             got == expected,
-            format!("spilled count mismatch: {got} != {expected}"),
+            &format!("spilled count mismatch: {got} != {expected}"),
         )?;
     }
 
@@ -230,7 +227,7 @@ fn spilled_node_order_statistics_agree_with_the_oracle() -> TestResult {
         got.push(pair);
     }
     let want: Vec<_> = all.iter().skip(9000).take(25).cloned().collect();
-    ensure(got == want, "spilled paginate mismatch".to_owned())?;
+    ensure(got == want, "spilled paginate mismatch")?;
     Ok(())
 }
 
@@ -244,7 +241,7 @@ fn order_statistics_are_stable_under_shuffled_build_order() -> TestResult {
     let a = build(&a_store, &forward)?;
     let b_store = MemoryStore::default();
     let b = build(&b_store, &reversed)?;
-    ensure(a == b, "shuffled build must root identically".to_owned())?;
+    ensure(a == b, "shuffled build must root identically")?;
 
     let reader = Reader::<MemoryStore, V1>::new(a_store);
     // A shuffled build is the same tree, so every rank and select is unchanged.
@@ -252,7 +249,7 @@ fn order_statistics_are_stable_under_shuffled_build_order() -> TestResult {
         let got = block_on(reader.select(&a, index)).map_err(|e| e.to_string())?;
         let (key, _) = got.ok_or("select fell off the shuffled build")?;
         let rank = block_on(reader.rank(&a, &key)).map_err(|e| e.to_string())?;
-        ensure(rank == index, format!("rank/select disagree at {index}"))?;
+        ensure(rank == index, &format!("rank/select disagree at {index}"))?;
     }
     Ok(())
 }
@@ -277,7 +274,7 @@ fn paginate_matches_iter_skip_take() -> TestResult {
         let want: Vec<_> = all.iter().skip(start).take(limit).cloned().collect();
         ensure(
             got == want,
-            format!("paginate_prefix({offset}, {limit}) mismatch"),
+            &format!("paginate_prefix({offset}, {limit}) mismatch"),
         )?;
     }
 
@@ -298,7 +295,10 @@ fn paginate_matches_iter_skip_take() -> TestResult {
         }
         let start = usize::try_from(offset)?;
         let want: Vec<_> = window.iter().skip(start).take(limit).cloned().collect();
-        ensure(got == want, format!("paginate({offset}, {limit}) mismatch"))?;
+        ensure(
+            got == want,
+            &format!("paginate({offset}, {limit}) mismatch"),
+        )?;
     }
     Ok(())
 }
@@ -323,13 +323,13 @@ fn the_offset_seek_costs_depth_not_offset() -> TestResult {
     for index in [0u64, total / 2, total.saturating_sub(1)] {
         reader.store().reset();
         let got = block_on(reader.select(&root, index)).map_err(|e| e.to_string())?;
-        ensure(got.is_some(), format!("select({index}) fell off"))?;
+        ensure(got.is_some(), &format!("select({index}) fell off"))?;
         costs.push(reader.store().gets());
     }
     for cost in &costs {
         ensure(
             *cost <= 32,
-            format!("select fetched {cost} nodes, not O(depth)"),
+            &format!("select fetched {cost} nodes, not O(depth)"),
         )?;
     }
 
@@ -351,11 +351,11 @@ fn the_offset_seek_costs_depth_not_offset() -> TestResult {
     // The deep page pays for its own depth and window, not the offset it skipped.
     ensure(
         deep_cost <= head_cost.saturating_mul(2).saturating_add(32),
-        format!("deep page fetched {deep_cost} vs head {head_cost}: offset is not free"),
+        &format!("deep page fetched {deep_cost} vs head {head_cost}: offset is not free"),
     )?;
     ensure(
         u64::try_from(deep_cost)? < deep_offset,
-        format!("deep page fetched {deep_cost}, proportional to the offset"),
+        &format!("deep page fetched {deep_cost}, proportional to the offset"),
     )?;
     Ok(())
 }

@@ -21,7 +21,6 @@
     clippy::missing_panics_doc
 )]
 
-use core::future::poll_fn;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -125,13 +124,9 @@ async fn split_into<const B: usize>(
     data: &[u8],
     window: PutWindow,
 ) -> ChunkAddress {
-    let mut split: Split<LatencyStore<B>, Plain, B> = Split::new(store, window);
-    let mut buf = data;
-    while !buf.is_empty() {
-        let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-        buf = &buf[n..];
-    }
-    poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+    Split::<LatencyStore<B>, Plain, B>::collect_with(store, window, data)
+        .await
+        .unwrap()
 }
 
 /// Split `data` into a fresh zero-latency store, returning the root.

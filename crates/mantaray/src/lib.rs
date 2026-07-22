@@ -29,9 +29,6 @@
 //! [`ChunkPut`]), so a single [`MemoryStore`] can hold both file chunks and
 //! manifest trie nodes.
 //!
-//! The former lazy-trie surface lives in [`legacy`] with a migration table;
-//! its removal is gated on the manifest 1.0 key-value store replacing it.
-//!
 //! # Website Manifests
 //!
 //! Configure index and error documents for Swarm-hosted websites:
@@ -102,20 +99,11 @@
         clippy::panic_in_result_fn
     )
 )]
-// The in-crate tests drive the deprecated legacy surface as the differential
-// oracle for the streaming modules.
-#![cfg_attr(test, allow(deprecated))]
-
 // `alloc` backs the fork maps (`BTreeMap`) and shared error sources (`Arc`).
 // `nectar-primitives`, a hard dependency of the trie modules, already
 // requires an allocator.
 #[cfg(feature = "std")]
 extern crate alloc;
-
-#[cfg(feature = "std")]
-use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-#[cfg(feature = "std")]
-use nectar_primitives::chunk::ChunkRef;
 
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
@@ -135,10 +123,6 @@ pub mod entry;
 pub mod error;
 #[cfg(feature = "std")]
 mod format;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-#[deprecated(note = "superseded by Reader, Cursor, and ManifestEditor")]
-pub mod legacy;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod manifest_ref;
@@ -168,9 +152,6 @@ pub use entry::Entry;
 pub use error::{
     CursorError, DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result,
 };
-#[allow(deprecated)]
-#[cfg(feature = "std")]
-pub use legacy::{DEFAULT_LIST_CONCURRENCY, Manifest, ManifestBuilder, ManifestIter};
 #[cfg(feature = "std")]
 pub use manifest_ref::ManifestRef;
 #[cfg(feature = "std")]
@@ -209,22 +190,3 @@ pub mod hazmat {
 pub use nectar_primitives::DefaultMemoryStore;
 #[cfg(feature = "std")]
 pub use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore, TrustedGet};
-
-/// Default manifest type using [`DEFAULT_BODY_SIZE`] and plain mode.
-#[allow(deprecated)]
-#[deprecated(note = "superseded by ManifestEditor and Reader")]
-#[cfg(feature = "std")]
-pub type DefaultManifest<S> = PlainManifest<S, DEFAULT_BODY_SIZE>;
-
-/// Plain manifest: 32-byte refs, no obfuscation.
-#[allow(deprecated)]
-#[deprecated(note = "superseded by ManifestEditor and Reader")]
-#[cfg(feature = "std")]
-pub type PlainManifest<S, const BS: usize = DEFAULT_BODY_SIZE> = Manifest<S, ChunkRef, BS>;
-
-/// Encrypted manifest: 64-byte refs, random obfuscation key.
-#[allow(deprecated)]
-#[deprecated(note = "superseded by ManifestEditor and Reader")]
-#[cfg(feature = "std")]
-pub type EncryptedManifest<S, const BS: usize = DEFAULT_BODY_SIZE> =
-    Manifest<S, nectar_primitives::EncryptedChunkRef, BS>;

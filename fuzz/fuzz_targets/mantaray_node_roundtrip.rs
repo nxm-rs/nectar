@@ -29,7 +29,10 @@ use nectar_primitives::chunk::{ChunkRef, Reference};
 fn round_trip<R: Reference>(node: &Node<R>) {
     let encoded = hazmat::encode(node).expect("arbitrary nodes must encode");
     let decoded = hazmat::decode::<R>(encoded.as_slice()).expect("encoded nodes must decode");
-    assert_eq!(&decoded, node, "decode(encode(node)) must reproduce the node");
+    assert_eq!(
+        &decoded, node,
+        "decode(encode(node)) must reproduce the node"
+    );
 
     // Canonical form: re-encoding the decoded node must be byte-identical.
     let reencoded = hazmat::encode(&decoded).expect("decoded nodes must re-encode");

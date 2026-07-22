@@ -28,6 +28,9 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(encoded) = node.encode() {
         assert_eq!(encoded, data, "accepted image must be canonical");
         let redecoded = Node::<V1>::decode(&encoded).expect("re-encoding must decode");
-        assert_eq!(redecoded, node, "decode(encode(node)) must reproduce the node");
+        assert_eq!(
+            redecoded, node,
+            "decode(encode(node)) must reproduce the node"
+        );
     }
 });

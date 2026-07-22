@@ -25,12 +25,17 @@ pub struct Pending;
 /// A whole-file read over a synchronous store completes in the single poll:
 ///
 /// ```
-/// # #![allow(deprecated)]
 /// use nectar_file::File;
 /// use nectar_file::sync::drive;
 ///
 /// let data = b"guest payload".to_vec();
-/// # let (root, store) = nectar_primitives::file::split::<4096>(&data).unwrap();
+/// # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
+/// # let root = drive(nectar_file::Split::<_, nectar_file::Plain, 4096>::collect(
+/// #     std::sync::Arc::clone(&store),
+/// #     &data,
+/// # ))
+/// # .unwrap()
+/// # .unwrap();
 /// let bytes = drive(async {
 ///     let file = File::open(store, root).await.unwrap();
 ///     file.collect(u64::MAX).await.unwrap()
@@ -48,14 +53,12 @@ pub fn drive<F: Future>(future: F) -> Result<F::Output, Pending> {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use std::vec::Vec;
 
-    use nectar_primitives::file::split;
-
     use super::*;
     use crate::read::File;
+    use crate::testutil::split_fixture;
     use crate::walk::Plain;
 
     #[test]
@@ -74,7 +77,7 @@ mod tests {
         let data: Vec<u8> = (0..(9 * TINY + 21) as u64)
             .map(|i| (i % 251) as u8)
             .collect();
-        let (root, store) = split::<TINY>(&data).unwrap();
+        let (root, store) = split_fixture::<TINY>(&data);
         let bytes = drive(async move {
             let file = File::<_, Plain, TINY>::open(store, root).await.unwrap();
             file.collect(u64::MAX).await.unwrap()

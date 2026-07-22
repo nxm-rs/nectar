@@ -1,27 +1,27 @@
-//! Split-engine oracles: root and chunk-set differentials against the
-//! legacy buffered splitter, put-window witnesses, cancellation and fuse
-//! behaviour.
-
-#![allow(deprecated)]
+//! Split-engine oracles: pinned root vectors, segmentation invariance,
+//! put-window witnesses, cancellation and fuse behaviour.
 
 use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::collections::HashMap;
-use std::io::Write as _;
-use std::string::ToString;
 use std::sync::{Arc, Mutex};
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
 use std::vec;
 use std::vec::Vec;
 
 use futures::executor::block_on;
 use futures::task::noop_waker;
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ChunkOps, Verified};
-use nectar_primitives::file::Splitter;
+use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
 
 use super::{Split, SplitError, SplitStats};
 use crate::config::{PutWindow, Window};
+use crate::testutil::{FaultStore, failing_at, reject_all};
 use crate::walk::{Plain, Walk};
 
 /// Tiny body size: fan-out 8, so a few dozen leaves already build a deep
@@ -61,13 +61,13 @@ fn yield_now() -> impl Future<Output = ()> {
 }
 
 /// Shared put store: logs accepted puts in order, resolves after `delay`
-/// yields, parks while `gate` is shut, refuses puts past `fail_after`.
+/// yields, parks while `gate` is shut. Fault injection rides
+/// [`FaultStore`](crate::testutil::FaultStore).
 struct TestStore<const B: usize> {
     chunks: Arc<Mutex<HashMap<ChunkAddress, Chunk<Verified, AnyChunkSet<B>>>>>,
     log: Arc<Mutex<Vec<ChunkAddress>>>,
     delay: usize,
     gate: Option<Arc<Mutex<bool>>>,
-    fail_after: Option<usize>,
 }
 
 impl<const B: usize> Clone for TestStore<B> {
@@ -77,7 +77,6 @@ impl<const B: usize> Clone for TestStore<B> {
             log: Arc::clone(&self.log),
             delay: self.delay,
             gate: self.gate.clone(),
-            fail_after: self.fail_after,
         }
     }
 }
@@ -89,20 +88,12 @@ impl<const B: usize> TestStore<B> {
             log: Arc::new(Mutex::new(Vec::new())),
             delay,
             gate: None,
-            fail_after: None,
         }
     }
 
     fn gated(gate: Arc<Mutex<bool>>) -> Self {
         Self {
             gate: Some(gate),
-            ..Self::new(0)
-        }
-    }
-
-    fn failing_after(fail_after: usize) -> Self {
-        Self {
-            fail_after: Some(fail_after),
             ..Self::new(0)
         }
     }
@@ -123,11 +114,6 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
         }
         for _ in 0..self.delay {
             yield_now().await;
-        }
-        if let Some(limit) = self.fail_after
-            && self.log.lock().unwrap().len() >= limit
-        {
-            return Err(ChunkStoreError::Other("put refused".to_string().into()));
         }
         let address = *chunk.address();
         self.log.lock().unwrap().push(address);
@@ -153,14 +139,82 @@ impl<const B: usize> ChunkGet<AnyChunkSet<B>> for TestStore<B> {
     }
 }
 
-/// The legacy buffered splitter as the oracle: root plus every produced
-/// chunk address.
-fn legacy_split<const B: usize>(data: &[u8]) -> (ChunkAddress, Vec<ChunkAddress>) {
-    let mut splitter = Splitter::<B>::new(data.len() as u64);
-    splitter.write_all(data).unwrap();
-    let (root, chunks) = splitter.finish().unwrap();
-    let addresses = chunks.iter().map(|chunk| *chunk.address()).collect();
-    (root, addresses)
+/// Roots pinned from the retired buffered splitter over [`fill`] bytes:
+/// the absolute tree-shape anchor.
+const TINY_ROOTS: &[(usize, &str)] = &[
+    (
+        0,
+        "b34ca8c22b9e982354f9c7f50b470d66db428d880c8a904d5fe4ec9713171526",
+    ),
+    (
+        1,
+        "fe60ba40b87599ddfb9e8947c1c872a4a1a5b56f7d1b80f0a646005b38db52a5",
+    ),
+    (
+        255,
+        "2274f71be6e13006f33cae2cffbdb70213a81cb380a54589c8bc8c958988beb7",
+    ),
+    (
+        256,
+        "00df5cfbb91a2432d5dec04c8edb74be800236b9b4d86bcd7584e7bda5647eee",
+    ),
+    (
+        257,
+        "936af738c97abc8d653bf9f07f53db7eef837ec4b3c3e072906c2e5cb6cce1ec",
+    ),
+    (
+        2047,
+        "292bdaa2d157b5d0a86db51b43abf3e55e57d6fe453c080a2123246cfdf5177f",
+    ),
+    (
+        2048,
+        "c28c0c6920e4561250217e1917f855e2182b712d13adedf1d5b72ac1028cb7bb",
+    ),
+    (
+        2049,
+        "b2c3e42e1ccaee79ee4dfdf2120e73defb7a4e9ed9dda63c53bf6f75aff89748",
+    ),
+    (
+        6661,
+        "4263312e2b655c6ffcda9f56342481240eb24f80fe22c0e59339995004196963",
+    ),
+    (
+        16383,
+        "adac79432c40ae0c528769c172163f3378cc0cf17a680f2a87dc4236c8ecb606",
+    ),
+    (
+        16384,
+        "65dd63a9721ca6e4203b8cd83d679b361fcdb0bcb3c1327765969272ec2d5b79",
+    ),
+    (
+        16385,
+        "524b55fa4ceeb29e31dac831afad68510253978155a3140fd5428cf31474fea7",
+    ),
+];
+
+/// Decode one pinned 64-hex-digit root.
+fn pinned(hex: &str) -> ChunkAddress {
+    let mut bytes = [0u8; 32];
+    for (i, slot) in bytes.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap();
+    }
+    ChunkAddress::new(bytes)
+}
+
+/// Chunk count of the tree over `len` bytes: leaves, then each reference
+/// level up to the root; a lone trailing reference carries up unwrapped.
+fn tree_chunks(len: usize, body: usize, fanout: usize) -> u64 {
+    let leaves = len.div_ceil(body).max(1);
+    let mut total = leaves;
+    let mut refs = leaves;
+    while refs > 1 {
+        let full = refs / fanout;
+        let rem = refs % fanout;
+        let chunks = full + usize::from(rem > 1);
+        total += chunks;
+        refs = chunks + usize::from(rem == 1);
+    }
+    total as u64
 }
 
 /// Stream `data` through a fresh split in `step`-byte writes.
@@ -193,49 +247,68 @@ fn sorted(mut addresses: Vec<ChunkAddress>) -> Vec<ChunkAddress> {
 }
 
 #[test]
-fn roots_and_chunk_sets_match_the_legacy_splitter() {
-    let b = TINY;
-    let kb = BRANCHES * b;
-    let k2b = BRANCHES * kb;
-    let sizes = [
-        0,
-        1,
-        b - 1,
-        b,
-        b + 1,
-        kb - 1,
-        kb,
-        kb + 1,
-        k2b - 1,
-        k2b,
-        k2b + 1,
-        3 * kb + 517,
-    ];
-    for size in sizes {
+fn roots_are_pinned_and_chunk_sets_are_segmentation_invariant() {
+    for &(size, root_hex) in TINY_ROOTS {
         let data = fill(size);
-        let (legacy_root, legacy_chunks) = legacy_split::<TINY>(&data);
         let (root, store, stats) = stream_split::<TINY>(&data, 4, 719, 1);
-        assert_eq!(root, legacy_root, "root diverged at {size}");
+        assert_eq!(root, pinned(root_hex), "root diverged at {size}");
+        // A different segmentation, window and put latency seals the same
+        // chunk set: the tree is a function of the bytes alone.
+        let (again, other, _) = stream_split::<TINY>(&data, 1, 97, 0);
+        assert_eq!(again, root, "root diverged across segmentations at {size}");
         assert_eq!(
             sorted(store.log()),
-            sorted(legacy_chunks),
+            sorted(other.log()),
             "chunk set diverged at {size}"
         );
+        assert_eq!(stats.puts, tree_chunks(size, TINY, BRANCHES));
         assert_eq!(stats.bytes, size as u64);
         assert_eq!(stats.leaves + stats.intermediates, stats.puts);
     }
 }
 
 #[test]
-fn default_profile_roots_match_the_legacy_splitter() {
+fn default_profile_roots_are_pinned() {
     const B: usize = nectar_primitives::DEFAULT_BODY_SIZE;
-    const K: usize = 128;
-    let sizes = [0, 1, B - 1, B, B + 1, K * B - 1, K * B, K * B + 1];
-    for size in sizes {
+    /// Roots pinned from the retired buffered splitter at the default body.
+    const DEFAULT_ROOTS: &[(usize, &str)] = &[
+        (
+            0,
+            "b34ca8c22b9e982354f9c7f50b470d66db428d880c8a904d5fe4ec9713171526",
+        ),
+        (
+            1,
+            "fe60ba40b87599ddfb9e8947c1c872a4a1a5b56f7d1b80f0a646005b38db52a5",
+        ),
+        (
+            4095,
+            "fba8ab42bd2b0955350b2192f90be070a2f8a1f5fe3da23ef864b73467b8cc76",
+        ),
+        (
+            4096,
+            "8d574088e95657940066cd317ad3f234af570762360d893b901b18d7ef279deb",
+        ),
+        (
+            4097,
+            "e4bd4e55076ef72a28d8efea9b927fdeaf6b8f2250af3ec586f14dc062237532",
+        ),
+        (
+            524287,
+            "3f237da44a04b5ed1a0ef1a5989b0976817f09aea39442514f8d5e85c722f53a",
+        ),
+        (
+            524288,
+            "0d72b8eab6dd6da074f9b0c2e3179449fcb2c22ba4e2a7bb4d62ceb969e4809b",
+        ),
+        (
+            524289,
+            "7799c8cb78045124ec8e12ac01be66eee6023010dea4a64e54e3dc7b9f1fcf1c",
+        ),
+    ];
+    for &(size, root_hex) in DEFAULT_ROOTS {
         let data = fill(size);
-        let (legacy_root, _) = legacy_split::<B>(&data);
         let (root, _, _) = stream_split::<B>(&data, 8, 65_536, 0);
-        assert_eq!(root, legacy_root, "root diverged at {size}");
+        assert_eq!(root, pinned(root_hex), "root diverged at {size}");
     }
 }
 
@@ -321,8 +394,8 @@ fn empty_write_consumes_nothing() {
 
 #[test]
 fn a_failed_put_poisons_the_fuse() {
-    let store = TestStore::<TINY>::failing_after(0);
-    let mut split: TinySplit = Split::new(store, PutWindow::new(2).unwrap());
+    let store = reject_all::<_, TINY>(TestStore::<TINY>::new(0));
+    let mut split = Split::<_, Plain, TINY>::new(store, PutWindow::new(2).unwrap());
     let data = fill(3 * TINY);
     let error = block_on(async {
         let mut buf = data.as_slice();
@@ -350,6 +423,22 @@ fn a_failed_put_poisons_the_fuse() {
         Poll::Ready(Err(SplitError::Poisoned))
     ));
     assert!(split.is_finished());
+}
+
+/// A put failing after some succeed surfaces through the `collect_with`
+/// one-shot as a typed `Put` error; `FaultStore` drives the fault and its
+/// counter is shared across the split's per-put store clones.
+#[test]
+fn collect_with_surfaces_a_put_failure() {
+    let data = fill(3 * TINY);
+    let store: FaultStore<_, _, TINY> = failing_at(TestStore::<TINY>::new(0), 3);
+    let error = block_on(Split::<_, Plain, TINY>::collect_with(
+        store,
+        PutWindow::new(2).unwrap(),
+        &data,
+    ))
+    .unwrap_err();
+    assert!(matches!(error, SplitError::Put { .. }), "got {error:?}");
 }
 
 #[test]
@@ -393,13 +482,12 @@ fn finish_is_fused_and_recallable() {
         Poll::Ready(Err(SplitError::Finished))
     ));
 
-    let (legacy_root, _) = legacy_split::<TINY>(&data);
-    assert_eq!(root, legacy_root);
+    let (again, _, _) = stream_split::<TINY>(&data, 4, 719, 1);
+    assert_eq!(root, again);
 }
 
-/// Encrypted-mode oracles: legacy joiner and splitter differentials, walk
-/// round trip, per-mode geometry witnesses, key-source injection and
-/// exhaustion.
+/// Encrypted-mode oracles: walk round trips, tree-shape witnesses, per-mode
+/// geometry, key-source injection and exhaustion.
 #[cfg(feature = "encryption")]
 mod encrypted {
     use core::future::poll_fn;
@@ -409,9 +497,8 @@ mod encrypted {
 
     use futures::executor::block_on;
     use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
-    use nectar_primitives::file::{EncryptedParallelSplitter, join};
 
-    use super::{BRANCHES, TINY, TestStore, fill, sorted};
+    use super::{BRANCHES, TINY, TestStore, fill, sorted, tree_chunks};
     use crate::config::{PutWindow, Window};
     use crate::geometry::{Mode, branches, max_depth};
     use crate::split::{KeyError, KeySource, RandomKeys, SealError, Split, SplitError, SplitStats};
@@ -498,7 +585,7 @@ mod encrypted {
     }
 
     #[test]
-    fn encrypted_roots_join_through_the_legacy_joiner() {
+    fn encrypted_roots_read_back_with_the_pinned_tree_shape() {
         for size in sizes() {
             let data = fill(size);
             // The rand-gated default source through the `Default` mode.
@@ -513,16 +600,27 @@ mod encrypted {
                 }
                 poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
             });
-            let plaintext = block_on(join(&store, root)).unwrap();
+            let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
+                store,
+                *root.address(),
+                root.key().clone(),
+                size as u64,
+                0..u64::MAX,
+                Window::new(4).unwrap(),
+            );
+            let plaintext = block_on(async {
+                let mut bytes = Vec::new();
+                while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+                    bytes.extend_from_slice(&frame.unwrap().data);
+                }
+                bytes
+            });
             assert_eq!(plaintext, data, "plaintext diverged at {size}");
 
-            // The tree shape matches the legacy encrypted splitter.
-            let (_, legacy_chunks) =
-                EncryptedParallelSplitter::<TINY>::split_to_vec(&data).unwrap();
             let stats = split.stats();
             assert_eq!(
-                stats.puts as usize,
-                legacy_chunks.len(),
+                stats.puts,
+                tree_chunks(size, TINY, ENC_BRANCHES),
                 "chunk count diverged at {size}"
             );
             assert_eq!(stats.bytes, size as u64);
@@ -631,11 +729,16 @@ mod encrypted {
 }
 
 /// Nightly gate: a stream past the `u32` span boundary keeps root equality
-/// with the legacy splitter while memory stays bounded.
+/// with the batch ingest while memory stays bounded.
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
 #[test]
 #[ignore = "nightly: streams more than 4 GiB"]
-fn huge_stream_root_matches_the_legacy_splitter() {
-    use nectar_primitives::file::{ParallelSplitter, ReadAt};
+fn huge_stream_root_matches_the_batch_ingest() {
+    use crate::parallel::{ReadAt, split_read_at};
 
     const B: usize = nectar_primitives::DEFAULT_BODY_SIZE;
     let size: u64 = (1u64 << 32) + (B as u64) + 17;
@@ -655,8 +758,8 @@ fn huge_stream_root_matches_the_legacy_splitter() {
             Ok(take)
         }
 
-        fn len(&self) -> u64 {
-            self.len
+        fn len(&self) -> std::io::Result<u64> {
+            Ok(self.len)
         }
     }
 
@@ -671,8 +774,12 @@ fn huge_stream_root_matches_the_legacy_splitter() {
         }
     }
 
-    let legacy_root =
-        ParallelSplitter::<B>::split_into(&Pattern { len: size }, |_chunk| {}).unwrap();
+    let batch_root = block_on(split_read_at::<_, _, Plain, B>(
+        Pattern { len: size },
+        Discard,
+        PutWindow::new(16).unwrap(),
+    ))
+    .unwrap();
 
     let mut split: Split<Discard, Plain, B> = Split::new(Discard, PutWindow::new(16).unwrap());
     let root = block_on(async {
@@ -693,6 +800,6 @@ fn huge_stream_root_matches_the_legacy_splitter() {
         poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
     });
 
-    assert_eq!(root, legacy_root);
+    assert_eq!(root, batch_root);
     assert_eq!(split.stats().bytes, size);
 }
