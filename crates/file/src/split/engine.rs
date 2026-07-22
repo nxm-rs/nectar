@@ -8,7 +8,7 @@ use core::future::Future;
 use core::future::poll_fn;
 use core::mem;
 use core::pin::Pin;
-use core::task::{Context, Poll};
+use core::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
@@ -82,7 +82,8 @@ where
     /// Data-carrying reference slots per intermediate, from the mode.
     slots: u64,
     window: usize,
-    /// Partial tail leaf, always shorter than the body.
+    /// Tail leaf payload under build: the span placeholder, then content
+    /// shorter than one body; empty between leaves.
     leaf: Vec<u8>,
     /// Spine frontier: per-level references awaiting a close, bottom up.
     spine: Vec<Level<M>>,
@@ -177,15 +178,16 @@ where
         if !self.pending.is_empty() || self.in_flight.len() >= self.window {
             return Poll::Pending;
         }
-        let take = buf.len().min(B.saturating_sub(self.leaf.len()));
+        let take = buf.len().min(B.saturating_sub(self.leaf_len()));
         let Some((bytes, _)) = buf.split_at_checked(take) else {
             return Poll::Ready(Ok(0));
         };
+        self.begin_leaf();
         self.leaf.extend_from_slice(bytes);
         self.stats.bytes = self.stats.bytes.saturating_add(u64_from_usize(take));
-        if self.leaf.len() == B {
-            let data = mem::take(&mut self.leaf);
-            if let Err(error) = self.spill_leaf(data) {
+        if self.leaf_len() == B {
+            let payload = mem::take(&mut self.leaf);
+            if let Err(error) = self.spill_leaf(payload) {
                 return Poll::Ready(Err(self.poison(error)));
             }
         }
@@ -322,11 +324,29 @@ where
     /// closing phase.
     fn flush_tail(&mut self) -> Result<(), SplitError<S::Error>> {
         if !self.leaf.is_empty() || self.stats.bytes == 0 {
-            let data = mem::take(&mut self.leaf);
-            self.spill_leaf(data)?;
+            self.begin_leaf();
+            let mut payload = mem::take(&mut self.leaf);
+            // The tail rarely fills the reserved body; give the slack back
+            // before the payload is pinned inside the sealed chunk.
+            payload.shrink_to_fit();
+            self.spill_leaf(payload)?;
         }
         self.phase = Phase::Closing;
         Ok(())
+    }
+
+    /// Content bytes in the tail leaf, behind its span placeholder.
+    const fn leaf_len(&self) -> usize {
+        self.leaf.len().saturating_sub(SPAN_SIZE)
+    }
+
+    /// Reserve one payload and lay down the span placeholder; a no-op once
+    /// the leaf is started.
+    fn begin_leaf(&mut self) {
+        if self.leaf.is_empty() {
+            self.leaf.reserve_exact(SPAN_SIZE.saturating_add(B));
+            self.leaf.extend_from_slice(&[0u8; SPAN_SIZE]);
+        }
     }
 
     /// Close the lowest occupied level: carry a lone reference up for free,
@@ -370,15 +390,16 @@ where
         }
     }
 
-    /// Seal one leaf payload and thread its reference into the spine.
-    fn spill_leaf(&mut self, data: Vec<u8>) -> Result<(), SplitError<S::Error>> {
-        let span = u64_from_usize(data.len());
-        let mut payload = Vec::with_capacity(SPAN_SIZE.saturating_add(data.len()));
-        payload.extend_from_slice(&span.to_le_bytes());
-        payload.extend_from_slice(&data);
+    /// Patch the span into a finished leaf payload, seal it and thread its
+    /// reference into the spine.
+    fn spill_leaf(&mut self, mut payload: Vec<u8>) -> Result<(), SplitError<S::Error>> {
+        let span = u64_from_usize(payload.len().saturating_sub(SPAN_SIZE));
+        if let Some((head, _)) = payload.split_first_chunk_mut::<SPAN_SIZE>() {
+            *head = span.to_le_bytes();
+        }
         let (chunk, reference) = self.mode.seal::<B>(Bytes::from(payload))?;
         self.stats.leaves = self.stats.leaves.saturating_add(1);
-        self.enqueue(chunk);
+        self.enqueue(chunk)?;
         self.push_ref(0, reference, span)
     }
 
@@ -451,38 +472,60 @@ where
         }
         let (chunk, reference) = self.mode.seal::<B>(Bytes::from(payload))?;
         self.stats.intermediates = self.stats.intermediates.saturating_add(1);
-        self.enqueue(chunk);
+        self.enqueue(chunk)?;
         Ok(reference)
     }
 
     /// Queue a sealed chunk for the put window, admitting what fits.
-    fn enqueue(&mut self, chunk: Chunk<Verified, AnyChunkSet<B>>) {
+    fn enqueue(
+        &mut self,
+        chunk: Chunk<Verified, AnyChunkSet<B>>,
+    ) -> Result<(), SplitError<S::Error>> {
         self.pending.push_back(chunk);
-        self.admit();
+        self.admit()?;
         self.stats.peak_pending = self.stats.peak_pending.max(self.pending.len());
+        Ok(())
     }
 
-    /// Move pending chunks into the put window while slots are free.
-    fn admit(&mut self) {
+    /// Move pending chunks into the put window while slots are free; a put
+    /// that fails on its opening poll is terminal.
+    fn admit(&mut self) -> Result<(), SplitError<S::Error>> {
         while self.in_flight.len() < self.window {
             let Some(chunk) = self.pending.pop_front() else {
-                return;
+                return Ok(());
             };
-            self.dispatch(chunk);
+            self.dispatch(chunk)?;
         }
+        Ok(())
     }
 
     /// Start one put, moving the chunk into its future; the completion
     /// carries the address back.
-    fn dispatch(&mut self, chunk: Chunk<Verified, AnyChunkSet<B>>) {
+    ///
+    /// The future is polled once on the spot: a put that finishes
+    /// synchronously never occupies the window, and a pending one parks
+    /// there to be driven with the caller's waker.
+    fn dispatch(
+        &mut self,
+        chunk: Chunk<Verified, AnyChunkSet<B>>,
+    ) -> Result<(), SplitError<S::Error>> {
         let store = self.store.clone();
-        let put: BoxPut<S::Error> = Box::pin(async move {
+        let mut put: BoxPut<S::Error> = Box::pin(async move {
             let address = *chunk.address();
             (address, store.put(chunk).await)
         });
-        self.in_flight.push(put);
         self.stats.puts = self.stats.puts.saturating_add(1);
-        self.stats.peak_put_in_flight = self.stats.peak_put_in_flight.max(self.in_flight.len());
+        match put.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready((address, result)) => {
+                result.map_err(|source| SplitError::Put { address, source })
+            }
+            Poll::Pending => {
+                self.in_flight.push(put);
+                self.stats.peak_put_in_flight =
+                    self.stats.peak_put_in_flight.max(self.in_flight.len());
+                Ok(())
+            }
+        }
     }
 
     /// Drive the put window without consuming input.
@@ -547,16 +590,19 @@ where
         }
         self.stats.bytes = self.stats.bytes.saturating_add(span);
         self.stats.leaves = self.stats.leaves.saturating_add(1);
-        self.enqueue(chunk);
-        self.push_ref(0, reference, span)
+        self.enqueue(chunk)
+            .and_then(|()| self.push_ref(0, reference, span))
             .map_err(|error| self.poison(error))
     }
 
     /// Fold completed puts back in and admit pending chunks; a failed put
-    /// is terminal.
+    /// is terminal. An empty window skips the poll machinery entirely.
     fn step_puts(&mut self, cx: &mut Context<'_>) -> Result<(), SplitError<S::Error>> {
         loop {
-            self.admit();
+            self.admit()?;
+            if self.in_flight.is_empty() {
+                return Ok(());
+            }
             match Pin::new(&mut self.in_flight).poll_next(cx) {
                 Poll::Ready(Some((address, result))) => {
                     result.map_err(|source| SplitError::Put { address, source })?;
@@ -577,7 +623,7 @@ where
             .field("phase", &self.phase)
             .field("window", &self.window)
             .field("slots", &self.slots)
-            .field("leaf_len", &self.leaf.len())
+            .field("leaf_len", &self.leaf.len().saturating_sub(SPAN_SIZE))
             .field("spine_levels", &self.spine.len())
             .field("pending", &self.pending.len())
             .field("in_flight", &self.in_flight.len())
