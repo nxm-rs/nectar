@@ -262,7 +262,40 @@ where
     where
         M: Default,
     {
-        let mut split = Self::new(store, PutWindow::DEFAULT);
+        Self::collect_with(store, PutWindow::DEFAULT, data).await
+    }
+
+    /// Split all of `data` under an explicit put `window`, store its chunks,
+    /// and return the root.
+    ///
+    /// [`collect`](Self::collect) at the default window; take this to tune the
+    /// back-pressure the one-shot drives under.
+    ///
+    /// ```
+    /// # futures::executor::block_on(async {
+    /// use std::sync::Arc;
+    ///
+    /// use nectar_file::{Plain, PutWindow, Split};
+    /// use nectar_primitives::chunk::AnyChunkSet;
+    /// use nectar_primitives::store::MemoryStore;
+    ///
+    /// let store = Arc::new(MemoryStore::<AnyChunkSet<4096>>::new());
+    /// let window = PutWindow::new(4).unwrap();
+    /// let root = Split::<_, Plain, 4096>::collect_with(Arc::clone(&store), window, b"hello swarm")
+    ///     .await
+    ///     .unwrap();
+    /// # let _ = root;
+    /// # });
+    /// ```
+    pub async fn collect_with(
+        store: S,
+        window: PutWindow,
+        data: &[u8],
+    ) -> Result<M::Root, SplitError<S::Error>>
+    where
+        M: Default,
+    {
+        let mut split = Self::new(store, window);
         let mut rest = data;
         while !rest.is_empty() {
             let taken = poll_fn(|cx| split.poll_write(cx, rest)).await?;

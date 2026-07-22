@@ -147,7 +147,7 @@ pub use sink::{DataSink, MemSink, MemSinkError};
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use split::{KeyError, KeySource, RandomKeys};
 #[cfg(feature = "std")]
-pub use split::{SealError, Sealed, Split, SplitError, SplitMode, SplitStats};
+pub use split::{SealError, Sealed, Split, SplitError, SplitMode, SplitStats, collect_into};
 #[cfg(feature = "std")]
 pub use store::{BoxedStore, BoxedStoreError, DynAnyFile, DynFile, DynFileReader, DynFileStream};
 #[cfg(feature = "std")]
