@@ -330,7 +330,9 @@ where
     }
 }
 
+// Sanctioned tokio adapter tests: the test macro expands to `Runtime::block_on`.
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use alloc::collections::BTreeMap;
     use std::sync::Mutex;

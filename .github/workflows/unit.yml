@@ -68,6 +68,13 @@ jobs:
                     --no-tests=warn --no-fail-fast
             - name: Run encrypted split doctests
               run: cargo test --doc -p nectar-file --features encryption --locked
+            # The issuer integration surface is feature-gated off the default
+            # build; cover its tests here.
+            - name: Run issuer tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-postage-usage --features issuer --locked \
+                    --no-tests=warn --no-fail-fast
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The

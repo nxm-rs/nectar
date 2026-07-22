@@ -45,6 +45,10 @@ panic_in_result_fn = "deny"
 # justified `#[allow]` where truncation is intended and provably in range.
 as_conversions = "deny"
 missing_panics_doc = "warn"
+# Async test discipline: `clippy.toml` disallows ad-hoc executor entry points
+# (`block_on` and friends). Deny so the gate fails CI; sanctioned call sites
+# (`nectar_testing::run`, tokio adapter modules) carry an `#[allow(...)]`.
+disallowed_methods = "deny"
 
 [workspace.metadata.docs.rs]
 all-features = true

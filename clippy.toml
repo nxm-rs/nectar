@@ -1,0 +1,14 @@
+# Async test discipline: futures run through `nectar_testing::run` (the one
+# sanctioned executor entry point, allowed at its call site) or a manual-poll
+# `Drive`; ad-hoc executors and runtime-blocking calls are disallowed.
+disallowed-methods = [
+    { path = "futures_executor::block_on", reason = "use nectar_testing::run" },
+    { path = "futures::executor::block_on", reason = "use nectar_testing::run" },
+    { path = "futures_executor::block_on_stream", reason = "use nectar_testing::run and drive the stream inside the future" },
+    { path = "futures::executor::block_on_stream", reason = "use nectar_testing::run and drive the stream inside the future" },
+    { path = "futures_executor::LocalPool::run_until", reason = "use nectar_testing::run" },
+    { path = "futures::executor::LocalPool::run_until", reason = "use nectar_testing::run" },
+    { path = "tokio::runtime::Runtime::block_on", reason = "use #[tokio::test] in a tokio adapter module or nectar_testing::run" },
+    { path = "tokio::runtime::Handle::block_on", reason = "use #[tokio::test] in a tokio adapter module or nectar_testing::run" },
+    { path = "tokio::task::yield_now", reason = "use nectar_testing::yield_now so the yield budget stays deterministic" },
+]
