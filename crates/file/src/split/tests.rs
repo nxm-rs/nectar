@@ -699,6 +699,49 @@ mod encrypted {
         assert_eq!(sorted(first_store.log()), sorted(second_store.log()));
     }
 
+    /// Keys are drawn on the workers, so only the round trip is pinned:
+    /// pooled encrypted output is not byte-reproducible.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    #[test]
+    fn pooled_encrypted_split_round_trips() {
+        use crate::config::HashWindow;
+
+        let size = 17 * TINY + 43;
+        let data = fill(size);
+        let store = TestStore::<TINY>::new(0);
+        let mut split: Split<TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
+            Split::new(store.clone(), PutWindow::new(4).unwrap())
+                .with_hash_window(HashWindow::new(4).unwrap());
+        let root = block_on(async {
+            let mut buf = data.as_slice();
+            while !buf.is_empty() {
+                let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+                buf = &buf[n..];
+            }
+            poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+        });
+        let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
+            store,
+            *root.address(),
+            root.key().clone(),
+            size as u64,
+            0..u64::MAX,
+            Window::new(4).unwrap(),
+        );
+        let plaintext = block_on(async {
+            let mut bytes = Vec::new();
+            while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+                bytes.extend_from_slice(&frame.unwrap().data);
+            }
+            bytes
+        });
+        assert_eq!(plaintext, data);
+    }
+
     #[test]
     fn an_exhausted_key_source_poisons_the_split() {
         let data = fill(3 * TINY);
@@ -736,6 +779,284 @@ mod encrypted {
             split.poll_finish(&mut cx),
             core::task::Poll::Ready(Err(SplitError::Poisoned))
         ));
+    }
+}
+
+/// Pooled-seal oracles: chunk streams identical to the serial engine,
+/// hash-window bounds, backpressure, drop and worker-panic paths.
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+mod pooled {
+    use core::future::poll_fn;
+    use core::task::{Context, Poll};
+    use core::time::Duration;
+    use std::sync::{Arc, Mutex};
+    use std::vec::Vec;
+
+    use bytes::Bytes;
+    use futures::executor::block_on;
+    use futures::task::noop_waker;
+    use nectar_primitives::chunk::{ChunkAddress, ContentChunk};
+
+    use super::{BRANCHES, TINY, TestStore, fill, sorted, stream_split, tree_chunks};
+    use crate::config::{HashWindow, PutWindow};
+    use crate::geometry::Mode;
+    use crate::split::{SealError, Sealed, Split, SplitError, SplitMode, SplitStats};
+    use crate::walk::Plain;
+
+    /// Stream `data` through a hash-windowed split in `step`-byte writes.
+    fn pooled_split(
+        data: &[u8],
+        put_window: u16,
+        hash_window: u16,
+        step: usize,
+        delay: usize,
+    ) -> (ChunkAddress, TestStore<TINY>, SplitStats) {
+        let store = TestStore::<TINY>::new(delay);
+        let mut split: Split<TestStore<TINY>, Plain, TINY> =
+            Split::new(store.clone(), PutWindow::new(put_window).unwrap())
+                .with_hash_window(HashWindow::new(hash_window).unwrap());
+        let root = block_on(async {
+            for piece in data.chunks(step.max(1)) {
+                let mut buf = piece;
+                while !buf.is_empty() {
+                    let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+                    buf = &buf[n..];
+                }
+            }
+            poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+        });
+        let stats = split.stats();
+        (root, store, stats)
+    }
+
+    #[test]
+    fn pooled_chunk_streams_are_byte_identical_to_serial() {
+        let b = TINY;
+        let kb = BRANCHES * b;
+        let k2b = BRANCHES * kb;
+        let sizes = [
+            0,
+            1,
+            b - 1,
+            b,
+            b + 1,
+            kb - 1,
+            kb,
+            kb + 1,
+            k2b - 1,
+            k2b,
+            k2b + 1,
+            3 * kb + 517,
+        ];
+        for size in sizes {
+            let data = fill(size);
+            // Zero put delay settles every put at dispatch, so the ordered
+            // log is the dispatch order: the wire chunk stream itself.
+            let (serial_root, serial_store, serial_stats) = stream_split::<TINY>(&data, 4, 719, 0);
+            let (root, store, stats) = pooled_split(&data, 4, 4, 719, 0);
+            assert_eq!(root, serial_root, "root diverged at {size}");
+            assert_eq!(
+                store.log(),
+                serial_store.log(),
+                "chunk stream diverged at {size}"
+            );
+            assert_eq!(stats.puts, serial_stats.puts);
+            assert_eq!(stats.bytes, size as u64);
+            assert_eq!(stats.leaves + stats.intermediates, stats.puts);
+            assert_eq!(stats.puts, tree_chunks(size, TINY, BRANCHES));
+        }
+    }
+
+    #[test]
+    fn pooled_bounds_hold_under_a_slow_store() {
+        let data = fill(200 * TINY + 63);
+        let (serial_root, serial_store, _) = stream_split::<TINY>(&data, 4, 719, 1);
+        for put_window in [1u16, 4] {
+            for hash_window in [1u16, 2, 8] {
+                let (root, store, stats) = pooled_split(&data, put_window, hash_window, 997, 3);
+                assert_eq!(root, serial_root);
+                assert_eq!(sorted(store.log()), sorted(serial_store.log()));
+                assert!(
+                    stats.peak_hash_in_flight <= usize::from(hash_window),
+                    "seals in flight {} exceeded the hash window {hash_window}",
+                    stats.peak_hash_in_flight
+                );
+                assert!(
+                    stats.peak_put_in_flight <= usize::from(put_window),
+                    "puts in flight {} exceeded the put window {put_window}",
+                    stats.peak_put_in_flight
+                );
+                assert!(
+                    stats.peak_pending <= stats.peak_spine,
+                    "pending {} exceeded the spine height {}",
+                    stats.peak_pending,
+                    stats.peak_spine
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pooled_write_backpressure_consumes_nothing_when_full() {
+        let gate = Arc::new(Mutex::new(false));
+        let store = TestStore::<TINY>::gated(Arc::clone(&gate));
+        let mut split: Split<TestStore<TINY>, Plain, TINY> =
+            Split::new(store, PutWindow::new(1).unwrap())
+                .with_hash_window(HashWindow::new(1).unwrap());
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let data = fill(4 * TINY);
+
+        // Two leaves fit: one behind the parked put, one on the pool.
+        let mut consumed = 0usize;
+        for _ in 0..100_000 {
+            match split.poll_write(&mut cx, &data[consumed..]) {
+                Poll::Ready(Ok(n)) => consumed += n,
+                Poll::Ready(Err(error)) => panic!("write failed: {error:?}"),
+                Poll::Pending => std::thread::sleep(Duration::from_micros(50)),
+            }
+            if consumed == 2 * TINY {
+                break;
+            }
+        }
+        assert_eq!(consumed, 2 * TINY, "backpressure engaged early");
+
+        // Let the second seal land: the front is then ready but the put
+        // window is full, so the deque stays occupied and every further
+        // poll consumes nothing.
+        std::thread::sleep(Duration::from_millis(20));
+        for _ in 0..100 {
+            assert!(split.poll_write(&mut cx, &data[consumed..]).is_pending());
+            assert_eq!(split.stats().bytes, (2 * TINY) as u64);
+        }
+
+        // Opening the gate drains the chain and the split finishes.
+        *gate.lock().unwrap() = true;
+        let root = block_on(async {
+            let mut buf = &data[consumed..];
+            while !buf.is_empty() {
+                let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+                buf = &buf[n..];
+            }
+            poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+        });
+        let (serial_root, _, _) = stream_split::<TINY>(&data, 4, 719, 0);
+        assert_eq!(root, serial_root);
+        assert_eq!(split.stats().bytes, (4 * TINY) as u64);
+    }
+
+    /// Mode whose seal panics on the worker; the split must survive it.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct PanicMode;
+
+    impl SplitMode for PanicMode {
+        const MODE: Mode = Mode::Plain;
+
+        type Ref = ChunkAddress;
+        type Root = ChunkAddress;
+
+        fn data_slots(branches: u64) -> u64 {
+            branches
+        }
+
+        fn seal<const B: usize>(&self, _payload: Bytes) -> Result<Sealed<Self, B>, SealError> {
+            panic!("seal panicked on the worker")
+        }
+
+        fn write_ref(reference: &ChunkAddress, out: &mut Vec<u8>) {
+            out.extend_from_slice(reference.as_bytes());
+        }
+
+        fn into_root(reference: ChunkAddress) -> ChunkAddress {
+            reference
+        }
+    }
+
+    #[test]
+    fn a_worker_panic_is_a_typed_error_not_an_abort() {
+        let store = TestStore::<TINY>::new(0);
+        let mut split: Split<TestStore<TINY>, PanicMode, TINY> =
+            Split::new(store, PutWindow::DEFAULT).with_hash_window(HashWindow::new(2).unwrap());
+        let data = fill(TINY);
+        let error = block_on(async {
+            let mut buf = data.as_slice();
+            while !buf.is_empty() {
+                match poll_fn(|cx| split.poll_write(cx, buf)).await {
+                    Ok(n) => buf = &buf[n..],
+                    Err(error) => return error,
+                }
+            }
+            poll_fn(|cx| split.poll_finish(cx)).await.unwrap_err()
+        });
+        assert!(matches!(error, SplitError::PoolDropped), "got {error:?}");
+
+        // The fuse is shut for good.
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(
+            split.poll_finish(&mut cx),
+            Poll::Ready(Err(SplitError::Poisoned))
+        ));
+    }
+
+    /// Plain sealing behind a worker-side stall, so drops race live jobs.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct SlowMode;
+
+    impl SplitMode for SlowMode {
+        const MODE: Mode = Mode::Plain;
+
+        type Ref = ChunkAddress;
+        type Root = ChunkAddress;
+
+        fn data_slots(branches: u64) -> u64 {
+            branches
+        }
+
+        fn seal<const B: usize>(&self, payload: Bytes) -> Result<Sealed<Self, B>, SealError> {
+            std::thread::sleep(Duration::from_millis(10));
+            let chunk = ContentChunk::<B>::try_from(payload)?
+                .seal::<nectar_primitives::chunk::AnyChunkSet<B>>();
+            let address = *chunk.address();
+            Ok((chunk, address))
+        }
+
+        fn write_ref(reference: &ChunkAddress, out: &mut Vec<u8>) {
+            out.extend_from_slice(reference.as_bytes());
+        }
+
+        fn into_root(reference: ChunkAddress) -> ChunkAddress {
+            reference
+        }
+    }
+
+    #[test]
+    fn dropping_a_pooled_split_abandons_live_jobs() {
+        let store = TestStore::<TINY>::new(0);
+        let mut split: Split<TestStore<TINY>, SlowMode, TINY> =
+            Split::new(store, PutWindow::DEFAULT).with_hash_window(HashWindow::new(4).unwrap());
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let data = fill(4 * TINY);
+        let mut consumed = 0usize;
+        for _ in 0..1_000 {
+            match split.poll_write(&mut cx, &data[consumed..]) {
+                Poll::Ready(Ok(n)) => consumed += n,
+                Poll::Ready(Err(error)) => panic!("write failed: {error:?}"),
+                Poll::Pending => {}
+            }
+            if consumed == data.len() {
+                break;
+            }
+        }
+        // Seals are still running on the pool; the drop must orphan them
+        // harmlessly (each writes into its dead slot and wakes a no-op).
+        drop(split);
+        std::thread::sleep(Duration::from_millis(60));
     }
 }
 

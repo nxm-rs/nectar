@@ -18,8 +18,32 @@ use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::ChunkPut;
 
 use super::SplitStats;
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+use super::error::SealError;
 use super::error::SplitError;
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+use super::handoff::{self, Handoff};
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+use super::mode::Sealed;
 use super::mode::SplitMode;
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+use crate::config::HashWindow;
 use crate::config::PutWindow;
 use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 
@@ -35,6 +59,47 @@ type BoxPut<E> = Pin<Box<dyn Future<Output = PutDone<E>> + Send>>;
 /// and under the `unsync` feature.
 #[cfg(any(target_arch = "wasm32", feature = "unsync"))]
 type BoxPut<E> = Pin<Box<dyn Future<Output = PutDone<E>>>>;
+
+/// Handoff carrying one pool leaf seal back to the engine.
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+type SealHandoff<M, const B: usize> = Handoff<Result<Sealed<M, B>, SealError>>;
+
+/// Submitter queueing one leaf payload on the pool.
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+type SealSubmit<M, const B: usize> = Box<dyn Fn(Bytes) -> SealHandoff<M, B> + Send + Sync>;
+
+/// One leaf seal in flight on the pool: its span and the handoff its sealed
+/// chunk arrives on.
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+struct PendingSeal<M: SplitMode, const B: usize> {
+    span: u64,
+    handoff: SealHandoff<M, B>,
+}
+
+/// Pool fan-out for leaf seals: a bounded deque of in-flight jobs and the
+/// submitter that queues one payload.
+#[cfg(all(
+    feature = "rayon",
+    not(target_arch = "wasm32"),
+    not(feature = "unsync")
+))]
+struct HashFan<M: SplitMode, const B: usize> {
+    window: usize,
+    submit: SealSubmit<M, B>,
+    seals: VecDeque<PendingSeal<M, B>>,
+}
 
 /// One spine level: references awaiting a close and the bytes they span.
 struct Level<M: SplitMode> {
@@ -90,6 +155,13 @@ where
     /// Sealed chunks awaiting a put slot; bounded by the spine height.
     pending: VecDeque<Chunk<Verified, AnyChunkSet<B>>>,
     in_flight: FuturesUnordered<BoxPut<S::Error>>,
+    /// Pool fan-out for leaf seals; `None` keeps sealing inline.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    hash: Option<HashFan<M, B>>,
     phase: Phase,
     root: Option<M::Root>,
     stats: SplitStats,
@@ -136,10 +208,65 @@ where
             spine: Vec::new(),
             pending: VecDeque::new(),
             in_flight: FuturesUnordered::new(),
+            #[cfg(all(
+                feature = "rayon",
+                not(target_arch = "wasm32"),
+                not(feature = "unsync")
+            ))]
+            hash: None,
             phase: Phase::Writing,
             root: None,
             stats: SplitStats::default(),
         }
+    }
+
+    /// Fan leaf sealing onto the rayon pool, holding at most `window` seals
+    /// in flight; sealed leaves are admitted in leaf order, so a
+    /// deterministic mode's chunk stream matches the serial engine.
+    /// Configure before the first write.
+    ///
+    /// ```
+    /// use core::future::poll_fn;
+    /// use nectar_file::{HashWindow, Plain, PutWindow, Split};
+    /// use nectar_primitives::chunk::AnyChunkSet;
+    /// use nectar_primitives::store::MemoryStore;
+    ///
+    /// # futures::executor::block_on(async {
+    /// let store = MemoryStore::<AnyChunkSet<4096>>::new();
+    /// let mut split = Split::<_, Plain, 4096>::new(store, PutWindow::DEFAULT)
+    ///     .with_hash_window(HashWindow::DEFAULT);
+    /// let data = vec![7u8; 10_000];
+    /// let mut buf = data.as_slice();
+    /// while !buf.is_empty() {
+    ///     let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+    ///     buf = &buf[n..];
+    /// }
+    /// let root = poll_fn(|cx| split.poll_finish(cx)).await.unwrap();
+    /// assert_eq!(root.as_bytes().len(), 32);
+    /// # });
+    /// ```
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+    #[must_use]
+    pub fn with_hash_window(mut self, window: HashWindow) -> Self
+    where
+        M: Clone,
+        M::Ref: Send,
+    {
+        let mode = self.mode.clone();
+        self.hash = Some(HashFan {
+            window: usize::from(window.get()),
+            submit: Box::new(move |payload| {
+                let mode = mode.clone();
+                handoff::submit(move || mode.seal::<B>(payload))
+            }),
+            seals: VecDeque::new(),
+        });
+        self
     }
 
     /// Occupancy witnesses accumulated so far.
@@ -155,8 +282,9 @@ where
     /// Consume bytes from `buf`, sealing and spilling as leaves fill; at
     /// most one leaf body is consumed per call.
     ///
-    /// Cancel-safe: a put slot is secured before any byte is consumed, so a
-    /// poll that returns `Pending` has consumed nothing.
+    /// Cancel-safe: a put slot (or a hash slot when the pool fan-out is on)
+    /// is secured before any byte is consumed, so a poll that returns
+    /// `Pending` has consumed nothing.
     pub fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -175,7 +303,15 @@ where
         if let Err(error) = self.step_puts(cx) {
             return Poll::Ready(Err(self.poison(error)));
         }
-        if !self.pending.is_empty() || self.in_flight.len() >= self.window {
+        #[cfg(all(
+            feature = "rayon",
+            not(target_arch = "wasm32"),
+            not(feature = "unsync")
+        ))]
+        if let Err(error) = self.drain_seals(cx) {
+            return Poll::Ready(Err(self.poison(error)));
+        }
+        if self.write_gate_blocked() {
             return Poll::Pending;
         }
         let take = buf.len().min(B.saturating_sub(self.leaf_len()));
@@ -211,6 +347,22 @@ where
                 Phase::Writing | Phase::Closing => {
                     if let Err(error) = self.step_puts(cx) {
                         return Poll::Ready(Err(self.poison(error)));
+                    }
+                    // Every pool leaf seal must land before the tail seals
+                    // and the spine closes, so the ascent stays in leaf
+                    // order.
+                    #[cfg(all(
+                        feature = "rayon",
+                        not(target_arch = "wasm32"),
+                        not(feature = "unsync")
+                    ))]
+                    {
+                        if let Err(error) = self.drain_seals(cx) {
+                            return Poll::Ready(Err(self.poison(error)));
+                        }
+                        if self.seals_queued() > 0 {
+                            return Poll::Pending;
+                        }
                     }
                     if !self.pending.is_empty() || self.in_flight.len() >= self.window {
                         return Poll::Pending;
@@ -390,17 +542,94 @@ where
         }
     }
 
-    /// Patch the span into a finished leaf payload, seal it and thread its
-    /// reference into the spine.
+    /// Patch the span into a finished leaf payload, seal it (inline or on
+    /// the pool) and thread its reference into the spine.
     fn spill_leaf(&mut self, mut payload: Vec<u8>) -> Result<(), SplitError<S::Error>> {
         let span = u64_from_usize(payload.len().saturating_sub(SPAN_SIZE));
         if let Some((head, _)) = payload.split_first_chunk_mut::<SPAN_SIZE>() {
             *head = span.to_le_bytes();
         }
+        #[cfg(all(
+            feature = "rayon",
+            not(target_arch = "wasm32"),
+            not(feature = "unsync")
+        ))]
+        if let Some(fan) = &mut self.hash {
+            let handoff = (fan.submit)(Bytes::from(payload));
+            fan.seals.push_back(PendingSeal { span, handoff });
+            self.stats.peak_hash_in_flight = self.stats.peak_hash_in_flight.max(fan.seals.len());
+            return Ok(());
+        }
         let (chunk, reference) = self.mode.seal::<B>(Bytes::from(payload))?;
         self.stats.leaves = self.stats.leaves.saturating_add(1);
         self.enqueue(chunk)?;
         self.push_ref(0, reference, span)
+    }
+
+    /// Whether the write gate refuses bytes this poll: a full hash window
+    /// when the fan-out is on, otherwise the serial put gate.
+    fn write_gate_blocked(&self) -> bool {
+        #[cfg(all(
+            feature = "rayon",
+            not(target_arch = "wasm32"),
+            not(feature = "unsync")
+        ))]
+        if let Some(fan) = &self.hash {
+            return fan.seals.len() >= fan.window;
+        }
+        !self.pending.is_empty() || self.in_flight.len() >= self.window
+    }
+
+    /// Admit pool-sealed leaves in leaf order while put capacity allows.
+    ///
+    /// Only the front handoff is ever polled, so ascent order, intermediate
+    /// sealing and put dispatch order match the serial engine; out-of-order
+    /// completions park in their slots. `Ok` with jobs still queued means
+    /// the front is not ready or the put gate is shut, and a waker is
+    /// registered either way: every admission loops back through
+    /// `step_puts`, so a put dispatched here is re-polled with the caller's
+    /// waker before any return.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    fn drain_seals(&mut self, cx: &mut Context<'_>) -> Result<(), SplitError<S::Error>> {
+        loop {
+            self.step_puts(cx)?;
+            if !self.pending.is_empty() || self.in_flight.len() >= self.window {
+                return Ok(());
+            }
+            let Some(fan) = self.hash.as_mut() else {
+                return Ok(());
+            };
+            let Some(front) = fan.seals.front_mut() else {
+                return Ok(());
+            };
+            let (span, sealed) = match front.handoff.poll_recv(cx) {
+                Poll::Pending => return Ok(()),
+                Poll::Ready(None) => return Err(SplitError::PoolDropped),
+                Poll::Ready(Some(result)) => {
+                    let span = front.span;
+                    fan.seals.pop_front();
+                    (span, result?)
+                }
+            };
+            let (chunk, reference) = sealed;
+            self.stats.leaves = self.stats.leaves.saturating_add(1);
+            self.enqueue(chunk)?;
+            self.push_ref(0, reference, span)?;
+        }
+    }
+
+    /// Leaf seals still on the pool; zero when the fan-out is off.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    fn seals_queued(&self) -> usize {
+        self.hash.as_ref().map_or(0, |fan| fan.seals.len())
     }
 
     /// Thread a reference into the spine at `at`, closing and spilling
@@ -526,73 +755,6 @@ where
                 Ok(())
             }
         }
-    }
-
-    /// Drive the put window without consuming input.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
-    pub(crate) fn pump(&mut self, cx: &mut Context<'_>) -> Result<(), SplitError<S::Error>> {
-        if matches!(self.phase, Phase::Poisoned) {
-            return Err(SplitError::Poisoned);
-        }
-        self.step_puts(cx).map_err(|error| self.poison(error))
-    }
-
-    /// Secure admission for one externally sealed leaf: pending drained and
-    /// a put slot free. `Pending` admits nothing.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
-    pub(crate) fn poll_admit(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), SplitError<S::Error>>> {
-        match self.phase {
-            Phase::Writing => {}
-            Phase::Poisoned => return Poll::Ready(Err(SplitError::Poisoned)),
-            Phase::Closing | Phase::Draining | Phase::Finished => {
-                return Poll::Ready(Err(SplitError::Finished));
-            }
-        }
-        if let Err(error) = self.step_puts(cx) {
-            return Poll::Ready(Err(self.poison(error)));
-        }
-        if !self.pending.is_empty() || self.in_flight.len() >= self.window {
-            return Poll::Pending;
-        }
-        Poll::Ready(Ok(()))
-    }
-
-    /// Thread one externally sealed leaf into the ascent; the caller has
-    /// secured capacity through `poll_admit`.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
-    pub(crate) fn push_sealed(
-        &mut self,
-        chunk: Chunk<Verified, AnyChunkSet<B>>,
-        reference: M::Ref,
-        span: u64,
-    ) -> Result<(), SplitError<S::Error>> {
-        match self.phase {
-            Phase::Writing => {}
-            Phase::Poisoned => return Err(SplitError::Poisoned),
-            Phase::Closing | Phase::Draining | Phase::Finished => {
-                return Err(SplitError::Finished);
-            }
-        }
-        self.stats.bytes = self.stats.bytes.saturating_add(span);
-        self.stats.leaves = self.stats.leaves.saturating_add(1);
-        self.enqueue(chunk)
-            .and_then(|()| self.push_ref(0, reference, span))
-            .map_err(|error| self.poison(error))
     }
 
     /// Fold completed puts back in and admit pending chunks; a failed put

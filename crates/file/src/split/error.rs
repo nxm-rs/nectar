@@ -44,6 +44,16 @@ pub enum SplitError<E> {
     /// An earlier failure fused the split shut.
     #[error("poisoned by an earlier failure")]
     Poisoned,
+    /// The pool dropped a leaf seal without replying; the worker panicked
+    /// or died.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
+    #[error("hash pool dropped a leaf seal")]
+    PoolDropped,
     /// The spine emptied without yielding a root; a split invariant is
     /// broken.
     #[error("spine depleted without a root")]
