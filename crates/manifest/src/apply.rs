@@ -349,16 +349,14 @@ where
                 child: absorbed.child().cloned(),
                 count: absorbed.child_count(),
             };
-            return finish(
-                store,
-                consumed,
+            // The merged edge lands on the forced cut, so the absorbed fork is
+            // already the boundary a build places: no further compaction.
+            return settle(
                 &merged,
                 absorbed.entry().cloned(),
                 absorbed.metadata().cloned(),
                 child,
-                stats,
-            )
-            .await;
+            );
         }
         // The child is untouched: reuse it verbatim, carrying its stored count.
         let child = Counted {
@@ -510,14 +508,12 @@ where
         }
     }
 
-    // The existing subtree hangs under the remainder of its edge. Shortening
-    // the edge can bring a chained child-only fork back within the prefix
-    // bound, so the re-root re-compacts exactly as a build at the new depth
-    // would rather than splicing the old shape in verbatim.
+    // The existing subtree hangs under the remainder of its edge, spliced in
+    // verbatim: anchoring keeps every cut below the split in place.
     let mut branch = ForkTable::new();
     let remainder = edge.get(cut..).ok_or(ApplyError::Internal)?;
     let first = *remainder.first().ok_or(ApplyError::Internal)?;
-    if let Some(record) = reroot(store, boundary, remainder, existing, stats).await? {
+    if let Some(record) = reroot(remainder, existing)? {
         branch.insert_record(first, record);
     }
     let table = Box::pin(apply_forks(store, branch, boundary, &remaining, stats)).await?;
@@ -533,29 +529,13 @@ where
     .await
 }
 
-/// Re-root an existing fork under a shortened `remainder` edge that starts at
-/// absolute key offset `at`, re-compacting a child-only chain fork that the
-/// shorter edge now brings within the prefix bound. A fork with a terminal
-/// value, or one whose single continuation still overruns the bound, is
-/// depth-independent and re-roots verbatim.
-async fn reroot<S, F>(
-    store: &S,
-    at: usize,
+/// Re-root an existing fork under a shortened `remainder` edge. Anchoring
+/// leaves every cut below the split where it was, so the fork re-roots
+/// verbatim.
+fn reroot<F: Format>(
     remainder: &[u8],
     existing: ForkRecord<F>,
-    stats: &mut BuildStats,
-) -> Result<Option<ForkRecord<F>>, ApplyError>
-where
-    S: ChunkPut + MaybeSync,
-    F: Format,
-{
-    if existing.entry().is_none()
-        && let Some(Child::Embedded(table)) = existing.child()
-        && table.len() == 1
-        && let Some((first, record)) = table.iter().next()
-    {
-        return compact(store, at, remainder, first, record, stats).await;
-    }
+) -> Result<Option<ForkRecord<F>>, ApplyError> {
     make_fork(
         remainder,
         existing.payload().clone(),
@@ -583,14 +563,25 @@ where
     S: ChunkPut + MaybeSync,
     F: Format,
 {
-    let Counted { child, count } = child;
     if entry.is_none()
-        && let Some(Child::Embedded(table)) = &child
+        && let Some(Child::Embedded(table)) = &child.child
         && table.len() == 1
         && let Some((first, record)) = table.iter().next()
     {
         return compact(store, at, edge, first, record, stats).await;
     }
+    settle(edge, entry, meta, child)
+}
+
+/// A fork record over `edge` from its parts, dropping metadata that no terminal
+/// value carries, or `None` when neither a value nor a child survives.
+fn settle<F: Format>(
+    edge: &[u8],
+    entry: Option<Entry<F>>,
+    meta: Option<Metadata<F>>,
+    child: Counted<F>,
+) -> Result<Option<ForkRecord<F>>, ApplyError> {
+    let Counted { child, count } = child;
     let has_entry = entry.is_some();
     ForkPayload::new(entry, child).map_or_else(
         || Ok(None),
@@ -602,10 +593,9 @@ where
 /// lone child fork (index byte `first` plus `record`), emitting the compacted
 /// fork a from-scratch build would produce.
 ///
-/// The lone child may itself head a child-only chain, so the whole run is
-/// flattened before re-segmenting: stopping after one link would re-split a
-/// short run and dangle the chain's tail as a separate hop, diverging from a
-/// build.
+/// One hop suffices: anchoring pins every cut below the merge to the same
+/// absolute offsets a build places, so the merged run re-segments into a
+/// canonical chain and the record's own boundary stays where it was.
 async fn compact<S, F>(
     store: &S,
     at: usize,
@@ -619,14 +609,15 @@ where
     F: Format,
 {
     let mut merged = edge.to_vec();
-    let terminal = flatten_run(&mut merged, first, record);
+    merged.push(first);
+    merged.extend_from_slice(record.tail().as_bytes());
     chain(
         store,
         at,
         &merged,
-        terminal.payload().clone(),
-        terminal.metadata().cloned(),
-        terminal.child_count(),
+        record.payload().clone(),
+        record.metadata().cloned(),
+        record.child_count(),
         stats,
     )
     .await
@@ -682,35 +673,6 @@ where
     merged.push(first);
     merged.extend_from_slice(record.tail().as_bytes());
     Ok(Some((merged, record.clone())))
-}
-
-/// Flatten a child-only single-fork chain rooted at (`first`, `record`) into
-/// `run`, appending every edge byte the collapsed run spans, and return the
-/// terminal fork whose payload the run carries.
-///
-/// The walk descends while a fork has no terminal value and exactly one
-/// embedded continuation: the shape a from-scratch build fuses into one
-/// `PLEN_MAX`-segmented run. It stops at a terminal value, a branch, or a
-/// referenced child, the boundaries a build keeps.
-fn flatten_run<'r, F: Format>(
-    run: &mut Vec<u8>,
-    mut first: u8,
-    mut record: &'r ForkRecord<F>,
-) -> &'r ForkRecord<F> {
-    loop {
-        run.push(first);
-        run.extend_from_slice(record.tail().as_bytes());
-        if record.entry().is_none()
-            && let Some(Child::Embedded(table)) = record.child()
-            && table.len() == 1
-            && let Some((next_first, next_record)) = table.iter().next()
-        {
-            first = next_first;
-            record = next_record;
-            continue;
-        }
-        return record;
-    }
 }
 
 /// A fork record over `prefix`, which starts at absolute key offset `at`, split
