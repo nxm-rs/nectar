@@ -8,7 +8,7 @@ use core::ops::Range;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ChunkOps, Verified};
@@ -93,6 +93,8 @@ where
     branch_in_flight: usize,
     /// Resolved leaf bodies, clipped to the range, keyed by offset.
     ready: BTreeMap<u64, Bytes>,
+    /// Staging buffer the mode's body decoder reuses across nodes.
+    scratch: BytesMut,
     done: bool,
     stats: WalkStats,
 }
@@ -146,6 +148,7 @@ where
             leaf_in_flight: 0,
             branch_in_flight: 0,
             ready: BTreeMap::new(),
+            scratch: BytesMut::new(),
             done: false,
             stats: WalkStats::default(),
         };
@@ -402,10 +405,13 @@ where
             });
         }
         let data = chunk.into_envelope().data().clone();
-        let data = M::decode_body(&node.context, B, self.plaintext_len(&node, leaf), data)
-            .map_err(|source| WalkError::Decode {
-                offset: node.start,
-                source,
+        let take = self.plaintext_len(&node, leaf);
+        let data =
+            M::decode_body(&node.context, B, take, data, &mut self.scratch).map_err(|source| {
+                WalkError::Decode {
+                    offset: node.start,
+                    source,
+                }
             })?;
         if leaf {
             let len = u64_from_usize(data.len());

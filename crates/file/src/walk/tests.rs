@@ -627,3 +627,75 @@ fn mid_leaf_range_is_clipped() {
     // Root plus the single overlapping leaf.
     assert_eq!(store.log().len(), 2);
 }
+
+/// A production-shaped body: a shared, non-zero-offset sub-view, as the
+/// wire decoder's span split and the store's retained copy produce.
+fn shared_offset_body(cipher: &[u8]) -> (Bytes, Bytes) {
+    let mut wire = Vec::with_capacity(8 + cipher.len());
+    wire.extend_from_slice(&[0u8; 8]);
+    wire.extend_from_slice(cipher);
+    let mut body = Bytes::from(wire);
+    let _span = body.split_to(8);
+    let held = body.clone();
+    (body, held)
+}
+
+#[test]
+fn encrypted_decode_stages_a_shared_offset_view() {
+    use bytes::BytesMut;
+    use nectar_primitives::chunk::encryption::{EncryptionKey, transcrypt_in_place};
+
+    use super::{Encrypted, WalkMode};
+
+    let key = EncryptionKey::from([7u8; 32]);
+    let plain = fill(TINY);
+    let mut cipher = plain.clone();
+    transcrypt_in_place(&key, 0, &mut cipher);
+    let (body, held) = shared_offset_body(&cipher);
+    let mut scratch = BytesMut::new();
+    let out = <Encrypted as WalkMode>::decode_body(&key, TINY, 100, body, &mut scratch).unwrap();
+    assert_eq!(out.as_ref(), &plain[..100]);
+    assert_eq!(
+        held.as_ref(),
+        cipher.as_slice(),
+        "shared holder must keep ciphertext"
+    );
+}
+
+#[test]
+fn encrypted_decode_reclaims_the_scratch_between_frames() {
+    use bytes::BytesMut;
+    use nectar_primitives::chunk::encryption::{EncryptionKey, transcrypt_in_place};
+
+    use super::{Encrypted, WalkMode};
+
+    let key = EncryptionKey::from([9u8; 32]);
+    let plain = fill(TINY);
+    let mut cipher = plain.clone();
+    transcrypt_in_place(&key, 0, &mut cipher);
+    let mut scratch = BytesMut::new();
+
+    let (body, _held) = shared_offset_body(&cipher);
+    let first = <Encrypted as WalkMode>::decode_body(&key, TINY, TINY, body, &mut scratch).unwrap();
+    let base = first.as_ptr();
+    assert_eq!(first.as_ref(), plain.as_slice());
+    drop(first);
+
+    // The dropped frame releases the backing, so the next decode recentres
+    // into the same allocation.
+    let (body, _held) = shared_offset_body(&cipher);
+    let second =
+        <Encrypted as WalkMode>::decode_body(&key, TINY, TINY, body, &mut scratch).unwrap();
+    assert_eq!(
+        second.as_ptr(),
+        base,
+        "scratch allocation must be reclaimed"
+    );
+
+    // A frame still alive keeps its bytes; the next decode moves to a fresh
+    // backing instead of overwriting it.
+    let (body, _held) = shared_offset_body(&cipher);
+    let third = <Encrypted as WalkMode>::decode_body(&key, TINY, TINY, body, &mut scratch).unwrap();
+    assert_eq!(second.as_ref(), plain.as_slice());
+    assert_eq!(third.as_ref(), plain.as_slice());
+}

@@ -1,10 +1,9 @@
 //! Reference grammar seam: how a walk reads child references and node
 //! bodies.
 
-use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey, transcrypt_in_place};
 use nectar_primitives::store::{MaybeSend, MaybeSync};
@@ -32,11 +31,16 @@ pub trait WalkMode: MaybeSend + MaybeSync + 'static {
     /// Decode one fetched body into the plaintext the tree grammar reads:
     /// `take` bytes (a leaf's span, or an intermediate's packed references)
     /// out of a `body_size`-byte profile.
+    ///
+    /// `scratch` is the walk's staging buffer, reused across nodes; a
+    /// transforming mode writes its output there and splits it off, a
+    /// pass-through mode leaves it untouched.
     fn decode_body(
         context: &Self::Context,
         body_size: usize,
         take: usize,
         data: Bytes,
+        scratch: &mut BytesMut,
     ) -> Result<Bytes, DecodeError>;
 }
 
@@ -61,6 +65,7 @@ impl WalkMode for Plain {
         _body_size: usize,
         _take: usize,
         data: Bytes,
+        _scratch: &mut BytesMut,
     ) -> Result<Bytes, DecodeError> {
         Ok(data)
     }
@@ -102,11 +107,16 @@ impl<K: MaybeSend + MaybeSync + 'static> WalkMode for Encrypted<K> {
 
     /// A ciphertext body is always full-size (short leaves are padded), so
     /// only the first `take` bytes are decrypted and returned.
+    ///
+    /// The plaintext is staged in `scratch` and split off as the frame; the
+    /// shared ciphertext is never touched, and the staging allocation is
+    /// reclaimed once earlier frames drop.
     fn decode_body(
         context: &EncryptionKey,
         body_size: usize,
         take: usize,
-        data: Bytes,
+        mut data: Bytes,
+        scratch: &mut BytesMut,
     ) -> Result<Bytes, DecodeError> {
         if data.len() != body_size {
             return Err(DecodeError::CiphertextLength {
@@ -114,8 +124,10 @@ impl<K: MaybeSend + MaybeSync + 'static> WalkMode for Encrypted<K> {
                 expected: body_size,
             });
         }
-        let mut plain = Vec::from(data.slice(..take.min(body_size)).as_ref());
-        transcrypt_in_place(context, 0, &mut plain);
-        Ok(Bytes::from(plain))
+        data.truncate(take.min(body_size));
+        scratch.clear();
+        scratch.extend_from_slice(data.as_ref());
+        transcrypt_in_place(context, 0, scratch.as_mut());
+        Ok(scratch.split().freeze())
     }
 }
