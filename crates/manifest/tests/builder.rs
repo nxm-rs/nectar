@@ -8,27 +8,16 @@ use std::error::Error;
 
 use bytes::Bytes;
 use futures::executor::block_on;
-use nectar_file::{Plain, Split};
 use nectar_manifest::{
     BuildStats, Builder, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node, NodeGet,
     Prefix, RootExtension, V1, build_files,
 };
-use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
+use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, MemoryStore};
+
+mod common;
+use common::split_whole;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-/// Split `data` whole through the streaming engine into a fresh store,
-/// returning the root and the split store.
-async fn split_whole(data: &[u8]) -> Result<(ChunkAddress, MemoryStore), Box<dyn Error>> {
-    let store = std::sync::Arc::new(MemoryStore::default());
-    let root = Split::<std::sync::Arc<MemoryStore>, Plain, DEFAULT_BODY_SIZE>::collect(
-        std::sync::Arc::clone(&store),
-        data,
-    )
-    .await?;
-    let store = std::sync::Arc::into_inner(store).ok_or("split still holds the store")?;
-    Ok((root, store))
-}
 
 /// A fallible assertion: Result-returning tests report failures as errors.
 fn ensure(cond: bool, what: &str) -> TestResult {

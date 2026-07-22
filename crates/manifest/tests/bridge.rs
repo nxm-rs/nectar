@@ -9,9 +9,11 @@ use std::error::Error;
 
 use bytes::Bytes;
 use futures::executor::block_on;
-use nectar_file::{Plain, Split};
 use nectar_manifest::{Builder, Entry, Key, Reader, build_files};
-use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
+use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
+
+mod common;
+use common::split_whole;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -53,19 +55,6 @@ const SIZES: &[usize] = &[
 fn pattern(size: usize) -> Bytes {
     let cycle = (0u16..251).map(|byte| u8::try_from(byte).unwrap_or_default());
     Bytes::from(cycle.cycle().take(size).collect::<Vec<u8>>())
-}
-
-/// Split `data` whole through the streaming engine into a fresh store,
-/// returning the root and the split store.
-async fn split_whole(data: &[u8]) -> Result<(ChunkAddress, MemoryStore), Box<dyn Error>> {
-    let store = std::sync::Arc::new(MemoryStore::default());
-    let root = Split::<std::sync::Arc<MemoryStore>, Plain, DEFAULT_BODY_SIZE>::collect(
-        std::sync::Arc::clone(&store),
-        data,
-    )
-    .await?;
-    let store = std::sync::Arc::into_inner(store).ok_or("split still holds the store")?;
-    Ok((root, store))
 }
 
 #[test]
