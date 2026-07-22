@@ -977,70 +977,6 @@ export class SingleOwnerChunkResult {
 if (Symbol.dispose) SingleOwnerChunkResult.prototype[Symbol.dispose] = SingleOwnerChunkResult.prototype.free;
 
 /**
- * Result of splitting a file into chunks.
- */
-export class SplitResult {
-    static __wrap(ptr) {
-        const obj = Object.create(SplitResult.prototype);
-        obj.__wbg_ptr = ptr;
-        SplitResultFinalization.register(obj, obj.__wbg_ptr, obj);
-        return obj;
-    }
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        SplitResultFinalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_splitresult_free(ptr, 0);
-    }
-    /**
-     * Get all chunk addresses as an array of Uint8Array.
-     * @returns {Array<any>}
-     */
-    addresses() {
-        const ret = wasm.splitresult_addresses(this.__wbg_ptr);
-        return ret;
-    }
-    /**
-     * Get the number of chunks generated.
-     * @returns {number}
-     */
-    get chunkCount() {
-        const ret = wasm.splitresult_chunkCount(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
-     * Get all chunks as an array of WasmContentChunk.
-     * @returns {Array<any>}
-     */
-    chunks() {
-        const ret = wasm.splitresult_chunks(this.__wbg_ptr);
-        return ret;
-    }
-    /**
-     * Get a chunk by index.
-     * @param {number} index
-     * @returns {ContentChunk | undefined}
-     */
-    getChunk(index) {
-        const ret = wasm.splitresult_getChunk(this.__wbg_ptr, index);
-        return ret === 0 ? undefined : ContentChunk.__wrap(ret);
-    }
-    /**
-     * Get the root address (32 bytes).
-     * @returns {Uint8Array}
-     */
-    get rootAddress() {
-        const ret = wasm.splitresult_rootAddress(this.__wbg_ptr);
-        return ret;
-    }
-}
-if (Symbol.dispose) SplitResult.prototype[Symbol.dispose] = SplitResult.prototype.free;
-
-/**
  * Analyze a chunk and determine its type and properties
  *
  * @param {Uint8Array} chunk_data - Serialized chunk data
@@ -1370,21 +1306,6 @@ export function hashChunkData(data, span) {
     }
     return takeFromExternrefTable0(ret[0]);
 }
-
-/**
- * Split data into BMT chunks.
- *
- * Returns a SplitResult containing the root address and all generated chunks.
- * @param {Uint8Array} data
- * @returns {SplitResult}
- */
-export function splitFile(data) {
-    const ret = wasm.splitFile(data);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return SplitResult.__wrap(ret[0]);
-}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -1412,10 +1333,6 @@ function __wbg_get_imports() {
             const ret = arg0.call(arg1, arg2);
             return ret;
         }, arguments); },
-        __wbg_contentchunk_new: function(arg0) {
-            const ret = ContentChunk.__wrap(arg0);
-            return ret;
-        },
         __wbg_crypto_38df2bab126b63dc: function(arg0) {
             const ret = arg0.crypto;
             return ret;
@@ -1587,9 +1504,6 @@ const ProofFinalization = (typeof FinalizationRegistry === 'undefined')
 const SingleOwnerChunkResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_singleownerchunkresult_free(ptr, 1));
-const SplitResultFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_splitresult_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
