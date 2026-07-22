@@ -84,12 +84,13 @@ fn change_set() -> impl Strategy<Value = Vec<(Vec<u8>, Option<Parts>)>> {
     prop::collection::vec((key_bytes(), prop::option::of(value_parts())), 0..=40)
 }
 
-/// A long, low-entropy key: a binary alphabet over up to 400 bytes, so pairs
-/// share prefixes past the 255-byte bound while the two-way fanout keeps every
-/// node within budget. Chains form, and a split above a chain boundary
-/// re-compacts into a `PLEN_MAX`-capped chain rather than one over-long edge.
+/// A long, low-entropy key: a binary alphabet over up to 800 bytes, so pairs
+/// share prefixes across several `PLEN_MAX` links while the two-way fanout keeps
+/// every node within budget. The ceiling clears 510 bytes so a shared run spans
+/// a chain of three or more forks, and a split above such a chain re-compacts
+/// into a `PLEN_MAX`-capped chain rather than stopping one link short.
 fn long_key_bytes() -> impl Strategy<Value = Vec<u8>> {
-    prop::collection::vec(0u8..2, 1..=400)
+    prop::collection::vec(0u8..2, 1..=800)
 }
 
 /// A base key set of long keys.
