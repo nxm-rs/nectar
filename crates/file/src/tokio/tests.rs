@@ -15,7 +15,7 @@ use super::{SpawnedReader, TokioReader, TokioWriter};
 use crate::config::PutWindow;
 use crate::read::File;
 use crate::split::Split;
-use crate::testutil::split_fixture;
+use crate::testutil::{reject_all, split_fixture};
 use crate::walk::Plain;
 
 /// Tiny body size shared with the facade tests: fan-out 8, so small files
@@ -229,18 +229,6 @@ async fn walk_failures_surface_as_io_errors_on_both_drivers() {
     assert_eq!(error.kind(), ErrorKind::Other);
 }
 
-/// Store refusing every put.
-#[derive(Clone)]
-struct RejectPuts;
-
-impl ChunkPut<AnyChunkSet<TINY>> for RejectPuts {
-    type Error = ChunkStoreError;
-
-    async fn put(&self, _chunk: Chunk<Verified, AnyChunkSet<TINY>>) -> Result<(), ChunkStoreError> {
-        Err(ChunkStoreError::Other("outage".to_string().into()))
-    }
-}
-
 /// Shared store handle: clones share one map, unlike the snapshot-cloning
 /// memory store.
 #[derive(Clone, Default)]
@@ -325,8 +313,8 @@ async fn writer_shutdown_is_fused_and_later_writes_fail() {
 
 #[tokio::test]
 async fn writer_put_failures_surface_as_io_errors() {
-    let mut writer =
-        TokioWriter::from(Split::<_, Plain, TINY>::new(RejectPuts, PutWindow::DEFAULT));
+    let store = reject_all::<_, TINY>(TinyStore::default());
+    let mut writer = TokioWriter::from(Split::<_, Plain, TINY>::new(store, PutWindow::DEFAULT));
     let data = fill(2 * TINY);
     let error = async {
         writer.write_all(&data).await?;

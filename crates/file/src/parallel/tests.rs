@@ -5,7 +5,6 @@ use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use std::collections::HashMap;
 use std::format;
-use std::string::ToString;
 use std::sync::{Arc, Mutex};
 use std::vec;
 use std::vec::Vec;
@@ -17,6 +16,7 @@ use nectar_primitives::store::{ChunkPut, ChunkStoreError};
 use super::{ReadAt, ReadAtError, split_read_at};
 use crate::config::PutWindow;
 use crate::split::{Split, SplitError};
+use crate::testutil::reject_all;
 use crate::walk::Plain;
 
 /// Tiny body size: fan-out 8, so a few dozen leaves already build a deep
@@ -35,13 +35,13 @@ fn pattern(i: u64) -> u8 {
 }
 
 /// Shared put store: logs accepted puts, resolves after `delay` yields,
-/// tracks peak concurrent puts, refuses puts past `fail_after`.
+/// tracks peak concurrent puts. Fault injection rides
+/// [`FaultStore`](crate::testutil::FaultStore).
 struct TestStore<const B: usize> {
     chunks: Arc<Mutex<HashMap<ChunkAddress, Chunk<Verified, AnyChunkSet<B>>>>>,
     log: Arc<Mutex<Vec<ChunkAddress>>>,
     active: Arc<Mutex<(usize, usize)>>,
     delay: usize,
-    fail_after: Option<usize>,
 }
 
 impl<const B: usize> Clone for TestStore<B> {
@@ -51,7 +51,6 @@ impl<const B: usize> Clone for TestStore<B> {
             log: Arc::clone(&self.log),
             active: Arc::clone(&self.active),
             delay: self.delay,
-            fail_after: self.fail_after,
         }
     }
 }
@@ -63,14 +62,6 @@ impl<const B: usize> TestStore<B> {
             log: Arc::new(Mutex::new(Vec::new())),
             active: Arc::new(Mutex::new((0, 0))),
             delay,
-            fail_after: None,
-        }
-    }
-
-    fn failing_after(fail_after: usize) -> Self {
-        Self {
-            fail_after: Some(fail_after),
-            ..Self::new(0)
         }
     }
 
@@ -118,11 +109,6 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
             yield_now().await;
         }
         self.active.lock().unwrap().0 -= 1;
-        if let Some(limit) = self.fail_after
-            && self.log.lock().unwrap().len() >= limit
-        {
-            return Err(ChunkStoreError::Other("put refused".to_string().into()));
-        }
         let address = *chunk.address();
         self.log.lock().unwrap().push(address);
         self.chunks.lock().unwrap().insert(address, chunk);
@@ -446,7 +432,7 @@ fn a_sizing_failure_is_typed() {
 
 #[test]
 fn a_failed_put_surfaces_as_a_split_error() {
-    let store = TestStore::<TINY>::failing_after(0);
+    let store = reject_all::<_, TINY>(TestStore::<TINY>::new(0));
     let error = block_on(split_read_at::<_, _, Plain, TINY>(
         fill(6 * TINY),
         store,

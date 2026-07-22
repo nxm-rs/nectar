@@ -5,7 +5,6 @@ use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::collections::HashMap;
-use std::string::ToString;
 use std::sync::{Arc, Mutex};
 #[cfg(all(
     feature = "rayon",
@@ -22,6 +21,7 @@ use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
 
 use super::{Split, SplitError, SplitStats};
 use crate::config::{PutWindow, Window};
+use crate::testutil::{FaultStore, failing_at, reject_all};
 use crate::walk::{Plain, Walk};
 
 /// Tiny body size: fan-out 8, so a few dozen leaves already build a deep
@@ -61,13 +61,13 @@ fn yield_now() -> impl Future<Output = ()> {
 }
 
 /// Shared put store: logs accepted puts in order, resolves after `delay`
-/// yields, parks while `gate` is shut, refuses puts past `fail_after`.
+/// yields, parks while `gate` is shut. Fault injection rides
+/// [`FaultStore`](crate::testutil::FaultStore).
 struct TestStore<const B: usize> {
     chunks: Arc<Mutex<HashMap<ChunkAddress, Chunk<Verified, AnyChunkSet<B>>>>>,
     log: Arc<Mutex<Vec<ChunkAddress>>>,
     delay: usize,
     gate: Option<Arc<Mutex<bool>>>,
-    fail_after: Option<usize>,
 }
 
 impl<const B: usize> Clone for TestStore<B> {
@@ -77,7 +77,6 @@ impl<const B: usize> Clone for TestStore<B> {
             log: Arc::clone(&self.log),
             delay: self.delay,
             gate: self.gate.clone(),
-            fail_after: self.fail_after,
         }
     }
 }
@@ -89,20 +88,12 @@ impl<const B: usize> TestStore<B> {
             log: Arc::new(Mutex::new(Vec::new())),
             delay,
             gate: None,
-            fail_after: None,
         }
     }
 
     fn gated(gate: Arc<Mutex<bool>>) -> Self {
         Self {
             gate: Some(gate),
-            ..Self::new(0)
-        }
-    }
-
-    fn failing_after(fail_after: usize) -> Self {
-        Self {
-            fail_after: Some(fail_after),
             ..Self::new(0)
         }
     }
@@ -123,11 +114,6 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
         }
         for _ in 0..self.delay {
             yield_now().await;
-        }
-        if let Some(limit) = self.fail_after
-            && self.log.lock().unwrap().len() >= limit
-        {
-            return Err(ChunkStoreError::Other("put refused".to_string().into()));
         }
         let address = *chunk.address();
         self.log.lock().unwrap().push(address);
@@ -408,8 +394,8 @@ fn empty_write_consumes_nothing() {
 
 #[test]
 fn a_failed_put_poisons_the_fuse() {
-    let store = TestStore::<TINY>::failing_after(0);
-    let mut split: TinySplit = Split::new(store, PutWindow::new(2).unwrap());
+    let store = reject_all::<_, TINY>(TestStore::<TINY>::new(0));
+    let mut split = Split::<_, Plain, TINY>::new(store, PutWindow::new(2).unwrap());
     let data = fill(3 * TINY);
     let error = block_on(async {
         let mut buf = data.as_slice();
@@ -437,6 +423,22 @@ fn a_failed_put_poisons_the_fuse() {
         Poll::Ready(Err(SplitError::Poisoned))
     ));
     assert!(split.is_finished());
+}
+
+/// A put failing after some succeed surfaces through the `collect_with`
+/// one-shot as a typed `Put` error; `FaultStore` drives the fault and its
+/// counter is shared across the split's per-put store clones.
+#[test]
+fn collect_with_surfaces_a_put_failure() {
+    let data = fill(3 * TINY);
+    let store: FaultStore<_, _, TINY> = failing_at(TestStore::<TINY>::new(0), 3);
+    let error = block_on(Split::<_, Plain, TINY>::collect_with(
+        store,
+        PutWindow::new(2).unwrap(),
+        &data,
+    ))
+    .unwrap_err();
+    assert!(matches!(error, SplitError::Put { .. }), "got {error:?}");
 }
 
 #[test]
