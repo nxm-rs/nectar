@@ -92,6 +92,8 @@ compile_error!("feature `rayon` needs `Send` chunks and errors; it excludes the 
 pub mod config;
 pub mod geometry;
 #[cfg(feature = "std")]
+mod inflight;
+#[cfg(feature = "std")]
 mod num;
 #[cfg(all(
     feature = "rayon",

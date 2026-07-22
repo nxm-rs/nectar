@@ -9,7 +9,6 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
-use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ChunkOps, Verified};
 use nectar_primitives::store::TrustedGet;
@@ -18,6 +17,7 @@ use super::error::{ShapeError, WalkError};
 use super::mode::WalkMode;
 use super::{Frame, WalkStats};
 use crate::config::{BranchBudget, Window};
+use crate::inflight::InFlight;
 use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 
 /// One pending tree node: where its bytes live and what fetches it.
@@ -84,7 +84,7 @@ where
     /// Discovered intermediates awaiting descent, ascending by key; the
     /// flattened frame stack of the serial walk.
     branch_frontier: VecDeque<Node<M>>,
-    in_flight: FuturesUnordered<BoxFetch<M, S::Error, B>>,
+    in_flight: InFlight<Fetched<M, S::Error, B>>,
     /// Keys of in-flight leaf fetches, counted per key.
     leaf_keys: BTreeMap<u64, usize>,
     /// Keys of in-flight branch fetches, counted per key.
@@ -142,7 +142,7 @@ where
             branch_budget: usize::try_from(budget.get()).unwrap_or(usize::MAX),
             leaf_frontier: VecDeque::new(),
             branch_frontier: VecDeque::new(),
-            in_flight: FuturesUnordered::new(),
+            in_flight: InFlight::new(),
             leaf_keys: BTreeMap::new(),
             branch_keys: BTreeMap::new(),
             leaf_in_flight: 0,
@@ -212,7 +212,7 @@ where
             if let Some(frame) = self.take_ready(drain) {
                 return Poll::Ready(Some(Ok(frame)));
             }
-            match Pin::new(&mut self.in_flight).poll_next(cx) {
+            match self.in_flight.poll(cx) {
                 Poll::Ready(Some((node, fetched))) => {
                     if let Err(error) = self.absorb(node, fetched) {
                         self.done = true;

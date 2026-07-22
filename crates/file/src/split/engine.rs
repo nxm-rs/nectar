@@ -11,7 +11,6 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
-use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::bmt::SPAN_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
@@ -45,6 +44,7 @@ use super::mode::SplitMode;
 ))]
 use crate::config::HashWindow;
 use crate::config::PutWindow;
+use crate::inflight::InFlight;
 use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 
 /// Completion payload; the future carries the chunk's address back for the
@@ -154,7 +154,7 @@ where
     spine: Vec<Level<M>>,
     /// Sealed chunks awaiting a put slot; bounded by the spine height.
     pending: VecDeque<Chunk<Verified, AnyChunkSet<B>>>,
-    in_flight: FuturesUnordered<BoxPut<S::Error>>,
+    in_flight: InFlight<PutDone<S::Error>>,
     /// Pool fan-out for leaf seals; `None` keeps sealing inline.
     #[cfg(all(
         feature = "rayon",
@@ -207,7 +207,7 @@ where
             leaf: Vec::new(),
             spine: Vec::new(),
             pending: VecDeque::new(),
-            in_flight: FuturesUnordered::new(),
+            in_flight: InFlight::new(),
             #[cfg(all(
                 feature = "rayon",
                 not(target_arch = "wasm32"),
@@ -765,7 +765,7 @@ where
             if self.in_flight.is_empty() {
                 return Ok(());
             }
-            match Pin::new(&mut self.in_flight).poll_next(cx) {
+            match self.in_flight.poll(cx) {
                 Poll::Ready(Some((address, result))) => {
                     result.map_err(|source| SplitError::Put { address, source })?;
                 }
