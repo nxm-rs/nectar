@@ -2,28 +2,20 @@
 //!
 //! The `Arbitrary` impl for `Stamp` (crates/postage/src/stamp.rs) builds a
 //! stamp from arbitrary batch/index/timestamp fields and an arbitrary (r, s,
-//! v) signature, so the oracle is stronger than "no panic": the 113-byte
-//! encoding (`to_bytes`) must decode (`from_bytes`), the decoded stamp must
-//! equal the original, and re-encoding must be byte-identical (canonical
-//! form). Any failure is a codec bug.
+//! v) signature, so the oracle is stronger than "no panic": the shared
+//! `nectar_postage::oracles::stamp_round_trip` oracle requires the 113-byte
+//! encoding to decode to an equal stamp and to re-encode byte-identically
+//! (canonical form). Any failure is a codec bug.
 //!
-//! The same property is pinned on stable by
-//! `arbitrary_stamp_encode_decode_round_trip` in `crates/postage/src/stamp.rs`
-//! (run with `--features arbitrary`).
+//! The same oracle is pinned on stable by the
+//! `stamp_encode_decode_round_trip` proptest in
+//! `crates/postage/src/stamp.rs`.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nectar_postage::Stamp;
+use nectar_postage::{Stamp, oracles};
 
 fuzz_target!(|stamp: Stamp| {
-    let encoded = stamp.to_bytes();
-    let decoded = Stamp::from_bytes(&encoded).expect("encoded stamps must decode");
-    assert_eq!(
-        decoded, stamp,
-        "decode(encode(stamp)) must reproduce the stamp"
-    );
-
-    // Canonical form: re-encoding the decoded stamp must be byte-identical.
-    assert_eq!(decoded.to_bytes(), encoded, "encoding must be canonical");
+    oracles::stamp_round_trip(&stamp).expect("the wire codec must round-trip arbitrary stamps");
 });
