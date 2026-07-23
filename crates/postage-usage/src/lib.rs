@@ -145,7 +145,7 @@ pub use nectar_primitives::{ChunkAddress, SocId};
 /// Postage types re-exported so a downstream caller naming
 /// [`PlannedChunk::stamp_index`] or calling [`UsageTable::from_batch`] does not
 /// need a direct `nectar-postage` dependency.
-pub use nectar_postage::{Batch, BatchId, StampIndex};
+pub use nectar_postage::{Batch, BatchId, BucketDepth, StampIndex};
 
 use alloy_primitives::{Address, Keccak256};
 

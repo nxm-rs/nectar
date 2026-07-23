@@ -33,11 +33,12 @@
 //!
 //! ```compile_fail
 //! use nectar_postage_issuer::{RingIssuer, Reserved, Unreserved};
-//! use nectar_postage::{Batch, BatchId};
+//! use nectar_postage::{Batch, BatchId, BucketDepth};
 //!
 //! fn self_hosting_sink(_ring: RingIssuer<Reserved>) {}
 //!
-//! let batch = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, 16, false);
+//! let bucket_depth = BucketDepth::new(16).unwrap();
+//! let batch = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, bucket_depth, false);
 //! let unreserved: RingIssuer<Unreserved> = RingIssuer::external(&batch).unwrap();
 //! // A reserved-blind ring is not a Reserved ring, and there is no conversion.
 //! self_hosting_sink(unreserved);

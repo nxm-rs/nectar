@@ -48,6 +48,10 @@ jobs:
             # disallowed-methods gate sees them.
             - name: cargo clippy (postage-usage surfaces)
               run: cargo clippy --workspace --all-targets --locked --features nectar-postage-usage/client,nectar-postage-usage/issuer
+            # The postage serde impls are off the default build, so the passes
+            # above never see them.
+            - name: cargo clippy (postage serde)
+              run: cargo clippy --locked --all-targets -p nectar-postage --features serde
             # `unused_crate_dependencies` is enforced per-library via `cargo
             # rustc` (not `[workspace.lints]`) so the flag applies only to each
             # crate's own lib target — never to benches/examples/tests (which

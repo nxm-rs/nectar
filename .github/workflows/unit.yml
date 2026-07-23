@@ -75,6 +75,13 @@ jobs:
                   cargo nextest run \
                     -p nectar-postage-usage --features issuer --locked \
                     --no-tests=warn --no-fail-fast
+            # The serde impls (and the bounded-newtype guards on their decode
+            # path) are off the default build; cover their tests here.
+            - name: Run postage serde tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-postage --features serde --locked \
+                    --no-tests=warn --no-fail-fast
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The
