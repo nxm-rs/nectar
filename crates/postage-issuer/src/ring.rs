@@ -616,4 +616,53 @@ mod tests {
             Err(StampError::BucketFull { bucket: b, capacity: 2 }) if b == bucket
         ));
     }
+
+    mod proptests {
+        use alloc::collections::BTreeMap;
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            /// Ring issuance cycles each bucket's slots in order, utilization
+            /// saturates at the capacity instead of counting overwrites,
+            /// spare capacity is reported iff a fresh slot remains, and the
+            /// lifetime count stays exact across wraps.
+            #[test]
+            fn ring_wraps_in_range_and_reports_saturation_honestly(
+                depth in 16u8..=20,
+                leads in proptest::collection::vec(0u16..6, 1..160),
+            ) {
+                let batch = mutable_batch(depth, 16);
+                let mut issuer = RingIssuer::external(&batch).unwrap();
+                let capacity = issuer.bucket_capacity();
+                let mut writes = BTreeMap::<u16, u32>::new();
+                let mut ts = 0u64;
+                for &lead in &leads {
+                    ts += 1;
+                    let digest = issuer.prepare_ring_stamp(&test_address(lead), ts).unwrap();
+                    let n = writes.entry(lead).or_insert(0);
+                    prop_assert_eq!(digest.index.bucket(), u32::from(lead));
+                    prop_assert_eq!(digest.index.index(), *n % capacity);
+                    *n += 1;
+                    prop_assert_eq!(
+                        issuer.bucket_utilization(u32::from(lead)),
+                        (*n).min(capacity)
+                    );
+                    prop_assert_eq!(
+                        issuer.bucket_has_capacity(u32::from(lead)),
+                        *n < capacity
+                    );
+                }
+                let peak = writes.values().map(|&n| n.min(capacity)).max().unwrap_or(0);
+                prop_assert_eq!(issuer.max_bucket_utilization(), peak);
+                prop_assert_eq!(
+                    issuer.stamps_issued(),
+                    Some(u64::try_from(leads.len()).unwrap())
+                );
+            }
+        }
+    }
 }

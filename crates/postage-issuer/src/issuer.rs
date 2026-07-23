@@ -504,4 +504,87 @@ mod tests {
             })
         ));
     }
+
+    mod proptests {
+        use proptest::prelude::*;
+        use std::collections::BTreeMap;
+
+        use super::*;
+
+        /// An interleaved issuance operation.
+        #[derive(Debug, Clone, Copy)]
+        enum Op {
+            /// Allocate a slot in the bucket named by the address prefix.
+            Allocate(u16),
+            /// Dilute the batch to the given depth.
+            Dilute(u8),
+        }
+
+        fn op_strategy() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                (0u16..4).prop_map(Op::Allocate),
+                (16u8..=24).prop_map(Op::Dilute),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            /// Under any allocate and dilute interleaving, a dilution grows the
+            /// capacity without moving a watermark (a depth decrease is refused
+            /// and changes nothing), refusal happens exactly at the current
+            /// capacity, and reopened buckets continue from their watermark.
+            #[test]
+            fn dilution_grows_capacity_without_moving_watermarks(
+                ops in proptest::collection::vec(op_strategy(), 1..120),
+            ) {
+                let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+                let mut depth = 17u8;
+                let mut marks = BTreeMap::<u16, u32>::new();
+                let mut issued = 0u64;
+                let mut ts = 0u64;
+                for &op in &ops {
+                    let capacity = 1u32 << (depth - 16);
+                    match op {
+                        Op::Dilute(new_depth) if new_depth < depth => {
+                            let refused = matches!(
+                                issuer.dilute(new_depth),
+                                Err(IssuerError::DepthDecrease { current, requested })
+                                    if current == depth && requested == new_depth
+                            );
+                            prop_assert!(refused, "depth decrease was not refused");
+                        }
+                        Op::Dilute(new_depth) => {
+                            prop_assert!(issuer.dilute(new_depth).is_ok());
+                            depth = new_depth;
+                        }
+                        Op::Allocate(lead) => {
+                            ts += 1;
+                            let mark = marks.entry(lead).or_insert(0);
+                            match issuer.prepare_stamp(&test_address(lead), ts) {
+                                Ok(digest) => {
+                                    prop_assert!(*mark < capacity);
+                                    prop_assert_eq!(digest.index.bucket(), u32::from(lead));
+                                    prop_assert_eq!(digest.index.index(), *mark);
+                                    *mark += 1;
+                                    issued += 1;
+                                }
+                                Err(err) => {
+                                    prop_assert_eq!(*mark, capacity);
+                                    prop_assert_eq!(
+                                        err,
+                                        StampError::BucketFull { bucket: u32::from(lead), capacity }
+                                    );
+                                }
+                            }
+                            prop_assert_eq!(issuer.bucket_utilization(u32::from(lead)), *mark);
+                        }
+                    }
+                    prop_assert_eq!(issuer.batch_depth(), depth);
+                    prop_assert_eq!(issuer.bucket_capacity(), 1u32 << (depth - 16));
+                    prop_assert_eq!(issuer.stamps_issued(), Some(issued));
+                }
+            }
+        }
+    }
 }
