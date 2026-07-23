@@ -136,6 +136,16 @@ impl Reference for EncryptedChunkRef {
     }
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for EncryptedChunkRef {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self::new(
+            <ChunkAddress as arbitrary::Arbitrary>::arbitrary(u)?,
+            <EncryptionKey as arbitrary::Arbitrary>::arbitrary(u)?,
+        ))
+    }
+}
+
 impl From<&EncryptedChunkRef> for [u8; EncryptedChunkRef::SIZE] {
     fn from(r: &EncryptedChunkRef) -> Self {
         r.to_bytes()

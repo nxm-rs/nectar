@@ -90,6 +90,9 @@ compile_error!("feature `rayon` needs a native thread pool; wasm32 builds must d
 compile_error!("feature `rayon` needs `Send` chunks and errors; it excludes the `unsync` escape");
 
 pub mod config;
+#[cfg(any(all(test, feature = "std"), feature = "arbitrary"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "arbitrary")))]
+pub mod generators;
 pub mod geometry;
 #[cfg(feature = "std")]
 mod inflight;

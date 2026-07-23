@@ -15,10 +15,11 @@ bytes = "1"
 libfuzzer-sys = "0.4"
 # The streaming file pipeline under test: read facade, reader and split
 # engine driven for split-then-read consistency. `arbitrary` exposes the
-# shared malformed-walk oracle.
+# shared malformed-walk oracle and the regime generators.
 nectar-file = { path = "../crates/file", features = ["arbitrary"] }
 # The mantaray 1.0 manifest codec, builder and apply path under test.
-# `arbitrary` exposes the shared node-decode oracle.
+# `arbitrary` exposes the node-decode oracle, the value-model impls and the
+# regime generators.
 nectar-manifest = { path = "../crates/manifest", features = ["arbitrary"] }
 # No `encryption` feature: the `EncryptedChunkRef` representation the
 # mantaray targets drive for the 64-byte entry path is unconditional.

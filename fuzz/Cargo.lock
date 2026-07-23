@@ -1916,6 +1916,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "nectar-file"
 version = "0.4.0"
 dependencies = [
+ "arbitrary",
  "bytes",
  "futures-util",
  "nectar-primitives",
@@ -1943,6 +1944,7 @@ name = "nectar-manifest"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
+ "arbitrary",
  "bytes",
  "futures",
  "nectar-file",

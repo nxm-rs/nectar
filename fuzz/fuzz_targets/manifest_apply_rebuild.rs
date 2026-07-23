@@ -10,36 +10,14 @@
 
 #![no_main]
 
-use bytes::Bytes;
-use nectar_testing::run;
 use libfuzzer_sys::fuzz_target;
+use nectar_fuzz::{Val, entry};
 use nectar_manifest::{Builder, Changeset, Entry, Key, V1, apply};
+use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::MemoryStore;
-use nectar_primitives::{ChunkAddress, ChunkRef};
+use nectar_testing::run;
 
-use arbitrary::Arbitrary;
 use std::collections::BTreeMap;
-
-/// One fuzzed value: a plain reference or an inline byte string.
-#[derive(Arbitrary, Debug, Clone)]
-enum Val {
-    /// A 32-byte reference synthesised from one byte.
-    Ref(u8),
-    /// An inline value; capped to the format bound before insertion.
-    Inline(Vec<u8>),
-}
-
-/// Turn a fuzzed value into an entry, capping an inline value at the bound.
-fn entry(val: Val) -> Entry<V1> {
-    match val {
-        Val::Ref(byte) => Entry::from(ChunkRef::new(ChunkAddress::new([byte; 32]))),
-        Val::Inline(mut bytes) => {
-            bytes.truncate(128);
-            Entry::inline(Bytes::from(bytes))
-                .unwrap_or_else(|_| Entry::from(ChunkRef::new(ChunkAddress::new([0; 32]))))
-        }
-    }
-}
 
 /// Build a key set into a fresh store, returning the store and root.
 fn build(pairs: &BTreeMap<Vec<u8>, Entry<V1>>) -> Option<(MemoryStore, ChunkAddress)> {
