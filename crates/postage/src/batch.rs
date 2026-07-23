@@ -83,12 +83,11 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
 /// The number of leading chunk-address bits that select a collision bucket, as
 /// the network `S` accepts it.
 ///
-/// Two bounds hold at construction. The representable one is `1..=32`: bucket
-/// selection shifts a `u32` right by `32 - depth`, so a depth outside
-/// [`MIN`](Self::MIN)`..=`[`MAX`](Self::MAX) names no bucket, and holding it in
-/// the type keeps the shift total wherever a depth reaches it. The protocol one
-/// is [`SwarmSpec::MIN_BUCKET_DEPTH`], the floor the PostageStamp contract
-/// publishes as `minimumBucketDepth()`.
+/// Two bounds hold at construction: [`SwarmSpec::MIN_BUCKET_DEPTH`], the floor
+/// the PostageStamp contract publishes as `minimumBucketDepth()`, and
+/// [`MAX`](Self::MAX), the width of the bucket key. Bucket selection shifts a
+/// `u32` right by `32 - depth`; holding both bounds in the type keeps that
+/// shift total wherever a depth reaches it.
 ///
 /// The floor is a compile-time property: a `BucketDepth<Mainnet>` below 16 does
 /// not exist, and one network's depth does not type-check where another's is
@@ -116,29 +115,25 @@ pub struct BucketDepth<S: SwarmSpec = Mainnet> {
 }
 
 impl<S: SwarmSpec> BucketDepth<S> {
-    /// Smallest representable depth, below which the bucket shift names
-    /// nothing. The spec supplies the protocol floor, which is higher.
-    pub const MIN: u8 = 1;
-
     /// Largest representable depth, the bit width of the bucket key.
     pub const MAX: u8 = 32;
 
-    /// Validates a raw depth against the spec floor and the `1..=32` bound.
+    /// Validates a raw depth against the spec floor and [`MAX`](Self::MAX).
     ///
     /// # Errors
     ///
     /// [`StampError::BucketDepthBelowMinimum`] when `depth` is under
     /// [`SwarmSpec::MIN_BUCKET_DEPTH`], [`StampError::InvalidBucketDepth`] when
-    /// it is outside the representable range.
+    /// it is above [`MAX`](Self::MAX).
     #[inline]
     pub const fn new(depth: u8) -> Result<Self, StampError> {
-        if depth < S::MIN_BUCKET_DEPTH {
+        if depth < S::MIN_BUCKET_DEPTH.get() {
             return Err(StampError::BucketDepthBelowMinimum {
                 bucket_depth: depth,
-                minimum: S::MIN_BUCKET_DEPTH,
+                minimum: S::MIN_BUCKET_DEPTH.get(),
             });
         }
-        if depth < Self::MIN || depth > Self::MAX {
+        if depth > Self::MAX {
             return Err(StampError::InvalidBucketDepth {
                 bucket_depth: depth,
             });
@@ -261,9 +256,9 @@ impl<'de, S: SwarmSpec> serde::Deserialize<'de> for BucketDepth<S> {
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BucketDepth<S> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let low = S::MIN_BUCKET_DEPTH.max(Self::MIN);
+        let low = S::MIN_BUCKET_DEPTH.get();
         if low > Self::MAX {
-            // A spec whose floor is unrepresentable admits no depth at all.
+            // A spec whose floor is past the bucket-key width admits no depth.
             return Err(arbitrary::Error::IncorrectFormat);
         }
         Self::new(u.int_in_range(low..=Self::MAX)?).map_err(|_| arbitrary::Error::IncorrectFormat)
@@ -669,6 +664,8 @@ impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for Batch<S> {
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroU8;
+
     use super::*;
 
     #[test]
@@ -687,7 +684,16 @@ mod tests {
 
     impl SwarmSpec for Deep {
         const NETWORK_ID: nectar_primitives::NetworkId = nectar_primitives::NetworkId::TESTNET;
-        const MIN_BUCKET_DEPTH: u8 = 20;
+        const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(20).unwrap();
+    }
+
+    /// A deployment whose floor is the lowest a spec can declare.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Shallow;
+
+    impl SwarmSpec for Shallow {
+        const NETWORK_ID: nectar_primitives::NetworkId = nectar_primitives::NetworkId::TESTNET;
+        const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
     }
 
     #[test]
@@ -722,18 +728,18 @@ mod tests {
                 bucket_depth: u8::MAX
             })
         ));
+    }
 
-        // A spec that lowers the floor still cannot name a zero-bit bucket.
-        struct Floorless;
-        impl SwarmSpec for Floorless {
-            const NETWORK_ID: nectar_primitives::NetworkId = nectar_primitives::NetworkId::TESTNET;
-            const MIN_BUCKET_DEPTH: u8 = 0;
-        }
+    #[test]
+    fn the_lowest_floor_admits_a_one_bit_bucket() {
+        assert_eq!(BucketDepth::<Shallow>::new(1).unwrap().get(), 1);
         assert!(matches!(
-            BucketDepth::<Floorless>::new(0),
-            Err(StampError::InvalidBucketDepth { bucket_depth: 0 })
+            BucketDepth::<Shallow>::new(0),
+            Err(StampError::BucketDepthBelowMinimum {
+                bucket_depth: 0,
+                minimum: 1
+            })
         ));
-        assert_eq!(BucketDepth::<Floorless>::new(1).unwrap().get(), 1);
     }
 
     #[test]

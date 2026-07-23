@@ -20,6 +20,8 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
+use core::num::NonZeroU8;
+
 use alloy_primitives::{Address, hex};
 use nectar_postage::{BucketDepth, calculate_bucket};
 use nectar_postage_usage::{
@@ -36,7 +38,7 @@ struct Shallow;
 
 impl SwarmSpec for Shallow {
     const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-    const MIN_BUCKET_DEPTH: u8 = 1;
+    const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
 }
 
 /// A bucket depth `Shallow` accepts.

@@ -19,6 +19,8 @@
 
 #![no_main]
 
+use core::num::NonZeroU8;
+
 use alloy_primitives::Address;
 use libfuzzer_sys::fuzz_target;
 use nectar_postage_usage::{NetworkId, PublishedSequence, RootInfoFor, SnapshotFor, SwarmSpec};
@@ -29,7 +31,7 @@ struct Shallow;
 
 impl SwarmSpec for Shallow {
     const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-    const MIN_BUCKET_DEPTH: u8 = 1;
+    const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
 }
 
 fuzz_target!(|snapshot: SnapshotFor<Shallow>| {

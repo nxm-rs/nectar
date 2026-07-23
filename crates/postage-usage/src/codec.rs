@@ -866,6 +866,8 @@ impl<S: SwarmSpec> RootInfoFor<S> {
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroU8;
+
     use nectar_primitives::NetworkId;
 
     use super::*;
@@ -880,7 +882,7 @@ mod tests {
 
     impl SwarmSpec for Shallow {
         const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-        const MIN_BUCKET_DEPTH: u8 = 1;
+        const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
     }
 
     /// A bucket depth `Shallow` accepts but mainnet does not.

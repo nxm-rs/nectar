@@ -10,6 +10,8 @@
 // surface. Nothing else in this file needs an exemption.
 #![allow(clippy::unwrap_used)]
 
+use core::num::NonZeroU8;
+
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_issuer::{
     Batch, BatchId, BatchStamper, BucketDepth, IssuerError, Mainnet, MemoryIssuerFor, NetworkId,
@@ -24,7 +26,7 @@ struct Deep;
 
 impl SwarmSpec for Deep {
     const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-    const MIN_BUCKET_DEPTH: u8 = 20;
+    const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(20).unwrap();
 }
 
 /// The bucket depth `Deep` demands.

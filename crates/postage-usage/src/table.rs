@@ -516,14 +516,10 @@ mod arbitrary_impls {
     impl<'a, S: SwarmSpec> Arbitrary<'a> for UsageTableFor<S> {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
             let batch_id = BatchId::new(u.arbitrary::<[u8; 32]>()?);
-            // `bucket_depth == 0` (a zero-width bucket) is invalid geometry:
-            // `validate_geometry` rejects it because `nectar_postage::
-            // calculate_bucket` shifts a u32 right by `32 - bucket_depth`, so
-            // depth 0 would overflow the shift. The window below is therefore
-            // exactly the format invariant intersected with the network floor,
-            // not a generator restriction; a network whose floor exceeds the
-            // format maximum has no snapshot geometry at all.
-            let low = S::MIN_BUCKET_DEPTH.max(1);
+            // The window is the format's cap intersected with the network
+            // floor, not a generator restriction; a network whose floor exceeds
+            // the format maximum has no snapshot geometry at all.
+            let low = S::MIN_BUCKET_DEPTH.get();
             if low > MAX_BUCKET_DEPTH {
                 return Err(arbitrary::Error::IncorrectFormat);
             }
@@ -562,6 +558,8 @@ mod arbitrary_impls {
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroU8;
+
     use alloy_primitives::{Address, b256};
     use nectar_postage::Batch;
     use nectar_primitives::NetworkId;
@@ -575,7 +573,7 @@ mod tests {
 
     impl SwarmSpec for Shallow {
         const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-        const MIN_BUCKET_DEPTH: u8 = 1;
+        const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
     }
 
     /// The mainnet bucket depth, the only one mainnet and the format agree on.
@@ -631,8 +629,8 @@ mod tests {
                 })
             );
         }
-        // The constructors cannot even be reached with one: no network, however
-        // low its floor, has a representable zero-width bucket depth.
+        // The constructors cannot even be reached with one: no network can
+        // declare a floor of zero, so the shallowest depth is 1.
         assert!(BucketDepth::<Shallow>::new(0).is_err());
         // The wire path rejoins the type here, so a decoded zero is refused.
         assert_eq!(

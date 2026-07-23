@@ -24,7 +24,7 @@ use crate::{Batch, BatchId, BucketDepth, Stamp, StampDigest, StampIndex, Stamped
 /// the mainnet floor, and bucket count and per-bucket capacity both stay within
 /// `u32`.
 pub fn batch(u: &mut Unstructured<'_>, owner: Address) -> arbitrary::Result<Batch> {
-    let floor = Mainnet::MIN_BUCKET_DEPTH;
+    let floor = Mainnet::MIN_BUCKET_DEPTH.get();
     let depth: u8 = u.int_in_range(floor..=32)?;
     let bucket_depth = BucketDepth::new(u.int_in_range(floor..=depth.min(31))?)
         .map_err(|_| arbitrary::Error::IncorrectFormat)?;

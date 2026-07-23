@@ -4,7 +4,7 @@
 //! [`Testnet`]) and a spec-parameterized value rejects an out-of-range one at
 //! compile time rather than at a validation call.
 
-use core::time::Duration;
+use core::{num::NonZeroU8, time::Duration};
 
 use crate::{Bin, NetworkId, ProximityOrder};
 
@@ -40,8 +40,8 @@ pub trait SwarmSpec {
 
     /// Minimum collision-bucket depth a postage batch may declare, from the
     /// PostageStamp contract's `minimumBucketDepth()`. A floor, not a fixed
-    /// width.
-    const MIN_BUCKET_DEPTH: u8 = 16;
+    /// width, and never zero: the bucket shift needs at least one bit.
+    const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(16).unwrap();
 
     /// Convenience: the deepest bin, derived from
     /// [`MAX_PROXIMITY_ORDER`](Self::MAX_PROXIMITY_ORDER).
@@ -83,7 +83,7 @@ mod tests {
         assert_eq!(Mainnet::BOOTNODE_OVER_SATURATION_PEERS, 20);
         assert_eq!(Mainnet::NEIGHBORHOOD_LOW_WATERMARK, 2);
         assert_eq!(Mainnet::CLOCK_SKEW_TOLERANCE, Duration::from_secs(21600));
-        assert_eq!(Mainnet::MIN_BUCKET_DEPTH, 16);
+        assert_eq!(Mainnet::MIN_BUCKET_DEPTH.get(), 16);
         assert_eq!(Mainnet::BIN_COUNT, 32);
         assert_eq!(Mainnet::MAX_BIN, Bin::MAX);
     }
