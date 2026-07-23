@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 bytes = { workspace = true, optional = true }
+futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 nectar-primitives = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
@@ -58,7 +59,7 @@ tokio = [ "dep:tokio", "std" ]
 # Pool leaf hashing: the split hash window and the read-at ingest. Implies
 # `std`; rayon on wasm32 or under `unsync` is a compile error, never a
 # silent fallback.
-rayon = [ "dep:rayon", "std" ]
+rayon = [ "dep:futures-channel", "dep:rayon", "std" ]
 
 # Split-side encrypted mode. Joining encrypted references stays unconditional.
 encryption = [ "nectar-primitives?/encryption" ]

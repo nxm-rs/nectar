@@ -111,6 +111,7 @@ rayon = "1.10"
 
 # Core dependencies
 bytes = { version = "1.11", default-features = false }
+futures-channel = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 # race::OnceBox: lazy statics without std synchronization
 once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
