@@ -10,10 +10,11 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, ensure};
+use arbitrary::Unstructured;
 use bytes::Bytes;
 use nectar_manifest::{
     ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, Metadata, Reader, V1, apply,
-    recanonicalize,
+    generators, recanonicalize,
 };
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{
@@ -390,6 +391,32 @@ proptest! {
             // A wide/heavy merge that cannot fit a node reports a typed error.
             Err(ApplyError::Build(_) | ApplyError::Store(_)) => {}
             Err(other) => prop_assert!(false, "unexpected apply error: {:?}", other),
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    // The single-chunk invariant at the chain regime: low-entropy keys whose
+    // shared runs cross PLEN_MAX chain forks over multiple levels, and no
+    // emitted node exceeds one chunk body.
+    #[test]
+    fn no_built_chain_node_exceeds_budget(
+        seed in prop::collection::vec(any::<u8>(), 0..4096),
+    ) {
+        let mut u = Unstructured::new(&seed);
+        let rows = generators::chain_rows::<V1>(&mut u)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let store = MemoryStore::default();
+        let mut builder = Builder::<V1>::new();
+        for (key, entry, meta) in rows {
+            builder.insert(key, entry, meta);
+        }
+        let built = run(builder.build(&store));
+        prop_assert!(built.is_ok(), "a chain set must pack, not error: {built:?}");
+        for len in chunk_lengths(&store) {
+            prop_assert!(len <= DEFAULT_BODY_SIZE, "built chain node over one chunk body");
         }
     }
 }

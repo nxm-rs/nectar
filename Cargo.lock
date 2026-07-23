@@ -2109,6 +2109,7 @@ dependencies = [
  "bytes",
  "futures",
  "nectar-file",
+ "nectar-manifest",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",

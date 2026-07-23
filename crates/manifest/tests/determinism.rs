@@ -10,11 +10,14 @@ use core::ops::Range;
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, ensure};
+use arbitrary::Unstructured;
 use nectar_manifest::{
-    Domain, Entry, ForkTable, Format, Node, Prefix, SegmentKind, SegmentWeight, V1, cut, h64,
-    segment, spill,
+    Builder, Domain, Entry, ForkTable, Format, Key, Node, Prefix, SegmentKind, SegmentWeight, V1,
+    cut, generators, h64, segment, spill,
 };
-use nectar_primitives::{ChunkAddress, ChunkRef};
+use nectar_primitives::store::MemoryStore;
+use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef};
+use nectar_testing::run;
 use proptest::prelude::*;
 
 const fn ref32(byte: u8) -> ChunkRef {
@@ -219,6 +222,70 @@ proptest! {
         let route = 5usize.saturating_add(ChunkRef::SIZE);
         let top = dir.dirs().len().saturating_mul(route);
         prop_assert!(top <= V1::CAP_DIR);
+    }
+}
+
+/// One chain-regime row: key, entry, optional metadata.
+type ChainRow = generators::Row<V1>;
+
+/// Chain-regime rows bridged from a proptest byte seed: the generator rows
+/// under a diverging pair whose shared run crosses `PLEN_MAX`, deduplicated
+/// by key so insert order cannot change the winning entry.
+fn chain_rows_case(seed: &[u8]) -> Result<Vec<ChainRow>, TestCaseError> {
+    fn draw(u: &mut Unstructured<'_>) -> arbitrary::Result<Vec<ChainRow>> {
+        let shared = u.int_in_range(V1::PLEN_MAX..=generators::chain_threshold::<V1>(3))?;
+        let (left, right) = generators::diverging_pair(u, shared)?;
+        let mut map = BTreeMap::new();
+        for (key, entry, meta) in generators::chain_rows::<V1>(u)? {
+            map.insert(key.as_bytes().to_vec(), (entry, meta));
+        }
+        // The pair lands last, so every case splits inside a chained edge.
+        for (fill, key) in [(0u8, left), (1u8, right)] {
+            map.insert(key.as_bytes().to_vec(), (Entry::from(ref32(fill)), None));
+        }
+        Ok(map
+            .into_iter()
+            .map(|(key, (entry, meta))| (Key::from(key), entry, meta))
+            .collect())
+    }
+    let mut u = Unstructured::new(seed);
+    draw(&mut u).map_err(|e| TestCaseError::fail(e.to_string()))
+}
+
+/// Build rows through the public builder in the given order, returning the
+/// root and every stored chunk payload by address.
+fn build_in_order<'a>(
+    rows: impl Iterator<Item = &'a ChainRow>,
+) -> Result<(ChunkAddress, BTreeMap<ChunkAddress, Vec<u8>>), TestCaseError> {
+    let store = MemoryStore::default();
+    let mut builder = Builder::<V1>::new();
+    for (key, entry, meta) in rows {
+        builder.insert(key.clone(), entry.clone(), meta.clone());
+    }
+    let built = run(builder.build(&store)).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let chunks = store
+        .into_chunks()
+        .into_iter()
+        .map(|(address, chunk)| (address, chunk.envelope().data().as_ref().to_vec()))
+        .collect();
+    Ok((*built.root(), chunks))
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    // Invariant I6 at the chain regime: shared runs crossing PLEN_MAX chain
+    // through multiple forks and the diverging pair splits inside the chained
+    // edge, yet the packed chunk set stays a pure function of the key set
+    // whatever the insert order.
+    #[test]
+    fn chained_edges_pack_history_independently(
+        seed in prop::collection::vec(any::<u8>(), 0..4096),
+    ) {
+        let rows = chain_rows_case(&seed)?;
+        let forward = build_in_order(rows.iter())?;
+        let reversed = build_in_order(rows.iter().rev())?;
+        prop_assert_eq!(forward, reversed);
     }
 }
 
