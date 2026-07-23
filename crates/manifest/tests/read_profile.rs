@@ -3,15 +3,11 @@
 //! inlines a subtree that V1 would reference, so the same key set resolves
 //! through fewer chunks under `V1Read`.
 
-use std::error::Error;
-
+use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_manifest::{Builder, Changeset, Entry, Key, Reader, V1, V1Read, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, MemoryStore};
 use nectar_testing::run;
-
-mod common;
-use common::{TestResult, ensure};
 
 fn ref_entry<F: nectar_manifest::Format>(fill: u8) -> Entry<F> {
     Entry::from(ChunkRef::new(ChunkAddress::new([fill; 32])))
@@ -27,7 +23,7 @@ fn windowed_keys() -> Vec<(Key, u8)> {
 
 /// Build the windowed key set under `F`, returning the root and the number of
 /// distinct chunks the build stored.
-fn build_windowed<F: nectar_manifest::Format>() -> Result<(ChunkAddress, usize), Box<dyn Error>> {
+fn build_windowed<F: nectar_manifest::Format>() -> Result<(ChunkAddress, usize)> {
     let store = MemoryStore::default();
     let mut builder = Builder::<F>::new();
     for (key, fill) in windowed_keys() {
@@ -38,32 +34,32 @@ fn build_windowed<F: nectar_manifest::Format>() -> Result<(ChunkAddress, usize),
 }
 
 #[test]
-fn the_read_profile_stores_fewer_chunks_for_a_windowed_subtree() -> TestResult {
+fn the_read_profile_stores_fewer_chunks_for_a_windowed_subtree() -> Result<()> {
     let (_, v1_chunks) = build_windowed::<V1>()?;
     let (_, read_chunks) = build_windowed::<V1Read>()?;
     // The sub-node is referenced under V1 (its own chunk) but embedded under
     // the read profile (folded into the root), so the read build stores fewer.
-    ensure(
+    ensure!(
         read_chunks < v1_chunks,
         "read profile must store fewer chunks than V1 for the windowed subtree",
-    )?;
+    );
     Ok(())
 }
 
 #[test]
-fn the_read_profile_and_v1_produce_distinct_roots() -> TestResult {
+fn the_read_profile_and_v1_produce_distinct_roots() -> Result<()> {
     let (v1_root, _) = build_windowed::<V1>()?;
     let (read_root, _) = build_windowed::<V1Read>()?;
     // A distinct wire version and a distinct shape: byte-distinct manifests.
-    ensure(
+    ensure!(
         v1_root != read_root,
-        "the two profiles must root differently",
-    )?;
+        "the two profiles must root differently"
+    );
     Ok(())
 }
 
 #[test]
-fn build_then_read_round_trips_every_key_under_the_read_profile() -> TestResult {
+fn build_then_read_round_trips_every_key_under_the_read_profile() -> Result<()> {
     let store = MemoryStore::default();
     let mut builder = Builder::<V1Read>::new();
     for (key, fill) in windowed_keys() {
@@ -74,21 +70,21 @@ fn build_then_read_round_trips_every_key_under_the_read_profile() -> TestResult 
     let reader = Reader::<MemoryStore, V1Read>::new(store);
     for (key, fill) in windowed_keys() {
         let got = run(reader.get(&root, &key))?;
-        ensure(
+        ensure!(
             got == Some(ref_entry::<V1Read>(fill)),
-            "read value mismatch",
-        )?;
+            "read value mismatch"
+        );
     }
     // An absent key still reads as absent under the profile.
-    ensure(
+    ensure!(
         run(reader.get(&root, &Key::from(&b"absent"[..])))?.is_none(),
         "absent key must read as None",
-    )?;
+    );
     Ok(())
 }
 
 #[test]
-fn apply_matches_a_from_scratch_build_under_the_read_profile() -> TestResult {
+fn apply_matches_a_from_scratch_build_under_the_read_profile() -> Result<()> {
     let all = windowed_keys();
     let split = 40usize;
 
@@ -109,25 +105,25 @@ fn apply_matches_a_from_scratch_build_under_the_read_profile() -> TestResult {
     // A from-scratch build of the merged key set lands on the same root, byte
     // for byte: history independence holds under the read profile too.
     let (scratch_root, _) = build_windowed::<V1Read>()?;
-    ensure(
+    ensure!(
         applied == scratch_root,
         "apply must match a from-scratch build under the read profile",
-    )?;
+    );
 
     // The applied manifest reads back the full key set.
     let reader = Reader::<MemoryStore, V1Read>::new(store);
     for (key, fill) in &all {
         let got = run(reader.get(&applied, key))?;
-        ensure(
+        ensure!(
             got == Some(ref_entry::<V1Read>(*fill)),
             "applied value mismatch",
-        )?;
+        );
     }
     Ok(())
 }
 
 #[test]
-fn an_inline_value_round_trips_under_the_read_profile() -> TestResult {
+fn an_inline_value_round_trips_under_the_read_profile() -> Result<()> {
     let store = MemoryStore::default();
     let mut builder = Builder::<V1Read>::new();
     let value = Entry::<V1Read>::inline(Bytes::from_static(b"<h1>hi</h1>"))?;
@@ -136,6 +132,6 @@ fn an_inline_value_round_trips_under_the_read_profile() -> TestResult {
 
     let reader = Reader::<MemoryStore, V1Read>::new(store);
     let got = run(reader.get(&root, &Key::from(&b"index.html"[..])))?;
-    ensure(got == Some(value), "inline value must round-trip")?;
+    ensure!(got == Some(value), "inline value must round-trip");
     Ok(())
 }

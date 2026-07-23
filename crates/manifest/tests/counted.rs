@@ -3,15 +3,11 @@
 //! the same root a from-scratch build produces, with counts maintained
 //! throughout.
 
-use std::error::Error;
-
+use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_manifest::{Builder, Changeset, Entry, Key, Reader, V1, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, MemoryStore};
 use nectar_testing::run;
-
-mod common;
-use common::{TestResult, ensure};
 
 fn ref_entry<F: nectar_manifest::Format>(fill: u8) -> Entry<F> {
     Entry::from(ChunkRef::new(ChunkAddress::new([fill; 32])))
@@ -29,7 +25,7 @@ fn keys() -> Vec<(Key, u8)> {
     out
 }
 
-fn build<F: nectar_manifest::Format>(order: &[(Key, u8)]) -> Result<ChunkAddress, Box<dyn Error>> {
+fn build<F: nectar_manifest::Format>(order: &[(Key, u8)]) -> Result<ChunkAddress> {
     let store = MemoryStore::default();
     let mut builder = Builder::<F>::new();
     for (key, fill) in order {
@@ -39,18 +35,18 @@ fn build<F: nectar_manifest::Format>(order: &[(Key, u8)]) -> Result<ChunkAddress
 }
 
 #[test]
-fn counted_canonical_bytes_are_stable_under_shuffled_build_order() -> TestResult {
+fn counted_canonical_bytes_are_stable_under_shuffled_build_order() -> Result<()> {
     let forward = keys();
     let mut reversed = forward.clone();
     reversed.reverse();
     let a = build::<V1>(&forward)?;
     let b = build::<V1>(&reversed)?;
-    ensure(a == b, "counted root must not depend on insertion order")?;
+    ensure!(a == b, "counted root must not depend on insertion order");
     Ok(())
 }
 
 #[test]
-fn build_then_read_round_trips_every_key() -> TestResult {
+fn build_then_read_round_trips_every_key() -> Result<()> {
     let store = MemoryStore::default();
     let all = keys();
     let mut builder = Builder::<V1>::new();
@@ -62,17 +58,17 @@ fn build_then_read_round_trips_every_key() -> TestResult {
     let reader = Reader::<MemoryStore, V1>::new(store);
     for (key, fill) in &all {
         let got = run(reader.get(&root, key))?;
-        ensure(got == Some(ref_entry::<V1>(*fill)), "read value mismatch")?;
+        ensure!(got == Some(ref_entry::<V1>(*fill)), "read value mismatch");
     }
-    ensure(
+    ensure!(
         run(reader.get(&root, &Key::from(&b"absent"[..])))?.is_none(),
         "absent key must read as None",
-    )?;
+    );
     Ok(())
 }
 
 #[test]
-fn apply_matches_a_from_scratch_build() -> TestResult {
+fn apply_matches_a_from_scratch_build() -> Result<()> {
     let all = keys();
     let split = all.len() * 3 / 4;
 
@@ -90,12 +86,12 @@ fn apply_matches_a_from_scratch_build() -> TestResult {
     let applied = run(apply(&store, &base_root, &changeset))?;
 
     let scratch = build::<V1>(&all)?;
-    ensure(applied == scratch, "apply must match a from-scratch build")?;
+    ensure!(applied == scratch, "apply must match a from-scratch build");
     Ok(())
 }
 
 #[test]
-fn an_inline_value_round_trips() -> TestResult {
+fn an_inline_value_round_trips() -> Result<()> {
     let store = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
     let value = Entry::<V1>::inline(Bytes::from_static(b"<h1>hi</h1>"))?;
@@ -104,6 +100,6 @@ fn an_inline_value_round_trips() -> TestResult {
 
     let reader = Reader::<MemoryStore, V1>::new(store);
     let got = run(reader.get(&root, &Key::from(&b"index.html"[..])))?;
-    ensure(got == Some(value), "inline value must round-trip")?;
+    ensure!(got == Some(value), "inline value must round-trip");
     Ok(())
 }

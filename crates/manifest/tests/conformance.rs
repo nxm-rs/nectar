@@ -3,9 +3,9 @@
 //! the canonical-or-reject bijection between logical trees and byte strings.
 
 use std::collections::HashSet;
-use std::error::Error;
 
 use alloy_primitives::{b256, keccak256};
+use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use nectar_manifest::{
     Child, CustomKeyError, DecodeError, Domain, Entry, ForkPayload, ForkTable, Format, KeyId,
@@ -13,9 +13,6 @@ use nectar_manifest::{
     segment,
 };
 use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
-
-mod common;
-use common::{TestResult, ensure, ensure_eq};
 
 const fn ref32(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))
@@ -28,7 +25,7 @@ fn ref64(addr: u8, key: u8) -> EncryptedChunkRef {
     )
 }
 
-fn prefix(bytes: &[u8]) -> Result<Prefix, Box<dyn Error>> {
+fn prefix(bytes: &[u8]) -> Result<Prefix> {
     Ok(Prefix::try_from(bytes)?)
 }
 
@@ -56,24 +53,23 @@ fn record32(byte: u8) -> Vec<u8> {
 
 // The empty-map root payload is the five bytes 6D 01 00 00 00.
 #[test]
-fn empty_map_root_is_the_frozen_five_byte_vector() -> TestResult {
+fn empty_map_root_is_the_frozen_five_byte_vector() -> Result<()> {
     let node: Node = Node::empty();
     let image = node.encode()?;
-    ensure_eq(
-        image.as_slice(),
-        [0x6D, 0x01, 0x00, 0x00, 0x00].as_slice(),
+    ensure!(
+        image.as_slice() == [0x6D, 0x01, 0x00, 0x00, 0x00].as_slice(),
         "empty-map root payload",
-    )?;
+    );
 
     let decoded: Node = Node::decode(&image)?;
-    ensure(decoded.is_empty(), "decoded root must be empty")?;
-    ensure_eq(&decoded.encode()?, &image, "re-encode")?;
+    ensure!(decoded.is_empty(), "decoded root must be empty");
+    ensure!(decoded.encode()? == image, "re-encode");
     Ok(())
 }
 
 // The worked example: a two-file website in one 150-byte payload.
 #[test]
-fn worked_two_file_example_is_bit_exact() -> TestResult {
+fn worked_two_file_example_is_bit_exact() -> Result<()> {
     let ref_a = [0xAA; 32]; // "index.html" content
     let ref_b = [0xBB; 32]; // "img/logo.png" content
 
@@ -135,14 +131,14 @@ fn worked_two_file_example_is_bit_exact() -> TestResult {
     expected.extend_from_slice(&ref_a); // 104
     expected.extend_from_slice(&[0x0C, 0x00, 0x01, 0x09, 0x00]); // 136: mlen = 12; content-type
     expected.extend_from_slice(b"text/html");
-    ensure_eq(expected.len(), 150, "vector length")?;
+    ensure!(expected.len() == 150, "vector length");
 
     let image = node.encode()?;
-    ensure_eq(&image, &expected, "worked example payload")?;
+    ensure!(image == expected, "worked example payload");
 
     let decoded: Node = Node::decode(&image)?;
-    ensure_eq(&decoded, &node, "round trip")?;
-    ensure_eq(&decoded.encode()?, &image, "re-encode")?;
+    ensure!(decoded == node, "round trip");
+    ensure!(decoded.encode()? == image, "re-encode");
     Ok(())
 }
 
@@ -170,7 +166,7 @@ fn h64_anchors_match_the_spec() {
 // Each row pins H64(P), the w * CUT_SCALE threshold, and the hash-cut bit;
 // the partition run pins the segmentation itself.
 #[test]
-fn worked_leaf_partition_reproduces_the_spec_trace() -> TestResult {
+fn worked_leaf_partition_reproduces_the_spec_trace() -> Result<()> {
     // (fork key, record weight w, H64 of the one-byte prefix, hash cut)
     let rows: [(u8, u64, u64, bool); 8] = [
         (b'a', 207, 0x1242_f58d_1625_c23a, true),
@@ -198,27 +194,25 @@ fn worked_leaf_partition_reproduces_the_spec_trace() -> TestResult {
 
     for ((key, w, hash, hash_cut), threshold) in rows.into_iter().zip(thresholds) {
         let name = char::from(key);
-        ensure_eq(h64(&[key]), hash, &format!("H64({name})"))?;
-        ensure_eq(
-            w.checked_mul(V1::CUT_SCALE),
-            Some(threshold),
-            &format!("threshold of {name}"),
-        )?;
-        ensure(w < seg_target, "every worked weight is below SEG_TARGET")?;
-        ensure_eq(hash < threshold, hash_cut, &format!("cut bit of {name}"))?;
+        ensure!(h64(&[key]) == hash, "H64({name})");
+        ensure!(
+            w.checked_mul(V1::CUT_SCALE) == Some(threshold),
+            "threshold of {name}",
+        );
+        ensure!(w < seg_target, "every worked weight is below SEG_TARGET");
+        ensure!((hash < threshold) == hash_cut, "cut bit of {name}");
         // Below SEG_TARGET the real predicate reduces to the hash comparison.
-        ensure_eq(
-            cut::<V1>(&[key], usize::try_from(w)?),
-            hash_cut,
-            &format!("cut predicate of {name}"),
-        )?;
+        ensure!(
+            cut::<V1>(&[key], usize::try_from(w)?) == hash_cut,
+            "cut predicate of {name}",
+        );
     }
 
     // The real leaf partition over (fork-relative prefix, weight), CAP_FORK.
     let forks: Vec<(Prefix, SegmentWeight)> = rows
         .into_iter()
         .map(|(key, w, _, _)| {
-            Ok::<_, Box<dyn Error>>((prefix(&[key])?, SegmentWeight::new(usize::try_from(w)?)?))
+            Ok::<_, anyhow::Error>((prefix(&[key])?, SegmentWeight::new(usize::try_from(w)?)?))
         })
         .collect::<Result<_, _>>()?;
     let ranges = segment::<V1>(&forks, SegmentKind::Leaf);
@@ -228,20 +222,19 @@ fn worked_leaf_partition_reproduces_the_spec_trace() -> TestResult {
     for range in &ranges {
         let mut group: Vec<u8> = Vec::new();
         for i in range.clone() {
-            let (key, ..) = *rows.get(i).ok_or("segment index out of range")?;
+            let (key, ..) = *rows.get(i).context("segment index out of range")?;
             group.push(key);
         }
         segments.push(group);
     }
 
     let expected = [b"abc".to_vec(), b"defg".to_vec(), b"h".to_vec()];
-    ensure_eq(segments.as_slice(), expected.as_slice(), "segments")?;
+    ensure!(segments.as_slice() == expected.as_slice(), "segments");
     let first_keys: Vec<u8> = segments.iter().filter_map(|s| s.first().copied()).collect();
-    ensure_eq(
-        first_keys.as_slice(),
-        [0x61, 0x64, 0x68].as_slice(),
+    ensure!(
+        first_keys.as_slice() == [0x61, 0x64, 0x68].as_slice(),
         "directory first keys",
-    )?;
+    );
     Ok(())
 }
 
@@ -274,30 +267,30 @@ fn cut_thresholds_are_exact_integer_comparisons() {
 // and shares its parent's encryption domain. The worked example's shared
 // child is a 123-byte plaintext body, so it embeds (its ilen is 123 there).
 #[test]
-fn child_embedding_gates_on_inline_max_and_domain() -> TestResult {
-    ensure(
+fn child_embedding_gates_on_inline_max_and_domain() -> Result<()> {
+    ensure!(
         embed::<V1>(123, Domain::Plain, Domain::Plain),
         "the worked child within INLINE_MAX embeds",
-    )?;
-    ensure(
+    );
+    ensure!(
         embed::<V1>(V1::INLINE_MAX, Domain::Plain, Domain::Plain),
         "a body at INLINE_MAX embeds",
-    )?;
-    ensure(
+    );
+    ensure!(
         !embed::<V1>(V1::INLINE_MAX + 1, Domain::Plain, Domain::Plain),
         "a body over INLINE_MAX spills",
-    )?;
-    ensure(
+    );
+    ensure!(
         !embed::<V1>(123, Domain::Plain, Domain::Encrypted),
         "a cross-domain child spills",
-    )?;
+    );
     Ok(())
 }
 
 /// The bijection family: pairwise-distinct logical trees, including the
 /// near-miss pairs (absent value against empty value, the all-zero
 /// reference as a legal value, not a sentinel).
-fn tree_family() -> Result<Vec<Node>, Box<dyn Error>> {
+fn tree_family() -> Result<Vec<Node>> {
     let mut family: Vec<Node> = vec![Node::empty()];
 
     // Root extension variants: the empty inline value is a value, distinct
@@ -343,7 +336,7 @@ fn tree_family() -> Result<Vec<Node>, Box<dyn Error>> {
             Some(Entry::inline(Bytes::new())?),
             Some(Child::from(ref32(0x33))),
         )
-        .ok_or("empty payload")?,
+        .context("empty payload")?,
         None,
     )?;
     family.push(Node::new(None, forks));
@@ -378,17 +371,17 @@ fn tree_family() -> Result<Vec<Node>, Box<dyn Error>> {
 // One logical tree, one byte string: every family member round-trips to
 // itself, re-encodes to the same bytes, and no two members share an image.
 #[test]
-fn bijection_holds_over_the_tree_family() -> TestResult {
+fn bijection_holds_over_the_tree_family() -> Result<()> {
     let family = tree_family()?;
     let mut images: HashSet<Vec<u8>> = HashSet::new();
     for node in &family {
         let image = node.encode()?;
         let decoded: Node = Node::decode(&image)?;
-        ensure_eq(&decoded, node, "round trip")?;
-        ensure_eq(&decoded.encode()?, &image, "re-encode")?;
-        ensure(images.insert(image), "two trees share one byte string")?;
+        ensure!(&decoded == node, "round trip");
+        ensure!(decoded.encode()? == image, "re-encode");
+        ensure!(images.insert(image), "two trees share one byte string");
     }
-    ensure_eq(images.len(), family.len(), "family image count")?;
+    ensure!(images.len() == family.len(), "family image count");
     Ok(())
 }
 

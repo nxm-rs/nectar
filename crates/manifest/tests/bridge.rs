@@ -5,13 +5,14 @@
 //! and the stored chunk address set must match exactly. Chunks are
 //! content-addressed, so address equality pins the stored bytes.
 
+use anyhow::{Result, anyhow, ensure};
 use bytes::Bytes;
 use nectar_manifest::{Builder, Entry, Key, Reader, build_files};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
 use nectar_testing::run;
 
 mod common;
-use common::{TestResult, ensure, ensure_eq, split_whole};
+use common::split_whole;
 
 const B: usize = DEFAULT_BODY_SIZE;
 /// Reference fan-out of one intermediate chunk at the default body size.
@@ -40,7 +41,7 @@ fn pattern(size: usize) -> Bytes {
 }
 
 #[test]
-fn streaming_bridge_pins_the_direct_split_bytes() -> TestResult {
+fn streaming_bridge_pins_the_direct_split_bytes() -> Result<()> {
     for &size in SIZES {
         let data = pattern(size);
         let key = Key::from(&b"file"[..]);
@@ -50,32 +51,32 @@ fn streaming_bridge_pins_the_direct_split_bytes() -> TestResult {
 
         // The reference bridge: the same manifest over a direct split's
         // reference, with the direct chunk set as the file bytes oracle.
-        let (direct_root, direct_store) = run(split_whole(&data))?;
+        let (direct_root, direct_store) = run(split_whole(&data)).map_err(|e| anyhow!("{e}"))?;
         let node_store = MemoryStore::default();
         let mut builder: Builder = Builder::new();
         builder.insert(key, Entry::from(ChunkRef::new(direct_root)), None);
         let direct_built = run(builder.build(&node_store))?;
-        ensure_eq(built.root(), direct_built.root(), "manifest root")?;
+        ensure!(built.root() == direct_built.root(), "manifest root");
 
         let direct = direct_store.into_chunks();
         let nodes = node_store.into_chunks();
         for address in direct.keys() {
-            ensure(store.get(address).is_some(), "direct-split chunk stored")?;
+            ensure!(store.get(address).is_some(), "direct-split chunk stored");
         }
         // Exact set equality: with the file chunks and manifest nodes both
         // pinned, no other chunk may appear.
         for address in store.into_chunks().keys() {
-            ensure(
+            ensure!(
                 direct.contains_key(address) || nodes.contains_key(address),
                 "no chunk beyond the direct split set and the manifest nodes",
-            )?;
+            );
         }
     }
     Ok(())
 }
 
 #[test]
-fn bridged_files_round_trip_byte_exact() -> TestResult {
+fn bridged_files_round_trip_byte_exact() -> Result<()> {
     let store = MemoryStore::default();
     let big = pattern(FAN * B + 5);
     let files = [
@@ -85,14 +86,13 @@ fn bridged_files_round_trip_byte_exact() -> TestResult {
     let root = *run(build_files(&store, files))?.root();
 
     let reader: Reader<_> = Reader::new(store);
-    ensure_eq(
-        run(reader.fetch(&root, &Key::from(&b"a/big"[..])))?,
-        Some(big),
+    ensure!(
+        run(reader.fetch(&root, &Key::from(&b"a/big"[..])))? == Some(big),
         "deep file round trip",
-    )?;
-    ensure_eq(
-        run(reader.fetch(&root, &Key::from(&b"a/small"[..])))?,
-        Some(Bytes::from_static(b"x")),
+    );
+    ensure!(
+        run(reader.fetch(&root, &Key::from(&b"a/small"[..])))? == Some(Bytes::from_static(b"x")),
         "single-leaf round trip",
-    )
+    );
+    Ok(())
 }

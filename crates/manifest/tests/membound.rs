@@ -7,9 +7,9 @@
 //! pin the single-chunk-node invariant: no node the builder emits exceeds one
 //! chunk body.
 
-use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_manifest::{
     ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, Metadata, Reader, V1, apply,
@@ -21,9 +21,6 @@ use nectar_primitives::{
 };
 use nectar_testing::run;
 use proptest::prelude::*;
-
-mod common;
-use common::{TestResult, ensure};
 
 /// A reference-valued entry keyed on one byte.
 fn entry(byte: u8) -> Entry<V1> {
@@ -75,28 +72,28 @@ fn fill_radix(builder: &mut Builder<V1>, radix: u8, remaining: u32, key: &mut Ve
 
 /// Build every `radix`-ary key of length `len` into `store`, returning the build
 /// stats.
-fn build_radix(store: &MemoryStore, radix: u8, len: u32) -> Result<BuildStats, Box<dyn Error>> {
+fn build_radix(store: &MemoryStore, radix: u8, len: u32) -> Result<BuildStats> {
     let mut builder = Builder::<V1>::new();
     fill_radix(&mut builder, radix, len, &mut Vec::new(), 0x11);
-    let built = run(builder.build(store)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(store))?;
     Ok(*built.stats())
 }
 
 /// Assert every stored node fits one chunk body: the single-chunk-node
 /// invariant, checked over the whole emitted set.
-fn assert_single_chunk_nodes(store: &MemoryStore) -> TestResult {
+fn assert_single_chunk_nodes(store: &MemoryStore) -> Result<()> {
     for chunk in store.clone().into_chunks().into_values() {
         let len = chunk.envelope().data().len();
-        ensure(
+        ensure!(
             len <= DEFAULT_BODY_SIZE,
-            &format!("emitted node is {len} bytes, over one chunk body"),
-        )?;
+            "emitted node is {len} bytes, over one chunk body",
+        );
     }
     Ok(())
 }
 
 #[test]
-fn peak_open_nodes_tracks_depth_not_width() -> TestResult {
+fn peak_open_nodes_tracks_depth_not_width() -> Result<()> {
     // radix 10, depth 2 is 100 keys two nodes deep.
     let shallow_narrow = build_radix(&MemoryStore::default(), 10, 2)?;
     // radix 60, depth 2 is 3_600 keys, still two deep but far wider per level.
@@ -105,36 +102,33 @@ fn peak_open_nodes_tracks_depth_not_width() -> TestResult {
     let deep = build_radix(&MemoryStore::default(), 10, 4)?;
 
     // Same depth, very different width: identical peak, whatever the fan.
-    ensure(
+    ensure!(
         shallow_narrow.peak_open_nodes() == shallow_wide.peak_open_nodes(),
-        &format!(
-            "peak {} != {} across widths at equal depth",
-            shallow_narrow.peak_open_nodes(),
-            shallow_wide.peak_open_nodes(),
-        ),
-    )?;
+        "peak {} != {} across widths at equal depth",
+        shallow_narrow.peak_open_nodes(),
+        shallow_wide.peak_open_nodes(),
+    );
     // Greater depth raises the peak; width alone never does.
-    ensure(
+    ensure!(
         deep.peak_open_nodes() > shallow_wide.peak_open_nodes(),
-        &format!(
-            "deeper build peak {} did not exceed shallow peak {}",
-            deep.peak_open_nodes(),
-            shallow_wide.peak_open_nodes(),
-        ),
-    )?;
+        "deeper build peak {} did not exceed shallow peak {}",
+        deep.peak_open_nodes(),
+        shallow_wide.peak_open_nodes(),
+    );
     // The wide build writes far more nodes than its peak: work is O(tree), the
     // retained frontier is O(depth).
-    ensure(
+    ensure!(
         shallow_wide.nodes_written() > shallow_wide.peak_open_nodes().saturating_mul(10),
         "wide build node count is not far above its peak",
-    )
+    );
+    Ok(())
 }
 
 /// Stream a byte-keyed profile into the builder: the first two key positions
 /// range over all 256 byte values and the third over `0..tail`, so every level-0
 /// and level-1 node is a full radix-256 fork table that overruns one chunk and
 /// must spill. `tail = 16` yields `256*256*16 = 1_048_576` keys.
-fn fill_radix256(builder: &mut Builder<V1>, tail: u16, fill: u8) -> Result<(), Box<dyn Error>> {
+fn fill_radix256(builder: &mut Builder<V1>, tail: u16, fill: u8) -> Result<()> {
     let mut key = [0u8; 3];
     for a in 0u16..256 {
         key[0] = u8::try_from(a)?;
@@ -150,7 +144,7 @@ fn fill_radix256(builder: &mut Builder<V1>, tail: u16, fill: u8) -> Result<(), B
 }
 
 #[test]
-fn a_million_key_manifest_is_depth_bounded() -> TestResult {
+fn a_million_key_manifest_is_depth_bounded() -> Result<()> {
     // A byte-keyed radix-256 profile: 256*256*16 = 1_048_576 keys three nodes
     // deep, whose level-0 and level-1 nodes are full 256-fork tables that a
     // naive encoder would reject as over-budget. Spill packs each into a segment
@@ -160,26 +154,22 @@ fn a_million_key_manifest_is_depth_bounded() -> TestResult {
     let inner = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
     fill_radix256(&mut builder, 16, 0x22)?;
-    let built = run(builder.build(&inner)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(&inner))?;
     let stats = *built.stats();
     let root = *built.root();
 
-    ensure(
+    ensure!(
         stats.peak_open_nodes() <= 8,
-        &format!(
-            "peak {} open nodes is not O(depth) at 10^6 keys",
-            stats.peak_open_nodes(),
-        ),
-    )?;
+        "peak {} open nodes is not O(depth) at 10^6 keys",
+        stats.peak_open_nodes(),
+    );
     // The tree is spilled across many chunks, orders of magnitude above the
     // peak, so the bound is a genuine streaming bound, not a small tree.
-    ensure(
+    ensure!(
         stats.nodes_written() > stats.peak_open_nodes().saturating_mul(100),
-        &format!(
-            "only {} nodes written, no wider than the peak",
-            stats.nodes_written(),
-        ),
-    )?;
+        "only {} nodes written, no wider than the peak",
+        stats.nodes_written(),
+    );
     // Every emitted node fits one chunk body, checked at 10^6-key scale over a
     // profile whose interior nodes are all spilled.
     assert_single_chunk_nodes(&inner)?;
@@ -195,22 +185,20 @@ fn a_million_key_manifest_is_depth_bounded() -> TestResult {
     let reader: Reader<_> = Reader::new(&store);
     for probe in [[0u8, 0, 0], [255, 255, 15], [128, 64, 8], [7, 200, 3]] {
         store.gets.store(0, Ordering::Relaxed);
-        let value = run(reader.get(&root, &Key::from(&probe[..]))).map_err(|e| e.to_string())?;
-        ensure(
-            value == Some(entry(0x22)),
-            &format!("missing key {probe:?}"),
-        )?;
+        let value = run(reader.get(&root, &Key::from(&probe[..])))?;
+        ensure!(value == Some(entry(0x22)), "missing key {probe:?}");
         // Three levels, each at most a segmented node and its covering segments.
-        ensure(
+        ensure!(
             store.gets() <= 24,
-            &format!("lookup fetched {} nodes, not O(depth)", store.gets()),
-        )?;
+            "lookup fetched {} nodes, not O(depth)",
+            store.gets(),
+        );
     }
     Ok(())
 }
 
 #[test]
-fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> TestResult {
+fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> Result<()> {
     // A single node holding all 256 first-byte forks, each carrying a heavy
     // metadata block: a ~9.5 KB fork table that far overruns one chunk. The
     // builder spills it into a segment directory; every emitted chunk still fits
@@ -219,33 +207,31 @@ fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> TestResult {
     let mut builder = Builder::<V1>::new();
     for first in 0u16..256 {
         let byte = u8::try_from(first)?;
-        let meta = Metadata::new(KeyId::ContentType, Bytes::from(vec![b'a'; 900]))
-            .map_err(|e| e.to_string())?;
+        let meta = Metadata::new(KeyId::ContentType, Bytes::from(vec![b'a'; 900]))?;
         builder.insert(Key::from(vec![byte]), entry(byte), Some(meta));
     }
-    let built = run(builder.build(&store)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(&store))?;
 
     // The node did not fit one chunk, so it was spilled across several.
-    ensure(
+    ensure!(
         built.stats().nodes_written() > 1,
         "a full radix-256 heavy node must spill into several chunks",
-    )?;
+    );
     assert_single_chunk_nodes(&store)?;
 
     let reader: Reader<_> = Reader::new(&store);
     for first in [0u8, 1, 127, 200, 255] {
-        let value =
-            run(reader.get(built.root(), &Key::from(vec![first]))).map_err(|e| e.to_string())?;
-        ensure(
+        let value = run(reader.get(built.root(), &Key::from(vec![first])))?;
+        ensure!(
             value == Some(entry(first)),
-            &format!("missing key {first} after spill"),
-        )?;
+            "missing key {first} after spill",
+        );
     }
     Ok(())
 }
 
 #[test]
-fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> TestResult {
+fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> Result<()> {
     // The canonical-form check (spec 6.2) over a whole spilled node set: decode
     // each stored chunk and re-encode it, and the bytes must match, plain node,
     // segmented node and segment alike. This is the build-roundtrip fuzz oracle
@@ -254,20 +240,19 @@ fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> TestResult {
     let mut builder = Builder::<V1>::new();
     for first in 0u16..256 {
         let byte = u8::try_from(first)?;
-        let meta = Metadata::new(KeyId::ContentType, Bytes::from(vec![b'a'; 700]))
-            .map_err(|e| e.to_string())?;
+        let meta = Metadata::new(KeyId::ContentType, Bytes::from(vec![b'a'; 700]))?;
         builder.insert(Key::from(vec![byte]), entry(byte), Some(meta));
     }
-    run(builder.build(&store)).map_err(|e| e.to_string())?;
+    run(builder.build(&store))?;
 
     let mut saw_segment = false;
     for chunk in store.into_chunks().into_values() {
         let payload = chunk.envelope().data();
-        let reencoded = recanonicalize::<V1>(payload.as_ref()).map_err(|e| e.to_string())?;
-        ensure(
+        let reencoded = recanonicalize::<V1>(payload.as_ref())?;
+        ensure!(
             reencoded.as_slice() == payload.as_ref(),
             "a stored chunk did not re-encode to its own bytes",
-        )?;
+        );
         // The flags byte follows the two preamble bytes; a set SEGMENTED or
         // SEGMENT bit witnesses that spill actually fired.
         if payload
@@ -278,12 +263,12 @@ fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> TestResult {
             saw_segment = true;
         }
     }
-    ensure(saw_segment, "the heavy set did not spill into segments")?;
+    ensure!(saw_segment, "the heavy set did not spill into segments");
     Ok(())
 }
 
 #[test]
-fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> TestResult {
+fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> Result<()> {
     // History independence across the spill boundary: folding a changeset into a
     // base whose root node spills must reach the exact root a from-scratch build
     // of the merged key set reaches, byte for byte. This drives the whole
@@ -295,51 +280,37 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> TestResult {
     let mut base_builder = Builder::<V1>::new();
     for first in 0u16..200 {
         let byte = u8::try_from(first)?;
-        base_builder.insert(
-            Key::from(vec![byte]),
-            entry(byte),
-            Some(heavy().map_err(|e| e.to_string())?),
-        );
+        base_builder.insert(Key::from(vec![byte]), entry(byte), Some(heavy()?));
     }
-    let base = run(base_builder.build(&base_store)).map_err(|e| e.to_string())?;
-    ensure(
+    let base = run(base_builder.build(&base_store))?;
+    ensure!(
         base.stats().nodes_written() > 1,
         "the base root node must spill",
-    )?;
+    );
 
     // The changeset overwrites the tail of the base and extends past it, so the
     // merged key set is 0..256.
     let mut changeset = Changeset::<V1>::new();
     for first in 150u16..256 {
         let byte = u8::try_from(first)?;
-        changeset.put(
-            Key::from(vec![byte]),
-            entry(byte),
-            Some(heavy().map_err(|e| e.to_string())?),
-        );
+        changeset.put(Key::from(vec![byte]), entry(byte), Some(heavy()?));
     }
-    let applied = run(apply(&base_store, base.root(), &changeset)).map_err(|e| e.to_string())?;
+    let applied = run(apply(&base_store, base.root(), &changeset))?;
 
     // A from-scratch build of the merged key set.
     let scratch_store = MemoryStore::default();
     let mut scratch_builder = Builder::<V1>::new();
     for first in 0u16..256 {
         let byte = u8::try_from(first)?;
-        scratch_builder.insert(
-            Key::from(vec![byte]),
-            entry(byte),
-            Some(heavy().map_err(|e| e.to_string())?),
-        );
+        scratch_builder.insert(Key::from(vec![byte]), entry(byte), Some(heavy()?));
     }
-    let scratch = run(scratch_builder.build(&scratch_store)).map_err(|e| e.to_string())?;
+    let scratch = run(scratch_builder.build(&scratch_store))?;
 
-    ensure(
+    ensure!(
         applied == *scratch.root(),
-        &format!(
-            "apply root {applied:?} diverged from the from-scratch root {:?}",
-            scratch.root()
-        ),
-    )?;
+        "apply root {applied:?} diverged from the from-scratch root {:?}",
+        scratch.root(),
+    );
     Ok(())
 }
 

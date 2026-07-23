@@ -2096,6 +2096,7 @@ name = "nectar-manifest"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
+ "anyhow",
  "bytes",
  "futures",
  "nectar-file",

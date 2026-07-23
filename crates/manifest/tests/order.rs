@@ -3,16 +3,13 @@
 //! returns the same slice as `iter().skip(offset).take(limit)`; and the offset
 //! seek costs O(depth), not O(offset), witnessed through a fetch-counting store.
 
-use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use anyhow::{Context, Result, ensure};
 use nectar_manifest::{Builder, Entry, Key, Reader, V1};
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, StandardChunkSet, Verified};
 use nectar_testing::run;
-
-mod common;
-use common::{TestResult, ensure};
 
 /// A key set paired with the value each key carries.
 type KeySet = Vec<(Key, u8)>;
@@ -94,49 +91,47 @@ fn wide_keys() -> KeySet {
     out
 }
 
-fn build(store: &MemoryStore, keys: &[(Key, u8)]) -> Result<ChunkAddress, Box<dyn Error>> {
+fn build(store: &MemoryStore, keys: &[(Key, u8)]) -> Result<ChunkAddress> {
     let mut builder = Builder::<V1>::new();
     for (key, fill) in keys {
         builder.insert(key.clone(), entry(*fill), None);
     }
-    Ok(*run(builder.build(store)).map_err(|e| e.to_string())?.root())
+    Ok(*run(builder.build(store))?.root())
 }
 
 /// The ground-truth ordering: every `(key, value)` a full walk yields.
-fn oracle(reader: &Reader<MemoryStore, V1>, root: &ChunkAddress) -> Result<Pairs, Box<dyn Error>> {
+fn oracle(reader: &Reader<MemoryStore, V1>, root: &ChunkAddress) -> Result<Pairs> {
     let mut out = Vec::new();
-    let mut cursor = run(reader.iter(root)).map_err(|e| e.to_string())?;
-    while let Some(pair) = run(cursor.next()).map_err(|e| e.to_string())? {
+    let mut cursor = run(reader.iter(root))?;
+    while let Some(pair) = run(cursor.next())? {
         out.push(pair);
     }
     Ok(out)
 }
 
 #[test]
-fn rank_select_count_agree_with_a_full_walk_oracle() -> TestResult {
+fn rank_select_count_agree_with_a_full_walk_oracle() -> Result<()> {
     let store = MemoryStore::default();
     let keys = radix_keys(12, 3);
     let root = build(&store, &keys)?;
     let reader = Reader::<MemoryStore, V1>::new(store);
     let all = oracle(&reader, &root)?;
-    ensure(all.len() == keys.len(), "oracle lost keys")?;
+    ensure!(all.len() == keys.len(), "oracle lost keys");
 
     // select(i) is the i-th key; one past the end is None.
     for (i, (key, value)) in all.iter().enumerate() {
         let index = u64::try_from(i)?;
-        let got = run(reader.select(&root, index)).map_err(|e| e.to_string())?;
-        ensure(
+        let got = run(reader.select(&root, index))?;
+        ensure!(
             got.as_ref() == Some(&(key.clone(), value.clone())),
-            &format!("select({i}) mismatch"),
-        )?;
+            "select({i}) mismatch",
+        );
     }
     let end = u64::try_from(all.len())?;
-    ensure(
-        run(reader.select(&root, end))
-            .map_err(|e| e.to_string())?
-            .is_none(),
+    ensure!(
+        run(reader.select(&root, end))?.is_none(),
         "select past the end must be None",
-    )?;
+    );
 
     // rank(key) is the count of strictly-smaller keys, checked at present keys
     // and at the absent points that bracket, precede and follow the key set.
@@ -153,11 +148,8 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> TestResult {
     ];
     for probe in &probes {
         let expected = u64::try_from(all.iter().filter(|(k, _)| k < probe).count())?;
-        let got = run(reader.rank(&root, probe)).map_err(|e| e.to_string())?;
-        ensure(
-            got == expected,
-            &format!("rank mismatch: {got} != {expected}"),
-        )?;
+        let got = run(reader.rank(&root, probe))?;
+        ensure!(got == expected, "rank mismatch: {got} != {expected}");
     }
 
     // count(lo, hi) is the size of the half-open window.
@@ -168,17 +160,14 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> TestResult {
         (Key::from(&[9u8][..]), Key::from(&[3u8][..])),
     ] {
         let expected = u64::try_from(all.iter().filter(|(k, _)| lo <= *k && *k < hi).count())?;
-        let got = run(reader.count(&root, &lo, &hi)).map_err(|e| e.to_string())?;
-        ensure(
-            got == expected,
-            &format!("count mismatch: {got} != {expected}"),
-        )?;
+        let got = run(reader.count(&root, &lo, &hi))?;
+        ensure!(got == expected, "count mismatch: {got} != {expected}");
     }
     Ok(())
 }
 
 #[test]
-fn spilled_node_order_statistics_agree_with_the_oracle() -> TestResult {
+fn spilled_node_order_statistics_agree_with_the_oracle() -> Result<()> {
     // A corpus whose root is a segmented node, so every query routes the root's
     // segment directory by seg_count before descending a referenced child.
     let store = MemoryStore::default();
@@ -186,21 +175,21 @@ fn spilled_node_order_statistics_agree_with_the_oracle() -> TestResult {
     let root = build(&store, &keys)?;
     let reader = Reader::<MemoryStore, V1>::new(store);
     let all = oracle(&reader, &root)?;
-    ensure(all.len() == keys.len(), "oracle lost keys")?;
+    ensure!(all.len() == keys.len(), "oracle lost keys");
 
     // Sampled select and its inverse rank agree with the oracle across the whole
     // spilled listing, including both ends.
     let last = all.len().saturating_sub(1);
     for i in (0..all.len()).step_by(311).chain([last]) {
-        let (key, value) = all.get(i).ok_or("oracle index out of range")?;
+        let (key, value) = all.get(i).context("oracle index out of range")?;
         let index = u64::try_from(i)?;
-        let got = run(reader.select(&root, index)).map_err(|e| e.to_string())?;
-        ensure(
+        let got = run(reader.select(&root, index))?;
+        ensure!(
             got.as_ref() == Some(&(key.clone(), value.clone())),
-            &format!("spilled select({i}) mismatch"),
-        )?;
-        let rank = run(reader.rank(&root, key)).map_err(|e| e.to_string())?;
-        ensure(rank == index, &format!("spilled rank at {i} mismatch"))?;
+            "spilled select({i}) mismatch",
+        );
+        let rank = run(reader.rank(&root, key))?;
+        ensure!(rank == index, "spilled rank at {i} mismatch");
     }
 
     // Windows spanning several segments count exactly.
@@ -210,27 +199,26 @@ fn spilled_node_order_statistics_agree_with_the_oracle() -> TestResult {
         (Key::empty(), Key::from(&[255u8, 255][..])),
     ] {
         let expected = u64::try_from(all.iter().filter(|(k, _)| lo <= *k && *k < hi).count())?;
-        let got = run(reader.count(&root, &lo, &hi)).map_err(|e| e.to_string())?;
-        ensure(
+        let got = run(reader.count(&root, &lo, &hi))?;
+        ensure!(
             got == expected,
-            &format!("spilled count mismatch: {got} != {expected}"),
-        )?;
+            "spilled count mismatch: {got} != {expected}"
+        );
     }
 
     // A page deep in the spilled listing is the matching oracle slice.
     let mut got = Vec::new();
-    let mut cursor =
-        run(reader.paginate_prefix(&root, &Key::empty(), 9000, 25)).map_err(|e| e.to_string())?;
-    while let Some(pair) = run(cursor.next()).map_err(|e| e.to_string())? {
+    let mut cursor = run(reader.paginate_prefix(&root, &Key::empty(), 9000, 25))?;
+    while let Some(pair) = run(cursor.next())? {
         got.push(pair);
     }
     let want: Vec<_> = all.iter().skip(9000).take(25).cloned().collect();
-    ensure(got == want, "spilled paginate mismatch")?;
+    ensure!(got == want, "spilled paginate mismatch");
     Ok(())
 }
 
 #[test]
-fn order_statistics_are_stable_under_shuffled_build_order() -> TestResult {
+fn order_statistics_are_stable_under_shuffled_build_order() -> Result<()> {
     let forward = radix_keys(10, 3);
     let mut reversed = forward.clone();
     reversed.reverse();
@@ -239,21 +227,21 @@ fn order_statistics_are_stable_under_shuffled_build_order() -> TestResult {
     let a = build(&a_store, &forward)?;
     let b_store = MemoryStore::default();
     let b = build(&b_store, &reversed)?;
-    ensure(a == b, "shuffled build must root identically")?;
+    ensure!(a == b, "shuffled build must root identically");
 
     let reader = Reader::<MemoryStore, V1>::new(a_store);
     // A shuffled build is the same tree, so every rank and select is unchanged.
     for index in [0u64, 1, 250, 500, 999] {
-        let got = run(reader.select(&a, index)).map_err(|e| e.to_string())?;
-        let (key, _) = got.ok_or("select fell off the shuffled build")?;
-        let rank = run(reader.rank(&a, &key)).map_err(|e| e.to_string())?;
-        ensure(rank == index, &format!("rank/select disagree at {index}"))?;
+        let got = run(reader.select(&a, index))?;
+        let (key, _) = got.context("select fell off the shuffled build")?;
+        let rank = run(reader.rank(&a, &key))?;
+        ensure!(rank == index, "rank/select disagree at {index}");
     }
     Ok(())
 }
 
 #[test]
-fn paginate_matches_iter_skip_take() -> TestResult {
+fn paginate_matches_iter_skip_take() -> Result<()> {
     let store = MemoryStore::default();
     let keys = radix_keys(10, 3);
     let root = build(&store, &keys)?;
@@ -263,17 +251,13 @@ fn paginate_matches_iter_skip_take() -> TestResult {
     // Whole-manifest pagination is exactly iter().skip(offset).take(limit).
     for (offset, limit) in [(0u64, 7usize), (13, 20), (500, 33), (995, 50), (2000, 4)] {
         let mut got = Vec::new();
-        let mut cursor = run(reader.paginate_prefix(&root, &Key::empty(), offset, limit))
-            .map_err(|e| e.to_string())?;
-        while let Some(pair) = run(cursor.next()).map_err(|e| e.to_string())? {
+        let mut cursor = run(reader.paginate_prefix(&root, &Key::empty(), offset, limit))?;
+        while let Some(pair) = run(cursor.next())? {
             got.push(pair);
         }
         let start = usize::try_from(offset)?;
         let want: Vec<_> = all.iter().skip(start).take(limit).cloned().collect();
-        ensure(
-            got == want,
-            &format!("paginate_prefix({offset}, {limit}) mismatch"),
-        )?;
+        ensure!(got == want, "paginate_prefix({offset}, {limit}) mismatch");
     }
 
     // Range pagination is the same over the range's own slice.
@@ -286,23 +270,19 @@ fn paginate_matches_iter_skip_take() -> TestResult {
         .collect();
     for (offset, limit) in [(0u64, 10usize), (25, 40), (300, 12)] {
         let mut got = Vec::new();
-        let mut cursor =
-            run(reader.paginate(&root, &lo, &hi, offset, limit)).map_err(|e| e.to_string())?;
-        while let Some(pair) = run(cursor.next()).map_err(|e| e.to_string())? {
+        let mut cursor = run(reader.paginate(&root, &lo, &hi, offset, limit))?;
+        while let Some(pair) = run(cursor.next())? {
             got.push(pair);
         }
         let start = usize::try_from(offset)?;
         let want: Vec<_> = window.iter().skip(start).take(limit).cloned().collect();
-        ensure(
-            got == want,
-            &format!("paginate({offset}, {limit}) mismatch"),
-        )?;
+        ensure!(got == want, "paginate({offset}, {limit}) mismatch");
     }
     Ok(())
 }
 
 #[test]
-fn the_offset_seek_costs_depth_not_offset() -> TestResult {
+fn the_offset_seek_costs_depth_not_offset() -> Result<()> {
     // A wide, spilled corpus: a full first-byte spread forces the root to spill
     // into a segment directory, so the seek must route by seg_count.
     let inner = MemoryStore::default();
@@ -320,40 +300,35 @@ fn the_offset_seek_costs_depth_not_offset() -> TestResult {
     let mut costs = Vec::new();
     for index in [0u64, total / 2, total.saturating_sub(1)] {
         reader.store().reset();
-        let got = run(reader.select(&root, index)).map_err(|e| e.to_string())?;
-        ensure(got.is_some(), &format!("select({index}) fell off"))?;
+        let got = run(reader.select(&root, index))?;
+        ensure!(got.is_some(), "select({index}) fell off");
         costs.push(reader.store().gets());
     }
     for cost in &costs {
-        ensure(
-            *cost <= 32,
-            &format!("select fetched {cost} nodes, not O(depth)"),
-        )?;
+        ensure!(*cost <= 32, "select fetched {cost} nodes, not O(depth)");
     }
 
     // Paginating at a large offset fetches no more than at offset zero plus the
     // page and its read-ahead: the offset itself is free.
     reader.store().reset();
-    let mut head =
-        run(reader.paginate_prefix(&root, &Key::empty(), 0, 5)).map_err(|e| e.to_string())?;
-    while run(head.next()).map_err(|e| e.to_string())?.is_some() {}
+    let mut head = run(reader.paginate_prefix(&root, &Key::empty(), 0, 5))?;
+    while run(head.next())?.is_some() {}
     let head_cost = reader.store().gets();
 
     reader.store().reset();
     let deep_offset = total.saturating_sub(5);
-    let mut deep = run(reader.paginate_prefix(&root, &Key::empty(), deep_offset, 5))
-        .map_err(|e| e.to_string())?;
-    while run(deep.next()).map_err(|e| e.to_string())?.is_some() {}
+    let mut deep = run(reader.paginate_prefix(&root, &Key::empty(), deep_offset, 5))?;
+    while run(deep.next())?.is_some() {}
     let deep_cost = reader.store().gets();
 
     // The deep page pays for its own depth and window, not the offset it skipped.
-    ensure(
+    ensure!(
         deep_cost <= head_cost.saturating_mul(2).saturating_add(32),
-        &format!("deep page fetched {deep_cost} vs head {head_cost}: offset is not free"),
-    )?;
-    ensure(
+        "deep page fetched {deep_cost} vs head {head_cost}: offset is not free",
+    );
+    ensure!(
         u64::try_from(deep_cost)? < deep_offset,
-        &format!("deep page fetched {deep_cost}, proportional to the offset"),
-    )?;
+        "deep page fetched {deep_cost}, proportional to the offset",
+    );
     Ok(())
 }
