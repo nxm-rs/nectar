@@ -852,4 +852,31 @@ mod tests {
         let (_, store) = run(editor.with_put_width(0).commit()).unwrap();
         assert_eq!(store.max_inflight.load(Ordering::SeqCst), 1);
     }
+
+    /// Replay the committed seed corpus of the `mantaray_editor_differential`
+    /// fuzz target: the seed bytes decode into an op log through the shared
+    /// `EditorOp` grammar and run the exact differential oracle the fuzzer
+    /// drives. This keeps the curated op-log seeds meaningful on stable
+    /// without running the fuzzer itself.
+    #[test]
+    fn seed_replay_mantaray_editor_differential() {
+        use arbitrary::{Arbitrary, Unstructured};
+
+        nectar_testing::SeedReplay::corpus(
+            env!("CARGO_MANIFEST_DIR"),
+            "mantaray_editor_differential",
+        )
+        .each(|name, data| {
+            let ops = Vec::<crate::oracles::EditorOp>::arbitrary_take_rest(Unstructured::new(data))
+                .unwrap_or_else(|e| panic!("seed {name} must decode an op log: {e}"));
+            assert!(!ops.is_empty(), "seed {name} must carry at least one op");
+            run(crate::oracles::editor_differential(&ops))
+                .unwrap_or_else(|v| panic!("seed {name}: {v}"));
+        })
+        .covers("prefix-")
+        .covers("root-")
+        .covers("zero-")
+        .floor(4)
+        .run();
+    }
 }

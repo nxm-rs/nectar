@@ -94,6 +94,11 @@ mod fork;
 mod format;
 mod meta;
 mod node;
+/// Shared fuzz and test oracle for the node codec. Compiled for in-crate
+/// tests and for fuzz builds (`arbitrary`); exempt from semver guarantees.
+#[cfg(any(test, feature = "arbitrary"))]
+#[doc(hidden)]
+pub mod oracles;
 mod order;
 mod packing;
 mod reader;

@@ -840,36 +840,31 @@ mod tests {
     }
 
     /// Replay the committed seed corpus of the `stamp_decode` fuzz target
-    /// (`fuzz/seeds/stamp_decode/`) through the shared oracle. Seed intent is
-    /// pinned by name:
+    /// through the shared oracle. Seed intent is pinned by name:
     /// `valid-*` must parse `Ok`, `invalid-*` must stay `Err`, `edge-*` only
     /// asserts no panic. This keeps the fuzz seeds meaningful on stable
     /// without running the fuzzer itself.
     #[test]
     fn seed_replay_stamp_decode() {
-        let seed_dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/stamp_decode");
-        let mut replayed = 0usize;
-        for entry in std::fs::read_dir(&seed_dir)
-            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
-        {
-            let path = entry.unwrap().path();
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let data = std::fs::read(&path).unwrap();
-
-            let result = crate::oracles::stamp_decode(&data);
-
-            if name.starts_with("valid-") {
-                assert!(result.is_ok(), "seed {name} must parse successfully");
-            } else if name.starts_with("invalid-") {
-                assert!(result.is_err(), "seed {name} must remain an Err input");
-            }
-            replayed += 1;
-        }
-        assert!(
-            replayed >= 4,
-            "expected at least the 4 curated seeds, found {replayed}"
-        );
+        nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "stamp_decode")
+            .each(|_, data| {
+                let _ = crate::oracles::stamp_decode(data);
+            })
+            .on("valid-", |name, data| {
+                assert!(
+                    crate::oracles::stamp_decode(data).is_ok(),
+                    "seed {name} must parse successfully"
+                );
+            })
+            .on("invalid-", |name, data| {
+                assert!(
+                    crate::oracles::stamp_decode(data).is_err(),
+                    "seed {name} must remain an Err input"
+                );
+            })
+            .covers("edge-")
+            .floor(4)
+            .run();
     }
 
     proptest! {

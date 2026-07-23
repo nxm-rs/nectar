@@ -495,41 +495,77 @@ mod tests {
     }
 
     /// Replay the committed seed corpus of the `chunk_decode` fuzz target
-    /// (`fuzz/seeds/chunk_decode/`) through the shared oracle. Seed intent is
-    /// pinned by name:
+    /// through the shared oracle. Seed intent is pinned by name:
     /// `valid-*` must deserialize `Ok` (and `valid-soc-*` must also decode as
     /// a SOC directly), `invalid-*` must stay `Err`. This keeps the fuzz
     /// seeds meaningful on stable without running the fuzzer itself.
     #[test]
     fn seed_replay_chunk_decode() {
-        let seed_dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/chunk_decode");
-        let mut replayed = 0usize;
-        for entry in std::fs::read_dir(&seed_dir)
-            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
-        {
-            let path = entry.unwrap().path();
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let data = std::fs::read(&path).unwrap();
-
-            let result = crate::oracles::chunk_decode::<DEFAULT_BODY_SIZE>(&data);
-
-            if name.starts_with("valid-") {
-                assert!(result.is_ok(), "seed {name} must deserialize successfully");
-            } else if name.starts_with("invalid-") {
-                assert!(result.is_err(), "seed {name} must remain an Err input");
-            }
-            if name.starts_with("valid-soc-") {
+        nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "chunk_decode")
+            .on("valid-soc-", |name, data| {
                 assert!(
-                    SingleOwnerChunk::<DEFAULT_BODY_SIZE>::try_from(data.as_slice()).is_ok(),
+                    crate::oracles::chunk_decode::<DEFAULT_BODY_SIZE>(data).is_ok(),
+                    "seed {name} must deserialize successfully"
+                );
+                assert!(
+                    SingleOwnerChunk::<DEFAULT_BODY_SIZE>::try_from(data).is_ok(),
                     "seed {name} must decode as a single-owner chunk"
                 );
-            }
-            replayed += 1;
-        }
-        assert!(
-            replayed >= 4,
-            "expected at least the 4 curated seeds, found {replayed}"
-        );
+            })
+            .on("valid-", |name, data| {
+                assert!(
+                    crate::oracles::chunk_decode::<DEFAULT_BODY_SIZE>(data).is_ok(),
+                    "seed {name} must deserialize successfully"
+                );
+            })
+            .on("invalid-", |name, data| {
+                assert!(
+                    crate::oracles::chunk_decode::<DEFAULT_BODY_SIZE>(data).is_err(),
+                    "seed {name} must remain an Err input"
+                );
+            })
+            .floor(4)
+            .run();
+    }
+
+    /// Replay the committed seed corpus of the `chunk_roundtrip` fuzz target
+    /// through the exact generator-plus-oracle pair the fuzzer drives: the
+    /// seed bytes feed `generators::any_chunk` and the built chunk must pass
+    /// the shared round-trip oracle. `soc-*` seeds must build a single-owner
+    /// chunk and `cac-*` seeds a content chunk, so both arms stay exercised
+    /// on stable.
+    #[test]
+    fn seed_replay_chunk_roundtrip() {
+        nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "chunk_roundtrip")
+            .on("soc-", |name, data| {
+                let mut u = arbitrary::Unstructured::new(data);
+                let chunk = crate::generators::any_chunk::<DEFAULT_BODY_SIZE>(&mut u)
+                    .unwrap_or_else(|e| panic!("seed {name} must build a chunk: {e}"));
+                assert!(
+                    matches!(chunk, AnyChunk::SingleOwner(_)),
+                    "seed {name} must build a single-owner chunk"
+                );
+                assert_eq!(
+                    crate::oracles::any_chunk_round_trip(&chunk),
+                    Ok(()),
+                    "seed {name} must round-trip the wire codec"
+                );
+            })
+            .on("cac-", |name, data| {
+                let mut u = arbitrary::Unstructured::new(data);
+                let chunk = crate::generators::any_chunk::<DEFAULT_BODY_SIZE>(&mut u)
+                    .unwrap_or_else(|e| panic!("seed {name} must build a chunk: {e}"));
+                assert!(
+                    matches!(chunk, AnyChunk::Content(_)),
+                    "seed {name} must build a content chunk"
+                );
+                assert_eq!(
+                    crate::oracles::any_chunk_round_trip(&chunk),
+                    Ok(()),
+                    "seed {name} must round-trip the wire codec"
+                );
+            })
+            .floor(2)
+            .run();
     }
 }

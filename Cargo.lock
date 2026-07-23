@@ -2078,6 +2078,7 @@ dependencies = [
 name = "nectar-file"
 version = "0.4.0"
 dependencies = [
+ "arbitrary",
  "bytes",
  "codspeed-criterion-compat",
  "futures",
@@ -2154,6 +2155,7 @@ dependencies = [
  "derive_more",
  "k256",
  "nectar-primitives 0.4.0",
+ "nectar-testing",
  "proptest",
  "proptest-arbitrary-interop",
  "rand 0.10.1",
@@ -2196,6 +2198,7 @@ dependencies = [
  "nectar-postage",
  "nectar-postage-issuer",
  "nectar-primitives 0.4.0",
+ "nectar-testing",
  "proptest",
  "proptest-arbitrary-interop",
  "thiserror",

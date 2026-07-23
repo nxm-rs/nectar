@@ -27,11 +27,15 @@ thiserror.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+nectar-primitives = { workspace = true, features = ["arbitrary"] }
 nectar-testing.workspace = true
 proptest.workspace = true
 
 [features]
 default = [ "std" ]
+# The shared codec oracle for the fuzz workspace and the stable seed
+# replays. Never reachable from `default` or any shipped feature.
+arbitrary = [ "nectar-file/arbitrary", "nectar-primitives/arbitrary", "std" ]
 # Per-reference node encryption (deterministic key derivation, sealing and
 # opening). The 64-byte ref representation is always available; this feature
 # only adds the crypto over it, so a default build still decodes and

@@ -95,6 +95,12 @@ pub mod geometry;
 mod inflight;
 #[cfg(feature = "std")]
 mod num;
+/// Shared fuzz and test oracle for the malformed-intermediate walk.
+/// Compiled for in-crate tests and for fuzz builds (`arbitrary`); exempt
+/// from semver guarantees.
+#[cfg(any(test, feature = "arbitrary"))]
+#[doc(hidden)]
+pub mod oracles;
 #[cfg(all(
     feature = "rayon",
     not(target_arch = "wasm32"),

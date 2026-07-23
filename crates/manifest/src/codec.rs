@@ -1936,4 +1936,30 @@ mod tests {
             Err(DecodeError::SegmentOrder)
         ));
     }
+
+    /// Replay the committed seed corpus of the `manifest_node_decode` fuzz
+    /// target through the shared canonical-decode oracle the fuzzer drives.
+    /// Seed intent is pinned by name: `valid-*` must decode (and therefore
+    /// re-encode canonically), `invalid-*` must stay rejected. This keeps
+    /// the fuzz seeds meaningful on stable without running the fuzzer
+    /// itself.
+    #[test]
+    fn seed_replay_manifest_node_decode() {
+        nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "manifest_node_decode")
+            .on("valid-", |name, data| {
+                let outcome = crate::oracles::node_decode_canonical(data)
+                    .unwrap_or_else(|v| panic!("seed {name}: {v}"));
+                assert!(outcome.is_some(), "seed {name} must decode");
+            })
+            .on("invalid-", |name, data| {
+                let outcome = crate::oracles::node_decode_canonical(data)
+                    .unwrap_or_else(|v| panic!("seed {name}: {v}"));
+                assert!(
+                    outcome.is_none(),
+                    "seed {name} must remain a rejected input"
+                );
+            })
+            .floor(5)
+            .run();
+    }
 }

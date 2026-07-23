@@ -44,6 +44,7 @@ alloy-signer-local = { workspace = true }
 alloy-primitives = { workspace = true, features = ["getrandom", "arbitrary"] }
 arbitrary = { workspace = true }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
+nectar-testing.workspace = true
 
 [[bench]]
 name = "verify"
