@@ -28,7 +28,7 @@ thiserror.workspace = true
 [dev-dependencies]
 anyhow.workspace = true
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
-nectar-testing.workspace = true
+nectar-testing = { workspace = true, features = ["fixtures"] }
 proptest.workspace = true
 
 [features]

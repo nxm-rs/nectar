@@ -11,11 +11,19 @@ authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Deterministic async test harness for the nectar workspace"
+description = "Deterministic async test harness and shared fixtures for the nectar workspace"
 publish = false
 
 [dependencies]
 futures-executor.workspace = true
+nectar-file = { workspace = true, optional = true }
+nectar-postage = { workspace = true, optional = true }
+nectar-primitives = { workspace = true, optional = true }
+
+[features]
+# Shared split fixtures and SwarmSpec doubles. Encrypted-mode splits ride the
+# mode-generic `split_into`; callers bring their own encryption features.
+fixtures = [ "dep:nectar-file", "dep:nectar-postage", "dep:nectar-primitives" ]
 
 # The wasm smoke test is the executable proof that a !Send store satisfies the
 # chunk traits on wasm32; the same store cannot compile on native targets.

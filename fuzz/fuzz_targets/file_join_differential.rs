@@ -9,10 +9,10 @@
 
 use std::sync::Arc;
 
-use nectar_testing::run;
 use libfuzzer_sys::fuzz_target;
 use nectar_file::{File, Plain};
-use nectar_fuzz::{split, tile};
+use nectar_fuzz::tile;
+use nectar_testing::{run, split_fixture};
 
 /// Tiny body size: fan-out 8, so a few KiB already builds a deep tree.
 const BODY: usize = 256;
@@ -21,7 +21,8 @@ fuzz_target!(|input: (Vec<u8>, u16)| {
     let (seed, copies) = input;
     let data = tile(&seed, copies);
 
-    let (root, store) = split(&data);
+    let (root, store) = split_fixture::<BODY>(&data);
+    let store = Arc::new(store);
 
     let collected = run(async {
         let file = File::<_, Plain, BODY>::open(Arc::clone(&store), root)

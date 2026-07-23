@@ -2037,6 +2037,9 @@ name = "nectar-testing"
 version = "0.4.0"
 dependencies = [
  "futures-executor",
+ "nectar-file",
+ "nectar-postage",
+ "nectar-primitives",
 ]
 
 [[package]]

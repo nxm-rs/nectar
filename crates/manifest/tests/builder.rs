@@ -11,10 +11,7 @@ use nectar_manifest::{
     Prefix, RootExtension, V1, build_files,
 };
 use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, MemoryStore};
-use nectar_testing::run;
-
-mod common;
-use common::split_whole;
+use nectar_testing::{run, split_whole};
 
 const fn ref32(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))

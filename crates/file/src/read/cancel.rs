@@ -15,11 +15,10 @@ use futures::Stream;
 use futures::task::noop_waker;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkStoreError, MemoryStore, TrustedGet};
-use nectar_testing::{run, yield_now};
+use nectar_testing::{run, split_fixture, yield_now};
 
 #[cfg(feature = "encryption")]
 use crate::testutil::split_encrypted_fixture;
-use crate::testutil::split_fixture;
 
 use super::{File, FileReader, FileStream};
 use crate::config::Window;

@@ -1,5 +1,5 @@
-//! Shared test fixtures: whole-buffer splits into a fresh memory store, and a
-//! closure-driven fault store for the split fault battery.
+//! Closure-driven fault store for the split fault battery, plus the one
+//! fixture the shared testing crate cannot host for this crate's own tests.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::boxed::Box;
@@ -8,16 +8,10 @@ use std::sync::Arc;
 
 #[cfg(feature = "encryption")]
 use nectar_primitives::chunk::encryption::EncryptedChunkRef;
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::{ChunkPut, ChunkStoreError, MaybeSend, MaybeSync, MemoryStore};
-use nectar_testing::run;
-
+use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 #[cfg(feature = "encryption")]
-use crate::split::RandomKeys;
-use crate::split::{Split, SplitMode};
-#[cfg(feature = "encryption")]
-use crate::walk::Encrypted;
-use crate::walk::Plain;
+use nectar_primitives::store::MemoryStore;
+use nectar_primitives::store::{ChunkPut, ChunkStoreError, MaybeSend, MaybeSync};
 
 /// A fault-injection store: forwards each put to `inner` when the policy
 /// admits it, else returns the policy's error. The policy is consulted once
@@ -99,33 +93,24 @@ where
     failing_at(inner, 0)
 }
 
-/// Drive `data` whole through a fresh split, returning the root and the
-/// filled store. `MemoryStore` clones deeply, so the split writes through a
-/// shared `Arc` handle that unwraps once the puts have drained.
-fn split_into<M, const B: usize>(data: &[u8]) -> (M::Root, MemoryStore<AnyChunkSet<B>>)
-where
-    M: SplitMode + Default,
-{
-    let store = Arc::new(MemoryStore::new());
-    let root = run(Split::<Arc<MemoryStore<AnyChunkSet<B>>>, M, B>::collect(
-        Arc::clone(&store),
-        data,
-    ))
-    .unwrap();
-    (root, Arc::into_inner(store).unwrap())
-}
-
-/// Split `data` into a fresh memory store, returning root and store.
-pub(crate) fn split_fixture<const B: usize>(
-    data: &[u8],
-) -> (ChunkAddress, MemoryStore<AnyChunkSet<B>>) {
-    split_into::<Plain, B>(data)
-}
-
-/// Split `data` into encrypted chunks in a fresh memory store.
+/// Encrypted split of `data` into a fresh memory store.
+///
+/// Stays local: this crate's `cfg(test)` build is a distinct crate instance
+/// from the one the shared fixtures bind to, so its mode types cannot
+/// instantiate the shared mode-generic fixture.
 #[cfg(feature = "encryption")]
 pub(crate) fn split_encrypted_fixture<const B: usize>(
     data: &[u8],
 ) -> (EncryptedChunkRef, MemoryStore<AnyChunkSet<B>>) {
-    split_into::<Encrypted<RandomKeys>, B>(data)
+    use crate::split::{RandomKeys, Split};
+    use crate::walk::Encrypted;
+
+    let store = Arc::new(MemoryStore::new());
+    let root = nectar_testing::run(Split::<
+        Arc<MemoryStore<AnyChunkSet<B>>>,
+        Encrypted<RandomKeys>,
+        B,
+    >::collect(Arc::clone(&store), data))
+    .unwrap();
+    (root, Arc::into_inner(store).unwrap())
 }

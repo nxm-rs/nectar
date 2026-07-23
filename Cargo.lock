@@ -2288,6 +2288,7 @@ dependencies = [
  "futures",
  "futures-executor",
  "nectar-file",
+ "nectar-postage",
  "nectar-primitives 0.4.0",
  "wasm-bindgen-test",
 ]

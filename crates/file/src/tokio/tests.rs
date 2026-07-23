@@ -9,13 +9,14 @@ use std::vec::Vec;
 
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, MemoryStore};
+use nectar_testing::split_fixture;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use super::{SpawnedReader, TokioReader, TokioWriter};
 use crate::config::PutWindow;
 use crate::read::File;
 use crate::split::Split;
-use crate::testutil::{reject_all, split_fixture};
+use crate::testutil::reject_all;
 use crate::walk::Plain;
 
 /// Tiny body size shared with the facade tests: fan-out 8, so small files

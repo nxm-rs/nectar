@@ -9,10 +9,10 @@
 #![no_main]
 
 use arbitrary::Arbitrary;
-use nectar_testing::run;
 use libfuzzer_sys::fuzz_target;
 use nectar_file::{File, Plain};
-use nectar_fuzz::{split, tile};
+use nectar_fuzz::tile;
+use nectar_testing::{run, split_fixture};
 
 /// Tiny body size: fan-out 8, so a few KiB already builds a deep tree.
 const BODY: usize = 256;
@@ -50,7 +50,7 @@ fuzz_target!(|input: (Vec<u8>, u16, (u64, u64), Vec<Op>)| {
     let window = &data[to_usize(clip_start)..to_usize(clip_end)];
     let eff = clip_end - clip_start;
 
-    let (root, store) = split(&data);
+    let (root, store) = split_fixture::<BODY>(&data);
     run(async move {
         let file = File::<_, Plain, BODY>::open(store, root)
             .await
