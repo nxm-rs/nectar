@@ -782,8 +782,13 @@ mod tests {
     /// `Node::<EncryptedChunkRef>` for 64-byte entries).
     /// The oracle is "no panic";
     /// `Err` is an acceptable outcome for any seed. Additionally pin the
-    /// intent of each seed by name: `crash-*` seeds must stay `Err` (they
-    /// are fixed panic reproducers), `valid-*` seeds must decode `Ok`.
+    /// intent of each seed by name: `crash-*` seeds must stay `Err` at both
+    /// widths (they are fixed panic reproducers), `valid-*` seeds must decode
+    /// `Ok` at the width their header declares. Each width must actually
+    /// decode the seeds it claims, not merely be skipped: the two plain
+    /// manifests at the `ChunkRef` width and the `ref_size = 64` cases at the
+    /// `EncryptedChunkRef` width, so the 64-byte slicing arithmetic is
+    /// exercised from the corpus and not only after mutation.
     ///
     /// This keeps the fuzz seeds meaningful on stable without running the
     /// fuzzer itself.
@@ -792,6 +797,8 @@ mod tests {
         let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fuzz/seeds/mantaray_node_decode");
         let mut replayed = 0usize;
+        let mut plain_decoded = 0usize;
+        let mut wide_decoded = 0usize;
         for entry in std::fs::read_dir(&seed_dir)
             .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
         {
@@ -801,19 +808,39 @@ mod tests {
 
             // The fuzz oracle: must not panic. Drive both entry widths the
             // fuzz target drives.
-            let result = Node::<ChunkRef>::decode(data.as_slice());
-            let _ = Node::<nectar_primitives::EncryptedChunkRef>::decode(data.as_slice());
+            let plain = Node::<ChunkRef>::decode(data.as_slice());
+            let wide = Node::<nectar_primitives::EncryptedChunkRef>::decode(data.as_slice());
+            if plain.is_ok() {
+                plain_decoded += 1;
+            }
+            if wide.is_ok() {
+                wide_decoded += 1;
+            }
 
             if name.starts_with("crash-") {
-                assert!(result.is_err(), "seed {name} must remain an Err reproducer");
+                assert!(
+                    plain.is_err() && wide.is_err(),
+                    "seed {name} must remain an Err reproducer at both widths"
+                );
             } else if name.starts_with("valid-") {
-                assert!(result.is_ok(), "seed {name} must decode successfully");
+                assert!(
+                    plain.is_ok() || wide.is_ok(),
+                    "seed {name} must decode successfully at one of the two widths"
+                );
             }
             replayed += 1;
         }
         assert!(
-            replayed >= 3,
-            "expected at least the 3 curated seeds, found {replayed}"
+            replayed >= 5,
+            "expected at least the 5 curated seeds, found {replayed}"
+        );
+        assert!(
+            plain_decoded >= 2,
+            "expected the v0.1 and v0.2 manifests to decode at the ChunkRef width, decoded {plain_decoded}"
+        );
+        assert!(
+            wide_decoded >= 2,
+            "expected the ref_size=64 seeds (empty and keyed fork) to decode at the EncryptedChunkRef width, decoded {wide_decoded}"
         );
     }
 
