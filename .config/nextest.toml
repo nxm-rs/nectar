@@ -1,0 +1,5 @@
+# Per-test hang gate: a deadlocked test fails by name in minutes instead of
+# eating the whole job timeout. nextest runs each test in its own process, so
+# the global-allocator witnesses are already isolated; no serial group needed.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 3 }
