@@ -4,9 +4,10 @@
 //! `mantaray_node_roundtrip` drives the encode-first property from
 //! valid-by-construction `Arbitrary` nodes, but the encoder emits v0.2 only,
 //! so it never exercises a v0.1 wire image and only the 32-byte plain width.
-//! This target closes both gaps with its own seed corpus: the v0.1 and v0.2
-//! plain manifests shared with `mantaray_node_decode`, plus a `ref_size` 64
-//! encrypted case. It decodes a real wire image to recover its header and fork
+//! This target closes both gaps with its own seed corpus, shared with
+//! `mantaray_node_decode`: the v0.1 and v0.2 plain manifests plus two
+//! `ref_size` 64 encrypted cases.
+//! It decodes a real wire image to recover its header and fork
 //! records, then round-trips that recovered node through encode and decode.
 //! Both entry widths are attempted on every input,
 //! `ChunkRef` (32-byte plain entries) and `EncryptedChunkRef` (64-byte
