@@ -100,6 +100,10 @@ which replays its seeds through the same fixed-point round trip.
   `mantaray_node_decode/crash-v01-header-only-64b.bin`, the input behind the
   bound-check fix in `crates/mantaray/src/codec.rs`). Name seeds
   `valid-*`/`invalid-*`/`edge-*`/`crash-*` with a size hint.
+- Nightly CI also commits its minimized corpus into `fuzz/seeds/<target>/` as
+  sha1-named files via an automated PR, so accumulated coverage survives
+  cache eviction. Machine-managed: never hand-edit or rename these; the next
+  refresh replaces them wholesale.
 - `fuzz/corpus/`, `fuzz/artifacts/`, `fuzz/coverage/` are **gitignored**; the
   corpus lives in the CI cache and on developer machines.
 - When a fuzzer finds a crash: `cargo fuzz tmin` it, commit the minimized
@@ -116,7 +120,8 @@ which replays its seeds through the same fixed-point round trip.
   (`-rss_limit_mb=2048`) on a per-target cached corpus with the committed
   seeds merged in. Crash artifacts are uploaded on failure.
 - **Nightly cron** — 10 minutes per target on the same corpus caches,
-  followed by `cargo fuzz cmin` so the caches don't grow without bound.
+  followed by a merge-minimize over corpus plus seeds; the minimized set is
+  then committed back into `fuzz/seeds/` by an automated PR.
 
 ## NixOS gotchas
 
