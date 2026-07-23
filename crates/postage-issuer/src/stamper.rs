@@ -197,6 +197,7 @@ mod tests {
     use super::*;
     use crate::MemoryIssuer;
     use alloy_primitives::{B256, Signature, U256};
+    use nectar_postage::BucketDepth;
     use nectar_postage::StampIndex;
 
     /// A mock signer for testing that creates deterministic signatures.
@@ -218,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_basic() {
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         let address = ChunkAddress::new([0xAB; 32]);
@@ -231,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_increments_index() {
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         // Use same address to hit same bucket
@@ -256,7 +257,7 @@ mod tests {
 
         // Create an issuer with very small bucket capacity: depth=17, bucket_depth=16
         // This gives 2^(17-16) = 2 slots per bucket
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 17, 16);
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         let address = ChunkAddress::new([0xAB; 32]);
@@ -275,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_max_utilization() {
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         assert_eq!(stamper.max_bucket_utilization(), 0);

@@ -17,7 +17,9 @@
 
 use std::sync::Mutex;
 
-use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
+use nectar_postage::{
+    Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
+};
 use nectar_primitives::ChunkAddress;
 
 use crate::error::IssuerError;
@@ -235,7 +237,7 @@ impl<R: Reservation> ShardedRingIssuer<R> {
     fn with_shard_count(
         batch_id: BatchId,
         depth: u8,
-        bucket_depth: u8,
+        bucket_depth: BucketDepth,
         shard_count: usize,
         make_reservation: impl Fn(u32, u32, usize) -> R,
     ) -> Self {
@@ -243,6 +245,8 @@ impl<R: Reservation> ShardedRingIssuer<R> {
             shard_count.is_power_of_two(),
             "shard_count must be a power of 2"
         );
+
+        let bucket_depth = bucket_depth.get();
 
         let total_buckets = 1u32 << bucket_depth;
         // `u32` always fits `usize` on the >=32-bit targets this crate supports.
@@ -438,7 +442,7 @@ mod tests {
             0,
             Default::default(),
             depth,
-            bucket_depth,
+            BucketDepth::new(bucket_depth).unwrap(),
             false,
         )
     }
@@ -450,7 +454,7 @@ mod tests {
             0,
             Default::default(),
             depth,
-            bucket_depth,
+            BucketDepth::new(bucket_depth).unwrap(),
             true,
         )
     }

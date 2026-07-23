@@ -2,7 +2,9 @@
 
 use crate::counter::{CounterMode, CounterTable};
 use crate::error::IssuerError;
-use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
+use nectar_postage::{
+    Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
+};
 use nectar_primitives::ChunkAddress;
 
 /// A trait for managing stamp issuance within a batch.
@@ -154,10 +156,10 @@ pub struct MemoryIssuer {
 
 impl MemoryIssuer {
     /// Creates a new fill-only memory issuer for the given batch geometry.
-    pub fn new(batch_id: BatchId, depth: u8, bucket_depth: u8) -> Self {
+    pub fn new(batch_id: BatchId, depth: u8, bucket_depth: BucketDepth) -> Self {
         Self {
             batch_id,
-            counters: CounterTable::new(depth, bucket_depth, CounterMode::Fill),
+            counters: CounterTable::new(depth, bucket_depth.get(), CounterMode::Fill),
         }
     }
 
@@ -277,7 +279,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_basic() {
         let batch_id = BatchId::ZERO;
-        let issuer = MemoryIssuer::new(batch_id, 20, 16);
+        let issuer = MemoryIssuer::new(batch_id, 20, BucketDepth::new(16).unwrap());
 
         assert_eq!(issuer.batch_id(), batch_id);
         assert_eq!(issuer.batch_depth(), 20);
@@ -290,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_prepare_stamp() {
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         let address = test_address(0xCBE5);
         let digest = issuer.prepare_stamp(&address, 12345).unwrap();
@@ -305,7 +307,7 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_increments_index() {
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         let address = test_address(0xCBE5);
 
@@ -322,7 +324,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_bucket_full() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
 
         let address = test_address(0xABCD);
 
@@ -343,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_bucket_utilization() {
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         let addr1 = test_address(0x1234);
         let addr2 = test_address(0x5678);
@@ -360,7 +362,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_capacity_check() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
 
         let address = test_address(0x0001);
 
@@ -376,7 +378,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_near_capacity() {
         // depth=18, bucket_depth=16 gives 4 slots per bucket
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 18, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 18, BucketDepth::new(16).unwrap());
 
         let address = test_address(0x0001);
 
@@ -402,7 +404,15 @@ mod tests {
         // A mutable batch must never yield an issuer: the obvious constructor
         // refuses it instead of handing back a reserved-blind ring that would
         // silently overwrite a self-hosted snapshot's own chunks.
-        let mutable = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, 16, false);
+        let mutable = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Default::default(),
+            20,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         assert!(matches!(
             MemoryIssuer::from_batch(&mutable),
@@ -417,10 +427,18 @@ mod tests {
         // An immutable batch yields a fill-only issuer byte-for-byte identical
         // to `new` for the same geometry: same indices and the same digest.
         let batch_id = BatchId::new([0x11u8; 32]);
-        let immutable = Batch::new(batch_id, 0, 0, Default::default(), 17, 16, true);
+        let immutable = Batch::new(
+            batch_id,
+            0,
+            0,
+            Default::default(),
+            17,
+            BucketDepth::new(16).unwrap(),
+            true,
+        );
 
         let mut from_batch = MemoryIssuer::from_batch(&immutable).unwrap();
-        let mut from_new = MemoryIssuer::new(batch_id, 17, 16);
+        let mut from_new = MemoryIssuer::new(batch_id, 17, BucketDepth::new(16).unwrap());
 
         for ts in 0..2u64 {
             for leading in [0xCBE5u16, 0x0001, 0xABCD] {
@@ -443,7 +461,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_dilute_grows_capacity_only() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, 16);
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let address = test_address(0xABCD);
 
         // Fill the bucket, then a dilution to depth 18 (4 slots) reopens it

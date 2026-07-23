@@ -15,7 +15,7 @@
     clippy::missing_panics_doc
 )]
 use alloy_primitives::Address;
-use nectar_postage::{BatchId, StampIndex, calculate_bucket};
+use nectar_postage::{BatchId, BucketDepth, StampIndex, calculate_bucket};
 use nectar_postage_issuer::StampIssuer;
 use nectar_postage_usage::{Mutability, PublishedSequence, Snapshot, SnapshotIssuer, UsageTable};
 use nectar_primitives::ChunkAddress;
@@ -220,7 +220,7 @@ fn shared_counter_table_backs_both_crates_identically() {
     // advances exactly like a bare MemoryIssuer.
     let table = UsageTable::new(batch_id, 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let mut memory = MemoryIssuer::new(batch_id, 20, BUCKET_DEPTH);
+    let mut memory = MemoryIssuer::new(batch_id, 20, BucketDepth::new(BUCKET_DEPTH).unwrap());
 
     for bucket in [0x0001u32, 0x0001, 0xCBE5, 0x0001, 0xCBE5] {
         for salt in 0..3u8 {

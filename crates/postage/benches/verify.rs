@@ -20,7 +20,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nectar_postage::{
-    Batch, BatchId, Stamp, StampBytes, StampDigest, StampIndex,
+    Batch, BatchId, BucketDepth, Stamp, StampBytes, StampDigest, StampIndex,
     parallel::{verify_stamps_parallel, verify_stamps_parallel_with_pubkey},
 };
 use nectar_primitives::ChunkAddress;
@@ -123,7 +123,15 @@ fn bench_stamp_index_roundtrip(c: &mut Criterion) {
 // Validation Benchmarks
 
 fn bench_validate_index(c: &mut Criterion) {
-    let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 20, 16, false);
+    let batch = Batch::new(
+        BatchId::ZERO,
+        0,
+        0,
+        Address::ZERO,
+        20,
+        BucketDepth::new(16).unwrap(),
+        false,
+    );
     let valid_index = StampIndex::new(1000, 10);
     let invalid_bucket = StampIndex::new(70000, 0);
 

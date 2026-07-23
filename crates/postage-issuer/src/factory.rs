@@ -149,17 +149,18 @@ impl BatchFactory for MemoryBatchFactory {
 mod tests {
     use super::*;
     use alloy_primitives::Address;
+    use nectar_postage::BucketDepth;
 
     #[tokio::test]
     async fn test_memory_factory_create() {
         let factory = MemoryBatchFactory::new(100);
 
-        let params = BatchParams::new(Address::ZERO, 20, 16, 1000);
+        let params = BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000);
         let result = factory.create(params).await.unwrap();
 
         assert_eq!(result.batch.owner(), Address::ZERO);
         assert_eq!(result.batch.depth(), 20);
-        assert_eq!(result.batch.bucket_depth(), 16);
+        assert_eq!(result.batch.bucket_depth().get(), 16);
         assert_eq!(result.batch.value(), 1000);
         assert_eq!(result.batch.start(), 100);
         assert!(result.tx_hash.is_none());
@@ -169,7 +170,7 @@ mod tests {
     async fn test_memory_factory_unique_ids() {
         let factory = MemoryBatchFactory::new(0);
 
-        let params = BatchParams::new(Address::ZERO, 20, 16, 1000);
+        let params = BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000);
 
         let r1 = factory.create(params.clone()).await.unwrap();
         let r2 = factory.create(params.clone()).await.unwrap();
@@ -183,7 +184,8 @@ mod tests {
     async fn test_memory_factory_immutable() {
         let factory = MemoryBatchFactory::new(0);
 
-        let params = BatchParams::new(Address::ZERO, 20, 16, 1000).immutable(true);
+        let params = BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
+            .immutable(true);
         let result = factory.create(params).await.unwrap();
 
         assert!(result.batch.immutable());

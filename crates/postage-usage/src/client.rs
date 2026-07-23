@@ -335,6 +335,7 @@ where
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use alloc::collections::BTreeMap;
+    use nectar_postage::BucketDepth;
     use std::sync::Mutex;
 
     use alloy_primitives::B256;
@@ -444,7 +445,7 @@ mod tests {
             0,
             signer.address(),
             20,
-            16,
+            BucketDepth::new(16).unwrap(),
             immutable,
         )
     }

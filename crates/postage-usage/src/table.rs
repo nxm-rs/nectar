@@ -187,7 +187,7 @@ impl UsageTable {
         Self::new(
             batch.id(),
             batch.depth(),
-            batch.bucket_depth(),
+            batch.bucket_depth().get(),
             Mutability::from_batch(batch),
         )
     }
@@ -498,7 +498,7 @@ mod arbitrary_impls {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::{Address, b256};
-    use nectar_postage::Batch;
+    use nectar_postage::{Batch, BucketDepth};
 
     use super::*;
 
@@ -519,7 +519,7 @@ mod tests {
             0,
             Address::repeat_byte(0x11),
             depth,
-            bucket_depth,
+            BucketDepth::new(bucket_depth).unwrap(),
             immutable,
         )
     }

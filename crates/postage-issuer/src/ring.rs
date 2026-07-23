@@ -30,7 +30,9 @@ extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
+use nectar_postage::{
+    Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
+};
 use nectar_primitives::ChunkAddress;
 
 use crate::StampIssuer;
@@ -209,7 +211,13 @@ impl<R: Reservation> RingIssuer<R> {
     }
 
     /// Builds a ring directly from geometry and a reservation policy.
-    fn with_reservation(batch_id: BatchId, depth: u8, bucket_depth: u8, reservation: R) -> Self {
+    fn with_reservation(
+        batch_id: BatchId,
+        depth: u8,
+        bucket_depth: BucketDepth,
+        reservation: R,
+    ) -> Self {
+        let bucket_depth = bucket_depth.get();
         let bucket_count = 1usize << bucket_depth;
         Self {
             batch_id,
@@ -412,7 +420,7 @@ mod tests {
             0,
             Default::default(),
             depth,
-            bucket_depth,
+            BucketDepth::new(bucket_depth).unwrap(),
             false,
         )
     }
@@ -424,7 +432,7 @@ mod tests {
             0,
             Default::default(),
             depth,
-            bucket_depth,
+            BucketDepth::new(bucket_depth).unwrap(),
             true,
         )
     }

@@ -225,11 +225,20 @@ impl<S: BatchStore> StoreValidator<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BucketDepth;
     use alloy_primitives::Address;
 
     #[test]
     fn test_validate_index_valid() {
-        let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         // Valid: bucket < 2^16, index < 2^(18-16) = 4
         let index = StampIndex::new(1000, 3);
@@ -238,7 +247,15 @@ mod tests {
 
     #[test]
     fn test_validate_index_bucket_out_of_range() {
-        let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         // Invalid: bucket >= 2^16 = 65536
         let index = StampIndex::new(70000, 0);
@@ -250,7 +267,15 @@ mod tests {
 
     #[test]
     fn test_validate_index_position_out_of_range() {
-        let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         // Invalid: index >= 2^(18-16) = 4
         let index = StampIndex::new(1000, 5);
@@ -262,7 +287,15 @@ mod tests {
 
     #[test]
     fn test_bucket_for_address() {
-        let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         let address = ChunkAddress::new([
             0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -274,7 +307,15 @@ mod tests {
 
     #[test]
     fn test_validate_bucket_match() {
-        let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         let address = ChunkAddress::new([
             0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -287,7 +328,15 @@ mod tests {
 
     #[test]
     fn test_validate_bucket_mismatch() {
-        let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         let address = ChunkAddress::new([
             0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

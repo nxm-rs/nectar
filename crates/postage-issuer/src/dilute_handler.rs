@@ -170,6 +170,7 @@ impl BatchEventHandler for IssuerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nectar_postage::BucketDepth;
 
     fn batch_id(byte: u8) -> BatchId {
         BatchId::new([byte; 32])
@@ -180,7 +181,11 @@ mod tests {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
         let tracked = batch_id(0x11);
         let mut registry = IssuerRegistry::new();
-        registry.register(MemoryIssuer::new(tracked, 17, 16));
+        registry.register(MemoryIssuer::new(
+            tracked,
+            17,
+            BucketDepth::new(16).unwrap(),
+        ));
         assert_eq!(registry.get(&tracked).unwrap().bucket_capacity(), 2);
 
         registry
@@ -201,7 +206,11 @@ mod tests {
     fn depth_increase_grows_sharded_issuer_capacity() {
         let tracked = batch_id(0x22);
         let mut registry = IssuerRegistry::new();
-        registry.register(ShardedIssuer::new(tracked, 17, 16));
+        registry.register(ShardedIssuer::new(
+            tracked,
+            17,
+            BucketDepth::new(16).unwrap(),
+        ));
         assert_eq!(registry.get(&tracked).unwrap().bucket_capacity(), 2);
 
         registry
@@ -222,7 +231,11 @@ mod tests {
         let other = batch_id(0x44);
 
         let mut registry = IssuerRegistry::new();
-        registry.register(MemoryIssuer::new(tracked, 17, 16));
+        registry.register(MemoryIssuer::new(
+            tracked,
+            17,
+            BucketDepth::new(16).unwrap(),
+        ));
 
         // An event for a batch we do not track must not error and must leave
         // the tracked issuer untouched.
@@ -246,7 +259,11 @@ mod tests {
     fn non_depth_events_are_ignored() {
         let tracked = batch_id(0x55);
         let mut registry = IssuerRegistry::new();
-        registry.register(MemoryIssuer::new(tracked, 17, 16));
+        registry.register(MemoryIssuer::new(
+            tracked,
+            17,
+            BucketDepth::new(16).unwrap(),
+        ));
 
         registry
             .handle_event(BatchEvent::TopUp {
@@ -270,7 +287,11 @@ mod tests {
         // refuses it and the error propagates.
         let tracked = batch_id(0x66);
         let mut registry = IssuerRegistry::new();
-        registry.register(MemoryIssuer::new(tracked, 18, 16));
+        registry.register(MemoryIssuer::new(
+            tracked,
+            18,
+            BucketDepth::new(16).unwrap(),
+        ));
 
         let result = registry.handle_event(BatchEvent::DepthIncrease {
             batch_id: tracked,

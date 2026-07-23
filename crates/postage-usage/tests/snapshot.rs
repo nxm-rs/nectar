@@ -14,7 +14,7 @@
     clippy::missing_panics_doc
 )]
 use alloy_primitives::Address;
-use nectar_postage::calculate_bucket;
+use nectar_postage::{BucketDepth, calculate_bucket};
 use nectar_postage_usage::{
     Batch, BatchId, MAGIC, Mutability, PersistPlan, PublishedSequence, RootInfo, Snapshot,
     UsageError, UsageTable, usage_chunk_address, usage_chunk_id,
@@ -53,14 +53,14 @@ fn roundtrip(plan: &PersistPlan) -> Snapshot {
     root.assemble(&leaves).unwrap()
 }
 
-const fn batch(depth: u8, immutable: bool) -> Batch {
+fn batch(depth: u8, immutable: bool) -> Batch {
     Batch::new(
         batch_id(),
         1_000,
         0,
         owner(),
         depth,
-        BUCKET_DEPTH,
+        BucketDepth::new(BUCKET_DEPTH).unwrap(),
         immutable,
     )
 }

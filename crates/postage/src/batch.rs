@@ -78,6 +78,81 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
     }
 }
 
+/// The number of leading chunk-address bits that select a collision bucket.
+///
+/// Bounded to `1..=32` at construction: bucket selection shifts a `u32` right by
+/// `32 - depth`, so a depth outside that range names no bucket. Holding the
+/// bound in the type keeps the shift total wherever a depth reaches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, Into)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
+#[display("{_0}")]
+#[into(u8)]
+#[repr(transparent)]
+pub struct BucketDepth(u8);
+
+impl BucketDepth {
+    /// The smallest valid depth, two collision buckets.
+    pub const MIN: Self = Self(1);
+
+    /// The largest valid depth, the bit width of the bucket key.
+    pub const MAX: Self = Self(32);
+
+    /// Validates a raw depth against the `1..=32` bound.
+    ///
+    /// # Errors
+    ///
+    /// [`StampError::InvalidBucketDepth`] when `depth` is zero or above 32.
+    #[inline]
+    pub const fn new(depth: u8) -> Result<Self, StampError> {
+        if depth < Self::MIN.0 || depth > Self::MAX.0 {
+            return Err(StampError::InvalidBucketDepth {
+                bucket_depth: depth,
+            });
+        }
+        Ok(Self(depth))
+    }
+
+    /// Returns the depth as a bit count.
+    #[inline]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    /// Returns the number of collision buckets, `2^depth`.
+    ///
+    /// Widened to `u64` because depth 32 overflows a `u32` count by one.
+    #[inline]
+    pub const fn bucket_count(self) -> u64 {
+        1u64 << self.0
+    }
+
+    /// Returns whether a bucket index is one this depth addresses.
+    #[inline]
+    pub const fn contains_bucket(self, bucket: u32) -> bool {
+        // At the maximum depth every `u32` is a bucket, and the count no longer
+        // fits the `u32` shift used below.
+        self.0 == Self::MAX.0 || bucket < (1u32 << self.0)
+    }
+}
+
+impl TryFrom<u8> for BucketDepth {
+    type Error = StampError;
+
+    #[inline]
+    fn try_from(depth: u8) -> Result<Self, StampError> {
+        Self::new(depth)
+    }
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for BucketDepth {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Self::new(u.int_in_range(Self::MIN.0..=Self::MAX.0)?)
+            .map_err(|_| arbitrary::Error::IncorrectFormat)
+    }
+}
+
 /// Parameters for creating a new batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -87,7 +162,7 @@ pub struct BatchParams {
     /// The depth of the batch (total capacity = 2^depth chunks).
     pub depth: u8,
     /// The bucket depth for collision bucket uniformity.
-    pub bucket_depth: u8,
+    pub bucket_depth: BucketDepth,
     /// Whether the batch is immutable.
     ///
     /// Immutable batches cannot be diluted (depth increased) and chunks cannot
@@ -100,7 +175,7 @@ pub struct BatchParams {
 
 impl BatchParams {
     /// Creates new batch parameters.
-    pub const fn new(owner: Address, depth: u8, bucket_depth: u8, amount: u128) -> Self {
+    pub const fn new(owner: Address, depth: u8, bucket_depth: BucketDepth, amount: u128) -> Self {
         Self {
             owner,
             depth,
@@ -137,7 +212,7 @@ pub struct Batch {
     /// The depth of the batch, determining total capacity (2^depth chunks).
     depth: u8,
     /// The bucket depth for collision bucket uniformity.
-    bucket_depth: u8,
+    bucket_depth: BucketDepth,
     /// Whether the batch is immutable.
     ///
     /// Immutable batches cannot be diluted (depth increased) and chunks cannot
@@ -155,7 +230,7 @@ impl Batch {
         start: u64,
         owner: Address,
         depth: u8,
-        bucket_depth: u8,
+        bucket_depth: BucketDepth,
         immutable: bool,
     ) -> Self {
         Self {
@@ -205,7 +280,7 @@ impl Batch {
     ///
     /// This controls the uniformity of chunk distribution across collision buckets.
     #[inline]
-    pub const fn bucket_depth(&self) -> u8 {
+    pub const fn bucket_depth(&self) -> BucketDepth {
         self.bucket_depth
     }
 
@@ -219,21 +294,25 @@ impl Batch {
         self.immutable
     }
 
-    /// Returns the maximum number of chunks per bucket.
+    /// Returns the maximum number of chunks per bucket, `2^(depth - bucket_depth)`.
     ///
-    /// This is equal to 2^(depth - bucket_depth).
+    /// Yields a single slot for a batch shallower than its bucket depth, and
+    /// saturates at [`u32::MAX`] for a slot count wider than a `u32`.
     #[inline]
-    #[allow(clippy::arithmetic_side_effects)] // batch geometry invariant: depth >= bucket_depth (capacity is 2^(depth - bucket_depth) chunks per bucket)
     pub const fn bucket_upper_bound(&self) -> u32 {
-        1u32 << (self.depth - self.bucket_depth)
+        let slots = self.depth.saturating_sub(self.bucket_depth.get());
+        // `BucketDepth::MAX` is the bit width of the count, so a wider slot
+        // count has no `u32` to land in.
+        if slots >= BucketDepth::MAX.get() {
+            return u32::MAX;
+        }
+        1u32 << slots
     }
 
-    /// Returns the number of collision buckets.
-    ///
-    /// This is equal to 2^bucket_depth.
+    /// Returns the number of collision buckets, `2^bucket_depth`.
     #[inline]
-    pub const fn bucket_count(&self) -> u32 {
-        1u32 << self.bucket_depth
+    pub const fn bucket_count(&self) -> u64 {
+        self.bucket_depth.bucket_count()
     }
 
     /// Updates the batch value (for top-up operations).
@@ -275,7 +354,7 @@ impl Batch {
     /// `Ok(())` if the index is valid, or `Err(StampError::InvalidIndex)` otherwise.
     pub const fn validate_index(&self, index: &StampIndex) -> Result<(), StampError> {
         // Check bucket is within range
-        if index.bucket() >= self.bucket_count() {
+        if !self.bucket_depth.contains_bucket(index.bucket()) {
             return Err(StampError::InvalidIndex);
         }
 
@@ -293,7 +372,7 @@ impl Batch {
     /// chunk address, interpreted as a big-endian unsigned integer.
     #[inline]
     pub fn bucket_for_address(&self, address: &ChunkAddress) -> u32 {
-        calculate_bucket(address, self.bucket_depth)
+        calculate_bucket(address, self.bucket_depth.get())
     }
 
     /// Checks if a chunk address matches the expected bucket for a stamp index.
@@ -321,7 +400,8 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchParams {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         // Generate valid depth values (bucket_depth must be <= depth)
         let depth: u8 = u.int_in_range(1..=32)?;
-        let bucket_depth: u8 = u.int_in_range(1..=depth)?;
+        let bucket_depth = BucketDepth::new(u.int_in_range(1..=depth)?)
+            .map_err(|_| arbitrary::Error::IncorrectFormat)?;
 
         Ok(Self {
             owner: Address::arbitrary(u)?,
@@ -338,7 +418,8 @@ impl<'a> arbitrary::Arbitrary<'a> for Batch {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         // Generate valid depth values (bucket_depth must be <= depth)
         let depth: u8 = u.int_in_range(1..=32)?;
-        let bucket_depth: u8 = u.int_in_range(1..=depth)?;
+        let bucket_depth = BucketDepth::new(u.int_in_range(1..=depth)?)
+            .map_err(|_| arbitrary::Error::IncorrectFormat)?;
 
         Ok(Self::new(
             BatchId::arbitrary(u)?,
@@ -367,22 +448,119 @@ mod tests {
     }
 
     #[test]
+    fn bucket_depth_accepts_only_one_to_thirty_two() {
+        assert!(matches!(
+            BucketDepth::new(0),
+            Err(StampError::InvalidBucketDepth { bucket_depth: 0 })
+        ));
+        assert_eq!(BucketDepth::new(1).unwrap(), BucketDepth::MIN);
+        assert_eq!(BucketDepth::new(32).unwrap(), BucketDepth::MAX);
+        assert!(matches!(
+            BucketDepth::new(33),
+            Err(StampError::InvalidBucketDepth { bucket_depth: 33 })
+        ));
+        assert!(matches!(
+            BucketDepth::try_from(u8::MAX),
+            Err(StampError::InvalidBucketDepth {
+                bucket_depth: u8::MAX
+            })
+        ));
+    }
+
+    #[test]
+    fn bucket_geometry_holds_at_the_bounds() {
+        let min = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            1,
+            BucketDepth::MIN,
+            false,
+        );
+        assert_eq!(min.bucket_count(), 2);
+        assert_eq!(min.bucket_for_address(&ChunkAddress::new([0xFF; 32])), 1);
+
+        let max = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            u8::MAX,
+            BucketDepth::MAX,
+            false,
+        );
+        assert_eq!(max.bucket_count(), 1 << 32);
+        assert_eq!(
+            max.bucket_for_address(&ChunkAddress::new([0xFF; 32])),
+            u32::MAX
+        );
+        // Every `u32` is a bucket at the maximum depth, and the per-bucket slot
+        // count saturates rather than overflowing its shift.
+        assert!(max.validate_index(&StampIndex::new(u32::MAX, 0)).is_ok());
+        assert_eq!(max.bucket_upper_bound(), u32::MAX);
+    }
+
+    #[test]
+    fn bucket_upper_bound_holds_for_a_batch_shallower_than_its_buckets() {
+        let batch = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            8,
+            BucketDepth::MAX,
+            false,
+        );
+        assert_eq!(batch.bucket_upper_bound(), 1);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_rejects_an_out_of_range_bucket_depth() {
+        use serde::{Deserialize, de::IntoDeserializer, de::value::Error};
+
+        let decode =
+            |raw: u8| BucketDepth::deserialize(IntoDeserializer::<Error>::into_deserializer(raw));
+
+        assert_eq!(decode(16).unwrap(), BucketDepth::new(16).unwrap());
+        assert!(decode(0).is_err());
+        assert!(decode(33).is_err());
+    }
+
+    #[test]
     fn test_batch_creation() {
         let id = BatchId::ZERO;
-        let batch = Batch::new(id, 1000, 100, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            id,
+            1000,
+            100,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         assert_eq!(batch.id(), id);
         assert_eq!(batch.value(), 1000);
         assert_eq!(batch.start(), 100);
         assert_eq!(batch.owner(), Address::ZERO);
         assert_eq!(batch.depth(), 18);
-        assert_eq!(batch.bucket_depth(), 16);
+        assert_eq!(batch.bucket_depth().get(), 16);
         assert!(!batch.immutable());
     }
 
     #[test]
     fn test_bucket_calculations() {
-        let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         // 2^(18-16) = 2^2 = 4 chunks per bucket
         assert_eq!(batch.bucket_upper_bound(), 4);
@@ -392,7 +570,15 @@ mod tests {
 
     #[test]
     fn test_batch_expiry() {
-        let batch = Batch::new(BatchId::ZERO, 1000, 0, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            BatchId::ZERO,
+            1000,
+            0,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         assert!(!batch.is_expired(999));
         assert!(batch.is_expired(1000));
@@ -401,7 +587,15 @@ mod tests {
 
     #[test]
     fn test_batch_usability() {
-        let batch = Batch::new(BatchId::ZERO, 1000, 100, Address::ZERO, 18, 16, false);
+        let batch = Batch::new(
+            BatchId::ZERO,
+            1000,
+            100,
+            Address::ZERO,
+            18,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
 
         assert!(!batch.is_usable(100, 10)); // Same block
         assert!(!batch.is_usable(109, 10)); // Not enough confirmations
@@ -411,11 +605,12 @@ mod tests {
 
     #[test]
     fn test_batch_params_builder() {
-        let params = BatchParams::new(Address::ZERO, 20, 16, 1000).immutable(true);
+        let params = BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
+            .immutable(true);
 
         assert_eq!(params.owner, Address::ZERO);
         assert_eq!(params.depth, 20);
-        assert_eq!(params.bucket_depth, 16);
+        assert_eq!(params.bucket_depth.get(), 16);
         assert_eq!(params.amount, 1000);
         assert!(params.immutable);
     }

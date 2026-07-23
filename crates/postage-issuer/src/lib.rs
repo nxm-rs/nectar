@@ -52,12 +52,12 @@
 //! # Example
 //!
 //! ```ignore
-//! use nectar_postage_issuer::{BatchId, BatchStamper, MemoryIssuer, Stamper};
+//! use nectar_postage_issuer::{BatchId, BatchStamper, BucketDepth, MemoryIssuer, Stamper};
 //! use nectar_primitives::ChunkAddress;
 //! use alloy_signer_local::PrivateKeySigner;
 //!
 //! // Create an issuer for a batch
-//! let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
+//! let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 //!
 //! // Combine with any SignerSync implementation to create a stamper
 //! let signer = PrivateKeySigner::random();

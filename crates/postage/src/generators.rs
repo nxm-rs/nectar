@@ -16,7 +16,7 @@ use alloy_signer::SignerSync;
 use arbitrary::Unstructured;
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 
-use crate::{Batch, BatchId, Stamp, StampDigest, StampIndex, StampedChunk};
+use crate::{Batch, BatchId, BucketDepth, Stamp, StampDigest, StampIndex, StampedChunk};
 
 /// A batch with valid depth invariants and the given owner.
 ///
@@ -24,7 +24,8 @@ use crate::{Batch, BatchId, Stamp, StampDigest, StampIndex, StampedChunk};
 /// per-bucket capacity both stay within `u32`.
 pub fn batch(u: &mut Unstructured<'_>, owner: Address) -> arbitrary::Result<Batch> {
     let depth: u8 = u.int_in_range(1..=32)?;
-    let bucket_depth: u8 = u.int_in_range(1..=depth.min(31))?;
+    let bucket_depth = BucketDepth::new(u.int_in_range(1..=depth.min(31))?)
+        .map_err(|_| arbitrary::Error::IncorrectFormat)?;
     Ok(Batch::new(
         BatchId::from(u.arbitrary::<[u8; 32]>()?),
         u.arbitrary()?,

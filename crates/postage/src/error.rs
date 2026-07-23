@@ -26,6 +26,13 @@ pub enum StampError {
     #[error("bucket mismatch: chunk address doesn't belong to stamp bucket")]
     BucketMismatch,
 
+    /// The bucket depth is outside the range a bucket key can address.
+    #[error("invalid bucket depth {bucket_depth}: must be in 1..=32")]
+    InvalidBucketDepth {
+        /// The rejected bucket depth.
+        bucket_depth: u8,
+    },
+
     /// The batch was not found.
     #[error("batch not found: {0}")]
     BatchNotFound(BatchId),
