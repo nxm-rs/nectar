@@ -866,31 +866,15 @@ impl<S: SwarmSpec> RootInfoFor<S> {
 
 #[cfg(test)]
 mod tests {
-    use core::num::NonZeroU8;
-
-    use nectar_primitives::NetworkId;
+    // Mainnet sets its floor at 16, which the format also caps, so a mainnet
+    // snapshot has exactly 2^16 buckets; `LowFloor` reaches the smaller
+    // geometries the format supports for a network that allows them.
+    use nectar_testing::{LowFloor, low_floor};
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
 
     use super::*;
     use crate::UsageTable;
-
-    /// A deployment whose bucket-depth floor is the format minimum. Mainnet
-    /// sets its floor at 16, which the format also caps, so a mainnet snapshot
-    /// has exactly 2^16 buckets; the fixtures below exercise the smaller
-    /// geometries the format supports for a network that allows them.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct Shallow;
-
-    impl SwarmSpec for Shallow {
-        const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-        const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
-    }
-
-    /// A bucket depth `Shallow` accepts but mainnet does not.
-    fn shallow(depth: u8) -> BucketDepth<Shallow> {
-        BucketDepth::new(depth).unwrap()
-    }
 
     /// The mainnet bucket depth, the only one mainnet and the format agree on.
     fn mainnet() -> BucketDepth {
@@ -997,7 +981,7 @@ mod tests {
         let table = UsageTableFor::from_counts(
             BatchId::new([0x42; 32]),
             12,
-            shallow(8),
+            low_floor(8),
             counts,
             Mutability::Immutable,
         )
@@ -1017,7 +1001,7 @@ mod tests {
         let mut root = root_with_one_exception();
         // Push the exception bucket index past the 256-bucket range.
         root[ROOT_HEADER_SIZE..ROOT_HEADER_SIZE + 4].copy_from_slice(&300u32.to_be_bytes());
-        let err = RootInfoFor::<Shallow>::parse(&root).unwrap_err();
+        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(err, UsageError::CorruptBucket { bucket: 300 });
         assert!(err.is_corruption());
         assert!(!err.is_recoverable());
@@ -1028,7 +1012,7 @@ mod tests {
         let mut root = root_with_one_exception();
         // Push the exception counter past the per-bucket capacity of 16.
         root[ROOT_HEADER_SIZE + 4..ROOT_HEADER_SIZE + 8].copy_from_slice(&17u32.to_be_bytes());
-        let err = RootInfoFor::<Shallow>::parse(&root).unwrap_err();
+        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(
             err,
             UsageError::CorruptCounter {
@@ -1048,7 +1032,7 @@ mod tests {
         // bucket-depth byte (here past the supported maximum) is decode
         // corruption, not a caller-input error.
         root[37] = 17;
-        let err = RootInfoFor::<Shallow>::parse(&root).unwrap_err();
+        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(
             err,
             UsageError::CorruptGeometry {
@@ -1078,7 +1062,7 @@ mod tests {
         root[60..62].copy_from_slice(&1u16.to_be_bytes()); // allocated = 1
         // exceptions = 0, leaves = 0, base = 0, slot 0 already zeroed.
 
-        let err = RootInfoFor::<Shallow>::parse(&root).unwrap_err();
+        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(
             err,
             UsageError::CorruptGeometry {
@@ -1095,7 +1079,7 @@ mod tests {
         let mut root = root_with_one_exception();
         // Push the allocated slot to the capacity bound (valid slots are < 16).
         root[ROOT_HEADER_SIZE + 8..ROOT_HEADER_SIZE + 12].copy_from_slice(&16u32.to_be_bytes());
-        let err = RootInfoFor::<Shallow>::parse(&root).unwrap_err();
+        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(
             err,
             UsageError::CorruptSlot {
@@ -1115,14 +1099,14 @@ mod tests {
         let table = UsageTableFor::from_counts(
             BatchId::new([0x42; 32]),
             12,
-            shallow(8),
+            low_floor(8),
             counts,
             Mutability::Immutable,
         )
         .unwrap();
         let mut corrupt = encode(&table, 1, &[4]).unwrap().root.to_vec();
         assert_eq!(
-            RootInfoFor::<Shallow>::parse(&corrupt)
+            RootInfoFor::<LowFloor>::parse(&corrupt)
                 .unwrap()
                 .leaf_count(),
             0,
@@ -1135,7 +1119,7 @@ mod tests {
         let packed_start = ROOT_HEADER_SIZE + 4;
         corrupt[packed_start] |= 0b1111_1000;
 
-        let info = RootInfoFor::<Shallow>::parse(&corrupt).unwrap();
+        let info = RootInfoFor::<LowFloor>::parse(&corrupt).unwrap();
         let err = info.assemble::<&[u8]>(&[]).unwrap_err();
         assert_eq!(
             err,
@@ -1159,7 +1143,7 @@ mod tests {
         let err = UsageTableFor::from_counts(
             BatchId::new([0x42; 32]),
             12,
-            shallow(8),
+            low_floor(8),
             counts,
             Mutability::Immutable,
         )
@@ -1224,13 +1208,13 @@ mod tests {
         /// Valid-by-construction snapshots survive the shared
         /// `snapshot_persist_round_trip` oracle; the property the
         /// `usage_snapshot_roundtrip` fuzz target drives. The generator runs
-        /// at `Shallow` so it spans the format's whole bucket-depth range
+        /// at `LowFloor` so it spans the format's whole bucket-depth range
         /// rather than the single geometry mainnet's floor admits. A refused
         /// snapshot slot (a full immutable bucket, an exhausted capacity-1
         /// ring) is a legitimate skip, bounded by proptest's reject limit.
         #[test]
         fn snapshot_persist_parse_assemble_round_trip(
-            snapshot in arb::<crate::SnapshotFor<Shallow>>(),
+            snapshot in arb::<crate::SnapshotFor<LowFloor>>(),
         ) {
             let outcome = crate::oracles::snapshot_persist_round_trip(snapshot);
             prop_assume!(outcome != Ok(false));

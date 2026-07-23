@@ -37,10 +37,15 @@
 //! 7. Derive hygiene: crate-side impls are hand-written (the two-tier
 //!    pattern is semantic, not derivable); only the fuzz workspace pulls the
 //!    `arbitrary` derive, for its target-local input grammars.
+//! Behind `fixtures`: the shared split fixtures and spec doubles.
 
 mod seeds;
 
 pub use seeds::SeedReplay;
+#[cfg(feature = "fixtures")]
+mod fixtures;
+#[cfg(feature = "fixtures")]
+pub use fixtures::*;
 
 use core::future::Future;
 use core::pin::Pin;

@@ -34,8 +34,8 @@ nectar-postage-usage = { path = "../crates/postage-usage", features = [
 ] }
 nectar-primitives = { path = "../crates/primitives", features = ["arbitrary"] }
 # The sanctioned executor entry point the targets drive futures to completion
-# with.
-nectar-testing = { path = "../crates/testing" }
+# with, plus the shared split fixture and spec doubles.
+nectar-testing = { path = "../crates/testing", features = ["fixtures"] }
 
 [[bin]]
 name = "mantaray_node_decode"

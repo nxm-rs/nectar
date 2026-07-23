@@ -22,7 +22,8 @@ use nectar_postage_usage::{
 
 mod common;
 
-use common::{BUCKET_DEPTH, Shallow, batch_id, bucket_depth, owner, shallow};
+use common::{BUCKET_DEPTH, batch_id, bucket_depth, owner};
+use nectar_testing::{LowFloor, low_floor};
 
 /// Deterministic pseudo-random counters with the given spread.
 fn synthetic_counts(buckets: usize, base: u32, spread: u32) -> Vec<u32> {
@@ -277,9 +278,9 @@ fn dilution_changes_no_leaf_bytes() {
 fn small_bucket_depth_inlines_in_the_root() {
     // 256 buckets at any width fit inline in the root.
     let counts = synthetic_counts(256, 1000, 4000);
-    // Bucket depth 8 is below mainnet's floor, so this runs at `Shallow`.
+    // Bucket depth 8 is below mainnet's floor, so this runs at `LowFloor`.
     let table =
-        UsageTableFor::from_counts(batch_id(), 21, shallow(8), counts, Mutability::Immutable)
+        UsageTableFor::from_counts(batch_id(), 21, low_floor(8), counts, Mutability::Immutable)
             .unwrap();
     let mut snapshot = SnapshotFor::new(table);
     let plan = snapshot
@@ -288,7 +289,7 @@ fn small_bucket_depth_inlines_in_the_root() {
         .plan_persist(&owner())
         .unwrap();
     assert_eq!(plan.chunks.len(), 1);
-    assert_eq!(roundtrip_for::<Shallow>(&plan), snapshot);
+    assert_eq!(roundtrip_for::<LowFloor>(&plan), snapshot);
 }
 
 #[test]
@@ -954,7 +955,7 @@ fn a_non_mainnet_snapshot_issues_reserves_and_recovers() {
     let table = UsageTableFor::from_counts(
         batch_id(),
         11,
-        shallow(8),
+        low_floor(8),
         vec![0u32; 256],
         Mutability::Mutable,
     )
@@ -990,12 +991,12 @@ fn a_non_mainnet_snapshot_issues_reserves_and_recovers() {
     // The next persist recovers byte-for-byte through the same spec.
     let plan = snapshot
         .revalidate(PublishedSequence::from(
-            &RootInfoFor::<Shallow>::parse(&first.chunks[0].payload).unwrap(),
+            &RootInfoFor::<LowFloor>::parse(&first.chunks[0].payload).unwrap(),
         ))
         .unwrap()
         .plan_persist(&owner())
         .unwrap();
-    assert_eq!(roundtrip_for::<Shallow>(&plan), snapshot);
+    assert_eq!(roundtrip_for::<LowFloor>(&plan), snapshot);
     assert!(snapshot.table().is_mutable());
     assert_eq!(snapshot.table().bucket_depth().get(), 8);
 

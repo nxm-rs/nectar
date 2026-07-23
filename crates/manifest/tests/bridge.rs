@@ -9,10 +9,7 @@ use anyhow::{Result, anyhow, ensure};
 use bytes::Bytes;
 use nectar_manifest::{Builder, Entry, Key, Reader, build_files};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
-use nectar_testing::run;
-
-mod common;
-use common::split_whole;
+use nectar_testing::{run, split_whole};
 
 const B: usize = DEFAULT_BODY_SIZE;
 /// Reference fan-out of one intermediate chunk at the default body size.

@@ -558,23 +558,11 @@ mod arbitrary_impls {
 
 #[cfg(test)]
 mod tests {
-    use core::num::NonZeroU8;
-
     use alloy_primitives::{Address, b256};
     use nectar_postage::Batch;
-    use nectar_primitives::NetworkId;
+    use nectar_testing::LowFloor;
 
     use super::*;
-
-    /// A deployment whose bucket-depth floor is the format minimum, for the
-    /// geometries mainnet's floor of 16 forbids.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct Shallow;
-
-    impl SwarmSpec for Shallow {
-        const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-        const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
-    }
 
     /// The mainnet bucket depth, the only one mainnet and the format agree on.
     fn mainnet() -> BucketDepth {
@@ -631,10 +619,10 @@ mod tests {
         }
         // The constructors cannot even be reached with one: no network can
         // declare a floor of zero, so the shallowest depth is 1.
-        assert!(BucketDepth::<Shallow>::new(0).is_err());
+        assert!(BucketDepth::<LowFloor>::new(0).is_err());
         // The wire path rejoins the type here, so a decoded zero is refused.
         assert_eq!(
-            checked_bucket_depth::<Shallow>(20, 0),
+            checked_bucket_depth::<LowFloor>(20, 0),
             Err(UsageError::InvalidGeometry {
                 depth: 20,
                 bucket_depth: 0,
@@ -646,7 +634,7 @@ mod tests {
     fn a_decoded_geometry_must_clear_the_network_floor() {
         // The format supports bucket depth 8; mainnet does not, and the wire
         // gate is where that is caught.
-        assert!(checked_bucket_depth::<Shallow>(12, 8).is_ok());
+        assert!(checked_bucket_depth::<LowFloor>(12, 8).is_ok());
         assert_eq!(
             checked_bucket_depth::<Mainnet>(12, 8),
             Err(UsageError::InvalidGeometry {

@@ -16,11 +16,10 @@ use nectar_primitives::chunk::{
 };
 use nectar_primitives::store::{ChunkStoreError, MemoryStore, TrustedGet};
 use nectar_primitives::{EntryRef, transcrypt};
-use nectar_testing::run;
+use nectar_testing::{run, split_fixture};
 
 #[cfg(feature = "encryption")]
 use crate::testutil::split_encrypted_fixture;
-use crate::testutil::split_fixture;
 
 use super::{AnyFile, CollectError, File, FileReader, OpenError, SeekPastEnd};
 use crate::config::Window;

@@ -664,7 +664,7 @@ impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for Batch<S> {
 
 #[cfg(test)]
 mod tests {
-    use core::num::NonZeroU8;
+    use nectar_testing::{HighFloor, LowFloor};
 
     use super::*;
 
@@ -676,24 +676,6 @@ mod tests {
         assert_eq!(BatchId::from(B256::new(bytes)), id);
         assert_eq!(<[u8; 32]>::from(id), bytes);
         assert_eq!(BatchId::from(bytes), id);
-    }
-
-    /// A deployment that raises the bucket-depth floor above mainnet's.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct Deep;
-
-    impl SwarmSpec for Deep {
-        const NETWORK_ID: nectar_primitives::NetworkId = nectar_primitives::NetworkId::TESTNET;
-        const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(20).unwrap();
-    }
-
-    /// A deployment whose floor is the lowest a spec can declare.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct Shallow;
-
-    impl SwarmSpec for Shallow {
-        const NETWORK_ID: nectar_primitives::NetworkId = nectar_primitives::NetworkId::TESTNET;
-        const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
     }
 
     #[test]
@@ -732,9 +714,9 @@ mod tests {
 
     #[test]
     fn the_lowest_floor_admits_a_one_bit_bucket() {
-        assert_eq!(BucketDepth::<Shallow>::new(1).unwrap().get(), 1);
+        assert_eq!(BucketDepth::<LowFloor>::new(1).unwrap().get(), 1);
         assert!(matches!(
-            BucketDepth::<Shallow>::new(0),
+            BucketDepth::<LowFloor>::new(0),
             Err(StampError::BucketDepthBelowMinimum {
                 bucket_depth: 0,
                 minimum: 1
@@ -746,13 +728,13 @@ mod tests {
     fn a_raised_floor_refuses_a_depth_mainnet_accepts() {
         assert!(BucketDepth::<Mainnet>::new(16).is_ok());
         assert!(matches!(
-            BucketDepth::<Deep>::new(16),
+            BucketDepth::<HighFloor>::new(16),
             Err(StampError::BucketDepthBelowMinimum {
                 bucket_depth: 16,
                 minimum: 20
             })
         ));
-        assert!(BucketDepth::<Deep>::new(20).is_ok());
+        assert!(BucketDepth::<HighFloor>::new(20).is_ok());
     }
 
     #[test]
@@ -861,8 +843,8 @@ mod tests {
         assert!(decode::<Mainnet>(33).is_err());
         // And the floor is the spec's, not a constant: 16 decodes on mainnet
         // and is refused on a deployment that asks for 20.
-        assert!(decode::<Deep>(16).is_err());
-        assert!(decode::<Deep>(20).is_ok());
+        assert!(decode::<HighFloor>(16).is_err());
+        assert!(decode::<HighFloor>(20).is_ok());
     }
 
     #[test]

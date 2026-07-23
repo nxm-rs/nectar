@@ -56,9 +56,10 @@ pub fn drive<F: Future>(future: F) -> Result<F::Output, Pending> {
 mod tests {
     use std::vec::Vec;
 
+    use nectar_testing::split_fixture;
+
     use super::*;
     use crate::read::File;
-    use crate::testutil::split_fixture;
     use crate::walk::Plain;
 
     #[test]

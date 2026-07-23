@@ -23,11 +23,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
 
-use nectar_file::{Encrypted, File, RandomKeys, Split};
+use nectar_file::{Encrypted, File, RandomKeys};
 use nectar_primitives::chunk::AnyChunkSet;
-use nectar_primitives::chunk::encryption::EncryptedChunkRef;
 use nectar_primitives::store::MemoryStore;
-use nectar_testing::run;
+use nectar_testing::{run, split_into};
 
 /// Body size of the default profile.
 const BODY: usize = nectar_primitives::DEFAULT_BODY_SIZE;
@@ -76,22 +75,12 @@ fn fill(len: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Stream `data` through an encrypted split into a fresh memory store.
-fn split_encrypted(data: &[u8]) -> (EncryptedChunkRef, Store) {
-    let store: Store = Arc::new(MemoryStore::new());
-    let root = run(Split::<Store, Encrypted<RandomKeys>, BODY>::collect(
-        Arc::clone(&store),
-        data,
-    ))
-    .unwrap();
-    (root, store)
-}
-
 /// Full read of `leaves` body-sized leaves; returns (calls, body-sized
 /// calls) the open-plus-collect made.
 fn probe(leaves: usize) -> (u64, u64) {
     let data = fill(leaves * BODY);
-    let (root, store) = split_encrypted(&data);
+    let (root, store) = split_into::<Encrypted<RandomKeys>, BODY>(&data);
+    let store: Store = Arc::new(store);
 
     let calls = CALLS.load(Ordering::Relaxed);
     let body_calls = BODY_CALLS.load(Ordering::Relaxed);

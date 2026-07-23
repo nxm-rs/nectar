@@ -10,32 +10,22 @@
 // surface. Nothing else in this file needs an exemption.
 #![allow(clippy::unwrap_used)]
 
-use core::num::NonZeroU8;
-
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_issuer::{
-    Batch, BatchId, BatchStamper, BucketDepth, IssuerError, Mainnet, MemoryIssuerFor, NetworkId,
-    Reserved, RingIssuerFor, ShardedIssuerFor, SigningError, StampError, StampIssuer, Stamper,
-    SwarmSpec, calculate_bucket,
+    Batch, BatchId, BatchStamper, BucketDepth, IssuerError, Mainnet, MemoryIssuerFor, Reserved,
+    RingIssuerFor, ShardedIssuerFor, SigningError, StampError, StampIssuer, Stamper,
+    calculate_bucket,
 };
 use nectar_primitives::ChunkAddress;
+use nectar_testing::HighFloor;
 
-/// A deployment whose collision-bucket floor is deeper than mainnet's 16.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Deep;
-
-impl SwarmSpec for Deep {
-    const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-    const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(20).unwrap();
-}
-
-/// The bucket depth `Deep` demands.
-fn deep() -> BucketDepth<Deep> {
+/// The bucket depth `HighFloor` demands.
+fn deep() -> BucketDepth<HighFloor> {
     BucketDepth::new(20).unwrap()
 }
 
-/// A `Deep` batch: 2^20 buckets of 2^(depth - 20) slots each.
-fn deep_batch(depth: u8, immutable: bool) -> Batch<Deep> {
+/// A `HighFloor` batch: 2^20 buckets of 2^(depth - 20) slots each.
+fn deep_batch(depth: u8, immutable: bool) -> Batch<HighFloor> {
     Batch::new(
         BatchId::ZERO,
         0,
@@ -56,16 +46,16 @@ fn address_in(bucket: u32) -> ChunkAddress {
 
 #[test]
 fn the_floor_is_the_deployments_own() {
-    // Mainnet's floor admits 16; `Deep` refuses it and demands 20.
+    // Mainnet's floor admits 16; `HighFloor` refuses it and demands 20.
     assert!(BucketDepth::<Mainnet>::new(16).is_ok());
     assert!(matches!(
-        BucketDepth::<Deep>::new(16),
+        BucketDepth::<HighFloor>::new(16),
         Err(StampError::BucketDepthBelowMinimum {
             bucket_depth: 16,
             minimum: 20
         })
     ));
-    assert_eq!(BucketDepth::<Deep>::new(20).unwrap().get(), 20);
+    assert_eq!(BucketDepth::<HighFloor>::new(20).unwrap().get(), 20);
 }
 
 #[test]
@@ -99,7 +89,7 @@ fn a_deep_issuer_stamps_through_a_batch_stamper() {
 
 #[test]
 fn a_deep_issuer_dilutes_and_a_deep_sharded_issuer_stamps() {
-    let mut issuer = MemoryIssuerFor::<Deep>::new(BatchId::ZERO, 21, deep());
+    let mut issuer = MemoryIssuerFor::<HighFloor>::new(BatchId::ZERO, 21, deep());
     let address = address_in(1);
     assert_eq!(issuer.prepare_stamp(&address, 1).unwrap().index.index(), 0);
     assert_eq!(issuer.prepare_stamp(&address, 2).unwrap().index.index(), 1);
@@ -129,7 +119,7 @@ fn a_deep_reserved_ring_never_emits_a_reserved_slot() {
     let batch = deep_batch(22, false);
     let address = address_in(0x0FEDC);
     let bucket = calculate_bucket(&address, 20);
-    let mut ring: RingIssuerFor<Deep, Reserved> =
+    let mut ring: RingIssuerFor<HighFloor, Reserved> =
         RingIssuerFor::reserved(&batch, [(bucket, 1), (bucket, 3)]).unwrap();
 
     // Far past one wrap, so every wrap is exercised.
