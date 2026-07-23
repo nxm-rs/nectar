@@ -62,6 +62,8 @@ pub mod generators;
 pub mod neighborhood_depth;
 pub mod network_id;
 pub mod nonce;
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod oracles;
 pub mod overlay;
 pub mod proximity_order;
 pub mod signing;

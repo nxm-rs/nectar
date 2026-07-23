@@ -66,6 +66,8 @@ mod batch;
 mod error;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod generators;
+#[cfg(any(test, feature = "arbitrary"))]
+pub mod oracles;
 mod stamp;
 mod stamped;
 mod util;
