@@ -1,9 +1,11 @@
 //! Postage batch types.
 
+use core::{fmt, marker::PhantomData};
+
 use alloy_primitives::{Address, B256};
 use derive_more::{AsRef, Display, From, Into};
 use nectar_primitives::{
-    ChunkAddress, SwarmSpec,
+    ChunkAddress, Mainnet, SwarmSpec,
     wire::{Cursor, FromCursor, ToWriter, Underrun, Writer},
 };
 
@@ -78,52 +80,81 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
     }
 }
 
-/// The number of leading chunk-address bits that select a collision bucket.
+/// The number of leading chunk-address bits that select a collision bucket, as
+/// the network `S` accepts it.
 ///
-/// Bounded to `1..=32` at construction: bucket selection shifts a `u32` right by
-/// `32 - depth`, so a depth outside that range names no bucket. Holding the
-/// bound in the type keeps the shift total wherever a depth reaches it.
+/// Two bounds hold at construction. The representable one is `1..=32`: bucket
+/// selection shifts a `u32` right by `32 - depth`, so a depth outside
+/// [`MIN`](Self::MIN)`..=`[`MAX`](Self::MAX) names no bucket, and holding it in
+/// the type keeps the shift total wherever a depth reaches it. The protocol one
+/// is [`SwarmSpec::MIN_BUCKET_DEPTH`], the floor the PostageStamp contract
+/// publishes as `minimumBucketDepth()`.
 ///
-/// The bound is what the shift can represent, not what a network accepts. A
-/// spec sets a minimum operative depth, so a batch is only well-formed when its
-/// bucket depth reaches that minimum and its batch depth leaves room above it;
-/// [`validate_geometry`] applies both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, Into)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
-#[display("{_0}")]
-#[into(u8)]
+/// The spec is a type parameter, so the floor is a compile-time property of the
+/// depth rather than something a caller must remember to check: a
+/// `BucketDepth<Mainnet>` below 16 does not exist, and a depth built for one
+/// network does not type-check where another's is wanted. Every constructor
+/// funnels through [`new`](Self::new), including the serde and `Arbitrary`
+/// paths.
+///
+/// A depth carries the network it was built for, so the following does not
+/// compile:
+///
+/// ```compile_fail
+/// use nectar_postage::{Batch, BatchId, BucketDepth};
+/// use nectar_primitives::Testnet;
+///
+/// let bucket_depth = BucketDepth::<Testnet>::new(16).unwrap();
+/// // `Batch` without a spec argument is a mainnet batch.
+/// let batch: Batch = Batch::new(
+///     BatchId::ZERO, 0, 0, Default::default(), 20, bucket_depth, false,
+/// );
+/// ```
 #[repr(transparent)]
-pub struct BucketDepth(u8);
+pub struct BucketDepth<S: SwarmSpec = Mainnet> {
+    depth: u8,
+    spec: PhantomData<S>,
+}
 
-impl BucketDepth {
+impl<S: SwarmSpec> BucketDepth<S> {
     /// The smallest representable depth, two collision buckets. A network sets
-    /// a far higher minimum; this is only the point below which the bucket
-    /// shift stops naming anything.
-    pub const MIN: Self = Self(1);
+    /// a far higher floor; this is only the point below which the bucket shift
+    /// stops naming anything.
+    pub const MIN: u8 = 1;
 
     /// The largest representable depth, the bit width of the bucket key.
-    pub const MAX: Self = Self(32);
+    pub const MAX: u8 = 32;
 
-    /// Validates a raw depth against the `1..=32` bound.
+    /// Validates a raw depth against the spec floor and the `1..=32` bound.
     ///
     /// # Errors
     ///
-    /// [`StampError::InvalidBucketDepth`] when `depth` is zero or above 32.
+    /// [`StampError::BucketDepthBelowMinimum`] when `depth` is under
+    /// [`SwarmSpec::MIN_BUCKET_DEPTH`], [`StampError::InvalidBucketDepth`] when
+    /// it is outside the representable range.
     #[inline]
     pub const fn new(depth: u8) -> Result<Self, StampError> {
-        if depth < Self::MIN.0 || depth > Self::MAX.0 {
+        if depth < S::MIN_BUCKET_DEPTH {
+            return Err(StampError::BucketDepthBelowMinimum {
+                bucket_depth: depth,
+                minimum: S::MIN_BUCKET_DEPTH,
+            });
+        }
+        if depth < Self::MIN || depth > Self::MAX {
             return Err(StampError::InvalidBucketDepth {
                 bucket_depth: depth,
             });
         }
-        Ok(Self(depth))
+        Ok(Self {
+            depth,
+            spec: PhantomData,
+        })
     }
 
     /// Returns the depth as a bit count.
     #[inline]
     pub const fn get(self) -> u8 {
-        self.0
+        self.depth
     }
 
     /// Returns the number of collision buckets, `2^depth`.
@@ -131,7 +162,7 @@ impl BucketDepth {
     /// Widened to `u64` because depth 32 overflows a `u32` count by one.
     #[inline]
     pub const fn bucket_count(self) -> u64 {
-        1u64 << self.0
+        1u64 << self.depth
     }
 
     /// Returns whether a bucket index is one this depth addresses.
@@ -139,11 +170,68 @@ impl BucketDepth {
     pub const fn contains_bucket(self, bucket: u32) -> bool {
         // At the maximum depth every `u32` is a bucket, and the count no longer
         // fits the `u32` shift used below.
-        self.0 == Self::MAX.0 || bucket < (1u32 << self.0)
+        self.depth == Self::MAX || bucket < (1u32 << self.depth)
     }
 }
 
-impl TryFrom<u8> for BucketDepth {
+// The spec is a type-level tag, so the manual impls below carry no bound on
+// `S` beyond `SwarmSpec`; deriving would demand `S: Clone`, `S: Eq` and the
+// rest of a marker type that holds no data.
+
+impl<S: SwarmSpec> Clone for BucketDepth<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: SwarmSpec> Copy for BucketDepth<S> {}
+
+impl<S: SwarmSpec> fmt::Debug for BucketDepth<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("BucketDepth").field(&self.depth).finish()
+    }
+}
+
+impl<S: SwarmSpec> fmt::Display for BucketDepth<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.depth, f)
+    }
+}
+
+impl<S: SwarmSpec> PartialEq for BucketDepth<S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.depth == other.depth
+    }
+}
+
+impl<S: SwarmSpec> Eq for BucketDepth<S> {}
+
+impl<S: SwarmSpec> PartialOrd for BucketDepth<S> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<S: SwarmSpec> Ord for BucketDepth<S> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.depth.cmp(&other.depth)
+    }
+}
+
+impl<S: SwarmSpec> core::hash::Hash for BucketDepth<S> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.depth.hash(state);
+    }
+}
+
+impl<S: SwarmSpec> From<BucketDepth<S>> for u8 {
+    #[inline]
+    fn from(depth: BucketDepth<S>) -> Self {
+        depth.depth
+    }
+}
+
+impl<S: SwarmSpec> TryFrom<u8> for BucketDepth<S> {
     type Error = StampError;
 
     #[inline]
@@ -152,61 +240,49 @@ impl TryFrom<u8> for BucketDepth {
     }
 }
 
+/// Serializes as the bare depth byte.
+#[cfg(feature = "serde")]
+impl<S: SwarmSpec> serde::Serialize for BucketDepth<S> {
+    fn serialize<Z: serde::Serializer>(&self, serializer: Z) -> Result<Z::Ok, Z::Error> {
+        serializer.serialize_u8(self.depth)
+    }
+}
+
+/// Deserializes through [`BucketDepth::new`], so a stored depth below the spec
+/// floor is refused rather than reconstructed.
+#[cfg(feature = "serde")]
+impl<'de, S: SwarmSpec> serde::Deserialize<'de> for BucketDepth<S> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let depth = u8::deserialize(deserializer)?;
+        Self::new(depth).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Draws from the spec's accepted window, so every generated depth is one the
+/// network accepts.
 #[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for BucketDepth {
+impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BucketDepth<S> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Self::new(u.int_in_range(Self::MIN.0..=Self::MAX.0)?)
-            .map_err(|_| arbitrary::Error::IncorrectFormat)
+        let low = S::MIN_BUCKET_DEPTH.max(Self::MIN);
+        if low > Self::MAX {
+            // A spec whose floor is unrepresentable admits no depth at all.
+            return Err(arbitrary::Error::IncorrectFormat);
+        }
+        Self::new(u.int_in_range(low..=Self::MAX)?).map_err(|_| arbitrary::Error::IncorrectFormat)
     }
 }
 
-/// Validates a batch geometry against the network `spec`.
-///
-/// Covers the two protocol bounds [`BucketDepth::new`] cannot: the bucket depth
-/// reaches [`SwarmSpec::min_bucket_depth`], and the batch depth leaves room
-/// above it. Takes the spec instead of binding one into every constructor, so
-/// building a depth stays free where no spec is at hand and the protocol check
-/// lands at the edge that has one.
-///
-/// # Errors
-///
-/// [`StampError::BucketDepthBelowMinimum`] when `bucket_depth` is under the
-/// spec minimum, [`StampError::DepthBelowBucketDepth`] when `depth` is under
-/// `bucket_depth`.
-pub fn validate_geometry<S>(
-    spec: &S,
-    depth: u8,
-    bucket_depth: BucketDepth,
-) -> Result<(), StampError>
-where
-    S: SwarmSpec + ?Sized,
-{
-    let minimum = spec.min_bucket_depth();
-    if bucket_depth.get() < minimum {
-        return Err(StampError::BucketDepthBelowMinimum {
-            bucket_depth: bucket_depth.get(),
-            minimum,
-        });
-    }
-    if depth < bucket_depth.get() {
-        return Err(StampError::DepthBelowBucketDepth {
-            depth,
-            bucket_depth: bucket_depth.get(),
-        });
-    }
-    Ok(())
-}
-
-/// Parameters for creating a new batch.
+/// Parameters for creating a new batch on the network `S`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct BatchParams {
+#[cfg_attr(feature = "serde", serde(bound(serialize = "", deserialize = "")))]
+pub struct BatchParams<S: SwarmSpec = Mainnet> {
     /// The owner's Ethereum address.
     pub owner: Address,
     /// The depth of the batch (total capacity = 2^depth chunks).
     pub depth: u8,
     /// The bucket depth for collision bucket uniformity.
-    pub bucket_depth: BucketDepth,
+    pub bucket_depth: BucketDepth<S>,
     /// Whether the batch is immutable.
     ///
     /// Immutable batches cannot be diluted (depth increased) and chunks cannot
@@ -217,9 +293,14 @@ pub struct BatchParams {
     pub amount: u128,
 }
 
-impl BatchParams {
+impl<S: SwarmSpec> BatchParams<S> {
     /// Creates new batch parameters.
-    pub const fn new(owner: Address, depth: u8, bucket_depth: BucketDepth, amount: u128) -> Self {
+    pub const fn new(
+        owner: Address,
+        depth: u8,
+        bucket_depth: BucketDepth<S>,
+        amount: u128,
+    ) -> Self {
         Self {
             owner,
             depth,
@@ -236,18 +317,34 @@ impl BatchParams {
         self
     }
 
-    /// Validates the declared geometry against `spec`, per [`validate_geometry`].
+    /// Validates that the batch depth leaves room above the bucket depth.
+    ///
+    /// The bucket depth clears the network floor by construction; this is the
+    /// one geometry bound left to check, because `depth` is a plain `u8` the
+    /// type system cannot relate to it.
     ///
     /// # Errors
     ///
-    /// As [`validate_geometry`].
+    /// [`StampError::DepthBelowBucketDepth`] when `depth` is under the bucket
+    /// depth.
     #[inline]
-    pub fn validate_geometry<S>(&self, spec: &S) -> Result<(), StampError>
-    where
-        S: SwarmSpec + ?Sized,
-    {
-        validate_geometry(spec, self.depth, self.bucket_depth)
+    pub const fn validate_depth(&self) -> Result<(), StampError> {
+        validate_depth(self.depth, self.bucket_depth)
     }
+}
+
+/// Validates that a batch depth leaves room above its bucket depth.
+const fn validate_depth<S: SwarmSpec>(
+    depth: u8,
+    bucket_depth: BucketDepth<S>,
+) -> Result<(), StampError> {
+    if depth < bucket_depth.get() {
+        return Err(StampError::DepthBelowBucketDepth {
+            depth,
+            bucket_depth: bucket_depth.get(),
+        });
+    }
+    Ok(())
 }
 
 /// A postage batch represents a prepaid storage allocation in the Swarm network.
@@ -255,9 +352,13 @@ impl BatchParams {
 /// Batches are created by sending BZZ tokens to the postage stamp contract.
 /// Each batch has a depth that determines the maximum number of chunks it can stamp,
 /// and a bucket depth that controls the uniformity of chunk distribution.
+///
+/// The network is a type parameter, defaulting to [`Mainnet`], and reaches the
+/// batch through its [`BucketDepth`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Batch {
+#[cfg_attr(feature = "serde", serde(bound(serialize = "", deserialize = "")))]
+pub struct Batch<S: SwarmSpec = Mainnet> {
     /// The unique identifier for this batch.
     id: BatchId,
     /// The normalized balance of the batch (value per chunk).
@@ -269,7 +370,7 @@ pub struct Batch {
     /// The depth of the batch, determining total capacity (2^depth chunks).
     depth: u8,
     /// The bucket depth for collision bucket uniformity.
-    bucket_depth: BucketDepth,
+    bucket_depth: BucketDepth<S>,
     /// Whether the batch is immutable.
     ///
     /// Immutable batches cannot be diluted (depth increased) and chunks cannot
@@ -278,7 +379,7 @@ pub struct Batch {
     immutable: bool,
 }
 
-impl Batch {
+impl<S: SwarmSpec> Batch<S> {
     /// Creates a new batch with the given parameters.
     #[inline]
     pub const fn new(
@@ -287,7 +388,7 @@ impl Batch {
         start: u64,
         owner: Address,
         depth: u8,
-        bucket_depth: BucketDepth,
+        bucket_depth: BucketDepth<S>,
         immutable: bool,
     ) -> Self {
         Self {
@@ -337,7 +438,7 @@ impl Batch {
     ///
     /// This controls the uniformity of chunk distribution across collision buckets.
     #[inline]
-    pub const fn bucket_depth(&self) -> BucketDepth {
+    pub const fn bucket_depth(&self) -> BucketDepth<S> {
         self.bucket_depth
     }
 
@@ -360,7 +461,7 @@ impl Batch {
         let slots = self.depth.saturating_sub(self.bucket_depth.get());
         // `BucketDepth::MAX` is the bit width of the count, so a wider slot
         // count has no `u32` to land in.
-        if slots >= BucketDepth::MAX.get() {
+        if slots >= BucketDepth::<S>::MAX {
             return u32::MAX;
         }
         1u32 << slots
@@ -400,21 +501,21 @@ impl Batch {
     // Validation methods
     // =========================================================================
 
-    /// Validates this batch's geometry against `spec`, per [`validate_geometry`].
+    /// Validates that the batch depth leaves room above the bucket depth.
     ///
-    /// Dilution raises the batch depth, so a batch stays valid across a
-    /// [`set_depth`](Self::set_depth) only while the new depth clears the
-    /// bucket depth.
+    /// The bucket depth clears the network floor by construction; this is the
+    /// one geometry bound left to check, because `depth` is a plain `u8` the
+    /// type system cannot relate to it. [`set_depth`](Self::set_depth) takes a
+    /// bare depth for a dilution, so a batch stays well-formed across one only
+    /// while the new depth clears the bucket depth.
     ///
     /// # Errors
     ///
-    /// As [`validate_geometry`].
+    /// [`StampError::DepthBelowBucketDepth`] when `depth` is under the bucket
+    /// depth.
     #[inline]
-    pub fn validate_geometry<S>(&self, spec: &S) -> Result<(), StampError>
-    where
-        S: SwarmSpec + ?Sized,
-    {
-        validate_geometry(spec, self.depth, self.bucket_depth)
+    pub const fn validate_depth(&self) -> Result<(), StampError> {
+        validate_depth(self.depth, self.bucket_depth)
     }
 
     /// Validates that an index is within the valid range for this batch.
@@ -469,13 +570,21 @@ impl Batch {
 
 // Arbitrary implementations for property-based testing
 
+/// Draws a bucket depth the network accepts, then a batch depth at or above
+/// it, so the generated geometry satisfies both bounds.
 #[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for BatchParams {
+fn arbitrary_geometry<S: SwarmSpec>(
+    u: &mut arbitrary::Unstructured<'_>,
+) -> arbitrary::Result<(u8, BucketDepth<S>)> {
+    let bucket_depth = <BucketDepth<S> as arbitrary::Arbitrary>::arbitrary(u)?;
+    let depth = u.int_in_range(bucket_depth.get()..=BucketDepth::<S>::MAX)?;
+    Ok((depth, bucket_depth))
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BatchParams<S> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // Generate valid depth values (bucket_depth must be <= depth)
-        let depth: u8 = u.int_in_range(1..=32)?;
-        let bucket_depth = BucketDepth::new(u.int_in_range(1..=depth)?)
-            .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+        let (depth, bucket_depth) = arbitrary_geometry::<S>(u)?;
 
         Ok(Self {
             owner: Address::arbitrary(u)?,
@@ -488,12 +597,9 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchParams {
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for Batch {
+impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for Batch<S> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // Generate valid depth values (bucket_depth must be <= depth)
-        let depth: u8 = u.int_in_range(1..=32)?;
-        let bucket_depth = BucketDepth::new(u.int_in_range(1..=depth)?)
-            .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+        let (depth, bucket_depth) = arbitrary_geometry::<S>(u)?;
 
         Ok(Self::new(
             BatchId::arbitrary(u)?,
@@ -521,120 +627,134 @@ mod tests {
         assert_eq!(BatchId::from(bytes), id);
     }
 
-    #[test]
-    fn bucket_depth_accepts_only_one_to_thirty_two() {
-        assert!(matches!(
-            BucketDepth::new(0),
-            Err(StampError::InvalidBucketDepth { bucket_depth: 0 })
-        ));
-        assert_eq!(BucketDepth::new(1).unwrap(), BucketDepth::MIN);
-        assert_eq!(BucketDepth::new(32).unwrap(), BucketDepth::MAX);
-        assert!(matches!(
-            BucketDepth::new(33),
-            Err(StampError::InvalidBucketDepth { bucket_depth: 33 })
-        ));
-        assert!(matches!(
-            BucketDepth::try_from(u8::MAX),
-            Err(StampError::InvalidBucketDepth {
-                bucket_depth: u8::MAX
-            })
-        ));
+    /// A deployment that raises the bucket-depth floor above mainnet's.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Deep;
+
+    impl SwarmSpec for Deep {
+        const NETWORK_ID: nectar_primitives::NetworkId = nectar_primitives::NetworkId::TESTNET;
+        const MIN_BUCKET_DEPTH: u8 = 20;
     }
 
     #[test]
-    fn geometry_takes_the_bucket_depth_minimum_from_the_spec() {
-        let spec = nectar_primitives::MAINNET;
-        assert_eq!(spec.min_bucket_depth(), 16);
-
-        let depth = |d: u8| BucketDepth::new(d).unwrap();
-
-        // Below the minimum, at it, and deeper than it.
+    fn bucket_depth_takes_its_floor_from_the_spec() {
+        // Below the mainnet floor, at it, and deeper than it.
         assert!(matches!(
-            validate_geometry(&spec, 24, depth(15)),
+            BucketDepth::<Mainnet>::new(15),
             Err(StampError::BucketDepthBelowMinimum {
                 bucket_depth: 15,
                 minimum: 16
             })
         ));
-        assert!(validate_geometry(&spec, 24, depth(16)).is_ok());
-        assert!(validate_geometry(&spec, 24, depth(20)).is_ok());
-        // A batch exactly as deep as its buckets holds one slot each.
-        assert!(validate_geometry(&spec, 16, depth(16)).is_ok());
-
-        assert!(matches!(
-            validate_geometry(&spec, 15, depth(16)),
-            Err(StampError::DepthBelowBucketDepth {
-                depth: 15,
-                bucket_depth: 16
-            })
-        ));
+        assert_eq!(BucketDepth::<Mainnet>::new(16).unwrap().get(), 16);
+        assert_eq!(BucketDepth::<Mainnet>::new(20).unwrap().get(), 20);
+        assert_eq!(
+            BucketDepth::<Mainnet>::new(BucketDepth::<Mainnet>::MAX)
+                .unwrap()
+                .get(),
+            32
+        );
     }
 
     #[test]
-    fn geometry_follows_a_deployment_that_raises_the_minimum() {
-        struct Deep;
-        impl SwarmSpec for Deep {
-            fn network_id(&self) -> nectar_primitives::NetworkId {
-                nectar_primitives::NetworkId::TESTNET
-            }
-            fn min_bucket_depth(&self) -> u8 {
-                20
-            }
-        }
-
-        let bucket_depth = BucketDepth::new(16).unwrap();
-        assert!(validate_geometry(&nectar_primitives::MAINNET, 24, bucket_depth).is_ok());
+    fn bucket_depth_rejects_an_unrepresentable_depth() {
         assert!(matches!(
-            validate_geometry(&Deep, 24, bucket_depth),
+            BucketDepth::<Mainnet>::new(33),
+            Err(StampError::InvalidBucketDepth { bucket_depth: 33 })
+        ));
+        assert!(matches!(
+            BucketDepth::<Mainnet>::try_from(u8::MAX),
+            Err(StampError::InvalidBucketDepth {
+                bucket_depth: u8::MAX
+            })
+        ));
+
+        // A spec that lowers the floor still cannot name a zero-bit bucket.
+        struct Floorless;
+        impl SwarmSpec for Floorless {
+            const NETWORK_ID: nectar_primitives::NetworkId = nectar_primitives::NetworkId::TESTNET;
+            const MIN_BUCKET_DEPTH: u8 = 0;
+        }
+        assert!(matches!(
+            BucketDepth::<Floorless>::new(0),
+            Err(StampError::InvalidBucketDepth { bucket_depth: 0 })
+        ));
+        assert_eq!(BucketDepth::<Floorless>::new(1).unwrap().get(), 1);
+    }
+
+    #[test]
+    fn a_raised_floor_refuses_a_depth_mainnet_accepts() {
+        assert!(BucketDepth::<Mainnet>::new(16).is_ok());
+        assert!(matches!(
+            BucketDepth::<Deep>::new(16),
             Err(StampError::BucketDepthBelowMinimum {
                 bucket_depth: 16,
                 minimum: 20
             })
         ));
+        assert!(BucketDepth::<Deep>::new(20).is_ok());
     }
 
     #[test]
-    fn geometry_validates_through_batch_and_params() {
-        let spec = nectar_primitives::MAINNET;
-        let bucket_depth = BucketDepth::new(16).unwrap();
+    fn depth_below_bucket_depth_is_rejected_through_batch_and_params() {
+        let bucket_depth = BucketDepth::<Mainnet>::new(16).unwrap();
 
         let params = BatchParams::new(Address::ZERO, 20, bucket_depth, 1000);
-        assert!(params.validate_geometry(&spec).is_ok());
+        assert!(params.validate_depth().is_ok());
 
         let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 20, bucket_depth, false);
-        assert!(batch.validate_geometry(&spec).is_ok());
+        assert!(batch.validate_depth().is_ok());
+
+        // A batch exactly as deep as its buckets holds one slot each.
+        let flat = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 16, bucket_depth, false);
+        assert!(flat.validate_depth().is_ok());
 
         let shallow = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 8, bucket_depth, false);
         assert!(matches!(
-            shallow.validate_geometry(&spec),
+            shallow.validate_depth(),
             Err(StampError::DepthBelowBucketDepth {
                 depth: 8,
                 bucket_depth: 16
             })
         ));
+        assert!(matches!(
+            BatchParams::new(Address::ZERO, 8, bucket_depth, 1000).validate_depth(),
+            Err(StampError::DepthBelowBucketDepth {
+                depth: 8,
+                bucket_depth: 16
+            })
+        ));
+
+        // Dilution moves the depth, so the check survives a `set_depth`.
+        let mut diluted = batch;
+        diluted.set_depth(15);
+        assert!(diluted.validate_depth().is_err());
     }
 
     #[test]
     fn bucket_geometry_holds_at_the_bounds() {
-        let min = Batch::new(
+        let min: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
             Address::ZERO,
-            1,
-            BucketDepth::MIN,
+            16,
+            BucketDepth::new(16).unwrap(),
             false,
         );
-        assert_eq!(min.bucket_count(), 2);
-        assert_eq!(min.bucket_for_address(&ChunkAddress::new([0xFF; 32])), 1);
+        assert_eq!(min.bucket_count(), 65536);
+        assert_eq!(
+            min.bucket_for_address(&ChunkAddress::new([0xFF; 32])),
+            65535
+        );
 
-        let max = Batch::new(
+        let max: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
             Address::ZERO,
             u8::MAX,
-            BucketDepth::MAX,
+            BucketDepth::new(BucketDepth::<Mainnet>::MAX).unwrap(),
             false,
         );
         assert_eq!(max.bucket_count(), 1 << 32);
@@ -650,13 +770,13 @@ mod tests {
 
     #[test]
     fn bucket_upper_bound_holds_for_a_batch_shallower_than_its_buckets() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
             Address::ZERO,
             8,
-            BucketDepth::MAX,
+            BucketDepth::new(BucketDepth::<Mainnet>::MAX).unwrap(),
             false,
         );
         assert_eq!(batch.bucket_upper_bound(), 1);
@@ -664,21 +784,39 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
-    fn serde_rejects_an_out_of_range_bucket_depth() {
+    fn serde_round_trips_a_depth_and_enforces_the_floor() {
         use serde::{Deserialize, de::IntoDeserializer, de::value::Error};
 
-        let decode =
-            |raw: u8| BucketDepth::deserialize(IntoDeserializer::<Error>::into_deserializer(raw));
+        fn decode<S: SwarmSpec>(raw: u8) -> Result<BucketDepth<S>, Error> {
+            BucketDepth::deserialize(IntoDeserializer::<Error>::into_deserializer(raw))
+        }
 
-        assert_eq!(decode(16).unwrap(), BucketDepth::new(16).unwrap());
-        assert!(decode(0).is_err());
-        assert!(decode(33).is_err());
+        let depth = BucketDepth::<Mainnet>::new(16).unwrap();
+        assert_eq!(decode::<Mainnet>(16).unwrap(), depth);
+        assert_eq!(
+            serde_json::to_string(&depth).unwrap(),
+            serde_json::to_string(&16u8).unwrap()
+        );
+
+        // The floor and the representable bound both survive the wire.
+        assert!(decode::<Mainnet>(15).is_err());
+        assert!(decode::<Mainnet>(33).is_err());
+        // And the floor is the spec's, not a constant: 16 decodes on mainnet
+        // and is refused on a deployment that asks for 20.
+        assert!(decode::<Deep>(16).is_err());
+        assert!(decode::<Deep>(20).is_ok());
+
+        // A batch decodes through the same gate.
+        let batch: Batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 20, depth, false);
+        let json = serde_json::to_string(&batch).unwrap();
+        assert_eq!(serde_json::from_str::<Batch>(&json).unwrap(), batch);
+        assert!(serde_json::from_str::<Batch<Deep>>(&json).is_err());
     }
 
     #[test]
     fn test_batch_creation() {
         let id = BatchId::ZERO;
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             id,
             1000,
             100,
@@ -699,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_bucket_calculations() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
@@ -717,7 +855,7 @@ mod tests {
 
     #[test]
     fn test_batch_expiry() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             1000,
             0,
@@ -734,7 +872,7 @@ mod tests {
 
     #[test]
     fn test_batch_usability() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             1000,
             100,
@@ -752,8 +890,9 @@ mod tests {
 
     #[test]
     fn test_batch_params_builder() {
-        let params = BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
-            .immutable(true);
+        let params: BatchParams =
+            BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
+                .immutable(true);
 
         assert_eq!(params.owner, Address::ZERO);
         assert_eq!(params.depth, 20);

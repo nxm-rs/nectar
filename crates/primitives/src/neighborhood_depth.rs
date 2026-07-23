@@ -9,9 +9,9 @@ use crate::Bin;
 /// Recompute the neighborhood depth from per-bin connected-peer counts.
 ///
 /// `connected_per_bin[i]` is the count of currently-connected peers in bin `i`.
-/// `saturation` is the target saturation per bin (typically `SwarmSpec::saturation_peers()`).
+/// `saturation` is the target saturation per bin (typically `SwarmSpec::SATURATION_PEERS`).
 /// `low_watermark` is the minimum cumulative count of peers in the deepest bins
-/// to anchor the neighborhood (typically `SwarmSpec::neighborhood_low_watermark()`).
+/// to anchor the neighborhood (typically `SwarmSpec::NEIGHBORHOOD_LOW_WATERMARK`).
 ///
 /// Algorithm - port of bee `kademlia.go:896-920`:
 /// 1. Walk bins shallow → deep. The depth candidate is the **shallowest bin

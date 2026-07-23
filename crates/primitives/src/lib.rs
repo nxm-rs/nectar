@@ -91,7 +91,7 @@ pub use network_id::NetworkId;
 pub use nonce::Nonce;
 pub use overlay::compute_overlay;
 pub use proximity_order::{ProximityOrder, ProximityOrderError};
-pub use spec::{MAINNET, StaticSpec, SwarmSpec, TESTNET};
+pub use spec::{Mainnet, SwarmSpec, Testnet};
 pub use timestamp::{Timestamp, TimestampError};
 pub use xor_metric::{EXTENDED_PO, MAX_PO, XorMetric};
 

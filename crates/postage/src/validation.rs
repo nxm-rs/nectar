@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_validate_index_valid() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_validate_index_bucket_out_of_range() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_validate_index_position_out_of_range() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_bucket_for_address() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn test_validate_bucket_match() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn test_validate_bucket_mismatch() {
-        let batch = Batch::new(
+        let batch: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,
