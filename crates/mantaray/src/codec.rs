@@ -781,14 +781,11 @@ mod tests {
     /// (`Node::<ChunkRef>` for 32-byte plain entries and
     /// `Node::<EncryptedChunkRef>` for 64-byte entries).
     /// The oracle is "no panic";
-    /// `Err` is an acceptable outcome for any seed. Additionally pin the
-    /// intent of each seed by name: `crash-*` seeds must stay `Err` at both
-    /// widths (they are fixed panic reproducers), `valid-*` seeds must decode
-    /// `Ok` at the width their header declares. Each width must actually
-    /// decode the seeds it claims, not merely be skipped: the two plain
-    /// manifests at the `ChunkRef` width and the `ref_size = 64` cases at the
-    /// `EncryptedChunkRef` width, so the 64-byte slicing arithmetic is
-    /// exercised from the corpus and not only after mutation.
+    /// `Err` is an acceptable outcome for any seed. Seed intent is pinned by
+    /// name: `crash-*` must stay `Err` at both widths, `valid-encrypted-*`
+    /// must decode at the `EncryptedChunkRef` width and every other `valid-*`
+    /// at the `ChunkRef` width. The per-width decode counts are what stop a
+    /// width from passing while every seed silently skips it.
     ///
     /// This keeps the fuzz seeds meaningful on stable without running the
     /// fuzzer itself.
@@ -822,10 +819,15 @@ mod tests {
                     plain.is_err() && wide.is_err(),
                     "seed {name} must remain an Err reproducer at both widths"
                 );
+            } else if name.starts_with("valid-encrypted-") {
+                assert!(
+                    wide.is_ok(),
+                    "seed {name} must decode at the EncryptedChunkRef width"
+                );
             } else if name.starts_with("valid-") {
                 assert!(
-                    plain.is_ok() || wide.is_ok(),
-                    "seed {name} must decode successfully at one of the two widths"
+                    plain.is_ok(),
+                    "seed {name} must decode at the ChunkRef width"
                 );
             }
             replayed += 1;
