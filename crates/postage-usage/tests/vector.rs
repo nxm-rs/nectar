@@ -20,31 +20,18 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use core::num::NonZeroU8;
-
 use alloy_primitives::{Address, hex};
 use nectar_postage::{BucketDepth, calculate_bucket};
 use nectar_postage_usage::{
-    BatchId, Mutability, NetworkId, PublishedSequence, RootInfo, RootInfoFor, Snapshot,
-    SnapshotFor, SwarmSpec, UsageTable, UsageTableFor, usage_chunk_address, usage_chunk_id,
+    BatchId, Mutability, PublishedSequence, RootInfo, RootInfoFor, Snapshot, SnapshotFor,
+    UsageTable, UsageTableFor, usage_chunk_address, usage_chunk_id,
 };
 
-/// The README's small worked example runs at bucket depth 8, which mainnet's
-/// floor of 16 forbids, so the vector is pinned for a deployment whose floor is
-/// the format minimum. The encoding does not depend on the spec: only which
-/// geometries a network admits does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Shallow;
+mod common;
 
-impl SwarmSpec for Shallow {
-    const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-    const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
-}
-
-/// A bucket depth `Shallow` accepts.
-fn shallow(depth: u8) -> BucketDepth<Shallow> {
-    BucketDepth::new(depth).unwrap()
-}
+// The README's small worked example runs at bucket depth 8, which mainnet's
+// floor of 16 forbids, so those vectors are pinned for `Shallow`.
+use common::{Shallow, shallow};
 
 /// The full root payload from the README worked example: depth 12, bucket
 /// depth 8, counts `3 + (b mod 4)` with bucket 200 full at 16, after one

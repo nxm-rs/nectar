@@ -13,30 +13,16 @@
     clippy::as_conversions,
     clippy::missing_panics_doc
 )]
-use core::num::NonZeroU8;
-
-use alloy_primitives::Address;
-use nectar_postage::{BucketDepth, calculate_bucket};
+use nectar_postage::calculate_bucket;
 use nectar_postage_usage::{
-    Batch, BatchId, MAGIC, Mutability, NetworkId, PersistPlan, PublishedSequence, RootInfo,
-    RootInfoFor, Snapshot, SnapshotFor, SwarmSpec, UsageError, UsageTable, UsageTableFor,
-    usage_chunk_address, usage_chunk_id,
+    Batch, MAGIC, Mutability, PersistPlan, PublishedSequence, RootInfo, RootInfoFor, Snapshot,
+    SnapshotFor, SwarmSpec, UsageError, UsageTable, UsageTableFor, usage_chunk_address,
+    usage_chunk_id,
 };
 
-const BUCKET_DEPTH: u8 = 16;
+mod common;
 
-/// The mainnet bucket depth of every table below, proof-carrying.
-fn bucket_depth() -> BucketDepth {
-    BucketDepth::new(BUCKET_DEPTH).unwrap()
-}
-
-const fn batch_id() -> BatchId {
-    BatchId::new([0x42; 32])
-}
-
-const fn owner() -> Address {
-    Address::repeat_byte(0x11)
-}
+use common::{BUCKET_DEPTH, Shallow, batch_id, bucket_depth, owner, shallow};
 
 /// Deterministic pseudo-random counters with the given spread.
 fn synthetic_counts(buckets: usize, base: u32, spread: u32) -> Vec<u32> {
@@ -61,16 +47,6 @@ fn roundtrip(plan: &PersistPlan) -> Snapshot {
     root.assemble(&leaves).unwrap()
 }
 
-/// A deployment whose bucket-depth floor is the format minimum, for the
-/// geometries mainnet's floor of 16 forbids.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Shallow;
-
-impl SwarmSpec for Shallow {
-    const NETWORK_ID: NetworkId = NetworkId::TESTNET;
-    const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
-}
-
 /// [`roundtrip`] for a snapshot of another network.
 fn roundtrip_for<S: SwarmSpec>(plan: &PersistPlan) -> SnapshotFor<S> {
     let root = RootInfoFor::<S>::parse(&plan.chunks[0].payload).unwrap();
@@ -86,7 +62,7 @@ fn batch(depth: u8, immutable: bool) -> Batch {
         0,
         owner(),
         depth,
-        BucketDepth::new(BUCKET_DEPTH).unwrap(),
+        bucket_depth(),
         immutable,
     )
 }
@@ -302,14 +278,9 @@ fn small_bucket_depth_inlines_in_the_root() {
     // 256 buckets at any width fit inline in the root.
     let counts = synthetic_counts(256, 1000, 4000);
     // Bucket depth 8 is below mainnet's floor, so this runs at `Shallow`.
-    let table = UsageTableFor::from_counts(
-        batch_id(),
-        21,
-        BucketDepth::<Shallow>::new(8).unwrap(),
-        counts,
-        Mutability::Immutable,
-    )
-    .unwrap();
+    let table =
+        UsageTableFor::from_counts(batch_id(), 21, shallow(8), counts, Mutability::Immutable)
+            .unwrap();
     let mut snapshot = SnapshotFor::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -983,7 +954,7 @@ fn a_non_mainnet_snapshot_issues_reserves_and_recovers() {
     let table = UsageTableFor::from_counts(
         batch_id(),
         11,
-        BucketDepth::<Shallow>::new(8).unwrap(),
+        shallow(8),
         vec![0u32; 256],
         Mutability::Mutable,
     )
