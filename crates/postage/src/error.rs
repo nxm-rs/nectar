@@ -33,6 +33,24 @@ pub enum StampError {
         bucket_depth: u8,
     },
 
+    /// The bucket depth is below the minimum the network spec sets.
+    #[error("bucket depth {bucket_depth} below the spec minimum {minimum}")]
+    BucketDepthBelowMinimum {
+        /// The rejected bucket depth.
+        bucket_depth: u8,
+        /// The minimum the spec sets.
+        minimum: u8,
+    },
+
+    /// The batch depth leaves no room above the bucket depth.
+    #[error("batch depth {depth} below bucket depth {bucket_depth}")]
+    DepthBelowBucketDepth {
+        /// The rejected batch depth.
+        depth: u8,
+        /// The bucket depth it has to reach.
+        bucket_depth: u8,
+    },
+
     /// The batch was not found.
     #[error("batch not found: {0}")]
     BatchNotFound(BatchId),

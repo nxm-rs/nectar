@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, B256};
 use derive_more::{AsRef, Display, From, Into};
 use nectar_primitives::{
-    ChunkAddress,
+    ChunkAddress, SwarmSpec,
     wire::{Cursor, FromCursor, ToWriter, Underrun, Writer},
 };
 
@@ -84,10 +84,10 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
 /// `32 - depth`, so a depth outside that range names no bucket. Holding the
 /// bound in the type keeps the shift total wherever a depth reaches it.
 ///
-/// The bound is what the shift can represent, not what a network accepts. The
-/// operative depth is a network constant, so a batch is only well-formed when
-/// its depth matches the one the spec fixes and leaves room for the batch
-/// depth above it.
+/// The bound is what the shift can represent, not what a network accepts. A
+/// spec sets a minimum operative depth, so a batch is only well-formed when its
+/// bucket depth reaches that minimum and its batch depth leaves room above it;
+/// [`validate_geometry`] applies both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, Into)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
@@ -97,9 +97,9 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
 pub struct BucketDepth(u8);
 
 impl BucketDepth {
-    /// The smallest representable depth, two collision buckets. A network
-    /// fixes a far higher operative depth; this is only the point below which
-    /// the bucket shift stops naming anything.
+    /// The smallest representable depth, two collision buckets. A network sets
+    /// a far higher minimum; this is only the point below which the bucket
+    /// shift stops naming anything.
     pub const MIN: Self = Self(1);
 
     /// The largest representable depth, the bit width of the bucket key.
@@ -160,6 +160,43 @@ impl<'a> arbitrary::Arbitrary<'a> for BucketDepth {
     }
 }
 
+/// Validates a batch geometry against the network `spec`.
+///
+/// Covers the two protocol bounds [`BucketDepth::new`] cannot: the bucket depth
+/// reaches [`SwarmSpec::min_bucket_depth`], and the batch depth leaves room
+/// above it. Takes the spec instead of binding one into every constructor, so
+/// building a depth stays free where no spec is at hand and the protocol check
+/// lands at the edge that has one.
+///
+/// # Errors
+///
+/// [`StampError::BucketDepthBelowMinimum`] when `bucket_depth` is under the
+/// spec minimum, [`StampError::DepthBelowBucketDepth`] when `depth` is under
+/// `bucket_depth`.
+pub fn validate_geometry<S>(
+    spec: &S,
+    depth: u8,
+    bucket_depth: BucketDepth,
+) -> Result<(), StampError>
+where
+    S: SwarmSpec + ?Sized,
+{
+    let minimum = spec.min_bucket_depth();
+    if bucket_depth.get() < minimum {
+        return Err(StampError::BucketDepthBelowMinimum {
+            bucket_depth: bucket_depth.get(),
+            minimum,
+        });
+    }
+    if depth < bucket_depth.get() {
+        return Err(StampError::DepthBelowBucketDepth {
+            depth,
+            bucket_depth: bucket_depth.get(),
+        });
+    }
+    Ok(())
+}
+
 /// Parameters for creating a new batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -197,6 +234,19 @@ impl BatchParams {
     pub const fn immutable(mut self, immutable: bool) -> Self {
         self.immutable = immutable;
         self
+    }
+
+    /// Validates the declared geometry against `spec`, per [`validate_geometry`].
+    ///
+    /// # Errors
+    ///
+    /// As [`validate_geometry`].
+    #[inline]
+    pub fn validate_geometry<S>(&self, spec: &S) -> Result<(), StampError>
+    where
+        S: SwarmSpec + ?Sized,
+    {
+        validate_geometry(spec, self.depth, self.bucket_depth)
     }
 }
 
@@ -350,6 +400,23 @@ impl Batch {
     // Validation methods
     // =========================================================================
 
+    /// Validates this batch's geometry against `spec`, per [`validate_geometry`].
+    ///
+    /// Dilution raises the batch depth, so a batch stays valid across a
+    /// [`set_depth`](Self::set_depth) only while the new depth clears the
+    /// bucket depth.
+    ///
+    /// # Errors
+    ///
+    /// As [`validate_geometry`].
+    #[inline]
+    pub fn validate_geometry<S>(&self, spec: &S) -> Result<(), StampError>
+    where
+        S: SwarmSpec + ?Sized,
+    {
+        validate_geometry(spec, self.depth, self.bucket_depth)
+    }
+
     /// Validates that an index is within the valid range for this batch.
     ///
     /// Checks that:
@@ -470,6 +537,79 @@ mod tests {
             BucketDepth::try_from(u8::MAX),
             Err(StampError::InvalidBucketDepth {
                 bucket_depth: u8::MAX
+            })
+        ));
+    }
+
+    #[test]
+    fn geometry_takes_the_bucket_depth_minimum_from_the_spec() {
+        let spec = nectar_primitives::MAINNET;
+        assert_eq!(spec.min_bucket_depth(), 16);
+
+        let depth = |d: u8| BucketDepth::new(d).unwrap();
+
+        // Below the minimum, at it, and deeper than it.
+        assert!(matches!(
+            validate_geometry(&spec, 24, depth(15)),
+            Err(StampError::BucketDepthBelowMinimum {
+                bucket_depth: 15,
+                minimum: 16
+            })
+        ));
+        assert!(validate_geometry(&spec, 24, depth(16)).is_ok());
+        assert!(validate_geometry(&spec, 24, depth(20)).is_ok());
+        // A batch exactly as deep as its buckets holds one slot each.
+        assert!(validate_geometry(&spec, 16, depth(16)).is_ok());
+
+        assert!(matches!(
+            validate_geometry(&spec, 15, depth(16)),
+            Err(StampError::DepthBelowBucketDepth {
+                depth: 15,
+                bucket_depth: 16
+            })
+        ));
+    }
+
+    #[test]
+    fn geometry_follows_a_deployment_that_raises_the_minimum() {
+        struct Deep;
+        impl SwarmSpec for Deep {
+            fn network_id(&self) -> nectar_primitives::NetworkId {
+                nectar_primitives::NetworkId::TESTNET
+            }
+            fn min_bucket_depth(&self) -> u8 {
+                20
+            }
+        }
+
+        let bucket_depth = BucketDepth::new(16).unwrap();
+        assert!(validate_geometry(&nectar_primitives::MAINNET, 24, bucket_depth).is_ok());
+        assert!(matches!(
+            validate_geometry(&Deep, 24, bucket_depth),
+            Err(StampError::BucketDepthBelowMinimum {
+                bucket_depth: 16,
+                minimum: 20
+            })
+        ));
+    }
+
+    #[test]
+    fn geometry_validates_through_batch_and_params() {
+        let spec = nectar_primitives::MAINNET;
+        let bucket_depth = BucketDepth::new(16).unwrap();
+
+        let params = BatchParams::new(Address::ZERO, 20, bucket_depth, 1000);
+        assert!(params.validate_geometry(&spec).is_ok());
+
+        let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 20, bucket_depth, false);
+        assert!(batch.validate_geometry(&spec).is_ok());
+
+        let shallow = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 8, bucket_depth, false);
+        assert!(matches!(
+            shallow.validate_geometry(&spec),
+            Err(StampError::DepthBelowBucketDepth {
+                depth: 8,
+                bucket_depth: 16
             })
         ));
     }

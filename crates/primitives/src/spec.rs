@@ -65,6 +65,13 @@ pub trait SwarmSpec {
         Duration::from_secs(6 * 60 * 60)
     }
 
+    /// Minimum collision-bucket depth a postage batch may declare, mirroring
+    /// the PostageStamp contract's `minimumBucketDepth()` (16 on mainnet).
+    /// A floor rather than a fixed width: a batch may declare a deeper one.
+    fn min_bucket_depth(&self) -> u8 {
+        16
+    }
+
     /// Convenience: the routing-table bin count (`max_proximity_order() + 1`).
     #[allow(clippy::arithmetic_side_effects)] // max_proximity_order() <= MAX_PO (31), so + 1 cannot overflow usize
     fn bin_count(&self) -> usize {
@@ -118,6 +125,7 @@ mod tests {
         assert_eq!(s.bootnode_over_saturation_peers(), 20);
         assert_eq!(s.neighborhood_low_watermark(), 2);
         assert_eq!(s.clock_skew_tolerance(), Duration::from_secs(21600));
+        assert_eq!(s.min_bucket_depth(), 16);
         assert_eq!(s.bin_count(), 32);
         assert_eq!(s.max_bin(), Bin::MAX);
     }
