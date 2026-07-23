@@ -813,15 +813,24 @@ mod pooled {
         }
     }
 
-    /// Plain sealing behind a worker-side stall, counting completed seals:
-    /// the stall makes drops race live jobs, the count makes a seal landing
-    /// observable without a sleep.
+    /// Plain sealing that counts completed seals, so a seal landing is
+    /// observable without a sleep, behind an optional worker-side stall.
     #[derive(Clone, Debug, Default)]
     struct CountedMode {
+        stall: Duration,
         sealed: Arc<AtomicUsize>,
     }
 
     impl CountedMode {
+        /// A mode whose every seal stalls on the worker, so drops race
+        /// live jobs.
+        fn stalling(stall: Duration) -> Self {
+            Self {
+                stall,
+                sealed: Arc::default(),
+            }
+        }
+
         /// Seals finished so far, on the pool or inline.
         fn completed(&self) -> usize {
             self.sealed.load(Ordering::Relaxed)
@@ -839,7 +848,7 @@ mod pooled {
         }
 
         fn seal<const B: usize>(&self, payload: Bytes) -> Result<Sealed<Self, B>, SealError> {
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(self.stall);
             let chunk = ContentChunk::<B>::try_from(payload)?
                 .seal::<nectar_primitives::chunk::AnyChunkSet<B>>();
             let address = *chunk.address();
@@ -1061,7 +1070,7 @@ mod pooled {
     #[test]
     fn dropping_a_pooled_split_abandons_live_jobs() {
         let store = TestStore::<TINY>::new(0);
-        let mode = CountedMode::default();
+        let mode = CountedMode::stalling(Duration::from_millis(10));
         let mut split: Split<TestStore<TINY>, CountedMode, TINY> =
             Split::with_mode(store, mode.clone(), PutWindow::DEFAULT)
                 .with_hash_window(HashWindow::new(4).unwrap());
