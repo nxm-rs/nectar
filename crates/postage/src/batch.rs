@@ -83,6 +83,11 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
 /// Bounded to `1..=32` at construction: bucket selection shifts a `u32` right by
 /// `32 - depth`, so a depth outside that range names no bucket. Holding the
 /// bound in the type keeps the shift total wherever a depth reaches it.
+///
+/// The bound is what the shift can represent, not what a network accepts. The
+/// operative depth is a network constant, so a batch is only well-formed when
+/// its depth matches the one the spec fixes and leaves room for the batch
+/// depth above it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, Into)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
@@ -92,10 +97,12 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
 pub struct BucketDepth(u8);
 
 impl BucketDepth {
-    /// The smallest valid depth, two collision buckets.
+    /// The smallest representable depth, two collision buckets. A network
+    /// fixes a far higher operative depth; this is only the point below which
+    /// the bucket shift stops naming anything.
     pub const MIN: Self = Self(1);
 
-    /// The largest valid depth, the bit width of the bucket key.
+    /// The largest representable depth, the bit width of the bucket key.
     pub const MAX: Self = Self(32);
 
     /// Validates a raw depth against the `1..=32` bound.
