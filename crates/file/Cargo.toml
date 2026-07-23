@@ -27,13 +27,16 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"], optional = true }
 
 [dev-dependencies]
+# The seed replay decodes committed fuzz inputs through the same grammar the
+# fuzzer uses.
+arbitrary.workspace = true
 criterion.workspace = true
 futures.workspace = true
 # The manifest-edit exhibit publishes a file root under a path.
 nectar-mantaray.workspace = true
 # The oracle stores and chunk fixtures ride the primitives store surface,
 # including the encrypted reference width.
-nectar-primitives = { workspace = true, features = ["std", "encryption"] }
+nectar-primitives = { workspace = true, features = ["arbitrary", "encryption", "std"] }
 nectar-testing.workspace = true
 tokio = { workspace = true, features = ["io-util", "time"] }
 
@@ -60,6 +63,10 @@ tokio = [ "dep:tokio", "std" ]
 # `std`; rayon on wasm32 or under `unsync` is a compile error, never a
 # silent fallback.
 rayon = [ "dep:futures-channel", "dep:rayon", "std" ]
+
+# The shared malformed-walk oracle for the fuzz workspace and the stable
+# seed replays. Never reachable from `default` or any shipped feature.
+arbitrary = [ "nectar-primitives?/arbitrary", "std" ]
 
 # Split-side encrypted mode. Joining encrypted references stays unconditional.
 encryption = [ "nectar-primitives?/encryption" ]

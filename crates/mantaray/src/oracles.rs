@@ -1,4 +1,5 @@
-//! Shared fuzz and test oracles for the raw node codec and the node view.
+//! Shared fuzz and test oracles for the raw node codec, the node view and
+//! the manifest editor.
 //!
 //! One oracle per invariant: the fuzz target and the stable pins call the
 //! same body, so the rungs cannot drift. Oracles return `Err` instead of
@@ -6,13 +7,15 @@
 //! `hazmat` plus `arbitrary`, to the fuzz workspace; exempt from semver
 //! guarantees.
 
+use std::collections::BTreeMap;
+
 use nectar_primitives::EncryptedChunkRef;
-use nectar_primitives::chunk::{ChunkRef, RefKind, Reference};
+use nectar_primitives::chunk::{ChunkAddress, ChunkRef, RefKind, Reference};
 use nectar_primitives::oracles::Violation;
 
 use crate::node::Node;
 use crate::view::NodeView;
-use crate::{DecodeResult, NodeType, RefWidth};
+use crate::{DecodeResult, DefaultMemoryStore, ManifestEditor, NodeType, Reader, RefWidth};
 
 /// Decode one wire image at both entry widths, `ChunkRef` (32-byte plain)
 /// and `EncryptedChunkRef` (64-byte encrypted). `Err` is an acceptable
@@ -179,6 +182,267 @@ fn compare<R: Reference>(node: &Node<R>, view: &NodeView) -> Result<(), Violatio
         let view_metadata = fork_view.metadata().cloned().unwrap_or_default();
         if child.metadata() != &view_metadata {
             return Err(Violation::new("fork metadata"));
+        }
+    }
+    Ok(())
+}
+
+/// Op-sequence cap per differential run.
+const MAX_OPS: usize = 24;
+/// Path-length cap in alphabet symbols.
+const MAX_PATH: usize = 12;
+
+/// One editor mutation for [`editor_differential`], decoded from raw fuzzer
+/// bytes.
+#[derive(Debug)]
+pub enum EditorOp {
+    /// Set the entry at the path to a reference filled with one byte.
+    Put {
+        /// Raw path bytes, mapped onto the dense four-symbol alphabet.
+        path: Vec<u8>,
+        /// Reference fill byte.
+        fill: u8,
+    },
+    /// Set the entry with one metadata pair.
+    PutMeta {
+        /// Raw path bytes, mapped onto the dense four-symbol alphabet.
+        path: Vec<u8>,
+        /// Reference fill byte.
+        fill: u8,
+        /// Metadata key seed.
+        key: u8,
+        /// Metadata value seed.
+        value: u8,
+    },
+    /// Remove the value at the path.
+    Remove {
+        /// Raw path bytes, mapped onto the dense four-symbol alphabet.
+        path: Vec<u8>,
+    },
+    /// Set the website index document.
+    SetIndex {
+        /// Document name seed.
+        name: u8,
+    },
+    /// Set the website error document.
+    SetError {
+        /// Document name seed.
+        name: u8,
+    },
+}
+
+impl<'a> arbitrary::Arbitrary<'a> for EditorOp {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Multiply-shift variant selection over one u32, the derive layout
+        // the committed corpus was recorded under; changing it re-interprets
+        // every committed seed.
+        Ok(match u64::from(u32::arbitrary(u)?).wrapping_mul(5) >> 32 {
+            0 => Self::Put {
+                path: u.arbitrary()?,
+                fill: u.arbitrary()?,
+            },
+            1 => Self::PutMeta {
+                path: u.arbitrary()?,
+                fill: u.arbitrary()?,
+                key: u.arbitrary()?,
+                value: u.arbitrary()?,
+            },
+            2 => Self::Remove {
+                path: u.arbitrary()?,
+            },
+            3 => Self::SetIndex {
+                name: u.arbitrary()?,
+            },
+            _ => Self::SetError {
+                name: u.arbitrary()?,
+            },
+        })
+    }
+
+    fn size_hint(_depth: usize) -> (usize, Option<usize>) {
+        (4, None)
+    }
+}
+
+/// Map raw bytes onto a dense four-symbol path, so fork splits, nested
+/// prefixes and separator edges stay dense in the search space.
+fn path(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .take(MAX_PATH)
+        .map(|byte| match byte % 4 {
+            0 => 'a',
+            1 => 'b',
+            2 => 'c',
+            _ => '/',
+        })
+        .collect()
+}
+
+const fn address(fill: u8) -> ChunkAddress {
+    ChunkAddress::new([fill; 32])
+}
+
+fn document(name: u8) -> String {
+    format!("doc{name}")
+}
+
+fn metadata(key: u8, value: u8) -> BTreeMap<String, String> {
+    BTreeMap::from([(format!("k{key}"), format!("v{value}"))])
+}
+
+/// Record the ops into a fresh editor.
+fn record(ops: &[EditorOp]) -> ManifestEditor<DefaultMemoryStore> {
+    let mut editor = ManifestEditor::new(DefaultMemoryStore::new());
+    for op in ops {
+        match op {
+            EditorOp::Put { path: raw, fill } => {
+                editor.put(path(raw), address(*fill));
+            }
+            EditorOp::PutMeta {
+                path: raw,
+                fill,
+                key,
+                value,
+            } => {
+                editor.put_with_metadata(path(raw), address(*fill), metadata(*key, *value));
+            }
+            EditorOp::Remove { path: raw } => {
+                editor.remove(path(raw));
+            }
+            EditorOp::SetIndex { name } => {
+                editor.set_index_document(&document(*name));
+            }
+            EditorOp::SetError { name } => {
+                editor.set_error_document(&document(*name));
+            }
+        }
+    }
+    editor
+}
+
+/// The surviving state a successful commit must expose to the reader.
+struct Model {
+    entries: BTreeMap<String, ChunkAddress>,
+    index_document: Option<String>,
+    error_document: Option<String>,
+}
+
+/// Replay the ops on the path-set model; only meaningful when every op
+/// applied, which a successful commit guarantees. Remove mirrors the trie's
+/// boundary prune: the named path and everything under it.
+fn model(ops: &[EditorOp]) -> Model {
+    let mut entries = BTreeMap::new();
+    let mut index_document = None;
+    let mut error_document = None;
+    for op in ops {
+        match op {
+            EditorOp::Put { path: raw, fill }
+            | EditorOp::PutMeta {
+                path: raw, fill, ..
+            } => {
+                entries.insert(path(raw), address(*fill));
+            }
+            EditorOp::Remove { path: raw } => {
+                // Remove prunes the fork whose boundary the path names, so
+                // every key under the prefix goes with it.
+                let p = path(raw);
+                entries.retain(|key, _| !key.starts_with(&p));
+            }
+            EditorOp::SetIndex { name } => index_document = Some(document(*name)),
+            EditorOp::SetError { name } => error_document = Some(document(*name)),
+        }
+    }
+    Model {
+        entries,
+        index_document,
+        error_document,
+    }
+}
+
+/// Differential of the manifest editor against a reader-based path-set
+/// model: a committed op log (capped at [`MAX_OPS`]) must expose exactly
+/// the model's surviving paths at their last put references, removed paths
+/// must stay absent, the root documents must read back at their last set
+/// values, and two commits of one log must agree.
+pub async fn editor_differential(ops: &[EditorOp]) -> Result<(), Violation> {
+    let ops = ops.get(..ops.len().min(MAX_OPS)).unwrap_or(ops);
+
+    let first = record(ops).commit().await;
+    let second = record(ops).commit().await;
+    let (root, store) = match (first, second) {
+        (Ok((root_a, store)), Ok((root_b, _))) => {
+            if root_a != root_b {
+                return Err(Violation::new("two commits of one log diverged"));
+            }
+            (root_a, store)
+        }
+        (Err(_), Err(_)) => return Ok(()),
+        _ => {
+            return Err(Violation::new(
+                "two commits of one log disagreed on success",
+            ));
+        }
+    };
+
+    let want = model(ops);
+    let reader = Reader::new(store);
+    for (p, addr) in &want.entries {
+        // The empty path is never addressable through the reader.
+        if p.is_empty() {
+            continue;
+        }
+        let Ok(got) = reader.get(&root, p.as_bytes()).await else {
+            return Err(Violation::new("lookup over a complete store must succeed"));
+        };
+        let Some(entry) = got else {
+            return Err(Violation::new("a committed path must be readable"));
+        };
+        if entry.reference().map(|r| *r.address()) != Some(*addr) {
+            return Err(Violation::new("a reference diverged from the model"));
+        }
+    }
+    // A removed or never-put probe must stay absent; probe removed paths.
+    // The "/" node also carries the root documents, so a removed root value
+    // may legitimately read back as a metadata-only entry.
+    for op in ops {
+        if let EditorOp::Remove { path: raw } = op {
+            let p = path(raw);
+            if p.is_empty() || want.entries.contains_key(&p) {
+                continue;
+            }
+            let Ok(got) = reader.get(&root, p.as_bytes()).await else {
+                return Err(Violation::new("lookup over a complete store must succeed"));
+            };
+            if p == "/" {
+                if got.as_ref().is_some_and(|e| e.reference().is_some()) {
+                    return Err(Violation::new(
+                        "a removed root value still carries a reference",
+                    ));
+                }
+            } else if got.is_some() {
+                return Err(Violation::new("a removed path is still readable"));
+            }
+        }
+    }
+    // The root documents read back as the last set values; a value op on
+    // the "/" path itself may rewrite that node, so the check stands only
+    // when no op touched it.
+    let slash_touched = ops.iter().any(|op| match op {
+        EditorOp::Put { path: raw, .. }
+        | EditorOp::PutMeta { path: raw, .. }
+        | EditorOp::Remove { path: raw } => path(raw) == "/",
+        EditorOp::SetIndex { .. } | EditorOp::SetError { .. } => false,
+    });
+    if !slash_touched && (want.index_document.is_some() || want.error_document.is_some()) {
+        let Ok(Some(root_entry)) = reader.get(&root, b"/").await else {
+            return Err(Violation::new("root documents set but no root entry"));
+        };
+        if root_entry.metadata().get("website-index-document") != want.index_document.as_ref() {
+            return Err(Violation::new("the index document diverged"));
+        }
+        if root_entry.metadata().get("website-error-document") != want.error_document.as_ref() {
+            return Err(Violation::new("the error document diverged"));
         }
     }
     Ok(())

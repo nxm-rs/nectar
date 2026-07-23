@@ -1239,37 +1239,27 @@ mod tests {
     }
 
     /// Replay the committed seed corpus of the `usage_snapshot_decode` fuzz
-    /// target (`fuzz/seeds/usage_snapshot_decode/`). Seed intent is pinned by
-    /// name: `valid-*` must parse `Ok`, `invalid-*` must stay `Err`. This
-    /// keeps the fuzz seeds meaningful on stable without running the fuzzer
-    /// itself.
+    /// target through the exact parse entry point the fuzzer drives. Seed
+    /// intent is pinned by name: `valid-*` must parse `Ok`, `invalid-*` must
+    /// stay `Err`. This keeps the fuzz seeds meaningful on stable without
+    /// running the fuzzer itself.
     #[test]
     fn seed_replay_usage_snapshot_decode() {
-        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fuzz/seeds/usage_snapshot_decode");
-        let mut replayed = 0usize;
-        for entry in std::fs::read_dir(&seed_dir)
-            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
-        {
-            let path = entry.unwrap().path();
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let data = std::fs::read(&path).unwrap();
-
-            let result = RootInfo::parse(&data);
-
-            if name.starts_with("valid-") {
+        nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "usage_snapshot_decode")
+            .on("valid-", |name, data| {
+                let result = RootInfo::parse(data);
                 assert!(
                     result.is_ok(),
                     "seed {name} must parse successfully: {result:?}"
                 );
-            } else if name.starts_with("invalid-") {
-                assert!(result.is_err(), "seed {name} must remain an Err input");
-            }
-            replayed += 1;
-        }
-        assert!(
-            replayed >= 3,
-            "expected at least the 3 curated seeds, found {replayed}"
-        );
+            })
+            .on("invalid-", |name, data| {
+                assert!(
+                    RootInfo::parse(data).is_err(),
+                    "seed {name} must remain an Err input"
+                );
+            })
+            .floor(3)
+            .run();
     }
 }

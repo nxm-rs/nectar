@@ -2,6 +2,8 @@
 //! budgeted cooperative yields, a manual-poll driver, and a gate for
 //! stepwise backpressure probes. Panics are the point: a deadlock becomes a
 //! failure instead of a hang, hence the opt-out from the workspace lints.
+//! Also hosts [`SeedReplay`], the walker behind every stable seed-corpus
+//! replay test.
 //!
 //! # Generator and test layering
 //!
@@ -35,6 +37,10 @@
 //! 7. Derive hygiene: crate-side impls are hand-written (the two-tier
 //!    pattern is semantic, not derivable); only the fuzz workspace pulls the
 //!    `arbitrary` derive, for its target-local input grammars.
+
+mod seeds;
+
+pub use seeds::SeedReplay;
 
 use core::future::Future;
 use core::pin::Pin;

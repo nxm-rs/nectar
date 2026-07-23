@@ -69,7 +69,12 @@ parallel = [
 ]
 
 # Arbitrary trait implementations for property-based testing
-arbitrary = [ "nectar-postage/arbitrary", "nectar-primitives/arbitrary", "std" ]
+arbitrary = [
+	"nectar-file/arbitrary",
+	"nectar-postage/arbitrary",
+	"nectar-primitives/arbitrary",
+	"std",
+]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -39,6 +39,7 @@ OOM, no hang*:
 | Target | Entry point | Invariant |
 |---|---|---|
 | `mantaray_node_decode` | `hazmat::decode` over raw bytes | manifest decoding never panics |
+| `manifest_node_decode` | `Node::<V1>::decode` over raw bytes | mantaray 1.0 decoding never panics; an accepted image re-encodes byte-exactly and decodes back equal |
 | `mantaray_view_differential` | `hazmat::decode` at both widths vs `NodeView::try_from` over raw bytes | the decoders agree on accept/reject and structure; the view's emit/decode pair is a fixed point |
 | `chunk_decode` | `AnyChunk::from_wire_bytes` + direct CAC/SOC `TryFrom` | chunk decoding, BMT address forcing, and SOC owner recovery never panic |
 | `stamp_decode` | `Stamp::try_from_slice` (+ `recover_signer` over a stamp‖address split) | stamp decoding and EIP-191 signer recovery never panic |
@@ -75,39 +76,54 @@ in-memory store:
 | `file_split_root` | one root regardless of write segmentation or put window, fused across repeated finishes, and the written store reads back to the source |
 | `file_malformed_intermediate` | fuzzer-authored chunk trees with lying spans, short reference lists and absent children are rejected typed; an accepted tree delivers exactly its declared span |
 
-Every decode target has a stable-gated **seed replay test in the library
-crate** that pushes the committed seed bytes through the exact same decode
-function, so plain `cargo nextest run` proves the seeds stay panic-free
-without nightly or libFuzzer:
+Every committed corpus has a stable-gated **seed replay test in the library
+crate** that pushes the committed seed bytes through the exact fuzz entry
+point, so plain `cargo nextest run` proves the seeds stay meaningful without
+nightly or libFuzzer:
 
-- `seed_replay_mantaray_node_decode` in `crates/mantaray/src/codec.rs`
+- `seed_replay_chunk_decode` and `seed_replay_chunk_roundtrip` in
+  `crates/primitives/src/chunk/registry.rs`
+- `seed_replay_mantaray_node_decode` and
+  `seed_replay_mantaray_record_roundtrip` in `crates/mantaray/src/codec.rs`
 - `seed_replay_mantaray_view_differential` in `crates/mantaray/src/view.rs`
-- `seed_replay_chunk_decode` in `crates/primitives/src/chunk/registry.rs`
+- `seed_replay_mantaray_editor_differential` in
+  `crates/mantaray/src/editor.rs`
+- `seed_replay_manifest_node_decode` in `crates/manifest/src/codec.rs`
+- `seed_replay_file_malformed_intermediate` in `crates/file/src/oracles.rs`
 - `seed_replay_stamp_decode` in `crates/postage/src/stamp.rs`
 - `seed_replay_usage_snapshot_decode` in `crates/postage-usage/src/codec.rs`
+
+Every replay walks its corpus through `nectar_testing::SeedReplay`, which
+fails on a seed name no registered prefix classifies, on a prefix matching
+no seed, and on a corpus falling below its curated floor, so a new seed
+cannot land without an intent assertion.
 
 Both the fuzz targets and their stable pins call one shared oracle per
 invariant, hosted in each crate's `oracles` module, so the two rungs cannot
 drift. The round-trip invariants are pinned on stable by proptests next to
 the replay tests (bridged from the `Arbitrary` layer via
 `proptest-arbitrary-interop`) and the chunk proptests in
-`crates/primitives/src/chunk/{content,single_owner}.rs`. The corpus-seeded
-`mantaray_record_roundtrip` is additionally pinned by
-`seed_replay_mantaray_record_roundtrip` in `crates/mantaray/src/codec.rs`,
-which replays its seeds through the same fixed-point oracle.
+`crates/primitives/src/chunk/{content,single_owner}.rs`.
 
 ## Corpus & seed policy
 
-- `fuzz/seeds/<target>/` is **committed**: a small curated set per decode
-  target — a few valid encodings, interesting invalid/edge encodings, and
-  minimized crash inputs from fixed bugs (e.g.
+- `fuzz/seeds/<target>/` is **committed**: a small curated set per target of
+  valid encodings, interesting invalid/edge encodings, and minimized crash
+  inputs from fixed bugs (e.g.
   `mantaray_node_decode/crash-v01-header-only-64b.bin`, the input behind the
-  bound-check fix in `crates/mantaray/src/codec.rs`). Name seeds
-  `valid-*`/`invalid-*`/`edge-*`/`crash-*` with a size hint.
+  bound-check fix in `crates/mantaray/src/codec.rs`).
+- The canonical name prefixes, mandatory for new hand-curated seeds:
+  `valid-` (the target's accept assertion must hold), `invalid-` (must stay
+  rejected), `edge-` (no intent beyond the target oracle), `crash-`
+  (minimized reproducer of a fixed bug, must stay rejected), each with a
+  size hint. A handful of legacy names outside this set (`soc-`, `prefix-`,
+  `root-`, `zero-`) predate the scheme and are classified explicitly by
+  their replays; do not add more.
 - Nightly CI also commits its minimized corpus into `fuzz/seeds/<target>/` as
   sha1-named files via an automated PR, so accumulated coverage survives
   cache eviction. Machine-managed: never hand-edit or rename these; the next
-  refresh replaces them wholesale.
+  refresh replaces them wholesale. The replay walker recognizes the hex
+  names and runs each through the target oracle without an intent class.
 - `fuzz/corpus/`, `fuzz/artifacts/`, `fuzz/coverage/` are **gitignored**; the
   corpus lives in the CI cache and on developer machines.
 - When a fuzzer finds a crash: `cargo fuzz tmin` it, commit the minimized

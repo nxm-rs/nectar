@@ -548,19 +548,14 @@ mod tests {
     /// seeds meaningful on stable without running the fuzzer.
     #[test]
     fn seed_replay_mantaray_view_differential() {
-        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fuzz/seeds/mantaray_view_differential");
-        let mut replayed = 0usize;
-        for entry in std::fs::read_dir(&seed_dir)
-            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
-        {
-            let data = std::fs::read(entry.unwrap().path()).unwrap();
-            assert_differential_agreement(&data);
-            replayed += 1;
-        }
-        assert!(
-            replayed >= 3,
-            "expected at least the 3 curated seeds, found {replayed}"
-        );
+        nectar_testing::SeedReplay::corpus(
+            env!("CARGO_MANIFEST_DIR"),
+            "mantaray_view_differential",
+        )
+        .each(|_, data| assert_differential_agreement(data))
+        .covers("crash-")
+        .covers("valid-")
+        .floor(3)
+        .run();
     }
 }

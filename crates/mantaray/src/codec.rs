@@ -793,57 +793,50 @@ mod tests {
     /// fuzzer itself.
     #[test]
     fn seed_replay_mantaray_node_decode() {
-        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fuzz/seeds/mantaray_node_decode");
-        let mut replayed = 0usize;
-        let mut plain_decoded = 0usize;
-        let mut wide_decoded = 0usize;
-        for entry in std::fs::read_dir(&seed_dir)
-            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
-        {
-            let path = entry.unwrap().path();
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let data = std::fs::read(&path).unwrap();
-
-            // The fuzz oracle: must not panic. The shared oracle drives both
-            // entry widths, exactly as the fuzz target does.
-            let (plain, wide) = crate::oracles::node_decode(data.as_slice());
-            if plain.is_ok() {
-                plain_decoded += 1;
-            }
-            if wide.is_ok() {
-                wide_decoded += 1;
-            }
-
-            if name.starts_with("crash-") {
+        let plain_decoded = core::cell::Cell::new(0usize);
+        let wide_decoded = core::cell::Cell::new(0usize);
+        nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "mantaray_node_decode")
+            .each(|_, data| {
+                // The fuzz oracle: must not panic. The shared oracle drives
+                // both entry widths, exactly as the fuzz target does.
+                let (plain, wide) = crate::oracles::node_decode(data);
+                if plain.is_ok() {
+                    plain_decoded.set(plain_decoded.get() + 1);
+                }
+                if wide.is_ok() {
+                    wide_decoded.set(wide_decoded.get() + 1);
+                }
+            })
+            .on("crash-", |name, data| {
+                let (plain, wide) = crate::oracles::node_decode(data);
                 assert!(
                     plain.is_err() && wide.is_err(),
                     "seed {name} must remain an Err reproducer at both widths"
                 );
-            } else if name.starts_with("valid-encrypted-") {
+            })
+            .on("valid-encrypted-", |name, data| {
                 assert!(
-                    wide.is_ok(),
+                    crate::oracles::node_decode(data).1.is_ok(),
                     "seed {name} must decode at the EncryptedChunkRef width"
                 );
-            } else if name.starts_with("valid-") {
+            })
+            .on("valid-", |name, data| {
                 assert!(
-                    plain.is_ok(),
+                    crate::oracles::node_decode(data).0.is_ok(),
                     "seed {name} must decode at the ChunkRef width"
                 );
-            }
-            replayed += 1;
-        }
+            })
+            .floor(5)
+            .run();
         assert!(
-            replayed >= 5,
-            "expected at least the 5 curated seeds, found {replayed}"
+            plain_decoded.get() >= 2,
+            "expected the v0.1 and v0.2 manifests to decode at the ChunkRef width, decoded {}",
+            plain_decoded.get()
         );
         assert!(
-            plain_decoded >= 2,
-            "expected the v0.1 and v0.2 manifests to decode at the ChunkRef width, decoded {plain_decoded}"
-        );
-        assert!(
-            wide_decoded >= 2,
-            "expected the ref_size=64 seeds (empty and keyed fork) to decode at the EncryptedChunkRef width, decoded {wide_decoded}"
+            wide_decoded.get() >= 2,
+            "expected the ref_size=64 seeds (empty and keyed fork) to decode at the EncryptedChunkRef width, decoded {}",
+            wide_decoded.get()
         );
     }
 
@@ -859,38 +852,34 @@ mod tests {
     /// fixed-point assertions from passing vacuously.
     #[test]
     fn seed_replay_mantaray_record_roundtrip() {
-        let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fuzz/seeds/mantaray_record_roundtrip");
-        let mut replayed = 0usize;
-        let mut plain_decoded = 0usize;
-        let mut wide_decoded = 0usize;
-        for entry in std::fs::read_dir(&seed_dir)
-            .unwrap_or_else(|e| panic!("seed dir {} must exist: {e}", seed_dir.display()))
-        {
-            let path = entry.unwrap().path();
-            let data = std::fs::read(&path).unwrap();
-
-            if crate::oracles::record_round_trip::<ChunkRef>(&data).unwrap() {
-                plain_decoded += 1;
-            }
-            if crate::oracles::record_round_trip::<nectar_primitives::EncryptedChunkRef>(&data)
-                .unwrap()
-            {
-                wide_decoded += 1;
-            }
-            replayed += 1;
-        }
+        let plain_decoded = core::cell::Cell::new(0usize);
+        let wide_decoded = core::cell::Cell::new(0usize);
+        nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "mantaray_record_roundtrip")
+            .each(|name, data| {
+                let plain = crate::oracles::record_round_trip::<ChunkRef>(data)
+                    .unwrap_or_else(|v| panic!("seed {name}: {v}"));
+                if plain {
+                    plain_decoded.set(plain_decoded.get() + 1);
+                }
+                let wide =
+                    crate::oracles::record_round_trip::<nectar_primitives::EncryptedChunkRef>(data)
+                        .unwrap_or_else(|v| panic!("seed {name}: {v}"));
+                if wide {
+                    wide_decoded.set(wide_decoded.get() + 1);
+                }
+            })
+            .covers("valid-")
+            .floor(4)
+            .run();
         assert!(
-            replayed >= 4,
-            "expected at least the 4 curated seeds, found {replayed}"
+            plain_decoded.get() >= 2,
+            "expected the v0.1 and v0.2 manifests to round-trip at the ChunkRef width, decoded {}",
+            plain_decoded.get()
         );
         assert!(
-            plain_decoded >= 2,
-            "expected the v0.1 and v0.2 manifests to round-trip at the ChunkRef width, decoded {plain_decoded}"
-        );
-        assert!(
-            wide_decoded >= 2,
-            "expected the ref_size=64 seeds (empty and keyed fork) to decode at the EncryptedChunkRef width, decoded {wide_decoded}"
+            wide_decoded.get() >= 2,
+            "expected the ref_size=64 seeds (empty and keyed fork) to decode at the EncryptedChunkRef width, decoded {}",
+            wide_decoded.get()
         );
     }
 
