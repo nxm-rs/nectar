@@ -6,8 +6,7 @@
 # The nightly corpus is persisted beyond actions/cache eviction: each cron
 # leg minimizes corpus plus committed seeds into a standalone set, and the
 # persist job commits it back into fuzz/seeds/<target>/ (hash-named files
-# next to the curated seeds) via an automated PR. ClusterFuzzLite was
-# considered and deferred until the estate wants coverage reporting.
+# next to the curated seeds) via an automated PR.
 name: fuzz
 
 on:
