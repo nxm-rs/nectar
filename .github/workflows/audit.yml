@@ -34,7 +34,16 @@ jobs:
           tool: cargo-audit
 
       - name: cargo audit
+        id: root-audit
         run: cargo audit
+
+      # fuzz/ is a self-contained workspace with its own committed lockfile,
+      # which a bare `cargo audit` never reads. Run from the repo root so
+      # .cargo/audit.toml applies to both lockfiles, and run even when the
+      # root audit fails so one lockfile cannot mask the other.
+      - name: cargo audit (fuzz lockfile)
+        if: success() || steps.root-audit.outcome == 'failure'
+        run: cargo audit --file fuzz/Cargo.lock
 
       - name: Open or update advisory issue
         if: failure() && github.event_name == 'schedule'
@@ -43,7 +52,7 @@ jobs:
         run: |
           title="Security audit found vulnerable dependencies"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          body=$(printf 'The scheduled security audit failed: a RustSec advisory matches a dependency in Cargo.lock.\n\nFailed run: %s\n\nUpdate the affected dependency to a patched version shown in the run log.' "$run_url")
+          body=$(printf 'The scheduled security audit failed: a RustSec advisory matches a dependency in the root or fuzz Cargo.lock.\n\nFailed run: %s\n\nUpdate the affected dependency to a patched version shown in the run log.' "$run_url")
           existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
