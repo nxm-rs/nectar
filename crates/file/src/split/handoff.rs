@@ -1,5 +1,6 @@
 //! Bounded handoff from the thread pool back to the polling future.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -11,6 +12,9 @@ use futures_util::task::AtomicWaker;
 struct Slot<T> {
     value: Mutex<Option<T>>,
     waker: AtomicWaker,
+    /// Raised by the reply half before it wakes, so a receiver that reads it
+    /// unset is guaranteed a later wake.
+    done: AtomicBool,
 }
 
 impl<T> Slot<T> {
@@ -37,10 +41,10 @@ impl<T> Handoff<T> {
         if let Some(value) = self.slot.value().take() {
             return Poll::Ready(Some(value));
         }
-        if Arc::strong_count(&self.slot) == 1 {
+        if self.slot.done.load(Ordering::Acquire) {
             // The reply half is gone, but it may have written its value
-            // before dropping; re-check so that ordering never turns a
-            // delivered reply into a spurious drop.
+            // between the take above and this load; re-check so that
+            // ordering never turns a delivered reply into a spurious drop.
             return Poll::Ready(self.slot.value().take());
         }
         Poll::Pending
@@ -55,8 +59,22 @@ struct Reply<T> {
 
 impl<T> Drop for Reply<T> {
     fn drop(&mut self) {
+        self.slot.done.store(true, Ordering::Release);
         self.slot.waker.wake();
     }
+}
+
+/// Both halves of one fresh slot.
+fn pair<T>() -> (Handoff<T>, Reply<T>) {
+    let slot = Arc::new(Slot {
+        value: Mutex::new(None),
+        waker: AtomicWaker::new(),
+        done: AtomicBool::new(false),
+    });
+    let reply = Reply {
+        slot: Arc::clone(&slot),
+    };
+    (Handoff { slot }, reply)
 }
 
 /// Queue `job` on the pool, returning the handoff its reply arrives on.
@@ -70,18 +88,83 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    let slot = Arc::new(Slot {
-        value: Mutex::new(None),
-        waker: AtomicWaker::new(),
-    });
-    let reply = Reply {
-        slot: Arc::clone(&slot),
-    };
+    let (handoff, reply) = pair();
     rayon::spawn(move || {
         if let Ok(value) = catch_unwind(AssertUnwindSafe(job)) {
             *reply.slot.value() = Some(value);
         }
         drop(reply);
     });
-    Handoff { slot }
+    handoff
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use core::task::Waker;
+    use core::time::Duration;
+    use std::task::Wake;
+    use std::thread::{self, Thread};
+    use std::time::Instant;
+
+    /// Waker that unparks the thread which registered it.
+    struct Unpark(Thread);
+
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    /// Drives `handoff` off wakes alone, panicking once `budget` is spent so a
+    /// lost wake surfaces as a fast diagnostic rather than a hang.
+    fn recv_before<T>(mut handoff: Handoff<T>, budget: Duration) -> Option<T> {
+        let waker = Waker::from(Arc::new(Unpark(thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let start = Instant::now();
+        loop {
+            assert!(
+                start.elapsed() < budget,
+                "lost wake: handoff still pending after {budget:?}"
+            );
+            if let Poll::Ready(value) = handoff.poll_recv(&mut cx) {
+                return value;
+            }
+            thread::park_timeout(budget.saturating_sub(start.elapsed()));
+        }
+    }
+
+    /// Waking after the completion flag is raised is what keeps a receiver that
+    /// parks mid-drop from sleeping for good, so hammer that interleaving.
+    #[test]
+    fn a_reply_dropped_without_a_value_always_wakes_the_receiver() {
+        for _ in 0..1_000 {
+            let (handoff, reply) = pair::<u32>();
+            let sender = thread::spawn(move || drop(reply));
+            assert_eq!(recv_before(handoff, Duration::from_secs(10)), None);
+            sender.join().unwrap();
+        }
+    }
+
+    /// A value stored before the drop is delivered, never read as a drop.
+    #[test]
+    fn a_reply_carrying_a_value_delivers_it() {
+        for _ in 0..1_000 {
+            let (handoff, reply) = pair::<u32>();
+            let sender = thread::spawn(move || {
+                *reply.slot.value() = Some(7);
+                drop(reply);
+            });
+            assert_eq!(recv_before(handoff, Duration::from_secs(10)), Some(7));
+            sender.join().unwrap();
+        }
+    }
+
+    /// The pool path end to end: a panicking job reads as a drop.
+    #[test]
+    fn a_panicking_job_reads_as_a_drop() {
+        let handoff = submit(|| panic!("job panicked"));
+        assert_eq!(recv_before::<u32>(handoff, Duration::from_secs(10)), None);
+    }
 }
