@@ -2,6 +2,39 @@
 //! budgeted cooperative yields, a manual-poll driver, and a gate for
 //! stepwise backpressure probes. Panics are the point: a deadlock becomes a
 //! failure instead of a hang, hence the opt-out from the workspace lints.
+//!
+//! # Generator and test layering
+//!
+//! The workspace convention for `Arbitrary`, proptest, seed-replay and fuzz
+//! code:
+//!
+//! 1. `Arbitrary` impls sit top-level under
+//!    `#[cfg(any(test, feature = "arbitrary"))]`, in a `mod arbitrary_impls`
+//!    where a file has several.
+//! 2. Two tiers: raw `Arbitrary` impls may yield structured-but-invalid
+//!    values and exist only where such values are representable and consumed
+//!    (decode-target food); valid-by-construction constructors
+//!    (`arbitrary_signed`, the `generators` modules) feed round-trips. Pure
+//!    wire decoders eat raw fuzzer bytes and need no structured raw tier.
+//! 3. One generator per type: fuzz targets compose the crate generators,
+//!    never local duplicates. Target-specific input grammars with no
+//!    crate-side equivalent stay local to the target. Types whose upstream
+//!    crate already ships an `Arbitrary` impl behind a feature compose that
+//!    impl; never hand-write one for an upstream type.
+//! 4. Proptest strategies bridge from the `Arbitrary` layer via
+//!    `proptest-arbitrary-interop` (`arb::<T>()`) for the raw tier;
+//!    regime-targeted hand strategies are the sanctioned exception and must
+//!    state which threshold they reach.
+//! 5. Pin split: seed-replay tests pin fuzz findings through the shared
+//!    oracle entry points; `proptest!` plus committed `proptest-regressions`
+//!    files pin properties. Every crate with fuzz targets carries both,
+//!    derived from the same `Arbitrary` layer.
+//! 6. Feature hygiene: every `arbitrary` feature lists `std` and is
+//!    unreachable from default, `std` or any shipped feature. Test matrices
+//!    use per-crate feature lanes, never workspace-wide `--all-features`.
+//! 7. Derive hygiene: crate-side impls are hand-written (the two-tier
+//!    pattern is semantic, not derivable); only the fuzz workspace pulls the
+//!    `arbitrary` derive, for its target-local input grammars.
 
 use core::future::Future;
 use core::pin::Pin;

@@ -45,7 +45,8 @@ OOM, no hang*:
 | `usage_snapshot_decode` | `RootInfo::parse` | SBU1 root parsing (geometry/packed-length arithmetic) never panics |
 
 Round-trip targets take a structured value via valid-by-construction
-`arbitrary::Arbitrary` impls (behind each crate's `arbitrary` feature), so the
+generators and `arbitrary::Arbitrary` impls (behind each crate's `arbitrary`
+feature), so the
 invariant is stronger — encode must decode back to an equal value, and where
 the encoding is canonical, re-encoding must be byte-identical. The one
 exception is `mantaray_record_roundtrip`, which takes raw `&[u8]` and is seeded

@@ -1,27 +1,28 @@
 //! Cross-member domain-separation fuzz of the chunk registry predicates.
 //!
-//! While the typeless wire path exists (bee-compat 1.x), trial-parse
-//! disambiguation by address must stay sound: no byte string may certify
-//! under two registry members for any address. A member certifies bytes only
-//! at its self-derived address, so the obligation reduces to derived-address
+//! While the legacy typeless wire path exists, trial-parse disambiguation by
+//! address must stay sound: no byte string may certify under two registry
+//! members for any address. A member certifies bytes only at its
+//! self-derived address, so the obligation reduces to derived-address
 //! distinctness whenever two members structurally parse the same bytes.
 //! This obligation relaxes only when the legacy typeless wire ids are
 //! retired downstream.
 //!
-//! Inputs are valid by construction, as in `chunk_roundtrip`: each exec
-//! generates a chunk under one member and asserts its wire bytes never
-//! certify under the other, then pins `StandardChunkSet::decode_wire` to the
-//! generating member at the generated address.
+//! Inputs come from `nectar_primitives::generators::any_chunk` and are valid
+//! by construction, as in `chunk_roundtrip`: each exec generates a chunk
+//! under one member and asserts its wire bytes never certify under the
+//! other, then pins `StandardChunkSet::decode_wire` to the generating member
+//! at the generated address. The generator keccak-derives its signing key
+//! from the drawn seed, so special-cased owner keys (the dispersed-replica
+//! owner) are never drawn in practice.
 
 #![no_main]
 
-use alloy_primitives::{B256, b256};
-use alloy_signer_local::PrivateKeySigner;
-use arbitrary::{Arbitrary, Unstructured};
+use arbitrary::Unstructured;
 use libfuzzer_sys::fuzz_target;
 use nectar_primitives::{
-    ChunkOps, ChunkRegistry, ContentChunk, DEFAULT_BODY_SIZE, SingleOwnerChunk, StandardChunkSet,
-    bytes::Bytes,
+    AnyChunk, ChunkOps, ChunkRegistry, ContentChunk, DEFAULT_BODY_SIZE, SingleOwnerChunk,
+    StandardChunkSet, bytes::Bytes, generators,
 };
 
 // The match below spells out the member cross-product by hand; a new
@@ -31,43 +32,13 @@ const _: () = assert!(
     "extend the pair sweep for the new registry member"
 );
 
-/// Private key of the dispersed-replica owner, mirroring the constant in
-/// `crates/primitives/src/chunk/single_owner.rs`.
-const DISPERSED_REPLICA_OWNER_KEY: B256 =
-    b256!("0x0100000000000000000000000000000000000000000000000000000000000000");
-
-/// One structured input: a valid chunk under one registry member, so each
-/// exec drives one direction of the member pair and the corpus covers both.
-#[derive(Debug)]
-enum ChunkInput {
-    Content(ContentChunk<DEFAULT_BODY_SIZE>),
-    SingleOwner(SingleOwnerChunk<DEFAULT_BODY_SIZE>),
-}
-
-impl<'a> Arbitrary<'a> for ChunkInput {
-    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        if u.arbitrary()? {
-            Ok(Self::Content(ContentChunk::arbitrary(u)?))
-        } else {
-            let key = B256::arbitrary(u)?;
-            // Key of bee's dispersed-replica owner (`pkg/replicas`): SOCs it
-            // signs face an extra id acceptance rule, so a random id does
-            // not certify. Replica semantics are outside this pair sweep.
-            if key == DISPERSED_REPLICA_OWNER_KEY {
-                return Err(arbitrary::Error::IncorrectFormat);
-            }
-            let signer = PrivateKeySigner::from_bytes(&key)
-                .map_err(|_| arbitrary::Error::IncorrectFormat)?;
-            Ok(Self::SingleOwner(SingleOwnerChunk::arbitrary_signed(
-                u, &signer,
-            )?))
-        }
-    }
-}
-
-fuzz_target!(|input: ChunkInput| {
-    match input {
-        ChunkInput::Content(chunk) => {
+fuzz_target!(|data: &[u8]| {
+    let mut u = Unstructured::new(data);
+    let Ok(chunk) = generators::any_chunk::<DEFAULT_BODY_SIZE>(&mut u) else {
+        return;
+    };
+    match chunk {
+        AnyChunk::Content(chunk) => {
             let address = *chunk.address();
             let wire: Bytes = chunk.into();
 
@@ -98,7 +69,7 @@ fuzz_target!(|input: ChunkInput| {
                 "registry disambiguated a CAC to another member"
             );
         }
-        ChunkInput::SingleOwner(chunk) => {
+        AnyChunk::SingleOwner(chunk) => {
             let address = *chunk.address();
             let wire: Bytes = chunk.into();
 
