@@ -632,29 +632,25 @@ mod tests {
             /// lifetime count stays exact across wraps.
             #[test]
             fn ring_wraps_in_range_and_reports_saturation_honestly(
-                depth in 16u8..=20,
+                bucket_depth in 16u8..=18,
+                excess in 0u8..=4,
                 leads in proptest::collection::vec(0u16..6, 1..160),
             ) {
-                let batch = mutable_batch(depth, 16);
+                let batch = mutable_batch(bucket_depth + excess, bucket_depth);
                 let mut issuer = RingIssuer::external(&batch).unwrap();
                 let capacity = issuer.bucket_capacity();
                 let mut writes = BTreeMap::<u16, u32>::new();
                 let mut ts = 0u64;
                 for &lead in &leads {
                     ts += 1;
+                    let bucket = u32::from(lead) << (bucket_depth - 16);
                     let digest = issuer.prepare_ring_stamp(&test_address(lead), ts).unwrap();
                     let n = writes.entry(lead).or_insert(0);
-                    prop_assert_eq!(digest.index.bucket(), u32::from(lead));
+                    prop_assert_eq!(digest.index.bucket(), bucket);
                     prop_assert_eq!(digest.index.index(), *n % capacity);
                     *n += 1;
-                    prop_assert_eq!(
-                        issuer.bucket_utilization(u32::from(lead)),
-                        (*n).min(capacity)
-                    );
-                    prop_assert_eq!(
-                        issuer.bucket_has_capacity(u32::from(lead)),
-                        *n < capacity
-                    );
+                    prop_assert_eq!(issuer.bucket_utilization(bucket), (*n).min(capacity));
+                    prop_assert_eq!(issuer.bucket_has_capacity(bucket), *n < capacity);
                 }
                 let peak = writes.values().map(|&n| n.min(capacity)).max().unwrap_or(0);
                 prop_assert_eq!(issuer.max_bucket_utilization(), peak);

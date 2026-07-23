@@ -503,10 +503,13 @@ mod tests {
             /// the issued total equals the counter sum.
             #[test]
             fn fill_sequence_is_a_conserved_watermark(
-                depth in 16u8..=22,
+                bucket_depth in 16u8..=18,
+                excess in 0u8..=6,
                 ops in proptest::collection::vec(0u32..8, 1..200),
             ) {
-                let mut table = CounterTable::new(depth, bucket_depth(), CounterMode::Fill);
+                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let mut table =
+                    CounterTable::new(bucket_depth.get() + excess, bucket_depth, CounterMode::Fill);
                 let capacity = table.bucket_capacity();
                 let mut marks = BTreeMap::<u32, u32>::new();
                 let mut successes = 0u64;
@@ -537,11 +540,14 @@ mod tests {
             /// protected, with `issued == sum(counts)` throughout.
             #[test]
             fn ring_sequence_matches_a_cyclic_scan(
-                depth in 16u8..=20,
+                bucket_depth in 16u8..=18,
+                excess in 0u8..=4,
                 masks in proptest::array::uniform4(proptest::num::u16::ANY),
                 ops in proptest::collection::vec(0usize..4, 1..200),
             ) {
-                let mut table = CounterTable::new(depth, bucket_depth(), CounterMode::Ring);
+                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let mut table =
+                    CounterTable::new(bucket_depth.get() + excess, bucket_depth, CounterMode::Ring);
                 let capacity = table.bucket_capacity();
                 let mut cursors = [0u32; 4];
                 for &idx in &ops {
@@ -576,17 +582,20 @@ mod tests {
             #[test]
             fn snapshot_restores_and_replays_identically(
                 ring in any::<bool>(),
-                depth in 16u8..=20,
+                bucket_depth in 16u8..=18,
+                excess in 0u8..=4,
                 prefix in proptest::collection::vec(0u32..8, 0..120),
                 suffix in proptest::collection::vec(0u32..8, 0..120),
             ) {
                 let mode = if ring { CounterMode::Ring } else { CounterMode::Fill };
-                let mut live = CounterTable::new(depth, bucket_depth(), mode);
+                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let depth = bucket_depth.get() + excess;
+                let mut live = CounterTable::new(depth, bucket_depth, mode);
                 for &bucket in &prefix {
                     let _ = live.record(bucket, never);
                 }
                 let mut restored =
-                    CounterTable::from_counts(depth, bucket_depth(), mode, live.counts().to_vec())
+                    CounterTable::from_counts(depth, bucket_depth, mode, live.counts().to_vec())
                         .unwrap();
                 prop_assert_eq!(&restored, &live);
                 for &bucket in &suffix {

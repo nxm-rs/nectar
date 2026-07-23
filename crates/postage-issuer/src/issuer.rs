@@ -536,15 +536,17 @@ mod tests {
             /// capacity, and reopened buckets continue from their watermark.
             #[test]
             fn dilution_grows_capacity_without_moving_watermarks(
+                bucket_depth in 16u8..=18,
                 ops in proptest::collection::vec(op_strategy(), 1..120),
             ) {
-                let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
-                let mut depth = 17u8;
+                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let mut depth = bucket_depth.get() + 1;
+                let mut issuer = MemoryIssuer::new(BatchId::ZERO, depth, bucket_depth);
                 let mut marks = BTreeMap::<u16, u32>::new();
                 let mut issued = 0u64;
                 let mut ts = 0u64;
                 for &op in &ops {
-                    let capacity = 1u32 << (depth - 16);
+                    let capacity = 1u32 << (depth - bucket_depth.get());
                     match op {
                         Op::Dilute(new_depth) if new_depth < depth => {
                             let refused = matches!(
@@ -560,11 +562,12 @@ mod tests {
                         }
                         Op::Allocate(lead) => {
                             ts += 1;
+                            let bucket = u32::from(lead) << (bucket_depth.get() - 16);
                             let mark = marks.entry(lead).or_insert(0);
                             match issuer.prepare_stamp(&test_address(lead), ts) {
                                 Ok(digest) => {
                                     prop_assert!(*mark < capacity);
-                                    prop_assert_eq!(digest.index.bucket(), u32::from(lead));
+                                    prop_assert_eq!(digest.index.bucket(), bucket);
                                     prop_assert_eq!(digest.index.index(), *mark);
                                     *mark += 1;
                                     issued += 1;
@@ -573,15 +576,15 @@ mod tests {
                                     prop_assert_eq!(*mark, capacity);
                                     prop_assert_eq!(
                                         err,
-                                        StampError::BucketFull { bucket: u32::from(lead), capacity }
+                                        StampError::BucketFull { bucket, capacity }
                                     );
                                 }
                             }
-                            prop_assert_eq!(issuer.bucket_utilization(u32::from(lead)), *mark);
+                            prop_assert_eq!(issuer.bucket_utilization(bucket), *mark);
                         }
                     }
                     prop_assert_eq!(issuer.batch_depth(), depth);
-                    prop_assert_eq!(issuer.bucket_capacity(), 1u32 << (depth - 16));
+                    prop_assert_eq!(issuer.bucket_capacity(), 1u32 << (depth - bucket_depth.get()));
                     prop_assert_eq!(issuer.stamps_issued(), Some(issued));
                 }
             }
