@@ -1,17 +1,8 @@
-//! Canonical Swarm network spec - `NETWORK_ID`, kademlia tuning, defaults.
+//! Canonical Swarm network knobs: network id, kademlia tuning, postage floors.
 //!
-//! Every Swarm node implementation needs a small set of canonical knobs:
-//! the network ID, the kademlia saturation thresholds, the bootnode-mode
-//! over-saturation cap, the neighborhood-depth low-watermark, the clock-skew
-//! tolerance used during handshake, the postage minimum bucket depth. Bee
-//! hard-codes these in `pkg/topology/kademlia/kademlia.go:54-56` and
-//! `pkg/bzz/timestamp.go`.
-//!
-//! The spec is a type, not a value: every knob is an associated const, so a
-//! network is named as a type parameter ([`Mainnet`], [`Testnet`]) and a knob
-//! is read without an instance in hand. A type parameterized by a spec (a
-//! postage bucket depth, say) can then refuse a value the network would refuse
-//! at compile time instead of at a validation call.
+//! Knobs are associated consts, so a network is a type ([`Mainnet`],
+//! [`Testnet`]) and a spec-parameterized value rejects an out-of-range one at
+//! compile time rather than at a validation call.
 
 use core::time::Duration;
 
@@ -19,13 +10,9 @@ use crate::{Bin, NetworkId, ProximityOrder};
 
 /// Canonical Swarm network spec.
 ///
-/// Const defaults mirror bee's hard-coded constants. Implementors only have to
-/// give [`NETWORK_ID`](Self::NETWORK_ID); they may override any of the others
-/// to customise a deployment (e.g. a dense testnet with tighter saturation).
-///
-/// Trait can grow with defaulted consts without breaking implementors -
-/// `#[non_exhaustive]` is not a valid attribute on traits in Rust, but the
-/// default-value discipline gives equivalent backward-compatibility.
+/// Only [`NETWORK_ID`](Self::NETWORK_ID) is required; the rest default to the
+/// reference client's values and may be overridden per deployment. Defaulted
+/// consts can be added without breaking implementors.
 pub trait SwarmSpec {
     /// Network identifier used in [`compute_overlay`](crate::compute_overlay)
     /// and the BzzAddress sign-data.
@@ -34,32 +21,26 @@ pub trait SwarmSpec {
     /// Maximum proximity order (= number of bins minus one).
     const MAX_PROXIMITY_ORDER: ProximityOrder = ProximityOrder::MAX;
 
-    /// Minimum desired peers per bin before the bin is considered saturated.
-    /// Bee default: 8 (`defaultSaturationPeers`).
+    /// Peers per bin before the bin counts as saturated.
     const SATURATION_PEERS: u8 = 8;
 
-    /// Soft cap: above this, non-bootnode peers reject further inbound dials.
-    /// Bee default: 18 (`defaultOverSaturationPeers`).
+    /// Soft cap above which a non-bootnode rejects further inbound dials.
     const OVER_SATURATION_PEERS: u8 = 18;
 
-    /// Soft cap for **bootnode** mode (higher than regular).
-    /// Bee default: 20 (`defaultBootNodeOverSaturationPeers`).
+    /// Soft cap in bootnode mode.
     const BOOTNODE_OVER_SATURATION_PEERS: u8 = 20;
 
-    /// Minimum peers required in the deepest bins to maintain neighborhood
-    /// depth (bee default: 2 - `nnLowWatermark`).
+    /// Peers needed in the deepest bins to anchor neighborhood depth.
     const NEIGHBORHOOD_LOW_WATERMARK: u8 = 2;
 
-    /// Maximum clock skew permitted between local and remote timestamps
-    /// during handshake / hive verification. Bee's `bzz/timestamp.go`
-    /// hard-codes 5s but operational deployments commonly relax to minutes
-    /// or hours; this default is 6h to match what was previously embedded
-    /// in vertex.
+    /// Clock skew tolerated between local and remote timestamps during
+    /// handshake and hive verification. Deployments commonly relax this well
+    /// past the reference client's 5s.
     const CLOCK_SKEW_TOLERANCE: Duration = Duration::from_secs(6 * 60 * 60);
 
-    /// Minimum collision-bucket depth a postage batch may declare, mirroring
-    /// the PostageStamp contract's `minimumBucketDepth()` (16 on mainnet).
-    /// A floor rather than a fixed width: a batch may declare a deeper one.
+    /// Minimum collision-bucket depth a postage batch may declare, from the
+    /// PostageStamp contract's `minimumBucketDepth()`. A floor, not a fixed
+    /// width.
     const MIN_BUCKET_DEPTH: u8 = 16;
 
     /// Convenience: the deepest bin, derived from
@@ -94,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_bee() {
+    fn defaults_match_the_reference_client() {
         assert_eq!(Mainnet::NETWORK_ID, NetworkId::MAINNET);
         assert_eq!(Mainnet::MAX_PROXIMITY_ORDER, ProximityOrder::MAX);
         assert_eq!(Mainnet::SATURATION_PEERS, 8);

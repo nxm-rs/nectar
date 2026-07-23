@@ -90,15 +90,12 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
 /// is [`SwarmSpec::MIN_BUCKET_DEPTH`], the floor the PostageStamp contract
 /// publishes as `minimumBucketDepth()`.
 ///
-/// The spec is a type parameter, so the floor is a compile-time property of the
-/// depth rather than something a caller must remember to check: a
-/// `BucketDepth<Mainnet>` below 16 does not exist, and a depth built for one
-/// network does not type-check where another's is wanted. Every constructor
-/// funnels through [`new`](Self::new), including the serde and `Arbitrary`
-/// paths.
+/// The floor is a compile-time property: a `BucketDepth<Mainnet>` below 16 does
+/// not exist, and one network's depth does not type-check where another's is
+/// wanted. Every constructor funnels through [`new`](Self::new), including the
+/// serde and `Arbitrary` paths.
 ///
-/// A depth carries the network it was built for, so the following does not
-/// compile:
+/// A depth carries its network, so this does not compile:
 ///
 /// ```compile_fail
 /// use nectar_postage::{Batch, BatchId, BucketDepth};
@@ -119,12 +116,11 @@ pub struct BucketDepth<S: SwarmSpec = Mainnet> {
 }
 
 impl<S: SwarmSpec> BucketDepth<S> {
-    /// The smallest representable depth, two collision buckets. A network sets
-    /// a far higher floor; this is only the point below which the bucket shift
-    /// stops naming anything.
+    /// Smallest representable depth, below which the bucket shift names
+    /// nothing. The spec supplies the protocol floor, which is higher.
     pub const MIN: u8 = 1;
 
-    /// The largest representable depth, the bit width of the bucket key.
+    /// Largest representable depth, the bit width of the bucket key.
     pub const MAX: u8 = 32;
 
     /// Validates a raw depth against the spec floor and the `1..=32` bound.
