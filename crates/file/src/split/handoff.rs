@@ -97,7 +97,10 @@ mod tests {
         for _ in 0..1_000 {
             let (tx, rx) = oneshot::channel::<u32>();
             let sender = thread::spawn(move || tx.send(7).unwrap());
-            assert_eq!(recv_before(Handoff { rx }, Duration::from_secs(10)), Some(7));
+            assert_eq!(
+                recv_before(Handoff { rx }, Duration::from_secs(10)),
+                Some(7)
+            );
             sender.join().unwrap();
         }
     }
