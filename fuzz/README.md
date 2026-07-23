@@ -80,11 +80,11 @@ crate** that pushes the committed seed bytes through the exact same decode
 function, so plain `cargo nextest run` proves the seeds stay panic-free
 without nightly or libFuzzer:
 
-- `seed_replay_mantaray_node_decode` — `crates/mantaray/src/codec.rs`
+- `seed_replay_mantaray_node_decode` in `crates/mantaray/src/codec.rs`
 - `seed_replay_mantaray_view_differential` in `crates/mantaray/src/view.rs`
 - `seed_replay_chunk_decode` in `crates/primitives/src/chunk/registry.rs`
-- `seed_replay_stamp_decode` — `crates/postage/src/stamp.rs`
-- `seed_replay_usage_snapshot_decode` — `crates/postage-usage/src/codec.rs`
+- `seed_replay_stamp_decode` in `crates/postage/src/stamp.rs`
+- `seed_replay_usage_snapshot_decode` in `crates/postage-usage/src/codec.rs`
 
 Both the fuzz targets and their stable pins call one shared oracle per
 invariant, hosted in each crate's `oracles` module, so the two rungs cannot

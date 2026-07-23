@@ -5,12 +5,14 @@
 //! panicking; call sites assert.
 
 use bytes::Bytes;
+use thiserror::Error;
 
 use crate::chunk::error::ChunkError;
 use crate::{AnyChunk, ChunkAddress, ChunkOps, ContentChunk, SingleOwnerChunk};
 
 /// A violated oracle invariant, named by the failing check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("{0}")]
 pub struct Violation(&'static str);
 
 impl Violation {
@@ -20,14 +22,6 @@ impl Violation {
         Self(check)
     }
 }
-
-impl core::fmt::Display for Violation {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-impl core::error::Error for Violation {}
 
 /// Drive every chunk decode entry point over one input and force the lazy
 /// address and owner computations. `Err` is an acceptable outcome for
