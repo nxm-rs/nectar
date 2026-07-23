@@ -1,7 +1,5 @@
 //! Shared helpers for the manifest integration tests.
 
-#![allow(dead_code)]
-
 use std::error::Error;
 use std::sync::Arc;
 
