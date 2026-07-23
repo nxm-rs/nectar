@@ -36,6 +36,14 @@ jobs:
       - name: cargo audit
         run: cargo audit
 
+      # fuzz/ is a self-contained workspace with its own committed lockfile,
+      # which a bare `cargo audit` never reads. Run from the repo root so
+      # .cargo/audit.toml applies to both lockfiles, and run even when the
+      # root audit fails so one lockfile cannot mask the other.
+      - name: cargo audit (fuzz lockfile)
+        if: '!cancelled()'
+        run: cargo audit --file fuzz/Cargo.lock
+
       - name: Open or update advisory issue
         if: failure() && github.event_name == 'schedule'
         env:
