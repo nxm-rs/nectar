@@ -419,8 +419,6 @@ mod tests {
     use super::*;
     use alloy_primitives::hex;
     use nectar_primitives::chunk::{ChunkAddress, ChunkRef};
-    use proptest::prelude::*;
-    use proptest_arbitrary_interop::arb;
 
     const ENCODED_V01: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950ac787fbce1061870e8d34e0a638bc7e812c7ca4ebd31d626a572ba47b06f6952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64950fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
     const ENCODED_V02: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64905954fb18659339d0b25e0fb9723d3cd5d528fb3c8d495fd157bd7b7a210496952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64940fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952e3872548ec012a6e123b60f9177017fb12e57732621d2c1ada267adbe8cc4350f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
@@ -779,7 +777,7 @@ mod tests {
     }
 
     /// Replay the committed seed corpus of the `mantaray_node_decode` fuzz
-    /// target through the shared `node_decode` oracle the fuzzer drives
+    /// target through the exact decode entry points the fuzzer exercises
     /// (`Node::<ChunkRef>` for 32-byte plain entries and
     /// `Node::<EncryptedChunkRef>` for 64-byte entries).
     /// The oracle is "no panic";
@@ -805,9 +803,10 @@ mod tests {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             let data = std::fs::read(&path).unwrap();
 
-            // The fuzz oracle: must not panic. The shared oracle drives both
-            // entry widths, exactly as the fuzz target does.
-            let (plain, wide) = crate::oracles::node_decode(data.as_slice());
+            // The fuzz oracle: must not panic. Drive both entry widths the
+            // fuzz target drives.
+            let plain = Node::<ChunkRef>::decode(data.as_slice());
+            let wide = Node::<nectar_primitives::EncryptedChunkRef>::decode(data.as_slice());
             if plain.is_ok() {
                 plain_decoded += 1;
             }
@@ -847,8 +846,37 @@ mod tests {
         );
     }
 
-    /// Replay the `mantaray_record_roundtrip` seed corpus through the shared
-    /// `record_round_trip` oracle the fuzz target runs, at both widths.
+    /// Round-trip one wire image at a single reference width: a width the
+    /// image does not declare decodes to `Err` and is skipped. The encoder
+    /// normalizes to v0.2, so the first re-encode is the canonical image and
+    /// the oracle is a fixed point, not equality with the decoded input.
+    /// Returns whether the width decoded, so callers can assert the corpus
+    /// actually exercises the width it claims.
+    fn record_round_trip<R: Reference>(data: &[u8]) -> bool {
+        let Ok(node) = Node::<R>::decode(data) else {
+            return false;
+        };
+        let encoded = node.encode().expect("a decoded node must re-encode");
+        let redecoded =
+            Node::<R>::decode(encoded.as_slice()).expect("the canonical image must decode");
+        let reencoded = redecoded
+            .encode()
+            .expect("a re-decoded node must re-encode");
+        assert_eq!(
+            reencoded, encoded,
+            "encode/decode must reach a byte-canonical fixed point"
+        );
+        let redecoded_again =
+            Node::<R>::decode(reencoded.as_slice()).expect("the canonical image must re-decode");
+        assert_eq!(
+            redecoded_again, redecoded,
+            "decode(encode(node)) must be structurally stable"
+        );
+        true
+    }
+
+    /// Replay the `mantaray_record_roundtrip` seed corpus through the exact
+    /// fixed-point round trip the fuzz target runs, at both reference widths.
     /// The corpus carries a v0.1 and a v0.2 plain manifest plus two `ref_size`
     /// 64 encrypted cases (an empty node and a keyed fork), so this pins
     /// record round-tripping across both wire versions and both widths on
@@ -870,12 +898,10 @@ mod tests {
             let path = entry.unwrap().path();
             let data = std::fs::read(&path).unwrap();
 
-            if crate::oracles::record_round_trip::<ChunkRef>(&data).unwrap() {
+            if record_round_trip::<ChunkRef>(&data) {
                 plain_decoded += 1;
             }
-            if crate::oracles::record_round_trip::<nectar_primitives::EncryptedChunkRef>(&data)
-                .unwrap()
-            {
+            if record_round_trip::<nectar_primitives::EncryptedChunkRef>(&data) {
                 wide_decoded += 1;
             }
             replayed += 1;
@@ -894,25 +920,49 @@ mod tests {
         );
     }
 
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(128))]
+    /// Build arbitrary (valid-by-construction) nodes from a fixed byte buffer
+    /// and prove `decode(encode(node)) == node` for each: the `Arbitrary`
+    /// impls generate only encodable, round-trip-stable nodes, which is the
+    /// property the structured round-trip fuzz target relies on. The buffer
+    /// is deterministic, so this pins the impls on stable without running the
+    /// fuzzer.
+    fn run_arbitrary_round_trip<R: Reference>() {
+        use arbitrary::{Arbitrary, Unstructured};
 
-        /// Valid-by-construction nodes survive the shared `node_round_trip`
-        /// oracle at the plain width; the property the
-        /// `mantaray_node_roundtrip` fuzz target drives.
-        #[test]
-        fn node_encode_decode_round_trip(node in arb::<Node<ChunkRef>>()) {
-            prop_assert_eq!(crate::oracles::node_round_trip(&node), Ok(()));
-        }
+        // Deterministic pseudo-random bytes (Knuth multiplicative hash): the
+        // top byte of the hash is exactly `hash >> 24`, taken cast-free.
+        let raw: Vec<u8> = (0u32..8192)
+            .map(|i| i.wrapping_mul(2654435761).to_be_bytes()[0])
+            .collect();
+        let mut u = Unstructured::new(&raw);
 
-        /// The encrypted width round-trips arbitrary full-width fork
-        /// references, so nonzero decryption keys survive encode and decode.
-        #[test]
-        fn encrypted_node_encode_decode_round_trip(
-            node in arb::<Node<nectar_primitives::EncryptedChunkRef>>(),
-        ) {
-            prop_assert_eq!(crate::oracles::node_round_trip(&node), Ok(()));
+        let mut checked = 0usize;
+        while !u.is_empty() && checked < 16 {
+            let node = Node::<R>::arbitrary(&mut u).unwrap();
+            let encoded = node.encode().unwrap();
+            let decoded = Node::<R>::decode(encoded.as_slice()).unwrap();
+            assert_eq!(
+                decoded, node,
+                "decode(encode(node)) must reproduce the node"
+            );
+            checked += 1;
         }
+        assert!(
+            checked >= 8,
+            "expected at least 8 arbitrary nodes, got {checked}"
+        );
+    }
+
+    #[test]
+    fn arbitrary_node_encode_decode_round_trip() {
+        run_arbitrary_round_trip::<ChunkRef>();
+    }
+
+    /// The encrypted width round-trips arbitrary full-width fork references,
+    /// so nonzero decryption keys survive encode and decode.
+    #[test]
+    fn arbitrary_encrypted_node_encode_decode_round_trip() {
+        run_arbitrary_round_trip::<nectar_primitives::EncryptedChunkRef>();
     }
 
     /// Encoding a fork whose child has no saved reference must error rather

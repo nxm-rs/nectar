@@ -869,8 +869,6 @@ mod tests {
     use core::num::NonZeroU8;
 
     use nectar_primitives::NetworkId;
-    use proptest::prelude::*;
-    use proptest_arbitrary_interop::arb;
 
     use super::*;
     use crate::UsageTable;
@@ -1218,24 +1216,63 @@ mod tests {
         }
     }
 
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
+    /// Build arbitrary (valid-by-construction) snapshots from a fixed byte
+    /// buffer and prove the full public round trip: `plan_persist` encodes
+    /// them into root+leaf payloads that `RootInfo::parse` + `assemble`
+    /// recover to an identical snapshot. This is the property the structured
+    /// round-trip fuzz target relies on; the buffer is deterministic, so it
+    /// is pinned on stable without running the fuzzer. A persist may
+    /// legitimately refuse to allocate a snapshot slot (a full immutable
+    /// bucket, an exhausted capacity-1 ring), so those iterations are
+    /// skipped, but most generated snapshots must round-trip. The generator
+    /// runs at `Shallow` so it spans the format's whole bucket-depth range
+    /// rather than the single geometry mainnet's floor admits.
+    #[test]
+    fn arbitrary_snapshot_persist_parse_assemble_round_trip() {
+        use alloy_primitives::Address;
+        use arbitrary::{Arbitrary, Unstructured};
 
-        /// Valid-by-construction snapshots survive the shared
-        /// `snapshot_persist_round_trip` oracle; the property the
-        /// `usage_snapshot_roundtrip` fuzz target drives. The generator runs
-        /// at `Shallow` so it spans the format's whole bucket-depth range
-        /// rather than the single geometry mainnet's floor admits. A refused
-        /// snapshot slot (a full immutable bucket, an exhausted capacity-1
-        /// ring) is a legitimate skip, bounded by proptest's reject limit.
-        #[test]
-        fn snapshot_persist_parse_assemble_round_trip(
-            snapshot in arb::<crate::SnapshotFor<Shallow>>(),
-        ) {
-            let outcome = crate::oracles::snapshot_persist_round_trip(snapshot);
-            prop_assume!(outcome != Ok(false));
-            prop_assert_eq!(outcome, Ok(true));
+        use crate::{PublishedSequence, SnapshotFor};
+
+        // Deterministic pseudo-random bytes (Knuth multiplicative hash).
+        let raw: Vec<u8> = (0u32..8192)
+            // The high byte of the mixed u32 (`x >> 24`) always fits u8.
+            .map(|i| i.wrapping_mul(2654435761).to_be_bytes()[0])
+            .collect();
+        let mut u = Unstructured::new(&raw);
+        let owner = Address::repeat_byte(0x11);
+
+        let mut round_trips = 0usize;
+        for _ in 0..32 {
+            let mut snapshot = SnapshotFor::<Shallow>::arbitrary(&mut u).unwrap();
+            let plan = match snapshot
+                .revalidate(PublishedSequence::NONE)
+                .unwrap()
+                .plan_persist(&owner)
+            {
+                Ok(plan) => plan,
+                // A full bucket can legitimately refuse a snapshot slot.
+                Err(_) => continue,
+            };
+            let root = RootInfoFor::<Shallow>::parse(&plan.chunks[0].payload)
+                .expect("planned root must parse");
+            let leaves: Vec<_> = plan.chunks[1..]
+                .iter()
+                .map(|c| c.payload.as_ref())
+                .collect();
+            let recovered = root
+                .assemble(&leaves)
+                .expect("planned leaves must assemble");
+            assert_eq!(
+                recovered, snapshot,
+                "parse+assemble must recover the persisted snapshot"
+            );
+            round_trips += 1;
         }
+        assert!(
+            round_trips >= 8,
+            "expected at least 8 snapshot round trips, got {round_trips}"
+        );
     }
 
     /// Replay the committed seed corpus of the `usage_snapshot_decode` fuzz

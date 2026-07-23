@@ -37,7 +37,6 @@ mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
 nectar-testing.workspace = true
 proptest.workspace = true
-proptest-arbitrary-interop.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 

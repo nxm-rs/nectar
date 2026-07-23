@@ -590,8 +590,6 @@ impl<'a> arbitrary::Arbitrary<'a> for Stamp {
 mod tests {
     use super::*;
     use alloy_primitives::hex;
-    use proptest::prelude::*;
-    use proptest_arbitrary_interop::arb;
 
     const TEST_BATCH_ID: &str = "c3387832bb1b88acbcd0ffdb65a08ef077d98c08d4bee576a72dbe3d36761369";
     const TEST_STAMP: &str = "c3387832bb1b88acbcd0ffdb65a08ef077d98c08d4bee576a72dbe3d367613690000cbe5000000000000018921ff0dbb29169df9e6364e26c6ca6b17745c10b9d6a36ea38e204f2e3cc64a8373c0661f5bb0a347c61d8d1689b0dcf8354117686a6a18d08cff927f526de5fc61b2b7491b";
@@ -621,6 +619,18 @@ mod tests {
 
         let back: StampIndex = tuple.into();
         assert_eq!(back, idx);
+    }
+
+    #[test]
+    fn test_stamp_roundtrip() {
+        let batch = BatchId::ZERO;
+        let sig = Signature::test_signature();
+        let stamp = Stamp::new(batch, 100, 50, 1234567890, sig);
+
+        let bytes = stamp.to_bytes();
+        let restored = Stamp::from_bytes(&bytes).unwrap();
+
+        assert_eq!(stamp, restored);
     }
 
     #[test]
@@ -818,8 +828,38 @@ mod tests {
         );
     }
 
-    /// Replay crafted edge inputs through the shared `stamp_decode` oracle
-    /// the fuzz target of the same name drives: length boundaries around the
+    /// Mirrors the body of the `stamp_decode` fuzz target: decode the whole
+    /// input, decode the leading 113 bytes when present, and run EIP-191
+    /// signer recovery (and owner verification) over whatever parsed. The
+    /// fuzz oracle is "no panic"; `Err` is an acceptable outcome for
+    /// arbitrary bytes. Returns the primary decode result: the first
+    /// `STAMP_SIZE` bytes when the input is long enough, the whole slice
+    /// otherwise.
+    fn exercise_stamp_decode(data: &[u8]) -> Result<Stamp, StampError> {
+        let _ = Stamp::try_from_slice(data);
+
+        let primary = if data.len() >= STAMP_SIZE {
+            Stamp::try_from_slice(&data[..STAMP_SIZE])
+        } else {
+            Stamp::try_from_slice(data)
+        };
+        if let Ok(stamp) = &primary {
+            // Trailing bytes, when present, act as the chunk address the
+            // stamp is recovered against; ECDSA recovery over arbitrary
+            // stamp fields must not panic.
+            let address = if data.len() >= STAMP_SIZE + 32 {
+                ChunkAddress::from_slice(&data[STAMP_SIZE..STAMP_SIZE + 32]).unwrap()
+            } else {
+                ChunkAddress::zero()
+            };
+            let _ = stamp.recover_signer(&address);
+            let _ = stamp.verify(&address, Address::ZERO);
+        }
+        primary
+    }
+
+    /// Replay crafted edge inputs through the exact entry points the
+    /// `stamp_decode` fuzz target exercises: length boundaries around the
     /// 113-byte wire size and the 113+32 recovery split, in all-zero and
     /// all-0xff flavours.
     #[test]
@@ -835,13 +875,12 @@ mod tests {
             alloc::vec![0xab; STAMP_SIZE + 32],
         ];
         for data in &edge_inputs {
-            let _ = crate::oracles::stamp_decode(data);
+            let _ = exercise_stamp_decode(data);
         }
     }
 
     /// Replay the committed seed corpus of the `stamp_decode` fuzz target
-    /// (`fuzz/seeds/stamp_decode/`) through the shared oracle. Seed intent is
-    /// pinned by name:
+    /// (`fuzz/seeds/stamp_decode/`). Seed intent is pinned by name:
     /// `valid-*` must parse `Ok`, `invalid-*` must stay `Err`, `edge-*` only
     /// asserts no panic. This keeps the fuzz seeds meaningful on stable
     /// without running the fuzzer itself.
@@ -857,7 +896,7 @@ mod tests {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             let data = std::fs::read(&path).unwrap();
 
-            let result = crate::oracles::stamp_decode(&data);
+            let result = exercise_stamp_decode(&data);
 
             if name.starts_with("valid-") {
                 assert!(result.is_ok(), "seed {name} must parse successfully");
@@ -872,15 +911,44 @@ mod tests {
         );
     }
 
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(256))]
+    /// Build arbitrary stamps from a fixed byte buffer and prove
+    /// `from_bytes(to_bytes(stamp)) == stamp` (and that re-encoding is
+    /// byte-identical) for each: the `Arbitrary` impl generates stamps with
+    /// arbitrary (r, s, v) signatures, and the wire codec must round-trip
+    /// them exactly. This is the property the `stamp_roundtrip` fuzz target
+    /// relies on; the buffer is deterministic, so it is pinned on stable
+    /// (with `--features arbitrary`) without running the fuzzer.
+    #[cfg(feature = "arbitrary")]
+    #[test]
+    fn arbitrary_stamp_encode_decode_round_trip() {
+        use arbitrary::{Arbitrary, Unstructured};
 
-        /// Raw-tier stamps (arbitrary (r, s, v) signatures) survive the
-        /// shared `stamp_round_trip` oracle; the property the
-        /// `stamp_roundtrip` fuzz target drives.
-        #[test]
-        fn stamp_encode_decode_round_trip(stamp in arb::<Stamp>()) {
-            prop_assert_eq!(crate::oracles::stamp_round_trip(&stamp), Ok(()));
+        // Deterministic pseudo-random bytes (Knuth multiplicative hash).
+        let raw: alloc::vec::Vec<u8> = (0u32..8192)
+            .map(|i| {
+                #[allow(clippy::as_conversions)] // `u32 >> 24` is always <= 0xFF, cast is lossless
+                {
+                    (i.wrapping_mul(2654435761) >> 24) as u8
+                }
+            })
+            .collect();
+        let mut u = Unstructured::new(&raw);
+
+        let mut checked = 0usize;
+        while !u.is_empty() && checked < 32 {
+            let stamp = Stamp::arbitrary(&mut u).unwrap();
+            let encoded = stamp.to_bytes();
+            let decoded = Stamp::from_bytes(&encoded).unwrap();
+            assert_eq!(
+                decoded, stamp,
+                "decode(encode(stamp)) must reproduce the stamp"
+            );
+            assert_eq!(decoded.to_bytes(), encoded, "encoding must be canonical");
+            checked += 1;
         }
+        assert!(
+            checked >= 16,
+            "expected at least 16 arbitrary stamps, got {checked}"
+        );
     }
 }

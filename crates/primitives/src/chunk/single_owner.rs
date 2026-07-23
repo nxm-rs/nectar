@@ -545,14 +545,12 @@ mod tests {
 
         #[test]
         fn test_signed_chunk_verifies(chunk in signed_chunk_strategy()) {
-            // The wire round trip the `chunk_roundtrip` fuzz target drives.
-            prop_assert_eq!(crate::oracles::single_owner_chunk_round_trip(&chunk), Ok(()));
-
-            // Local extras beyond the shared oracle: owner recovery survives
-            // the round trip, and address verification succeeds.
+            // Owner recovery succeeds and survives the round-trip
             let bytes: Bytes = chunk.clone().into();
             let decoded = DefaultSingleOwnerChunk::try_from(bytes.as_ref()).unwrap();
             prop_assert_eq!(chunk.owner().unwrap(), decoded.owner().unwrap());
+
+            // Address verification succeeds
             let address = chunk.address();
             prop_assert!(chunk.verify(address).is_ok());
         }

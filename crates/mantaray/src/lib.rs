@@ -129,12 +129,6 @@ pub mod manifest_ref;
 #[cfg(feature = "std")]
 mod node;
 pub mod obfuscation;
-/// Shared fuzz and test oracles over the raw node codec and the node view.
-/// Compiled for in-crate tests and for fuzz builds (`hazmat` plus
-/// `arbitrary`); exempt from semver guarantees.
-#[cfg(any(test, all(feature = "arbitrary", feature = "hazmat")))]
-#[doc(hidden)]
-pub mod oracles;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod reader;

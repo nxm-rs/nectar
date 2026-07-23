@@ -131,8 +131,6 @@ extern crate alloc;
 
 mod codec;
 mod error;
-#[cfg(any(test, feature = "arbitrary"))]
-pub mod oracles;
 mod snapshot;
 mod table;
 

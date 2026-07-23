@@ -1926,6 +1926,7 @@ dependencies = [
 name = "nectar-fuzz"
 version = "0.0.0"
 dependencies = [
+ "alloy-primitives",
  "arbitrary",
  "bytes",
  "libfuzzer-sys",
