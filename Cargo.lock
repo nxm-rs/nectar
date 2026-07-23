@@ -2093,6 +2093,7 @@ dependencies = [
  "nectar-mantaray 0.4.0",
  "nectar-primitives 0.4.0",
  "nectar-testing",
+ "proptest",
  "rayon",
  "thiserror",
  "tokio",
@@ -2104,6 +2105,7 @@ version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "anyhow",
+ "arbitrary",
  "bytes",
  "futures",
  "nectar-file",

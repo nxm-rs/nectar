@@ -18,6 +18,7 @@ categories = ["no-std", "asynchronous", "data-structures"]
 workspace = true
 
 [dependencies]
+arbitrary = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
@@ -32,6 +33,7 @@ tokio = { workspace = true, features = ["sync"], optional = true }
 arbitrary.workspace = true
 criterion.workspace = true
 futures.workspace = true
+proptest.workspace = true
 # The manifest-edit exhibit publishes a file root under a path.
 nectar-mantaray.workspace = true
 # The oracle stores and chunk fixtures ride the primitives store surface,
@@ -64,9 +66,10 @@ tokio = [ "dep:tokio", "std" ]
 # silent fallback.
 rayon = [ "dep:futures-channel", "dep:rayon", "std" ]
 
-# The shared malformed-walk oracle for the fuzz workspace and the stable
-# seed replays. Never reachable from `default` or any shipped feature.
-arbitrary = [ "nectar-primitives?/arbitrary", "std" ]
+# The shared malformed-walk oracle, the structural-regime body generators
+# and the stable seed replays. Never reachable from `default` or any
+# shipped feature.
+arbitrary = [ "dep:arbitrary", "nectar-primitives?/arbitrary", "std" ]
 
 # Split-side encrypted mode. Joining encrypted references stays unconditional.
 encryption = [ "nectar-primitives?/encryption" ]
@@ -83,5 +86,5 @@ required-features = ["std"]
 # `rayon` and `unsync` are mutually exclusive, so the doc build lists
 # features explicitly rather than enabling all at once.
 [package.metadata.docs.rs]
-features = ["std", "tokio", "rayon", "encryption"]
+features = ["std", "tokio", "rayon", "encryption", "arbitrary"]
 rustdoc-args = ["--cfg", "docsrs"]

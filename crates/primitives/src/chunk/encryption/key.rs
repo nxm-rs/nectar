@@ -83,6 +83,15 @@ impl TryFrom<&[u8]> for EncryptionKey {
     }
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for EncryptionKey {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self(<[u8; Self::SIZE] as arbitrary::Arbitrary>::arbitrary(
+            u,
+        )?))
+    }
+}
+
 impl std::fmt::Debug for EncryptionKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Show first 4 bytes as hex for identification

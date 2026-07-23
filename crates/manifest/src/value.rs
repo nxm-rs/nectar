@@ -259,6 +259,40 @@ impl<F: Format> TryFrom<Entry<F>> for EntryRef {
     }
 }
 
+#[cfg(any(test, feature = "arbitrary"))]
+mod arbitrary_impls {
+    use arbitrary::{Arbitrary, Unstructured};
+    use bytes::Bytes;
+
+    use super::{Entry, InlineValue, Key};
+    use crate::format::Format;
+
+    impl<'a> Arbitrary<'a> for Key {
+        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+            Ok(Self::from(Vec::<u8>::arbitrary(u)?))
+        }
+    }
+
+    impl<'a, F: Format> Arbitrary<'a> for InlineValue<F> {
+        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+            // Clamped after the draw: the draw itself consumes input bytes.
+            let len = u.int_in_range(0..=F::VINLINE_MAX)?.min(u.len());
+            Self::new(Bytes::copy_from_slice(u.bytes(len)?))
+                .map_err(|_| arbitrary::Error::IncorrectFormat)
+        }
+    }
+
+    impl<'a, F: Format> Arbitrary<'a> for Entry<F> {
+        fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+            match u.int_in_range(0..=2u8)? {
+                0 => Ok(Self::Ref32(Arbitrary::arbitrary(u)?)),
+                1 => Ok(Self::Ref64(Arbitrary::arbitrary(u)?)),
+                _ => Ok(Self::Inline(Arbitrary::arbitrary(u)?)),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use nectar_primitives::EncryptionKey;

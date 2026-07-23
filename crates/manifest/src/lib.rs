@@ -92,6 +92,9 @@ mod error;
 mod folder;
 mod fork;
 mod format;
+#[cfg(any(test, feature = "arbitrary"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "arbitrary")))]
+pub mod generators;
 mod meta;
 mod node;
 /// Shared fuzz and test oracle for the node codec. Compiled for in-crate
