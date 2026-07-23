@@ -773,7 +773,9 @@ mod pooled {
     use core::future::poll_fn;
     use core::task::{Context, Poll};
     use core::time::Duration;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
     use std::vec::Vec;
 
     use bytes::Bytes;
@@ -786,6 +788,73 @@ mod pooled {
     use crate::geometry::Mode;
     use crate::split::{SealError, Sealed, Split, SplitError, SplitMode, SplitStats};
     use crate::walk::Plain;
+
+    /// Wall-clock bound on every wait below: far above any scheduling
+    /// delay, low enough that a stuck test fails instead of hanging.
+    const BUDGET: Duration = Duration::from_secs(10);
+
+    /// Gap between polls of a waited-on condition.
+    const POLL_GAP: Duration = Duration::from_micros(50);
+
+    /// Waits for `count` to reach `want`, panicking with both counts and
+    /// `state` once [`BUDGET`] is spent.
+    fn wait_for_count(state: &str, want: usize, count: impl Fn() -> usize) {
+        let deadline = Instant::now() + BUDGET;
+        loop {
+            let seen = count();
+            if seen >= want {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "deadline expired after {BUDGET:?} waiting for {state}: {seen} of {want}"
+            );
+            std::thread::sleep(POLL_GAP);
+        }
+    }
+
+    /// Plain sealing behind a worker-side stall, counting completed seals:
+    /// the stall makes drops race live jobs, the count makes a seal landing
+    /// observable without a sleep.
+    #[derive(Clone, Debug, Default)]
+    struct CountedMode {
+        sealed: Arc<AtomicUsize>,
+    }
+
+    impl CountedMode {
+        /// Seals finished so far, on the pool or inline.
+        fn completed(&self) -> usize {
+            self.sealed.load(Ordering::Relaxed)
+        }
+    }
+
+    impl SplitMode for CountedMode {
+        const MODE: Mode = Mode::Plain;
+
+        type Ref = ChunkAddress;
+        type Root = ChunkAddress;
+
+        fn data_slots(branches: u64) -> u64 {
+            branches
+        }
+
+        fn seal<const B: usize>(&self, payload: Bytes) -> Result<Sealed<Self, B>, SealError> {
+            std::thread::sleep(Duration::from_millis(10));
+            let chunk = ContentChunk::<B>::try_from(payload)?
+                .seal::<nectar_primitives::chunk::AnyChunkSet<B>>();
+            let address = *chunk.address();
+            self.sealed.fetch_add(1, Ordering::Relaxed);
+            Ok((chunk, address))
+        }
+
+        fn write_ref(reference: &ChunkAddress, out: &mut Vec<u8>) {
+            out.extend_from_slice(reference.as_bytes());
+        }
+
+        fn into_root(reference: ChunkAddress) -> ChunkAddress {
+            reference
+        }
+    }
 
     /// Stream `data` through a hash-windowed split in `step`-byte writes.
     fn pooled_split(
@@ -884,31 +953,37 @@ mod pooled {
     fn pooled_write_backpressure_consumes_nothing_when_full() {
         let gate = Arc::new(Mutex::new(false));
         let store = TestStore::<TINY>::gated(Arc::clone(&gate));
-        let mut split: Split<TestStore<TINY>, Plain, TINY> =
-            Split::new(store, PutWindow::new(1).unwrap())
+        let mode = CountedMode::default();
+        let mut split: Split<TestStore<TINY>, CountedMode, TINY> =
+            Split::with_mode(store, mode.clone(), PutWindow::new(1).unwrap())
                 .with_hash_window(HashWindow::new(1).unwrap());
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
         let data = fill(4 * TINY);
 
-        // Two leaves fit: one behind the parked put, one on the pool.
+        // Two leaves fit: one behind the parked put, one on the pool. The
+        // no-op waker cannot park, so the admission is polled to a
+        // deadline.
+        let deadline = Instant::now() + BUDGET;
         let mut consumed = 0usize;
-        for _ in 0..100_000 {
+        while consumed < 2 * TINY {
+            assert!(
+                Instant::now() < deadline,
+                "deadline expired after {BUDGET:?} with {consumed} of {} bytes admitted",
+                2 * TINY
+            );
             match split.poll_write(&mut cx, &data[consumed..]) {
                 Poll::Ready(Ok(n)) => consumed += n,
                 Poll::Ready(Err(error)) => panic!("write failed: {error:?}"),
-                Poll::Pending => std::thread::sleep(Duration::from_micros(50)),
-            }
-            if consumed == 2 * TINY {
-                break;
+                Poll::Pending => std::thread::sleep(POLL_GAP),
             }
         }
-        assert_eq!(consumed, 2 * TINY, "backpressure engaged early");
+        assert_eq!(consumed, 2 * TINY, "backpressure admitted a third leaf");
 
-        // Let the second seal land: the front is then ready but the put
-        // window is full, so the deque stays occupied and every further
-        // poll consumes nothing.
-        std::thread::sleep(Duration::from_millis(20));
+        // Once the second seal lands the front is ready but the put window
+        // is full, so the deque stays occupied and every further poll
+        // consumes nothing.
+        wait_for_count("the second leaf seal", 2, || mode.completed());
         for _ in 0..100 {
             assert!(split.poll_write(&mut cx, &data[consumed..]).is_pending());
             assert_eq!(split.stats().bytes, (2 * TINY) as u64);
@@ -983,42 +1058,13 @@ mod pooled {
         ));
     }
 
-    /// Plain sealing behind a worker-side stall, so drops race live jobs.
-    #[derive(Clone, Copy, Debug, Default)]
-    struct SlowMode;
-
-    impl SplitMode for SlowMode {
-        const MODE: Mode = Mode::Plain;
-
-        type Ref = ChunkAddress;
-        type Root = ChunkAddress;
-
-        fn data_slots(branches: u64) -> u64 {
-            branches
-        }
-
-        fn seal<const B: usize>(&self, payload: Bytes) -> Result<Sealed<Self, B>, SealError> {
-            std::thread::sleep(Duration::from_millis(10));
-            let chunk = ContentChunk::<B>::try_from(payload)?
-                .seal::<nectar_primitives::chunk::AnyChunkSet<B>>();
-            let address = *chunk.address();
-            Ok((chunk, address))
-        }
-
-        fn write_ref(reference: &ChunkAddress, out: &mut Vec<u8>) {
-            out.extend_from_slice(reference.as_bytes());
-        }
-
-        fn into_root(reference: ChunkAddress) -> ChunkAddress {
-            reference
-        }
-    }
-
     #[test]
     fn dropping_a_pooled_split_abandons_live_jobs() {
         let store = TestStore::<TINY>::new(0);
-        let mut split: Split<TestStore<TINY>, SlowMode, TINY> =
-            Split::new(store, PutWindow::DEFAULT).with_hash_window(HashWindow::new(4).unwrap());
+        let mode = CountedMode::default();
+        let mut split: Split<TestStore<TINY>, CountedMode, TINY> =
+            Split::with_mode(store, mode.clone(), PutWindow::DEFAULT)
+                .with_hash_window(HashWindow::new(4).unwrap());
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
         let data = fill(4 * TINY);
@@ -1033,10 +1079,13 @@ mod pooled {
                 break;
             }
         }
+        assert_eq!(consumed, data.len(), "the hash window never took the file");
+
         // Seals are still running on the pool; the drop must orphan them
-        // harmlessly (each writes into its dead slot and wakes a no-op).
+        // harmlessly (each sender is dropped unsent, its receiver gone).
+        let submitted = consumed / TINY;
         drop(split);
-        std::thread::sleep(Duration::from_millis(60));
+        wait_for_count("every orphaned seal to run", submitted, || mode.completed());
     }
 }
 
