@@ -754,3 +754,96 @@ fn download_restart_after_transient_failure_is_idempotent() {
     assert_eq!(written, data.len() as u64);
     assert_eq!(sink.as_ref(), data);
 }
+
+/// Shrinking stable coverage: split-and-join roundtrip and the seek model,
+/// composed from the structural-regime generators.
+mod properties {
+    use arbitrary::Unstructured;
+    use nectar_testing::run;
+    use proptest::prelude::*;
+
+    use nectar_testing::split_fixture;
+
+    use super::{File, SeekPastEnd, TINY, drain_reader};
+    use crate::generators;
+    use crate::walk::Plain;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn split_and_join_round_trip(seed in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let mut u = Unstructured::new(&seed);
+            let data = generators::body(&mut u).unwrap();
+            let (root, store) = split_fixture::<TINY>(&data);
+            let file = run(File::<_, Plain, TINY>::open(store, root)).unwrap();
+            prop_assert_eq!(file.len(), data.len() as u64);
+            prop_assert_eq!(run(file.collect(u64::MAX)).unwrap(), data);
+        }
+
+        #[test]
+        fn seek_and_drain_match_the_model(seed in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let mut u = Unstructured::new(&seed);
+            let data = generators::multi_chunk_body(&mut u).unwrap();
+            let span = data.len() as u64;
+
+            // Both bounds may overshoot the file; the clip is the model.
+            let overshoot = span + 2 * TINY as u64 + 1;
+            let start_req = u.int_in_range(0..=overshoot).unwrap();
+            let end_req = u.int_in_range(0..=overshoot).unwrap();
+            let clip_end = end_req.min(span);
+            let clip_start = start_req.min(clip_end);
+            let model = &data[clip_start as usize..clip_end as usize];
+            let eff = clip_end - clip_start;
+
+            let (root, store) = split_fixture::<TINY>(&data);
+            let file = run(File::<_, Plain, TINY>::open(store, root)).unwrap();
+            let mut reader = file.read().range(start_req..end_req).build();
+            prop_assert_eq!(reader.effective_len(), eff);
+
+            // A past-end seek is typed and moves nothing.
+            let target = u.int_in_range(0..=eff + 1).unwrap();
+            let pos = match reader.seek(target) {
+                Ok(()) => {
+                    prop_assert!(target <= eff);
+                    target
+                }
+                Err(error) => {
+                    prop_assert!(target > eff);
+                    prop_assert_eq!(error, SeekPastEnd { requested: target, effective_len: eff });
+                    0
+                }
+            };
+            prop_assert_eq!(reader.position(), pos);
+            prop_assert_eq!(drain_reader(&mut reader), &model[pos as usize..]);
+            prop_assert_eq!(reader.position(), eff);
+        }
+    }
+
+    /// The encrypted width joins through its own fan-out and reference size.
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use arbitrary::Unstructured;
+        use nectar_testing::run;
+        use proptest::prelude::*;
+
+        use super::super::{File, TINY};
+        use crate::generators;
+        use crate::testutil::split_encrypted_fixture;
+        use crate::walk::Encrypted;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            #[test]
+            fn split_and_join_round_trip(seed in proptest::collection::vec(any::<u8>(), 0..512)) {
+                let mut u = Unstructured::new(&seed);
+                let data = generators::body(&mut u).unwrap();
+                let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
+                let file = run(File::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+                prop_assert_eq!(file.len(), data.len() as u64);
+                prop_assert_eq!(run(file.collect(u64::MAX)).unwrap(), data);
+            }
+        }
+    }
+}
