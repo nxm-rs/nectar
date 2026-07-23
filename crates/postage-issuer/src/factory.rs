@@ -136,7 +136,7 @@ impl<S: SwarmSpec> MemoryBatchFactoryFor<S> {
     fn generate_batch_id(&self) -> BatchId {
         let id = self
             .next_id
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut bytes = [0u8; 32];
         bytes[24..32].copy_from_slice(&id.to_be_bytes());
         BatchId::new(bytes)
