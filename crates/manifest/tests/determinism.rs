@@ -9,15 +9,13 @@
 use core::ops::Range;
 use std::collections::BTreeMap;
 
+use anyhow::{Context, Result, ensure};
 use nectar_manifest::{
     Domain, Entry, ForkTable, Format, Node, Prefix, SegmentKind, SegmentWeight, V1, cut, h64,
     segment, spill,
 };
 use nectar_primitives::{ChunkAddress, ChunkRef};
 use proptest::prelude::*;
-
-mod common;
-use common::{TestResult, ensure, ensure_eq};
 
 const fn ref32(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))
@@ -227,20 +225,20 @@ proptest! {
 // The frozen boundary anchors: CUT_SCALE is 2^53 and divides the 64-bit hash
 // space by SEG_TARGET exactly, so the window product never overflows a u64.
 #[test]
-fn cut_scale_is_frozen() -> TestResult {
-    ensure_eq(V1::CUT_SCALE, 1u64 << 53, "CUT_SCALE")?;
+fn cut_scale_is_frozen() -> Result<()> {
+    ensure!(V1::CUT_SCALE == 1u64 << 53, "CUT_SCALE");
     let seg_target = u128::try_from(V1::SEG_TARGET)?;
     let product = u128::from(V1::CUT_SCALE)
         .checked_mul(seg_target)
-        .ok_or("window product overflowed")?;
-    ensure_eq(product, 1u128 << 64, "CUT_SCALE * SEG_TARGET")?;
+        .context("window product overflowed")?;
+    ensure!(product == 1u128 << 64, "CUT_SCALE * SEG_TARGET");
     Ok(())
 }
 
 // Termination at V1: the widest fork record fits a leaf segment with a margin
 // wider than the cut-suppression window, so packing always makes progress.
 #[test]
-fn termination_bounds_hold_at_v1() -> TestResult {
+fn termination_bounds_hold_at_v1() -> Result<()> {
     // The worst record by the codec's layout: index slot (key byte + u16
     // offset), fork flags, prefix-length byte, the longest tail, the largest
     // inline entry, the largest embedded child, and the largest metadata block.
@@ -255,18 +253,18 @@ fn termination_bounds_hold_at_v1() -> TestResult {
         .saturating_add(entry)
         .saturating_add(child)
         .saturating_add(metadata);
-    ensure_eq(worst, 2952, "worst fork record")?;
-    ensure(
+    ensure!(worst == 2952, "worst fork record");
+    ensure!(
         worst <= V1::CAP_FORK,
         "the worst record fits a leaf segment",
-    )?;
+    );
 
     let margin = V1::CAP_FORK.saturating_sub(worst);
-    ensure_eq(margin, 1139, "forced-cut margin")?;
-    ensure(
+    ensure!(margin == 1139, "forced-cut margin");
+    ensure!(
         margin >= V1::SEG_MIN,
         "the margin covers the suppression window",
-    )?;
+    );
     Ok(())
 }
 
@@ -274,7 +272,7 @@ fn termination_bounds_hold_at_v1() -> TestResult {
 // heavy enough to force its own leaf. It splits across exactly two levels, and
 // one top directory still routes every group.
 #[test]
-fn spill_of_a_full_radix_table_stays_depth_two() -> TestResult {
+fn spill_of_a_full_radix_table_stays_depth_two() -> Result<()> {
     let mut forks = Vec::with_capacity(V1::FORKS_MAX);
     for first in 0u8..=u8::MAX {
         forks.push((
@@ -283,11 +281,11 @@ fn spill_of_a_full_radix_table_stays_depth_two() -> TestResult {
         ));
     }
     let dir = spill::<V1>(&forks, Domain::Plain);
-    ensure_eq(dir.leaves().len(), V1::FORKS_MAX, "one leaf per fork")?;
-    ensure_eq(dir.depth(), 2, "a full table needs two levels")?;
+    ensure!(dir.leaves().len() == V1::FORKS_MAX, "one leaf per fork");
+    ensure!(dir.depth() == 2, "a full table needs two levels");
 
     let route = 5usize.saturating_add(ChunkRef::SIZE);
     let top = dir.dirs().len().saturating_mul(route);
-    ensure(top <= V1::CAP_DIR, "one top directory routes every group")?;
+    ensure!(top <= V1::CAP_DIR, "one top directory routes every group");
     Ok(())
 }

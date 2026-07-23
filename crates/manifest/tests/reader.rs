@@ -2,17 +2,14 @@
 //! node, so a lookup down a wide manifest fetches O(depth) nodes and never a
 //! whole level. A counting store witnesses the bound directly.
 
-use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_manifest::{Builder, Child, Entry, ForkTable, Key, Node, NodePut, Prefix, Reader, V1};
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, StandardChunkSet, Verified};
 use nectar_testing::run;
-
-mod common;
-use common::{TestResult, ensure, ensure_eq};
 
 /// A trusted store that counts every `get`, so a test can read off how many
 /// nodes a lookup fetched.
@@ -48,7 +45,7 @@ fn entry(byte: u8) -> Entry {
 /// Build a deliberately wide two-level manifest: a root whose fork table holds
 /// one referenced leaf per first byte, each leaf terminating a single key. The
 /// second level is `width` chunks wide, but any one key sits two nodes deep.
-fn wide_manifest(store: &MemoryStore, width: u16) -> Result<ChunkAddress, Box<dyn Error>> {
+fn wide_manifest(store: &MemoryStore, width: u16) -> Result<ChunkAddress> {
     let mut forks = ForkTable::<V1>::new();
     for first in 0..width {
         let first = u8::try_from(first)?;
@@ -65,7 +62,7 @@ fn wide_manifest(store: &MemoryStore, width: u16) -> Result<ChunkAddress, Box<dy
 }
 
 #[test]
-fn a_lookup_fetches_depth_nodes_not_the_wide_level() -> TestResult {
+fn a_lookup_fetches_depth_nodes_not_the_wide_level() -> Result<()> {
     // Wide enough to dwarf the depth-2 path, yet inside one root chunk (a
     // radix-full root spills to a directory, which is a later car's concern).
     let width = 100u16;
@@ -73,7 +70,7 @@ fn a_lookup_fetches_depth_nodes_not_the_wide_level() -> TestResult {
     let root = wide_manifest(&memory, width)?;
 
     // The whole manifest is one root plus `width` leaves.
-    ensure_eq(memory.len(), usize::from(width) + 1, "stored node count")?;
+    ensure!(memory.len() == usize::from(width) + 1, "stored node count");
 
     let store = CountingStore {
         inner: memory,
@@ -84,26 +81,27 @@ fn a_lookup_fetches_depth_nodes_not_the_wide_level() -> TestResult {
     // Look up one key: first byte 0x2A, then the leaf's 0xFF fork.
     let key = Key::from(&[0x2Au8, 0xFF][..]);
     let value = run(reader.get(&root, &key))?;
-    ensure_eq(value, Some(entry(0x2A)), "looked-up value")?;
+    ensure!(value == Some(entry(0x2A)), "looked-up value");
 
     // Two hops: the root and the single leaf on the path. Never the wide
     // sibling level, so fetches track depth, not width.
-    ensure_eq(store.gets(), 2, "fetches equal path depth")?;
-    ensure(
+    ensure!(store.gets() == 2, "fetches equal path depth");
+    ensure!(
         store.gets() < usize::from(width),
-        "fetches below level width",
-    )?;
+        "fetches below level width"
+    );
 
     // A second lookup on a different branch is again two hops: the frontier is
     // never widened, each key pays only its own path.
     store.gets.store(0, Ordering::Relaxed);
     let value = run(reader.get(&root, &Key::from(&[0x50u8, 0xFF][..])))?;
-    ensure_eq(value, Some(entry(0x50)), "second value")?;
-    ensure_eq(store.gets(), 2, "second lookup is also depth-bounded")
+    ensure!(value == Some(entry(0x50)), "second value");
+    ensure!(store.gets() == 2, "second lookup is also depth-bounded");
+    Ok(())
 }
 
 #[test]
-fn every_builder_key_reads_back_through_referenced_hops() -> TestResult {
+fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
     // Build a real manifest through the builder so the reader is exercised
     // against the wire structure it exists to read, not a hand-laid table: the
     // shared-prefix grid forces compacted edges, embedded subtrees and, once a
@@ -127,20 +125,20 @@ fn every_builder_key_reads_back_through_referenced_hops() -> TestResult {
     builder.insert(Key::from(&b"prefix"[..]), entry(0x22), None);
     expected.push(("prefix".to_owned(), entry(0x22)));
     // An inline value must read back whole, not as a reference.
-    let inline = Entry::inline(Bytes::from_static(b"hello")).map_err(|e| e.to_string())?;
+    let inline = Entry::inline(Bytes::from_static(b"hello"))?;
     builder.insert(Key::from(&b"inline.txt"[..]), inline.clone(), None);
     expected.push(("inline.txt".to_owned(), inline));
     // The empty key sets the manifest's own value in the root extension.
     builder.insert(Key::empty(), entry(0x99), None);
 
-    let built = run(builder.build(&memory)).map_err(|e| e.to_string())?;
+    let built = run(builder.build(&memory))?;
     let root = *built.root();
     // More than one node spilled: the builder emitted referenced children, so
     // reading keys beneath them genuinely drives the fetch-and-descend path.
-    ensure(
+    ensure!(
         built.stats().nodes_written() > 1,
         "builder spilled referenced children",
-    )?;
+    );
 
     let store = CountingStore {
         inner: memory,
@@ -149,11 +147,10 @@ fn every_builder_key_reads_back_through_referenced_hops() -> TestResult {
     let reader: Reader<_> = Reader::new(&store);
 
     // The root extension answers the empty key.
-    ensure_eq(
-        run(reader.get(&root, &Key::empty())).map_err(|e| e.to_string())?,
-        Some(entry(0x99)),
+    ensure!(
+        run(reader.get(&root, &Key::empty()))? == Some(entry(0x99)),
         "empty key reads the root value",
-    )?;
+    );
 
     // Every key reads back its exact value, and no single lookup ever fetches a
     // whole level: the deepest path stays a small multiple of the tree depth,
@@ -161,16 +158,15 @@ fn every_builder_key_reads_back_through_referenced_hops() -> TestResult {
     let mut deepest = 0usize;
     for (key, value) in &expected {
         store.gets.store(0, Ordering::Relaxed);
-        let got = run(reader.get(&root, &Key::from(key.clone().into_bytes())))
-            .map_err(|e| e.to_string())?;
-        ensure_eq(got.as_ref(), Some(value), key)?;
+        let got = run(reader.get(&root, &Key::from(key.clone().into_bytes())))?;
+        ensure!(got.as_ref() == Some(value), "{key}");
         deepest = deepest.max(store.gets());
     }
-    ensure(deepest >= 2, "at least one key descends a referenced hop")?;
-    ensure(
+    ensure!(deepest >= 2, "at least one key descends a referenced hop");
+    ensure!(
         deepest < built.stats().nodes_written(),
         "no lookup fetches the whole tree",
-    )?;
+    );
 
     // Keys that diverge from, fall short of, or overrun a stored key are absent.
     for absent in [
@@ -180,17 +176,16 @@ fn every_builder_key_reads_back_through_referenced_hops() -> TestResult {
         "pr",
         "prefixed",
     ] {
-        ensure_eq(
-            run(reader.get(&root, &Key::from(absent.as_bytes()))).map_err(|e| e.to_string())?,
-            None,
-            absent,
-        )?;
+        ensure!(
+            run(reader.get(&root, &Key::from(absent.as_bytes())))?.is_none(),
+            "{absent}",
+        );
     }
     Ok(())
 }
 
 #[test]
-fn an_absent_key_stops_at_the_first_unmatched_fork() -> TestResult {
+fn an_absent_key_stops_at_the_first_unmatched_fork() -> Result<()> {
     let width = 64u16;
     let memory = MemoryStore::default();
     let root = wide_manifest(&memory, width)?;
@@ -204,6 +199,7 @@ fn an_absent_key_stops_at_the_first_unmatched_fork() -> TestResult {
     // A first byte no root fork carries: the walk stops at the root without
     // fetching any leaf.
     let value = run(reader.get(&root, &Key::from(&[0xFFu8, 0x00][..])))?;
-    ensure_eq(value, None, "absent value")?;
-    ensure_eq(store.gets(), 1, "only the root is fetched")
+    ensure!(value.is_none(), "absent value");
+    ensure!(store.gets() == 1, "only the root is fetched");
+    Ok(())
 }
