@@ -35,7 +35,6 @@ futures = { workspace = true }
 nectar-file = { workspace = true, features = ["rayon"] }
 nectar-testing = { workspace = true }
 proptest = { workspace = true }
-proptest-arbitrary-interop = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
 alloy-signer-local = { workspace = true }
