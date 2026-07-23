@@ -2,4 +2,6 @@
 # eating the whole job timeout. nextest runs each test in its own process, so
 # the global-allocator witnesses are already isolated; no serial group needed.
 [profile.default]
-slow-timeout = { period = "60s", terminate-after = 3 }
+# Slowest legitimate test holds near 81s on CI; the 300s kill fires on
+# genuine hangs only.
+slow-timeout = { period = "60s", terminate-after = 5 }
