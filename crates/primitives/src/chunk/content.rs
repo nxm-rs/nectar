@@ -257,16 +257,12 @@ mod tests {
     proptest! {
         #[test]
         fn test_chunk_properties(chunk in chunk_strategy()) {
-            // Test basic properties
+            // Local extras beyond the shared oracle: size accounting.
             prop_assert!(chunk.data().len() <= DEFAULT_BODY_SIZE);
             prop_assert_eq!(chunk.size(), 8 + chunk.data().len());
 
-            // Test round-trip conversion
-            let bytes: Bytes = chunk.clone().into();
-            let decoded = DefaultContentChunk::try_from(bytes).unwrap();
-            prop_assert_eq!(chunk.address(), decoded.address());
-            prop_assert_eq!(chunk.data(), decoded.data());
-            prop_assert_eq!(chunk.span(), decoded.span());
+            // The wire round trip the `chunk_roundtrip` fuzz target drives.
+            prop_assert_eq!(crate::oracles::content_chunk_round_trip(&chunk), Ok(()));
         }
 
         #[test]

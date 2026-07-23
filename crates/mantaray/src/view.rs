@@ -307,60 +307,10 @@ mod tests {
     const ENCODED_V01: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950ac787fbce1061870e8d34e0a638bc7e812c7ca4ebd31d626a572ba47b06f6952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64950fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
     const ENCODED_V02: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64905954fb18659339d0b25e0fb9723d3cd5d528fb3c8d495fd157bd7b7a210496952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64940fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952e3872548ec012a6e123b60f9177017fb12e57732621d2c1ada267adbe8cc4350f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
 
-    /// Assert the differential decode oracle on one input: the width-pinned
-    /// node decoder and the view agree on accept/reject, agree structurally on
-    /// accept, and the view's emit/decode pair is a fixed point. Mirrors the
-    /// `mantaray_view_differential` fuzz target.
+    /// Assert the shared `view_differential` oracle on one input; the
+    /// `mantaray_view_differential` fuzz target drives the same body.
     fn assert_differential_agreement(data: &[u8]) {
-        let old_plain = Node::<ChunkRef>::decode(data);
-        let old_encrypted = Node::<EncryptedChunkRef>::decode(data);
-        let new = NodeView::try_from(data);
-
-        assert_eq!(
-            new.is_ok(),
-            old_plain.is_ok() || old_encrypted.is_ok(),
-            "decoders must agree on accept/reject"
-        );
-        let Ok(view) = new else { return };
-
-        match view.ref_width() {
-            RefWidth::Zero => {
-                let plain = old_plain.unwrap();
-                let encrypted = old_encrypted.unwrap();
-                assert!(plain.entry().is_none() && plain.forks().is_empty());
-                assert!(encrypted.entry().is_none() && encrypted.forks().is_empty());
-                assert!(view.entry().is_none() && view.forks().is_empty());
-            }
-            RefWidth::Kind(RefKind::Plain) => compare(&old_plain.unwrap(), &view),
-            RefWidth::Kind(RefKind::Encrypted) => compare(&old_encrypted.unwrap(), &view),
-        }
-
-        let emitted = Vec::<u8>::from(&view);
-        let redecoded = NodeView::try_from(emitted.as_slice()).unwrap();
-        assert_eq!(redecoded, view, "emit/decode must be a fixed point");
-    }
-
-    /// Field-by-field agreement between a width-pinned decoded node and the
-    /// view of the same bytes.
-    fn compare<R: Reference>(node: &Node<R>, view: &NodeView) {
-        assert_eq!(
-            node.entry().cloned().map(Reference::into_entry_ref),
-            view.entry().cloned()
-        );
-        assert_eq!(node.obfuscation_key(), view.obfuscation_key());
-        assert_eq!(node.forks().len(), view.forks().len());
-        for ((key, fork), fork_view) in node.forks().iter().zip(view.forks()) {
-            assert_eq!(*key, fork_view.key());
-            assert_eq!(fork.prefix(), fork_view.prefix());
-            let child = fork.node();
-            assert_eq!(child.node_type, fork_view.node_type());
-            assert_eq!(
-                child.reference().cloned().map(Reference::into_entry_ref),
-                Some(fork_view.reference().clone())
-            );
-            let view_metadata = fork_view.metadata().cloned().unwrap_or_default();
-            assert_eq!(child.metadata(), &view_metadata);
-        }
+        crate::oracles::view_differential(data).unwrap();
     }
 
     #[test]

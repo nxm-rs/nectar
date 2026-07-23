@@ -6,58 +6,32 @@
 //! so it never exercises a v0.1 wire image and only the 32-byte plain width.
 //! This target closes both gaps with its own seed corpus, shared with
 //! `mantaray_node_decode`: the v0.1 and v0.2 plain manifests plus two
-//! `ref_size` 64 encrypted cases.
-//! It decodes a real wire image to recover its header and fork
-//! records, then round-trips that recovered node through encode and decode.
-//! Both entry widths are attempted on every input,
-//! `ChunkRef` (32-byte plain entries) and `EncryptedChunkRef` (64-byte
-//! encrypted entries); a width the image does not declare is rejected and
-//! skipped.
+//! `ref_size` 64 encrypted cases. The shared
+//! `nectar_mantaray::oracles::record_round_trip` oracle decodes a real wire
+//! image to recover its header and fork records, then round-trips that
+//! recovered node through encode and decode. Both entry widths are attempted
+//! on every input, `ChunkRef` (32-byte plain entries) and
+//! `EncryptedChunkRef` (64-byte encrypted entries); a width the image does
+//! not declare is rejected and skipped.
 //!
 //! The encoder normalizes to v0.2, so the first re-encode is the canonical
 //! image. The oracle is therefore a fixed point rather than equality with the
 //! decoded input: re-encoding the re-decoded node must be byte-identical, and
 //! decoding it again must be structurally identical. Any drift is a codec bug.
 //!
-//! The same property is pinned on stable by
+//! The same oracle is pinned on stable by
 //! `seed_replay_mantaray_record_roundtrip` in `crates/mantaray/src/codec.rs`.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nectar_mantaray::hazmat;
+use nectar_mantaray::oracles;
 use nectar_primitives::EncryptedChunkRef;
-use nectar_primitives::chunk::{ChunkRef, Reference};
-
-/// Round-trip a wire image at one reference width. A width the image does not
-/// declare decodes to `Err` and is skipped; every decoded node must reach a
-/// byte- and structure-canonical fixed point under encode/decode.
-fn round_trip<R: Reference>(data: &[u8]) {
-    let Ok(node) = hazmat::decode::<R>(data) else {
-        return;
-    };
-
-    // A decoded node carries a saved reference on every fork child, so it is
-    // always encodable; this first re-encode is the canonical v0.2 image.
-    let encoded = hazmat::encode(&node).expect("a decoded node must re-encode");
-    let redecoded =
-        hazmat::decode::<R>(encoded.as_slice()).expect("the canonical image must decode");
-
-    let reencoded = hazmat::encode(&redecoded).expect("a re-decoded node must re-encode");
-    assert_eq!(
-        reencoded, encoded,
-        "encode/decode must reach a byte-canonical fixed point"
-    );
-
-    let redecoded_again =
-        hazmat::decode::<R>(reencoded.as_slice()).expect("the canonical image must re-decode");
-    assert_eq!(
-        redecoded_again, redecoded,
-        "decode(encode(node)) must be structurally stable"
-    );
-}
+use nectar_primitives::chunk::ChunkRef;
 
 fuzz_target!(|data: &[u8]| {
-    round_trip::<ChunkRef>(data);
-    round_trip::<EncryptedChunkRef>(data);
+    let _ = oracles::record_round_trip::<ChunkRef>(data)
+        .expect("plain-width records must reach a canonical fixed point");
+    let _ = oracles::record_round_trip::<EncryptedChunkRef>(data)
+        .expect("encrypted-width records must reach a canonical fixed point");
 });
