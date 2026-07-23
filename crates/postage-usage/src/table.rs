@@ -2,8 +2,9 @@
 
 use alloc::vec::Vec;
 
-use nectar_postage::{Batch, BatchId};
-use nectar_postage_issuer::{CounterError, CounterMode, CounterTable};
+use nectar_postage::{Batch, BatchId, BucketDepth};
+use nectar_postage_issuer::{CounterError, CounterMode, CounterTableFor};
+use nectar_primitives::{Mainnet, SwarmSpec};
 
 use crate::{MAX_BUCKET_DEPTH, MAX_COUNTER_BITS, Result, UsageError};
 
@@ -58,6 +59,23 @@ pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()>
     Ok(())
 }
 
+/// Validates a raw geometry against both the snapshot format and the network
+/// floor, yielding the proof-carrying bucket depth `S` accepts.
+///
+/// The wire carries a bare depth byte, so this is where a decoded geometry
+/// rejoins the type: a bucket depth the network would refuse never reaches a
+/// table.
+pub(crate) fn checked_bucket_depth<S: SwarmSpec>(
+    depth: u8,
+    bucket_depth: u8,
+) -> Result<BucketDepth<S>> {
+    validate_geometry(depth, bucket_depth)?;
+    BucketDepth::new(bucket_depth).map_err(|_| UsageError::InvalidGeometry {
+        depth,
+        bucket_depth,
+    })
+}
+
 /// Whether a usage table is an immutable fill watermark or a mutable ring.
 ///
 /// The fill-or-ring choice is a runtime flag, not a type parameter: the SBU1
@@ -80,7 +98,7 @@ impl Mutability {
     /// Picks the mutability from a batch: an immutable batch yields the fill
     /// watermark table, a mutable batch (`batch.immutable() == false`) yields the
     /// wrapping ring.
-    pub const fn from_batch(batch: &Batch) -> Self {
+    pub const fn from_batch<S: SwarmSpec>(batch: &Batch<S>) -> Self {
         if batch.immutable() {
             Self::Immutable
         } else {
@@ -129,32 +147,58 @@ impl Mutability {
 /// runtime check.
 ///
 /// ```compile_fail
-/// use nectar_postage_usage::{BatchId, Mutability, UsageTable};
+/// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, UsageTable};
 ///
-/// let mut table = UsageTable::new(BatchId::new([0x42; 32]), 18, 16, Mutability::Mutable).unwrap();
+/// let bucket_depth = BucketDepth::new(16).unwrap();
+/// let mut table = UsageTable::new(BatchId::new([0x42; 32]), 18, bucket_depth, Mutability::Mutable).unwrap();
 /// // `record` no longer exists on the inert table.
 /// table.record(7).unwrap();
 /// ```
 ///
 /// ```compile_fail
 /// use alloy_primitives::B256;
-/// use nectar_postage_usage::{BatchId, Mutability, ChunkAddress, UsageTable};
+/// use nectar_postage_usage::{BatchId, BucketDepth, ChunkAddress, Mutability, UsageTable};
 ///
-/// let mut table = UsageTable::new(BatchId::new([0x42; 32]), 18, 16, Mutability::Mutable).unwrap();
+/// let bucket_depth = BucketDepth::new(16).unwrap();
+/// let mut table = UsageTable::new(BatchId::new([0x42; 32]), 18, bucket_depth, Mutability::Mutable).unwrap();
 /// // `record_address` no longer exists on the inert table.
 /// table.record_address(&ChunkAddress::from(B256::repeat_byte(0x99))).unwrap();
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsageTable {
+#[derive(Debug)]
+pub struct UsageTableFor<S: SwarmSpec = Mainnet> {
     pub(crate) batch_id: BatchId,
     /// The shared per-bucket counter table. It holds the counters, the issued
     /// sum, the geometry, and the fill-or-ring mode, in the same `[0, capacity]`
     /// representation the wire format serializes. The snapshot wraps this table
     /// rather than carrying its own copy of the counter logic.
-    pub(crate) counters: CounterTable,
+    pub(crate) counters: CounterTableFor<S>,
 }
 
-impl UsageTable {
+/// The [`UsageTableFor`] of the mainnet spec.
+pub type UsageTable = UsageTableFor<Mainnet>;
+
+// The spec is a type-level tag, so the impls below carry no bound on `S` beyond
+// `SwarmSpec`; deriving would demand `S: Clone` and `S: Eq` of a marker type
+// that holds no data.
+
+impl<S: SwarmSpec> Clone for UsageTableFor<S> {
+    fn clone(&self) -> Self {
+        Self {
+            batch_id: self.batch_id,
+            counters: self.counters.clone(),
+        }
+    }
+}
+
+impl<S: SwarmSpec> PartialEq for UsageTableFor<S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.batch_id == other.batch_id && self.counters == other.counters
+    }
+}
+
+impl<S: SwarmSpec> Eq for UsageTableFor<S> {}
+
+impl<S: SwarmSpec> UsageTableFor<S> {
     /// Creates an empty table for a batch with the given geometry and
     /// [`Mutability`].
     ///
@@ -166,13 +210,13 @@ impl UsageTable {
     pub fn new(
         batch_id: BatchId,
         depth: u8,
-        bucket_depth: u8,
+        bucket_depth: BucketDepth<S>,
         mutability: Mutability,
     ) -> Result<Self> {
-        validate_geometry(depth, bucket_depth)?;
+        validate_geometry(depth, bucket_depth.get())?;
         Ok(Self {
             batch_id,
-            counters: CounterTable::new(depth, bucket_depth, mutability.mode()),
+            counters: CounterTableFor::new(depth, bucket_depth, mutability.mode()),
         })
     }
 
@@ -183,11 +227,11 @@ impl UsageTable {
     /// (`batch.immutable() == false`) yields a wrapping ring. This lets a caller
     /// holding a `Batch` build the matching table without restating the geometry
     /// or polarity by hand.
-    pub fn from_batch(batch: &Batch) -> Result<Self> {
+    pub fn from_batch(batch: &Batch<S>) -> Result<Self> {
         Self::new(
             batch.id(),
             batch.depth(),
-            batch.bucket_depth().get(),
+            batch.bucket_depth(),
             Mutability::from_batch(batch),
         )
     }
@@ -200,12 +244,12 @@ impl UsageTable {
     pub fn from_counts(
         batch_id: BatchId,
         depth: u8,
-        bucket_depth: u8,
+        bucket_depth: BucketDepth<S>,
         counts: Vec<u32>,
         mutability: Mutability,
     ) -> Result<Self> {
-        validate_geometry(depth, bucket_depth)?;
-        let counters = CounterTable::from_counts(depth, bucket_depth, mutability.mode(), counts)
+        validate_geometry(depth, bucket_depth.get())?;
+        let counters = CounterTableFor::from_counts(depth, bucket_depth, mutability.mode(), counts)
             .map_err(map_counter_error)?;
         Ok(Self { batch_id, counters })
     }
@@ -227,7 +271,7 @@ impl UsageTable {
     }
 
     /// Returns the bucket (uniformity) depth.
-    pub const fn bucket_depth(&self) -> u8 {
+    pub const fn bucket_depth(&self) -> BucketDepth<S> {
         self.counters.bucket_depth()
     }
 
@@ -285,13 +329,13 @@ impl UsageTable {
 
     /// Returns the shared counter table backing this usage table, for the
     /// snapshot's counter-advance and merge paths.
-    pub(crate) const fn counters(&self) -> &CounterTable {
+    pub(crate) const fn counters(&self) -> &CounterTableFor<S> {
         &self.counters
     }
 
     /// Returns a mutable reference to the shared counter table, the snapshot's
     /// single counter-advance handle.
-    pub(crate) const fn counters_mut(&mut self) -> &mut CounterTable {
+    pub(crate) const fn counters_mut(&mut self) -> &mut CounterTableFor<S> {
         &mut self.counters
     }
 
@@ -308,7 +352,7 @@ impl UsageTable {
                 requested: new_depth,
             });
         }
-        validate_geometry(new_depth, self.counters.bucket_depth())?;
+        validate_geometry(new_depth, self.counters.bucket_depth().get())?;
         // The geometry is validated against the snapshot format above, so the
         // shared table only needs to adopt the new depth.
         self.counters.set_depth(new_depth);
@@ -334,7 +378,7 @@ impl UsageTable {
             return Err(UsageError::BatchMismatch);
         }
         let depth = self.depth().max(other.depth());
-        validate_geometry(depth, self.bucket_depth())?;
+        validate_geometry(depth, self.bucket_depth().get())?;
         self.counters.merge_counts_max(other.counters(), depth);
         Ok(())
     }
@@ -354,13 +398,25 @@ impl UsageTable {
 /// snapshot.
 ///
 /// The view borrows the table, so it cannot outlive the snapshot it came from.
-#[derive(Debug, Clone, Copy)]
-pub struct TableView<'a> {
-    table: &'a UsageTable,
+#[derive(Debug)]
+pub struct TableViewFor<'a, S: SwarmSpec = Mainnet> {
+    table: &'a UsageTableFor<S>,
 }
 
-impl<'a> TableView<'a> {
-    pub(crate) const fn new(table: &'a UsageTable) -> Self {
+/// The [`TableViewFor`] of the mainnet spec.
+pub type TableView<'a> = TableViewFor<'a, Mainnet>;
+
+// A view is a shared borrow, so it copies whatever the spec marker does.
+impl<S: SwarmSpec> Clone for TableViewFor<'_, S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: SwarmSpec> Copy for TableViewFor<'_, S> {}
+
+impl<'a, S: SwarmSpec> TableViewFor<'a, S> {
+    pub(crate) const fn new(table: &'a UsageTableFor<S>) -> Self {
         Self { table }
     }
 
@@ -381,7 +437,7 @@ impl<'a> TableView<'a> {
     }
 
     /// Returns the bucket (uniformity) depth.
-    pub const fn bucket_depth(&self) -> u8 {
+    pub const fn bucket_depth(&self) -> BucketDepth<S> {
         self.table.bucket_depth()
     }
 
@@ -441,9 +497,10 @@ impl<'a> TableView<'a> {
 mod arbitrary_impls {
     use alloc::vec;
     use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
-    use nectar_postage::BatchId;
+    use nectar_postage::{BatchId, BucketDepth};
+    use nectar_primitives::SwarmSpec;
 
-    use super::{Mutability, UsageTable};
+    use super::{Mutability, UsageTableFor};
     use crate::{MAX_BUCKET_DEPTH, MAX_COUNTER_BITS};
 
     impl<'a> Arbitrary<'a> for Mutability {
@@ -456,15 +513,21 @@ mod arbitrary_impls {
         }
     }
 
-    impl<'a> Arbitrary<'a> for UsageTable {
+    impl<'a, S: SwarmSpec> Arbitrary<'a> for UsageTableFor<S> {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
             let batch_id = BatchId::new(u.arbitrary::<[u8; 32]>()?);
             // `bucket_depth == 0` (a zero-width bucket) is invalid geometry:
             // `validate_geometry` rejects it because `nectar_postage::
             // calculate_bucket` shifts a u32 right by `32 - bucket_depth`, so
-            // depth 0 would overflow the shift. The range below is therefore
-            // exactly the format invariant, not a generator restriction.
-            let bucket_depth = u.int_in_range(1..=MAX_BUCKET_DEPTH)?;
+            // depth 0 would overflow the shift. The window below is therefore
+            // exactly the format invariant intersected with the network floor,
+            // not a generator restriction; a network whose floor exceeds the
+            // format maximum has no snapshot geometry at all.
+            let low = S::MIN_BUCKET_DEPTH.max(1);
+            if low > MAX_BUCKET_DEPTH {
+                return Err(arbitrary::Error::IncorrectFormat);
+            }
+            let bucket_depth = u.int_in_range(low..=MAX_BUCKET_DEPTH)?;
             let counter_bits = u.int_in_range(0..=MAX_COUNTER_BITS)?;
             // `bucket_depth <= 16` and `counter_bits <= 31`, so the u8 sum
             // is at most 47.
@@ -489,6 +552,8 @@ mod arbitrary_impls {
 
             // Cannot fail for the geometry and counters generated above; map
             // defensively rather than panicking inside the generator.
+            let bucket_depth =
+                BucketDepth::new(bucket_depth).map_err(|_| arbitrary::Error::IncorrectFormat)?;
             Self::from_counts(batch_id, depth, bucket_depth, counts, mutability)
                 .map_err(|_| arbitrary::Error::IncorrectFormat)
         }
@@ -498,9 +563,25 @@ mod arbitrary_impls {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::{Address, b256};
-    use nectar_postage::{Batch, BucketDepth};
+    use nectar_postage::Batch;
+    use nectar_primitives::NetworkId;
 
     use super::*;
+
+    /// A deployment whose bucket-depth floor is the format minimum, for the
+    /// geometries mainnet's floor of 16 forbids.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Shallow;
+
+    impl SwarmSpec for Shallow {
+        const NETWORK_ID: NetworkId = NetworkId::TESTNET;
+        const MIN_BUCKET_DEPTH: u8 = 1;
+    }
+
+    /// The mainnet bucket depth, the only one mainnet and the format agree on.
+    fn mainnet() -> BucketDepth {
+        BucketDepth::new(16).unwrap()
+    }
 
     fn batch_id() -> BatchId {
         BatchId::from(b256!(
@@ -527,12 +608,13 @@ mod tests {
     #[test]
     fn geometry_bounds() {
         let imm = Mutability::Immutable;
-        assert!(UsageTable::new(batch_id(), 20, 16, imm).is_ok());
-        assert!(UsageTable::new(batch_id(), 16, 16, imm).is_ok());
-        assert!(UsageTable::new(batch_id(), 47, 16, imm).is_ok());
-        assert!(UsageTable::new(batch_id(), 48, 16, imm).is_err());
-        assert!(UsageTable::new(batch_id(), 15, 16, imm).is_err());
-        assert!(UsageTable::new(batch_id(), 20, 17, imm).is_err());
+        assert!(UsageTable::new(batch_id(), 20, mainnet(), imm).is_ok());
+        assert!(UsageTable::new(batch_id(), 16, mainnet(), imm).is_ok());
+        assert!(UsageTable::new(batch_id(), 47, mainnet(), imm).is_ok());
+        assert!(UsageTable::new(batch_id(), 48, mainnet(), imm).is_err());
+        assert!(UsageTable::new(batch_id(), 15, mainnet(), imm).is_err());
+        // A bucket depth the network accepts but the format does not.
+        assert!(UsageTable::new(batch_id(), 20, BucketDepth::new(17).unwrap(), imm).is_err());
     }
 
     #[test]
@@ -549,19 +631,29 @@ mod tests {
                 })
             );
         }
-        // Both constructors go through the validator.
+        // The constructors cannot even be reached with one: no network, however
+        // low its floor, has a representable zero-width bucket depth.
+        assert!(BucketDepth::<Shallow>::new(0).is_err());
+        // The wire path rejoins the type here, so a decoded zero is refused.
         assert_eq!(
-            UsageTable::new(batch_id(), 20, 0, Mutability::Immutable),
+            checked_bucket_depth::<Shallow>(20, 0),
             Err(UsageError::InvalidGeometry {
                 depth: 20,
                 bucket_depth: 0,
             })
         );
+    }
+
+    #[test]
+    fn a_decoded_geometry_must_clear_the_network_floor() {
+        // The format supports bucket depth 8; mainnet does not, and the wire
+        // gate is where that is caught.
+        assert!(checked_bucket_depth::<Shallow>(12, 8).is_ok());
         assert_eq!(
-            UsageTable::from_counts(batch_id(), 5, 0, vec![0u32], Mutability::Immutable),
+            checked_bucket_depth::<Mainnet>(12, 8),
             Err(UsageError::InvalidGeometry {
-                depth: 5,
-                bucket_depth: 0,
+                depth: 12,
+                bucket_depth: 8,
             })
         );
     }
@@ -570,25 +662,30 @@ mod tests {
     fn mutability_enum_matches_old_constructors() {
         // The enum constructors produce the same tables the old `new`/`new_mutable`
         // pair did: an immutable table is a fill watermark, a mutable table a ring.
-        let immutable = UsageTable::new(batch_id(), 20, 16, Mutability::Immutable).unwrap();
+        let immutable = UsageTable::new(batch_id(), 20, mainnet(), Mutability::Immutable).unwrap();
         assert!(!immutable.is_mutable());
 
-        let mutable = UsageTable::new(batch_id(), 20, 16, Mutability::Mutable).unwrap();
+        let mutable = UsageTable::new(batch_id(), 20, mainnet(), Mutability::Mutable).unwrap();
         assert!(mutable.is_mutable());
 
         let from_counts_imm = UsageTable::from_counts(
             batch_id(),
             17,
-            16,
+            mainnet(),
             immutable_counts(),
             Mutability::Immutable,
         )
         .unwrap();
         assert!(!from_counts_imm.is_mutable());
 
-        let from_counts_mut =
-            UsageTable::from_counts(batch_id(), 17, 16, immutable_counts(), Mutability::Mutable)
-                .unwrap();
+        let from_counts_mut = UsageTable::from_counts(
+            batch_id(),
+            17,
+            mainnet(),
+            immutable_counts(),
+            Mutability::Mutable,
+        )
+        .unwrap();
         assert!(from_counts_mut.is_mutable());
     }
 
@@ -600,7 +697,7 @@ mod tests {
         assert!(!immutable_table.is_mutable());
         assert_eq!(immutable_table.batch_id(), batch_id());
         assert_eq!(immutable_table.depth(), 20);
-        assert_eq!(immutable_table.bucket_depth(), 16);
+        assert_eq!(immutable_table.bucket_depth().get(), 16);
 
         let mutable_batch = batch_with(20, 16, false);
         let mutable_table = UsageTable::from_batch(&mutable_batch).unwrap();
@@ -613,7 +710,8 @@ mod tests {
         let mut counts = vec![0u32; 1usize << 16];
         counts[7] = 2;
         let table =
-            UsageTable::from_counts(batch_id(), 17, 16, counts, Mutability::Immutable).unwrap();
+            UsageTable::from_counts(batch_id(), 17, mainnet(), counts, Mutability::Immutable)
+                .unwrap();
         assert_eq!(table.bucket_capacity(), 2);
         assert_eq!(table.total_issued(), 2);
         assert_eq!(table.max_count(), 2);
@@ -622,7 +720,7 @@ mod tests {
         let mut over = vec![0u32; 1usize << 16];
         over[7] = 3; // capacity is 2
         assert_eq!(
-            UsageTable::from_counts(batch_id(), 17, 16, over, Mutability::Immutable),
+            UsageTable::from_counts(batch_id(), 17, mainnet(), over, Mutability::Immutable),
             Err(UsageError::CounterOverflow {
                 bucket: 7,
                 count: 3,
@@ -636,7 +734,8 @@ mod tests {
         let mut counts = vec![0u32; 1usize << 16];
         counts[0] = 1;
         let mut table =
-            UsageTable::from_counts(batch_id(), 17, 16, counts, Mutability::Immutable).unwrap();
+            UsageTable::from_counts(batch_id(), 17, mainnet(), counts, Mutability::Immutable)
+                .unwrap();
         table.dilute(18).unwrap();
         assert_eq!(table.bucket_capacity(), 4);
         assert_eq!(table.count(0).unwrap(), 1);
@@ -657,9 +756,10 @@ mod tests {
         counts_b[0] = 1;
         counts_b[1] = 1;
         let mut a =
-            UsageTable::from_counts(batch_id(), 18, 16, counts_a, Mutability::Immutable).unwrap();
-        let b =
-            UsageTable::from_counts(batch_id(), 19, 16, counts_b, Mutability::Immutable).unwrap();
+            UsageTable::from_counts(batch_id(), 18, mainnet(), counts_a, Mutability::Immutable)
+                .unwrap();
+        let b = UsageTable::from_counts(batch_id(), 19, mainnet(), counts_b, Mutability::Immutable)
+            .unwrap();
         a.merge_max(&b).unwrap();
         assert_eq!(a.depth(), 19);
         assert_eq!(a.count(0).unwrap(), 2);
@@ -670,13 +770,16 @@ mod tests {
     #[test]
     fn merge_max_rejects_mutable() {
         let zero = || vec![0u32; 1usize << 16];
-        let mut a =
-            UsageTable::from_counts(batch_id(), 18, 16, zero(), Mutability::Mutable).unwrap();
-        let b = UsageTable::from_counts(batch_id(), 18, 16, zero(), Mutability::Immutable).unwrap();
+        let mut a = UsageTable::from_counts(batch_id(), 18, mainnet(), zero(), Mutability::Mutable)
+            .unwrap();
+        let b = UsageTable::from_counts(batch_id(), 18, mainnet(), zero(), Mutability::Immutable)
+            .unwrap();
         assert_eq!(a.merge_max(&b), Err(UsageError::MutableMerge));
         let mut c =
-            UsageTable::from_counts(batch_id(), 18, 16, zero(), Mutability::Immutable).unwrap();
-        let d = UsageTable::from_counts(batch_id(), 18, 16, zero(), Mutability::Mutable).unwrap();
+            UsageTable::from_counts(batch_id(), 18, mainnet(), zero(), Mutability::Immutable)
+                .unwrap();
+        let d = UsageTable::from_counts(batch_id(), 18, mainnet(), zero(), Mutability::Mutable)
+            .unwrap();
         assert_eq!(c.merge_max(&d), Err(UsageError::MutableMerge));
     }
 }

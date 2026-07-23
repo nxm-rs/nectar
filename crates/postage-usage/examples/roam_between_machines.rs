@@ -224,7 +224,12 @@ fn stale_persist_is_rejected(
     println!("----------------------------------------------");
 
     // A snapshot sitting at sequence 1 (its next persist would emit 2).
-    let table = UsageTable::new(batch_id, DEPTH, BUCKET_DEPTH, Mutability::Immutable)?;
+    let table = UsageTable::new(
+        batch_id,
+        DEPTH,
+        BucketDepth::new(BUCKET_DEPTH)?,
+        Mutability::Immutable,
+    )?;
     let mut snapshot = Snapshot::new(table);
     snapshot
         .revalidate(PublishedSequence::NONE)?

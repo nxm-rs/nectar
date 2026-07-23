@@ -9,7 +9,7 @@
 //!
 //! The spec is a type, not a value: every knob is an associated const, so a
 //! network is named as a type parameter ([`Mainnet`], [`Testnet`]) and a knob
-//! is read without an instance in hand. A type parameterised by a spec (a
+//! is read without an instance in hand. A type parameterized by a spec (a
 //! postage bucket depth, say) can then refuse a value the network would refuse
 //! at compile time instead of at a validation call.
 

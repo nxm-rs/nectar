@@ -16,11 +16,17 @@
 use alloy_primitives::Address;
 use nectar_postage::{BucketDepth, calculate_bucket};
 use nectar_postage_usage::{
-    Batch, BatchId, MAGIC, Mutability, PersistPlan, PublishedSequence, RootInfo, Snapshot,
-    UsageError, UsageTable, usage_chunk_address, usage_chunk_id,
+    Batch, BatchId, MAGIC, Mutability, NetworkId, PersistPlan, PublishedSequence, RootInfo,
+    RootInfoFor, Snapshot, SnapshotFor, SwarmSpec, UsageError, UsageTable, UsageTableFor,
+    usage_chunk_address, usage_chunk_id,
 };
 
 const BUCKET_DEPTH: u8 = 16;
+
+/// The mainnet bucket depth of every table below, proof-carrying.
+fn bucket_depth() -> BucketDepth {
+    BucketDepth::new(BUCKET_DEPTH).unwrap()
+}
 
 const fn batch_id() -> BatchId {
     BatchId::new([0x42; 32])
@@ -53,6 +59,24 @@ fn roundtrip(plan: &PersistPlan) -> Snapshot {
     root.assemble(&leaves).unwrap()
 }
 
+/// A deployment whose bucket-depth floor is the format minimum, for the
+/// geometries mainnet's floor of 16 forbids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shallow;
+
+impl SwarmSpec for Shallow {
+    const NETWORK_ID: NetworkId = NetworkId::TESTNET;
+    const MIN_BUCKET_DEPTH: u8 = 1;
+}
+
+/// [`roundtrip`] for a snapshot of another network.
+fn roundtrip_for<S: SwarmSpec>(plan: &PersistPlan) -> SnapshotFor<S> {
+    let root = RootInfoFor::<S>::parse(&plan.chunks[0].payload).unwrap();
+    let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| &c.payload).collect();
+    assert_eq!(usize::from(root.leaf_count()), leaves.len());
+    root.assemble(&leaves).unwrap()
+}
+
 fn batch(depth: u8, immutable: bool) -> Batch {
     Batch::new(
         batch_id(),
@@ -74,7 +98,7 @@ fn snapshot_from_batch_matches_batch_polarity() {
     assert!(!immutable.table().is_mutable());
     assert_eq!(immutable.table().batch_id(), batch_id());
     assert_eq!(immutable.table().depth(), 20);
-    assert_eq!(immutable.table().bucket_depth(), BUCKET_DEPTH);
+    assert_eq!(immutable.table().bucket_depth().get(), BUCKET_DEPTH);
     assert_eq!(immutable.sequence(), 0);
 
     let mutable = Snapshot::from_batch(&batch(22, false)).unwrap();
@@ -85,7 +109,7 @@ fn snapshot_from_batch_matches_batch_polarity() {
 
 #[test]
 fn empty_table_persists_as_a_single_small_root() {
-    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let table = UsageTable::new(batch_id(), 20, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -113,9 +137,14 @@ fn uniform_spread_uses_leaves_and_round_trips() {
     // Counts in 64..=127: base 64, deltas need 6 bits. A leaf holds
     // floor(32768 / 6) = 5461 buckets, so 65536 buckets need 13 leaves.
     let counts = synthetic_counts(buckets, 64, 63);
-    let table =
-        UsageTable::from_counts(batch_id(), 24, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        24,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -134,9 +163,14 @@ fn hot_bucket_becomes_an_exception_not_a_wider_table() {
     let buckets = 1usize << BUCKET_DEPTH;
     let mut counts = vec![0u32; buckets];
     counts[12345] = 200_000; // one hot bucket, everything else empty
-    let table =
-        UsageTable::from_counts(batch_id(), 34, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        34,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -155,9 +189,14 @@ fn hot_bucket_becomes_an_exception_not_a_wider_table() {
 fn steady_state_persists_allocate_nothing_and_keep_slots() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 10, 15);
-    let table =
-        UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        22,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
 
     let first = snapshot
@@ -191,9 +230,14 @@ fn steady_state_persists_allocate_nothing_and_keep_slots() {
 fn snapshot_accounts_for_its_own_chunks() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 100, 90);
-    let table =
-        UsageTable::from_counts(batch_id(), 24, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        24,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let issued_before = table.total_issued();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
@@ -220,9 +264,14 @@ fn snapshot_accounts_for_its_own_chunks() {
 fn dilution_changes_no_leaf_bytes() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 5, 7);
-    let table =
-        UsageTable::from_counts(batch_id(), 20, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        20,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
     let before = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -250,15 +299,23 @@ fn dilution_changes_no_leaf_bytes() {
 fn small_bucket_depth_inlines_in_the_root() {
     // 256 buckets at any width fit inline in the root.
     let counts = synthetic_counts(256, 1000, 4000);
-    let table = UsageTable::from_counts(batch_id(), 21, 8, counts, Mutability::Immutable).unwrap();
-    let mut snapshot = Snapshot::new(table);
+    // Bucket depth 8 is below mainnet's floor, so this runs at `Shallow`.
+    let table = UsageTableFor::from_counts(
+        batch_id(),
+        21,
+        BucketDepth::<Shallow>::new(8).unwrap(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
+    let mut snapshot = SnapshotFor::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
         .unwrap()
         .plan_persist(&owner())
         .unwrap();
     assert_eq!(plan.chunks.len(), 1);
-    assert_eq!(roundtrip(&plan), snapshot);
+    assert_eq!(roundtrip_for::<Shallow>(&plan), snapshot);
 }
 
 #[test]
@@ -270,9 +327,14 @@ fn full_capacity_counters_round_trip() {
     for c in counts.iter_mut().take(64) {
         *c = 0;
     }
-    let table =
-        UsageTable::from_counts(batch_id(), 17, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        17,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
     match snapshot
         .revalidate(PublishedSequence::NONE)
@@ -294,9 +356,14 @@ fn full_capacity_counters_round_trip() {
 fn corruption_is_rejected() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 50, 40);
-    let table =
-        UsageTable::from_counts(batch_id(), 23, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        23,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -351,9 +418,14 @@ fn corruption_is_rejected() {
 fn reserved_indices_match_planned_stamps_and_guard_reuse() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 10, 15);
-    let table =
-        UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        22,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -385,7 +457,8 @@ fn mutable_round_trips_and_decodes_as_mutable() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 10, 15);
     let table =
-        UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts, Mutability::Mutable).unwrap();
+        UsageTable::from_counts(batch_id(), 22, bucket_depth(), counts, Mutability::Mutable)
+            .unwrap();
     assert!(table.is_mutable());
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
@@ -412,7 +485,8 @@ fn mutable_dilution_changes_no_cursor_or_leaf_bytes() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 5, 7);
     let table =
-        UsageTable::from_counts(batch_id(), 20, BUCKET_DEPTH, counts, Mutability::Mutable).unwrap();
+        UsageTable::from_counts(batch_id(), 20, bucket_depth(), counts, Mutability::Mutable)
+            .unwrap();
     let mut snapshot = Snapshot::new(table);
     let before = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -448,7 +522,7 @@ fn merge_max_rejects_mutable() {
     let a = UsageTable::from_counts(
         batch_id(),
         20,
-        BUCKET_DEPTH,
+        bucket_depth(),
         synthetic_counts(buckets, 1, 2),
         Mutability::Mutable,
     )
@@ -456,7 +530,7 @@ fn merge_max_rejects_mutable() {
     let b = UsageTable::from_counts(
         batch_id(),
         20,
-        BUCKET_DEPTH,
+        bucket_depth(),
         synthetic_counts(buckets, 1, 2),
         Mutability::Immutable,
     )
@@ -474,9 +548,14 @@ fn recovered_mutable_issues_reserved_aware_through_the_handle() {
     let buckets = 1usize << BUCKET_DEPTH;
     // Fill the table close to full so cursors wrap fast.
     let counts = vec![3u32; buckets];
-    let table =
-        UsageTable::from_counts(batch_id(), depth, BUCKET_DEPTH, counts, Mutability::Mutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        depth,
+        bucket_depth(),
+        counts,
+        Mutability::Mutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -510,9 +589,14 @@ fn recovered_mutable_issues_reserved_aware_through_the_handle() {
 fn extract_then_rebuild_preserves_sequence_and_slots() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 10, 15);
-    let table =
-        UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        22,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
 
     // Persist a few times so the sequence climbs above 0 and slots are allocated.
@@ -568,9 +652,14 @@ fn extract_then_rebuild_preserves_sequence_and_slots() {
 fn recovered_snapshot_rebuilds_through_from_parts_without_regressing() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 64, 63);
-    let table =
-        UsageTable::from_counts(batch_id(), 24, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        24,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
     snapshot
         .revalidate(PublishedSequence::NONE)
@@ -600,7 +689,7 @@ fn table_view_exposes_counts_and_geometry_without_yielding_an_owned_table() {
     let table = UsageTable::from_counts(
         batch_id(),
         24,
-        BUCKET_DEPTH,
+        bucket_depth(),
         counts.clone(),
         Mutability::Immutable,
     )
@@ -630,7 +719,7 @@ fn table_view_exposes_counts_and_geometry_without_yielding_an_owned_table() {
     // Geometry getters.
     assert_eq!(view.batch_id(), batch_id());
     assert_eq!(view.depth(), 24);
-    assert_eq!(view.bucket_depth(), BUCKET_DEPTH);
+    assert_eq!(view.bucket_depth().get(), BUCKET_DEPTH);
     assert_eq!(view.bucket_count(), buckets_u32);
     assert_eq!(view.bucket_capacity(), 1u32 << (24 - BUCKET_DEPTH));
     assert_eq!(view.total_capacity(), 1u64 << 24);
@@ -662,7 +751,7 @@ fn table_view_exposes_counts_and_geometry_without_yielding_an_owned_table() {
 /// `stamps_since_persist` counts the unpersisted stamps in immutable mode.
 #[test]
 fn is_dirty_and_stamps_since_persist_track_unpersisted_issuance() {
-    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let table = UsageTable::new(batch_id(), 20, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
 
     // A fresh snapshot that has issued nothing is clean.
@@ -706,7 +795,7 @@ fn is_dirty_and_stamps_since_persist_track_unpersisted_issuance() {
 /// ring churn and clears on persist.
 #[test]
 fn mutable_is_dirty_tracks_churn_but_count_is_none() {
-    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Mutable).unwrap();
+    let table = UsageTable::new(batch_id(), 20, bucket_depth(), Mutability::Mutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     assert!(snapshot.table().is_mutable());
 
@@ -740,7 +829,8 @@ fn mutable_ring_wrap_is_signalled() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = vec![0u32; buckets];
     let table =
-        UsageTable::from_counts(batch_id(), 17, BUCKET_DEPTH, counts, Mutability::Mutable).unwrap();
+        UsageTable::from_counts(batch_id(), 17, bucket_depth(), counts, Mutability::Mutable)
+            .unwrap();
     let mut snapshot = Snapshot::new(table);
     let capacity = snapshot.table().bucket_capacity();
     assert_eq!(capacity, 2);
@@ -786,7 +876,7 @@ fn mutable_ring_wrap_is_signalled() {
 /// bucket fails rather than overwriting, so no eviction is ever signalled.
 #[test]
 fn immutable_never_wraps() {
-    let table = UsageTable::new(batch_id(), 17, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let table = UsageTable::new(batch_id(), 17, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     let content = address_in_bucket(0x1234);
     let bucket = calculate_bucket(&content, BUCKET_DEPTH);
@@ -810,9 +900,14 @@ fn immutable_never_wraps() {
 fn steady_state_persist_changes_only_the_sequence() {
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = synthetic_counts(buckets, 10, 15);
-    let table =
-        UsageTable::from_counts(batch_id(), 22, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        22,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
 
     // First persist allocates the snapshot's own slots.
@@ -848,9 +943,14 @@ fn failed_allocation_rolls_back_the_snapshot() {
     // immediately hits a full bucket.
     let buckets = 1usize << BUCKET_DEPTH;
     let counts = vec![1u32; buckets];
-    let table =
-        UsageTable::from_counts(batch_id(), 16, BUCKET_DEPTH, counts, Mutability::Immutable)
-            .unwrap();
+    let table = UsageTable::from_counts(
+        batch_id(),
+        16,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
     let mut snapshot = Snapshot::new(table);
     let counts_before = snapshot.table().counts().to_vec();
     let issued_before = snapshot.table().total_issued();
@@ -868,6 +968,79 @@ fn failed_allocation_rolls_back_the_snapshot() {
     assert!(snapshot.allocated_slots().is_empty());
     assert_eq!(snapshot.table().counts(), counts_before.as_slice());
     assert_eq!(snapshot.table().total_issued(), issued_before);
+}
+
+/// A whole issue-reserve-persist-recover cycle for a network other than
+/// mainnet, proving the spec parameter is load-bearing rather than decorative:
+/// bucket depth 8 is below mainnet's floor of 16, so none of this exists for a
+/// mainnet snapshot, and the same bytes are refused when parsed as one.
+#[test]
+fn a_non_mainnet_snapshot_issues_reserves_and_recovers() {
+    // Depth 11 over bucket depth 8 gives 8 slots per bucket, on a mutable ring
+    // so issuance wraps rather than filling.
+    let table = UsageTableFor::from_counts(
+        batch_id(),
+        11,
+        BucketDepth::<Shallow>::new(8).unwrap(),
+        vec![0u32; 256],
+        Mutability::Mutable,
+    )
+    .unwrap();
+    let mut snapshot = SnapshotFor::new(table);
+
+    // The first persist allocates the snapshot's own chunk, which is reserved
+    // from then on.
+    let first = snapshot
+        .revalidate(PublishedSequence::NONE)
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    assert_eq!(first.chunks.len(), 1);
+    let reserved = snapshot.reserved_stamp_indices(&owner());
+    assert_eq!(reserved.len(), 1);
+    let (root_bucket, root_slot) = (reserved[0].bucket(), reserved[0].index());
+
+    // Content stamped into the snapshot's own bucket wraps around its slot, far
+    // past one full ring cycle.
+    let address = address_in_bucket_at(root_bucket, 8);
+    let mut issuer = snapshot.issuer(owner());
+    for _ in 0..40 {
+        let index = issuer.record_address(&address).unwrap();
+        assert_eq!(index.bucket(), root_bucket);
+        assert_ne!(
+            index.index(),
+            root_slot,
+            "issuance evicted the snapshot's own chunk"
+        );
+    }
+
+    // The next persist recovers byte-for-byte through the same spec.
+    let plan = snapshot
+        .revalidate(PublishedSequence::from(
+            &RootInfoFor::<Shallow>::parse(&first.chunks[0].payload).unwrap(),
+        ))
+        .unwrap()
+        .plan_persist(&owner())
+        .unwrap();
+    assert_eq!(roundtrip_for::<Shallow>(&plan), snapshot);
+    assert!(snapshot.table().is_mutable());
+    assert_eq!(snapshot.table().bucket_depth().get(), 8);
+
+    // Mainnet refuses the very same payload: its floor is 16.
+    assert_eq!(
+        RootInfo::parse(&plan.chunks[0].payload),
+        Err(UsageError::CorruptGeometry {
+            depth: 11,
+            bucket_depth: 8,
+        })
+    );
+}
+
+/// Returns a chunk address whose top `bucket_depth` bits select `bucket`.
+fn address_in_bucket_at(bucket: u32, bucket_depth: u8) -> nectar_primitives::ChunkAddress {
+    let mut bytes = [0u8; 32];
+    bytes[..4].copy_from_slice(&(bucket << (32 - u32::from(bucket_depth))).to_be_bytes());
+    nectar_primitives::ChunkAddress::new(bytes)
 }
 
 /// Returns a chunk address whose top `BUCKET_DEPTH` bits select `bucket`.
@@ -888,7 +1061,7 @@ const fn address_in_bucket(bucket: u32) -> nectar_primitives::ChunkAddress {
 /// thing that can reject a forged sequence-0 persist against a published batch.
 #[test]
 fn fresh_construction_forgery_is_rejected_by_the_floor() {
-    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let table = UsageTable::new(batch_id(), 20, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     // The published root the consumer reads live already carries sequence 5, so
     // the floor is 5. A fresh snapshot would emit sequence 1, which does not
@@ -904,7 +1077,7 @@ fn fresh_construction_forgery_is_rejected_by_the_floor() {
 /// recovers it from the wire so it stands in for a snapshot loaded from a stale
 /// cache at sequence `n`.
 fn recovered_at_sequence(n: u64) -> Snapshot {
-    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let table = UsageTable::new(batch_id(), 20, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     let mut plan = None;
     for _ in 0..n {
@@ -959,7 +1132,7 @@ fn persist_above_the_floor_succeeds() {
 /// is 1 and `1 > 0`.
 #[test]
 fn none_floor_admits_the_first_persist() {
-    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let table = UsageTable::new(batch_id(), 20, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -973,7 +1146,7 @@ fn none_floor_admits_the_first_persist() {
 /// live root chunk, the only sanctioned source of the floor value.
 #[test]
 fn published_sequence_reads_from_a_parsed_root() {
-    let table = UsageTable::new(batch_id(), 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let table = UsageTable::new(batch_id(), 20, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     // Publish twice so the live root carries sequence 2.
     snapshot

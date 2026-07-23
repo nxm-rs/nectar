@@ -16,12 +16,17 @@
 use alloy_primitives::Address;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_usage::{
-    BatchId, Mutability, PublishedSequence, SealError, Snapshot, UsageTable, seal_plan,
-    usage_chunk_address,
+    BatchId, BucketDepth, Mutability, PublishedSequence, SealError, Snapshot, UsageTable,
+    seal_plan, usage_chunk_address,
 };
 use nectar_primitives::ChunkOps;
 
 const BUCKET_DEPTH: u8 = 16;
+
+/// The mainnet bucket depth of every table below, proof-carrying.
+fn bucket_depth() -> BucketDepth {
+    BucketDepth::new(BUCKET_DEPTH).unwrap()
+}
 
 fn seeded_snapshot(owner: Address, batch_id: BatchId) -> Snapshot {
     // Seed one stamp in bucket 123 via the inert constructor; the table itself
@@ -29,7 +34,8 @@ fn seeded_snapshot(owner: Address, batch_id: BatchId) -> Snapshot {
     let mut counts = vec![0u32; 1usize << BUCKET_DEPTH];
     counts[123] = 1;
     let table =
-        UsageTable::from_counts(batch_id, 20, BUCKET_DEPTH, counts, Mutability::Immutable).unwrap();
+        UsageTable::from_counts(batch_id, 20, bucket_depth(), counts, Mutability::Immutable)
+            .unwrap();
     let mut snapshot = Snapshot::new(table);
     let _ = snapshot
         .revalidate(PublishedSequence::NONE)

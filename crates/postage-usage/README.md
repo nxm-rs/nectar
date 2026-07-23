@@ -84,7 +84,7 @@ With `w > 0`, each leaf holds `B = floor(32768 / w)` buckets' deltas, MSB-first 
 
 A complete root payload, byte for byte, so the record structure can be reasoned about. This exact vector is pinned by `tests/vector.rs`, so the documentation cannot drift from the implementation.
 
-Scenario: batch id `0x42` repeated, owner `0x11` repeated, depth 12, bucket depth 8 (256 buckets of 16 slots). Counters follow the pattern `count(b) = 3 + (b mod 4)`, except bucket 200 (0xc8) which is completely full at 16. Persisting allocates the snapshot's own root chunk a slot: its address hashes into bucket 41 (0x29), bumping that counter from 4 to 5 and `total_issued` to 1166.
+Scenario: batch id `0x42` repeated, owner `0x11` repeated, depth 12, bucket depth 8 (256 buckets of 16 slots). The format supports bucket depths 1 to 16; which of them a batch may declare is the network's own floor (`SwarmSpec::MIN_BUCKET_DEPTH`, 16 on mainnet), so this small geometry belongs to a deployment with a lower floor and the vector is pinned for one. Counters follow the pattern `count(b) = 3 + (b mod 4)`, except bucket 200 (0xc8) which is completely full at 16. Persisting allocates the snapshot's own root chunk a slot: its address hashes into bucket 41 (0x29), bumping that counter from 4 to 5 and `total_issued` to 1166.
 
 The encoder picks `base = 3` and `w = 2` (deltas 0..=3 cover every bucket except the hot one, which becomes the single exception: 1 exception at 8 bytes beats widening 256 buckets to 4 bits). The packed table is 64 bytes and fits inline, so the whole snapshot is one 142-byte chunk:
 

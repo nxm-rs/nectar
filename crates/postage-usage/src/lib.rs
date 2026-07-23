@@ -27,7 +27,8 @@
 //! ```
 //! use alloy_primitives::{Address, B256};
 //! use nectar_postage_usage::{
-//!     BatchId, Mutability, PublishedSequence, RootInfo, Snapshot, ChunkAddress, UsageTable,
+//!     BatchId, BucketDepth, ChunkAddress, Mutability, PublishedSequence, RootInfo, Snapshot,
+//!     UsageTable,
 //! };
 //!
 //! let batch_id = BatchId::new([0x42; 32]);
@@ -35,7 +36,8 @@
 //!
 //! // Issue a stamp for an uploaded chunk through the snapshot's issuing handle,
 //! // then plan a persist.
-//! let table = UsageTable::new(batch_id, 20, 16, Mutability::Immutable).unwrap();
+//! let table =
+//!     UsageTable::new(batch_id, 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
 //! let mut snapshot = Snapshot::new(table);
 //! let address = ChunkAddress::from(B256::repeat_byte(0x99));
 //! snapshot.issuer(owner).record_address(&address).unwrap();
@@ -54,6 +56,21 @@
 //! let recovered = root.assemble(&leaves).unwrap();
 //! assert_eq!(recovered, snapshot);
 //! ```
+//!
+//! # Networks
+//!
+//! A snapshot is parameterized by the [`SwarmSpec`] of the batch it describes,
+//! and carries it in the [`BucketDepth`] its table was built from. The generic
+//! type takes the `...For` name ([`UsageTableFor`], [`SnapshotFor`],
+//! [`RootInfoFor`] and friends) and the bare name is the mainnet alias, so
+//! ordinary call sites need no type annotation. The floor is load-bearing on
+//! the wire too: [`RootInfo::parse`] rebuilds the bucket depth for the network
+//! asked of it, so a root whose geometry that network would never issue is
+//! refused as corrupt.
+//!
+//! The snapshot format supports bucket depths 1 to 16 and mainnet's floor is
+//! 16, so a mainnet snapshot always has exactly 2^16 buckets; the smaller
+//! geometries belong to deployments with a lower floor.
 //!
 //! # Recovery
 //!
@@ -124,23 +141,24 @@ mod issuer;
 #[cfg(feature = "seal")]
 mod seal;
 
-pub use codec::RootInfo;
+pub use codec::{RootInfo, RootInfoFor};
 pub use error::UsageError;
 pub use snapshot::{
-    Issuer, PersistPlan, PlannedChunk, PublishedSequence, Snapshot, SnapshotParts, Validated,
+    Issuer, IssuerFor, PersistPlan, PlannedChunk, PublishedSequence, Snapshot, SnapshotFor,
+    SnapshotParts, SnapshotPartsFor, Validated, ValidatedFor,
 };
-pub use table::{Mutability, TableView, UsageTable};
+pub use table::{Mutability, TableView, TableViewFor, UsageTable, UsageTableFor};
 
 #[cfg(feature = "issuer")]
-pub use issuer::SnapshotIssuer;
+pub use issuer::{SnapshotIssuer, SnapshotIssuerFor};
 
 #[cfg(feature = "seal")]
 pub use seal::{SealError, SealedChunk, seal_plan};
 
 #[cfg(feature = "client")]
-pub use client::{BatchStamper, ClientError, SnapshotSink, SnapshotSource};
+pub use client::{BatchStamper, BatchStamperFor, ClientError, SnapshotSink, SnapshotSource};
 
-pub use nectar_primitives::{ChunkAddress, SocId};
+pub use nectar_primitives::{ChunkAddress, Mainnet, NetworkId, SocId, SwarmSpec, Testnet};
 
 /// Postage types re-exported so a downstream caller naming
 /// [`PlannedChunk::stamp_index`] or calling [`UsageTable::from_batch`] does not

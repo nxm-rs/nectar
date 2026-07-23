@@ -113,7 +113,9 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
 #[repr(transparent)]
 pub struct BucketDepth<S: SwarmSpec = Mainnet> {
     depth: u8,
-    spec: PhantomData<S>,
+    // `fn() -> S` rather than `S`: the tag carries no data, so the depth (and
+    // everything holding one) is `Send`/`Sync` whatever the spec marker is.
+    spec: PhantomData<fn() -> S>,
 }
 
 impl<S: SwarmSpec> BucketDepth<S> {
@@ -273,7 +275,7 @@ impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BucketDepth<S> {
 }
 
 /// Parameters for creating a new batch on the network `S`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(bound(serialize = "", deserialize = "")))]
 pub struct BatchParams<S: SwarmSpec = Mainnet> {
@@ -292,6 +294,34 @@ pub struct BatchParams<S: SwarmSpec = Mainnet> {
     /// Initial amount to fund the batch.
     pub amount: u128,
 }
+
+// As for [`BucketDepth`] above: the spec is a type-level tag, so `Clone` and
+// equality carry no bound on `S` beyond `SwarmSpec`. Only `Debug` is derived,
+// following the marker's own.
+
+impl<S: SwarmSpec> Clone for BatchParams<S> {
+    fn clone(&self) -> Self {
+        Self {
+            owner: self.owner,
+            depth: self.depth,
+            bucket_depth: self.bucket_depth,
+            immutable: self.immutable,
+            amount: self.amount,
+        }
+    }
+}
+
+impl<S: SwarmSpec> PartialEq for BatchParams<S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.owner == other.owner
+            && self.depth == other.depth
+            && self.bucket_depth == other.bucket_depth
+            && self.immutable == other.immutable
+            && self.amount == other.amount
+    }
+}
+
+impl<S: SwarmSpec> Eq for BatchParams<S> {}
 
 impl<S: SwarmSpec> BatchParams<S> {
     /// Creates new batch parameters.
@@ -355,7 +385,7 @@ const fn validate_depth<S: SwarmSpec>(
 ///
 /// The network is a type parameter, defaulting to [`Mainnet`], and reaches the
 /// batch through its [`BucketDepth`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(bound(serialize = "", deserialize = "")))]
 pub struct Batch<S: SwarmSpec = Mainnet> {
@@ -378,6 +408,34 @@ pub struct Batch<S: SwarmSpec = Mainnet> {
     /// bucket index with a later timestamp, replacing the previous chunk.
     immutable: bool,
 }
+
+impl<S: SwarmSpec> Clone for Batch<S> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            value: self.value,
+            start: self.start,
+            owner: self.owner,
+            depth: self.depth,
+            bucket_depth: self.bucket_depth,
+            immutable: self.immutable,
+        }
+    }
+}
+
+impl<S: SwarmSpec> PartialEq for Batch<S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.value == other.value
+            && self.start == other.start
+            && self.owner == other.owner
+            && self.depth == other.depth
+            && self.bucket_depth == other.bucket_depth
+            && self.immutable == other.immutable
+    }
+}
+
+impl<S: SwarmSpec> Eq for Batch<S> {}
 
 impl<S: SwarmSpec> Batch<S> {
     /// Creates a new batch with the given parameters.

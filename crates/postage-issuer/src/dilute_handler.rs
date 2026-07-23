@@ -16,17 +16,21 @@
 use std::collections::HashMap;
 
 use crate::error::IssuerError;
-use crate::issuer::MemoryIssuer;
-use crate::sharded::ShardedIssuer;
+use crate::issuer::MemoryIssuerFor;
+use crate::sharded::ShardedIssuerFor;
 use nectar_postage::{BatchEvent, BatchEventHandler, BatchId};
+use nectar_primitives::SwarmSpec;
 
 /// An issuer whose per-bucket capacity can be grown by an on-chain dilution.
 ///
 /// This is the minimal surface the [`IssuerRegistry`] needs to drive a
 /// [`BatchEvent::DepthIncrease`] through to the right issuer. It is implemented
-/// for the fill-only issuers in this crate ([`MemoryIssuer`] and
-/// [`ShardedIssuer`]); a self-hosting ring issuer dilutes through its snapshot
+/// for the fill-only issuers in this crate ([`MemoryIssuerFor`] and
+/// [`ShardedIssuerFor`]); a self-hosting ring issuer dilutes through its snapshot
 /// in `nectar-postage-usage` and is not registered here.
+///
+/// The trait is spec-agnostic: it only reads scalar geometry, so one registry
+/// can hold issuers for different networks behind `dyn Dilutable`.
 pub trait Dilutable {
     /// Returns the batch ID this issuer issues stamps for.
     fn batch_id(&self) -> BatchId;
@@ -47,7 +51,7 @@ pub trait Dilutable {
     fn dilute(&mut self, new_depth: u8) -> Result<(), IssuerError>;
 }
 
-impl Dilutable for MemoryIssuer {
+impl<S: SwarmSpec> Dilutable for MemoryIssuerFor<S> {
     // The geometry accessors come from the StampIssuer trait, so they are named
     // explicitly to avoid resolving back into this Dilutable impl.
     fn batch_id(&self) -> BatchId {
@@ -67,7 +71,7 @@ impl Dilutable for MemoryIssuer {
     }
 }
 
-impl Dilutable for ShardedIssuer {
+impl<S: SwarmSpec> Dilutable for ShardedIssuerFor<S> {
     fn batch_id(&self) -> BatchId {
         Self::batch_id(self)
     }
@@ -170,6 +174,7 @@ impl BatchEventHandler for IssuerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MemoryIssuer, ShardedIssuer};
     use nectar_postage::BucketDepth;
 
     fn batch_id(byte: u8) -> BatchId {

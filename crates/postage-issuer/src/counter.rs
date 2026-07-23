@@ -31,6 +31,8 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use nectar_postage::BucketDepth;
+use nectar_primitives::{Mainnet, SwarmSpec};
 use thiserror::Error;
 
 /// Whether a [`CounterTable`] fills each bucket once or wraps it as a ring.
@@ -104,16 +106,39 @@ pub enum CounterError {
 /// answers whether a `(bucket, slot)` is protected, so a ring never re-emits a
 /// reserved slot. Fill mode ignores the predicate; nothing protects a fill
 /// watermark because it only ever moves forward.
-#[derive(Debug, Clone)]
-pub struct CounterTable {
+///
+/// The network is a type parameter and reaches the table through its
+/// [`BucketDepth`], so the bucket depth a table was built with is one the
+/// network accepts. [`CounterTable`] is the mainnet table.
+#[derive(Debug)]
+pub struct CounterTableFor<S: SwarmSpec = Mainnet> {
     depth: u8,
-    bucket_depth: u8,
+    bucket_depth: BucketDepth<S>,
     mode: CounterMode,
     counts: Vec<u32>,
     issued: u64,
 }
 
-impl PartialEq for CounterTable {
+/// The [`CounterTableFor`] of the mainnet spec.
+pub type CounterTable = CounterTableFor<Mainnet>;
+
+// The spec is a type-level tag, so the impls below carry no bound on `S` beyond
+// `SwarmSpec`; deriving would demand `S: Clone` and `S: Eq` of a marker type
+// that holds no data.
+
+impl<S: SwarmSpec> Clone for CounterTableFor<S> {
+    fn clone(&self) -> Self {
+        Self {
+            depth: self.depth,
+            bucket_depth: self.bucket_depth,
+            mode: self.mode,
+            counts: self.counts.clone(),
+            issued: self.issued,
+        }
+    }
+}
+
+impl<S: SwarmSpec> PartialEq for CounterTableFor<S> {
     fn eq(&self, other: &Self) -> bool {
         self.depth == other.depth
             && self.bucket_depth == other.bucket_depth
@@ -123,16 +148,16 @@ impl PartialEq for CounterTable {
     }
 }
 
-impl Eq for CounterTable {}
+impl<S: SwarmSpec> Eq for CounterTableFor<S> {}
 
-impl CounterTable {
+impl<S: SwarmSpec> CounterTableFor<S> {
     /// Creates an empty table for the given geometry and mode.
-    pub fn new(depth: u8, bucket_depth: u8, mode: CounterMode) -> Self {
+    pub fn new(depth: u8, bucket_depth: BucketDepth<S>, mode: CounterMode) -> Self {
         Self {
             depth,
             bucket_depth,
             mode,
-            counts: vec![0u32; 1usize << bucket_depth],
+            counts: vec![0u32; 1usize << bucket_depth.get()],
             issued: 0,
         }
     }
@@ -149,11 +174,11 @@ impl CounterTable {
     /// exceeds the bucket capacity.
     pub fn from_counts(
         depth: u8,
-        bucket_depth: u8,
+        bucket_depth: BucketDepth<S>,
         mode: CounterMode,
         counts: Vec<u32>,
     ) -> Result<Self, CounterError> {
-        let expected = 1usize << bucket_depth;
+        let expected = 1usize << bucket_depth.get();
         if counts.len() != expected {
             return Err(CounterError::CounterLength {
                 expected,
@@ -162,7 +187,7 @@ impl CounterTable {
         }
         // Batch geometry invariant: depth >= bucket_depth, enforced by callers.
         #[allow(clippy::arithmetic_side_effects)]
-        let capacity = 1u32 << (depth - bucket_depth);
+        let capacity = 1u32 << (depth - bucket_depth.get());
         let mut issued = 0u64;
         for (bucket, &count) in counts.iter().enumerate() {
             if count > capacity {
@@ -197,7 +222,7 @@ impl CounterTable {
     }
 
     /// Returns the bucket (uniformity) depth.
-    pub const fn bucket_depth(&self) -> u8 {
+    pub const fn bucket_depth(&self) -> BucketDepth<S> {
         self.bucket_depth
     }
 
@@ -208,14 +233,14 @@ impl CounterTable {
 
     /// Returns the number of collision buckets (`2^bucket_depth`).
     pub const fn bucket_count(&self) -> u32 {
-        1u32 << self.bucket_depth
+        1u32 << self.bucket_depth.get()
     }
 
     /// Returns the number of slots per bucket (`2^(depth - bucket_depth)`).
     // Batch geometry invariant: depth >= bucket_depth, enforced at construction.
     #[allow(clippy::arithmetic_side_effects)]
     pub const fn bucket_capacity(&self) -> u32 {
-        1u32 << (self.depth - self.bucket_depth)
+        1u32 << (self.depth - self.bucket_depth.get())
     }
 
     /// Returns the total batch capacity in slots (`2^depth`).
@@ -390,10 +415,15 @@ mod tests {
         false
     }
 
+    /// The mainnet bucket depth every fixture below is built at.
+    fn bucket_depth() -> BucketDepth {
+        BucketDepth::new(16).unwrap()
+    }
+
     #[test]
     fn fill_is_a_monotone_watermark_that_refuses_a_full_bucket() {
         // depth 17, bucket depth 16 gives 2 slots per bucket.
-        let mut table = CounterTable::new(17, 16, CounterMode::Fill);
+        let mut table = CounterTable::new(17, bucket_depth(), CounterMode::Fill);
         assert_eq!(table.record(5, never).unwrap(), 0);
         assert_eq!(table.record(5, never).unwrap(), 1);
         assert_eq!(
@@ -409,7 +439,7 @@ mod tests {
 
     #[test]
     fn ring_wraps_and_keeps_the_cursor_in_range() {
-        let mut table = CounterTable::new(17, 16, CounterMode::Ring);
+        let mut table = CounterTable::new(17, bucket_depth(), CounterMode::Ring);
         assert_eq!(table.record(5, never).unwrap(), 0);
         assert_eq!(table.record(5, never).unwrap(), 1);
         // The cursor sits at capacity, the deferred-wrap state.
@@ -422,7 +452,7 @@ mod tests {
     #[test]
     fn ring_skips_protected_slots() {
         // depth 18, bucket depth 16 gives 4 slots per bucket. Protect 1 and 3.
-        let mut table = CounterTable::new(18, 16, CounterMode::Ring);
+        let mut table = CounterTable::new(18, bucket_depth(), CounterMode::Ring);
         let protected = |slot: u32| slot == 1 || slot == 3;
         for _ in 0..20 {
             let slot = table.record(0, protected).unwrap();
@@ -432,7 +462,7 @@ mod tests {
 
     #[test]
     fn ring_exhausts_when_every_slot_is_protected() {
-        let mut table = CounterTable::new(17, 16, CounterMode::Ring);
+        let mut table = CounterTable::new(17, bucket_depth(), CounterMode::Ring);
         assert_eq!(
             table.record(0, |_| true),
             Err(CounterError::RingExhausted { bucket: 0 })
@@ -443,13 +473,14 @@ mod tests {
     fn from_counts_sums_and_rejects_overflow() {
         let mut counts = vec![0u32; 1usize << 16];
         counts[7] = 2;
-        let table = CounterTable::from_counts(17, 16, CounterMode::Fill, counts).unwrap();
+        let table =
+            CounterTable::from_counts(17, bucket_depth(), CounterMode::Fill, counts).unwrap();
         assert_eq!(table.total_issued(), 2);
 
         let mut over = vec![0u32; 1usize << 16];
         over[7] = 3;
         assert_eq!(
-            CounterTable::from_counts(17, 16, CounterMode::Fill, over),
+            CounterTable::from_counts(17, bucket_depth(), CounterMode::Fill, over),
             Err(CounterError::CounterOverflow {
                 bucket: 7,
                 count: 3,

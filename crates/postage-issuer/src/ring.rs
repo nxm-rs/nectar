@@ -33,10 +33,10 @@ use alloc::vec::Vec;
 use nectar_postage::{
     Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
 };
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
 use crate::StampIssuer;
-use crate::counter::{CounterError, CounterMode, CounterTable};
+use crate::counter::{CounterError, CounterMode, CounterTableFor};
 use crate::error::IssuerError;
 
 mod sealed {
@@ -134,13 +134,16 @@ impl Reservation for Reserved {
 /// Both constructors require a mutable batch. An immutable batch is refused
 /// with [`IssuerError::ImmutableNotSupported`]: immutable batches are fill-only
 /// and use [`MemoryIssuer`](crate::MemoryIssuer).
-#[derive(Debug, Clone)]
-pub struct RingIssuer<R = Unreserved> {
+///
+/// The network is the leading type parameter and reaches the ring through its
+/// [`BucketDepth`]; [`RingIssuer`] is the mainnet ring.
+#[derive(Debug)]
+pub struct RingIssuerFor<S: SwarmSpec = Mainnet, R = Unreserved> {
     /// The batch ID.
     batch_id: BatchId,
     /// The shared per-bucket ring cursors, in the `[0, capacity]` deferred-wrap
     /// representation. `counts[b] == capacity` means "wrap on the next write".
-    counters: CounterTable,
+    counters: CounterTableFor<S>,
     /// Whether each bucket has been written to capacity at least once.
     ///
     /// The wire representation defers each wrap, so once a bucket has wrapped its
@@ -158,7 +161,26 @@ pub struct RingIssuer<R = Unreserved> {
     reservation: R,
 }
 
-impl RingIssuer<Unreserved> {
+/// The [`RingIssuerFor`] of the mainnet spec.
+pub type RingIssuer<R = Unreserved> = RingIssuerFor<Mainnet, R>;
+
+// The spec is a type-level tag, so this carries no bound on `S` beyond
+// `SwarmSpec`; deriving would demand `S: Clone` of a marker type that holds no
+// data.
+impl<S: SwarmSpec, R: Clone> Clone for RingIssuerFor<S, R> {
+    fn clone(&self) -> Self {
+        Self {
+            batch_id: self.batch_id,
+            counters: self.counters.clone(),
+            saturated: self.saturated.clone(),
+            max_utilization: self.max_utilization,
+            stamps_issued: self.stamps_issued,
+            reservation: self.reservation.clone(),
+        }
+    }
+}
+
+impl<S: SwarmSpec> RingIssuerFor<S, Unreserved> {
     /// Builds an externally tracked ring for a mutable batch.
     ///
     /// The ring protects nothing: it wraps freely and may re-emit any slot. The
@@ -170,12 +192,12 @@ impl RingIssuer<Unreserved> {
     /// Returns [`IssuerError::ImmutableNotSupported`] if the batch is immutable;
     /// immutable batches are fill-only and use
     /// [`MemoryIssuer`](crate::MemoryIssuer).
-    pub fn external(batch: &Batch) -> Result<Self, IssuerError> {
+    pub fn external(batch: &Batch<S>) -> Result<Self, IssuerError> {
         Self::for_mutable_batch(batch, Unreserved)
     }
 }
 
-impl RingIssuer<Reserved> {
+impl<S: SwarmSpec> RingIssuerFor<S, Reserved> {
     /// Builds a self-hosting ring for a mutable batch with a set of protected
     /// slots.
     ///
@@ -189,16 +211,16 @@ impl RingIssuer<Reserved> {
     /// immutable batches are fill-only and use
     /// [`MemoryIssuer`](crate::MemoryIssuer).
     pub fn reserved(
-        batch: &Batch,
+        batch: &Batch<S>,
         slots: impl IntoIterator<Item = (u32, u32)>,
     ) -> Result<Self, IssuerError> {
         Self::for_mutable_batch(batch, Reserved::new(slots))
     }
 }
 
-impl<R: Reservation> RingIssuer<R> {
+impl<S: SwarmSpec, R: Reservation> RingIssuerFor<S, R> {
     /// Builds a ring for a mutable batch with the given reservation policy.
-    fn for_mutable_batch(batch: &Batch, reservation: R) -> Result<Self, IssuerError> {
+    fn for_mutable_batch(batch: &Batch<S>, reservation: R) -> Result<Self, IssuerError> {
         if batch.immutable() {
             return Err(IssuerError::ImmutableNotSupported);
         }
@@ -214,14 +236,13 @@ impl<R: Reservation> RingIssuer<R> {
     fn with_reservation(
         batch_id: BatchId,
         depth: u8,
-        bucket_depth: BucketDepth,
+        bucket_depth: BucketDepth<S>,
         reservation: R,
     ) -> Self {
-        let bucket_depth = bucket_depth.get();
-        let bucket_count = 1usize << bucket_depth;
+        let bucket_count = 1usize << bucket_depth.get();
         Self {
             batch_id,
-            counters: CounterTable::new(depth, bucket_depth, CounterMode::Ring),
+            counters: CounterTableFor::new(depth, bucket_depth, CounterMode::Ring),
             saturated: alloc::vec![false; bucket_count],
             max_utilization: 0,
             stamps_issued: 0,
@@ -295,7 +316,7 @@ impl<R: Reservation> RingIssuer<R> {
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, IssuerError> {
-        let bucket = calculate_bucket(address, self.counters.bucket_depth());
+        let bucket = calculate_bucket(address, self.counters.bucket_depth().get());
         let position = self.next_slot(bucket)?;
 
         // Monotone u64 issuance counter; one increment per stamp cannot
@@ -327,7 +348,7 @@ impl<R: Reservation> RingIssuer<R> {
     }
 }
 
-impl<R: Reservation> StampIssuer for RingIssuer<R> {
+impl<S: SwarmSpec, R: Reservation> StampIssuer for RingIssuerFor<S, R> {
     fn prepare_stamp(
         &mut self,
         address: &ChunkAddress,
@@ -360,7 +381,7 @@ impl<R: Reservation> StampIssuer for RingIssuer<R> {
     }
 
     fn bucket_depth(&self) -> u8 {
-        self.counters.bucket_depth()
+        self.counters.bucket_depth().get()
     }
 
     fn max_bucket_utilization(&self) -> u32 {

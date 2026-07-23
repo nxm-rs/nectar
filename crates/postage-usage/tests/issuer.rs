@@ -22,6 +22,11 @@ use nectar_primitives::ChunkAddress;
 
 const BUCKET_DEPTH: u8 = 16;
 
+/// The mainnet bucket depth of every table below, proof-carrying.
+fn bucket_depth() -> BucketDepth {
+    BucketDepth::new(BUCKET_DEPTH).unwrap()
+}
+
 const fn owner() -> Address {
     Address::repeat_byte(0x11)
 }
@@ -42,7 +47,7 @@ const fn content_address(bucket: u32, salt: u8) -> ChunkAddress {
 #[test]
 fn snapshot_issuer_issues_sequential_indices() {
     let batch_id = BatchId::new([0x42; 32]);
-    let table = UsageTable::new(batch_id, 18, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let table = UsageTable::new(batch_id, 18, bucket_depth(), Mutability::Immutable).unwrap();
     // A fresh, never-persisted snapshot reserves no slots, so issuance fills the
     // bucket from index zero just as a bare table once did.
     let snapshot = Snapshot::new(table);
@@ -78,7 +83,8 @@ fn shared_table_immutable_never_collides_with_reserved_slots() {
     let batch_id = BatchId::new([0x42; 32]);
     let counts = vec![5u32; 1usize << BUCKET_DEPTH];
     let table =
-        UsageTable::from_counts(batch_id, 24, BUCKET_DEPTH, counts, Mutability::Immutable).unwrap();
+        UsageTable::from_counts(batch_id, 24, bucket_depth(), counts, Mutability::Immutable)
+            .unwrap();
     let mut snapshot = Snapshot::new(table);
 
     // Persist once, recording the snapshot's own reserved slots.
@@ -109,7 +115,7 @@ fn shared_table_mutable_skips_reserved_across_wraps() {
     // Capacity 4 per bucket; fill near-full so the ring wraps almost at once.
     let counts = vec![2u32; 1usize << BUCKET_DEPTH];
     let table =
-        UsageTable::from_counts(batch_id, 18, BUCKET_DEPTH, counts, Mutability::Mutable).unwrap();
+        UsageTable::from_counts(batch_id, 18, bucket_depth(), counts, Mutability::Mutable).unwrap();
     assert!(table.is_mutable());
     let mut snapshot = Snapshot::new(table);
 
@@ -161,7 +167,7 @@ fn sole_issuance_path_cannot_evict_snapshot_slots() {
     // wraps the ring and would land on the reserved slot under a naive issuer.
     let counts = vec![3u32; 1usize << BUCKET_DEPTH];
     let table =
-        UsageTable::from_counts(batch_id, 18, BUCKET_DEPTH, counts, Mutability::Mutable).unwrap();
+        UsageTable::from_counts(batch_id, 18, bucket_depth(), counts, Mutability::Mutable).unwrap();
     assert!(table.is_mutable());
 
     // `SnapshotIssuer` is the only `StampIssuer` this crate exposes. Persist
@@ -218,9 +224,9 @@ fn shared_counter_table_backs_both_crates_identically() {
     let batch_id = BatchId::new([0x42; 32]);
     // A fresh, never-persisted snapshot reserves no slots, so its fill watermark
     // advances exactly like a bare MemoryIssuer.
-    let table = UsageTable::new(batch_id, 20, BUCKET_DEPTH, Mutability::Immutable).unwrap();
+    let table = UsageTable::new(batch_id, 20, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let mut memory = MemoryIssuer::new(batch_id, 20, BucketDepth::new(BUCKET_DEPTH).unwrap());
+    let mut memory = MemoryIssuer::new(batch_id, 20, bucket_depth());
 
     for bucket in [0x0001u32, 0x0001, 0xCBE5, 0x0001, 0xCBE5] {
         for salt in 0..3u8 {
@@ -250,7 +256,7 @@ fn snapshot_issuer_adapter_drives_a_batch_stamper_path() {
     let owner = signer.address();
     let batch_id = BatchId::new([0x77; 32]);
 
-    let table = UsageTable::new(batch_id, 20, BUCKET_DEPTH, Mutability::Mutable).unwrap();
+    let table = UsageTable::new(batch_id, 20, bucket_depth(), Mutability::Mutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     snapshot
         .revalidate(PublishedSequence::NONE)

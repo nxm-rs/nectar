@@ -1,15 +1,42 @@
 //! Batch factory traits for creating batches.
 
-use nectar_postage::{Batch, BatchId, BatchParams};
+use core::marker::PhantomData;
 
-/// The result of creating a batch.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CreateResult {
+use nectar_postage::{Batch, BatchId, BatchParams};
+use nectar_primitives::{Mainnet, SwarmSpec};
+
+/// The result of creating a batch on the network `S`.
+#[derive(Debug)]
+pub struct CreateResultFor<S: SwarmSpec = Mainnet> {
     /// The created batch.
-    pub batch: Batch,
+    pub batch: Batch<S>,
     /// The transaction hash (if created on-chain).
     pub tx_hash: Option<alloy_primitives::B256>,
 }
+
+/// The [`CreateResultFor`] of the mainnet spec.
+pub type CreateResult = CreateResultFor<Mainnet>;
+
+// The spec is a type-level tag, so the impls below carry no bound on `S` beyond
+// `SwarmSpec`; deriving would demand `S: Clone` and `S: Eq` of a marker type
+// that holds no data.
+
+impl<S: SwarmSpec> Clone for CreateResultFor<S> {
+    fn clone(&self) -> Self {
+        Self {
+            batch: self.batch.clone(),
+            tx_hash: self.tx_hash,
+        }
+    }
+}
+
+impl<S: SwarmSpec> PartialEq for CreateResultFor<S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.batch == other.batch && self.tx_hash == other.tx_hash
+    }
+}
+
+impl<S: SwarmSpec> Eq for CreateResultFor<S> {}
 
 /// A trait for creating postage batches.
 ///
@@ -18,6 +45,9 @@ pub struct CreateResult {
 pub trait BatchFactory {
     /// The error type returned by factory operations.
     type Error: std::error::Error;
+
+    /// The network the created batches belong to.
+    type Spec: SwarmSpec;
 
     /// Creates a new batch with the given parameters.
     ///
@@ -33,8 +63,8 @@ pub trait BatchFactory {
     /// A `CreateResult` containing the created batch and optional transaction hash.
     fn create(
         &self,
-        params: BatchParams,
-    ) -> impl std::future::Future<Output = Result<CreateResult, Self::Error>> + Send;
+        params: BatchParams<Self::Spec>,
+    ) -> impl std::future::Future<Output = Result<CreateResultFor<Self::Spec>, Self::Error>> + Send;
 
     /// Tops up a batch with additional funds.
     ///
@@ -72,20 +102,29 @@ pub trait BatchFactory {
 ///
 /// This implementation creates batches in memory without any blockchain
 /// interaction. Useful for unit tests and local development.
+///
+/// The network the batches are minted for is a type parameter;
+/// [`MemoryBatchFactory`] is the mainnet factory.
 #[derive(Debug)]
-pub struct MemoryBatchFactory {
+pub struct MemoryBatchFactoryFor<S: SwarmSpec = Mainnet> {
     /// Counter for generating unique batch IDs.
     next_id: std::sync::atomic::AtomicU64,
     /// The current block number (for start block).
     current_block: u64,
+    /// The network the minted batches belong to.
+    spec: PhantomData<fn() -> S>,
 }
 
-impl MemoryBatchFactory {
+/// The [`MemoryBatchFactoryFor`] of the mainnet spec.
+pub type MemoryBatchFactory = MemoryBatchFactoryFor<Mainnet>;
+
+impl<S: SwarmSpec> MemoryBatchFactoryFor<S> {
     /// Creates a new memory batch factory.
     pub const fn new(current_block: u64) -> Self {
         Self {
             next_id: std::sync::atomic::AtomicU64::new(0),
             current_block,
+            spec: PhantomData,
         }
     }
 
@@ -104,16 +143,17 @@ impl MemoryBatchFactory {
     }
 }
 
-impl Default for MemoryBatchFactory {
+impl<S: SwarmSpec> Default for MemoryBatchFactoryFor<S> {
     fn default() -> Self {
         Self::new(0)
     }
 }
 
-impl BatchFactory for MemoryBatchFactory {
+impl<S: SwarmSpec> BatchFactory for MemoryBatchFactoryFor<S> {
     type Error = std::convert::Infallible;
+    type Spec = S;
 
-    async fn create(&self, params: BatchParams) -> Result<CreateResult, Self::Error> {
+    async fn create(&self, params: BatchParams<S>) -> Result<CreateResultFor<S>, Self::Error> {
         let batch_id = self.generate_batch_id();
 
         let batch = Batch::new(
@@ -126,7 +166,7 @@ impl BatchFactory for MemoryBatchFactory {
             params.immutable,
         );
 
-        Ok(CreateResult {
+        Ok(CreateResultFor {
             batch,
             tx_hash: None,
         })

@@ -1,11 +1,11 @@
 //! Stamp issuer trait for tracking bucket utilization.
 
-use crate::counter::{CounterMode, CounterTable};
+use crate::counter::{CounterMode, CounterTableFor};
 use crate::error::IssuerError;
 use nectar_postage::{
     Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
 };
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
 /// A trait for managing stamp issuance within a batch.
 ///
@@ -145,21 +145,39 @@ pub trait StampIssuer {
 /// issuance is intentionally absent from this crate; it requires reserved-slot
 /// awareness that lives in `nectar-postage-usage`. See the crate-root
 /// documentation for the steer toward `Snapshot::issuer` / `SnapshotIssuer`.
-#[derive(Debug, Clone)]
-pub struct MemoryIssuer {
+///
+/// The network is a type parameter and reaches the issuer through its
+/// [`BucketDepth`]; [`MemoryIssuer`] is the mainnet issuer.
+#[derive(Debug)]
+pub struct MemoryIssuerFor<S: SwarmSpec = Mainnet> {
     /// The batch ID.
     batch_id: BatchId,
     /// The shared per-bucket fill watermarks. `counts[b]` is the next unused
     /// slot, monotone and never above the capacity.
-    counters: CounterTable,
+    counters: CounterTableFor<S>,
 }
 
-impl MemoryIssuer {
+/// The [`MemoryIssuerFor`] of the mainnet spec.
+pub type MemoryIssuer = MemoryIssuerFor<Mainnet>;
+
+// The spec is a type-level tag, so this carries no bound on `S` beyond
+// `SwarmSpec`; deriving would demand `S: Clone` of a marker type that holds no
+// data.
+impl<S: SwarmSpec> Clone for MemoryIssuerFor<S> {
+    fn clone(&self) -> Self {
+        Self {
+            batch_id: self.batch_id,
+            counters: self.counters.clone(),
+        }
+    }
+}
+
+impl<S: SwarmSpec> MemoryIssuerFor<S> {
     /// Creates a new fill-only memory issuer for the given batch geometry.
-    pub fn new(batch_id: BatchId, depth: u8, bucket_depth: BucketDepth) -> Self {
+    pub fn new(batch_id: BatchId, depth: u8, bucket_depth: BucketDepth<S>) -> Self {
         Self {
             batch_id,
-            counters: CounterTable::new(depth, bucket_depth.get(), CounterMode::Fill),
+            counters: CounterTableFor::new(depth, bucket_depth, CounterMode::Fill),
         }
     }
 
@@ -194,7 +212,7 @@ impl MemoryIssuer {
     /// [`RingIssuer::external`](crate::RingIssuer::external) for external
     /// tracking, or [`RingIssuer::reserved`](crate::RingIssuer::reserved) for
     /// self-hosting, where the protected slots come from `nectar-postage-usage`.
-    pub fn from_batch(batch: &Batch) -> Result<Self, IssuerError> {
+    pub fn from_batch(batch: &Batch<S>) -> Result<Self, IssuerError> {
         if batch.immutable() {
             Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))
         } else {
@@ -203,13 +221,13 @@ impl MemoryIssuer {
     }
 }
 
-impl StampIssuer for MemoryIssuer {
+impl<S: SwarmSpec> StampIssuer for MemoryIssuerFor<S> {
     fn prepare_stamp(
         &mut self,
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.counters.bucket_depth());
+        let bucket = calculate_bucket(address, self.counters.bucket_depth().get());
         // Fill mode ignores the predicate; a monotone watermark never lands on a
         // reserved slot.
         let position =
@@ -237,7 +255,7 @@ impl StampIssuer for MemoryIssuer {
     }
 
     fn bucket_depth(&self) -> u8 {
-        self.counters.bucket_depth()
+        self.counters.bucket_depth().get()
     }
 
     fn max_bucket_utilization(&self) -> u32 {
