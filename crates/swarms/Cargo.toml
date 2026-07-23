@@ -33,7 +33,7 @@ proptest-arbitrary-interop = { workspace = true }
 default = [ "std" ]
 std = [ "alloy-chains/std", "serde?/std", "strum/std" ]
 serde = [ "alloy-chains/serde", "dep:serde" ]
-arbitrary = [ "alloy-chains/arbitrary" ]
+arbitrary = [ "alloy-chains/arbitrary", "std" ]
 
 [package.metadata.docs.rs]
 all-features = true

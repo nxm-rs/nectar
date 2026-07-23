@@ -1,15 +1,15 @@
 //! Structured round-trip fuzz of the chunk wire codecs.
 //!
-//! Inputs are valid by construction: CACs via the raw `Arbitrary` impl
-//! (content addressing needs no signature), SOCs via `arbitrary_signed`
-//! with a signer whose key is drawn from the same input, so ownership
-//! recovery and `verify` succeed. The oracle is therefore stronger than
-//! "no panic": the wire encoding (`Bytes: From<chunk>`) must decode
-//! (`TryFrom<&[u8]>`), and the decoded chunk must reproduce the original's
-//! identity (address), payload (span/data), and, for SOCs, the signature and
-//! recovered owner. Any failure is a codec bug.
+//! Inputs come from `nectar_primitives::generators::any_chunk`, so they are
+//! valid by construction: CACs need no signature, SOCs are signed by a
+//! signer drawn from the same input, so ownership recovery and `verify`
+//! succeed. The oracle is therefore stronger than "no panic": the wire
+//! encoding (`Bytes: From<chunk>`) must decode (`TryFrom<&[u8]>`), and the
+//! decoded chunk must reproduce the original's identity (address), payload
+//! (span/data), and, for SOCs, the signature and recovered owner. Any
+//! failure is a codec bug.
 //!
-//! The raw SOC `Arbitrary` impl (unconstrained signature) is deliberately
+//! The raw `Arbitrary` impls (unconstrained SOC signature) are deliberately
 //! not used here; adversarial inputs belong to the decode targets.
 //!
 //! The same properties are pinned on stable by the `test_chunk_properties`
@@ -17,39 +17,19 @@
 
 #![no_main]
 
-use alloy_primitives::B256;
-use alloy_signer_local::PrivateKeySigner;
-use arbitrary::{Arbitrary, Unstructured};
+use arbitrary::Unstructured;
 use libfuzzer_sys::fuzz_target;
 use nectar_primitives::{
-    ChunkOps, ContentChunk, DEFAULT_BODY_SIZE, SingleOwnerChunk, bytes::Bytes,
+    AnyChunk, ChunkOps, ContentChunk, DEFAULT_BODY_SIZE, SingleOwnerChunk, bytes::Bytes, generators,
 };
 
-/// One structured input: either chunk kind, so a single corpus drives both
-/// codecs (the SOC arm pays an ECDSA sign per exec, the CAC arm stays cheap).
-#[derive(Debug)]
-enum ChunkInput {
-    Content(ContentChunk<DEFAULT_BODY_SIZE>),
-    SingleOwner(SingleOwnerChunk<DEFAULT_BODY_SIZE>),
-}
-
-impl<'a> Arbitrary<'a> for ChunkInput {
-    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        if u.arbitrary()? {
-            Ok(Self::Content(ContentChunk::arbitrary(u)?))
-        } else {
-            let signer = PrivateKeySigner::from_bytes(&B256::arbitrary(u)?)
-                .map_err(|_| arbitrary::Error::IncorrectFormat)?;
-            Ok(Self::SingleOwner(SingleOwnerChunk::arbitrary_signed(
-                u, &signer,
-            )?))
-        }
-    }
-}
-
-fuzz_target!(|input: ChunkInput| {
-    match input {
-        ChunkInput::Content(chunk) => {
+fuzz_target!(|data: &[u8]| {
+    let mut u = Unstructured::new(data);
+    let Ok(chunk) = generators::any_chunk::<DEFAULT_BODY_SIZE>(&mut u) else {
+        return;
+    };
+    match chunk {
+        AnyChunk::Content(chunk) => {
             let encoded: Bytes = chunk.clone().into();
             let decoded = ContentChunk::<DEFAULT_BODY_SIZE>::try_from(encoded.as_ref())
                 .expect("encoded content chunks must decode");
@@ -59,7 +39,7 @@ fuzz_target!(|input: ChunkInput| {
             assert_eq!(decoded.span(), chunk.span(), "span must round-trip");
             assert_eq!(decoded.data(), chunk.data(), "data must round-trip");
         }
-        ChunkInput::SingleOwner(chunk) => {
+        AnyChunk::SingleOwner(chunk) => {
             let encoded: Bytes = chunk.clone().into();
             let decoded = SingleOwnerChunk::<DEFAULT_BODY_SIZE>::try_from(encoded.as_ref())
                 .expect("encoded single-owner chunks must decode");
