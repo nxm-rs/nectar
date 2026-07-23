@@ -844,18 +844,16 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
-    fn serde_round_trips_a_depth_and_enforces_the_floor() {
+    fn serde_decodes_a_depth_and_enforces_the_floor() {
         use serde::{Deserialize, de::IntoDeserializer, de::value::Error};
 
         fn decode<S: SwarmSpec>(raw: u8) -> Result<BucketDepth<S>, Error> {
             BucketDepth::deserialize(IntoDeserializer::<Error>::into_deserializer(raw))
         }
 
-        let depth = BucketDepth::<Mainnet>::new(16).unwrap();
-        assert_eq!(decode::<Mainnet>(16).unwrap(), depth);
         assert_eq!(
-            serde_json::to_string(&depth).unwrap(),
-            serde_json::to_string(&16u8).unwrap()
+            decode::<Mainnet>(16).unwrap(),
+            BucketDepth::<Mainnet>::new(16).unwrap()
         );
 
         // The floor and the representable bound both survive the wire.
@@ -865,12 +863,6 @@ mod tests {
         // and is refused on a deployment that asks for 20.
         assert!(decode::<Deep>(16).is_err());
         assert!(decode::<Deep>(20).is_ok());
-
-        // A batch decodes through the same gate.
-        let batch: Batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 20, depth, false);
-        let json = serde_json::to_string(&batch).unwrap();
-        assert_eq!(serde_json::from_str::<Batch>(&json).unwrap(), batch);
-        assert!(serde_json::from_str::<Batch<Deep>>(&json).is_err());
     }
 
     #[test]

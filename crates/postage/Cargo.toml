@@ -44,7 +44,6 @@ alloy-signer-local = { workspace = true }
 alloy-primitives = { workspace = true, features = ["getrandom", "arbitrary"] }
 arbitrary = { workspace = true, features = ["derive"] }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
-serde_json = { workspace = true, features = ["std"] }
 
 [[bench]]
 name = "verify"
