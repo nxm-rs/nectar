@@ -488,4 +488,179 @@ mod tests {
             })
         );
     }
+
+    mod proptests {
+        use alloc::collections::BTreeMap;
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            /// Fill mode is a conserved watermark: slots come out as `0..capacity`
+            /// exactly once per bucket, refusal happens exactly at capacity, and
+            /// the issued total equals the counter sum.
+            #[test]
+            fn fill_sequence_is_a_conserved_watermark(
+                bucket_depth in 16u8..=18,
+                excess in 0u8..=6,
+                ops in proptest::collection::vec(0u32..8, 1..200),
+            ) {
+                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let mut table =
+                    CounterTable::new(bucket_depth.get() + excess, bucket_depth, CounterMode::Fill);
+                let capacity = table.bucket_capacity();
+                let mut marks = BTreeMap::<u32, u32>::new();
+                let mut successes = 0u64;
+                for &bucket in &ops {
+                    let mark = marks.entry(bucket).or_insert(0);
+                    match table.record(bucket, never) {
+                        Ok(slot) => {
+                            prop_assert!(*mark < capacity);
+                            prop_assert_eq!(slot, *mark);
+                            *mark += 1;
+                            successes += 1;
+                        }
+                        Err(err) => {
+                            prop_assert_eq!(*mark, capacity);
+                            prop_assert_eq!(err, CounterError::BucketFull { bucket, capacity });
+                        }
+                    }
+                    prop_assert_eq!(table.count(bucket), Ok(*mark));
+                    prop_assert_eq!(table.has_capacity(bucket), Ok(*mark < capacity));
+                }
+                prop_assert_eq!(table.total_issued(), successes);
+                let sum: u64 = table.counts().iter().copied().map(u64::from).sum();
+                prop_assert_eq!(table.total_issued(), sum);
+            }
+
+            /// Ring advance is the cyclic scan for the first unprotected slot
+            /// from the deferred-wrap cursor, exhausting iff every slot is
+            /// protected, with `issued == sum(counts)` throughout.
+            #[test]
+            fn ring_sequence_matches_a_cyclic_scan(
+                bucket_depth in 16u8..=18,
+                excess in 0u8..=4,
+                masks in proptest::array::uniform4(proptest::num::u16::ANY),
+                ops in proptest::collection::vec(0usize..4, 1..200),
+            ) {
+                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let mut table =
+                    CounterTable::new(bucket_depth.get() + excess, bucket_depth, CounterMode::Ring);
+                let capacity = table.bucket_capacity();
+                let mut cursors = [0u32; 4];
+                for &idx in &ops {
+                    let bucket = u32::try_from(idx).unwrap();
+                    let mask = masks[idx];
+                    let protected = |slot: u32| (mask & (1u16 << slot)) != 0;
+                    let start = if cursors[idx] >= capacity { 0 } else { cursors[idx] };
+                    let expected = (0..capacity)
+                        .map(|step| (start + step) % capacity)
+                        .find(|&slot| !protected(slot));
+                    match expected {
+                        Some(want) => {
+                            prop_assert_eq!(table.record(bucket, protected), Ok(want));
+                            cursors[idx] = want + 1;
+                        }
+                        None => {
+                            prop_assert_eq!(
+                                table.record(bucket, protected),
+                                Err(CounterError::RingExhausted { bucket })
+                            );
+                        }
+                    }
+                    prop_assert_eq!(table.count(bucket), Ok(cursors[idx]));
+                    prop_assert!(cursors[idx] <= capacity);
+                }
+                let sum: u64 = table.counts().iter().copied().map(u64::from).sum();
+                prop_assert_eq!(table.total_issued(), sum);
+            }
+
+            /// A counts snapshot restores to an equal table that replays any
+            /// continuation identically in both modes.
+            #[test]
+            fn snapshot_restores_and_replays_identically(
+                ring in any::<bool>(),
+                bucket_depth in 16u8..=18,
+                excess in 0u8..=4,
+                prefix in proptest::collection::vec(0u32..8, 0..120),
+                suffix in proptest::collection::vec(0u32..8, 0..120),
+            ) {
+                let mode = if ring { CounterMode::Ring } else { CounterMode::Fill };
+                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let depth = bucket_depth.get() + excess;
+                let mut live = CounterTable::new(depth, bucket_depth, mode);
+                for &bucket in &prefix {
+                    let _ = live.record(bucket, never);
+                }
+                let mut restored =
+                    CounterTable::from_counts(depth, bucket_depth, mode, live.counts().to_vec())
+                        .unwrap();
+                prop_assert_eq!(&restored, &live);
+                for &bucket in &suffix {
+                    prop_assert_eq!(restored.record(bucket, never), live.record(bucket, never));
+                }
+                prop_assert_eq!(&restored, &live);
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            /// The capacity boundary holds at every depth excess up to the full
+            /// `u32` slot range: acceptance at the capacity, rejection one past
+            /// it, fill refusal exactly at it, and the deferred wrap back to
+            /// slot zero.
+            #[test]
+            fn capacity_boundary_holds_at_depth_extremes(excess in 0u8..=31) {
+                let depth = 16 + excess;
+                let capacity = 1u32 << excess;
+                let mut counts = vec![0u32; 1usize << 16];
+                counts[0] = capacity - 1;
+                counts[1] = capacity;
+
+                let mut fill =
+                    CounterTable::from_counts(depth, bucket_depth(), CounterMode::Fill, counts.clone())
+                        .unwrap();
+                prop_assert_eq!(fill.bucket_capacity(), capacity);
+                prop_assert_eq!(
+                    fill.total_issued(),
+                    u64::from(capacity - 1) + u64::from(capacity)
+                );
+                prop_assert_eq!(fill.record(0, never), Ok(capacity - 1));
+                prop_assert_eq!(
+                    fill.record(0, never),
+                    Err(CounterError::BucketFull { bucket: 0, capacity })
+                );
+                prop_assert_eq!(
+                    fill.record(1, never),
+                    Err(CounterError::BucketFull { bucket: 1, capacity })
+                );
+
+                let mut over = counts.clone();
+                over[2] = capacity + 1;
+                prop_assert_eq!(
+                    CounterTable::from_counts(depth, bucket_depth(), CounterMode::Fill, over),
+                    Err(CounterError::CounterOverflow {
+                        bucket: 2,
+                        count: capacity + 1,
+                        capacity
+                    })
+                );
+
+                let mut ring =
+                    CounterTable::from_counts(depth, bucket_depth(), CounterMode::Ring, counts)
+                        .unwrap();
+                prop_assert_eq!(ring.has_capacity(1), Ok(false));
+                prop_assert_eq!(ring.record(1, never), Ok(0));
+                prop_assert_eq!(ring.count(1), Ok(1));
+                prop_assert_eq!(ring.record(0, never), Ok(capacity - 1));
+                prop_assert_eq!(ring.count(0), Ok(capacity));
+                prop_assert_eq!(ring.record(0, never), Ok(0));
+                prop_assert_eq!(ring.count(0), Ok(1));
+                prop_assert_eq!(ring.total_issued(), 2);
+            }
+        }
+    }
 }
