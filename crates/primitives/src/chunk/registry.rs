@@ -469,42 +469,8 @@ mod tests {
         assert!(ContentOnlyChunkSet::decode_wire(&address, wire).is_err());
     }
 
-    /// Mirrors the body of the `chunk_decode` fuzz target: run the input
-    /// through every decode entry point the fuzzer drives and force the lazy
-    /// address/owner computations. The fuzz oracle is "no panic"; `Err` is an
-    /// acceptable outcome for arbitrary bytes.
-    fn exercise_chunk_decode(data: &[u8]) -> Result<AnyChunk<DEFAULT_BODY_SIZE>> {
-        let bytes = Bytes::copy_from_slice(data);
-
-        // Address-mismatch arm: the zero address matches (almost) no input,
-        // so both trial parses and their address computations run to `Err`.
-        let _ =
-            AnyChunk::<DEFAULT_BODY_SIZE>::from_wire_bytes(&ChunkAddress::default(), bytes.clone());
-
-        let content = ContentChunk::<DEFAULT_BODY_SIZE>::try_from(data);
-        let soc = SingleOwnerChunk::<DEFAULT_BODY_SIZE>::try_from(data);
-        if let Ok(soc) = &soc {
-            // ECDSA public-key recovery over bytes 32..97 must not panic.
-            let _ = soc.owner();
-            let _ = soc.address();
-        }
-
-        // Ok arm: key the wire decoder by the address of whichever direct
-        // parse succeeded, CAC first (the same trial order the decoder uses).
-        let address = content
-            .ok()
-            .map(|c| *c.address())
-            .or_else(|| soc.ok().map(|s| *s.address()))
-            .ok_or_else(|| ChunkError::invalid_format("no structural parse"))?;
-        let result = AnyChunk::from_wire_bytes(&address, bytes);
-        if let Ok(chunk) = &result {
-            let _ = chunk.address();
-        }
-        result
-    }
-
-    /// Replay crafted edge inputs through the exact entry points the
-    /// `chunk_decode` fuzz target exercises: length boundaries around the
+    /// Replay crafted edge inputs through the shared `chunk_decode` oracle
+    /// the fuzz target of the same name drives: length boundaries around the
     /// 8-byte span, the 97-byte SOC id+signature header, and the maximum
     /// CAC/SOC encodings, in all-zero and all-0xff flavours.
     #[test]
@@ -524,12 +490,13 @@ mod tests {
             vec![0xff; 97 + 8 + DEFAULT_BODY_SIZE + 1], // one past max SOC
         ];
         for data in &edge_inputs {
-            let _ = exercise_chunk_decode(data);
+            let _ = crate::oracles::chunk_decode::<DEFAULT_BODY_SIZE>(data);
         }
     }
 
     /// Replay the committed seed corpus of the `chunk_decode` fuzz target
-    /// (`fuzz/seeds/chunk_decode/`). Seed intent is pinned by name:
+    /// (`fuzz/seeds/chunk_decode/`) through the shared oracle. Seed intent is
+    /// pinned by name:
     /// `valid-*` must deserialize `Ok` (and `valid-soc-*` must also decode as
     /// a SOC directly), `invalid-*` must stay `Err`. This keeps the fuzz
     /// seeds meaningful on stable without running the fuzzer itself.
@@ -545,7 +512,7 @@ mod tests {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             let data = std::fs::read(&path).unwrap();
 
-            let result = exercise_chunk_decode(&data);
+            let result = crate::oracles::chunk_decode::<DEFAULT_BODY_SIZE>(&data);
 
             if name.starts_with("valid-") {
                 assert!(result.is_ok(), "seed {name} must deserialize successfully");

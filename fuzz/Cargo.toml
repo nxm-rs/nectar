@@ -8,9 +8,6 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-# `default-features = false` matches the parent workspace; the crate is
-# already in the graph transitively, this only names it for `Address`.
-alloy-primitives = { version = "1.6", default-features = false }
 arbitrary = { version = "1", features = ["derive"] }
 # Chunk wire payloads are `Bytes`; the chunk targets build them from the
 # fuzzer's raw input.

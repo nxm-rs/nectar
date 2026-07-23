@@ -82,16 +82,19 @@ without nightly or libFuzzer:
 
 - `seed_replay_mantaray_node_decode` — `crates/mantaray/src/codec.rs`
 - `seed_replay_mantaray_view_differential` in `crates/mantaray/src/view.rs`
-- `seed_replay_chunk_decode` — `crates/primitives/src/chunk/chunk_type_set.rs`
+- `seed_replay_chunk_decode` in `crates/primitives/src/chunk/registry.rs`
 - `seed_replay_stamp_decode` — `crates/postage/src/stamp.rs`
 - `seed_replay_usage_snapshot_decode` — `crates/postage-usage/src/codec.rs`
 
-The round-trip invariants are pinned on stable by the `arbitrary_*` tests next
-to the replay tests (run with `--features arbitrary`) and the chunk proptests
-in `crates/primitives/src/chunk/{content,single_owner}.rs`. The corpus-seeded
+Both the fuzz targets and their stable pins call one shared oracle per
+invariant, hosted in each crate's `oracles` module, so the two rungs cannot
+drift. The round-trip invariants are pinned on stable by proptests next to
+the replay tests (bridged from the `Arbitrary` layer via
+`proptest-arbitrary-interop`) and the chunk proptests in
+`crates/primitives/src/chunk/{content,single_owner}.rs`. The corpus-seeded
 `mantaray_record_roundtrip` is additionally pinned by
 `seed_replay_mantaray_record_roundtrip` in `crates/mantaray/src/codec.rs`,
-which replays its seeds through the same fixed-point round trip.
+which replays its seeds through the same fixed-point oracle.
 
 ## Corpus & seed policy
 
