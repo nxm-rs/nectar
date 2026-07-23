@@ -7,20 +7,20 @@ use core::num::NonZeroU8;
 use alloy_primitives::Address;
 use nectar_postage_usage::{BatchId, BucketDepth, NetworkId, SwarmSpec};
 
-/// The bucket depth of every mainnet table below.
+/// The mainnet bucket depth these tests build tables at.
 pub(crate) const BUCKET_DEPTH: u8 = 16;
 
-/// The mainnet bucket depth of every table below, proof-carrying.
+/// [`BUCKET_DEPTH`] in the proof-carrying type.
 pub(crate) fn bucket_depth() -> BucketDepth {
     BucketDepth::new(BUCKET_DEPTH).unwrap()
 }
 
-/// The batch every table below belongs to.
+/// The batch these tests' tables belong to.
 pub(crate) const fn batch_id() -> BatchId {
     BatchId::new([0x42; 32])
 }
 
-/// The owner every table below is persisted by.
+/// The owner these tests' tables are persisted by.
 pub(crate) const fn owner() -> Address {
     Address::repeat_byte(0x11)
 }
