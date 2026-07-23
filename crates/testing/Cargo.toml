@@ -15,12 +15,17 @@ description = "Deterministic async test harness and shared fixtures for the nect
 publish = false
 
 [dependencies]
+allocation-counter = { workspace = true, optional = true }
 futures-executor.workspace = true
 nectar-file = { workspace = true, optional = true }
 nectar-postage = { workspace = true, optional = true }
 nectar-primitives = { workspace = true, optional = true }
 
 [features]
+# Allocation witness. Linking it swaps the global allocator of every target
+# in the enabling crate, so enable it per probe crate, never by default.
+alloc = [ "dep:allocation-counter" ]
+
 # Shared split fixtures and SwarmSpec doubles. Encrypted-mode splits ride the
 # mode-generic `split_into`; callers bring their own encryption features.
 fixtures = [ "dep:nectar-file", "dep:nectar-postage", "dep:nectar-primitives" ]

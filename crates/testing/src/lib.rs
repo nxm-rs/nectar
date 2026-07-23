@@ -37,11 +37,16 @@
 //! 7. Derive hygiene: crate-side impls are hand-written (the two-tier
 //!    pattern is semantic, not derivable); only the fuzz workspace pulls the
 //!    `arbitrary` derive, for its target-local input grammars.
-//! Behind `fixtures`: the shared split fixtures and spec doubles.
+//! Behind `fixtures`: the shared split fixtures and spec doubles. Behind
+//! `alloc`: the allocation witness.
 
 mod seeds;
 
 pub use seeds::SeedReplay;
+#[cfg(feature = "alloc")]
+mod alloc;
+#[cfg(feature = "alloc")]
+pub use alloc::*;
 #[cfg(feature = "fixtures")]
 mod fixtures;
 #[cfg(feature = "fixtures")]
