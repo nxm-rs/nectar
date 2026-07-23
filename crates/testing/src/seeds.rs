@@ -106,6 +106,12 @@ impl<'a> SeedReplay<'a> {
             for hook in &mut self.each {
                 hook(&name, &data);
             }
+            // Machine seeds from the nightly corpus refresh are hex-named;
+            // they run the target oracle above but carry no intent class.
+            if is_machine_name(&name) {
+                replayed += 1;
+                continue;
+            }
             let rule = self
                 .rules
                 .iter_mut()
@@ -139,6 +145,16 @@ impl<'a> SeedReplay<'a> {
         );
         replayed
     }
+}
+
+/// Whether `name` is a machine seed from the nightly corpus refresh: a bare
+/// sha1 hex stem, no curated prefix.
+fn is_machine_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    stem.len() == 40
+        && stem
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 #[cfg(test)]
@@ -203,6 +219,21 @@ mod tests {
             .floor(3)
             .run();
         assert_eq!((replayed, seen.get(), socs.get()), (3, 3, 1));
+    }
+
+    #[test]
+    fn machine_named_seeds_replay_without_a_class() {
+        let corpus = Corpus::new(&[
+            ("valid-a.bin", b"a" as &[u8]),
+            ("da39a3ee5e6b4b0d3255bfef95601890afd80709", b"m"),
+        ]);
+        let seen = Cell::new(0usize);
+        let n = SeedReplay::dir(&corpus.0)
+            .each(|_, _| seen.set(seen.get() + 1))
+            .covers("valid-")
+            .run();
+        assert_eq!(n, 2, "the machine seed counts toward the replayed total");
+        assert_eq!(seen.get(), 2, "the machine seed runs the oracle hook");
     }
 
     #[test]

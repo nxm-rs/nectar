@@ -532,7 +532,8 @@ mod tests {
     /// through the exact generator-plus-oracle pair the fuzzer drives: the
     /// seed bytes feed `generators::any_chunk` and the built chunk must pass
     /// the shared round-trip oracle. `soc-*` seeds must build a single-owner
-    /// chunk, so the signed path stays exercised on stable.
+    /// chunk and `cac-*` seeds a content chunk, so both arms stay exercised
+    /// on stable.
     #[test]
     fn seed_replay_chunk_roundtrip() {
         nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "chunk_roundtrip")
@@ -550,7 +551,21 @@ mod tests {
                     "seed {name} must round-trip the wire codec"
                 );
             })
-            .floor(1)
+            .on("cac-", |name, data| {
+                let mut u = arbitrary::Unstructured::new(data);
+                let chunk = crate::generators::any_chunk::<DEFAULT_BODY_SIZE>(&mut u)
+                    .unwrap_or_else(|e| panic!("seed {name} must build a chunk: {e}"));
+                assert!(
+                    matches!(chunk, AnyChunk::Content(_)),
+                    "seed {name} must build a content chunk"
+                );
+                assert_eq!(
+                    crate::oracles::any_chunk_round_trip(&chunk),
+                    Ok(()),
+                    "seed {name} must round-trip the wire codec"
+                );
+            })
+            .floor(2)
             .run();
     }
 }

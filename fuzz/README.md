@@ -116,7 +116,7 @@ the replay tests (bridged from the `Arbitrary` layer via
   `valid-` (the target's accept assertion must hold), `invalid-` (must stay
   rejected), `edge-` (no intent beyond the target oracle), `crash-`
   (minimized reproducer of a fixed bug, must stay rejected), each with a
-  size hint. A handful of legacy names outside this set (`soc-`, `prefix-`,
+  size hint. A handful of legacy names outside this set (`cac-`, `soc-`, `prefix-`,
   `root-`, `zero-`) predate the scheme and are classified explicitly by
   their replays; do not add more.
 - Nightly CI also commits its minimized corpus into `fuzz/seeds/<target>/` as
