@@ -82,6 +82,7 @@ pub trait BatchEventHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BucketDepth;
     use alloy_primitives::Address;
 
     #[test]
@@ -92,7 +93,7 @@ mod tests {
             100,
             Address::ZERO,
             20,
-            16,
+            BucketDepth::new(16).unwrap(),
             false,
         );
         let batch_id = batch.id();

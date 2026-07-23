@@ -33,15 +33,37 @@
 //!
 //! ```compile_fail
 //! use nectar_postage_issuer::{RingIssuer, Reserved, Unreserved};
-//! use nectar_postage::{Batch, BatchId};
+//! use nectar_postage::{Batch, BatchId, BucketDepth};
 //!
 //! fn self_hosting_sink(_ring: RingIssuer<Reserved>) {}
 //!
-//! let batch = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, 16, false);
+//! let bucket_depth = BucketDepth::new(16).unwrap();
+//! let batch = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, bucket_depth, false);
 //! let unreserved: RingIssuer<Unreserved> = RingIssuer::external(&batch).unwrap();
 //! // A reserved-blind ring is not a Reserved ring, and there is no conversion.
 //! self_hosting_sink(unreserved);
 //! ```
+//!
+//! # Networks
+//!
+//! An issuer is parameterized by the [`SwarmSpec`] its batch was built for, and
+//! carries it in the [`BucketDepth`] it is constructed from, so a depth the
+//! network refuses never reaches an issuer. The generic type takes the `...For`
+//! name ([`MemoryIssuerFor`], [`RingIssuerFor`], [`ShardedIssuerFor`],
+//! [`ShardedRingIssuerFor`], [`CounterTableFor`]) and the bare name is the
+//! mainnet alias, so ordinary call sites need no type annotation:
+//!
+//! ```
+//! use nectar_postage_issuer::{BatchId, BucketDepth, MemoryIssuer, MemoryIssuerFor, Testnet};
+//!
+//! let mainnet = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16)?);
+//! let testnet = MemoryIssuerFor::<Testnet>::new(BatchId::ZERO, 20, BucketDepth::new(16)?);
+//! # Ok::<(), nectar_postage_issuer::StampError>(())
+//! ```
+//!
+//! [`StampIssuer`], [`Stamper`] and [`Dilutable`] stay spec-agnostic: they only
+//! read scalar geometry, so a `dyn Dilutable` registry can hold issuers for
+//! different networks.
 //!
 //! # Features
 //!
@@ -52,12 +74,12 @@
 //! # Example
 //!
 //! ```ignore
-//! use nectar_postage_issuer::{BatchId, BatchStamper, MemoryIssuer, Stamper};
+//! use nectar_postage_issuer::{BatchId, BatchStamper, BucketDepth, MemoryIssuer, Stamper};
 //! use nectar_primitives::ChunkAddress;
 //! use alloy_signer_local::PrivateKeySigner;
 //!
 //! // Create an issuer for a batch
-//! let issuer = MemoryIssuer::new(BatchId::ZERO, 20, 16);
+//! let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 //!
 //! // Combine with any SignerSync implementation to create a stamper
 //! let signer = PrivateKeySigner::random();
@@ -97,28 +119,33 @@ mod stamper;
 // Re-export core types from nectar-postage (includes BatchEvent, BatchEventHandler)
 pub use nectar_postage::*;
 
+// The network specs the issuers are parameterized by.
+pub use nectar_primitives::{Mainnet, NetworkId, SwarmSpec, Testnet};
+
 // Errors (override nectar_postage::StampError with our own that includes signing)
 pub use error::{IssuerError, SigningError};
 
 // The shared per-bucket counter table behind every issuer and the snapshot.
-pub use counter::{CounterError, CounterMode, CounterTable};
+pub use counter::{CounterError, CounterMode, CounterTable, CounterTableFor};
 
 // Wiring on-chain depth-increase events through to issuer dilution (std only).
 #[cfg(feature = "std")]
 pub use dilute_handler::{Dilutable, IssuerRegistry};
 
 // Issuing
-pub use issuer::{MemoryIssuer, StampIssuer};
-pub use sharded::ShardedIssuer;
+pub use issuer::{MemoryIssuer, MemoryIssuerFor, StampIssuer};
+pub use sharded::{ShardedIssuer, ShardedIssuerFor};
 pub use stamper::{BatchStamper, Stamper};
 
 // Mutable (ring) issuing with a type-state reservation guard
-pub use ring::{Reservation, Reserved, RingIssuer, Unreserved};
-pub use sharded_ring::ShardedRingIssuer;
+pub use ring::{Reservation, Reserved, RingIssuer, RingIssuerFor, Unreserved};
+pub use sharded_ring::{ShardedRingIssuer, ShardedRingIssuerFor};
 
 // Factory (std only)
 #[cfg(feature = "std")]
-pub use factory::{BatchFactory, CreateResult, MemoryBatchFactory};
+pub use factory::{
+    BatchFactory, CreateResult, CreateResultFor, MemoryBatchFactory, MemoryBatchFactoryFor,
+};
 
 // Parallel signing (requires parallel feature)
 #[cfg(feature = "parallel")]

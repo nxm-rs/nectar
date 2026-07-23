@@ -9,6 +9,8 @@
 //! # Core Types
 //!
 //! - [`Batch`]: A postage batch representing prepaid storage
+//! - [`BucketDepth`]: A collision-bucket depth a network accepts, checked
+//!   against the [`SwarmSpec`](nectar_primitives::SwarmSpec) it is built for
 //! - [`Stamp`]: A postage stamp proving payment for chunk storage
 //! - [`StampIndex`]: The bucket and position index within a stamp
 //! - [`StampDigest`]: The data to be signed when creating a stamp
@@ -82,7 +84,7 @@ mod store;
 pub mod parallel;
 
 // Core types
-pub use batch::{Batch, BatchId, BatchParams};
+pub use batch::{Batch, BatchId, BatchParams, BucketDepth};
 pub use error::StampError;
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;

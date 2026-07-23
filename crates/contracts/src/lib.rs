@@ -149,6 +149,7 @@ sol! {
         function batchDepth(bytes32 batchId) external view returns (uint8);
         function batchBucketDepth(bytes32 batchId) external view returns (uint8);
         function remainingBalance(bytes32 batchId) external view returns (uint256);
+        function minimumBucketDepth() external view returns (uint8);
         function minimumInitialBalancePerChunk() external view returns (uint256);
         function batches(bytes32 batchId) external view returns (
             address owner,
@@ -476,6 +477,7 @@ mod tests {
         let _ = IPostageStamp::batchOwnerCall {
             batchId: [0u8; 32].into(),
         };
+        let _ = IPostageStamp::minimumBucketDepthCall {};
         let _ = IStakeRegistry::overlayOfAddressCall {
             owner: Address::ZERO,
         };

@@ -17,8 +17,10 @@
 
 use std::sync::Mutex;
 
-use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
-use nectar_primitives::ChunkAddress;
+use nectar_postage::{
+    Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
+};
+use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
 use crate::error::IssuerError;
 use crate::ring::{Reservation, Reserved, Unreserved};
@@ -145,14 +147,17 @@ fn alloc_zeroed_u32(count: usize) -> Vec<u32> {
 ///
 /// Both constructors require a mutable batch; an immutable batch is refused with
 /// [`IssuerError::ImmutableNotSupported`].
+///
+/// The network is the leading type parameter and reaches the ring through its
+/// [`BucketDepth`]; [`ShardedRingIssuer`] is the mainnet ring.
 #[derive(Debug)]
-pub struct ShardedRingIssuer<R = Unreserved> {
+pub struct ShardedRingIssuerFor<S: SwarmSpec = Mainnet, R = Unreserved> {
     /// The batch ID.
     batch_id: BatchId,
     /// The batch depth.
     depth: u8,
     /// The bucket depth.
-    bucket_depth: u8,
+    bucket_depth: BucketDepth<S>,
     /// The bucket capacity, `2^(depth - bucket_depth)`.
     bucket_capacity: u32,
     /// The shards, each owning a contiguous bucket range.
@@ -167,7 +172,10 @@ pub struct ShardedRingIssuer<R = Unreserved> {
     stamps_issued: Mutex<u64>,
 }
 
-impl ShardedRingIssuer<Unreserved> {
+/// The [`ShardedRingIssuerFor`] of the mainnet spec.
+pub type ShardedRingIssuer<R = Unreserved> = ShardedRingIssuerFor<Mainnet, R>;
+
+impl<S: SwarmSpec> ShardedRingIssuerFor<S, Unreserved> {
     /// Builds an externally tracked sharded ring for a mutable batch.
     ///
     /// The ring protects nothing. The caller tracks usage outside the batch.
@@ -175,12 +183,12 @@ impl ShardedRingIssuer<Unreserved> {
     /// # Errors
     ///
     /// Returns [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
-    pub fn external(batch: &Batch) -> Result<Self, IssuerError> {
+    pub fn external(batch: &Batch<S>) -> Result<Self, IssuerError> {
         Self::for_mutable_batch(batch, |_, _, _| Unreserved)
     }
 }
 
-impl ShardedRingIssuer<Reserved> {
+impl<S: SwarmSpec> ShardedRingIssuerFor<S, Reserved> {
     /// Builds a self-hosting sharded ring for a mutable batch with a set of
     /// protected slots.
     ///
@@ -192,7 +200,7 @@ impl ShardedRingIssuer<Reserved> {
     ///
     /// Returns [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
     pub fn reserved(
-        batch: &Batch,
+        batch: &Batch<S>,
         slots: impl IntoIterator<Item = (u32, u32)>,
     ) -> Result<Self, IssuerError> {
         let slots: Vec<(u32, u32)> = slots.into_iter().collect();
@@ -208,9 +216,9 @@ impl ShardedRingIssuer<Reserved> {
     }
 }
 
-impl<R: Reservation> ShardedRingIssuer<R> {
+impl<S: SwarmSpec, R: Reservation> ShardedRingIssuerFor<S, R> {
     fn for_mutable_batch(
-        batch: &Batch,
+        batch: &Batch<S>,
         make_reservation: impl Fn(u32, u32, usize) -> R,
     ) -> Result<Self, IssuerError> {
         if batch.immutable() {
@@ -235,7 +243,7 @@ impl<R: Reservation> ShardedRingIssuer<R> {
     fn with_shard_count(
         batch_id: BatchId,
         depth: u8,
-        bucket_depth: u8,
+        bucket_depth: BucketDepth<S>,
         shard_count: usize,
         make_reservation: impl Fn(u32, u32, usize) -> R,
     ) -> Self {
@@ -244,7 +252,7 @@ impl<R: Reservation> ShardedRingIssuer<R> {
             "shard_count must be a power of 2"
         );
 
-        let total_buckets = 1u32 << bucket_depth;
+        let total_buckets = 1u32 << bucket_depth.get();
         // `u32` always fits `usize` on the >=32-bit targets this crate supports.
         #[allow(clippy::as_conversions)]
         let shard_count = shard_count.min(total_buckets as usize);
@@ -253,10 +261,10 @@ impl<R: Reservation> ShardedRingIssuer<R> {
         #[allow(clippy::as_conversions)]
         let shard_count_u32 = shard_count as u32;
         let buckets_per_shard = total_buckets / shard_count_u32;
-        let bucket_capacity = 1u32 << (depth - bucket_depth);
+        let bucket_capacity = 1u32 << (depth - bucket_depth.get());
 
         let shard_bits = shard_count_u32.trailing_zeros();
-        let shard_shift = u32::from(bucket_depth) - shard_bits;
+        let shard_shift = u32::from(bucket_depth.get()) - shard_bits;
         let shard_mask = shard_count_u32 - 1;
 
         let shards: Vec<_> = (0..shard_count)
@@ -310,7 +318,7 @@ impl<R: Reservation> ShardedRingIssuer<R> {
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.bucket_depth);
+        let bucket = calculate_bucket(address, self.bucket_depth.get());
         // `shard_index` masks with `shard_mask = shards.len() - 1`, so the index
         // is always in range.
         #[allow(clippy::indexing_slicing)]
@@ -366,7 +374,7 @@ impl<R: Reservation> ShardedRingIssuer<R> {
 
     /// Returns the bucket depth.
     pub const fn bucket_depth(&self) -> u8 {
-        self.bucket_depth
+        self.bucket_depth.get()
     }
 
     /// Returns the bucket capacity, `2^(depth - bucket_depth)`.
@@ -438,7 +446,7 @@ mod tests {
             0,
             Default::default(),
             depth,
-            bucket_depth,
+            BucketDepth::new(bucket_depth).unwrap(),
             false,
         )
     }
@@ -450,7 +458,7 @@ mod tests {
             0,
             Default::default(),
             depth,
-            bucket_depth,
+            BucketDepth::new(bucket_depth).unwrap(),
             true,
         )
     }

@@ -21,7 +21,9 @@ use nectar_postage_usage::{
 };
 use nectar_primitives::ChunkOps;
 
-const BUCKET_DEPTH: u8 = 16;
+mod common;
+
+use common::{BUCKET_DEPTH, batch_id, bucket_depth};
 
 fn seeded_snapshot(owner: Address, batch_id: BatchId) -> Snapshot {
     // Seed one stamp in bucket 123 via the inert constructor; the table itself
@@ -29,7 +31,8 @@ fn seeded_snapshot(owner: Address, batch_id: BatchId) -> Snapshot {
     let mut counts = vec![0u32; 1usize << BUCKET_DEPTH];
     counts[123] = 1;
     let table =
-        UsageTable::from_counts(batch_id, 20, BUCKET_DEPTH, counts, Mutability::Immutable).unwrap();
+        UsageTable::from_counts(batch_id, 20, bucket_depth(), counts, Mutability::Immutable)
+            .unwrap();
     let mut snapshot = Snapshot::new(table);
     let _ = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -43,7 +46,7 @@ fn seeded_snapshot(owner: Address, batch_id: BatchId) -> Snapshot {
 fn sealed_chunks_and_stamps_verify() {
     let signer = PrivateKeySigner::random();
     let owner = signer.address();
-    let batch_id = BatchId::new([0x42; 32]);
+    let batch_id = batch_id();
 
     let mut snapshot = seeded_snapshot(owner, batch_id);
     let plan = snapshot
@@ -99,7 +102,7 @@ fn sealed_chunks_and_stamps_verify() {
 fn non_increasing_seal_timestamp_is_rejected() {
     let signer = PrivateKeySigner::random();
     let owner = signer.address();
-    let batch_id = BatchId::new([0x42; 32]);
+    let batch_id = batch_id();
 
     let mut snapshot = seeded_snapshot(owner, batch_id);
 

@@ -34,12 +34,12 @@ use alloy_primitives::Address;
 use alloy_signer::SignerSync;
 use bytes::Bytes;
 use nectar_postage::{Batch, BatchId, StampIndex};
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 use thiserror::Error;
 
-use crate::codec::RootInfo;
+use crate::codec::RootInfoFor;
 use crate::seal::{SealError, SealedChunk, seal_plan};
-use crate::snapshot::{PublishedSequence, Snapshot};
+use crate::snapshot::{PublishedSequence, SnapshotFor};
 use crate::{UsageError, usage_chunk_address};
 
 /// Reads a chunk's payload from the network by its single-owner-chunk address.
@@ -143,13 +143,13 @@ where
 /// chunk address is derived from it and the batch id, so a second machine
 /// holding only the same key and batch id recovers the same state.
 #[derive(Debug)]
-pub struct BatchStamper<Sg, Src, Snk> {
+pub struct BatchStamperFor<Sg, Src, Snk, S: SwarmSpec = Mainnet> {
     signer: Sg,
     owner: Address,
     batch_id: BatchId,
     source: Src,
     sink: Snk,
-    snapshot: Snapshot,
+    snapshot: SnapshotFor<S>,
     /// Whether a persist has been emitted in this session. A clean snapshot that
     /// has already persisted once this session makes [`flush`](Self::flush) a
     /// no-op; a clean but never-persisted snapshot still flushes once so a fresh
@@ -157,11 +157,15 @@ pub struct BatchStamper<Sg, Src, Snk> {
     persisted_this_session: bool,
 }
 
-impl<Sg, Src, Snk> BatchStamper<Sg, Src, Snk>
+/// The [`BatchStamperFor`] of the mainnet spec.
+pub type BatchStamper<Sg, Src, Snk> = BatchStamperFor<Sg, Src, Snk, Mainnet>;
+
+impl<Sg, Src, Snk, S> BatchStamperFor<Sg, Src, Snk, S>
 where
     Sg: SignerSync + alloy_signer::Signer,
     Src: SnapshotSource,
     Snk: SnapshotSink,
+    S: SwarmSpec,
 {
     /// Opens a stamper for `batch`, recovering published state or starting fresh.
     ///
@@ -181,7 +185,7 @@ where
     ///   a published root.
     pub async fn open(
         signer: Sg,
-        batch: &Batch,
+        batch: &Batch<S>,
         source: Src,
         sink: Snk,
     ) -> Result<Self, ClientError<Src::Error, Snk::Error>> {
@@ -198,7 +202,7 @@ where
                 // A published root exists: recover its sequence and slots. Every
                 // committed leaf must be present; a missing leaf is corruption,
                 // not a reason to start over.
-                let root = RootInfo::parse(&root_bytes)?;
+                let root = RootInfoFor::<S>::parse(&root_bytes)?;
                 let mut leaves: Vec<Bytes> = Vec::with_capacity(usize::from(root.leaf_count()));
                 for leaf in 0..root.leaf_count() {
                     // `leaf < leaf_count() <= u16::MAX`, so the increment
@@ -218,7 +222,7 @@ where
                 root.assemble(&leaves)?
             }
             // The network confirms no published root: a genuinely fresh batch.
-            None => Snapshot::from_batch(batch)?,
+            None => SnapshotFor::from_batch(batch)?,
         };
 
         Ok(Self {
@@ -275,7 +279,7 @@ where
             .await
             .map_err(ClientError::Source)?
         {
-            Some(root_bytes) => PublishedSequence::from(&RootInfo::parse(&root_bytes)?),
+            Some(root_bytes) => PublishedSequence::from(&RootInfoFor::<S>::parse(&root_bytes)?),
             // The network confirms no published root: the floor is NONE.
             None => PublishedSequence::NONE,
         };
@@ -309,7 +313,7 @@ where
     }
 
     /// Returns the wrapped snapshot.
-    pub const fn snapshot(&self) -> &Snapshot {
+    pub const fn snapshot(&self) -> &SnapshotFor<S> {
         &self.snapshot
     }
 
@@ -335,13 +339,14 @@ where
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use alloc::collections::BTreeMap;
+    use nectar_postage::BucketDepth;
     use std::sync::Mutex;
 
     use alloy_primitives::B256;
     use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
-    use crate::{Mutability, UsageTable};
+    use crate::{Mutability, Snapshot, UsageTable};
 
     /// A shared in-memory network backing both a [`SnapshotSource`] and a
     /// [`SnapshotSink`], keyed by single-owner-chunk address.
@@ -444,7 +449,7 @@ mod tests {
             0,
             signer.address(),
             20,
-            16,
+            BucketDepth::new(16).unwrap(),
             immutable,
         )
     }
@@ -598,7 +603,13 @@ mod tests {
         // A stale machine B sitting at sequence 1: open it, but rewind its
         // snapshot to a sequence-1 state, then issue and flush. The live floor (2)
         // rejects the next sequence (2).
-        let table = UsageTable::new(batch.id(), 20, 16, Mutability::Immutable).unwrap();
+        let table = UsageTable::new(
+            batch.id(),
+            20,
+            BucketDepth::new(16).unwrap(),
+            Mutability::Immutable,
+        )
+        .unwrap();
         let mut stale = Snapshot::new(table);
         stale
             .revalidate(PublishedSequence::NONE)

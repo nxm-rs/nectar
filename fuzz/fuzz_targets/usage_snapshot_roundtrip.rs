@@ -9,17 +9,32 @@
 //! full immutable bucket, an exhausted capacity-1 ring), so a `plan_persist`
 //! error skips the input; every other failure is a codec bug.
 //!
+//! The generator runs at `Shallow`, a spec whose collision-bucket floor is the
+//! format minimum, so the inputs span the format's whole bucket-depth range
+//! rather than the single geometry mainnet's floor of 16 admits.
+//!
 //! The same property is pinned on stable by
 //! `arbitrary_snapshot_persist_parse_assemble_round_trip` in
 //! `crates/postage-usage/src/codec.rs`.
 
 #![no_main]
 
+use core::num::NonZeroU8;
+
 use alloy_primitives::Address;
 use libfuzzer_sys::fuzz_target;
-use nectar_postage_usage::{PublishedSequence, RootInfo, Snapshot};
+use nectar_postage_usage::{NetworkId, PublishedSequence, RootInfoFor, SnapshotFor, SwarmSpec};
 
-fuzz_target!(|snapshot: Snapshot| {
+/// A deployment whose bucket-depth floor is the format minimum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shallow;
+
+impl SwarmSpec for Shallow {
+    const NETWORK_ID: NetworkId = NetworkId::TESTNET;
+    const MIN_BUCKET_DEPTH: NonZeroU8 = NonZeroU8::new(1).unwrap();
+}
+
+fuzz_target!(|snapshot: SnapshotFor<Shallow>| {
     let mut snapshot = snapshot;
     let owner = Address::repeat_byte(0x11);
 
@@ -35,7 +50,8 @@ fuzz_target!(|snapshot: Snapshot| {
         Err(_) => return,
     };
 
-    let root = RootInfo::parse(&plan.chunks[0].payload).expect("planned root must parse");
+    let root =
+        RootInfoFor::<Shallow>::parse(&plan.chunks[0].payload).expect("planned root must parse");
     let leaves: Vec<&[u8]> = plan.chunks[1..]
         .iter()
         .map(|c| c.payload.as_ref())

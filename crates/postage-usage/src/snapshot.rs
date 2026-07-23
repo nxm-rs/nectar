@@ -6,10 +6,10 @@ use alloc::vec::Vec;
 use alloy_primitives::Address;
 use bytes::Bytes;
 use nectar_postage::{Batch, BatchId, StampIndex, calculate_bucket};
-use nectar_primitives::{ChunkAddress, SocId};
+use nectar_primitives::{ChunkAddress, Mainnet, SocId, SwarmSpec};
 
-use crate::codec::{self, Encoded, RootInfo};
-use crate::table::{TableView, UsageTable};
+use crate::codec::{self, Encoded, RootInfoFor};
+use crate::table::{TableViewFor, UsageTableFor};
 use crate::{Result, UsageError, usage_chunk_address, usage_chunk_id};
 
 /// The published persist sequence at a snapshot's root chunk address, the floor
@@ -45,8 +45,8 @@ impl PublishedSequence {
     }
 }
 
-impl From<&RootInfo> for PublishedSequence {
-    fn from(r: &RootInfo) -> Self {
+impl<S: SwarmSpec> From<&RootInfoFor<S>> for PublishedSequence {
+    fn from(r: &RootInfoFor<S>) -> Self {
         Self(r.sequence())
     }
 }
@@ -54,9 +54,9 @@ impl From<&RootInfo> for PublishedSequence {
 /// A [`UsageTable`] together with the state needed to persist it inside its
 /// own batch: a monotone sequence number and the within-bucket slots
 /// allocated to the snapshot chunks themselves.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Snapshot {
-    table: UsageTable,
+#[derive(Debug)]
+pub struct SnapshotFor<S: SwarmSpec = Mainnet> {
+    table: UsageTableFor<S>,
     sequence: u64,
     slots: Vec<u32>,
     /// The counter sum ([`UsageTable::total_issued`]) captured at the last
@@ -76,6 +76,41 @@ pub struct Snapshot {
     #[cfg(feature = "seal")]
     last_seal_timestamp: Option<u64>,
 }
+
+/// The [`SnapshotFor`] of the mainnet spec.
+pub type Snapshot = SnapshotFor<Mainnet>;
+
+// The spec is a type-level tag, so the impls below (here and on
+// [`SnapshotParts`]) carry no bound on `S` beyond `SwarmSpec`; deriving would
+// demand `S: Clone` and `S: Eq` of a marker type that holds no data, and
+// [`Validated::plan_persist`] clones a snapshot generically.
+
+impl<S: SwarmSpec> Clone for SnapshotFor<S> {
+    fn clone(&self) -> Self {
+        Self {
+            table: self.table.clone(),
+            sequence: self.sequence,
+            slots: self.slots.clone(),
+            issued_at_persist: self.issued_at_persist,
+            #[cfg(feature = "seal")]
+            last_seal_timestamp: self.last_seal_timestamp,
+        }
+    }
+}
+
+impl<S: SwarmSpec> PartialEq for SnapshotFor<S> {
+    fn eq(&self, other: &Self) -> bool {
+        let equal = self.table == other.table
+            && self.sequence == other.sequence
+            && self.slots == other.slots
+            && self.issued_at_persist == other.issued_at_persist;
+        #[cfg(feature = "seal")]
+        let equal = equal && self.last_seal_timestamp == other.last_seal_timestamp;
+        equal
+    }
+}
+
+impl<S: SwarmSpec> Eq for SnapshotFor<S> {}
 
 /// One chunk of a persist plan: the payload to publish and the slot to
 /// stamp it with.
@@ -117,23 +152,44 @@ pub struct PlannedChunk {
 /// The accessors are read-only and for inspection only (logging a recovered
 /// sequence, say); rebuilding a usable snapshot goes through
 /// [`from_parts`](Snapshot::from_parts).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[must_use = "dropping the parts discards the recovered sequence and slots; rebuild with Snapshot::from_parts"]
-pub struct SnapshotParts {
-    table: UsageTable,
+pub struct SnapshotPartsFor<S: SwarmSpec = Mainnet> {
+    table: UsageTableFor<S>,
     sequence: u64,
     slots: Vec<u32>,
 }
 
-impl SnapshotParts {
+/// The [`SnapshotPartsFor`] of the mainnet spec.
+pub type SnapshotParts = SnapshotPartsFor<Mainnet>;
+
+impl<S: SwarmSpec> Clone for SnapshotPartsFor<S> {
+    fn clone(&self) -> Self {
+        Self {
+            table: self.table.clone(),
+            sequence: self.sequence,
+            slots: self.slots.clone(),
+        }
+    }
+}
+
+impl<S: SwarmSpec> PartialEq for SnapshotPartsFor<S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.table == other.table && self.sequence == other.sequence && self.slots == other.slots
+    }
+}
+
+impl<S: SwarmSpec> Eq for SnapshotPartsFor<S> {}
+
+impl<S: SwarmSpec> SnapshotPartsFor<S> {
     /// Returns a borrowed, read-only [`TableView`] onto the inert usage table.
     ///
     /// There is deliberately no owned-table accessor, and the view is neither
     /// [`Clone`]-to-owned nor a [`Deref`](core::ops::Deref) to the table: an owned
     /// bare table could be passed to [`Snapshot::new`] and reset to sequence 0, so
     /// `parts.table().clone()` must not yield one.
-    pub const fn table(&self) -> TableView<'_> {
-        TableView::new(&self.table)
+    pub const fn table(&self) -> TableViewFor<'_, S> {
+        TableViewFor::new(&self.table)
     }
 
     /// Returns the persist sequence carried by these parts.
@@ -169,7 +225,7 @@ pub struct PersistPlan {
     pub previous_timestamp: Option<u64>,
 }
 
-impl Snapshot {
+impl<S: SwarmSpec> SnapshotFor<S> {
     /// Wraps a table that has never been persisted, starting a fresh persist
     /// history at sequence 0 with no allocated slots.
     ///
@@ -195,7 +251,7 @@ impl Snapshot {
     /// *published* sequence needs a compare-and-swap against the live root chunk.
     /// Both are enforced by [`Snapshot::revalidate`]'s [`PublishedSequence`]
     /// floor.
-    pub const fn new(table: UsageTable) -> Self {
+    pub const fn new(table: UsageTableFor<S>) -> Self {
         Self {
             table,
             sequence: 0,
@@ -216,14 +272,14 @@ impl Snapshot {
     /// this is correct *only* for a genuinely new batch and starts the persist
     /// history at sequence 0 with no allocated slots; recovered or extracted state
     /// round-trips through [`from_parts`](Self::from_parts) instead.
-    pub fn from_batch(batch: &Batch) -> Result<Self> {
-        Ok(Self::new(UsageTable::from_batch(batch)?))
+    pub fn from_batch(batch: &Batch<S>) -> Result<Self> {
+        Ok(Self::new(UsageTableFor::from_batch(batch)?))
     }
 
     /// Validates the slots of a table/sequence/slots triple against the table
     /// geometry, the shared check behind [`from_parts`](Self::from_parts) and
     /// the codec's recovery path.
-    pub(crate) fn validate_parts(table: &UsageTable, slots: &[u32]) -> Result<()> {
+    pub(crate) fn validate_parts(table: &UsageTableFor<S>, slots: &[u32]) -> Result<()> {
         let capacity = table.bucket_capacity();
         if slots.len() > usize::from(u16::MAX) {
             return Err(UsageError::Malformed("too many allocated chunks"));
@@ -239,12 +295,12 @@ impl Snapshot {
     /// recovery through [`RootInfo::assemble`](crate::RootInfo::assemble), which
     /// flows through here, or through [`into_parts`](Self::into_parts).
     pub(crate) fn recovered_parts(
-        table: UsageTable,
+        table: UsageTableFor<S>,
         sequence: u64,
         slots: Vec<u32>,
-    ) -> Result<SnapshotParts> {
+    ) -> Result<SnapshotPartsFor<S>> {
         Self::validate_parts(&table, &slots)?;
-        Ok(SnapshotParts {
+        Ok(SnapshotPartsFor {
             table,
             sequence,
             slots,
@@ -263,8 +319,8 @@ impl Snapshot {
     /// automatically the moment you obtain an [`Issuer`] through
     /// [`issuer`](Self::issuer), which is the only way to advance a counter.
     /// Immutable batches issue without reserved state.
-    pub fn from_parts(parts: SnapshotParts) -> Result<Self> {
-        let SnapshotParts {
+    pub fn from_parts(parts: SnapshotPartsFor<S>) -> Result<Self> {
+        let SnapshotPartsFor {
             table,
             sequence,
             slots,
@@ -295,8 +351,8 @@ impl Snapshot {
     /// another borrowed view, never an owned table that [`new`](Self::new) would
     /// accept at sequence 0. This closes the in-memory clone route that would
     /// otherwise downgrade a recovered snapshot.
-    pub const fn table(&self) -> TableView<'_> {
-        TableView::new(&self.table)
+    pub const fn table(&self) -> TableViewFor<'_, S> {
+        TableViewFor::new(&self.table)
     }
 
     /// Returns the inner [`UsageTable`] by reference, for crate-internal callers
@@ -304,7 +360,7 @@ impl Snapshot {
     /// Never exposed publicly: a public `&UsageTable` would let
     /// `snapshot.table().clone()` reproduce an owned table for
     /// [`new`](Self::new).
-    pub(crate) const fn table_ref(&self) -> &UsageTable {
+    pub(crate) const fn table_ref(&self) -> &UsageTableFor<S> {
         &self.table
     }
 
@@ -321,7 +377,7 @@ impl Snapshot {
     /// Immutable only: rejects with [`MutableMerge`](UsageError::MutableMerge) if
     /// either table is mutable. The persistence state (sequence and slots) is
     /// untouched; only the counters and depth join.
-    pub fn merge_max(&mut self, other: &UsageTable) -> Result<()> {
+    pub fn merge_max(&mut self, other: &UsageTableFor<S>) -> Result<()> {
         self.table.merge_max(other)
     }
 
@@ -342,10 +398,10 @@ impl Snapshot {
     /// error:
     ///
     /// ```compile_fail
-    /// use alloy_primitives::B256;
-    /// use nectar_postage_usage::{Mutability, Snapshot, UsageTable};
+    /// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, Snapshot, UsageTable};
     ///
-    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap());
+    /// let table = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
+    /// let snapshot = Snapshot::new(table);
     /// // `into_table` no longer exists; only `into_parts` can consume a snapshot.
     /// let table = snapshot.into_table();
     /// ```
@@ -355,11 +411,12 @@ impl Snapshot {
     /// an owned table, so it cannot be moved into `Snapshot::new`:
     ///
     /// ```compile_fail
-    /// use alloy_primitives::{Address, B256};
-    /// use nectar_postage_usage::{Mutability, Snapshot, UsageTable};
+    /// use alloy_primitives::Address;
+    /// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, Snapshot, UsageTable};
     ///
     /// let owner = Address::repeat_byte(0x11);
-    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap());
+    /// let table = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
+    /// let snapshot = Snapshot::new(table);
     /// let parts = snapshot.into_parts();
     /// // The move/clone guard is what fails here: `parts.table` is private and
     /// // only a `TableView` is exposed, so `Snapshot::new(parts.table)` cannot
@@ -376,17 +433,17 @@ impl Snapshot {
     /// [`UsageTable`] for `Snapshot::new`:
     ///
     /// ```compile_fail
-    /// use alloy_primitives::B256;
-    /// use nectar_postage_usage::{Mutability, Snapshot, UsageTable};
+    /// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, Snapshot, UsageTable};
     ///
-    /// let snapshot = Snapshot::new(UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap());
+    /// let table = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
+    /// let snapshot = Snapshot::new(table);
     /// // `table()` returns a `TableView`; cloning it yields another view, not a
     /// // `UsageTable`, so this does not type-check.
     /// let reset = Snapshot::new(snapshot.table().clone());
     /// ```
     #[must_use = "the parts carry the recovered sequence and slots; dropping them discards that state"]
-    pub fn into_parts(self) -> SnapshotParts {
-        SnapshotParts {
+    pub fn into_parts(self) -> SnapshotPartsFor<S> {
+        SnapshotPartsFor {
             table: self.table,
             sequence: self.sequence,
             slots: self.slots,
@@ -472,7 +529,7 @@ impl Snapshot {
     /// any write.
     pub fn reserved_stamp_indices(&self, owner: &Address) -> Vec<StampIndex> {
         let batch_id = self.table.batch_id();
-        let bucket_depth = self.table.bucket_depth();
+        let bucket_depth = self.table.bucket_depth().get();
         self.slots
             .iter()
             .enumerate()
@@ -550,9 +607,9 @@ impl Snapshot {
     /// sequence against a [`PublishedSequence`] floor and is the only route to a
     /// [`PersistPlan`], so a snapshot can issue but cannot persist without first
     /// clearing the floor.
-    pub fn issuer(&mut self, owner: Address) -> Issuer<'_> {
+    pub fn issuer(&mut self, owner: Address) -> IssuerFor<'_, S> {
         let reserved = self.reserved_slots(&owner);
-        Issuer {
+        IssuerFor {
             snapshot: self,
             owner,
             reserved,
@@ -576,8 +633,8 @@ impl Snapshot {
     /// bound to `owner`, so content stamping drops into a `BatchStamper` while
     /// persisting through the same table as snapshot allocation.
     #[cfg(feature = "issuer")]
-    pub const fn into_issuer(self, owner: Address) -> crate::SnapshotIssuer {
-        crate::SnapshotIssuer::new(self, owner)
+    pub const fn into_issuer(self, owner: Address) -> crate::SnapshotIssuerFor<S> {
+        crate::SnapshotIssuerFor::new(self, owner)
     }
 
     /// Encodes the snapshot with its current sequence number.
@@ -609,7 +666,7 @@ impl Snapshot {
     /// mutation. The floor is captured here, so keep the
     /// `revalidate` -> [`plan_persist`](Validated::plan_persist) window tight:
     /// the network floor may advance afterwards.
-    pub fn revalidate(&mut self, floor: PublishedSequence) -> Result<Validated<'_>> {
+    pub fn revalidate(&mut self, floor: PublishedSequence) -> Result<ValidatedFor<'_, S>> {
         let next = self
             .sequence
             .checked_add(1)
@@ -620,7 +677,7 @@ impl Snapshot {
                 floor: floor.get(),
             });
         }
-        Ok(Validated {
+        Ok(ValidatedFor {
             snapshot: self,
             floor: floor.get(),
         })
@@ -636,12 +693,15 @@ impl Snapshot {
 /// window tight, since the floor is captured at revalidate time and the network
 /// floor may advance afterwards.
 #[derive(Debug)]
-pub struct Validated<'s> {
-    snapshot: &'s mut Snapshot,
+pub struct ValidatedFor<'s, S: SwarmSpec = Mainnet> {
+    snapshot: &'s mut SnapshotFor<S>,
     floor: u64,
 }
 
-impl Validated<'_> {
+/// The [`ValidatedFor`] of the mainnet spec.
+pub type Validated<'s> = ValidatedFor<'s, Mainnet>;
+
+impl<S: SwarmSpec> ValidatedFor<'_, S> {
     /// Plans the next persist: bumps the sequence, allocates a slot for any
     /// snapshot chunk that lacks one (folding those stamps into the table), and
     /// encodes.
@@ -663,11 +723,11 @@ impl Validated<'_> {
     ///
     /// ```compile_fail
     /// # #![deny(unused_must_use)]
-    /// use alloy_primitives::{Address, B256};
-    /// use nectar_postage_usage::{Mutability, PublishedSequence, Snapshot, UsageTable};
+    /// use alloy_primitives::Address;
+    /// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, PublishedSequence, Snapshot, UsageTable};
     ///
     /// let owner = Address::repeat_byte(0x11);
-    /// let table = UsageTable::new(B256::repeat_byte(0x42), 20, 16, Mutability::Immutable).unwrap();
+    /// let table = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
     /// let mut snapshot = Snapshot::new(table);
     /// // Ignoring the plan is a compile error: the persist would be silently lost.
     /// snapshot.revalidate(PublishedSequence::NONE).unwrap().plan_persist(&owner);
@@ -695,7 +755,7 @@ impl Validated<'_> {
         }
 
         let batch_id = self.snapshot.table.batch_id();
-        let bucket_depth = self.snapshot.table.bucket_depth();
+        let bucket_depth = self.snapshot.table.bucket_depth().get();
         let previously_allocated = self.snapshot.slots.len();
         let previous_sequence = self.snapshot.sequence;
 
@@ -737,7 +797,7 @@ impl Validated<'_> {
             // carries the new sequence.
             work.sequence = sequence;
 
-            let allocate = |work: &mut Snapshot| -> Result<()> {
+            let allocate = |work: &mut SnapshotFor<S>| -> Result<()> {
                 // The allocation loop stops once the slots outnumber the
                 // leaves (at most the digests that fit a root chunk), far
                 // below u16::MAX.
@@ -831,15 +891,18 @@ impl Validated<'_> {
 /// that could wrap a mutable ring onto the snapshot's own chunks. It borrows the
 /// snapshot mutably, so persisting cannot run while issuance is live.
 #[derive(Debug)]
-pub struct Issuer<'s> {
-    snapshot: &'s mut Snapshot,
+pub struct IssuerFor<'s, S: SwarmSpec = Mainnet> {
+    snapshot: &'s mut SnapshotFor<S>,
     owner: Address,
     /// The `(bucket, index)` slots held by the snapshot's own chunks, installed
     /// at construction from the snapshot's allocated slots.
     reserved: BTreeSet<(u32, u32)>,
 }
 
-impl Issuer<'_> {
+/// The [`IssuerFor`] of the mainnet spec.
+pub type Issuer<'s> = IssuerFor<'s, Mainnet>;
+
+impl<S: SwarmSpec> IssuerFor<'_, S> {
     /// Assigns the next unused slot for a content chunk address and returns the
     /// resulting stamp index, skipping the snapshot's reserved slots.
     ///
@@ -868,7 +931,7 @@ impl Issuer<'_> {
         &mut self,
         address: &ChunkAddress,
     ) -> Result<(StampIndex, bool)> {
-        let bucket = calculate_bucket(address, self.snapshot.table.bucket_depth());
+        let bucket = calculate_bucket(address, self.snapshot.table.bucket_depth().get());
         // Decide before the write: afterwards the cursor has already advanced.
         let wrapped = self.will_wrap(bucket)?;
         let index = self.snapshot.record_bucket(bucket, &self.reserved)?;
@@ -959,12 +1022,14 @@ mod arbitrary_impls {
     use alloc::vec::Vec;
     use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
 
-    use super::Snapshot;
-    use crate::UsageTable;
+    use nectar_primitives::SwarmSpec;
 
-    impl<'a> Arbitrary<'a> for Snapshot {
+    use super::SnapshotFor;
+    use crate::UsageTableFor;
+
+    impl<'a, S: SwarmSpec> Arbitrary<'a> for SnapshotFor<S> {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
-            let table = UsageTable::arbitrary(u)?;
+            let table = UsageTableFor::<S>::arbitrary(u)?;
             // Leave headroom so revalidate/plan_persist can advance the
             // sequence without overflowing.
             let sequence = u.int_in_range(0..=u64::MAX - 1)?;

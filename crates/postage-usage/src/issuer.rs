@@ -4,9 +4,9 @@
 use alloy_primitives::Address;
 use nectar_postage::{BatchId, StampDigest, StampError};
 use nectar_postage_issuer::StampIssuer;
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
-use crate::Snapshot;
+use crate::SnapshotFor;
 use crate::error::UsageError;
 
 /// Maps a usage table error onto a stamp issuer error.
@@ -25,31 +25,46 @@ const fn map_usage_error(err: UsageError) -> StampError {
 /// slots so it never evicts the batch-state chunks. It owns the snapshot by
 /// value to drop into `BatchStamper::new`; recover it with
 /// [`into_snapshot`](Self::into_snapshot).
-#[derive(Debug, Clone)]
-pub struct SnapshotIssuer {
-    snapshot: Snapshot,
+#[derive(Debug)]
+pub struct SnapshotIssuerFor<S: SwarmSpec = Mainnet> {
+    snapshot: SnapshotFor<S>,
     owner: Address,
 }
 
-impl SnapshotIssuer {
+/// The [`SnapshotIssuerFor`] of the mainnet spec.
+pub type SnapshotIssuer = SnapshotIssuerFor<Mainnet>;
+
+// The spec is a type-level tag, so this carries no bound on `S` beyond
+// `SwarmSpec`; deriving would demand `S: Clone` of a marker type that holds no
+// data.
+impl<S: SwarmSpec> Clone for SnapshotIssuerFor<S> {
+    fn clone(&self) -> Self {
+        Self {
+            snapshot: self.snapshot.clone(),
+            owner: self.owner,
+        }
+    }
+}
+
+impl<S: SwarmSpec> SnapshotIssuerFor<S> {
     /// Wraps a snapshot and the batch owner address.
-    pub const fn new(snapshot: Snapshot, owner: Address) -> Self {
+    pub const fn new(snapshot: SnapshotFor<S>, owner: Address) -> Self {
         Self { snapshot, owner }
     }
 
     /// Returns a reference to the wrapped snapshot.
-    pub const fn snapshot(&self) -> &Snapshot {
+    pub const fn snapshot(&self) -> &SnapshotFor<S> {
         &self.snapshot
     }
 
     /// Returns a mutable reference to the wrapped snapshot, for example to plan
     /// a persist between batches of content stamping.
-    pub const fn snapshot_mut(&mut self) -> &mut Snapshot {
+    pub const fn snapshot_mut(&mut self) -> &mut SnapshotFor<S> {
         &mut self.snapshot
     }
 
     /// Consumes the adapter and returns the wrapped snapshot.
-    pub fn into_snapshot(self) -> Snapshot {
+    pub fn into_snapshot(self) -> SnapshotFor<S> {
         self.snapshot
     }
 
@@ -59,7 +74,7 @@ impl SnapshotIssuer {
     }
 }
 
-impl StampIssuer for SnapshotIssuer {
+impl<S: SwarmSpec> StampIssuer for SnapshotIssuerFor<S> {
     fn prepare_stamp(
         &mut self,
         address: &ChunkAddress,
@@ -86,7 +101,7 @@ impl StampIssuer for SnapshotIssuer {
     }
 
     fn bucket_depth(&self) -> u8 {
-        self.snapshot.table_ref().bucket_depth()
+        self.snapshot.table_ref().bucket_depth().get()
     }
 
     fn max_bucket_utilization(&self) -> u32 {

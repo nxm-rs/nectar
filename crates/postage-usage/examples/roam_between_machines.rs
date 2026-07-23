@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex};
 use alloy_primitives::{Address, B256, hex};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
-use nectar_postage::{Batch, BatchId};
+use nectar_postage::{Batch, BatchId, BucketDepth};
 use nectar_postage_usage::{
     BatchStamper, ChunkAddress, Mutability, PublishedSequence, SealedChunk, Snapshot, SnapshotSink,
     SnapshotSource, UsageError, UsageTable,
@@ -96,7 +96,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signer = PrivateKeySigner::random();
     let owner: Address = signer.address();
     let batch_id = BatchId::new([0x42; 32]);
-    let batch = Batch::new(batch_id, 0, 0, owner, DEPTH, BUCKET_DEPTH, true);
+    let batch = Batch::new(
+        batch_id,
+        0,
+        0,
+        owner,
+        DEPTH,
+        BucketDepth::new(BUCKET_DEPTH)?,
+        true,
+    );
 
     println!("Postage batch usage: roaming between machines");
     println!("==============================================\n");
@@ -216,7 +224,12 @@ fn stale_persist_is_rejected(
     println!("----------------------------------------------");
 
     // A snapshot sitting at sequence 1 (its next persist would emit 2).
-    let table = UsageTable::new(batch_id, DEPTH, BUCKET_DEPTH, Mutability::Immutable)?;
+    let table = UsageTable::new(
+        batch_id,
+        DEPTH,
+        BucketDepth::new(BUCKET_DEPTH)?,
+        Mutability::Immutable,
+    )?;
     let mut snapshot = Snapshot::new(table);
     snapshot
         .revalidate(PublishedSequence::NONE)?

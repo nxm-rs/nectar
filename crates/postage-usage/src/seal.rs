@@ -4,10 +4,10 @@ use alloc::vec::Vec;
 
 use alloy_signer::SignerSync;
 use nectar_postage::{Stamp, StampDigest};
-use nectar_primitives::{ChunkOps, SingleOwnerChunk};
+use nectar_primitives::{ChunkOps, SingleOwnerChunk, SwarmSpec};
 use thiserror::Error;
 
-use crate::snapshot::{PersistPlan, Snapshot};
+use crate::snapshot::{PersistPlan, SnapshotFor};
 
 /// Errors produced while sealing a persist plan.
 #[non_exhaustive]
@@ -66,8 +66,8 @@ pub struct SealedChunk {
 /// holds across the whole persist/seal cycle without caller bookkeeping. `plan`
 /// must have been planned from `snapshot`.
 #[must_use = "the sealed chunks are the snapshot to upload; dropping them discards the seal"]
-pub fn seal_plan(
-    snapshot: &mut Snapshot,
+pub fn seal_plan<S: SwarmSpec>(
+    snapshot: &mut SnapshotFor<S>,
     plan: &PersistPlan,
     timestamp: u64,
     signer: &impl SignerSync,

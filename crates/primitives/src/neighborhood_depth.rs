@@ -1,6 +1,6 @@
 //! Canonical neighborhood-depth recomputation.
 //!
-//! Pure function port of bee `pkg/topology/kademlia/kademlia.go:896-920`
+//! Neighborhood depth from per-bin peer counts.
 //! (`recalcDepth`). The wrapper type (`NeighborhoodDepth`) stays in the
 //! routing layer of each downstream impl; nectar only owns the math.
 
@@ -9,11 +9,11 @@ use crate::Bin;
 /// Recompute the neighborhood depth from per-bin connected-peer counts.
 ///
 /// `connected_per_bin[i]` is the count of currently-connected peers in bin `i`.
-/// `saturation` is the target saturation per bin (typically `SwarmSpec::saturation_peers()`).
+/// `saturation` is the target saturation per bin (typically `SwarmSpec::SATURATION_PEERS`).
 /// `low_watermark` is the minimum cumulative count of peers in the deepest bins
-/// to anchor the neighborhood (typically `SwarmSpec::neighborhood_low_watermark()`).
+/// to anchor the neighborhood (typically `SwarmSpec::NEIGHBORHOOD_LOW_WATERMARK`).
 ///
-/// Algorithm - port of bee `kademlia.go:896-920`:
+/// Algorithm:
 /// 1. Walk bins shallow → deep. The depth candidate is the **shallowest bin
 ///    whose count is below `saturation`**.
 /// 2. From that candidate, sum populations of the deepest bins until the
@@ -65,7 +65,7 @@ pub fn recompute_neighborhood_depth(
     }
     if !found_unsaturated {
         // Every bin is saturated: depth is the deepest occupied bin.
-        // Bee returns `MaxPO` here, but the conservative interpretation is
+        // The reference client returns `MaxPO` here; the conservative reading is
         // that the neighborhood extends to the deepest bin we actually have
         // peers in - fall through and use the watermark anchor instead.
         candidate = crate::MAX_PO;

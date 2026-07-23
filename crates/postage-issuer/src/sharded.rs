@@ -16,8 +16,10 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::error::IssuerError;
-use nectar_postage::{Batch, BatchId, StampDigest, StampError, StampIndex, calculate_bucket};
-use nectar_primitives::ChunkAddress;
+use nectar_postage::{
+    Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
+};
+use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
 #[cfg(feature = "parallel")]
 use {
@@ -97,20 +99,23 @@ impl BucketShard {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use nectar_postage_issuer::{BatchId, ShardedIssuer};
+/// The network is a type parameter and reaches the issuer through its
+/// [`BucketDepth`]; [`ShardedIssuer`] is the mainnet issuer.
 ///
-/// let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
+/// ```ignore
+/// use nectar_postage_issuer::{BatchId, BucketDepth, ShardedIssuer};
+///
+/// let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 /// // Now safe to use from multiple threads via sign_stamps_parallel
 /// ```
 #[derive(Debug)]
-pub struct ShardedIssuer {
+pub struct ShardedIssuerFor<S: SwarmSpec = Mainnet> {
     /// The batch ID.
     batch_id: BatchId,
     /// The batch depth.
     depth: u8,
     /// The bucket depth.
-    bucket_depth: u8,
+    bucket_depth: BucketDepth<S>,
     /// The bucket capacity (2^(depth - bucket_depth)).
     bucket_capacity: u32,
     /// The shards containing bucket indices.
@@ -125,9 +130,12 @@ pub struct ShardedIssuer {
     stamps_issued: AtomicU64,
 }
 
-impl ShardedIssuer {
+/// The [`ShardedIssuerFor`] of the mainnet spec.
+pub type ShardedIssuer = ShardedIssuerFor<Mainnet>;
+
+impl<S: SwarmSpec> ShardedIssuerFor<S> {
     /// Creates a new sharded issuer with the default number of shards.
-    pub fn new(batch_id: BatchId, depth: u8, bucket_depth: u8) -> Self {
+    pub fn new(batch_id: BatchId, depth: u8, bucket_depth: BucketDepth<S>) -> Self {
         Self::with_shard_count(batch_id, depth, bucket_depth, DEFAULT_SHARD_COUNT)
     }
 
@@ -146,7 +154,7 @@ impl ShardedIssuer {
     pub fn with_shard_count(
         batch_id: BatchId,
         depth: u8,
-        bucket_depth: u8,
+        bucket_depth: BucketDepth<S>,
         shard_count: usize,
     ) -> Self {
         assert!(
@@ -154,7 +162,7 @@ impl ShardedIssuer {
             "shard_count must be a power of 2"
         );
 
-        let total_buckets = 1u32 << bucket_depth;
+        let total_buckets = 1u32 << bucket_depth.get();
         // `u32` always fits `usize` on the >=32-bit targets this crate supports.
         #[allow(clippy::as_conversions)]
         let shard_count = shard_count.min(total_buckets as usize);
@@ -163,12 +171,12 @@ impl ShardedIssuer {
         #[allow(clippy::as_conversions)]
         let shard_count_u32 = shard_count as u32;
         let buckets_per_shard = total_buckets / shard_count_u32;
-        let bucket_capacity = 1u32 << (depth - bucket_depth);
+        let bucket_capacity = 1u32 << (depth - bucket_depth.get());
 
         // Calculate shard_shift: how many bits to shift bucket to get shard index
         // For bucket_depth=16 and shard_count=16, we take top 4 bits: shift = 16 - 4 = 12
         let shard_bits = shard_count_u32.trailing_zeros();
-        let shard_shift = u32::from(bucket_depth) - shard_bits;
+        let shard_shift = u32::from(bucket_depth.get()) - shard_bits;
         let shard_mask = shard_count_u32 - 1;
 
         let shards: Vec<_> = (0..shard_count)
@@ -204,7 +212,7 @@ impl ShardedIssuer {
     /// external tracking, or
     /// [`ShardedRingIssuer::reserved`](crate::ShardedRingIssuer::reserved) for
     /// self-hosting, where the protected slots come from `nectar-postage-usage`.
-    pub fn from_batch(batch: &Batch) -> Result<Self, IssuerError> {
+    pub fn from_batch(batch: &Batch<S>) -> Result<Self, IssuerError> {
         if batch.immutable() {
             Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))
         } else {
@@ -237,7 +245,7 @@ impl ShardedIssuer {
         // batch geometry invariant), so the subtraction cannot underflow.
         #[allow(clippy::arithmetic_side_effects)]
         {
-            self.bucket_capacity = 1u32 << (new_depth - self.bucket_depth);
+            self.bucket_capacity = 1u32 << (new_depth - self.bucket_depth.get());
         }
         Ok(())
     }
@@ -259,7 +267,7 @@ impl ShardedIssuer {
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.bucket_depth);
+        let bucket = calculate_bucket(address, self.bucket_depth.get());
         let shard_idx = self.shard_index(bucket);
         // `shard_index` masks with `shard_mask = shards.len() - 1`, so the index
         // is always in range.
@@ -311,7 +319,7 @@ impl ShardedIssuer {
 
     /// Bucket depth.
     pub const fn bucket_depth(&self) -> u8 {
-        self.bucket_depth
+        self.bucket_depth.get()
     }
 
     /// Maximum bucket utilization observed across all buckets.
@@ -378,24 +386,25 @@ pub struct StampResult {
 /// # Example
 ///
 /// ```ignore
-/// use nectar_postage_issuer::{BatchId, ShardedIssuer, sign_stamps_parallel};
+/// use nectar_postage_issuer::{BatchId, BucketDepth, ShardedIssuer, sign_stamps_parallel};
 /// use alloy_primitives::B256;
 /// use alloy_signer::SignerSync;
 ///
-/// let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
+/// let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 /// let addresses: Vec<ChunkAddress> = /* ... */;
 /// // Use sign_message_sync for EIP-191 compatibility
 /// let signer_fn = |prehash: &B256| signer.sign_message_sync(prehash.as_slice());
 /// let results = sign_stamps_parallel(&issuer, &signer_fn, &addresses);
 /// ```
 #[cfg(feature = "parallel")]
-pub fn sign_stamps_parallel<S, E>(
-    issuer: &ShardedIssuer,
-    signer: &S,
+pub fn sign_stamps_parallel<Sp, Sg, E>(
+    issuer: &ShardedIssuerFor<Sp>,
+    signer: &Sg,
     addresses: &[ChunkAddress],
 ) -> Vec<StampResult>
 where
-    S: Fn(&B256) -> Result<Signature, E> + Sync,
+    Sp: SwarmSpec + Sync,
+    Sg: Fn(&B256) -> Result<Signature, E> + Sync,
     E: Into<SigningError>,
 {
     use rayon::prelude::*;
@@ -413,13 +422,14 @@ where
 }
 
 #[cfg(feature = "parallel")]
-fn sign_stamp_internal<S, E>(
-    issuer: &ShardedIssuer,
-    signer: &S,
+fn sign_stamp_internal<Sp, Sg, E>(
+    issuer: &ShardedIssuerFor<Sp>,
+    signer: &Sg,
     address: &ChunkAddress,
 ) -> Result<Stamp, SigningError>
 where
-    S: Fn(&B256) -> Result<Signature, E>,
+    Sp: SwarmSpec,
+    Sg: Fn(&B256) -> Result<Signature, E>,
     E: Into<SigningError>,
 {
     let timestamp = current_timestamp();
@@ -449,7 +459,15 @@ mod tests {
         // The parallel constructor refuses a mutable batch for the same reason
         // as MemoryIssuer: a reserved-blind ring would silently overwrite a
         // self-hosted snapshot's own chunks.
-        let mutable = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, 16, false);
+        let mutable = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Default::default(),
+            20,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
         assert!(matches!(
             ShardedIssuer::from_batch(&mutable),
             Err(IssuerError::MutableNotSupported)
@@ -460,13 +478,21 @@ mod tests {
     fn test_sharded_issuer_from_batch_immutable_ok() {
         use nectar_postage::Batch;
 
-        let immutable = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, 16, true);
+        let immutable = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Default::default(),
+            20,
+            BucketDepth::new(16).unwrap(),
+            true,
+        );
         assert!(ShardedIssuer::from_batch(&immutable).is_ok());
     }
 
     #[test]
     fn test_sharded_issuer_basic() {
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         assert_eq!(issuer.batch_id(), BatchId::ZERO);
         assert_eq!(issuer.batch_depth(), 20);
@@ -477,7 +503,7 @@ mod tests {
 
     #[test]
     fn test_sharded_issuer_prepare_stamp() {
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, 16);
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let address = ChunkAddress::from(B256::random());
 
         let digest = issuer.prepare_stamp(&address, 12345).unwrap();
@@ -490,7 +516,7 @@ mod tests {
     #[test]
     fn test_sharded_issuer_dilute_grows_capacity_only() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer = ShardedIssuer::new(BatchId::ZERO, 17, 16);
+        let mut issuer = ShardedIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let address = ChunkAddress::from(B256::repeat_byte(0xAB));
         let bucket = calculate_bucket(&address, 16);
 
@@ -520,7 +546,11 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let issuer = Arc::new(ShardedIssuer::new(BatchId::ZERO, 24, 16));
+        let issuer = Arc::new(ShardedIssuer::new(
+            BatchId::ZERO,
+            24,
+            BucketDepth::new(16).unwrap(),
+        ));
         let num_threads = 8;
         let stamps_per_thread = 1000;
 
@@ -553,7 +583,7 @@ mod tests {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
 
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, 16);
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
         let signer = PrivateKeySigner::random();
 
         let addresses: Vec<_> = (0..100)
