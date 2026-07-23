@@ -3,8 +3,8 @@
 //! Splits a file through the plain splitter into a `MemoryStore`, then reads
 //! it back through `File::open` under the allocation witness. Plain bodies
 //! pass through undecoded, so the marginal bytes per added fetch stay below
-//! one body, and the walk holds outstanding fetches in a reusable in-flight
-//! set, so the per-fetch allocation count stays below the
+//! a quarter body, and the walk holds outstanding fetches in a reusable
+//! in-flight set, so the per-fetch allocation count stays below the
 //! boxed-future-plus-task-node pair that a `FuturesUnordered` charged: one
 //! boxed store future per fetch plus a chunk-independent remainder, never
 //! two.
@@ -93,14 +93,14 @@ fn plain_read_allocations_stay_below_two_per_fetch() {
     );
 
     // Plain bodies pass through undecoded and nothing collects the payload,
-    // so a body-sized allocation per fetched node would grow the read's
-    // traffic by at least one body per added fetch; the reader's own staging
-    // is chunk-count independent, keeping the marginal bytes well under.
+    // so the reader's chunk-count-independent staging holds the marginal
+    // bytes to a few hundred per added fetch; a body-sized allocation even
+    // every fourth fetched node would breach the quarter-body slope.
     let byte_delta = large.bytes_total.saturating_sub(small.bytes_total);
     let fetch_delta = large_fetches - small_fetches;
     assert!(
-        byte_delta < fetch_delta * BODY as u64,
-        "read traffic grew {byte_delta} bytes over {fetch_delta} added fetches, at or above one body per fetch"
+        byte_delta < fetch_delta * (BODY as u64 / 4),
+        "read traffic grew {byte_delta} bytes over {fetch_delta} added fetches, at or above a quarter body per fetch"
     );
 
     // The reusable in-flight set holds one boxed store future per fetch and

@@ -5,7 +5,7 @@
 //! allocation witness. Fetched bodies are shared offset sub-views, so the
 //! walk's staging buffer is the only place plaintext can land: `collect`
 //! reserves the output exactly, so allocated bytes beyond the output must
-//! grow by less than one body per added chunk, never by a per-chunk
+//! grow by less than a quarter body per added chunk, never by a per-chunk
 //! plaintext staging buffer.
 #![cfg(feature = "encryption")]
 // Integration-test code: unwraps, direct indexing, casts, and assertions
@@ -77,14 +77,15 @@ fn encrypted_read_body_allocations_stay_constant() {
     );
 
     // `collect` reserves the output exactly once at the payload size, so the
-    // bytes beyond the output are the walk's own traffic. A plaintext staging
-    // buffer per fetched chunk would grow that remainder by one body per
-    // added chunk; the bounded staging keeps it well under.
+    // bytes beyond the output are the walk's own traffic. Bounded staging
+    // holds that remainder's growth to a few hundred bytes per added chunk;
+    // a plaintext staging buffer even every fourth chunk would breach the
+    // quarter-body slope.
     let small_extra = small.bytes_total.saturating_sub((SMALL * BODY) as u64);
     let large_extra = large.bytes_total.saturating_sub((LARGE * BODY) as u64);
     let extra_delta = large_extra.saturating_sub(small_extra);
     assert!(
-        extra_delta < CHUNK_DELTA * BODY as u64,
-        "read traffic beyond the output grew {extra_delta} bytes over {CHUNK_DELTA} added chunks, at or above one body per chunk"
+        extra_delta < CHUNK_DELTA * (BODY as u64 / 4),
+        "read traffic beyond the output grew {extra_delta} bytes over {CHUNK_DELTA} added chunks, at or above a quarter body per chunk"
     );
 }
