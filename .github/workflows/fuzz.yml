@@ -2,6 +2,12 @@
 # properties. Targets build once under nightly plus the
 # sanitizer; each run job then executes the prebuilt binary, so nothing is
 # rebuilt and the run jobs need no toolchain.
+#
+# The nightly corpus is persisted beyond actions/cache eviction: each cron
+# leg minimizes corpus plus committed seeds into a standalone set, and the
+# persist job commits it back into fuzz/seeds/<target>/ (hash-named files
+# next to the curated seeds) via an automated PR. ClusterFuzzLite was
+# considered and deferred until the estate wants coverage reporting.
 name: fuzz
 
 on:
@@ -150,7 +156,7 @@ jobs:
                   key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
                   restore-keys: |
                       fuzz-corpus-${{ matrix.target }}-
-            - name: Run ${{ matrix.target }} for 10 minutes and minimise
+            - name: Run ${{ matrix.target }} for 10 minutes and minimize
               run: |
                   bin="$PWD/fuzz-bin/${{ matrix.target }}"
                   chmod +x "$bin"
@@ -159,12 +165,81 @@ jobs:
                   seeds="fuzz/seeds/${{ matrix.target }}"
                   [ -d "$seeds" ] || seeds=""
                   "$bin" "$corpus" $seeds -max_total_time=600 -rss_limit_mb=2048 -artifact_prefix=fuzz/artifacts/
+                  # Merge the seeds too: the minimized set must stand alone so
+                  # the persist job can commit it as the durable coverage floor.
                   min=$(mktemp -d)
-                  "$bin" -merge=1 "$min" "$corpus"
+                  "$bin" -merge=1 "$min" "$corpus" $seeds
                   rm -rf "$corpus"; mkdir -p "$corpus"; cp -a "$min"/. "$corpus"/ 2>/dev/null || true
+            - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+              with:
+                  name: fuzz-corpus-min-${{ matrix.target }}
+                  path: fuzz/corpus/${{ matrix.target }}
+                  retention-days: 1
+                  if-no-files-found: ignore
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
               if: failure()
               with:
                   name: fuzz-artifacts-nightly-${{ matrix.target }}
                   path: fuzz/artifacts
                   if-no-files-found: ignore
+
+    persist:
+        name: fuzz corpus persist
+        if: github.event_name == 'schedule' && !cancelled()
+        needs: cron
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: write
+            pull-requests: write
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+              with:
+                  pattern: fuzz-corpus-min-*
+                  path: corpus-min
+            - name: Refresh the committed corpus under fuzz/seeds
+              run: |
+                  for dir in corpus-min/fuzz-corpus-min-*; do
+                      [ -d "$dir" ] || continue
+                      target="${dir##*/fuzz-corpus-min-}"
+                      seeds="fuzz/seeds/$target"
+                      mkdir -p "$seeds"
+                      # Replace only the hash-named machine entries; curated
+                      # valid-*/invalid-*/edge-*/crash-* seeds never match.
+                      find "$seeds" -maxdepth 1 -type f -regextype posix-extended \
+                          -regex '.*/[0-9a-f]{40}' -delete
+                      # Skip minimized entries byte-identical to a curated seed
+                      # (merge names files by content sha1).
+                      curated=$(find "$seeds" -maxdepth 1 -type f -print0 | xargs -0 -r sha1sum | cut -d' ' -f1 | tr '\n' ' ')
+                      for f in "$dir"/*; do
+                          [ -f "$f" ] || continue
+                          name="${f##*/}"
+                          case " $curated " in *" $name "*) continue ;; esac
+                          cp "$f" "$seeds/$name"
+                      done
+                  done
+            - name: Open or update the corpus refresh PR
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  git add -A fuzz/seeds
+                  if git diff --cached --quiet; then
+                      echo "committed corpus already current"
+                      exit 0
+                  fi
+                  summary=$(cd fuzz/seeds && for d in */; do
+                      printf -- '- %s: %s files, %s\n' "${d%/}" "$(find "$d" -type f | wc -l)" "$(du -sh "$d" | cut -f1)"
+                  done)
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  branch=ci/fuzz-corpus-refresh
+                  git checkout -B "$branch"
+                  git commit -m "chore(fuzz): refresh the committed minimized corpus"
+                  git push -f origin "$branch"
+                  existing=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')
+                  if [ -z "$existing" ]; then
+                      gh pr create --head "$branch" \
+                          --title "chore(fuzz): refresh the committed minimized corpus" \
+                          --body "$(printf 'Nightly-minimized fuzz corpus, committed so accumulated coverage survives actions/cache eviction. Hash-named files sit next to the curated seeds and replay through the existing stable seed-replay tests.\n\n%s' "$summary")"
+                  fi
