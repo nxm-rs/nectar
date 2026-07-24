@@ -6,12 +6,13 @@ use std::boxed::Box;
 use std::string::ToString;
 use std::sync::Arc;
 
+use nectar_marker::{MaybeSend, MaybeSync};
 #[cfg(feature = "encryption")]
 use nectar_primitives::chunk::encryption::EncryptedChunkRef;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 #[cfg(feature = "encryption")]
 use nectar_primitives::store::MemoryStore;
-use nectar_primitives::store::{ChunkPut, ChunkStoreError, MaybeSend, MaybeSync};
+use nectar_primitives::store::{ChunkPut, ChunkStoreError};
 
 /// A fault-injection store: forwards each put to `inner` when the policy
 /// admits it, else returns the policy's error. The policy is consulted once

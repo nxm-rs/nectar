@@ -296,10 +296,7 @@ where
 
     /// Decompose into the io adapters' state: the live walk and lead bytes
     /// plus the rebuild recipe a seek re-walks from.
-    #[cfg(all(
-        feature = "tokio",
-        not(any(target_arch = "wasm32", feature = "unsync"))
-    ))]
+    #[cfg(all(feature = "tokio", multi_thread))]
     pub(crate) fn into_parts(self) -> ReaderParts<S, M, B> {
         ReaderParts {
             store: self.store,
@@ -318,10 +315,7 @@ where
 
 /// Decomposed reader state for the io adapters; fields mirror
 /// [`FileReader`].
-#[cfg(all(
-    feature = "tokio",
-    not(any(target_arch = "wasm32", feature = "unsync"))
-))]
+#[cfg(all(feature = "tokio", multi_thread))]
 pub(crate) struct ReaderParts<S, M, const B: usize>
 where
     S: TrustedGet<AnyChunkSet<B>>,

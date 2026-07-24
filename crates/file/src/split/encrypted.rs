@@ -5,9 +5,9 @@
 use alloc::vec::Vec;
 
 use bytes::Bytes;
+use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::encryption::{ChunkEncrypt, EncryptedChunkRef, EncryptionKey};
 use nectar_primitives::chunk::{AnyChunkSet, ContentChunk};
-use nectar_primitives::store::{MaybeSend, MaybeSync};
 
 use super::error::SealError;
 use super::mode::{Sealed, SplitMode};

@@ -15,9 +15,9 @@ use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
-use super::maybe_send::{MaybeSend, MaybeSync};
 use super::typed::{ChunkGet, ChunkHas, ChunkPut};
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
+use crate::marker::{MaybeSend, MaybeSync};
 
 /// Injected async delay so the decorator owns its timer: nectar takes no new
 /// timer dependency and each consumer supplies its platform sleep.

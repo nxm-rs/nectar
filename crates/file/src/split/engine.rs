@@ -53,11 +53,11 @@ type PutDone<E> = (ChunkAddress, Result<(), E>);
 
 /// Boxed put future: `Send` on multi-threaded targets, unbounded on wasm32
 /// and under the `unsync` feature.
-#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+#[cfg(multi_thread)]
 type BoxPut<E> = Pin<Box<dyn Future<Output = PutDone<E>> + Send>>;
 /// Boxed put future: `Send` on multi-threaded targets, unbounded on wasm32
 /// and under the `unsync` feature.
-#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
+#[cfg(not(multi_thread))]
 type BoxPut<E> = Pin<Box<dyn Future<Output = PutDone<E>>>>;
 
 /// Handoff carrying one pool leaf seal back to the engine.

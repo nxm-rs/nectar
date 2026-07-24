@@ -63,6 +63,7 @@ nectar-contracts = { version = "0.4.0", path = "crates/contracts" }
 nectar-file = { version = "0.4.0", path = "crates/file" }
 nectar-manifest = { version = "0.4.0", path = "crates/manifest" }
 nectar-mantaray = { version = "0.4.0", path = "crates/mantaray" }
+nectar-marker = { version = "0.4.0", path = "crates/marker" }
 nectar-primitives = { version = "0.4.0", path = "crates/primitives" }
 nectar-swarms = { version = "0.4.0", path = "crates/swarms" }
 nectar-postage = { version = "0.4.0", path = "crates/postage" }
@@ -112,6 +113,7 @@ rayon = "1.10"
 # Core dependencies
 bytes = { version = "1.11", default-features = false }
 futures-channel = { version = "0.3", default-features = false, features = ["alloc"] }
+futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 # race::OnceBox: lazy statics without std synchronization
 once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }

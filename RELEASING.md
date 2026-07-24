@@ -12,18 +12,19 @@ All publishable crates share a single workspace version, defined once in `[works
 
 cargo-release computes the dependency order automatically and publishes leaves before dependents. For reference, the order is:
 
-1. `nectar-primitives`
-2. `nectar-contracts`
-3. `nectar-swarms`
-4. `nectar-postage` (depends on `nectar-primitives`)
-5. `nectar-mantaray` (depends on `nectar-primitives`)
-6. `nectar-postage-issuer` (depends on `nectar-postage`, `nectar-primitives`)
+1. `nectar-marker`
+2. `nectar-primitives` (depends on `nectar-marker`)
+3. `nectar-contracts`
+4. `nectar-swarms`
+5. `nectar-postage` (depends on `nectar-primitives`)
+6. `nectar-mantaray` (depends on `nectar-primitives`)
+7. `nectar-postage-issuer` (depends on `nectar-postage`, `nectar-primitives`)
 
 The `bmt-wasm-demo` example crate is `publish = false` and is skipped.
 
 ## Prerequisites
 
-- A crates.io account that is an owner of all six crates, and a token available to cargo: run `cargo login`, or export `CARGO_REGISTRY_TOKEN`.
+- A crates.io account that is an owner of all seven crates, and a token available to cargo: run `cargo login`, or export `CARGO_REGISTRY_TOKEN`.
 - Your hardware signing key (YubiKey) unlocked in the gpg-agent, so cargo-release can create the signed release commit and signed `vX.Y.Z` tag without prompting.
 - A clean checkout of `main` with no uncommitted changes, up to date with the remote.
 - CI green on the commit you are about to release.
@@ -47,7 +48,7 @@ cargo release minor --execute
 2. Run the pre-release hook (`git-cliff`) to regenerate `CHANGELOG.md` for the new version.
 3. Create the signed release commit `chore(release): X.Y.Z`.
 4. Create the signed tag `vX.Y.Z`.
-5. Publish all six crates to crates.io in dependency order.
+5. Publish all seven crates to crates.io in dependency order.
 6. Push the release commit and tag to the remote.
 
 Use `patch` instead of `minor` for a patch release, or `cargo release X.Y.Z --execute` to set an exact version.

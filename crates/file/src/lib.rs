@@ -83,6 +83,10 @@ extern crate alloc;
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
+// The marker traits bound only the std-gated surfaces today.
+#[cfg(not(feature = "std"))]
+use nectar_marker as _;
+
 #[cfg(all(feature = "rayon", target_arch = "wasm32"))]
 compile_error!("feature `rayon` needs a native thread pool; wasm32 builds must disable it");
 
@@ -133,10 +137,7 @@ pub mod walk;
 
 #[cfg(feature = "tokio")]
 pub use self::tokio::{SeekOverflow, TokioReader};
-#[cfg(all(
-    feature = "tokio",
-    not(any(target_arch = "wasm32", feature = "unsync"))
-))]
+#[cfg(all(feature = "tokio", multi_thread))]
 pub use self::tokio::{SpawnedReader, TokioWriter};
 pub use config::{BranchBudget, HashWindow, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};

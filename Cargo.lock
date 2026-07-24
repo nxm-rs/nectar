@@ -2125,6 +2125,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "nectar-mantaray 0.4.0",
+ "nectar-marker",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",
@@ -2204,6 +2205,10 @@ dependencies = [
  "serde_json",
  "thiserror",
 ]
+
+[[package]]
+name = "nectar-marker"
+version = "0.4.0"
 
 [[package]]
 name = "nectar-postage"
@@ -2304,12 +2309,14 @@ dependencies = [
  "derive_more",
  "digest 0.11.3",
  "futures",
+ "futures-core",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "getrandom 0.4.2",
  "hybrid-array",
  "js-sys",
  "keccak-batch",
+ "nectar-marker",
  "nectar-testing",
  "once_cell",
  "parking_lot",
