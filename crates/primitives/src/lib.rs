@@ -55,6 +55,7 @@ pub mod bmt;
 mod cache;
 mod cast;
 pub mod chunk;
+pub mod ecies;
 pub mod entry_ref;
 pub mod error;
 #[cfg(any(test, feature = "arbitrary"))]

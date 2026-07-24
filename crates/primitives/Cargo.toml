@@ -26,6 +26,7 @@ alloy-signer-local.workspace = true
 ## rust crypto
 digest.workspace = true
 hybrid-array.workspace = true
+k256 = { workspace = true, features = ["ecdh"] }
 keccak-batch.workspace = true
 
 # derive macros
