@@ -27,7 +27,6 @@ nectar-primitives = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
 arbitrary.workspace = true
 # Self dev-dependency: exposes the `generators` module to integration tests.
 nectar-manifest = { workspace = true, features = ["arbitrary"] }

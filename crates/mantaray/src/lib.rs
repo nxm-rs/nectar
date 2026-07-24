@@ -96,7 +96,8 @@
         clippy::arithmetic_side_effects,
         clippy::panic,
         clippy::unreachable,
-        clippy::panic_in_result_fn
+        clippy::panic_in_result_fn,
+        clippy::as_conversions
     )
 )]
 // `alloc` backs the fork maps (`BTreeMap`) and shared error sources (`Arc`).

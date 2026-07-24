@@ -1,0 +1,136 @@
+[package]
+name = "nectar-integration-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Public-API integration tests for the nectar workspace"
+publish = false
+
+# Non-shipping targets: the runtime-safety restriction set does not apply,
+# but stubs and ad-hoc executor entry points stay denied.
+[lints.rust]
+unused-must-use = "deny"
+rust-2018-idioms = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+redundant-clone = "warn"
+todo = "deny"
+unimplemented = "deny"
+disallowed_methods = "deny"
+
+[dev-dependencies]
+anyhow.workspace = true
+arbitrary.workspace = true
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+alloy-signer-local.workspace = true
+bytes.workspace = true
+futures.workspace = true
+# Registry-pinned legacy oracle for the submission-order differential gate:
+# identical op sequences must produce byte-identical roots.
+mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
+nectar-file.workspace = true
+nectar-manifest = { workspace = true, features = ["arbitrary"] }
+nectar-mantaray.workspace = true
+nectar-postage.workspace = true
+nectar-postage-issuer.workspace = true
+nectar-postage-usage.workspace = true
+nectar-primitives.workspace = true
+nectar-testing = { workspace = true, features = ["alloc", "fixtures"] }
+proptest.workspace = true
+
+[features]
+# Each feature mirrors the underlying crate feature so the `cfg(feature)`
+# gates in the test files keep their meaning; CI selects the shapes.
+encryption = [ "nectar-file/encryption", "nectar-primitives/encryption" ]
+issuer = [ "nectar-postage-usage/issuer" ]
+rayon = [ "nectar-file/rayon" ]
+seal = [ "nectar-postage-usage/seal" ]
+
+[[test]]
+name = "file_alloc_probe"
+path = "tests/file/alloc_probe.rs"
+
+[[test]]
+name = "file_membound"
+path = "tests/file/membound.rs"
+
+[[test]]
+name = "file_plain_alloc_probe"
+path = "tests/file/plain_alloc_probe.rs"
+
+[[test]]
+name = "file_split_membound"
+path = "tests/file/split_membound.rs"
+
+[[test]]
+name = "manifest_apply"
+path = "tests/manifest/apply.rs"
+
+[[test]]
+name = "manifest_bridge"
+path = "tests/manifest/bridge.rs"
+
+[[test]]
+name = "manifest_builder"
+path = "tests/manifest/builder.rs"
+
+[[test]]
+name = "manifest_conformance"
+path = "tests/manifest/conformance.rs"
+
+[[test]]
+name = "manifest_counted"
+path = "tests/manifest/counted.rs"
+
+[[test]]
+name = "manifest_determinism"
+path = "tests/manifest/determinism.rs"
+
+[[test]]
+name = "manifest_membound"
+path = "tests/manifest/membound.rs"
+
+[[test]]
+name = "manifest_order"
+path = "tests/manifest/order.rs"
+
+[[test]]
+name = "manifest_reader"
+path = "tests/manifest/reader.rs"
+
+[[test]]
+name = "manifest_read_profile"
+path = "tests/manifest/read_profile.rs"
+
+[[test]]
+name = "manifest_scan"
+path = "tests/manifest/scan.rs"
+
+[[test]]
+name = "mantaray_legacy_differential"
+path = "tests/mantaray/legacy_differential.rs"
+
+[[test]]
+name = "postage_issuer_non_mainnet"
+path = "tests/postage_issuer/non_mainnet.rs"
+
+[[test]]
+name = "postage_usage_issuer"
+path = "tests/postage_usage/issuer.rs"
+
+[[test]]
+name = "postage_usage_seal"
+path = "tests/postage_usage/seal.rs"
+
+[[test]]
+name = "postage_usage_snapshot"
+path = "tests/postage_usage/snapshot.rs"
+
+[[test]]
+name = "postage_usage_vector"
+path = "tests/postage_usage/vector.rs"

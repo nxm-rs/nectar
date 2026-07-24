@@ -29,27 +29,15 @@ alloy-signer-local = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
-futures = { workspace = true }
+# Referenced by the `arbitrary` feature.
+nectar-file = { workspace = true }
 # The upload pipeline bench splits through the streaming engine and the
 # rayon batch ingest.
-nectar-file = { workspace = true, features = ["rayon"] }
-nectar-testing = { workspace = true, features = ["fixtures"] }
 proptest = { workspace = true }
-criterion = { workspace = true }
 rand = { workspace = true }
 alloy-signer-local = { workspace = true }
 alloy-primitives = { workspace = true, features = ["getrandom"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-
-[[bench]]
-name = "sign"
-harness = false
-required-features = ["parallel"]
-
-[[bench]]
-name = "upload_pipeline"
-harness = false
-required-features = ["parallel"]
 
 [features]
 default = [ "std" ]

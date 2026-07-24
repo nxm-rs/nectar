@@ -38,18 +38,12 @@ web-time = { workspace = true, optional = true }
 [dev-dependencies]
 proptest = { workspace = true }
 proptest-arbitrary-interop = { workspace = true }
-criterion = { workspace = true }
 rand = { workspace = true }
 alloy-signer-local = { workspace = true }
 alloy-primitives = { workspace = true, features = ["getrandom", "arbitrary"] }
 arbitrary = { workspace = true }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
 nectar-testing = { workspace = true, features = ["fixtures"] }
-
-[[bench]]
-name = "verify"
-harness = false
-required-features = ["parallel"]
 
 [features]
 default = [ "std" ]
