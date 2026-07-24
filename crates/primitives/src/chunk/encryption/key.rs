@@ -83,7 +83,7 @@ impl TryFrom<&[u8]> for EncryptionKey {
     }
 }
 
-#[cfg(feature = "arbitrary")]
+#[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for EncryptionKey {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         Ok(Self(<[u8; Self::SIZE] as arbitrary::Arbitrary>::arbitrary(
