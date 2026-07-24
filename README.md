@@ -22,6 +22,7 @@ Looking for the org overview? See **[github.com/nxm-rs](https://github.com/nxm-r
 | **[`nectar-postage-issuer`](./crates/postage-issuer)** | High-performance stamp issuance with parallel signing | [![crates.io](https://img.shields.io/crates/v/nectar-postage-issuer.svg)](https://crates.io/crates/nectar-postage-issuer) | [![docs.rs](https://docs.rs/nectar-postage-issuer/badge.svg)](https://docs.rs/nectar-postage-issuer) |
 | **[`nectar-contracts`](./crates/contracts)** | Contract bindings for on-chain Swarm interactions | [![crates.io](https://img.shields.io/crates/v/nectar-contracts.svg)](https://crates.io/crates/nectar-contracts) | [![docs.rs](https://docs.rs/nectar-contracts/badge.svg)](https://docs.rs/nectar-contracts) |
 | **[`nectar-swarms`](./crates/swarms)** | Network identifiers (mainnet, testnet, etc.) | [![crates.io](https://img.shields.io/crates/v/nectar-swarms.svg)](https://crates.io/crates/nectar-swarms) | [![docs.rs](https://docs.rs/nectar-swarms/badge.svg)](https://docs.rs/nectar-swarms) |
+| **[`nectar-clock`](./crates/clock)** | Injectable `no_std` time source | [![crates.io](https://img.shields.io/crates/v/nectar-clock.svg)](https://crates.io/crates/nectar-clock) | [![docs.rs](https://docs.rs/nectar-clock/badge.svg)](https://docs.rs/nectar-clock) |
 
 ---
 

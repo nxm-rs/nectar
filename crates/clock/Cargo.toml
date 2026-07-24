@@ -1,0 +1,35 @@
+[package]
+name = "nectar-clock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Injectable time source for Ethereum Swarm components"
+documentation = "https://docs.rs/nectar-clock"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "clock", "time", "no_std"]
+categories = ["no-std", "date-and-time"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nectar-marker = { workspace = true }
+
+# optional
+web-time = { workspace = true, optional = true }
+
+[features]
+default = [ "std" ]
+std = [ "dep:web-time" ]
+# Single-thread send escape for non-wasm targets: relaxes the Clock bounds
+# via nectar-marker/unsync.
+unsync = [ "nectar-marker/unsync" ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
