@@ -577,46 +577,48 @@ mod encrypted {
 
     #[test]
     fn encrypted_roots_read_back_with_the_pinned_tree_shape() {
-        for size in sizes() {
-            let data = fill(size);
-            // The rand-gated default source through the `Default` mode.
-            let store = TestStore::<TINY>::new(1);
-            let mut split: Split<TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
-                Split::new(store.clone(), PutWindow::new(4).unwrap());
-            let root = run(async {
-                let mut buf = data.as_slice();
-                while !buf.is_empty() {
-                    let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-                    buf = &buf[n..];
-                }
-                poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-            });
-            let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
-                store,
-                *root.address(),
-                root.key().clone(),
-                size as u64,
-                0..u64::MAX,
-                Window::new(4).unwrap(),
-            );
-            let plaintext = run(async {
-                let mut bytes = Vec::new();
-                while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
-                    bytes.extend_from_slice(&frame.unwrap().data);
-                }
-                bytes
-            });
-            assert_eq!(plaintext, data, "plaintext diverged at {size}");
+        run(async {
+            for size in sizes() {
+                let data = fill(size);
+                // The rand-gated default source through the `Default` mode.
+                let store = TestStore::<TINY>::new(1);
+                let mut split: Split<TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
+                    Split::new(store.clone(), PutWindow::new(4).unwrap());
+                let root = {
+                    let mut buf = data.as_slice();
+                    while !buf.is_empty() {
+                        let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+                        buf = &buf[n..];
+                    }
+                    poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+                };
+                let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
+                    store,
+                    *root.address(),
+                    root.key().clone(),
+                    size as u64,
+                    0..u64::MAX,
+                    Window::new(4).unwrap(),
+                );
+                let plaintext = {
+                    let mut bytes = Vec::new();
+                    while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+                        bytes.extend_from_slice(&frame.unwrap().data);
+                    }
+                    bytes
+                };
+                assert_eq!(plaintext, data, "plaintext diverged at {size}");
 
-            let stats = split.stats();
-            assert_eq!(
-                stats.puts,
-                tree_chunks(size, TINY, ENC_BRANCHES),
-                "chunk count diverged at {size}"
-            );
-            assert_eq!(stats.bytes, size as u64);
-            assert_eq!(stats.leaves + stats.intermediates, stats.puts);
-        }
+                let stats = split.stats();
+                assert_eq!(
+                    stats.puts,
+                    tree_chunks(size, TINY, ENC_BRANCHES),
+                    "chunk count diverged at {size}"
+                );
+                assert_eq!(stats.bytes, size as u64);
+                assert_eq!(stats.leaves + stats.intermediates, stats.puts);
+            }
+        });
     }
 
     #[test]

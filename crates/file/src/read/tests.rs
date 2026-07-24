@@ -80,15 +80,28 @@ fn plain_reader_matches_the_source_bytes() {
     for len in edge_sizes() {
         let data = fill(len);
         let (root, store) = split_fixture::<TINY>(&data);
-        for window in [1u16, 4] {
-            let file = run(File::<_, Plain, TINY>::open(store.clone(), root)).unwrap();
-            assert_eq!(file.len(), len as u64);
-            assert_eq!(file.is_empty(), len == 0);
-            let mut reader = file.read().window(Window::new(window).unwrap()).build();
-            assert_eq!(reader.effective_len(), len as u64);
-            assert_eq!(drain_reader(&mut reader), data, "diverged at {len}");
-            assert_eq!(reader.position(), len as u64);
-        }
+        run(async {
+            for window in [1u16, 4] {
+                let file = File::<_, Plain, TINY>::open(store.clone(), root)
+                    .await
+                    .unwrap();
+                assert_eq!(file.len(), len as u64);
+                assert_eq!(file.is_empty(), len == 0);
+                let mut reader = file.read().window(Window::new(window).unwrap()).build();
+                assert_eq!(reader.effective_len(), len as u64);
+                let mut out = Vec::new();
+                let mut buf = [0u8; 97];
+                loop {
+                    let n = reader.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    out.extend_from_slice(&buf[..n]);
+                }
+                assert_eq!(out, data, "diverged at {len}");
+                assert_eq!(reader.position(), len as u64);
+            }
+        });
     }
 }
 
@@ -98,16 +111,26 @@ fn encrypted_reader_matches_the_source_bytes() {
     for len in edge_sizes() {
         let data = fill(len);
         let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
-        for window in [1u16, 4] {
-            let file = run(File::<_, Encrypted, TINY>::open_encrypted(
-                store.clone(),
-                root_ref.clone(),
-            ))
-            .unwrap();
-            assert_eq!(file.len(), len as u64);
-            let mut reader = file.read().window(Window::new(window).unwrap()).build();
-            assert_eq!(drain_reader(&mut reader), data, "diverged at {len}");
-        }
+        run(async {
+            for window in [1u16, 4] {
+                let file =
+                    File::<_, Encrypted, TINY>::open_encrypted(store.clone(), root_ref.clone())
+                        .await
+                        .unwrap();
+                assert_eq!(file.len(), len as u64);
+                let mut reader = file.read().window(Window::new(window).unwrap()).build();
+                let mut out = Vec::new();
+                let mut buf = [0u8; 97];
+                loop {
+                    let n = reader.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    out.extend_from_slice(&buf[..n]);
+                }
+                assert_eq!(out, data, "diverged at {len}");
+            }
+        });
     }
 }
 
@@ -186,7 +209,7 @@ fn out_of_file_ranges_clip_to_effective_length() {
     assert!(drain_reader(&mut reader).is_empty());
 }
 
-fn run_seek_script<M: WalkMode>(
+async fn run_seek_script<M: WalkMode>(
     mut reader: FileReader<TinyStore, M, TINY>,
     data: &[u8],
     label: &str,
@@ -205,15 +228,13 @@ fn run_seek_script<M: WalkMode>(
         assert_eq!(reader.position(), pos, "{label}: position after seek");
         let mut buf = vec![0u8; want];
         let mut got = 0;
-        run(async {
-            loop {
-                let n = reader.read(&mut buf[got..]).await.unwrap();
-                if n == 0 {
-                    break;
-                }
-                got += n;
+        loop {
+            let n = reader.read(&mut buf[got..]).await.unwrap();
+            if n == 0 {
+                break;
             }
-        });
+            got += n;
+        }
         let expect_end = (pos as usize + want).min(len);
         let expect = &data[(pos as usize).min(len)..expect_end];
         assert_eq!(&buf[..got], expect, "{label}: seek {pos} read {want}");
@@ -229,9 +250,7 @@ fn run_seek_script<M: WalkMode>(
     );
     reader.seek(3).unwrap();
     let mut buf = [0u8; 4];
-    run(async {
-        reader.read(&mut buf).await.unwrap();
-    });
+    reader.read(&mut buf).await.unwrap();
     assert_eq!(&buf[..], &data[3..7], "{label}: read after failed seek");
 }
 
@@ -239,8 +258,10 @@ fn run_seek_script<M: WalkMode>(
 fn seek_reads_match_oracle_slices() {
     let data = fill(21 * TINY + 100);
     let (root, store) = split_fixture::<TINY>(&data);
-    let file = run(File::<_, Plain, TINY>::open(store, root)).unwrap();
-    run_seek_script(file.read().build(), &data, "plain");
+    run(async {
+        let file = File::<_, Plain, TINY>::open(store, root).await.unwrap();
+        run_seek_script(file.read().build(), &data, "plain").await;
+    });
 }
 
 #[cfg(feature = "encryption")]
@@ -248,8 +269,12 @@ fn seek_reads_match_oracle_slices() {
 fn encrypted_seek_reads_match_oracle_slices() {
     let data = fill(21 * TINY + 100);
     let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
-    let file = run(File::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
-    run_seek_script(file.read().build(), &data, "encrypted");
+    run(async {
+        let file = File::<_, Encrypted, TINY>::open_encrypted(store, root_ref)
+            .await
+            .unwrap();
+        run_seek_script(file.read().build(), &data, "encrypted").await;
+    });
 }
 
 #[test]
