@@ -22,6 +22,8 @@ use core::pin::Pin;
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, StreamExt};
 use nectar_primitives::ChunkAddress;
+#[cfg(feature = "encryption")]
+use nectar_primitives::EncryptedChunkRef;
 use nectar_primitives::store::MaybeSync;
 
 use crate::fork::{Child, ForkTable};
@@ -37,7 +39,7 @@ use crate::value::{Entry, Key};
 /// chunk base followed by the suffix. A referenced child is a descent point,
 /// never a value: iteration fetches it only to keep walking, not to read it.
 #[derive(Clone, Debug)]
-enum Step<F: Format> {
+pub(crate) enum Step<F: Format> {
     /// A key terminates here with this value.
     Value {
         /// Key bytes below the chunk root.
@@ -52,10 +54,15 @@ enum Step<F: Format> {
         /// The child chunk address.
         addr: ChunkAddress,
     },
-    /// The trie continues into an encrypted child the plain reader cannot open.
+    /// The trie continues into an encrypted child the plain cursor cannot
+    /// open.
     Encrypted {
         /// Key bytes below the chunk root leading to the child.
         suffix: Bytes,
+        /// The child's reference: address plus decryption key, carried for
+        /// the traversal that can open it.
+        #[cfg(feature = "encryption")]
+        reference: EncryptedChunkRef,
     },
 }
 
@@ -63,9 +70,9 @@ impl<F: Format> Step<F> {
     /// The key bytes below the chunk root.
     fn suffix(&self) -> &[u8] {
         match self {
-            Self::Value { suffix, .. } | Self::Ref { suffix, .. } | Self::Encrypted { suffix } => {
-                suffix
-            }
+            Self::Value { suffix, .. }
+            | Self::Ref { suffix, .. }
+            | Self::Encrypted { suffix, .. } => suffix,
         }
     }
 }
@@ -285,7 +292,7 @@ where
                                     let seq = frame.sched.get(index).copied().flatten();
                                     Advance::Descend(join(&frame.base, suffix), *addr, seq)
                                 }
-                                Step::Encrypted { suffix } => {
+                                Step::Encrypted { suffix, .. } => {
                                     Advance::Encrypted(join(&frame.base, suffix))
                                 }
                             }
@@ -586,7 +593,7 @@ where
 
 /// A chunk's contents flattened into ascending-key steps. The root chunk's own
 /// value is the empty key, the least of all, so it leads the list.
-fn flatten<F: Format>(node: &Node<F>, is_root: bool) -> Vec<Step<F>> {
+pub(crate) fn flatten<F: Format>(node: &Node<F>, is_root: bool) -> Vec<Step<F>> {
     let mut steps = Vec::new();
     if is_root && let Some(entry) = node.entry() {
         steps.push(Step::Value {
@@ -620,6 +627,12 @@ fn flatten_table<F: Format>(table: &ForkTable<F>, prefix: &mut Vec<u8>, steps: &
                 suffix: Bytes::copy_from_slice(prefix.as_slice()),
                 addr: *reference.address(),
             }),
+            #[cfg(feature = "encryption")]
+            Some(Child::Ref64(reference)) => steps.push(Step::Encrypted {
+                suffix: Bytes::copy_from_slice(prefix.as_slice()),
+                reference: reference.clone(),
+            }),
+            #[cfg(not(feature = "encryption"))]
             Some(Child::Ref64(_)) => steps.push(Step::Encrypted {
                 suffix: Bytes::copy_from_slice(prefix.as_slice()),
             }),

@@ -103,6 +103,15 @@ jobs:
                   cargo nextest run \
                     -p nectar-postage --features serde --locked \
                     --no-tests=warn --no-fail-fast
+            # The encrypted node walk and its per-reference crypto sit behind
+            # the encryption feature; cover its tests and doctest here.
+            - name: Run manifest encryption tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-manifest --features encryption --locked \
+                    --no-tests=warn --no-fail-fast
+            - name: Run manifest encryption doctests
+              run: cargo test --doc -p nectar-manifest --features encryption --locked
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The
