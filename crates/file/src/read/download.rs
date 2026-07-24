@@ -3,12 +3,14 @@
 use alloc::boxed::Box;
 use core::fmt;
 use core::ops::Range;
+use core::time::Duration;
 
 use futures_util::stream::StreamExt;
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::TrustedGet;
 
+use super::body_size;
 use super::error::DownloadError;
 use super::frames::FileFrames;
 use crate::config::Window;
@@ -105,6 +107,17 @@ impl<S, M: WalkMode, const B: usize> DownloadBuilder<S, M, B> {
     pub const fn window(mut self, window: Window) -> Self {
         self.window = window;
         self
+    }
+
+    /// Fetch window sized to sustain `bytes_per_second` at `mean_latency`
+    /// per leaf fetch; see [`Window::for_throughput`].
+    #[must_use]
+    pub const fn throughput(self, bytes_per_second: u64, mean_latency: Duration) -> Self {
+        self.window(Window::for_throughput(
+            bytes_per_second,
+            mean_latency,
+            body_size::<B>(),
+        ))
     }
 
     /// Absolute byte range to download, clipped to the file.
