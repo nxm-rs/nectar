@@ -104,6 +104,22 @@ fn plain_reader_matches_the_source_bytes() {
     }
 }
 
+#[test]
+fn throughput_hint_sizes_the_window() {
+    let data = fill(TINY * 8);
+    let (root, store) = split_fixture::<TINY>(&data);
+    run(async {
+        let file = File::<_, Plain, TINY>::open(store, root).await.unwrap();
+        // One body per second at one second per fetch: a single slot.
+        let mut reader = file
+            .read()
+            .throughput(TINY as u64, core::time::Duration::from_secs(1))
+            .build();
+        assert_eq!(drain(&mut reader).await, data);
+        assert!(reader.stats().peak_occupancy <= 1);
+    });
+}
+
 #[cfg(feature = "encryption")]
 #[test]
 fn encrypted_reader_matches_the_source_bytes() {
