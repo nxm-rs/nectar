@@ -57,6 +57,10 @@ jobs:
             # above never see them.
             - name: cargo clippy (postage serde)
               run: cargo clippy --locked --all-targets -p nectar-postage --features serde
+            # The encrypted node walk sits behind the encryption feature,
+            # likewise outside the default-features pass.
+            - name: cargo clippy (manifest encryption)
+              run: cargo clippy --locked --all-targets -p nectar-manifest --features encryption
             # `unused_crate_dependencies` is enforced per-library via `cargo
             # rustc` (not `[workspace.lints]`) so the flag applies only to each
             # crate's own lib target — never to benches/examples/tests (which
