@@ -27,7 +27,6 @@ serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-proptest-arbitrary-interop = { workspace = true }
 
 [features]
 default = [ "std" ]

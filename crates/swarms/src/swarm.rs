@@ -276,3 +276,27 @@ mod tests {
         assert_ne!(swarm, 5678u64);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use strum::IntoEnumIterator;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// `id()` recovers the input regardless of the named/unchecked branch.
+        #[test]
+        fn from_id_recovers_id(id in any::<u64>()) {
+            prop_assert_eq!(Swarm::from_id(id).id(), id);
+        }
+
+        /// A named id classifies back to its own named swarm, not an unchecked id.
+        #[test]
+        fn from_id_recognizes_named(index in 0usize..NamedSwarm::iter().count()) {
+            let named = NamedSwarm::iter().nth(index).unwrap();
+            prop_assert_eq!(Swarm::from_id(named.id()).named(), Some(named));
+        }
+    }
+}
