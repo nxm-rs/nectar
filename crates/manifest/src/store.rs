@@ -12,7 +12,9 @@
 use core::future::Future;
 
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
-use nectar_primitives::{Chunk, ChunkAddress, ChunkOps, ContentChunk, Verified};
+use nectar_primitives::{
+    Chunk, ChunkAddress, ChunkOps, ContentChunk, EncryptionKey, Verified, transcrypt_in_place,
+};
 
 use crate::codec::{DecodeError, DecodedChunk, EncodeError};
 use crate::fork::ForkTable;
@@ -100,12 +102,38 @@ where
     S: TrustedGet + MaybeSync,
     F: Format,
 {
+    let (node, _) = materialize_traced::<S, F>(store, address, None).await?;
+    Ok(node)
+}
+
+/// Load the node at `address`, decrypting with `key` when the reference
+/// carried one, and record each segment chunk address the reassembly fetches.
+///
+/// The arrival fixes the segment widths: a plain node's descriptors must be
+/// bare, an encrypted node's must carry keys.
+pub(crate) async fn materialize_traced<S, F>(
+    store: &S,
+    address: &ChunkAddress,
+    key: Option<&EncryptionKey>,
+) -> Result<(Node<F>, Vec<ChunkAddress>), StoreError>
+where
+    S: TrustedGet + MaybeSync,
+    F: Format,
+{
     let chunk = store.get(address).await.map_err(StoreError::store)?;
-    match Node::<F>::decode_chunk(chunk.envelope().data())? {
-        DecodedChunk::Node(node) => Ok(node),
+    match decode_fetched::<F>(&chunk, key)? {
+        DecodedChunk::Node(node) => Ok((node, Vec::new())),
         DecodedChunk::Segmented(root, dir) => {
-            let forks = Box::pin(collect_segment_forks::<S, F>(store, &dir, 0)).await?;
-            Ok(Node::new(root, forks))
+            let mut trace = Vec::with_capacity(dir.descriptors.len());
+            let forks = Box::pin(collect_segment_forks::<S, F>(
+                store,
+                &dir,
+                key.is_some(),
+                0,
+                &mut trace,
+            ))
+            .await?;
+            Ok((Node::new(root, forks), trace))
         }
         // A fork child reference names a node, never a bare segment.
         DecodedChunk::Leaf(_) | DecodedChunk::Directory(_) => {
@@ -114,12 +142,30 @@ where
     }
 }
 
+/// Decode a certified chunk, decrypting first when a key travels with it.
+fn decode_fetched<F: Format>(
+    chunk: &NodeChunk,
+    key: Option<&EncryptionKey>,
+) -> Result<DecodedChunk<F>, DecodeError> {
+    key.map_or_else(
+        || Node::decode_chunk(chunk.envelope().data()),
+        |key| {
+            let mut payload = chunk.envelope().data().to_vec();
+            transcrypt_in_place(key, 0, &mut payload);
+            Node::decode_chunk(&payload)
+        },
+    )
+}
+
 /// Gather every fork of a spilled node by fetching the segments its directory
-/// routes to, descending one directory level at a time.
+/// routes to, descending one directory level at a time and recording each
+/// segment chunk address into `trace`.
 async fn collect_segment_forks<S, F>(
     store: &S,
     dir: &crate::codec::SegmentDir,
+    encrypted: bool,
     depth: usize,
+    trace: &mut Vec<ChunkAddress>,
 ) -> Result<ForkTable<F>, StoreError>
 where
     S: TrustedGet + MaybeSync,
@@ -130,21 +176,24 @@ where
     }
     let mut table = ForkTable::new();
     for descriptor in &dir.descriptors {
-        // The plain read path cannot open an encrypted segment tree.
-        if descriptor.key.is_some() {
+        // Descriptor width must match the arrival on both sides.
+        if descriptor.key.is_some() != encrypted {
             return Err(StoreError::Decode(DecodeError::SegmentContext));
         }
+        trace.push(descriptor.address);
         let chunk = store
             .get(&descriptor.address)
             .await
             .map_err(StoreError::store)?;
-        let sub = match Node::<F>::decode_chunk(chunk.envelope().data())? {
+        let sub = match decode_fetched::<F>(&chunk, descriptor.key.as_ref())? {
             DecodedChunk::Leaf(sub) => sub,
             DecodedChunk::Directory(inner) => {
                 Box::pin(collect_segment_forks::<S, F>(
                     store,
                     &inner,
+                    encrypted,
                     depth.saturating_add(1),
+                    trace,
                 ))
                 .await?
             }
