@@ -337,19 +337,35 @@ fn clean_ancestor_hazard_regression() {
     assert_eq!(got, want, "the editor reproduced the clean-ancestor hazard");
 }
 
-/// Path pool for randomized scripts: split-prone stems, nested folders, the
-/// root path, and edges past the 30-byte prefix limit.
+/// Path pool for randomized scripts: split-prone stems, mid-edge splits,
+/// nested and deep folders, boundary-remove-prone parents, the root path,
+/// and long edges at and past the 30-byte prefix limit, including a pair
+/// diverging inside the long edge. Every shape is exercised by the
+/// deterministic corpora above, so the pool stays within pinned-crate
+/// support.
 const PATHS: &[&str] = &[
     "a",
     "ab",
     "abc",
+    "abcdef",
+    "abcxyz",
     "app.js",
     "app.js.map",
+    "app.js.map.gz",
     "index.html",
     "img/1.png",
     "img/2.png",
+    "img/3.png",
     "img/sub/deep.png",
+    "d/x",
+    "d/y",
+    "da",
     "dir/sub/file00.dat",
+    "dir/sub/file01.dat",
+    "a/b/c/d/e/f/g/h/file00.dat",
+    "a/b/c/x.txt",
+    "oneverylongpathsegmentthatexceedsthethirtybyteprefixlimitforsure",
+    "oneverylongpathsegmentthatexceedsthethirtybyteprefixlimitforsurely",
     "oneverylongpathsegmentthatexceedsthethirtybyteprefixlimitforsure/x",
     "/",
 ];

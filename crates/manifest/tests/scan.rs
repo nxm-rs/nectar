@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, ensure};
+use arbitrary::Unstructured;
 use bytes::Bytes;
-use nectar_manifest::{Builder, Cursor, Entry, Format, Key, Reader, V1};
+use nectar_manifest::{Builder, Cursor, Entry, Format, Key, Reader, V1, generators};
 use nectar_primitives::store::{ChunkGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, StandardChunkSet, Verified};
 use nectar_testing::run;
@@ -310,6 +311,55 @@ proptest! {
             let value = Entry::inline(Bytes::from(vec![fill; 32]))
                 .map_err(|e| TestCaseError::fail(e.to_string()))?;
             oracle.insert(key, value);
+        }
+        let store = MemoryStore::default();
+        let mut builder = Builder::new();
+        for (key, value) in &oracle {
+            builder.insert(Key::from(key.clone()), value.clone(), None);
+        }
+        let built = run(builder.build(&store))
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let reader: Reader<_> = Reader::new(&store);
+        let got: Rows = {
+            let mut cursor = run(reader.iter(built.root()))
+                .map_err(|e| TestCaseError::fail(e.to_string()))?;
+            let mut out = Vec::new();
+            while let Some((key, value)) = run(cursor.next())
+                .map_err(|e| TestCaseError::fail(e.to_string()))?
+            {
+                out.push((key.as_bytes().to_vec(), value));
+            }
+            out
+        };
+        let expected: Rows = oracle.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        prop_assert_eq!(got, expected);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    // Ordered iteration at the chain regime: low-entropy keys whose shared
+    // runs cross PLEN_MAX chain forks over multiple levels, and the cursor
+    // still returns exactly the ordered oracle across the chained edges.
+    #[test]
+    fn iteration_matches_the_oracle_across_chained_edges(
+        seed in prop::collection::vec(any::<u8>(), 0..8192),
+    ) {
+        let mut u = Unstructured::new(&seed);
+        let count = u
+            .int_in_range(0..=12usize)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let mut oracle = Oracle::new();
+        for _ in 0..count {
+            let key = generators::chain_key::<V1>(&mut u)
+                .map_err(|e| TestCaseError::fail(e.to_string()))?;
+            let fill = u
+                .int_in_range(0..=u8::MAX)
+                .map_err(|e| TestCaseError::fail(e.to_string()))?;
+            let value = Entry::inline(Bytes::from(vec![fill; 16]))
+                .map_err(|e| TestCaseError::fail(e.to_string()))?;
+            oracle.insert(key.as_bytes().to_vec(), value);
         }
         let store = MemoryStore::default();
         let mut builder = Builder::new();

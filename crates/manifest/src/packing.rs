@@ -326,6 +326,61 @@ mod tests {
         }
     }
 
+    // The exact leaf-capacity threshold: a two-fork run weighing exactly
+    // CAP_FORK packs as one segment; one more byte forces the cut before the
+    // second fork.
+    #[test]
+    fn a_leaf_run_packs_to_cap_fork_and_splits_one_byte_past() {
+        // The head stays under SEG_MIN, so no content cut can close the run
+        // before the capacity check sees the tail fork.
+        let head = V1::SEG_MIN - 1;
+        let fit = V1::CAP_FORK - head;
+        assert_eq!(head + fit, 4091);
+        let run = |tail: usize| {
+            let forks = vec![
+                (
+                    Prefix::try_from(&b"a"[..]).unwrap(),
+                    SegmentWeight::new(head).unwrap(),
+                ),
+                (
+                    Prefix::try_from(&b"b"[..]).unwrap(),
+                    SegmentWeight::new(tail).unwrap(),
+                ),
+            ];
+            segment::<V1>(&forks, SegmentKind::Leaf)
+        };
+        assert_eq!(run(fit), vec![0..2]);
+        assert_eq!(run(fit + 1), vec![0..1, 1..2]);
+    }
+
+    // The exact spill threshold: a head fork whose hash clears the widest
+    // sub-target window keeps its run open at SEG_TARGET - 1, and one more
+    // byte of weight alone forces the cut.
+    #[test]
+    fn the_forced_cut_fires_exactly_at_seg_target() {
+        assert_eq!(V1::SEG_TARGET, 2048);
+        assert_eq!(h64(b"jh"), 0xfff2_7cd7_3ef7_f1fa);
+        assert!(h64(b"jh") >= u64::try_from(V1::SEG_TARGET - 1).unwrap() * V1::CUT_SCALE);
+        assert!(!cut::<V1>(b"jh", V1::SEG_TARGET - 1));
+        assert!(cut::<V1>(b"jh", V1::SEG_TARGET));
+
+        let run = |weight: usize| {
+            let forks = vec![
+                (
+                    Prefix::try_from(&b"jh"[..]).unwrap(),
+                    SegmentWeight::new(weight).unwrap(),
+                ),
+                (
+                    Prefix::try_from(&b"b"[..]).unwrap(),
+                    SegmentWeight::new(100).unwrap(),
+                ),
+            ];
+            segment::<V1>(&forks, SegmentKind::Leaf)
+        };
+        assert_eq!(run(V1::SEG_TARGET - 1), vec![0..2]);
+        assert_eq!(run(V1::SEG_TARGET), vec![0..1, 1..2]);
+    }
+
     #[test]
     fn segment_reproduces_the_worked_leaf_partition() {
         let forks = worked_forks();
