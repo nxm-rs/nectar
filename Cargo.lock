@@ -2172,6 +2172,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-manifest-sim"
+version = "0.4.0"
+dependencies = [
+ "bytes",
+ "codspeed-criterion-compat",
+ "nectar-manifest",
+ "nectar-mantaray 0.3.0",
+ "nectar-mantaray 0.4.0",
+ "nectar-primitives 0.3.0",
+ "nectar-primitives 0.4.0",
+ "nectar-testing",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "nectar-mantaray"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

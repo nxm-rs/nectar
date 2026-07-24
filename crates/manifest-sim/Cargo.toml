@@ -1,0 +1,58 @@
+[package]
+name = "nectar-manifest-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+description = "Empirical performance harness comparing mantaray 1.0 (nectar-manifest) and mantaray 0.2 (the pinned legacy crate)"
+
+# Non-shipping targets: the runtime-safety restriction set does not apply,
+# but stubs and ad-hoc executor entry points stay denied.
+[lints.rust]
+unused-must-use = "deny"
+rust-2018-idioms = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+redundant-clone = "warn"
+todo = "deny"
+unimplemented = "deny"
+disallowed_methods = "deny"
+
+[dependencies]
+bytes.workspace = true
+# Registry-pinned 0.2 baseline: freezes the legacy comparison against the
+# published crate instead of the (removed) workspace legacy API.
+mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
+primitives-old = { package = "nectar-primitives", version = "=0.3.0" }
+nectar-manifest = { workspace = true }
+nectar-mantaray = { workspace = true }
+nectar-primitives = { workspace = true }
+nectar-testing.workspace = true
+serde = { workspace = true, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+sha2 = "0.10"
+# Paused virtual clock: models one RTT per node fetch so the bounded-concurrency
+# ordered cursor's parallel rounds are read off tokio's auto-advancing test
+# clock, never guessed. `test-util` supplies `start_paused`.
+tokio = { workspace = true, features = ["time", "test-util"] }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bin]]
+name = "manifest-sim"
+path = "src/bin/manifest_sim.rs"
+
+[[bin]]
+name = "manifest-perf-v3"
+path = "src/bin/manifest_perf_v3.rs"
+
+[[bench]]
+name = "manifest_perf"
+path = "benches/manifest_perf.rs"
+harness = false
