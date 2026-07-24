@@ -1173,3 +1173,36 @@ fn huge_stream_root_matches_the_batch_ingest() {
     assert_eq!(root, batch_root);
     assert_eq!(split.stats().bytes, size);
 }
+
+/// Shrinking stable coverage: root idempotence over write segmentation,
+/// composed from the structural-regime generators.
+mod properties {
+    use arbitrary::Unstructured;
+    use proptest::prelude::*;
+
+    use super::{TINY, sorted, stream_split};
+    use crate::generators;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn root_and_chunk_set_are_invariant_over_segmentation(
+            seed in proptest::collection::vec(any::<u8>(), 0..512)
+        ) {
+            let mut u = Unstructured::new(&seed);
+            let data = generators::body(&mut u).unwrap();
+            let arm = |u: &mut Unstructured<'_>| {
+                let window = u.int_in_range(1..=8u16).unwrap();
+                let step = u.int_in_range(1..=1024usize).unwrap();
+                let delay = u.int_in_range(0..=2usize).unwrap();
+                stream_split::<TINY>(&data, window, step, delay)
+            };
+            let (root_a, store_a, stats) = arm(&mut u);
+            let (root_b, store_b, _) = arm(&mut u);
+            prop_assert_eq!(root_a, root_b);
+            prop_assert_eq!(sorted(store_a.log()), sorted(store_b.log()));
+            prop_assert_eq!(stats.bytes, data.len() as u64);
+        }
+    }
+}
