@@ -38,7 +38,7 @@ jobs:
               run: |
                   cargo check --locked \
                     -p nectar-swarms -p nectar-contracts -p nectar-file \
-                    -p nectar-marker \
+                    -p nectar-marker -p nectar-clock \
                     --no-default-features \
                     --target ${{ matrix.target }}
                   # nectar-mantaray by path: the editor's differential gate pins a
