@@ -206,6 +206,28 @@ mod tests {
     }
 
     #[test]
+    fn test_stamp_parallel_signer_error_passes_through_in_order() {
+        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+
+        let addresses: Vec<_> = (0..20)
+            .map(|_| ChunkAddress::from(B256::random()))
+            .collect();
+
+        // A signer that always fails: allocation succeeds, so every result must
+        // carry the signer error through in input order.
+        let failing = |_: &B256| -> Result<Signature, SigningError> {
+            Err(alloy_signer::Error::message("signer offline").into())
+        };
+        let results = stamp_parallel(&mut issuer, &failing, &addresses);
+
+        assert_eq!(results.len(), addresses.len());
+        for (result, address) in results.iter().zip(&addresses) {
+            assert_eq!(result.address, *address);
+            assert!(matches!(result.result, Err(SigningError::Signer(_))));
+        }
+    }
+
+    #[test]
     fn test_stamp_parallel_ring_issuer() {
         // The helper is issuer-generic: a mutable batch's ring issuer works too.
         let mutable = Batch::new(
