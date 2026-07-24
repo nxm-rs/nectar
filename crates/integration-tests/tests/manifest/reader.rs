@@ -45,20 +45,20 @@ fn entry(byte: u8) -> Entry {
 /// Build a deliberately wide two-level manifest: a root whose fork table holds
 /// one referenced leaf per first byte, each leaf terminating a single key. The
 /// second level is `width` chunks wide, but any one key sits two nodes deep.
-fn wide_manifest(store: &MemoryStore, width: u16) -> Result<ChunkAddress> {
+async fn wide_manifest(store: &MemoryStore, width: u16) -> Result<ChunkAddress> {
     let mut forks = ForkTable::<V1>::new();
     for first in 0..width {
         let first = u8::try_from(first)?;
         let mut leaf = ForkTable::new();
         leaf.insert(Prefix::try_from(&[0xFFu8][..])?, entry(first).into(), None)?;
-        let leaf_ref = run(store.put_node(&Node::new(None, leaf)))?;
+        let leaf_ref = store.put_node(&Node::new(None, leaf)).await?;
         forks.insert(
             Prefix::try_from(&[first][..])?,
             Child::Ref32(ChunkRef::new(leaf_ref)).into(),
             None,
         )?;
     }
-    Ok(run(store.put_node(&Node::new(None, forks)))?)
+    Ok(store.put_node(&Node::new(None, forks)).await?)
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn a_lookup_fetches_depth_nodes_not_the_wide_level() -> Result<()> {
     // radix-full root spills to a directory, which is a later car's concern).
     let width = 100u16;
     let memory = MemoryStore::default();
-    let root = wide_manifest(&memory, width)?;
+    let root = run(wide_manifest(&memory, width))?;
 
     // The whole manifest is one root plus `width` leaves.
     ensure!(memory.len() == usize::from(width) + 1, "stored node count");
@@ -156,12 +156,17 @@ fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
     // whole level: the deepest path stays a small multiple of the tree depth,
     // far below the spilled node count.
     let mut deepest = 0usize;
-    for (key, value) in &expected {
-        store.gets.store(0, Ordering::Relaxed);
-        let got = run(reader.get(&root, &Key::from(key.clone().into_bytes())))?;
-        ensure!(got.as_ref() == Some(value), "{key}");
-        deepest = deepest.max(store.gets());
-    }
+    run(async {
+        for (key, value) in &expected {
+            store.gets.store(0, Ordering::Relaxed);
+            let got = reader
+                .get(&root, &Key::from(key.clone().into_bytes()))
+                .await?;
+            ensure!(got.as_ref() == Some(value), "{key}");
+            deepest = deepest.max(store.gets());
+        }
+        anyhow::Ok(())
+    })?;
     ensure!(deepest >= 2, "at least one key descends a referenced hop");
     ensure!(
         deepest < built.stats().nodes_written(),
@@ -169,26 +174,31 @@ fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
     );
 
     // Keys that diverge from, fall short of, or overrun a stored key are absent.
-    for absent in [
-        "nope",
-        "dir99/file0000.txt",
-        "dir00/file9999.txt",
-        "pr",
-        "prefixed",
-    ] {
-        ensure!(
-            run(reader.get(&root, &Key::from(absent.as_bytes())))?.is_none(),
-            "{absent}",
-        );
-    }
-    Ok(())
+    run(async {
+        for absent in [
+            "nope",
+            "dir99/file0000.txt",
+            "dir00/file9999.txt",
+            "pr",
+            "prefixed",
+        ] {
+            ensure!(
+                reader
+                    .get(&root, &Key::from(absent.as_bytes()))
+                    .await?
+                    .is_none(),
+                "{absent}",
+            );
+        }
+        Ok(())
+    })
 }
 
 #[test]
 fn an_absent_key_stops_at_the_first_unmatched_fork() -> Result<()> {
     let width = 64u16;
     let memory = MemoryStore::default();
-    let root = wide_manifest(&memory, width)?;
+    let root = run(wide_manifest(&memory, width))?;
 
     let store = CountingStore {
         inner: memory,

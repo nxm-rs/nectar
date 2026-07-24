@@ -49,24 +49,24 @@ enum Outcome {
 
 /// Replay on the pinned legacy crate: fresh build, one save. A failing op
 /// stops the replay and is part of the differential contract.
-fn legacy_outcome(script: &[ScriptOp]) -> Outcome {
+async fn legacy_outcome(script: &[ScriptOp]) -> Outcome {
     let mut m = OldManifest::new(OldStore::new());
     for (index, op) in script.iter().enumerate() {
         let result = match op {
-            ScriptOp::Add(p, a) => run(m.add(p, *a)),
+            ScriptOp::Add(p, a) => m.add(p, *a).await,
             ScriptOp::AddMeta(p, a, k, v) => {
                 let meta: BTreeMap<String, String> = [(k.clone(), v.clone())].into();
-                run(m.add_with_metadata(p, *a, meta))
+                m.add_with_metadata(p, *a, meta).await
             }
-            ScriptOp::Rm(p) => run(m.remove(p)),
-            ScriptOp::SetIndex(v) => run(m.set_index_document(v)),
-            ScriptOp::SetError(v) => run(m.set_error_document(v)),
+            ScriptOp::Rm(p) => m.remove(p).await,
+            ScriptOp::SetIndex(v) => m.set_index_document(v).await,
+            ScriptOp::SetError(v) => m.set_error_document(v).await,
         };
         if result.is_err() {
             return Outcome::FailedAt(index);
         }
     }
-    let root = run(m.save()).unwrap();
+    let root = m.save().await.unwrap();
     let mut out = [0u8; 32];
     out.copy_from_slice(root.as_bytes());
     Outcome::Root(out)
@@ -74,7 +74,7 @@ fn legacy_outcome(script: &[ScriptOp]) -> Outcome {
 
 /// The legacy root for a script known to be valid.
 fn legacy_root(script: &[ScriptOp]) -> [u8; 32] {
-    match legacy_outcome(script) {
+    match run(legacy_outcome(script)) {
         Outcome::Root(root) => root,
         Outcome::FailedAt(index) => panic!("legacy replay failed at op {index}"),
     }
@@ -275,7 +275,7 @@ fn corpora_split_commits_match_legacy() {
 #[test]
 fn failing_op_index_matches_legacy() {
     let script = vec![add("ab"), add("a"), rm("a"), rm("ab")];
-    assert_eq!(legacy_outcome(&script), Outcome::FailedAt(3));
+    assert_eq!(run(legacy_outcome(&script)), Outcome::FailedAt(3));
     assert_eq!(editor_outcome(&script), Outcome::FailedAt(3));
     for split in 0..=script.len() {
         assert_eq!(editor_outcome_split(&script, split), Outcome::FailedAt(3));
@@ -416,7 +416,7 @@ proptest! {
     #[test]
     fn random_scripts_match_legacy(raw in proptest::collection::vec(any::<(u8, u8, u8)>(), 1..24)) {
         let script = build_script(&raw);
-        let want = legacy_outcome(&script);
+        let want = run(legacy_outcome(&script));
         prop_assert_eq!(editor_outcome(&script), want);
         prop_assert_eq!(editor_outcome_split(&script, script.len() / 2), want);
     }

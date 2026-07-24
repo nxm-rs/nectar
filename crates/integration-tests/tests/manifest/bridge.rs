@@ -39,37 +39,40 @@ fn pattern(size: usize) -> Bytes {
 
 #[test]
 fn streaming_bridge_pins_the_direct_split_bytes() -> Result<()> {
-    for &size in SIZES {
-        let data = pattern(size);
-        let key = Key::from(&b"file"[..]);
+    run(async {
+        for &size in SIZES {
+            let data = pattern(size);
+            let key = Key::from(&b"file"[..]);
 
-        let store = MemoryStore::default();
-        let built = run(build_files(&store, [(key.clone(), data.clone())]))?;
+            let store = MemoryStore::default();
+            let built = build_files(&store, [(key.clone(), data.clone())]).await?;
 
-        // The reference bridge: the same manifest over a direct split's
-        // reference, with the direct chunk set as the file bytes oracle.
-        let (direct_root, direct_store) = run(split_whole(&data)).map_err(|e| anyhow!("{e}"))?;
-        let node_store = MemoryStore::default();
-        let mut builder: Builder = Builder::new();
-        builder.insert(key, Entry::from(ChunkRef::new(direct_root)), None);
-        let direct_built = run(builder.build(&node_store))?;
-        ensure!(built.root() == direct_built.root(), "manifest root");
+            // The reference bridge: the same manifest over a direct split's
+            // reference, with the direct chunk set as the file bytes oracle.
+            let (direct_root, direct_store) =
+                split_whole(&data).await.map_err(|e| anyhow!("{e}"))?;
+            let node_store = MemoryStore::default();
+            let mut builder: Builder = Builder::new();
+            builder.insert(key, Entry::from(ChunkRef::new(direct_root)), None);
+            let direct_built = builder.build(&node_store).await?;
+            ensure!(built.root() == direct_built.root(), "manifest root");
 
-        let direct = direct_store.into_chunks();
-        let nodes = node_store.into_chunks();
-        for address in direct.keys() {
-            ensure!(store.get(address).is_some(), "direct-split chunk stored");
+            let direct = direct_store.into_chunks();
+            let nodes = node_store.into_chunks();
+            for address in direct.keys() {
+                ensure!(store.get(address).is_some(), "direct-split chunk stored");
+            }
+            // Exact set equality: with the file chunks and manifest nodes both
+            // pinned, no other chunk may appear.
+            for address in store.into_chunks().keys() {
+                ensure!(
+                    direct.contains_key(address) || nodes.contains_key(address),
+                    "no chunk beyond the direct split set and the manifest nodes",
+                );
+            }
         }
-        // Exact set equality: with the file chunks and manifest nodes both
-        // pinned, no other chunk may appear.
-        for address in store.into_chunks().keys() {
-            ensure!(
-                direct.contains_key(address) || nodes.contains_key(address),
-                "no chunk beyond the direct split set and the manifest nodes",
-            );
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 #[test]

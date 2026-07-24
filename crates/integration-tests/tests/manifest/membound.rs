@@ -184,18 +184,20 @@ fn a_million_key_manifest_is_depth_bounded() -> Result<()> {
         gets: AtomicUsize::new(0),
     };
     let reader: Reader<_> = Reader::new(&store);
-    for probe in [[0u8, 0, 0], [255, 255, 15], [128, 64, 8], [7, 200, 3]] {
-        store.gets.store(0, Ordering::Relaxed);
-        let value = run(reader.get(&root, &Key::from(&probe[..])))?;
-        ensure!(value == Some(entry(0x22)), "missing key {probe:?}");
-        // Three levels, each at most a segmented node and its covering segments.
-        ensure!(
-            store.gets() <= 24,
-            "lookup fetched {} nodes, not O(depth)",
-            store.gets(),
-        );
-    }
-    Ok(())
+    run(async {
+        for probe in [[0u8, 0, 0], [255, 255, 15], [128, 64, 8], [7, 200, 3]] {
+            store.gets.store(0, Ordering::Relaxed);
+            let value = reader.get(&root, &Key::from(&probe[..])).await?;
+            ensure!(value == Some(entry(0x22)), "missing key {probe:?}");
+            // Three levels, each at most a segmented node and its covering segments.
+            ensure!(
+                store.gets() <= 24,
+                "lookup fetched {} nodes, not O(depth)",
+                store.gets(),
+            );
+        }
+        Ok(())
+    })
 }
 
 #[test]
@@ -221,14 +223,16 @@ fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> Result<()> {
     assert_single_chunk_nodes(&store)?;
 
     let reader: Reader<_> = Reader::new(&store);
-    for first in [0u8, 1, 127, 200, 255] {
-        let value = run(reader.get(built.root(), &Key::from(vec![first])))?;
-        ensure!(
-            value == Some(entry(first)),
-            "missing key {first} after spill",
-        );
-    }
-    Ok(())
+    run(async {
+        for first in [0u8, 1, 127, 200, 255] {
+            let value = reader.get(built.root(), &Key::from(vec![first])).await?;
+            ensure!(
+                value == Some(entry(first)),
+                "missing key {first} after spill",
+            );
+        }
+        Ok(())
+    })
 }
 
 #[test]
