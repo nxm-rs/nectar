@@ -648,17 +648,21 @@ mod tests {
         // as the prefix range walked from the manifest root.
         let mut delegated = Vec::new();
         let mut cursor = run(reader.iter(sub.address())).unwrap();
-        while let Some((key, value)) = run(cursor.next()).unwrap() {
-            let mut full = b"mg/".to_vec();
-            full.extend_from_slice(key.as_bytes());
-            delegated.push((full, value));
-        }
+        run(async {
+            while let Some((key, value)) = cursor.next().await.unwrap() {
+                let mut full = b"mg/".to_vec();
+                full.extend_from_slice(key.as_bytes());
+                delegated.push((full, value));
+            }
+        });
 
         let mut walked = Vec::new();
         let mut cursor = run(reader.prefix(&root, &Key::from(&b"mg/"[..]))).unwrap();
-        while let Some((key, value)) = run(cursor.next()).unwrap() {
-            walked.push((key.as_bytes().to_vec(), value));
-        }
+        run(async {
+            while let Some((key, value)) = cursor.next().await.unwrap() {
+                walked.push((key.as_bytes().to_vec(), value));
+            }
+        });
         assert_eq!(delegated, walked);
     }
 
