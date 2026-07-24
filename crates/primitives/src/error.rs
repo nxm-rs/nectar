@@ -78,6 +78,10 @@ pub enum PrimitivesError {
     #[error(transparent)]
     Encryption(#[from] crate::chunk::encryption::EncryptionError),
 
+    /// Errors from ECIES operations
+    #[error(transparent)]
+    Ecies(#[from] crate::ecies::EciesError),
+
     /// Input/output errors
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
