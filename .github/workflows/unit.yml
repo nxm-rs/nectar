@@ -103,6 +103,13 @@ jobs:
                   cargo nextest run \
                     -p nectar-postage --features serde --locked \
                     --no-tests=warn --no-fail-fast
+            # The parallel signing helpers sit behind the parallel feature,
+            # outside the default-features pass above.
+            - name: Run postage-issuer parallel tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-postage-issuer --features parallel --locked \
+                    --no-tests=warn --no-fail-fast
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The
