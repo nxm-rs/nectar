@@ -1057,22 +1057,25 @@ mod tests {
     fn encode_decode_round_trip() {
         let mut n = Node::<ChunkRef>::new_unencrypted();
 
-        for entry in test_entries() {
-            let path = entry.path.as_bytes();
-            let e = {
-                let mut buf = [0u8; 32];
-                let len = path.len().min(32);
-                buf[32 - len..].copy_from_slice(&path[..len]);
-                ChunkRef::from(ChunkAddress::from(buf))
-            };
-            nectar_testing::run(n.add::<
-                nectar_primitives::store::NullLoader,
-                { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
-            >(
-                path, Some(e), entry.metadata, &nectar_primitives::store::NullLoader,
-            ))
-            .unwrap();
-        }
+        nectar_testing::run(async {
+            for entry in test_entries() {
+                let path = entry.path.as_bytes();
+                let e = {
+                    let mut buf = [0u8; 32];
+                    let len = path.len().min(32);
+                    buf[32 - len..].copy_from_slice(&path[..len]);
+                    ChunkRef::from(ChunkAddress::from(buf))
+                };
+                n.add::<
+                    nectar_primitives::store::NullLoader,
+                    { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
+                >(
+                    path, Some(e), entry.metadata, &nectar_primitives::store::NullLoader,
+                )
+                .await
+                .unwrap();
+            }
+        });
 
         // assign deterministic references to forks so encoding works
         for (counter, fork) in n.forks.values_mut().enumerate() {

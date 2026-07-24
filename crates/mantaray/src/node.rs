@@ -1430,21 +1430,23 @@ mod tests {
         run_add_and_lookup_node(&test_case_data()[5].items);
     }
 
-    fn run_add_and_lookup_with_load_save(items: &[&str]) {
+    async fn run_add_and_lookup_with_load_save(items: &[&str]) {
         let mut n = Node::default();
 
         for c in items {
             let e = make_entry(c);
-            node_add(&mut n, c.as_bytes(), e, BTreeMap::new());
+            n.add::<NullLoader, BS>(c.as_bytes(), Some(e), BTreeMap::new(), &NL)
+                .await
+                .unwrap();
         }
 
         let store = MemoryStore::<StandardChunkSet>::new();
-        run(n.save(&store)).unwrap();
+        n.save(&store).await.unwrap();
 
         let mut n2: Node = Node::from_reference(*n.reference().unwrap());
 
         for &d in items {
-            let node = run(n2.lookup_node(d.as_bytes(), &store)).unwrap();
+            let node = n2.lookup_node(d.as_bytes(), &store).await.unwrap();
             assert!(node.is_value());
             assert_eq!(node.entry(), Some(&make_entry(d)));
         }
@@ -1477,32 +1479,44 @@ mod tests {
 
     #[test]
     fn add_and_lookup_with_load_save_a() {
-        run_add_and_lookup_with_load_save(&test_case_data()[0].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[0].items).await;
+        });
     }
 
     #[test]
     fn add_and_lookup_with_load_save_simple() {
-        run_add_and_lookup_with_load_save(&test_case_data()[1].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[1].items).await;
+        });
     }
 
     #[test]
     fn add_and_lookup_with_load_save_nested_value() {
-        run_add_and_lookup_with_load_save(&test_case_data()[2].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[2].items).await;
+        });
     }
 
     #[test]
     fn add_and_lookup_with_load_save_nested_prefix() {
-        run_add_and_lookup_with_load_save(&test_case_data()[3].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[3].items).await;
+        });
     }
 
     #[test]
     fn add_and_lookup_with_load_save_conflicting_path() {
-        run_add_and_lookup_with_load_save(&test_case_data()[4].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[4].items).await;
+        });
     }
 
     #[test]
     fn add_and_lookup_with_load_save_spa_website() {
-        run_add_and_lookup_with_load_save(&test_case_data()[5].items);
+        run(async {
+            run_add_and_lookup_with_load_save(&test_case_data()[5].items).await;
+        });
     }
 
     fn run_remove(tc: RemoveTestCase) {
@@ -1562,30 +1576,32 @@ mod tests {
 
     // Tests save->reload->remove->save->reload->verify-removed cycle.
 
-    fn run_persist_remove(tc: RemoveTestCase) {
+    async fn run_persist_remove(tc: RemoveTestCase) {
         let store = MemoryStore::<StandardChunkSet>::new();
 
         // add entries and persist
         let mut n = Node::default();
         for c in &tc.items {
             let e = make_entry(&c.path);
-            run(n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)).unwrap();
+            n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)
+                .await
+                .unwrap();
         }
-        run(n.save(&store)).unwrap();
+        n.save(&store).await.unwrap();
         let ref_ = *n.reference().unwrap();
 
         // reload and remove
         let mut nn: Node = Node::from_reference(ref_);
         for path in &tc.remove {
-            run(nn.remove(path.as_bytes(), &store)).unwrap();
+            nn.remove(path.as_bytes(), &store).await.unwrap();
         }
-        run(nn.save(&store)).unwrap();
+        nn.save(&store).await.unwrap();
         let ref2 = *nn.reference().unwrap();
 
         // reload and verify removed paths are gone
         let mut nnn: Node = Node::from_reference(ref2);
         for path in &tc.remove {
-            let result = run(nnn.lookup_node(path.as_bytes(), &store));
+            let result = nnn.lookup_node(path.as_bytes(), &store).await;
             assert!(
                 result.is_err(),
                 "expected removed path '{path}' to be not found"
@@ -1595,12 +1611,16 @@ mod tests {
 
     #[test]
     fn persist_remove_simple() {
-        run_persist_remove(remove_test_case_data()[0].clone());
+        run(async {
+            run_persist_remove(remove_test_case_data()[0].clone()).await;
+        });
     }
 
     #[test]
     fn persist_remove_nested_prefix() {
-        run_persist_remove(remove_test_case_data()[1].clone());
+        run(async {
+            run_persist_remove(remove_test_case_data()[1].clone()).await;
+        });
     }
 
     fn make_entry_bytes(s: &[u8]) -> ChunkRef {
