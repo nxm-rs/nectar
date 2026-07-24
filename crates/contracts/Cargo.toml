@@ -25,9 +25,6 @@ alloy-sol-types = { workspace = true }
 # optional
 serde = { workspace = true, optional = true }
 
-[dev-dependencies]
-proptest = { workspace = true }
-
 [features]
 default = [ "std" ]
 std = [ "alloy-primitives/std", "alloy-sol-types/std", "serde?/std" ]

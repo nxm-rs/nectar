@@ -2096,7 +2096,6 @@ version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
- "proptest",
  "serde",
 ]
 
@@ -2334,7 +2333,6 @@ dependencies = [
  "alloy-chains",
  "num_enum",
  "proptest",
- "proptest-arbitrary-interop",
  "serde",
  "strum 0.28.0",
 ]
