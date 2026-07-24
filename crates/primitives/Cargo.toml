@@ -77,7 +77,6 @@ getrandom_02.workspace = true
 getrandom_04.workspace = true
 
 [build-dependencies]
-cfg_aliases.workspace = true
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "asm-keccak"] }

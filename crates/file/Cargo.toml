@@ -28,7 +28,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"], optional = true }
 
 [build-dependencies]
-cfg_aliases.workspace = true
 
 [dev-dependencies]
 # The seed replay decodes committed fuzz inputs through the same grammar the

@@ -110,7 +110,6 @@ web-time = "1.1"
 rayon = "1.10"
 
 # build-script cfg aliases for the shared target/feature gates
-cfg_aliases = "0.2"
 
 # Core dependencies
 bytes = { version = "1.11", default-features = false }
