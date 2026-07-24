@@ -246,23 +246,19 @@ mod tests {
     }
 
     /// Build a persisted manifest over the paths through the editor.
-    fn build(paths: &[&str]) -> (ChunkAddress, Store) {
+    async fn build(paths: &[&str]) -> (ChunkAddress, Store) {
         let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
         for &p in paths {
             editor.put(p, make_addr(p));
         }
-        run(editor.commit()).unwrap()
+        editor.commit().await.unwrap()
     }
 
     /// Build a persisted manifest, then check the reader against the
     /// path-set model over the same store: a get hits exactly the stored
     /// paths, a prefix probe hits exactly the stored extensions.
     async fn assert_model(paths: &[&str]) {
-        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
-        for &p in paths {
-            editor.put(p, make_addr(p));
-        }
-        let (root, store) = editor.commit().await.unwrap();
+        let (root, store) = build(paths).await;
         let reader = Reader::new(store);
         for probe in probes(paths) {
             let got = reader.get(&root, probe.as_bytes()).await.unwrap();
@@ -382,7 +378,7 @@ mod tests {
 
     #[test]
     fn fetch_costs_are_depth_bounded() {
-        let (root, store) = build(&["abc"]);
+        let (root, store) = run(build(&["abc"]));
         let reader = Reader::new(CountingStore::new(store));
 
         // Value hit: root plus the terminal node.
@@ -404,7 +400,7 @@ mod tests {
     #[test]
     fn fetch_costs_stay_linear_in_path_length() {
         let paths = ["a", "ab", "abc", "abcd", "abcde"];
-        let (root, store) = build(&paths);
+        let (root, store) = run(build(&paths));
         let reader = Reader::new(CountingStore::new(store));
 
         run(async {
@@ -426,7 +422,7 @@ mod tests {
     #[test]
     fn max_depth_is_a_typed_error() {
         // One-byte edge chain: get("abcde") costs 6 fetches, has_prefix 5.
-        let (root, store) = build(&["a", "ab", "abc", "abcd", "abcde"]);
+        let (root, store) = run(build(&["a", "ab", "abc", "abcd", "abcde"]));
 
         let exact = Reader::with_max_depth(store, 6);
         assert!(run(exact.get(&root, b"abcde")).unwrap().is_some());
@@ -457,7 +453,7 @@ mod tests {
 
     #[test]
     fn empty_path_is_not_a_value() {
-        let (root, store) = build(&["a"]);
+        let (root, store) = run(build(&["a"]));
         let reader = Reader::new(store);
         assert_eq!(run(reader.get(&root, b"")).unwrap(), None);
     }
