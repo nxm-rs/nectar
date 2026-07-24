@@ -325,3 +325,33 @@ fn osm_bbox(n: usize) -> Vec<GenKey> {
     out.truncate(n);
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Corpus, generate};
+
+    /// Every corpus is seed-reproducible and yields exactly `n` sorted, distinct
+    /// keys: the anti-fabrication guarantee the results rest on.
+    #[test]
+    fn corpora_are_reproducible_sorted_and_distinct() {
+        let n = 300;
+        for corpus in Corpus::all() {
+            let a = generate(corpus, n);
+            let b = generate(corpus, n);
+            let raws: Vec<&[u8]> = a.iter().map(|k| k.raw.as_slice()).collect();
+            assert_eq!(a.len(), n, "{}: count", corpus.name());
+            assert!(
+                raws.windows(2).all(|w| w[0] < w[1]),
+                "{}: sorted and distinct",
+                corpus.name()
+            );
+            assert!(
+                a.iter()
+                    .zip(&b)
+                    .all(|(x, y)| x.raw == y.raw && x.path == y.path),
+                "{}: reproducible across runs",
+                corpus.name()
+            );
+        }
+    }
+}

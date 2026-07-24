@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -157,24 +158,30 @@ fn first_prefix(corpus: Corpus, keys: &[GenKey]) -> Option<Vec<u8>> {
 
 // ---- parallel cursor -----------------------------------------------------
 
+/// Drive a future to completion on a fresh current-thread runtime with a paused
+/// virtual clock, so elapsed `tokio::time` reads back the modelled RTT rounds.
+/// The sole sanctioned runtime-blocking call site in the harness: a paused clock
+/// needs a real timer driver, which `nectar_testing::run` does not provide.
+#[allow(clippy::disallowed_methods)]
+fn block_on_paused<T>(f: impl Future<Output = T>) -> Result<T, Err> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()?;
+    Ok(rt.block_on(f))
+}
+
 /// Drain a range scan under a paused virtual clock, returning
 /// `(fetch_count, rounds, keys_returned)`. One virtual millisecond is charged
 /// per node fetch, so the elapsed virtual time is exactly `rounds` and the
 /// bounded-concurrency read-ahead collapses independent fetches into one round.
-// The rounds figure is virtual time under tokio's paused clock, so the
-// runtime's own `block_on` is the entry point here.
-#[allow(clippy::disallowed_methods)]
 fn range_rounds<F: Format>(
     store: &MemoryStore,
     root: &ChunkAddress,
     lo: &Key,
     hi: &Key,
 ) -> Result<(u64, u64, u64), Err> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()?;
-    let out: Result<(u64, u64, u64), nectar_manifest::ReaderError> = rt.block_on(async {
+    let out = block_on_paused(async {
         let latency = LatencyStore::<StandardChunkSet>::new(store, RTT_UNIT);
         let reader = Reader::<&LatencyStore<'_, StandardChunkSet>, F>::new(&latency);
         let t0 = tokio::time::Instant::now();
@@ -184,24 +191,18 @@ fn range_rounds<F: Format>(
             keys = keys.saturating_add(1);
         }
         let rounds = t0.elapsed().as_millis() as u64;
-        Ok((latency.gets(), rounds, keys))
-    });
+        Ok::<_, nectar_manifest::ReaderError>((latency.gets(), rounds, keys))
+    })?;
     Ok(out?)
 }
 
 /// Drain a prefix scan under the paused virtual clock, as [`range_rounds`].
-// See `range_rounds` on the paused-clock `block_on` entry point.
-#[allow(clippy::disallowed_methods)]
 fn prefix_rounds<F: Format>(
     store: &MemoryStore,
     root: &ChunkAddress,
     prefix: &Key,
 ) -> Result<(u64, u64, u64), Err> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()?;
-    let out: Result<(u64, u64, u64), nectar_manifest::ReaderError> = rt.block_on(async {
+    let out = block_on_paused(async {
         let latency = LatencyStore::<StandardChunkSet>::new(store, RTT_UNIT);
         let reader = Reader::<&LatencyStore<'_, StandardChunkSet>, F>::new(&latency);
         let t0 = tokio::time::Instant::now();
@@ -211,8 +212,8 @@ fn prefix_rounds<F: Format>(
             keys = keys.saturating_add(1);
         }
         let rounds = t0.elapsed().as_millis() as u64;
-        Ok((latency.gets(), rounds, keys))
-    });
+        Ok::<_, nectar_manifest::ReaderError>((latency.gets(), rounds, keys))
+    })?;
     Ok(out?)
 }
 
