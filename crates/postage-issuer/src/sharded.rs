@@ -24,9 +24,11 @@ use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 #[cfg(feature = "parallel")]
 use {
     crate::error::SigningError,
+    crate::stamper::stamp_timestamp,
     alloy_primitives::B256,
     alloy_signer::Signature,
-    nectar_postage::{Stamp, current_timestamp},
+    nectar_clock::{Clock, SystemClock},
+    nectar_postage::Stamp,
 };
 
 /// Number of shards for bucket partitioning.
@@ -407,12 +409,30 @@ where
     Sg: Fn(&B256) -> Result<Signature, E> + Sync,
     E: Into<SigningError>,
 {
+    sign_stamps_parallel_with_clock(issuer, signer, addresses, &SystemClock)
+}
+
+/// [`sign_stamps_parallel`] with an injected timestamp source, for
+/// deterministic stamp timestamps.
+#[cfg(feature = "parallel")]
+pub fn sign_stamps_parallel_with_clock<Sp, Sg, E, C>(
+    issuer: &ShardedIssuerFor<Sp>,
+    signer: &Sg,
+    addresses: &[ChunkAddress],
+    clock: &C,
+) -> Vec<StampResult>
+where
+    Sp: SwarmSpec + Sync,
+    Sg: Fn(&B256) -> Result<Signature, E> + Sync,
+    E: Into<SigningError>,
+    C: Clock + Sync,
+{
     use rayon::prelude::*;
 
     addresses
         .par_iter()
         .map(|address| {
-            let result = sign_stamp_internal(issuer, signer, address);
+            let result = sign_stamp_internal(issuer, signer, address, clock);
             StampResult {
                 address: *address,
                 result,
@@ -422,17 +442,19 @@ where
 }
 
 #[cfg(feature = "parallel")]
-fn sign_stamp_internal<Sp, Sg, E>(
+fn sign_stamp_internal<Sp, Sg, E, C>(
     issuer: &ShardedIssuerFor<Sp>,
     signer: &Sg,
     address: &ChunkAddress,
+    clock: &C,
 ) -> Result<Stamp, SigningError>
 where
     Sp: SwarmSpec,
     Sg: Fn(&B256) -> Result<Signature, E>,
     E: Into<SigningError>,
+    C: Clock,
 {
-    let timestamp = current_timestamp();
+    let timestamp = stamp_timestamp(clock);
     let digest = issuer.prepare_stamp(address, timestamp)?;
     let prehash = digest.to_prehash();
     let sig = signer(&prehash).map_err(|e| e.into())?;
@@ -603,5 +625,35 @@ mod tests {
             assert!(result.result.is_ok());
         }
         assert_eq!(issuer.stamps_issued(), 100);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_parallel_signing_with_clock() {
+        use crate::error::SigningError;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use nectar_clock::ManualClock;
+
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+        let signer = PrivateKeySigner::random();
+        let clock = ManualClock::new(1_234_567_890);
+
+        let addresses: Vec<_> = (0..16)
+            .map(|_| ChunkAddress::from(B256::random()))
+            .collect();
+
+        let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
+            Ok(signer
+                .sign_message_sync(prehash.as_slice())
+                .map_err(alloy_signer::Error::other)?)
+        };
+
+        let results = sign_stamps_parallel_with_clock(&issuer, &sign_fn, &addresses, &clock);
+
+        assert_eq!(results.len(), 16);
+        for result in &results {
+            assert_eq!(result.result.as_ref().unwrap().timestamp(), 1_234_567_890);
+        }
     }
 }

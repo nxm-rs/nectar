@@ -150,4 +150,4 @@ pub use factory::{
 
 // Parallel signing (requires parallel feature)
 #[cfg(feature = "parallel")]
-pub use sharded::{StampResult, sign_stamps_parallel};
+pub use sharded::{StampResult, sign_stamps_parallel, sign_stamps_parallel_with_clock};

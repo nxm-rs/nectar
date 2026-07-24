@@ -14,8 +14,17 @@ use alloy_signer::SignerSync;
 
 use crate::StampIssuer;
 use crate::error::SigningError;
-use nectar_postage::{BatchId, Stamp, StampDigest, StampError, current_timestamp};
+use nectar_clock::Clock;
+#[cfg(feature = "std")]
+use nectar_clock::SystemClock;
+use nectar_postage::{BatchId, Stamp, StampDigest, StampError};
 use nectar_primitives::ChunkAddress;
+
+/// Reads `clock` as a stamp timestamp: nanoseconds since the unix epoch,
+/// clamped to zero for pre-epoch readings.
+pub(crate) fn stamp_timestamp<C: Clock + ?Sized>(clock: &C) -> u64 {
+    u64::try_from(clock.now_ns()).unwrap_or(0)
+}
 
 /// A trait for entities that can stamp chunks.
 ///
@@ -91,6 +100,10 @@ pub trait Stamper {
 /// and handles the signing of stamps. This composition allows using different
 /// issuer implementations (e.g., `MemoryIssuer`, `ShardedIssuer`) with any signer.
 ///
+/// Stamp timestamps come from the clock type parameter, defaulting to the
+/// system clock; [`with_clock`](Self::with_clock) injects a deterministic
+/// source.
+///
 /// # Example
 ///
 /// ```ignore
@@ -100,18 +113,56 @@ pub trait Stamper {
 /// let mut stamper = BatchStamper::new(issuer, my_signer);
 /// let stamp = stamper.stamp(&chunk_address)?;
 /// ```
+#[cfg(feature = "std")]
 #[derive(Debug, Clone)]
-pub struct BatchStamper<I, S> {
+pub struct BatchStamper<I, S, C = SystemClock> {
     /// The issuer for tracking bucket utilization.
     issuer: I,
     /// The signer used to sign stamps.
     signer: S,
+    /// The timestamp source for issued stamps.
+    clock: C,
 }
 
+/// Without `std` there is no default clock; construct via
+/// [`with_clock`](Self::with_clock).
+#[cfg(not(feature = "std"))]
+#[derive(Debug, Clone)]
+pub struct BatchStamper<I, S, C> {
+    /// The issuer for tracking bucket utilization.
+    issuer: I,
+    /// The signer used to sign stamps.
+    signer: S,
+    /// The timestamp source for issued stamps.
+    clock: C,
+}
+
+#[cfg(feature = "std")]
 impl<I, S> BatchStamper<I, S> {
-    /// Creates a new batch stamper with the given issuer and signer.
+    /// Creates a new batch stamper with the given issuer and signer, reading
+    /// stamp timestamps from the system clock.
     pub const fn new(issuer: I, signer: S) -> Self {
-        Self { issuer, signer }
+        Self {
+            issuer,
+            signer,
+            clock: SystemClock,
+        }
+    }
+}
+
+impl<I, S, C> BatchStamper<I, S, C> {
+    /// Creates a batch stamper that reads stamp timestamps from `clock`.
+    pub const fn with_clock(issuer: I, signer: S, clock: C) -> Self {
+        Self {
+            issuer,
+            signer,
+            clock,
+        }
+    }
+
+    /// Returns a reference to the clock.
+    pub const fn clock(&self) -> &C {
+        &self.clock
     }
 
     /// Returns a reference to the issuer.
@@ -145,7 +196,7 @@ impl<I, S> BatchStamper<I, S> {
     }
 }
 
-impl<I, S> BatchStamper<I, S>
+impl<I, S, C> BatchStamper<I, S, C>
 where
     I: StampIssuer,
 {
@@ -162,15 +213,16 @@ where
     }
 }
 
-impl<I, S> Stamper for BatchStamper<I, S>
+impl<I, S, C> Stamper for BatchStamper<I, S, C>
 where
     I: StampIssuer,
     S: SignerSync,
+    C: Clock,
 {
     type Error = SigningError;
 
     fn stamp(&mut self, address: &ChunkAddress) -> Result<Stamp, Self::Error> {
-        let timestamp = current_timestamp();
+        let timestamp = stamp_timestamp(&self.clock);
         let digest = self.issuer.prepare_stamp(address, timestamp)?;
         let prehash = digest.to_prehash();
 
@@ -249,6 +301,28 @@ mod tests {
         // All should be in the same bucket
         assert_eq!(stamp1.bucket(), stamp2.bucket());
         assert_eq!(stamp2.bucket(), stamp3.bucket());
+    }
+
+    #[test]
+    fn test_batch_stamper_injected_clock() {
+        use nectar_clock::ManualClock;
+
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let clock = ManualClock::new(1_234_567_890);
+        let mut stamper = BatchStamper::with_clock(issuer, MockSigner, &clock);
+
+        let address = ChunkAddress::new([0xAB; 32]);
+        let stamp = stamper.stamp(&address).unwrap();
+        assert_eq!(stamp.timestamp(), 1_234_567_890);
+
+        clock.set_ns(2_000_000_000);
+        let stamp = stamper.stamp(&address).unwrap();
+        assert_eq!(stamp.timestamp(), 2_000_000_000);
+
+        // A pre-epoch reading clamps to zero, matching the default clock path.
+        clock.set_ns(-1);
+        let stamp = stamper.stamp(&address).unwrap();
+        assert_eq!(stamp.timestamp(), 0);
     }
 
     #[test]

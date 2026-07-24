@@ -29,7 +29,7 @@ thiserror = { workspace = true }
 alloy-signer = { workspace = true, optional = true }
 arbitrary = { workspace = true, optional = true }
 auto_impl = { workspace = true, optional = true }
-web-time = { workspace = true, optional = true }
+nectar-clock = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["getrandom"] }
@@ -47,6 +47,7 @@ default = [ "std" ]
 # Standard library support.
 std = [
 	"alloy-primitives/std",
+	"nectar-clock?/std",
 	"nectar-postage-issuer/std",
 	"nectar-postage/std",
 	"thiserror/std",
@@ -74,8 +75,8 @@ seal = [ "dep:alloy-signer", "std" ]
 # High-level async facade (`BatchStamper`) that collapses the open / stamp /
 # flush cross-machine roam into three calls. The consumer supplies the network
 # through the `SnapshotSource` and `SnapshotSink` traits. Implies `seal` (it seals
-# every persist) and `std` (it reads the wall clock for the seal timestamp).
-client = [ "dep:auto_impl", "dep:web-time", "seal", "std" ]
+# every persist) and `std` (the seal timestamp defaults to the system clock).
+client = [ "dep:auto_impl", "dep:nectar-clock", "seal", "std" ]
 
 [package.metadata.docs.rs]
 all-features = true

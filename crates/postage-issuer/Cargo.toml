@@ -18,6 +18,7 @@ categories = ["cryptography", "data-structures"]
 workspace = true
 
 [dependencies]
+nectar-clock = { workspace = true }
 nectar-postage = { workspace = true }
 nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
@@ -43,7 +44,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 default = [ "std" ]
 
 # Standard library support
-std = [ "nectar-postage/std" ]
+std = [ "nectar-clock/std", "nectar-postage/std" ]
 
 # Local key signing for testing and development
 local-signer = [ "dep:alloy-signer-local", "std" ]
