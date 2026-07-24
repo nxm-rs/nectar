@@ -56,23 +56,31 @@ fn edge_sizes() -> Vec<usize> {
     ]
 }
 
+/// Reads the reader to end, one home for the drain loop shared by the sync
+/// wrapper and the async loop tests.
+async fn drain<S, M>(reader: &mut FileReader<S, M, TINY>) -> Vec<u8>
+where
+    S: TrustedGet<AnyChunkSet<TINY>, Error = ChunkStoreError> + Clone + 'static,
+    M: WalkMode,
+{
+    let mut out = Vec::new();
+    let mut buf = [0u8; 97];
+    loop {
+        let n = reader.read(&mut buf).await.unwrap();
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+    out
+}
+
 fn drain_reader<S, M>(reader: &mut FileReader<S, M, TINY>) -> Vec<u8>
 where
     S: TrustedGet<AnyChunkSet<TINY>, Error = ChunkStoreError> + Clone + 'static,
     M: WalkMode,
 {
-    run(async {
-        let mut out = Vec::new();
-        let mut buf = [0u8; 97];
-        loop {
-            let n = reader.read(&mut buf).await.unwrap();
-            if n == 0 {
-                break;
-            }
-            out.extend_from_slice(&buf[..n]);
-        }
-        out
-    })
+    run(drain(reader))
 }
 
 #[test]
@@ -89,16 +97,7 @@ fn plain_reader_matches_the_source_bytes() {
                 assert_eq!(file.is_empty(), len == 0);
                 let mut reader = file.read().window(Window::new(window).unwrap()).build();
                 assert_eq!(reader.effective_len(), len as u64);
-                let mut out = Vec::new();
-                let mut buf = [0u8; 97];
-                loop {
-                    let n = reader.read(&mut buf).await.unwrap();
-                    if n == 0 {
-                        break;
-                    }
-                    out.extend_from_slice(&buf[..n]);
-                }
-                assert_eq!(out, data, "diverged at {len}");
+                assert_eq!(drain(&mut reader).await, data, "diverged at {len}");
                 assert_eq!(reader.position(), len as u64);
             }
         });
@@ -119,16 +118,7 @@ fn encrypted_reader_matches_the_source_bytes() {
                         .unwrap();
                 assert_eq!(file.len(), len as u64);
                 let mut reader = file.read().window(Window::new(window).unwrap()).build();
-                let mut out = Vec::new();
-                let mut buf = [0u8; 97];
-                loop {
-                    let n = reader.read(&mut buf).await.unwrap();
-                    if n == 0 {
-                        break;
-                    }
-                    out.extend_from_slice(&buf[..n]);
-                }
-                assert_eq!(out, data, "diverged at {len}");
+                assert_eq!(drain(&mut reader).await, data, "diverged at {len}");
             }
         });
     }
