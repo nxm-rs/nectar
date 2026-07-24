@@ -150,7 +150,9 @@ impl<T: ChunkPut> EncryptedNodePut for T {}
 /// Blanket-implemented for every [`TrustedGet`]; the ref64 carries both the
 /// address to fetch and the key to decrypt with.
 pub trait EncryptedNodeGet: TrustedGet {
-    /// Load the chunk at `reference`'s address and decrypt it with its key.
+    /// Load the chunk at `reference`'s address and decrypt it with its key,
+    /// materializing a spilled node's forks from its keyed segments so the
+    /// caller always sees one logical node.
     fn get_node_encrypted<F: Format>(
         &self,
         reference: &EncryptedChunkRef,
@@ -159,11 +161,13 @@ pub trait EncryptedNodeGet: TrustedGet {
         Self: Sized + MaybeSync,
     {
         async move {
-            let chunk = self
-                .get(reference.address())
-                .await
-                .map_err(|err| StoreError::Store(Box::new(err)))?;
-            Ok(Node::from_encrypted_chunk(&chunk, reference.key())?)
+            let (node, _) = crate::store::materialize_traced::<Self, F>(
+                self,
+                reference.address(),
+                Some(reference.key()),
+            )
+            .await?;
+            Ok(node)
         }
     }
 }
