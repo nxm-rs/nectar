@@ -2071,6 +2071,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-benches"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "bytes",
+ "codspeed-criterion-compat",
+ "digest 0.11.3",
+ "nectar-file",
+ "nectar-mantaray 0.4.0",
+ "nectar-postage",
+ "nectar-postage-issuer",
+ "nectar-primitives 0.4.0",
+ "nectar-testing",
+ "rand 0.10.1",
+ "tokio",
+]
+
+[[package]]
 name = "nectar-contracts"
 version = "0.4.0"
 dependencies = [
@@ -2081,12 +2101,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-examples"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "bytes",
+ "nectar-contracts",
+ "nectar-postage",
+ "nectar-postage-usage",
+ "nectar-primitives 0.4.0",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "nectar-file"
 version = "0.4.0"
 dependencies = [
  "arbitrary",
  "bytes",
- "codspeed-criterion-compat",
  "futures",
  "futures-channel",
  "futures-util",
@@ -2100,11 +2135,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-integration-tests"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer-local",
+ "anyhow",
+ "arbitrary",
+ "bytes",
+ "futures",
+ "nectar-file",
+ "nectar-manifest",
+ "nectar-mantaray 0.3.0",
+ "nectar-mantaray 0.4.0",
+ "nectar-postage",
+ "nectar-postage-issuer",
+ "nectar-postage-usage",
+ "nectar-primitives 0.4.0",
+ "nectar-testing",
+ "proptest",
+]
+
+[[package]]
 name = "nectar-manifest"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
- "anyhow",
  "arbitrary",
  "bytes",
  "futures",
@@ -2140,9 +2196,7 @@ dependencies = [
  "arbitrary",
  "bitflags",
  "bytes",
- "codspeed-criterion-compat",
  "futures",
- "nectar-mantaray 0.3.0",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",
@@ -2160,7 +2214,6 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "arbitrary",
- "codspeed-criterion-compat",
  "derive_more",
  "k256",
  "nectar-primitives 0.4.0",
@@ -2181,12 +2234,9 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
- "codspeed-criterion-compat",
- "futures",
  "nectar-file",
  "nectar-postage",
  "nectar-primitives 0.4.0",
- "nectar-testing",
  "proptest",
  "rand 0.10.1",
  "rayon",
@@ -2252,7 +2302,6 @@ dependencies = [
  "alloy-signer-local",
  "arbitrary",
  "bytes",
- "codspeed-criterion-compat",
  "derive_more",
  "digest 0.11.3",
  "futures",

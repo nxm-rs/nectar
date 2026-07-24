@@ -8,7 +8,7 @@ the package the bee node compiles against.
 Rather than parsing each other's source, the two sides emit structured data and
 compare it:
 
-- the `nectar-contracts` `dump_deployments` example prints its `mainnet` /
+- the `dump_deployments` example prints the `nectar-contracts` `mainnet` /
   `testnet` constants as JSON, straight from the real typed constants;
 - this Go program imports `go-storage-incentives-abi` and compares the upstream
   address + deploy block against that JSON.
@@ -21,7 +21,7 @@ is printed but not compared.
 Run locally:
 
 ```sh
-cargo run -p nectar-contracts --example dump_deployments --quiet > nectar.json
+cargo run -p nectar-examples --example dump_deployments --quiet > nectar.json
 cd tools/upstream-check && go run . -nectar ../../nectar.json
 ```
 

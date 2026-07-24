@@ -1,0 +1,36 @@
+[package]
+name = "nectar-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Runnable examples for the nectar workspace"
+publish = false
+
+# Non-shipping targets: the runtime-safety restriction set does not apply,
+# but stubs and ad-hoc executor entry points stay denied.
+[lints.rust]
+unused-must-use = "deny"
+rust-2018-idioms = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+redundant-clone = "warn"
+todo = "deny"
+unimplemented = "deny"
+disallowed_methods = "deny"
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+bytes.workspace = true
+nectar-contracts.workspace = true
+nectar-postage.workspace = true
+nectar-postage-usage = { workspace = true, features = ["client", "seal"] }
+nectar-primitives.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["rt", "macros"] }

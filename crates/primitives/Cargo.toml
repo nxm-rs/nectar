@@ -79,7 +79,6 @@ getrandom_04.workspace = true
 alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "asm-keccak"] }
 
 arbitrary = { workspace = true }
-criterion.workspace = true
 futures.workspace = true
 nectar-testing.workspace = true
 proptest.workspace = true
@@ -113,27 +112,6 @@ encryption = [ "dep:rand" ]
 # any target. An explicit feature rather than a target cfg so CI can exercise
 # the relaxed shape off-wasm.
 unsync = []
-
-[[bench]]
-name = "primitives"
-harness = false
-
-[[bench]]
-name = "proofs"
-harness = false
-
-[[bench]]
-name = "address"
-harness = false
-
-[[bench]]
-name = "bmt_bench"
-harness = false
-
-[[bench]]
-name = "encryption_bench"
-harness = false
-required-features = ["encryption"]
 
 [package.metadata.docs.rs]
 all-features = true

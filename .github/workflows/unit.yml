@@ -59,6 +59,13 @@ jobs:
                     --no-tests=warn --no-fail-fast
             - name: Run rayon ingest doctests
               run: cargo test --doc -p nectar-file --features rayon,encryption --locked
+            # The file-pipeline integration tests gate their rayon suites
+            # behind the dev crate's forwarding feature of the same name.
+            - name: Run rayon ingest integration tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-integration-tests --features rayon,encryption --locked \
+                    --no-tests=warn --no-fail-fast
             # The encrypted split mode sits behind the encryption feature;
             # cover its tests and doctest here.
             - name: Run encrypted split tests
@@ -68,12 +75,26 @@ jobs:
                     --no-tests=warn --no-fail-fast
             - name: Run encrypted split doctests
               run: cargo test --doc -p nectar-file --features encryption --locked
+            # The encrypted allocation probes must see encryption without
+            # rayon, matching the encrypted split shape above.
+            - name: Run encrypted split integration tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-integration-tests --features encryption --locked \
+                    --no-tests=warn --no-fail-fast
             # The issuer integration surface is feature-gated off the default
             # build; cover its tests here.
             - name: Run issuer tests
               run: |
                   cargo nextest run \
                     -p nectar-postage-usage --features issuer --locked \
+                    --no-tests=warn --no-fail-fast
+            # The seal and issuer integration suites ride the dev crate's
+            # forwarding features.
+            - name: Run seal and issuer integration tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-integration-tests --features seal,issuer --locked \
                     --no-tests=warn --no-fail-fast
             # The serde impls (and the bounded-newtype guards on their decode
             # path) are off the default build; cover their tests here.

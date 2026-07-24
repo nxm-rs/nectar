@@ -101,7 +101,8 @@
         clippy::arithmetic_side_effects,
         clippy::panic,
         clippy::unreachable,
-        clippy::panic_in_result_fn
+        clippy::panic_in_result_fn,
+        clippy::as_conversions
     )
 )]
 

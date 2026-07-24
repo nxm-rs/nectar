@@ -31,7 +31,6 @@ tokio = { workspace = true, features = ["sync"], optional = true }
 # The seed replay decodes committed fuzz inputs through the same grammar the
 # fuzzer uses.
 arbitrary.workspace = true
-criterion.workspace = true
 futures.workspace = true
 proptest.workspace = true
 # The manifest-edit exhibit publishes a file root under a path.
@@ -77,11 +76,6 @@ encryption = [ "nectar-primitives?/encryption" ]
 # Single-thread send escape: relaxes the boxed fetch future off `Send` in
 # lockstep with the primitives store traits.
 unsync = [ "nectar-primitives?/unsync" ]
-
-[[bench]]
-name = "latency_bench"
-harness = false
-required-features = ["std"]
 
 # `rayon` and `unsync` are mutually exclusive, so the doc build lists
 # features explicitly rather than enabling all at once.

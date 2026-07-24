@@ -77,10 +77,6 @@ seal = [ "dep:alloy-signer", "std" ]
 # every persist) and `std` (it reads the wall clock for the seal timestamp).
 client = [ "dep:auto_impl", "dep:web-time", "seal", "std" ]
 
-[[example]]
-name = "roam_between_machines"
-required-features = ["client", "seal"]
-
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

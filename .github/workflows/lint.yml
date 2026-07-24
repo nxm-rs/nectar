@@ -43,6 +43,11 @@ jobs:
             # likewise outside the default-features pass.
             - name: cargo clippy (encrypted split)
               run: cargo clippy --locked --all-targets -p nectar-file --features encryption
+            # The feature-gated integration suites are invisible to the
+            # default pass; compile them all in so the disallowed-methods
+            # gate sees them.
+            - name: cargo clippy (integration-test shapes)
+              run: cargo clippy --locked --all-targets -p nectar-integration-tests --features rayon,encryption,seal,issuer
             # The postage-usage tokio surfaces are feature-gated, so their tests
             # are invisible to the passes above; compile them in so the
             # disallowed-methods gate sees them.

@@ -14,14 +14,14 @@ on:
   pull_request:
     paths:
       - "crates/contracts/src/lib.rs"
-      - "crates/contracts/examples/dump_deployments.rs"
+      - "crates/examples/examples/dump_deployments.rs"
       - "tools/upstream-check/**"
       - ".github/workflows/upstream-addresses.yml"
   push:
     branches: [main]
     paths:
       - "crates/contracts/src/lib.rs"
-      - "crates/contracts/examples/dump_deployments.rs"
+      - "crates/examples/examples/dump_deployments.rs"
       - "tools/upstream-check/**"
       - ".github/workflows/upstream-addresses.yml"
 
@@ -45,7 +45,7 @@ jobs:
           go-version: stable
 
       - name: Emit nectar-contracts deployments
-        run: cargo run -p nectar-contracts --example dump_deployments --quiet > nectar.json
+        run: cargo run -p nectar-examples --example dump_deployments --quiet > nectar.json
 
       - name: Fetch latest go-storage-incentives-abi and compare
         working-directory: tools/upstream-check

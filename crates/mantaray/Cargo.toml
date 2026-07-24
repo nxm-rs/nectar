@@ -30,23 +30,14 @@ rand = { workspace = true, optional = true }
 
 [dev-dependencies]
 arbitrary = { workspace = true }
-criterion.workspace = true
 # Registry-pinned legacy oracle for the submission-order differential gate:
 # identical op sequences must produce byte-identical roots.
-mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
 nectar-testing.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true
 serde_json.workspace = true
-
-# The encode/decode benches drive the raw node codec, so the bench target
-# needs the hazmat surface: `cargo bench --features hazmat`.
-[[bench]]
-name = "mantaray_bench"
-harness = false
-required-features = ["hazmat"]
 
 [features]
 default = [ "rand", "std" ]

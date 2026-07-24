@@ -1,0 +1,80 @@
+[package]
+name = "nectar-benches"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Criterion benchmarks for the nectar workspace"
+publish = false
+
+# Non-shipping targets: the runtime-safety restriction set does not apply,
+# but stubs and ad-hoc executor entry points stay denied.
+[lints.rust]
+unused-must-use = "deny"
+rust-2018-idioms = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+redundant-clone = "warn"
+todo = "deny"
+unimplemented = "deny"
+disallowed_methods = "deny"
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+bytes.workspace = true
+criterion.workspace = true
+digest.workspace = true
+nectar-file = { workspace = true, features = ["rayon"] }
+nectar-mantaray = { workspace = true, features = ["hazmat"] }
+nectar-postage = { workspace = true, features = ["parallel"] }
+nectar-postage-issuer = { workspace = true, features = ["parallel"] }
+nectar-primitives = { workspace = true, features = ["encryption"] }
+nectar-testing.workspace = true
+rand.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+
+[[bench]]
+name = "address"
+harness = false
+
+[[bench]]
+name = "bmt_bench"
+harness = false
+
+[[bench]]
+name = "encryption_bench"
+harness = false
+
+[[bench]]
+name = "latency_bench"
+harness = false
+
+[[bench]]
+name = "mantaray_bench"
+harness = false
+
+[[bench]]
+name = "primitives"
+harness = false
+
+[[bench]]
+name = "proofs"
+harness = false
+
+[[bench]]
+name = "sign"
+harness = false
+
+[[bench]]
+name = "upload_pipeline"
+harness = false
+
+[[bench]]
+name = "verify"
+harness = false
