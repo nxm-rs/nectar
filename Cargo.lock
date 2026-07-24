@@ -2116,6 +2116,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-feeds"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "arbitrary",
+ "bytes",
+ "derive_more",
+ "nectar-feeds",
+ "nectar-primitives 0.4.0",
+ "nectar-testing",
+ "proptest",
+ "proptest-arbitrary-interop",
+ "thiserror",
+]
+
+[[package]]
 name = "nectar-file"
 version = "0.4.0"
 dependencies = [

@@ -1,0 +1,60 @@
+[package]
+name = "nectar-feeds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Single-owner chunk feeds for Ethereum Swarm"
+documentation = "https://docs.rs/nectar-feeds"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "feeds", "chunk", "storage"]
+categories = ["data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives = { workspace = true }
+alloy-signer.workspace = true
+alloy-signer-local = { workspace = true, optional = true }
+arbitrary = { workspace = true, optional = true }
+bytes.workspace = true
+derive_more.workspace = true
+nectar-primitives = { workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+alloy-signer-local.workspace = true
+arbitrary.workspace = true
+# Self dev-dependency: exposes the `generators` module to integration tests.
+nectar-feeds = { workspace = true, features = ["arbitrary"] }
+nectar-primitives = { workspace = true, features = ["arbitrary"] }
+nectar-testing.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
+
+[features]
+default = [ "std" ]
+# The `Arbitrary` impls and the valid-by-construction `generators` module.
+# Never reachable from `default` or any shipped feature.
+arbitrary = [
+	"alloy-primitives/arbitrary",
+	"dep:alloy-signer-local",
+	"dep:arbitrary",
+	"nectar-primitives/arbitrary",
+	"std",
+]
+std = [
+	"alloy-primitives/std",
+	"bytes/std",
+	"nectar-primitives/std",
+	"thiserror/std",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
