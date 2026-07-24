@@ -1,0 +1,29 @@
+[package]
+name = "nectar-marker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Thread-safety markers for Ethereum Swarm: Send/Sync bounds that relax on single-threaded targets"
+documentation = "https://docs.rs/nectar-marker"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "no_std", "marker", "wasm"]
+categories = ["no-std", "concurrency"]
+
+[lints]
+workspace = true
+
+[features]
+# Single-thread send escape for non-wasm targets (e.g. zkVM guests): applies
+# the wasm32 relaxation of MaybeSend/MaybeSync on any target. An explicit
+# feature rather than a target cfg so CI can exercise the relaxed shape
+# off-wasm.
+unsync = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

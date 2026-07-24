@@ -47,8 +47,9 @@ use core::future::poll_fn;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use nectar_marker::MaybeSync;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
-use nectar_primitives::store::{ChunkPut, MaybeSync};
+use nectar_primitives::store::ChunkPut;
 
 use crate::config::PutWindow;
 

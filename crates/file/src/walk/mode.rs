@@ -4,9 +4,9 @@
 use core::fmt::Debug;
 
 use bytes::{Bytes, BytesMut};
+use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey, transcrypt_in_place};
-use nectar_primitives::store::{MaybeSend, MaybeSync};
 
 use super::error::DecodeError;
 use crate::geometry::Mode;

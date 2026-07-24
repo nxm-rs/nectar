@@ -83,6 +83,10 @@ extern crate alloc;
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
+// The marker traits bound only the std-gated surfaces today.
+#[cfg(not(feature = "std"))]
+use nectar_marker as _;
+
 #[cfg(all(feature = "rayon", target_arch = "wasm32"))]
 compile_error!("feature `rayon` needs a native thread pool; wasm32 builds must disable it");
 

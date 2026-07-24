@@ -10,9 +10,10 @@ use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
 
+use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::{BoxedError, ChunkGet, MaybeSend, MaybeSync, TrustedGet};
+use nectar_primitives::store::{BoxedError, ChunkGet, TrustedGet};
 
 use crate::read::{AnyFile, File, FileReader, FileStream};
 use crate::walk::Plain;

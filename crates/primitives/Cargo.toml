@@ -18,6 +18,9 @@ categories = ["data-structures", "cryptography"]
 workspace = true
 
 [dependencies]
+# nectar
+nectar-marker.workspace = true
+
 ## alloy crypto
 # alloy-primitives noted below in architecture-dependent set of crates
 alloy-signer.workspace = true
@@ -114,7 +117,7 @@ encryption = [ "dep:rand" ]
 # the wasm32 relaxation of MaybeSend/MaybeSync and the boxed error aliases on
 # any target. An explicit feature rather than a target cfg so CI can exercise
 # the relaxed shape off-wasm.
-unsync = []
+unsync = [ "nectar-marker/unsync" ]
 
 [package.metadata.docs.rs]
 all-features = true

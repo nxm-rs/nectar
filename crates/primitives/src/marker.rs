@@ -8,37 +8,7 @@ use core::pin::Pin;
 
 use futures_core::Stream;
 
-/// `Send` on multi-threaded targets, no bound on wasm32 or with the `unsync`
-/// feature. A single-threaded executor may hold `!Send` state (a JS handle
-/// in the browser) across an await point.
-#[cfg(multi_thread)]
-pub trait MaybeSend: Send {}
-#[cfg(multi_thread)]
-impl<T: ?Sized + Send> MaybeSend for T {}
-
-/// `Send` on multi-threaded targets, no bound on wasm32 or with the `unsync`
-/// feature. A single-threaded executor may hold `!Send` state (a JS handle
-/// in the browser) across an await point.
-#[cfg(not(multi_thread))]
-pub trait MaybeSend {}
-#[cfg(not(multi_thread))]
-impl<T: ?Sized> MaybeSend for T {}
-
-/// `Sync` on multi-threaded targets, no bound on wasm32 or with the `unsync`
-/// feature. Single-thread state (a JS handle) is `!Sync`; on a
-/// single-threaded executor that is sound.
-#[cfg(multi_thread)]
-pub trait MaybeSync: Sync {}
-#[cfg(multi_thread)]
-impl<T: ?Sized + Sync> MaybeSync for T {}
-
-/// `Sync` on multi-threaded targets, no bound on wasm32 or with the `unsync`
-/// feature. Single-thread state (a JS handle) is `!Sync`; on a
-/// single-threaded executor that is sound.
-#[cfg(not(multi_thread))]
-pub trait MaybeSync {}
-#[cfg(not(multi_thread))]
-impl<T: ?Sized> MaybeSync for T {}
+pub use nectar_marker::{MaybeSend, MaybeSync};
 
 /// Boxed future: `Send` on multi-threaded targets, unbounded on wasm32 and
 /// under the `unsync` feature.

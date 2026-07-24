@@ -22,6 +22,7 @@ arbitrary = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
+nectar-marker = { workspace = true }
 nectar-primitives = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 thiserror = { workspace = true }
@@ -77,7 +78,7 @@ encryption = [ "nectar-primitives?/encryption" ]
 
 # Single-thread send escape: relaxes the boxed fetch future off `Send` in
 # lockstep with the primitives store traits.
-unsync = [ "nectar-primitives?/unsync" ]
+unsync = [ "nectar-marker/unsync", "nectar-primitives?/unsync" ]
 
 # `rayon` and `unsync` are mutually exclusive, so the doc build lists
 # features explicitly rather than enabling all at once.

@@ -4,8 +4,8 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use bytes::Bytes;
+use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentChunk, Verified};
-use nectar_primitives::store::{MaybeSend, MaybeSync};
 
 use super::error::SealError;
 use crate::geometry::Mode;
