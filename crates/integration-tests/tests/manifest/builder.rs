@@ -201,23 +201,25 @@ fn build_files_splits_through_bmt_and_references_the_stored_roots() -> Result<()
 
     // Each file's manifest entry is its independent BMT root, and every file
     // chunk is present in the same store.
-    for (first, tail, data) in [
-        (b'i', &b"ndex.html"[..], page),
-        (b'l', &b"ogo.png"[..], logo),
-    ] {
-        let record = node.forks().get(first).context("missing fork")?;
-        ensure!(record.tail().as_bytes() == tail, "fork tail");
-        let address = record
-            .entry()
-            .context("fork has no entry")?
-            .address()
-            .context("entry is not a reference")?;
+    run(async {
+        for (first, tail, data) in [
+            (b'i', &b"ndex.html"[..], page),
+            (b'l', &b"ogo.png"[..], logo),
+        ] {
+            let record = node.forks().get(first).context("missing fork")?;
+            ensure!(record.tail().as_bytes() == tail, "fork tail");
+            let address = record
+                .entry()
+                .context("fork has no entry")?
+                .address()
+                .context("entry is not a reference")?;
 
-        let (expected_root, _) = run(split_whole(&data)).map_err(|e| anyhow!("{e}"))?;
-        ensure!(address == &expected_root, "file root reference");
-        ensure!(store.get(address).is_some(), "file root stored");
-    }
-    Ok(())
+            let (expected_root, _) = split_whole(&data).await.map_err(|e| anyhow!("{e}"))?;
+            ensure!(address == &expected_root, "file root reference");
+            ensure!(store.get(address).is_some(), "file root stored");
+        }
+        Ok(())
+    })
 }
 
 #[test]

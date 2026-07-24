@@ -154,29 +154,31 @@ fn prefix_matches_the_oracle() -> Result<()> {
     let (root, oracle) = build(&store)?;
     let reader: Reader<_> = Reader::new(&store);
 
-    for p in [
-        &b"dir05/"[..],
-        &b"dir1"[..],
-        &b"pre"[..],
-        &b"dir05/file000"[..],
-        &b""[..],
-    ] {
-        let got: Rows = {
-            let mut cursor = run(reader.prefix(&root, &Key::from(p)))?;
-            let mut out = Vec::new();
-            while let Some((key, value)) = run(cursor.next())? {
-                out.push((key.as_bytes().to_vec(), value));
-            }
-            out
-        };
-        let expected: Rows = oracle
-            .iter()
-            .filter(|(k, _)| k.starts_with(p))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        ensure!(got == expected, "prefix matches the oracle");
-    }
-    Ok(())
+    run(async {
+        for p in [
+            &b"dir05/"[..],
+            &b"dir1"[..],
+            &b"pre"[..],
+            &b"dir05/file000"[..],
+            &b""[..],
+        ] {
+            let got: Rows = {
+                let mut cursor = reader.prefix(&root, &Key::from(p)).await?;
+                let mut out = Vec::new();
+                while let Some((key, value)) = cursor.next().await? {
+                    out.push((key.as_bytes().to_vec(), value));
+                }
+                out
+            };
+            let expected: Rows = oracle
+                .iter()
+                .filter(|(k, _)| k.starts_with(p))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            ensure!(got == expected, "prefix matches the oracle");
+        }
+        Ok(())
+    })
 }
 
 /// A future that yields once: `Pending` on the first poll, `Ready` after. It
@@ -267,11 +269,13 @@ fn read_ahead_bounds_in_flight_and_matches_the_oracle() -> Result<()> {
 
     let got: Rows = {
         let mut cursor = run(reader.iter(&root))?;
-        let mut out = Vec::new();
-        while let Some((key, value)) = run(cursor.next())? {
-            out.push((key.as_bytes().to_vec(), value));
-        }
-        out
+        run(async {
+            let mut out = Vec::new();
+            while let Some((key, value)) = cursor.next().await? {
+                out.push((key.as_bytes().to_vec(), value));
+            }
+            anyhow::Ok(out)
+        })?
     };
     let expected: Rows = oracle.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     ensure!(got == expected, "read-ahead iteration matches the oracle");
@@ -323,13 +327,17 @@ proptest! {
         let got: Rows = {
             let mut cursor = run(reader.iter(built.root()))
                 .map_err(|e| TestCaseError::fail(e.to_string()))?;
-            let mut out = Vec::new();
-            while let Some((key, value)) = run(cursor.next())
-                .map_err(|e| TestCaseError::fail(e.to_string()))?
-            {
-                out.push((key.as_bytes().to_vec(), value));
-            }
-            out
+            run(async {
+                let mut out = Vec::new();
+                while let Some((key, value)) = cursor
+                    .next()
+                    .await
+                    .map_err(|e| TestCaseError::fail(e.to_string()))?
+                {
+                    out.push((key.as_bytes().to_vec(), value));
+                }
+                Ok::<Rows, TestCaseError>(out)
+            })?
         };
         let expected: Rows = oracle.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         prop_assert_eq!(got, expected);
@@ -372,13 +380,17 @@ proptest! {
         let got: Rows = {
             let mut cursor = run(reader.iter(built.root()))
                 .map_err(|e| TestCaseError::fail(e.to_string()))?;
-            let mut out = Vec::new();
-            while let Some((key, value)) = run(cursor.next())
-                .map_err(|e| TestCaseError::fail(e.to_string()))?
-            {
-                out.push((key.as_bytes().to_vec(), value));
-            }
-            out
+            run(async {
+                let mut out = Vec::new();
+                while let Some((key, value)) = cursor
+                    .next()
+                    .await
+                    .map_err(|e| TestCaseError::fail(e.to_string()))?
+                {
+                    out.push((key.as_bytes().to_vec(), value));
+                }
+                Ok::<Rows, TestCaseError>(out)
+            })?
         };
         let expected: Rows = oracle.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         prop_assert_eq!(got, expected);
@@ -416,11 +428,13 @@ fn read_ahead_never_fetches_past_the_upper_bound() -> Result<()> {
     let hi = Key::from(&[1u8][..]);
     let got: Rows = {
         let mut cursor = run(reader.range(&root, &lo, &hi))?;
-        let mut out = Vec::new();
-        while let Some((key, value)) = run(cursor.next())? {
-            out.push((key.as_bytes().to_vec(), value));
-        }
-        out
+        run(async {
+            let mut out = Vec::new();
+            while let Some((key, value)) = cursor.next().await? {
+                out.push((key.as_bytes().to_vec(), value));
+            }
+            anyhow::Ok(out)
+        })?
     };
     let expected: Rows = oracle
         .iter()
@@ -448,24 +462,28 @@ fn floor_matches_the_oracle() -> Result<()> {
     let (root, oracle) = build(&store)?;
     let reader: Reader<_> = Reader::new(&store);
 
-    for target in [
-        &b""[..],
-        &b"a"[..],
-        &b"dir05/file0015.txt"[..],
-        &b"dir05/file0015.tyt"[..],
-        &b"dir05/file00155"[..],
-        &b"pre"[..],
-        &b"prefix"[..],
-        &b"prefiy"[..],
-        &b"zzzzz"[..],
-    ] {
-        let got =
-            run(reader.floor(&root, &Key::from(target)))?.map(|(k, v)| (k.as_bytes().to_vec(), v));
-        let expected = oracle
-            .range(..=target.to_vec())
-            .next_back()
-            .map(|(k, v)| (k.clone(), v.clone()));
-        ensure!(got == expected, "floor matches the oracle");
-    }
-    Ok(())
+    run(async {
+        for target in [
+            &b""[..],
+            &b"a"[..],
+            &b"dir05/file0015.txt"[..],
+            &b"dir05/file0015.tyt"[..],
+            &b"dir05/file00155"[..],
+            &b"pre"[..],
+            &b"prefix"[..],
+            &b"prefiy"[..],
+            &b"zzzzz"[..],
+        ] {
+            let got = reader
+                .floor(&root, &Key::from(target))
+                .await?
+                .map(|(k, v)| (k.as_bytes().to_vec(), v));
+            let expected = oracle
+                .range(..=target.to_vec())
+                .next_back()
+                .map(|(k, v)| (k.clone(), v.clone()));
+            ensure!(got == expected, "floor matches the oracle");
+        }
+        Ok(())
+    })
 }

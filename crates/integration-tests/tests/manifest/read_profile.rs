@@ -68,13 +68,16 @@ fn build_then_read_round_trips_every_key_under_the_read_profile() -> Result<()> 
     let root = *run(builder.build(&store))?.root();
 
     let reader = Reader::<MemoryStore, V1Read>::new(store);
-    for (key, fill) in windowed_keys() {
-        let got = run(reader.get(&root, &key))?;
-        ensure!(
-            got == Some(ref_entry::<V1Read>(fill)),
-            "read value mismatch"
-        );
-    }
+    run(async {
+        for (key, fill) in windowed_keys() {
+            let got = reader.get(&root, &key).await?;
+            ensure!(
+                got == Some(ref_entry::<V1Read>(fill)),
+                "read value mismatch"
+            );
+        }
+        anyhow::Ok(())
+    })?;
     // An absent key still reads as absent under the profile.
     ensure!(
         run(reader.get(&root, &Key::from(&b"absent"[..])))?.is_none(),
@@ -112,14 +115,16 @@ fn apply_matches_a_from_scratch_build_under_the_read_profile() -> Result<()> {
 
     // The applied manifest reads back the full key set.
     let reader = Reader::<MemoryStore, V1Read>::new(store);
-    for (key, fill) in &all {
-        let got = run(reader.get(&applied, key))?;
-        ensure!(
-            got == Some(ref_entry::<V1Read>(*fill)),
-            "applied value mismatch",
-        );
-    }
-    Ok(())
+    run(async {
+        for (key, fill) in &all {
+            let got = reader.get(&applied, key).await?;
+            ensure!(
+                got == Some(ref_entry::<V1Read>(*fill)),
+                "applied value mismatch",
+            );
+        }
+        Ok(())
+    })
 }
 
 #[test]

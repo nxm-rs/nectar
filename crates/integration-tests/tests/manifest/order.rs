@@ -119,14 +119,17 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> Result<()> {
     ensure!(all.len() == keys.len(), "oracle lost keys");
 
     // select(i) is the i-th key; one past the end is None.
-    for (i, (key, value)) in all.iter().enumerate() {
-        let index = u64::try_from(i)?;
-        let got = run(reader.select(&root, index))?;
-        ensure!(
-            got.as_ref() == Some(&(key.clone(), value.clone())),
-            "select({i}) mismatch",
-        );
-    }
+    run(async {
+        for (i, (key, value)) in all.iter().enumerate() {
+            let index = u64::try_from(i)?;
+            let got = reader.select(&root, index).await?;
+            ensure!(
+                got.as_ref() == Some(&(key.clone(), value.clone())),
+                "select({i}) mismatch",
+            );
+        }
+        anyhow::Ok(())
+    })?;
     let end = u64::try_from(all.len())?;
     ensure!(
         run(reader.select(&root, end))?.is_none(),
@@ -146,24 +149,29 @@ fn rank_select_count_agree_with_a_full_walk_oracle() -> Result<()> {
         Key::from(&[12u8][..]),
         Key::from(&[255u8][..]),
     ];
-    for probe in &probes {
-        let expected = u64::try_from(all.iter().filter(|(k, _)| k < probe).count())?;
-        let got = run(reader.rank(&root, probe))?;
-        ensure!(got == expected, "rank mismatch: {got} != {expected}");
-    }
+    run(async {
+        for probe in &probes {
+            let expected = u64::try_from(all.iter().filter(|(k, _)| k < probe).count())?;
+            let got = reader.rank(&root, probe).await?;
+            ensure!(got == expected, "rank mismatch: {got} != {expected}");
+        }
+        anyhow::Ok(())
+    })?;
 
     // count(lo, hi) is the size of the half-open window.
-    for (lo, hi) in [
-        (Key::from(&[0u8, 0, 0][..]), Key::from(&[3u8, 0, 0][..])),
-        (Key::from(&[3u8, 5, 5][..]), Key::from(&[7u8, 2, 2][..])),
-        (Key::empty(), Key::from(&[12u8][..])),
-        (Key::from(&[9u8][..]), Key::from(&[3u8][..])),
-    ] {
-        let expected = u64::try_from(all.iter().filter(|(k, _)| lo <= *k && *k < hi).count())?;
-        let got = run(reader.count(&root, &lo, &hi))?;
-        ensure!(got == expected, "count mismatch: {got} != {expected}");
-    }
-    Ok(())
+    run(async {
+        for (lo, hi) in [
+            (Key::from(&[0u8, 0, 0][..]), Key::from(&[3u8, 0, 0][..])),
+            (Key::from(&[3u8, 5, 5][..]), Key::from(&[7u8, 2, 2][..])),
+            (Key::empty(), Key::from(&[12u8][..])),
+            (Key::from(&[9u8][..]), Key::from(&[3u8][..])),
+        ] {
+            let expected = u64::try_from(all.iter().filter(|(k, _)| lo <= *k && *k < hi).count())?;
+            let got = reader.count(&root, &lo, &hi).await?;
+            ensure!(got == expected, "count mismatch: {got} != {expected}");
+        }
+        Ok(())
+    })
 }
 
 #[test]
@@ -180,38 +188,47 @@ fn spilled_node_order_statistics_agree_with_the_oracle() -> Result<()> {
     // Sampled select and its inverse rank agree with the oracle across the whole
     // spilled listing, including both ends.
     let last = all.len().saturating_sub(1);
-    for i in (0..all.len()).step_by(311).chain([last]) {
-        let (key, value) = all.get(i).context("oracle index out of range")?;
-        let index = u64::try_from(i)?;
-        let got = run(reader.select(&root, index))?;
-        ensure!(
-            got.as_ref() == Some(&(key.clone(), value.clone())),
-            "spilled select({i}) mismatch",
-        );
-        let rank = run(reader.rank(&root, key))?;
-        ensure!(rank == index, "spilled rank at {i} mismatch");
-    }
+    run(async {
+        for i in (0..all.len()).step_by(311).chain([last]) {
+            let (key, value) = all.get(i).context("oracle index out of range")?;
+            let index = u64::try_from(i)?;
+            let got = reader.select(&root, index).await?;
+            ensure!(
+                got.as_ref() == Some(&(key.clone(), value.clone())),
+                "spilled select({i}) mismatch",
+            );
+            let rank = reader.rank(&root, key).await?;
+            ensure!(rank == index, "spilled rank at {i} mismatch");
+        }
+        anyhow::Ok(())
+    })?;
 
     // Windows spanning several segments count exactly.
-    for (lo, hi) in [
-        (Key::from(&[0u8, 0][..]), Key::from(&[100u8, 0][..])),
-        (Key::from(&[40u8, 25][..]), Key::from(&[210u8, 10][..])),
-        (Key::empty(), Key::from(&[255u8, 255][..])),
-    ] {
-        let expected = u64::try_from(all.iter().filter(|(k, _)| lo <= *k && *k < hi).count())?;
-        let got = run(reader.count(&root, &lo, &hi))?;
-        ensure!(
-            got == expected,
-            "spilled count mismatch: {got} != {expected}"
-        );
-    }
+    run(async {
+        for (lo, hi) in [
+            (Key::from(&[0u8, 0][..]), Key::from(&[100u8, 0][..])),
+            (Key::from(&[40u8, 25][..]), Key::from(&[210u8, 10][..])),
+            (Key::empty(), Key::from(&[255u8, 255][..])),
+        ] {
+            let expected = u64::try_from(all.iter().filter(|(k, _)| lo <= *k && *k < hi).count())?;
+            let got = reader.count(&root, &lo, &hi).await?;
+            ensure!(
+                got == expected,
+                "spilled count mismatch: {got} != {expected}"
+            );
+        }
+        anyhow::Ok(())
+    })?;
 
     // A page deep in the spilled listing is the matching oracle slice.
     let mut got = Vec::new();
     let mut cursor = run(reader.paginate_prefix(&root, &Key::empty(), 9000, 25))?;
-    while let Some(pair) = run(cursor.next())? {
-        got.push(pair);
-    }
+    run(async {
+        while let Some(pair) = cursor.next().await? {
+            got.push(pair);
+        }
+        anyhow::Ok(())
+    })?;
     let want: Vec<_> = all.iter().skip(9000).take(25).cloned().collect();
     ensure!(got == want, "spilled paginate mismatch");
     Ok(())
@@ -231,13 +248,15 @@ fn order_statistics_are_stable_under_shuffled_build_order() -> Result<()> {
 
     let reader = Reader::<MemoryStore, V1>::new(a_store);
     // A shuffled build is the same tree, so every rank and select is unchanged.
-    for index in [0u64, 1, 250, 500, 999] {
-        let got = run(reader.select(&a, index))?;
-        let (key, _) = got.context("select fell off the shuffled build")?;
-        let rank = run(reader.rank(&a, &key))?;
-        ensure!(rank == index, "rank/select disagree at {index}");
-    }
-    Ok(())
+    run(async {
+        for index in [0u64, 1, 250, 500, 999] {
+            let got = reader.select(&a, index).await?;
+            let (key, _) = got.context("select fell off the shuffled build")?;
+            let rank = reader.rank(&a, &key).await?;
+            ensure!(rank == index, "rank/select disagree at {index}");
+        }
+        Ok(())
+    })
 }
 
 #[test]
@@ -249,16 +268,21 @@ fn paginate_matches_iter_skip_take() -> Result<()> {
     let all = oracle(&reader, &root)?;
 
     // Whole-manifest pagination is exactly iter().skip(offset).take(limit).
-    for (offset, limit) in [(0u64, 7usize), (13, 20), (500, 33), (995, 50), (2000, 4)] {
-        let mut got = Vec::new();
-        let mut cursor = run(reader.paginate_prefix(&root, &Key::empty(), offset, limit))?;
-        while let Some(pair) = run(cursor.next())? {
-            got.push(pair);
+    run(async {
+        for (offset, limit) in [(0u64, 7usize), (13, 20), (500, 33), (995, 50), (2000, 4)] {
+            let mut got = Vec::new();
+            let mut cursor = reader
+                .paginate_prefix(&root, &Key::empty(), offset, limit)
+                .await?;
+            while let Some(pair) = cursor.next().await? {
+                got.push(pair);
+            }
+            let start = usize::try_from(offset)?;
+            let want: Vec<_> = all.iter().skip(start).take(limit).cloned().collect();
+            ensure!(got == want, "paginate_prefix({offset}, {limit}) mismatch");
         }
-        let start = usize::try_from(offset)?;
-        let want: Vec<_> = all.iter().skip(start).take(limit).cloned().collect();
-        ensure!(got == want, "paginate_prefix({offset}, {limit}) mismatch");
-    }
+        anyhow::Ok(())
+    })?;
 
     // Range pagination is the same over the range's own slice.
     let lo = Key::from(&[3u8, 0, 0][..]);
@@ -268,17 +292,19 @@ fn paginate_matches_iter_skip_take() -> Result<()> {
         .filter(|(k, _)| lo <= *k && *k < hi)
         .cloned()
         .collect();
-    for (offset, limit) in [(0u64, 10usize), (25, 40), (300, 12)] {
-        let mut got = Vec::new();
-        let mut cursor = run(reader.paginate(&root, &lo, &hi, offset, limit))?;
-        while let Some(pair) = run(cursor.next())? {
-            got.push(pair);
+    run(async {
+        for (offset, limit) in [(0u64, 10usize), (25, 40), (300, 12)] {
+            let mut got = Vec::new();
+            let mut cursor = reader.paginate(&root, &lo, &hi, offset, limit).await?;
+            while let Some(pair) = cursor.next().await? {
+                got.push(pair);
+            }
+            let start = usize::try_from(offset)?;
+            let want: Vec<_> = window.iter().skip(start).take(limit).cloned().collect();
+            ensure!(got == want, "paginate({offset}, {limit}) mismatch");
         }
-        let start = usize::try_from(offset)?;
-        let want: Vec<_> = window.iter().skip(start).take(limit).cloned().collect();
-        ensure!(got == want, "paginate({offset}, {limit}) mismatch");
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 #[test]
@@ -312,13 +338,19 @@ fn the_offset_seek_costs_depth_not_offset() -> Result<()> {
     // page and its read-ahead: the offset itself is free.
     reader.store().reset();
     let mut head = run(reader.paginate_prefix(&root, &Key::empty(), 0, 5))?;
-    while run(head.next())?.is_some() {}
+    run(async {
+        while head.next().await?.is_some() {}
+        anyhow::Ok(())
+    })?;
     let head_cost = reader.store().gets();
 
     reader.store().reset();
     let deep_offset = total.saturating_sub(5);
     let mut deep = run(reader.paginate_prefix(&root, &Key::empty(), deep_offset, 5))?;
-    while run(deep.next())?.is_some() {}
+    run(async {
+        while deep.next().await?.is_some() {}
+        anyhow::Ok(())
+    })?;
     let deep_cost = reader.store().gets();
 
     // The deep page pays for its own depth and window, not the offset it skipped.

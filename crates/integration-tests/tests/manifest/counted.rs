@@ -56,10 +56,13 @@ fn build_then_read_round_trips_every_key() -> Result<()> {
     let root = *run(builder.build(&store))?.root();
 
     let reader = Reader::<MemoryStore, V1>::new(store);
-    for (key, fill) in &all {
-        let got = run(reader.get(&root, key))?;
-        ensure!(got == Some(ref_entry::<V1>(*fill)), "read value mismatch");
-    }
+    run(async {
+        for (key, fill) in &all {
+            let got = reader.get(&root, key).await?;
+            ensure!(got == Some(ref_entry::<V1>(*fill)), "read value mismatch");
+        }
+        anyhow::Ok(())
+    })?;
     ensure!(
         run(reader.get(&root, &Key::from(&b"absent"[..])))?.is_none(),
         "absent key must read as None",
