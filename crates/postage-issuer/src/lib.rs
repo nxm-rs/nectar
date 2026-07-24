@@ -112,6 +112,8 @@ mod dilute_handler;
 mod error;
 mod factory;
 mod issuer;
+#[cfg(feature = "parallel")]
+mod prepared;
 mod ring;
 mod sharded;
 mod sharded_ring;
@@ -149,5 +151,7 @@ pub use factory::{
 };
 
 // Parallel signing (requires parallel feature)
+#[cfg(feature = "parallel")]
+pub use prepared::{StampPreparation, prepare_stamps, sign_prepared_parallel, stamp_parallel};
 #[cfg(feature = "parallel")]
 pub use sharded::{StampResult, sign_stamps_parallel};
