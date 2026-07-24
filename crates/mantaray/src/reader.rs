@@ -257,11 +257,15 @@ mod tests {
     /// Build a persisted manifest, then check the reader against the
     /// path-set model over the same store: a get hits exactly the stored
     /// paths, a prefix probe hits exactly the stored extensions.
-    fn assert_model(paths: &[&str]) {
-        let (root, store) = build(paths);
+    async fn assert_model(paths: &[&str]) {
+        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
+        for &p in paths {
+            editor.put(p, make_addr(p));
+        }
+        let (root, store) = editor.commit().await.unwrap();
         let reader = Reader::new(store);
         for probe in probes(paths) {
-            let got = run(reader.get(&root, probe.as_bytes())).unwrap();
+            let got = reader.get(&root, probe.as_bytes()).await.unwrap();
             assert_eq!(
                 got.is_some(),
                 paths.contains(&probe.as_str()),
@@ -274,7 +278,7 @@ mod tests {
                     "reference for {probe:?}"
                 );
             }
-            let has = run(reader.has_prefix(&root, probe.as_bytes())).unwrap();
+            let has = reader.has_prefix(&root, probe.as_bytes()).await.unwrap();
             let want_has = probe.is_empty() || paths.iter().any(|p| p.starts_with(&probe));
             assert_eq!(has, want_has, "has_prefix({probe:?})");
         }
@@ -282,37 +286,41 @@ mod tests {
 
     #[test]
     fn get_and_has_prefix_match_the_path_set_model() {
-        for paths in corpora() {
-            assert_model(&paths);
-        }
+        run(async {
+            for paths in corpora() {
+                assert_model(&paths).await;
+            }
+        });
     }
 
     #[test]
     fn encrypted_trie_lookups_return_the_stored_references() {
-        let paths = ["secret/a.txt", "secret/b.txt", "top.txt"];
-        let key = EncryptionKey::from([0x5a; 32]);
-        let mut editor: ManifestEditor<Store, EncryptedChunkRef> =
-            ManifestEditor::new_encrypted(Store::new());
-        for p in paths {
-            editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
-        }
-        let (manifest_ref, store) = run(editor.commit()).unwrap();
-        let (root, _key) = manifest_ref.into_parts();
-
-        let reader = Reader::new(store);
-        for p in paths {
-            let got = run(reader.get(&root, p.as_bytes())).unwrap().unwrap();
-            match got.reference() {
-                Some(EntryRef::Encrypted(reference)) => {
-                    assert_eq!(reference.address(), &make_addr(p), "address for {p:?}");
-                    assert_eq!(reference.key(), &key, "key for {p:?}");
-                }
-                other => panic!("encrypted get({p:?}) returned {other:?}"),
+        run(async {
+            let paths = ["secret/a.txt", "secret/b.txt", "top.txt"];
+            let key = EncryptionKey::from([0x5a; 32]);
+            let mut editor: ManifestEditor<Store, EncryptedChunkRef> =
+                ManifestEditor::new_encrypted(Store::new());
+            for p in paths {
+                editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
             }
-        }
-        assert!(run(reader.has_prefix(&root, b"secret/")).unwrap());
-        assert!(!run(reader.has_prefix(&root, b"secrets")).unwrap());
-        assert_eq!(run(reader.get(&root, b"secret/")).unwrap(), None);
+            let (manifest_ref, store) = editor.commit().await.unwrap();
+            let (root, _key) = manifest_ref.into_parts();
+
+            let reader = Reader::new(store);
+            for p in paths {
+                let got = reader.get(&root, p.as_bytes()).await.unwrap().unwrap();
+                match got.reference() {
+                    Some(EntryRef::Encrypted(reference)) => {
+                        assert_eq!(reference.address(), &make_addr(p), "address for {p:?}");
+                        assert_eq!(reference.key(), &key, "key for {p:?}");
+                    }
+                    other => panic!("encrypted get({p:?}) returned {other:?}"),
+                }
+            }
+            assert!(reader.has_prefix(&root, b"secret/").await.unwrap());
+            assert!(!reader.has_prefix(&root, b"secrets").await.unwrap());
+            assert_eq!(reader.get(&root, b"secret/").await.unwrap(), None);
+        });
     }
 
     #[test]
@@ -399,18 +407,20 @@ mod tests {
         let (root, store) = build(&paths);
         let reader = Reader::new(CountingStore::new(store));
 
-        for p in paths {
-            assert!(run(reader.get(&root, p.as_bytes())).unwrap().is_some());
-            assert!(
-                reader.store().take() <= p.len() + 1,
-                "get({p:?}) exceeded the depth bound"
-            );
-            assert!(run(reader.has_prefix(&root, p.as_bytes())).unwrap());
-            assert!(
-                reader.store().take() <= p.len(),
-                "has_prefix({p:?}) exceeded the depth bound"
-            );
-        }
+        run(async {
+            for p in paths {
+                assert!(reader.get(&root, p.as_bytes()).await.unwrap().is_some());
+                assert!(
+                    reader.store().take() <= p.len() + 1,
+                    "get({p:?}) exceeded the depth bound"
+                );
+                assert!(reader.has_prefix(&root, p.as_bytes()).await.unwrap());
+                assert!(
+                    reader.store().take() <= p.len(),
+                    "has_prefix({p:?}) exceeded the depth bound"
+                );
+            }
+        });
     }
 
     #[test]
