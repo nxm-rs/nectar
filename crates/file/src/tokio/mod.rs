@@ -45,7 +45,7 @@
 //! `Bytes` for a streaming http body.
 
 mod reader;
-#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+#[cfg(multi_thread)]
 mod spawned;
 // Sanctioned tokio adapter tests: the test macro expands to `Runtime::block_on`.
 #[cfg(test)]
@@ -53,15 +53,15 @@ mod spawned;
 mod tests;
 // The writer maps split failures into `io::Error`, which boxes them
 // `Send + Sync`; the wasm32 and `unsync` error chains are not.
-#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+#[cfg(multi_thread)]
 mod writer;
 
 use std::io::SeekFrom;
 
 pub use reader::TokioReader;
-#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+#[cfg(multi_thread)]
 pub use spawned::SpawnedReader;
-#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+#[cfg(multi_thread)]
 pub use writer::TokioWriter;
 
 /// A relative seek whose resolved target leaves the unsigned position

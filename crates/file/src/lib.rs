@@ -133,10 +133,7 @@ pub mod walk;
 
 #[cfg(feature = "tokio")]
 pub use self::tokio::{SeekOverflow, TokioReader};
-#[cfg(all(
-    feature = "tokio",
-    not(any(target_arch = "wasm32", feature = "unsync"))
-))]
+#[cfg(all(feature = "tokio", multi_thread))]
 pub use self::tokio::{SpawnedReader, TokioWriter};
 pub use config::{BranchBudget, HashWindow, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};

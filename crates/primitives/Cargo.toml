@@ -33,6 +33,7 @@ derive_more.workspace = true
 
 # Core dependencies
 bytes.workspace = true
+futures-core.workspace = true
 once_cell.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, optional = true }
@@ -75,6 +76,9 @@ getrandom_02.workspace = true
 # B256::random (used by Nonce::random) links on wasm32-unknown-unknown.
 getrandom_04.workspace = true
 
+[build-dependencies]
+cfg_aliases.workspace = true
+
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "asm-keccak"] }
 
@@ -87,7 +91,7 @@ rand.workspace = true
 
 [features]
 default = [ "std" ]
-std = []
+std = [ "futures-core/std" ]
 # WASM thread pool via wasm-bindgen-rayon. OFF by default so the default wasm
 # build needs no SharedArrayBuffer / cross-origin isolation — letting it run on
 # hosts that can't set COOP/COEP (e.g. the eth.limo ENS gateway). Enable it

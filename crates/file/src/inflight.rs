@@ -8,11 +8,11 @@ use core::task::{Context, Poll};
 
 /// Boxed future held in the set: `Send` on multi-threaded targets, unbounded
 /// on wasm32 and under the `unsync` feature.
-#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+#[cfg(multi_thread)]
 pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// Boxed future held in the set: `Send` on multi-threaded targets, unbounded
 /// on wasm32 and under the `unsync` feature.
-#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
+#[cfg(not(multi_thread))]
 pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
 /// A fixed-membership set of outstanding futures.

@@ -59,6 +59,7 @@ pub mod entry_ref;
 pub mod error;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod generators;
+pub mod marker;
 pub mod neighborhood_depth;
 pub mod network_id;
 pub mod nonce;

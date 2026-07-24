@@ -27,11 +27,11 @@ pub struct Progress {
 
 /// Boxed progress callback: `Send` on multi-threaded targets, unbounded on
 /// wasm32 and under the `unsync` feature.
-#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+#[cfg(multi_thread)]
 pub type ProgressFn = Box<dyn FnMut(Progress) + Send>;
 /// Boxed progress callback: `Send` on multi-threaded targets, unbounded on
 /// wasm32 and under the `unsync` feature.
-#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
+#[cfg(not(multi_thread))]
 pub type ProgressFn = Box<dyn FnMut(Progress)>;
 
 /// Builder of one download; construction is infallible.

@@ -25,12 +25,12 @@ pub struct BoxedStoreError(#[source] BoxedError);
 
 /// Boxed erased fetch future: `Send` on multi-threaded targets, unbounded on
 /// wasm32 and under the `unsync` feature.
-#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+#[cfg(multi_thread)]
 type BoxGet<const B: usize> =
     Pin<Box<dyn Future<Output = Result<Chunk<Verified, AnyChunkSet<B>>, BoxedStoreError>> + Send>>;
 /// Boxed erased fetch future: `Send` on multi-threaded targets, unbounded on
 /// wasm32 and under the `unsync` feature.
-#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
+#[cfg(not(multi_thread))]
 type BoxGet<const B: usize> =
     Pin<Box<dyn Future<Output = Result<Chunk<Verified, AnyChunkSet<B>>, BoxedStoreError>>>>;
 

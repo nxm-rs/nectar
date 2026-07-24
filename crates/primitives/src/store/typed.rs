@@ -8,8 +8,8 @@
 
 use std::future::Future;
 
-use super::maybe_send::{MaybeSend, MaybeSync};
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, TrustState, Verified};
+use crate::marker::{MaybeSend, MaybeSync};
 
 /// Async chunk retrieval (primary API).
 ///
@@ -119,7 +119,7 @@ pub trait TrustedGet<R: ChunkRegistry = StandardChunkSet>: ChunkGet<R, Trust = V
 
 impl<R: ChunkRegistry, T: ChunkGet<R, Trust = Verified> + ?Sized> TrustedGet<R> for T {}
 
-#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
+#[cfg(not(multi_thread))]
 mod send_sync_relaxation_proof {
     // A store that is neither Send nor Sync (raw pointer marker) must still
     // satisfy ChunkGet wherever the relaxation applies (wasm32, or the unsync

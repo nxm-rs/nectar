@@ -45,11 +45,11 @@ type Fetched<M, E, const B: usize> = (Node<M>, Result<Chunk<Verified, AnyChunkSe
 
 /// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
 /// and under the `unsync` feature.
-#[cfg(not(any(target_arch = "wasm32", feature = "unsync")))]
+#[cfg(multi_thread)]
 type BoxFetch<M, E, const B: usize> = Pin<Box<dyn Future<Output = Fetched<M, E, B>> + Send>>;
 /// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
 /// and under the `unsync` feature.
-#[cfg(any(target_arch = "wasm32", feature = "unsync"))]
+#[cfg(not(multi_thread))]
 type BoxFetch<M, E, const B: usize> = Pin<Box<dyn Future<Output = Fetched<M, E, B>>>>;
 
 /// Which frame a drain takes from the ready set.

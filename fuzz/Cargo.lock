@@ -1918,6 +1918,7 @@ version = "0.4.0"
 dependencies = [
  "arbitrary",
  "bytes",
+ "cfg_aliases",
  "futures-util",
  "nectar-primitives",
  "thiserror",
@@ -2015,8 +2016,10 @@ dependencies = [
  "alloy-signer-local",
  "arbitrary",
  "bytes",
+ "cfg_aliases",
  "derive_more",
  "digest 0.11.3",
+ "futures-core",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
