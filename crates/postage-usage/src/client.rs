@@ -28,7 +28,7 @@
 
 use alloc::vec::Vec;
 
-use web_time::{SystemTime, UNIX_EPOCH};
+use nectar_clock::{Clock, SystemClock};
 
 use alloy_primitives::Address;
 use alloy_signer::SignerSync;
@@ -142,14 +142,20 @@ where
 /// The owner is fixed at `open` from the signer's address, and every snapshot
 /// chunk address is derived from it and the batch id, so a second machine
 /// holding only the same key and batch id recovers the same state.
+///
+/// Seal timestamps come from the clock type parameter, defaulting to the
+/// system clock; [`open_with_clock`](Self::open_with_clock) injects a
+/// deterministic source.
 #[derive(Debug)]
-pub struct BatchStamperFor<Sg, Src, Snk, S: SwarmSpec = Mainnet> {
+pub struct BatchStamperFor<Sg, Src, Snk, S: SwarmSpec = Mainnet, C = SystemClock> {
     signer: Sg,
     owner: Address,
     batch_id: BatchId,
     source: Src,
     sink: Snk,
     snapshot: SnapshotFor<S>,
+    /// The timestamp source for seals.
+    clock: C,
     /// Whether a persist has been emitted in this session. A clean snapshot that
     /// has already persisted once this session makes [`flush`](Self::flush) a
     /// no-op; a clean but never-persisted snapshot still flushes once so a fresh
@@ -158,7 +164,7 @@ pub struct BatchStamperFor<Sg, Src, Snk, S: SwarmSpec = Mainnet> {
 }
 
 /// The [`BatchStamperFor`] of the mainnet spec.
-pub type BatchStamper<Sg, Src, Snk> = BatchStamperFor<Sg, Src, Snk, Mainnet>;
+pub type BatchStamper<Sg, Src, Snk, C = SystemClock> = BatchStamperFor<Sg, Src, Snk, Mainnet, C>;
 
 impl<Sg, Src, Snk, S> BatchStamperFor<Sg, Src, Snk, S>
 where
@@ -168,6 +174,30 @@ where
     S: SwarmSpec,
 {
     /// Opens a stamper for `batch`, recovering published state or starting fresh.
+    ///
+    /// Seal timestamps come from the system clock; see
+    /// [`open_with_clock`](Self::open_with_clock) for the recovery contract and
+    /// for injecting a deterministic source.
+    pub async fn open(
+        signer: Sg,
+        batch: &Batch<S>,
+        source: Src,
+        sink: Snk,
+    ) -> Result<Self, ClientError<Src::Error, Snk::Error>> {
+        Self::open_with_clock(signer, batch, source, sink, SystemClock).await
+    }
+}
+
+impl<Sg, Src, Snk, S, C> BatchStamperFor<Sg, Src, Snk, S, C>
+where
+    Sg: SignerSync + alloy_signer::Signer,
+    Src: SnapshotSource,
+    Snk: SnapshotSink,
+    S: SwarmSpec,
+    C: Clock,
+{
+    /// Opens a stamper for `batch` whose seal timestamps read from `clock`,
+    /// recovering published state or starting fresh.
     ///
     /// The owner is taken from `signer.address()`. The root chunk address is
     /// derived from the batch id, owner, and index 0, then read through `source`:
@@ -183,11 +213,12 @@ where
     /// - `Err`: the read could not be completed. This aborts; it never starts
     ///   fresh, so a transport failure cannot downgrade a batch that already has
     ///   a published root.
-    pub async fn open(
+    pub async fn open_with_clock(
         signer: Sg,
         batch: &Batch<S>,
         source: Src,
         sink: Snk,
+        clock: C,
     ) -> Result<Self, ClientError<Src::Error, Snk::Error>> {
         let owner = signer.address();
         let batch_id = batch.id();
@@ -232,6 +263,7 @@ where
             source,
             sink,
             snapshot,
+            clock,
             persisted_this_session: false,
         })
     }
@@ -262,7 +294,7 @@ where
     /// - `Err`: the read could not be completed. This aborts; it never persists
     ///   against a floor it could not read.
     ///
-    /// The seal timestamp is the wall clock, nudged past the previous seal so the
+    /// The seal timestamp is the clock reading, nudged past the previous seal so the
     /// in-process monotonicity guard in [`seal_plan`] never trips and the reserve
     /// overwrites each metadata chunk in place. A persist whose next sequence does
     /// not strictly exceed the live floor surfaces as
@@ -287,13 +319,10 @@ where
         let plan = self.snapshot.revalidate(floor)?.plan_persist(&self.owner)?;
 
         // The seal timestamp must strictly increase across flushes so the reserve
-        // overwrites each metadata chunk in place. Take the wall clock, but lift
-        // it past the previous seal so a coarse or non-advancing clock never trips
-        // the in-process guard in `seal_plan`.
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        // overwrites each metadata chunk in place. Read the clock (pre-epoch
+        // clamps to zero), but lift it past the previous seal so a coarse or
+        // non-advancing clock never trips the in-process guard in `seal_plan`.
+        let now = u64::try_from(self.clock.now_secs()).unwrap_or(0);
         // `previous` is a wall-clock seal timestamp in seconds, recorded by
         // an earlier flush, so it sits far below u64::MAX and the increment
         // cannot overflow.
@@ -479,6 +508,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn flush_seals_with_the_injected_clock() {
+        use nectar_clock::ManualClock;
+
+        let signer = PrivateKeySigner::random();
+        let batch = test_batch(&signer, true);
+        let net = MemNet::default();
+
+        let clock = ManualClock::new(1_000 * 1_000_000_000);
+        let mut stamper =
+            BatchStamper::open_with_clock(signer, &batch, net.clone(), net.clone(), &clock)
+                .await
+                .unwrap();
+
+        stamper
+            .stamp(&ChunkAddress::from(B256::repeat_byte(0x99)))
+            .unwrap();
+        stamper.flush().await.unwrap();
+        assert_eq!(stamper.snapshot().last_seal_timestamp(), Some(1_000));
+
+        // A non-advancing clock still seals strictly after the previous seal.
+        stamper
+            .stamp(&ChunkAddress::from(B256::repeat_byte(0x77)))
+            .unwrap();
+        stamper.flush().await.unwrap();
+        assert_eq!(stamper.snapshot().last_seal_timestamp(), Some(1_001));
+
+        clock.advance(core::time::Duration::from_secs(60));
+        stamper
+            .stamp(&ChunkAddress::from(B256::repeat_byte(0x55)))
+            .unwrap();
+        stamper.flush().await.unwrap();
+        assert_eq!(stamper.snapshot().last_seal_timestamp(), Some(1_060));
+    }
+
+    #[tokio::test]
     async fn open_recovers_published_batch() {
         let signer = PrivateKeySigner::random();
         let owner = signer.address();
@@ -536,6 +600,7 @@ mod tests {
             source: FailingSource,
             sink: net.clone(),
             snapshot: Snapshot::from_batch(&batch).unwrap(),
+            clock: SystemClock,
             persisted_this_session: false,
         };
         stamper
@@ -625,6 +690,7 @@ mod tests {
             source: net.clone(),
             sink: net.clone(),
             snapshot: stale,
+            clock: SystemClock,
             persisted_this_session: false,
         };
         b.stamp(&ChunkAddress::from(B256::repeat_byte(0x03)))
