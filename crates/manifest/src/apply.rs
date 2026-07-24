@@ -769,6 +769,9 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use core::future::Future;
+    use core::pin::Pin;
+
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{ChunkAddress, ChunkRef};
     use nectar_testing::run;
@@ -785,27 +788,34 @@ mod tests {
 
     // Walk the counted tree, asserting every stored referenced-child count
     // equals the walked subtree size, and return the subtree's key count.
-    fn walk_counts(store: &MemoryStore, table: &ForkTable<V1>) -> u64 {
-        let mut total = 0u64;
-        for (_, record) in table.iter() {
-            let child = match record.child() {
-                None => 0,
-                Some(Child::Embedded(inner)) => walk_counts(store, inner),
-                Some(Child::Ref32(reference)) => {
-                    let node = run(store.get_node::<V1>(reference.address())).unwrap();
-                    let actual = walk_counts(store, node.forks());
-                    assert_eq!(
-                        record.child_count(),
-                        Some(SubtreeCount::new(actual)),
-                        "stored count must equal the walked subtree size"
-                    );
-                    actual
-                }
-                Some(Child::Ref64(_)) => unreachable!("a plaintext build has no encrypted child"),
-            };
-            total += u64::from(record.entry().is_some()) + child;
-        }
-        total
+    fn walk_counts<'a>(
+        store: &'a MemoryStore,
+        table: &'a ForkTable<V1>,
+    ) -> Pin<Box<dyn Future<Output = u64> + 'a>> {
+        Box::pin(async move {
+            let mut total = 0u64;
+            for (_, record) in table.iter() {
+                let child = match record.child() {
+                    None => 0,
+                    Some(Child::Embedded(inner)) => walk_counts(store, inner).await,
+                    Some(Child::Ref32(reference)) => {
+                        let node = store.get_node::<V1>(reference.address()).await.unwrap();
+                        let actual = walk_counts(store, node.forks()).await;
+                        assert_eq!(
+                            record.child_count(),
+                            Some(SubtreeCount::new(actual)),
+                            "stored count must equal the walked subtree size"
+                        );
+                        actual
+                    }
+                    Some(Child::Ref64(_)) => {
+                        unreachable!("a plaintext build has no encrypted child")
+                    }
+                };
+                total += u64::from(record.entry().is_some()) + child;
+            }
+            total
+        })
     }
 
     #[test]
@@ -824,7 +834,7 @@ mod tests {
         }
         let root = *run(builder.build(&store)).unwrap().root();
         let node = run(store.get_node::<V1>(&root)).unwrap();
-        let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks());
+        let total = u64::from(node.entry().is_some()) + run(walk_counts(&store, node.forks()));
         assert_eq!(total, expected);
     }
 
@@ -854,7 +864,7 @@ mod tests {
 
         // The applied tree's stored counts still equal the walked subtree sizes.
         let node = run(store.get_node::<V1>(&applied)).unwrap();
-        let total = u64::from(node.entry().is_some()) + walk_counts(&store, node.forks());
+        let total = u64::from(node.entry().is_some()) + run(walk_counts(&store, node.forks()));
         assert_eq!(total, 64);
     }
 
