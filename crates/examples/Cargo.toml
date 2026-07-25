@@ -30,6 +30,7 @@ alloy-signer-local.workspace = true
 bytes.workspace = true
 nectar-contracts.workspace = true
 nectar-postage.workspace = true
+nectar-postage-issuer = { workspace = true, features = ["parallel"] }
 nectar-postage-usage = { workspace = true, features = ["client", "seal"] }
 nectar-primitives.workspace = true
 thiserror = { workspace = true, features = ["std"] }

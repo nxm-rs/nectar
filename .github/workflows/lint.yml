@@ -61,14 +61,19 @@ jobs:
             # above never see them.
             - name: cargo clippy (postage serde)
               run: cargo clippy --locked --all-targets -p nectar-postage --features serde
-            # The parallel signing helpers sit behind the parallel feature,
-            # likewise outside the default-features pass.
+            # The pipeline's parallel engine sits behind the parallel
+            # feature, likewise outside the default-features pass.
             - name: cargo clippy (postage-issuer parallel)
               run: cargo clippy --locked --all-targets -p nectar-postage-issuer --features parallel
             # The encrypted node walk sits behind the encryption feature,
             # likewise outside the default-features pass.
             - name: cargo clippy (manifest encryption)
               run: cargo clippy --locked --all-targets -p nectar-manifest --features encryption
+            # The pipeline's inline engine only compiles with the parallel
+            # feature off; the workspace pass unifies parallel in via the
+            # bench crate, so lint the inline shape explicitly.
+            - name: cargo clippy (postage-issuer inline engine)
+              run: cargo clippy --locked --all-targets -p nectar-postage-issuer
             # `unused_crate_dependencies` is enforced per-library via `cargo
             # rustc` (not `[workspace.lints]`) so the flag applies only to each
             # crate's own lib target — never to benches/examples/tests (which

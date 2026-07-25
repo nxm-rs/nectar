@@ -119,13 +119,23 @@ jobs:
                   cargo nextest run \
                     -p nectar-postage --features serde --locked \
                     --no-tests=warn --no-fail-fast
-            # The parallel signing helpers sit behind the parallel feature,
-            # outside the default-features pass above.
+            # The pipeline's parallel engine sits behind the parallel
+            # feature, outside the default-features pass above.
             - name: Run postage-issuer parallel tests
               run: |
                   cargo nextest run \
                     -p nectar-postage-issuer --features parallel --locked \
                     --no-tests=warn --no-fail-fast
+            # The pipeline's inline engine only compiles with the parallel
+            # feature off; the workspace pass unifies parallel in via the
+            # bench crate, so cover the inline shape explicitly.
+            - name: Run postage-issuer inline-engine tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-postage-issuer --locked \
+                    --no-tests=warn --no-fail-fast
+            - name: Run postage-issuer inline-engine doctests
+              run: cargo test --doc -p nectar-postage-issuer --locked
 
     wasm:
         # The postage-usage client facade is meant to run in a browser. The

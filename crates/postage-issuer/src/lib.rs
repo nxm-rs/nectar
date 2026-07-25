@@ -6,6 +6,14 @@
 //! For verification-only use cases (like `vertex` nodes), use
 //! [`nectar-postage`](nectar_postage) directly.
 //!
+//! # Front door
+//!
+//! - [`StampPipeline`]: the many-chunk entry; streams any address iterator
+//!   and yields results unordered, tagged by address.
+//! - [`BatchStamper`]: the one-off entry for stamping a single chunk;
+//!   [`BatchStamper::into_parts`] moves an issuer between the doors.
+//! - Stamping at put lands later as a store decorator over the same engine.
+//!
 //! # Immutable and mutable issuance
 //!
 //! Immutable batches are fill-only: every slot is written at most once and a
@@ -69,7 +77,9 @@
 //!
 //! - `std` (default) - Enables standard library support
 //! - `local-signer` - Enables local key signing with `alloy-signer-local`
-//! - `parallel` - Enables parallel signing with rayon
+//! - `parallel` - Enables the pipeline's parallel signing engine with rayon
+//! - `unsync` - Relaxes the signer thread-safety bounds on single-threaded
+//!   targets; mutually exclusive with `parallel`
 //!
 //! # Example
 //!
@@ -106,13 +116,20 @@
     )
 )]
 
+// The parallel engine spawns onto rayon and needs real `Send`; `unsync`
+// relaxes that bound away. Enabling both (directly or through feature
+// unification) is a build error with a clear cause rather than a deep one at
+// the spawn site.
+#[cfg(all(feature = "parallel", feature = "unsync"))]
+compile_error!("features `parallel` and `unsync` are mutually exclusive");
+
 mod counter;
 #[cfg(feature = "std")]
 mod dilute_handler;
 mod error;
 mod factory;
 mod issuer;
-#[cfg(feature = "parallel")]
+mod pipeline;
 mod prepared;
 mod ring;
 mod sharded;
@@ -140,6 +157,9 @@ pub use issuer::{MemoryIssuer, MemoryIssuerFor, StampIssuer};
 pub use sharded::{ShardedIssuer, ShardedIssuerFor};
 pub use stamper::{BatchStamper, Stamper};
 
+// The streaming stamp pipeline
+pub use pipeline::{Eip191, SignPrehash, SignWindow, StampPipeline, StampResult, Stamped};
+
 // Mutable (ring) issuing with a type-state reservation guard
 pub use ring::{Reservation, Reserved, RingIssuer, RingIssuerFor, Unreserved};
 pub use sharded_ring::{ShardedRingIssuer, ShardedRingIssuerFor};
@@ -149,12 +169,3 @@ pub use sharded_ring::{ShardedRingIssuer, ShardedRingIssuerFor};
 pub use factory::{
     BatchFactory, CreateResult, CreateResultFor, MemoryBatchFactory, MemoryBatchFactoryFor,
 };
-
-// Parallel signing (requires parallel feature)
-#[cfg(feature = "parallel")]
-pub use prepared::{
-    StampPreparation, prepare_stamps, prepare_stamps_with_clock, sign_prepared_parallel,
-    stamp_parallel, stamp_parallel_with_clock,
-};
-#[cfg(feature = "parallel")]
-pub use sharded::{StampResult, sign_stamps_parallel, sign_stamps_parallel_with_clock};
