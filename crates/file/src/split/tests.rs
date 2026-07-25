@@ -536,10 +536,44 @@ mod encrypted {
         data: &[u8],
         mode: Encrypted<K>,
         step: usize,
+        delay: usize,
     ) -> (EncryptedChunkRef, TestStore<TINY>, SplitStats) {
-        let store = TestStore::<TINY>::new(1);
+        let store = TestStore::<TINY>::new(delay);
         let mut split: Split<TestStore<TINY>, Encrypted<K>, TINY> =
             Split::with_mode(store.clone(), mode, PutWindow::new(4).unwrap());
+        let root = run(async {
+            for piece in data.chunks(step.max(1)) {
+                let mut buf = piece;
+                while !buf.is_empty() {
+                    let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
+                    buf = &buf[n..];
+                }
+            }
+            poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
+        });
+        let stats = split.stats();
+        (root, store, stats)
+    }
+
+    /// Stream `data` through a pooled encrypted split in `step`-byte writes.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    fn pooled_split_encrypted<K: KeySource>(
+        data: &[u8],
+        mode: Encrypted<K>,
+        hash_window: u16,
+        step: usize,
+        delay: usize,
+    ) -> (EncryptedChunkRef, TestStore<TINY>, SplitStats) {
+        use crate::config::HashWindow;
+
+        let store = TestStore::<TINY>::new(delay);
+        let mut split: Split<TestStore<TINY>, Encrypted<K>, TINY> =
+            Split::with_mode(store.clone(), mode, PutWindow::new(4).unwrap())
+                .with_hash_window(HashWindow::new(hash_window).unwrap());
         let root = run(async {
             for piece in data.chunks(step.max(1)) {
                 let mut buf = piece;
@@ -626,7 +660,7 @@ mod encrypted {
         let size = 13 * TINY + 29;
         let data = fill(size);
         let (root, store, _) =
-            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719);
+            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719, 1);
         let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
             store,
             *root.address(),
@@ -662,7 +696,7 @@ mod encrypted {
         assert_eq!(plain_stats.peak_spine, 3);
 
         let (_, _, enc_stats) =
-            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719);
+            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719, 1);
         assert_eq!(enc_stats.leaves, 64);
         assert_eq!(enc_stats.intermediates, 21);
         assert_eq!(enc_stats.peak_spine, 4);
@@ -674,15 +708,51 @@ mod encrypted {
         // ciphertexts and the whole tree is a function of the key stream.
         let data = fill(16 * TINY);
         let (first_root, first_store, _) =
-            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719);
+            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719, 1);
         let (second_root, second_store, _) =
-            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 97);
+            stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 97, 1);
         assert_eq!(first_root, second_root);
         assert_eq!(sorted(first_store.log()), sorted(second_store.log()));
     }
 
-    /// Keys are drawn on the workers, so only the round trip is pinned:
-    /// pooled encrypted output is not byte-reproducible.
+    /// Every draw lands at submission, so a deterministic source assigns
+    /// keys in seal order and the pooled chunk stream is byte-identical to
+    /// the serial engine's. Only padless trees are byte-reproducible, so
+    /// the sizes keep every node full.
+    #[cfg(all(
+        feature = "rayon",
+        not(target_arch = "wasm32"),
+        not(feature = "unsync")
+    ))]
+    #[test]
+    fn pooled_encrypted_chunk_streams_are_byte_identical_to_serial() {
+        for depth in 0u32..4 {
+            let size = ENC_BRANCHES.pow(depth) * TINY;
+            let data = fill(size);
+            // Zero put delay settles every put at dispatch, so the ordered
+            // log is the dispatch order: the wire chunk stream itself.
+            let (serial_root, serial_store, serial_stats) =
+                stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719, 0);
+            for hash_window in [1u16, 4] {
+                let (root, store, stats) = pooled_split_encrypted(
+                    &data,
+                    Encrypted::new(SeqKeys::default()),
+                    hash_window,
+                    719,
+                    0,
+                );
+                assert_eq!(root, serial_root, "root diverged at {size}");
+                assert_eq!(
+                    store.log(),
+                    serial_store.log(),
+                    "chunk stream diverged at {size}"
+                );
+                assert_eq!(stats.puts, serial_stats.puts);
+            }
+        }
+    }
+
+    /// The default random source through the pool still round trips.
     #[cfg(all(
         feature = "rayon",
         not(target_arch = "wasm32"),
@@ -844,17 +914,25 @@ mod pooled {
 
         type Ref = ChunkAddress;
         type Root = ChunkAddress;
+        type Draw = Self;
 
         fn data_slots(branches: u64) -> u64 {
             branches
         }
 
-        fn seal<const B: usize>(&self, payload: Bytes) -> Result<Sealed<Self, B>, SealError> {
-            std::thread::sleep(self.stall);
+        fn draw(&self) -> Result<Self, SealError> {
+            Ok(self.clone())
+        }
+
+        fn seal_with<const B: usize>(
+            mode: Self,
+            payload: Bytes,
+        ) -> Result<Sealed<Self, B>, SealError> {
+            std::thread::sleep(mode.stall);
             let chunk = ContentChunk::<B>::try_from(payload)?
                 .seal::<nectar_primitives::chunk::AnyChunkSet<B>>();
             let address = *chunk.address();
-            self.sealed.fetch_add(1, Ordering::Relaxed);
+            mode.sealed.fetch_add(1, Ordering::Relaxed);
             Ok((chunk, address))
         }
 
@@ -1024,12 +1102,20 @@ mod pooled {
 
         type Ref = ChunkAddress;
         type Root = ChunkAddress;
+        type Draw = ();
 
         fn data_slots(branches: u64) -> u64 {
             branches
         }
 
-        fn seal<const B: usize>(&self, _payload: Bytes) -> Result<Sealed<Self, B>, SealError> {
+        fn draw(&self) -> Result<(), SealError> {
+            Ok(())
+        }
+
+        fn seal_with<const B: usize>(
+            (): (),
+            _payload: Bytes,
+        ) -> Result<Sealed<Self, B>, SealError> {
             panic!("seal panicked on the worker")
         }
 

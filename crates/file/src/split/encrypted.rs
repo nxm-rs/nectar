@@ -17,7 +17,8 @@ use crate::walk::Encrypted;
 /// Key supply for the encrypted split; one fresh key seals one chunk.
 ///
 /// Sources are shared handles: a clone draws from the same stream, so keys
-/// stay unique across the streaming ascent and pool workers.
+/// stay unique across clones. The split draws every key on the engine
+/// thread in seal order, so a deterministic source reproduces the tree.
 pub trait KeySource: MaybeSend + MaybeSync + 'static {
     /// The key sealing the next chunk.
     fn next_key(&self) -> Result<EncryptionKey, KeyError>;
@@ -65,13 +66,20 @@ impl<K: KeySource> SplitMode for Encrypted<K> {
 
     type Ref = EncryptedChunkRef;
     type Root = EncryptedChunkRef;
+    type Draw = EncryptionKey;
 
     fn data_slots(branches: u64) -> u64 {
         branches
     }
 
-    fn seal<const B: usize>(&self, payload: Bytes) -> Result<Sealed<Self, B>, SealError> {
-        let key = self.source().next_key()?;
+    fn draw(&self) -> Result<EncryptionKey, SealError> {
+        Ok(self.source().next_key()?)
+    }
+
+    fn seal_with<const B: usize>(
+        key: EncryptionKey,
+        payload: Bytes,
+    ) -> Result<Sealed<Self, B>, SealError> {
         let (chunk, reference) = ContentChunk::<B>::try_from(payload)?
             .encrypt_with(&key)?
             .into_parts();

@@ -24,9 +24,9 @@
 //! 5. Fused finish: `poll_finish` is cancel-safe and re-callable; after the
 //!    root is delivered every later call returns the same root.
 //! 6. Bounded hash window: pool leaf seals in flight never exceed the
-//!    [`HashWindow`](crate::HashWindow), and sealed leaves are admitted in
-//!    leaf order, so a deterministic mode's chunk stream matches the serial
-//!    engine.
+//!    [`HashWindow`](crate::HashWindow); sealed leaves are admitted in leaf
+//!    order and every draw lands at submission, so a deterministic mode's
+//!    chunk stream is byte-identical to the serial engine's.
 
 #[cfg(feature = "encryption")]
 mod encrypted;
