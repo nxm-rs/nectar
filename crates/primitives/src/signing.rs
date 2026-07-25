@@ -34,6 +34,7 @@
 //! argument is whatever wire encoding the calling node uses for its multiaddr
 //! list.
 
+use alloc::vec::Vec;
 use alloy_primitives::Address;
 
 use crate::{NetworkId, Nonce, OverlayAddress, Timestamp};

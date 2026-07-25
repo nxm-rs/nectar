@@ -62,6 +62,7 @@ pub(super) fn node_hasher(prefix: Option<&[u8]>) -> Keccak256 {
 ///
 /// Consumes exactly `out.len()` pairs from `pairs` (the caller guarantees the
 /// iterator yields that many); each output is `keccak(prefix || left || right)`.
+#[cfg(feature = "std")]
 pub(super) fn hash_pairs<'a>(
     prefix: Option<&[u8]>,
     pairs: impl Iterator<Item = &'a [u8]>,
@@ -81,6 +82,21 @@ pub(super) fn hash_pairs<'a>(
     }
     let inputs: Vec<&[u8]> = scratch.chunks_exact(entry).collect();
     keccak_batch::keccak256_many_into(&inputs, out);
+}
+
+/// Hash 64-byte sibling pairs sequentially: the `no_std` baseline, one
+/// `keccak(prefix || left || right)` per pair on the patchable keccak seam.
+#[cfg(not(feature = "std"))]
+pub(super) fn hash_pairs<'a>(
+    prefix: Option<&[u8]>,
+    pairs: impl Iterator<Item = &'a [u8]>,
+    out: &mut [[u8; 32]],
+) {
+    for (slot, pair) in out.iter_mut().zip(pairs) {
+        let mut hasher = node_hasher(prefix);
+        hasher.update(pair);
+        slot.copy_from_slice(hasher.finalize().as_slice());
+    }
 }
 
 /// BMT hasher with configurable body size.
@@ -401,12 +417,15 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
         Bytes::copy_from_slice(live)
     }
 
-    /// Get segments for the current level of data
+    /// Get segments for the current level of data.
+    ///
+    /// Parallel via rayon on hosted non-wasm targets; the sequential walk is
+    /// the wasm32 and `no_std` baseline.
     #[inline]
     pub fn get_level_segments(&self, data: &[u8]) -> Vec<B256> {
         let branches = branches_for_body_size(BODY_SIZE);
 
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
         {
             use rayon::prelude::*;
             (0..branches)
@@ -415,7 +434,7 @@ impl<const BODY_SIZE: usize> Hasher<BODY_SIZE> {
                 .collect()
         }
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "std", not(target_arch = "wasm32"))))]
         {
             (0..branches)
                 .map(|i| self.compute_segment_hash(data, i))

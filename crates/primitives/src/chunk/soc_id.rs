@@ -56,6 +56,9 @@ impl SocId {
     }
 
     /// Sample a cryptographically random id via `alloy_primitives::B256::random`.
+    ///
+    /// Absent on bare metal, which has no entropy source.
+    #[cfg(not(target_os = "none"))]
     pub fn random() -> Self {
         Self(B256::random())
     }

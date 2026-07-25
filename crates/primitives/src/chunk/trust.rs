@@ -6,7 +6,8 @@
 //! then verify; a store holding a [`TrustedSource`] capability is the single
 //! gated exception ([`Chunk::assume_verified`]).
 
-use std::marker::PhantomData;
+use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use alloy_primitives::Address;
 use bytes::Bytes;
@@ -262,8 +263,8 @@ impl<S: TrustState, R: ChunkRegistry> Clone for Chunk<S, R> {
     }
 }
 
-impl<S: TrustState, R: ChunkRegistry> std::fmt::Debug for Chunk<S, R> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<S: TrustState, R: ChunkRegistry> core::fmt::Debug for Chunk<S, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Chunk")
             .field("state", &S::NAME)
             .field("address", &self.address)

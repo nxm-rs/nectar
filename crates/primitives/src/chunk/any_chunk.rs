@@ -6,6 +6,8 @@
 use bytes::Bytes;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
+use alloc::vec::Vec;
+
 use crate::error::Result;
 
 use super::address::ChunkAddress;

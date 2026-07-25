@@ -4,10 +4,10 @@
 //! which form the basis for content-addressed chunks in the storage system.
 
 use bytes::{Bytes, BytesMut};
-use std::marker::PhantomData;
-use std::sync::OnceLock;
+use core::marker::PhantomData;
 
 use crate::bmt::{DEFAULT_BODY_SIZE, DerivedAddress, Hasher, SPAN_SIZE};
+use crate::cache::OnceCache;
 use crate::chunk::ChunkAddress;
 use crate::chunk::error::{self, ChunkError};
 use crate::error::{PrimitivesError, Result};
@@ -17,7 +17,7 @@ use crate::error::{PrimitivesError, Result};
 pub struct BmtBody<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     span: u64,
     data: Bytes,
-    cached_hash: OnceLock<DerivedAddress>,
+    cached_hash: OnceCache<DerivedAddress>,
 }
 
 /// Structural equality over span and payload. Never derives the hash: when
@@ -39,7 +39,7 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
         Self {
             span,
             data,
-            cached_hash: OnceLock::new(),
+            cached_hash: OnceCache::new(),
         }
     }
 
@@ -85,7 +85,7 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
 
     /// The body's BMT root with hasher provenance; computed once, cached.
     pub(crate) fn derived_hash(&self) -> DerivedAddress {
-        *self.cached_hash.get_or_init(|| self.calculate_hash())
+        *self.cached_hash.get_or_compute(|| self.calculate_hash())
     }
 
     fn calculate_hash(&self) -> DerivedAddress {

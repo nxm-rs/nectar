@@ -2371,6 +2371,7 @@ dependencies = [
  "js-sys",
  "k256",
  "keccak-batch",
+ "nectar-clock",
  "nectar-marker",
  "nectar-testing",
  "once_cell",

@@ -97,7 +97,7 @@ impl XorMetric for OverlayAddress {
 impl TryFrom<&[u8]> for OverlayAddress {
     type Error = WrongLength;
 
-    fn try_from(slice: &[u8]) -> std::result::Result<Self, Self::Error> {
+    fn try_from(slice: &[u8]) -> core::result::Result<Self, Self::Error> {
         let bytes: [u8; 32] = slice.try_into().map_err(|_| WrongLength {
             expected: 32,
             got: slice.len(),

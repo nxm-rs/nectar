@@ -36,7 +36,7 @@
 //! }
 //! ```
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
 
 use alloy_primitives::U256;
 

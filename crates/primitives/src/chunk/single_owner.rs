@@ -4,12 +4,16 @@
 //! carrier under a [`SocHeader`], which binds the body to an owner via an
 //! id and a signature.
 
-use alloy_primitives::{Address, B256, Keccak256, Signature, address, b256, hex};
+#[cfg(feature = "std")]
+use alloy_primitives::b256;
+use alloy_primitives::{Address, B256, Keccak256, Signature, address, hex};
+#[cfg(feature = "std")]
 use alloy_signer::SignerSync;
+#[cfg(feature = "std")]
 use alloy_signer_local::PrivateKeySigner;
 use bytes::{Bytes, BytesMut};
-use std::fmt;
-use std::marker::PhantomData;
+use core::fmt;
+use core::marker::PhantomData;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::chunk::error::{self, ChunkError};
@@ -26,12 +30,13 @@ use super::type_id::ChunkTypeId;
 use super::type_tag::ChunkVersion;
 
 // Constants for field sizes
-const ID_SIZE: usize = std::mem::size_of::<B256>();
+const ID_SIZE: usize = size_of::<B256>();
 const SIGNATURE_SIZE: usize = 65;
 
 /// The address of the owner of the SOC for dispersed replicas.
 const DISPERSED_REPLICA_OWNER: Address = address!("0xdc5b20847f43d67928f49cd4f85d696b5a7617b5");
 /// Generated from the private key `0x0100000000000000000000000000000000000000000000000000000000000000`.
+#[cfg(feature = "std")]
 pub(crate) const DISPERSED_REPLICA_OWNER_PK: B256 =
     b256!("0x0100000000000000000000000000000000000000000000000000000000000000");
 
@@ -125,7 +130,7 @@ impl ChunkHeader for SocHeader {
         &self,
         body_hash: B256,
         expected: &ChunkAddress,
-    ) -> std::result::Result<(), ChunkError> {
+    ) -> core::result::Result<(), ChunkError> {
         let owner = self.owner(body_hash)?;
 
         // If the owner is the replica chunk owner, the ID must adhere to the
@@ -158,7 +163,7 @@ impl ChunkHeader for SocHeader {
         out.extend_from_slice(&self.signature.as_bytes());
     }
 
-    fn decode(cursor: &mut wire::Cursor<'_>) -> std::result::Result<Self, ChunkError> {
+    fn decode(cursor: &mut wire::Cursor<'_>) -> core::result::Result<Self, ChunkError> {
         let id = SocId::new(cursor.take::<[u8; ID_SIZE]>()?);
         let signature = Signature::from_raw(&cursor.take::<[u8; SIGNATURE_SIZE]>()?)?;
         Ok(Self::new(id, signature))
@@ -180,6 +185,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// # Returns
     ///
     /// A Result containing the new SingleOwnerChunk, or an error if creation fails.
+    #[cfg(feature = "std")]
     #[must_use = "this returns a new chunk without modifying the input"]
     pub fn new(id: SocId, data: impl Into<Bytes>, signer: &impl SignerSync) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::<BODY_SIZE, Initial>::default()
@@ -217,6 +223,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// # Arguments
     /// * `mined_byte` - The first byte of the chunk's ID.
     /// * `body` - The underlying BMT body containing the data and metadata.
+    #[cfg(feature = "std")]
     #[must_use = "this returns a new chunk without modifying the input"]
     pub fn new_dispersed_replica(mined_byte: u8, body: BmtBody<BODY_SIZE>) -> Result<Self> {
         SingleOwnerChunkBuilderImpl::<BODY_SIZE, Initial>::default()
@@ -285,6 +292,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
 impl<const BODY_SIZE: usize> fmt::Display for SingleOwnerChunk<BODY_SIZE> {
     #[allow(clippy::indexing_slicing)] // id is a fixed 32-byte value, so [..8] holds
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use alloc::string::ToString;
         let owner_str = self.owner().map_or_else(
             |_| "invalid".to_string(),
             |addr| hex::encode(addr.as_slice()),
@@ -361,6 +369,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, Initial> {
     }
 
     /// Initialize with a specific body
+    #[cfg(any(feature = "std", test, feature = "arbitrary"))]
     fn with_body(
         mut self,
         body: BmtBody<BODY_SIZE>,
@@ -390,6 +399,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
     }
 
     /// Creates a new dispersed replica chunk with the given first byte and transitions to ReadyToBuild
+    #[cfg(feature = "std")]
     #[allow(clippy::unwrap_used, clippy::indexing_slicing)] // the WithData typestate guarantees body is Some; id and body_hash are fixed 32-byte values; DISPERSED_REPLICA_OWNER_PK is a known-valid constant key
     fn dispersed_replica(
         self,
@@ -408,6 +418,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithData> {
 
 impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, WithId> {
     /// Sign the chunk with the given signer
+    #[cfg(feature = "std")]
     #[allow(clippy::unwrap_used)] // the WithId typestate guarantees body and id are Some
     fn with_signer(
         self,

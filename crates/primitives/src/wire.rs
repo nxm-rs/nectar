@@ -19,6 +19,7 @@
 //! # Ok::<(), nectar_primitives::wire::Underrun>(())
 //! ```
 
+use alloc::vec::Vec;
 use thiserror::Error;
 
 /// A short read: the buffer held fewer bytes than a field required.

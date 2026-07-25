@@ -39,7 +39,7 @@
 use thiserror::Error;
 
 /// Result type for operations in the primitives crate
-pub type Result<T> = std::result::Result<T, PrimitivesError>;
+pub type Result<T> = core::result::Result<T, PrimitivesError>;
 
 /// A byte slice did not carry the width its target type requires.
 ///
@@ -83,12 +83,13 @@ pub enum PrimitivesError {
     Ecies(#[from] crate::ecies::EciesError),
 
     /// Input/output errors
+    #[cfg(feature = "std")]
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     /// Array conversion errors
     #[error("Array conversion error: {0}")]
-    ArrayConversion(#[from] std::array::TryFromSliceError),
+    ArrayConversion(#[from] core::array::TryFromSliceError),
 
     /// A byte slice had the wrong width for a fixed-width type
     #[error(transparent)]

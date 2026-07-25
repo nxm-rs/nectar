@@ -5,6 +5,7 @@
 //! the reference client's big-integer encoding. Wire-critical: ciphertexts
 //! must decrypt cross-client.
 
+use alloc::vec::Vec;
 use alloy_primitives::Keccak256;
 use thiserror::Error;
 

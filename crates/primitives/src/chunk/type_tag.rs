@@ -107,7 +107,7 @@ impl From<ChunkTypeTag> for u16 {
 impl From<ChunkTypeTag> for u32 {
     #[inline]
     fn from(tag: ChunkTypeTag) -> Self {
-        u32::from(tag.to_u16())
+        Self::from(tag.to_u16())
     }
 }
 

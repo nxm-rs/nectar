@@ -1,5 +1,7 @@
 //! Chunk reference types for encrypted chunks.
 
+use alloc::vec::Vec;
+
 use crate::chunk::reference::{RefKind, Reference, WrongRefKind, sealed};
 use crate::chunk::{ChunkAddress, ChunkRef};
 use crate::entry_ref::EntryRef;

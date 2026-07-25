@@ -5,7 +5,8 @@
 //! and [`Reference`] carries them at the type level, so every wire-width
 //! constant in the crate derives from this single statement of the fact.
 
-use std::mem::size_of;
+use alloc::vec::Vec;
+use core::mem::size_of;
 
 use crate::chunk::ChunkAddress;
 use crate::entry_ref::EntryRef;

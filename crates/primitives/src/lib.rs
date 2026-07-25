@@ -32,6 +32,7 @@
 //! let owner_chunk = DefaultSingleOwnerChunk::new(id, b"Signed data".as_slice(), &wallet).unwrap();
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(
     test,
     allow(
@@ -163,9 +164,11 @@ pub type DefaultMemoryStore = MemoryStore<StandardChunkSet>;
 
 // Chunk storage traits
 pub use store::{
-    ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, RetryConfig, RetryingChunkGet,
-    SingleOwnerGet, SingleOwnerGetError, Sleeper, TrustedGet,
+    ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, SingleOwnerGet,
+    SingleOwnerGetError, TrustedGet,
 };
+#[cfg(feature = "std")]
+pub use store::{RetryConfig, RetryingChunkGet, Sleeper};
 
 // The width-agnostic reference union: the manifest-to-file bridge type.
 pub use entry_ref::{EntryRef, InvalidEntryRef};

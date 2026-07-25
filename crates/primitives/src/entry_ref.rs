@@ -1,5 +1,7 @@
 //! Unified file entry reference type.
 
+use alloc::vec::Vec;
+
 use crate::chunk::encryption::EncryptedChunkRef;
 use crate::chunk::{ChunkAddress, ChunkRef};
 

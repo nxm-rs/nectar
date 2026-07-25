@@ -52,6 +52,8 @@ default = [ "std" ]
 std = [
 	"alloy-primitives/std",
 	"dep:web-time",
+	"k256/precomputed-tables",
+	"k256/std",
 	"nectar-primitives/std",
 	"serde?/std",
 	"thiserror/std",
