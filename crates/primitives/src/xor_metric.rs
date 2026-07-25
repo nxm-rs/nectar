@@ -144,7 +144,7 @@ pub trait XorMetric {
     #[inline(always)]
     #[must_use]
     fn proximity(&self, other: &impl XorMetric) -> ProximityOrder {
-        // `proximity_up_to` is bounded by MAX_PO, so the cast is sound.
+        // `proximity_up_to` caps at MAX_PO, so the result is a valid `ProximityOrder`.
         ProximityOrder::new_unchecked(proximity_up_to(self.point(), other.point(), MAX_PO))
     }
 
@@ -231,7 +231,7 @@ fn proximity_up_to(bytes1: &[u8; 32], bytes2: &[u8; 32], max: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChunkAddress, Mainnet, OverlayAddress};
+    use crate::{ChunkAddress, Mainnet, NetworkId, OverlayAddress};
     use alloy_primitives::B256;
 
     #[test]
@@ -253,6 +253,33 @@ mod tests {
             Mainnet.extended_proximity_order()
         );
         assert_eq!(base.proximity(&base).get(), MAX_PO);
+    }
+
+    #[test]
+    fn extended_proximity_resolves_and_caps_past_standard() {
+        // Match through byte 3, differ at bit 34 (byte 4): standard proximity
+        // saturates at MAX_PO, the extended value resolves the finer 34.
+        let base = OverlayAddress::zero();
+        let mut bytes = [0u8; 32];
+        bytes[4] = 0b0010_0000;
+        let deeper = OverlayAddress::from(B256::from(bytes));
+        assert_eq!(base.proximity(&deeper).get(), MAX_PO);
+        assert_eq!(base.extended_proximity(&deeper, &Mainnet), 34);
+
+        // Differ only at bit 39: the raw count (39) exceeds the cap, so it
+        // clamps to the canonical 36.
+        let mut past_cap = [0u8; 32];
+        past_cap[4] = 0b0000_0001;
+        let past_cap = OverlayAddress::from(B256::from(past_cap));
+        assert_eq!(base.extended_proximity(&past_cap, &Mainnet), 36);
+
+        // A narrowed spec caps the extended value below the canonical 36.
+        struct Shallow;
+        impl SwarmSpec for Shallow {
+            const NETWORK_ID: NetworkId = NetworkId::TESTNET;
+            const MAX_PROXIMITY_ORDER: ProximityOrder = ProximityOrder::new_unchecked(7);
+        }
+        assert_eq!(base.extended_proximity(&base, &Shallow), 12);
     }
 
     #[test]
