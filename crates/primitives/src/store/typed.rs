@@ -6,7 +6,7 @@
 //! `Chunk<Verified, R>`); trust is a property of the read medium, declared
 //! once per backend through [`ChunkGet::Trust`].
 
-use std::future::Future;
+use core::future::Future;
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, TrustState, Verified};
 use crate::marker::{MaybeSend, MaybeSync};

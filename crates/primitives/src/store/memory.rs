@@ -1,7 +1,8 @@
 //! In-memory chunk storage.
 
-use std::collections::HashMap;
+use alloc::collections::BTreeMap;
 
+#[cfg(feature = "std")]
 use parking_lot::RwLock;
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, Verified};
@@ -9,16 +10,42 @@ use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, Verifie
 use super::ChunkStoreError;
 use super::typed::{ChunkGet, ChunkHas, ChunkPut};
 
-/// In-memory chunk storage using a `RwLock<HashMap>`.
+/// Single-threaded stand-in for `RwLock` on the `no_std` side: guests execute
+/// single-threaded, so a `RefCell` provides the same interior mutability.
+#[cfg(not(feature = "std"))]
+#[derive(Debug)]
+struct RwLock<T>(core::cell::RefCell<T>);
+
+#[cfg(not(feature = "std"))]
+impl<T> RwLock<T> {
+    const fn new(value: T) -> Self {
+        Self(core::cell::RefCell::new(value))
+    }
+
+    fn read(&self) -> core::cell::Ref<'_, T> {
+        self.0.borrow()
+    }
+
+    fn write(&self) -> core::cell::RefMut<'_, T> {
+        self.0.borrow_mut()
+    }
+
+    fn into_inner(self) -> T {
+        self.0.into_inner()
+    }
+}
+
+/// In-memory chunk storage over an address-keyed map.
 ///
 /// Holds only sealed chunks and is process-private, so reads are `Verified`:
 /// nothing can alter a chunk between put and get.
 ///
 /// Uses interior mutability so `ChunkPut::put(&self)` works without
-/// external synchronization.
+/// external synchronization: `parking_lot::RwLock` under `std`, an unsync
+/// cell on the single-threaded `no_std` side.
 #[derive(Debug)]
 pub struct MemoryStore<R: ChunkRegistry = StandardChunkSet> {
-    chunks: RwLock<HashMap<ChunkAddress, Chunk<Verified, R>>>,
+    chunks: RwLock<BTreeMap<ChunkAddress, Chunk<Verified, R>>>,
 }
 
 impl<R: ChunkRegistry> Clone for MemoryStore<R> {
@@ -37,9 +64,9 @@ impl<R: ChunkRegistry> Default for MemoryStore<R> {
 
 impl<R: ChunkRegistry> MemoryStore<R> {
     /// Create an empty memory store.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
-            chunks: RwLock::new(HashMap::new()),
+            chunks: RwLock::new(BTreeMap::new()),
         }
     }
 
@@ -66,13 +93,13 @@ impl<R: ChunkRegistry> MemoryStore<R> {
     }
 
     /// Consume the store and return all chunks.
-    pub fn into_chunks(self) -> HashMap<ChunkAddress, Chunk<Verified, R>> {
+    pub fn into_chunks(self) -> BTreeMap<ChunkAddress, Chunk<Verified, R>> {
         self.chunks.into_inner()
     }
 }
 
 impl<R: ChunkRegistry> ChunkPut<R> for MemoryStore<R> {
-    type Error = std::convert::Infallible;
+    type Error = core::convert::Infallible;
 
     async fn put(&self, chunk: Chunk<Verified, R>) -> Result<(), Self::Error> {
         self.chunks.write().insert(*chunk.address(), chunk);
@@ -99,7 +126,7 @@ impl<R: ChunkRegistry> ChunkHas for MemoryStore<R> {
     }
 }
 
-impl<R: ChunkRegistry> ChunkGet<R> for HashMap<ChunkAddress, Chunk<Verified, R>> {
+impl<R: ChunkRegistry> ChunkGet<R> for BTreeMap<ChunkAddress, Chunk<Verified, R>> {
     type Trust = Verified;
     type Error = ChunkStoreError;
 
@@ -110,7 +137,26 @@ impl<R: ChunkRegistry> ChunkGet<R> for HashMap<ChunkAddress, Chunk<Verified, R>>
     }
 }
 
-impl<R: ChunkRegistry> ChunkHas for HashMap<ChunkAddress, Chunk<Verified, R>> {
+impl<R: ChunkRegistry> ChunkHas for BTreeMap<ChunkAddress, Chunk<Verified, R>> {
+    async fn has(&self, address: &ChunkAddress) -> bool {
+        self.contains_key(address)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<R: ChunkRegistry> ChunkGet<R> for std::collections::HashMap<ChunkAddress, Chunk<Verified, R>> {
+    type Trust = Verified;
+    type Error = ChunkStoreError;
+
+    async fn get(&self, address: &ChunkAddress) -> Result<Chunk<Verified, R>, Self::Error> {
+        self.get(address)
+            .cloned()
+            .ok_or_else(|| ChunkStoreError::not_found(address))
+    }
+}
+
+#[cfg(feature = "std")]
+impl<R: ChunkRegistry> ChunkHas for std::collections::HashMap<ChunkAddress, Chunk<Verified, R>> {
     async fn has(&self, address: &ChunkAddress) -> bool {
         self.contains_key(address)
     }

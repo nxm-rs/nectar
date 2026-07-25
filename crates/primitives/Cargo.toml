@@ -19,18 +19,21 @@ workspace = true
 
 [dependencies]
 # nectar
+nectar-clock.workspace = true
 nectar-marker.workspace = true
 
 ## alloy crypto
-# alloy-primitives noted below in architecture-dependent set of crates
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
+# Base set: signature recovery (k256) stays in the bare-metal core; the
+# asm-keccak and getrandom extras ride the target tables below.
+alloy-primitives = { workspace = true, features = ["k256"] }
+alloy-signer = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
 
 ## rust crypto
 digest.workspace = true
 hybrid-array.workspace = true
 k256 = { workspace = true, features = ["ecdh"] }
-keccak-batch.workspace = true
+keccak-batch = { workspace = true, optional = true }
 
 # derive macros
 derive_more.workspace = true
@@ -47,20 +50,20 @@ subtle.workspace = true
 zeroize = { workspace = true, features = ["derive"] }
 
 # synchronization
-parking_lot = "0.12"
+parking_lot = { version = "0.12", optional = true }
 
-# wall clock: std::time on native, browser clock on wasm32 (see Timestamp::now)
-web-time.workspace = true
+# wall clock for retry jitter: std::time on native, browser clock on wasm32
+web-time = { workspace = true, optional = true }
 
 # arbitrary
 arbitrary = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 
 # rayon for parallelism (works on both native and WASM via wasm-bindgen-rayon)
-rayon.workspace = true
+rayon = { workspace = true, optional = true }
 
-# Only for non-WASM targets
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Only for hosted non-WASM targets (bare metal has no asm keccak or entropy)
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "none")))'.dependencies]
 alloy-primitives = { workspace = true, features = ["asm-keccak", "getrandom"] }
 
 # Only for WASM-specific targets
@@ -94,7 +97,18 @@ rand.workspace = true
 
 [features]
 default = [ "std" ]
-std = [ "futures-core/std" ]
+std = [
+	"dep:alloy-signer",
+	"dep:alloy-signer-local",
+	"dep:keccak-batch",
+	"dep:parking_lot",
+	"dep:rayon",
+	"dep:web-time",
+	"futures-core/std",
+	"k256/precomputed-tables",
+	"k256/std",
+	"nectar-clock/std",
+]
 # WASM thread pool via wasm-bindgen-rayon. OFF by default so the default wasm
 # build needs no SharedArrayBuffer / cross-origin isolation — letting it run on
 # hosts that can't set COOP/COEP (e.g. the eth.limo ENS gateway). Enable it
@@ -102,7 +116,7 @@ std = [ "futures-core/std" ]
 # requires shared memory). Must stay out of `default`: dependents pull this
 # crate with default features, so a default-on threads feature would be forced
 # on transitively and couldn't be opted out.
-wasm-threads = [ "dep:wasm-bindgen-rayon" ]
+wasm-threads = [ "dep:rayon", "dep:wasm-bindgen-rayon" ]
 # Plain-terminology umbrella for "run in parallel", matching the `parallel`
 # feature on nectar-postage and nectar-postage-issuer. Native builds already
 # parallelize through rayon, so this is a no-op there; on wasm32 it opts into the

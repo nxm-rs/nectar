@@ -1,6 +1,6 @@
 //! Encryption key type.
 
-use std::mem::size_of;
+use core::mem::size_of;
 
 use alloy_primitives::B256;
 use subtle::ConstantTimeEq;
@@ -92,8 +92,8 @@ impl<'a> arbitrary::Arbitrary<'a> for EncryptionKey {
     }
 }
 
-impl std::fmt::Debug for EncryptionKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for EncryptionKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Show first 4 bytes as hex for identification
         write!(
             f,

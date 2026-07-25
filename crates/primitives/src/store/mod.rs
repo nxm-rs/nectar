@@ -2,18 +2,22 @@
 //!
 //! `ChunkGet`, `ChunkPut`, and `ChunkHas` are async and carry `MaybeSend`/
 //! `MaybeSync` bounds so a store may be `!Send` on single-threaded targets
-//! (wasm32, or any target under the `unsync` feature).
+//! (wasm32, bare metal, or any target under the `unsync` feature).
 
 mod memory;
+#[cfg(feature = "std")]
 mod retry;
 mod single_owner;
 mod typed;
 
 pub use crate::marker::{MaybeSend, MaybeSync};
 pub use memory::MemoryStore;
+#[cfg(feature = "std")]
 pub use retry::{RetryConfig, RetryingChunkGet, Sleeper};
 pub use single_owner::{SingleOwnerGet, SingleOwnerGetError};
 pub use typed::{ChunkGet, ChunkHas, ChunkPut, TrustedGet};
+
+use alloc::boxed::Box;
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
 
@@ -32,12 +36,12 @@ pub type BoxedError = Box<dyn core::error::Error>;
 /// wasm32 and under the `unsync` feature where a backend error may hold
 /// single-thread state (a JS handle).
 #[cfg(multi_thread)]
-pub type SharedError = std::sync::Arc<dyn core::error::Error + Send + Sync>;
+pub type SharedError = alloc::sync::Arc<dyn core::error::Error + Send + Sync>;
 /// Shared store error: `Send + Sync` on multi-threaded targets, unbounded on
 /// wasm32 and under the `unsync` feature where a backend error may hold
 /// single-thread state (a JS handle).
 #[cfg(not(multi_thread))]
-pub type SharedError = std::sync::Arc<dyn core::error::Error>;
+pub type SharedError = alloc::sync::Arc<dyn core::error::Error>;
 
 /// Errors from chunk storage operations.
 #[non_exhaustive]

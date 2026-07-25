@@ -82,8 +82,8 @@ alloy-chains = { version = "0.2.30", default-features = false }
 alloy-signer = { version = "2.0", default-features = false }
 alloy-signer-local = { version = "2.0", default-features = false }
 
-# k256 with precomputed tables for faster ECDSA
-k256 = { version = "0.13", default-features = false, features = ["ecdsa", "precomputed-tables", "std"] }
+# k256 base; std consumers add std + precomputed-tables (which needs std)
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 # hashing
 digest = "0.11"
@@ -152,7 +152,7 @@ getrandom_02 = { package = "getrandom", version = "0.2", default-features = fals
 # "wasm_js" feature selects the browser backend so B256::random links on wasm32.
 getrandom_04 = { package = "getrandom", version = "0.4", default-features = false, features = ["wasm_js"] }
 bitflags = { version = "2", default-features = false }
-subtle = "2"
+subtle = { version = "2", default-features = false, features = ["i128"] }
 zeroize = "1"
 
 [profile.release]

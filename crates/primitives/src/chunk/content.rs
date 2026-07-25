@@ -6,7 +6,7 @@
 
 use alloy_primitives::{B256, hex};
 use bytes::{Bytes, BytesMut};
-use std::fmt;
+use core::fmt;
 
 use crate::bmt::DEFAULT_BODY_SIZE;
 use crate::error::Result;
@@ -52,7 +52,7 @@ impl ChunkHeader for CacHeader {
         &self,
         body_hash: B256,
         expected: &ChunkAddress,
-    ) -> std::result::Result<(), ChunkError> {
+    ) -> core::result::Result<(), ChunkError> {
         let actual = self.commit(body_hash);
         if actual != *expected {
             return Err(ChunkError::verification_failed(*expected, actual));
@@ -67,7 +67,7 @@ impl ChunkHeader for CacHeader {
 
     fn encode(&self, _out: &mut BytesMut) {}
 
-    fn decode(_cursor: &mut wire::Cursor<'_>) -> std::result::Result<Self, ChunkError> {
+    fn decode(_cursor: &mut wire::Cursor<'_>) -> core::result::Result<Self, ChunkError> {
         Ok(Self)
     }
 }

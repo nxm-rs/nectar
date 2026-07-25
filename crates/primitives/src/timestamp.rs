@@ -4,8 +4,8 @@
 //! Verification rejects records whose timestamp drifts outside a
 //! caller-supplied window from local clock. See `SPEC.md#handshake-timestamp`.
 
+use core::time::Duration;
 use derive_more::{Display, From, Into};
-use std::time::Duration;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -55,25 +55,17 @@ impl Timestamp {
 
     /// Capture the current wall-clock time as a [`Timestamp`].
     ///
-    /// The clock comes from `web-time`, which is `std::time` on native targets
-    /// and the browser clock on `wasm32`, so this runs on every supported
-    /// target instead of panicking through the std unsupported-platform stub.
-    ///
-    /// # Panics
-    ///
-    /// Only if the system clock is set before the unix epoch (or past
-    /// `i64::MAX` unix-seconds), which would already break far more than this
-    /// primitive. Pre-1970 callers can construct via [`Self::from_seconds`]
-    /// manually.
-    #[allow(clippy::expect_used)] // documented invariants: panics only on a pre-1970 or absurdly far-future system clock
+    /// Reads [`nectar_clock::SystemClock`]: `std::time` on native targets,
+    /// the browser clock on `wasm32`. Guests without a wall clock construct
+    /// via [`Self::from_clock`] with an injected source instead.
+    #[cfg(feature = "std")]
     pub fn now() -> Self {
-        use web_time::{SystemTime, UNIX_EPOCH};
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock set before unix epoch")
-            .as_secs();
-        // u64 -> i64: safe for the next ~290 billion years.
-        Self(i64::try_from(secs).expect("system clock exceeds i64 unix seconds"))
+        Self::from_clock(&nectar_clock::SystemClock)
+    }
+
+    /// Capture the current time from an injected [`nectar_clock::Clock`].
+    pub fn from_clock(clock: &impl nectar_clock::Clock) -> Self {
+        Self(clock.now_secs())
     }
 
     /// Verify this timestamp is within `window` of `local`.

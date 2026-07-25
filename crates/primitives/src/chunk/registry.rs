@@ -5,6 +5,7 @@
 //! [`ContentOnlyChunkSet`], and [`SingleOwnerOnlyChunkSet`] are the built-in
 //! registries.
 
+use alloc::vec::Vec;
 use bytes::Bytes;
 
 use crate::bmt::DEFAULT_BODY_SIZE;

@@ -1,10 +1,12 @@
+use alloc::string::String;
+
 use super::address::ChunkAddress;
 use thiserror::Error;
 
 use super::type_tag::ChunkTypeTag;
 
 /// Result type for chunk operations
-pub(crate) type Result<T> = std::result::Result<T, ChunkError>;
+pub(crate) type Result<T> = core::result::Result<T, ChunkError>;
 
 /// Errors specific to chunk operations
 #[non_exhaustive]
@@ -39,6 +41,7 @@ pub enum ChunkError {
     Signature(#[from] alloy_primitives::SignatureError),
 
     /// Signer errors
+    #[cfg(feature = "std")]
     #[error("Signer error: {0}")]
     Signer(#[from] alloy_signer::Error),
 
