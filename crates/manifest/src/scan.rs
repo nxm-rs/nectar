@@ -16,11 +16,8 @@
 //! count a serial walk pays.
 
 use core::cmp::Ordering;
-use core::future::Future;
-use core::pin::Pin;
 
 use bytes::Bytes;
-use futures::stream::{FuturesUnordered, StreamExt};
 use nectar_primitives::ChunkAddress;
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
@@ -30,6 +27,7 @@ use crate::fork::{Child, ForkTable};
 use crate::format::{Format, V1};
 use crate::node::Node;
 use crate::reader::{Reader, ReaderError};
+use crate::sched::{Frame, Plan, Scheduler};
 use crate::store::NodeGet;
 use crate::value::{Entry, Key};
 
@@ -77,44 +75,6 @@ impl<F: Format> Step<F> {
     }
 }
 
-/// One chunk's ordered contents plus the key prefix that reaches its root.
-#[derive(Clone, Debug)]
-struct Frame<F: Format> {
-    /// Key bytes consumed to reach this chunk's root.
-    base: Bytes,
-    /// The chunk's steps in ascending key order.
-    steps: Vec<Step<F>>,
-    /// The next step to visit.
-    index: usize,
-    /// Per-step prefetch tag, parallel to `steps`: the sequence id a referenced
-    /// child was launched under, once the read-ahead window scheduled it.
-    sched: Vec<Option<usize>>,
-}
-
-impl<F: Format> Frame<F> {
-    /// A frame over `steps`, resuming at `index`, with an empty prefetch tag.
-    fn new(base: Bytes, steps: Vec<Step<F>>, index: usize) -> Self {
-        let sched = vec![None; steps.len()];
-        Self {
-            base,
-            steps,
-            index,
-            sched,
-        }
-    }
-}
-
-/// A launched node fetch tagged with the sequence id it was scheduled under, so
-/// out-of-order completions route back to the descent that awaits them.
-type Fetched<F> = (usize, Result<Vec<Step<F>>, ReaderError>);
-
-/// An in-flight node fetch. Boxed to hold heterogeneous fetch futures in one
-/// queue; `Send` on native, unbounded on the single-threaded wasm executor.
-#[cfg(not(target_arch = "wasm32"))]
-type Fetch<'a, F> = Pin<Box<dyn Future<Output = Fetched<F>> + Send + 'a>>;
-#[cfg(target_arch = "wasm32")]
-type Fetch<'a, F> = Pin<Box<dyn Future<Output = Fetched<F>> + 'a>>;
-
 /// An ordered cursor over a manifest, yielding `(key, value)` in key order.
 ///
 /// The cursor fetches trie nodes on demand and retains one frame per referenced
@@ -136,13 +96,8 @@ pub struct Cursor<'a, S, F: Format = V1> {
     stack: Vec<Frame<F>>,
     end: Option<Bytes>,
     done: bool,
-    /// Node fetches launched by the read-ahead window, awaiting completion.
-    inflight: FuturesUnordered<Fetch<'a, F>>,
-    /// Completions that arrived before the descent awaiting them; drained by
-    /// sequence id. Bounded with `inflight` by the window, so O(depth) overall.
-    ready: Vec<Fetched<F>>,
-    /// The next fetch sequence id to hand out.
-    next_seq: usize,
+    /// The read-ahead window over prefetched node fetches.
+    sched: Scheduler<'a, Vec<Step<F>>>,
     /// Remaining yields a paginated cursor may return; `None` is unbounded.
     remaining: Option<usize>,
 }
@@ -232,9 +187,7 @@ where
             stack,
             end,
             done: false,
-            inflight: FuturesUnordered::new(),
-            ready: Vec::new(),
-            next_seq: 0,
+            sched: Scheduler::new(),
             remaining: None,
         })
     }
@@ -247,9 +200,7 @@ where
             stack: Vec::new(),
             end: None,
             done: true,
-            inflight: FuturesUnordered::new(),
-            ready: Vec::new(),
-            next_seq: 0,
+            sched: Scheduler::new(),
             remaining: None,
         }
     }
@@ -291,7 +242,7 @@ where
                                 Advance::Yield(join(&frame.base, suffix), entry.clone())
                             }
                             Step::Ref { suffix, addr } => {
-                                let seq = frame.sched.get(index).copied().flatten();
+                                let seq = frame.tag(index);
                                 Advance::Descend(join(&frame.base, suffix), *addr, seq)
                             }
                             Step::Encrypted { suffix, .. } => {
@@ -341,82 +292,49 @@ where
         }
     }
 
-    /// Fill the read-ahead window: launch node fetches for the referenced
-    /// children the walk will reach next, in ascending-key order, until at most
-    /// [`Format::READ_AHEAD`] fetches are in flight.
-    ///
-    /// Scheduling mirrors the walk's own termination, so it launches exactly the
-    /// nodes the walk fetches: it stops at the first step at or past the upper
-    /// bound and at the first encrypted child, and never relaunches a child
-    /// already tagged with a sequence id.
+    /// Fill the read-ahead window with the referenced children the walk will
+    /// reach next: it stops at the first step at or past the upper bound and
+    /// at the first encrypted child, which the walk errors on.
     fn schedule(&mut self) {
-        let cap = F::READ_AHEAD;
         let store = self.store;
-        // Deepest frame first: that is ascending-key order from the cursor, so
-        // the child needed soonest is always launched first and never starved.
-        'outer: for frame in self.stack.iter_mut().rev() {
-            let mut index = frame.index;
-            while let Some(step) = frame.steps.get(index) {
-                if self.inflight.len().saturating_add(self.ready.len()) >= cap {
-                    break 'outer;
-                }
-                let key = join(&frame.base, step.suffix());
-                if self
-                    .end
-                    .as_ref()
-                    .is_some_and(|end| key.as_slice() >= end.as_ref())
-                {
+        let end = self.end.as_ref();
+        self.sched
+            .fill(F::READ_AHEAD, &mut self.stack, |base, step| {
+                let key = join(base, step.suffix());
+                if end.is_some_and(|end| key.as_slice() >= end.as_ref()) {
                     // The walk stops at this bound; nothing beyond it is fetched.
-                    break 'outer;
+                    return Plan::Stop;
                 }
                 match step {
                     // The walk errors here; no deeper node is fetched.
-                    Step::Encrypted { .. } => break 'outer,
-                    Step::Ref { addr, .. } if !matches!(frame.sched.get(index), Some(Some(_))) => {
-                        let seq = self.next_seq;
-                        self.next_seq = self.next_seq.saturating_add(1);
-                        if let Some(slot) = frame.sched.get_mut(index) {
-                            *slot = Some(seq);
-                        }
+                    Step::Encrypted { .. } => Plan::Stop,
+                    Step::Value { .. } => Plan::Skip,
+                    Step::Ref { addr, .. } => {
                         let addr = *addr;
-                        let fetch: Fetch<'a, F> = Box::pin(async move {
-                            let result = store
+                        Plan::Fetch(async move {
+                            store
                                 .get_node::<F>(&addr)
                                 .await
                                 .map(|node| flatten(&node, false))
-                                .map_err(ReaderError::from);
-                            (seq, result)
-                        });
-                        self.inflight.push(fetch);
+                                .map_err(ReaderError::from)
+                        })
                     }
-                    Step::Ref { .. } | Step::Value { .. } => {}
                 }
-                index = index.saturating_add(1);
-            }
-        }
+            });
     }
 
-    /// The steps of the child reached by a descent: take the prefetch launched
-    /// under `seq`, driving in-flight fetches until it completes and buffering
-    /// any earlier-arriving completions. Falls back to a direct fetch when the
-    /// descent was not prefetched.
+    /// The steps of the child reached by a descent: take the prefetch
+    /// launched under `seq`, or fetch directly when the descent was not
+    /// prefetched.
     async fn resolve(
         &mut self,
         seq: Option<usize>,
         addr: &ChunkAddress,
     ) -> Result<Vec<Step<F>>, ReaderError> {
-        if let Some(seq) = seq {
-            loop {
-                if let Some(pos) = self.ready.iter().position(|(other, _)| *other == seq) {
-                    return self.ready.swap_remove(pos).1;
-                }
-                match self.inflight.next().await {
-                    Some((other, result)) if other == seq => return result,
-                    Some(pair) => self.ready.push(pair),
-                    // The launched fetch is unaccounted for; fetch directly.
-                    None => break,
-                }
-            }
+        if let Some(seq) = seq
+            && let Some(result) = self.sched.take(seq).await
+        {
+            return result;
         }
         let node = self.store.get_node::<F>(addr).await?;
         Ok(flatten(&node, false))

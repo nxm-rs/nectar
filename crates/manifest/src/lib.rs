@@ -107,6 +107,7 @@ mod order;
 mod packing;
 mod reader;
 mod scan;
+mod sched;
 mod store;
 mod traverse;
 mod value;
