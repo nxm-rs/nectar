@@ -11,9 +11,9 @@
 //! ## Standard vs extended proximity
 //!
 //! - **Standard PO** ([`MAX_PO`] = 31): most routing operations; 32 bins.
-//! - **Extended PO** ([`EXTENDED_PO`] = 36): Kademlia bin balancing, which
-//!   checks `po + BitSuffixLength + 1` (`BitSuffixLength = 4`), so bin 31
-//!   needs 31 + 4 + 1 = 36.
+//! - **Extended PO** ([`SwarmSpec::extended_proximity_order`]): Kademlia bin
+//!   balancing, which checks `po + bit_suffix_length + 1`, so bin 31 needs
+//!   31 + 4 + 1 = 36 on the canonical specs.
 //!
 //! Matches the Swarm reference implementation: leading matching bits (not
 //! bytes), capped at the respective maximum.
@@ -40,19 +40,14 @@ use core::cmp::Ordering;
 
 use alloy_primitives::U256;
 
-use crate::{Bin, ProximityOrder};
+use crate::{Bin, ProximityOrder, SwarmSpec};
 
 /// Maximum proximity order for standard routing operations.
 ///
-/// Value 31 gives 32 Kademlia bins (0-31).
+/// Value 31 gives 32 Kademlia bins (0-31). The protocol ceiling that
+/// [`ProximityOrder`] and [`Bin`] validate against; spec methods narrow
+/// below it per network.
 pub const MAX_PO: u8 = 31;
-
-/// Extended proximity order for Kademlia bin balancing.
-///
-/// Value 36 = MaxPO (31) + BitSuffixLength (4) + 1. Used when the Kademlia
-/// bin balancing algorithm needs to check proximity at finer granularity
-/// than standard routing.
-pub const EXTENDED_PO: u8 = MAX_PO + 5;
 
 /// XOR-metric operations over a 32-byte point.
 ///
@@ -150,23 +145,22 @@ pub trait XorMetric {
     #[must_use]
     fn proximity(&self, other: &impl XorMetric) -> ProximityOrder {
         // `proximity_up_to` is bounded by MAX_PO, so the cast is sound.
-        ProximityOrder::new_unchecked(proximity_up_to(self.point(), other.point(), MAX_PO.into()))
+        ProximityOrder::new_unchecked(proximity_up_to(self.point(), other.point(), MAX_PO))
     }
 
     /// Calculate the extended proximity order between `self` and another point.
     ///
     /// Returns the number of leading bits that match between the two points,
-    /// capped at [`EXTENDED_PO`] (36). Use this for Kademlia bin balancing
-    /// where the algorithm checks `po + BitSuffixLength + 1` (up to 36 for
-    /// bin 31).
+    /// capped at `spec.extended_proximity_order()`. Use this for Kademlia bin
+    /// balancing, which needs finer granularity than standard routing.
     ///
     /// Returns a raw `u8` because the extended range exceeds `ProximityOrder`'s
     /// invariant (`0..=MAX_PO`). For standard routing, use
     /// [`proximity()`](Self::proximity) instead.
     #[inline(always)]
     #[must_use]
-    fn extended_proximity(&self, other: &impl XorMetric) -> u8 {
-        proximity_up_to(self.point(), other.point(), EXTENDED_PO.into())
+    fn extended_proximity(&self, other: &impl XorMetric, spec: &impl SwarmSpec) -> u8 {
+        proximity_up_to(self.point(), other.point(), spec.extended_proximity_order())
     }
 
     /// XOR distance - bitwise XOR of the two 32-byte points as a new value of
@@ -210,11 +204,10 @@ impl<T: XorMetric> XorMetric for &T {
     clippy::indexing_slicing,
     clippy::as_conversions
 )]
-// max is MAX_PO (31) or EXTENDED_PO (36), so i <= max_bytes = 4 < 32 and i * 8 + leading_zeros <= 40 fits u8; the casts to u8 (max, i, and the u8 xor's leading_zeros <= 8) are all within those bounds
+// max is u8, so i <= max_bytes = max / 8 <= 31 < 32; at a mismatch the u8 xor's leading_zeros <= 7, so i * 8 + leading_zeros <= 248 + 7 fits u8, as do the i and leading_zeros casts
 #[inline(always)]
-fn proximity_up_to(bytes1: &[u8; 32], bytes2: &[u8; 32], max: usize) -> u8 {
-    let max_bytes = max / 8;
-    let max_bits = max as u8;
+fn proximity_up_to(bytes1: &[u8; 32], bytes2: &[u8; 32], max: u8) -> u8 {
+    let max_bytes = usize::from(max / 8);
 
     for i in 0..=max_bytes {
         let xor = bytes1[i] ^ bytes2[i];
@@ -222,29 +215,23 @@ fn proximity_up_to(bytes1: &[u8; 32], bytes2: &[u8; 32], max: usize) -> u8 {
             // Found a difference - use leading_zeros to count matching bits
             let leading_zeros = xor.leading_zeros() as u8;
             let proximity = (i as u8 * 8) + leading_zeros;
-
-            // Return the smaller of proximity or max_bits
-            return if proximity < max_bits {
-                proximity
-            } else {
-                max_bits
-            };
+            return proximity.min(max);
         }
 
         // If we're at the last byte we might need to check
         if i == max_bytes {
-            return max_bits; // All bits match up to max
+            return max; // All bits match up to max
         }
     }
 
     // If we've examined all bytes and found no differences
-    max_bits
+    max
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChunkAddress, OverlayAddress};
+    use crate::{ChunkAddress, Mainnet, OverlayAddress};
     use alloy_primitives::B256;
 
     #[test]
@@ -260,7 +247,11 @@ mod tests {
     #[test]
     fn extended_proximity_exceeds_standard_cap() {
         let base = OverlayAddress::zero();
-        assert_eq!(base.extended_proximity(&base), EXTENDED_PO);
+        assert_eq!(base.extended_proximity(&base, &Mainnet), 36);
+        assert_eq!(
+            base.extended_proximity(&base, &Mainnet),
+            Mainnet.extended_proximity_order()
+        );
         assert_eq!(base.proximity(&base).get(), MAX_PO);
     }
 

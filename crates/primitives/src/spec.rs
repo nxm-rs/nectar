@@ -2,7 +2,8 @@
 //!
 //! Knobs are associated consts, so a network is a type ([`Mainnet`],
 //! [`Testnet`]) and a spec-parameterized value rejects an out-of-range one at
-//! compile time rather than at a validation call.
+//! compile time rather than at a validation call. Derived accessors are
+//! methods, callable on a spec value.
 
 use core::{num::NonZeroU8, time::Duration};
 
@@ -53,6 +54,23 @@ pub trait SwarmSpec {
     // A PO is range-validated to `MAX_PO` (31), so the saturating step never
     // saturates; it is the const-callable form of the increment.
     const BIN_COUNT: usize = Self::MAX_BIN.as_index().saturating_add(1);
+
+    /// Extra bits of proximity the bin-balancing path distinguishes past
+    /// [`MAX_PROXIMITY_ORDER`](Self::MAX_PROXIMITY_ORDER).
+    fn bit_suffix_length(&self) -> u8 {
+        4
+    }
+
+    /// Proximity cap for bin balancing, derived as
+    /// [`MAX_PROXIMITY_ORDER`](Self::MAX_PROXIMITY_ORDER) +
+    /// [`bit_suffix_length`](Self::bit_suffix_length) + 1; not an independent
+    /// knob.
+    fn extended_proximity_order(&self) -> u8 {
+        Self::MAX_PROXIMITY_ORDER
+            .get()
+            .saturating_add(self.bit_suffix_length())
+            .saturating_add(1)
+    }
 }
 
 /// Canonical mainnet spec ([`NetworkId::MAINNET`]).
@@ -87,6 +105,8 @@ mod tests {
         assert_eq!(Mainnet::MIN_BUCKET_DEPTH.get(), 16);
         assert_eq!(Mainnet::BIN_COUNT, 32);
         assert_eq!(Mainnet::MAX_BIN, Bin::MAX);
+        assert_eq!(Mainnet.bit_suffix_length(), 4);
+        assert_eq!(Mainnet.extended_proximity_order(), 36);
     }
 
     #[test]
@@ -114,5 +134,6 @@ mod tests {
         }
         assert_eq!(Shallow::MAX_BIN, Bin::new(7).unwrap());
         assert_eq!(Shallow::BIN_COUNT, 8);
+        assert_eq!(Shallow.extended_proximity_order(), 12);
     }
 }
