@@ -160,6 +160,13 @@ jobs:
                   cargo check \
                     -p nectar-tasks --features wasm --locked \
                     --target wasm32-unknown-unknown
+            - name: Check feeds builds for wasm32
+              # Feeds carries no clock and no network, so its default build must
+              # stay wasm32-clean for browser consumers.
+              run: |
+                  cargo check \
+                    -p nectar-feeds --locked \
+                    --target wasm32-unknown-unknown
 
     wasm-smoke:
         # Executable proof of the wasm store-trait relaxation: a !Send store
