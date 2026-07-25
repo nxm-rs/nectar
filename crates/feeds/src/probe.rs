@@ -354,6 +354,19 @@ mod tests {
         NonZeroUsize::new(n).unwrap()
     }
 
+    /// The sequential scan may consult one index twice (the top slot, probed
+    /// as the floor and again on the exhausted-ladder arm); the resolver
+    /// caches every answer and never re-consults, so the width-one trace is
+    /// the sequential trace with repeat consultations dropped.
+    fn first_consultations(trace: &[u64]) -> Vec<u64> {
+        let mut seen = BTreeMap::new();
+        trace
+            .iter()
+            .copied()
+            .filter(|index| seen.insert(*index, ()).is_none())
+            .collect()
+    }
+
     #[test]
     fn empty_answers_fault_on_the_floor() {
         let answers = Answers::new();
@@ -457,7 +470,7 @@ mod tests {
             let mut trace = Vec::new();
             let got = simulate(resolve_probing, base, &oracle, ONE, &[], &mut trace);
             prop_assert_eq!(got, expected);
-            prop_assert_eq!(&trace, &expected_trace);
+            prop_assert_eq!(trace, first_consultations(&expected_trace));
 
             let oracle = Oracle { beyond: false, ..oracle };
             let mut expected_trace = Vec::new();
@@ -465,7 +478,7 @@ mod tests {
             let mut trace = Vec::new();
             let got = simulate(resolve_linear, base, &oracle, ONE, &[], &mut trace);
             prop_assert_eq!(got, expected);
-            prop_assert_eq!(trace, expected_trace);
+            prop_assert_eq!(trace, first_consultations(&expected_trace));
         }
     }
 }
