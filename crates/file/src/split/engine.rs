@@ -17,26 +17,14 @@ use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::ChunkPut;
 
 use super::SplitStats;
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
-use super::error::SealError;
-use super::error::SplitError;
+use super::error::{SealError, SplitError};
 #[cfg(all(
     feature = "rayon",
     not(target_arch = "wasm32"),
     not(feature = "unsync")
 ))]
 use super::handoff::{self, Handoff};
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
-use super::mode::Sealed;
-use super::mode::SplitMode;
+use super::mode::{Sealed, SplitMode};
 #[cfg(all(
     feature = "rayon",
     not(target_arch = "wasm32"),
@@ -68,13 +56,14 @@ type BoxPut<E> = Pin<Box<dyn Future<Output = PutDone<E>>>>;
 ))]
 type SealHandoff<M, const B: usize> = Handoff<Result<Sealed<M, B>, SealError>>;
 
-/// Submitter queueing one leaf payload on the pool.
+/// Submitter queueing one leaf payload on the pool under its drawn state.
 #[cfg(all(
     feature = "rayon",
     not(target_arch = "wasm32"),
     not(feature = "unsync")
 ))]
-type SealSubmit<M, const B: usize> = Box<dyn Fn(Bytes) -> SealHandoff<M, B> + Send + Sync>;
+type SealSubmit<M, const B: usize> =
+    Box<dyn Fn(<M as SplitMode>::Draw, Bytes) -> SealHandoff<M, B> + Send + Sync>;
 
 /// One leaf seal in flight on the pool: its span and the handoff its sealed
 /// chunk arrives on.
@@ -99,6 +88,11 @@ struct HashFan<M: SplitMode, const B: usize> {
     window: usize,
     submit: SealSubmit<M, B>,
     seals: VecDeque<PendingSeal<M, B>>,
+    /// Draws stashed at submission for the ascent seals the queued leaves
+    /// trigger on admission; spent front-first.
+    draws: VecDeque<M::Draw>,
+    /// Leaves submitted so far; positions the ascent draws.
+    submitted: u64,
 }
 
 /// One spine level: references awaiting a close and the bytes they span.
@@ -221,9 +215,10 @@ where
     }
 
     /// Fan leaf sealing onto the rayon pool, holding at most `window` seals
-    /// in flight; sealed leaves are admitted in leaf order, so a
-    /// deterministic mode's chunk stream matches the serial engine.
-    /// Configure before the first write.
+    /// in flight; sealed leaves are admitted in leaf order and every draw
+    /// lands at submission, so a deterministic mode's chunk stream is
+    /// byte-identical to the serial engine's. Configure before the first
+    /// write.
     ///
     /// ```
     /// use core::future::poll_fn;
@@ -254,17 +249,16 @@ where
     #[must_use]
     pub fn with_hash_window(mut self, window: HashWindow) -> Self
     where
-        M: Clone,
         M::Ref: Send,
     {
-        let mode = self.mode.clone();
         self.hash = Some(HashFan {
             window: usize::from(window.get()),
-            submit: Box::new(move |payload| {
-                let mode = mode.clone();
-                handoff::submit(move || mode.seal::<B>(payload))
+            submit: Box::new(|draw, payload| {
+                handoff::submit(move || M::seal_with::<B>(draw, payload))
             }),
             seals: VecDeque::new(),
+            draws: VecDeque::new(),
+            submitted: 0,
         });
         self
     }
@@ -555,7 +549,19 @@ where
             not(feature = "unsync")
         ))]
         if let Some(fan) = &mut self.hash {
-            let handoff = (fan.submit)(Bytes::from(payload));
+            // The leaf's draw, then one per ascent seal its admission
+            // triggers, so the draw order equals the serial engine's.
+            let draw = self.mode.draw()?;
+            fan.submitted = fan.submitted.saturating_add(1);
+            let mut filled = fan.submitted;
+            while filled.checked_rem(self.slots) == Some(0) {
+                fan.draws.push_back(self.mode.draw()?);
+                let Some(next) = filled.checked_div(self.slots) else {
+                    break;
+                };
+                filled = next;
+            }
+            let handoff = (fan.submit)(draw, Bytes::from(payload));
             fan.seals.push_back(PendingSeal { span, handoff });
             self.stats.peak_hash_in_flight = self.stats.peak_hash_in_flight.max(fan.seals.len());
             return Ok(());
@@ -699,10 +705,24 @@ where
         for reference in refs {
             M::write_ref(reference, &mut payload);
         }
-        let (chunk, reference) = self.mode.seal::<B>(Bytes::from(payload))?;
+        let (chunk, reference) = self.seal_inline(Bytes::from(payload))?;
         self.stats.intermediates = self.stats.intermediates.saturating_add(1);
         self.enqueue(chunk)?;
         Ok(reference)
+    }
+
+    /// Seal one payload on the engine thread; under the pool fan-out a
+    /// streaming ascent seal spends its submission-time draw.
+    fn seal_inline(&mut self, payload: Bytes) -> Result<Sealed<M, B>, SealError> {
+        #[cfg(all(
+            feature = "rayon",
+            not(target_arch = "wasm32"),
+            not(feature = "unsync")
+        ))]
+        if let Some(draw) = self.hash.as_mut().and_then(|fan| fan.draws.pop_front()) {
+            return M::seal_with::<B>(draw, payload);
+        }
+        self.mode.seal::<B>(payload)
     }
 
     /// Queue a sealed chunk for the put window, admitting what fits.
