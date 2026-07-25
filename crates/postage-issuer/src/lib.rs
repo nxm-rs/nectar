@@ -116,6 +116,13 @@
     )
 )]
 
+// The parallel engine spawns onto rayon and needs real `Send`; `unsync`
+// relaxes that bound away. Enabling both (directly or through feature
+// unification) is a build error with a clear cause rather than a deep one at
+// the spawn site.
+#[cfg(all(feature = "parallel", feature = "unsync"))]
+compile_error!("features `parallel` and `unsync` are mutually exclusive");
+
 mod counter;
 #[cfg(feature = "std")]
 mod dilute_handler;
