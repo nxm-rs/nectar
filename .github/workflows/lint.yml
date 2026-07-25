@@ -69,6 +69,10 @@ jobs:
             # likewise outside the default-features pass.
             - name: cargo clippy (manifest encryption)
               run: cargo clippy --locked --all-targets -p nectar-manifest --features encryption
+            # The modern envelope sits behind the primitives envelope
+            # feature, likewise outside the default-features pass.
+            - name: cargo clippy (envelope)
+              run: cargo clippy --locked --all-targets -p nectar-primitives --features envelope,encryption
             # The pipeline's inline engine only compiles with the parallel
             # feature off; the workspace pass unifies parallel in via the
             # bench crate, so lint the inline shape explicitly.

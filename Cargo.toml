@@ -85,6 +85,15 @@ alloy-signer-local = { version = "2.0", default-features = false }
 # k256 base; std consumers add std + precomputed-tables (which needs std)
 k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
+# hpke envelope suite
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+hkdf = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+# reference hpke implementation, differential test oracle only
+hpke-rs = "0.7"
+hpke-rs-crypto = "0.7"
+hpke-rs-rust-crypto = "0.7"
+
 # hashing
 digest = "0.11"
 hybrid-array = { version = "0.4", features = ["extra-sizes"] }

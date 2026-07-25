@@ -61,6 +61,8 @@ mod cast;
 pub mod chunk;
 pub mod ecies;
 pub mod entry_ref;
+#[cfg(feature = "envelope")]
+pub mod envelope;
 pub mod error;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod generators;
