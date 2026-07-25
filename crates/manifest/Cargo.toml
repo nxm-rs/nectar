@@ -22,7 +22,7 @@ alloy-primitives = { workspace = true }
 arbitrary = { workspace = true, optional = true }
 bytes.workspace = true
 futures.workspace = true
-nectar-file = { workspace = true }
+nectar-file = { workspace = true, features = ["primitives"] }
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
 

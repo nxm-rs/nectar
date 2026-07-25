@@ -2,6 +2,8 @@
 //!
 //! This module provides JavaScript-friendly wrappers around Hasher types.
 
+use alloc::string::ToString;
+
 use super::{Hasher, Proof, Prover};
 use crate::chunk::ChunkAddress;
 use alloy_primitives::B256;

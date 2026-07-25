@@ -40,6 +40,14 @@ jobs:
             # dir rather than in a separate job that rebuilds the workspace.
             - name: Run doctests
               run: cargo test --doc --workspace --locked
+            # The no-std engine core: the vector-pinned roots and the split
+            # parity batteries run on the exact arms a guest executes, rather
+            # than being merely type-checked by the no_std workflow.
+            - name: Run file no-std core tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-file --no-default-features --features primitives --locked \
+                    --no-tests=warn --no-fail-fast
             # The async io adapters are feature-gated off the default build;
             # cover their tests and the range-request doctest here.
             - name: Run tokio adapter tests

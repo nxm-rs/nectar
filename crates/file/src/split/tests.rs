@@ -5,11 +5,7 @@ use core::future::poll_fn;
 use core::task::{Context, Poll};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 use std::vec;
 use std::vec::Vec;
 
@@ -557,11 +553,7 @@ mod encrypted {
     }
 
     /// Stream `data` through a pooled encrypted split in `step`-byte writes.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
+    #[cfg(feature = "rayon")]
     fn pooled_split_encrypted<K: KeySource>(
         data: &[u8],
         mode: Encrypted<K>,
@@ -720,11 +712,7 @@ mod encrypted {
     /// keys in seal order and the pooled chunk stream is byte-identical to
     /// the serial engine's. Only padless trees are byte-reproducible, so
     /// the sizes keep every node full.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
+    #[cfg(feature = "rayon")]
     #[test]
     fn pooled_encrypted_chunk_streams_are_byte_identical_to_serial() {
         for depth in 0u32..4 {
@@ -754,11 +742,7 @@ mod encrypted {
     }
 
     /// The default random source through the pool still round trips.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
+    #[cfg(feature = "rayon")]
     #[test]
     fn pooled_encrypted_split_round_trips() {
         use crate::config::HashWindow;
@@ -837,11 +821,7 @@ mod encrypted {
 
 /// Pooled-seal oracles: chunk streams identical to the serial engine,
 /// hash-window bounds, backpressure, drop and worker-panic paths.
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 mod pooled {
     use core::future::poll_fn;
     use core::task::{Context, Poll};
@@ -1189,11 +1169,7 @@ mod pooled {
 
 /// Nightly gate: a stream past the `u32` span boundary keeps root equality
 /// with the batch ingest while memory stays bounded.
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 #[test]
 #[ignore = "nightly: streams more than 4 GiB"]
 fn huge_stream_root_matches_the_batch_ingest() {
