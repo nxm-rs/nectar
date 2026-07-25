@@ -1,0 +1,44 @@
+[package]
+name = "nectar-tasks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Object-safe task spawn seam for Ethereum Swarm components"
+documentation = "https://docs.rs/nectar-tasks"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "async", "spawn", "wasm"]
+categories = ["asynchronous", "concurrency", "no-std", "wasm"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nectar-marker = { workspace = true }
+
+# optional
+tokio = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+futures-util = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync"] }
+
+[features]
+# Spawner onto the ambient tokio runtime.
+tokio = [ "dep:tokio" ]
+# Spawner onto the browser event loop (wasm32 only).
+wasm = [ "dep:futures-util", "dep:wasm-bindgen-futures" ]
+# Single-thread send escape for non-wasm targets: relaxes the Spawn bounds
+# via nectar-marker/unsync.
+unsync = [ "nectar-marker/unsync" ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

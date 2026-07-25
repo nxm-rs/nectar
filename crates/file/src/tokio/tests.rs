@@ -179,6 +179,38 @@ async fn spawn_carries_reader_progress_and_lead_bytes() {
     assert_eq!(out, &data[100..]);
 }
 
+/// Spawner counting every dispatch before delegating to the runtime.
+#[derive(Default)]
+struct CountingSpawner(std::sync::atomic::AtomicUsize);
+
+impl nectar_tasks::Spawn for CountingSpawner {
+    fn spawn(&self, task: nectar_tasks::BoxFuture<'static, ()>) -> nectar_tasks::TaskHandle {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        nectar_tasks::TokioSpawner.spawn(task)
+    }
+}
+
+#[tokio::test]
+async fn spawn_on_routes_every_driver_through_the_executor() {
+    let data = fill(17 * TINY + 5);
+    let file = open(&data).await;
+    let counter = Arc::new(CountingSpawner::default());
+    let executor: Arc<dyn nectar_tasks::Spawn> = Arc::<CountingSpawner>::clone(&counter);
+    let mut reader = SpawnedReader::spawn_on(executor, file.read().build());
+    assert_eq!(counter.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    let mut buf = [0u8; 300];
+    reader.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf[..], &data[..300]);
+
+    // A moving seek respawns the driver on the caller-supplied executor.
+    reader.seek(SeekFrom::Start(4000)).await.unwrap();
+    assert_eq!(counter.0.load(std::sync::atomic::Ordering::Relaxed), 2);
+    let mut out = Vec::new();
+    reader.read_to_end(&mut out).await.unwrap();
+    assert_eq!(out, &data[4000..]);
+}
+
 /// Store failing every fetch after a countdown of successes.
 #[derive(Clone)]
 struct FailAfter {

@@ -23,6 +23,7 @@ Looking for the org overview? See **[github.com/nxm-rs](https://github.com/nxm-r
 | **[`nectar-contracts`](./crates/contracts)** | Contract bindings for on-chain Swarm interactions | [![crates.io](https://img.shields.io/crates/v/nectar-contracts.svg)](https://crates.io/crates/nectar-contracts) | [![docs.rs](https://docs.rs/nectar-contracts/badge.svg)](https://docs.rs/nectar-contracts) |
 | **[`nectar-swarms`](./crates/swarms)** | Network identifiers (mainnet, testnet, etc.) | [![crates.io](https://img.shields.io/crates/v/nectar-swarms.svg)](https://crates.io/crates/nectar-swarms) | [![docs.rs](https://docs.rs/nectar-swarms/badge.svg)](https://docs.rs/nectar-swarms) |
 | **[`nectar-clock`](./crates/clock)** | Injectable `no_std` time source | [![crates.io](https://img.shields.io/crates/v/nectar-clock.svg)](https://crates.io/crates/nectar-clock) | [![docs.rs](https://docs.rs/nectar-clock/badge.svg)](https://docs.rs/nectar-clock) |
+| **[`nectar-tasks`](./crates/tasks)** | Object-safe spawn seam for library tasks | [![crates.io](https://img.shields.io/crates/v/nectar-tasks.svg)](https://crates.io/crates/nectar-tasks) | [![docs.rs](https://docs.rs/nectar-tasks/badge.svg)](https://docs.rs/nectar-tasks) |
 
 ---
 
