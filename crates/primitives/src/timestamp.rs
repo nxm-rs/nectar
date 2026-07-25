@@ -1,8 +1,8 @@
 //! Typed unix-seconds timestamp used in BzzAddress sign-data.
 //!
-//! The bee handshake sign-data carries an `int64` timestamp (big-endian,
-//! signed). Verification rejects records whose timestamp drifts outside a
-//! caller-supplied window from local clock. See bee `pkg/bzz/timestamp.go`.
+//! The handshake sign-data carries an `int64` timestamp (big-endian, signed).
+//! Verification rejects records whose timestamp drifts outside a
+//! caller-supplied window from local clock. See `SPEC.md#handshake-timestamp`.
 
 use derive_more::{Display, From, Into};
 use std::time::Duration;
@@ -10,7 +10,7 @@ use std::time::Duration;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Unix-seconds timestamp (signed, matching bee's `int64`).
+/// Unix-seconds timestamp (signed, matching the reference client's `int64`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]

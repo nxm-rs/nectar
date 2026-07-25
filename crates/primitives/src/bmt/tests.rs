@@ -167,13 +167,14 @@ fn reference_prefix_root(prefix: Option<&[u8]>, span: u64, payload: &[u8]) -> B2
     B256::from_slice(h.finalize().as_slice())
 }
 
-/// Cross-implementation parity gate against bee's published deterministic
-/// vector (pkg/storer/sample_test.go TestSampleVectorCAC).
+/// Cross-implementation parity gate against the reference client's published
+/// deterministic vector (`TestSampleVectorCAC`, see `SPEC.md#transformed-addresses`).
 ///
 /// Chunk content is 4096 bytes with byte[i] = i % 256; the CAC span is 4096
 /// (little-endian). The plain BMT root is the chunk address and the
-/// anchor-prefixed BMT root is bee's transformed address. Reproducing both
-/// byte-for-byte proves nectar's per-node prefixing is bee-identical.
+/// anchor-prefixed BMT root is the transformed address. Reproducing both
+/// byte-for-byte proves nectar's per-node prefixing matches the reference
+/// client.
 #[test]
 fn test_bee_sample_vector_cac_parity() {
     const ANCHOR: &[u8] = b"swarm-test-anchor-deterministic!";

@@ -9,6 +9,9 @@
 //! - **Binary Merkle Tree**: Efficient content addressing and proof generation ([`bmt::Hasher`])
 //! - **OverlayAddress**: 256-bit identifiers for network addressing
 //!
+//! Reference-client source citations for the ported algorithms live in
+//! `SPEC.md` at the crate root.
+//!
 //! ## Usage Examples
 //!
 //! ```

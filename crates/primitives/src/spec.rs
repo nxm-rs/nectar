@@ -11,8 +11,9 @@ use crate::{Bin, NetworkId, ProximityOrder};
 /// Canonical Swarm network spec.
 ///
 /// Only [`NETWORK_ID`](Self::NETWORK_ID) is required; the rest default to the
-/// reference client's values and may be overridden per deployment. Defaulted
-/// consts can be added without breaking implementors.
+/// reference client's values (`SPEC.md#kademlia-parameters`) and may be
+/// overridden per deployment. Defaulted consts can be added without breaking
+/// implementors.
 pub trait SwarmSpec {
     /// Network identifier used in [`compute_overlay`](crate::compute_overlay)
     /// and the BzzAddress sign-data.

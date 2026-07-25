@@ -617,13 +617,14 @@ mod tests {
         assert!(DefaultAnyChunk::from_wire_bytes(&addr, opaque).is_err());
     }
 
-    // --- transformed address (redistribution sampler) bee parity -------------
+    // --- transformed address (redistribution sampler) parity -----------------
     //
     // nectar owns the parity oracle for the anchor-keyed transformed address.
-    // The vectors below are taken from bee so that any drift in the prefixed
+    // The vectors below are taken from the reference client
+    // (SPEC.md#transformed-addresses) so that any drift in the prefixed
     // BMT or the single-owner outer wrap is caught here, at the primitive.
 
-    /// bee `TestSampleVectorCAC` (`pkg/storer/sample_test.go`): a 4096-byte CAC
+    /// The reference client's `TestSampleVectorCAC` vector: a 4096-byte CAC
     /// whose payload is the repeating pattern `i % 256`, transformed under the
     /// anchor `swarm-test-anchor-deterministic!`.
     #[test]
@@ -661,7 +662,7 @@ mod tests {
         );
     }
 
-    /// A single-owner chunk vector from bee's `TestMakeInclusionProofsRegression`
+    /// A single-owner chunk vector from the reference client's `TestMakeInclusionProofsRegression`
     /// oracle (anchor1 = `0x64`). Exercises the SOC path: the wrapped content
     /// chunk is re-hashed under the anchor, then the SOC transformed address is
     /// the plain `keccak256(soc_address || inner)`.

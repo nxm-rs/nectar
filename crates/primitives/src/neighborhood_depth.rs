@@ -1,8 +1,9 @@
 //! Canonical neighborhood-depth recomputation.
 //!
-//! Neighborhood depth from per-bin peer counts.
-//! (`recalcDepth`). The wrapper type (`NeighborhoodDepth`) stays in the
-//! routing layer of each downstream impl; nectar only owns the math.
+//! Neighborhood depth from per-bin peer counts, matching the reference
+//! client's `recalcDepth` (`SPEC.md#neighborhood-depth`). The wrapper type
+//! (`NeighborhoodDepth`) stays in the routing layer of each downstream impl;
+//! nectar only owns the math.
 
 use crate::Bin;
 
