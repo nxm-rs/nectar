@@ -14,7 +14,7 @@ Module docs link here instead of restating citations inline.
 
 | Citation | Description |
 |---|---|
-| `pkg/swarm/swarm.go` | Canonical network identifiers (mainnet `1`, testnet `10`). |
+| `pkg/config/chain.go` | Canonical network identifiers (mainnet `1`, testnet `10`). |
 
 ## Handshake sign-data
 
@@ -57,4 +57,5 @@ Module docs link here instead of restating citations inline.
 | Citation | Description |
 |---|---|
 | `pkg/storer/sample.go` | `transformedAddressCAC`: anchor-prefixed BMT over span and payload, the redistribution sampler's per-round re-hash. |
-| `pkg/storer/sample_test.go` | Deterministic parity vectors: `TestSampleVectorCAC` (CAC) and `TestMakeInclusionProofsRegression` (SOC). |
+| `pkg/storer/sample_test.go` | Deterministic CAC parity vector: `TestSampleVectorCAC`. |
+| `pkg/storageincentives/proof_test.go` | Deterministic SOC parity vector: `TestMakeInclusionProofsRegression`. |
