@@ -79,9 +79,7 @@ the seek prologue is serial (one round per depth) and the drain is where concurr
 for fewer referenced hops per range/listing window; read both sides together."
             .to_string(),
         "paginate is the rank-directed page: its fetch count is ~O(depth) and flat in \
-offset, against the iter().skip(offset) baseline whose fetches grow with offset, and the 0.2 \
-resume-token page walk (v02_emulated: true) which cannot skip and pays the full scan to the \
-offset."
+offset, against the iter().skip(offset) baseline whose fetches grow with offset."
             .to_string(),
     ]
 }

@@ -1,10 +1,4 @@
-//! Shared instrumented in-memory chunk store.
-//!
-//! One wrapper type satisfies both formats: it is generic over the chunk
-//! registry, so `CountingStore<StandardChunkSet>` backs mantaray 1.0 and
-//! `CountingStore<AnyChunkSet<4096>>` backs mantaray 0.2. Both hold 4096-byte
-//! content-chunk bodies, so every byte and chunk metric is directly
-//! comparable across formats.
+//! Shared instrumented in-memory chunk store, generic over the chunk registry.
 //!
 //! Counters are atomic so the store stays `Sync` (satisfies `MaybeSync`) and
 //! a caller snapshots gets/puts around a single operation to read off hops and

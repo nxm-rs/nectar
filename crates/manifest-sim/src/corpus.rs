@@ -6,10 +6,6 @@
 //! index needs more than 32 bytes. Keys are generated then sorted, so the
 //! published set is order-independent. Values are ref32 addresses derived as
 //! `sha256(b"val" || key_bytes)`.
-//!
-//! Each corpus yields a logical key that both formats express: 1.0 takes raw
-//! key bytes; 0.2 needs a UTF-8 `&str`, so uniform binary keys are lowercase
-//! hex (the ACT hex pattern) while path corpora are byte-identical in both.
 
 use std::collections::BTreeSet;
 
@@ -18,23 +14,13 @@ use sha2::{Digest, Sha256};
 /// Master seed, little-endian.
 pub const MASTER_SEED: u64 = 0x6d61_6e74_7261_7931;
 
-/// A generated key with both format encodings and optional content type.
+/// A generated key with optional content type.
 #[derive(Clone, Debug)]
 pub struct GenKey {
-    /// Raw key bytes fed to mantaray 1.0.
+    /// Raw key bytes.
     pub raw: Vec<u8>,
-    /// UTF-8 path fed to mantaray 0.2 (hex of `raw` for the uniform corpus).
-    pub path: String,
     /// Content-type metadata value, when the corpus carries it.
     pub content_type: Option<&'static str>,
-}
-
-impl GenKey {
-    /// Whether the 0.2 path is a byte-identical view of the 1.0 raw key.
-    #[must_use]
-    pub fn encodings_match(&self) -> bool {
-        self.raw.as_slice() == self.path.as_bytes()
-    }
 }
 
 /// The four corpora.
@@ -59,15 +45,6 @@ impl Corpus {
             Self::Kiwix => "kiwix",
             Self::OsmPyramid => "osm_pyramid",
             Self::OsmBbox => "osm_bbox",
-        }
-    }
-
-    /// Whether the 0.2 key encoding is `hex` (uniform) or `raw` (paths).
-    #[must_use]
-    pub const fn key_encoding(self) -> &'static str {
-        match self {
-            Self::Uniform => "hex",
-            _ => "raw",
         }
     }
 
@@ -137,16 +114,6 @@ pub fn value_addr(key_bytes: &[u8]) -> [u8; 32] {
     tagged_addr(b"val", key_bytes)
 }
 
-fn to_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[usize::from(b >> 4)] as char);
-        s.push(HEX[usize::from(b & 0x0f)] as char);
-    }
-    s
-}
-
 /// Generate exactly `n` keys of `corpus`, sorted by raw bytes.
 #[must_use]
 pub fn generate(corpus: Corpus, n: usize) -> Vec<GenKey> {
@@ -170,7 +137,6 @@ fn uniform(n: usize) -> Vec<GenKey> {
     set.into_iter()
         .take(n)
         .map(|raw| GenKey {
-            path: to_hex(&raw),
             raw: raw.to_vec(),
             content_type: None,
         })
@@ -254,8 +220,7 @@ fn kiwix(n: usize) -> Vec<GenKey> {
     let mut out: Vec<GenKey> = emitted
         .into_iter()
         .map(|(path, mime)| GenKey {
-            raw: path.clone().into_bytes(),
-            path,
+            raw: path.into_bytes(),
             content_type: Some(mime),
         })
         .collect();
@@ -264,10 +229,8 @@ fn kiwix(n: usize) -> Vec<GenKey> {
 }
 
 fn ascii_key(z: u32, x: u64, y: u64) -> GenKey {
-    let path = format!("{z}/{x}/{y}");
     GenKey {
-        raw: path.clone().into_bytes(),
-        path,
+        raw: format!("{z}/{x}/{y}").into_bytes(),
         content_type: None,
     }
 }
@@ -346,9 +309,7 @@ mod tests {
                 corpus.name()
             );
             assert!(
-                a.iter()
-                    .zip(&b)
-                    .all(|(x, y)| x.raw == y.raw && x.path == y.path),
+                a.iter().zip(&b).all(|(x, y)| x.raw == y.raw),
                 "{}: reproducible across runs",
                 corpus.name()
             );

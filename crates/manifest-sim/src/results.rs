@@ -120,11 +120,4 @@ pub struct PaginateCell {
     pub skip_baseline_fetch_count: u64,
     /// `skip_baseline / paginate`; grows with offset as the win widens.
     pub skip_over_paginate: Option<f64>,
-    /// The 0.2 resume-token walk is an emulation: the cursor restarts pages
-    /// but cannot skip, so it pays the full scan to the offset.
-    pub v02_emulated: bool,
-    /// Fetches for the 0.2 editor's cursor to page through to the offset.
-    pub v02_resume_walk_fetch_count: u64,
-    /// `v02_resume_walk / paginate`.
-    pub v02_over_paginate: Option<f64>,
 }

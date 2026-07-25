@@ -26,7 +26,6 @@ disallowed_methods = "deny"
 [dependencies]
 bytes.workspace = true
 nectar-manifest = { workspace = true }
-nectar-mantaray = { workspace = true }
 nectar-primitives = { workspace = true }
 nectar-testing.workspace = true
 serde = { workspace = true, features = ["std", "derive"] }

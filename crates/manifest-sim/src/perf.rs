@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::future::Future;
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -19,9 +18,8 @@ use nectar_testing::run;
 use nectar_manifest::{
     Builder, Changeset, Entry, Format, Key, KeyId, Metadata, Reader, V1, V1Read, apply,
 };
-use nectar_mantaray::{Cursor, ManifestEditor};
 use nectar_primitives::store::MemoryStore;
-use nectar_primitives::{AnyChunkSet, ChunkAddress, ChunkRef, StandardChunkSet};
+use nectar_primitives::{ChunkAddress, ChunkRef, StandardChunkSet};
 
 use crate::corpus::{Corpus, GenKey, tagged_addr, value_addr};
 use crate::results::{
@@ -405,54 +403,6 @@ pub fn read_profile_cell(
 
 // ---- paginate ------------------------------------------------------------
 
-type V02Store = Arc<CountingStore<AnyChunkSet<4096>>>;
-
-/// Build every key into a 0.2 editor manifest over a counting store.
-fn build_v02(keys: &[GenKey]) -> Result<(V02Store, ChunkAddress), Err> {
-    let store: V02Store = Arc::new(CountingStore::new());
-    let mut ed = ManifestEditor::new(Arc::clone(&store));
-    for k in keys {
-        ed.put(k.path.as_bytes(), ref32(value_addr(k.path.as_bytes())));
-    }
-    let (root, _) = run(ed.commit())?;
-    Ok((store, root))
-}
-
-/// Fetches for the 0.2 cursor to page through to `offset + limit` entries via
-/// resume tokens: restartable, but unable to skip, so the walk pays the full
-/// scan to the offset.
-fn v02_resume_walk(
-    store: &V02Store,
-    root: ChunkAddress,
-    offset: u64,
-    limit: usize,
-) -> Result<u64, Err> {
-    let target = offset.saturating_add(limit as u64);
-    let before = store.gets();
-    let mut resume: Option<Vec<u8>> = None;
-    let mut yielded = 0u64;
-    'pages: while yielded < target {
-        let mut cursor = Cursor::new(Arc::clone(store), root).with_limit(limit);
-        if let Some(after) = &resume {
-            cursor = cursor.after(after);
-        }
-        let mut got = 0u64;
-        while let Some(entry) = run(cursor.next()) {
-            let entry = entry?;
-            resume = Some(entry.path().to_vec());
-            yielded = yielded.saturating_add(1);
-            got = got.saturating_add(1);
-            if yielded >= target {
-                break 'pages;
-            }
-        }
-        if got == 0 {
-            break;
-        }
-    }
-    Ok(store.gets().saturating_sub(before))
-}
-
 /// The pagination sweep for one `(corpus, scale)`: rank-directed paginate.
 pub fn paginate_cells(
     corpus: Corpus,
@@ -461,7 +411,6 @@ pub fn paginate_cells(
 ) -> Result<Vec<PaginateCell>, Err> {
     let (store, root) = build_counting::<V1>(keys)?;
     let reader = Reader::<&CountingStore<StandardChunkSet>, V1>::new(&store);
-    let (v02_store, v02_root) = build_v02(keys)?;
     let n = keys.len() as u64;
     let empty = Key::empty();
     let mut cells = Vec::new();
@@ -491,9 +440,6 @@ pub fn paginate_cells(
         }
         let skip_fetch = store.gets().saturating_sub(before);
 
-        // The 0.2 resume-token page walk: ordered and restartable, no skip.
-        let v02_fetch = v02_resume_walk(&v02_store, v02_root, offset, PAGE_LIMIT)?;
-
         cells.push(PaginateCell {
             corpus: corpus.name().to_string(),
             scale,
@@ -504,10 +450,6 @@ pub fn paginate_cells(
             skip_baseline_fetch_count: skip_fetch,
             skip_over_paginate: (paginate_fetch > 0)
                 .then(|| skip_fetch as f64 / paginate_fetch as f64),
-            v02_emulated: true,
-            v02_resume_walk_fetch_count: v02_fetch,
-            v02_over_paginate: (paginate_fetch > 0)
-                .then(|| v02_fetch as f64 / paginate_fetch as f64),
         });
     }
     Ok(cells)
