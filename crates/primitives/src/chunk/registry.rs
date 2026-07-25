@@ -1,8 +1,9 @@
 //! Compile-time chunk type registry
 //!
 //! This module provides the [`ChunkRegistry`] trait: the closed envelope type
-//! IS the type-level set of chunk types a network accepts. [`StandardChunkSet`]
-//! and [`ContentOnlyChunkSet`] are the built-in registries.
+//! IS the type-level set of chunk types a network accepts. [`StandardChunkSet`],
+//! [`ContentOnlyChunkSet`], and [`SingleOwnerOnlyChunkSet`] are the built-in
+//! registries.
 
 use bytes::Bytes;
 
@@ -13,7 +14,7 @@ use super::address::ChunkAddress;
 use super::any_chunk::AnyChunk;
 use super::content::{CacHeader, ContentChunk};
 use super::error::ChunkError;
-use super::single_owner::SocHeader;
+use super::single_owner::{SingleOwnerChunk, SocHeader};
 use super::traits::{ChunkHeader, ChunkOps};
 use super::type_id::ChunkTypeId;
 use super::type_tag::ChunkTypeTag;
@@ -219,6 +220,49 @@ impl ChunkRegistry for ContentOnlyChunkSet {
 
 const _: () = ContentOnlyChunkSet::DISTINCT_TAGS;
 
+/// Registry that accepts only single-owner chunks at body size `BODY_SIZE`,
+/// carried directly as [`SingleOwnerChunk`]: a single-member set needs no
+/// envelope enum. The registry carries the body size so no store trait
+/// restates it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SingleOwnerOnlyChunkSet<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>;
+
+impl<const BODY_SIZE: usize> ChunkRegistry for SingleOwnerOnlyChunkSet<BODY_SIZE> {
+    type Envelope = SingleOwnerChunk<BODY_SIZE>;
+
+    const MEMBERS: &'static [ChunkTypeInfo] = &[ChunkTypeInfo::of::<SocHeader>()];
+
+    fn parse_typed(bytes: &[u8]) -> Result<Self::Envelope> {
+        let (tag, payload) = bytes.split_first_chunk::<2>().ok_or_else(|| {
+            ChunkError::invalid_format("typed-chunk encoding shorter than the two-byte type tag")
+        })?;
+        let tag = ChunkTypeTag::from(*tag);
+        if !Self::supports(tag) {
+            return Err(ChunkError::unsupported_tag(tag).into());
+        }
+        SingleOwnerChunk::try_from(Bytes::copy_from_slice(payload))
+    }
+
+    fn decode_wire(address: &ChunkAddress, data: Bytes) -> Result<Self::Envelope> {
+        let chunk = SingleOwnerChunk::try_from(data)?;
+        // Full acceptance rule (owner recovery, replica pin, address
+        // compare), never a bare address compare.
+        chunk.verify(address)?;
+        Ok(chunk)
+    }
+
+    fn encode_typed(chunk: &Self::Envelope) -> Vec<u8> {
+        let tag = ChunkTypeInfo::of::<SocHeader>().tag.to_bytes();
+        let wire = chunk.clone().into_bytes();
+        let mut out = Vec::with_capacity(wire.len().saturating_add(tag.len()));
+        out.extend_from_slice(&tag);
+        out.extend_from_slice(&wire);
+        out
+    }
+}
+
+const _: () = SingleOwnerOnlyChunkSet::<DEFAULT_BODY_SIZE>::DISTINCT_TAGS;
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
@@ -230,6 +274,7 @@ mod tests {
     use crate::error::PrimitivesError;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
+    type SocOnly = SingleOwnerOnlyChunkSet<DEFAULT_BODY_SIZE>;
 
     const CAC_TAG: ChunkTypeTag = ChunkTypeTag::new(CacHeader::TYPE_ID, CacHeader::VERSION);
     const SOC_TAG: ChunkTypeTag = ChunkTypeTag::new(SocHeader::TYPE_ID, SocHeader::VERSION);
@@ -290,6 +335,15 @@ mod tests {
     }
 
     #[test]
+    fn soc_only_supports() {
+        assert!(SocOnly::supports(SOC_TAG));
+        assert!(!SocOnly::supports(CAC_TAG));
+        assert!(SocOnly::supports_id(ChunkTypeId::SINGLE_OWNER));
+        assert!(!SocOnly::supports_id(ChunkTypeId::CONTENT));
+        assert_eq!(SocOnly::MEMBERS.len(), 1);
+    }
+
+    #[test]
     fn duplicate_tag_scan() {
         assert_eq!(ChunkTypeInfo::duplicate_tag(&[]), None);
         assert_eq!(
@@ -300,6 +354,7 @@ mod tests {
             ChunkTypeInfo::duplicate_tag(ContentOnlyChunkSet::MEMBERS),
             None
         );
+        assert_eq!(ChunkTypeInfo::duplicate_tag(SocOnly::MEMBERS), None);
 
         let dup = [
             ChunkTypeInfo::of::<CacHeader>(),
@@ -365,6 +420,10 @@ mod tests {
         let content_only = ContentOnlyChunkSet::encode_typed(&content);
         assert!(ContentOnlyChunkSet::parse_typed(&content_only).is_ok());
         assert!(ContentOnlyChunkSet::decode_typed(&wrong, &content_only).is_err());
+
+        let soc_only = SocOnly::encode_typed(&sample_single_owner());
+        assert!(SocOnly::parse_typed(&soc_only).is_ok());
+        assert!(SocOnly::decode_typed(&wrong, &soc_only).is_err());
     }
 
     #[test]
@@ -467,6 +526,84 @@ mod tests {
         let wire = soc.into_bytes();
 
         assert!(ContentOnlyChunkSet::decode_wire(&address, wire).is_err());
+    }
+
+    #[test]
+    fn soc_only_typed_round_trip() {
+        let soc = sample_single_owner();
+        let address = *soc.address();
+
+        let encoded = SocOnly::encode_typed(&soc);
+        // The typed form must agree with the standard registry's encoding.
+        assert_eq!(encoded, StandardChunkSet::encode_typed(&soc.into()));
+
+        let decoded = SocOnly::decode_typed(&address, &encoded).unwrap();
+        assert_eq!(*decoded.address(), address);
+    }
+
+    #[test]
+    fn soc_only_typed_rejects_cac_tag_as_unsupported() {
+        let content = DefaultContentChunk::new(&b"wrong network"[..]).unwrap();
+        let address = *content.address();
+        let encoded = StandardChunkSet::encode_typed(&content.into());
+
+        let err = SocOnly::decode_typed(&address, &encoded).unwrap_err();
+        match err {
+            PrimitivesError::Chunk(ChunkError::UnsupportedTag(t)) => assert_eq!(t, CAC_TAG),
+            other => panic!("expected UnsupportedTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn soc_only_typed_short_input_errors() {
+        let address: ChunkAddress = [0u8; 32].into();
+        assert!(SocOnly::decode_typed(&address, &[]).is_err());
+        assert!(SocOnly::decode_typed(&address, &[1]).is_err());
+    }
+
+    #[test]
+    fn soc_only_wire_round_trip() {
+        let soc = sample_single_owner();
+        let address = *soc.address();
+        let wire: Bytes = soc.into_bytes();
+
+        // The same bare wire bytes the standard registry's single-owner arm
+        // consumes.
+        let via_standard = StandardChunkSet::decode_wire(&address, wire.clone()).unwrap();
+        assert!(via_standard.is_single_owner());
+
+        let decoded = SocOnly::decode_wire(&address, wire.clone()).unwrap();
+        assert_eq!(*decoded.address(), address);
+        assert_eq!(decoded.into_bytes(), wire);
+    }
+
+    #[test]
+    fn soc_only_wire_rejects_content_bytes() {
+        // A content chunk's wire bytes carry no 97-byte id-plus-signature
+        // header, so no single-owner interpretation certifies at its address.
+        let content = DefaultContentChunk::new(&b"bare cac wire"[..]).unwrap();
+        let address = *content.address();
+        let wire = content.into_bytes();
+
+        assert!(SocOnly::decode_wire(&address, wire).is_err());
+    }
+
+    /// The single-member wire path still runs the full acceptance rule: a
+    /// garbage signature commits under the zero owner, and asking for
+    /// exactly that committed address must fail, where a bare address
+    /// compare would pass.
+    #[test]
+    fn soc_only_wire_rejects_garbage_signature_at_committed_address() {
+        let soc = sample_single_owner();
+        let mut wire = soc.into_bytes().to_vec();
+        // Clobber the 65 signature bytes after the 32-byte id.
+        for byte in wire.iter_mut().skip(32).take(65) {
+            *byte = 0xff;
+        }
+        let forged = SingleOwnerChunk::<DEFAULT_BODY_SIZE>::try_from(wire.as_slice()).unwrap();
+        let committed = *forged.address();
+
+        assert!(SocOnly::decode_wire(&committed, Bytes::from(wire)).is_err());
     }
 
     /// Replay crafted edge inputs through the shared `chunk_decode` oracle
