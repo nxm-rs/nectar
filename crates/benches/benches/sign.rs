@@ -7,8 +7,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nectar_postage_issuer::{
-    BatchId, BatchStamper, BucketDepth, MemoryIssuer, ShardedIssuer, SigningError, Stamper,
-    sign_stamps_parallel,
+    BatchId, BatchStamper, BucketDepth, MemoryIssuer, ShardedIssuer, StampPipeline, Stamper,
 };
 use nectar_primitives::ChunkAddress;
 use rand::RngExt;
@@ -103,16 +102,9 @@ fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
 // Parallel ECDSA Signing Benchmarks
 
 fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
-    let signer = PrivateKeySigner::random();
+    let pipeline = StampPipeline::from_signer(PrivateKeySigner::random());
     let addresses_100: Vec<ChunkAddress> = (0..100).map(|_| random_address()).collect();
     let addresses_1000: Vec<ChunkAddress> = (0..1000).map(|_| random_address()).collect();
-
-    // Use sign_message_sync for EIP-191 compatibility
-    let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
-        Ok(signer
-            .sign_message_sync(prehash.as_slice())
-            .map_err(alloy_signer::Error::other)?)
-    };
 
     let mut group = c.benchmark_group("ecdsa_sign_parallel");
 
@@ -120,7 +112,11 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     group.bench_function("throughput_100", |b| {
         b.iter(|| {
             let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            black_box(sign_stamps_parallel(&issuer, &sign_fn, &addresses_100))
+            let mut handle = &issuer;
+            let results: Vec<_> = pipeline
+                .stamp(&mut handle, addresses_100.iter().copied())
+                .collect();
+            black_box(results)
         })
     });
 
@@ -128,7 +124,11 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     group.bench_function("throughput_1000", |b| {
         b.iter(|| {
             let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            black_box(sign_stamps_parallel(&issuer, &sign_fn, &addresses_1000))
+            let mut handle = &issuer;
+            let results: Vec<_> = pipeline
+                .stamp(&mut handle, addresses_1000.iter().copied())
+                .collect();
+            black_box(results)
         })
     });
 
@@ -139,14 +139,8 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
 
 fn bench_sign_comparison(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
+    let pipeline = StampPipeline::from_signer(signer.clone());
     let addresses: Vec<ChunkAddress> = (0..1000).map(|_| random_address()).collect();
-
-    // Use sign_message_sync for EIP-191 compatibility
-    let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
-        Ok(signer
-            .sign_message_sync(prehash.as_slice())
-            .map_err(alloy_signer::Error::other)?)
-    };
 
     let mut group = c.benchmark_group("sign_1000_comparison");
     group.throughput(Throughput::Elements(1000));
@@ -162,11 +156,15 @@ fn bench_sign_comparison(c: &mut Criterion) {
         })
     });
 
-    // Parallel
-    group.bench_function("parallel", |b| {
+    // Streaming pipeline over the sharded issuer
+    group.bench_function("pipeline", |b| {
         b.iter(|| {
             let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            black_box(sign_stamps_parallel(&issuer, &sign_fn, &addresses))
+            let mut handle = &issuer;
+            let results: Vec<_> = pipeline
+                .stamp(&mut handle, addresses.iter().copied())
+                .collect();
+            black_box(results)
         })
     });
 

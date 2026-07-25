@@ -47,10 +47,27 @@ pub enum IssuerError {
 #[derive(Debug, Error)]
 pub enum SigningError {
     /// A stamp-related error occurred.
+    ///
+    /// Allocation failures such as `BucketFull` consume no index; a retry is
+    /// free.
     #[error(transparent)]
     Stamp(#[from] nectar_postage::StampError),
 
     /// Signing operation failed.
+    ///
+    /// The allocated index is burnt; a retry allocates a fresh one.
     #[error(transparent)]
     Signer(#[from] alloy_signer::Error),
+
+    /// The sign task ended without producing a signature (signer panic).
+    ///
+    /// The allocated index is burnt; a retry allocates a fresh one.
+    #[error("sign task dropped before producing a signature")]
+    Dropped,
+
+    /// The pipeline stopped before admitting this address.
+    ///
+    /// No allocation happened; a retry is free.
+    #[error("address not admitted before the pipeline stopped")]
+    NotAdmitted,
 }

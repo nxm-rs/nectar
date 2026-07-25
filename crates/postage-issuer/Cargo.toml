@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 nectar-clock = { workspace = true }
+nectar-marker = { workspace = true }
 nectar-postage = { workspace = true }
 nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
@@ -49,12 +50,21 @@ std = [ "nectar-clock/std", "nectar-postage/std" ]
 # Local key signing for testing and development
 local-signer = [ "dep:alloy-signer-local", "std" ]
 
-# Parallel signing operations using rayon
+# The pipeline's parallel signing engine using rayon. Rayon on wasm32 or
+# under `unsync` is a compile error, never a silent fallback.
 parallel = [
 	"dep:rayon",
 	"nectar-postage/parallel",
 	"nectar-primitives/parallel",
 	"std",
+]
+
+# Single-thread send escape: relaxes the signer bounds in lockstep with the
+# clock and primitives markers.
+unsync = [
+	"nectar-clock/unsync",
+	"nectar-marker/unsync",
+	"nectar-primitives/unsync",
 ]
 
 # Arbitrary trait implementations for property-based testing
@@ -65,6 +75,8 @@ arbitrary = [
 	"std",
 ]
 
+# `parallel` and `unsync` are mutually exclusive, so the doc build lists
+# features explicitly rather than enabling all at once.
 [package.metadata.docs.rs]
-all-features = true
+features = ["std", "local-signer", "parallel", "arbitrary"]
 rustdoc-args = ["--cfg", "docsrs"]

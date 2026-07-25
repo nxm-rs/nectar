@@ -16,20 +16,11 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::error::IssuerError;
+use crate::issuer::StampIssuer;
 use nectar_postage::{
     Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
 };
 use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
-
-#[cfg(feature = "parallel")]
-use {
-    crate::error::SigningError,
-    crate::stamper::stamp_timestamp,
-    alloy_primitives::B256,
-    alloy_signer::Signature,
-    nectar_clock::{Clock, SystemClock},
-    nectar_postage::Stamp,
-};
 
 /// Number of shards for bucket partitioning.
 /// Must be a power of 2 for efficient bucket-to-shard mapping.
@@ -108,7 +99,7 @@ impl BucketShard {
 /// use nectar_postage_issuer::{BatchId, BucketDepth, ShardedIssuer};
 ///
 /// let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
-/// // Now safe to use from multiple threads via sign_stamps_parallel
+/// // Safe to stamp from multiple threads, each holding a `&ShardedIssuer`.
 /// ```
 #[derive(Debug)]
 pub struct ShardedIssuerFor<S: SwarmSpec = Mainnet> {
@@ -354,119 +345,85 @@ impl<S: SwarmSpec> ShardedIssuerFor<S> {
     }
 }
 
-/// Result of a parallel stamp operation.
-#[cfg(feature = "parallel")]
-#[derive(Debug)]
-pub struct StampResult {
-    /// The chunk address that was stamped.
-    pub address: ChunkAddress,
-    /// The resulting stamp, or error message.
-    pub result: Result<Stamp, SigningError>,
+impl<S: SwarmSpec> StampIssuer for ShardedIssuerFor<S> {
+    fn prepare_stamp(
+        &mut self,
+        address: &ChunkAddress,
+        timestamp: u64,
+    ) -> Result<StampDigest, StampError> {
+        // The inherent shared-reference method; inherent methods shadow the
+        // trait method here.
+        (*self).prepare_stamp(address, timestamp)
+    }
+
+    fn batch_id(&self) -> BatchId {
+        Self::batch_id(self)
+    }
+
+    fn batch_depth(&self) -> u8 {
+        Self::batch_depth(self)
+    }
+
+    fn bucket_depth(&self) -> u8 {
+        Self::bucket_depth(self)
+    }
+
+    fn max_bucket_utilization(&self) -> u32 {
+        Self::max_bucket_utilization(self)
+    }
+
+    fn bucket_utilization(&self, bucket: u32) -> u32 {
+        Self::bucket_utilization(self, bucket)
+    }
+
+    fn bucket_has_capacity(&self, bucket: u32) -> bool {
+        Self::bucket_utilization(self, bucket) < Self::bucket_capacity(self)
+    }
+
+    fn stamps_issued(&self) -> Option<u64> {
+        Some(Self::stamps_issued(self))
+    }
 }
 
-/// Signs multiple chunks in parallel using the provided signer.
-///
-/// This function distributes the work across multiple threads using rayon.
-/// The signer must be `Sync` as it will be shared across threads.
-///
-/// # EIP-191 Compatibility
-///
-/// The signer function receives the prehash (32-byte keccak256 of stamp data)
-/// and should sign it using EIP-191 personal message signing. Use
-/// `SignerSync::sign_message_sync(prehash.as_slice())`.
-///
-/// # Arguments
-///
-/// * `issuer` - The sharded issuer for allocating bucket indices
-/// * `signer` - A synchronous signer that implements `Sync`. Should use EIP-191 signing.
-/// * `addresses` - The chunk addresses to stamp
-///
-/// # Returns
-///
-/// A vector of stamp results in the same order as the input addresses.
-///
-/// # Example
-///
-/// ```ignore
-/// use nectar_postage_issuer::{BatchId, BucketDepth, ShardedIssuer, sign_stamps_parallel};
-/// use alloy_primitives::B256;
-/// use alloy_signer::SignerSync;
-///
-/// let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
-/// let addresses: Vec<ChunkAddress> = /* ... */;
-/// // Use sign_message_sync for EIP-191 compatibility
-/// let signer_fn = |prehash: &B256| signer.sign_message_sync(prehash.as_slice());
-/// let results = sign_stamps_parallel(&issuer, &signer_fn, &addresses);
-/// ```
-#[cfg(feature = "parallel")]
-pub fn sign_stamps_parallel<Sp, Sg, E>(
-    issuer: &ShardedIssuerFor<Sp>,
-    signer: &Sg,
-    addresses: &[ChunkAddress],
-) -> Vec<StampResult>
-where
-    Sp: SwarmSpec + Sync,
-    Sg: Fn(&B256) -> Result<Signature, E> + Sync,
-    E: Into<SigningError>,
-{
-    sign_stamps_parallel_with_clock(issuer, signer, addresses, &SystemClock)
-}
+/// Shared-handle issuance: allocation needs only `&self`, so several
+/// pipelines may admit concurrently from one issuer, each holding its own
+/// `&ShardedIssuerFor`.
+impl<S: SwarmSpec> StampIssuer for &ShardedIssuerFor<S> {
+    fn prepare_stamp(
+        &mut self,
+        address: &ChunkAddress,
+        timestamp: u64,
+    ) -> Result<StampDigest, StampError> {
+        (**self).prepare_stamp(address, timestamp)
+    }
 
-/// [`sign_stamps_parallel`] with an injected timestamp source, for
-/// deterministic stamp timestamps.
-#[cfg(feature = "parallel")]
-pub fn sign_stamps_parallel_with_clock<Sp, Sg, E, C>(
-    issuer: &ShardedIssuerFor<Sp>,
-    signer: &Sg,
-    addresses: &[ChunkAddress],
-    clock: &C,
-) -> Vec<StampResult>
-where
-    Sp: SwarmSpec + Sync,
-    Sg: Fn(&B256) -> Result<Signature, E> + Sync,
-    E: Into<SigningError>,
-    C: Clock + Sync,
-{
-    use rayon::prelude::*;
+    fn batch_id(&self) -> BatchId {
+        ShardedIssuerFor::batch_id(self)
+    }
 
-    addresses
-        .par_iter()
-        .map(|address| {
-            let result = sign_stamp_internal(issuer, signer, address, clock);
-            StampResult {
-                address: *address,
-                result,
-            }
-        })
-        .collect()
-}
+    fn batch_depth(&self) -> u8 {
+        ShardedIssuerFor::batch_depth(self)
+    }
 
-#[cfg(feature = "parallel")]
-fn sign_stamp_internal<Sp, Sg, E, C>(
-    issuer: &ShardedIssuerFor<Sp>,
-    signer: &Sg,
-    address: &ChunkAddress,
-    clock: &C,
-) -> Result<Stamp, SigningError>
-where
-    Sp: SwarmSpec,
-    Sg: Fn(&B256) -> Result<Signature, E>,
-    E: Into<SigningError>,
-    C: Clock,
-{
-    let timestamp = stamp_timestamp(clock);
-    let digest = issuer.prepare_stamp(address, timestamp)?;
-    let prehash = digest.to_prehash();
-    let sig = signer(&prehash).map_err(|e| e.into())?;
-    Ok(stamp_from_signature(&digest, sig))
-}
+    fn bucket_depth(&self) -> u8 {
+        ShardedIssuerFor::bucket_depth(self)
+    }
 
-/// Creates a stamp from a digest and signature.
-#[cfg(feature = "parallel")]
-#[inline]
-const fn stamp_from_signature(digest: &StampDigest, sig: Signature) -> Stamp {
-    // Signature is now stored directly in Stamp
-    Stamp::with_index(digest.batch_id, digest.index, digest.timestamp, sig)
+    fn max_bucket_utilization(&self) -> u32 {
+        ShardedIssuerFor::max_bucket_utilization(self)
+    }
+
+    fn bucket_utilization(&self, bucket: u32) -> u32 {
+        ShardedIssuerFor::bucket_utilization(self, bucket)
+    }
+
+    fn bucket_has_capacity(&self, bucket: u32) -> bool {
+        ShardedIssuerFor::bucket_utilization(self, bucket) < ShardedIssuerFor::bucket_capacity(self)
+    }
+
+    fn stamps_issued(&self) -> Option<u64> {
+        Some(ShardedIssuerFor::stamps_issued(self))
+    }
 }
 
 #[cfg(test)]
@@ -598,62 +555,21 @@ mod tests {
         assert_eq!(issuer.stamps_issued(), expected);
     }
 
-    #[cfg(feature = "parallel")]
     #[test]
-    fn test_parallel_signing() {
-        use crate::error::SigningError;
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
+    fn test_shared_handle_implements_stamp_issuer() {
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let mut handle = &issuer;
 
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
-        let signer = PrivateKeySigner::random();
+        let address = ChunkAddress::from(B256::random());
+        let digest = StampIssuer::prepare_stamp(&mut handle, &address, 42).unwrap();
 
-        let addresses: Vec<_> = (0..100)
-            .map(|_| ChunkAddress::from(B256::random()))
-            .collect();
-
-        let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
-            Ok(signer
-                .sign_message_sync(prehash.as_slice())
-                .map_err(alloy_signer::Error::other)?)
-        };
-
-        let results = sign_stamps_parallel(&issuer, &sign_fn, &addresses);
-
-        assert_eq!(results.len(), 100);
-        for result in &results {
-            assert!(result.result.is_ok());
-        }
-        assert_eq!(issuer.stamps_issued(), 100);
-    }
-
-    #[cfg(feature = "parallel")]
-    #[test]
-    fn test_parallel_signing_with_clock() {
-        use crate::error::SigningError;
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        use nectar_clock::ManualClock;
-
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
-        let signer = PrivateKeySigner::random();
-        let clock = ManualClock::new(1_234_567_890);
-
-        let addresses: Vec<_> = (0..16)
-            .map(|_| ChunkAddress::from(B256::random()))
-            .collect();
-
-        let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
-            Ok(signer
-                .sign_message_sync(prehash.as_slice())
-                .map_err(alloy_signer::Error::other)?)
-        };
-
-        let results = sign_stamps_parallel_with_clock(&issuer, &sign_fn, &addresses, &clock);
-
-        assert_eq!(results.len(), 16);
-        for result in &results {
-            assert_eq!(result.result.as_ref().unwrap().timestamp(), 1_234_567_890);
-        }
+        assert_eq!(digest.batch_id, BatchId::ZERO);
+        assert_eq!(digest.timestamp, 42);
+        assert_eq!(issuer.stamps_issued(), 1);
+        assert_eq!(StampIssuer::stamps_issued(&handle), Some(1));
+        assert!(StampIssuer::bucket_has_capacity(
+            &handle,
+            calculate_bucket(&address, 16)
+        ));
     }
 }

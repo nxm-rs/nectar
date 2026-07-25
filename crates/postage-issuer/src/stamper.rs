@@ -185,6 +185,12 @@ impl<I, S, C> BatchStamper<I, S, C> {
         &mut self.signer
     }
 
+    /// Splits into issuer, signer and clock, so an issuer moves between the
+    /// one-off and streaming stamping doors.
+    pub fn into_parts(self) -> (I, S, C) {
+        (self.issuer, self.signer, self.clock)
+    }
+
     /// Creates a stamp from a digest and signature.
     ///
     /// This is a utility function for converting an alloy `Signature` into
@@ -361,6 +367,18 @@ mod tests {
 
         stamper.stamp(&address).unwrap();
         assert_eq!(stamper.max_bucket_utilization(), 2);
+    }
+
+    #[test]
+    fn test_into_parts_keeps_issuer_state() {
+        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let mut stamper = BatchStamper::new(issuer, MockSigner);
+
+        let address = ChunkAddress::new([0xAB; 32]);
+        stamper.stamp(&address).unwrap();
+
+        let (issuer, _signer, _clock) = stamper.into_parts();
+        assert_eq!(issuer.stamps_issued(), Some(1));
     }
 
     #[test]

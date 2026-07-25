@@ -18,8 +18,7 @@ use rand::{Rng, rng};
 
 use nectar_file::{Plain, PutWindow, ReadAt, Split, split_read_at};
 use nectar_postage_issuer::{
-    BatchId, BatchStamper, BucketDepth, MemoryIssuer, ShardedIssuer, SigningError, Stamper,
-    sign_stamps_parallel,
+    BatchId, BatchStamper, BucketDepth, MemoryIssuer, ShardedIssuer, StampPipeline, Stamper,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
@@ -208,17 +207,11 @@ fn bench_pipeline_ecdsa_sequential(c: &mut Criterion) {
     group.finish();
 }
 
-/// Full pipeline with parallel splitting and parallel signing.
+/// Full pipeline with parallel splitting and streamed parallel signing.
 ///
 /// Maximum throughput configuration.
 fn bench_pipeline_fully_parallel(c: &mut Criterion) {
-    let signer = PrivateKeySigner::random();
-
-    let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
-        Ok(signer
-            .sign_message_sync(prehash.as_slice())
-            .map_err(alloy_signer::Error::other)?)
-    };
+    let pipeline = StampPipeline::from_signer(PrivateKeySigner::random());
 
     let mut group = c.benchmark_group("upload_pipeline_fully_parallel");
 
@@ -233,12 +226,12 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
                 // Parallel split
                 let (root, chunks) = split_parallel(source);
 
-                // Collect addresses for parallel signing
-                let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
-
-                // Parallel stamp signing
+                // Stream the addresses through the stamp pipeline
                 let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-                let stamps = sign_stamps_parallel(&issuer, &sign_fn, &addresses);
+                let mut handle = &issuer;
+                let stamps: Vec<_> = pipeline
+                    .stamp(&mut handle, chunks.iter().map(|c| *c.address()))
+                    .collect();
 
                 black_box((root, stamps))
             });
@@ -251,16 +244,11 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
 /// Comparison at 4MB: sequential vs parallel pipeline.
 fn bench_pipeline_comparison(c: &mut Criterion) {
     let signer = PrivateKeySigner::random();
+    let pipeline = StampPipeline::from_signer(signer.clone());
     let size = 4 * 1024 * 1024u64;
 
     let mut data = vec![0u8; size as usize];
     rng().fill_bytes(&mut data);
-
-    let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
-        Ok(signer
-            .sign_message_sync(prehash.as_slice())
-            .map_err(alloy_signer::Error::other)?)
-    };
 
     let mut group = c.benchmark_group("upload_pipeline_4mb_comparison");
     group.throughput(Throughput::Bytes(size));
@@ -306,10 +294,11 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
         b.iter(|| {
             let (root, chunks) = split_parallel(&source);
 
-            let addresses: Vec<_> = chunks.iter().map(|c| *c.address()).collect();
-
             let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            let stamps = sign_stamps_parallel(&issuer, &sign_fn, &addresses);
+            let mut handle = &issuer;
+            let stamps: Vec<_> = pipeline
+                .stamp(&mut handle, chunks.iter().map(|c| *c.address()))
+                .collect();
 
             black_box((root, stamps))
         });
@@ -361,17 +350,17 @@ fn bench_pipeline_stages(c: &mut Criterion) {
         });
     });
 
-    // Stage 2: Stamp only (parallel)
-    let sign_fn = |prehash: &B256| -> Result<Signature, SigningError> {
-        Ok(signer
-            .sign_message_sync(prehash.as_slice())
-            .map_err(alloy_signer::Error::other)?)
-    };
+    // Stage 2: Stamp only (streamed parallel)
+    let pipeline = StampPipeline::from_signer(signer.clone());
 
     group.bench_function("2_stamp_parallel", |b| {
         b.iter(|| {
             let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            black_box(sign_stamps_parallel(&issuer, &sign_fn, &addresses))
+            let mut handle = &issuer;
+            let stamps: Vec<_> = pipeline
+                .stamp(&mut handle, addresses.iter().copied())
+                .collect();
+            black_box(stamps)
         });
     });
 
