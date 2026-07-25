@@ -28,6 +28,7 @@ nectar-tasks = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"], optional = true }
+zeroize = { workspace = true, optional = true }
 
 [build-dependencies]
 
@@ -75,7 +76,7 @@ rayon = [ "dep:futures-channel", "dep:rayon", "std" ]
 arbitrary = [ "dep:arbitrary", "nectar-primitives?/arbitrary", "std" ]
 
 # Split-side encrypted mode. Joining encrypted references stays unconditional.
-encryption = [ "nectar-primitives?/encryption" ]
+encryption = [ "dep:zeroize", "nectar-primitives?/encryption" ]
 
 # Single-thread send escape: relaxes the boxed fetch future off `Send` in
 # lockstep with the primitives store traits.

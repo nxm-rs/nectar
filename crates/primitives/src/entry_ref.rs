@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::chunk::encryption::EncryptedChunkRef;
-use crate::chunk::{ChunkAddress, ChunkRef};
+use crate::chunk::{ChunkAddress, ChunkRef, Reference};
 
 /// A byte slice whose width is neither reference width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -71,7 +71,7 @@ impl From<&EntryRef> for Vec<u8> {
     fn from(entry_ref: &EntryRef) -> Self {
         match entry_ref {
             EntryRef::Plain(reference) => reference.address().as_bytes().to_vec(),
-            EntryRef::Encrypted(enc) => Self::from(enc),
+            EntryRef::Encrypted(enc) => Reference::to_bytes(enc),
         }
     }
 }

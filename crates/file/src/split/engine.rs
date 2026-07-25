@@ -693,6 +693,9 @@ where
     }
 
     /// Seal one intermediate payload from its children's references.
+    ///
+    /// The payload is built uniquely owned: an encrypted mode's sealer
+    /// relies on that to wipe it, since the body carries every child key.
     fn seal_intermediate(
         &mut self,
         span: u64,
