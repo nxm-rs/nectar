@@ -38,5 +38,5 @@ sha2 = "0.10"
 tokio = { workspace = true, features = ["time", "test-util"] }
 
 [[bin]]
-name = "manifest-perf-v3"
-path = "src/bin/manifest_perf_v3.rs"
+name = "manifest-perf"
+path = "src/bin/manifest-perf.rs"

@@ -1,4 +1,4 @@
-//! Drive the v3 range-query measurements across every
+//! Drive the range-query measurements across every
 //! `(corpus, scale)` and write one JSON result document. Every number is
 //! measured; the only modelled figure is `rounds * rtt`, and `rounds` itself is
 //! read off the real bounded-concurrency cursor under a paused virtual clock.
@@ -9,13 +9,13 @@ use std::process::Command;
 
 use nectar_manifest::V1;
 use nectar_manifest_sim::corpus::{self, Corpus};
-use nectar_manifest_sim::perf_v3;
-use nectar_manifest_sim::results_v3::{DocumentV3, MetaV3};
+use nectar_manifest_sim::perf;
+use nectar_manifest_sim::results::{Document, Meta};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
 use nectar_manifest::Format;
 
-const DEFAULT_OUT: &str = "manifest-perf-v3-results.json";
+const DEFAULT_OUT: &str = "manifest-perf-results.json";
 
 struct Args {
     out: PathBuf,
@@ -96,32 +96,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     for corpus in Corpus::all() {
         for &scale in &args.scales {
             let n = scale as usize;
-            eprintln!("[v3] {} n={}", corpus.name(), n);
+            eprintln!("[manifest-perf] {} n={}", corpus.name(), n);
             let keys = corpus::generate(corpus, n);
-            parallel_cursor.extend(perf_v3::parallel_cursor_cells(corpus, scale, &keys)?);
-            v1read.push(perf_v3::read_profile_cell(corpus, scale, &keys)?);
-            paginate.extend(perf_v3::paginate_cells(corpus, scale, &keys)?);
+            parallel_cursor.extend(perf::parallel_cursor_cells(corpus, scale, &keys)?);
+            v1read.push(perf::read_profile_cell(corpus, scale, &keys)?);
+            paginate.extend(perf::paginate_cells(corpus, scale, &keys)?);
         }
     }
 
-    let meta = MetaV3 {
+    let meta = Meta {
         generated: now_iso(),
         git_branch: git(&["rev-parse", "--abbrev-ref", "HEAD"]),
         git_commit: git(&["rev-parse", "HEAD"]),
         harness_version: "4".to_string(),
         seed_master: format!("0x{:016x}", corpus::MASTER_SEED),
-        rtt_ms_set: perf_v3::RTT_SET.to_vec(),
+        rtt_ms_set: perf::RTT_SET.to_vec(),
         read_ahead: V1::READ_AHEAD as u32,
         scales: args.scales.clone(),
         corpora: Corpus::all().iter().map(|c| c.name().to_string()).collect(),
-        range_windows: perf_v3::RANGE_WS.to_vec(),
-        paginate_offsets: perf_v3::PAGE_OFFSETS.to_vec(),
-        paginate_limit: perf_v3::PAGE_LIMIT as u32,
+        range_windows: perf::RANGE_WS.to_vec(),
+        paginate_offsets: perf::PAGE_OFFSETS.to_vec(),
+        paginate_limit: perf::PAGE_LIMIT as u32,
         chunk_body_size: DEFAULT_BODY_SIZE as u32,
         caveats: caveats(),
     };
 
-    let doc = DocumentV3 {
+    let doc = Document {
         meta,
         parallel_cursor,
         v1read,

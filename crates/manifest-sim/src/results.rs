@@ -1,4 +1,4 @@
-//! Serializable schema for the v3 range-query performance run.
+//! Serializable schema for the range-query performance run.
 //!
 //! Every numeric field is measured by executing the real reader or cursor; a
 //! `None` serializes to JSON `null` and is only ever set by a capability gap
@@ -11,10 +11,10 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-/// The whole v3 result document.
+/// The whole result document.
 #[derive(Debug, Serialize)]
-pub struct DocumentV3 {
-    pub meta: MetaV3,
+pub struct Document {
+    pub meta: Meta,
     /// Parallel-cursor rounds and the serial-vs-concurrent latency model.
     pub parallel_cursor: Vec<ParallelCursorCell>,
     /// V1Read vs V1: fetches-per-window, depth, single-update write-amp.
@@ -25,10 +25,11 @@ pub struct DocumentV3 {
 
 /// Run-level metadata.
 #[derive(Debug, Serialize)]
-pub struct MetaV3 {
+pub struct Meta {
     pub generated: String,
     pub git_branch: String,
     pub git_commit: String,
+    /// The single version authority for the harness and its schema.
     pub harness_version: String,
     pub seed_master: String,
     pub rtt_ms_set: Vec<u32>,

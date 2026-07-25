@@ -7,6 +7,6 @@
 //! across every `(corpus, scale)` and writes one JSON document.
 
 pub mod corpus;
-pub mod perf_v3;
-pub mod results_v3;
+pub mod perf;
+pub mod results;
 pub mod store;

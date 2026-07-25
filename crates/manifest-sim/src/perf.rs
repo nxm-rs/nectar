@@ -1,4 +1,4 @@
-//! Measurements for the v3 range-query performance run.
+//! Measurements for the range-query performance run.
 //!
 //! Every figure is produced by executing a real reader or cursor over one of
 //! the shared corpora. The single modelled quantity is wall-clock latency, and
@@ -24,7 +24,7 @@ use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{AnyChunkSet, ChunkAddress, ChunkRef, StandardChunkSet};
 
 use crate::corpus::{Corpus, GenKey, tagged_addr, value_addr};
-use crate::results_v3::{
+use crate::results::{
     CursorLatency, PaginateCell, ParallelCursorCell, ReadProfileCell, ReadProfileSide,
 };
 use crate::store::{CountingStore, LatencyStore};
