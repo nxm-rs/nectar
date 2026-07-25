@@ -762,7 +762,9 @@ mod test_traversal {
     use nectar_primitives::store::{ChunkPut, TrustedGet};
     use nectar_primitives::{AnyChunkSet, Chunk};
 
-    use super::{Node, NodeState, StoredReference, common_prefix_len};
+    use alloc::collections::{BTreeMap, btree_map};
+
+    use super::{Fork, Node, NodeState, Prefix, StoredReference, common_prefix_len};
     use crate::error::{MantarayError, Result};
 
     impl<R: Reference> Node<R> {
@@ -855,10 +857,10 @@ mod test_traversal {
 
         /// Save this node and all children to storage in post-order.
         ///
-        /// Uses BMT content-addressing via `ContentChunk`. An explicit stack avoids
-        /// recursion: each frame visits its forks (pushing unsaved children) before
-        /// the node itself is encoded and put.
-        #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
+        /// Uses BMT content-addressing via `ContentChunk`. Each owned frame
+        /// drains its node's fork map and reattaches saved children on pop;
+        /// on failure the detached subtree is dropped and `self` is left
+        /// empty.
         pub(crate) async fn save<S: ChunkPut<AnyChunkSet<BS>>, const BS: usize>(
             &mut self,
             store: &S,
@@ -871,47 +873,45 @@ mod test_traversal {
             }
 
             struct SaveFrame<R: Reference> {
-                /// Node owned by an ancestor's fork map, valid for this call.
-                node: *mut Node<R>,
-                /// Fork keys still to descend into.
-                keys: Vec<u8>,
-                /// Index into `keys`.
-                key_idx: usize,
+                /// Fork slot (key and prefix) this node reattaches to in its
+                /// parent; `None` only for the root frame.
+                slot: Option<(u8, Prefix)>,
+                node: Node<R>,
+                /// Children still to visit, drained from the node's fork map.
+                todo: btree_map::IntoIter<u8, Fork<R>>,
+                /// Children already saved, keyed for reattachment.
+                done: BTreeMap<u8, Fork<R>>,
             }
 
-            let mut stack: Vec<SaveFrame<R>> = vec![SaveFrame {
-                node: core::ptr::from_mut(self),
-                keys: self.forks.keys().copied().collect(),
-                key_idx: 0,
-            }];
+            fn frame<R: Reference>(slot: Option<(u8, Prefix)>, mut node: Node<R>) -> SaveFrame<R> {
+                let todo = core::mem::take(&mut node.forks).into_iter();
+                SaveFrame {
+                    slot,
+                    node,
+                    todo,
+                    done: BTreeMap::new(),
+                }
+            }
 
-            while let Some(frame) = stack.last_mut() {
-                // SAFETY: every frame's node points into the exclusively borrowed
-                // trie. Children are only pushed once, then their parent waits in
-                // the stack below them, so no two frames alias the same node.
-                let node = unsafe { &mut *frame.node };
+            let mut stack = vec![frame(None, core::mem::take(self))];
 
-                if frame.key_idx < frame.keys.len() {
-                    #[allow(clippy::indexing_slicing)] // key_idx < keys.len() checked above
-                    let key = frame.keys[frame.key_idx];
-                    frame.key_idx += 1;
-                    #[allow(clippy::expect_used)]
-                    // key was collected from this node's fork map, which is not mutated while the frame is live
-                    let child = node.forks.get_mut(&key).expect("key from this node");
-                    if child.node.reference().is_none() {
-                        let child_ptr = core::ptr::from_mut(&mut child.node);
-                        let child_keys = child.node.forks.keys().copied().collect();
-                        stack.push(SaveFrame {
-                            node: child_ptr,
-                            keys: child_keys,
-                            key_idx: 0,
-                        });
+            while let Some(top) = stack.last_mut() {
+                if let Some((key, fork)) = top.todo.next() {
+                    if fork.node.reference().is_some() {
+                        // Already persisted; nothing below it changed.
+                        top.done.insert(key, fork);
+                    } else {
+                        stack.push(frame(Some((key, fork.prefix)), fork.node));
                     }
                     continue;
                 }
 
-                // All children saved; encode and put this node, then pop.
-                let data = node.encode()?;
+                let Some(mut finished) = stack.pop() else {
+                    break;
+                };
+                // All children saved; encode and put this node.
+                finished.node.forks = core::mem::take(&mut finished.done);
+                let data = finished.node.encode()?;
                 let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
                 let address = *chunk.address();
                 let sealed: Chunk<_, AnyChunkSet<BS>> = Chunk::from_envelope(chunk.into())?;
@@ -923,9 +923,23 @@ mod test_traversal {
                     })?;
                 // Persist the reference and drop the now-redundant forks: the node
                 // becomes a stub, reloaded on demand.
-                node.state = NodeState::Stub(R::from_stored(address));
-                node.forks.clear();
-                stack.pop();
+                finished.node.state = NodeState::Stub(R::from_stored(address));
+                finished.node.forks.clear();
+                match stack.last_mut() {
+                    Some(parent) => {
+                        // A slotless frame is the root, which never has a parent.
+                        if let Some((key, prefix)) = finished.slot {
+                            parent.done.insert(
+                                key,
+                                Fork {
+                                    prefix,
+                                    node: finished.node,
+                                },
+                            );
+                        }
+                    }
+                    None => *self = finished.node,
+                }
             }
 
             Ok(())
@@ -964,10 +978,12 @@ mod test_traversal {
         }
     }
 
-    /// Pre-order DFS visitor over a loaded-on-demand trie via an explicit stack.
+    /// Pre-order DFS visitor over a loaded-on-demand trie via owned frames.
     ///
-    /// The visitor `f` only reads loaded nodes, so it stays a synchronous `FnMut`.
-    #[allow(clippy::arithmetic_side_effects)] // the only arithmetic is the fork-cursor `key_idx += 1`, bounded by keys.len() <= 256
+    /// The visitor `f` only reads loaded nodes, so it stays a synchronous
+    /// `FnMut`. Each frame drains its node's fork map and reattaches walked
+    /// children on pop, so the trie is intact (and loaded) on return; on
+    /// failure the detached subtree is dropped and `node` is left empty.
     async fn walk_inner<R: Reference, S: TrustedGet<AnyChunkSet<BS>>, const BS: usize, F>(
         path_buf: &mut Vec<u8>,
         node: &mut Node<R>,
@@ -977,63 +993,73 @@ mod test_traversal {
     where
         F: FnMut(&[u8], &Node<R>) -> Result<()>,
     {
-        struct WalkFrame {
-            /// Node visited at this level (raw pointer into the exclusive borrow).
-            node: *mut (),
+        struct WalkFrame<R: Reference> {
+            /// Fork slot (key and prefix) this node reattaches to in its
+            /// parent; `None` only for the root frame.
+            slot: Option<(u8, Prefix)>,
+            node: Node<R>,
             /// Length of `path_buf` before this frame's prefix was appended.
             path_len_before: usize,
-            /// Sorted fork keys for this node.
-            keys: Vec<u8>,
-            /// Index into `keys`.
-            key_idx: usize,
+            /// Children still to visit, drained from the node's fork map.
+            todo: btree_map::IntoIter<u8, Fork<R>>,
+            /// Children already walked, keyed for reattachment.
+            done: BTreeMap<u8, Fork<R>>,
         }
 
-        node.ensure_loaded(store).await?;
-        f(path_buf, node)?;
+        fn frame<R: Reference>(
+            slot: Option<(u8, Prefix)>,
+            mut node: Node<R>,
+            path_len_before: usize,
+        ) -> WalkFrame<R> {
+            let todo = core::mem::take(&mut node.forks).into_iter();
+            WalkFrame {
+                slot,
+                node,
+                path_len_before,
+                todo,
+                done: BTreeMap::new(),
+            }
+        }
 
-        let mut stack: Vec<WalkFrame> = vec![WalkFrame {
-            node: core::ptr::from_mut(node).cast::<()>(),
-            path_len_before: path_buf.len(),
-            keys: node.forks.keys().copied().collect(),
-            key_idx: 0,
-        }];
+        let mut root = core::mem::take(node);
+        root.ensure_loaded(store).await?;
+        f(path_buf, &root)?;
 
-        while let Some(frame) = stack.last_mut() {
-            if frame.key_idx >= frame.keys.len() {
-                path_buf.truncate(frame.path_len_before);
-                stack.pop();
+        let mut stack = vec![frame(None, root, path_buf.len())];
+
+        while let Some(top) = stack.last_mut() {
+            if let Some((key, fork)) = top.todo.next() {
+                let prev_len = path_buf.len();
+                path_buf.extend_from_slice(&fork.prefix);
+
+                let mut child = fork.node;
+                child.ensure_loaded(store).await?;
+                f(path_buf, &child)?;
+
+                stack.push(frame(Some((key, fork.prefix)), child, prev_len));
                 continue;
             }
 
-            #[allow(clippy::indexing_slicing)] // key_idx < keys.len() checked above
-            let key = frame.keys[frame.key_idx];
-            frame.key_idx += 1;
-
-            // SAFETY: frame.node points into the exclusively borrowed trie. Each
-            // node appears in exactly one frame and is only dereferenced while at
-            // the top of the stack, so no two live references alias.
-            let parent = unsafe { &mut *frame.node.cast::<Node<R>>() };
-            let reference = parent.reference().map(|r| *r.address());
-            let fork = parent
-                .forks
-                .get_mut(&key)
-                .ok_or(MantarayError::NoForkFound { reference })?;
-
-            let prev_len = path_buf.len();
-            path_buf.extend_from_slice(&fork.prefix);
-
-            let child = &mut fork.node;
-            child.ensure_loaded(store).await?;
-            f(path_buf, child)?;
-
-            let child_ptr = core::ptr::from_mut(child).cast::<()>();
-            let child_keys = child.forks.keys().copied().collect();
-            stack.push(WalkFrame {
-                node: child_ptr,
-                path_len_before: prev_len,
-                keys: child_keys,
-                key_idx: 0,
-            });
+            let Some(mut finished) = stack.pop() else {
+                break;
+            };
+            path_buf.truncate(finished.path_len_before);
+            finished.node.forks = core::mem::take(&mut finished.done);
+            match stack.last_mut() {
+                Some(parent) => {
+                    // A slotless frame is the root, which never has a parent.
+                    if let Some((key, prefix)) = finished.slot {
+                        parent.done.insert(
+                            key,
+                            Fork {
+                                prefix,
+                                node: finished.node,
+                            },
+                        );
+                    }
+                }
+                None => *node = finished.node,
+            }
         }
 
         Ok(())
