@@ -74,6 +74,11 @@
 //! assert!(decoded.entry().is_none());
 //! ```
 //!
+//! # Spec references
+//!
+//! Reference-client source citations for the wire format live in `SPEC.md`
+//! at the crate root.
+//!
 //! # Upstream-bug workarounds
 //!
 //! Code that exists solely to tolerate a defect in an upstream reference

@@ -14,8 +14,8 @@ pub type DecodeResult<T> = core::result::Result<T, DecodeError>;
 ///
 /// Reported to callers through [`MantarayError::Corrupt`], which pairs the
 /// failure with the address of the chunk the malformed bytes came from so a
-/// deep-load failure names the offending chunk. bee-spec node.md governs the
-/// layout these variants reject.
+/// deep-load failure names the offending chunk. `SPEC.md#wire-format` governs
+/// the layout these variants reject.
 #[non_exhaustive]
 #[derive(thiserror::Error, Debug)]
 pub enum DecodeError {

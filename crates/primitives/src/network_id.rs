@@ -2,9 +2,9 @@
 //!
 //! [`NetworkId`] is mixed into the overlay address (see [`compute_overlay`])
 //! so that a single keypair derives a different overlay on each network.
-//! This is the Swarm-wide partitioning mechanism inherited from bee
-//! (see `pkg/crypto/crypto.go:45-57` for the derivation, and
-//! `pkg/swarm/swarm.go` for canonical IDs).
+//! This is the Swarm-wide partitioning mechanism inherited from the reference
+//! client (derivation: `SPEC.md#overlay-derivation`; canonical IDs:
+//! `SPEC.md#network-identifiers`).
 //!
 //! [`compute_overlay`]: crate::compute_overlay
 
@@ -13,7 +13,7 @@ use derive_more::{Display, From, Into};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Swarm network identifier (u64 wire-compatible with bee).
+/// Swarm network identifier (u64 wire-compatible with the reference client).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
@@ -40,14 +40,14 @@ impl NetworkId {
     }
 
     /// Eight-byte little-endian representation (used in
-    /// [`compute_overlay`](crate::compute_overlay) per bee).
+    /// [`compute_overlay`](crate::compute_overlay), see `SPEC.md#overlay-derivation`).
     #[inline]
     pub const fn to_le_bytes(self) -> [u8; 8] {
         self.0.to_le_bytes()
     }
 
-    /// Eight-byte big-endian representation (used in the BzzAddress sign-data
-    /// per bee `pkg/bzz/address.go:138-160`).
+    /// Eight-byte big-endian representation (used in the BzzAddress sign-data,
+    /// see `SPEC.md#handshake-sign-data`).
     #[inline]
     pub const fn to_be_bytes(self) -> [u8; 8] {
         self.0.to_be_bytes()

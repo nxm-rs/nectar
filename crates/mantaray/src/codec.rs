@@ -2,7 +2,7 @@
 //!
 //! Wire behaviour: fork reference slots are carried at their full declared
 //! width, so the encrypted width writes and reads the child's address and
-//! decryption key (bee-spec node.md stores the full reference). Earlier
+//! decryption key (`SPEC.md#wire-format` stores the full reference). Earlier
 //! encoders zero-padded the key half; those images still decode, yielding an
 //! all-zero key. Plain manifests are unaffected.
 
@@ -97,23 +97,22 @@ fn encode_node<R: Reference>(node: &Node<R>) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-// ┌─────────────────────────── HAZMAT ───────────────────────────┐
-// │ BEE-WORKAROUND(bee#5483): bee's mantaray writer occasionally  │
-// │ emits a node with `ref_size = 0` (the byte at header offset  │
-// │ 63) for entry-less terminal nodes. This is not spec-legal:  │
-// │ the spec doc (bee/pkg/manifest/mantaray/docs/format/node.md) │
-// │ and every reference impl (bee, mantaray-js, nectar) treat    │
-// │ `ref_size` as a single uniform width in {32, 64} governing   │
-// │ both the entry slot and every fork ref slot. mantaray-js     │
-// │ documents the bee artifact with an explicit FIXME: "in Bee,  │
-// │ if one uploads a file on the bzz endpoint, the node under    │
-// │ `/` gets 0 refsize."                                         │
-// │                                                              │
-// │ Remove the `RefSize::EmptyTerminal` variant, its zero-width   │
-// │ classification in `parse_header`, and `decode_empty_terminal` │
-// │ once the upstream bee fix lands and downstream consumers have │
-// │ upgraded past the buggy releases.                            │
-// └──────────────────────────────────────────────────────────────┘
+// ┌──────────────────────────── HAZMAT ────────────────────────────┐
+// │ BEE-WORKAROUND(bee#5483): the reference client's mantaray      │
+// │ writer occasionally emits a node with `ref_size = 0` (the      │
+// │ byte at header offset 63) for entry-less terminal nodes.       │
+// │ This is not spec-legal: the wire-format doc                    │
+// │ (`SPEC.md#wire-format`) and every other implementation treat   │
+// │ `ref_size` as a single uniform width in {32, 64} governing     │
+// │ both the entry slot and every fork ref slot. mantaray-js       │
+// │ documents the artifact with an explicit FIXME (a file          │
+// │ uploaded on the bzz endpoint gets a 0-refsize node under `/`). │
+// │                                                                │
+// │ Remove the `RefSize::EmptyTerminal` variant, its zero-width    │
+// │ classification in `parse_header`, and `decode_empty_terminal`  │
+// │ once the upstream fix lands and downstream consumers have      │
+// │ upgraded past the buggy releases.                              │
+// └────────────────────────────────────────────────────────────────┘
 
 /// The reference width declared by a node header.
 ///
@@ -316,8 +315,9 @@ fn parse_fork_body<R: Reference>(body: &[u8], has_metadata: bool) -> DecodeResul
 /// Construction is the sole fallible step: a fork whose child was never
 /// persisted has no reference, and oversized metadata cannot be sized into the
 /// `u16` length field. Once built, [`emit`](Self::emit) cannot produce a
-/// misaligned image. bee-spec node.md: fork layout is node_type, prefix_len, a
-/// 30-byte prefix region, the full-width reference, then optional metadata.
+/// misaligned image. Per `SPEC.md#wire-format`: fork layout is node_type,
+/// prefix_len, a 30-byte prefix region, the full-width reference, then
+/// optional metadata.
 struct WireFork<'a, R: Reference> {
     node_type: NodeType,
     prefix: &'a Prefix,

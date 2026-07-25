@@ -1,7 +1,7 @@
 //! Chunk-level encryption and decryption.
 //!
 //! Encrypts a chunk's span and data separately with different initial counters,
-//! matching Go's `ChunkEncrypter` in `pkg/encryption/chunk_encryption.go`.
+//! matching the reference client's `ChunkEncrypter` (`SPEC.md#chunk-encryption`).
 
 #[cfg(any(test, feature = "encryption"))]
 use crate::bmt::SPAN_SIZE;

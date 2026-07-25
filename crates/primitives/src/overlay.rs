@@ -1,7 +1,7 @@
 //! Canonical overlay address derivation.
 //!
 //! The Swarm overlay address is `keccak256(ethereum_address || network_id || nonce)`
-//! per bee `pkg/crypto/crypto.go:45-57`. Network ID is encoded in
+//! per the reference client (`SPEC.md#overlay-derivation`). Network ID is encoded in
 //! **little-endian** in this hash (distinct from the big-endian encoding used
 //! in the BzzAddress sign-data, see [`crate::signing::sign_data`]).
 

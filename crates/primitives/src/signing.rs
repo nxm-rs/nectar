@@ -2,8 +2,8 @@
 //!
 //! The Swarm peer record (overlay + underlay + nonce + timestamp + chequebook)
 //! is authenticated by an EIP-191 personal-sign signature over the byte
-//! sequence built by [`sign_data`] below. The layout matches bee
-//! `pkg/bzz/address.go:138-160` exactly so any Swarm impl can interop.
+//! sequence built by [`sign_data`] below. The layout matches the reference
+//! client exactly (`SPEC.md#handshake-sign-data`) so any Swarm impl can interop.
 //!
 //! ```text
 //! sign_data = "bee-handshake-"        (14 bytes)
@@ -38,14 +38,14 @@ use alloy_primitives::Address;
 
 use crate::{NetworkId, Nonce, OverlayAddress, Timestamp};
 
-/// Magic prefix matching bee `pkg/bzz/address.go:138` (`signDataPrefix`).
+/// Magic prefix of the sign-data layout (`SPEC.md#handshake-sign-data`).
 pub const SIGN_DATA_PREFIX: &[u8] = b"bee-handshake-";
 
 /// Build the canonical sign-data buffer for a BzzAddress.
 ///
 /// `underlay_bytes` is the wire-encoded multiaddr list (caller-defined format).
 /// `chequebook` is `None` for nodes without a chequebook; the byte layout
-/// pads with 20 zero bytes either way, matching bee's `common.Address{}.Bytes()`
+/// pads with 20 zero bytes either way, matching the reference client's
 /// behaviour (so `None` and `Some(Address::ZERO)` produce byte-identical
 /// sign-data - verified by the test suite).
 #[must_use]

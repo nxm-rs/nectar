@@ -99,7 +99,8 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
     ///
     /// This is the prefixed BMT of the body (`span` + `payload`), where the
     /// `anchor` is mixed into *every* node hash via [`Hasher::with_prefix`].
-    /// It mirrors bee's `transformedAddressCAC` (`pkg/storer/sample.go`) and is
+    /// It mirrors the reference client's `transformedAddressCAC`
+    /// (`SPEC.md#transformed-addresses`) and is
     /// the redistribution sampler's per-round, per-node re-hash of a chunk
     /// body. The span is serialised little-endian by the hasher.
     ///

@@ -2,8 +2,8 @@
 //!
 //! A [`SocId`] is the 32-byte identifier a single-owner chunk is signed
 //! under; the SOC address is `keccak256(id || owner)`. See
-//! [`SingleOwnerChunk`](super::single_owner::SingleOwnerChunk) and bee
-//! `pkg/soc/soc.go` for the reference semantics.
+//! [`SingleOwnerChunk`](super::single_owner::SingleOwnerChunk) and
+//! `SPEC.md#single-owner-chunks` for the reference semantics.
 
 use alloy_primitives::B256;
 use derive_more::{AsRef, Display, From, Into};
