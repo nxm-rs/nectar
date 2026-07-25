@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use nectar_file::{File, Plain, PutWindow, Split};
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
-use nectar_primitives::store::MemoryStore;
+use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_testing::{AllocationInfo, measure_allocations, run};
 
 /// Body size of the default profile.
@@ -53,7 +53,8 @@ fn probe(leaves: usize) -> (AllocationInfo, u64) {
 
     let ((read, fetches), info) = measure_allocations(|| {
         run(async {
-            let file: File<Store, Plain, BODY> = File::open(store, root).await.unwrap();
+            let file: File<ContentGet<Store>, Plain, BODY> =
+                File::open(ContentGet::new(store), root).await.unwrap();
             let mut reader = file.read().build();
             let mut read = 0usize;
             while let Some(segment) = reader.next_segment().await {

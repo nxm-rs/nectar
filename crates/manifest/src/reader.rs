@@ -389,7 +389,7 @@ fn descend<F: Format>(table: &ForkTable<F>, key: &[u8], pos: usize) -> Descent<F
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use nectar_primitives::store::MemoryStore;
+    use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
     use nectar_testing::run;
 
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn descends_embedded_and_referenced_children_alike() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
 
         // A leaf reached by reference, holding the key "img/logo.png".
         let mut leaf = ForkTable::new();
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn a_fork_with_only_a_child_holds_no_value_at_its_own_prefix() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut child = ForkTable::new();
         child.insert(prefix(b"b"), entry(1).into(), None).unwrap();
         let mut forks = ForkTable::new();
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn the_empty_key_reads_the_root_extension_value() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
         let root = run(store.put_node(&Node::new(root_ext, ForkTable::new()))).unwrap();
 
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn inline_values_read_back_whole() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let value = Entry::inline(Bytes::from_static(b"hi")).unwrap();
         let mut forks = ForkTable::new();
         forks
@@ -511,7 +511,7 @@ mod tests {
 
     // A manifest whose "mg/" directory is a referenced subtree holding one key
     // "mg/logo.png", with "index.html" embedded in the root under "i".
-    fn subtree_sample(store: &MemoryStore) -> (ChunkAddress, ChunkAddress) {
+    fn subtree_sample(store: &ContentGet<MemoryStore>) -> (ChunkAddress, ChunkAddress) {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"logo.png"), entry(0xBB).into(), None)
             .unwrap();
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn subtree_of_the_empty_prefix_is_the_root() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, _) = subtree_sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn subtree_returns_the_referenced_child_covering_the_prefix() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, leaf_ref) = subtree_sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         // The prefix ends exactly at the referenced edge: the child is the
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn subtree_of_a_mid_edge_prefix_with_no_boundary_is_none() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, _) = subtree_sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         // "mg/logo" lands within the leaf's "logo.png" edge, which terminates a
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn subtree_of_an_embedded_prefix_is_none() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, _) = subtree_sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         // "index.html" lives embedded in the root chunk, with no chunk of its
@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn subtree_of_an_absent_prefix_is_none() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, _) = subtree_sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn subtree_through_an_encrypted_child_is_an_error() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // A "sec/" directory referenced through an encrypted (ref64) child: the
         // plain reader cannot open it, and a 32-byte reference cannot carry it.
         let mut forks = ForkTable::new();
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn subtree_covers_exactly_the_prefix_key_set() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, leaf_ref) = subtree_sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         let sub = run(reader.subtree(&root, &Key::from(&b"mg/"[..])))
@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn a_missing_root_is_a_store_error() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let reader: Reader<_> = Reader::new(&store);
         let err = run(reader.get(&ChunkAddress::new([0; 32]), &Key::from(&b"x"[..]))).unwrap_err();
         assert!(matches!(err, ReaderError::Store(StoreError::Store(_))));

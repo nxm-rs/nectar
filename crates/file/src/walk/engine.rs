@@ -10,7 +10,7 @@ use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ChunkOps, Verified};
+use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkOps, ContentOnlyChunkSet, Verified};
 use nectar_primitives::store::TrustedGet;
 
 use super::error::{ShapeError, WalkError};
@@ -41,7 +41,7 @@ impl<M: WalkMode> Node<M> {
 
 /// Completion payload; the future carries its node back, which is the whole
 /// of sequence routing.
-type Fetched<M, E, const B: usize> = (Node<M>, Result<Chunk<Verified, AnyChunkSet<B>>, E>);
+type Fetched<M, E, const B: usize> = (Node<M>, Result<Chunk<Verified, ContentOnlyChunkSet<B>>, E>);
 
 /// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
 /// and under the `unsync` feature.
@@ -69,7 +69,7 @@ enum Drain {
 /// admission invariants.
 pub struct Walk<S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     store: S,
@@ -101,7 +101,7 @@ where
 
 impl<S, M, const B: usize> Walk<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
 {
     /// Compile-time profile guard for the walk's span arithmetic.
@@ -388,7 +388,7 @@ where
     fn absorb(
         &mut self,
         node: Node<M>,
-        fetched: Result<Chunk<Verified, AnyChunkSet<B>>, S::Error>,
+        fetched: Result<Chunk<Verified, ContentOnlyChunkSet<B>>, S::Error>,
     ) -> Result<(), WalkError<S::Error>> {
         let leaf = node.span <= self.body;
         let key = node.key(self.range_start);
@@ -522,7 +522,7 @@ where
 
 impl<S, M, const B: usize> fmt::Debug for Walk<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

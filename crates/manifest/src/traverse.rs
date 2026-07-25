@@ -331,8 +331,10 @@ mod tests {
     use bytes::Bytes;
     #[cfg(not(feature = "encryption"))]
     use nectar_primitives::EncryptedChunkRef;
-    use nectar_primitives::store::{ChunkGet, ChunkPut, MemoryStore};
-    use nectar_primitives::{Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk};
+    use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, MemoryStore};
+    use nectar_primitives::{
+        Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk, ContentOnlyChunkSet, Verified,
+    };
 
     use nectar_testing::run;
 
@@ -361,7 +363,7 @@ mod tests {
     }
 
     /// Seal a raw payload as a content chunk and store it.
-    fn put_raw(store: &MemoryStore, payload: Vec<u8>) -> ChunkAddress {
+    fn put_raw(store: &ContentGet<MemoryStore>, payload: Vec<u8>) -> ChunkAddress {
         let content = ContentChunk::new(payload).unwrap();
         let chunk: NodeChunk = Chunk::from_envelope(content.into()).unwrap();
         let address = *chunk.address();
@@ -384,7 +386,7 @@ mod tests {
 
     // A two-level manifest: a root fork "a" behind an embedded child holding
     // "aa"/"ab", and "b" behind a referenced leaf holding "ba".
-    fn sample(store: &MemoryStore) -> (ChunkAddress, ChunkAddress) {
+    fn sample(store: &ContentGet<MemoryStore>) -> (ChunkAddress, ChunkAddress) {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
         let leaf_addr = run(store.put_node(&Node::new(None, leaf))).unwrap();
@@ -413,7 +415,7 @@ mod tests {
 
     #[test]
     fn streams_nodes_and_entry_addresses_depth_first() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, leaf) = sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(reader.addresses(&root));
@@ -422,7 +424,7 @@ mod tests {
 
     #[test]
     fn the_root_extension_entry_leads_the_closure() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root_ext = RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
@@ -433,7 +435,7 @@ mod tests {
 
     #[test]
     fn inline_entries_contribute_no_address() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut forks = ForkTable::new();
         forks
             .insert(
@@ -449,7 +451,7 @@ mod tests {
 
     #[test]
     fn a_ref64_entry_yields_its_address() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut forks = ForkTable::new();
         forks
             .insert(
@@ -469,7 +471,7 @@ mod tests {
 
     #[test]
     fn a_shared_subtree_repeats_at_each_reference() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"x"), entry(0x33).into(), None).unwrap();
         let leaf_addr = run(store.put_node(&Node::new(None, leaf))).unwrap();
@@ -493,7 +495,7 @@ mod tests {
 
     #[test]
     fn a_spilled_node_streams_its_segment_chunks() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut builder = Builder::<V1>::new();
         for byte in 0u8..=255 {
             builder.insert(Key::from(&[byte][..]), entry(byte), None);
@@ -501,7 +503,7 @@ mod tests {
         let root = *run(builder.build(&store)).unwrap().root();
 
         // The expected segment addresses, straight off the root chunk's wire.
-        let chunk = store.get(&root).unwrap();
+        let chunk = store.inner().get(&root).unwrap();
         let decoded = Node::<V1>::decode_chunk(chunk.envelope().data()).unwrap();
         let crate::codec::DecodedChunk::Segmented(_, dir) = decoded else {
             panic!("a 256-fork root must spill");
@@ -518,7 +520,7 @@ mod tests {
 
         // Completeness: the streamed chunk set is exactly what the build
         // stored, plus the entry addresses that live outside the store.
-        let stored: HashSet<ChunkAddress> = store.into_chunks().into_keys().collect();
+        let stored: HashSet<ChunkAddress> = store.into_inner().into_chunks().into_keys().collect();
         let streamed: HashSet<ChunkAddress> = got.iter().copied().collect();
         let entries: HashSet<ChunkAddress> = (0u8..=255).map(addr).collect();
         assert_eq!(
@@ -532,7 +534,7 @@ mod tests {
 
     #[test]
     fn keyed_descriptors_under_a_plain_arrival_are_rejected() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let dir = SegmentDir {
             wide: true,
             descriptors: vec![SegDesc {
@@ -557,7 +559,7 @@ mod tests {
     #[cfg(not(feature = "encryption"))]
     #[test]
     fn an_encrypted_child_ends_the_walk_and_stays_an_error() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut forks = ForkTable::new();
         forks
             .insert(prefix(b"a"), entry(0xA1).into(), None)
@@ -599,12 +601,12 @@ mod tests {
     }
 
     struct SlowInner {
-        store: MemoryStore,
+        store: ContentGet<MemoryStore>,
         fetched: std::sync::Mutex<Vec<ChunkAddress>>,
     }
 
     impl SlowStore {
-        fn new(store: MemoryStore) -> Self {
+        fn new(store: ContentGet<MemoryStore>) -> Self {
             Self {
                 inner: std::sync::Arc::new(SlowInner {
                     store,
@@ -633,11 +635,14 @@ mod tests {
         .await;
     }
 
-    impl ChunkGet for SlowStore {
-        type Trust = nectar_primitives::Verified;
-        type Error = <MemoryStore as ChunkGet>::Error;
+    impl ChunkGet<ContentOnlyChunkSet> for SlowStore {
+        type Trust = Verified;
+        type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
 
-        async fn get(&self, address: &ChunkAddress) -> Result<NodeChunk, Self::Error> {
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
             self.inner.fetched.lock().unwrap().push(*address);
             yield_once().await;
             ChunkGet::get(&self.inner.store, address).await
@@ -646,7 +651,7 @@ mod tests {
 
     #[test]
     fn a_dropped_next_future_loses_no_addresses() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, leaf) = sample(&store);
         let slow = SlowStore::new(store);
         let reader: Reader<_> = Reader::new(&slow);
@@ -668,7 +673,7 @@ mod tests {
 
     #[test]
     fn the_walk_fetches_exactly_the_chunks_it_names() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, leaf) = sample(&store);
         let slow = SlowStore::new(store);
         let reader: Reader<_> = Reader::new(&slow);
@@ -695,7 +700,7 @@ mod tests {
 
         #[test]
         fn a_plain_parent_opens_its_encrypted_child() {
-            let store = MemoryStore::default();
+            let store = ContentGet::new(MemoryStore::default());
             let mut child = Node::empty();
             child
                 .forks_mut()
@@ -720,7 +725,7 @@ mod tests {
 
         #[test]
         fn an_encrypted_root_streams_the_same_closure_shape() {
-            let store = MemoryStore::default();
+            let store = ContentGet::new(MemoryStore::default());
             run(async {
                 let mut child = Node::empty();
                 child
@@ -772,7 +777,7 @@ mod tests {
 
         #[test]
         fn an_encrypted_spilled_node_streams_its_keyed_segments() {
-            let store = MemoryStore::default();
+            let store = ContentGet::new(MemoryStore::default());
             let mut table = ForkTable::new();
             table.insert(prefix(b"a"), entry(1).into(), None).unwrap();
             table.insert(prefix(b"b"), entry(2).into(), None).unwrap();
@@ -803,7 +808,7 @@ mod tests {
 
         #[test]
         fn bare_descriptors_under_an_encrypted_arrival_are_rejected() {
-            let store = MemoryStore::default();
+            let store = ContentGet::new(MemoryStore::default());
             let dir = SegmentDir {
                 wide: false,
                 descriptors: vec![SegDesc {

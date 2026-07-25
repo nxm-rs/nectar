@@ -14,7 +14,7 @@ use libfuzzer_sys::fuzz_target;
 use nectar_fuzz::{Val, entry};
 use nectar_manifest::{Builder, Changeset, Entry, Key, V1, apply};
 use nectar_primitives::ChunkAddress;
-use nectar_primitives::store::MemoryStore;
+use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_testing::run;
 
 use std::collections::BTreeMap;
@@ -58,7 +58,7 @@ fuzz_target!(
             }
         }
 
-        let applied = run(apply(&store, &root, &changeset));
+        let applied = run(apply(&ContentGet::new(&store), &root, &changeset));
         let rebuilt = build(&merged).map(|(_, root)| root);
 
         if let (Ok(applied), Some(rebuilt)) = (applied, rebuilt) {

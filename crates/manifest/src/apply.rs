@@ -772,7 +772,7 @@ mod tests {
     use core::future::Future;
     use core::pin::Pin;
 
-    use nectar_primitives::store::MemoryStore;
+    use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef};
     use nectar_testing::run;
 
@@ -789,7 +789,7 @@ mod tests {
     // Walk the counted tree, asserting every stored referenced-child count
     // equals the walked subtree size, and return the subtree's key count.
     fn walk_counts<'a>(
-        store: &'a MemoryStore,
+        store: &'a ContentGet<MemoryStore>,
         table: &'a ForkTable<V1>,
     ) -> Pin<Box<dyn Future<Output = u64> + 'a>> {
         Box::pin(async move {
@@ -820,7 +820,7 @@ mod tests {
 
     #[test]
     fn counted_child_counts_match_a_full_walk_oracle() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut builder = Builder::<V1>::new();
         let mut expected = 0u64;
         // Many wide sub-trees, each referenced (over the embedding budget), under
@@ -840,7 +840,7 @@ mod tests {
 
     #[test]
     fn counted_apply_matches_a_rebuild_and_preserves_counts() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // A base that references a wide sub-tree under "a", then a changeset that
         // deepens it: apply must reproduce the from-scratch counted root.
         let mut base = Builder::<V1>::new();
@@ -859,7 +859,9 @@ mod tests {
         for x in 0u8..64 {
             scratch.insert(Key::from(&[b'a', x][..]), entry(x), None);
         }
-        let scratch_root = *run(scratch.build(&MemoryStore::default())).unwrap().root();
+        let scratch_root = *run(scratch.build(&ContentGet::new(MemoryStore::default())))
+            .unwrap()
+            .root();
         assert_eq!(applied, scratch_root, "apply must match a counted rebuild");
 
         // The applied tree's stored counts still equal the walked subtree sizes.
@@ -869,7 +871,7 @@ mod tests {
     }
 
     // Build a manifest from `keys` and return its root.
-    fn build(store: &MemoryStore, keys: &[(&[u8], u8)]) -> ChunkAddress {
+    fn build(store: &ContentGet<MemoryStore>, keys: &[(&[u8], u8)]) -> ChunkAddress {
         let mut builder = Builder::<V1>::new();
         for (key, fill) in keys {
             builder.insert(Key::from(*key), entry(*fill), None);
@@ -880,12 +882,12 @@ mod tests {
     // The root a from-scratch build of `keys` produces, for the byte-identity
     // check: a fresh store makes the address depend on the bytes alone.
     fn rebuilt(keys: &[(&[u8], u8)]) -> ChunkAddress {
-        build(&MemoryStore::default(), keys)
+        build(&ContentGet::new(MemoryStore::default()), keys)
     }
 
     #[test]
     fn an_empty_changeset_returns_the_root_unchanged() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
         let out = run(apply(&store, &root, &Changeset::<V1>::new())).unwrap();
         assert_eq!(out, root);
@@ -893,7 +895,7 @@ mod tests {
 
     #[test]
     fn a_single_insert_equals_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1), (b"c", 3)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"b"[..]), entry(2), None);
@@ -903,7 +905,7 @@ mod tests {
 
     #[test]
     fn a_batch_touching_one_ancestor_equals_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"road", 1), (b"roam", 2)]);
         // Two inserts under the shared "ro" ancestor, rewritten in one pass.
         let mut cs = Changeset::<V1>::new();
@@ -918,7 +920,7 @@ mod tests {
 
     #[test]
     fn an_update_overwrites_in_place() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"a"[..]), entry(9), None);
@@ -928,7 +930,7 @@ mod tests {
 
     #[test]
     fn a_deletion_that_re_inlines_a_sibling_equals_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // "roam"/"road" share a "roa" branch; deleting one collapses the branch
         // back into a single compacted edge.
         let root = build(&store, &[(b"roam", 1), (b"road", 2), (b"x", 3)]);
@@ -940,7 +942,7 @@ mod tests {
 
     #[test]
     fn deleting_the_last_child_removes_the_fork() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&b"a"[..]));
@@ -950,7 +952,7 @@ mod tests {
 
     #[test]
     fn deleting_an_absent_key_is_a_no_op() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1), (b"ab", 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&b"absent"[..]));
@@ -962,7 +964,7 @@ mod tests {
 
     #[test]
     fn a_split_within_an_edge_equals_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // "abcdef" sits behind a long compacted edge; inserting "abz" branches
         // inside that edge.
         let root = build(&store, &[(b"abcdef", 1)]);
@@ -974,7 +976,7 @@ mod tests {
 
     #[test]
     fn a_split_above_a_chain_boundary_recompacts_like_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // A 256-byte key sits behind a PLEN_MAX(255) chain: one 255-byte edge
         // over a child holding its last byte. Inserting a key that shares only
         // the first byte branches above that chain, shortening the existing edge
@@ -991,7 +993,7 @@ mod tests {
 
     #[test]
     fn a_split_above_a_multi_fork_chain_recompacts_like_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // A 511-byte key sits behind a PLEN_MAX(255) chain of three forks
         // (255 + 255 + 1). Inserting its one-byte prefix branches at the head,
         // leaving a 510-byte continuation run whose canonical shape is a
@@ -1008,7 +1010,7 @@ mod tests {
 
     #[test]
     fn a_split_above_a_deep_chain_recompacts_like_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // A 766-byte key is a four-fork chain (255 + 255 + 255 + 1); branching
         // at its head must re-segment the whole 765-byte run, not just the top
         // link.
@@ -1023,7 +1025,7 @@ mod tests {
 
     #[test]
     fn a_remove_beside_a_recapped_chain_insert_equals_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // Removing the only key while inserting a 257-byte sibling splits the
         // shared first byte, and the re-capped PLEN_MAX(255) chain boundary
         // lands one byte earlier than the inserted subtree's own cap: the tail
@@ -1041,7 +1043,7 @@ mod tests {
 
     #[test]
     fn the_empty_key_sets_and_clears_the_root_value() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1)]);
         let mut set = Changeset::<V1>::new();
         set.put(Key::empty(), entry(7), None);
@@ -1050,7 +1052,9 @@ mod tests {
         let mut expect = Builder::<V1>::new();
         expect.insert(Key::empty(), entry(7), None);
         expect.insert(Key::from(&b"a"[..]), entry(1), None);
-        let rebuilt_root = *run(expect.build(&MemoryStore::default())).unwrap().root();
+        let rebuilt_root = *run(expect.build(&ContentGet::new(MemoryStore::default())))
+            .unwrap()
+            .root();
         assert_eq!(with_root, rebuilt_root);
 
         let mut clear = Changeset::<V1>::new();
@@ -1061,7 +1065,7 @@ mod tests {
 
     #[test]
     fn a_collapse_past_the_prefix_bound_chains_like_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // Two keys sharing a 200-byte prefix, total length 260: the fork over
         // the shared run terminates one key and continues to the other. Deleting
         // the terminal leaves a single 260-byte key whose from-scratch shape is
@@ -1078,7 +1082,7 @@ mod tests {
 
     #[test]
     fn a_split_above_a_spilled_chain_link_equals_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // A 1708-byte key spills its top chain link (subtree body over
         // INLINE_MAX), so the shifted run continues behind a reference.
         let long = vec![0x07u8; 1708];
@@ -1091,7 +1095,7 @@ mod tests {
 
     #[test]
     fn a_delete_merging_into_a_spilled_chain_equals_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // Stripping the short key's terminal merges its edge into a continuation
         // that has spilled to a reference.
         let short = vec![0x07u8; 100];
@@ -1106,7 +1110,7 @@ mod tests {
 
     #[test]
     fn an_edge_at_its_forced_cut_absorbs_nothing() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // The root edge fills PLEN_MAX exactly, so its boundary is the forced
         // cut a build places and its spilled continuation must stay put: a
         // stripped terminal here merges nothing.
@@ -1131,7 +1135,7 @@ mod tests {
 
     #[test]
     fn carried_metadata_survives_a_rebuild() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let meta = Metadata::new(KeyId::ContentType, Bytes::from_static(b"text/html")).unwrap();
         let root = build(&store, &[(b"a", 1)]);
         let mut cs = Changeset::<V1>::new();
@@ -1141,7 +1145,9 @@ mod tests {
         let mut expect = Builder::<V1>::new();
         expect.insert(Key::from(&b"a"[..]), entry(1), None);
         expect.insert(Key::from(&b"index.html"[..]), entry(2), Some(meta));
-        let rebuilt_root = *run(expect.build(&MemoryStore::default())).unwrap().root();
+        let rebuilt_root = *run(expect.build(&ContentGet::new(MemoryStore::default())))
+            .unwrap()
+            .root();
         assert_eq!(out, rebuilt_root);
     }
 }

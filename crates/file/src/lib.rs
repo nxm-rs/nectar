@@ -22,6 +22,7 @@
 //! ```
 //! use nectar_file::AnyFile;
 //! use nectar_mantaray::{ManifestEditor, Reader};
+//! use nectar_primitives::store::ContentGet;
 //!
 //! # nectar_testing::run(async {
 //! let data = b"hello swarm".to_vec();
@@ -38,7 +39,7 @@
 //! editor.remove("stale.txt");
 //! let (manifest_root, store) = editor.commit().await.unwrap();
 //!
-//! let reader = Reader::new(store.clone());
+//! let reader = Reader::new(ContentGet::new(store.clone()));
 //! assert!(
 //!     reader
 //!         .get(&manifest_root, b"stale.txt")
@@ -51,7 +52,7 @@
 //!     .await
 //!     .unwrap()
 //!     .unwrap();
-//! let file = AnyFile::open(store, entry.reference().unwrap().clone())
+//! let file = AnyFile::open(ContentGet::new(store), entry.reference().unwrap().clone())
 //!     .await
 //!     .unwrap();
 //! assert_eq!(file.collect(u64::MAX).await.unwrap(), data);

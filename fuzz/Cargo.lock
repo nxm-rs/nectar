@@ -2012,6 +2012,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "nectar-clock",
+ "nectar-marker",
  "nectar-postage",
  "nectar-primitives",
  "thiserror",

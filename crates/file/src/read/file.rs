@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey, transcrypt_in_place};
-use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress, ChunkOps};
+use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ContentOnlyChunkSet};
 use nectar_primitives::store::TrustedGet;
 use nectar_primitives::{DEFAULT_BODY_SIZE, EntryRef};
 
@@ -70,7 +70,7 @@ impl<S: Clone, M: WalkMode, const B: usize> File<S, M, B> {
 
 impl<S, M, const B: usize> File<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
 {
     /// Assemble the whole file in memory, at most `max` bytes.
@@ -81,7 +81,7 @@ where
 
 impl<S, const B: usize> File<S, Plain, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
 {
     /// Open a plain file at its root address, reading the span off the root
     /// chunk.
@@ -99,7 +99,7 @@ where
 
 impl<S, const B: usize> File<S, Encrypted, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
 {
     /// Open an encrypted file at its root reference, decrypting the span off
     /// the root chunk with the reference's key.
@@ -148,7 +148,7 @@ pub enum AnyFile<S, const B: usize = DEFAULT_BODY_SIZE> {
 
 impl<S, const B: usize> AnyFile<S, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
 {
     /// Open a file from a wire reference, dispatching the mode on the
     /// reference width.
@@ -221,11 +221,11 @@ async fn fetch_root<S, const B: usize>(
     store: &S,
     address: ChunkAddress,
 ) -> Result<
-    <AnyChunkSet<B> as nectar_primitives::chunk::ChunkRegistry>::Envelope,
+    <ContentOnlyChunkSet<B> as nectar_primitives::chunk::ChunkRegistry>::Envelope,
     OpenError<S::Error>,
 >
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
 {
     let chunk = store
         .get(&address)

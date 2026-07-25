@@ -6,14 +6,16 @@
 //! path never re-hashes. The write path seals a freshly built payload into a
 //! [`Verified`] content chunk, deriving the address rather than trusting one.
 //!
-//! [`NodeGet`] and [`NodePut`] reuse the primitives store traits unchanged;
-//! they are the seam the streaming builder and reader both sit on.
+//! [`NodeGet`] and [`NodePut`] reuse the primitives store traits; the read
+//! seam binds the content-only registry, so a non-content chunk is rejected
+//! at decode rather than decoded as a node.
 
 use core::future::Future;
 
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
-    Chunk, ChunkAddress, ChunkOps, ContentChunk, EncryptionKey, Verified, transcrypt_in_place,
+    Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, EncryptionKey, Verified,
+    transcrypt_in_place,
 };
 
 use crate::codec::{DecodeError, DecodedChunk, EncodeError};
@@ -24,6 +26,10 @@ use crate::node::Node;
 /// A manifest node sealed as a verified content chunk over the standard
 /// registry, whose content-chunk member carries the node payload.
 pub type NodeChunk = Chunk<Verified>;
+
+/// A node chunk read back through the content-only registry: the fetch
+/// itself certifies `address == BMT(body)`.
+type FetchedChunk = Chunk<Verified, ContentOnlyChunkSet>;
 
 /// A node write or read failure across the store seam.
 #[non_exhaustive]
@@ -72,7 +78,7 @@ impl<F: Format> Node<F> {
 ///
 /// Blanket-implemented for every [`TrustedGet`]; the `Trust = Verified`
 /// bound is what lets [`get_node`](Self::get_node) skip re-hashing.
-pub trait NodeGet: TrustedGet {
+pub trait NodeGet: TrustedGet<ContentOnlyChunkSet> {
     /// Load and decode the node at `address`, materializing a spilled node's
     /// forks from its segments so the caller always sees one logical node.
     ///
@@ -90,7 +96,7 @@ pub trait NodeGet: TrustedGet {
     }
 }
 
-impl<T: TrustedGet> NodeGet for T {}
+impl<T: TrustedGet<ContentOnlyChunkSet>> NodeGet for T {}
 
 /// The greatest legal segment-directory depth (spec 5.4); a deeper nesting is a
 /// malformed image, not a tree this format ever produces.
@@ -99,7 +105,7 @@ const MAX_DIR_DEPTH: usize = 2;
 /// Load the node at `address`, reassembling a segmented node's forks in place.
 async fn materialize_node<S, F>(store: &S, address: &ChunkAddress) -> Result<Node<F>, StoreError>
 where
-    S: TrustedGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
 {
     let (node, _) = materialize_traced::<S, F>(store, address, None).await?;
@@ -117,7 +123,7 @@ pub(crate) async fn materialize_traced<S, F>(
     key: Option<&EncryptionKey>,
 ) -> Result<(Node<F>, Vec<ChunkAddress>), StoreError>
 where
-    S: TrustedGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
 {
     let chunk = store.get(address).await.map_err(StoreError::store)?;
@@ -144,7 +150,7 @@ where
 
 /// Decode a certified chunk, decrypting first when a key travels with it.
 fn decode_fetched<F: Format>(
-    chunk: &NodeChunk,
+    chunk: &FetchedChunk,
     key: Option<&EncryptionKey>,
 ) -> Result<DecodedChunk<F>, DecodeError> {
     key.map_or_else(
@@ -168,7 +174,7 @@ async fn collect_segment_forks<S, F>(
     trace: &mut Vec<ChunkAddress>,
 ) -> Result<ForkTable<F>, StoreError>
 where
-    S: TrustedGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
 {
     if depth >= MAX_DIR_DEPTH {
@@ -238,7 +244,7 @@ impl<T: ChunkPut> NodePut for T {}
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use nectar_primitives::store::MemoryStore;
+    use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef, DefaultContentChunk};
     use nectar_testing::run;
 
@@ -273,7 +279,7 @@ mod tests {
 
     #[test]
     fn round_trips_through_a_memory_store() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let node = sample();
 
         let address = run(store.put_node(&node)).unwrap();
@@ -301,7 +307,7 @@ mod tests {
 
     #[test]
     fn missing_address_is_a_store_error() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let err = run(store.get_node::<crate::V1>(&ChunkAddress::new([0; 32]))).unwrap_err();
         assert!(matches!(err, StoreError::Store(_)));
     }

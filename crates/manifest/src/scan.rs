@@ -680,14 +680,19 @@ pub(crate) fn successor(prefix: &[u8]) -> Option<Bytes> {
 mod tests {
     use core::task::Poll;
 
-    use nectar_primitives::store::{ChunkGet, ChunkStoreError, MemoryStore};
-    use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey, Verified};
+    use nectar_primitives::store::{
+        ChunkGet, ChunkStoreError, ContentGet, ContentGetError, MemoryStore,
+    };
+    use nectar_primitives::{
+        Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, EncryptedChunkRef, EncryptionKey,
+        Verified,
+    };
     use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::fork::{Child, ForkTable};
     use crate::node::Node;
-    use crate::store::{NodeChunk, NodePut};
+    use crate::store::NodePut;
     use crate::value::{Entry, Key};
 
     use super::*;
@@ -700,7 +705,7 @@ mod tests {
         Prefix::try_from(bytes).unwrap()
     }
 
-    fn drain(mut cursor: Cursor<'_, &MemoryStore>) -> Vec<(Vec<u8>, Entry)> {
+    fn drain(mut cursor: Cursor<'_, &ContentGet<MemoryStore>>) -> Vec<(Vec<u8>, Entry)> {
         let mut out = Vec::new();
         while let Some((key, value)) = run(cursor.next()).unwrap() {
             out.push((key.as_bytes().to_vec(), value));
@@ -710,7 +715,7 @@ mod tests {
 
     // A two-level manifest: a root fork "a" behind an embedded child holding
     // "aa"/"ab", and "b" behind a referenced leaf holding "ba".
-    fn sample(store: &MemoryStore) -> ChunkAddress {
+    fn sample(store: &ContentGet<MemoryStore>) -> ChunkAddress {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
         let leaf_ref = run(store.put_node(&Node::new(None, leaf))).unwrap();
@@ -738,7 +743,7 @@ mod tests {
 
     #[test]
     fn iteration_is_ascending_across_embedded_and_referenced_children() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(run(reader.iter(&root)).unwrap());
@@ -754,7 +759,7 @@ mod tests {
 
     #[test]
     fn the_root_value_is_the_empty_key_and_leads_iteration() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
@@ -766,7 +771,7 @@ mod tests {
 
     #[test]
     fn range_is_half_open() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(
@@ -781,7 +786,7 @@ mod tests {
 
     #[test]
     fn range_starting_between_keys_seeks_to_the_ceiling() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         let got =
@@ -791,7 +796,7 @@ mod tests {
 
     #[test]
     fn prefix_selects_one_subtree() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(run(reader.prefix(&root, &Key::from(&b"a"[..]))).unwrap());
@@ -803,7 +808,7 @@ mod tests {
 
     #[test]
     fn floor_resolves_present_absent_and_below_all_keys() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         // Exact hit.
@@ -838,7 +843,7 @@ mod tests {
 
     // A root holding "a" and "z" as plain values with an encrypted subtree
     // wedged between them under "m".
-    fn with_encrypted(store: &MemoryStore) -> ChunkAddress {
+    fn with_encrypted(store: &ContentGet<MemoryStore>) -> ChunkAddress {
         let mut forks = ForkTable::new();
         forks
             .insert(prefix(b"a"), entry(0xA1).into(), None)
@@ -854,7 +859,7 @@ mod tests {
 
     #[test]
     fn iteration_surfaces_an_encrypted_subtree_as_an_error() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = with_encrypted(&store);
         let reader: Reader<_> = Reader::new(&store);
         let mut cursor = run(reader.iter(&root)).unwrap();
@@ -872,7 +877,7 @@ mod tests {
 
     #[test]
     fn a_bound_short_of_the_encrypted_edge_prunes_it() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = with_encrypted(&store);
         let reader: Reader<_> = Reader::new(&store);
         // "m" is the exclusive upper bound, so the encrypted child at "m" is
@@ -884,7 +889,7 @@ mod tests {
 
     #[test]
     fn floor_past_an_encrypted_edge_reads_the_plain_key() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = with_encrypted(&store);
         let reader: Reader<_> = Reader::new(&store);
         // The floor of "z" is "z" itself; the encrypted subtree is left of the
@@ -897,7 +902,7 @@ mod tests {
 
     #[test]
     fn floor_landing_in_an_encrypted_subtree_cannot_be_read() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = with_encrypted(&store);
         let reader: Reader<_> = Reader::new(&store);
         // Every key at or below "n" that could be the floor lives in the
@@ -909,7 +914,7 @@ mod tests {
     }
 
     // A root value "a" plus a referenced leaf under "b" holding "ba".
-    fn with_ref(store: &MemoryStore) -> (ChunkAddress, ChunkAddress) {
+    fn with_ref(store: &ContentGet<MemoryStore>) -> (ChunkAddress, ChunkAddress) {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
         let leaf_addr = run(store.put_node(&Node::new(None, leaf))).unwrap();
@@ -946,14 +951,17 @@ mod tests {
     /// Store wrapper that yields once per get, so a `next` future can be
     /// observed mid-fetch.
     struct SlowStore {
-        inner: MemoryStore,
+        inner: ContentGet<MemoryStore>,
     }
 
-    impl ChunkGet for SlowStore {
+    impl ChunkGet<ContentOnlyChunkSet> for SlowStore {
         type Trust = Verified;
-        type Error = <MemoryStore as ChunkGet>::Error;
+        type Error = ContentGetError<ChunkStoreError>;
 
-        async fn get(&self, address: &ChunkAddress) -> Result<NodeChunk, Self::Error> {
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
             yield_once().await;
             ChunkGet::get(&self.inner, address).await
         }
@@ -961,7 +969,7 @@ mod tests {
 
     #[test]
     fn a_dropped_next_future_loses_no_keys() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, _) = with_ref(&store);
         let slow = SlowStore { inner: store };
         let reader: Reader<_> = Reader::new(&slow);
@@ -989,21 +997,24 @@ mod tests {
 
     /// Store wrapper that fails the first `failures` gets of one address.
     struct FlakyStore {
-        inner: MemoryStore,
+        inner: ContentGet<MemoryStore>,
         deny: ChunkAddress,
         failures: std::sync::Mutex<usize>,
     }
 
-    impl ChunkGet for FlakyStore {
+    impl ChunkGet<ContentOnlyChunkSet> for FlakyStore {
         type Trust = Verified;
-        type Error = <MemoryStore as ChunkGet>::Error;
+        type Error = ContentGetError<ChunkStoreError>;
 
-        async fn get(&self, address: &ChunkAddress) -> Result<NodeChunk, Self::Error> {
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
             if *address == self.deny {
                 let mut left = self.failures.lock().unwrap();
                 if *left > 0 {
                     *left = left.saturating_sub(1);
-                    return Err(ChunkStoreError::not_found(address));
+                    return Err(ContentGetError::Inner(ChunkStoreError::not_found(address)));
                 }
             }
             ChunkGet::get(&self.inner, address).await
@@ -1012,7 +1023,7 @@ mod tests {
 
     #[test]
     fn a_failed_resolve_replays_the_same_descent() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let (root, leaf) = with_ref(&store);
         let flaky = FlakyStore {
             inner: store,

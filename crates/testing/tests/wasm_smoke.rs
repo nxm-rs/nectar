@@ -10,8 +10,8 @@ use std::rc::Rc;
 use futures::StreamExt;
 use nectar_file::{File, Plain, Split, Window};
 use nectar_primitives::{
-    AnyChunkSet, Chunk, ChunkAddress, ChunkGet, ChunkPut, ChunkStoreError, DEFAULT_BODY_SIZE,
-    Verified,
+    AnyChunkSet, Chunk, ChunkAddress, ChunkGet, ChunkPut, ChunkStoreError, ContentGet,
+    DEFAULT_BODY_SIZE, Verified,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -72,7 +72,7 @@ async fn non_send_store_round_trips_a_file() {
     let store = RcStore::default();
     let data = sample_data();
     let root = write_file(&store, &data).await;
-    let file = File::<_, Plain, DEFAULT_BODY_SIZE>::open(store.clone(), root)
+    let file = File::<_, Plain, DEFAULT_BODY_SIZE>::open(ContentGet::new(store.clone()), root)
         .await
         .unwrap();
     let out = file.collect(u64::MAX).await.unwrap();
@@ -85,7 +85,7 @@ async fn windowed_read_ahead_stays_within_bound() {
     let store = RcStore::default();
     let data = sample_data();
     let root = write_file(&store, &data).await;
-    let file = File::<_, Plain, DEFAULT_BODY_SIZE>::open(store.clone(), root)
+    let file = File::<_, Plain, DEFAULT_BODY_SIZE>::open(ContentGet::new(store.clone()), root)
         .await
         .unwrap();
 

@@ -8,7 +8,7 @@
 use anyhow::{Result, anyhow, ensure};
 use bytes::Bytes;
 use nectar_manifest::{Builder, Entry, Key, Reader, build_files};
-use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, MemoryStore};
+use nectar_primitives::{ChunkRef, ContentGet, DEFAULT_BODY_SIZE, MemoryStore};
 use nectar_testing::{run, split_whole};
 
 const B: usize = DEFAULT_BODY_SIZE;
@@ -85,7 +85,7 @@ fn bridged_files_round_trip_byte_exact() -> Result<()> {
     ];
     let root = *run(build_files(&store, files))?.root();
 
-    let reader: Reader<_> = Reader::new(store);
+    let reader: Reader<_> = Reader::new(ContentGet::new(store));
     ensure!(
         run(reader.fetch(&root, &Key::from(&b"a/big"[..])))? == Some(big),
         "deep file round trip",

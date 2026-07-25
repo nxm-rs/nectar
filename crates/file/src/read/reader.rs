@@ -12,7 +12,7 @@ use core::time::Duration;
 use bytes::Bytes;
 use futures_util::stream::{Stream, StreamExt};
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
+use nectar_primitives::chunk::{ChunkAddress, ContentOnlyChunkSet};
 use nectar_primitives::store::TrustedGet;
 
 use super::body_size;
@@ -83,7 +83,7 @@ impl<S, M: WalkMode, const B: usize> ReadBuilder<S, M, B> {
 
 impl<S, M, const B: usize> ReadBuilder<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
 {
     /// Build the ordered, seekable reader.
@@ -177,7 +177,7 @@ impl<S, M: WalkMode, const B: usize> fmt::Debug for ReadBuilder<S, M, B> {
 /// only when a call returns.
 pub struct FileReader<S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     store: S,
@@ -198,7 +198,7 @@ where
 
 impl<S, M, const B: usize> FileReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
 {
     /// Current position within the clipped range.
@@ -331,7 +331,7 @@ where
 #[cfg(all(feature = "tokio", multi_thread))]
 pub(crate) struct ReaderParts<S, M, const B: usize>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     pub(crate) store: S,
@@ -348,7 +348,7 @@ where
 
 impl<S, M, const B: usize> fmt::Debug for FileReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -382,7 +382,9 @@ where
 /// # )
 /// # .await
 /// # .unwrap();
-/// let file = File::open(store, root).await.unwrap();
+/// let file = File::open(nectar_primitives::store::ContentGet::new(store), root)
+///     .await
+///     .unwrap();
 /// let mut stream = file.read().range(4_096..12_288).stream();
 /// let mut out = Vec::new();
 /// while let Some(run) = stream.next().await {
@@ -393,7 +395,7 @@ where
 /// ```
 pub struct FileStream<S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     /// Partially consumed frame handed over by a reader, delivered first.
@@ -405,14 +407,14 @@ where
 /// state and boxed futures, never a self-reference.
 impl<S, M, const B: usize> Unpin for FileStream<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
 }
 
 impl<S, M, const B: usize> Stream for FileStream<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
 {
     type Item = Result<Bytes, WalkError<S::Error>>;
@@ -430,7 +432,7 @@ where
 
 impl<S, M, const B: usize> fmt::Debug for FileStream<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -12,7 +12,7 @@ use core::pin::Pin;
 
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
+use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
 use nectar_primitives::store::{BoxedError, ChunkGet, TrustedGet};
 
 use crate::read::{AnyFile, File, FileReader, FileStream};
@@ -27,13 +27,17 @@ pub struct BoxedStoreError(#[source] BoxedError);
 /// Boxed erased fetch future: `Send` on multi-threaded targets, unbounded on
 /// wasm32 and under the `unsync` feature.
 #[cfg(multi_thread)]
-type BoxGet<const B: usize> =
-    Pin<Box<dyn Future<Output = Result<Chunk<Verified, AnyChunkSet<B>>, BoxedStoreError>> + Send>>;
+type BoxGet<const B: usize> = Pin<
+    Box<
+        dyn Future<Output = Result<Chunk<Verified, ContentOnlyChunkSet<B>>, BoxedStoreError>>
+            + Send,
+    >,
+>;
 /// Boxed erased fetch future: `Send` on multi-threaded targets, unbounded on
 /// wasm32 and under the `unsync` feature.
 #[cfg(not(multi_thread))]
 type BoxGet<const B: usize> =
-    Pin<Box<dyn Future<Output = Result<Chunk<Verified, AnyChunkSet<B>>, BoxedStoreError>>>>;
+    Pin<Box<dyn Future<Output = Result<Chunk<Verified, ContentOnlyChunkSet<B>>, BoxedStoreError>>>>;
 
 /// Object-safe fetch surface the adapter erases stores through.
 trait ErasedGet<const B: usize>: MaybeSend + MaybeSync {
@@ -42,7 +46,7 @@ trait ErasedGet<const B: usize>: MaybeSend + MaybeSync {
 
 impl<S, const B: usize> ErasedGet<B> for S
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
 {
     fn get(&self, address: ChunkAddress) -> BoxGet<B> {
         let store = self.clone();
@@ -62,7 +66,7 @@ impl<const B: usize> BoxedStore<B> {
     /// Erase a trusted store behind one nameable handle.
     pub fn new<S>(store: S) -> Self
     where
-        S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+        S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     {
         Self(Arc::new(store))
     }
@@ -80,14 +84,14 @@ impl<const B: usize> fmt::Debug for BoxedStore<B> {
     }
 }
 
-impl<const B: usize> ChunkGet<AnyChunkSet<B>> for BoxedStore<B> {
+impl<const B: usize> ChunkGet<ContentOnlyChunkSet<B>> for BoxedStore<B> {
     type Trust = Verified;
     type Error = BoxedStoreError;
 
     fn get(
         &self,
         address: &ChunkAddress,
-    ) -> impl Future<Output = Result<Chunk<Verified, AnyChunkSet<B>>, Self::Error>> + MaybeSend
+    ) -> impl Future<Output = Result<Chunk<Verified, ContentOnlyChunkSet<B>>, Self::Error>> + MaybeSend
     {
         self.0.get(*address)
     }

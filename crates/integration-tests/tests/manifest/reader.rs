@@ -7,15 +7,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_manifest::{Builder, Child, Entry, ForkTable, Key, Node, NodePut, Prefix, Reader, V1};
-use nectar_primitives::store::{ChunkGet, MemoryStore};
-use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, StandardChunkSet, Verified};
+use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
+use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
 
 /// A trusted store that counts every `get`, so a test can read off how many
 /// nodes a lookup fetched.
 #[derive(Debug, Default)]
 struct CountingStore {
-    inner: MemoryStore,
+    inner: ContentGet<MemoryStore>,
     gets: AtomicUsize,
 }
 
@@ -25,14 +25,14 @@ impl CountingStore {
     }
 }
 
-impl ChunkGet<StandardChunkSet> for CountingStore {
+impl ChunkGet<ContentOnlyChunkSet> for CountingStore {
     type Trust = Verified;
-    type Error = <MemoryStore as ChunkGet>::Error;
+    type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<Verified, StandardChunkSet>, Self::Error> {
+    ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
         self.gets.fetch_add(1, Ordering::Relaxed);
         ChunkGet::get(&self.inner, address).await
     }
@@ -73,7 +73,7 @@ fn a_lookup_fetches_depth_nodes_not_the_wide_level() -> Result<()> {
     ensure!(memory.len() == usize::from(width) + 1, "stored node count");
 
     let store = CountingStore {
-        inner: memory,
+        inner: ContentGet::new(memory),
         gets: AtomicUsize::new(0),
     };
     let reader: Reader<_> = Reader::new(&store);
@@ -141,7 +141,7 @@ fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
     );
 
     let store = CountingStore {
-        inner: memory,
+        inner: ContentGet::new(memory),
         gets: AtomicUsize::new(0),
     };
     let reader: Reader<_> = Reader::new(&store);
@@ -201,7 +201,7 @@ fn an_absent_key_stops_at_the_first_unmatched_fork() -> Result<()> {
     let root = run(wide_manifest(&memory, width))?;
 
     let store = CountingStore {
-        inner: memory,
+        inner: ContentGet::new(memory),
         gets: AtomicUsize::new(0),
     };
     let reader: Reader<_> = Reader::new(&store);

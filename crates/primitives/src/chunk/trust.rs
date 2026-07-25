@@ -16,7 +16,9 @@ use crate::cache::OnceCache;
 use crate::error::Result;
 
 use super::address::ChunkAddress;
-use super::registry::{AnyChunkSet, ChunkRegistry, SingleOwnerOnlyChunkSet, StandardChunkSet};
+use super::registry::{
+    AnyChunkSet, ChunkRegistry, ContentOnlyChunkSet, SingleOwnerOnlyChunkSet, StandardChunkSet,
+};
 use super::traits::ChunkOps;
 
 mod sealed {
@@ -246,6 +248,26 @@ impl<const BODY_SIZE: usize> Chunk<Verified, AnyChunkSet<BODY_SIZE>> {
         Some(Chunk {
             address,
             inner: inner.into_single_owner()?,
+            owner,
+            _state: PhantomData,
+        })
+    }
+
+    /// Narrow to the content-only registry; `None` for a single-owner chunk.
+    ///
+    /// The address fact transfers as-is: the content arm was certified by
+    /// its full acceptance rule already, so no hash re-runs.
+    #[must_use]
+    pub fn narrow_content(self) -> Option<Chunk<Verified, ContentOnlyChunkSet<BODY_SIZE>>> {
+        let Self {
+            address,
+            inner,
+            owner,
+            _state,
+        } = self;
+        Some(Chunk {
+            address,
+            inner: inner.into_content()?,
             owner,
             _state: PhantomData,
         })
@@ -536,6 +558,29 @@ mod tests {
         let content = DefaultContentChunk::new(&b"stays wide"[..]).unwrap();
         let wide = Chunk::<Verified>::from_envelope(content.into()).unwrap();
         assert!(wide.narrow_single_owner().is_none());
+    }
+
+    /// Narrowing transfers the Verified fact without re-running any
+    /// acceptance rule: the address carries over and the typed encoding is
+    /// byte-identical.
+    #[test]
+    fn narrow_content_preserves_the_verified_fact() {
+        let content = DefaultContentChunk::new(&b"narrowed"[..]).unwrap();
+        let address = *content.address();
+        let wide = Chunk::<Verified>::from_envelope(content.into()).unwrap();
+        let typed = wide.typed_bytes();
+
+        let narrow = wide.narrow_content().unwrap();
+        assert_eq!(narrow.address(), &address);
+        assert_eq!(narrow.typed_bytes(), typed);
+    }
+
+    #[test]
+    fn narrow_content_rejects_a_single_owner_chunk() {
+        let soc = DefaultSingleOwnerChunk::new(SocId::ZERO, b"stays wide".to_vec(), &test_signer())
+            .unwrap();
+        let wide = Chunk::<Verified>::from_envelope(soc.into()).unwrap();
+        assert!(wide.narrow_content().is_none());
     }
 
     #[test]

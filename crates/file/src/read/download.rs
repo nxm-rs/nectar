@@ -7,7 +7,7 @@ use core::time::Duration;
 
 use futures_util::stream::StreamExt;
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
+use nectar_primitives::chunk::{ChunkAddress, ContentOnlyChunkSet};
 use nectar_primitives::store::TrustedGet;
 
 use super::body_size;
@@ -57,7 +57,9 @@ pub type ProgressFn = Box<dyn FnMut(Progress)>;
 /// # )
 /// # .await
 /// # .unwrap();
-/// let file = File::open(store, root).await.unwrap();
+/// let file = File::open(nectar_primitives::store::ContentGet::new(store), root)
+///     .await
+///     .unwrap();
 /// let mut sink = MemSink::new();
 /// let written = file
 ///     .download()
@@ -137,7 +139,7 @@ impl<S, M: WalkMode, const B: usize> DownloadBuilder<S, M, B> {
 
 impl<S, M, const B: usize> DownloadBuilder<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
 {
     /// Run the download to completion, returning the bytes written.

@@ -484,7 +484,7 @@ mod tests {
     use super::*;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use nectar_primitives::store::{ChunkGet, MemoryStore};
+    use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
     use nectar_primitives::{EncryptedChunkRef, EncryptionKey, StandardChunkSet, Verified};
     use nectar_testing::run;
 
@@ -640,7 +640,7 @@ mod tests {
     fn committed_root_is_readable() {
         let script = corpora().swap_remove(4);
         let (root, store) = editor_replay(&script);
-        let reader = crate::Reader::new(store);
+        let reader = crate::Reader::new(ContentGet::new(store));
         let entry = run(reader.get(&root, b"img/1.png")).unwrap().unwrap();
         assert_eq!(
             entry.reference().map(|r| *r.address()),
@@ -657,7 +657,7 @@ mod tests {
         editor.put("//", make_addr("s"));
         editor.set_index_document("doc");
         let (root, store) = run(editor.commit()).unwrap();
-        let entry = run(crate::Reader::new(store).get(&root, b"/"))
+        let entry = run(crate::Reader::new(ContentGet::new(store)).get(&root, b"/"))
             .unwrap()
             .expect("metadata-carrying edge reads back");
         assert!(entry.reference().is_none());
@@ -717,7 +717,7 @@ mod tests {
         let (got, store) = run(editor.commit()).unwrap();
         assert_eq!(got, want);
 
-        let reader = crate::Reader::new(store);
+        let reader = crate::Reader::new(ContentGet::new(store));
         let entry = run(reader.get(&got, b"/")).unwrap().unwrap();
         assert_eq!(
             entry.metadata().get("website-index-document").cloned(),

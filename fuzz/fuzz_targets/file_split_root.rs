@@ -16,7 +16,7 @@ use nectar_file::sync::drive;
 use nectar_file::{File, Plain, PutWindow, Split};
 use nectar_fuzz::tile;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
+use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
 
 /// Tiny body size: fan-out 8, so a few KiB already builds a deep tree.
 const BODY: usize = 256;
@@ -115,7 +115,7 @@ fuzz_target!(|input: (Vec<u8>, u16, Vec<u16>, Vec<u16>, u16, u16)| {
     assert_eq!(root_a, root_b, "root diverged across write segmentations");
 
     let read_back = drive(async move {
-        let file = File::<_, Plain, BODY>::open(store, root_a)
+        let file = File::<_, Plain, BODY>::open(ContentGet::new(store), root_a)
             .await
             .expect("open must succeed over the written store");
         file.collect(u64::MAX)

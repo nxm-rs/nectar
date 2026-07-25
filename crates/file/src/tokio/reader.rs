@@ -7,7 +7,7 @@ use std::io;
 use std::io::SeekFrom;
 
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::AnyChunkSet;
+use nectar_primitives::chunk::ContentOnlyChunkSet;
 use nectar_primitives::store::TrustedGet;
 use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 
@@ -23,7 +23,7 @@ use crate::walk::WalkMode;
 /// `InvalidInput`, never a clamp.
 pub struct TokioReader<S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     inner: FileReader<S, M, B>,
@@ -31,7 +31,7 @@ where
 
 impl<S, M, const B: usize> TokioReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
 {
     /// Current position within the clipped range.
@@ -47,7 +47,7 @@ where
 
 impl<S, M, const B: usize> From<FileReader<S, M, B>> for TokioReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     fn from(inner: FileReader<S, M, B>) -> Self {
@@ -57,7 +57,7 @@ where
 
 impl<S, M, const B: usize> From<TokioReader<S, M, B>> for FileReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     fn from(reader: TokioReader<S, M, B>) -> Self {
@@ -69,14 +69,14 @@ where
 /// state and boxed futures, never a self-reference.
 impl<S, M, const B: usize> Unpin for TokioReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
 }
 
 impl<S, M, const B: usize> AsyncRead for TokioReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     S::Error: std::error::Error + Send + Sync + 'static,
     M: WalkMode,
 {
@@ -99,7 +99,7 @@ where
 
 impl<S, M, const B: usize> AsyncSeek for TokioReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     S::Error: std::error::Error + Send + Sync + 'static,
     M: WalkMode,
 {
@@ -121,7 +121,7 @@ where
 
 impl<S, M, const B: usize> fmt::Debug for TokioReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

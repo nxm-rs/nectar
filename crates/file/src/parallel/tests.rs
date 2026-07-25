@@ -210,6 +210,8 @@ impl<const B: usize> nectar_primitives::store::ChunkGet<AnyChunkSet<B>> for Test
 fn encrypted_ingest_reads_back_through_the_walk() {
     use core::future::poll_fn;
 
+    use nectar_primitives::store::ContentGet;
+
     use crate::config::Window;
     use crate::split::RandomKeys;
     use crate::walk::{Encrypted, Walk};
@@ -222,8 +224,8 @@ fn encrypted_ingest_reads_back_through_the_walk() {
         PutWindow::DEFAULT,
     ))
     .unwrap();
-    let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
-        store,
+    let mut walk: Walk<ContentGet<TestStore<TINY>>, Encrypted, TINY> = Walk::new(
+        ContentGet::new(store),
         *root.address(),
         root.key().clone(),
         data.len() as u64,

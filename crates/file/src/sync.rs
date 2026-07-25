@@ -37,7 +37,9 @@ pub struct Pending;
 /// # .unwrap()
 /// # .unwrap();
 /// let bytes = drive(async {
-///     let file = File::open(store, root).await.unwrap();
+///     let file = File::open(nectar_primitives::store::ContentGet::new(store), root)
+///         .await
+///         .unwrap();
 ///     file.collect(u64::MAX).await.unwrap()
 /// })
 /// .unwrap();

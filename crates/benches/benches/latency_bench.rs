@@ -23,7 +23,7 @@ use criterion::{
 use nectar_file::{File, Plain, PutWindow, Split, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
+use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
 use tokio::runtime::Runtime;
 
 /// Narrow body for the deep group: fan-out 8, so a hundred leaves already
@@ -152,8 +152,10 @@ fn read_group<const B: usize>(c: &mut Criterion, name: &str, latency: Duration, 
         group.bench_with_input(BenchmarkId::from_parameter(window), &window, |b, &w| {
             b.iter(|| {
                 rt.block_on(async {
-                    let file: File<LatencyStore<B>, Plain, B> =
-                        File::open(store.clone(), root).await.unwrap();
+                    let file: File<ContentGet<LatencyStore<B>>, Plain, B> =
+                        File::open(ContentGet::new(store.clone()), root)
+                            .await
+                            .unwrap();
                     let mut reader = file.read().window(Window::new(w).unwrap()).build();
                     let mut total = 0usize;
                     while let Some(segment) = reader.next_segment().await {

@@ -23,7 +23,7 @@ use nectar_file::{
     SplitStats, WalkMode, WalkStats, Window,
 };
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
+use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
 use nectar_testing::{run, yield_now};
 
 /// Tiny body size: fan-out 8, so a few hundred leaves already build a deep
@@ -31,7 +31,7 @@ use nectar_testing::{run, yield_now};
 const TINY: usize = 256;
 const BRANCHES: usize = 8;
 
-type PlainFile = File<GaugeStore<TINY>, Plain, TINY>;
+type PlainFile = File<ContentGet<GaugeStore<TINY>>, Plain, TINY>;
 
 /// Distinct byte per file position so every node address is unique.
 fn fill(len: usize) -> Vec<u8> {
@@ -215,13 +215,13 @@ fn split_plain(
 }
 
 fn open_plain(store: GaugeStore<TINY>, root: ChunkAddress) -> PlainFile {
-    run(File::open(store, root)).unwrap()
+    run(File::open(ContentGet::new(store), root)).unwrap()
 }
 
 /// Drain a reader in order, pausing `pause` yields per segment to model a
 /// slow consumer.
 fn drain_reader<M: WalkMode>(
-    reader: &mut FileReader<GaugeStore<TINY>, M, TINY>,
+    reader: &mut FileReader<ContentGet<GaugeStore<TINY>>, M, TINY>,
     pause: usize,
 ) -> Vec<u8> {
     run(async {
@@ -611,6 +611,7 @@ mod encrypted {
 
     use nectar_file::{Encrypted, File, KeyError, KeySource, PutWindow, Split, SplitStats, Window};
     use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
+    use nectar_primitives::store::ContentGet;
     use nectar_testing::run;
 
     use super::{
@@ -679,8 +680,8 @@ mod encrypted {
             );
 
             let store = built.fresh(2);
-            let file: File<GaugeStore<TINY>, Encrypted, TINY> =
-                run(File::open_encrypted(store.clone(), root)).unwrap();
+            let file: File<ContentGet<GaugeStore<TINY>>, Encrypted, TINY> =
+                run(File::open_encrypted(ContentGet::new(store.clone()), root)).unwrap();
             assert_eq!(store.gets.total(), 1, "open fetched more than the root");
             assert_eq!(file.len(), size as u64);
             let window = 3u16;

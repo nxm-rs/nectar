@@ -9,16 +9,16 @@
 
 use bytes::Bytes;
 use nectar_file::{CollectError, File, OpenError};
-use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::{ChunkGet, MaybeSync};
+use nectar_primitives::{ChunkAddress, ContentOnlyChunkSet};
 
 use crate::format::Format;
 use crate::reader::{Reader, ReaderError};
 use crate::store::NodeGet;
 use crate::value::{Entry, Key};
 
-/// The store error of `S` over the standard registry.
-type StoreError<S> = <S as ChunkGet>::Error;
+/// The store error of `S` over the content-only registry.
+type StoreError<S> = <S as ChunkGet<ContentOnlyChunkSet>>::Error;
 
 /// A failure resolving a key or entry to its file bytes.
 #[non_exhaustive]
@@ -74,7 +74,7 @@ where
     /// ```
     /// use nectar_testing::run;
     /// use nectar_manifest::{build_files, Key, Reader};
-    /// use nectar_primitives::MemoryStore;
+    /// use nectar_primitives::{ContentGet, MemoryStore};
     ///
     /// let store = MemoryStore::default();
     /// let files = [(
@@ -83,7 +83,7 @@ where
     /// )];
     /// let root = *run(build_files(&store, files)).unwrap().root();
     ///
-    /// let reader: Reader<_> = Reader::new(store.clone());
+    /// let reader: Reader<_> = Reader::new(ContentGet::new(store.clone()));
     /// let page = run(reader.fetch(&root, &Key::from(&b"index.html"[..]))).unwrap();
     /// assert_eq!(page.as_deref(), Some(&b"<h1>hi</h1>"[..]));
     /// ```
@@ -102,7 +102,7 @@ where
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use nectar_primitives::store::MemoryStore;
+    use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_testing::run;
 
     use crate::builder::{Builder, build_files};
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn publish_then_fetch_round_trips_file_bytes() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let files = [
             (
                 Key::from(&b"index.html"[..]),
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn fetch_of_an_absent_key_is_none() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let files = [(Key::from(&b"a"[..]), Bytes::from_static(b"x"))];
         let root = *run(build_files(&store, files)).unwrap().root();
 
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn read_returns_inline_bytes_directly() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut builder = Builder::new();
         let value: Entry = Entry::inline(Bytes::from_static(b"inline")).unwrap();
         builder.insert(Key::from(&b"k"[..]), value, None);

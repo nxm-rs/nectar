@@ -10,7 +10,7 @@ use nectar_manifest::{
     BuildStats, Builder, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node, NodeGet,
     Prefix, RootExtension, V1, build_files,
 };
-use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, MemoryStore};
+use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, ContentGet, MemoryStore};
 use nectar_testing::{run, split_whole};
 
 const fn ref32(byte: u8) -> ChunkRef {
@@ -90,7 +90,7 @@ fn builds_the_worked_example_byte_for_byte() -> Result<()> {
         "root payload",
     );
 
-    let decoded: Node = run(store.get_node(built.root()))?;
+    let decoded: Node = run(ContentGet::new(&store).get_node(built.root()))?;
     ensure!(decoded == worked_example_node()?, "decoded root");
     Ok(())
 }
@@ -181,7 +181,7 @@ fn the_empty_builder_publishes_the_empty_root() -> Result<()> {
     ensure!(built.stats().peak_open_nodes() == 1, "one open node");
     ensure!(built.stats().nodes_written() == 1, "one node written");
 
-    let node: Node = run(store.get_node(built.root()))?;
+    let node: Node = run(ContentGet::new(&store).get_node(built.root()))?;
     ensure!(node.is_empty(), "root is the empty map");
     Ok(())
 }
@@ -197,7 +197,7 @@ fn build_files_splits_through_bmt_and_references_the_stored_roots() -> Result<()
     ];
 
     let built = run(build_files(&store, files))?;
-    let node: Node = run(store.get_node(built.root()))?;
+    let node: Node = run(ContentGet::new(&store).get_node(built.root()))?;
 
     // Each file's manifest entry is its independent BMT root, and every file
     // chunk is present in the same store.
@@ -231,7 +231,7 @@ fn a_key_that_prefixes_another_shares_a_fork() -> Result<()> {
         .insert(Key::from(&b"ab"[..]), Entry::from(ref32(2)), None);
     let built = run(builder.build(&store))?;
 
-    let node: Node = run(store.get_node(built.root()))?;
+    let node: Node = run(ContentGet::new(&store).get_node(built.root()))?;
     let record = node.forks().get(b'a').context("missing fork a")?;
     ensure!(record.tail().is_empty(), "single-byte edge");
     // "a" terminates here and the trie continues to "ab".

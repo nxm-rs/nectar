@@ -10,7 +10,7 @@ use std::vec::Vec;
 
 use bytes::Bytes;
 use nectar_primitives::chunk::{
-    AnyChunk, AnyChunkSet, Chunk, ChunkAddress, ChunkOps, ContentChunk, Verified,
+    Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, Verified,
 };
 use nectar_primitives::store::{ChunkGet, ChunkStoreError, TrustedGet};
 use nectar_testing::{run, yield_now};
@@ -24,7 +24,7 @@ const TINY: usize = 256;
 const TINY_U64: u64 = 256;
 const BRANCHES: usize = 8;
 
-type TinyRegistry = AnyChunkSet<TINY>;
+type TinyRegistry = ContentOnlyChunkSet<TINY>;
 type TinyChunk = Chunk<Verified, TinyRegistry>;
 type TinyWalk<S> = Walk<S, Plain, TINY>;
 
@@ -38,7 +38,7 @@ fn fill(len: usize) -> Vec<u8> {
 
 fn seal(content: ContentChunk<TINY>) -> (ChunkAddress, TinyChunk) {
     let address = *content.address();
-    let chunk = Chunk::from_envelope(AnyChunk::from(content)).unwrap();
+    let chunk = Chunk::from_envelope(content).unwrap();
     (address, chunk)
 }
 

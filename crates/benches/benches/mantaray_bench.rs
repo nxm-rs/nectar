@@ -2,7 +2,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nectar_mantaray::{Cursor, ManifestEditor, MemoryStore, Reader, hazmat};
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
-use nectar_primitives::store::ChunkGet;
+use nectar_primitives::store::{ChunkGet, ContentGet};
 use nectar_testing::run;
 
 type Store = MemoryStore<StandardChunkSet>;
@@ -87,7 +87,7 @@ fn bench_get(c: &mut Criterion) {
     let mut group = c.benchmark_group("get");
 
     let (root, store) = build_spa();
-    let reader = Reader::new(store);
+    let reader = Reader::new(ContentGet::new(store));
 
     group.bench_function("existing_path", |b| {
         b.iter(|| {
@@ -97,7 +97,7 @@ fn bench_get(c: &mut Criterion) {
     });
 
     let (large_root, large_store) = build_large(500);
-    let large_reader = Reader::new(large_store);
+    let large_reader = Reader::new(ContentGet::new(large_store));
 
     group.bench_function("500_paths_deep", |b| {
         b.iter(|| {
@@ -131,7 +131,7 @@ fn bench_has_prefix(c: &mut Criterion) {
     let mut group = c.benchmark_group("has_prefix");
 
     let (root, store) = build_spa();
-    let reader = Reader::new(store);
+    let reader = Reader::new(ContentGet::new(store));
 
     group.bench_function("existing_prefix", |b| {
         b.iter(|| run(reader.has_prefix(&root, b"js/")).unwrap());
@@ -179,7 +179,8 @@ fn bench_decode(c: &mut Criterion) {
 /// Drain the ordered listing cursor, returning the entry count.
 fn drain_cursor(root: ChunkAddress, store: &Store) -> u32 {
     run(async {
-        let mut cursor: Cursor<Store> = Cursor::new(store.clone(), root);
+        let mut cursor: Cursor<ContentGet<Store>> =
+            Cursor::new(ContentGet::new(store.clone()), root);
         let mut count = 0u32;
         while let Some(entry) = cursor.next().await {
             entry.unwrap();
@@ -213,7 +214,7 @@ fn bench_full_workflow(c: &mut Criterion) {
     group.bench_function("commit_then_lookup", |b| {
         b.iter(|| {
             let (root, store) = build_spa();
-            let reader = Reader::new(store);
+            let reader = Reader::new(ContentGet::new(store));
             let paths: &[&[u8]] = &[
                 b"css/app.css",
                 b"favicon.ico",

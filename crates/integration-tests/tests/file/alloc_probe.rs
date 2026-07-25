@@ -12,14 +12,14 @@
 use std::sync::Arc;
 
 use nectar_file::{Encrypted, File, RandomKeys};
-use nectar_primitives::chunk::AnyChunkSet;
+use nectar_primitives::chunk::ContentOnlyChunkSet;
 use nectar_primitives::store::MemoryStore;
 use nectar_testing::{AllocationInfo, measure_allocations, run, split_into};
 
 /// Body size of the default profile.
 const BODY: usize = nectar_primitives::DEFAULT_BODY_SIZE;
 
-type Store = Arc<MemoryStore<AnyChunkSet<BODY>>>;
+type Store = Arc<MemoryStore<ContentOnlyChunkSet<BODY>>>;
 
 /// Distinct byte per position so every chunk address is unique.
 fn fill(len: usize) -> Vec<u8> {

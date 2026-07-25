@@ -7,19 +7,23 @@ use std::sync::Arc;
 
 use nectar_file::{Plain, Split, SplitMode};
 use nectar_postage::BucketDepth;
-use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
+use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress, ContentOnlyChunkSet};
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{DEFAULT_BODY_SIZE, NetworkId, SwarmSpec};
 
 use crate::run;
 
+/// A split's output store, narrowed for the content-only read paths.
+pub type SplitStore<const B: usize = DEFAULT_BODY_SIZE> = MemoryStore<ContentOnlyChunkSet<B>>;
+
 /// Splits `data` whole through the streaming engine into a fresh store,
-/// returning the root and the filled store. `MemoryStore` clones deeply, so
-/// the split writes through a shared `Arc` handle that unwraps once the puts
-/// have drained.
+/// returning the root and the filled store narrowed to the content-only
+/// registry the read paths bind. `MemoryStore` clones deeply, so the split
+/// writes through a shared `Arc` handle that unwraps once the puts have
+/// drained.
 pub async fn try_split_into<M, const B: usize>(
     data: &[u8],
-) -> Result<(M::Root, MemoryStore<AnyChunkSet<B>>), Box<dyn Error>>
+) -> Result<(M::Root, SplitStore<B>), Box<dyn Error>>
 where
     M: SplitMode + Default,
 {
@@ -27,12 +31,21 @@ where
     let root =
         Split::<Arc<MemoryStore<AnyChunkSet<B>>>, M, B>::collect(Arc::clone(&store), data).await?;
     let store = Arc::into_inner(store).ok_or("split still holds the store")?;
-    Ok((root, store))
+    let chunks = store
+        .into_chunks()
+        .into_values()
+        .map(|chunk| {
+            chunk
+                .narrow_content()
+                .ok_or("split wrote a non-content chunk")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((root, MemoryStore::from_chunks(chunks)))
 }
 
 /// [`try_split_into`] driven to completion on the calling thread; panics on
 /// a split failure.
-pub fn split_into<M, const B: usize>(data: &[u8]) -> (M::Root, MemoryStore<AnyChunkSet<B>>)
+pub fn split_into<M, const B: usize>(data: &[u8]) -> (M::Root, SplitStore<B>)
 where
     M: SplitMode + Default,
 {
@@ -40,12 +53,12 @@ where
 }
 
 /// Plain split of `data` at the default profile, returning root and store.
-pub async fn split_whole(data: &[u8]) -> Result<(ChunkAddress, MemoryStore), Box<dyn Error>> {
+pub async fn split_whole(data: &[u8]) -> Result<(ChunkAddress, SplitStore), Box<dyn Error>> {
     try_split_into::<Plain, DEFAULT_BODY_SIZE>(data).await
 }
 
 /// Plain split of `data` into a fresh memory store, returning root and store.
-pub fn split_fixture<const B: usize>(data: &[u8]) -> (ChunkAddress, MemoryStore<AnyChunkSet<B>>) {
+pub fn split_fixture<const B: usize>(data: &[u8]) -> (ChunkAddress, SplitStore<B>) {
     split_into::<Plain, B>(data)
 }
 
