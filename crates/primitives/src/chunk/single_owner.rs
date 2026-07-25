@@ -32,7 +32,7 @@ const SIGNATURE_SIZE: usize = 65;
 /// The address of the owner of the SOC for dispersed replicas.
 const DISPERSED_REPLICA_OWNER: Address = address!("0xdc5b20847f43d67928f49cd4f85d696b5a7617b5");
 /// Generated from the private key `0x0100000000000000000000000000000000000000000000000000000000000000`.
-const DISPERSED_REPLICA_OWNER_PK: B256 =
+pub(crate) const DISPERSED_REPLICA_OWNER_PK: B256 =
     b256!("0x0100000000000000000000000000000000000000000000000000000000000000");
 
 /// A single-owner chunk (SOC) with configurable body size.
