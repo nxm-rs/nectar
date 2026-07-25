@@ -1,6 +1,6 @@
 use alloy_primitives::{B256, b256};
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use nectar_primitives::{OverlayAddress, XorMetric};
+use nectar_primitives::{Mainnet, OverlayAddress, XorMetric};
 use rand::prelude::*;
 
 pub fn address_benchmarks(c: &mut Criterion) {
@@ -42,15 +42,15 @@ pub fn address_benchmarks(c: &mut Criterion) {
 
     // Benchmark extended proximity calculation between addresses
     group.bench_function("extended_proximity_same", |b| {
-        b.iter(|| black_box(base_addr.extended_proximity(&base_addr)))
+        b.iter(|| black_box(base_addr.extended_proximity(&base_addr, &Mainnet)))
     });
 
     group.bench_function("extended_proximity_near", |b| {
-        b.iter(|| black_box(base_addr.extended_proximity(&near_addr)))
+        b.iter(|| black_box(base_addr.extended_proximity(&near_addr, &Mainnet)))
     });
 
     group.bench_function("extended_proximity_far", |b| {
-        b.iter(|| black_box(base_addr.extended_proximity(&far_addr)))
+        b.iter(|| black_box(base_addr.extended_proximity(&far_addr, &Mainnet)))
     });
 
     // Benchmark distance calculation between addresses

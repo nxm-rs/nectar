@@ -103,7 +103,7 @@ pub use overlay::compute_overlay;
 pub use proximity_order::{ProximityOrder, ProximityOrderError};
 pub use spec::{Mainnet, SwarmSpec, Testnet};
 pub use timestamp::{Timestamp, TimestampError};
-pub use xor_metric::{EXTENDED_PO, MAX_PO, XorMetric};
+pub use xor_metric::{MAX_PO, XorMetric};
 
 /// Former name of the node-identity address kind.
 #[deprecated(note = "use `OverlayAddress`; this alias is removed in the next release")]
