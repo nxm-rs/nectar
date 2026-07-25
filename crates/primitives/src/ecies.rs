@@ -27,12 +27,41 @@ pub enum EciesError {
     },
 }
 
+/// KDF salt for the shared-key derivation.
+///
+/// The hash input is `x || salt` with `x` stripped of leading zeros, so the
+/// split is not length-delimited; keep salts to the sanctioned shapes (the
+/// 32-byte topic, the reference construction's short access-control salts,
+/// empty). [`Salt::raw`] is the explicit escape for the short shapes.
+#[derive(Debug, Clone, Copy)]
+pub struct Salt<'a>(&'a [u8]);
+
+impl<'a> Salt<'a> {
+    /// Wrap an arbitrary-length salt.
+    #[must_use]
+    pub const fn raw(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
+
+    /// Access the raw salt bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        self.0
+    }
+}
+
+impl<'a> From<&'a [u8; 32]> for Salt<'a> {
+    fn from(topic: &'a [u8; 32]) -> Self {
+        Self(topic)
+    }
+}
+
 /// Derive the shared cipher key: `keccak256(x || salt)`.
 ///
 /// Symmetric: the encryptor passes `(ephemeral_secret, recipient_public)`,
 /// the decryptor `(recipient_secret, ephemeral_public)`.
 #[must_use]
-pub fn shared_key(secret: &SecretKey, public: &PublicKey, salt: &[u8]) -> EncryptionKey {
+pub fn shared_key(secret: &SecretKey, public: &PublicKey, salt: Salt<'_>) -> EncryptionKey {
     let shared = k256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
 
     // The reference client serialises x as a big integer: leading zero
@@ -44,7 +73,7 @@ pub fn shared_key(secret: &SecretKey, public: &PublicKey, salt: &[u8]) -> Encryp
 
     let mut hasher = Keccak256::new();
     hasher.update(x);
-    hasher.update(salt);
+    hasher.update(salt.as_bytes());
     EncryptionKey::from(hasher.finalize())
 }
 
@@ -60,10 +89,10 @@ impl Hint {
 
     /// Derive the hint for a shared key and salt.
     #[must_use]
-    pub fn derive(key: &EncryptionKey, salt: &[u8]) -> Self {
+    pub fn derive(key: &EncryptionKey, salt: Salt<'_>) -> Self {
         let mut hasher = Keccak256::new();
         hasher.update(key.as_bytes());
-        hasher.update(salt);
+        hasher.update(salt.as_bytes());
         let digest: [u8; 32] = hasher.finalize().0;
         let [b0, b1, b2, b3, b4, b5, b6, b7, ..] = digest;
         Self([b0, b1, b2, b3, b4, b5, b6, b7])
@@ -133,7 +162,7 @@ pub fn generate_secret() -> SecretKey {
 #[cfg(any(test, feature = "encryption"))]
 pub fn encrypt(
     recipient: &PublicKey,
-    salt: &[u8],
+    salt: Salt<'_>,
     plaintext: &[u8],
     pad_to: Option<usize>,
 ) -> Result<Encrypted, EciesError> {
@@ -147,7 +176,7 @@ pub fn encrypt(
 pub fn encrypt_with(
     ephemeral: &SecretKey,
     recipient: &PublicKey,
-    salt: &[u8],
+    salt: Salt<'_>,
     plaintext: &[u8],
     pad_to: Option<usize>,
 ) -> Result<Encrypted, EciesError> {
@@ -229,16 +258,16 @@ mod tests {
             "4a44080be348dc2e52afc1c441c35af054cfa397ce0da076c3f65aa65ca659f166736e30923400d5"
         );
 
-        let out = encrypt_with(&eph, &recip_pub, &TOPIC, &plaintext40(), None).unwrap();
+        let out = encrypt_with(&eph, &recip_pub, Salt::from(&TOPIC), &plaintext40(), None).unwrap();
         assert_eq!(out.key.as_bytes(), &expected_key);
         assert_eq!(out.ciphertext, expected_ct);
         assert_eq!(
-            Hint::derive(&out.key, &TOPIC),
+            Hint::derive(&out.key, Salt::from(&TOPIC)),
             Hint::from(hex!("523bcd55e968e22b"))
         );
 
         // Decryptor direction: recipient secret with the ephemeral public.
-        let key = shared_key(&recip, &out.ephemeral, &TOPIC);
+        let key = shared_key(&recip, &out.ephemeral, Salt::from(&TOPIC));
         assert_eq!(key.as_bytes(), &expected_key);
         assert_eq!(decrypt(&key, &out.ciphertext), plaintext40());
     }
@@ -246,7 +275,7 @@ mod tests {
     #[test]
     fn conformance_short_salt() {
         let (eph, _, recip_pub) = keys();
-        let out = encrypt_with(&eph, &recip_pub, b"salt", &[0xaa; 32], None).unwrap();
+        let out = encrypt_with(&eph, &recip_pub, Salt::raw(b"salt"), &[0xaa; 32], None).unwrap();
         assert_eq!(
             out.key.as_bytes(),
             &hex!("7cd1824531c584a2465e3bf27b00bc94b6501de09b761541079ba4c40220b92f")
@@ -256,7 +285,7 @@ mod tests {
             hex!("48068375611c6a1ab294f597ad32f75ba37bf12d6f0dae4d9eda997075ef3551")
         );
         assert_eq!(
-            Hint::derive(&out.key, b"salt"),
+            Hint::derive(&out.key, Salt::raw(b"salt")),
             Hint::from(hex!("6266792501751968"))
         );
     }
@@ -264,14 +293,14 @@ mod tests {
     #[test]
     fn conformance_empty_salt_empty_plaintext() {
         let (eph, _, recip_pub) = keys();
-        let out = encrypt_with(&eph, &recip_pub, &[], &[], None).unwrap();
+        let out = encrypt_with(&eph, &recip_pub, Salt::raw(&[]), &[], None).unwrap();
         assert_eq!(
             out.key.as_bytes(),
             &hex!("65755c74f04311cbf5701c4011ed8e9738e9e91ab261ae1a3f3ea4356f7d001f")
         );
         assert!(out.ciphertext.is_empty());
         assert_eq!(
-            Hint::derive(&out.key, &[]),
+            Hint::derive(&out.key, Salt::raw(&[])),
             Hint::from(hex!("b82a360cac8110d6"))
         );
     }
@@ -287,7 +316,7 @@ mod tests {
         eph_sk[31] = 0x34;
         let eph = SecretKey::from_slice(&eph_sk).unwrap();
 
-        let out = encrypt_with(&eph, &recip_pub, &TOPIC, &plaintext40(), None).unwrap();
+        let out = encrypt_with(&eph, &recip_pub, Salt::from(&TOPIC), &plaintext40(), None).unwrap();
         assert_eq!(
             out.key.as_bytes(),
             &hex!("c6ea100a183c558bfc0c9b0d0322c5ca3845504e78b40354f6e4c1acc5f7dbe3")
@@ -299,7 +328,7 @@ mod tests {
             )
         );
         assert_eq!(
-            Hint::derive(&out.key, &TOPIC),
+            Hint::derive(&out.key, Salt::from(&TOPIC)),
             Hint::from(hex!("946860fd5c210b9c"))
         );
     }
@@ -308,11 +337,14 @@ mod tests {
     fn roundtrip_random_ephemeral_with_padding() {
         let (_, recip, recip_pub) = keys();
         let plaintext = plaintext40();
-        let out = encrypt(&recip_pub, &TOPIC, &plaintext, Some(4032)).unwrap();
+        let out = encrypt(&recip_pub, Salt::from(&TOPIC), &plaintext, Some(4032)).unwrap();
         assert_eq!(out.ciphertext.len(), 4032);
 
-        let key = shared_key(&recip, &out.ephemeral, &TOPIC);
-        assert_eq!(Hint::derive(&key, &TOPIC), Hint::derive(&out.key, &TOPIC));
+        let key = shared_key(&recip, &out.ephemeral, Salt::from(&TOPIC));
+        assert_eq!(
+            Hint::derive(&key, Salt::from(&TOPIC)),
+            Hint::derive(&out.key, Salt::from(&TOPIC))
+        );
         let recovered = decrypt(&key, &out.ciphertext);
         assert_eq!(&recovered[..plaintext.len()], &plaintext[..]);
     }
@@ -321,8 +353,9 @@ mod tests {
     fn padding_extends_ciphertext_only() {
         let (eph, _, recip_pub) = keys();
         let plaintext = plaintext40();
-        let plain = encrypt_with(&eph, &recip_pub, &TOPIC, &plaintext, None).unwrap();
-        let padded = encrypt_with(&eph, &recip_pub, &TOPIC, &plaintext, Some(100)).unwrap();
+        let plain = encrypt_with(&eph, &recip_pub, Salt::from(&TOPIC), &plaintext, None).unwrap();
+        let padded =
+            encrypt_with(&eph, &recip_pub, Salt::from(&TOPIC), &plaintext, Some(100)).unwrap();
         assert_eq!(padded.ciphertext.len(), 100);
         assert_eq!(&padded.ciphertext[..40], &plain.ciphertext[..]);
     }
@@ -330,7 +363,14 @@ mod tests {
     #[test]
     fn plaintext_longer_than_padding_errors() {
         let (eph, _, recip_pub) = keys();
-        let err = encrypt_with(&eph, &recip_pub, &TOPIC, &plaintext40(), Some(39)).unwrap_err();
+        let err = encrypt_with(
+            &eph,
+            &recip_pub,
+            Salt::from(&TOPIC),
+            &plaintext40(),
+            Some(39),
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             EciesError::PlaintextTooLong {
@@ -343,12 +383,12 @@ mod tests {
     #[test]
     fn wrong_salt_derives_different_key() {
         let (eph, recip, recip_pub) = keys();
-        let out = encrypt_with(&eph, &recip_pub, &TOPIC, &plaintext40(), None).unwrap();
-        let wrong = shared_key(&recip, &out.ephemeral, b"other");
+        let out = encrypt_with(&eph, &recip_pub, Salt::from(&TOPIC), &plaintext40(), None).unwrap();
+        let wrong = shared_key(&recip, &out.ephemeral, Salt::raw(b"other"));
         assert_ne!(wrong.as_bytes(), out.key.as_bytes());
         assert_ne!(
-            Hint::derive(&wrong, b"other"),
-            Hint::derive(&out.key, &TOPIC)
+            Hint::derive(&wrong, Salt::raw(b"other")),
+            Hint::derive(&out.key, Salt::from(&TOPIC))
         );
     }
 
