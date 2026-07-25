@@ -531,7 +531,7 @@ fn select_fragment<F: Format>(steps: Vec<Ranked<F>>, index: &mut u64) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use nectar_primitives::store::MemoryStore;
+    use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
     use nectar_testing::run;
 
@@ -555,12 +555,12 @@ mod tests {
 
     #[test]
     fn the_root_entry_is_index_zero_and_lifts_every_rank() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root_ext = RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
         let root = run(store.put_node(&Node::<V1>::new(root_ext, forks))).unwrap();
-        let reader = Reader::<&MemoryStore, V1>::new(&store);
+        let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
 
         // The empty key leads iteration at index 0; "k" follows at index 1.
         assert_eq!(
@@ -586,7 +586,7 @@ mod tests {
 
     // A root holding "a" and "z" as plain values with an encrypted five-key
     // subtree wedged between them under "m"; the count rides the fork record.
-    fn with_encrypted(store: &MemoryStore) -> ChunkAddress {
+    fn with_encrypted(store: &ContentGet<MemoryStore>) -> ChunkAddress {
         let mut forks = ForkTable::new();
         forks
             .insert(prefix(b"a"), entry(0xA1).into(), None)
@@ -614,9 +614,9 @@ mod tests {
 
     #[test]
     fn an_encrypted_subtree_is_counted_without_being_opened() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = with_encrypted(&store);
-        let reader = Reader::<&MemoryStore, V1>::new(&store);
+        let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
 
         // Ranking past the encrypted subtree adds its stored count: "a", then its
         // five keys, all strictly before "z".
@@ -632,9 +632,9 @@ mod tests {
 
     #[test]
     fn descending_into_an_encrypted_subtree_is_an_error() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = with_encrypted(&store);
-        let reader = Reader::<&MemoryStore, V1>::new(&store);
+        let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
 
         // A rank whose key funnels into the encrypted subtree cannot be answered.
         assert!(matches!(
@@ -650,9 +650,9 @@ mod tests {
 
     #[test]
     fn an_empty_manifest_has_no_keys() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = run(store.put_node(&Node::<V1>::empty())).unwrap();
-        let reader = Reader::<&MemoryStore, V1>::new(&store);
+        let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
         assert_eq!(run(reader.rank(&root, &Key::from(&b"x"[..]))).unwrap(), 0);
         assert_eq!(run(reader.select(&root, 0)).unwrap(), None);
         let mut cursor = run(reader.paginate_prefix(&root, &Key::empty(), 0, 10)).unwrap();

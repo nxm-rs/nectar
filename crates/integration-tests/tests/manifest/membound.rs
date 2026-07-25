@@ -16,9 +16,9 @@ use nectar_manifest::{
     ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, Metadata, Reader, V1, apply,
     generators, recanonicalize,
 };
-use nectar_primitives::store::{ChunkGet, MemoryStore};
+use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{
-    Chunk, ChunkAddress, ChunkOps, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet, Verified,
+    Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentOnlyChunkSet, DEFAULT_BODY_SIZE, Verified,
 };
 use nectar_testing::run;
 use proptest::prelude::*;
@@ -32,7 +32,7 @@ fn entry(byte: u8) -> Entry<V1> {
 /// lookup fetched.
 #[derive(Debug, Default)]
 struct CountingStore {
-    inner: MemoryStore,
+    inner: ContentGet<MemoryStore>,
     gets: AtomicUsize,
 }
 
@@ -42,14 +42,14 @@ impl CountingStore {
     }
 }
 
-impl ChunkGet<StandardChunkSet> for CountingStore {
+impl ChunkGet<ContentOnlyChunkSet> for CountingStore {
     type Trust = Verified;
-    type Error = <MemoryStore as ChunkGet>::Error;
+    type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<Verified, StandardChunkSet>, Self::Error> {
+    ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
         self.gets.fetch_add(1, Ordering::Relaxed);
         ChunkGet::get(&self.inner, address).await
     }
@@ -180,7 +180,7 @@ fn a_million_key_manifest_is_depth_bounded() -> Result<()> {
     // small constant per level, so the fetch count is bounded independent of the
     // key count.
     let store = CountingStore {
-        inner,
+        inner: ContentGet::new(inner),
         gets: AtomicUsize::new(0),
     };
     let reader: Reader<_> = Reader::new(&store);
@@ -222,7 +222,7 @@ fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> Result<()> {
     );
     assert_single_chunk_nodes(&store)?;
 
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: Reader<_> = Reader::new(ContentGet::new(&store));
     run(async {
         for first in [0u8, 1, 127, 200, 255] {
             let value = reader.get(built.root(), &Key::from(vec![first])).await?;
@@ -300,7 +300,11 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> Result<()> {
         let byte = u8::try_from(first)?;
         changeset.put(Key::from(vec![byte]), entry(byte), Some(heavy()?));
     }
-    let applied = run(apply(&base_store, base.root(), &changeset))?;
+    let applied = run(apply(
+        &ContentGet::new(&base_store),
+        base.root(),
+        &changeset,
+    ))?;
 
     // A from-scratch build of the merged key set.
     let scratch_store = MemoryStore::default();
@@ -386,7 +390,7 @@ proptest! {
         for (key, fill, _) in &delta {
             changeset.put(Key::from(key.clone()), entry(*fill), None);
         }
-        match run(apply(&store, built.root(), &changeset)) {
+        match run(apply(&ContentGet::new(&store), built.root(), &changeset)) {
             Ok(_) => {
                 for len in chunk_lengths(&store) {
                     prop_assert!(len <= DEFAULT_BODY_SIZE, "applied node over one chunk body");

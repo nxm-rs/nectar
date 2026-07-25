@@ -12,8 +12,8 @@ use anyhow::{Result, ensure};
 use arbitrary::Unstructured;
 use bytes::Bytes;
 use nectar_manifest::{Builder, Cursor, Entry, Format, Key, Reader, V1, generators};
-use nectar_primitives::store::{ChunkGet, MemoryStore};
-use nectar_primitives::{Chunk, ChunkAddress, StandardChunkSet, Verified};
+use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
+use nectar_primitives::{Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
 use proptest::prelude::*;
 
@@ -21,7 +21,7 @@ use proptest::prelude::*;
 /// nodes a walk fetched.
 #[derive(Debug, Default)]
 struct CountingStore {
-    inner: MemoryStore,
+    inner: ContentGet<MemoryStore>,
     gets: AtomicUsize,
 }
 
@@ -31,14 +31,14 @@ impl CountingStore {
     }
 }
 
-impl ChunkGet<StandardChunkSet> for CountingStore {
+impl ChunkGet<ContentOnlyChunkSet> for CountingStore {
     type Trust = Verified;
-    type Error = <MemoryStore as ChunkGet>::Error;
+    type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<Verified, StandardChunkSet>, Self::Error> {
+    ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
         self.gets.fetch_add(1, Ordering::Relaxed);
         ChunkGet::get(&self.inner, address).await
     }
@@ -105,7 +105,7 @@ fn iteration_fetches_nodes_not_values() -> Result<()> {
     ensure!(oracle.len() > nodes, "more keys than trie nodes");
 
     let store = CountingStore {
-        inner: memory,
+        inner: ContentGet::new(memory),
         gets: AtomicUsize::new(0),
     };
     let reader: Reader<_> = Reader::new(&store);
@@ -126,7 +126,7 @@ fn range_matches_the_oracle() -> Result<()> {
     let store = MemoryStore::default();
     let (root, oracle) = build(&store)?;
     let counting = CountingStore {
-        inner: store,
+        inner: ContentGet::new(store),
         gets: AtomicUsize::new(0),
     };
     let reader: Reader<_> = Reader::new(&counting);
@@ -152,7 +152,7 @@ fn range_matches_the_oracle() -> Result<()> {
 fn prefix_matches_the_oracle() -> Result<()> {
     let store = MemoryStore::default();
     let (root, oracle) = build(&store)?;
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: Reader<_> = Reader::new(ContentGet::new(&store));
 
     run(async {
         for p in [
@@ -207,20 +207,20 @@ impl Future for YieldOnce {
 /// under the single-threaded test executor.
 #[derive(Debug, Default)]
 struct GatedStore {
-    inner: MemoryStore,
+    inner: ContentGet<MemoryStore>,
     inflight: AtomicUsize,
     peak: AtomicUsize,
     gets: AtomicUsize,
 }
 
-impl ChunkGet<StandardChunkSet> for GatedStore {
+impl ChunkGet<ContentOnlyChunkSet> for GatedStore {
     type Trust = Verified;
-    type Error = <MemoryStore as ChunkGet>::Error;
+    type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<Verified, StandardChunkSet>, Self::Error> {
+    ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
         self.gets.fetch_add(1, Ordering::Relaxed);
         let now = self
             .inflight
@@ -262,7 +262,7 @@ fn read_ahead_bounds_in_flight_and_matches_the_oracle() -> Result<()> {
     ensure!(nodes > 8, "manifest fans out into many referenced children");
 
     let store = GatedStore {
-        inner: memory,
+        inner: ContentGet::new(memory),
         ..Default::default()
     };
     let reader: Reader<_> = Reader::new(&store);
@@ -323,7 +323,7 @@ proptest! {
         }
         let built = run(builder.build(&store))
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: Reader<_> = Reader::new(ContentGet::new(&store));
         let got: Rows = {
             let mut cursor = run(reader.iter(built.root()))
                 .map_err(|e| TestCaseError::fail(e.to_string()))?;
@@ -376,7 +376,7 @@ proptest! {
         }
         let built = run(builder.build(&store))
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
-        let reader: Reader<_> = Reader::new(&store);
+        let reader: Reader<_> = Reader::new(ContentGet::new(&store));
         let got: Rows = {
             let mut cursor = run(reader.iter(built.root()))
                 .map_err(|e| TestCaseError::fail(e.to_string()))?;
@@ -416,7 +416,7 @@ fn read_ahead_never_fetches_past_the_upper_bound() -> Result<()> {
     // hides the over-fetch, because the awaited fetch completes before the
     // executor ever polls the surplus futures.
     let store = GatedStore {
-        inner: memory,
+        inner: ContentGet::new(memory),
         ..Default::default()
     };
     let reader: Reader<_> = Reader::new(&store);
@@ -460,7 +460,7 @@ fn read_ahead_never_fetches_past_the_upper_bound() -> Result<()> {
 fn floor_matches_the_oracle() -> Result<()> {
     let store = MemoryStore::default();
     let (root, oracle) = build(&store)?;
-    let reader: Reader<_> = Reader::new(&store);
+    let reader: Reader<_> = Reader::new(ContentGet::new(&store));
 
     run(async {
         for target in [

@@ -19,7 +19,7 @@
 //!
 //! use nectar_file::{File, Plain, Split, TokioReader};
 //! use nectar_primitives::chunk::AnyChunkSet;
-//! use nectar_primitives::store::MemoryStore;
+//! use nectar_primitives::store::{ContentGet, MemoryStore};
 //! use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 //!
 //! type Store = Arc<MemoryStore<AnyChunkSet<4096>>>;
@@ -31,7 +31,7 @@
 //!     .collect();
 //! # let store: Store = Arc::new(MemoryStore::new());
 //! # let root = Split::<_, Plain, 4096>::collect(Arc::clone(&store), &data).await.unwrap();
-//! let file: File<Store> = File::open(store, root).await.unwrap();
+//! let file: File<ContentGet<Store>> = File::open(ContentGet::new(store), root).await.unwrap();
 //!
 //! // A plain AsyncRead + AsyncSeek: seek to a range, then read it back.
 //! let mut reader = TokioReader::from(file.read().build());

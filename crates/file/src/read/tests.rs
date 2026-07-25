@@ -12,7 +12,7 @@ use std::vec::Vec;
 use bytes::Bytes;
 use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
 use nectar_primitives::chunk::{
-    AnyChunk, AnyChunkSet, Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk,
+    Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk, ContentOnlyChunkSet,
 };
 use nectar_primitives::store::{ChunkStoreError, MemoryStore, TrustedGet};
 use nectar_primitives::{EntryRef, transcrypt};
@@ -30,7 +30,7 @@ use crate::walk::{DecodeError, Encrypted, Plain, WalkError, WalkMode};
 /// build deep trees.
 const TINY: usize = 256;
 
-type TinyStore = MemoryStore<AnyChunkSet<TINY>>;
+type TinyStore = MemoryStore<ContentOnlyChunkSet<TINY>>;
 
 /// Distinct byte per file position so slices are position-sensitive.
 fn fill(len: usize) -> Vec<u8> {
@@ -60,7 +60,7 @@ fn edge_sizes() -> Vec<usize> {
 /// wrapper and the async loop tests.
 async fn drain<S, M>(reader: &mut FileReader<S, M, TINY>) -> Vec<u8>
 where
-    S: TrustedGet<AnyChunkSet<TINY>, Error = ChunkStoreError> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<TINY>, Error = ChunkStoreError> + Clone + 'static,
     M: WalkMode,
 {
     let mut out = Vec::new();
@@ -77,7 +77,7 @@ where
 
 fn drain_reader<S, M>(reader: &mut FileReader<S, M, TINY>) -> Vec<u8>
 where
-    S: TrustedGet<AnyChunkSet<TINY>, Error = ChunkStoreError> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<TINY>, Error = ChunkStoreError> + Clone + 'static,
     M: WalkMode,
 {
     run(drain(reader))
@@ -376,10 +376,10 @@ fn seal(
     content: ContentChunk<TINY>,
 ) -> (
     ChunkAddress,
-    Chunk<nectar_primitives::chunk::Verified, AnyChunkSet<TINY>>,
+    Chunk<nectar_primitives::chunk::Verified, ContentOnlyChunkSet<TINY>>,
 ) {
     let address = *content.address();
-    let chunk = Chunk::from_envelope(AnyChunk::from(content)).unwrap();
+    let chunk = Chunk::from_envelope(content).unwrap();
     (address, chunk)
 }
 
@@ -468,7 +468,7 @@ fn debug_never_leaks_the_decryption_key() {
 
 fn collect_frames<S, M>(mut frames: super::FileFrames<S, M, TINY>) -> Vec<crate::walk::Frame>
 where
-    S: TrustedGet<AnyChunkSet<TINY>, Error = ChunkStoreError> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<TINY>, Error = ChunkStoreError> + Clone + 'static,
     M: WalkMode,
 {
     run(async {
@@ -629,14 +629,15 @@ struct CountingStore {
     gets: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl nectar_primitives::store::ChunkGet<AnyChunkSet<TINY>> for CountingStore {
+impl nectar_primitives::store::ChunkGet<ContentOnlyChunkSet<TINY>> for CountingStore {
     type Trust = nectar_primitives::chunk::Verified;
     type Error = ChunkStoreError;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<nectar_primitives::chunk::Verified, AnyChunkSet<TINY>>, ChunkStoreError> {
+    ) -> Result<Chunk<nectar_primitives::chunk::Verified, ContentOnlyChunkSet<TINY>>, ChunkStoreError>
+    {
         self.gets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         nectar_primitives::store::ChunkGet::get(self.inner.as_ref(), address).await
     }
@@ -720,14 +721,15 @@ struct FailOnce {
     countdown: std::sync::Arc<std::sync::Mutex<Option<usize>>>,
 }
 
-impl nectar_primitives::store::ChunkGet<AnyChunkSet<TINY>> for FailOnce {
+impl nectar_primitives::store::ChunkGet<ContentOnlyChunkSet<TINY>> for FailOnce {
     type Trust = nectar_primitives::chunk::Verified;
     type Error = ChunkStoreError;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<nectar_primitives::chunk::Verified, AnyChunkSet<TINY>>, ChunkStoreError> {
+    ) -> Result<Chunk<nectar_primitives::chunk::Verified, ContentOnlyChunkSet<TINY>>, ChunkStoreError>
+    {
         let fail = {
             let mut slot = self.countdown.lock().unwrap();
             match slot.as_mut() {

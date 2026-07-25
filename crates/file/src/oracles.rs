@@ -8,7 +8,7 @@
 
 use alloc::vec::Vec;
 
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentChunk, Verified};
+use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentChunk, ContentOnlyChunkSet, Verified};
 use nectar_primitives::oracles::Violation;
 use nectar_primitives::store::MemoryStore;
 
@@ -37,7 +37,10 @@ fn synth(span: u64, payload: &[u8]) -> Option<ContentChunk<BODY>> {
 /// Open and drain the tree at `root`; malformed trees may only fail typed.
 /// Returns whether the open and the bounded collect both succeeded, in
 /// which case the delivered length must equal the declared span.
-fn probe(store: &MemoryStore<AnyChunkSet<BODY>>, root: ChunkAddress) -> Result<bool, Violation> {
+fn probe(
+    store: &MemoryStore<ContentOnlyChunkSet<BODY>>,
+    root: ChunkAddress,
+) -> Result<bool, Violation> {
     let store = store.clone();
     let outcome = drive(async move {
         let Ok(file) = File::<_, Plain, BODY>::open(store, root).await else {
@@ -77,7 +80,7 @@ pub fn malformed_walk(
     root_span: u64,
     arity: u8,
 ) -> Result<Option<bool>, Violation> {
-    let mut chunks: Vec<Chunk<Verified, AnyChunkSet<BODY>>> = Vec::new();
+    let mut chunks: Vec<Chunk<Verified, ContentOnlyChunkSet<BODY>>> = Vec::new();
     for (span, payload) in specs.iter().take(MAX_CHUNKS) {
         if let Some(chunk) = synth(*span, payload) {
             chunks.push(chunk.seal());
@@ -96,7 +99,7 @@ pub fn malformed_walk(
             body.extend_from_slice(address.as_bytes());
         }
         if let Some(root) = synth(root_span, &body) {
-            let sealed: Chunk<Verified, AnyChunkSet<BODY>> = root.seal();
+            let sealed: Chunk<Verified, ContentOnlyChunkSet<BODY>> = root.seal();
             let root_address = *sealed.address();
             let store =
                 MemoryStore::from_chunks(store.clone().into_chunks().into_values().chain([sealed]));

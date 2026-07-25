@@ -337,7 +337,7 @@ fn directory_index<F: Format>(path: &[u8], index: &[u8]) -> Key {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use nectar_primitives::store::MemoryStore;
+    use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef};
     use nectar_testing::run;
 
@@ -351,7 +351,7 @@ mod tests {
     }
 
     /// Build a manifest from `(key, value)` pairs and return its root address.
-    fn manifest(store: &MemoryStore, pairs: &[(&[u8], u8)]) -> ChunkAddress {
+    fn manifest(store: &ContentGet<MemoryStore>, pairs: &[(&[u8], u8)]) -> ChunkAddress {
         let mut builder = Builder::new();
         for (key, byte) in pairs {
             builder.insert(Key::from(&key[..]), entry(*byte), None);
@@ -360,7 +360,7 @@ mod tests {
     }
 
     /// Drain a listing into its entries.
-    fn entries(mut listing: Listing<'_, &MemoryStore>) -> Vec<DirEntry> {
+    fn entries(mut listing: Listing<'_, &ContentGet<MemoryStore>>) -> Vec<DirEntry> {
         let mut out = Vec::new();
         while let Some(item) = run(listing.next()).unwrap() {
             out.push(item);
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn list_collapses_subdirectories_at_the_separator() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = manifest(
             &store,
             &[
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn list_of_a_nested_directory_reads_one_level() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = manifest(
             &store,
             &[
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn list_collapses_consecutive_subdirectories() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // Two subdirectories in a row exercise the reseek-then-collapse-again
         // path: each named subtree must be skipped without swallowing the next.
         let root = manifest(
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn list_skips_the_directory_key_itself() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // A key exactly equal to the listed directory path is the directory
         // itself, not a child.
         let root = manifest(&store, &[(b"dir/", 0x01), (b"dir/a", 0x02)]);
@@ -485,7 +485,7 @@ mod tests {
         use crate::node::Node;
         use crate::store::NodePut;
 
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         // A referenced "mg/" subtree holding a nested subdirectory and a file,
         // so listing it delegates to the subtree root and still collapses and
         // reseeks in the subtree's own key space.
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn serve_prefers_an_exact_key() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = manifest(&store, &[(b"a.html", 0x01)]);
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn serve_falls_back_to_the_index_document() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut builder = Builder::new();
         builder.insert(Key::from(&b"index.html"[..]), entry(0x01), None);
         builder.insert(Key::from(&b"docs/index.html"[..]), entry(0x02), None);
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn serve_falls_back_to_the_error_document() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut builder = Builder::new();
         builder.insert(Key::from(&b"404.html"[..]), entry(0x09), None);
         builder.manifest_metadata(
@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn serve_missing_without_conventions_is_missing() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let root = manifest(&store, &[(b"a.html", 0x01)]);
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn website_reads_the_root_conventions() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let mut builder = Builder::new();
         builder.insert(Key::from(&b"index.html"[..]), entry(0x01), None);
         let mut meta = Metadata::new(
@@ -647,11 +647,11 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use nectar_primitives::store::ChunkGet;
-    use nectar_primitives::{Chunk, StandardChunkSet, Verified};
+    use nectar_primitives::{Chunk, ContentOnlyChunkSet, Verified};
 
     #[derive(Debug, Default)]
     struct CountingStore {
-        inner: MemoryStore,
+        inner: ContentGet<MemoryStore>,
         gets: AtomicUsize,
     }
 
@@ -665,14 +665,14 @@ mod tests {
         }
     }
 
-    impl ChunkGet<StandardChunkSet> for CountingStore {
+    impl ChunkGet<ContentOnlyChunkSet> for CountingStore {
         type Trust = Verified;
-        type Error = <MemoryStore as ChunkGet>::Error;
+        type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
 
         async fn get(
             &self,
             address: &ChunkAddress,
-        ) -> Result<Chunk<Verified, StandardChunkSet>, Self::Error> {
+        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
             self.gets.fetch_add(1, Ordering::Relaxed);
             ChunkGet::get(&self.inner, address).await
         }

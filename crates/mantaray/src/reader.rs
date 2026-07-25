@@ -8,7 +8,7 @@
 
 use alloc::sync::Arc;
 
-use nectar_primitives::AnyChunkSet;
+use nectar_primitives::ContentOnlyChunkSet;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
 use nectar_primitives::store::TrustedGet;
@@ -66,7 +66,7 @@ impl<S, const BS: usize> Reader<S, BS> {
     }
 }
 
-impl<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize> Reader<S, BS> {
+impl<S: TrustedGet<ContentOnlyChunkSet<BS>>, const BS: usize> Reader<S, BS> {
     /// The entry at `path` under the trie rooted at `root`, or `None` when
     /// the path is absent or names a bare edge. A metadata-carrying edge
     /// (the root documents node) reads back as an entry with no reference.
@@ -191,7 +191,7 @@ mod tests {
 
     use bytes::Bytes;
     use nectar_primitives::chunk::{ChunkOps, ContentChunk};
-    use nectar_primitives::store::{ChunkGet, ChunkPut, MemoryStore};
+    use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, MemoryStore};
     use nectar_primitives::{
         Chunk, EncryptedChunkRef, EncryptionKey, EntryRef, StandardChunkSet, Verified,
     };
@@ -259,7 +259,7 @@ mod tests {
     /// paths, a prefix probe hits exactly the stored extensions.
     async fn assert_model(paths: &[&str]) {
         let (root, store) = build(paths).await;
-        let reader = Reader::new(store);
+        let reader = Reader::new(ContentGet::new(store));
         for probe in probes(paths) {
             let got = reader.get(&root, probe.as_bytes()).await.unwrap();
             assert_eq!(
@@ -302,7 +302,7 @@ mod tests {
             let (manifest_ref, store) = editor.commit().await.unwrap();
             let (root, _key) = manifest_ref.into_parts();
 
-            let reader = Reader::new(store);
+            let reader = Reader::new(ContentGet::new(store));
             for p in paths {
                 let got = reader.get(&root, p.as_bytes()).await.unwrap().unwrap();
                 match got.reference() {
@@ -329,7 +329,7 @@ mod tests {
         editor.set_index_document("index.html");
         let (root, store) = run(editor.commit()).unwrap();
 
-        let reader = Reader::new(store);
+        let reader = Reader::new(ContentGet::new(store));
         let plain = run(reader.get(&root, b"plain.txt")).unwrap().unwrap();
         assert_eq!(
             plain.reference().map(|r| *r.address()),
@@ -349,14 +349,14 @@ mod tests {
 
     /// Store wrapper counting `get` calls, pinning the reader's fetch costs.
     struct CountingStore {
-        inner: Store,
+        inner: ContentGet<Store>,
         gets: AtomicUsize,
     }
 
     impl CountingStore {
         fn new(inner: Store) -> Self {
             Self {
-                inner,
+                inner: ContentGet::new(inner),
                 gets: AtomicUsize::new(0),
             }
         }
@@ -366,11 +366,14 @@ mod tests {
         }
     }
 
-    impl ChunkGet<StandardChunkSet> for CountingStore {
+    impl ChunkGet<ContentOnlyChunkSet> for CountingStore {
         type Trust = Verified;
-        type Error = <Store as ChunkGet<StandardChunkSet>>::Error;
+        type Error = <ContentGet<Store> as ChunkGet<ContentOnlyChunkSet>>::Error;
 
-        async fn get(&self, address: &ChunkAddress) -> Result<Chunk, Self::Error> {
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
             self.gets.fetch_add(1, Ordering::SeqCst);
             ChunkGet::get(&self.inner, address).await
         }
@@ -424,7 +427,7 @@ mod tests {
         // One-byte edge chain: get("abcde") costs 6 fetches, has_prefix 5.
         let (root, store) = run(build(&["a", "ab", "abc", "abcd", "abcde"]));
 
-        let exact = Reader::with_max_depth(store, 6);
+        let exact = Reader::with_max_depth(ContentGet::new(store), 6);
         assert!(run(exact.get(&root, b"abcde")).unwrap().is_some());
         assert!(run(exact.has_prefix(&root, b"abcde")).unwrap());
 
@@ -454,13 +457,13 @@ mod tests {
     #[test]
     fn empty_path_is_not_a_value() {
         let (root, store) = run(build(&["a"]));
-        let reader = Reader::new(store);
+        let reader = Reader::new(ContentGet::new(store));
         assert_eq!(run(reader.get(&root, b"")).unwrap(), None);
     }
 
     #[test]
     fn missing_root_is_a_store_error() {
-        let reader: Reader<Store> = Reader::new(Store::new());
+        let reader: Reader<ContentGet<Store>> = Reader::new(ContentGet::new(Store::new()));
         let root = make_addr("nowhere");
         assert!(matches!(
             run(reader.get(&root, b"x")),
@@ -483,7 +486,7 @@ mod tests {
         let sealed: Chunk = Chunk::from_envelope(chunk.into()).unwrap();
         run(store.put(sealed)).unwrap();
 
-        let reader = Reader::new(store);
+        let reader = Reader::new(ContentGet::new(store));
         assert!(matches!(
             run(reader.get(&root, b"x")),
             Err(ReaderError::Corrupt { address, .. }) if address == root

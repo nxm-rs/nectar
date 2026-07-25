@@ -18,7 +18,7 @@ use nectar_testing::run;
 use nectar_manifest::{
     Builder, Changeset, Entry, Format, Key, KeyId, Metadata, Reader, V1, V1Read, apply,
 };
-use nectar_primitives::store::MemoryStore;
+use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, StandardChunkSet};
 
 use crate::corpus::{Corpus, GenKey, tagged_addr, value_addr};
@@ -182,7 +182,7 @@ fn range_rounds<F: Format>(
 ) -> Result<(u64, u64, u64), Err> {
     let out = block_on_paused(async {
         let latency = LatencyStore::<StandardChunkSet>::new(store, RTT_UNIT);
-        let reader = Reader::<&LatencyStore<'_, StandardChunkSet>, F>::new(&latency);
+        let reader = Reader::<_, F>::new(ContentGet::new(&latency));
         let t0 = tokio::time::Instant::now();
         let mut cursor = reader.range(root, lo, hi).await?;
         let mut keys = 0u64;
@@ -203,7 +203,7 @@ fn prefix_rounds<F: Format>(
 ) -> Result<(u64, u64, u64), Err> {
     let out = block_on_paused(async {
         let latency = LatencyStore::<StandardChunkSet>::new(store, RTT_UNIT);
-        let reader = Reader::<&LatencyStore<'_, StandardChunkSet>, F>::new(&latency);
+        let reader = Reader::<_, F>::new(ContentGet::new(&latency));
         let t0 = tokio::time::Instant::now();
         let mut cursor = reader.prefix(root, prefix).await?;
         let mut keys = 0u64;
@@ -288,7 +288,7 @@ pub fn parallel_cursor_cells(
 /// Mean and max get-depth over a key sample, counted as store fetches per get.
 fn get_depth<F: Format>(
     store: &CountingStore<StandardChunkSet>,
-    reader: &Reader<&CountingStore<StandardChunkSet>, F>,
+    reader: &Reader<ContentGet<&CountingStore<StandardChunkSet>>, F>,
     root: &ChunkAddress,
     keys: &[GenKey],
     idxs: &[usize],
@@ -315,7 +315,7 @@ fn get_depth<F: Format>(
 /// format over one corpus.
 fn read_side<F: Format>(keys: &[GenKey]) -> Result<ReadProfileSide, Err> {
     let (store, root) = build_counting::<F>(keys)?;
-    let reader = Reader::<&CountingStore<StandardChunkSet>, F>::new(&store);
+    let reader = Reader::<_, F>::new(ContentGet::new(&store));
     let n = keys.len();
     let idxs = sample_indices(n, 256);
     let (depth_mean, depth_max) = get_depth::<F>(&store, &reader, &root, keys, &idxs)?;
@@ -341,7 +341,7 @@ fn read_side<F: Format>(keys: &[GenKey]) -> Result<ReadProfileSide, Err> {
                 meta_for::<F>(k),
             );
             let before = store.puts();
-            let _ = run(apply(&store, &root, &cs))?;
+            let _ = run(apply(&ContentGet::new(&store), &root, &cs))?;
             rewrites.push(store.puts().saturating_sub(before));
         }
     }
@@ -411,7 +411,7 @@ pub fn paginate_cells(
     keys: &[GenKey],
 ) -> Result<Vec<PaginateCell>, Err> {
     let (store, root) = build_counting::<V1>(keys)?;
-    let reader = Reader::<&CountingStore<StandardChunkSet>, V1>::new(&store);
+    let reader = Reader::<_, V1>::new(ContentGet::new(&store));
     let n = keys.len() as u64;
     let empty = Key::empty();
     let mut cells = Vec::new();
@@ -486,7 +486,7 @@ pub fn subtree_serve_cell(
         return Ok(None);
     };
     let (store, root) = build_counting::<V1>(keys)?;
-    let reader = Reader::<&CountingStore<StandardChunkSet>, V1>::new(&store);
+    let reader = Reader::<_, V1>::new(ContentGet::new(&store));
     let pk = Key::from(prefix.as_slice());
 
     let before = store.gets();

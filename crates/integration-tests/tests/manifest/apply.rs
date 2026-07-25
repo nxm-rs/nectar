@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use nectar_manifest::{Builder, Changeset, Entry, Key, KeyId, Metadata, V1, apply};
-use nectar_primitives::{ChunkAddress, ChunkRef, MemoryStore};
+use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, MemoryStore};
 use nectar_testing::run;
 use proptest::prelude::*;
 
@@ -151,8 +151,8 @@ fn assert_apply_equals_rebuild(
         }
     }
 
-    let applied =
-        run(apply(&store, &root, &changeset)).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let applied = run(apply(&ContentGet::new(&store), &root, &changeset))
+        .map_err(|e| TestCaseError::fail(e.to_string()))?;
     let expected = rebuild(&map)?;
     prop_assert_eq!(applied, expected);
     Ok(())

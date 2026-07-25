@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
+use nectar_primitives::chunk::{ChunkAddress, ContentOnlyChunkSet};
 use nectar_primitives::store::TrustedGet;
 use nectar_tasks::{Spawn, TaskHandle, TokioSpawner};
 use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
@@ -36,7 +36,7 @@ type Frames<E> = mpsc::Receiver<Result<Frame, WalkError<E>>>;
 /// clamp.
 pub struct SpawnedReader<S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     store: S,
@@ -59,7 +59,7 @@ where
 
 impl<S, M, const B: usize> SpawnedReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + Send + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + Send + 'static,
     S::Error: Send,
     M: WalkMode,
 {
@@ -141,7 +141,7 @@ fn drive<S, M, const B: usize>(
     window: Window,
 ) -> (Frames<S::Error>, TaskHandle)
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + Send + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + Send + 'static,
     S::Error: Send,
     M: WalkMode,
 {
@@ -164,14 +164,14 @@ where
 /// state and channel handles, never a self-reference.
 impl<S, M, const B: usize> Unpin for SpawnedReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
 }
 
 impl<S, M, const B: usize> AsyncRead for SpawnedReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + Send + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + Send + 'static,
     S::Error: std::error::Error + Send + Sync + 'static,
     M: WalkMode,
 {
@@ -203,7 +203,7 @@ where
 
 impl<S, M, const B: usize> AsyncSeek for SpawnedReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + Send + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + Send + 'static,
     S::Error: std::error::Error + Send + Sync + 'static,
     M: WalkMode,
 {
@@ -224,7 +224,7 @@ where
 
 impl<S, M, const B: usize> fmt::Debug for SpawnedReader<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

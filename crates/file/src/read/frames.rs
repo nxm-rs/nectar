@@ -7,7 +7,7 @@ use core::task::{Context, Poll};
 
 use futures_util::stream::Stream;
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::AnyChunkSet;
+use nectar_primitives::chunk::ContentOnlyChunkSet;
 use nectar_primitives::store::TrustedGet;
 
 use crate::walk::{Frame, Walk, WalkError, WalkMode, WalkStats};
@@ -16,7 +16,7 @@ use crate::walk::{Frame, Walk, WalkError, WalkMode, WalkStats};
 /// frames tile the range exactly once, in no particular order.
 pub struct FileFrames<S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     walk: Walk<S, M, B>,
@@ -24,7 +24,7 @@ where
 
 impl<S, M, const B: usize> FileFrames<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
 {
     pub(super) const fn new(walk: Walk<S, M, B>) -> Self {
@@ -46,14 +46,14 @@ where
 /// state and boxed futures, never a self-reference.
 impl<S, M, const B: usize> Unpin for FileFrames<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
 }
 
 impl<S, M, const B: usize> Stream for FileFrames<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
 {
     type Item = Result<Frame, WalkError<S::Error>>;
@@ -65,7 +65,7 @@ where
 
 impl<S, M, const B: usize> fmt::Debug for FileFrames<S, M, B>
 where
-    S: TrustedGet<AnyChunkSet<B>>,
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

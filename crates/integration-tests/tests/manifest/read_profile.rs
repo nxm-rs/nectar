@@ -6,7 +6,7 @@
 use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_manifest::{Builder, Changeset, Entry, Key, Reader, V1, V1Read, apply};
-use nectar_primitives::{ChunkAddress, ChunkRef, MemoryStore};
+use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, MemoryStore};
 use nectar_testing::run;
 
 fn ref_entry<F: nectar_manifest::Format>(fill: u8) -> Entry<F> {
@@ -67,7 +67,7 @@ fn build_then_read_round_trips_every_key_under_the_read_profile() -> Result<()> 
     }
     let root = *run(builder.build(&store))?.root();
 
-    let reader = Reader::<MemoryStore, V1Read>::new(store);
+    let reader = Reader::<_, V1Read>::new(ContentGet::new(store));
     run(async {
         for (key, fill) in windowed_keys() {
             let got = reader.get(&root, &key).await?;
@@ -103,7 +103,7 @@ fn apply_matches_a_from_scratch_build_under_the_read_profile() -> Result<()> {
     for (key, fill) in all.iter().skip(split) {
         changeset.put(key.clone(), ref_entry::<V1Read>(*fill), None);
     }
-    let applied = run(apply(&store, &base_root, &changeset))?;
+    let applied = run(apply(&ContentGet::new(&store), &base_root, &changeset))?;
 
     // A from-scratch build of the merged key set lands on the same root, byte
     // for byte: history independence holds under the read profile too.
@@ -114,7 +114,7 @@ fn apply_matches_a_from_scratch_build_under_the_read_profile() -> Result<()> {
     );
 
     // The applied manifest reads back the full key set.
-    let reader = Reader::<MemoryStore, V1Read>::new(store);
+    let reader = Reader::<_, V1Read>::new(ContentGet::new(store));
     run(async {
         for (key, fill) in &all {
             let got = reader.get(&applied, key).await?;
@@ -135,7 +135,7 @@ fn an_inline_value_round_trips_under_the_read_profile() -> Result<()> {
     builder.insert(Key::from(&b"index.html"[..]), value.clone(), None);
     let root = *run(builder.build(&store))?.root();
 
-    let reader = Reader::<MemoryStore, V1Read>::new(store);
+    let reader = Reader::<_, V1Read>::new(ContentGet::new(store));
     let got = run(reader.get(&root, &Key::from(&b"index.html"[..])))?;
     ensure!(got == Some(value), "inline value must round-trip");
     Ok(())

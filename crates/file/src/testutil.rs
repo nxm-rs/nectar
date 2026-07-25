@@ -102,7 +102,10 @@ where
 #[cfg(feature = "encryption")]
 pub(crate) fn split_encrypted_fixture<const B: usize>(
     data: &[u8],
-) -> (EncryptedChunkRef, MemoryStore<AnyChunkSet<B>>) {
+) -> (
+    EncryptedChunkRef,
+    MemoryStore<nectar_primitives::chunk::ContentOnlyChunkSet<B>>,
+) {
     use crate::split::{RandomKeys, Split};
     use crate::walk::Encrypted;
 
@@ -113,5 +116,10 @@ pub(crate) fn split_encrypted_fixture<const B: usize>(
         B,
     >::collect(Arc::clone(&store), data))
     .unwrap();
-    (root, Arc::into_inner(store).unwrap())
+    let chunks = Arc::into_inner(store)
+        .unwrap()
+        .into_chunks()
+        .into_values()
+        .map(|chunk| chunk.narrow_content().unwrap());
+    (root, MemoryStore::from_chunks(chunks))
 }

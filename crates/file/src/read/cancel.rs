@@ -13,7 +13,7 @@ use std::vec::Vec;
 
 use futures::Stream;
 use futures::task::noop_waker;
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
+use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkStoreError, MemoryStore, TrustedGet};
 use nectar_testing::{run, split_fixture, yield_now};
 
@@ -33,7 +33,7 @@ const TINY: usize = 256;
 /// Polls after which a test declares the pipeline stalled.
 const POLL_CAP: usize = 100_000;
 
-type TinyRegistry = AnyChunkSet<TINY>;
+type TinyRegistry = ContentOnlyChunkSet<TINY>;
 type TinyChunk = Chunk<Verified, TinyRegistry>;
 type TinyStore = MemoryStore<TinyRegistry>;
 

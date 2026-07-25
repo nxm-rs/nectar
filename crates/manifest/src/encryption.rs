@@ -33,7 +33,8 @@ use core::future::Future;
 use alloy_primitives::Keccak256;
 use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
-    Chunk, ChunkOps, ContentChunk, EncryptedChunkRef, EncryptionKey, transcrypt_in_place,
+    Chunk, ChunkOps, ContentChunk, ContentOnlyChunkSet, EncryptedChunkRef, EncryptionKey,
+    transcrypt_in_place,
 };
 
 use crate::codec::DecodeError;
@@ -149,7 +150,7 @@ impl<T: ChunkPut> EncryptedNodePut for T {}
 ///
 /// Blanket-implemented for every [`TrustedGet`]; the ref64 carries both the
 /// address to fetch and the key to decrypt with.
-pub trait EncryptedNodeGet: TrustedGet {
+pub trait EncryptedNodeGet: TrustedGet<ContentOnlyChunkSet> {
     /// Load the chunk at `reference`'s address and decrypt it with its key,
     /// materializing a spilled node's forks from its keyed segments so the
     /// caller always sees one logical node.
@@ -172,12 +173,12 @@ pub trait EncryptedNodeGet: TrustedGet {
     }
 }
 
-impl<T: TrustedGet> EncryptedNodeGet for T {}
+impl<T: TrustedGet<ContentOnlyChunkSet>> EncryptedNodeGet for T {}
 
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use nectar_primitives::store::MemoryStore;
+    use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef};
     use nectar_testing::run;
 
@@ -269,7 +270,7 @@ mod tests {
 
     #[test]
     fn round_trips_through_a_memory_store() {
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let node = sample();
         let reference = run(store.put_node_encrypted(&node, SECRET)).unwrap();
         let opened: Node = run(store.get_node_encrypted(&reference)).unwrap();
@@ -281,7 +282,7 @@ mod tests {
         // The privacy rule made concrete: sealing a child yields a ref64 whose
         // key is exactly the child's derived key, so a parent that records the
         // ref64 carries that key in its own bytes.
-        let store = MemoryStore::default();
+        let store = ContentGet::new(MemoryStore::default());
         let child = sample();
         let reference = run(store.put_node_encrypted(&child, SECRET)).unwrap();
         assert_eq!(

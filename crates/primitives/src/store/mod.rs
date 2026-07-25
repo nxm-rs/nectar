@@ -4,6 +4,7 @@
 //! `MaybeSync` bounds so a store may be `!Send` on single-threaded targets
 //! (wasm32, bare metal, or any target under the `unsync` feature).
 
+mod content;
 mod memory;
 #[cfg(feature = "std")]
 mod retry;
@@ -11,6 +12,7 @@ mod single_owner;
 mod typed;
 
 pub use crate::marker::{MaybeSend, MaybeSync};
+pub use content::{ContentGet, ContentGetError};
 pub use memory::MemoryStore;
 #[cfg(feature = "std")]
 pub use retry::{RetryConfig, RetryingChunkGet, Sleeper};

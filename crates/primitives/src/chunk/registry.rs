@@ -182,13 +182,15 @@ impl<const BODY_SIZE: usize> ChunkRegistry for AnyChunkSet<BODY_SIZE> {
 
 const _: () = StandardChunkSet::DISTINCT_TAGS;
 
-/// Registry that accepts only content-addressed chunks, carried directly as
-/// [`ContentChunk`]: a single-member set needs no envelope enum.
+/// Registry that accepts only content-addressed chunks at body size
+/// `BODY_SIZE`, carried directly as [`ContentChunk`]: a single-member set
+/// needs no envelope enum. The registry carries the body size so no store
+/// trait restates it.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ContentOnlyChunkSet;
+pub struct ContentOnlyChunkSet<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>;
 
-impl ChunkRegistry for ContentOnlyChunkSet {
-    type Envelope = ContentChunk;
+impl<const BODY_SIZE: usize> ChunkRegistry for ContentOnlyChunkSet<BODY_SIZE> {
+    type Envelope = ContentChunk<BODY_SIZE>;
 
     const MEMBERS: &'static [ChunkTypeInfo] = &[ChunkTypeInfo::of::<CacHeader>()];
 
@@ -200,11 +202,11 @@ impl ChunkRegistry for ContentOnlyChunkSet {
         if !Self::supports(tag) {
             return Err(ChunkError::unsupported_tag(tag).into());
         }
-        ContentChunk::try_from(Bytes::copy_from_slice(payload))
+        ContentChunk::<BODY_SIZE>::try_from(Bytes::copy_from_slice(payload))
     }
 
     fn decode_wire(address: &ChunkAddress, data: Bytes) -> Result<Self::Envelope> {
-        let chunk = ContentChunk::try_from(data)?;
+        let chunk = ContentChunk::<BODY_SIZE>::try_from(data)?;
         chunk.verify(address)?;
         Ok(chunk)
     }
@@ -219,7 +221,7 @@ impl ChunkRegistry for ContentOnlyChunkSet {
     }
 }
 
-const _: () = ContentOnlyChunkSet::DISTINCT_TAGS;
+const _: () = ContentOnlyChunkSet::<DEFAULT_BODY_SIZE>::DISTINCT_TAGS;
 
 /// Registry that accepts only single-owner chunks at body size `BODY_SIZE`,
 /// carried directly as [`SingleOwnerChunk`]: a single-member set needs no
@@ -275,6 +277,7 @@ mod tests {
     use crate::error::PrimitivesError;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
+    type ContentOnly = ContentOnlyChunkSet<DEFAULT_BODY_SIZE>;
     type SocOnly = SingleOwnerOnlyChunkSet<DEFAULT_BODY_SIZE>;
 
     const CAC_TAG: ChunkTypeTag = ChunkTypeTag::new(CacHeader::TYPE_ID, CacHeader::VERSION);
@@ -328,11 +331,11 @@ mod tests {
 
     #[test]
     fn content_only_supports() {
-        assert!(ContentOnlyChunkSet::supports(CAC_TAG));
-        assert!(!ContentOnlyChunkSet::supports(SOC_TAG));
-        assert!(ContentOnlyChunkSet::supports_id(ChunkTypeId::CONTENT));
-        assert!(!ContentOnlyChunkSet::supports_id(ChunkTypeId::SINGLE_OWNER));
-        assert_eq!(ContentOnlyChunkSet::MEMBERS.len(), 1);
+        assert!(ContentOnly::supports(CAC_TAG));
+        assert!(!ContentOnly::supports(SOC_TAG));
+        assert!(ContentOnly::supports_id(ChunkTypeId::CONTENT));
+        assert!(!ContentOnly::supports_id(ChunkTypeId::SINGLE_OWNER));
+        assert_eq!(ContentOnly::MEMBERS.len(), 1);
     }
 
     #[test]
@@ -351,10 +354,7 @@ mod tests {
             ChunkTypeInfo::duplicate_tag(StandardChunkSet::MEMBERS),
             None
         );
-        assert_eq!(
-            ChunkTypeInfo::duplicate_tag(ContentOnlyChunkSet::MEMBERS),
-            None
-        );
+        assert_eq!(ChunkTypeInfo::duplicate_tag(ContentOnly::MEMBERS), None);
         assert_eq!(ChunkTypeInfo::duplicate_tag(SocOnly::MEMBERS), None);
 
         let dup = [
@@ -418,9 +418,9 @@ mod tests {
         assert!(StandardChunkSet::parse_typed(&standard).is_ok());
         assert!(StandardChunkSet::decode_typed(&wrong, &standard).is_err());
 
-        let content_only = ContentOnlyChunkSet::encode_typed(&content);
-        assert!(ContentOnlyChunkSet::parse_typed(&content_only).is_ok());
-        assert!(ContentOnlyChunkSet::decode_typed(&wrong, &content_only).is_err());
+        let content_only = ContentOnly::encode_typed(&content);
+        assert!(ContentOnly::parse_typed(&content_only).is_ok());
+        assert!(ContentOnly::decode_typed(&wrong, &content_only).is_err());
 
         let soc_only = SocOnly::encode_typed(&sample_single_owner());
         assert!(SocOnly::parse_typed(&soc_only).is_ok());
@@ -470,11 +470,11 @@ mod tests {
         let content = DefaultContentChunk::new(&b"content only"[..]).unwrap();
         let address = *content.address();
 
-        let encoded = ContentOnlyChunkSet::encode_typed(&content);
+        let encoded = ContentOnly::encode_typed(&content);
         // The typed form must agree with the standard registry's encoding.
         assert_eq!(encoded, StandardChunkSet::encode_typed(&content.into()));
 
-        let decoded = ContentOnlyChunkSet::decode_typed(&address, &encoded).unwrap();
+        let decoded = ContentOnly::decode_typed(&address, &encoded).unwrap();
         assert_eq!(*decoded.address(), address);
     }
 
@@ -484,7 +484,7 @@ mod tests {
         let address = *soc.address();
         let encoded = StandardChunkSet::encode_typed(&soc.into());
 
-        let err = ContentOnlyChunkSet::decode_typed(&address, &encoded).unwrap_err();
+        let err = ContentOnly::decode_typed(&address, &encoded).unwrap_err();
         match err {
             PrimitivesError::Chunk(ChunkError::UnsupportedTag(t)) => assert_eq!(t, SOC_TAG),
             other => panic!("expected UnsupportedTag, got {other:?}"),
@@ -494,17 +494,17 @@ mod tests {
     #[test]
     fn content_only_typed_short_input_errors() {
         let address: ChunkAddress = [0u8; 32].into();
-        assert!(ContentOnlyChunkSet::decode_typed(&address, &[]).is_err());
-        assert!(ContentOnlyChunkSet::decode_typed(&address, &[0]).is_err());
+        assert!(ContentOnly::decode_typed(&address, &[]).is_err());
+        assert!(ContentOnly::decode_typed(&address, &[0]).is_err());
     }
 
     #[test]
     fn content_only_typed_address_mismatch_errors() {
         let content = DefaultContentChunk::new(&b"chunk A"[..]).unwrap();
-        let encoded = ContentOnlyChunkSet::encode_typed(&content);
+        let encoded = ContentOnly::encode_typed(&content);
 
         let wrong: ChunkAddress = [0xFFu8; 32].into();
-        assert!(ContentOnlyChunkSet::decode_typed(&wrong, &encoded).is_err());
+        assert!(ContentOnly::decode_typed(&wrong, &encoded).is_err());
     }
 
     #[test]
@@ -513,7 +513,7 @@ mod tests {
         let address = *content.address();
         let wire: Bytes = content.clone().into_bytes();
 
-        let decoded = ContentOnlyChunkSet::decode_wire(&address, wire).unwrap();
+        let decoded = ContentOnly::decode_wire(&address, wire).unwrap();
         assert_eq!(*decoded.address(), address);
         assert_eq!(decoded.data(), content.data());
     }
@@ -526,7 +526,7 @@ mod tests {
         let address = *soc.address();
         let wire = soc.into_bytes();
 
-        assert!(ContentOnlyChunkSet::decode_wire(&address, wire).is_err());
+        assert!(ContentOnly::decode_wire(&address, wire).is_err());
     }
 
     #[test]

@@ -7,8 +7,8 @@ use std::string::ToString;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, MemoryStore};
+use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
+use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet, MemoryStore};
 use nectar_testing::split_fixture;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -23,7 +23,7 @@ use crate::walk::Plain;
 /// already build deep trees.
 const TINY: usize = 256;
 
-type TinyStore = MemoryStore<AnyChunkSet<TINY>>;
+type TinyStore = MemoryStore<ContentOnlyChunkSet<TINY>>;
 
 /// Distinct byte per file position so slices are position-sensitive.
 fn fill(len: usize) -> Vec<u8> {
@@ -218,14 +218,14 @@ struct FailAfter {
     countdown: Arc<Mutex<usize>>,
 }
 
-impl ChunkGet<AnyChunkSet<TINY>> for FailAfter {
+impl ChunkGet<ContentOnlyChunkSet<TINY>> for FailAfter {
     type Trust = Verified;
     type Error = ChunkStoreError;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<Verified, AnyChunkSet<TINY>>, ChunkStoreError> {
+    ) -> Result<Chunk<Verified, ContentOnlyChunkSet<TINY>>, ChunkStoreError> {
         {
             let mut left = self.countdown.lock().unwrap();
             if *left == 0 {
@@ -263,9 +263,9 @@ async fn walk_failures_surface_as_io_errors_on_both_drivers() {
 }
 
 /// Shared store handle: clones share one map, unlike the snapshot-cloning
-/// memory store.
+/// memory store. Writes stay wide; reads narrow through [`ContentGet`].
 #[derive(Clone, Default)]
-struct SharedStore(Arc<TinyStore>);
+struct SharedStore(Arc<MemoryStore<AnyChunkSet<TINY>>>);
 
 impl ChunkPut<AnyChunkSet<TINY>> for SharedStore {
     type Error = std::convert::Infallible;
@@ -317,7 +317,9 @@ async fn writer_roots_match_the_whole_buffer_split() {
         let (expected, _) = split_fixture::<TINY>(&data);
         assert_eq!(root, expected, "diverged at {len}");
 
-        let file = File::<_, Plain, TINY>::open(store, root).await.unwrap();
+        let file = File::<_, Plain, TINY>::open(ContentGet::new(store), root)
+            .await
+            .unwrap();
         let mut out = Vec::new();
         TokioReader::from(file.read().build())
             .read_to_end(&mut out)
@@ -346,7 +348,7 @@ async fn writer_shutdown_is_fused_and_later_writes_fail() {
 
 #[tokio::test]
 async fn writer_put_failures_surface_as_io_errors() {
-    let store = reject_all::<_, TINY>(TinyStore::default());
+    let store = reject_all::<_, TINY>(MemoryStore::<AnyChunkSet<TINY>>::default());
     let mut writer = TokioWriter::from(Split::<_, Plain, TINY>::new(store, PutWindow::DEFAULT));
     let data = fill(2 * TINY);
     let error = async {

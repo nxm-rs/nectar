@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use nectar_primitives::EncryptedChunkRef;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, RefKind, Reference};
 use nectar_primitives::oracles::Violation;
+use nectar_primitives::store::ContentGet;
 
 use crate::node::Node;
 use crate::view::NodeView;
@@ -386,7 +387,7 @@ pub async fn editor_differential(ops: &[EditorOp]) -> Result<(), Violation> {
     };
 
     let want = model(ops);
-    let reader = Reader::new(store);
+    let reader = Reader::new(ContentGet::new(store));
     for (p, addr) in &want.entries {
         // The empty path is never addressable through the reader.
         if p.is_empty() {

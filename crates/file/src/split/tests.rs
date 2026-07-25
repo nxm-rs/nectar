@@ -15,7 +15,7 @@ use std::vec::Vec;
 
 use futures::task::noop_waker;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
-use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError};
+use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
 use nectar_testing::{run, yield_now};
 
 use super::{Split, SplitError, SplitStats};
@@ -296,8 +296,8 @@ fn default_profile_roots_are_pinned() {
 fn split_then_walk_round_trips() {
     let data = fill(37 * TINY + 41);
     let (root, store, _) = stream_split::<TINY>(&data, 4, usize::MAX, 1);
-    let mut walk: Walk<TestStore<TINY>, Plain, TINY> = Walk::new(
-        store,
+    let mut walk: Walk<ContentGet<TestStore<TINY>>, Plain, TINY> = Walk::new(
+        ContentGet::new(store),
         root,
         (),
         data.len() as u64,
@@ -487,6 +487,7 @@ mod encrypted {
     use std::vec::Vec;
 
     use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
+    use nectar_primitives::store::ContentGet;
     use nectar_testing::run;
 
     use super::{BRANCHES, TINY, TestStore, fill, sorted, tree_chunks};
@@ -626,8 +627,8 @@ mod encrypted {
                     }
                     poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
                 };
-                let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
-                    store,
+                let mut walk: Walk<ContentGet<TestStore<TINY>>, Encrypted, TINY> = Walk::new(
+                    ContentGet::new(store),
                     *root.address(),
                     root.key().clone(),
                     size as u64,
@@ -661,8 +662,8 @@ mod encrypted {
         let data = fill(size);
         let (root, store, _) =
             stream_split_encrypted(&data, Encrypted::new(SeqKeys::default()), 719, 1);
-        let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
-            store,
+        let mut walk: Walk<ContentGet<TestStore<TINY>>, Encrypted, TINY> = Walk::new(
+            ContentGet::new(store),
             *root.address(),
             root.key().clone(),
             size as u64,
@@ -776,8 +777,8 @@ mod encrypted {
             }
             poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
         });
-        let mut walk: Walk<TestStore<TINY>, Encrypted, TINY> = Walk::new(
-            store,
+        let mut walk: Walk<ContentGet<TestStore<TINY>>, Encrypted, TINY> = Walk::new(
+            ContentGet::new(store),
             *root.address(),
             root.key().clone(),
             size as u64,
