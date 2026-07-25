@@ -2214,11 +2214,8 @@ name = "nectar-manifest-sim"
 version = "0.4.0"
 dependencies = [
  "bytes",
- "codspeed-criterion-compat",
  "nectar-manifest",
- "nectar-mantaray 0.3.0",
  "nectar-mantaray 0.4.0",
- "nectar-primitives 0.3.0",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "serde",
