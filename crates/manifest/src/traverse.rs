@@ -7,11 +7,9 @@
 //! closure: every node chunk, every segment chunk and each entry's referenced
 //! address.
 
-use core::future::Future;
-use core::pin::Pin;
 use std::collections::VecDeque;
 
-use futures::stream::{FuturesUnordered, StreamExt};
+use bytes::Bytes;
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
 use nectar_primitives::store::MaybeSync;
@@ -20,45 +18,12 @@ use nectar_primitives::{ChunkAddress, EncryptionKey};
 use crate::format::{Format, V1};
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Step, flatten};
+use crate::sched::{Frame, Plan, Scheduler};
 use crate::store::{NodeGet, materialize_traced};
 
-/// One visited node's steps and the walk position within them.
-#[derive(Debug)]
-struct Frame<F: Format> {
-    /// The node's steps in ascending key order.
-    steps: Vec<Step<F>>,
-    /// The next step to visit.
-    index: usize,
-    /// Per-step prefetch tag, parallel to `steps`: the sequence id a
-    /// referenced child was launched under, once the window scheduled it.
-    sched: Vec<Option<usize>>,
-}
-
-impl<F: Format> Frame<F> {
-    /// A fresh frame over `steps` with an empty prefetch tag.
-    fn new(steps: Vec<Step<F>>) -> Self {
-        let sched = vec![None; steps.len()];
-        Self {
-            steps,
-            index: 0,
-            sched,
-        }
-    }
-}
-
-/// A completed node fetch: the sequence id it was launched under, its steps
-/// and the segment chunk addresses its reassembly visited.
-type Fetched<F> = (
-    usize,
-    Result<(Vec<Step<F>>, Vec<ChunkAddress>), ReaderError>,
-);
-
-/// An in-flight node fetch. Boxed to hold heterogeneous fetch futures in one
-/// queue; `Send` on native, unbounded on the single-threaded wasm executor.
-#[cfg(not(target_arch = "wasm32"))]
-type Fetch<'a, F> = Pin<Box<dyn Future<Output = Fetched<F>> + Send + 'a>>;
-#[cfg(target_arch = "wasm32")]
-type Fetch<'a, F> = Pin<Box<dyn Future<Output = Fetched<F>> + 'a>>;
+/// A visited node's completion payload: its steps and the segment chunk
+/// addresses its reassembly visited.
+type Visited<F> = (Vec<Step<F>>, Vec<ChunkAddress>);
 
 /// The stream's root reference, pending its first visit.
 #[derive(Debug)]
@@ -116,13 +81,8 @@ pub struct AddressStream<'a, S, F: Format = V1> {
     /// One frame per referenced hop on the current path.
     stack: Vec<Frame<F>>,
     done: bool,
-    /// Node fetches launched by the read-ahead window, awaiting completion.
-    inflight: FuturesUnordered<Fetch<'a, F>>,
-    /// Completions that arrived before the descent awaiting them; drained by
-    /// sequence id. Bounded with `inflight` by the window.
-    ready: Vec<Fetched<F>>,
-    /// The next fetch sequence id to hand out.
-    next_seq: usize,
+    /// The read-ahead window over prefetched node fetches.
+    sched: Scheduler<'a, Visited<F>>,
 }
 
 impl<'a, S, F: Format> AddressStream<'a, S, F> {
@@ -134,9 +94,7 @@ impl<'a, S, F: Format> AddressStream<'a, S, F> {
             pending: VecDeque::new(),
             stack: Vec::new(),
             done: false,
-            inflight: FuturesUnordered::new(),
-            ready: Vec::new(),
-            next_seq: 0,
+            sched: Scheduler::new(),
         }
     }
 }
@@ -184,13 +142,13 @@ where
                     Some(Step::Ref { addr, .. }) => Advance::Descend {
                         address: *addr,
                         key: None,
-                        seq: frame.sched.get(frame.index).copied().flatten(),
+                        seq: frame.tag(frame.index),
                     },
                     #[cfg(feature = "encryption")]
                     Some(Step::Encrypted { reference, .. }) => Advance::Descend {
                         address: *reference.address(),
                         key: Some(reference.key().clone()),
-                        seq: frame.sched.get(frame.index).copied().flatten(),
+                        seq: frame.tag(frame.index),
                     },
                     #[cfg(not(feature = "encryption"))]
                     Some(Step::Encrypted { .. }) => return Err(ReaderError::EncryptedChild),
@@ -223,23 +181,17 @@ where
     fn enter(&mut self, address: ChunkAddress, segments: Vec<ChunkAddress>, steps: Vec<Step<F>>) {
         self.pending.push_back(address);
         self.pending.extend(segments);
-        self.stack.push(Frame::new(steps));
+        self.stack.push(Frame::new(Bytes::new(), steps, 0));
     }
 
-    /// Fill the read-ahead window: launch node fetches for the referenced
-    /// children the walk reaches next, in ascending-key order, until at most
-    /// [`Format::READ_AHEAD`] fetches are in flight.
+    /// Fill the read-ahead window with the referenced children the walk
+    /// reaches next, opening an encrypted child with the key its record
+    /// carries; without the `encryption` feature it stops there, where the
+    /// walk errors.
     fn schedule(&mut self) {
-        let cap = F::READ_AHEAD;
         let store = self.store;
-        // Deepest frame first: that is ascending-key order from the walk, so
-        // the child needed soonest is always launched first.
-        'outer: for frame in self.stack.iter_mut().rev() {
-            let mut index = frame.index;
-            while let Some(step) = frame.steps.get(index) {
-                if self.inflight.len().saturating_add(self.ready.len()) >= cap {
-                    break 'outer;
-                }
+        self.sched
+            .fill(F::READ_AHEAD, &mut self.stack, |_base, step| {
                 let target = match step {
                     Step::Value { .. } => None,
                     Step::Ref { addr, .. } => Some((*addr, None)),
@@ -249,51 +201,33 @@ where
                     }
                     // The walk errors here; nothing beyond it is fetched.
                     #[cfg(not(feature = "encryption"))]
-                    Step::Encrypted { .. } => break 'outer,
+                    Step::Encrypted { .. } => return Plan::Stop,
                 };
-                if let Some((address, key)) = target
-                    && !matches!(frame.sched.get(index), Some(Some(_)))
-                {
-                    let seq = self.next_seq;
-                    self.next_seq = self.next_seq.saturating_add(1);
-                    if let Some(slot) = frame.sched.get_mut(index) {
-                        *slot = Some(seq);
-                    }
-                    let fetch: Fetch<'a, F> = Box::pin(async move {
-                        let result = materialize_traced::<S, F>(store, &address, key.as_ref())
-                            .await
-                            .map(|(node, segments)| (flatten(&node, false), segments))
-                            .map_err(ReaderError::from);
-                        (seq, result)
-                    });
-                    self.inflight.push(fetch);
-                }
-                index = index.saturating_add(1);
-            }
-        }
+                let Some((address, key)) = target else {
+                    return Plan::Skip;
+                };
+                Plan::Fetch(async move {
+                    materialize_traced::<S, F>(store, &address, key.as_ref())
+                        .await
+                        .map(|(node, segments)| (flatten(&node, false), segments))
+                        .map_err(ReaderError::from)
+                })
+            });
     }
 
     /// The steps and segment trace of the child at `address`: take the
-    /// prefetch launched under `seq`, buffering earlier-arriving completions,
-    /// or fetch directly when the descent was not prefetched.
+    /// prefetch launched under `seq`, or fetch directly when the descent was
+    /// not prefetched.
     async fn resolve(
         &mut self,
         seq: Option<usize>,
         address: ChunkAddress,
         key: Option<EncryptionKey>,
-    ) -> Result<(Vec<Step<F>>, Vec<ChunkAddress>), ReaderError> {
-        if let Some(seq) = seq {
-            loop {
-                if let Some(pos) = self.ready.iter().position(|(other, _)| *other == seq) {
-                    return self.ready.swap_remove(pos).1;
-                }
-                match self.inflight.next().await {
-                    Some((other, result)) if other == seq => return result,
-                    Some(pair) => self.ready.push(pair),
-                    // The launched fetch is unaccounted for; fetch directly.
-                    None => break,
-                }
-            }
+    ) -> Result<Visited<F>, ReaderError> {
+        if let Some(seq) = seq
+            && let Some(result) = self.sched.take(seq).await
+        {
+            return result;
         }
         let (node, segments) =
             materialize_traced::<S, F>(self.store, &address, key.as_ref()).await?;
