@@ -108,6 +108,7 @@ mod packing;
 mod reader;
 mod scan;
 mod store;
+mod traverse;
 mod value;
 
 pub use apply::{ApplyError, Changeset, apply};
@@ -132,4 +133,5 @@ pub use packing::{Directory, Domain, SegmentKind, cut, embed, h64, segment, spil
 pub use reader::{Reader, ReaderError};
 pub use scan::Cursor;
 pub use store::{NodeChunk, NodeGet, NodePut, StoreError};
+pub use traverse::AddressStream;
 pub use value::{Entry, InlineValue, Key};
