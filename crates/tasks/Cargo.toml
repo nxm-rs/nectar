@@ -39,6 +39,9 @@ wasm = [ "dep:futures-util", "dep:wasm-bindgen-futures" ]
 # via nectar-marker/unsync.
 unsync = [ "nectar-marker/unsync" ]
 
+# `tokio` needs the multi-threaded bounds; `unsync` relaxes them and is
+# mutually exclusive, so the doc build names the tokio feature rather than
+# enabling all at once (which would hide the tokio spawner).
 [package.metadata.docs.rs]
-all-features = true
+features = ["tokio"]
 rustdoc-args = ["--cfg", "docsrs"]
