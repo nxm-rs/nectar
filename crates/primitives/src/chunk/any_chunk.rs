@@ -291,20 +291,35 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     ///
     /// # Errors
     ///
-    /// Returns a verification error (and never panics) when neither the content
-    /// nor the single-owner interpretation of `data` hashes to `address`.
+    /// Returns an error (and never panics) when no interpretation of `data`
+    /// certifies at `address`: a verification error carrying the derived
+    /// address when a shape parsed, a format error when neither shape parses.
+    /// The single-owner arm certifies through [`ChunkHeader::validate`]
+    /// (owner recovery, replica pin, address compare), so its failures
+    /// propagate as-is.
     pub fn from_wire_bytes(address: &ChunkAddress, data: Bytes) -> crate::error::Result<Self> {
-        if let Ok(content) = ContentChunk::try_from(data.clone())
-            && content.address() == address
-        {
-            return Ok(Self::Content(content));
-        }
-        if let Ok(soc) = SingleOwnerChunk::try_from(data)
-            && soc.address() == address
-        {
+        let content_derived = match ContentChunk::try_from(data.clone()) {
+            Ok(content) if content.address() == address => return Ok(Self::Content(content)),
+            Ok(content) => Some(*content.address()),
+            Err(_) => None,
+        };
+        if let Ok(soc) = SingleOwnerChunk::try_from(data) {
+            // Full acceptance rule, never a bare address compare: a bare
+            // compare would admit an unvalidated signature and skip the
+            // dispersed-replica pin.
+            soc.verify(address)?;
             return Ok(Self::SingleOwner(soc));
         }
-        Err(super::error::ChunkError::verification_failed(*address, *address).into())
+        Err(content_derived
+            .map_or_else(
+                || {
+                    super::error::ChunkError::invalid_format(
+                        "bytes parse as neither a content nor a single-owner chunk",
+                    )
+                },
+                |derived| super::error::ChunkError::verification_failed(*address, derived),
+            )
+            .into())
     }
 }
 
@@ -615,6 +630,94 @@ mod tests {
         let opaque = Bytes::from_static(b"opaque custom-looking payload bytes");
         let addr: ChunkAddress = [0x11u8; 32].into();
         assert!(DefaultAnyChunk::from_wire_bytes(&addr, opaque).is_err());
+    }
+
+    /// The single-owner wire arm runs the full acceptance rule: a chunk
+    /// signed by the public replica key over a non-conforming id commits to
+    /// a real replica address, and a bare address compare would mint
+    /// arbitrary content there. The replica pin must reject it.
+    #[test]
+    fn test_from_wire_bytes_rejects_nonconforming_replica_id() {
+        use super::super::single_owner::DISPERSED_REPLICA_OWNER_PK;
+
+        let signer =
+            alloy_signer_local::PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice())
+                .unwrap();
+        // SocId::ZERO's tail cannot equal the body hash tail, so the
+        // dispersed-replica pin is violated by construction.
+        let soc =
+            DefaultSingleOwnerChunk::new(crate::SocId::ZERO, b"minted body".to_vec(), &signer)
+                .unwrap();
+        let committed = *soc.address();
+        let wire = DefaultAnyChunk::from(soc).into_bytes();
+
+        let result = DefaultAnyChunk::from_wire_bytes(&committed, wire);
+        assert!(
+            matches!(
+                result,
+                Err(crate::PrimitivesError::Chunk(
+                    super::super::error::ChunkError::InvalidFormat(_)
+                )),
+            ),
+            "replica-owner chunk with a non-conforming id must be rejected",
+        );
+    }
+
+    /// A garbage signature commits under the zero owner; asking the wire
+    /// path about exactly that address must still fail, where a bare
+    /// address compare would lie its way through.
+    #[test]
+    fn test_from_wire_bytes_rejects_garbage_signature_at_committed_address() {
+        let soc = sample_single_owner();
+        let mut wire = DefaultAnyChunk::from(soc).into_bytes().to_vec();
+        // Clobber the 65 signature bytes after the 32-byte id.
+        for byte in wire.iter_mut().skip(32).take(65) {
+            *byte = 0xff;
+        }
+
+        let forged = DefaultSingleOwnerChunk::try_from(wire.as_slice()).unwrap();
+        let committed = *forged.address();
+
+        let result = DefaultAnyChunk::from_wire_bytes(&committed, Bytes::from(wire));
+        assert!(
+            result.is_err(),
+            "garbage-signature chunk at its committed address must be rejected",
+        );
+    }
+
+    /// A parse-but-mismatch failure reports the genuine expected-vs-derived
+    /// pair, not the expected address twice.
+    #[test]
+    fn test_from_wire_bytes_mismatch_error_carries_derived_address() {
+        let content = DefaultContentChunk::new(&b"chunk A"[..]).unwrap();
+        let derived = *content.address();
+        let wire = DefaultAnyChunk::from(content).into_bytes();
+
+        let wrong: ChunkAddress = [0xFFu8; 32].into();
+        match DefaultAnyChunk::from_wire_bytes(&wrong, wire) {
+            Err(crate::PrimitivesError::Chunk(
+                super::super::error::ChunkError::VerificationFailed { expected, actual },
+            )) => {
+                assert_eq!(expected, wrong);
+                assert_eq!(actual, derived);
+                assert_ne!(expected, actual, "error must carry a distinct pair");
+            }
+            other => panic!("expected VerificationFailed, got {other:?}"),
+        }
+    }
+
+    /// Bytes that parse as neither shape have no derived address, so the
+    /// error is a format error rather than a fabricated address pair.
+    #[test]
+    fn test_from_wire_bytes_neither_shape_is_format_error() {
+        let addr: ChunkAddress = [0x22u8; 32].into();
+        let result = DefaultAnyChunk::from_wire_bytes(&addr, Bytes::from_static(&[0x01, 0x02]));
+        assert!(matches!(
+            result,
+            Err(crate::PrimitivesError::Chunk(
+                super::super::error::ChunkError::InvalidFormat(_)
+            )),
+        ));
     }
 
     // --- transformed address (redistribution sampler) parity -----------------
