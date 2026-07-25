@@ -127,6 +127,9 @@ type Fetch<'a, F> = Pin<Box<dyn Future<Output = Fetched<F>> + 'a>>;
 /// in ascending-key order and never past the upper bound, so the concurrent
 /// walk fetches exactly the nodes a serial walk would and returns them in the
 /// same order.
+///
+/// Cancel-safe: a descent's step is consumed only after its fetch completes,
+/// so a dropped [`next`](Self::next) future replays the same descent.
 #[derive(Debug)]
 pub struct Cursor<'a, S, F: Format = V1> {
     store: &'a S,
@@ -282,21 +285,20 @@ where
                     let index = frame.index;
                     match frame.steps.get(index) {
                         None => Advance::Pop,
-                        Some(step) => {
-                            frame.index = index.saturating_add(1);
-                            match step {
-                                Step::Value { suffix, entry } => {
-                                    Advance::Yield(join(&frame.base, suffix), entry.clone())
-                                }
-                                Step::Ref { suffix, addr } => {
-                                    let seq = frame.sched.get(index).copied().flatten();
-                                    Advance::Descend(join(&frame.base, suffix), *addr, seq)
-                                }
-                                Step::Encrypted { suffix, .. } => {
-                                    Advance::Encrypted(join(&frame.base, suffix))
-                                }
+                        Some(step) => match step {
+                            Step::Value { suffix, entry } => {
+                                frame.index = index.saturating_add(1);
+                                Advance::Yield(join(&frame.base, suffix), entry.clone())
                             }
-                        }
+                            Step::Ref { suffix, addr } => {
+                                let seq = frame.sched.get(index).copied().flatten();
+                                Advance::Descend(join(&frame.base, suffix), *addr, seq)
+                            }
+                            Step::Encrypted { suffix, .. } => {
+                                frame.index = index.saturating_add(1);
+                                Advance::Encrypted(join(&frame.base, suffix))
+                            }
+                        },
                     }
                 }
             };
@@ -320,6 +322,11 @@ where
                         return Ok(None);
                     }
                     let steps = self.resolve(seq, &addr).await?;
+                    // The step is consumed only now, so a cancelled or failed
+                    // resolve replays the same descent.
+                    if let Some(frame) = self.stack.last_mut() {
+                        frame.index = frame.index.saturating_add(1);
+                    }
                     self.stack
                         .push(Frame::new(Bytes::from(child_base), steps, 0));
                 }
@@ -671,14 +678,16 @@ pub(crate) fn successor(prefix: &[u8]) -> Option<Bytes> {
 
 #[cfg(test)]
 mod tests {
-    use nectar_primitives::store::MemoryStore;
-    use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
+    use core::task::Poll;
+
+    use nectar_primitives::store::{ChunkGet, ChunkStoreError, MemoryStore};
+    use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey, Verified};
     use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::fork::{Child, ForkTable};
     use crate::node::Node;
-    use crate::store::NodePut;
+    use crate::store::{NodeChunk, NodePut};
     use crate::value::{Entry, Key};
 
     use super::*;
@@ -897,6 +906,138 @@ mod tests {
             run(reader.floor(&root, &Key::from(&b"n"[..]))).unwrap_err(),
             ReaderError::EncryptedChild
         ));
+    }
+
+    // A root value "a" plus a referenced leaf under "b" holding "ba".
+    fn with_ref(store: &MemoryStore) -> (ChunkAddress, ChunkAddress) {
+        let mut leaf = ForkTable::new();
+        leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
+        let leaf_addr = run(store.put_node(&Node::new(None, leaf))).unwrap();
+        let mut forks = ForkTable::new();
+        forks
+            .insert(prefix(b"a"), entry(0xA1).into(), None)
+            .unwrap();
+        forks
+            .insert(
+                prefix(b"b"),
+                Child::Ref32(ChunkRef::new(leaf_addr)).into(),
+                None,
+            )
+            .unwrap();
+        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        (root, leaf_addr)
+    }
+
+    /// Yield once, waking immediately, so the caller observes a pending poll.
+    async fn yield_once() {
+        let mut yielded = false;
+        futures::future::poll_fn(|cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+
+    /// Store wrapper that yields once per get, so a `next` future can be
+    /// observed mid-fetch.
+    struct SlowStore {
+        inner: MemoryStore,
+    }
+
+    impl ChunkGet for SlowStore {
+        type Trust = Verified;
+        type Error = <MemoryStore as ChunkGet>::Error;
+
+        async fn get(&self, address: &ChunkAddress) -> Result<NodeChunk, Self::Error> {
+            yield_once().await;
+            ChunkGet::get(&self.inner, address).await
+        }
+    }
+
+    #[test]
+    fn a_dropped_next_future_loses_no_keys() {
+        let store = MemoryStore::default();
+        let (root, _) = with_ref(&store);
+        let slow = SlowStore { inner: store };
+        let reader: Reader<_> = Reader::new(&slow);
+        run(async {
+            let mut cursor = reader.iter(&root).await.unwrap();
+            assert_eq!(
+                cursor.next().await.unwrap(),
+                Some((Key::from(&b"a"[..]), entry(0xA1)))
+            );
+            // Drop a next future mid-fetch of the referenced leaf.
+            {
+                let fut = cursor.next();
+                futures::pin_mut!(fut);
+                let state = futures::future::poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await;
+                assert!(state.is_pending());
+            }
+            // The descent replays; no key under the leaf is lost.
+            assert_eq!(
+                cursor.next().await.unwrap(),
+                Some((Key::from(&b"ba"[..]), entry(0xBA)))
+            );
+            assert_eq!(cursor.next().await.unwrap(), None);
+        });
+    }
+
+    /// Store wrapper that fails the first `failures` gets of one address.
+    struct FlakyStore {
+        inner: MemoryStore,
+        deny: ChunkAddress,
+        failures: std::sync::Mutex<usize>,
+    }
+
+    impl ChunkGet for FlakyStore {
+        type Trust = Verified;
+        type Error = <MemoryStore as ChunkGet>::Error;
+
+        async fn get(&self, address: &ChunkAddress) -> Result<NodeChunk, Self::Error> {
+            if *address == self.deny {
+                let mut left = self.failures.lock().unwrap();
+                if *left > 0 {
+                    *left = left.saturating_sub(1);
+                    return Err(ChunkStoreError::not_found(address));
+                }
+            }
+            ChunkGet::get(&self.inner, address).await
+        }
+    }
+
+    #[test]
+    fn a_failed_resolve_replays_the_same_descent() {
+        let store = MemoryStore::default();
+        let (root, leaf) = with_ref(&store);
+        let flaky = FlakyStore {
+            inner: store,
+            deny: leaf,
+            failures: std::sync::Mutex::new(1),
+        };
+        let reader: Reader<_> = Reader::new(&flaky);
+        run(async {
+            let mut cursor = reader.iter(&root).await.unwrap();
+            assert_eq!(
+                cursor.next().await.unwrap(),
+                Some((Key::from(&b"a"[..]), entry(0xA1)))
+            );
+            // The leaf fetch fails once; the step stays unconsumed.
+            assert!(matches!(
+                cursor.next().await.unwrap_err(),
+                ReaderError::Store(_)
+            ));
+            // The retry replays the descent and reads the leaf.
+            assert_eq!(
+                cursor.next().await.unwrap(),
+                Some((Key::from(&b"ba"[..]), entry(0xBA)))
+            );
+            assert_eq!(cursor.next().await.unwrap(), None);
+        });
     }
 
     #[test]
