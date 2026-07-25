@@ -294,7 +294,8 @@ pub use reference::{ChunkRef, RefKind, Reference, WrongRefKind};
 pub use any_chunk::AnyChunk;
 pub use chunk_type::ChunkType;
 pub use registry::{
-    AnyChunkSet, ChunkRegistry, ChunkTypeInfo, ContentOnlyChunkSet, StandardChunkSet,
+    AnyChunkSet, ChunkRegistry, ChunkTypeInfo, ContentOnlyChunkSet, SingleOwnerOnlyChunkSet,
+    StandardChunkSet,
 };
 pub use type_id::ChunkTypeId;
 pub use type_tag::{ChunkTypeTag, ChunkVersion, TagWireError};

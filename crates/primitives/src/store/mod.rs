@@ -6,11 +6,13 @@
 
 mod memory;
 mod retry;
+mod single_owner;
 mod typed;
 
 pub use crate::marker::{MaybeSend, MaybeSync};
 pub use memory::MemoryStore;
 pub use retry::{RetryConfig, RetryingChunkGet, Sleeper};
+pub use single_owner::{SingleOwnerGet, SingleOwnerGetError};
 pub use typed::{ChunkGet, ChunkHas, ChunkPut, TrustedGet};
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};

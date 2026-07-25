@@ -138,6 +138,7 @@ pub use chunk::{
     RefKind,
     Reference,
     SingleOwnerChunk,
+    SingleOwnerOnlyChunkSet,
     SocHeader,
     SocId,
     StandardChunkSet,
@@ -163,7 +164,7 @@ pub type DefaultMemoryStore = MemoryStore<StandardChunkSet>;
 // Chunk storage traits
 pub use store::{
     ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, RetryConfig, RetryingChunkGet,
-    Sleeper, TrustedGet,
+    SingleOwnerGet, SingleOwnerGetError, Sleeper, TrustedGet,
 };
 
 // The width-agnostic reference union: the manifest-to-file bridge type.
