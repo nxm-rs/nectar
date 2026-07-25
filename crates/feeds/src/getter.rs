@@ -1,7 +1,9 @@
 //! Read side: fetch, certify and interpret updates over a chunk store.
 
 use core::fmt;
+use core::num::NonZeroUsize;
 
+use futures_util::future::join_all;
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, IntoVerified, SingleOwnerOnlyChunkSet};
 use nectar_primitives::store::{ChunkGet, ChunkHas};
@@ -9,6 +11,7 @@ use nectar_primitives::store::{ChunkGet, ChunkHas};
 use crate::error::{FeedError, Result};
 use crate::feed::Feed;
 use crate::index::Index;
+use crate::probe::{self, Answers, Step};
 use crate::sequence::Sequence;
 use crate::update::FeedUpdate;
 
@@ -16,6 +19,7 @@ use crate::update::FeedUpdate;
 pub struct Getter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     feed: Feed<BODY_SIZE>,
     store: S,
+    window: NonZeroUsize,
 }
 
 /// Latest sequence update plus the next free index.
@@ -33,6 +37,7 @@ impl<S, const BODY_SIZE: usize> fmt::Debug for Getter<S, BODY_SIZE> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Getter")
             .field("feed", &self.feed)
+            .field("window", &self.window)
             .finish_non_exhaustive()
     }
 }
@@ -40,7 +45,23 @@ impl<S, const BODY_SIZE: usize> fmt::Debug for Getter<S, BODY_SIZE> {
 impl<S, const BODY_SIZE: usize> Getter<S, BODY_SIZE> {
     /// Create a getter over `feed` reading from `store`.
     pub const fn new(feed: Feed<BODY_SIZE>, store: S) -> Self {
-        Self { feed, store }
+        Self {
+            feed,
+            store,
+            window: NonZeroUsize::MIN,
+        }
+    }
+
+    /// Set the concurrent presence-probe window of the latest-update
+    /// finders.
+    ///
+    /// A store-capacity knob, not a pure speedup: a wide round can induce
+    /// timeouts a presence probe must report as absence. Width one is the
+    /// sequential scan.
+    #[must_use]
+    pub const fn with_window(mut self, window: NonZeroUsize) -> Self {
+        self.window = window;
+        self
     }
 
     /// The feed this getter reads.
@@ -79,12 +100,6 @@ where
     Chunk<S::Trust, SingleOwnerOnlyChunkSet<BODY_SIZE>>:
         IntoVerified<Registry = SingleOwnerOnlyChunkSet<BODY_SIZE>>,
 {
-    async fn present(&self, index: u64) -> bool {
-        self.store
-            .has(&self.feed.update_address(&Sequence::new(index)))
-            .await
-    }
-
     /// Certify the update at `index` and pair it with its successor slot.
     async fn found(&self, index: u64) -> Result<Latest<BODY_SIZE>> {
         let seq = Sequence::new(index);
@@ -96,9 +111,53 @@ where
         })
     }
 
+    /// Run a replay resolver to a verdict, answering its faults in rounds of
+    /// at most [`window`](Self::with_window) concurrent presence probes.
+    ///
+    /// Only a completed probe answers an index; a speculative answer the
+    /// replay never consults is inert, so any width commits the boundary the
+    /// sequential scan would.
+    async fn drive(
+        &self,
+        floor: Sequence,
+        resolve: fn(u64, &Answers) -> Step,
+    ) -> Result<Latest<BODY_SIZE>> {
+        let base = floor.get();
+        let mut answers = Answers::new();
+        let mut plan = Vec::new();
+        loop {
+            match resolve(base, &answers) {
+                Step::Empty => {
+                    return Ok(Latest {
+                        update: None,
+                        next: Some(floor),
+                    });
+                }
+                Step::Commit { lo } => return self.found(lo).await,
+                Step::Fault(fault) => {
+                    fault.plan(self.window, &mut plan);
+                    plan.retain(|index| !answers.contains_key(index));
+                    let addressed: Vec<_> = plan
+                        .iter()
+                        .map(|&index| (index, self.feed.update_address(&Sequence::new(index))))
+                        .collect();
+                    let results =
+                        join_all(addressed.iter().map(|(_, address)| self.store.has(address)))
+                            .await;
+                    for (&(index, _), present) in addressed.iter().zip(results) {
+                        answers.insert(index, present);
+                    }
+                }
+            }
+        }
+    }
+
     /// Latest update by exponential-then-binary probing, from index zero.
     ///
     /// Assumes gapless publication: a hole reads as the end of the feed.
+    /// The returned update is certified; absence rests on unverified
+    /// presence answers, so a lying or unavailable store truncates the scan
+    /// to an earlier genuine update, never a forged one.
     pub async fn latest(&self) -> Result<Latest<BODY_SIZE>> {
         self.latest_from(Sequence::ZERO).await
     }
@@ -107,72 +166,13 @@ where
     /// known-present hint. An absent floor yields an empty result with
     /// `next = floor`.
     pub async fn latest_from(&self, floor: Sequence) -> Result<Latest<BODY_SIZE>> {
-        let base = floor.get();
-        if !self.present(base).await {
-            return Ok(Latest {
-                update: None,
-                next: Some(floor),
-            });
-        }
-
-        // Exponential phase: double the probe offset until a miss brackets
-        // the boundary between present and absent.
-        let mut lo = base;
-        let mut off: u64 = 1;
-        let mut hi = loop {
-            let Some(idx) = base.checked_add(off) else {
-                // The offset left the index space; the top slot decides.
-                if self.present(u64::MAX).await {
-                    return self.found(u64::MAX).await;
-                }
-                break u64::MAX;
-            };
-            if self.present(idx).await {
-                if idx == u64::MAX {
-                    return self.found(u64::MAX).await;
-                }
-                lo = idx;
-                off = off.saturating_mul(2);
-            } else {
-                break idx;
-            }
-        };
-
-        // Binary phase: `lo` present, `hi` absent; converge to adjacency.
-        while let Some(gap) = hi.checked_sub(lo) {
-            if gap <= 1 {
-                break;
-            }
-            let Some(mid) = lo.checked_add(gap / 2) else {
-                break;
-            };
-            if self.present(mid).await {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        self.found(lo).await
+        self.drive(floor, probe::resolve_probing).await
     }
 
-    /// Latest update by stepwise scan from a floor slot, one probe per
-    /// index. The baseline the probing search is measured against.
+    /// Latest update by stepwise scan from a floor slot. The baseline the
+    /// probing search is measured against; the absence caveat of
+    /// [`latest`](Self::latest) applies.
     pub async fn latest_linear_from(&self, floor: Sequence) -> Result<Latest<BODY_SIZE>> {
-        if !self.present(floor.get()).await {
-            return Ok(Latest {
-                update: None,
-                next: Some(floor),
-            });
-        }
-        let mut last = floor.get();
-        loop {
-            let Some(candidate) = last.checked_add(1) else {
-                return self.found(last).await;
-            };
-            if !self.present(candidate).await {
-                return self.found(last).await;
-            }
-            last = candidate;
-        }
+        self.drive(floor, probe::resolve_linear).await
     }
 }

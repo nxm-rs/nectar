@@ -49,6 +49,7 @@ mod error;
 mod feed;
 mod getter;
 mod index;
+mod probe;
 mod sequence;
 mod topic;
 mod update;

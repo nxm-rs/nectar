@@ -312,6 +312,36 @@ fn content_chunk_at_a_feed_slot_is_a_typed_store_error() {
 }
 
 #[test]
+fn windowed_finders_agree_with_sequential() {
+    run(async {
+        let signer = signer();
+        let feed = feed_for(&signer);
+        let store = SocStore::new();
+        let mut updater = Updater::new(feed, &store, &signer);
+        for n in 0u64..21 {
+            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+        }
+
+        for width in [1usize, 2, 7, 15] {
+            let getter =
+                Getter::new(feed, &store).with_window(core::num::NonZeroUsize::new(width).unwrap());
+            for latest in [
+                getter.latest().await.unwrap(),
+                getter.latest_from(Sequence::new(3)).await.unwrap(),
+                getter.latest_linear_from(Sequence::ZERO).await.unwrap(),
+            ] {
+                assert_eq!(latest.update.unwrap().index(), &Sequence::new(20));
+                assert_eq!(latest.next, Some(Sequence::new(21)));
+            }
+
+            let empty = getter.latest_from(Sequence::new(21)).await.unwrap();
+            assert!(empty.update.is_none());
+            assert_eq!(empty.next, Some(Sequence::new(21)));
+        }
+    });
+}
+
+#[test]
 fn shared_general_store_adapts_through_the_narrowing_get() {
     run(async {
         let signer = signer();
