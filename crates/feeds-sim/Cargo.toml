@@ -1,0 +1,39 @@
+[package]
+name = "nectar-feeds-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+description = "Lookup work-count measurement harness for the sequence feed finders"
+
+# Non-shipping targets: the runtime-safety restriction set does not apply,
+# but stubs and ad-hoc executor entry points stay denied.
+[lints.rust]
+unused-must-use = "deny"
+rust-2018-idioms = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+redundant-clone = "warn"
+todo = "deny"
+unimplemented = "deny"
+disallowed_methods = "deny"
+
+[dependencies]
+alloy-signer-local.workspace = true
+nectar-feeds = { workspace = true }
+nectar-primitives = { workspace = true, features = ["std"] }
+serde = { workspace = true, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+# Paused virtual clock: one tick per presence probe, so the windowed finder's
+# concurrent rounds are read off tokio's auto-advancing test clock, never
+# guessed. `test-util` supplies `start_paused`.
+tokio = { workspace = true, features = ["time", "test-util"] }
+
+[[bin]]
+name = "feeds-perf"
+path = "src/bin/feeds-perf.rs"
