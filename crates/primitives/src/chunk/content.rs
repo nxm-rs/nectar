@@ -292,7 +292,7 @@ mod tests {
         #[test]
         fn test_chunk_size_validation(data in proptest::collection::vec(any::<u8>(), DEFAULT_BODY_SIZE + 1..DEFAULT_BODY_SIZE * 2)) {
             let result = DefaultContentChunk::new(data);
-            prop_assert_eq!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))), true);
+            prop_assert_eq!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::BodyTooLarge { .. }))), true);
         }
 
         #[test]
@@ -309,7 +309,7 @@ mod tests {
         #[test]
         fn test_deserialize_invalid_chunks(data in proptest::collection::vec(any::<u8>(), 0..8)) {
             let result = DefaultContentChunk::try_from(data.as_slice());
-            prop_assert_eq!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))), true);
+            prop_assert_eq!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::TruncatedSpan { .. }))), true);
         }
 
         /// Differential accept set: seal certifies exactly the (chunk, address)
