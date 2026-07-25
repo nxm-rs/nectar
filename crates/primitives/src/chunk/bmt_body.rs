@@ -118,11 +118,10 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
 fn validate_data<const BODY_SIZE: usize>(data: impl Into<Bytes>) -> error::Result<Bytes> {
     let data = data.into();
     if data.len() > BODY_SIZE {
-        return Err(ChunkError::invalid_size(
-            "data exceeds maximum chunk size",
-            BODY_SIZE,
-            data.len(),
-        ));
+        return Err(ChunkError::BodyTooLarge {
+            max: BODY_SIZE,
+            actual: data.len(),
+        });
     }
     Ok(data)
 }
@@ -141,11 +140,10 @@ impl<const BODY_SIZE: usize> TryFrom<Bytes> for BmtBody<BODY_SIZE> {
     #[allow(clippy::unwrap_used)] // infallible: split_to(SPAN_SIZE) yields exactly 8 bytes (length checked above)
     fn try_from(mut buf: Bytes) -> Result<Self> {
         if buf.len() < SPAN_SIZE {
-            return Err(ChunkError::invalid_size(
-                "insufficient data for span",
-                SPAN_SIZE,
-                buf.len(),
-            )
+            return Err(ChunkError::TruncatedSpan {
+                expected: SPAN_SIZE,
+                actual: buf.len(),
+            }
             .into());
         }
 
@@ -240,11 +238,10 @@ impl<const BODY_SIZE: usize> BmtBodyBuilder<BODY_SIZE, WithSpan> {
             // span <= BODY_SIZE here, so it fits usize on all supported targets.
             let span_len = crate::cast::usize_from_u64(span);
             if data_len != span_len {
-                return Err(ChunkError::invalid_size(
-                    "span does not match data size",
-                    span_len,
-                    data_len,
-                )
+                return Err(ChunkError::SpanMismatch {
+                    span,
+                    actual: data_len,
+                }
                 .into());
             }
         }
@@ -330,7 +327,7 @@ mod tests {
         fn test_bmt_body_size_validation(span in 0..=u64::MAX, data_len in DEFAULT_BODY_SIZE + 1..=DEFAULT_BODY_SIZE * 2) {
             let data = vec![0; data_len];
             let result = create_bmt_body(span, data);
-            assert!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))));
+            assert!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::BodyTooLarge { .. }))));
         }
 
         #[test]
@@ -360,7 +357,7 @@ mod tests {
                 .with_data(data.clone());
 
             if span <= DEFAULT_BODY_SIZE as u64 && data.len() != span as usize {
-                assert!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))));
+                assert!(matches!(result, Err(PrimitivesError::Chunk(ChunkError::SpanMismatch { .. }))));
             } else {
                 assert!(result.is_ok());
             }
@@ -406,13 +403,13 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))
+            Err(PrimitivesError::Chunk(ChunkError::BodyTooLarge { .. }))
         ));
 
         let result = DefaultBmtBody::try_from(vec![0; DEFAULT_BODY_SIZE + 9].as_slice());
         assert!(matches!(
             result,
-            Err(PrimitivesError::Chunk(ChunkError::InvalidSize { .. }))
+            Err(PrimitivesError::Chunk(ChunkError::BodyTooLarge { .. }))
         ));
     }
 }

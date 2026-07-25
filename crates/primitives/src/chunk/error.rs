@@ -12,14 +12,30 @@ pub(crate) type Result<T> = core::result::Result<T, ChunkError>;
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum ChunkError {
-    /// Chunk size is invalid
-    #[error("Invalid chunk size: {message} (expected: {expected}, got: {actual})")]
-    InvalidSize {
-        /// What was being sized when the mismatch was found
-        message: &'static str,
-        /// Byte width the format requires
+    /// Chunk body exceeds the maximum body size
+    #[error("Chunk body too large: maximum {max} bytes, got {actual}")]
+    BodyTooLarge {
+        /// Maximum body size in bytes
+        max: usize,
+        /// Byte length actually observed
+        actual: usize,
+    },
+
+    /// Buffer too short to carry a span
+    #[error("Truncated span: expected {expected} bytes, got {actual}")]
+    TruncatedSpan {
+        /// Byte width a span requires
         expected: usize,
-        /// Byte width actually observed
+        /// Byte length actually observed
+        actual: usize,
+    },
+
+    /// Span disagrees with the data length it describes
+    #[error("Span mismatch: span says {span} bytes, data is {actual}")]
+    SpanMismatch {
+        /// Length the span claims
+        span: u64,
+        /// Data length actually observed
         actual: usize,
     },
 
@@ -60,15 +76,6 @@ pub enum ChunkError {
 }
 
 impl ChunkError {
-    /// Construct an [`InvalidSize`](Self::InvalidSize) error
-    pub const fn invalid_size(message: &'static str, expected: usize, actual: usize) -> Self {
-        Self::InvalidSize {
-            message,
-            expected,
-            actual,
-        }
-    }
-
     /// Construct an [`InvalidFormat`](Self::InvalidFormat) error
     pub fn invalid_format<S: Into<String>>(msg: S) -> Self {
         Self::InvalidFormat(msg.into())
