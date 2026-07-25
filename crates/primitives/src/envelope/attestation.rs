@@ -7,6 +7,7 @@
 //! with the node, which must treat a missing token for a pinned peer as an
 //! attack, never as licence to fall back to compat.
 
+use alloc::vec::Vec;
 use alloy_primitives::{Address, Signature};
 use k256::PublicKey;
 use k256::elliptic_curve::sec1::ToEncodedPoint;

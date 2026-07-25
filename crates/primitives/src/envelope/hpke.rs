@@ -6,6 +6,7 @@
 //! SEC1, and every secret intermediate is zeroized on drop. Auth and psk
 //! modes arrive with their consumers.
 
+use alloc::vec::Vec;
 use chacha20poly1305::aead::AeadInPlace;
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, Tag};
 use hkdf::Hkdf;
@@ -135,7 +136,7 @@ fn labeled_expand(
     let hk = Hkdf::<Sha256>::from_prk(prk).map_err(|_| ExportError)?;
     let length = u16::try_from(okm.len()).map_err(|_| ExportError)?;
     let length_bytes = length.to_be_bytes();
-    let mut info: Vec<&[u8]> = vec![&length_bytes, b"HPKE-v1", suite_id, label];
+    let mut info: Vec<&[u8]> = alloc::vec![&length_bytes, b"HPKE-v1", suite_id, label];
     info.extend_from_slice(info_parts);
     hk.expand_multi_info(&info, okm).map_err(|_| ExportError)
 }

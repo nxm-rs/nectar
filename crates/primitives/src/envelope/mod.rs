@@ -33,6 +33,7 @@
 //! deliberately adds SHA-256 beside the otherwise keccak-only proving
 //! surface.
 
+use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
 

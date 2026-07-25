@@ -57,6 +57,15 @@ jobs:
                   cargo check --locked -p nectar-primitives \
                     --no-default-features \
                     --target ${{ matrix.target }}
+            # Envelope open and decap need no RNG, so a bare-metal or proving
+            # guest opens envelopes without std. Sealing rides encryption (rand)
+            # and is excluded here.
+            - name: Check envelope open builds bare-metal
+              if: matrix.target == 'riscv64imac-unknown-none-elf'
+              run: |
+                  cargo check --locked -p nectar-primitives \
+                    --no-default-features --features envelope \
+                    --target ${{ matrix.target }}
             # The single-thread send escape (the unsync feature) and its
             # !Send-store compile proof, checked for the host inside the
             # rv64 lane, the target shape the escape exists for.
