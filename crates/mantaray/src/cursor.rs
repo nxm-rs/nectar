@@ -360,6 +360,7 @@ fn narrow_after(after: Option<&[u8]>, edge: &[u8]) -> Option<Option<Vec<u8>>> {
 /// ```
 /// # use nectar_mantaray::{Cursor, ManifestEditor, DefaultMemoryStore};
 /// # use nectar_primitives::chunk::ChunkAddress;
+/// # use nectar_primitives::store::ContentGet;
 /// # nectar_testing::run(async {
 /// let mut editor = ManifestEditor::new(DefaultMemoryStore::new());
 /// editor.put("a.txt", ChunkAddress::from([1u8; 32]));
