@@ -20,6 +20,8 @@
 //! # Traits
 //!
 //! - [`StampValidator`]: Validate stamps against batches
+//! - [`PutStamped`]: Downward-facing sink for a [`StampedChunk`], with
+//!   [`StampIndifferent`] and [`Tee`] bridging plain chunk stores into it
 //! - [`BatchStore`]: Persist and retrieve batches (requires `std`). The trait is
 //!   synchronous and, having an associated `Error` and no generic methods, is
 //!   naturally object-safe; drive it from an async edge (a gRPC service, an FFI
@@ -69,6 +71,7 @@ mod error;
 pub mod generators;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod oracles;
+mod sink;
 mod stamp;
 mod stamped;
 mod util;
@@ -89,6 +92,7 @@ pub mod parallel;
 // Core types
 pub use batch::{Batch, BatchId, BatchParams, BucketDepth};
 pub use error::StampError;
+pub use sink::{PutStamped, StampIndifferent, Tee, TeeError};
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
 pub use util::{PostageContext, calculate_bucket, current_timestamp};
