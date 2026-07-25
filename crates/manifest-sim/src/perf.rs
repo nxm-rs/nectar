@@ -24,6 +24,7 @@ use nectar_primitives::{ChunkAddress, ChunkRef, StandardChunkSet};
 use crate::corpus::{Corpus, GenKey, tagged_addr, value_addr};
 use crate::results::{
     CursorLatency, PaginateCell, ParallelCursorCell, ReadProfileCell, ReadProfileSide,
+    SubtreeServeCell,
 };
 use crate::store::{CountingStore, LatencyStore};
 
@@ -453,4 +454,123 @@ pub fn paginate_cells(
         });
     }
     Ok(cells)
+}
+
+// ---- subtree serve -------------------------------------------------------
+
+/// The top-level listing prefix of a path corpus (the middle key's bytes
+/// through the first '/'), or a one-byte prefix for the uniform corpus.
+fn listing_prefix(corpus: Corpus, keys: &[GenKey]) -> Option<Vec<u8>> {
+    let mid = keys.get(keys.len() / 2)?;
+    let raw = &mid.raw;
+    let p = match corpus {
+        Corpus::Uniform => raw.iter().take(1).copied().collect(),
+        _ => match raw.iter().position(|&b| b == b'/') {
+            Some(pos) => raw.get(..=pos).map(<[u8]>::to_vec).unwrap_or_default(),
+            None => raw.iter().take(1).copied().collect(),
+        },
+    };
+    Some(p)
+}
+
+/// The subtree-serve cell for one `(corpus, scale)`: resolving a folder
+/// listing's single covering subtree reference (a one-ref handoff) versus
+/// draining the full prefix cursor from the manifest root. `None` when the
+/// corpus yields no listing prefix.
+pub fn subtree_serve_cell(
+    corpus: Corpus,
+    scale: u64,
+    keys: &[GenKey],
+) -> Result<Option<SubtreeServeCell>, Err> {
+    let Some(prefix) = listing_prefix(corpus, keys) else {
+        return Ok(None);
+    };
+    let (store, root) = build_counting::<V1>(keys)?;
+    let reader = Reader::<&CountingStore<StandardChunkSet>, V1>::new(&store);
+    let pk = Key::from(prefix.as_slice());
+
+    let before = store.gets();
+    let handoff = run(reader.subtree(&root, &pk))?;
+    let handoff_fetch = store.gets().saturating_sub(before);
+
+    let before = store.gets();
+    let mut cursor = run(reader.prefix(&root, &pk))?;
+    let mut keys_returned = 0u64;
+    while run(cursor.next())?.is_some() {
+        keys_returned = keys_returned.saturating_add(1);
+    }
+    let walk_fetch = store.gets().saturating_sub(before);
+
+    Ok(Some(SubtreeServeCell {
+        corpus: corpus.name().to_string(),
+        scale,
+        prefix: String::from_utf8_lossy(&prefix).into_owned(),
+        keys_returned,
+        handoff_found: handoff.is_some(),
+        handoff_fetch_count: handoff_fetch,
+        cursor_walk_fetch_count: walk_fetch,
+        walk_over_handoff: (handoff.is_some() && handoff_fetch > 0)
+            .then(|| walk_fetch as f64 / handoff_fetch as f64),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::corpus;
+
+    /// Two full measurement runs serialize byte-identically: the determinism
+    /// the checked-in figures rest on.
+    #[test]
+    fn two_runs_serialize_byte_identically() {
+        let corpus = Corpus::Kiwix;
+        let scale = 1_000u64;
+        let run_once = || {
+            let keys = corpus::generate(corpus, scale as usize);
+            let pc = parallel_cursor_cells(corpus, scale, &keys).unwrap();
+            let rp = read_profile_cell(corpus, scale, &keys).unwrap();
+            let pg = paginate_cells(corpus, scale, &keys).unwrap();
+            let ss = subtree_serve_cell(corpus, scale, &keys).unwrap();
+            serde_json::to_string(&(pc, rp, pg, ss)).unwrap()
+        };
+        assert_eq!(run_once(), run_once());
+    }
+
+    /// Rank-directed paginate stays flat in offset while the skip baseline
+    /// grows.
+    #[test]
+    fn paginate_fetch_count_is_flat_across_offsets() {
+        let corpus = Corpus::Kiwix;
+        let keys = corpus::generate(corpus, 2_000);
+        let cells = paginate_cells(corpus, 2_000, &keys).unwrap();
+        assert!(cells.len() >= 3, "want offsets 0, 100 and 1000");
+        let min = cells.iter().map(|c| c.paginate_fetch_count).min().unwrap();
+        let max = cells.iter().map(|c| c.paginate_fetch_count).max().unwrap();
+        assert!(min > 0);
+        assert!(
+            max <= min.saturating_mul(2),
+            "not flat: min {min}, max {max}"
+        );
+        let (first, last) = (cells.first().unwrap(), cells.last().unwrap());
+        assert!(last.skip_baseline_fetch_count > first.skip_baseline_fetch_count);
+    }
+
+    /// Bounded concurrency can only merge fetches into rounds, never add any.
+    #[test]
+    fn rounds_never_exceed_fetch_count() {
+        let corpus = Corpus::OsmBbox;
+        let keys = corpus::generate(corpus, 1_000);
+        let cells = parallel_cursor_cells(corpus, 1_000, &keys).unwrap();
+        assert!(!cells.is_empty());
+        for c in &cells {
+            assert!(
+                c.rounds <= c.fetch_count,
+                "{}: rounds {} > fetches {}",
+                c.op,
+                c.rounds,
+                c.fetch_count
+            );
+            assert!(c.fetch_count == 0 || c.rounds >= 1);
+        }
+    }
 }

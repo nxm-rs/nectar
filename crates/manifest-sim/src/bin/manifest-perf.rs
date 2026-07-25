@@ -10,7 +10,7 @@ use std::process::Command;
 use nectar_manifest::V1;
 use nectar_manifest_sim::corpus::{self, Corpus};
 use nectar_manifest_sim::perf;
-use nectar_manifest_sim::results::{Document, Meta};
+use nectar_manifest_sim::results::{self, Document, Meta};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
 use nectar_manifest::Format;
@@ -54,16 +54,6 @@ fn git(args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-fn now_iso() -> String {
-    Command::new("date")
-        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
-}
-
 fn caveats() -> Vec<String> {
     vec![
         "Every fetch/round/byte figure is measured. The only modelled numbers are the cursor \
@@ -81,6 +71,10 @@ for fewer referenced hops per range/listing window; read both sides together."
         "paginate is the rank-directed page: its fetch count is ~O(depth) and flat in \
 offset, against the iter().skip(offset) baseline whose fetches grow with offset."
             .to_string(),
+        "subtree_serve compares resolving a folder's single covering subtree reference (an \
+O(depth) one-ref handoff) against draining the full prefix cursor from the root; handoff_found: \
+false means no single chunk holds exactly the prefix's keys."
+            .to_string(),
     ]
 }
 
@@ -90,6 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut parallel_cursor = Vec::new();
     let mut v1read = Vec::new();
     let mut paginate = Vec::new();
+    let mut subtree_serve = Vec::new();
 
     for corpus in Corpus::all() {
         for &scale in &args.scales {
@@ -99,11 +94,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             parallel_cursor.extend(perf::parallel_cursor_cells(corpus, scale, &keys)?);
             v1read.push(perf::read_profile_cell(corpus, scale, &keys)?);
             paginate.extend(perf::paginate_cells(corpus, scale, &keys)?);
+            subtree_serve.extend(perf::subtree_serve_cell(corpus, scale, &keys)?);
         }
     }
 
     let meta = Meta {
-        generated: now_iso(),
+        generated: results::generated_iso(
+            std::env::var("SOURCE_DATE_EPOCH")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+        ),
         git_branch: git(&["rev-parse", "--abbrev-ref", "HEAD"]),
         git_commit: git(&["rev-parse", "HEAD"]),
         harness_version: "4".to_string(),
@@ -124,6 +124,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         parallel_cursor,
         v1read,
         paginate,
+        subtree_serve,
     };
     let json = serde_json::to_string_pretty(&doc)?;
     if let Some(parent) = args.out.parent() {

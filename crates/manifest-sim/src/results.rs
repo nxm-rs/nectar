@@ -21,11 +21,15 @@ pub struct Document {
     pub v1read: Vec<ReadProfileCell>,
     /// Rank-directed paginate vs the O(offset) skip baseline.
     pub paginate: Vec<PaginateCell>,
+    /// Subtree-ref handoff vs the full cursor walk for a folder listing.
+    pub subtree_serve: Vec<SubtreeServeCell>,
 }
 
 /// Run-level metadata.
 #[derive(Debug, Serialize)]
 pub struct Meta {
+    /// Run timestamp; `SOURCE_DATE_EPOCH` pins it so two runs are
+    /// byte-identical.
     pub generated: String,
     pub git_branch: String,
     pub git_commit: String,
@@ -120,4 +124,65 @@ pub struct PaginateCell {
     pub skip_baseline_fetch_count: u64,
     /// `skip_baseline / paginate`; grows with offset as the win widens.
     pub skip_over_paginate: Option<f64>,
+}
+
+/// One `(corpus, scale)` subtree-serve cell: a folder listing handed off as a
+/// single subtree reference versus walked in full from the manifest root.
+#[derive(Debug, Serialize)]
+pub struct SubtreeServeCell {
+    pub corpus: String,
+    pub scale: u64,
+    /// The listing prefix (lossy UTF-8).
+    pub prefix: String,
+    pub keys_returned: u64,
+    /// Whether one chunk holds exactly the prefix's keys, so its reference
+    /// can be handed off.
+    pub handoff_found: bool,
+    /// Node fetches to resolve the handoff reference: O(depth) to the
+    /// boundary, nothing below it.
+    pub handoff_fetch_count: u64,
+    /// Node fetches to drain the full prefix cursor from the root.
+    pub cursor_walk_fetch_count: u64,
+    /// `cursor_walk / handoff`; `null` without a handoff.
+    pub walk_over_handoff: Option<f64>,
+}
+
+/// RFC 3339 UTC seconds for `epoch_secs`, or the current wall clock when
+/// `None`; the bin passes `SOURCE_DATE_EPOCH` here.
+#[must_use]
+pub fn generated_iso(epoch_secs: Option<u64>) -> String {
+    let secs = epoch_secs.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    });
+    iso_utc(secs)
+}
+
+/// Proleptic-Gregorian UTC render of a Unix timestamp, seconds precision.
+fn iso_utc(secs: u64) -> String {
+    let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(mo <= 2);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{generated_iso, iso_utc};
+
+    #[test]
+    fn iso_render_is_correct_at_known_instants() {
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso_utc(951_868_800), "2000-03-01T00:00:00Z");
+        assert_eq!(iso_utc(1_767_225_600), "2026-01-01T00:00:00Z");
+        assert_eq!(generated_iso(Some(86_399)), "1970-01-01T23:59:59Z");
+    }
 }
