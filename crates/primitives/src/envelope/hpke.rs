@@ -323,6 +323,7 @@ pub(super) fn seal(
 
 /// Deterministic apart from the ephemeral; reached from [`seal`] and, for
 /// the pinned vectors, from the KAT tests only.
+#[cfg(feature = "encryption")]
 fn seal_with_ephemeral(
     ephemeral: &SecretKey,
     recipient: &PublicKey,

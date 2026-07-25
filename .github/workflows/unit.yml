@@ -97,10 +97,10 @@ jobs:
             - name: Run envelope tests
               run: |
                   cargo nextest run \
-                    -p nectar-primitives --features envelope --locked \
+                    -p nectar-primitives --features envelope,encryption --locked \
                     --no-tests=warn --no-fail-fast
             - name: Run envelope doctests
-              run: cargo test --doc -p nectar-primitives --features envelope --locked
+              run: cargo test --doc -p nectar-primitives --features envelope,encryption --locked
             # The encrypted allocation probes must see encryption without
             # rayon, matching the encrypted split shape above.
             - name: Run encrypted split integration tests
