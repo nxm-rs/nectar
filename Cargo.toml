@@ -67,6 +67,7 @@ nectar-mantaray = { version = "0.4.0", path = "crates/mantaray" }
 nectar-marker = { version = "0.4.0", path = "crates/marker" }
 nectar-primitives = { version = "0.4.0", path = "crates/primitives" }
 nectar-swarms = { version = "0.4.0", path = "crates/swarms" }
+nectar-tasks = { version = "0.4.0", path = "crates/tasks" }
 nectar-postage = { version = "0.4.0", path = "crates/postage" }
 nectar-postage-issuer = { version = "0.4.0", path = "crates/postage-issuer" }
 nectar-postage-usage = { version = "0.4.0", path = "crates/postage-usage" }
@@ -136,6 +137,7 @@ futures-executor = "0.3"
 
 # wasm
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 # Exact pin: 0.3.72 requires wasm-bindgen =0.2.122, so the resolved wasm-bindgen
 # stays in lockstep with the wasm-bindgen-test-runner version CI installs.
 wasm-bindgen-test = "=0.3.72"

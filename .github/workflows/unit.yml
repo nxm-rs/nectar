@@ -49,6 +49,13 @@ jobs:
                     --no-tests=warn --no-fail-fast
             - name: Run tokio adapter doctests
               run: cargo test --doc -p nectar-file --features tokio --locked
+            # The tokio spawner is likewise feature-gated off the default
+            # build; cover its tests here.
+            - name: Run tokio spawner tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-tasks --features tokio --locked \
+                    --no-tests=warn --no-fail-fast
             # The batch ingest is likewise feature-gated off the default
             # build; cover its tests and doctest here, with the encrypted
             # mode enabled so the pooled encrypted ingest runs too.
@@ -145,6 +152,13 @@ jobs:
               run: |
                   cargo check \
                     -p nectar-manifest --locked \
+                    --target wasm32-unknown-unknown
+            - name: Check the browser spawner builds for wasm32
+              # The spawn seam's wasm implementation only exists on wasm32, so
+              # the faithful check is the feature build on that target.
+              run: |
+                  cargo check \
+                    -p nectar-tasks --features wasm --locked \
                     --target wasm32-unknown-unknown
 
     wasm-smoke:

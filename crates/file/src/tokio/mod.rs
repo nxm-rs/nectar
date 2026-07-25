@@ -4,8 +4,9 @@
 //! [`AsyncSeek`](::tokio::io::AsyncSeek) straight over a
 //! [`FileReader`](crate::FileReader): every poll drains the walk in place,
 //! so the fetch window stays in flight across polls and no future is
-//! created per call. [`SpawnedReader`] opts into a runtime task that keeps
-//! the walk advancing between reads. Positions are zero-based within the
+//! created per call. [`SpawnedReader`] opts into a driver task that keeps
+//! the walk advancing between reads, spawned on the ambient runtime or a
+//! caller-supplied executor. Positions are zero-based within the
 //! clipped range, so [`SeekFrom::End`] resolves against the effective
 //! length. [`TokioWriter`] shims [`AsyncWrite`](::tokio::io::AsyncWrite)
 //! over a [`Split`](crate::Split): `poll_shutdown` drives the finish and

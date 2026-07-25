@@ -1,19 +1,21 @@
-//! Spawned pool driver: a runtime task advances the walk between reads.
+//! Spawned pool driver: an executor task advances the walk between reads.
 
+use alloc::boxed::Box;
 use core::fmt;
 use core::future::poll_fn;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::io;
 use std::io::SeekFrom;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::TrustedGet;
+use nectar_tasks::{Spawn, TaskHandle, TokioSpawner};
 use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 use super::resolve;
 use crate::config::Window;
@@ -24,7 +26,7 @@ use crate::walk::{Frame, Walk, WalkError, WalkMode};
 /// Frame channel one driver task fills.
 type Frames<E> = mpsc::Receiver<Result<Frame, WalkError<E>>>;
 
-/// [`AsyncRead`] plus [`AsyncSeek`] reader whose walk a spawned runtime
+/// [`AsyncRead`] plus [`AsyncSeek`] reader whose walk a spawned executor
 /// task drives, so the fetch window keeps filling between reads.
 ///
 /// Read-ahead is bounded by the walk window plus one frame channel of the
@@ -51,7 +53,8 @@ where
     /// Unconsumed tail of the last delivered frame.
     current: Bytes,
     frames: Frames<S::Error>,
-    driver: JoinHandle<()>,
+    executor: Arc<dyn Spawn>,
+    driver: TaskHandle,
 }
 
 impl<S, M, const B: usize> SpawnedReader<S, M, B>
@@ -63,8 +66,14 @@ where
     /// Move `reader` onto the current runtime, retaining its walk and any
     /// prefetched frames. Must be called within a runtime.
     pub fn spawn(reader: FileReader<S, M, B>) -> Self {
+        Self::spawn_on(Arc::new(TokioSpawner), reader)
+    }
+
+    /// Move `reader` onto `executor`, retaining its walk and any prefetched
+    /// frames. Reseeks respawn the driver on the same executor.
+    pub fn spawn_on(executor: Arc<dyn Spawn>, reader: FileReader<S, M, B>) -> Self {
         let parts = reader.into_parts();
-        let (frames, driver) = drive(parts.walk, parts.window);
+        let (frames, driver) = drive(&*executor, parts.walk, parts.window);
         Self {
             store: parts.store,
             root: parts.root,
@@ -76,6 +85,7 @@ where
             position: parts.position,
             current: parts.current,
             frames,
+            executor,
             driver,
         }
     }
@@ -115,7 +125,7 @@ where
             target..self.end,
             self.window,
         );
-        let (frames, driver) = drive(walk, self.window);
+        let (frames, driver) = drive(&*self.executor, walk, self.window);
         self.frames = frames;
         self.driver = driver;
         self.position = target;
@@ -126,16 +136,17 @@ where
 /// Drive one walk into a bounded frame channel until it finishes, fails or
 /// loses its receiver.
 fn drive<S, M, const B: usize>(
+    executor: &dyn Spawn,
     mut walk: Walk<S, M, B>,
     window: Window,
-) -> (Frames<S::Error>, JoinHandle<()>)
+) -> (Frames<S::Error>, TaskHandle)
 where
     S: TrustedGet<AnyChunkSet<B>> + Clone + Send + 'static,
     S::Error: Send,
     M: WalkMode,
 {
     let (sender, receiver) = mpsc::channel(usize::from(window.get()));
-    let driver = tokio::spawn(async move {
+    let driver = executor.spawn(Box::pin(async move {
         loop {
             let Some(item) = poll_fn(|cx| walk.poll_next_ordered(cx)).await else {
                 break;
@@ -145,18 +156,8 @@ where
                 break;
             }
         }
-    });
+    }));
     (receiver, driver)
-}
-
-impl<S, M, const B: usize> Drop for SpawnedReader<S, M, B>
-where
-    S: TrustedGet<AnyChunkSet<B>>,
-    M: WalkMode,
-{
-    fn drop(&mut self) {
-        self.driver.abort();
-    }
 }
 
 /// Movable regardless of the store or context types: the reader owns plain
