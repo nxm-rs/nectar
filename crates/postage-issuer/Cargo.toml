@@ -45,7 +45,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 default = [ "std" ]
 
 # Standard library support
-std = [ "nectar-clock/std", "nectar-postage/std" ]
+std = [ "nectar-clock/std", "nectar-postage/std", "nectar-primitives/std" ]
 
 # Local key signing for testing and development
 local-signer = [ "dep:alloy-signer-local", "std" ]

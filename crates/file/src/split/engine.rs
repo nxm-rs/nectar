@@ -18,18 +18,10 @@ use nectar_primitives::store::ChunkPut;
 
 use super::SplitStats;
 use super::error::{SealError, SplitError};
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 use super::handoff::{self, Handoff};
 use super::mode::{Sealed, SplitMode};
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 use crate::config::HashWindow;
 use crate::config::PutWindow;
 use crate::inflight::InFlight;
@@ -49,29 +41,17 @@ type BoxPut<E> = Pin<Box<dyn Future<Output = PutDone<E>> + Send>>;
 type BoxPut<E> = Pin<Box<dyn Future<Output = PutDone<E>>>>;
 
 /// Handoff carrying one pool leaf seal back to the engine.
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 type SealHandoff<M, const B: usize> = Handoff<Result<Sealed<M, B>, SealError>>;
 
 /// Submitter queueing one leaf payload on the pool under its drawn state.
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 type SealSubmit<M, const B: usize> =
     Box<dyn Fn(<M as SplitMode>::Draw, Bytes) -> SealHandoff<M, B> + Send + Sync>;
 
 /// One leaf seal in flight on the pool: its span and the handoff its sealed
 /// chunk arrives on.
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 struct PendingSeal<M: SplitMode, const B: usize> {
     span: u64,
     handoff: SealHandoff<M, B>,
@@ -79,11 +59,7 @@ struct PendingSeal<M: SplitMode, const B: usize> {
 
 /// Pool fan-out for leaf seals: a bounded deque of in-flight jobs and the
 /// submitter that queues one payload.
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 struct HashFan<M: SplitMode, const B: usize> {
     window: usize,
     submit: SealSubmit<M, B>,
@@ -150,11 +126,7 @@ where
     pending: VecDeque<Chunk<Verified, AnyChunkSet<B>>>,
     in_flight: InFlight<PutDone<S::Error>>,
     /// Pool fan-out for leaf seals; `None` keeps sealing inline.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
+    #[cfg(feature = "rayon")]
     hash: Option<HashFan<M, B>>,
     phase: Phase,
     root: Option<M::Root>,
@@ -202,11 +174,7 @@ where
             spine: Vec::new(),
             pending: VecDeque::new(),
             in_flight: InFlight::new(),
-            #[cfg(all(
-                feature = "rayon",
-                not(target_arch = "wasm32"),
-                not(feature = "unsync")
-            ))]
+            #[cfg(feature = "rayon")]
             hash: None,
             phase: Phase::Writing,
             root: None,
@@ -240,11 +208,7 @@ where
     /// assert_eq!(root.as_bytes().len(), 32);
     /// # });
     /// ```
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
+    #[cfg(feature = "rayon")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
     #[must_use]
     pub fn with_hash_window(mut self, window: HashWindow) -> Self
@@ -297,11 +261,7 @@ where
         if let Err(error) = self.step_puts(cx) {
             return Poll::Ready(Err(self.poison(error)));
         }
-        #[cfg(all(
-            feature = "rayon",
-            not(target_arch = "wasm32"),
-            not(feature = "unsync")
-        ))]
+        #[cfg(feature = "rayon")]
         if let Err(error) = self.drain_seals(cx) {
             return Poll::Ready(Err(self.poison(error)));
         }
@@ -345,11 +305,7 @@ where
                     // Every pool leaf seal must land before the tail seals
                     // and the spine closes, so the ascent stays in leaf
                     // order.
-                    #[cfg(all(
-                        feature = "rayon",
-                        not(target_arch = "wasm32"),
-                        not(feature = "unsync")
-                    ))]
+                    #[cfg(feature = "rayon")]
                     {
                         if let Err(error) = self.drain_seals(cx) {
                             return Poll::Ready(Err(self.poison(error)));
@@ -543,11 +499,7 @@ where
         if let Some((head, _)) = payload.split_first_chunk_mut::<SPAN_SIZE>() {
             *head = span.to_le_bytes();
         }
-        #[cfg(all(
-            feature = "rayon",
-            not(target_arch = "wasm32"),
-            not(feature = "unsync")
-        ))]
+        #[cfg(feature = "rayon")]
         if let Some(fan) = &mut self.hash {
             // The leaf's draw, then one per ascent seal its admission
             // triggers, so the draw order equals the serial engine's.
@@ -575,11 +527,7 @@ where
     /// Whether the write gate refuses bytes this poll: a full hash window
     /// when the fan-out is on, otherwise the serial put gate.
     fn write_gate_blocked(&self) -> bool {
-        #[cfg(all(
-            feature = "rayon",
-            not(target_arch = "wasm32"),
-            not(feature = "unsync")
-        ))]
+        #[cfg(feature = "rayon")]
         if let Some(fan) = &self.hash {
             return fan.seals.len() >= fan.window;
         }
@@ -595,11 +543,7 @@ where
     /// registered either way: every admission loops back through
     /// `step_puts`, so a put dispatched here is re-polled with the caller's
     /// waker before any return.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
+    #[cfg(feature = "rayon")]
     fn drain_seals(&mut self, cx: &mut Context<'_>) -> Result<(), SplitError<S::Error>> {
         loop {
             self.step_puts(cx)?;
@@ -629,11 +573,7 @@ where
     }
 
     /// Leaf seals still on the pool; zero when the fan-out is off.
-    #[cfg(all(
-        feature = "rayon",
-        not(target_arch = "wasm32"),
-        not(feature = "unsync")
-    ))]
+    #[cfg(feature = "rayon")]
     fn seals_queued(&self) -> usize {
         self.hash.as_ref().map_or(0, |fan| fan.seals.len())
     }
@@ -717,11 +657,7 @@ where
     /// Seal one payload on the engine thread; under the pool fan-out a
     /// streaming ascent seal spends its submission-time draw.
     fn seal_inline(&mut self, payload: Bytes) -> Result<Sealed<M, B>, SealError> {
-        #[cfg(all(
-            feature = "rayon",
-            not(target_arch = "wasm32"),
-            not(feature = "unsync")
-        ))]
+        #[cfg(feature = "rayon")]
         if let Some(draw) = self.hash.as_mut().and_then(|fan| fan.draws.pop_front()) {
             return M::seal_with::<B>(draw, payload);
         }

@@ -33,13 +33,13 @@ futures.workspace = true
 # Registry-pinned legacy oracle for the submission-order differential gate:
 # identical op sequences must produce byte-identical roots.
 mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
-nectar-file.workspace = true
+nectar-file = { workspace = true, features = ["std"] }
 nectar-manifest = { workspace = true, features = ["arbitrary"] }
 nectar-mantaray.workspace = true
 nectar-postage.workspace = true
 nectar-postage-issuer.workspace = true
 nectar-postage-usage.workspace = true
-nectar-primitives.workspace = true
+nectar-primitives = { workspace = true, features = ["std"] }
 nectar-testing = { workspace = true, features = ["alloc", "fixtures"] }
 proptest.workspace = true
 

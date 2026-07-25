@@ -17,9 +17,11 @@ publish = false
 [dependencies]
 allocation-counter = { workspace = true, optional = true }
 futures-executor.workspace = true
-nectar-file = { workspace = true, optional = true }
+# The engine surface only, so a consumer's no-std test lane keeps the file
+# crate's std feature off.
+nectar-file = { workspace = true, optional = true, features = ["primitives"] }
 nectar-postage = { workspace = true, optional = true }
-nectar-primitives = { workspace = true, optional = true }
+nectar-primitives = { workspace = true, optional = true, features = ["std"] }
 
 [features]
 # Allocation witness. Linking it swaps the global allocator of every target
@@ -34,6 +36,6 @@ fixtures = [ "dep:nectar-file", "dep:nectar-postage", "dep:nectar-primitives" ]
 # chunk traits on wasm32; the same store cannot compile on native targets.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 futures.workspace = true
-nectar-file.workspace = true
-nectar-primitives.workspace = true
+nectar-file = { workspace = true, features = ["std"] }
+nectar-primitives = { workspace = true, features = ["std"] }
 wasm-bindgen-test.workspace = true

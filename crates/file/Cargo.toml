@@ -49,16 +49,17 @@ tokio = { workspace = true, features = ["io-util", "time"] }
 [features]
 default = [ "std" ]
 
+# The sequential engine core without std: the primitives dependency, the
+# byte buffers and the poll utilities, alloc-only.
+primitives = [ "dep:bytes", "dep:futures-util", "dep:nectar-primitives" ]
+
 # Standard library interop; the filesystem and io adapters land with the
-# write engine. The walk engine rides this feature until the primitives core
-# builds bare-metal.
+# write engine.
 std = [
 	"bytes?/std",
-	"dep:bytes",
-	"dep:futures-util",
-	"dep:nectar-primitives",
 	"futures-util?/std",
 	"nectar-primitives?/std",
+	"primitives",
 	"thiserror/std",
 ]
 

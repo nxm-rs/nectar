@@ -48,6 +48,14 @@ jobs:
                   # removed or the workspace version bumps.
                   cargo check --locked --manifest-path crates/mantaray/Cargo.toml \
                     --no-default-features --target ${{ matrix.target }}
+            # The sequential read, join and walk core of nectar-file, with the
+            # primitives dependency on; the bare pass above keeps the hollow
+            # shape honest.
+            - name: Check nectar-file with the primitives core
+              run: |
+                  cargo check --locked -p nectar-file \
+                    --no-default-features --features primitives \
+                    --target ${{ matrix.target }}
             # The bare-metal core of nectar-primitives. Only in the rv64 lane:
             # the wasm32 shape of the crate is the std build with the wasm
             # target table (wasm-bindgen), not the no_std core.

@@ -1,5 +1,8 @@
 //! WASM bindings for Chunk functionality.
 
+use alloc::format;
+use alloc::string::ToString;
+
 use super::content::ContentChunk;
 use super::traits::ChunkOps;
 use crate::bmt::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE};

@@ -84,8 +84,8 @@ extern crate alloc;
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
-// The marker traits bound only the std-gated surfaces today.
-#[cfg(not(feature = "std"))]
+// The marker traits bound only the engine surfaces behind `primitives`.
+#[cfg(not(feature = "primitives"))]
 use nectar_marker as _;
 
 #[cfg(all(feature = "rayon", target_arch = "wasm32"))]
@@ -95,45 +95,41 @@ compile_error!("feature `rayon` needs a native thread pool; wasm32 builds must d
 compile_error!("feature `rayon` needs `Send` chunks and errors; it excludes the `unsync` escape");
 
 pub mod config;
-#[cfg(any(all(test, feature = "std"), feature = "arbitrary"))]
+#[cfg(any(test, feature = "arbitrary"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "arbitrary")))]
 pub mod generators;
 pub mod geometry;
-#[cfg(feature = "std")]
+#[cfg(feature = "primitives")]
 mod inflight;
-#[cfg(feature = "std")]
+#[cfg(feature = "primitives")]
 mod num;
 /// Shared fuzz and test oracle for the malformed-intermediate walk.
 /// Compiled for in-crate tests and for fuzz builds (`arbitrary`); exempt
 /// from semver guarantees.
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(any(all(test, feature = "primitives"), feature = "arbitrary"))]
 #[doc(hidden)]
 pub mod oracles;
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 pub mod parallel;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[cfg(feature = "primitives")]
+#[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
 pub mod read;
 pub mod sink;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[cfg(feature = "primitives")]
+#[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
 pub mod split;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[cfg(feature = "primitives")]
+#[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
 pub mod store;
 pub mod sync;
-#[cfg(all(test, feature = "std"))]
+#[cfg(all(test, feature = "primitives"))]
 mod testutil;
 #[cfg(feature = "tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub mod tokio;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[cfg(feature = "primitives")]
+#[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
 pub mod walk;
 
 #[cfg(feature = "tokio")]
@@ -142,13 +138,9 @@ pub use self::tokio::{SeekOverflow, TokioReader};
 pub use self::tokio::{SpawnedReader, TokioWriter};
 pub use config::{BranchBudget, HashWindow, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
-#[cfg(all(
-    feature = "rayon",
-    not(target_arch = "wasm32"),
-    not(feature = "unsync")
-))]
+#[cfg(feature = "rayon")]
 pub use parallel::{ReadAt, ReadAtError, split_read_at};
-#[cfg(feature = "std")]
+#[cfg(feature = "primitives")]
 pub use read::{
     AnyFile, CollectError, DownloadBuilder, DownloadError, File, FileFrames, FileReader,
     FileStream, OpenError, Progress, ProgressFn, ReadBuilder, SeekPastEnd,
@@ -156,14 +148,16 @@ pub use read::{
 #[cfg(feature = "std")]
 pub use sink::FsSink;
 pub use sink::{DataSink, MemSink, MemSinkError};
-#[cfg(all(feature = "std", feature = "encryption"))]
+#[cfg(all(feature = "primitives", any(feature = "std", not(multi_thread))))]
+pub use split::collect_into;
+#[cfg(all(feature = "primitives", feature = "encryption"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use split::{KeyError, KeySource, RandomKeys};
-#[cfg(feature = "std")]
-pub use split::{SealError, Sealed, Split, SplitError, SplitMode, SplitStats, collect_into};
-#[cfg(feature = "std")]
+#[cfg(feature = "primitives")]
+pub use split::{SealError, Sealed, Split, SplitError, SplitMode, SplitStats};
+#[cfg(feature = "primitives")]
 pub use store::{BoxedStore, BoxedStoreError, DynAnyFile, DynFile, DynFileReader, DynFileStream};
-#[cfg(feature = "std")]
+#[cfg(feature = "primitives")]
 pub use walk::{
     DecodeError, Encrypted, Frame, Plain, ShapeError, Walk, WalkError, WalkMode, WalkStats,
 };

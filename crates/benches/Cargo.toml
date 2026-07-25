@@ -34,7 +34,7 @@ nectar-file = { workspace = true, features = ["rayon"] }
 nectar-mantaray = { workspace = true, features = ["hazmat"] }
 nectar-postage = { workspace = true, features = ["parallel"] }
 nectar-postage-issuer = { workspace = true, features = ["parallel"] }
-nectar-primitives = { workspace = true, features = ["encryption"] }
+nectar-primitives = { workspace = true, features = ["encryption", "std"] }
 nectar-testing.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }

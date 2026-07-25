@@ -50,6 +50,7 @@ std = [
 	"nectar-clock?/std",
 	"nectar-postage-issuer/std",
 	"nectar-postage/std",
+	"nectar-primitives/std",
 	"thiserror/std",
 ]
 
