@@ -14,14 +14,21 @@
 use alloy_primitives::hex;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_feeds::{Feed, FeedError, Getter, Index, Sequence, Topic, Updater};
-use nectar_primitives::chunk::{ChunkAddress, ChunkOps, TrustedSource, Unverified};
-use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkStoreError};
+use nectar_primitives::chunk::{
+    ChunkAddress, ChunkOps, SingleOwnerChunk, SingleOwnerOnlyChunkSet, TrustedSource, Unverified,
+};
+use nectar_primitives::store::{
+    ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, SingleOwnerGet,
+};
 use nectar_primitives::{
     Chunk, ChunkRegistry, DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultMemoryStore,
     StandardChunkSet,
 };
 use nectar_testing::run;
 use proptest::prelude::*;
+
+/// Single-owner-only store the feed handles are typed against.
+type SocStore = MemoryStore<SingleOwnerOnlyChunkSet>;
 
 fn signer() -> PrivateKeySigner {
     let pk = hex!("2c7536e3605d9c16a7a3d7b1898e529396a65c23a3bcbd4012a11cf2731b0fbc");
@@ -37,7 +44,7 @@ fn append_then_read_round_trips() {
     run(async {
         let signer = signer();
         let feed = feed_for(&signer);
-        let store = DefaultMemoryStore::new();
+        let store = SocStore::new();
         let mut updater = Updater::new(feed, &store, &signer);
 
         let payloads: [&[u8]; 3] = [b"first", b"second", b"third"];
@@ -61,7 +68,7 @@ fn append_then_read_round_trips() {
 fn empty_feed_has_no_latest() {
     run(async {
         let signer = signer();
-        let getter = Getter::new(feed_for(&signer), DefaultMemoryStore::new());
+        let getter = Getter::new(feed_for(&signer), SocStore::new());
 
         for latest in [
             getter.latest().await.unwrap(),
@@ -78,7 +85,7 @@ fn finders_agree_while_the_feed_grows() {
     run(async {
         let signer = signer();
         let feed = feed_for(&signer);
-        let store = DefaultMemoryStore::new();
+        let store = SocStore::new();
         let mut updater = Updater::new(feed, &store, &signer);
         let getter = Getter::new(feed, &store);
 
@@ -103,7 +110,7 @@ fn latest_from_respects_the_floor() {
     run(async {
         let signer = signer();
         let feed = feed_for(&signer);
-        let store = DefaultMemoryStore::new();
+        let store = SocStore::new();
         let mut updater = Updater::new(feed, &store, &signer);
         for n in 0u64..5 {
             updater.append(n.to_be_bytes().to_vec()).await.unwrap();
@@ -127,7 +134,7 @@ fn wrong_signer_is_rejected_before_the_write() {
         let signer = signer();
         let other = PrivateKeySigner::from_slice(&[0x42u8; 32]).unwrap();
         let feed = Feed::<DEFAULT_BODY_SIZE>::new(Topic::from_label("roundtrip"), other.address());
-        let store = DefaultMemoryStore::new();
+        let store = SocStore::new();
         let mut updater = Updater::new(feed, &store, &signer);
 
         let err = updater.append(b"payload".to_vec()).await.unwrap_err();
@@ -143,7 +150,7 @@ fn sequence_space_exhausts_at_the_top_slot() {
     run(async {
         let signer = signer();
         let feed = feed_for(&signer);
-        let store = DefaultMemoryStore::new();
+        let store = SocStore::new();
         let mut updater = Updater::resume(feed, &store, &signer, Sequence::MAX);
 
         let update = updater.append(b"last".to_vec()).await.unwrap();
@@ -169,7 +176,7 @@ fn sequence_space_exhausts_at_the_top_slot() {
 fn missing_update_surfaces_the_store_error() {
     run(async {
         let signer = signer();
-        let getter = Getter::new(feed_for(&signer), DefaultMemoryStore::new());
+        let getter = Getter::new(feed_for(&signer), SocStore::new());
         assert!(matches!(
             getter.at(Sequence::ZERO).await.unwrap_err(),
             FeedError::Store(_)
@@ -179,16 +186,16 @@ fn missing_update_surfaces_the_store_error() {
 
 /// Store double reading back unverified parses of what the inner store holds,
 /// exercising the getter's certification path.
-struct Unverifying<'a>(&'a DefaultMemoryStore);
+struct Unverifying<'a>(&'a SocStore);
 
-impl ChunkGet<StandardChunkSet> for Unverifying<'_> {
+impl ChunkGet<SingleOwnerOnlyChunkSet> for Unverifying<'_> {
     type Trust = Unverified;
     type Error = ChunkStoreError;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<Unverified, StandardChunkSet>, Self::Error> {
+    ) -> Result<Chunk<Unverified, SingleOwnerOnlyChunkSet>, Self::Error> {
         let chunk = ChunkGet::get(self.0, address).await?;
         Chunk::parse(*address, &chunk.typed_bytes())
             .map_err(|_| ChunkStoreError::not_found(address))
@@ -206,7 +213,7 @@ fn unverified_reads_are_certified() {
     run(async {
         let signer = signer();
         let feed = feed_for(&signer);
-        let store = DefaultMemoryStore::new();
+        let store = SocStore::new();
         let mut updater = Updater::new(feed, &store, &signer);
         updater.append(b"payload".to_vec()).await.unwrap();
 
@@ -222,18 +229,18 @@ fn unverified_reads_are_certified() {
 /// Store that serves one fixed slot's bytes under whatever address is asked
 /// for: certification must reject the relabelled chunk.
 struct Rebinding<'a> {
-    inner: &'a DefaultMemoryStore,
+    inner: &'a SocStore,
     from: ChunkAddress,
 }
 
-impl ChunkGet<StandardChunkSet> for Rebinding<'_> {
+impl ChunkGet<SingleOwnerOnlyChunkSet> for Rebinding<'_> {
     type Trust = Unverified;
     type Error = ChunkStoreError;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<Unverified, StandardChunkSet>, Self::Error> {
+    ) -> Result<Chunk<Unverified, SingleOwnerOnlyChunkSet>, Self::Error> {
         let chunk = ChunkGet::get(self.inner, &self.from).await?;
         Chunk::parse(*address, &chunk.typed_bytes())
             .map_err(|_| ChunkStoreError::not_found(address))
@@ -245,7 +252,7 @@ fn relabelled_chunk_fails_certification() {
     run(async {
         let signer = signer();
         let feed = feed_for(&signer);
-        let store = DefaultMemoryStore::new();
+        let store = SocStore::new();
         let mut updater = Updater::new(feed, &store, &signer);
         updater.append(b"payload".to_vec()).await.unwrap();
 
@@ -263,8 +270,8 @@ fn relabelled_chunk_fails_certification() {
     });
 }
 
-/// Trusted store lying about type: a content chunk vouched for at the feed
-/// slot must still be rejected as not single-owner.
+/// Trusted general store lying about type: a content chunk vouched for at
+/// the feed slot must still be rejected on the narrowing seam.
 struct LyingTrusted {
     bytes: Vec<u8>,
     source: TrustedSource,
@@ -285,7 +292,7 @@ impl ChunkGet<StandardChunkSet> for LyingTrusted {
 }
 
 #[test]
-fn content_chunk_at_a_feed_slot_is_rejected() {
+fn content_chunk_at_a_feed_slot_is_a_typed_store_error() {
     run(async {
         let signer = signer();
         let feed = feed_for(&signer);
@@ -296,11 +303,37 @@ fn content_chunk_at_a_feed_slot_is_rejected() {
             source: unsafe { TrustedSource::grant() },
         };
 
-        let getter = Getter::new(feed, store);
+        let getter = Getter::new(feed, SingleOwnerGet::new(store));
         assert!(matches!(
             getter.at(Sequence::ZERO).await.unwrap_err(),
-            FeedError::NotSingleOwner(_)
+            FeedError::Store(_)
         ));
+    });
+}
+
+#[test]
+fn shared_general_store_adapts_through_the_narrowing_get() {
+    run(async {
+        let signer = signer();
+        let feed = feed_for(&signer);
+        let shared = DefaultMemoryStore::new();
+        let soc = SingleOwnerChunk::new(
+            feed.update_id(&Sequence::ZERO),
+            b"payload".to_vec(),
+            &signer,
+        )
+        .unwrap();
+        ChunkPut::put(&shared, Chunk::from_envelope(soc.into()).unwrap())
+            .await
+            .unwrap();
+
+        let getter = Getter::new(feed, SingleOwnerGet::new(&shared));
+        let update = getter.at(Sequence::ZERO).await.unwrap();
+        assert_eq!(update.payload().as_ref(), b"payload");
+
+        let latest = getter.latest().await.unwrap();
+        assert_eq!(latest.update.unwrap().index(), &Sequence::ZERO);
+        assert_eq!(latest.next, Sequence::ZERO.next());
     });
 }
 
@@ -320,7 +353,7 @@ proptest! {
         };
 
         run(async {
-            let store = DefaultMemoryStore::new();
+            let store = SocStore::new();
             let mut updater = Updater::new(feed, &store, &signer);
             let written = updater.append(payload.clone()).await.unwrap();
 

@@ -3,7 +3,7 @@
 use core::fmt;
 
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, IntoVerified};
+use nectar_primitives::chunk::{Chunk, IntoVerified, SingleOwnerOnlyChunkSet};
 use nectar_primitives::store::{ChunkGet, ChunkHas};
 
 use crate::error::{FeedError, Result};
@@ -51,8 +51,9 @@ impl<S, const BODY_SIZE: usize> Getter<S, BODY_SIZE> {
 
 impl<S, const BODY_SIZE: usize> Getter<S, BODY_SIZE>
 where
-    S: ChunkGet<AnyChunkSet<BODY_SIZE>>,
-    Chunk<S::Trust, AnyChunkSet<BODY_SIZE>>: IntoVerified<Registry = AnyChunkSet<BODY_SIZE>>,
+    S: ChunkGet<SingleOwnerOnlyChunkSet<BODY_SIZE>>,
+    Chunk<S::Trust, SingleOwnerOnlyChunkSet<BODY_SIZE>>:
+        IntoVerified<Registry = SingleOwnerOnlyChunkSet<BODY_SIZE>>,
 {
     /// Fetch and certify the update at `index`.
     ///
@@ -68,18 +69,15 @@ where
                 actual: *chunk.address(),
             });
         }
-        let soc = chunk
-            .into_envelope()
-            .into_single_owner()
-            .ok_or(FeedError::NotSingleOwner(address))?;
-        Ok(FeedUpdate::new(index, soc))
+        Ok(FeedUpdate::new(index, chunk.into_envelope()))
     }
 }
 
 impl<S, const BODY_SIZE: usize> Getter<S, BODY_SIZE>
 where
-    S: ChunkGet<AnyChunkSet<BODY_SIZE>> + ChunkHas,
-    Chunk<S::Trust, AnyChunkSet<BODY_SIZE>>: IntoVerified<Registry = AnyChunkSet<BODY_SIZE>>,
+    S: ChunkGet<SingleOwnerOnlyChunkSet<BODY_SIZE>> + ChunkHas,
+    Chunk<S::Trust, SingleOwnerOnlyChunkSet<BODY_SIZE>>:
+        IntoVerified<Registry = SingleOwnerOnlyChunkSet<BODY_SIZE>>,
 {
     async fn present(&self, index: u64) -> bool {
         self.store

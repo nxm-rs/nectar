@@ -4,7 +4,7 @@ use core::fmt;
 
 use alloy_signer::SignerSync;
 use bytes::Bytes;
-use nectar_primitives::chunk::{AnyChunkSet, Chunk, SingleOwnerChunk, Verified};
+use nectar_primitives::chunk::{Chunk, SingleOwnerChunk, SingleOwnerOnlyChunkSet, Verified};
 use nectar_primitives::store::ChunkPut;
 use nectar_primitives::{DEFAULT_BODY_SIZE, PrimitivesError};
 
@@ -62,7 +62,7 @@ impl<S, Sig, const BODY_SIZE: usize> Updater<S, Sig, BODY_SIZE> {
 
 impl<S, Sig, const BODY_SIZE: usize> Updater<S, Sig, BODY_SIZE>
 where
-    S: ChunkPut<AnyChunkSet<BODY_SIZE>>,
+    S: ChunkPut<SingleOwnerOnlyChunkSet<BODY_SIZE>>,
     Sig: SignerSync,
 {
     /// Sign and publish `payload` at the next sequence position, advancing
@@ -97,7 +97,8 @@ where
                 actual: owner,
             });
         }
-        let sealed = Chunk::<Verified, AnyChunkSet<BODY_SIZE>>::from_envelope(soc.clone().into())?;
+        let sealed =
+            Chunk::<Verified, SingleOwnerOnlyChunkSet<BODY_SIZE>>::from_envelope(soc.clone())?;
         self.store.put(sealed).await.map_err(FeedError::store)?;
         Ok(FeedUpdate::new(index, soc))
     }

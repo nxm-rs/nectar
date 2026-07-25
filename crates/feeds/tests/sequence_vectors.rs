@@ -20,10 +20,9 @@ use alloy_primitives::{B256, Signature, address, b256, hex};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use nectar_feeds::{Feed, Getter, Sequence, Topic};
-use nectar_primitives::chunk::{ChunkAddress, ChunkOps, SocId};
-use nectar_primitives::{
-    Chunk, DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultMemoryStore, DefaultSingleOwnerChunk,
-};
+use nectar_primitives::chunk::{ChunkAddress, ChunkOps, SingleOwnerOnlyChunkSet, SocId};
+use nectar_primitives::store::MemoryStore;
+use nectar_primitives::{Chunk, DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultSingleOwnerChunk};
 
 /// The single-owner chunk anchor: id of all zeroes, payload `"foo"`, and the
 /// known-good signature from the reference client's vectors. Pins the SOC
@@ -158,7 +157,8 @@ fn getter_reads_reference_vector() {
     let soc =
         DefaultSingleOwnerChunk::new(feed.update_id(&Sequence::ZERO), b"data".to_vec(), &signer)
             .unwrap();
-    let store = DefaultMemoryStore::from_chunks([Chunk::from_envelope(soc.into()).unwrap()]);
+    let store =
+        MemoryStore::<SingleOwnerOnlyChunkSet>::from_chunks([Chunk::from_envelope(soc).unwrap()]);
 
     let update = nectar_testing::run(Getter::new(feed, &store).at(Sequence::ZERO)).unwrap();
     assert_eq!(update.payload().as_ref(), b"data");
