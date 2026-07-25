@@ -25,6 +25,7 @@ disallowed_methods = "deny"
 
 [dependencies]
 alloy-signer-local.workspace = true
+futures-util.workspace = true
 nectar-feeds = { workspace = true }
 nectar-primitives = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["std", "derive"] }

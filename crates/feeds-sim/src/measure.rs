@@ -16,8 +16,9 @@ type Err = Box<dyn Error>;
 /// Window widths swept per feed length.
 pub const WIDTHS: [usize; 4] = [1, 8, 16, 64];
 
-/// Feed lengths: the present-then-absent boundary positions.
-pub const LENGTHS: [u64; 7] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000];
+/// Feed lengths: the present-then-absent boundary positions, a superset of
+/// the reference client's benchmark prefills {1, 100, 1000, 5000}.
+pub const LENGTHS: [u64; 8] = [1, 10, 100, 1_000, 5_000, 10_000, 100_000, 1_000_000];
 
 /// Replay-work budget for the stepwise finder. Measuring a cell costs about
 /// `n^2 / (2 * width)` frontier lookups because the replay recomputes from
@@ -69,7 +70,7 @@ pub const fn linear_feasible(n: u64, width: usize) -> bool {
 /// paused clock needs a real timer driver, which `nectar_testing::run` does
 /// not provide.
 #[allow(clippy::disallowed_methods)]
-fn block_on_paused<T>(f: impl Future<Output = T>) -> Result<T, Err> {
+pub(crate) fn block_on_paused<T>(f: impl Future<Output = T>) -> Result<T, Err> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)

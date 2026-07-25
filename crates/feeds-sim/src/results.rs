@@ -16,7 +16,10 @@ pub struct Document {
     pub latest: Vec<FinderCell>,
     /// Stepwise finder cells (`latest_linear_from`).
     pub linear: Vec<FinderCell>,
-    /// Analytic comparison against the reference client's concurrent finder.
+    /// Ported reference-client finder cells, one series: `width` reports its
+    /// fixed lookahead concurrency.
+    pub reference: Vec<FinderCell>,
+    /// Comparison against the reference client's concurrent finder.
     pub reference_comparison: Vec<String>,
 }
 

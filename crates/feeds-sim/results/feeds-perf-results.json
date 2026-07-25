@@ -1,9 +1,9 @@
 {
   "meta": {
-    "generated": "2026-07-25T22:28:01Z",
-    "git_branch": "bench/feeds-finder-cost",
-    "git_commit": "741af0fa208c765d6af5ecc50244bcdf18c4077c",
-    "harness_version": "1",
+    "generated": "2026-07-25T23:30:50Z",
+    "git_branch": "HEAD",
+    "git_commit": "236f04352166e5f223893a26a769ff359fa74069",
+    "harness_version": "2",
     "topic_label": "finder-cost",
     "owner": "0xB0E5863D0DDf7e105e409Fee0eCC0123a362e14B",
     "widths": [
@@ -17,6 +17,7 @@
       10,
       100,
       1000,
+      5000,
       10000,
       100000,
       1000000
@@ -27,7 +28,8 @@
       "total_probes counts presence probes, speculation included: the chunks required for the lookup. wasted_probes counts probes answered absent (at or past the first free slot); the sequential scan itself needs bracketing misses, so a width's speculation overhead is its excess over the width-one figure.",
       "verified_gets is the certified retrieval of the committed boundary update; presence answers are unverified, per the finder's documented absence caveat.",
       "Stepwise cells whose replay work n^2/(2*width) exceeds linear_budget are null with a reason: the stepwise replay recomputes its frontier from the floor each round, so measuring those cells is quadratic even though the finder's own probe and round counts are linear.",
-      "Wire indexing is shared with the reference client (8-byte big-endian index, keccak(topic || index) id, keccak(id || owner) address); the comparison is lookup strategy only."
+      "Wire indexing is shared with the reference client (8-byte big-endian index, keccak(topic || index) id, keccak(id || owner) address); the comparison is lookup strategy only.",
+      "The reference series is a faithful port of the reference client's concurrent finder (fixed eight-way lookahead at offsets 2^k - 1 per interval) driven over the same presence store. In the original every probe is a full retrieval with absence inferred from a timeout, so presence probes stand in and verified_gets is zero; its probe cost is understated relative to the nectar cells on that account, never overstated."
     ]
   },
   "latest": [
@@ -205,6 +207,50 @@
       "verified_gets": 1,
       "committed": 999,
       "next": 1000,
+      "gap": null
+    },
+    {
+      "n": 5000,
+      "width": 1,
+      "rounds": 27,
+      "total_probes": 27,
+      "wasted_probes": 7,
+      "verified_gets": 1,
+      "committed": 4999,
+      "next": 5000,
+      "gap": null
+    },
+    {
+      "n": 5000,
+      "width": 8,
+      "rounds": 6,
+      "total_probes": 43,
+      "wasted_probes": 16,
+      "verified_gets": 1,
+      "committed": 4999,
+      "next": 5000,
+      "gap": null
+    },
+    {
+      "n": 5000,
+      "width": 16,
+      "rounds": 4,
+      "total_probes": 63,
+      "wasted_probes": 29,
+      "verified_gets": 1,
+      "committed": 4999,
+      "next": 5000,
+      "gap": null
+    },
+    {
+      "n": 5000,
+      "width": 64,
+      "rounds": 3,
+      "total_probes": 191,
+      "wasted_probes": 155,
+      "verified_gets": 1,
+      "committed": 4999,
+      "next": 5000,
       "gap": null
     },
     {
@@ -518,6 +564,50 @@
       "gap": null
     },
     {
+      "n": 5000,
+      "width": 1,
+      "rounds": 5001,
+      "total_probes": 5001,
+      "wasted_probes": 1,
+      "verified_gets": 1,
+      "committed": 4999,
+      "next": 5000,
+      "gap": null
+    },
+    {
+      "n": 5000,
+      "width": 8,
+      "rounds": 626,
+      "total_probes": 5008,
+      "wasted_probes": 8,
+      "verified_gets": 1,
+      "committed": 4999,
+      "next": 5000,
+      "gap": null
+    },
+    {
+      "n": 5000,
+      "width": 16,
+      "rounds": 313,
+      "total_probes": 5008,
+      "wasted_probes": 8,
+      "verified_gets": 1,
+      "committed": 4999,
+      "next": 5000,
+      "gap": null
+    },
+    {
+      "n": 5000,
+      "width": 64,
+      "rounds": 79,
+      "total_probes": 5056,
+      "wasted_probes": 56,
+      "verified_gets": 1,
+      "committed": 4999,
+      "next": 5000,
+      "gap": null
+    },
+    {
       "n": 10000,
       "width": 1,
       "rounds": 10001,
@@ -650,10 +740,101 @@
       "gap": "stepwise replay work n^2/(2*width) exceeds the 100000000 budget; the replay recomputes its frontier from the floor each round"
     }
   ],
+  "reference": [
+    {
+      "n": 1,
+      "width": 8,
+      "rounds": 2,
+      "total_probes": 9,
+      "wasted_probes": 8,
+      "verified_gets": 0,
+      "committed": 0,
+      "next": 1,
+      "gap": null
+    },
+    {
+      "n": 10,
+      "width": 8,
+      "rounds": 4,
+      "total_probes": 13,
+      "wasted_probes": 7,
+      "verified_gets": 0,
+      "committed": 9,
+      "next": 10,
+      "gap": null
+    },
+    {
+      "n": 100,
+      "width": 8,
+      "rounds": 6,
+      "total_probes": 23,
+      "wasted_probes": 7,
+      "verified_gets": 0,
+      "committed": 99,
+      "next": 100,
+      "gap": null
+    },
+    {
+      "n": 1000,
+      "width": 8,
+      "rounds": 10,
+      "total_probes": 56,
+      "wasted_probes": 6,
+      "verified_gets": 0,
+      "committed": 999,
+      "next": 1000,
+      "gap": null
+    },
+    {
+      "n": 5000,
+      "width": 8,
+      "rounds": 26,
+      "total_probes": 178,
+      "wasted_probes": 7,
+      "verified_gets": 0,
+      "committed": 4999,
+      "next": 5000,
+      "gap": null
+    },
+    {
+      "n": 10000,
+      "width": 8,
+      "rounds": 45,
+      "total_probes": 334,
+      "wasted_probes": 8,
+      "verified_gets": 0,
+      "committed": 9999,
+      "next": 10000,
+      "gap": null
+    },
+    {
+      "n": 100000,
+      "width": 8,
+      "rounds": 397,
+      "total_probes": 3154,
+      "wasted_probes": 8,
+      "verified_gets": 0,
+      "committed": 99999,
+      "next": 100000,
+      "gap": null
+    },
+    {
+      "n": 1000000,
+      "width": 8,
+      "rounds": 3926,
+      "total_probes": 31389,
+      "wasted_probes": 7,
+      "verified_gets": 0,
+      "committed": 999999,
+      "next": 1000000,
+      "gap": null
+    }
+  ],
   "reference_comparison": [
-    "The reference client's concurrent finder probes the interval (base, base + 2^levels) at offsets 2^k - 1 for k = 1..levels, with levels = 8 concurrent lookaheads per batch, recursing into the subinterval of the highest update found; each probe is a full retrieval whose absence is inferred from a per-probe timeout.",
-    "Rounds: below 2^levels = 256 updates both strategies converge in a logarithmic number of batches, so they are broadly equal for small feeds. Past 256 the reference interval base advances by at most 2^levels - 1 slots per batch, so its batch count grows linearly in n (about n / 255, around 4000 batches at n = 10^6), while the ladder here doubles per rung and stays logarithmic at every scale: see the single-digit measured rounds at n = 10^6, width >= 16.",
-    "Probes: the reference issues its full fan-out of up to levels retrievals per batch, about levels * n / (2^levels - 1) in total for large n (order 3 * 10^4 at n = 10^6). Width one here is exactly the sequential exponential-then-binary scan, 2 * ceil(log2 n) + 1 probes for n >= 2; wider windows add speculation bounded by the window per round, visible in wasted_probes.",
-    "Where the reference is better or equal: on a feed a few updates long a wide window here speculates far up the ladder and wastes more probes than the reference's fixed eight lookaheads (see wasted_probes at n = 1, width = 64), a probe-count loss bounded by one window; rounds are never worse. Presence probes are also cheaper than the reference's full retrievals and answer absence explicitly rather than by timeout, which the counts here do not credit."
+    "The reference client's concurrent finder probes the interval (base, base + 2^levels) at offsets 2^k - 1 for k = 1..levels, with levels = 8 concurrent lookaheads per batch, recursing into the subinterval of the highest update found; each probe is a full retrieval whose absence is inferred from a per-probe timeout. The reference series measures a faithful port of it over the same counting store.",
+    "Rounds: below 2^levels = 256 updates both strategies converge in a logarithmic number of batches, so they are broadly equal for small feeds. Past 256 the reference interval base advances by at most 2^levels - 1 slots per batch, so its measured batch count grows linearly in n (about n / 255: see the reference cells from n = 1000 up), while the ladder here doubles per rung and stays logarithmic at every scale: see the single-digit measured rounds at n = 10^6, width >= 16.",
+    "Probes: the reference issues its full fan-out of up to levels retrievals per batch, about levels * n / (2^levels - 1) in total for large n (see the reference cells). Width one here is exactly the sequential exponential-then-binary scan, 2 * ceil(log2 n) + 1 probes for n >= 2; wider windows add speculation bounded by the window per round, visible in wasted_probes.",
+    "Where the reference is better or equal: on a feed a few updates long a wide window here speculates far up the ladder and wastes more probes than the reference's fixed eight lookaheads (see wasted_probes at n = 1, width = 64), a probe-count loss bounded by one window; rounds are never worse. Presence probes are also cheaper than the reference's full retrievals and answer absence explicitly rather than by timeout, which the counts here do not credit.",
+    "The per-length verdicts and the measured comparison table live in results/COMPARISON.md next to this document."
   ]
 }

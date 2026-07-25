@@ -7,5 +7,6 @@
 
 pub mod corpus;
 pub mod measure;
+pub mod reference;
 pub mod results;
 pub mod store;

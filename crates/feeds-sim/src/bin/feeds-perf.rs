@@ -10,6 +10,7 @@ use std::process::Command;
 
 use nectar_feeds_sim::corpus::{Corpus, TOPIC_LABEL};
 use nectar_feeds_sim::measure::{self, FinderKind, LENGTHS, LINEAR_BUDGET, WIDTHS};
+use nectar_feeds_sim::reference;
 use nectar_feeds_sim::results::{self, Document, FinderCell, Meta};
 
 const DEFAULT_OUT: &str = "feeds-perf-results.json";
@@ -73,6 +74,12 @@ those cells is quadratic even though the finder's own probe and round counts are
         "Wire indexing is shared with the reference client (8-byte big-endian index, \
 keccak(topic || index) id, keccak(id || owner) address); the comparison is lookup strategy only."
             .to_string(),
+        "The reference series is a faithful port of the reference client's concurrent finder \
+(fixed eight-way lookahead at offsets 2^k - 1 per interval) driven over the same presence store. \
+In the original every probe is a full retrieval with absence inferred from a timeout, so \
+presence probes stand in and verified_gets is zero; its probe cost is understated relative to \
+the nectar cells on that account, never overstated."
+            .to_string(),
     ]
 }
 
@@ -81,16 +88,18 @@ fn reference_comparison() -> Vec<String> {
         "The reference client's concurrent finder probes the interval (base, base + 2^levels) at \
 offsets 2^k - 1 for k = 1..levels, with levels = 8 concurrent lookaheads per batch, recursing \
 into the subinterval of the highest update found; each probe is a full retrieval whose absence \
-is inferred from a per-probe timeout."
+is inferred from a per-probe timeout. The reference series measures a faithful port of it over \
+the same counting store."
             .to_string(),
         "Rounds: below 2^levels = 256 updates both strategies converge in a logarithmic number \
 of batches, so they are broadly equal for small feeds. Past 256 the reference interval base \
-advances by at most 2^levels - 1 slots per batch, so its batch count grows linearly in n (about \
-n / 255, around 4000 batches at n = 10^6), while the ladder here doubles per rung and stays \
-logarithmic at every scale: see the single-digit measured rounds at n = 10^6, width >= 16."
+advances by at most 2^levels - 1 slots per batch, so its measured batch count grows linearly in \
+n (about n / 255: see the reference cells from n = 1000 up), while the ladder here doubles per \
+rung and stays logarithmic at every scale: see the single-digit measured rounds at n = 10^6, \
+width >= 16."
             .to_string(),
         "Probes: the reference issues its full fan-out of up to levels retrievals per batch, \
-about levels * n / (2^levels - 1) in total for large n (order 3 * 10^4 at n = 10^6). Width one \
+about levels * n / (2^levels - 1) in total for large n (see the reference cells). Width one \
 here is exactly the sequential exponential-then-binary scan, 2 * ceil(log2 n) + 1 probes for \
 n >= 2; wider windows add speculation bounded by the window per round, visible in \
 wasted_probes."
@@ -100,6 +109,9 @@ speculates far up the ladder and wastes more probes than the reference's fixed e
 (see wasted_probes at n = 1, width = 64), a probe-count loss bounded by one window; rounds are \
 never worse. Presence probes are also cheaper than the reference's full retrievals and answer \
 absence explicitly rather than by timeout, which the counts here do not credit."
+            .to_string(),
+        "The per-length verdicts and the measured comparison table live in results/COMPARISON.md \
+next to this document."
             .to_string(),
     ]
 }
@@ -112,7 +124,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut latest = Vec::new();
     let mut linear = Vec::new();
+    let mut reference_cells = Vec::new();
     for &n in &args.lengths {
+        eprintln!("[feeds-perf] reference n={n}");
+        reference_cells.push(FinderCell::measured(reference::measure(&corpus, n)?));
         for w in WIDTHS {
             let width = NonZeroUsize::new(w).ok_or("zero width")?;
             eprintln!("[feeds-perf] latest n={n} w={w}");
@@ -151,7 +166,7 @@ the replay recomputes its frontier from the floor each round"
         ),
         git_branch: git(&["rev-parse", "--abbrev-ref", "HEAD"]),
         git_commit: git(&["rev-parse", "HEAD"]),
-        harness_version: "1".to_string(),
+        harness_version: "2".to_string(),
         topic_label: TOPIC_LABEL.to_string(),
         owner: corpus.feed().owner().to_string(),
         widths: WIDTHS.to_vec(),
@@ -164,6 +179,7 @@ the replay recomputes its frontier from the floor each round"
         meta,
         latest,
         linear,
+        reference: reference_cells,
         reference_comparison: reference_comparison(),
     };
     let json = serde_json::to_string_pretty(&doc)?;
