@@ -30,10 +30,13 @@ alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
 
 ## rust crypto
+chacha20poly1305 = { workspace = true, optional = true }
 digest.workspace = true
+hkdf = { workspace = true, optional = true }
 hybrid-array.workspace = true
 k256 = { workspace = true, features = ["ecdh"] }
 keccak-batch = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 # derive macros
 derive_more.workspace = true
@@ -90,6 +93,9 @@ alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "as
 
 arbitrary = { workspace = true }
 futures.workspace = true
+hpke-rs.workspace = true
+hpke-rs-crypto.workspace = true
+hpke-rs-rust-crypto.workspace = true
 nectar-testing.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
@@ -128,6 +134,8 @@ parallel = [ "wasm-threads" ]
 serde = [ "dep:serde" ]
 arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "dep:rand", "std" ]
 encryption = [ "dep:rand" ]
+# Modern envelope: RFC 9180 HPKE over the frozen ecies compat baseline.
+envelope = [ "dep:chacha20poly1305", "dep:hkdf", "dep:sha2", "encryption" ]
 # Single-thread send escape for non-wasm targets (e.g. zkVM guests): applies
 # the wasm32 relaxation of MaybeSend/MaybeSync and the boxed error aliases on
 # any target. An explicit feature rather than a target cfg so CI can exercise
