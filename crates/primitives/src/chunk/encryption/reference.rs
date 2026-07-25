@@ -7,6 +7,7 @@ use crate::chunk::{ChunkAddress, ChunkRef};
 use crate::entry_ref::EntryRef;
 use crate::error::WrongLength;
 use crate::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
+use zeroize::Zeroizing;
 
 use super::key::EncryptionKey;
 
@@ -54,8 +55,10 @@ impl EncryptedChunkRef {
     }
 
     /// Serialize to the fixed wire form: address followed by decryption key.
-    pub const fn to_bytes(&self) -> [u8; Self::SIZE] {
-        let mut buf = [0u8; Self::SIZE];
+    ///
+    /// The buffer carries the key, so it wipes on drop.
+    pub fn to_bytes(&self) -> Zeroizing<[u8; Self::SIZE]> {
+        let mut buf = Zeroizing::new([0u8; Self::SIZE]);
         let (address, key) = buf.split_at_mut(ChunkRef::SIZE);
         address.copy_from_slice(self.address().as_bytes());
         key.copy_from_slice(self.key.as_bytes());
@@ -85,7 +88,7 @@ impl FromCursor for EncryptedChunkRef {
 /// Writes the 64 wire bytes, the mirror of the `FromCursor` impl above.
 impl ToWriter for EncryptedChunkRef {
     fn put_into(&self, w: &mut Writer<'_>) {
-        w.put(&self.to_bytes());
+        w.put(&*self.to_bytes());
     }
 }
 
@@ -148,30 +151,9 @@ impl<'a> arbitrary::Arbitrary<'a> for EncryptedChunkRef {
     }
 }
 
-impl From<&EncryptedChunkRef> for [u8; EncryptedChunkRef::SIZE] {
-    fn from(r: &EncryptedChunkRef) -> Self {
-        r.to_bytes()
-    }
-}
-
-impl From<EncryptedChunkRef> for [u8; EncryptedChunkRef::SIZE] {
-    fn from(r: EncryptedChunkRef) -> Self {
-        r.to_bytes()
-    }
-}
-
 impl From<[u8; Self::SIZE]> for EncryptedChunkRef {
     fn from(bytes: [u8; Self::SIZE]) -> Self {
         Self::from_bytes(&bytes)
-    }
-}
-
-impl From<&EncryptedChunkRef> for Vec<u8> {
-    fn from(r: &EncryptedChunkRef) -> Self {
-        let mut v = Self::with_capacity(EncryptedChunkRef::SIZE);
-        v.extend_from_slice(r.address().as_bytes());
-        v.extend_from_slice(r.key.as_bytes());
-        v
     }
 }
 
@@ -202,13 +184,13 @@ mod tests {
         assert_eq!(enc_ref.reference().address(), &addr);
         assert_eq!(enc_ref.key(), &key);
 
-        let bytes: [u8; 64] = (&enc_ref).into();
+        let bytes = enc_ref.to_bytes();
         assert_eq!(bytes.len(), 64);
 
         let recovered = EncryptedChunkRef::try_from(bytes.as_slice()).unwrap();
         assert_eq!(recovered, enc_ref);
 
-        assert_eq!(EncryptedChunkRef::from(bytes), enc_ref);
+        assert_eq!(EncryptedChunkRef::from(*bytes), enc_ref);
         assert_eq!(EncryptedChunkRef::from_bytes(&bytes), enc_ref);
     }
 

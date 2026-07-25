@@ -419,8 +419,8 @@ fn truncated_ciphertext_is_a_typed_decode_error() {
     // A valid encrypted parent referencing the short chunk fails mid-walk.
     let span = 2 * TINY as u64;
     let mut refs = Vec::new();
-    refs.extend_from_slice(&EncryptedChunkRef::new(short_addr, child_key.clone()).to_bytes());
-    refs.extend_from_slice(&EncryptedChunkRef::new(short_addr, child_key).to_bytes());
+    refs.extend_from_slice(&*EncryptedChunkRef::new(short_addr, child_key.clone()).to_bytes());
+    refs.extend_from_slice(&*EncryptedChunkRef::new(short_addr, child_key).to_bytes());
     let parent_wire = encrypt_node(&parent_key, span, &refs);
     let (parent_addr, parent_chunk) =
         seal(ContentChunk::<TINY>::try_from(Bytes::from(parent_wire)).unwrap());

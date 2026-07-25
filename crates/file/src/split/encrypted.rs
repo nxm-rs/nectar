@@ -8,6 +8,7 @@ use bytes::Bytes;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::encryption::{ChunkEncrypt, EncryptedChunkRef, EncryptionKey};
 use nectar_primitives::chunk::{AnyChunkSet, ContentChunk};
+use zeroize::Zeroize;
 
 use super::error::SealError;
 use super::mode::{Sealed, SplitMode};
@@ -76,18 +77,25 @@ impl<K: KeySource> SplitMode for Encrypted<K> {
         Ok(self.source().next_key()?)
     }
 
+    /// Seals the payload, then wipes it when this seal held the last
+    /// reference: an intermediate body carries every child key, and the
+    /// engine builds it uniquely owned. A payload shared with the caller is
+    /// left alone.
     fn seal_with<const B: usize>(
         key: EncryptionKey,
         payload: Bytes,
     ) -> Result<Sealed<Self, B>, SealError> {
-        let (chunk, reference) = ContentChunk::<B>::try_from(payload)?
-            .encrypt_with(&key)?
-            .into_parts();
+        let encrypted =
+            ContentChunk::<B>::try_from(payload.clone()).and_then(|plain| plain.encrypt_with(&key));
+        if let Ok(mut buf) = payload.try_into_mut() {
+            buf.as_mut().zeroize();
+        }
+        let (chunk, reference) = encrypted?.into_parts();
         Ok((chunk.seal::<AnyChunkSet<B>>(), reference))
     }
 
     fn write_ref(reference: &EncryptedChunkRef, out: &mut Vec<u8>) {
-        out.extend_from_slice(&reference.to_bytes());
+        out.extend_from_slice(&*reference.to_bytes());
     }
 
     fn into_root(reference: EncryptedChunkRef) -> EncryptedChunkRef {
