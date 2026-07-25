@@ -36,7 +36,7 @@ mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
 nectar-file = { workspace = true, features = ["std"] }
 nectar-manifest = { workspace = true, features = ["arbitrary"] }
 nectar-mantaray.workspace = true
-nectar-postage.workspace = true
+nectar-postage = { workspace = true, features = ["std"] }
 nectar-postage-issuer.workspace = true
 nectar-postage-usage.workspace = true
 nectar-primitives = { workspace = true, features = ["std"] }

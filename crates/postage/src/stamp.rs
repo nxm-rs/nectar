@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use alloy_primitives::{Address, B256, Signature, eip191_hash_message};
-use alloy_signer::k256::ecdsa::VerifyingKey;
+use k256::ecdsa::VerifyingKey;
 use nectar_primitives::{
     ChunkAddress,
     wire::{Cursor, FromCursor, ToWriter, Underrun, Writer},
@@ -420,7 +420,7 @@ impl Stamp {
     /// ```ignore
     /// // First stamp: recover and cache the public key
     /// let pubkey = first_stamp.recover_pubkey(&first_address)?;
-    /// let owner = alloy_signer::utils::public_key_to_address(&pubkey);
+    /// let owner = alloy_primitives::Address::from_public_key(&pubkey);
     ///
     /// // Fast verification for remaining stamps in the same batch
     /// second_stamp.verify_with_pubkey(&second_address, &pubkey)?;
@@ -431,7 +431,7 @@ impl Stamp {
         chunk_address: &ChunkAddress,
         pubkey: &VerifyingKey,
     ) -> Result<(), StampError> {
-        use alloy_signer::k256::ecdsa::signature::hazmat::PrehashVerifier;
+        use k256::ecdsa::signature::hazmat::PrehashVerifier;
 
         let digest = StampDigest::new(*chunk_address, self.batch, self.index, self.timestamp);
         let prehash = digest.to_prehash();
@@ -732,8 +732,6 @@ mod tests {
     /// Test recover_pubkey using the Go interop test vector.
     #[test]
     fn test_recover_pubkey() {
-        use alloy_signer::utils::public_key_to_address;
-
         // Test vector from Go's TestGenerateInteropStamp
         let chunk_addr_bytes =
             hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
@@ -750,7 +748,7 @@ mod tests {
         let pubkey = stamp.recover_pubkey(&chunk_address).unwrap();
 
         // Convert to address and verify
-        let recovered_addr = public_key_to_address(&pubkey);
+        let recovered_addr = Address::from_public_key(&pubkey);
         assert_eq!(recovered_addr, expected_owner);
     }
 

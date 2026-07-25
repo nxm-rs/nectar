@@ -25,8 +25,6 @@
 //! [`MemoryIssuer`]: crate::MemoryIssuer
 //! [`ShardedIssuer`]: crate::ShardedIssuer
 
-extern crate alloc;
-
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 

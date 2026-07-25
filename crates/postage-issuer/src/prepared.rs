@@ -1,5 +1,7 @@
 //! Admission micro-batch: serial digest allocation for the pipeline window.
 
+use alloc::vec::Vec;
+
 use crate::issuer::StampIssuer;
 use crate::stamper::stamp_timestamp;
 use nectar_clock::Clock;

@@ -56,10 +56,6 @@
     )
 )]
 
-// k256 is a dependency only to enable the precomputed-tables feature for faster ECDSA
-#[cfg(not(test))]
-use k256 as _;
-
 // `alloc` is required by the stamped-chunk codec (`Vec`). `nectar-primitives`,
 // a hard dependency, also already requires an allocator, so this adds no new
 // constraint to the `no_std` build.
@@ -95,7 +91,7 @@ pub use error::StampError;
 pub use sink::{PutStamped, StampIndifferent, Tee, TeeError};
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
-pub use util::{PostageContext, calculate_bucket, current_timestamp};
+pub use util::{PostageContext, calculate_bucket};
 pub use validation::StampValidator;
 #[cfg(feature = "std")]
 pub use validation::StoreValidator;
@@ -109,4 +105,4 @@ pub use snapshot_store::SnapshotStore;
 pub use store::{BatchStore, BatchStoreError, BatchStoreExt};
 
 // Re-export VerifyingKey for cached pubkey verification optimization
-pub use alloy_signer::k256::ecdsa::VerifyingKey;
+pub use k256::ecdsa::VerifyingKey;

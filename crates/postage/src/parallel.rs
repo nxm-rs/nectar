@@ -13,8 +13,7 @@
 //! compared to full ECDSA recovery.
 
 use alloy_primitives::Address;
-use alloy_signer::k256::ecdsa::VerifyingKey;
-use alloy_signer::utils::public_key_to_address;
+use k256::ecdsa::VerifyingKey;
 use rayon::prelude::*;
 
 use crate::{Stamp, StampDigest, StampError};
@@ -133,7 +132,7 @@ pub fn verify_stamps_parallel_with_pubkey(
     stamps: &[(&Stamp, &ChunkAddress)],
     owner_pubkey: &VerifyingKey,
 ) -> Vec<VerifyResult> {
-    let owner_address = public_key_to_address(owner_pubkey);
+    let owner_address = Address::from_public_key(owner_pubkey);
 
     stamps
         .par_iter()
@@ -191,7 +190,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
-    use crate::{BatchId, Stamp, StampIndex, current_timestamp};
+    use crate::{BatchId, Stamp, StampIndex};
 
     /// Creates a stamp for testing verification.
     fn create_test_stamp(
@@ -200,7 +199,7 @@ mod tests {
         batch_id: BatchId,
     ) -> Stamp {
         let index = StampIndex::new(0, 0);
-        let timestamp = current_timestamp();
+        let timestamp = 1_234_567_890;
         let digest = StampDigest::new(*chunk_address, batch_id, index, timestamp);
         let prehash = digest.to_prehash();
 

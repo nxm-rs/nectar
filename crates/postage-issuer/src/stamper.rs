@@ -10,9 +10,11 @@
 //! rather than `sign_hash_sync`.
 
 use alloy_primitives::Signature;
+#[cfg(feature = "std")]
 use alloy_signer::SignerSync;
 
 use crate::StampIssuer;
+#[cfg(feature = "std")]
 use crate::error::SigningError;
 use nectar_clock::Clock;
 #[cfg(feature = "std")]
@@ -219,6 +221,7 @@ where
     }
 }
 
+#[cfg(feature = "std")]
 impl<I, S, C> Stamper for BatchStamper<I, S, C>
 where
     I: StampIssuer,
