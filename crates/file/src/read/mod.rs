@@ -10,6 +10,8 @@
 //! [`ReadBuilder::collect`] assembles a bounded in-memory copy, typed
 //! [`CollectError::TooLarge`] past its bound.
 
+use core::num::NonZeroUsize;
+
 #[cfg(test)]
 mod cancel;
 mod download;
@@ -19,6 +21,15 @@ mod frames;
 mod reader;
 #[cfg(test)]
 mod tests;
+
+/// The profile's body size as a typed nonzero. A zero profile never walks;
+/// the floor only keeps the conversion total.
+const fn body_size<const B: usize>() -> NonZeroUsize {
+    match NonZeroUsize::new(B) {
+        Some(body) => body,
+        None => NonZeroUsize::MIN,
+    }
+}
 
 pub use download::{DownloadBuilder, Progress, ProgressFn};
 pub use error::{CollectError, DownloadError, OpenError, SeekPastEnd};
