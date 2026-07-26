@@ -2,7 +2,7 @@
 
 use crate::chunk::{AnyChunkSet, Chunk, ChunkAddress, SingleOwnerOnlyChunkSet, Verified};
 
-use super::typed::ChunkGet;
+use super::typed::{ChunkGet, ChunkHas};
 
 /// Single-owner view over a store typed at [`AnyChunkSet`].
 ///
@@ -58,6 +58,13 @@ where
         chunk
             .narrow_single_owner()
             .ok_or(SingleOwnerGetError::NotSingleOwner(*address))
+    }
+}
+
+/// Existence is registry-agnostic, so the check passes through unchanged.
+impl<T: ChunkHas> ChunkHas for SingleOwnerGet<T> {
+    async fn has(&self, address: &ChunkAddress) -> bool {
+        self.0.has(address).await
     }
 }
 

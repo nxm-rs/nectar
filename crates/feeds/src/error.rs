@@ -20,9 +20,6 @@ pub enum FeedError {
         /// The address of the returned chunk.
         actual: ChunkAddress,
     },
-    /// The chunk at a feed slot is not a single-owner chunk.
-    #[error("chunk at {0} is not a single-owner chunk")]
-    NotSingleOwner(ChunkAddress),
     /// The signer is not the feed owner.
     #[error("owner mismatch: feed owner {expected}, signer {actual}")]
     OwnerMismatch {
