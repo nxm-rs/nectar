@@ -5,6 +5,7 @@
 //! carrier means there is nowhere to hand-write a divergent address or verify
 //! path per chunk type.
 
+use alloy_primitives::Address;
 use bytes::{Bytes, BytesMut};
 
 use crate::bmt::DEFAULT_BODY_SIZE;
@@ -31,6 +32,9 @@ pub struct ChunkInner<H: ChunkHeader, const BODY_SIZE: usize = DEFAULT_BODY_SIZE
     body: BmtBody<BODY_SIZE>,
     /// Lazily derived `header.commit(body.hash())`; never caller-supplied.
     address: OnceCache<ChunkAddress>,
+    /// Owner bound by the acceptance rule; seeded by `verify`, never
+    /// caller-supplied.
+    owner: OnceCache<Option<Address>>,
 }
 
 impl<H: ChunkHeader, const BODY_SIZE: usize> ChunkInner<H, BODY_SIZE> {
@@ -44,6 +48,26 @@ impl<H: ChunkHeader, const BODY_SIZE: usize> ChunkInner<H, BODY_SIZE> {
             header,
             body,
             address: OnceCache::new(),
+            owner: OnceCache::new(),
+        }
+    }
+
+    /// Assemble with provenance-derived facts pre-seeded.
+    ///
+    /// Crate-internal: the caller must have derived `address` and `owner`
+    /// from the parts themselves (a seal path), never from a claim.
+    #[cfg(feature = "std")]
+    pub(crate) fn from_provenance(
+        header: H,
+        body: BmtBody<BODY_SIZE>,
+        address: ChunkAddress,
+        owner: Option<Address>,
+    ) -> Self {
+        Self {
+            header,
+            body,
+            address: OnceCache::with_value(address),
+            owner: OnceCache::with_value(owner),
         }
     }
 
@@ -84,14 +108,26 @@ impl<H: ChunkHeader, const BODY_SIZE: usize> ChunkOps for ChunkInner<H, BODY_SIZ
         self.body.span()
     }
 
-    fn owner(&self) -> Option<alloy_primitives::Address> {
-        self.header.recover_owner(self.body.hash().into())
+    /// Memoized through the acceptance rule at the committed address, so a
+    /// chunk its own type rejects binds no owner.
+    fn owner(&self) -> Option<Address> {
+        *self.owner.get_or_compute(|| {
+            self.header
+                .validate(self.body.hash().into(), self.address())
+                .ok()
+                .flatten()
+        })
     }
 
     /// Certify through [`ChunkHeader::validate`]: the header's full acceptance
-    /// rule runs, not an address compare against the cached address.
+    /// rule runs, not an address compare against the cached address. On
+    /// acceptance the address and owner caches are seeded from the one run,
+    /// so an accepted chunk never recomputes either fact.
     fn verify(&self, expected: &ChunkAddress) -> Result<()> {
-        Ok(self.header.validate(self.body.hash().into(), expected)?)
+        let owner = self.header.validate(self.body.hash().into(), expected)?;
+        let _ = self.address.get_or_compute(|| *expected);
+        let _ = self.owner.get_or_compute(|| owner);
+        Ok(())
     }
 
     /// Runs on the carrier's borrowed body ([`ChunkInner::body`]), so no
@@ -217,6 +253,21 @@ mod tests {
         let chunk = DefaultSingleOwnerChunk::try_from(wire.as_slice()).unwrap();
         let committed = *chunk.address();
         assert!(chunk.verify(&committed).is_err());
+    }
+
+    /// Acceptance seeds the derived facts: after verify, the address and the
+    /// owner are the values the one validate run produced.
+    #[test]
+    fn verify_seeds_address_and_owner_facts() {
+        let soc = DefaultSingleOwnerChunk::try_from(soc_test_vector().as_slice()).unwrap();
+        let expected = soc.header().commit(soc.body().hash().into());
+
+        soc.verify(&expected).unwrap();
+        assert_eq!(*soc.address(), expected);
+        assert_eq!(
+            ChunkOps::owner(&soc),
+            soc.header().owner(soc.body().hash().into()).ok()
+        );
     }
 
     /// Both aliases round-trip through the one carrier codec.

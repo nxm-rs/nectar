@@ -8,7 +8,7 @@
 use alloy_primitives::b256;
 use alloy_primitives::{Address, B256, Keccak256, Signature, address, hex};
 #[cfg(feature = "std")]
-use alloy_signer::SignerSync;
+use alloy_signer::{Signer, SignerSync};
 #[cfg(feature = "std")]
 use alloy_signer_local::PrivateKeySigner;
 use bytes::{Bytes, BytesMut};
@@ -24,8 +24,12 @@ use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
 use super::content::ContentChunk;
 use super::inner::ChunkInner;
+#[cfg(feature = "std")]
+use super::registry::ChunkRegistry;
 use super::soc_id::SocId;
 use super::traits::ChunkHeader;
+#[cfg(feature = "std")]
+use super::trust::{Chunk, Verified};
 use super::type_id::ChunkTypeId;
 use super::type_tag::ChunkVersion;
 
@@ -111,6 +115,23 @@ impl SocHeader {
         let hash_tail = body_hash.as_slice().split_first().map(|(_, tail)| tail);
         id_tail == hash_tail
     }
+
+    /// Dispersed-replica pin for a known owner: the recovery-free half of
+    /// acceptance.
+    fn pin_replica(&self, owner: Address, body_hash: B256) -> error::Result<()> {
+        if owner == DISPERSED_REPLICA_OWNER && !self.is_valid_replica(body_hash) {
+            return Err(ChunkError::invalid_format("invalid dispersed replica"));
+        }
+        Ok(())
+    }
+
+    /// Intrinsic acceptance: recover the owner and enforce the replica pin.
+    /// Routing (the address compare) stays in [`validate`](ChunkHeader::validate).
+    fn accept(&self, body_hash: B256) -> error::Result<Address> {
+        let owner = self.owner(body_hash)?;
+        self.pin_replica(owner, body_hash)?;
+        Ok(owner)
+    }
 }
 
 impl ChunkHeader for SocHeader {
@@ -130,24 +151,14 @@ impl ChunkHeader for SocHeader {
         &self,
         body_hash: B256,
         expected: &ChunkAddress,
-    ) -> core::result::Result<(), ChunkError> {
-        let owner = self.owner(body_hash)?;
-
-        // If the owner is the replica chunk owner, the ID must adhere to the
-        // dispersed-replica semantics.
-        if owner == DISPERSED_REPLICA_OWNER && !self.is_valid_replica(body_hash) {
-            return Err(ChunkError::invalid_format("invalid dispersed replica"));
-        }
+    ) -> core::result::Result<Option<Address>, ChunkError> {
+        let owner = self.accept(body_hash)?;
 
         let actual = Self::address_for(self.id, owner);
         if actual != *expected {
             return Err(ChunkError::verification_failed(*expected, actual));
         }
-        Ok(())
-    }
-
-    fn recover_owner(&self, body_hash: B256) -> Option<Address> {
-        self.owner(body_hash).ok()
+        Ok(Some(owner))
     }
 
     /// Plain (unprefixed) `keccak256(soc_address || transformed_root)`.
@@ -193,6 +204,47 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
             .with_id(id)
             .with_signer(signer)?
             .build()
+    }
+
+    /// Sign and seal into the verified currency, recovery-free.
+    ///
+    /// Signer-provenance twin of [`ContentChunk::seal`]: the owner is the
+    /// signer's own address, so the sealed address is `keccak256(id || owner)`
+    /// derived here, never caller-supplied, and no signature recovery runs.
+    /// The replica pin still applies; debug builds retain a full verify
+    /// assertion.
+    #[cfg(feature = "std")]
+    #[must_use = "this returns a sealed chunk without modifying the input"]
+    pub fn seal<R>(
+        id: SocId,
+        data: impl Into<Bytes>,
+        signer: &(impl Signer + SignerSync),
+    ) -> Result<Chunk<Verified, R>>
+    where
+        R: ChunkRegistry,
+        R::Envelope: From<Self>,
+    {
+        let body = BmtBody::<BODY_SIZE>::builder()
+            .auto_from_data(data)?
+            .build()?;
+        let body_hash: B256 = body.hash().into();
+        let owner = signer.address();
+        let signature = signer
+            .sign_message_sync(SocHeader::owner_message(id, body_hash).as_ref())
+            .map_err(ChunkError::from)?;
+        let header = SocHeader::new(id, signature);
+        header.pin_replica(owner, body_hash)?;
+        let address = SocHeader::address_for(id, owner);
+        let chunk = Self::from_provenance(header, body, address, Some(owner));
+        debug_assert!(
+            super::traits::ChunkOps::verify(&chunk, &address).is_ok(),
+            "a signer-provenance single-owner chunk must certify at its derived address"
+        );
+        Ok(Chunk::from_verified_parts_with_owner(
+            address,
+            R::Envelope::from(chunk),
+            Some(owner),
+        ))
     }
 
     /// Create a new SingleOwnerChunk with a pre-signed signature.
@@ -813,6 +865,79 @@ mod tests {
         assert!(matches!(
             header.validate(body_hash, &zero_owner_address),
             Err(ChunkError::Signature(_))
+        ));
+    }
+
+    /// Validate returns the owner fact its acceptance run recovered.
+    #[test]
+    fn soc_header_validate_returns_the_recovered_owner() {
+        let chunk = DefaultSingleOwnerChunk::try_from(get_test_chunk_data().as_slice()).unwrap();
+        let body_hash: B256 = chunk.body().hash().into();
+
+        let owner = chunk.header().validate(body_hash, chunk.address()).unwrap();
+        assert_eq!(
+            owner,
+            Some(address!("8d3766440f0d7b949a5e32995d09619a7f86e632"))
+        );
+    }
+
+    /// The owner is an acceptance fact: a chunk its own type rejects binds
+    /// none, even when raw recovery would produce an address.
+    #[test]
+    fn chunk_ops_owner_follows_acceptance() {
+        // Garbage signature: recovery fails, no owner.
+        let mut wire = get_test_chunk_data();
+        wire[ID_SIZE..ID_SIZE + SIGNATURE_SIZE].copy_from_slice(&[0xff; SIGNATURE_SIZE]);
+        let forged = DefaultSingleOwnerChunk::try_from(wire.as_slice()).unwrap();
+        assert_eq!(ChunkOps::owner(&forged), None);
+
+        // Replica-owner signature over a non-replica id: recovery succeeds
+        // but the pin rejects, so no owner is bound.
+        let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
+        let chunk = DefaultSingleOwnerChunk::new(SocId::ZERO, b"data".to_vec(), &signer).unwrap();
+        assert_eq!(chunk.owner().unwrap(), DISPERSED_REPLICA_OWNER);
+        assert_eq!(ChunkOps::owner(&chunk), None);
+    }
+
+    /// The seal lands exactly where the parse-then-verify route lands, with
+    /// the owner fact seeded from provenance.
+    #[test]
+    fn seal_matches_the_from_envelope_route() {
+        use crate::chunk::{Chunk, StandardChunkSet, Verified};
+
+        let wallet = get_test_wallet();
+        let sealed = DefaultSingleOwnerChunk::seal::<StandardChunkSet>(
+            SocId::ZERO,
+            b"sealed payload".to_vec(),
+            &wallet,
+        )
+        .unwrap();
+
+        let soc =
+            DefaultSingleOwnerChunk::new(SocId::ZERO, b"sealed payload".to_vec(), &wallet).unwrap();
+        let verified = Chunk::<Verified>::from_envelope(soc.into()).unwrap();
+
+        assert_eq!(sealed.address(), verified.address());
+        assert_eq!(sealed.owner(), Some(wallet.address()));
+        assert_eq!(sealed.typed_bytes(), verified.typed_bytes());
+        assert!(sealed.envelope().verify(sealed.address()).is_ok());
+    }
+
+    /// The seal's accept set equals verify's: the replica pin holds on the
+    /// provenance path too, in release builds as well.
+    #[test]
+    fn seal_enforces_the_replica_pin() {
+        use crate::chunk::StandardChunkSet;
+
+        let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
+        let result = DefaultSingleOwnerChunk::seal::<StandardChunkSet>(
+            SocId::ZERO,
+            b"minted body".to_vec(),
+            &signer,
+        );
+        assert!(matches!(
+            result,
+            Err(PrimitivesError::Chunk(ChunkError::InvalidFormat(_)))
         ));
     }
 

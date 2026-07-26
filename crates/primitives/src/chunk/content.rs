@@ -4,7 +4,7 @@
 //! carrier under the empty [`CacHeader`], whose address is the hash of the
 //! chunk's own body.
 
-use alloy_primitives::{B256, hex};
+use alloy_primitives::{Address, B256, hex};
 use bytes::{Bytes, BytesMut};
 use core::fmt;
 
@@ -52,12 +52,12 @@ impl ChunkHeader for CacHeader {
         &self,
         body_hash: B256,
         expected: &ChunkAddress,
-    ) -> core::result::Result<(), ChunkError> {
+    ) -> core::result::Result<Option<Address>, ChunkError> {
         let actual = self.commit(body_hash);
         if actual != *expected {
             return Err(ChunkError::verification_failed(*expected, actual));
         }
-        Ok(())
+        Ok(None)
     }
 
     /// The transformed address is the anchor-keyed BMT root itself.
@@ -115,7 +115,8 @@ impl<const BODY_SIZE: usize> ContentChunk<BODY_SIZE> {
             self.verify(&address).is_ok(),
             "a content chunk must certify at its derived address"
         );
-        Chunk::from_verified_parts(address, R::Envelope::from(self))
+        // A content chunk binds no owner: a type fact, seeded for free.
+        Chunk::from_verified_parts_with_owner(address, R::Envelope::from(self), None)
     }
 }
 
@@ -392,6 +393,17 @@ mod tests {
         let expected = b256!("2387e8e7d8a48c2a9339c97c1dc3461a9a7aa07e994c5cb8b38fd7c1b3e6ea48");
         assert_eq!(CacHeader.commit(body_hash), ChunkAddress::from(expected));
         assert!(CacHeader.validate(body_hash, &expected.into()).is_ok());
+    }
+
+    /// A content header binds no owner: validate says so on acceptance.
+    #[test]
+    fn cac_header_validate_returns_no_owner() {
+        let chunk = DefaultContentChunk::new(b"ownerless".to_vec()).unwrap();
+        let body_hash: B256 = chunk.body().hash().into();
+        assert_eq!(
+            CacHeader.validate(body_hash, chunk.address()).unwrap(),
+            None
+        );
     }
 
     #[test]

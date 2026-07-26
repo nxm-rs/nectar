@@ -26,7 +26,7 @@ use super::type_tag::ChunkVersion;
 /// in sealing.
 ///
 /// ```
-/// use alloy_primitives::{B256, Keccak256};
+/// use alloy_primitives::{Address, B256, Keccak256};
 /// use nectar_primitives::bytes::BytesMut;
 /// use nectar_primitives::chunk::{ChunkAddress, ChunkError, ChunkHeader};
 /// use nectar_primitives::{ChunkTypeId, ChunkVersion, wire};
@@ -47,10 +47,14 @@ use super::type_tag::ChunkVersion;
 ///         ChunkAddress::from(hasher.finalize())
 ///     }
 ///
-///     fn validate(&self, body_hash: B256, expected: &ChunkAddress) -> Result<(), ChunkError> {
+///     fn validate(
+///         &self,
+///         body_hash: B256,
+///         expected: &ChunkAddress,
+///     ) -> Result<Option<Address>, ChunkError> {
 ///         let actual = self.commit(body_hash);
 ///         if actual == *expected {
-///             Ok(())
+///             Ok(None)
 ///         } else {
 ///             Err(ChunkError::verification_failed(*expected, actual))
 ///         }
@@ -87,21 +91,19 @@ pub trait ChunkHeader: Sized + Send + Sync + 'static {
     /// which [`validate`](Self::validate) then rejects.
     fn commit(&self, body_hash: B256) -> ChunkAddress;
 
-    /// Certify that this header and `body_hash` derive `expected`.
+    /// Certify that this header and `body_hash` derive `expected`, returning
+    /// the owner the acceptance rule bound (`None` for ownerless types).
     ///
     /// Required, deliberately without a default: an address-compare-only
     /// implementation would accept single-owner chunks whose signatures do
     /// not recover, so every header must state its full acceptance rule.
-    fn validate(&self, body_hash: B256, expected: &ChunkAddress) -> Result<(), ChunkError>;
-
-    /// Recover the owner this header binds the body to.
-    ///
-    /// `None` for ownerless types (the default) and for a signature that
-    /// does not recover; [`validate`](Self::validate), not this hook,
-    /// decides whether that is an error.
-    fn recover_owner(&self, _body_hash: B256) -> Option<Address> {
-        None
-    }
+    /// The sole acceptance entry point; the owner is returned here, not
+    /// through a parallel hook, so it cannot drift from acceptance.
+    fn validate(
+        &self,
+        body_hash: B256,
+        expected: &ChunkAddress,
+    ) -> Result<Option<Address>, ChunkError>;
 
     /// Seal the anchor-keyed `transformed_root` of the body into the chunk's
     /// transformed address (the redistribution sampler's re-hash).
@@ -135,8 +137,9 @@ pub trait ChunkOps: Send + Sync + 'static {
     /// underlying body.
     fn span(&self) -> u64;
 
-    /// Get the owner this chunk's type binds, if it has one and the
-    /// signature recovers ([`ChunkHeader::recover_owner`]).
+    /// Get the owner this chunk's type binds, if its acceptance rule admits
+    /// one ([`ChunkHeader::validate`]). `None` for ownerless types and for a
+    /// chunk its own type rejects.
     fn owner(&self) -> Option<Address>;
 
     /// Certify this chunk against an expected address.
