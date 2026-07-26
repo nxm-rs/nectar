@@ -152,6 +152,10 @@ impl<S, R: Reference, const BS: usize> ManifestEditor<S, R, BS> {
     }
 
     /// Record setting the entry at `path`.
+    ///
+    /// Format limitations, both rejected at commit: an all-zero reference is
+    /// the wire's absent-entry sentinel, and metadata on the empty path (the
+    /// trie root) has no wire slot.
     pub fn put(&mut self, path: impl AsRef<[u8]>, reference: impl Into<R>) -> &mut Self {
         self.push(
             path,
@@ -384,6 +388,11 @@ where
 {
     if root.reference().is_some() {
         return Ok(root);
+    }
+    // Only fork records carry metadata on the wire; a root's own would be
+    // silently dropped, so fail loud instead.
+    if !root.metadata.is_empty() {
+        return Err(MantarayError::RootMetadata);
     }
 
     struct CommitFrame<R: Reference> {
@@ -668,6 +677,20 @@ mod tests {
                 .map(String::as_str),
             Some("doc")
         );
+    }
+
+    /// Metadata on the empty path lands on the trie root, which has no wire
+    /// slot for it; commit fails loud instead of dropping it silently.
+    #[test]
+    fn root_metadata_put_fails_commit() {
+        let mut editor = Editor::new(Store::new());
+        let meta = [("k".to_string(), "v".to_string())].into();
+        editor.put_with_metadata("", make_addr("r"), meta);
+        let err = run(editor.commit()).unwrap_err();
+        assert!(matches!(
+            err,
+            EditorError::Commit(MantarayError::RootMetadata)
+        ));
     }
 
     #[test]

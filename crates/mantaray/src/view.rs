@@ -10,7 +10,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::error::{DecodeError, DecodeResult};
-use crate::format::{FORK_INDEX_SIZE, MetadataLen, xor_in_place};
+use crate::format::{FORK_INDEX_SIZE, MetadataLen, ensure_reencodable, xor_in_place};
 use crate::node::{NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 
@@ -95,9 +95,10 @@ impl TryFrom<&[u8]> for NodeView {
 
         let (entry, forks) = match ref_width {
             RefWidth::Zero => {
-                // BEE-WORKAROUND(bee#5483): a zero-width node decodes only as
-                // the entry-less terminal shape; declared forks would carry
-                // zero-width references, so they are rejected as malformed.
+                // LEGACY-TOLERANCE(ref-size-zero): a zero-width node decodes
+                // only as the entry-less terminal shape; declared forks would
+                // carry zero-width references, so they are rejected as
+                // malformed.
                 let index = cur.take::<[u8; FORK_INDEX_SIZE]>()?;
                 if index.iter().any(|&b| b != 0) {
                     return Err(DecodeError::ZeroWidthForks);
@@ -222,7 +223,10 @@ impl ForkView {
             let entries = if raw.is_empty() {
                 BTreeMap::new()
             } else {
-                serde_json::from_slice(&raw)?
+                let entries: BTreeMap<String, String> = serde_json::from_slice(&raw)?;
+                // Round-trip totality: agree with the node codec's domain.
+                ensure_reencodable(&entries)?;
+                entries
             };
             Some(ForkMetadata { len, raw, entries })
         } else {
@@ -300,8 +304,8 @@ mod tests {
     use nectar_primitives::chunk::ChunkAddress;
     use nectar_primitives::{EncryptionKey, EntryRef};
 
-    /// The v0.2 single-fork website manifest fixture from the go test suite.
-    const GO_MANIFEST_V02: &str = "00000000000000000000000000000000000000000000000000000000000000005768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f200000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000016012f0000000000000000000000000000000000000000000000000000000000e87f95c3d081c4fede769b6c69e27b435e525cbd25c6715c607e7c531e329639005d7b22776562736974652d696e6465782d646f63756d656e74223a2233356561656538316262363338303436393965633637316265323736326465626665346662643330636461646139303232393239646131613965366134366436227d0a";
+    /// The v0.2 single-fork website manifest fixture from the reference client.
+    const REFERENCE_MANIFEST_V02: &str = "00000000000000000000000000000000000000000000000000000000000000005768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f200000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000016012f0000000000000000000000000000000000000000000000000000000000e87f95c3d081c4fede769b6c69e27b435e525cbd25c6715c607e7c531e329639005d7b22776562736974652d696e6465782d646f63756d656e74223a2233356561656538316262363338303436393965633637316265323736326465626665346662643330636461646139303232393239646131613965366134366436227d0a";
 
     /// The obfuscated multi-fork fixtures the node codec pins.
     const ENCODED_V01: &str = "52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950ac787fbce1061870e8d34e0a638bc7e812c7ca4ebd31d626a572ba47b06f6952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072102654f163f5f0fa0621d729566c74d10037c4d7bbb0407d1e2c64950fcd3072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64950f89d6640e3044f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64850ff9f642182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64b50fc98072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64a50ff99622182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64952fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c64d";
@@ -314,8 +318,8 @@ mod tests {
     }
 
     #[test]
-    fn go_manifest_decodes_and_re_emits_byte_exactly() {
-        let data = hex::decode(GO_MANIFEST_V02).unwrap();
+    fn reference_manifest_decodes_and_re_emits_byte_exactly() {
+        let data = hex::decode(REFERENCE_MANIFEST_V02).unwrap();
         let view = NodeView::try_from(data.as_slice()).unwrap();
 
         assert_eq!(view.version(), Version::V02);
@@ -339,11 +343,12 @@ mod tests {
     }
 
     #[test]
-    fn go_manifest_bad_metadata_lengths_are_rejected() {
+    fn reference_manifest_bad_metadata_lengths_are_rejected() {
         // The valid fixture declares 0x5d (93) metadata bytes; 89 truncates
         // the JSON, 95 and 96 overrun the buffer.
         for declared in ["59", "5f", "60"] {
-            let hex_image = GO_MANIFEST_V02.replace("005d7b", &alloc::format!("00{declared}7b"));
+            let hex_image =
+                REFERENCE_MANIFEST_V02.replace("005d7b", &alloc::format!("00{declared}7b"));
             let data = hex::decode(hex_image).unwrap();
             assert!(NodeView::try_from(data.as_slice()).is_err());
             assert_differential_agreement(&data);
@@ -370,7 +375,7 @@ mod tests {
 
     #[test]
     fn trailing_bytes_are_ignored_and_dropped_on_re_emit() {
-        let data = hex::decode(GO_MANIFEST_V02).unwrap();
+        let data = hex::decode(REFERENCE_MANIFEST_V02).unwrap();
         let mut padded = data.clone();
         padded.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         let view = NodeView::try_from(data.as_slice()).unwrap();
@@ -536,7 +541,7 @@ mod tests {
 
     #[test]
     fn fork_resolution_misses_absent_keys() {
-        let data = hex::decode(GO_MANIFEST_V02).unwrap();
+        let data = hex::decode(REFERENCE_MANIFEST_V02).unwrap();
         let view = NodeView::try_from(data.as_slice()).unwrap();
         assert!(view.fork(b'/').is_some());
         assert!(view.fork(b'a').is_none());

@@ -1,7 +1,10 @@
 //! Mantaray wire grammar: node header layout, fork framing, and the shared
 //! field codecs used by both the node codec and [`NodeView`](crate::view::NodeView).
 
-use crate::error::DecodeError;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+
+use crate::error::{DecodeError, DecodeResult};
 use crate::node::{NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 
@@ -54,8 +57,8 @@ impl Version {
 /// declares its own, so mixed-width tries decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefWidth {
-    /// BEE-WORKAROUND(bee#5483): a zero `ref_size` byte marking an entry-less
-    /// terminal node. Not spec-legal; see the codec's workaround note.
+    /// LEGACY-TOLERANCE(ref-size-zero): a zero `ref_size` byte marking an
+    /// entry-less terminal node. Not spec-legal; see the codec's HAZMAT note.
     Zero,
     /// A declared width naming the reference kind of every slot.
     Kind(RefKind),
@@ -139,6 +142,30 @@ impl MetadataLen {
     pub(crate) fn get(self) -> usize {
         usize::from(self.0)
     }
+
+    /// Canonical padded payload size for `json_len` bytes of compact JSON:
+    /// payload plus length field rounded up to the obfuscation-key stride,
+    /// never below one stride, less the length field.
+    pub(crate) fn padded_payload(json_len: usize) -> usize {
+        json_len
+            .saturating_add(ForkHeader::METADATA_LEN_SIZE)
+            .max(ObfuscationKey::SIZE)
+            .next_multiple_of(ObfuscationKey::SIZE)
+            .saturating_sub(ForkHeader::METADATA_LEN_SIZE)
+    }
+}
+
+/// Reject decoded metadata whose canonical padded size exceeds the `u16`
+/// length field, so decode and encode accept the same domain.
+pub(crate) fn ensure_reencodable(metadata: &BTreeMap<String, String>) -> DecodeResult<()> {
+    let padded = MetadataLen::padded_payload(serde_json::to_string(metadata)?.len());
+    if u16::try_from(padded).is_err() {
+        return Err(DecodeError::MetadataTooLarge {
+            max: usize::from(u16::MAX),
+            actual: padded,
+        });
+    }
+    Ok(())
 }
 
 impl FromCursor for MetadataLen {

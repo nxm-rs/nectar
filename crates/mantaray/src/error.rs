@@ -69,6 +69,15 @@ pub enum DecodeError {
     /// Fork metadata is not valid JSON.
     #[error("invalid metadata")]
     Metadata(#[from] serde_json::Error),
+    /// Metadata whose canonical re-encode cannot be sized into the `u16`
+    /// length field; rejected at decode so every decoded node re-encodes.
+    #[error("metadata too large: max {max}, got {actual}")]
+    MetadataTooLarge {
+        /// Maximum allowed padded size.
+        max: usize,
+        /// Canonical padded size.
+        actual: usize,
+    },
 }
 
 /// Failures of the depth-guarded reader.
