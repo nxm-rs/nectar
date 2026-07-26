@@ -38,8 +38,12 @@ pub trait WalkPolicy {
 /// else poll one completion into the policy. All state lives in the policy
 /// and the in-flight set, so every poll is cancel-safe.
 ///
-/// `F` is the policy's `Fetched` type, named separately so the accessors need
-/// no [`WalkPolicy`] bound; [`poll`](Self::poll) ties the two together.
+/// `F` is `P::Fetched`, kept a separate parameter ON PURPOSE so a holder names
+/// the in-flight set at the policy's own bounds: borrow-based walkers must not
+/// inherit the file walk's `Clone + 'static`. Do NOT collapse to `Driver<P>`
+/// (projecting `P::Fetched` in the field virally widens every holder). Holders
+/// embed `Driver<Policy, Policy's Fetched alias>` as a private field and land
+/// the poll delegation with it.
 pub struct Driver<P, F> {
     policy: P,
     in_flight: InFlight<F>,
@@ -47,15 +51,6 @@ pub struct Driver<P, F> {
 }
 
 impl<P, F> Driver<P, F> {
-    /// Drive `policy` from an empty in-flight set.
-    pub const fn new(policy: P) -> Self {
-        Self {
-            policy,
-            in_flight: InFlight::new(),
-            done: false,
-        }
-    }
-
     /// The driven policy.
     pub const fn policy(&self) -> &P {
         &self.policy
@@ -66,6 +61,11 @@ impl<P, F> Driver<P, F> {
         &mut self.policy
     }
 
+    /// Consume the driver, recovering the policy (and any store it owns).
+    pub fn into_policy(self) -> P {
+        self.policy
+    }
+
     /// Whether the last frame has been delivered or the walk has failed.
     pub const fn is_finished(&self) -> bool {
         self.done
@@ -73,6 +73,16 @@ impl<P, F> Driver<P, F> {
 }
 
 impl<P: WalkPolicy> Driver<P, P::Fetched> {
+    /// Drive `policy` from an empty in-flight set. Bounded so `F` can only be
+    /// `P::Fetched`: a mismatched `Driver` has no constructor.
+    pub const fn new(policy: P) -> Self {
+        Self {
+            policy,
+            in_flight: InFlight::new(),
+            done: false,
+        }
+    }
+
     /// Deliver the next frame under `drain`. `Ready(None)` after the last
     /// frame or a terminal error; a later poll after either stays `None`.
     #[inline]
