@@ -79,14 +79,14 @@
 //! Reference-client source citations for the wire format live in `SPEC.md`
 //! at the crate root.
 //!
-//! # Upstream-bug workarounds
+//! # Legacy tolerances
 //!
-//! Code that exists solely to tolerate a defect in an upstream reference
-//! implementation is tagged with a grep-able `BEE-WORKAROUND(bee#NNNN)`
-//! comment. When the upstream fix lands and downstream consumers have
-//! upgraded past the buggy releases, every site tagged with that issue
-//! number should be removed. Run `git grep -n BEE-WORKAROUND` to enumerate
-//! them.
+//! Code that exists solely to keep decoding historical images emitted by a
+//! since-fixed defect in the reference client's writer is tagged with a
+//! grep-able `LEGACY-TOLERANCE(name)` comment. Content-addressed data is
+//! retrievable forever, so these decode-side tolerances are permanent; the
+//! encoder never emits the shapes. Run `git grep -n LEGACY-TOLERANCE` to
+//! enumerate them.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
