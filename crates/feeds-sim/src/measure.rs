@@ -18,7 +18,7 @@ pub const WIDTHS: [usize; 4] = [1, 8, 16, 64];
 
 /// Feed lengths: the present-then-absent boundary positions, a superset of
 /// the reference client's benchmark prefills {1, 100, 1000, 5000}.
-pub const LENGTHS: [u64; 8] = [1, 10, 100, 1_000, 5_000, 10_000, 100_000, 1_000_000];
+pub const LENGTHS: [u64; 9] = [1, 10, 100, 500, 1_000, 5_000, 10_000, 100_000, 1_000_000];
 
 /// Replay-work budget for the stepwise finder. Measuring a cell costs about
 /// `n^2 / (2 * width)` frontier lookups because the replay recomputes from

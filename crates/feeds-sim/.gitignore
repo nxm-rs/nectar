@@ -1,4 +1,0 @@
-# Benchmark output is generated on demand, never committed.
-# The durable artifacts are the harness, the invariant tests, and COMPARISON.md.
-feeds-perf-results.json
-results/*.json

@@ -11,3 +11,6 @@ cspell.json
 # Agent / local worktrees (created under these paths; never tracked)
 .claude/
 .worktrees/
+
+# feeds finder benchmark output (generated on demand, never committed)
+feeds-perf-results.json
