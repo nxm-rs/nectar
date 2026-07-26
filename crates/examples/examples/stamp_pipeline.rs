@@ -6,14 +6,14 @@
 use alloy_primitives::B256;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_issuer::{
-    BatchId, BucketDepth, MemoryIssuer, SignWindow, StampPipeline, StampResult,
+    BatchId, BucketDepth, MemoryIssuer, StampPipeline, StampResult, Window,
 };
 use nectar_primitives::ChunkAddress;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut issuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16)?);
     let pipeline = StampPipeline::from_signer(PrivateKeySigner::random())
-        .with_window(SignWindow::new(256).ok_or("window must be nonzero")?);
+        .with_window(Window::new(256).ok_or("window must be nonzero")?);
 
     // Any address iterator works; it must not depend on consuming the
     // pipeline's output.

@@ -1,0 +1,42 @@
+[package]
+name = "nectar-kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Bounded-admission kernel for Ethereum Swarm walkers: in-flight set, window, head-slot admission"
+documentation = "https://docs.rs/nectar-kernel"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "no_std", "async", "admission"]
+categories = ["no-std", "asynchronous", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nectar-marker = { workspace = true }
+
+# optional
+nectar-primitives = { workspace = true, optional = true }
+
+[build-dependencies]
+
+[dev-dependencies]
+nectar-primitives = { workspace = true, features = ["std"] }
+nectar-testing.workspace = true
+proptest.workspace = true
+
+[features]
+# Chunk-typed fetch helper over the primitives store surface.
+chunk = [ "dep:nectar-primitives" ]
+# Single-thread send escape: relaxes the boxed future off `Send` in lockstep
+# with the marker traits.
+unsync = [ "nectar-marker/unsync", "nectar-primitives?/unsync" ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

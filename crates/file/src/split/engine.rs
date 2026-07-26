@@ -4,13 +4,12 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::fmt;
-use core::future::Future;
 use core::future::poll_fn;
 use core::mem;
-use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
+use nectar_kernel::{BoxFuture, InFlight};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::bmt::SPAN_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
@@ -24,21 +23,15 @@ use super::mode::{Sealed, SplitMode};
 #[cfg(feature = "rayon")]
 use crate::config::HashWindow;
 use crate::config::PutWindow;
-use crate::inflight::InFlight;
 use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 
 /// Completion payload; the future carries the chunk's address back for the
 /// error context.
 type PutDone<E> = (ChunkAddress, Result<(), E>);
 
-/// Boxed put future: `Send` on multi-threaded targets, unbounded on wasm32
-/// and under the `unsync` feature.
-#[cfg(multi_thread)]
-type BoxPut<E> = Pin<Box<dyn Future<Output = PutDone<E>> + Send>>;
-/// Boxed put future: `Send` on multi-threaded targets, unbounded on wasm32
-/// and under the `unsync` feature.
-#[cfg(not(multi_thread))]
-type BoxPut<E> = Pin<Box<dyn Future<Output = PutDone<E>>>>;
+/// Boxed put future; the kernel alias relaxes `Send` off the multi-threaded
+/// targets.
+type BoxPut<E> = BoxFuture<PutDone<E>>;
 
 /// Handoff carrying one pool leaf seal back to the engine.
 #[cfg(feature = "rayon")]

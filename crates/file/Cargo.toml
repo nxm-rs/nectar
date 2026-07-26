@@ -22,6 +22,7 @@ arbitrary = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
+nectar-kernel = { workspace = true }
 nectar-marker = { workspace = true }
 nectar-primitives = { workspace = true, optional = true }
 nectar-tasks = { workspace = true, optional = true }
@@ -51,7 +52,12 @@ default = [ "std" ]
 
 # The sequential engine core without std: the primitives dependency, the
 # byte buffers and the poll utilities, alloc-only.
-primitives = [ "dep:bytes", "dep:futures-util", "dep:nectar-primitives" ]
+primitives = [
+	"dep:bytes",
+	"dep:futures-util",
+	"dep:nectar-primitives",
+	"nectar-kernel/chunk",
+]
 
 # Standard library interop; the filesystem and io adapters land with the
 # write engine.
@@ -82,6 +88,7 @@ encryption = [ "dep:zeroize", "nectar-primitives?/encryption" ]
 # Single-thread send escape: relaxes the boxed fetch future off `Send` in
 # lockstep with the primitives store traits.
 unsync = [
+	"nectar-kernel/unsync",
 	"nectar-marker/unsync",
 	"nectar-primitives?/unsync",
 	"nectar-tasks?/unsync",

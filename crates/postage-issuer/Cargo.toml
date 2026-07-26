@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 nectar-clock = { workspace = true }
+nectar-kernel = { workspace = true }
 nectar-marker = { workspace = true }
 nectar-postage = { workspace = true }
 nectar-primitives = { workspace = true }
@@ -71,6 +72,7 @@ parallel = [
 # clock and primitives markers.
 unsync = [
 	"nectar-clock/unsync",
+	"nectar-kernel/unsync",
 	"nectar-marker/unsync",
 	"nectar-primitives/unsync",
 ]

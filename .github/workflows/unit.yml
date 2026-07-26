@@ -40,6 +40,14 @@ jobs:
             # dir rather than in a separate job that rebuilds the workspace.
             - name: Run doctests
               run: cargo test --doc --workspace --locked
+            # The kernel's boxed-future alias must stay `Send` on the default
+            # build; workspace unification could mask a relaxation, so the
+            # bound is asserted with the crate resolved alone.
+            - name: Run kernel default-build tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-kernel --locked \
+                    --no-tests=warn --no-fail-fast
             # The no-std engine core: the vector-pinned roots and the split
             # parity batteries run on the exact arms a guest executes, rather
             # than being merely type-checked by the no_std workflow.

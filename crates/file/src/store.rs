@@ -7,9 +7,8 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::fmt;
-use core::future::Future;
-use core::pin::Pin;
 
+use nectar_kernel::BoxFuture;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
@@ -24,20 +23,10 @@ use crate::walk::Plain;
 #[error("erased store fetch failed")]
 pub struct BoxedStoreError(#[source] BoxedError);
 
-/// Boxed erased fetch future: `Send` on multi-threaded targets, unbounded on
-/// wasm32 and under the `unsync` feature.
-#[cfg(multi_thread)]
-type BoxGet<const B: usize> = Pin<
-    Box<
-        dyn Future<Output = Result<Chunk<Verified, ContentOnlyChunkSet<B>>, BoxedStoreError>>
-            + Send,
-    >,
->;
-/// Boxed erased fetch future: `Send` on multi-threaded targets, unbounded on
-/// wasm32 and under the `unsync` feature.
-#[cfg(not(multi_thread))]
+/// Boxed erased fetch future; the kernel alias relaxes `Send` off the
+/// multi-threaded targets.
 type BoxGet<const B: usize> =
-    Pin<Box<dyn Future<Output = Result<Chunk<Verified, ContentOnlyChunkSet<B>>, BoxedStoreError>>>>;
+    BoxFuture<Result<Chunk<Verified, ContentOnlyChunkSet<B>>, BoxedStoreError>>;
 
 /// Object-safe fetch surface the adapter erases stores through.
 trait ErasedGet<const B: usize>: MaybeSend + MaybeSync {

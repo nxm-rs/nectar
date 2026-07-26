@@ -2550,6 +2550,7 @@ dependencies = [
  "futures",
  "futures-channel",
  "futures-util",
+ "nectar-kernel",
  "nectar-mantaray 0.4.0",
  "nectar-marker",
  "nectar-primitives 0.4.0",
@@ -2579,6 +2580,16 @@ dependencies = [
  "nectar-postage",
  "nectar-postage-issuer",
  "nectar-postage-usage",
+ "nectar-primitives 0.4.0",
+ "nectar-testing",
+ "proptest",
+]
+
+[[package]]
+name = "nectar-kernel"
+version = "0.4.0"
+dependencies = [
+ "nectar-marker",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",
@@ -2640,6 +2651,7 @@ dependencies = [
  "bitflags",
  "bytes",
  "futures",
+ "nectar-kernel",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",
@@ -2682,6 +2694,7 @@ dependencies = [
  "alloy-signer-local",
  "nectar-clock",
  "nectar-file",
+ "nectar-kernel",
  "nectar-marker",
  "nectar-postage",
  "nectar-primitives 0.4.0",

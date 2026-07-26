@@ -3,12 +3,11 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use core::fmt;
-use core::future::Future;
 use core::ops::Range;
-use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
+use nectar_kernel::{Admission, BoxFuture, InFlight, get_verified};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkOps, ContentOnlyChunkSet, Verified};
 use nectar_primitives::store::TrustedGet;
@@ -17,7 +16,6 @@ use super::error::{ShapeError, WalkError};
 use super::mode::WalkMode;
 use super::{Frame, WalkStats};
 use crate::config::{BranchBudget, Window};
-use crate::inflight::InFlight;
 use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 
 /// One pending tree node: where its bytes live and what fetches it.
@@ -43,14 +41,9 @@ impl<M: WalkMode> Node<M> {
 /// of sequence routing.
 type Fetched<M, E, const B: usize> = (Node<M>, Result<Chunk<Verified, ContentOnlyChunkSet<B>>, E>);
 
-/// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
-/// and under the `unsync` feature.
-#[cfg(multi_thread)]
-type BoxFetch<M, E, const B: usize> = Pin<Box<dyn Future<Output = Fetched<M, E, B>> + Send>>;
-/// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
-/// and under the `unsync` feature.
-#[cfg(not(multi_thread))]
-type BoxFetch<M, E, const B: usize> = Pin<Box<dyn Future<Output = Fetched<M, E, B>>>>;
+/// Boxed fetch future; the kernel alias relaxes `Send` off the
+/// multi-threaded targets.
+type BoxFetch<M, E, const B: usize> = BoxFuture<Fetched<M, E, B>>;
 
 /// Which frame a drain takes from the ready set.
 #[derive(Clone, Copy)]
@@ -77,7 +70,7 @@ where
     range_end: u64,
     body: u64,
     branches: u64,
-    window: usize,
+    admission: Admission,
     branch_budget: usize,
     /// Discovered leaves awaiting a window slot, ascending by key.
     leaf_frontier: VecDeque<Node<M>>,
@@ -138,7 +131,7 @@ where
             range_end,
             body,
             branches,
-            window: usize::from(window.get()),
+            admission: Admission::new(window),
             branch_budget: usize::try_from(budget.get()).unwrap_or(usize::MAX),
             leaf_frontier: VecDeque::new(),
             branch_frontier: VecDeque::new(),
@@ -310,12 +303,8 @@ where
         let Some(front) = self.leaf_frontier.front() else {
             return false;
         };
-        let cap = if front.key(self.range_start) == head || self.head_holds_slot(head) {
-            self.window
-        } else {
-            self.window.saturating_sub(1)
-        };
-        if self.occupancy() >= cap {
+        let head_served = front.key(self.range_start) == head || self.head_holds_slot(head);
+        if !self.admission.admits(self.occupancy(), head_served) {
             return false;
         }
         let Some(node) = self.leaf_frontier.pop_front() else {
@@ -334,7 +323,7 @@ where
             .saturating_add(1)
             .saturating_mul(self.branches);
         pending.saturating_add(reserved)
-            <= u64_from_usize(self.window).saturating_add(self.branches)
+            <= u64::from(self.admission.window().get()).saturating_add(self.branches)
     }
 
     /// Start one fetch, moving the node into its future; the completion
@@ -355,11 +344,7 @@ where
         }
         self.stats.fetches = self.stats.fetches.saturating_add(1);
         let store = self.store.clone();
-        let fetch: BoxFetch<M, S::Error, B> = Box::pin(async move {
-            let address = node.address;
-            let fetched = store.get(&address).await;
-            (node, fetched)
-        });
+        let fetch: BoxFetch<M, S::Error, B> = Box::pin(get_verified(store, node.address, node));
         self.in_flight.push(fetch);
     }
 
@@ -523,7 +508,7 @@ where
         f.debug_struct("Walk")
             .field("range_start", &self.range_start)
             .field("range_end", &self.range_end)
-            .field("window", &self.window)
+            .field("window", &self.admission.window())
             .field("branch_budget", &self.branch_budget)
             .field("leaf_in_flight", &self.leaf_in_flight)
             .field("branch_in_flight", &self.branch_in_flight)
