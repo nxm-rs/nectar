@@ -244,7 +244,7 @@ where
     }
 
     #[inline]
-    fn take_ready(&mut self, drain: Drain) -> Option<Frame> {
+    fn take_ready(&mut self, drain: Drain) -> Option<Result<Frame, Self::Error>> {
         if let Drain::Ordered = drain {
             let head = self.head_key()?;
             let (&key, _) = self.ready.first_key_value()?;
@@ -254,7 +254,7 @@ where
         }
         self.ready
             .pop_first()
-            .map(|(offset, data)| Frame { offset, data })
+            .map(|(offset, data)| Ok(Frame { offset, data }))
     }
 
     #[inline]
