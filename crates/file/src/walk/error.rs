@@ -13,14 +13,6 @@ pub enum WalkError<E> {
         /// Store error behind the failure.
         source: E,
     },
-    /// The store completed a fetch with a chunk at a different address.
-    #[error("store returned {returned} for requested {requested}")]
-    AddressMismatch {
-        /// Address the engine asked for.
-        requested: ChunkAddress,
-        /// Address of the chunk the store handed back.
-        returned: ChunkAddress,
-    },
     /// The tree's bytes contradict its declared spans.
     #[error(transparent)]
     Shape(#[from] ShapeError),

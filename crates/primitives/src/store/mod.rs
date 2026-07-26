@@ -10,6 +10,7 @@ mod memory;
 mod retry;
 mod single_owner;
 mod typed;
+mod verify;
 
 pub use crate::marker::{MaybeSend, MaybeSync};
 pub use content::{ContentGet, ContentGetError};
@@ -18,6 +19,7 @@ pub use memory::MemoryStore;
 pub use retry::{RetryConfig, RetryingChunkGet, Sleeper};
 pub use single_owner::{SingleOwnerGet, SingleOwnerGetError};
 pub use typed::{ChunkGet, ChunkHas, ChunkPut, TrustedGet};
+pub use verify::{VerifyError, VerifyingStore};
 
 use alloc::boxed::Box;
 

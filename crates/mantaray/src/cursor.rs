@@ -278,23 +278,13 @@ where
         self.in_flight_count = self.in_flight_count.saturating_sub(1);
         let outcome = match fetched {
             Err(error) => Err(error),
-            Ok(chunk) => {
-                let returned = *chunk.address();
-                if returned == pending.address {
-                    match NodeView::try_from(chunk.envelope().data().as_ref()) {
-                        Ok(view) => Ok((pending, view)),
-                        Err(source) => Err(CursorError::Corrupt {
-                            address: pending.address,
-                            source,
-                        }),
-                    }
-                } else {
-                    Err(CursorError::AddressMismatch {
-                        requested: pending.address,
-                        returned,
-                    })
-                }
-            }
+            Ok(chunk) => match NodeView::try_from(chunk.envelope().data().as_ref()) {
+                Ok(view) => Ok((pending, view)),
+                Err(source) => Err(CursorError::Corrupt {
+                    address: pending.address,
+                    source,
+                }),
+            },
         };
         self.resolved.insert(id, outcome);
     }
@@ -612,8 +602,12 @@ mod tests {
 
     use bytes::Bytes;
     use nectar_primitives::chunk::{ChunkRef, ContentChunk};
-    use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, MemoryStore};
-    use nectar_primitives::{EncryptedChunkRef, EncryptionKey, EntryRef, StandardChunkSet};
+    use nectar_primitives::store::{
+        ChunkGet, ChunkPut, ContentGet, MemoryStore, VerifyError, VerifyingStore,
+    };
+    use nectar_primitives::{
+        EncryptedChunkRef, EncryptionKey, EntryRef, StandardChunkSet, Unverified,
+    };
     use nectar_testing::run;
 
     use crate::ManifestEditor;
@@ -718,7 +712,6 @@ mod tests {
         peak: AtomicUsize,
         delay: bool,
         fail: Option<ChunkAddress>,
-        lie: Option<(ChunkAddress, ChunkAddress)>,
     }
 
     impl RecordingStore {
@@ -731,7 +724,6 @@ mod tests {
                     peak: AtomicUsize::new(0),
                     delay,
                     fail,
-                    lie: None,
                 }),
             }
         }
@@ -746,12 +738,6 @@ mod tests {
 
         fn failing(store: Store, fail: ChunkAddress) -> Self {
             Self::with(store, false, Some(fail))
-        }
-
-        fn lying(store: Store, at: ChunkAddress, with: ChunkAddress) -> Self {
-            let mut this = Self::with(store, false, None);
-            std::sync::Arc::get_mut(&mut this.inner).unwrap().lie = Some((at, with));
-            this
         }
 
         fn fetched(&self) -> Vec<ChunkAddress> {
@@ -799,10 +785,6 @@ mod tests {
             }
             let result = if self.inner.fail == Some(*address) {
                 ChunkGet::get(&self.inner.store, &make_addr("absent-sentinel")).await
-            } else if let Some((at, with)) = self.inner.lie
-                && at == *address
-            {
-                ChunkGet::get(&self.inner.store, &with).await
             } else {
                 ChunkGet::get(&self.inner.store, address).await
             };
@@ -1143,19 +1125,56 @@ mod tests {
         assert!(matches!(err, Some(CursorError::Corrupt { address, .. }) if address == gaddr));
     }
 
+    /// Misrouting store: answers `at` with the chunk stored at `with`,
+    /// declared untrusted so the verifying boundary is the guard.
+    #[derive(Clone)]
+    struct MisroutedStore {
+        store: ContentGet<Store>,
+        at: ChunkAddress,
+        with: ChunkAddress,
+    }
+
+    type MisrouteError = VerifyError<<ContentGet<Store> as ChunkGet<ContentOnlyChunkSet>>::Error>;
+
+    impl ChunkGet<ContentOnlyChunkSet> for MisroutedStore {
+        type Trust = Unverified;
+        type Error = <ContentGet<Store> as ChunkGet<ContentOnlyChunkSet>>::Error;
+
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> Result<Chunk<Unverified, ContentOnlyChunkSet>, Self::Error> {
+            let target = if *address == self.at {
+                self.with
+            } else {
+                *address
+            };
+            let chunk = ChunkGet::get(&self.store, &target).await?;
+            Ok(Chunk::parse(*chunk.address(), &chunk.typed_bytes()).unwrap())
+        }
+    }
+
     #[test]
-    fn lying_store_is_an_address_mismatch() {
+    fn misrouted_store_is_caught_at_the_verifying_boundary() {
         let (root, store) = build(&["a", "b"]);
         let (serial_seq, _) = serial_profile(root, &store);
         let other = *serial_seq.last().unwrap();
         assert_ne!(other, root);
-        let rec = RecordingStore::lying(store, root, other);
-        let (entries, err) = collect_until_err(Cursor::new(rec, root));
+        let lifted = VerifyingStore::new(MisroutedStore {
+            store: ContentGet::new(store),
+            at: root,
+            with: other,
+        });
+        let (entries, err) = collect_until_err(Cursor::new(lifted, root));
         assert!(entries.is_empty());
+        let Some(CursorError::Store { address, source }) = err else {
+            panic!("expected a store error, got {err:?}");
+        };
+        assert_eq!(address, root);
         assert!(matches!(
-            err,
-            Some(CursorError::AddressMismatch { requested, returned })
-                if requested == root && returned == other
+            source.downcast_ref::<MisrouteError>(),
+            Some(VerifyError::AddressMismatch { requested, returned })
+                if *requested == root && *returned == other
         ));
     }
 

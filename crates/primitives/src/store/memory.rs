@@ -126,42 +126,6 @@ impl<R: ChunkRegistry> ChunkHas for MemoryStore<R> {
     }
 }
 
-impl<R: ChunkRegistry> ChunkGet<R> for BTreeMap<ChunkAddress, Chunk<Verified, R>> {
-    type Trust = Verified;
-    type Error = ChunkStoreError;
-
-    async fn get(&self, address: &ChunkAddress) -> Result<Chunk<Verified, R>, Self::Error> {
-        self.get(address)
-            .cloned()
-            .ok_or_else(|| ChunkStoreError::not_found(address))
-    }
-}
-
-impl<R: ChunkRegistry> ChunkHas for BTreeMap<ChunkAddress, Chunk<Verified, R>> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        self.contains_key(address)
-    }
-}
-
-#[cfg(feature = "std")]
-impl<R: ChunkRegistry> ChunkGet<R> for std::collections::HashMap<ChunkAddress, Chunk<Verified, R>> {
-    type Trust = Verified;
-    type Error = ChunkStoreError;
-
-    async fn get(&self, address: &ChunkAddress) -> Result<Chunk<Verified, R>, Self::Error> {
-        self.get(address)
-            .cloned()
-            .ok_or_else(|| ChunkStoreError::not_found(address))
-    }
-}
-
-#[cfg(feature = "std")]
-impl<R: ChunkRegistry> ChunkHas for std::collections::HashMap<ChunkAddress, Chunk<Verified, R>> {
-    async fn has(&self, address: &ChunkAddress) -> bool {
-        self.contains_key(address)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

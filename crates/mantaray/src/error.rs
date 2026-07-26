@@ -124,14 +124,6 @@ pub enum CursorError {
         /// The underlying wire decode failure.
         source: DecodeError,
     },
-    /// The store returned a chunk other than the requested one.
-    #[error("address mismatch: requested {requested}, returned {returned}")]
-    AddressMismatch {
-        /// Address the walk requested.
-        requested: ChunkAddress,
-        /// Address of the chunk the store returned.
-        returned: ChunkAddress,
-    },
     /// No fetch in flight while nodes remain queued; the walk cannot
     /// progress.
     #[error("walk stalled with {pending} nodes queued")]

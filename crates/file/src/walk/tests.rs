@@ -10,9 +10,11 @@ use std::vec::Vec;
 
 use bytes::Bytes;
 use nectar_primitives::chunk::{
-    Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, Verified,
+    Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, Unverified, Verified,
 };
-use nectar_primitives::store::{ChunkGet, ChunkStoreError, TrustedGet};
+use nectar_primitives::store::{
+    ChunkGet, ChunkStoreError, TrustedGet, VerifyError, VerifyingStore,
+};
 use nectar_testing::{run, yield_now};
 
 use super::{Frame, Plain, ShapeError, Walk, WalkError};
@@ -218,7 +220,8 @@ impl ChunkGet<TinyRegistry> for HeadLast {
     }
 }
 
-/// Hostile store: answers `from` with the chunk stored at `to`.
+/// Misrouting store: answers `from` with the chunk stored at `to`, declared
+/// untrusted so the verifying boundary is the guard.
 #[derive(Clone)]
 struct Swapped {
     chunks: Arc<HashMap<ChunkAddress, TinyChunk>>,
@@ -227,20 +230,24 @@ struct Swapped {
 }
 
 impl ChunkGet<TinyRegistry> for Swapped {
-    type Trust = Verified;
+    type Trust = Unverified;
     type Error = ChunkStoreError;
 
-    async fn get(&self, address: &ChunkAddress) -> Result<TinyChunk, ChunkStoreError> {
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<Chunk<Unverified, TinyRegistry>, ChunkStoreError> {
         let target = if *address == self.from {
             self.to
         } else {
             *address
         };
-        self.chunks
+        let chunk = self
+            .chunks
             .as_ref()
             .get(&target)
-            .cloned()
-            .ok_or_else(|| ChunkStoreError::not_found(address))
+            .ok_or_else(|| ChunkStoreError::not_found(address))?;
+        Ok(Chunk::parse(*chunk.address(), &chunk.typed_bytes()).unwrap())
     }
 }
 
@@ -408,29 +415,42 @@ fn tail_read_fetches_one_path() {
 }
 
 #[test]
-fn address_mismatch_is_detected() {
+fn misrouting_is_caught_at_the_verifying_boundary() {
     let data = fill(10 * TINY);
     let tree = build_tree(&data);
     let mut offsets: Vec<(u64, ChunkAddress)> = tree.leaves.iter().map(|(a, o)| (*o, *a)).collect();
     offsets.sort();
     let requested = offsets[3].1;
     let substituted = offsets[4].1;
-    let store = Swapped {
+    let store = VerifyingStore::new(Swapped {
         chunks: Arc::new(tree.chunks.clone()),
         from: requested,
         to: substituted,
-    };
+    });
     let mut walk = walk_range(store, &tree, 0..tree.span, 4);
-    let error = collect_ordered(&mut walk).unwrap_err();
+    let error = run(async {
+        loop {
+            match poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+                Some(Ok(_)) => {}
+                Some(Err(error)) => break error,
+                None => panic!("walk completed over a misrouting store"),
+            }
+        }
+    });
     match error {
-        WalkError::AddressMismatch {
-            requested: want,
-            returned,
+        WalkError::Fetch {
+            address,
+            source:
+                VerifyError::AddressMismatch {
+                    requested: want,
+                    returned,
+                },
         } => {
+            assert_eq!(address, requested);
             assert_eq!(want, requested);
             assert_eq!(returned, substituted);
         }
-        other => panic!("expected AddressMismatch, got {other:?}"),
+        other => panic!("expected a boundary mismatch, got {other:?}"),
     }
 }
 

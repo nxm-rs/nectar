@@ -215,8 +215,8 @@ impl<S, const B: usize> From<File<S, Encrypted, B>> for AnyFile<S, B> {
     }
 }
 
-/// Fetch the root envelope, insisting the store answered for the requested
-/// address.
+/// Fetch the root envelope; the trusted store bound answers for the
+/// requested address.
 async fn fetch_root<S, const B: usize>(
     store: &S,
     address: ChunkAddress,
@@ -231,13 +231,6 @@ where
         .get(&address)
         .await
         .map_err(|source| OpenError::Fetch { address, source })?;
-    let returned = *chunk.address();
-    if returned != address {
-        return Err(OpenError::AddressMismatch {
-            requested: address,
-            returned,
-        });
-    }
     Ok(chunk.into_envelope())
 }
 

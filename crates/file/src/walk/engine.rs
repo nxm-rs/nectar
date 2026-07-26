@@ -384,7 +384,8 @@ where
     }
 
     /// Fold one completion back into the walk: buffer a leaf body or expand
-    /// an intermediate. Every completion must return the requested address.
+    /// an intermediate. The trusted store bound answers for the requested
+    /// address; an untrusted medium is lifted through `VerifyingStore`.
     fn absorb(
         &mut self,
         node: Node<M>,
@@ -397,13 +398,6 @@ where
             address: node.address,
             source,
         })?;
-        let returned = *chunk.address();
-        if returned != node.address {
-            return Err(WalkError::AddressMismatch {
-                requested: node.address,
-                returned,
-            });
-        }
         let data = chunk.into_envelope().data().clone();
         let take = self.plaintext_len(&node, leaf);
         let data =
