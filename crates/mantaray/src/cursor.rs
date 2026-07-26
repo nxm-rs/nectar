@@ -4,23 +4,21 @@
 //! through a bounded read-ahead window: unconsumed fetches never exceed the
 //! window, so the fetched set is the serial walk's consumed set plus at most
 //! one window of lookahead, and errors surface at the failing node's serial
-//! position, never earlier. The head-slot admission predicate is the shared
-//! kernel one; the scheduler shape stays bespoke because the file walk
-//! engine's byte-offset sequencing seam does not fit path-keyed trie order.
+//! position, never earlier. The kernel driver owns the loop and the
+//! in-flight set; the policy keeps the path-keyed frontier and parks each
+//! completion, fault included, until its serial turn at the head.
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use futures::Stream;
-use futures::stream::FuturesUnordered;
-use nectar_kernel::Admission;
 pub use nectar_kernel::Window;
+use nectar_kernel::{Admission, BoxFuture, Driver, InFlight, WalkPolicy};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ChunkAddress;
 
@@ -62,15 +60,6 @@ type Fetched = (
     Result<(Vec<u8>, Vec<ChunkAddress>), CursorError>,
 );
 
-/// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
-/// and under the `unsync` feature, so `!Send` stores stay usable.
-#[cfg(multi_thread)]
-type BoxFetch = Pin<Box<dyn Future<Output = Fetched> + Send>>;
-/// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
-/// and under the `unsync` feature, so `!Send` stores stay usable.
-#[cfg(not(multi_thread))]
-type BoxFetch = Pin<Box<dyn Future<Output = Fetched>>>;
-
 /// One resolved node awaiting its serial turn: the pending record, its
 /// image addresses, and the decoded view.
 type Resolved = Result<(Pending, Vec<ChunkAddress>, NodeView), CursorError>;
@@ -87,15 +76,7 @@ struct Visit {
 /// The shared bounded-lookahead walk: a depth-first frontier whose head is
 /// consumed in serial order while up to a window of fetches runs ahead.
 struct TrieWalk<L> {
-    store: L,
-    admission: Admission,
-    frontier: VecDeque<Slot>,
-    in_flight: FuturesUnordered<BoxFetch>,
-    in_flight_count: usize,
-    /// Completed fetches awaiting their serial turn at the head, keyed by id.
-    resolved: BTreeMap<u64, Resolved>,
-    next_id: u64,
-    done: bool,
+    driver: Driver<CursorPolicy<L>, Fetched>,
 }
 
 impl<L> TrieWalk<L>
@@ -118,14 +99,13 @@ where
             after,
         }));
         Self {
-            store,
-            admission: Admission::new(window),
-            frontier,
-            in_flight: FuturesUnordered::new(),
-            in_flight_count: 0,
-            resolved: BTreeMap::new(),
-            next_id: 0,
-            done: false,
+            driver: Driver::new(CursorPolicy {
+                store,
+                admission: Admission::new(window),
+                frontier,
+                resolved: BTreeMap::new(),
+                next_id: 0,
+            }),
         }
     }
 
@@ -135,58 +115,41 @@ where
     /// Cancel-safe: all progress lives in `self`. `Ready(None)` after the
     /// last node or a terminal error.
     fn poll_visit(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Visit, CursorError>>> {
-        if self.done {
-            return Poll::Ready(None);
-        }
-        loop {
-            self.admit();
-            let head = match self.frontier.front() {
-                Some(Slot::Fetching(id)) => self.resolved.remove(id),
-                Some(Slot::Queued(_)) => None,
-                None => {
-                    self.done = true;
-                    return Poll::Ready(None);
-                }
-            };
-            if let Some(outcome) = head {
-                self.frontier.pop_front();
-                match outcome {
-                    Ok((pending, addresses, view)) => {
-                        self.expand(&pending, &view);
-                        return Poll::Ready(Some(Ok(Visit {
-                            path: pending.path,
-                            addresses,
-                            value: pending.value,
-                            view,
-                        })));
-                    }
-                    Err(error) => {
-                        self.done = true;
-                        return Poll::Ready(Some(Err(error)));
-                    }
-                }
-            }
-            match Pin::new(&mut self.in_flight).poll_next(cx) {
-                Poll::Ready(Some((id, pending, fetched))) => self.absorb(id, pending, fetched),
-                Poll::Ready(None) => {
-                    self.done = true;
-                    return Poll::Ready(Some(Err(CursorError::Stalled {
-                        pending: self.frontier.len(),
-                    })));
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
+        self.driver.poll(cx, ())
     }
+}
+
+/// The cursor's [`WalkPolicy`]: a path-keyed depth-first frontier drained
+/// only at its head, so every completion, fault included, is parked in
+/// `resolved` until its serial turn; a lookahead fetch never fails a listing
+/// that stops before it.
+struct CursorPolicy<L> {
+    store: L,
+    admission: Admission,
+    frontier: VecDeque<Slot>,
+    /// Completed fetches awaiting their serial turn at the head, keyed by id.
+    resolved: BTreeMap<u64, Resolved>,
+    next_id: u64,
+}
+
+impl<L> WalkPolicy for CursorPolicy<L>
+where
+    L: NodeLoader + Clone + 'static,
+{
+    type Fetched = Fetched;
+    type Frame = Visit;
+    type Error = CursorError;
+    type Drain = ();
 
     /// Admit queued nodes into the window, lowest frontier position first.
     ///
     /// The head-slot predicate keeps the serial drain live: unconsumed
     /// fetches never exceed the window. The scan is O(window): every slot
     /// passed over or filled counts toward occupancy, which the window caps.
-    fn admit(&mut self) {
+    #[inline]
+    fn admit(&mut self, in_flight: &mut InFlight<Fetched>) {
         let admission = self.admission;
-        let mut occupancy = self.in_flight_count.saturating_add(self.resolved.len());
+        let mut occupancy = in_flight.len().saturating_add(self.resolved.len());
         let mut head_holds_slot = matches!(self.frontier.front(), Some(Slot::Fetching(_)));
         for (index, slot) in self.frontier.iter_mut().enumerate() {
             if matches!(slot, Slot::Fetching(_)) {
@@ -203,7 +166,7 @@ where
             };
             let store = self.store.clone();
             let reference = pending.reference.clone();
-            let fetch: BoxFetch =
+            let fetch: BoxFuture<Fetched> =
                 Box::pin(async move {
                     let fetched = store.load_with_addresses(&reference).await.map_err(|e| {
                         CursorError::Store {
@@ -213,8 +176,7 @@ where
                     });
                     (id, pending, fetched)
                 });
-            self.in_flight.push(fetch);
-            self.in_flight_count = self.in_flight_count.saturating_add(1);
+            in_flight.push(fetch);
             occupancy = occupancy.saturating_add(1);
             if index == 0 {
                 head_holds_slot = true;
@@ -222,16 +184,32 @@ where
         }
     }
 
-    /// Fold one completion into the resolved set; a failure waits for its
-    /// serial turn, so a lookahead fetch never fails a listing that stops
-    /// before it.
-    fn absorb(
-        &mut self,
-        id: u64,
-        pending: Pending,
-        fetched: Result<(Vec<u8>, Vec<ChunkAddress>), CursorError>,
-    ) {
-        self.in_flight_count = self.in_flight_count.saturating_sub(1);
+    /// Consume the head once resolved, expanding it into its children; a
+    /// parked fault surfaces here, at its serial turn.
+    #[inline]
+    fn take_ready(&mut self, (): ()) -> Option<Result<Visit, CursorError>> {
+        let Some(Slot::Fetching(id)) = self.frontier.front() else {
+            return None;
+        };
+        let outcome = self.resolved.remove(id)?;
+        self.frontier.pop_front();
+        match outcome {
+            Ok((pending, addresses, view)) => {
+                self.expand(&pending, &view);
+                Some(Ok(Visit {
+                    path: pending.path,
+                    addresses,
+                    value: pending.value,
+                    view,
+                }))
+            }
+            Err(error) => Some(Err(error)),
+        }
+    }
+
+    /// Park one completion for its serial turn; never eagerly terminal.
+    #[inline]
+    fn absorb(&mut self, (id, pending, fetched): Fetched) -> Result<(), CursorError> {
         let outcome = match fetched {
             Err(error) => Err(error),
             Ok((bytes, addresses)) => match NodeView::try_from(bytes.as_slice()) {
@@ -243,8 +221,22 @@ where
             },
         };
         self.resolved.insert(id, outcome);
+        Ok(())
     }
 
+    #[inline]
+    fn drained(&self) -> Result<(), CursorError> {
+        if self.frontier.is_empty() {
+            Ok(())
+        } else {
+            Err(CursorError::Stalled {
+                pending: self.frontier.len(),
+            })
+        }
+    }
+}
+
+impl<L> CursorPolicy<L> {
     /// Queue the node's children at the frontier head in ascending fork
     /// order, pruning subtrees the prefix and resume bounds exclude.
     fn expand(&mut self, parent: &Pending, view: &NodeView) {

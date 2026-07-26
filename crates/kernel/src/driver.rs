@@ -23,10 +23,12 @@ pub trait WalkPolicy {
     /// Dispatch queued work into `in_flight` until neither lane may proceed.
     fn admit(&mut self, in_flight: &mut InFlight<Self::Fetched>);
 
-    /// Take the next deliverable frame, if the drain permits one.
-    fn take_ready(&mut self, drain: Self::Drain) -> Option<Self::Frame>;
+    /// Take the next deliverable outcome, if the drain permits one; an `Err`
+    /// is a fault surfacing at its serial turn, terminal like any other.
+    fn take_ready(&mut self, drain: Self::Drain) -> Option<Result<Self::Frame, Self::Error>>;
 
-    /// Fold one completion; an error terminates the walk at its own timing.
+    /// Fold one completion; an `Err` terminates the walk eagerly. A policy
+    /// that defers faults parks them and surfaces them via `take_ready`.
     fn absorb(&mut self, fetched: Self::Fetched) -> Result<(), Self::Error>;
 
     /// Outcome once the in-flight set empties: `Ok` is clean completion,
@@ -96,8 +98,11 @@ impl<P: WalkPolicy> Driver<P, P::Fetched> {
         }
         loop {
             self.policy.admit(&mut self.in_flight);
-            if let Some(frame) = self.policy.take_ready(drain) {
-                return Poll::Ready(Some(Ok(frame)));
+            if let Some(outcome) = self.policy.take_ready(drain) {
+                if outcome.is_err() {
+                    self.done = true;
+                }
+                return Poll::Ready(Some(outcome));
             }
             match self.in_flight.poll(cx) {
                 Poll::Ready(Some(fetched)) => {
