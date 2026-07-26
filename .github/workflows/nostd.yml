@@ -41,7 +41,7 @@ jobs:
                   # gated sequential core.
                   cargo check --locked \
                     -p nectar-swarms -p nectar-contracts -p nectar-file \
-                    -p nectar-marker -p nectar-clock \
+                    -p nectar-marker -p nectar-clock -p nectar-kernel \
                     -p nectar-postage -p nectar-postage-issuer \
                     --no-default-features \
                     --target ${{ matrix.target }}
@@ -59,6 +59,13 @@ jobs:
               run: |
                   cargo check --locked -p nectar-file \
                     --no-default-features --features primitives \
+                    --target ${{ matrix.target }}
+            # The kernel's chunk-typed fetch helper pins the primitives core,
+            # which unification would leak into the bare pass above.
+            - name: Check nectar-kernel with the chunk helper
+              run: |
+                  cargo check --locked -p nectar-kernel \
+                    --no-default-features --features chunk \
                     --target ${{ matrix.target }}
             # The manifest core over the file read and split paths. Separate
             # from the shared list above: the manifest edge pins the file

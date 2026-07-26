@@ -22,6 +22,7 @@ alloy-primitives = { workspace = true, features = ["map"], optional = true }
 bitflags = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+nectar-kernel = { workspace = true, optional = true }
 nectar-primitives = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
@@ -50,6 +51,7 @@ std = [
 	"dep:bitflags",
 	"dep:bytes",
 	"dep:futures",
+	"dep:nectar-kernel",
 	"dep:nectar-primitives",
 	"dep:serde_json",
 	"dep:thiserror",
@@ -73,7 +75,7 @@ encryption = [ "nectar-primitives?/encryption" ]
 hazmat = [ "std" ]
 # Single-thread send escape: relaxes the boxed trie futures off `Send` in
 # lockstep with the store traits.
-unsync = [ "nectar-primitives?/unsync" ]
+unsync = [ "nectar-kernel?/unsync", "nectar-primitives?/unsync" ]
 
 [package.metadata.docs.rs]
 all-features = true

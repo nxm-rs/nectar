@@ -33,7 +33,6 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
-use core::num::NonZeroU16;
 #[cfg(all(feature = "std", not(feature = "parallel")))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(feature = "parallel")]
@@ -42,6 +41,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use nectar_clock::Clock;
 #[cfg(feature = "std")]
 use nectar_clock::SystemClock;
+use nectar_kernel::Window;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::{Stamp, StampDigest};
 use nectar_primitives::ChunkAddress;
@@ -67,61 +67,16 @@ pub struct StampResult {
     pub result: Result<Stamp, SigningError>,
 }
 
-/// Sign window: allocated, unsigned stamps the pipeline may hold in flight.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SignWindow(NonZeroU16);
-
-impl SignWindow {
-    /// Default window of 64 sign slots.
-    // 64 is nonzero; the MIN arm only satisfies const evaluation.
-    pub const DEFAULT: Self = match NonZeroU16::new(64) {
-        Some(slots) => Self(slots),
-        None => Self(NonZeroU16::MIN),
-    };
-
-    /// `None` when `slots` is zero; const twin of the `NonZeroU16`
-    /// conversion.
-    pub const fn new(slots: u16) -> Option<Self> {
-        match NonZeroU16::new(slots) {
-            Some(slots) => Some(Self(slots)),
-            None => None,
-        }
-    }
-
-    /// Window depth in slots.
-    pub const fn get(self) -> u16 {
-        self.0.get()
-    }
-}
-
-impl Default for SignWindow {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-impl From<NonZeroU16> for SignWindow {
-    fn from(slots: NonZeroU16) -> Self {
-        Self(slots)
-    }
-}
-
-impl From<SignWindow> for NonZeroU16 {
-    fn from(window: SignWindow) -> Self {
-        window.0
-    }
-}
-
-/// Sizes the window as `clamp(16 x available_parallelism, 64, 1024)`.
+/// Sizes the sign window as `clamp(16 x available_parallelism, 64, 1024)`.
 #[cfg(feature = "std")]
-fn default_window() -> SignWindow {
+fn default_window() -> Window {
     let threads = std::thread::available_parallelism().map_or(1, core::num::NonZeroUsize::get);
     let slots = threads.saturating_mul(16).clamp(64, 1024);
     // The clamp bounds are nonzero and fit u16.
     u16::try_from(slots)
         .ok()
-        .and_then(SignWindow::new)
-        .unwrap_or(SignWindow::DEFAULT)
+        .and_then(Window::new)
+        .unwrap_or(Window::DEFAULT)
 }
 
 /// The published many-chunk stamping entry.
@@ -135,7 +90,7 @@ fn default_window() -> SignWindow {
 pub struct StampPipeline<Sg, C = SystemClock> {
     signer: Arc<Sg>,
     clock: C,
-    window: SignWindow,
+    window: Window,
     fail_fast: bool,
 }
 
@@ -145,7 +100,7 @@ pub struct StampPipeline<Sg, C = SystemClock> {
 pub struct StampPipeline<Sg, C> {
     signer: Arc<Sg>,
     clock: C,
-    window: SignWindow,
+    window: Window,
     fail_fast: bool,
 }
 
@@ -184,8 +139,8 @@ impl<S> StampPipeline<Eip191<S>> {
 
 impl<Sg, C> StampPipeline<Sg, C> {
     /// Creates a pipeline from explicit parts, with fail-fast on. The
-    /// defaults-free constructor; [`SignWindow::DEFAULT`] is 64 slots.
-    pub fn with_parts(signer: Sg, clock: C, window: SignWindow) -> Self {
+    /// defaults-free constructor; [`Window::DEFAULT`] is sixteen slots.
+    pub fn with_parts(signer: Sg, clock: C, window: Window) -> Self {
         Self {
             signer: Arc::new(signer),
             clock,
@@ -196,7 +151,7 @@ impl<Sg, C> StampPipeline<Sg, C> {
 
     /// Replaces the sign window.
     #[must_use]
-    pub const fn with_window(mut self, window: SignWindow) -> Self {
+    pub const fn with_window(mut self, window: Window) -> Self {
         self.window = window;
         self
     }
@@ -220,7 +175,7 @@ impl<Sg, C> StampPipeline<Sg, C> {
     }
 
     /// The sign window.
-    pub const fn window(&self) -> SignWindow {
+    pub const fn window(&self) -> Window {
         self.window
     }
 
@@ -507,8 +462,8 @@ mod tests {
         (0..n).map(|_| ChunkAddress::from(B256::random())).collect()
     }
 
-    fn window(slots: u16) -> SignWindow {
-        SignWindow::new(slots).unwrap()
+    fn window(slots: u16) -> Window {
+        Window::new(slots).unwrap()
     }
 
     fn fixed_signature() -> Signature {

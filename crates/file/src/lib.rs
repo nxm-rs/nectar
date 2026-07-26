@@ -100,8 +100,6 @@ pub mod config;
 pub mod generators;
 pub mod geometry;
 #[cfg(feature = "primitives")]
-mod inflight;
-#[cfg(feature = "primitives")]
 mod num;
 /// Shared fuzz and test oracle for the malformed-intermediate walk.
 /// Compiled for in-crate tests and for fuzz builds (`arbitrary`); exempt

@@ -4,9 +4,9 @@
 //! through a bounded read-ahead window: unconsumed fetches never exceed the
 //! window, so the fetched set is the serial walk's consumed set plus at most
 //! one window of lookahead, and errors surface at the failing node's serial
-//! position, never earlier. The admission scheduler mirrors the file walk
-//! engine's, whose byte-offset sequencing seam does not fit path-keyed trie
-//! order, so the shape is copied rather than shared.
+//! position, never earlier. The head-slot admission predicate is the shared
+//! kernel one; the scheduler shape stays bespoke because the file walk
+//! engine's byte-offset sequencing seam does not fit path-keyed trie order.
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -14,12 +14,13 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
-use core::num::NonZeroU16;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use futures::Stream;
 use futures::stream::FuturesUnordered;
+use nectar_kernel::Admission;
+pub use nectar_kernel::Window;
 use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
 use nectar_primitives::store::TrustedGet;
@@ -29,55 +30,6 @@ use crate::entry::Entry;
 use crate::error::CursorError;
 use crate::node::NodeType;
 use crate::view::{ForkView, NodeView};
-
-/// Sixteen slots: the default read-ahead depth.
-const DEFAULT_SLOTS: NonZeroU16 = match NonZeroU16::new(16) {
-    Some(slots) => slots,
-    None => NonZeroU16::MIN,
-};
-const _: () = assert!(DEFAULT_SLOTS.get() == 16);
-
-/// Read-ahead window: node fetches a walk may hold unconsumed, in flight or
-/// buffered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Window(NonZeroU16);
-
-impl Window {
-    /// Default window of sixteen fetch slots.
-    pub const DEFAULT: Self = Self(DEFAULT_SLOTS);
-
-    /// `None` when `slots` is zero; const twin of the `NonZeroU16`
-    /// conversion.
-    pub const fn new(slots: u16) -> Option<Self> {
-        match NonZeroU16::new(slots) {
-            Some(slots) => Some(Self(slots)),
-            None => None,
-        }
-    }
-
-    /// Window depth in slots.
-    pub const fn get(self) -> u16 {
-        self.0.get()
-    }
-}
-
-impl Default for Window {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-impl From<NonZeroU16> for Window {
-    fn from(slots: NonZeroU16) -> Self {
-        Self(slots)
-    }
-}
-
-impl From<Window> for NonZeroU16 {
-    fn from(window: Window) -> Self {
-        window.0
-    }
-}
 
 /// One queued subtree root: the child's address plus the filter state its
 /// subtree inherits.
@@ -132,7 +84,7 @@ struct Visit {
 /// consumed in serial order while up to a window of fetches runs ahead.
 struct TrieWalk<S, const BS: usize> {
     store: S,
-    window: usize,
+    admission: Admission,
     frontier: VecDeque<Slot>,
     in_flight: FuturesUnordered<BoxFetch<BS>>,
     in_flight_count: usize,
@@ -163,7 +115,7 @@ where
         }));
         Self {
             store,
-            window: usize::from(window.get()),
+            admission: Admission::new(window),
             frontier,
             in_flight: FuturesUnordered::new(),
             in_flight_count: 0,
@@ -225,21 +177,18 @@ where
 
     /// Admit queued nodes into the window, lowest frontier position first.
     ///
-    /// One slot stays reserved for the head until the head occupies one, so
-    /// the serial drain always progresses; unconsumed fetches never exceed
-    /// the window. The scan is O(window): every slot passed over or filled
-    /// counts toward occupancy, which the window caps.
+    /// The head-slot predicate keeps the serial drain live: unconsumed
+    /// fetches never exceed the window. The scan is O(window): every slot
+    /// passed over or filled counts toward occupancy, which the window caps.
     fn admit(&mut self) {
+        let admission = self.admission;
         let mut occupancy = self.in_flight_count.saturating_add(self.resolved.len());
         let mut head_holds_slot = matches!(self.frontier.front(), Some(Slot::Fetching(_)));
         for (index, slot) in self.frontier.iter_mut().enumerate() {
-            if occupancy >= self.window {
-                return;
-            }
             if matches!(slot, Slot::Fetching(_)) {
                 continue;
             }
-            if index > 0 && !head_holds_slot && occupancy >= self.window.saturating_sub(1) {
+            if !admission.admits(occupancy, index == 0 || head_holds_slot) {
                 return;
             }
             let id = self.next_id;

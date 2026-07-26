@@ -166,8 +166,9 @@ pub use issuer::{MemoryIssuer, MemoryIssuerFor, StampIssuer};
 pub use sharded::{ShardedIssuer, ShardedIssuerFor};
 pub use stamper::{BatchStamper, Stamper};
 
-// The streaming stamp pipeline
-pub use pipeline::{Eip191, SignPrehash, SignWindow, StampPipeline, StampResult, Stamped};
+// The streaming stamp pipeline; its sign window is the kernel window.
+pub use nectar_kernel::Window;
+pub use pipeline::{Eip191, SignPrehash, StampPipeline, StampResult, Stamped};
 
 // Mutable (ring) issuing with a type-state reservation guard
 pub use ring::{Reservation, Reserved, RingIssuer, RingIssuerFor, Unreserved};
