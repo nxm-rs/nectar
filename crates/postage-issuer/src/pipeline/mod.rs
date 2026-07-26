@@ -51,12 +51,19 @@ use crate::issuer::StampIssuer;
 use crate::prepared::prepare_stamps;
 
 mod signer;
+// The shared cell behind the decorator: a mutex under std, a cell wherever
+// the Send/Sync bounds relax. Hosted no-std builds without `unsync` have
+// neither, so the surface is absent there.
+#[cfg(any(feature = "std", not(multi_thread)))]
+mod stamped_put;
 #[cfg(feature = "parallel")]
 mod task;
 
 #[cfg(not(feature = "parallel"))]
 use signer::sign_digest;
 pub use signer::{Eip191, SignPrehash};
+#[cfg(any(feature = "std", not(multi_thread)))]
+pub use stamped_put::{IssuedBound, StampedPut, StampedPutError};
 
 /// A completed stamping attempt, tagged with its input address.
 #[derive(Debug)]

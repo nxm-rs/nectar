@@ -33,8 +33,10 @@ alloy-signer-local = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Referenced by the `arbitrary` feature.
-nectar-file = { workspace = true }
+# Referenced by the `arbitrary` feature; the decorator regression splits
+# through the streaming engine.
+nectar-file = { workspace = true, features = ["std"] }
+nectar-testing = { workspace = true }
 # The upload pipeline bench splits through the streaming engine and the
 # rayon batch ingest.
 proptest = { workspace = true }
