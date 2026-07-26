@@ -10,7 +10,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::error::{DecodeError, DecodeResult};
-use crate::format::{FORK_INDEX_SIZE, MetadataLen, xor_in_place};
+use crate::format::{FORK_INDEX_SIZE, MetadataLen, ensure_reencodable, xor_in_place};
 use crate::node::{NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 
@@ -95,9 +95,10 @@ impl TryFrom<&[u8]> for NodeView {
 
         let (entry, forks) = match ref_width {
             RefWidth::Zero => {
-                // BEE-WORKAROUND(bee#5483): a zero-width node decodes only as
-                // the entry-less terminal shape; declared forks would carry
-                // zero-width references, so they are rejected as malformed.
+                // LEGACY-TOLERANCE(ref-size-zero): a zero-width node decodes
+                // only as the entry-less terminal shape; declared forks would
+                // carry zero-width references, so they are rejected as
+                // malformed.
                 let index = cur.take::<[u8; FORK_INDEX_SIZE]>()?;
                 if index.iter().any(|&b| b != 0) {
                     return Err(DecodeError::ZeroWidthForks);
@@ -222,7 +223,10 @@ impl ForkView {
             let entries = if raw.is_empty() {
                 BTreeMap::new()
             } else {
-                serde_json::from_slice(&raw)?
+                let entries: BTreeMap<String, String> = serde_json::from_slice(&raw)?;
+                // Round-trip totality: agree with the node codec's domain.
+                ensure_reencodable(&entries)?;
+                entries
             };
             Some(ForkMetadata { len, raw, entries })
         } else {

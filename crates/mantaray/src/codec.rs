@@ -9,7 +9,9 @@
 use alloc::collections::BTreeMap;
 
 use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
-use crate::format::{FORK_INDEX_SIZE, ForkHeader, MetadataLen, NodeHeader, Version, xor_in_place};
+use crate::format::{
+    FORK_INDEX_SIZE, ForkHeader, MetadataLen, NodeHeader, Version, ensure_reencodable, xor_in_place,
+};
 use crate::node::{Fork, Node, NodeType, Prefix};
 use crate::obfuscation::ObfuscationKey;
 
@@ -98,28 +100,26 @@ fn encode_node<R: Reference>(node: &Node<R>) -> Result<Vec<u8>> {
 }
 
 // ┌──────────────────────────── HAZMAT ────────────────────────────┐
-// │ BEE-WORKAROUND(bee#5483): the reference client's mantaray      │
-// │ writer occasionally emits a node with `ref_size = 0` (the      │
-// │ byte at header offset 63) for entry-less terminal nodes.       │
-// │ This is not spec-legal: the wire-format doc                    │
-// │ (`SPEC.md#wire-format`) and every other implementation treat   │
+// │ LEGACY-TOLERANCE(ref-size-zero): historical images exist with  │
+// │ `ref_size = 0` (the byte at header offset 63) for entry-less   │
+// │ terminal nodes. Not spec-legal: `SPEC.md#wire-format` treats   │
 // │ `ref_size` as a single uniform width in {32, 64} governing     │
-// │ both the entry slot and every fork ref slot. mantaray-js       │
-// │ documents the artifact with an explicit FIXME (a file          │
-// │ uploaded on the bzz endpoint gets a 0-refsize node under `/`). │
+// │ both the entry slot and every fork ref slot.                   │
 // │                                                                │
-// │ Remove the `RefSize::EmptyTerminal` variant, its zero-width    │
-// │ classification in `parse_header`, and `decode_empty_terminal`  │
-// │ once the upstream fix lands and downstream consumers have      │
-// │ upgraded past the buggy releases.                              │
+// │ The emitter class is closed: the defect was fixed upstream in  │
+// │ the reference client's writer (writer-only; its reader kept    │
+// │ accepting the shape), so only pre-fix images carry it. The     │
+// │ decode tolerance is permanent - that content is addressed and  │
+// │ retrievable forever - while the encoder never emits the shape. │
 // └────────────────────────────────────────────────────────────────┘
 
 /// The reference width declared by a node header.
 ///
-/// `EmptyTerminal` is the bee#5483 sentinel (a `ref_size` byte of zero); it is
-/// not spec-legal and marks an entry-less terminal node. See the HAZMAT block.
+/// `EmptyTerminal` is the frozen legacy sentinel (a `ref_size` byte of zero);
+/// it is not spec-legal and marks an entry-less terminal node. See the HAZMAT
+/// block.
 enum RefSize {
-    /// bee#5483: `ref_size == 0`, an entry-less terminal node.
+    /// LEGACY-TOLERANCE(ref-size-zero): an entry-less terminal node.
     EmptyTerminal,
     /// A declared uniform reference width in bytes.
     Declared(usize),
@@ -159,7 +159,7 @@ fn parse_header(cur: &mut Cursor<'_>) -> DecodeResult<(Version, RefSize)> {
     Ok((version, ref_size))
 }
 
-/// Decode a `ref_size = 0` node as the empty terminal node bee intends.
+/// Decode a legacy `ref_size = 0` image as the empty terminal node it encodes.
 ///
 /// Accepts this wire shape only when the forks bitfield is also empty; a
 /// `ref_size = 0` node with non-empty forks is unrecoverable (fork refs would
@@ -198,7 +198,8 @@ fn insufficient_fork(underrun: Underrun, total: usize, byte_index: u8) -> Decode
 ///
 /// The entry slot and index are both read before the entry is validated, so a
 /// truncated index reports `TooShort` rather than an entry-shaped error.
-/// v0.2 derives the root EDGE flag from a non-empty index; v0.1 leaves it unset.
+/// The wire carries no flags for the node itself, so its `node_type` is the
+/// derived projection: VALUE from a present entry, EDGE from a non-empty index.
 fn decode_body<R: Reference>(
     cur: &mut Cursor<'_>,
     version: Version,
@@ -221,7 +222,10 @@ fn decode_body<R: Reference>(
         .map_err(|_| DecodeError::TooShort)?;
 
     let mut node_type = NodeType::empty();
-    if matches!(version, Version::V02) && index_bytes.iter().any(|&b| b != 0) {
+    if entry.is_some() {
+        node_type |= NodeType::VALUE;
+    }
+    if index_bytes.iter().any(|&b| b != 0) {
         node_type |= NodeType::EDGE;
     }
 
@@ -302,7 +306,10 @@ fn parse_fork_body<R: Reference>(body: &[u8], has_metadata: bool) -> DecodeResul
             .take::<MetadataLen>()
             .map_err(|_| DecodeError::TooShort)?;
         if metadata_len.get() > 0 {
-            node.metadata = serde_json::from_slice(cur.finish())?;
+            let metadata: BTreeMap<String, String> = serde_json::from_slice(cur.finish())?;
+            // Round-trip totality: accept only what re-encode can size back.
+            ensure_reencodable(&metadata)?;
+            node.metadata = metadata;
         }
     }
 
@@ -340,32 +347,17 @@ impl WireMetadata {
     /// Serialize, pad to the `ObfuscationKey::SIZE` stride, and size the length
     /// field. Padding fills with `0x0a`, so the trailing bytes are JSON
     /// whitespace the decoder re-parses transparently.
-    #[allow(clippy::arithmetic_side_effects)] // padding math is guarded (`SIZE - x` only when `x < SIZE`, `SIZE - rem` only when `rem != 0`) and `% ObfuscationKey::SIZE` has a nonzero constant divisor
     fn build(metadata: &BTreeMap<String, String>) -> Result<Self> {
         let mut padded_json = serde_json::to_string(metadata)
             .map_err(MantarayError::Metadata)?
             .into_bytes();
 
-        let size_with_header = padded_json.len() + ForkHeader::METADATA_LEN_SIZE;
-        let padding = if size_with_header < ObfuscationKey::SIZE {
-            ObfuscationKey::SIZE - size_with_header
-        } else if size_with_header > ObfuscationKey::SIZE {
-            let rem = size_with_header % ObfuscationKey::SIZE;
-            if rem == 0 {
-                0
-            } else {
-                ObfuscationKey::SIZE - rem
-            }
-        } else {
-            0
-        };
-        padded_json.resize(padded_json.len() + padding, 0x0a);
-
-        let len =
-            u16::try_from(padded_json.len()).map_err(|_| MantarayError::MetadataTooLarge {
-                max: usize::from(u16::MAX),
-                actual: padded_json.len(),
-            })?;
+        let padded = MetadataLen::padded_payload(padded_json.len());
+        let len = u16::try_from(padded).map_err(|_| MantarayError::MetadataTooLarge {
+            max: usize::from(u16::MAX),
+            actual: padded,
+        })?;
+        padded_json.resize(padded, 0x0a);
         Ok(Self {
             len: MetadataLen(len),
             padded_json,
@@ -567,13 +559,102 @@ mod tests {
         assert!(Node::<ChunkRef>::decode(data.as_slice()).is_err());
     }
 
-    /// BEE-WORKAROUND(bee#5483): bee occasionally emits nodes with
-    /// `ref_size = 0` for entry-less terminal nodes (mantaray-js FIXME:
-    /// "in Bee, if one uploads a file on the bzz endpoint, the node under
-    /// `/` gets 0 refsize"). Tolerate this wire shape only when the forks
-    /// bitfield is also empty.
+    /// Single-fork v0.2 image (zero obfuscation key, so XOR is identity)
+    /// whose fork carries `json` as its metadata region verbatim.
+    fn metadata_fork_node_bytes(json: &[u8]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0u8; ObfuscationKey::SIZE]);
+        data.extend_from_slice(Version::V02.as_bytes());
+        data.push(32); // ref_size
+        data.extend_from_slice(&[0u8; 32]); // entry slot: absent
+        let mut index = [0u8; FORK_INDEX_SIZE];
+        index[usize::from(b'm' / 8)] = 1 << (b'm' % 8);
+        data.extend_from_slice(&index);
+        data.push(NodeType::METADATA.bits());
+        data.push(1); // prefix length
+        let mut prefix = [0u8; Prefix::MAX_LEN];
+        prefix[0] = b'm';
+        data.extend_from_slice(&prefix);
+        data.extend_from_slice(&[0xaa; 32]); // fork reference
+        data.extend_from_slice(&u16::try_from(json.len()).unwrap().to_be_bytes());
+        data.extend_from_slice(json);
+        data
+    }
+
+    /// Round-trip totality: compact metadata filling the `u16` length field
+    /// cannot be re-padded into it, so decode rejects what encode cannot
+    /// emit. Takes a ~64KB crafted region to reach.
     #[test]
-    fn decode_bee_legacy_ref_size_zero_empty_node() {
+    fn decode_rejects_metadata_that_cannot_reencode() {
+        let json = format!(r#"{{"k":"{}"}}"#, "a".repeat(65527));
+        assert_eq!(json.len(), usize::from(u16::MAX));
+        let data = metadata_fork_node_bytes(json.as_bytes());
+        let result = Node::<ChunkRef>::decode(data.as_slice());
+        assert!(matches!(
+            result,
+            Err(DecodeError::MetadataTooLarge { actual: 65566, .. })
+        ));
+        crate::oracles::view_differential(&data).unwrap();
+    }
+
+    /// The largest compact metadata that re-pads into the length field both
+    /// decodes and re-encodes: decode and encode agree on the domain edge.
+    #[test]
+    fn decode_accepts_metadata_at_the_reencode_limit() {
+        let json = format!(r#"{{"k":"{}"}}"#, "a".repeat(65526));
+        let data = metadata_fork_node_bytes(json.as_bytes());
+        let node = Node::<ChunkRef>::decode(data.as_slice()).unwrap();
+        let reencoded = node.encode().unwrap();
+        assert_eq!(
+            Node::<ChunkRef>::decode(reencoded.as_slice()).unwrap(),
+            node
+        );
+        crate::oracles::view_differential(&data).unwrap();
+    }
+
+    /// A full-length wire region whose canonical form is small stays
+    /// accepted: the bound is the re-encode size, not the wire field.
+    #[test]
+    fn decode_accepts_padded_wire_metadata_at_the_field_limit() {
+        let mut json = br#"{"k":"aaaa"}"#.to_vec();
+        json.resize(usize::from(u16::MAX), 0x0a);
+        let data = metadata_fork_node_bytes(&json);
+        let node = Node::<ChunkRef>::decode(data.as_slice()).unwrap();
+        assert_eq!(
+            node.forks()[&b'm']
+                .node()
+                .metadata()
+                .get("k")
+                .map(String::as_str),
+            Some("aaaa")
+        );
+        node.encode().unwrap();
+        crate::oracles::view_differential(&data).unwrap();
+    }
+
+    /// The decoded node's own flags are the derived projection: VALUE from a
+    /// present entry, EDGE from a non-empty forks index, on both versions.
+    #[test]
+    fn decoded_flags_are_derived_from_structure() {
+        for version in [Version::V01, Version::V02] {
+            let mut data = truncated_node_bytes(&version, NodeHeader::SIZE + 32 + 32);
+            data[NodeHeader::SIZE] = 0x07; // non-zero entry slot
+            let n = Node::<ChunkRef>::decode(data.as_slice()).unwrap();
+            assert!(n.is_value());
+            assert!(!n.is_edge());
+        }
+        for encoded in [ENCODED_V01, ENCODED_V02] {
+            let data = hex::decode(encoded).unwrap();
+            assert!(Node::<ChunkRef>::decode(data.as_slice()).unwrap().is_edge());
+        }
+    }
+
+    /// LEGACY-TOLERANCE(ref-size-zero): historical images carry
+    /// `ref_size = 0` for entry-less terminal nodes (the reference client's
+    /// writer emitted them before its fix). Tolerate this wire shape only
+    /// when the forks bitfield is also empty.
+    #[test]
+    fn decode_legacy_ref_size_zero_empty_node() {
         // v0.2 layout: 32 obfuscation key zeros || 31 version hash || ref_size=0 || 32 index zeros = 96 bytes
         let mut data = vec![0u8; 96];
         data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + Version::SIZE]
@@ -586,12 +667,12 @@ mod tests {
         assert!(n.forks().is_empty());
     }
 
-    /// BEE-WORKAROUND(bee#5483): a `ref_size = 0` node with a non-empty forks
-    /// bitfield is unrecoverable by any reference implementation (fork refs
-    /// would have zero width). Reject as malformed rather than silently
+    /// LEGACY-TOLERANCE(ref-size-zero): a `ref_size = 0` node with a
+    /// non-empty forks bitfield is unrecoverable by any implementation (fork
+    /// refs would have zero width). Reject as malformed rather than silently
     /// dropping forks.
     #[test]
-    fn decode_bee_legacy_ref_size_zero_with_forks_is_rejected() {
+    fn decode_legacy_ref_size_zero_with_forks_is_rejected() {
         let mut data = vec![0u8; 96];
         data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + Version::SIZE]
             .copy_from_slice(Version::V02.as_bytes());
@@ -608,10 +689,10 @@ mod tests {
         ));
     }
 
-    /// BEE-WORKAROUND(bee#5483): same as above but for v0.1; both decoders
-    /// must apply the same rule.
+    /// LEGACY-TOLERANCE(ref-size-zero): same as above but for v0.1; both
+    /// decoders must apply the same rule.
     #[test]
-    fn decode_bee_legacy_ref_size_zero_v01_empty_node() {
+    fn decode_legacy_ref_size_zero_v01_empty_node() {
         let mut data = vec![0u8; 96];
         data[ObfuscationKey::SIZE..ObfuscationKey::SIZE + Version::SIZE]
             .copy_from_slice(Version::V01.as_bytes());
@@ -623,9 +704,9 @@ mod tests {
     }
 
     /// Pin nectar's encoder behaviour: even for an entry-less node, it must
-    /// emit `ref_size = R::SIZE`, never `0`. Spec-correct, matches bee's
-    /// "valid manifest" test fixture, matches mantaray-js. Emitting 0 would
-    /// reproduce the bee bug rather than fix it.
+    /// emit `ref_size = R::SIZE`, never `0`; the spec requires a uniform
+    /// reference width. Emitting 0 would reproduce the legacy defect rather
+    /// than tolerate it.
     #[test]
     fn encoder_never_emits_ref_size_zero_for_entryless_node() {
         let n = Node::<ChunkRef>::new_unencrypted();

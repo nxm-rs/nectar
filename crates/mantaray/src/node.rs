@@ -300,6 +300,9 @@ impl<R: Reference> Node<R> {
     }
 
     /// The typed entry stored at this node.
+    ///
+    /// Format limitation: the wire's entry slot has no presence bit, so an
+    /// all-zero reference is the absent-entry sentinel and cannot be stored.
     pub const fn entry(&self) -> Option<&R> {
         self.entry.as_ref()
     }
@@ -644,9 +647,9 @@ impl<R: Reference> Node<R> {
 ///   index expects.
 /// - Fork children carry a full-width reference (a reference-less child is not
 ///   encodable) plus flags, and metadata only when the METADATA flag is set.
-/// - The root's own flags are not serialized; the v0.2 decoder derives EDGE
-///   from a non-empty forks index and nothing else, so the root's `node_type`
-///   is exactly that.
+/// - The root's own flags are not serialized; the decoder derives them as a
+///   projection of the structure (VALUE from a present entry, EDGE from a
+///   non-empty forks index), so the root's `node_type` is exactly that.
 /// - An all-zero entry is the wire sentinel for "no entry", so it is mapped
 ///   to `None`.
 #[cfg(any(test, feature = "arbitrary"))]
@@ -732,13 +735,15 @@ mod arbitrary_impls {
                 forks.insert(fork.prefix[0], fork);
             }
 
-            // The root's own flags are not serialized; the v0.2 decoder
-            // derives EDGE from a non-empty forks index and nothing else.
-            let node_type = if forks.is_empty() {
-                NodeType::empty()
-            } else {
-                NodeType::EDGE
-            };
+            // The root's own flags are not serialized; the decoder derives
+            // the projection VALUE-from-entry, EDGE-from-forks.
+            let mut node_type = NodeType::empty();
+            if entry.is_some() {
+                node_type |= NodeType::VALUE;
+            }
+            if !forks.is_empty() {
+                node_type |= NodeType::EDGE;
+            }
 
             Ok(Self {
                 node_type,
@@ -871,6 +876,11 @@ mod test_traversal {
         {
             if self.reference().is_some() {
                 return Ok(());
+            }
+            // Only fork records carry metadata on the wire; a root's own
+            // would be silently dropped, so fail loud instead.
+            if !self.metadata.is_empty() {
+                return Err(MantarayError::RootMetadata);
             }
 
             struct SaveFrame<R: Reference> {
@@ -1647,6 +1657,41 @@ mod tests {
     fn persist_remove_nested_prefix() {
         run(async {
             run_persist_remove(remove_test_case_data()[1].clone()).await;
+        });
+    }
+
+    /// The root's VALUE flag is a derived projection of its persisted entry,
+    /// so it survives a save and reload.
+    #[test]
+    fn root_value_survives_reload() {
+        run(async {
+            let store = MemoryStore::<StandardChunkSet>::new();
+            let mut n = Node::default();
+            n.add(b"", Some(make_entry("root")), BTreeMap::new(), &store)
+                .await
+                .unwrap();
+            n.save(&store).await.unwrap();
+
+            let mut n2: Node = Node::from_reference(*n.reference().unwrap());
+            let node = n2.lookup_node(b"", &store).await.unwrap();
+            assert!(node.is_value());
+            assert_eq!(node.entry(), Some(&make_entry("root")));
+        });
+    }
+
+    /// Only fork records carry metadata on the wire; a root carrying its own
+    /// fails the save loud instead of dropping it silently.
+    #[test]
+    fn save_rejects_root_metadata() {
+        run(async {
+            let store = MemoryStore::<StandardChunkSet>::new();
+            let mut n = Node::default();
+            let meta = BTreeMap::from([("k".to_string(), "v".to_string())]);
+            n.add(b"", Some(make_entry("root")), meta, &store)
+                .await
+                .unwrap();
+            let err = n.save(&store).await.unwrap_err();
+            assert!(matches!(err, MantarayError::RootMetadata));
         });
     }
 
