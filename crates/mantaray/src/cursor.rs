@@ -111,13 +111,13 @@ type Fetched<const B: usize> = (
     Result<Chunk<Verified, ContentOnlyChunkSet<B>>, CursorError>,
 );
 
-/// Boxed fetch future: `Send` on native, unbounded on wasm32 so `!Send`
-/// browser stores stay usable.
-#[cfg(not(target_arch = "wasm32"))]
+/// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
+/// and under the `unsync` feature, so `!Send` stores stay usable.
+#[cfg(multi_thread)]
 type BoxFetch<const B: usize> = Pin<Box<dyn Future<Output = Fetched<B>> + Send>>;
-/// Boxed fetch future: `Send` on native, unbounded on wasm32 so `!Send`
-/// browser stores stay usable.
-#[cfg(target_arch = "wasm32")]
+/// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
+/// and under the `unsync` feature, so `!Send` stores stay usable.
+#[cfg(not(multi_thread))]
 type BoxFetch<const B: usize> = Pin<Box<dyn Future<Output = Fetched<B>>>>;
 
 /// One consumed node in depth-first order.

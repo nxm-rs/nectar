@@ -101,6 +101,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use bytes::Bytes;
     use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_testing::run;

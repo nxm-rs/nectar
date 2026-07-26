@@ -1,5 +1,6 @@
 //! Keys and entry values: what the map stores against each key.
 
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use bytes::Bytes;
@@ -261,6 +262,8 @@ impl<F: Format> TryFrom<Entry<F>> for EntryRef {
 
 #[cfg(any(test, feature = "arbitrary"))]
 mod arbitrary_impls {
+    use alloc::vec::Vec;
+
     use arbitrary::{Arbitrary, Unstructured};
     use bytes::Bytes;
 
@@ -295,6 +298,8 @@ mod arbitrary_impls {
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use nectar_primitives::EncryptionKey;
 
     use super::*;

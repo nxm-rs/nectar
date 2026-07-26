@@ -17,7 +17,9 @@
 //! Peak retained state is O(depth + changeset frontier): the descent holds one
 //! node per level on the current path, never a whole subtree.
 
-use std::collections::BTreeMap;
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use bytes::Bytes;
 use nectar_primitives::ChunkAddress;
@@ -771,6 +773,7 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
 mod tests {
     use core::future::Future;
     use core::pin::Pin;
+    use std::vec;
 
     use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef};

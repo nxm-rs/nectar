@@ -60,6 +60,15 @@ jobs:
                   cargo check --locked -p nectar-file \
                     --no-default-features --features primitives \
                     --target ${{ matrix.target }}
+            # The manifest core over the file read and split paths. Separate
+            # from the shared list above: the manifest edge pins the file
+            # crate's primitives feature, which unification would leak into
+            # the bare nectar-file pass.
+            - name: Check nectar-manifest without std
+              run: |
+                  cargo check --locked -p nectar-manifest \
+                    --no-default-features \
+                    --target ${{ matrix.target }}
             # The bare-metal core of nectar-primitives. Only in the rv64 lane:
             # the wasm32 shape of the crate is the std build with the wasm
             # target table (wasm-bindgen), not the no_std core.

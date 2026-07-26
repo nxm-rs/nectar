@@ -71,6 +71,9 @@ arbitrary = [
 encryption = [ "nectar-primitives?/encryption" ]
 # Raw node internals (the `hazmat` module) for fuzz harnesses and benches.
 hazmat = [ "std" ]
+# Single-thread send escape: relaxes the boxed trie futures off `Send` in
+# lockstep with the store traits.
+unsync = [ "nectar-primitives?/unsync" ]
 
 [package.metadata.docs.rs]
 all-features = true

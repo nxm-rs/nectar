@@ -5,7 +5,7 @@
 //! flag bits carry no independent state and are never stored: presence is
 //! derived from the structure at encode time.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
 
 use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef};
 
@@ -340,6 +340,9 @@ impl<F: Format> Default for ForkTable<F> {
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+    use std::vec::Vec;
+
     use bytes::Bytes;
 
     use super::*;

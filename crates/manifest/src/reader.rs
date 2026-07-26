@@ -388,6 +388,8 @@ fn descend<F: Format>(table: &ForkTable<F>, key: &[u8], pos: usize) -> Descent<F
 
 #[cfg(test)]
 mod tests {
+    use std::vec::Vec;
+
     use bytes::Bytes;
     use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};

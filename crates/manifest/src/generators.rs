@@ -5,6 +5,9 @@
 //! in `u`, so shrinking and replay work. Bridge to proptest by mapping a
 //! byte-vector strategy through [`arbitrary::Unstructured`].
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use arbitrary::{Arbitrary, Unstructured};
 use bytes::Bytes;
 use nectar_primitives::EncryptedChunkRef;

@@ -106,6 +106,8 @@ impl ToWriter for SubtreeCount {
 
 #[cfg(test)]
 mod tests {
+    use std::vec::Vec;
+
     use super::*;
 
     fn encode(value: u64) -> Vec<u8> {

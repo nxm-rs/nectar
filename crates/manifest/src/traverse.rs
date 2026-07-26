@@ -7,7 +7,8 @@
 //! closure: every node chunk, every segment chunk and each entry's referenced
 //! address.
 
-use std::collections::VecDeque;
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 
 use bytes::Bytes;
 #[cfg(feature = "encryption")]
@@ -261,6 +262,7 @@ where
 mod tests {
     use core::task::Poll;
     use std::collections::HashSet;
+    use std::vec;
 
     use bytes::Bytes;
     #[cfg(not(feature = "encryption"))]

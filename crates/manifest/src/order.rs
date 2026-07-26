@@ -9,6 +9,8 @@
 //! fetches one node per referenced hop on the path and never the window it steps
 //! over.
 
+use alloc::vec::Vec;
+
 use bytes::Bytes;
 use nectar_primitives::store::MaybeSync;
 use nectar_primitives::{ChunkAddress, ChunkOps};

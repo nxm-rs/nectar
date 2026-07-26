@@ -63,6 +63,7 @@
 //! assert!(prefix.len() <= V1::PLEN_MAX);
 //! ```
 
+#![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(
@@ -80,6 +81,10 @@
         clippy::as_conversions
     )
 )]
+
+extern crate alloc;
+#[cfg(any(test, feature = "std"))]
+extern crate std;
 
 mod apply;
 mod bounded;

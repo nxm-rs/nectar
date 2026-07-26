@@ -230,6 +230,8 @@ impl<F: Format> TryFrom<usize> for SegmentWeight<F> {
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use super::*;
 
     #[test]
