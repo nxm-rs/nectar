@@ -150,7 +150,14 @@ impl<R: ChunkRegistry> Chunk<Unverified, R> {
     /// internally consistent lie about the address cannot certify itself.
     pub fn verify(self) -> Result<Chunk<Verified, R>> {
         self.inner.verify(&self.address)?;
-        Ok(Chunk::from_verified_parts(self.address, self.inner))
+        // Acceptance just seeded the envelope's caches, so this owner read
+        // reuses the one recovery rather than paying a second.
+        let owner = self.inner.owner();
+        Ok(Chunk::from_verified_parts_with_owner(
+            self.address,
+            self.inner,
+            owner,
+        ))
     }
 
     /// Take the claimed address on trust: the single gated skip of
@@ -174,6 +181,21 @@ impl<R: ChunkRegistry> Chunk<Verified, R> {
         }
     }
 
+    /// Seed the address fact and the owner fact together, for mints whose
+    /// acceptance run (or provenance) already produced the owner.
+    pub(crate) fn from_verified_parts_with_owner(
+        address: ChunkAddress,
+        inner: R::Envelope,
+        owner: Option<Address>,
+    ) -> Self {
+        Self {
+            address,
+            inner,
+            owner: OnceCache::with_value(owner),
+            _state: PhantomData,
+        }
+    }
+
     /// Certify a locally built envelope at its own derived address.
     ///
     /// For upload paths where the value was constructed, not decoded. The
@@ -185,7 +207,8 @@ impl<R: ChunkRegistry> Chunk<Verified, R> {
     pub fn from_envelope(inner: R::Envelope) -> Result<Self> {
         let address = *inner.address();
         inner.verify(&address)?;
-        Ok(Self::from_verified_parts(address, inner))
+        let owner = inner.owner();
+        Ok(Self::from_verified_parts_with_owner(address, inner, owner))
     }
 
     /// Decode and certify bare wire bytes (no type tag) in one step.
@@ -193,10 +216,9 @@ impl<R: ChunkRegistry> Chunk<Verified, R> {
     /// Without a tag the address is the only member router, so parsing and
     /// certification are inseparable and the result is already verified.
     pub fn decode_wire(address: ChunkAddress, data: Bytes) -> Result<Self> {
-        Ok(Self::from_verified_parts(
-            address,
-            R::decode_wire(&address, data)?,
-        ))
+        let inner = R::decode_wire(&address, data)?;
+        let owner = inner.owner();
+        Ok(Self::from_verified_parts_with_owner(address, inner, owner))
     }
 
     /// The chunk's address: a certified fact, free to read.
@@ -383,6 +405,22 @@ mod tests {
         // Second read serves the memoized value.
         assert_eq!(verified.owner(), owner);
         assert!(verified.envelope().is_single_owner());
+    }
+
+    /// A verify-routed mint seeds the owner fact from its acceptance run;
+    /// reading it never pays a second recovery.
+    #[test]
+    fn verify_routed_mint_seeds_the_owner() {
+        let signer = test_signer();
+        let soc = DefaultSingleOwnerChunk::new(SocId::ZERO, b"seeded".to_vec(), &signer).unwrap();
+        let claimed = *soc.address();
+        let typed = StandardChunkSet::encode_typed(&soc.into());
+
+        let verified = Chunk::<Unverified>::parse(claimed, &typed)
+            .unwrap()
+            .verify()
+            .unwrap();
+        assert_eq!(verified.owner(), Some(signer.address()));
     }
 
     /// Key regression: an internally consistent lie must be rejected. A

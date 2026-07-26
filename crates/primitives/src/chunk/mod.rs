@@ -101,10 +101,10 @@
 //! #         &self,
 //! #         body_hash: B256,
 //! #         expected: &ChunkAddress,
-//! #     ) -> core::result::Result<(), ChunkError> {
+//! #     ) -> core::result::Result<Option<Address>, ChunkError> {
 //! #         let actual = self.commit(body_hash);
 //! #         if actual == *expected {
-//! #             Ok(())
+//! #             Ok(None)
 //! #         } else {
 //! #             Err(ChunkError::verification_failed(*expected, actual))
 //! #         }

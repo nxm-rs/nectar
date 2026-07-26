@@ -18,7 +18,9 @@ use crate::StampedChunk;
 /// The stamp travels in-band with the chunk it pays for. The contract is
 /// delivery only: per-address idempotence belongs to a decorator layered
 /// above the sink, never to this trait. Implementors use interior
-/// mutability, mirroring `ChunkPut`.
+/// mutability, mirroring `ChunkPut`. Ingest ordering: batch existence and
+/// authenticity gates run before chunk certification; the typed decode
+/// takes the stamp structurally before paying the chunk's acceptance rule.
 pub trait PutStamped<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: MaybeSend + MaybeSync {
     /// Error type for stamped put operations.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;

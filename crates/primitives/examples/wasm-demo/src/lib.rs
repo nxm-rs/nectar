@@ -900,19 +900,24 @@ pub fn analyze_chunk(
     let content_result = DefaultContentChunk::try_from(chunk_data);
     let single_owner_result = DefaultSingleOwnerChunk::try_from(chunk_data);
 
-    // Prioritize any successful parse that matches the expected address
+    // Prioritize any parse that certifies at the expected address via the
+    // full acceptance rule; a bare address compare would bless a
+    // garbage-signature single owner chunk. The structural parses below
+    // feed diagnostics only, never the validity bit.
     match (content_result, single_owner_result) {
-        (Ok(content_chunk), _) if content_chunk.address() == &expected => Ok(ChunkAnalysisResult {
-            is_valid: true,
-            chunk_type: ChunkType::Content,
-            address: B256::from(*content_chunk.address()),
-            data: content_chunk.data().to_vec(),
-            id: None,
-            owner: None,
-            signature: None,
-            error_message: None,
-        }),
-        (_, Ok(single_owner_chunk)) if single_owner_chunk.address() == &expected => {
+        (Ok(content_chunk), _) if content_chunk.verify(&expected).is_ok() => {
+            Ok(ChunkAnalysisResult {
+                is_valid: true,
+                chunk_type: ChunkType::Content,
+                address: B256::from(*content_chunk.address()),
+                data: content_chunk.data().to_vec(),
+                id: None,
+                owner: None,
+                signature: None,
+                error_message: None,
+            })
+        }
+        (_, Ok(single_owner_chunk)) if single_owner_chunk.verify(&expected).is_ok() => {
             Ok(ChunkAnalysisResult {
                 is_valid: true,
                 chunk_type: ChunkType::SingleOwner,
@@ -924,7 +929,8 @@ pub fn analyze_chunk(
                 error_message: None,
             })
         }
-        // Return any successful parse with address mismatch
+        // Structural parse only: report the verification failure as a
+        // diagnostic alongside the parsed fields.
         (Ok(content_chunk), _) => Ok(ChunkAnalysisResult {
             is_valid: false,
             chunk_type: ChunkType::Content,
@@ -933,11 +939,10 @@ pub fn analyze_chunk(
             id: None,
             owner: None,
             signature: None,
-            error_message: Some(format!(
-                "Content chunk address mismatch. Expected: 0x{}, Actual: 0x{}",
-                hex::encode(expected.as_bytes()),
-                hex::encode(content_chunk.address().as_bytes())
-            )),
+            error_message: content_chunk
+                .verify(&expected)
+                .err()
+                .map(|e| format!("Content chunk failed verification: {}", e)),
         }),
         (_, Ok(single_owner_chunk)) => Ok(ChunkAnalysisResult {
             is_valid: false,
@@ -947,11 +952,10 @@ pub fn analyze_chunk(
             id: Some(single_owner_chunk.id().into()),
             owner: single_owner_chunk.owner().ok(),
             signature: Some(single_owner_chunk.signature().as_bytes().to_vec()),
-            error_message: Some(format!(
-                "Single owner chunk address mismatch. Expected: 0x{}, Actual: 0x{}",
-                hex::encode(expected.as_bytes()),
-                hex::encode(single_owner_chunk.address().as_bytes())
-            )),
+            error_message: single_owner_chunk
+                .verify(&expected)
+                .err()
+                .map(|e| format!("Single owner chunk failed verification: {}", e)),
         }),
         // Both failed to parse
         (Err(e1), Err(e2)) => Ok(ChunkAnalysisResult {
