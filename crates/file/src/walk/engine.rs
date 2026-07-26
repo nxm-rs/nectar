@@ -8,7 +8,8 @@ use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
 use nectar_kernel::{
-    Admission, AdmitPolicy, BoxFuture, FromFn, InFlight, Observations, from_fn, get_verified,
+    Admission, AdmitPolicy, BoxFuture, Driver, FromFn, InFlight, Observations, WalkPolicy, from_fn,
+    get_verified,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkOps, ContentOnlyChunkSet, Verified};
@@ -67,6 +68,18 @@ where
     S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
+    driver: Driver<FileWalkPolicy<S, M, B>, Fetched<M, S::Error, B>>,
+}
+
+/// The file walk's [`WalkPolicy`]: the two-lane branch/leaf frontier, its
+/// head-reserved admission, byte-offset ordering, eager-terminal error, and
+/// clip/expand completion fold. The kernel driver owns only the loop and the
+/// in-flight set.
+struct FileWalkPolicy<S, M, const B: usize>
+where
+    S: TrustedGet<ContentOnlyChunkSet<B>>,
+    M: WalkMode,
+{
     store: S,
     range_start: u64,
     range_end: u64,
@@ -83,7 +96,6 @@ where
     /// Discovered intermediates awaiting descent, ascending by key; the
     /// flattened frame stack of the serial walk.
     branch_frontier: VecDeque<Node<M>>,
-    in_flight: InFlight<Fetched<M, S::Error, B>>,
     /// Keys of in-flight leaf fetches, counted per key.
     leaf_keys: BTreeMap<u64, usize>,
     /// Keys of in-flight branch fetches, counted per key.
@@ -94,11 +106,210 @@ where
     ready: BTreeMap<u64, Bytes>,
     /// Staging buffer the mode's body decoder reuses across nodes.
     scratch: BytesMut,
-    done: bool,
     stats: WalkStats,
 }
 
 impl<S, M, const B: usize> Walk<S, M, B>
+where
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
+    M: WalkMode,
+{
+    /// Walk `range` of the tree under `root`, whose total `span` the caller
+    /// read from the root chunk. The engine re-fetches the root as its first
+    /// node, so the fetch set stays identical to a cold serial walk.
+    pub fn new(
+        store: S,
+        root: ChunkAddress,
+        context: M::Context,
+        span: u64,
+        range: Range<u64>,
+        window: Window,
+    ) -> Self {
+        const { FileWalkPolicy::<S, M, B>::PROFILE };
+        let body = u64_from_usize(B);
+        let branches = fan_out(body, u64_from_u32(M::MODE.ref_size()));
+        let range_end = range.end.min(span);
+        let range_start = range.start.min(range_end);
+        let mut policy = FileWalkPolicy {
+            store,
+            range_start,
+            range_end,
+            body,
+            branches,
+            admission: Admission::new(window),
+            branch_budget: branch_budget(window, branches),
+            policy: None,
+            completed: 0,
+            leaf_frontier: VecDeque::new(),
+            branch_frontier: VecDeque::new(),
+            leaf_keys: BTreeMap::new(),
+            branch_keys: BTreeMap::new(),
+            leaf_in_flight: 0,
+            branch_in_flight: 0,
+            ready: BTreeMap::new(),
+            scratch: BytesMut::new(),
+            stats: WalkStats::default(),
+        };
+        policy.enqueue(Node {
+            address: root,
+            context,
+            start: 0,
+            span,
+        });
+        Self {
+            driver: Driver::new(policy),
+        }
+    }
+
+    /// Adaptive cap: `policy` recomputes the window between admission
+    /// rounds, seeded with the built window. Occupancy above a shrunk cap
+    /// drains by attrition; the head stays admissible at any depth.
+    #[must_use]
+    pub fn with_policy(mut self, policy: WindowPolicyFn) -> Self {
+        self.driver.policy_mut().policy = Some(from_fn(policy));
+        self
+    }
+
+    /// Detach the policy with its accumulated state; a successor walk
+    /// re-arms it.
+    pub(crate) fn take_policy(&mut self) -> Option<WindowPolicyFn> {
+        self.driver
+            .policy_mut()
+            .policy
+            .take()
+            .map(FromFn::into_inner)
+    }
+
+    /// Clipped absolute byte range this walk delivers.
+    pub const fn range(&self) -> Range<u64> {
+        let policy = self.driver.policy();
+        policy.range_start..policy.range_end
+    }
+
+    /// Occupancy witnesses accumulated so far.
+    pub const fn stats(&self) -> WalkStats {
+        self.driver.policy().stats
+    }
+
+    /// Whether the walk has delivered its last frame or failed.
+    pub const fn is_finished(&self) -> bool {
+        self.driver.is_finished()
+    }
+
+    /// Deliver the next frame in file order: consecutive frames tile the
+    /// range gaplessly.
+    ///
+    /// Cancel-safe: all progress lives in `self`, so an abandoned call loses
+    /// nothing. `Ready(None)` after the last in-range byte or after a
+    /// terminal error.
+    pub fn poll_next_ordered(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame, WalkError<S::Error>>>> {
+        self.driver.poll(cx, Drain::Ordered)
+    }
+
+    /// Deliver the next frame in completion order, lowest ready offset
+    /// first. Same contract as [`poll_next_ordered`](Self::poll_next_ordered)
+    /// without the ordering guarantee.
+    pub fn poll_next_any(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame, WalkError<S::Error>>>> {
+        self.driver.poll(cx, Drain::Any)
+    }
+}
+
+impl<S, M, const B: usize> WalkPolicy for FileWalkPolicy<S, M, B>
+where
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
+    M: WalkMode,
+{
+    type Fetched = Fetched<M, S::Error, B>;
+    type Frame = Frame;
+    type Error = WalkError<S::Error>;
+    type Drain = Drain;
+
+    #[inline]
+    fn admit(&mut self, in_flight: &mut InFlight<Self::Fetched>) {
+        self.retune();
+        loop {
+            let Some(head) = self.head_key() else { return };
+            let branch = self.try_admit_branch(head, in_flight);
+            let leaf = self.try_admit_leaf(head, in_flight);
+            if !branch && !leaf {
+                return;
+            }
+        }
+    }
+
+    #[inline]
+    fn take_ready(&mut self, drain: Drain) -> Option<Frame> {
+        if let Drain::Ordered = drain {
+            let head = self.head_key()?;
+            let (&key, _) = self.ready.first_key_value()?;
+            if key != head {
+                return None;
+            }
+        }
+        self.ready
+            .pop_first()
+            .map(|(offset, data)| Frame { offset, data })
+    }
+
+    #[inline]
+    fn absorb(&mut self, (node, fetched): Self::Fetched) -> Result<(), Self::Error> {
+        let leaf = node.span <= self.body;
+        let key = node.key(self.range_start);
+        self.retire(key, leaf);
+        let chunk = fetched.map_err(|source| WalkError::Fetch {
+            address: node.address,
+            source,
+        })?;
+        let data = chunk.into_envelope().data().clone();
+        let take = self.plaintext_len(&node, leaf);
+        let data =
+            M::decode_body(&node.context, B, take, data, &mut self.scratch).map_err(|source| {
+                WalkError::Decode {
+                    offset: node.start,
+                    source,
+                }
+            })?;
+        if leaf {
+            let len = u64_from_usize(data.len());
+            if len != node.span {
+                return Err(ShapeError::LeafLength {
+                    offset: node.start,
+                    span: node.span,
+                    len,
+                }
+                .into());
+            }
+            self.ready.insert(key, self.clip(&node, data));
+            Ok(())
+        } else {
+            self.expand(&node, &data).map_err(WalkError::from)
+        }
+    }
+
+    #[inline]
+    fn drained(&self) -> Result<(), Self::Error> {
+        let pending = self
+            .leaf_frontier
+            .len()
+            .saturating_add(self.branch_frontier.len());
+        if pending == 0 && self.ready.is_empty() {
+            Ok(())
+        } else {
+            Err(WalkError::Stalled {
+                pending,
+                occupancy: self.occupancy(),
+            })
+        }
+    }
+}
+
+impl<S, M, const B: usize> FileWalkPolicy<S, M, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
@@ -113,145 +324,6 @@ where
         let fan_out = fan_out(u64_from_usize(B), u64_from_u32(M::MODE.ref_size()));
         assert!(fan_out >= 2, "fan-out must be at least two");
     };
-
-    /// Walk `range` of the tree under `root`, whose total `span` the caller
-    /// read from the root chunk. The engine re-fetches the root as its first
-    /// node, so the fetch set stays identical to a cold serial walk.
-    pub fn new(
-        store: S,
-        root: ChunkAddress,
-        context: M::Context,
-        span: u64,
-        range: Range<u64>,
-        window: Window,
-    ) -> Self {
-        const { Self::PROFILE };
-        let body = u64_from_usize(B);
-        let branches = fan_out(body, u64_from_u32(M::MODE.ref_size()));
-        let range_end = range.end.min(span);
-        let range_start = range.start.min(range_end);
-        let mut walk = Self {
-            store,
-            range_start,
-            range_end,
-            body,
-            branches,
-            admission: Admission::new(window),
-            branch_budget: branch_budget(window, branches),
-            policy: None,
-            completed: 0,
-            leaf_frontier: VecDeque::new(),
-            branch_frontier: VecDeque::new(),
-            in_flight: InFlight::new(),
-            leaf_keys: BTreeMap::new(),
-            branch_keys: BTreeMap::new(),
-            leaf_in_flight: 0,
-            branch_in_flight: 0,
-            ready: BTreeMap::new(),
-            scratch: BytesMut::new(),
-            done: false,
-            stats: WalkStats::default(),
-        };
-        walk.enqueue(Node {
-            address: root,
-            context,
-            start: 0,
-            span,
-        });
-        walk
-    }
-
-    /// Adaptive cap: `policy` recomputes the window between admission
-    /// rounds, seeded with the built window. Occupancy above a shrunk cap
-    /// drains by attrition; the head stays admissible at any depth.
-    #[must_use]
-    pub fn with_policy(mut self, policy: WindowPolicyFn) -> Self {
-        self.policy = Some(from_fn(policy));
-        self
-    }
-
-    /// Detach the policy with its accumulated state; a successor walk
-    /// re-arms it.
-    pub(crate) fn take_policy(&mut self) -> Option<WindowPolicyFn> {
-        self.policy.take().map(FromFn::into_inner)
-    }
-
-    /// Clipped absolute byte range this walk delivers.
-    pub const fn range(&self) -> Range<u64> {
-        self.range_start..self.range_end
-    }
-
-    /// Occupancy witnesses accumulated so far.
-    pub const fn stats(&self) -> WalkStats {
-        self.stats
-    }
-
-    /// Whether the walk has delivered its last frame or failed.
-    pub const fn is_finished(&self) -> bool {
-        self.done
-    }
-
-    /// Deliver the next frame in file order: consecutive frames tile the
-    /// range gaplessly.
-    ///
-    /// Cancel-safe: all progress lives in `self`, so an abandoned call loses
-    /// nothing. `Ready(None)` after the last in-range byte or after a
-    /// terminal error.
-    pub fn poll_next_ordered(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame, WalkError<S::Error>>>> {
-        self.poll_frame(cx, Drain::Ordered)
-    }
-
-    /// Deliver the next frame in completion order, lowest ready offset
-    /// first. Same contract as [`poll_next_ordered`](Self::poll_next_ordered)
-    /// without the ordering guarantee.
-    pub fn poll_next_any(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame, WalkError<S::Error>>>> {
-        self.poll_frame(cx, Drain::Any)
-    }
-
-    fn poll_frame(
-        &mut self,
-        cx: &mut Context<'_>,
-        drain: Drain,
-    ) -> Poll<Option<Result<Frame, WalkError<S::Error>>>> {
-        if self.done {
-            return Poll::Ready(None);
-        }
-        loop {
-            self.admit();
-            if let Some(frame) = self.take_ready(drain) {
-                return Poll::Ready(Some(Ok(frame)));
-            }
-            match self.in_flight.poll(cx) {
-                Poll::Ready(Some((node, fetched))) => {
-                    if let Err(error) = self.absorb(node, fetched) {
-                        self.done = true;
-                        return Poll::Ready(Some(Err(error)));
-                    }
-                }
-                Poll::Ready(None) => {
-                    self.done = true;
-                    let pending = self
-                        .leaf_frontier
-                        .len()
-                        .saturating_add(self.branch_frontier.len());
-                    if pending == 0 && self.ready.is_empty() {
-                        return Poll::Ready(None);
-                    }
-                    return Poll::Ready(Some(Err(WalkError::Stalled {
-                        pending,
-                        occupancy: self.occupancy(),
-                    })));
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
 
     /// Let the policy recompute the window; a change re-derives the branch
     /// budget.
@@ -270,19 +342,6 @@ where
         if window != self.admission.window() {
             self.admission = Admission::new(window);
             self.branch_budget = branch_budget(window, self.branches);
-        }
-    }
-
-    /// Admit queued nodes until neither lane may proceed.
-    fn admit(&mut self) {
-        self.retune();
-        loop {
-            let Some(head) = self.head_key() else { return };
-            let branch = self.try_admit_branch(head);
-            let leaf = self.try_admit_leaf(head);
-            if !branch && !leaf {
-                return;
-            }
         }
     }
 
@@ -323,7 +382,11 @@ where
     /// Admit the lowest queued branch. The head branch only needs a budget
     /// slot (liveness over the reference cap); any other branch also needs
     /// absorption room.
-    fn try_admit_branch(&mut self, head: u64) -> bool {
+    fn try_admit_branch(
+        &mut self,
+        head: u64,
+        in_flight: &mut InFlight<Fetched<M, S::Error, B>>,
+    ) -> bool {
         if self.branch_in_flight >= self.branch_budget {
             return false;
         }
@@ -336,13 +399,17 @@ where
         let Some(node) = self.branch_frontier.pop_front() else {
             return false;
         };
-        self.dispatch(node);
+        self.dispatch(node, in_flight);
         true
     }
 
     /// Admit the lowest queued leaf. The head leaf may take the last window
     /// slot; any other leaf must leave it free until the head holds one.
-    fn try_admit_leaf(&mut self, head: u64) -> bool {
+    fn try_admit_leaf(
+        &mut self,
+        head: u64,
+        in_flight: &mut InFlight<Fetched<M, S::Error, B>>,
+    ) -> bool {
         let Some(front) = self.leaf_frontier.front() else {
             return false;
         };
@@ -362,7 +429,7 @@ where
         let Some(node) = self.leaf_frontier.pop_front() else {
             return false;
         };
-        self.dispatch(node);
+        self.dispatch(node, in_flight);
         true
     }
 
@@ -380,7 +447,7 @@ where
 
     /// Start one fetch, moving the node into its future; the completion
     /// carries it back.
-    fn dispatch(&mut self, node: Node<M>) {
+    fn dispatch(&mut self, node: Node<M>, in_flight: &mut InFlight<Fetched<M, S::Error, B>>) {
         let key = node.key(self.range_start);
         if node.span <= self.body {
             let slot = self.leaf_keys.entry(key).or_insert(0);
@@ -397,7 +464,7 @@ where
         self.stats.fetches = self.stats.fetches.saturating_add(1);
         let store = self.store.clone();
         let fetch: BoxFetch<M, S::Error, B> = Box::pin(get_verified(store, node.address, node));
-        self.in_flight.push(fetch);
+        in_flight.push(fetch);
     }
 
     /// Retire a completed fetch from the in-flight accounting.
@@ -418,47 +485,6 @@ where
             self.completed = self.completed.saturating_add(1);
         } else {
             self.branch_in_flight = self.branch_in_flight.saturating_sub(1);
-        }
-    }
-
-    /// Fold one completion back into the walk: buffer a leaf body or expand
-    /// an intermediate. The trusted store bound answers for the requested
-    /// address; an untrusted medium is lifted through `VerifyingStore`.
-    fn absorb(
-        &mut self,
-        node: Node<M>,
-        fetched: Result<Chunk<Verified, ContentOnlyChunkSet<B>>, S::Error>,
-    ) -> Result<(), WalkError<S::Error>> {
-        let leaf = node.span <= self.body;
-        let key = node.key(self.range_start);
-        self.retire(key, leaf);
-        let chunk = fetched.map_err(|source| WalkError::Fetch {
-            address: node.address,
-            source,
-        })?;
-        let data = chunk.into_envelope().data().clone();
-        let take = self.plaintext_len(&node, leaf);
-        let data =
-            M::decode_body(&node.context, B, take, data, &mut self.scratch).map_err(|source| {
-                WalkError::Decode {
-                    offset: node.start,
-                    source,
-                }
-            })?;
-        if leaf {
-            let len = u64_from_usize(data.len());
-            if len != node.span {
-                return Err(ShapeError::LeafLength {
-                    offset: node.start,
-                    span: node.span,
-                    len,
-                }
-                .into());
-            }
-            self.ready.insert(key, self.clip(&node, data));
-            Ok(())
-        } else {
-            self.expand(&node, &data).map_err(WalkError::from)
         }
     }
 
@@ -536,20 +562,6 @@ where
         let high = clamp_index(self.range_end.saturating_sub(node.start), len).max(low);
         data.slice(low..high)
     }
-
-    /// Take the next deliverable frame, if the drain permits one.
-    fn take_ready(&mut self, drain: Drain) -> Option<Frame> {
-        if let Drain::Ordered = drain {
-            let head = self.head_key()?;
-            let (&key, _) = self.ready.first_key_value()?;
-            if key != head {
-                return None;
-            }
-        }
-        self.ready
-            .pop_first()
-            .map(|(offset, data)| Frame { offset, data })
-    }
 }
 
 impl<S, M, const B: usize> fmt::Debug for Walk<S, M, B>
@@ -558,15 +570,16 @@ where
     M: WalkMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let policy = self.driver.policy();
         f.debug_struct("Walk")
-            .field("range_start", &self.range_start)
-            .field("range_end", &self.range_end)
-            .field("window", &self.admission.window())
-            .field("branch_budget", &self.branch_budget)
-            .field("policy", &self.policy.is_some())
-            .field("leaf_in_flight", &self.leaf_in_flight)
-            .field("branch_in_flight", &self.branch_in_flight)
-            .field("done", &self.done)
+            .field("range_start", &policy.range_start)
+            .field("range_end", &policy.range_end)
+            .field("window", &policy.admission.window())
+            .field("branch_budget", &policy.branch_budget)
+            .field("policy", &policy.policy.is_some())
+            .field("leaf_in_flight", &policy.leaf_in_flight)
+            .field("branch_in_flight", &policy.branch_in_flight)
+            .field("done", &self.driver.is_finished())
             .finish_non_exhaustive()
     }
 }
