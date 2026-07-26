@@ -8,8 +8,8 @@ use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
 use nectar_kernel::{
-    Admission, AdmitPolicy, BoxFuture, Driver, FromFn, InFlight, Observations, WalkPolicy, from_fn,
-    get_verified,
+    Admission, AdmitPolicy, BoxFuture, FromFn, InFlight, Observations, StaticDriver, WalkPolicy,
+    from_fn, get_verified,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkOps, ContentOnlyChunkSet, Verified};
@@ -46,7 +46,7 @@ type Fetched<M, E, const B: usize> = (Node<M>, Result<Chunk<Verified, ContentOnl
 
 /// Boxed fetch future; the kernel alias relaxes `Send` off the
 /// multi-threaded targets.
-type BoxFetch<M, E, const B: usize> = BoxFuture<Fetched<M, E, B>>;
+type BoxFetch<M, E, const B: usize> = BoxFuture<'static, Fetched<M, E, B>>;
 
 /// Which frame a drain takes from the ready set.
 #[derive(Clone, Copy)]
@@ -68,7 +68,7 @@ where
     S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
 {
-    driver: Driver<FileWalkPolicy<S, M, B>, Fetched<M, S::Error, B>>,
+    driver: StaticDriver<FileWalkPolicy<S, M, B>, Fetched<M, S::Error, B>>,
 }
 
 /// The file walk's [`WalkPolicy`]: the two-lane branch/leaf frontier, its
@@ -157,7 +157,7 @@ where
             span,
         });
         Self {
-            driver: Driver::new(policy),
+            driver: StaticDriver::new(policy),
         }
     }
 
@@ -220,7 +220,7 @@ where
     }
 }
 
-impl<S, M, const B: usize> WalkPolicy for FileWalkPolicy<S, M, B>
+impl<S, M, const B: usize> WalkPolicy<'static> for FileWalkPolicy<S, M, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     M: WalkMode,
@@ -231,7 +231,7 @@ where
     type Drain = Drain;
 
     #[inline]
-    fn admit(&mut self, in_flight: &mut InFlight<Self::Fetched>) {
+    fn admit(&mut self, in_flight: &mut InFlight<'static, Self::Fetched>) {
         self.retune();
         loop {
             let Some(head) = self.head_key() else { return };
@@ -385,7 +385,7 @@ where
     fn try_admit_branch(
         &mut self,
         head: u64,
-        in_flight: &mut InFlight<Fetched<M, S::Error, B>>,
+        in_flight: &mut InFlight<'static, Fetched<M, S::Error, B>>,
     ) -> bool {
         if self.branch_in_flight >= self.branch_budget {
             return false;
@@ -408,7 +408,7 @@ where
     fn try_admit_leaf(
         &mut self,
         head: u64,
-        in_flight: &mut InFlight<Fetched<M, S::Error, B>>,
+        in_flight: &mut InFlight<'static, Fetched<M, S::Error, B>>,
     ) -> bool {
         let Some(front) = self.leaf_frontier.front() else {
             return false;
@@ -447,7 +447,11 @@ where
 
     /// Start one fetch, moving the node into its future; the completion
     /// carries it back.
-    fn dispatch(&mut self, node: Node<M>, in_flight: &mut InFlight<Fetched<M, S::Error, B>>) {
+    fn dispatch(
+        &mut self,
+        node: Node<M>,
+        in_flight: &mut InFlight<'static, Fetched<M, S::Error, B>>,
+    ) {
         let key = node.key(self.range_start);
         if node.span <= self.body {
             let slot = self.leaf_keys.entry(key).or_insert(0);

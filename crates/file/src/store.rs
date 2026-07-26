@@ -26,7 +26,7 @@ pub struct BoxedStoreError(#[source] BoxedError);
 /// Boxed erased fetch future; the kernel alias relaxes `Send` off the
 /// multi-threaded targets.
 type BoxGet<const B: usize> =
-    BoxFuture<Result<Chunk<Verified, ContentOnlyChunkSet<B>>, BoxedStoreError>>;
+    BoxFuture<'static, Result<Chunk<Verified, ContentOnlyChunkSet<B>>, BoxedStoreError>>;
 
 /// Object-safe fetch surface the adapter erases stores through.
 trait ErasedGet<const B: usize>: MaybeSend + MaybeSync {

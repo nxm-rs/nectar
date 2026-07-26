@@ -50,7 +50,7 @@ pub use admission::Admission;
 #[cfg(feature = "chunk")]
 #[cfg_attr(docsrs, doc(cfg(feature = "chunk")))]
 pub use chunk::get_verified;
-pub use driver::{Driver, WalkPolicy};
+pub use driver::{Driver, StaticDriver, WalkPolicy};
 pub use future::BoxFuture;
 pub use inflight::InFlight;
 pub use policy::{AdmitPolicy, Fixed, FromFn, Observations, from_fn};
