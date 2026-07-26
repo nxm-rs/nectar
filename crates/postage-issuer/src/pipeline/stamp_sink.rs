@@ -232,17 +232,14 @@ where
     /// allocation failure queues its result instead.
     fn admit(&mut self, address: ChunkAddress) {
         let batch = [address];
-        let Some(preparation) =
-            prepare_stamps(&mut *self.issuer, &batch, &self.pipeline.clock).pop()
-        else {
-            return;
-        };
-        match preparation.result {
-            Ok(digest) => self.submit(digest),
-            Err(error) => self.ready.push_back(StampResult {
-                address: preparation.address,
-                result: Err(SigningError::Stamp(error)),
-            }),
+        for preparation in prepare_stamps(&mut *self.issuer, &batch, &self.pipeline.clock) {
+            match preparation.result {
+                Ok(digest) => self.submit(digest),
+                Err(error) => self.ready.push_back(StampResult {
+                    address: preparation.address,
+                    result: Err(SigningError::Stamp(error)),
+                }),
+            }
         }
     }
 
