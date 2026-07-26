@@ -1,6 +1,6 @@
 //! Ordered listing cursor and address stream over persisted mantaray tries.
 //!
-//! Both walk a trie depth-first in ascending fork order, fetching nodes
+//! Both walk a trie depth-first in ascending fork order, loading nodes
 //! through a bounded read-ahead window: unconsumed fetches never exceed the
 //! window, so the fetched set is the serial walk's consumed set plus at most
 //! one window of lookahead, and errors surface at the failing node's serial
@@ -21,20 +21,19 @@ use futures::Stream;
 use futures::stream::FuturesUnordered;
 use nectar_kernel::Admission;
 pub use nectar_kernel::Window;
-use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
-use nectar_primitives::store::TrustedGet;
-use nectar_primitives::{Chunk, ContentOnlyChunkSet, Verified};
+use nectar_primitives::EntryRef;
+use nectar_primitives::chunk::ChunkAddress;
 
 use crate::entry::Entry;
 use crate::error::CursorError;
 use crate::node::NodeType;
+use crate::persist::NodeLoader;
 use crate::view::{ForkView, NodeView};
 
-/// One queued subtree root: the child's address plus the filter state its
-/// subtree inherits.
+/// One queued subtree root: the child's full-width reference plus the
+/// filter state its subtree inherits.
 struct Pending {
-    address: ChunkAddress,
+    reference: EntryRef,
     /// Full path of the node from the trie root.
     path: Vec<u8>,
     /// Arriving-fork value payload; `Some` exactly when the walk delivers an
@@ -56,58 +55,63 @@ enum Slot {
     Fetching(u64),
 }
 
-/// Completion payload: the fetch id, its node, and the store outcome.
-type Fetched<const B: usize> = (
+/// Completion payload: the fetch id, its node, and the load outcome.
+type Fetched = (
     u64,
     Pending,
-    Result<Chunk<Verified, ContentOnlyChunkSet<B>>, CursorError>,
+    Result<(Vec<u8>, Vec<ChunkAddress>), CursorError>,
 );
 
 /// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
 /// and under the `unsync` feature, so `!Send` stores stay usable.
 #[cfg(multi_thread)]
-type BoxFetch<const B: usize> = Pin<Box<dyn Future<Output = Fetched<B>> + Send>>;
+type BoxFetch = Pin<Box<dyn Future<Output = Fetched> + Send>>;
 /// Boxed fetch future: `Send` on multi-threaded targets, unbounded on wasm32
 /// and under the `unsync` feature, so `!Send` stores stay usable.
 #[cfg(not(multi_thread))]
-type BoxFetch<const B: usize> = Pin<Box<dyn Future<Output = Fetched<B>>>>;
+type BoxFetch = Pin<Box<dyn Future<Output = Fetched>>>;
+
+/// One resolved node awaiting its serial turn: the pending record, its
+/// image addresses, and the decoded view.
+type Resolved = Result<(Pending, Vec<ChunkAddress>, NodeView), CursorError>;
 
 /// One consumed node in depth-first order.
 struct Visit {
     path: Vec<u8>,
-    address: ChunkAddress,
+    /// Every chunk address the node's stored image occupies, root first.
+    addresses: Vec<ChunkAddress>,
     value: Option<BTreeMap<String, String>>,
     view: NodeView,
 }
 
 /// The shared bounded-lookahead walk: a depth-first frontier whose head is
 /// consumed in serial order while up to a window of fetches runs ahead.
-struct TrieWalk<S, const BS: usize> {
-    store: S,
+struct TrieWalk<L> {
+    store: L,
     admission: Admission,
     frontier: VecDeque<Slot>,
-    in_flight: FuturesUnordered<BoxFetch<BS>>,
+    in_flight: FuturesUnordered<BoxFetch>,
     in_flight_count: usize,
     /// Completed fetches awaiting their serial turn at the head, keyed by id.
-    resolved: BTreeMap<u64, Result<(Pending, NodeView), CursorError>>,
+    resolved: BTreeMap<u64, Resolved>,
     next_id: u64,
     done: bool,
 }
 
-impl<S, const BS: usize> TrieWalk<S, BS>
+impl<L> TrieWalk<L>
 where
-    S: TrustedGet<ContentOnlyChunkSet<BS>> + Clone + 'static,
+    L: NodeLoader + Clone + 'static,
 {
     fn new(
-        store: S,
-        root: ChunkAddress,
+        store: L,
+        root: EntryRef,
         goal: Vec<u8>,
         after: Option<Vec<u8>>,
         window: Window,
     ) -> Self {
         let mut frontier = VecDeque::new();
         frontier.push_back(Slot::Queued(Pending {
-            address: root,
+            reference: root,
             path: Vec::new(),
             value: None,
             goal,
@@ -147,11 +151,11 @@ where
             if let Some(outcome) = head {
                 self.frontier.pop_front();
                 match outcome {
-                    Ok((pending, view)) => {
+                    Ok((pending, addresses, view)) => {
                         self.expand(&pending, &view);
                         return Poll::Ready(Some(Ok(Visit {
                             path: pending.path,
-                            address: pending.address,
+                            addresses,
                             value: pending.value,
                             view,
                         })));
@@ -198,14 +202,17 @@ where
                 return;
             };
             let store = self.store.clone();
-            let address = pending.address;
-            let fetch: BoxFetch<BS> = Box::pin(async move {
-                let fetched = store.get(&address).await.map_err(|e| CursorError::Store {
-                    address,
-                    source: Arc::new(e),
+            let reference = pending.reference.clone();
+            let fetch: BoxFetch =
+                Box::pin(async move {
+                    let fetched = store.load_with_addresses(&reference).await.map_err(|e| {
+                        CursorError::Store {
+                            address: *reference.address(),
+                            source: Arc::new(e),
+                        }
+                    });
+                    (id, pending, fetched)
                 });
-                (id, pending, fetched)
-            });
             self.in_flight.push(fetch);
             self.in_flight_count = self.in_flight_count.saturating_add(1);
             occupancy = occupancy.saturating_add(1);
@@ -222,15 +229,15 @@ where
         &mut self,
         id: u64,
         pending: Pending,
-        fetched: Result<Chunk<Verified, ContentOnlyChunkSet<BS>>, CursorError>,
+        fetched: Result<(Vec<u8>, Vec<ChunkAddress>), CursorError>,
     ) {
         self.in_flight_count = self.in_flight_count.saturating_sub(1);
         let outcome = match fetched {
             Err(error) => Err(error),
-            Ok(chunk) => match NodeView::try_from(chunk.envelope().data().as_ref()) {
-                Ok(view) => Ok((pending, view)),
+            Ok((bytes, addresses)) => match NodeView::try_from(bytes.as_slice()) {
+                Ok(view) => Ok((pending, addresses, view)),
                 Err(source) => Err(CursorError::Corrupt {
-                    address: pending.address,
+                    address: *pending.reference.address(),
                     source,
                 }),
             },
@@ -260,7 +267,7 @@ fn child_pending(parent: &Pending, fork: &ForkView) -> Option<Pending> {
     let value = (fork.node_type().contains(NodeType::VALUE) && goal.is_empty() && after.is_none())
         .then(|| fork.metadata().cloned().unwrap_or_default());
     Some(Pending {
-        address: *fork.reference().address(),
+        reference: fork.reference().clone(),
         path,
         value,
         goal,
@@ -295,38 +302,22 @@ fn narrow_after(after: Option<&[u8]>, edge: &[u8]) -> Option<Option<Vec<u8>>> {
 /// strictly after an optional bound, up to an optional limit; the resume
 /// token for the next page is the last yielded path. Configure before the
 /// first poll; configuration set later is ignored.
-///
-/// ```
-/// # use nectar_mantaray::{Cursor, ManifestEditor, DefaultMemoryStore};
-/// # use nectar_primitives::chunk::ChunkAddress;
-/// # use nectar_primitives::store::ContentGet;
-/// # nectar_testing::run(async {
-/// let mut editor = ManifestEditor::new(DefaultMemoryStore::new());
-/// editor.put("a.txt", ChunkAddress::from([1u8; 32]));
-/// editor.put("b/c.txt", ChunkAddress::from([2u8; 32]));
-/// let (root, store) = editor.commit().await.unwrap();
-/// let mut cursor = Cursor::new(ContentGet::new(store), root).with_prefix("b/");
-/// let entry = cursor.next().await.unwrap().unwrap();
-/// assert_eq!(entry.path(), b"b/c.txt");
-/// assert!(cursor.next().await.is_none());
-/// # });
-/// ```
-pub struct Cursor<S, const BS: usize = DEFAULT_BODY_SIZE> {
-    store: S,
-    root: ChunkAddress,
+pub struct Cursor<L> {
+    store: L,
+    root: EntryRef,
     window: Window,
     prefix: Vec<u8>,
     after: Option<Vec<u8>>,
     remaining: Option<usize>,
-    walk: Option<TrieWalk<S, BS>>,
+    walk: Option<TrieWalk<L>>,
 }
 
-impl<S, const BS: usize> Cursor<S, BS> {
+impl<L> Cursor<L> {
     /// Cursor over the whole trie rooted at `root`, with the default window.
-    pub const fn new(store: S, root: ChunkAddress) -> Self {
+    pub fn new(store: L, root: impl Into<EntryRef>) -> Self {
         Self {
             store,
-            root,
+            root: root.into(),
             window: Window::DEFAULT,
             prefix: Vec::new(),
             after: None,
@@ -363,16 +354,16 @@ impl<S, const BS: usize> Cursor<S, BS> {
         self
     }
 
-    /// The backing store.
+    /// The backing loader.
     #[must_use]
-    pub const fn store(&self) -> &S {
+    pub const fn store(&self) -> &L {
         &self.store
     }
 }
 
-impl<S, const BS: usize> Cursor<S, BS>
+impl<L> Cursor<L>
 where
-    S: TrustedGet<ContentOnlyChunkSet<BS>> + Clone + 'static,
+    L: NodeLoader + Clone + 'static,
 {
     /// Deliver the next entry in path order.
     ///
@@ -388,7 +379,7 @@ where
         let walk = self.walk.get_or_insert_with(|| {
             TrieWalk::new(
                 self.store.clone(),
-                self.root,
+                self.root.clone(),
                 core::mem::take(&mut self.prefix),
                 self.after.take(),
                 self.window,
@@ -422,9 +413,9 @@ where
     }
 }
 
-impl<S, const BS: usize> Stream for Cursor<S, BS>
+impl<L> Stream for Cursor<L>
 where
-    S: TrustedGet<ContentOnlyChunkSet<BS>> + Clone + Unpin + 'static,
+    L: NodeLoader + Clone + Unpin + 'static,
 {
     type Item = Result<Entry, CursorError>;
 
@@ -433,7 +424,7 @@ where
     }
 }
 
-impl<S, const BS: usize> core::fmt::Debug for Cursor<S, BS> {
+impl<L> core::fmt::Debug for Cursor<L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Cursor")
             .field("root", &self.root)
@@ -443,29 +434,31 @@ impl<S, const BS: usize> core::fmt::Debug for Cursor<S, BS> {
     }
 }
 
-/// Depth-first address stream over a persisted trie: every node chunk
-/// address, with a value node's entry address right after its node.
+/// Depth-first address stream over a persisted trie: every chunk address a
+/// node's stored image occupies (root first), with a value node's entry
+/// address right after its node's addresses.
 ///
 /// Enumerates every chunk the trie depends on, for pinning and garbage
-/// collection; shared subtrees repeat, matching the serial walk. Delivery
-/// order is fixed by the trie, not the window. Configure before the first
-/// poll; configuration set later is ignored.
-pub struct AddressStream<S, const BS: usize = DEFAULT_BODY_SIZE> {
-    store: S,
-    root: ChunkAddress,
+/// collection; a multi-chunk node contributes all of its tree's addresses,
+/// and shared subtrees repeat, matching the serial walk. Delivery order is
+/// fixed by the trie, not the window. Configure before the first poll;
+/// configuration set later is ignored.
+pub struct AddressStream<L> {
+    store: L,
+    root: EntryRef,
     window: Window,
-    queued: Option<ChunkAddress>,
-    walk: Option<TrieWalk<S, BS>>,
+    queued: VecDeque<ChunkAddress>,
+    walk: Option<TrieWalk<L>>,
 }
 
-impl<S, const BS: usize> AddressStream<S, BS> {
+impl<L> AddressStream<L> {
     /// Stream over the whole trie rooted at `root`, with the default window.
-    pub const fn new(store: S, root: ChunkAddress) -> Self {
+    pub fn new(store: L, root: impl Into<EntryRef>) -> Self {
         Self {
             store,
-            root,
+            root: root.into(),
             window: Window::DEFAULT,
-            queued: None,
+            queued: VecDeque::new(),
             walk: None,
         }
     }
@@ -477,16 +470,16 @@ impl<S, const BS: usize> AddressStream<S, BS> {
         self
     }
 
-    /// The backing store.
+    /// The backing loader.
     #[must_use]
-    pub const fn store(&self) -> &S {
+    pub const fn store(&self) -> &L {
         &self.store
     }
 }
 
-impl<S, const BS: usize> AddressStream<S, BS>
+impl<L> AddressStream<L>
 where
-    S: TrustedGet<ContentOnlyChunkSet<BS>> + Clone + 'static,
+    L: NodeLoader + Clone + 'static,
 {
     /// Deliver the next address in depth-first order.
     ///
@@ -496,24 +489,32 @@ where
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<ChunkAddress, CursorError>>> {
-        if let Some(address) = self.queued.take() {
-            return Poll::Ready(Some(Ok(address)));
-        }
-        let walk = self.walk.get_or_insert_with(|| {
-            TrieWalk::new(self.store.clone(), self.root, Vec::new(), None, self.window)
-        });
-        match walk.poll_visit(cx) {
-            Poll::Ready(Some(Ok(visit))) => {
-                if visit.value.is_some()
-                    && let Some(entry) = visit.view.entry()
-                {
-                    self.queued = Some(*entry.address());
-                }
-                Poll::Ready(Some(Ok(visit.address)))
+        loop {
+            if let Some(address) = self.queued.pop_front() {
+                return Poll::Ready(Some(Ok(address)));
             }
-            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+            let walk = self.walk.get_or_insert_with(|| {
+                TrieWalk::new(
+                    self.store.clone(),
+                    self.root.clone(),
+                    Vec::new(),
+                    None,
+                    self.window,
+                )
+            });
+            match walk.poll_visit(cx) {
+                Poll::Ready(Some(Ok(visit))) => {
+                    self.queued.extend(visit.addresses);
+                    if visit.value.is_some()
+                        && let Some(entry) = visit.view.entry()
+                    {
+                        self.queued.push_back(*entry.address());
+                    }
+                }
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 
@@ -523,9 +524,9 @@ where
     }
 }
 
-impl<S, const BS: usize> Stream for AddressStream<S, BS>
+impl<L> Stream for AddressStream<L>
 where
-    S: TrustedGet<ContentOnlyChunkSet<BS>> + Clone + Unpin + 'static,
+    L: NodeLoader + Clone + Unpin + 'static,
 {
     type Item = Result<ChunkAddress, CursorError>;
 
@@ -534,7 +535,7 @@ where
     }
 }
 
-impl<S, const BS: usize> core::fmt::Debug for AddressStream<S, BS> {
+impl<L> core::fmt::Debug for AddressStream<L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AddressStream")
             .field("root", &self.root)
@@ -550,19 +551,20 @@ mod tests {
     use std::sync::Mutex;
 
     use bytes::Bytes;
-    use nectar_primitives::chunk::{ChunkRef, ContentChunk};
-    use nectar_primitives::store::{
-        ChunkGet, ChunkPut, ContentGet, MemoryStore, VerifyError, VerifyingStore,
-    };
+    use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
+    use nectar_primitives::chunk::{ChunkOps, ChunkRef, ContentChunk};
+    use nectar_primitives::store::{ChunkGet, ChunkPut, MemoryStore, VerifyError, VerifyingStore};
     use nectar_primitives::{
-        EncryptedChunkRef, EncryptionKey, EntryRef, StandardChunkSet, Unverified,
+        Chunk, EncryptedChunkRef, EncryptionKey, StandardChunkSet, Unverified,
     };
     use nectar_testing::run;
 
     use crate::ManifestEditor;
     use crate::node::{Fork, Node, Prefix};
+    use crate::persist::single_chunk::{SingleChunkError, SingleChunkLoadSaver};
 
     type Store = MemoryStore<StandardChunkSet>;
+    type LoadSaver = SingleChunkLoadSaver<Store>;
 
     /// A ChunkAddress from a string, right-padded with zeroes.
     fn make_addr(s: &str) -> ChunkAddress {
@@ -597,17 +599,29 @@ mod tests {
     }
 
     /// Build a persisted plain manifest over the paths through the editor.
-    fn build(paths: &[&str]) -> (ChunkAddress, Store) {
-        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
+    fn build(paths: &[&str]) -> (ChunkAddress, LoadSaver) {
+        let mut editor: ManifestEditor<LoadSaver> =
+            ManifestEditor::new(LoadSaver::new(Store::new()));
         for &p in paths {
             editor.put(p, make_addr(p));
         }
         run(editor.commit()).unwrap()
     }
 
-    fn collect_entries<S>(mut cursor: Cursor<S>) -> Vec<Entry>
+    /// Every chunk address held by the loadsaver's backing store.
+    fn stored_addresses(loadsaver: &LoadSaver) -> Vec<ChunkAddress> {
+        loadsaver
+            .store()
+            .clone()
+            .into_chunks()
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    fn collect_entries<L>(mut cursor: Cursor<L>) -> Vec<Entry>
     where
-        S: TrustedGet<ContentOnlyChunkSet<DEFAULT_BODY_SIZE>> + Clone + 'static,
+        L: NodeLoader + Clone + 'static,
     {
         run(async {
             let mut out = Vec::new();
@@ -618,9 +632,9 @@ mod tests {
         })
     }
 
-    fn collect_until_err<S>(mut cursor: Cursor<S>) -> (Vec<Entry>, Option<CursorError>)
+    fn collect_until_err<L>(mut cursor: Cursor<L>) -> (Vec<Entry>, Option<CursorError>)
     where
-        S: TrustedGet<ContentOnlyChunkSet<DEFAULT_BODY_SIZE>> + Clone + 'static,
+        L: NodeLoader + Clone + 'static,
     {
         run(async {
             let mut out = Vec::new();
@@ -634,9 +648,9 @@ mod tests {
         })
     }
 
-    fn collect_addresses<S>(mut stream: AddressStream<S>) -> Vec<ChunkAddress>
+    fn collect_addresses<L>(mut stream: AddressStream<L>) -> Vec<ChunkAddress>
     where
-        S: TrustedGet<ContentOnlyChunkSet<DEFAULT_BODY_SIZE>> + Clone + 'static,
+        L: NodeLoader + Clone + 'static,
     {
         run(async {
             let mut out = Vec::new();
@@ -647,7 +661,7 @@ mod tests {
         })
     }
 
-    /// Store wrapper recording fetches, concurrency peaks, and scripted
+    /// Loader wrapper recording node loads, concurrency peaks, and scripted
     /// faults; `Clone` shares one recording.
     #[derive(Clone)]
     struct RecordingStore {
@@ -655,7 +669,7 @@ mod tests {
     }
 
     struct Recording {
-        store: ContentGet<Store>,
+        store: LoadSaver,
         fetched: Mutex<Vec<ChunkAddress>>,
         inflight: AtomicUsize,
         peak: AtomicUsize,
@@ -664,10 +678,10 @@ mod tests {
     }
 
     impl RecordingStore {
-        fn with(store: Store, delay: bool, fail: Option<ChunkAddress>) -> Self {
+        fn with(store: LoadSaver, delay: bool, fail: Option<ChunkAddress>) -> Self {
             Self {
                 inner: std::sync::Arc::new(Recording {
-                    store: ContentGet::new(store),
+                    store,
                     fetched: Mutex::new(Vec::new()),
                     inflight: AtomicUsize::new(0),
                     peak: AtomicUsize::new(0),
@@ -677,15 +691,15 @@ mod tests {
             }
         }
 
-        fn new(store: Store) -> Self {
+        fn new(store: LoadSaver) -> Self {
             Self::with(store, false, None)
         }
 
-        fn delayed(store: Store) -> Self {
+        fn delayed(store: LoadSaver) -> Self {
             Self::with(store, true, None)
         }
 
-        fn failing(store: Store, fail: ChunkAddress) -> Self {
+        fn failing(store: LoadSaver, fail: ChunkAddress) -> Self {
             Self::with(store, false, Some(fail))
         }
 
@@ -718,24 +732,24 @@ mod tests {
         .await;
     }
 
-    impl ChunkGet<ContentOnlyChunkSet> for RecordingStore {
-        type Trust = Verified;
-        type Error = <ContentGet<Store> as ChunkGet<ContentOnlyChunkSet>>::Error;
+    impl NodeLoader for RecordingStore {
+        type Error = SingleChunkError;
 
-        async fn get(
-            &self,
-            address: &ChunkAddress,
-        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
-            self.inner.fetched.lock().unwrap().push(*address);
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            let address = *reference.address();
+            self.inner.fetched.lock().unwrap().push(address);
             let level = self.inner.inflight.fetch_add(1, Ordering::SeqCst) + 1;
             self.inner.peak.fetch_max(level, Ordering::SeqCst);
             if self.inner.delay {
                 yield_once().await;
             }
-            let result = if self.inner.fail == Some(*address) {
-                ChunkGet::get(&self.inner.store, &make_addr("absent-sentinel")).await
+            let result = if self.inner.fail == Some(address) {
+                self.inner
+                    .store
+                    .load(&EntryRef::from(make_addr("absent-sentinel")))
+                    .await
             } else {
-                ChunkGet::get(&self.inner.store, address).await
+                self.inner.store.load(reference).await
             };
             self.inner.inflight.fetch_sub(1, Ordering::SeqCst);
             result
@@ -744,7 +758,7 @@ mod tests {
 
     /// Serial truth from a window-one walk: the fetch sequence and the
     /// cumulative fetch count at each yielded entry.
-    fn serial_profile(root: ChunkAddress, store: &Store) -> (Vec<ChunkAddress>, Vec<usize>) {
+    fn serial_profile(root: ChunkAddress, store: &LoadSaver) -> (Vec<ChunkAddress>, Vec<usize>) {
         let rec = RecordingStore::new(store.clone());
         let mut cursor: Cursor<RecordingStore> =
             Cursor::new(rec.clone(), root).with_window(window(1));
@@ -761,8 +775,8 @@ mod tests {
     #[test]
     fn listing_yields_every_path_in_path_order() {
         for paths in corpora() {
-            let (root, store) = build(&paths);
-            let got = collect_entries(Cursor::new(ContentGet::new(store), root));
+            let (root, loadsaver) = build(&paths);
+            let got = collect_entries(Cursor::new(loadsaver, root));
             let mut want = paths.clone();
             want.sort_unstable();
             assert_eq!(got.len(), want.len(), "corpus {paths:?}");
@@ -780,15 +794,16 @@ mod tests {
 
     #[test]
     fn metadata_and_root_document_survive_the_listing() {
-        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
+        let mut editor: ManifestEditor<LoadSaver> =
+            ManifestEditor::new(LoadSaver::new(Store::new()));
         editor.put("plain.txt", make_addr("plain"));
         let meta: BTreeMap<String, String> =
             [("Content-Type".to_string(), "image/png".to_string())].into();
         editor.put_with_metadata("logo.png", make_addr("logo"), meta.clone());
         editor.set_index_document("index.html");
-        let (root, store) = run(editor.commit()).unwrap();
+        let (root, loadsaver) = run(editor.commit()).unwrap();
 
-        let got = collect_entries(Cursor::new(ContentGet::new(store), root));
+        let got = collect_entries(Cursor::new(loadsaver, root));
         assert_eq!(got.len(), 3);
         let plain = got.iter().find(|e| e.path() == b"plain.txt").unwrap();
         assert_eq!(
@@ -809,15 +824,14 @@ mod tests {
     fn encrypted_listing_yields_the_stored_references() {
         let paths = ["secret/a.txt", "secret/b.txt", "top.txt"];
         let key = EncryptionKey::from([0x5a; 32]);
-        let mut editor: ManifestEditor<Store, EncryptedChunkRef> =
-            ManifestEditor::new_encrypted(Store::new());
+        let mut editor: ManifestEditor<LoadSaver, EncryptedChunkRef> =
+            ManifestEditor::new_encrypted(LoadSaver::new(Store::new()));
         for p in paths {
             editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
         }
-        let (manifest_ref, store) = run(editor.commit()).unwrap();
-        let (root, _key) = manifest_ref.into_parts();
+        let (root, loadsaver) = run(editor.commit()).unwrap();
 
-        let got = collect_entries(Cursor::new(ContentGet::new(store), root));
+        let got = collect_entries(Cursor::new(loadsaver, root));
         let mut want = paths.to_vec();
         want.sort_unstable();
         assert_eq!(got.len(), want.len());
@@ -836,8 +850,8 @@ mod tests {
     #[test]
     fn prefix_narrows_the_listing() {
         for paths in corpora() {
-            let (root, store) = build(&paths);
-            let full = collect_entries(Cursor::new(ContentGet::new(store.clone()), root));
+            let (root, loadsaver) = build(&paths);
+            let full = collect_entries(Cursor::new(loadsaver.clone(), root));
             let mut probes = vec![String::new(), "zzz-absent".to_string()];
             for p in &paths {
                 probes.push((*p).to_string());
@@ -853,9 +867,7 @@ mod tests {
                     .filter(|e| e.path().starts_with(probe.as_bytes()))
                     .cloned()
                     .collect();
-                let got = collect_entries(
-                    Cursor::new(ContentGet::new(store.clone()), root).with_prefix(&probe),
-                );
+                let got = collect_entries(Cursor::new(loadsaver.clone(), root).with_prefix(&probe));
                 assert_eq!(got, want, "prefix {probe:?} over {paths:?}");
             }
         }
@@ -864,14 +876,12 @@ mod tests {
     #[test]
     fn resume_after_continues_where_the_page_ended() {
         for paths in corpora() {
-            let (root, store) = build(&paths);
-            let full = collect_entries(Cursor::new(ContentGet::new(store.clone()), root));
+            let (root, loadsaver) = build(&paths);
+            let full = collect_entries(Cursor::new(loadsaver.clone(), root));
             for k in 0..full.len() {
-                let page = collect_entries(
-                    Cursor::new(ContentGet::new(store.clone()), root).with_limit(k),
-                );
+                let page = collect_entries(Cursor::new(loadsaver.clone(), root).with_limit(k));
                 assert_eq!(page.as_slice(), &full[..k]);
-                let mut resumed = Cursor::new(ContentGet::new(store.clone()), root);
+                let mut resumed = Cursor::new(loadsaver.clone(), root);
                 if let Some(last) = page.last() {
                     resumed = resumed.after(last.path());
                 }
@@ -886,8 +896,8 @@ mod tests {
     #[test]
     fn resume_tokens_need_not_be_stored_paths() {
         for paths in corpora() {
-            let (root, store) = build(&paths);
-            let full = collect_entries(Cursor::new(ContentGet::new(store.clone()), root));
+            let (root, loadsaver) = build(&paths);
+            let full = collect_entries(Cursor::new(loadsaver.clone(), root));
             let mut tokens = vec![String::new(), "zzz-absent".to_string()];
             for p in &paths {
                 tokens.push(format!("{p}0"));
@@ -901,9 +911,7 @@ mod tests {
                     .filter(|e| e.path() > token.as_bytes())
                     .cloned()
                     .collect();
-                let got = collect_entries(
-                    Cursor::new(ContentGet::new(store.clone()), root).after(&token),
-                );
+                let got = collect_entries(Cursor::new(loadsaver.clone(), root).after(&token));
                 assert_eq!(got, want, "token {token:?} over {paths:?}");
             }
         }
@@ -918,15 +926,15 @@ mod tests {
             "img/3.png",
             "robots.txt",
         ];
-        let (root, store) = build(&paths);
-        let full = collect_entries(Cursor::new(ContentGet::new(store.clone()), root));
+        let (root, loadsaver) = build(&paths);
+        let full = collect_entries(Cursor::new(loadsaver.clone(), root));
         let want: Vec<Entry> = full
             .iter()
             .filter(|e| e.path().starts_with(b"img/") && e.path() > b"img/1.png".as_slice())
             .cloned()
             .collect();
         let got = collect_entries(
-            Cursor::new(ContentGet::new(store), root)
+            Cursor::new(loadsaver, root)
                 .with_prefix("img/")
                 .after("img/1.png"),
         );
@@ -936,8 +944,8 @@ mod tests {
 
     #[test]
     fn zero_limit_lists_nothing_and_fetches_nothing() {
-        let (root, store) = build(&["a", "b"]);
-        let rec = RecordingStore::new(store);
+        let (root, loadsaver) = build(&["a", "b"]);
+        let rec = RecordingStore::new(loadsaver);
         let got = collect_entries(Cursor::new(rec.clone(), root).with_limit(0));
         assert!(got.is_empty());
         assert_eq!(rec.fetch_count(), 0);
@@ -946,13 +954,13 @@ mod tests {
     #[test]
     fn fetched_set_stays_within_the_serial_set_plus_window() {
         for paths in corpora() {
-            let (root, store) = build(&paths);
-            let (serial_seq, counts) = serial_profile(root, &store);
+            let (root, loadsaver) = build(&paths);
+            let (serial_seq, counts) = serial_profile(root, &loadsaver);
             let serial_set: std::collections::BTreeSet<ChunkAddress> =
                 serial_seq.iter().copied().collect();
             for w in [1u16, 2, 4, 16] {
                 for k in 1..=counts.len() {
-                    let rec = RecordingStore::new(store.clone());
+                    let rec = RecordingStore::new(loadsaver.clone());
                     let page = collect_entries(
                         Cursor::new(rec.clone(), root)
                             .with_window(window(w))
@@ -971,7 +979,7 @@ mod tests {
                         counts[k - 1]
                     );
                 }
-                let rec = RecordingStore::new(store.clone());
+                let rec = RecordingStore::new(loadsaver.clone());
                 let full = collect_entries(Cursor::new(rec.clone(), root).with_window(window(w)));
                 assert_eq!(full.len(), counts.len());
                 let mut got = rec.fetched();
@@ -987,9 +995,9 @@ mod tests {
     fn in_flight_fetches_stay_within_the_window_and_overlap() {
         let paths: Vec<String> = (0..24).map(|i| format!("file{i:02}.dat")).collect();
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-        let (root, store) = build(&refs);
+        let (root, loadsaver) = build(&refs);
         for w in [1u16, 4, 8] {
-            let rec = RecordingStore::delayed(store.clone());
+            let rec = RecordingStore::delayed(loadsaver.clone());
             let got = collect_entries(Cursor::new(rec.clone(), root).with_window(window(w)));
             assert_eq!(got.len(), paths.len());
             let peak = rec.peak();
@@ -1010,12 +1018,12 @@ mod tests {
             "a/b/c/x.txt",
             "zz.txt",
         ];
-        let (root, store) = build(&paths);
-        let (serial_seq, _) = serial_profile(root, &store);
+        let (root, loadsaver) = build(&paths);
+        let (serial_seq, _) = serial_profile(root, &loadsaver);
         for victim_pos in [0, serial_seq.len() / 2, serial_seq.len() - 1] {
             let victim = serial_seq[victim_pos];
             let (want_entries, want_err) = collect_until_err(
-                Cursor::new(RecordingStore::failing(store.clone(), victim), root)
+                Cursor::new(RecordingStore::failing(loadsaver.clone(), victim), root)
                     .with_window(window(1)),
             );
             assert!(
@@ -1023,7 +1031,7 @@ mod tests {
             );
             for w in [2u16, 16] {
                 let (entries, err) = collect_until_err(
-                    Cursor::new(RecordingStore::failing(store.clone(), victim), root)
+                    Cursor::new(RecordingStore::failing(loadsaver.clone(), victim), root)
                         .with_window(window(w)),
                 );
                 assert_eq!(entries, want_entries, "victim {victim_pos} window {w}");
@@ -1034,7 +1042,7 @@ mod tests {
             // A limit that stops before the failing node never sees the
             // error, even when the lookahead already fetched it.
             let (entries, err) = collect_until_err(
-                Cursor::new(RecordingStore::failing(store.clone(), victim), root)
+                Cursor::new(RecordingStore::failing(loadsaver.clone(), victim), root)
                     .with_window(window(16))
                     .with_limit(want_entries.len()),
             );
@@ -1069,7 +1077,7 @@ mod tests {
         let sealed: Chunk = Chunk::from_envelope(root_chunk.into()).unwrap();
         run(store.put(sealed)).unwrap();
 
-        let (entries, err) = collect_until_err(Cursor::new(ContentGet::new(store), root));
+        let (entries, err) = collect_until_err(Cursor::new(LoadSaver::new(store), root));
         assert!(entries.is_empty());
         assert!(matches!(err, Some(CursorError::Corrupt { address, .. }) if address == gaddr));
     }
@@ -1078,21 +1086,21 @@ mod tests {
     /// declared untrusted so the verifying boundary is the guard.
     #[derive(Clone)]
     struct MisroutedStore {
-        store: ContentGet<Store>,
+        store: Store,
         at: ChunkAddress,
         with: ChunkAddress,
     }
 
-    type MisrouteError = VerifyError<<ContentGet<Store> as ChunkGet<ContentOnlyChunkSet>>::Error>;
+    type MisrouteError = VerifyError<<Store as ChunkGet<StandardChunkSet>>::Error>;
 
-    impl ChunkGet<ContentOnlyChunkSet> for MisroutedStore {
+    impl ChunkGet<StandardChunkSet> for MisroutedStore {
         type Trust = Unverified;
-        type Error = <ContentGet<Store> as ChunkGet<ContentOnlyChunkSet>>::Error;
+        type Error = <Store as ChunkGet<StandardChunkSet>>::Error;
 
         async fn get(
             &self,
             address: &ChunkAddress,
-        ) -> Result<Chunk<Unverified, ContentOnlyChunkSet>, Self::Error> {
+        ) -> Result<Chunk<Unverified, StandardChunkSet>, Self::Error> {
             let target = if *address == self.at {
                 self.with
             } else {
@@ -1105,23 +1113,28 @@ mod tests {
 
     #[test]
     fn misrouted_store_is_caught_at_the_verifying_boundary() {
-        let (root, store) = build(&["a", "b"]);
-        let (serial_seq, _) = serial_profile(root, &store);
+        let (root, loadsaver) = build(&["a", "b"]);
+        let (serial_seq, _) = serial_profile(root, &loadsaver);
         let other = *serial_seq.last().unwrap();
         assert_ne!(other, root);
-        let lifted = VerifyingStore::new(MisroutedStore {
-            store: ContentGet::new(store),
-            at: root,
-            with: other,
-        });
+        let lifted = SingleChunkLoadSaver::<_, DEFAULT_BODY_SIZE>::new(VerifyingStore::new(
+            MisroutedStore {
+                store: loadsaver.into_store(),
+                at: root,
+                with: other,
+            },
+        ));
         let (entries, err) = collect_until_err(Cursor::new(lifted, root));
         assert!(entries.is_empty());
         let Some(CursorError::Store { address, source }) = err else {
             panic!("expected a store error, got {err:?}");
         };
         assert_eq!(address, root);
+        let Some(SingleChunkError::Store(inner)) = source.downcast_ref::<SingleChunkError>() else {
+            panic!("expected a wrapped store failure, got {source:?}");
+        };
         assert!(matches!(
-            source.downcast_ref::<MisrouteError>(),
+            inner.downcast_ref::<MisrouteError>(),
             Some(VerifyError::AddressMismatch { requested, returned })
                 if *requested == root && *returned == other
         ));
@@ -1130,11 +1143,10 @@ mod tests {
     #[test]
     fn address_stream_covers_nodes_and_entries() {
         for paths in corpora() {
-            let (root, store) = build(&paths);
-            let ordered =
-                collect_addresses(AddressStream::new(ContentGet::new(store.clone()), root));
+            let (root, loadsaver) = build(&paths);
+            let ordered = collect_addresses(AddressStream::new(loadsaver.clone(), root));
             let windowed = collect_addresses(
-                AddressStream::new(ContentGet::new(store.clone()), root).with_window(window(8)),
+                AddressStream::new(loadsaver.clone(), root).with_window(window(8)),
             );
             assert_eq!(
                 ordered, windowed,
@@ -1144,7 +1156,7 @@ mod tests {
             // cover every stored node plus every value reference.
             let mut got = ordered;
             got.sort();
-            let mut want: Vec<ChunkAddress> = store.into_chunks().keys().copied().collect();
+            let mut want = stored_addresses(&loadsaver);
             want.extend(paths.iter().map(|p| make_addr(p)));
             want.sort();
             assert_eq!(got, want, "corpus {paths:?}");
@@ -1154,22 +1166,21 @@ mod tests {
     #[test]
     fn encrypted_address_stream_covers_nodes_and_entries() {
         let paths = ["secret/a.txt", "secret/b.txt", "top.txt"];
-        let mut editor: ManifestEditor<Store, EncryptedChunkRef> =
-            ManifestEditor::new_encrypted(Store::new());
+        let mut editor: ManifestEditor<LoadSaver, EncryptedChunkRef> =
+            ManifestEditor::new_encrypted(LoadSaver::new(Store::new()));
         for p in paths {
             editor.put(
                 p,
                 EncryptedChunkRef::new(make_addr(p), EncryptionKey::from([0x5a; 32])),
             );
         }
-        let (manifest_ref, store) = run(editor.commit()).unwrap();
-        let (root, _key) = manifest_ref.into_parts();
+        let (root, loadsaver) = run(editor.commit()).unwrap();
 
         // Value entries ride the full encrypted width on the wire; the
         // stream carries their 32-byte addresses next to every node address.
-        let mut got = collect_addresses(AddressStream::new(ContentGet::new(store.clone()), root));
+        let mut got = collect_addresses(AddressStream::new(loadsaver.clone(), root));
         got.sort();
-        let mut want: Vec<ChunkAddress> = store.into_chunks().keys().copied().collect();
+        let mut want = stored_addresses(&loadsaver);
         want.extend(paths.iter().map(|p| make_addr(p)));
         want.sort();
         assert_eq!(got, want);
@@ -1177,11 +1188,11 @@ mod tests {
 
     #[test]
     fn empty_trie_lists_nothing_and_streams_only_the_root() {
-        let editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
-        let (root, store) = run(editor.commit()).unwrap();
-        assert!(collect_entries(Cursor::new(ContentGet::new(store.clone()), root)).is_empty());
+        let editor: ManifestEditor<LoadSaver> = ManifestEditor::new(LoadSaver::new(Store::new()));
+        let (root, loadsaver) = run(editor.commit()).unwrap();
+        assert!(collect_entries(Cursor::new(loadsaver.clone(), root)).is_empty());
         assert_eq!(
-            collect_addresses(AddressStream::new(ContentGet::new(store), root)),
+            collect_addresses(AddressStream::new(loadsaver, root)),
             vec![root]
         );
     }
@@ -1189,7 +1200,7 @@ mod tests {
     #[test]
     fn missing_root_is_a_store_error() {
         let root = make_addr("nowhere");
-        let (entries, err) = collect_until_err(Cursor::new(ContentGet::new(Store::new()), root));
+        let (entries, err) = collect_until_err(Cursor::new(LoadSaver::new(Store::new()), root));
         assert!(entries.is_empty());
         assert!(matches!(err, Some(CursorError::Store { address, .. }) if address == root));
     }
@@ -1197,13 +1208,11 @@ mod tests {
     #[test]
     fn cursor_and_address_stream_drive_as_streams() {
         use futures::StreamExt;
-        let (root, store) = build(&["a", "b", "c"]);
-        let entries: Vec<_> =
-            run(Cursor::new(ContentGet::new(store.clone()), root).collect::<Vec<_>>());
+        let (root, loadsaver) = build(&["a", "b", "c"]);
+        let entries: Vec<_> = run(Cursor::new(loadsaver.clone(), root).collect::<Vec<_>>());
         assert_eq!(entries.len(), 3);
         assert!(entries.iter().all(Result::is_ok));
-        let addresses: Vec<_> =
-            run(AddressStream::new(ContentGet::new(store), root).collect::<Vec<_>>());
+        let addresses: Vec<_> = run(AddressStream::new(loadsaver, root).collect::<Vec<_>>());
         assert!(addresses.len() > 3);
         assert!(addresses.iter().all(Result::is_ok));
     }

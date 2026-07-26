@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use nectar_loadsave::NodeLoadSaver;
 use nectar_mantaray::ManifestEditor;
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::ChunkAddress;
@@ -15,7 +16,8 @@ use nectar_testing::run;
 use proptest::prelude::*;
 
 type Store = MemoryStore<StandardChunkSet>;
-type Editor = ManifestEditor<Store>;
+type LoadSaver = NodeLoadSaver<Store>;
+type Editor = ManifestEditor<LoadSaver>;
 
 type OldStore = mantaray_old::DefaultMemoryStore;
 type OldManifest = mantaray_old::PlainManifest<OldStore>;
@@ -107,9 +109,9 @@ fn record(editor: &mut Editor, script: &[ScriptOp]) {
 /// Map a commit result onto an outcome, offsetting apply indices by the
 /// number of ops committed earlier.
 fn outcome_from(
-    result: Result<(ChunkAddress, Store), nectar_mantaray::EditorError>,
+    result: Result<(ChunkAddress, LoadSaver), nectar_mantaray::EditorError>,
     offset: usize,
-) -> Result<(ChunkAddress, Store), Outcome> {
+) -> Result<(ChunkAddress, LoadSaver), Outcome> {
     match result {
         Ok(ok) => Ok(ok),
         Err(nectar_mantaray::EditorError::Apply { index, .. }) => {
@@ -121,7 +123,7 @@ fn outcome_from(
 
 /// Editor replay from an empty manifest, committing once.
 fn editor_outcome(script: &[ScriptOp]) -> Outcome {
-    let mut editor = Editor::new(Store::new());
+    let mut editor = Editor::new(LoadSaver::new(Store::new()));
     record(&mut editor, script);
     match outcome_from(run(editor.commit()), 0) {
         Ok((root, _)) => {
@@ -136,7 +138,7 @@ fn editor_outcome(script: &[ScriptOp]) -> Outcome {
 /// Editor replay with a commit boundary after `split` ops.
 fn editor_outcome_split(script: &[ScriptOp], split: usize) -> Outcome {
     let (head, tail) = script.split_at(split.min(script.len()));
-    let mut editor = Editor::new(Store::new());
+    let mut editor = Editor::new(LoadSaver::new(Store::new()));
     record(&mut editor, head);
     let (root, store) = match outcome_from(run(editor.commit()), 0) {
         Ok(ok) => ok,

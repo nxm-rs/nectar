@@ -34,6 +34,7 @@ futures.workspace = true
 # identical op sequences must produce byte-identical roots.
 mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
 nectar-file = { workspace = true, features = ["std"] }
+nectar-loadsave.workspace = true
 nectar-manifest = { workspace = true, features = ["arbitrary"] }
 nectar-mantaray.workspace = true
 nectar-postage = { workspace = true, features = ["std"] }
@@ -46,7 +47,11 @@ proptest.workspace = true
 [features]
 # Each feature mirrors the underlying crate feature so the `cfg(feature)`
 # gates in the test files keep their meaning; CI selects the shapes.
-encryption = [ "nectar-file/encryption", "nectar-primitives/encryption" ]
+encryption = [
+	"nectar-file/encryption",
+	"nectar-loadsave/encryption",
+	"nectar-primitives/encryption",
+]
 issuer = [ "nectar-postage-usage/issuer" ]
 rayon = [ "nectar-file/rayon" ]
 seal = [ "nectar-postage-usage/seal" ]
@@ -110,6 +115,10 @@ path = "tests/manifest/read_profile.rs"
 [[test]]
 name = "manifest_scan"
 path = "tests/manifest/scan.rs"
+
+[[test]]
+name = "mantaray_bmt_nodes"
+path = "tests/mantaray/bmt_nodes.rs"
 
 [[test]]
 name = "mantaray_legacy_differential"

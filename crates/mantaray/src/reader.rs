@@ -1,21 +1,19 @@
 //! Depth-guarded path reader over persisted mantaray tries.
 //!
-//! Each lookup descends from a root address one [`NodeView`] per hop, fetching
-//! only the nodes on the path, so it costs O(depth) store round trips under a
-//! caller-set fetch budget. A node's obfuscation key and reference width
-//! travel in its own bytes, so one reader serves plain, encrypted and
-//! mixed-width tries by address alone.
+//! Each lookup descends from a root reference one [`NodeView`] per hop,
+//! loading only the nodes on the path, so it costs O(depth) node loads under
+//! a caller-set fetch budget. Descent passes each fork's full-width
+//! reference to the loader, so encrypted and mixed-width tries resolve
+//! without dropping decryption keys.
 
 use alloc::sync::Arc;
 
-use nectar_primitives::ContentOnlyChunkSet;
-use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
-use nectar_primitives::store::TrustedGet;
+use nectar_primitives::EntryRef;
 
 use crate::entry::Entry;
 use crate::error::ReaderError;
 use crate::node::NodeType;
+use crate::persist::NodeLoader;
 use crate::view::NodeView;
 
 /// Default per-lookup node-fetch budget.
@@ -24,26 +22,26 @@ use crate::view::NodeView;
 /// at least one path byte, so this covers any path up to 255 bytes.
 pub const DEFAULT_MAX_DEPTH: usize = 256;
 
-/// Depth-guarded reader over a trusted chunk store.
+/// Depth-guarded reader over a node loader.
 ///
-/// Stateless between calls: each lookup starts from the root address it is
-/// given, so one reader serves any number of tries in the same store.
+/// Stateless between calls: each lookup starts from the root reference it is
+/// given, so one reader serves any number of tries behind the same loader.
 #[derive(Clone, Copy, Debug)]
-pub struct Reader<S, const BS: usize = DEFAULT_BODY_SIZE> {
-    store: S,
+pub struct Reader<L> {
+    store: L,
     max_depth: usize,
 }
 
-impl<S, const BS: usize> Reader<S, BS> {
+impl<L> Reader<L> {
     /// Reader with the [`DEFAULT_MAX_DEPTH`] fetch budget.
     #[must_use]
-    pub const fn new(store: S) -> Self {
+    pub const fn new(store: L) -> Self {
         Self::with_max_depth(store, DEFAULT_MAX_DEPTH)
     }
 
     /// Reader with an explicit per-lookup fetch budget.
     #[must_use]
-    pub const fn with_max_depth(store: S, max_depth: usize) -> Self {
+    pub const fn with_max_depth(store: L, max_depth: usize) -> Self {
         Self { store, max_depth }
     }
 
@@ -53,20 +51,20 @@ impl<S, const BS: usize> Reader<S, BS> {
         self.max_depth
     }
 
-    /// The backing store.
+    /// The backing loader.
     #[must_use]
-    pub const fn store(&self) -> &S {
+    pub const fn store(&self) -> &L {
         &self.store
     }
 
-    /// Unwrap the backing store.
+    /// Unwrap the backing loader.
     #[must_use]
-    pub fn into_store(self) -> S {
+    pub fn into_store(self) -> L {
         self.store
     }
 }
 
-impl<S: TrustedGet<ContentOnlyChunkSet<BS>>, const BS: usize> Reader<S, BS> {
+impl<L: NodeLoader> Reader<L> {
     /// The entry at `path` under the trie rooted at `root`, or `None` when
     /// the path is absent or names a bare edge. A metadata-carrying edge
     /// (the root documents node) reads back as an entry with no reference.
@@ -76,11 +74,11 @@ impl<S: TrustedGet<ContentOnlyChunkSet<BS>>, const BS: usize> Reader<S, BS> {
     /// without being fetched.
     pub async fn get(
         &self,
-        root: &ChunkAddress,
+        root: impl Into<EntryRef>,
         path: &[u8],
     ) -> Result<Option<Entry>, ReaderError> {
         let mut budget = self.max_depth;
-        let mut view = self.fetch(&mut budget, root).await?;
+        let mut view = self.fetch(&mut budget, &root.into()).await?;
         let mut rest = path;
         loop {
             let Some((first, _)) = rest.split_first() else {
@@ -106,7 +104,7 @@ impl<S: TrustedGet<ContentOnlyChunkSet<BS>>, const BS: usize> Reader<S, BS> {
                     None
                 };
                 rest = next;
-                (*fork.reference().address(), terminal)
+                (fork.reference().clone(), terminal)
             };
             view = self.fetch(&mut budget, &child).await?;
             if let Some(metadata) = terminal {
@@ -127,14 +125,14 @@ impl<S: TrustedGet<ContentOnlyChunkSet<BS>>, const BS: usize> Reader<S, BS> {
     /// present and costs no fetch.
     pub async fn has_prefix(
         &self,
-        root: &ChunkAddress,
+        root: impl Into<EntryRef>,
         prefix: &[u8],
     ) -> Result<bool, ReaderError> {
         if prefix.is_empty() {
             return Ok(true);
         }
         let mut budget = self.max_depth;
-        let mut view = self.fetch(&mut budget, root).await?;
+        let mut view = self.fetch(&mut budget, &root.into()).await?;
         let mut rest = prefix;
         loop {
             let Some((first, _)) = rest.split_first() else {
@@ -148,7 +146,7 @@ impl<S: TrustedGet<ContentOnlyChunkSet<BS>>, const BS: usize> Reader<S, BS> {
                     return Ok(fork.prefix().starts_with(rest));
                 };
                 rest = next;
-                *fork.reference().address()
+                fork.reference().clone()
             };
             if rest.is_empty() {
                 return Ok(true);
@@ -157,29 +155,26 @@ impl<S: TrustedGet<ContentOnlyChunkSet<BS>>, const BS: usize> Reader<S, BS> {
         }
     }
 
-    /// Fetch and decode one node, spending one unit of the lookup's budget.
+    /// Load and decode one node, spending one unit of the lookup's budget.
     async fn fetch(
         &self,
         budget: &mut usize,
-        address: &ChunkAddress,
+        reference: &EntryRef,
     ) -> Result<NodeView, ReaderError> {
         *budget = budget.checked_sub(1).ok_or(ReaderError::MaxDepth {
             max_depth: self.max_depth,
         })?;
-        let chunk = self
+        let address = *reference.address();
+        let bytes = self
             .store
-            .get(address)
+            .load(reference)
             .await
             .map_err(|e| ReaderError::Store {
-                address: *address,
+                address,
                 source: Arc::new(e),
             })?;
-        NodeView::try_from(chunk.envelope().data().as_ref()).map_err(|source| {
-            ReaderError::Corrupt {
-                address: *address,
-                source,
-            }
-        })
+        NodeView::try_from(bytes.as_slice())
+            .map_err(|source| ReaderError::Corrupt { address, source })
     }
 }
 
@@ -190,16 +185,16 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use bytes::Bytes;
-    use nectar_primitives::chunk::{ChunkOps, ContentChunk};
-    use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, MemoryStore};
-    use nectar_primitives::{
-        Chunk, EncryptedChunkRef, EncryptionKey, EntryRef, StandardChunkSet, Verified,
-    };
+    use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ContentChunk};
+    use nectar_primitives::store::{ChunkPut, MemoryStore};
+    use nectar_primitives::{Chunk, EncryptedChunkRef, EncryptionKey, StandardChunkSet};
     use nectar_testing::run;
 
     use crate::ManifestEditor;
+    use crate::persist::single_chunk::{SingleChunkError, SingleChunkLoadSaver};
 
     type Store = MemoryStore<StandardChunkSet>;
+    type LoadSaver = SingleChunkLoadSaver<Store>;
 
     /// A ChunkAddress from a string, right-padded with zeroes.
     fn make_addr(s: &str) -> ChunkAddress {
@@ -246,8 +241,9 @@ mod tests {
     }
 
     /// Build a persisted manifest over the paths through the editor.
-    async fn build(paths: &[&str]) -> (ChunkAddress, Store) {
-        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
+    async fn build(paths: &[&str]) -> (ChunkAddress, LoadSaver) {
+        let mut editor: ManifestEditor<LoadSaver> =
+            ManifestEditor::new(LoadSaver::new(Store::new()));
         for &p in paths {
             editor.put(p, make_addr(p));
         }
@@ -258,10 +254,10 @@ mod tests {
     /// path-set model over the same store: a get hits exactly the stored
     /// paths, a prefix probe hits exactly the stored extensions.
     async fn assert_model(paths: &[&str]) {
-        let (root, store) = build(paths).await;
-        let reader = Reader::new(ContentGet::new(store));
+        let (root, loadsaver) = build(paths).await;
+        let reader = Reader::new(loadsaver);
         for probe in probes(paths) {
-            let got = reader.get(&root, probe.as_bytes()).await.unwrap();
+            let got = reader.get(root, probe.as_bytes()).await.unwrap();
             assert_eq!(
                 got.is_some(),
                 paths.contains(&probe.as_str()),
@@ -274,7 +270,7 @@ mod tests {
                     "reference for {probe:?}"
                 );
             }
-            let has = reader.has_prefix(&root, probe.as_bytes()).await.unwrap();
+            let has = reader.has_prefix(root, probe.as_bytes()).await.unwrap();
             let want_has = probe.is_empty() || paths.iter().any(|p| p.starts_with(&probe));
             assert_eq!(has, want_has, "has_prefix({probe:?})");
         }
@@ -294,17 +290,20 @@ mod tests {
         run(async {
             let paths = ["secret/a.txt", "secret/b.txt", "top.txt"];
             let key = EncryptionKey::from([0x5a; 32]);
-            let mut editor: ManifestEditor<Store, EncryptedChunkRef> =
-                ManifestEditor::new_encrypted(Store::new());
+            let mut editor: ManifestEditor<LoadSaver, EncryptedChunkRef> =
+                ManifestEditor::new_encrypted(LoadSaver::new(Store::new()));
             for p in paths {
                 editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
             }
-            let (manifest_ref, store) = editor.commit().await.unwrap();
-            let (root, _key) = manifest_ref.into_parts();
+            let (root, loadsaver) = editor.commit().await.unwrap();
 
-            let reader = Reader::new(ContentGet::new(store));
+            let reader = Reader::new(loadsaver);
             for p in paths {
-                let got = reader.get(&root, p.as_bytes()).await.unwrap().unwrap();
+                let got = reader
+                    .get(root.clone(), p.as_bytes())
+                    .await
+                    .unwrap()
+                    .unwrap();
                 match got.reference() {
                     Some(EntryRef::Encrypted(reference)) => {
                         assert_eq!(reference.address(), &make_addr(p), "address for {p:?}");
@@ -313,33 +312,34 @@ mod tests {
                     other => panic!("encrypted get({p:?}) returned {other:?}"),
                 }
             }
-            assert!(reader.has_prefix(&root, b"secret/").await.unwrap());
-            assert!(!reader.has_prefix(&root, b"secrets").await.unwrap());
-            assert_eq!(reader.get(&root, b"secret/").await.unwrap(), None);
+            assert!(reader.has_prefix(root.clone(), b"secret/").await.unwrap());
+            assert!(!reader.has_prefix(root.clone(), b"secrets").await.unwrap());
+            assert_eq!(reader.get(root, b"secret/").await.unwrap(), None);
         });
     }
 
     #[test]
     fn metadata_and_the_root_document_read_back() {
-        let mut editor: ManifestEditor<Store> = ManifestEditor::new(Store::new());
+        let mut editor: ManifestEditor<LoadSaver> =
+            ManifestEditor::new(LoadSaver::new(Store::new()));
         editor.put("plain.txt", make_addr("plain"));
         let meta: BTreeMap<String, String> =
             [("Content-Type".to_string(), "image/png".to_string())].into();
         editor.put_with_metadata("logo.png", make_addr("logo"), meta.clone());
         editor.set_index_document("index.html");
-        let (root, store) = run(editor.commit()).unwrap();
+        let (root, loadsaver) = run(editor.commit()).unwrap();
 
-        let reader = Reader::new(ContentGet::new(store));
-        let plain = run(reader.get(&root, b"plain.txt")).unwrap().unwrap();
+        let reader = Reader::new(loadsaver);
+        let plain = run(reader.get(root, b"plain.txt")).unwrap().unwrap();
         assert_eq!(
             plain.reference().map(|r| *r.address()),
             Some(make_addr("plain"))
         );
         assert!(plain.metadata().is_empty());
-        let logo = run(reader.get(&root, b"logo.png")).unwrap().unwrap();
+        let logo = run(reader.get(root, b"logo.png")).unwrap().unwrap();
         assert_eq!(logo.metadata(), &meta);
         // The root path node carries metadata but no reference.
-        let root_entry = run(reader.get(&root, b"/")).unwrap().unwrap();
+        let root_entry = run(reader.get(root, b"/")).unwrap().unwrap();
         assert!(root_entry.reference().is_none());
         assert_eq!(
             root_entry.metadata().get("website-index-document").cloned(),
@@ -347,16 +347,17 @@ mod tests {
         );
     }
 
-    /// Store wrapper counting `get` calls, pinning the reader's fetch costs.
+    /// Loader wrapper counting `load` calls, pinning the reader's fetch
+    /// costs.
     struct CountingStore {
-        inner: ContentGet<Store>,
+        inner: LoadSaver,
         gets: AtomicUsize,
     }
 
     impl CountingStore {
-        fn new(inner: Store) -> Self {
+        fn new(inner: LoadSaver) -> Self {
             Self {
-                inner: ContentGet::new(inner),
+                inner,
                 gets: AtomicUsize::new(0),
             }
         }
@@ -366,54 +367,50 @@ mod tests {
         }
     }
 
-    impl ChunkGet<ContentOnlyChunkSet> for CountingStore {
-        type Trust = Verified;
-        type Error = <ContentGet<Store> as ChunkGet<ContentOnlyChunkSet>>::Error;
+    impl NodeLoader for CountingStore {
+        type Error = SingleChunkError;
 
-        async fn get(
-            &self,
-            address: &ChunkAddress,
-        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
             self.gets.fetch_add(1, Ordering::SeqCst);
-            ChunkGet::get(&self.inner, address).await
+            self.inner.load(reference).await
         }
     }
 
     #[test]
     fn fetch_costs_are_depth_bounded() {
-        let (root, store) = run(build(&["abc"]));
-        let reader = Reader::new(CountingStore::new(store));
+        let (root, loadsaver) = run(build(&["abc"]));
+        let reader = Reader::new(CountingStore::new(loadsaver));
 
         // Value hit: root plus the terminal node.
-        assert!(run(reader.get(&root, b"abc")).unwrap().is_some());
+        assert!(run(reader.get(root, b"abc")).unwrap().is_some());
         assert_eq!(reader.store().take(), 2);
         // Mid-edge miss: decided at the root.
-        assert!(run(reader.get(&root, b"ab")).unwrap().is_none());
+        assert!(run(reader.get(root, b"ab")).unwrap().is_none());
         assert_eq!(reader.store().take(), 1);
         // Prefix probes never fetch the boundary node.
-        assert!(run(reader.has_prefix(&root, b"abc")).unwrap());
+        assert!(run(reader.has_prefix(root, b"abc")).unwrap());
         assert_eq!(reader.store().take(), 1);
-        assert!(run(reader.has_prefix(&root, b"ab")).unwrap());
+        assert!(run(reader.has_prefix(root, b"ab")).unwrap());
         assert_eq!(reader.store().take(), 1);
         // The empty prefix is answered without touching the store.
-        assert!(run(reader.has_prefix(&root, b"")).unwrap());
+        assert!(run(reader.has_prefix(root, b"")).unwrap());
         assert_eq!(reader.store().take(), 0);
     }
 
     #[test]
     fn fetch_costs_stay_linear_in_path_length() {
         let paths = ["a", "ab", "abc", "abcd", "abcde"];
-        let (root, store) = run(build(&paths));
-        let reader = Reader::new(CountingStore::new(store));
+        let (root, loadsaver) = run(build(&paths));
+        let reader = Reader::new(CountingStore::new(loadsaver));
 
         run(async {
             for p in paths {
-                assert!(reader.get(&root, p.as_bytes()).await.unwrap().is_some());
+                assert!(reader.get(root, p.as_bytes()).await.unwrap().is_some());
                 assert!(
                     reader.store().take() <= p.len() + 1,
                     "get({p:?}) exceeded the depth bound"
                 );
-                assert!(reader.has_prefix(&root, p.as_bytes()).await.unwrap());
+                assert!(reader.has_prefix(root, p.as_bytes()).await.unwrap());
                 assert!(
                     reader.store().take() <= p.len(),
                     "has_prefix({p:?}) exceeded the depth bound"
@@ -425,22 +422,22 @@ mod tests {
     #[test]
     fn max_depth_is_a_typed_error() {
         // One-byte edge chain: get("abcde") costs 6 fetches, has_prefix 5.
-        let (root, store) = run(build(&["a", "ab", "abc", "abcd", "abcde"]));
+        let (root, loadsaver) = run(build(&["a", "ab", "abc", "abcd", "abcde"]));
 
-        let exact = Reader::with_max_depth(ContentGet::new(store), 6);
-        assert!(run(exact.get(&root, b"abcde")).unwrap().is_some());
-        assert!(run(exact.has_prefix(&root, b"abcde")).unwrap());
+        let exact = Reader::with_max_depth(loadsaver, 6);
+        assert!(run(exact.get(root, b"abcde")).unwrap().is_some());
+        assert!(run(exact.has_prefix(root, b"abcde")).unwrap());
 
         let short = Reader::with_max_depth(exact.into_store(), 5);
         assert!(matches!(
-            run(short.get(&root, b"abcde")),
+            run(short.get(root, b"abcde")),
             Err(ReaderError::MaxDepth { max_depth: 5 })
         ));
-        assert!(run(short.has_prefix(&root, b"abcde")).unwrap());
+        assert!(run(short.has_prefix(root, b"abcde")).unwrap());
 
         let shorter = Reader::with_max_depth(short.into_store(), 4);
         assert!(matches!(
-            run(shorter.has_prefix(&root, b"abcde")),
+            run(shorter.has_prefix(root, b"abcde")),
             Err(ReaderError::MaxDepth { max_depth: 4 })
         ));
 
@@ -448,29 +445,29 @@ mod tests {
         // needs none.
         let zero = Reader::with_max_depth(shorter.into_store(), 0);
         assert!(matches!(
-            run(zero.get(&root, b"")),
+            run(zero.get(root, b"")),
             Err(ReaderError::MaxDepth { max_depth: 0 })
         ));
-        assert!(run(zero.has_prefix(&root, b"")).unwrap());
+        assert!(run(zero.has_prefix(root, b"")).unwrap());
     }
 
     #[test]
     fn empty_path_is_not_a_value() {
-        let (root, store) = run(build(&["a"]));
-        let reader = Reader::new(ContentGet::new(store));
-        assert_eq!(run(reader.get(&root, b"")).unwrap(), None);
+        let (root, loadsaver) = run(build(&["a"]));
+        let reader = Reader::new(loadsaver);
+        assert_eq!(run(reader.get(root, b"")).unwrap(), None);
     }
 
     #[test]
     fn missing_root_is_a_store_error() {
-        let reader: Reader<ContentGet<Store>> = Reader::new(ContentGet::new(Store::new()));
+        let reader: Reader<LoadSaver> = Reader::new(LoadSaver::new(Store::new()));
         let root = make_addr("nowhere");
         assert!(matches!(
-            run(reader.get(&root, b"x")),
+            run(reader.get(root, b"x")),
             Err(ReaderError::Store { address, .. }) if address == root
         ));
         assert!(matches!(
-            run(reader.has_prefix(&root, b"x")),
+            run(reader.has_prefix(root, b"x")),
             Err(ReaderError::Store { address, .. }) if address == root
         ));
     }
@@ -486,9 +483,9 @@ mod tests {
         let sealed: Chunk = Chunk::from_envelope(chunk.into()).unwrap();
         run(store.put(sealed)).unwrap();
 
-        let reader = Reader::new(ContentGet::new(store));
+        let reader = Reader::new(LoadSaver::new(store));
         assert!(matches!(
-            run(reader.get(&root, b"x")),
+            run(reader.get(root, b"x")),
             Err(ReaderError::Corrupt { address, .. }) if address == root
         ));
     }

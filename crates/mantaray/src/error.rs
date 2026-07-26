@@ -185,14 +185,6 @@ pub enum MantarayError {
         /// Reference of the node.
         reference: Option<ChunkAddress>,
     },
-    /// Entry size does not match expected reference byte size.
-    #[error("entry size mismatch: expected {expected}, got {actual}")]
-    EntrySizeMismatch {
-        /// Expected size.
-        expected: usize,
-        /// Actual size.
-        actual: usize,
-    },
     /// Entry reference kind does not match the manifest's reference type.
     #[error(transparent)]
     WrongRefKind(#[from] nectar_primitives::chunk::WrongRefKind),

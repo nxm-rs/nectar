@@ -998,11 +998,11 @@ mod tests {
             buf[32 - path.len()..].copy_from_slice(path);
             ChunkRef::from(ChunkAddress::from(buf))
         };
-        nectar_testing::run(n.add::<
-            nectar_primitives::store::NullLoader,
-            { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
-        >(
-            path, Some(e), BTreeMap::new(), &nectar_primitives::store::NullLoader,
+        nectar_testing::run(n.add(
+            path,
+            Some(e),
+            BTreeMap::new(),
+            &nectar_primitives::store::NullLoader,
         ))
         .unwrap();
 
@@ -1148,11 +1148,11 @@ mod tests {
                     buf[32 - len..].copy_from_slice(&path[..len]);
                     ChunkRef::from(ChunkAddress::from(buf))
                 };
-                n.add::<
-                    nectar_primitives::store::NullLoader,
-                    { nectar_primitives::bmt::DEFAULT_BODY_SIZE },
-                >(
-                    path, Some(e), entry.metadata, &nectar_primitives::store::NullLoader,
+                n.add(
+                    path,
+                    Some(e),
+                    entry.metadata,
+                    &nectar_primitives::store::NullLoader,
                 )
                 .await
                 .unwrap();

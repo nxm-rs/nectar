@@ -40,8 +40,6 @@ zeroize = { workspace = true, optional = true }
 arbitrary.workspace = true
 futures.workspace = true
 proptest.workspace = true
-# The manifest-edit exhibit publishes a file root under a path.
-nectar-mantaray.workspace = true
 # The oracle stores and chunk fixtures ride the primitives store surface,
 # including the encrypted reference width.
 nectar-primitives = { workspace = true, features = ["arbitrary", "encryption", "std"] }

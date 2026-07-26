@@ -1937,6 +1937,8 @@ dependencies = [
  "arbitrary",
  "bytes",
  "futures-util",
+ "nectar-clock",
+ "nectar-kernel",
  "nectar-marker",
  "nectar-primitives",
  "thiserror",
@@ -1959,13 +1961,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-kernel"
+version = "0.4.0"
+dependencies = [
+ "nectar-marker",
+ "nectar-primitives",
+]
+
+[[package]]
 name = "nectar-manifest"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "arbitrary",
  "bytes",
- "futures",
+ "futures-util",
  "nectar-file",
  "nectar-primitives",
  "thiserror",
@@ -1978,8 +1988,8 @@ dependencies = [
  "alloy-primitives",
  "arbitrary",
  "bitflags",
- "bytes",
  "futures",
+ "nectar-kernel",
  "nectar-primitives",
  "rand 0.10.2",
  "serde_json",
@@ -2002,7 +2012,6 @@ dependencies = [
  "nectar-primitives",
  "serde",
  "thiserror",
- "web-time",
 ]
 
 [[package]]
@@ -2012,9 +2021,11 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "nectar-clock",
+ "nectar-kernel",
  "nectar-marker",
  "nectar-postage",
  "nectar-primitives",
+ "nectar-tasks",
  "thiserror",
 ]
 
@@ -2051,6 +2062,7 @@ dependencies = [
  "js-sys",
  "k256",
  "keccak-batch",
+ "nectar-clock",
  "nectar-marker",
  "once_cell",
  "parking_lot",
@@ -2061,6 +2073,13 @@ dependencies = [
  "wasm-bindgen",
  "web-time",
  "zeroize",
+]
+
+[[package]]
+name = "nectar-tasks"
+version = "0.4.0"
+dependencies = [
+ "nectar-marker",
 ]
 
 [[package]]
