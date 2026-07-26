@@ -12,6 +12,8 @@
 
 use core::num::NonZeroUsize;
 
+#[cfg(feature = "std")]
+mod adaptive;
 #[cfg(test)]
 mod cancel;
 mod download;
@@ -31,6 +33,9 @@ const fn body_size<const B: usize>() -> NonZeroUsize {
     }
 }
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use adaptive::AdaptiveWindow;
 pub use download::{DownloadBuilder, Progress, ProgressFn};
 pub use error::{CollectError, DownloadError, OpenError, SeekPastEnd};
 pub use file::{AnyFile, File};

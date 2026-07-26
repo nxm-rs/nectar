@@ -3,6 +3,7 @@
 
 use core::future::poll_fn;
 use core::ops::Range;
+use std::boxed::Box;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::vec;
@@ -697,4 +698,91 @@ fn encrypted_decode_reclaims_the_scratch_between_frames() {
     let third = <Encrypted as WalkMode>::decode_body(&key, TINY, TINY, body, &mut scratch).unwrap();
     assert_eq!(second.as_ref(), plain.as_slice());
     assert_eq!(third.as_ref(), plain.as_slice());
+}
+
+#[test]
+fn policy_shrink_to_one_stays_live_and_byte_exact() {
+    let data = fill(60 * TINY + 13);
+    let tree = build_tree(&data);
+    let store = Recording::new(&tree, 2);
+    // Built at eight slots, the policy pins the cap to one before the first
+    // admission round.
+    let mut walk = walk_range(store, &tree, 0..tree.span, 8)
+        .with_policy(Box::new(|_: &super::Observations| Window::new(1).unwrap()));
+    let frames = collect_ordered(&mut walk).unwrap();
+    assert_tiles(&frames, 0, &data);
+    assert!(walk.stats().peak_occupancy <= 1);
+}
+
+#[test]
+fn policy_sees_every_leaf_completion() {
+    let data = fill(40 * TINY + 5);
+    let tree = build_tree(&data);
+    let store = Recording::new(&tree, 2);
+    let seen = Arc::new(Mutex::new(0usize));
+    let sink = Arc::clone(&seen);
+    let mut walk = walk_range(store, &tree, 0..tree.span, 4).with_policy(Box::new(
+        move |observations: &super::Observations| {
+            *sink.lock().unwrap() += observations.completions;
+            assert!(observations.in_flight <= observations.occupancy);
+            Window::new(4).unwrap()
+        },
+    ));
+    let frames = collect_ordered(&mut walk).unwrap();
+    assert_tiles(&frames, 0, &data);
+    let leaves = data.len().div_ceil(TINY);
+    assert_eq!(*seen.lock().unwrap(), leaves);
+}
+
+#[test]
+fn policy_grows_the_window_mid_walk() {
+    let data = fill(100 * TINY);
+    let tree = build_tree(&data);
+    let store = Recording::new(&tree, 3);
+    let completed = Arc::new(Mutex::new(0usize));
+    let sink = Arc::clone(&completed);
+    let mut walk = walk_range(store, &tree, 0..tree.span, 2).with_policy(Box::new(
+        move |observations: &super::Observations| {
+            let mut total = sink.lock().unwrap();
+            *total += observations.completions;
+            Window::new(if *total < 10 { 2 } else { 8 }).unwrap()
+        },
+    ));
+    let frames = collect_ordered(&mut walk).unwrap();
+    assert_tiles(&frames, 0, &data);
+    let stats = walk.stats();
+    assert!(stats.peak_occupancy > 2, "growth must widen the pipe");
+    assert!(stats.peak_occupancy <= 8);
+}
+
+#[test]
+fn policy_shrink_mid_walk_drains_by_attrition() {
+    let data = fill(100 * TINY + 41);
+    let tree = build_tree(&data);
+    let store = Recording::new(&tree, 3);
+    let completed = Arc::new(Mutex::new(0usize));
+    let sink = Arc::clone(&completed);
+    let mut walk = walk_range(store, &tree, 0..tree.span, 8).with_policy(Box::new(
+        move |observations: &super::Observations| {
+            let mut total = sink.lock().unwrap();
+            *total += observations.completions;
+            Window::new(if *total < 20 { 8 } else { 2 }).unwrap()
+        },
+    ));
+    let frames = collect_ordered(&mut walk).unwrap();
+    assert_tiles(&frames, 0, &data);
+    // Occupancy never exceeds the largest cap held.
+    assert!(walk.stats().peak_occupancy <= 8);
+}
+
+#[test]
+fn policy_any_drain_survives_a_shrunk_cap() {
+    let data = fill(50 * TINY + 7);
+    let tree = build_tree(&data);
+    let store = Recording::new(&tree, 2);
+    let mut walk = walk_range(store, &tree, 0..tree.span, 6)
+        .with_policy(Box::new(|_: &super::Observations| Window::new(1).unwrap()));
+    let mut frames = collect_any(&mut walk).unwrap();
+    frames.sort_by_key(|frame| frame.offset);
+    assert_tiles(&frames, 0, &data);
 }

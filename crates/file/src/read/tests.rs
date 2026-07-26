@@ -880,3 +880,71 @@ mod properties {
         }
     }
 }
+
+#[test]
+fn window_policy_rides_across_a_seek() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let len = 40 * TINY + 9;
+    let data = fill(len);
+    let (root, store) = split_fixture::<TINY>(&data);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    run(async {
+        let file = File::<_, Plain, TINY>::open(store, root).await.unwrap();
+        let mut reader = file
+            .read()
+            .window(Window::new(4).unwrap())
+            .window_policy(Box::new(move |_: &crate::walk::Observations| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                Window::new(3).unwrap()
+            }))
+            .build();
+        let mut buf = [0u8; 512];
+        let n = reader.read(&mut buf).await.unwrap();
+        assert!(n > 0);
+        let before = calls.load(Ordering::Relaxed);
+        assert!(before > 0, "the policy must run before the seek");
+        let target = (20 * TINY) as u64;
+        reader.seek(target).unwrap();
+        let mut out = Vec::new();
+        loop {
+            let n = reader.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(out, &data[20 * TINY..]);
+        assert!(
+            calls.load(Ordering::Relaxed) > before,
+            "the policy must keep running after the seek"
+        );
+        assert!(reader.stats().peak_occupancy <= 3);
+    });
+}
+
+#[test]
+fn download_honours_a_window_policy() {
+    use crate::sink::MemSink;
+
+    let len = 25 * TINY + 3;
+    let data = fill(len);
+    let (root, store) = split_fixture::<TINY>(&data);
+    run(async {
+        let file = File::<_, Plain, TINY>::open(store, root).await.unwrap();
+        let mut sink = MemSink::new();
+        let written = file
+            .download()
+            .window(Window::new(6).unwrap())
+            .window_policy(Box::new(|_: &crate::walk::Observations| {
+                Window::new(2).unwrap()
+            }))
+            .run(&mut sink)
+            .await
+            .unwrap();
+        assert_eq!(written, len as u64);
+        assert_eq!(sink.as_ref(), data.as_slice());
+    });
+}

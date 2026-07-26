@@ -138,6 +138,9 @@ pub use config::{BranchBudget, HashWindow, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
 #[cfg(feature = "rayon")]
 pub use parallel::{ReadAt, ReadAtError, split_read_at};
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use read::AdaptiveWindow;
 #[cfg(feature = "primitives")]
 pub use read::{
     AnyFile, CollectError, DownloadBuilder, DownloadError, File, FileFrames, FileReader,
@@ -157,5 +160,6 @@ pub use split::{SealError, Sealed, Split, SplitError, SplitMode, SplitStats};
 pub use store::{BoxedStore, BoxedStoreError, DynAnyFile, DynFile, DynFileReader, DynFileStream};
 #[cfg(feature = "primitives")]
 pub use walk::{
-    DecodeError, Encrypted, Frame, Plain, ShapeError, Walk, WalkError, WalkMode, WalkStats,
+    DecodeError, Encrypted, Frame, Observations, Plain, ShapeError, Walk, WalkError, WalkMode,
+    WalkStats, WindowPolicyFn,
 };
