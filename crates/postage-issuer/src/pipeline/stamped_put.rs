@@ -64,7 +64,9 @@ pub enum StampedPutError<E> {
 enum Issued {
     /// Allocated; signing in flight. Wakers re-poll when it resolves.
     Pending(Vec<Waker>),
-    /// Signed; no sink put has succeeded yet.
+    /// Signed; one put holds the delivery. Wakers re-poll when it settles.
+    Delivering(Stamp, Vec<Waker>),
+    /// Signed; no delivery in flight. The next put takes the delivery.
     Signed(Stamp),
     /// Signed and delivered to the sink; duplicates short-circuit.
     Stored,
@@ -146,6 +148,51 @@ fn resolve<I>(
     wakers
 }
 
+/// Ends a held delivery: swaps `Delivering` for `next(stamp)` and returns
+/// the parked wakers.
+fn end_delivery<I>(
+    shared: &SharedState<I>,
+    address: &ChunkAddress,
+    next: impl FnOnce(&Stamp) -> Issued,
+) -> Vec<Waker> {
+    with_state(shared, |state| match state.issued.get_mut(address) {
+        Some(Issued::Delivering(stamp, wakers)) => {
+            let woken = core::mem::take(wakers);
+            let replacement = next(stamp);
+            state.issued.insert(*address, replacement);
+            woken
+        }
+        _ => Vec::new(),
+    })
+}
+
+/// Held delivery of one address. Dropping without [`stored`](Self::stored)
+/// hands the signed stamp back, so a failed or cancelled delivery never
+/// wedges parked duplicates.
+struct DeliveryGuard<'a, I> {
+    shared: &'a SharedState<I>,
+    address: ChunkAddress,
+    armed: bool,
+}
+
+impl<I> DeliveryGuard<'_, I> {
+    /// Marks the address stored and wakes parked duplicates.
+    fn stored(mut self) {
+        self.armed = false;
+        wake_all(end_delivery(self.shared, &self.address, |_| Issued::Stored));
+    }
+}
+
+impl<I> Drop for DeliveryGuard<'_, I> {
+    fn drop(&mut self) {
+        if self.armed {
+            wake_all(end_delivery(self.shared, &self.address, |stamp| {
+                Issued::Signed(stamp.clone())
+            }));
+        }
+    }
+}
+
 /// Signs one digest inline, converting a signer panic into
 /// [`SigningError::Dropped`].
 #[cfg(all(feature = "std", not(feature = "parallel")))]
@@ -212,11 +259,11 @@ impl SignSlot {
 enum Step {
     /// The address is already stored; nothing to do.
     Done,
-    /// Reuse the already-signed stamp.
-    Reuse(Stamp),
+    /// This put took the delivery of the already-signed stamp.
+    Deliver(Stamp),
     /// This put owns the allocation and drives the signing.
     Own { digest: StampDigest, tracked: bool },
-    /// Another put holds the allocation; wait for its signature.
+    /// Another put signs or delivers this address; wait for it.
     Wait,
     /// Allocation refused.
     Refused(StampError),
@@ -236,11 +283,12 @@ enum Step {
 ///   so the issuer is held behind a shared handle and never cloned.
 /// - Per-address idempotence: the issued map is consulted before
 ///   allocation. A duplicate put reuses the signed stamp, or returns
-///   without a second sink put once the first succeeded; two in-flight
-///   puts of one address share one allocation. A bucket-capacity-exceeding
-///   run of identical chunks (a large zeroed region) would otherwise
-///   refuse with `BucketFull`. Cost is ~145 B per unique address; see
-///   [`IssuedBound`] for the bound and off switches.
+///   without a second sink put once the first succeeded; in-flight
+///   duplicates share one allocation and one sink delivery, a failed or
+///   cancelled delivery handing the signed stamp to the next put. A
+///   bucket-capacity-exceeding run of identical chunks (a large zeroed
+///   region) would otherwise refuse with `BucketFull`. Cost is ~145 B per
+///   unique address; see [`IssuedBound`] for the bound and off switches.
 /// - The decorator stamps per put, not per reachable chunk: a wrapped
 ///   re-commit stamps only newly-put chunks.
 /// - Transport retries compose below [`PutStamped`], reusing the already
@@ -391,8 +439,14 @@ where
     fn step(&self, address: &ChunkAddress) -> Step {
         with_state(&self.shared, |state| match state.issued.get(address) {
             Some(Issued::Stored) => Step::Done,
-            Some(Issued::Signed(stamp)) => Step::Reuse(stamp.clone()),
-            Some(Issued::Pending(_)) => Step::Wait,
+            Some(Issued::Signed(stamp)) => {
+                let stamp = stamp.clone();
+                state
+                    .issued
+                    .insert(*address, Issued::Delivering(stamp.clone(), Vec::new()));
+                Step::Deliver(stamp)
+            }
+            Some(Issued::Pending(_) | Issued::Delivering(..)) => Step::Wait,
             None => {
                 let tracked = state.tracks();
                 match state
@@ -411,13 +465,13 @@ where
         })
     }
 
-    /// Waits until the address's allocation leaves `Pending`, re-registering
-    /// the waker on every poll (the first registration is the split's noop
-    /// waker).
-    async fn wait_signed(&self, address: &ChunkAddress) {
+    /// Waits while another put signs or delivers this address,
+    /// re-registering the waker on every poll (the first registration is
+    /// the split's noop waker).
+    async fn wait_progress(&self, address: &ChunkAddress) {
         poll_fn(|cx| {
             with_state(&self.shared, |state| match state.issued.get_mut(address) {
-                Some(Issued::Pending(wakers)) => {
+                Some(Issued::Pending(wakers) | Issued::Delivering(_, wakers)) => {
                     if !wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
                         wakers.push(cx.waker().clone());
                     }
@@ -483,29 +537,37 @@ where
             "stamped put polled from a rayon pool thread"
         );
         let address = *chunk.address();
-        let stamp = loop {
+        // A signed tracked owner loops back to race for the delivery, so
+        // the sink sees each tracked address exactly once.
+        let (stamp, held) = loop {
             match self.step(&address) {
                 Step::Done => return Ok(()),
                 Step::Refused(error) => return Err(StampedPutError::Stamp(error)),
-                Step::Reuse(stamp) => break stamp,
+                Step::Deliver(stamp) => break (stamp, true),
                 Step::Own { digest, tracked } => {
-                    break self
+                    let stamp = self
                         .sign(digest, tracked)
                         .await
                         .map_err(StampedPutError::Sign)?;
+                    if !tracked {
+                        break (stamp, false);
+                    }
                 }
-                Step::Wait => self.wait_signed(&address).await,
+                Step::Wait => self.wait_progress(&address).await,
             }
         };
+        let guard = held.then(|| DeliveryGuard {
+            shared: &self.shared,
+            address,
+            armed: true,
+        });
         self.inner
             .put_stamped(StampedChunk::new(chunk, stamp))
             .await
             .map_err(StampedPutError::Put)?;
-        with_state(&self.shared, |state| {
-            if let Some(entry) = state.issued.get_mut(&address) {
-                *entry = Issued::Stored;
-            }
-        });
+        if let Some(guard) = guard {
+            guard.stored();
+        }
         Ok(())
     }
 }
@@ -842,11 +904,12 @@ mod tests {
         });
     }
 
-    /// Two in-flight puts of one address share one allocation: the waiter
-    /// parks on the pending entry and reuses the owner's signed stamp.
+    /// Two in-flight puts of one address share one allocation and one
+    /// delivery: the waiter parks on the pending entry, then exactly one
+    /// of the pair carries the signed stamp to the sink.
     #[cfg(feature = "parallel")]
     #[test]
-    fn concurrent_duplicates_share_one_allocation() {
+    fn concurrent_duplicates_share_one_allocation_and_delivery() {
         use core::pin::pin;
         use core::task::{Context, Poll, Waker};
         use std::task::Wake;
@@ -900,8 +963,8 @@ mod tests {
         let mut waiter_done = false;
         while !(owner_done && waiter_done) {
             assert!(start.elapsed() < budget, "lost wake");
-            // The waiter polls first each round, so it reuses the signed
-            // stamp before the owner marks the address stored.
+            // The waiter polls first each round, so it can take the
+            // delivery before the owner resumes from signing.
             if !waiter_done && let Poll::Ready(result) = waiter.as_mut().poll(cx) {
                 result.unwrap();
                 waiter_done = true;
@@ -915,10 +978,7 @@ mod tests {
             }
         }
 
-        let seen = sink.seen.lock().unwrap();
-        assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].1, seen[1].1);
-        drop(seen);
+        assert_eq!(sink.seen.lock().unwrap().len(), 1);
         assert_eq!(store.remaining_capacity(), 15);
     }
 }
