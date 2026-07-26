@@ -58,7 +58,7 @@ mod signer;
 mod stamped_put;
 #[cfg(feature = "std")]
 mod stamp_sink;
-#[cfg(feature = "parallel")]
+#[cfg(feature = "std")]
 mod task;
 
 #[cfg(not(feature = "parallel"))]
