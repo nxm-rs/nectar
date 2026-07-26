@@ -23,10 +23,11 @@ nectar-marker = { workspace = true }
 nectar-postage = { workspace = true }
 nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
-alloy-signer = { workspace = true }
 thiserror = { workspace = true }
 
 # optional
+# The signer stack requires std; the no_std core only allocates digests.
+alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
@@ -44,8 +45,15 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 [features]
 default = [ "std" ]
 
-# Standard library support
-std = [ "nectar-clock/std", "nectar-postage/std", "nectar-primitives/std" ]
+# Standard library support: the signer stack, the concurrent issuers
+# (sharded, sharded ring), the factory and the dilution registry live behind
+# this gate.
+std = [
+	"dep:alloy-signer",
+	"nectar-clock/std",
+	"nectar-postage/std",
+	"nectar-primitives/std",
+]
 
 # Local key signing for testing and development
 local-signer = [ "dep:alloy-signer-local", "std" ]

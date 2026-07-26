@@ -13,9 +13,9 @@
 //!   is the set of addresses with no Ok result, computable from results
 //!   alone; collecting into a map drops multiplicity. Dedup upstream where
 //!   capacity hygiene matters.
-//! - Every admitted job yields exactly one result on every path; a signer
-//!   panic yields [`SigningError::Dropped`] for the address captured at
-//!   admission.
+//! - Every admitted job yields exactly one result on every path; under `std`
+//!   a signer panic is caught and yields [`SigningError::Dropped`] for the
+//!   address captured at admission. Without `std` a signer panic propagates.
 //! - Fail-fast (default on): a `Signer` or `Dropped` result stops admission.
 //!   Already-admitted completions still yield, Ok and per-item Err alike
 //!   (signed stamps are wire-valid; discarding them burns capacity), then
@@ -29,12 +29,13 @@
 //! - Dropping a [`Stamped`] abandons at most one window of allocated,
 //!   unsigned indices; issuer state is coherent at every yield point.
 
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt;
 use core::num::NonZeroU16;
-use std::collections::VecDeque;
-#[cfg(not(feature = "parallel"))]
+#[cfg(all(feature = "std", not(feature = "parallel")))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 #[cfg(feature = "parallel")]
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -427,7 +428,7 @@ where
     }
 
     /// Signs the next admitted digest inline, if any.
-    #[cfg(not(feature = "parallel"))]
+    #[cfg(all(feature = "std", not(feature = "parallel")))]
     fn complete_one(&mut self) -> Option<StampResult> {
         let digest = self.prepared.pop_front()?;
         let address = digest.chunk_address;
@@ -437,6 +438,16 @@ where
             sign_digest(self.pipeline.signer.as_ref(), &digest)
         }))
         .unwrap_or_else(|_| Err(SigningError::Dropped));
+        Some(StampResult { address, result })
+    }
+
+    /// Signs the next admitted digest inline, if any. Without `std` there is
+    /// no unwind boundary: a signer panic propagates.
+    #[cfg(not(any(feature = "std", feature = "parallel")))]
+    fn complete_one(&mut self) -> Option<StampResult> {
+        let digest = self.prepared.pop_front()?;
+        let address = digest.chunk_address;
+        let result = sign_digest(self.pipeline.signer.as_ref(), &digest);
         Some(StampResult { address, result })
     }
 }
@@ -459,10 +470,7 @@ where
             if let Some(result) = self.complete_one() {
                 if self.pipeline.fail_fast
                     && !self.failed
-                    && matches!(
-                        result.result,
-                        Err(SigningError::Signer(_) | SigningError::Dropped)
-                    )
+                    && matches!(&result.result, Err(error) if error.is_systemic())
                 {
                     self.stop_admission();
                 }

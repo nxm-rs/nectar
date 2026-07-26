@@ -26,8 +26,6 @@
 //! small, so the sum does not count overwrites. The snapshot codec writes and
 //! re-checks this sum in both modes.
 
-extern crate alloc;
-
 use alloc::vec;
 use alloc::vec::Vec;
 

@@ -36,9 +36,13 @@ jobs:
                   targets: ${{ matrix.target }}
             - name: Check no_std crates without std
               run: |
+                  # nectar-postage is the proving-grade surface (stamp wire
+                  # types and verification); nectar-postage-issuer rides as its
+                  # gated sequential core.
                   cargo check --locked \
                     -p nectar-swarms -p nectar-contracts -p nectar-file \
                     -p nectar-marker -p nectar-clock \
+                    -p nectar-postage -p nectar-postage-issuer \
                     --no-default-features \
                     --target ${{ matrix.target }}
                   # nectar-mantaray by path: the editor's differential gate pins a

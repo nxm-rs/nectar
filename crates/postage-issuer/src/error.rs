@@ -56,6 +56,7 @@ pub enum SigningError {
     /// Signing operation failed.
     ///
     /// The allocated index is burnt; a retry allocates a fresh one.
+    #[cfg(feature = "std")]
     #[error(transparent)]
     Signer(#[from] alloy_signer::Error),
 
@@ -70,4 +71,18 @@ pub enum SigningError {
     /// No allocation happened; a retry is free.
     #[error("address not admitted before the pipeline stopped")]
     NotAdmitted,
+}
+
+impl SigningError {
+    /// Whether the signer itself failed, as opposed to a per-item refusal.
+    pub const fn is_systemic(&self) -> bool {
+        #[cfg(feature = "std")]
+        {
+            matches!(self, Self::Signer(_) | Self::Dropped)
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            matches!(self, Self::Dropped)
+        }
+    }
 }

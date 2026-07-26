@@ -19,8 +19,7 @@ workspace = true
 
 [dependencies]
 nectar-primitives = { workspace = true }
-alloy-primitives = { workspace = true }
-alloy-signer = { workspace = true }
+alloy-primitives = { workspace = true, features = ["k256"] }
 derive_more = { workspace = true }
 thiserror = { workspace = true }
 
@@ -28,17 +27,18 @@ thiserror = { workspace = true }
 k256 = { workspace = true }
 
 # optional
+# The signer seam is issuing-side machinery; verification never signs, so the
+# generators are the only consumer.
+alloy-signer = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 arbitrary = { workspace = true, optional = true }
-# wall clock for stamp issuance timestamps; std::time on native, browser clock
-# on wasm32. Only needed with the `std` feature (the no_std path returns 0).
-web-time = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 proptest-arbitrary-interop = { workspace = true }
 rand = { workspace = true }
+alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 alloy-primitives = { workspace = true, features = ["getrandom", "arbitrary"] }
 arbitrary = { workspace = true }
@@ -48,10 +48,9 @@ nectar-testing = { workspace = true, features = ["fixtures"] }
 [features]
 default = [ "std" ]
 
-# Standard library support. Enables BatchStore, BatchFactory, and timestamp functions.
+# Standard library support. Enables BatchStore, BatchFactory, and events.
 std = [
 	"alloy-primitives/std",
-	"dep:web-time",
 	"k256/precomputed-tables",
 	"k256/std",
 	"nectar-primitives/std",
@@ -69,6 +68,7 @@ parallel = [ "dep:rayon", "nectar-primitives/parallel", "std" ]
 # property-based testing and fuzzing.
 arbitrary = [
 	"alloy-primitives/arbitrary",
+	"dep:alloy-signer",
 	"dep:arbitrary",
 	"nectar-primitives/arbitrary",
 	"std",

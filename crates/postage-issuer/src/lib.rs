@@ -75,7 +75,10 @@
 //!
 //! # Features
 //!
-//! - `std` (default) - Enables standard library support
+//! - `std` (default) - Standard library support. Without it the crate is the
+//!   sequential issuing core only: the concurrent issuers, the factory and
+//!   the dilution registry are gated out, construction takes explicit clocks,
+//!   and a signer panic propagates instead of being caught into a result.
 //! - `local-signer` - Enables local key signing with `alloy-signer-local`
 //! - `parallel` - Enables the pipeline's parallel signing engine with rayon
 //! - `unsync` - Relaxes the signer thread-safety bounds on single-threaded
@@ -116,6 +119,8 @@
     )
 )]
 
+extern crate alloc;
+
 // The parallel engine spawns onto rayon and needs real `Send`; `unsync`
 // relaxes that bound away. Enabling both (directly or through feature
 // unification) is a build error with a clear cause rather than a deep one at
@@ -127,12 +132,15 @@ mod counter;
 #[cfg(feature = "std")]
 mod dilute_handler;
 mod error;
+#[cfg(feature = "std")]
 mod factory;
 mod issuer;
 mod pipeline;
 mod prepared;
 mod ring;
+#[cfg(feature = "std")]
 mod sharded;
+#[cfg(feature = "std")]
 mod sharded_ring;
 mod stamper;
 
@@ -154,6 +162,7 @@ pub use dilute_handler::{Dilutable, IssuerRegistry};
 
 // Issuing
 pub use issuer::{MemoryIssuer, MemoryIssuerFor, StampIssuer};
+#[cfg(feature = "std")]
 pub use sharded::{ShardedIssuer, ShardedIssuerFor};
 pub use stamper::{BatchStamper, Stamper};
 
@@ -162,6 +171,7 @@ pub use pipeline::{Eip191, SignPrehash, SignWindow, StampPipeline, StampResult, 
 
 // Mutable (ring) issuing with a type-state reservation guard
 pub use ring::{Reservation, Reserved, RingIssuer, RingIssuerFor, Unreserved};
+#[cfg(feature = "std")]
 pub use sharded_ring::{ShardedRingIssuer, ShardedRingIssuerFor};
 
 // Factory (std only)

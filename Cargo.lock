@@ -2670,7 +2670,6 @@ dependencies = [
  "rayon",
  "serde",
  "thiserror",
- "web-time",
 ]
 
 [[package]]

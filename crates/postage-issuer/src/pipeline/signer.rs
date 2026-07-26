@@ -1,7 +1,8 @@
 //! Sealed prehash signing: the pipeline's only signer seam.
 
-use alloy_primitives::B256;
-use alloy_signer::{Signature, SignerSync};
+use alloy_primitives::{B256, Signature};
+#[cfg(feature = "std")]
+use alloy_signer::SignerSync;
 
 use crate::error::SigningError;
 use nectar_postage::{Stamp, StampDigest};
@@ -16,7 +17,7 @@ mod sealed {
 /// synchronous signer, so the prehash handling is never hand-written.
 pub trait SignPrehash: sealed::Sealed {
     /// Signs `prehash`, the keccak256 stamp digest.
-    fn sign_prehash(&self, prehash: &B256) -> Result<Signature, alloy_signer::Error>;
+    fn sign_prehash(&self, prehash: &B256) -> Result<Signature, SigningError>;
 }
 
 /// EIP-191 personal-message adapter over a synchronous signer.
@@ -37,9 +38,12 @@ impl<S> Eip191<S> {
 
 impl<S> sealed::Sealed for Eip191<S> {}
 
+#[cfg(feature = "std")]
 impl<S: SignerSync> SignPrehash for Eip191<S> {
-    fn sign_prehash(&self, prehash: &B256) -> Result<Signature, alloy_signer::Error> {
-        self.0.sign_message_sync(prehash.as_slice())
+    fn sign_prehash(&self, prehash: &B256) -> Result<Signature, SigningError> {
+        self.0
+            .sign_message_sync(prehash.as_slice())
+            .map_err(SigningError::from)
     }
 }
 
