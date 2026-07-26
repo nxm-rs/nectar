@@ -56,6 +56,8 @@ mod signer;
 // neither, so the surface is absent there.
 #[cfg(any(feature = "std", not(multi_thread)))]
 mod stamped_put;
+#[cfg(feature = "std")]
+mod stamp_sink;
 #[cfg(feature = "parallel")]
 mod task;
 
@@ -64,6 +66,8 @@ use signer::sign_digest;
 pub use signer::{Eip191, SignPrehash};
 #[cfg(any(feature = "std", not(multi_thread)))]
 pub use stamped_put::{IssuedBound, StampedPut, StampedPutError};
+#[cfg(feature = "std")]
+pub use stamp_sink::StampSink;
 
 /// A completed stamping attempt, tagged with its input address.
 #[derive(Debug)]
