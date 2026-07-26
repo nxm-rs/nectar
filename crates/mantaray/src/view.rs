@@ -347,7 +347,8 @@ mod tests {
         // The valid fixture declares 0x5d (93) metadata bytes; 89 truncates
         // the JSON, 95 and 96 overrun the buffer.
         for declared in ["59", "5f", "60"] {
-            let hex_image = REFERENCE_MANIFEST_V02.replace("005d7b", &alloc::format!("00{declared}7b"));
+            let hex_image =
+                REFERENCE_MANIFEST_V02.replace("005d7b", &alloc::format!("00{declared}7b"));
             let data = hex::decode(hex_image).unwrap();
             assert!(NodeView::try_from(data.as_slice()).is_err());
             assert_differential_agreement(&data);
