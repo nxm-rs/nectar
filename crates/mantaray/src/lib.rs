@@ -10,24 +10,21 @@
 //!
 //! # Streaming Surface
 //!
-//! Three complementary handles over a typed chunk store cover the manifest
-//! lifecycle:
+//! Three complementary handles over the node persistence seam cover the
+//! manifest lifecycle:
 //!
 //! - [`Reader`]: depth-guarded point lookups ([`Reader::get`],
 //!   [`Reader::has_prefix`]) with `Ok(None)` on a miss.
 //! - [`Cursor`] and [`AddressStream`]: ordered listing with bounded
 //!   read-ahead.
 //! - [`ManifestEditor`]: records puts and removes, then commits them in
-//!   submission order with a bounded number of puts in flight.
+//!   submission order.
 //!
-//! ```no_run
-//! # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
-//! let mut editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
-//! ```
-//!
-//! The store traits come from `nectar_primitives` ([`ChunkGet`],
-//! [`ChunkPut`]), so a single [`MemoryStore`] can hold both file chunks and
-//! manifest trie nodes.
+//! All four are generic over the [`persist`] seam ([`NodeLoader`],
+//! [`NodeSaver`]): the trie never touches chunk stores directly, so the
+//! storage layout is the adapter's. The workspace `nectar-loadsave` crate
+//! adapts a chunk store through the file pipeline, storing a node larger
+//! than one chunk across several, as the reference client does.
 //!
 //! # Website Manifests
 //!
@@ -130,9 +127,6 @@ pub mod error;
 #[cfg(feature = "std")]
 mod format;
 #[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-pub mod manifest_ref;
-#[cfg(feature = "std")]
 mod node;
 pub mod obfuscation;
 /// Shared fuzz and test oracles over the raw node codec and the node view.
@@ -141,6 +135,9 @@ pub mod obfuscation;
 #[cfg(any(test, all(feature = "arbitrary", feature = "hazmat")))]
 #[doc(hidden)]
 pub mod oracles;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod persist;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod reader;
@@ -157,7 +154,7 @@ pub(crate) use constants::*;
 #[cfg(feature = "std")]
 pub use cursor::{AddressStream, Cursor, Window};
 #[cfg(feature = "std")]
-pub use editor::{DEFAULT_PUT_WIDTH, ManifestEditor, Op};
+pub use editor::{ManifestEditor, Op};
 #[cfg(feature = "std")]
 pub use entry::Entry;
 #[cfg(feature = "std")]
@@ -165,10 +162,10 @@ pub use error::{
     CursorError, DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result,
 };
 #[cfg(feature = "std")]
-pub use manifest_ref::ManifestRef;
-#[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
+#[cfg(feature = "std")]
+pub use persist::{MAX_NODE_BYTES, NodeLoader, NodeSaver};
 #[cfg(feature = "std")]
 pub use reader::{DEFAULT_MAX_DEPTH, Reader};
 #[cfg(feature = "std")]

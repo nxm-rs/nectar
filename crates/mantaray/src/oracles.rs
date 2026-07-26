@@ -12,11 +12,14 @@ use std::collections::BTreeMap;
 use nectar_primitives::EncryptedChunkRef;
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, RefKind, Reference};
 use nectar_primitives::oracles::Violation;
-use nectar_primitives::store::ContentGet;
 
 use crate::node::Node;
+use crate::persist::single_chunk::SingleChunkLoadSaver;
 use crate::view::NodeView;
 use crate::{DecodeResult, DefaultMemoryStore, ManifestEditor, NodeType, Reader, RefWidth};
+
+/// The single-chunk loadsaver the editor oracle drives.
+type OracleLoadSaver = SingleChunkLoadSaver<DefaultMemoryStore>;
 
 /// Decode one wire image at both entry widths, `ChunkRef` (32-byte plain)
 /// and `EncryptedChunkRef` (64-byte encrypted). `Err` is an acceptable
@@ -293,8 +296,8 @@ fn metadata(key: u8, value: u8) -> BTreeMap<String, String> {
 }
 
 /// Record the ops into a fresh editor.
-fn record(ops: &[EditorOp]) -> ManifestEditor<DefaultMemoryStore> {
-    let mut editor = ManifestEditor::new(DefaultMemoryStore::new());
+fn record(ops: &[EditorOp]) -> ManifestEditor<OracleLoadSaver> {
+    let mut editor = ManifestEditor::new(OracleLoadSaver::new(DefaultMemoryStore::new()));
     for op in ops {
         match op {
             EditorOp::Put { path: raw, fill } => {
@@ -387,13 +390,13 @@ pub async fn editor_differential(ops: &[EditorOp]) -> Result<(), Violation> {
     };
 
     let want = model(ops);
-    let reader = Reader::new(ContentGet::new(store));
+    let reader = Reader::new(store);
     for (p, addr) in &want.entries {
         // The empty path is never addressable through the reader.
         if p.is_empty() {
             continue;
         }
-        let Ok(got) = reader.get(&root, p.as_bytes()).await else {
+        let Ok(got) = reader.get(root, p.as_bytes()).await else {
             return Err(Violation::new("lookup over a complete store must succeed"));
         };
         let Some(entry) = got else {
@@ -412,7 +415,7 @@ pub async fn editor_differential(ops: &[EditorOp]) -> Result<(), Violation> {
             if p.is_empty() || want.entries.contains_key(&p) {
                 continue;
             }
-            let Ok(got) = reader.get(&root, p.as_bytes()).await else {
+            let Ok(got) = reader.get(root, p.as_bytes()).await else {
                 return Err(Violation::new("lookup over a complete store must succeed"));
             };
             if p == "/" {
@@ -436,7 +439,7 @@ pub async fn editor_differential(ops: &[EditorOp]) -> Result<(), Violation> {
         EditorOp::SetIndex { .. } | EditorOp::SetError { .. } => false,
     });
     if !slash_touched && (want.index_document.is_some() || want.error_document.is_some()) {
-        let Ok(Some(root_entry)) = reader.get(&root, b"/").await else {
+        let Ok(Some(root_entry)) = reader.get(root, b"/").await else {
             return Err(Violation::new("root documents set but no root entry"));
         };
         if root_entry.metadata().get("website-index-document") != want.index_document.as_ref() {

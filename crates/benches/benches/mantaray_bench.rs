@@ -1,12 +1,14 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use nectar_loadsave::NodeLoadSaver;
 use nectar_mantaray::{Cursor, ManifestEditor, MemoryStore, Reader, hazmat};
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
-use nectar_primitives::store::{ChunkGet, ContentGet};
+use nectar_primitives::store::ChunkGet;
 use nectar_testing::run;
 
 type Store = MemoryStore<StandardChunkSet>;
-type Editor = ManifestEditor<Store>;
+type LoadSaver = NodeLoadSaver<Store>;
+type Editor = ManifestEditor<LoadSaver>;
 
 /// Create a ChunkAddress from a path, left-padded with zeroes.
 fn make_addr(path: &[u8]) -> ChunkAddress {
@@ -42,18 +44,18 @@ fn large_paths(count: usize) -> Vec<(String, ChunkAddress)> {
         .collect()
 }
 
-/// Commit the SPA website dataset, returning root and store.
-fn build_spa() -> (ChunkAddress, Store) {
-    let mut editor = Editor::new(Store::new());
+/// Commit the SPA website dataset, returning root and loadsaver.
+fn build_spa() -> (ChunkAddress, LoadSaver) {
+    let mut editor = Editor::new(LoadSaver::new(Store::new()));
     for &p in SPA_PATHS {
         editor.put(p, make_addr(p.as_bytes()));
     }
     run(editor.commit()).unwrap()
 }
 
-/// Commit `count` generated paths, returning root and store.
-fn build_large(count: usize) -> (ChunkAddress, Store) {
-    let mut editor = Editor::new(Store::new());
+/// Commit `count` generated paths, returning root and loadsaver.
+fn build_large(count: usize) -> (ChunkAddress, LoadSaver) {
+    let mut editor = Editor::new(LoadSaver::new(Store::new()));
     for (path, addr) in large_paths(count) {
         editor.put(path, addr);
     }
@@ -71,7 +73,7 @@ fn bench_commit(c: &mut Criterion) {
         let entries = large_paths(count);
         group.bench_with_input(BenchmarkId::new("paths", count), &entries, |b, entries| {
             b.iter(|| {
-                let mut editor = Editor::new(Store::new());
+                let mut editor = Editor::new(LoadSaver::new(Store::new()));
                 for (path, addr) in entries {
                     editor.put(path, *addr);
                 }
@@ -86,22 +88,22 @@ fn bench_commit(c: &mut Criterion) {
 fn bench_get(c: &mut Criterion) {
     let mut group = c.benchmark_group("get");
 
-    let (root, store) = build_spa();
-    let reader = Reader::new(ContentGet::new(store));
+    let (root, loadsaver) = build_spa();
+    let reader = Reader::new(loadsaver);
 
     group.bench_function("existing_path", |b| {
         b.iter(|| {
-            let entry = run(reader.get(&root, b"js/app.js")).unwrap();
+            let entry = run(reader.get(root, b"js/app.js")).unwrap();
             entry.is_some()
         });
     });
 
-    let (large_root, large_store) = build_large(500);
-    let large_reader = Reader::new(ContentGet::new(large_store));
+    let (large_root, large_loadsaver) = build_large(500);
+    let large_reader = Reader::new(large_loadsaver);
 
     group.bench_function("500_paths_deep", |b| {
         b.iter(|| {
-            let entry = run(large_reader.get(&large_root, b"dir4/subdir49/file499.dat")).unwrap();
+            let entry = run(large_reader.get(large_root, b"dir4/subdir49/file499.dat")).unwrap();
             entry.is_some()
         });
     });
@@ -130,15 +132,15 @@ fn bench_remove(c: &mut Criterion) {
 fn bench_has_prefix(c: &mut Criterion) {
     let mut group = c.benchmark_group("has_prefix");
 
-    let (root, store) = build_spa();
-    let reader = Reader::new(ContentGet::new(store));
+    let (root, loadsaver) = build_spa();
+    let reader = Reader::new(loadsaver);
 
     group.bench_function("existing_prefix", |b| {
-        b.iter(|| run(reader.has_prefix(&root, b"js/")).unwrap());
+        b.iter(|| run(reader.has_prefix(root, b"js/")).unwrap());
     });
 
     group.bench_function("missing_prefix", |b| {
-        b.iter(|| run(reader.has_prefix(&root, b"nonexistent/")).unwrap());
+        b.iter(|| run(reader.has_prefix(root, b"nonexistent/")).unwrap());
     });
 
     group.finish();
@@ -146,8 +148,8 @@ fn bench_has_prefix(c: &mut Criterion) {
 
 /// The committed root node's wire image, for the raw codec benches.
 fn root_node_bytes() -> Vec<u8> {
-    let (root, store) = build_spa();
-    let chunk = run(ChunkGet::get(&store, &root)).unwrap();
+    let (root, loadsaver) = build_spa();
+    let chunk = run(ChunkGet::get(loadsaver.store(), &root)).unwrap();
     chunk.envelope().data().to_vec()
 }
 
@@ -177,10 +179,9 @@ fn bench_decode(c: &mut Criterion) {
 }
 
 /// Drain the ordered listing cursor, returning the entry count.
-fn drain_cursor(root: ChunkAddress, store: &Store) -> u32 {
+fn drain_cursor(root: ChunkAddress, loadsaver: &LoadSaver) -> u32 {
     run(async {
-        let mut cursor: Cursor<ContentGet<Store>> =
-            Cursor::new(ContentGet::new(store.clone()), root);
+        let mut cursor: Cursor<LoadSaver> = Cursor::new(loadsaver.clone(), root);
         let mut count = 0u32;
         while let Some(entry) = cursor.next().await {
             entry.unwrap();
@@ -194,14 +195,14 @@ fn bench_list(c: &mut Criterion) {
     let mut group = c.benchmark_group("list");
 
     group.bench_function("spa_trie", |b| {
-        let (root, store) = build_spa();
-        b.iter(|| drain_cursor(root, &store));
+        let (root, loadsaver) = build_spa();
+        b.iter(|| drain_cursor(root, &loadsaver));
     });
 
     for &count in &[100, 500] {
         group.bench_with_input(BenchmarkId::new("paths", count), &count, |b, &count| {
-            let (root, store) = build_large(count);
-            b.iter(|| drain_cursor(root, &store));
+            let (root, loadsaver) = build_large(count);
+            b.iter(|| drain_cursor(root, &loadsaver));
         });
     }
 
@@ -213,8 +214,8 @@ fn bench_full_workflow(c: &mut Criterion) {
 
     group.bench_function("commit_then_lookup", |b| {
         b.iter(|| {
-            let (root, store) = build_spa();
-            let reader = Reader::new(ContentGet::new(store));
+            let (root, loadsaver) = build_spa();
+            let reader = Reader::new(loadsaver);
             let paths: &[&[u8]] = &[
                 b"css/app.css",
                 b"favicon.ico",
@@ -223,7 +224,7 @@ fn bench_full_workflow(c: &mut Criterion) {
                 b"js/app.js",
             ];
             for &p in paths {
-                run(reader.get(&root, p)).unwrap();
+                run(reader.get(root, p)).unwrap();
             }
         });
     });

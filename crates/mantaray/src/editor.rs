@@ -1,34 +1,34 @@
-//! Submission-order manifest editor with a streaming, bounded-put commit.
+//! Submission-order manifest editor over the node persistence seam.
 //!
 //! Ops are recorded synchronously into a `(path, op)` log and applied one at
 //! a time at commit, in submission order. The committed root is defined as
 //! the root the reference mutation path produces for the same sequence
 //! (pinned by the registry-crate differential gate), shape quirks included;
-//! ops are never reordered or batched.
+//! ops are never reordered or batched. Nodes persist through a
+//! [`NodeSaver`], so the storage layout and any put concurrency are the
+//! adapter's.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::collections::btree_map;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::{Future, poll_fn};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
-use bytes::Bytes;
-use futures::StreamExt;
+use futures::Stream;
 use futures::stream::FuturesUnordered;
-use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ChunkRef, ContentChunk, Reference};
-use nectar_primitives::store::{ChunkPut, MaybeSend, TrustedGet};
-use nectar_primitives::{AnyChunkSet, Chunk, EntryRef};
+use nectar_kernel::{Admission, Window};
+use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
+use nectar_primitives::store::MaybeSend;
+use nectar_primitives::{EncryptedChunkRef, EntryRef};
 
 use crate::error::EditorError;
-use crate::node::{Fork, Node, NodeState, Prefix, StoredReference};
+use crate::node::{Fork, Node, NodeState, Prefix};
+use crate::persist::{NodeLoader, NodeSaver};
 use crate::{MantarayError, metadata};
-
-/// Default bound on in-flight commit puts.
-///
-/// Matches the listing fan-out width, balancing round-trip overlap against
-/// peak in-flight store load.
-pub const DEFAULT_PUT_WIDTH: usize = 8;
 
 /// One recorded manifest mutation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,33 +56,30 @@ pub enum Op<R: Reference = ChunkRef> {
 
 /// Submission-order manifest editor.
 ///
-/// Records `(path, op)` pairs without touching the store; [`commit`] applies
-/// them sequentially and persists every rewritten node with a bounded number
-/// of puts in flight. Commit consumes the editor: reopen from the returned
-/// root to edit further.
+/// Records `(path, op)` pairs without touching storage; [`commit`] applies
+/// them sequentially and persists every rewritten node through the
+/// loadsaver. Commit consumes the editor: reopen from the returned root to
+/// edit further.
 ///
 /// [`commit`]: Self::commit
 ///
 /// ```
 /// # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
 /// # use nectar_primitives::chunk::ChunkAddress;
-/// # nectar_testing::run(async {
-/// let mut editor = ManifestEditor::new(DefaultMemoryStore::new());
+/// let mut editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
 /// editor.put("index.html", ChunkAddress::from([7u8; 32]));
 /// editor.set_index_document("index.html");
-/// let (root, _store) = editor.commit().await.unwrap();
-/// # let _ = root;
-/// # });
+/// assert_eq!(editor.ops().len(), 2);
 /// ```
 #[derive(Debug)]
-pub struct ManifestEditor<S, R: Reference = ChunkRef, const BS: usize = DEFAULT_BODY_SIZE> {
+pub struct ManifestEditor<S, R: Reference = ChunkRef> {
     trie: Node<R>,
     ops: Vec<(Vec<u8>, Op<R>)>,
     store: S,
-    put_width: usize,
+    commit_window: Window,
 }
 
-impl<S, const BS: usize> ManifestEditor<S, ChunkRef, BS> {
+impl<S> ManifestEditor<S, ChunkRef> {
     /// Editor over an empty plain manifest.
     pub fn new(store: S) -> Self {
         Self::with_root(Node::new_unencrypted(), store)
@@ -94,7 +91,7 @@ impl<S, const BS: usize> ManifestEditor<S, ChunkRef, BS> {
     }
 }
 
-impl<S, const BS: usize> ManifestEditor<S, nectar_primitives::EncryptedChunkRef, BS> {
+impl<S> ManifestEditor<S, EncryptedChunkRef> {
     /// Editor over an empty encrypted manifest with a random obfuscation key.
     #[cfg(feature = "rand")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rand")))]
@@ -106,43 +103,35 @@ impl<S, const BS: usize> ManifestEditor<S, nectar_primitives::EncryptedChunkRef,
         Self::with_root(trie, store)
     }
 
-    /// Editor over the persisted encrypted manifest at `root`.
-    pub fn open_encrypted(root: crate::ManifestRef, store: S) -> Self {
-        let (addr, key) = root.into_parts();
-        let mut trie =
-            Node::from_reference(nectar_primitives::EncryptedChunkRef::from_stored(addr));
-        trie.obfuscation_key = key;
-        Self::with_root(trie, store)
+    /// Editor over the persisted encrypted manifest at `root`; the
+    /// obfuscation key rides the root node's own bytes.
+    pub fn open_encrypted(root: EncryptedChunkRef, store: S) -> Self {
+        Self::with_root(Node::from_reference(root), store)
     }
 }
 
-impl<S, R: Reference, const BS: usize> ManifestEditor<S, R, BS> {
+impl<S, R: Reference> ManifestEditor<S, R> {
     const fn with_root(trie: Node<R>, store: S) -> Self {
         Self {
             trie,
             ops: Vec::new(),
             store,
-            put_width: DEFAULT_PUT_WIDTH,
+            commit_window: Window::DEFAULT,
         }
     }
 
-    /// Replace the in-flight put bound; clamped to at least 1.
-    #[must_use]
-    pub fn with_put_width(mut self, width: usize) -> Self {
-        self.put_width = width.max(1);
-        self
-    }
-
-    /// The in-flight put bound used by commit.
-    #[must_use]
-    pub const fn put_width(&self) -> usize {
-        self.put_width
-    }
-
-    /// The backing store.
+    /// The backing loadsaver.
     #[must_use]
     pub const fn store(&self) -> &S {
         &self.store
+    }
+
+    /// Replace the commit save window: the cap on node saves in flight while
+    /// the dirty trie is persisted post-order.
+    #[must_use]
+    pub const fn with_commit_window(mut self, window: Window) -> Self {
+        self.commit_window = window;
+        self
     }
 
     /// The recorded ops in submission order.
@@ -218,9 +207,7 @@ impl<S, R: Reference, const BS: usize> ManifestEditor<S, R, BS> {
     }
 }
 
-impl<S: TrustedGet<AnyChunkSet<BS>>, R: Reference + MaybeSend, const BS: usize>
-    ManifestEditor<S, R, BS>
-{
+impl<S: NodeLoader, R: Reference + MaybeSend> ManifestEditor<S, R> {
     /// Apply the recorded ops to the trie, one at a time, in submission order.
     async fn apply_ops(&mut self) -> Result<(), EditorError> {
         let ops = core::mem::take(&mut self.ops);
@@ -235,14 +222,12 @@ impl<S: TrustedGet<AnyChunkSet<BS>>, R: Reference + MaybeSend, const BS: usize>
                     if reference.as_ref().is_some_and(is_zero_reference) {
                         Err(MantarayError::ZeroReference)
                     } else {
-                        self.trie
-                            .add::<S, BS>(&path, reference, metadata, &self.store)
-                            .await
+                        self.trie.add(&path, reference, metadata, &self.store).await
                     }
                 }
-                Op::Remove => self.trie.remove::<S, BS>(&path, &self.store).await,
+                Op::Remove => self.trie.remove(&path, &self.store).await,
                 Op::SetRootMetadata { key, value } => {
-                    apply_metadata_merge::<S, R, BS>(&mut self.trie, &path, key, value, &self.store)
+                    apply_metadata_merge::<S, R>(&mut self.trie, &path, key, value, &self.store)
                         .await
                 }
             };
@@ -256,14 +241,13 @@ impl<S: TrustedGet<AnyChunkSet<BS>>, R: Reference + MaybeSend, const BS: usize>
     }
 }
 
-impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
-    ManifestEditor<S, ChunkRef, BS>
-{
+impl<S: NodeLoader + NodeSaver<ChunkRef>> ManifestEditor<S, ChunkRef> {
     /// Apply the log and persist the trie, returning the root chunk address
-    /// and the store.
+    /// and the loadsaver.
     pub async fn commit(mut self) -> Result<(ChunkAddress, S), EditorError> {
         self.apply_ops().await?;
-        let committed = commit_trie::<S, ChunkRef, BS>(self.trie, &self.store, self.put_width)
+        let window = self.commit_window;
+        let committed = commit_trie::<S, ChunkRef>(self.trie, &self.store, window)
             .await
             .map_err(EditorError::Commit)?;
         let address = *committed
@@ -274,28 +258,20 @@ impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize
     }
 }
 
-impl<S: TrustedGet<AnyChunkSet<BS>> + ChunkPut<AnyChunkSet<BS>>, const BS: usize>
-    ManifestEditor<S, nectar_primitives::EncryptedChunkRef, BS>
-{
-    /// Apply the log and persist the trie, returning the manifest reference
-    /// and the store.
-    pub async fn commit(mut self) -> Result<(crate::ManifestRef, S), EditorError> {
+impl<S: NodeLoader + NodeSaver<EncryptedChunkRef>> ManifestEditor<S, EncryptedChunkRef> {
+    /// Apply the log and persist the trie, returning the root's full-width
+    /// reference (address plus decryption key) and the loadsaver.
+    pub async fn commit(mut self) -> Result<(EncryptedChunkRef, S), EditorError> {
         self.apply_ops().await?;
-        let committed = commit_trie::<S, nectar_primitives::EncryptedChunkRef, BS>(
-            self.trie,
-            &self.store,
-            self.put_width,
-        )
-        .await
-        .map_err(EditorError::Commit)?;
-        let address = *committed
+        let window = self.commit_window;
+        let committed = commit_trie::<S, EncryptedChunkRef>(self.trie, &self.store, window)
+            .await
+            .map_err(EditorError::Commit)?;
+        let reference = committed
             .reference()
-            .ok_or(EditorError::Commit(MantarayError::MissingReference))?
-            .address();
-        Ok((
-            crate::ManifestRef::new(address, *committed.obfuscation_key()),
-            self.store,
-        ))
+            .cloned()
+            .ok_or(EditorError::Commit(MantarayError::MissingReference))?;
+        Ok((reference, self.store))
     }
 }
 
@@ -313,7 +289,7 @@ enum MergeOutcome {
 /// its entry and gains the key; an absent one is created as a metadata-only
 /// value. Every node on the descent is marked dirty so a clean ancestor can
 /// never shadow the merged metadata at commit.
-async fn apply_metadata_merge<S, R, const BS: usize>(
+async fn apply_metadata_merge<S, R>(
     trie: &mut Node<R>,
     path: &[u8],
     key: String,
@@ -321,7 +297,7 @@ async fn apply_metadata_merge<S, R, const BS: usize>(
     store: &S,
 ) -> Result<(), MantarayError>
 where
-    S: TrustedGet<AnyChunkSet<BS>>,
+    S: NodeLoader,
     R: Reference + MaybeSend,
 {
     match merge_descent(trie, path, &key, &value, store).await? {
@@ -329,13 +305,13 @@ where
         MergeOutcome::Missing => {
             let mut meta = BTreeMap::new();
             meta.insert(key, value);
-            trie.add::<S, BS>(path, None, meta, store).await
+            trie.add(path, None, meta, store).await
         }
     }
 }
 
 /// Descend to `path`, dirtying every visited node, and merge the key there.
-async fn merge_descent<S, R, const BS: usize>(
+async fn merge_descent<S, R>(
     trie: &mut Node<R>,
     path: &[u8],
     key: &str,
@@ -343,14 +319,14 @@ async fn merge_descent<S, R, const BS: usize>(
     store: &S,
 ) -> Result<MergeOutcome, MantarayError>
 where
-    S: TrustedGet<AnyChunkSet<BS>>,
+    S: NodeLoader,
     R: Reference,
 {
     let mut current = trie;
     let mut rest = path;
     loop {
         if !current.is_loaded() {
-            current.load::<S, BS>(store).await?;
+            current.load(store).await?;
         }
         // Dirtying an unchanged node is safe: it re-encodes to the same
         // address, so a divergent descent never moves the root.
@@ -372,19 +348,23 @@ where
     }
 }
 
-/// Persist the dirty subtree post-order, keeping at most `width` puts in
-/// flight, and return the root as a persisted stub.
+/// Persist the dirty subtree post-order through the saver and return the
+/// root as a persisted stub.
 ///
-/// A child's address is content-derived at encode time, so parents encode
-/// without waiting for the child's put to land; only completion is awaited.
-async fn commit_trie<S, R, const BS: usize>(
+/// Independent subtrees save concurrently up to `window`; a parent is
+/// admitted to save only once every child save has completed, so it embeds
+/// each child's saver-issued reference and the committed root is byte- and
+/// address-identical to a serial save. A node's encoded image is held only
+/// while its own save is in flight and dropped when it collapses to a stub,
+/// so peak encoded bytes beyond the dirty trie stay within the window.
+async fn commit_trie<S, R>(
     root: Node<R>,
-    store: &S,
-    width: usize,
+    saver: &S,
+    window: Window,
 ) -> Result<Node<R>, MantarayError>
 where
-    S: ChunkPut<AnyChunkSet<BS>>,
-    R: StoredReference,
+    S: NodeSaver<R>,
+    R: Reference + MaybeSend,
 {
     if root.reference().is_some() {
         return Ok(root);
@@ -394,88 +374,242 @@ where
     if !root.metadata.is_empty() {
         return Err(MantarayError::RootMetadata);
     }
+    let mut commit = Commit::new(saver, window, root);
+    poll_fn(|cx| commit.poll(cx)).await
+}
 
-    struct CommitFrame<R: Reference> {
-        /// Fork slot (key and prefix) this node re-attaches to in its
-        /// parent; `None` only for the root frame.
-        slot: Option<(u8, Prefix)>,
-        node: Node<R>,
-        /// Children still to visit, drained from the node's fork map.
-        todo: btree_map::IntoIter<u8, Fork<R>>,
-        /// Children already persisted, keyed for re-attachment.
-        done: BTreeMap<u8, Fork<R>>,
+/// Save completion: the dispatch id and the saver's reference outcome.
+type SaveDone<R> = (u64, Result<R, MantarayError>);
+
+/// One node save in flight: borrows the saver, so the persisted chunks land
+/// in the very store the commit hands back. `Send` on the multi-threaded
+/// targets, unbounded on wasm32 and under `unsync`, mirroring the store seam.
+#[cfg(multi_thread)]
+type BoxSave<'s, R> = Pin<Box<dyn Future<Output = SaveDone<R>> + Send + 's>>;
+/// One node save in flight: borrows the saver, so the persisted chunks land
+/// in the very store the commit hands back. `Send` on the multi-threaded
+/// targets, unbounded on wasm32 and under `unsync`, mirroring the store seam.
+#[cfg(not(multi_thread))]
+type BoxSave<'s, R> = Pin<Box<dyn Future<Output = SaveDone<R>> + 's>>;
+
+/// One node mid-commit: its parent frame, its reattachment slot, the children
+/// still to descend and the ones already saved, and the count of its own
+/// children whose saves are outstanding.
+struct CommitFrame<R: Reference> {
+    /// Routes a child completion back to this frame; the root's is unused.
+    id: u64,
+    /// Parent frame id; `None` only for the root frame.
+    parent: Option<u64>,
+    /// Fork slot (key and prefix) this node reattaches to in its parent;
+    /// `None` only for the root frame.
+    slot: Option<(u8, Prefix)>,
+    node: Node<R>,
+    /// Children still to visit, drained from the node's fork map.
+    todo: btree_map::IntoIter<u8, Fork<R>>,
+    /// Children already persisted, keyed for reattachment.
+    done: BTreeMap<u8, Fork<R>>,
+    /// This node's children whose saves are dispatched but not yet folded
+    /// into `done`.
+    saving: usize,
+}
+
+/// A node whose own save is in flight: held only until its reference arrives,
+/// then collapsed to a stub and reattached to its parent.
+struct Saving<R: Reference> {
+    parent: Option<u64>,
+    slot: Option<(u8, Prefix)>,
+    node: Node<R>,
+}
+
+/// A frame over `node`, its forks drained into the visit queue.
+fn commit_frame<R: Reference>(
+    id: u64,
+    parent: Option<u64>,
+    slot: Option<(u8, Prefix)>,
+    mut node: Node<R>,
+) -> CommitFrame<R> {
+    let todo = core::mem::take(&mut node.forks).into_iter();
+    CommitFrame {
+        id,
+        parent,
+        slot,
+        node,
+        todo,
+        done: BTreeMap::new(),
+        saving: 0,
     }
+}
 
-    fn frame<R: Reference>(slot: Option<(u8, Prefix)>, mut node: Node<R>) -> CommitFrame<R> {
-        let todo = core::mem::take(&mut node.forks).into_iter();
-        CommitFrame {
-            slot,
-            node,
-            todo,
-            done: BTreeMap::new(),
+/// The bounded-concurrent post-order commit: a depth-first descent whose
+/// ready frames dispatch their saves into a window, folding completions back
+/// into their parents until the root is persisted last.
+///
+/// The frontier shape mirrors the read walk's: a window of saves runs ahead
+/// through [`Admission`], their futures borrowing the saver so the writes
+/// land in the store the commit returns.
+struct Commit<'s, S, R: Reference> {
+    saver: &'s S,
+    admission: Admission,
+    /// Depth-first path of open frames, root at the base.
+    stack: Vec<CommitFrame<R>>,
+    /// Nodes whose own save is in flight, keyed by dispatch id.
+    inflight_nodes: BTreeMap<u64, Saving<R>>,
+    in_flight: FuturesUnordered<BoxSave<'s, R>>,
+    /// The persisted root, set when the root's own save completes.
+    root: Option<Node<R>>,
+    next_id: u64,
+}
+
+impl<'s, S, R> Commit<'s, S, R>
+where
+    S: NodeSaver<R>,
+    R: Reference + MaybeSend,
+{
+    fn new(saver: &'s S, window: Window, root: Node<R>) -> Self {
+        Self {
+            saver,
+            admission: Admission::new(window),
+            stack: alloc::vec![commit_frame(0, None, None, root)],
+            inflight_nodes: BTreeMap::new(),
+            in_flight: FuturesUnordered::new(),
+            root: None,
+            next_id: 1,
         }
     }
 
-    let width = width.max(1);
-    let mut pending = FuturesUnordered::new();
-    let mut stack = alloc::vec![frame(None, root)];
-    let mut committed_root = None;
-
-    while let Some(top) = stack.last_mut() {
-        if let Some((key, fork)) = top.todo.next() {
-            if fork.node.reference().is_some() {
-                // Already persisted; nothing below it changed.
-                top.done.insert(key, fork);
-            } else {
-                stack.push(frame(Some((key, fork.prefix)), fork.node));
+    /// Drive the commit: descend and dispatch ready saves up to the window,
+    /// fold one completion in, repeat until the root is persisted.
+    ///
+    /// Cancel-safe: all progress lives in `self`.
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Node<R>, MantarayError>> {
+        loop {
+            if let Err(error) = self.advance() {
+                return Poll::Ready(Err(error));
             }
-            continue;
-        }
-
-        let Some(mut finished) = stack.pop() else {
-            break;
-        };
-        finished.node.forks = core::mem::take(&mut finished.done);
-        let data = finished.node.encode()?;
-        let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
-        let address = *chunk.address();
-        let sealed: Chunk<_, AnyChunkSet<BS>> = Chunk::from_envelope(chunk.into())?;
-        pending.push(store.put(sealed));
-        if pending.len() >= width
-            && let Some(result) = pending.next().await
-        {
-            result.map_err(|e| MantarayError::StorePut {
-                source: Arc::new(e),
-            })?;
-        }
-
-        // The persisted node collapses to a stub, reloaded on demand.
-        finished.node.state = NodeState::Stub(R::from_stored(address));
-        finished.node.forks.clear();
-        match stack.last_mut() {
-            Some(parent) => {
-                if let Some((key, prefix)) = finished.slot {
-                    parent.done.insert(
-                        key,
-                        Fork {
-                            prefix,
-                            node: finished.node,
-                        },
-                    );
+            if self.stack.is_empty() && self.in_flight.is_empty() {
+                return Poll::Ready(self.root.take().ok_or(MantarayError::MissingReference));
+            }
+            // `advance` leaves the window non-empty whenever the stack still
+            // holds work, so the poll below always has a future to drive.
+            match Pin::new(&mut self.in_flight).poll_next(cx) {
+                Poll::Ready(Some((id, result))) => {
+                    if let Err(error) = self.absorb(id, result) {
+                        return Poll::Ready(Err(error));
+                    }
                 }
-                // A slotless frame is the root, which never has a parent.
+                Poll::Ready(None) | Poll::Pending => return Poll::Pending,
             }
-            None => committed_root = Some(finished.node),
         }
     }
 
-    while let Some(result) = pending.next().await {
-        result.map_err(|e| MantarayError::StorePut {
-            source: Arc::new(e),
-        })?;
+    /// Walk the frontier: queue persisted children, descend dirty ones, and
+    /// dispatch a frame's own save once its children are all saved and the
+    /// window has room. Stops when the deepest frame waits on its children
+    /// or the window is full.
+    fn advance(&mut self) -> Result<(), MantarayError> {
+        loop {
+            let Some(top) = self.stack.last_mut() else {
+                return Ok(());
+            };
+            if let Some((key, fork)) = top.todo.next() {
+                if fork.node.reference().is_some() {
+                    // Already persisted; nothing below it changed.
+                    top.done.insert(key, fork);
+                } else {
+                    let parent = top.id;
+                    let id = self.next_id;
+                    self.next_id = self.next_id.wrapping_add(1);
+                    self.stack.push(commit_frame(
+                        id,
+                        Some(parent),
+                        Some((key, fork.prefix)),
+                        fork.node,
+                    ));
+                }
+                continue;
+            }
+            if top.saving > 0 {
+                // Children still saving; this deepest frame, and so the whole
+                // stack, waits on their completions.
+                return Ok(());
+            }
+            // Saves are order-independent, so there is no serial-drain head to
+            // reserve a slot for: the whole window admits.
+            if !self.admission.admits(self.in_flight.len(), true) {
+                // The window is full; wait for a save to complete.
+                return Ok(());
+            }
+            self.dispatch()?;
+        }
     }
 
-    committed_root.ok_or(MantarayError::MissingReference)
+    /// Encode the top frame's node, dispatch its save into the window, and
+    /// pop it; its parent's outstanding-child count rises until the save
+    /// completes.
+    fn dispatch(&mut self) -> Result<(), MantarayError> {
+        let Some(mut frame) = self.stack.pop() else {
+            return Ok(());
+        };
+        // Fold the saved children back in, then encode the node's image.
+        frame.node.forks = core::mem::take(&mut frame.done);
+        let data = frame.node.encode()?;
+        let id = frame.id;
+        let saver = self.saver;
+        let future: BoxSave<'s, R> = Box::pin(async move {
+            let outcome = saver.save(data).await.map_err(|e| MantarayError::StorePut {
+                source: Arc::new(e),
+            });
+            (id, outcome)
+        });
+        if let Some(parent) = frame.parent {
+            let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent) else {
+                // A dispatched child's parent is always still on the stack.
+                return Err(MantarayError::MissingReference);
+            };
+            parent_frame.saving = parent_frame.saving.saturating_add(1);
+        }
+        self.inflight_nodes.insert(
+            id,
+            Saving {
+                parent: frame.parent,
+                slot: frame.slot,
+                node: frame.node,
+            },
+        );
+        self.in_flight.push(future);
+        Ok(())
+    }
+
+    /// Fold one completed save in: collapse its node to a stub and reattach
+    /// it to its parent, or crown the root.
+    fn absorb(&mut self, id: u64, result: Result<R, MantarayError>) -> Result<(), MantarayError> {
+        let reference = result?;
+        let Some(Saving {
+            parent,
+            slot,
+            mut node,
+        }) = self.inflight_nodes.remove(&id)
+        else {
+            // Every completion matches a dispatched node.
+            return Err(MantarayError::MissingReference);
+        };
+        // The persisted node collapses to a stub, reloaded on demand.
+        node.state = NodeState::Stub(reference);
+        node.forks.clear();
+        match (parent, slot) {
+            (Some(parent), Some((key, prefix))) => {
+                let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent)
+                else {
+                    return Err(MantarayError::MissingReference);
+                };
+                parent_frame.done.insert(key, Fork { prefix, node });
+                parent_frame.saving = parent_frame.saving.saturating_sub(1);
+            }
+            // A parentless, slotless node is the root.
+            _ => self.root = Some(node),
+        }
+        Ok(())
+    }
 }
 
 /// True when the reference would occupy the wire's absent-entry slot.
@@ -493,12 +627,15 @@ mod tests {
     use super::*;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
-    use nectar_primitives::{EncryptedChunkRef, EncryptionKey, StandardChunkSet, Verified};
+    use nectar_primitives::store::MemoryStore;
+    use nectar_primitives::{EncryptionKey, StandardChunkSet};
     use nectar_testing::run;
 
+    use crate::persist::single_chunk::{SingleChunkError, SingleChunkLoadSaver};
+
     type Store = MemoryStore<StandardChunkSet>;
-    type Editor = ManifestEditor<Store>;
+    type LoadSaver = SingleChunkLoadSaver<Store>;
+    type Editor = ManifestEditor<LoadSaver>;
 
     /// A ChunkAddress from a string, right-padded with zeroes.
     fn make_addr(s: &str) -> ChunkAddress {
@@ -544,17 +681,17 @@ mod tests {
     }
 
     /// Editor replay of a full script from an empty manifest.
-    fn editor_replay(script: &[Script]) -> (ChunkAddress, Store) {
-        let mut editor = Editor::new(Store::new());
+    fn editor_replay(script: &[Script]) -> (ChunkAddress, LoadSaver) {
+        let mut editor = Editor::new(LoadSaver::new(Store::new()));
         record(&mut editor, script);
         run(editor.commit()).unwrap()
     }
 
     /// Editor replay with a commit boundary after `split` ops, continuing
     /// from the persisted intermediate root.
-    fn editor_replay_split(script: &[Script], split: usize) -> (ChunkAddress, Store) {
+    fn editor_replay_split(script: &[Script], split: usize) -> (ChunkAddress, LoadSaver) {
         let (head, tail) = script.split_at(split.min(script.len()));
-        let mut editor = Editor::new(Store::new());
+        let mut editor = Editor::new(LoadSaver::new(Store::new()));
         record(&mut editor, head);
         let (root, store) = run(editor.commit()).unwrap();
         let mut editor = Editor::open(root, store);
@@ -648,25 +785,25 @@ mod tests {
     #[test]
     fn committed_root_is_readable() {
         let script = corpora().swap_remove(4);
-        let (root, store) = editor_replay(&script);
-        let reader = crate::Reader::new(ContentGet::new(store));
-        let entry = run(reader.get(&root, b"img/1.png")).unwrap().unwrap();
+        let (root, loadsaver) = editor_replay(&script);
+        let reader = crate::Reader::new(loadsaver);
+        let entry = run(reader.get(root, b"img/1.png")).unwrap().unwrap();
         assert_eq!(
             entry.reference().map(|r| *r.address()),
             Some(make_addr("1v2"))
         );
-        assert!(run(reader.get(&root, b"img/2.png")).unwrap().is_some());
-        assert!(run(reader.get(&root, b"absent")).unwrap().is_none());
+        assert!(run(reader.get(root, b"img/2.png")).unwrap().is_some());
+        assert!(run(reader.get(root, b"absent")).unwrap().is_none());
     }
 
     #[test]
     fn root_documents_readable_on_an_edge_node() {
-        let mut editor = Editor::new(Store::new());
+        let mut editor = Editor::new(LoadSaver::new(Store::new()));
         editor.put("/c", make_addr("c"));
         editor.put("//", make_addr("s"));
         editor.set_index_document("doc");
-        let (root, store) = run(editor.commit()).unwrap();
-        let entry = run(crate::Reader::new(ContentGet::new(store)).get(&root, b"/"))
+        let (root, loadsaver) = run(editor.commit()).unwrap();
+        let entry = run(crate::Reader::new(loadsaver).get(root, b"/"))
             .unwrap()
             .expect("metadata-carrying edge reads back");
         assert!(entry.reference().is_none());
@@ -683,7 +820,7 @@ mod tests {
     /// slot for it; commit fails loud instead of dropping it silently.
     #[test]
     fn root_metadata_put_fails_commit() {
-        let mut editor = Editor::new(Store::new());
+        let mut editor = Editor::new(LoadSaver::new(Store::new()));
         let meta = [("k".to_string(), "v".to_string())].into();
         editor.put_with_metadata("", make_addr("r"), meta);
         let err = run(editor.commit()).unwrap_err();
@@ -695,7 +832,7 @@ mod tests {
 
     #[test]
     fn zero_reference_put_fails_commit() {
-        let mut editor = Editor::new(Store::new());
+        let mut editor = Editor::new(LoadSaver::new(Store::new()));
         editor.put("a", ChunkAddress::from([0u8; 32]));
         let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
@@ -710,7 +847,7 @@ mod tests {
 
     #[test]
     fn apply_error_names_op_index_and_path() {
-        let mut editor = Editor::new(Store::new());
+        let mut editor = Editor::new(LoadSaver::new(Store::new()));
         editor.put("present", make_addr("p"));
         editor.remove("absent");
         let err = run(editor.commit()).unwrap_err();
@@ -731,17 +868,17 @@ mod tests {
         ]);
 
         // The editor commits the metadata across a reopen boundary.
-        let mut editor = Editor::new(Store::new());
+        let mut editor = Editor::new(LoadSaver::new(Store::new()));
         editor.put("index.html", make_addr("i"));
-        let (root, store) = run(editor.commit()).unwrap();
+        let (root, loadsaver) = run(editor.commit()).unwrap();
         assert_ne!(root, want, "the metadata must change the root");
-        let mut editor = Editor::open(root, store);
+        let mut editor = Editor::open(root, loadsaver);
         editor.set_index_document("index.html");
-        let (got, store) = run(editor.commit()).unwrap();
+        let (got, loadsaver) = run(editor.commit()).unwrap();
         assert_eq!(got, want);
 
-        let reader = crate::Reader::new(ContentGet::new(store));
-        let entry = run(reader.get(&got, b"/")).unwrap().unwrap();
+        let reader = crate::Reader::new(loadsaver);
+        let entry = run(reader.get(got, b"/")).unwrap().unwrap();
         assert_eq!(
             entry.metadata().get("website-index-document").cloned(),
             Some("index.html".to_string())
@@ -749,13 +886,13 @@ mod tests {
     }
 
     #[test]
-    fn noop_commit_on_opened_root_is_stable_and_put_free() {
-        let (root, store) = editor_replay(&[Script::Add("a", "1"), Script::Add("b", "2")]);
-        let counting = CountingPutStore::new(store);
-        let editor: ManifestEditor<_> = ManifestEditor::open(root, counting);
-        let (again, counting) = run(editor.commit()).unwrap();
+    fn noop_commit_on_opened_root_is_stable_and_save_free() {
+        let (root, loadsaver) = editor_replay(&[Script::Add("a", "1"), Script::Add("b", "2")]);
+        let counting = CountingSaver::new(loadsaver);
+        let editor: ManifestEditor<_> = ManifestEditor::open(root, counting.clone());
+        let (again, _) = run(editor.commit()).unwrap();
         assert_eq!(again, root);
-        assert_eq!(counting.puts.load(Ordering::SeqCst), 0);
+        assert_eq!(counting.saves(), 0);
     }
 
     #[test]
@@ -763,13 +900,13 @@ mod tests {
         // Seed a persisted empty encrypted manifest so both replays share
         // one obfuscation key.
         let seed: ManifestEditor<_, EncryptedChunkRef> =
-            ManifestEditor::new_encrypted(Store::new());
+            ManifestEditor::new_encrypted(LoadSaver::new(Store::new()));
         let (seed_ref, store) = run(seed.commit()).unwrap();
         let enc = |s: &str| EncryptedChunkRef::new(make_addr(s), EncryptionKey::from([0x5a; 32]));
 
         // Single-session replay from the seed.
         let mut single: ManifestEditor<_, EncryptedChunkRef> =
-            ManifestEditor::open_encrypted(seed_ref, store);
+            ManifestEditor::open_encrypted(seed_ref.clone(), store);
         single.put("secret/a.txt", enc("a"));
         single.put("secret/b.txt", enc("b"));
         single.remove("secret/a.txt");
@@ -788,31 +925,127 @@ mod tests {
         assert_eq!(got, want);
     }
 
-    /// A `ChunkPut` wrapper recording total and peak-concurrent puts.
-    struct CountingPutStore {
-        inner: Store,
-        puts: AtomicUsize,
-        inflight: AtomicUsize,
-        max_inflight: AtomicUsize,
+    /// A loadsaver wrapper counting save calls; `Clone` shares one count.
+    #[derive(Clone)]
+    struct CountingSaver {
+        inner: LoadSaver,
+        saves: Arc<AtomicUsize>,
     }
 
-    impl CountingPutStore {
-        fn new(inner: Store) -> Self {
+    impl CountingSaver {
+        fn new(inner: LoadSaver) -> Self {
             Self {
                 inner,
-                puts: AtomicUsize::new(0),
-                inflight: AtomicUsize::new(0),
-                max_inflight: AtomicUsize::new(0),
+                saves: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        fn saves(&self) -> usize {
+            self.saves.load(Ordering::SeqCst)
         }
     }
 
-    /// Yield once so queued sibling puts can ramp their in-flight count
-    /// before any single put resolves.
+    impl NodeLoader for CountingSaver {
+        type Error = SingleChunkError;
+
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            self.inner.load(reference).await
+        }
+    }
+
+    impl NodeSaver<ChunkRef> for CountingSaver {
+        type Error = SingleChunkError;
+
+        async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
+            self.saves.fetch_add(1, Ordering::SeqCst);
+            NodeSaver::<ChunkRef>::save(&self.inner, data).await
+        }
+    }
+
+    /// A saver that parks each save once before completing and records the
+    /// concurrency and the resident encoded bytes it observes, so a test can
+    /// witness sibling overlap and the window bound directly. `Clone` shares
+    /// one recording.
+    #[derive(Clone)]
+    struct WindowSaver {
+        inner: LoadSaver,
+        probe: Arc<SaveProbe>,
+    }
+
+    struct SaveProbe {
+        saves: AtomicUsize,
+        in_flight: AtomicUsize,
+        peak_in_flight: AtomicUsize,
+        resident: AtomicUsize,
+        peak_resident: AtomicUsize,
+        total: AtomicUsize,
+    }
+
+    impl WindowSaver {
+        fn new(inner: LoadSaver) -> Self {
+            Self {
+                inner,
+                probe: Arc::new(SaveProbe {
+                    saves: AtomicUsize::new(0),
+                    in_flight: AtomicUsize::new(0),
+                    peak_in_flight: AtomicUsize::new(0),
+                    resident: AtomicUsize::new(0),
+                    peak_resident: AtomicUsize::new(0),
+                    total: AtomicUsize::new(0),
+                }),
+            }
+        }
+
+        fn saves(&self) -> usize {
+            self.probe.saves.load(Ordering::SeqCst)
+        }
+
+        fn peak_in_flight(&self) -> usize {
+            self.probe.peak_in_flight.load(Ordering::SeqCst)
+        }
+
+        fn peak_resident(&self) -> usize {
+            self.probe.peak_resident.load(Ordering::SeqCst)
+        }
+
+        fn total(&self) -> usize {
+            self.probe.total.load(Ordering::SeqCst)
+        }
+    }
+
+    impl NodeLoader for WindowSaver {
+        type Error = SingleChunkError;
+
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            self.inner.load(reference).await
+        }
+    }
+
+    impl NodeSaver<ChunkRef> for WindowSaver {
+        type Error = SingleChunkError;
+
+        async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
+            let bytes = data.len();
+            self.probe.saves.fetch_add(1, Ordering::SeqCst);
+            self.probe.total.fetch_add(bytes, Ordering::SeqCst);
+            let level = self.probe.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.probe.peak_in_flight.fetch_max(level, Ordering::SeqCst);
+            let held = self.probe.resident.fetch_add(bytes, Ordering::SeqCst) + bytes;
+            self.probe.peak_resident.fetch_max(held, Ordering::SeqCst);
+            // Park once so queued siblings ramp their in-flight count before
+            // any single save resolves.
+            yield_once().await;
+            let result = NodeSaver::<ChunkRef>::save(&self.inner, data).await;
+            self.probe.resident.fetch_sub(bytes, Ordering::SeqCst);
+            self.probe.in_flight.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
+
+    /// Yield once, waking immediately, so pending saves accumulate.
     async fn yield_once() {
-        use core::task::Poll;
         let mut yielded = false;
-        futures::future::poll_fn(|cx| {
+        core::future::poll_fn(|cx| {
             if yielded {
                 Poll::Ready(())
             } else {
@@ -824,56 +1057,77 @@ mod tests {
         .await;
     }
 
-    impl ChunkGet<StandardChunkSet> for CountingPutStore {
-        type Trust = Verified;
-        type Error = <Store as ChunkGet<StandardChunkSet>>::Error;
-
-        async fn get(&self, address: &ChunkAddress) -> Result<Chunk, Self::Error> {
-            ChunkGet::get(&self.inner, address).await
+    /// A wide, two-level dirty manifest: `groups` first-byte fan-outs, each an
+    /// intermediate node with `leaves` value children keyed `[group, leaf]`.
+    /// Independent siblings under one intermediate are what a bounded window
+    /// overlaps; two levels keep the node count in the thousands without a
+    /// single node exceeding one chunk.
+    fn wide_editor(groups: u8, leaves: u8) -> ManifestEditor<WindowSaver> {
+        let mut editor = ManifestEditor::new(WindowSaver::new(LoadSaver::new(Store::new())));
+        for g in 0..groups {
+            for l in 0..leaves {
+                editor.put([g, l], make_addr(&format!("{g}-{l}")));
+            }
         }
+        editor
     }
 
-    impl ChunkPut<StandardChunkSet> for CountingPutStore {
-        type Error = <Store as ChunkPut<StandardChunkSet>>::Error;
-
-        async fn put(&self, chunk: Chunk) -> Result<(), Self::Error> {
-            self.puts.fetch_add(1, Ordering::SeqCst);
-            let cur = self.inflight.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max_inflight.fetch_max(cur, Ordering::SeqCst);
-            yield_once().await;
-            let r = ChunkPut::put(&self.inner, chunk).await;
-            self.inflight.fetch_sub(1, Ordering::SeqCst);
-            r
-        }
+    /// A window of `slots`.
+    fn win(slots: u16) -> Window {
+        Window::new(slots).unwrap()
     }
 
+    /// Independent siblings save concurrently and exactly fill the window: the
+    /// descent dispatches leaf saves until the window is full, so the peak is
+    /// the window whenever a group has at least that many leaves.
     #[test]
-    fn commit_puts_stay_bounded_and_overlap() {
-        // Twenty sibling files: one root and twenty leaves to put.
-        let mut editor: ManifestEditor<_> =
-            ManifestEditor::new(CountingPutStore::new(Store::new()));
-        for i in 0..20 {
-            let path = format!("file{i:02}.dat");
-            editor.put(path.as_str(), make_addr(&path));
+    fn commit_overlaps_siblings_within_the_window() {
+        for slots in [1u16, 4, 16] {
+            let editor = wide_editor(4, 24).with_commit_window(win(slots));
+            let saver = editor.store().clone();
+            let (_root, _store) = run(editor.commit()).unwrap();
+            let peak = saver.peak_in_flight();
+            assert!(
+                peak <= usize::from(slots),
+                "window {slots}: peak in-flight {peak} exceeds the window"
+            );
+            assert_eq!(
+                peak,
+                usize::from(slots),
+                "window {slots}: independent siblings must fill the window (peak {peak})"
+            );
         }
-        let width = 4;
-        let (_, store) = run(editor.with_put_width(width).commit()).unwrap();
-        assert!(store.puts.load(Ordering::SeqCst) > 1);
-        let peak = store.max_inflight.load(Ordering::SeqCst);
-        assert!(peak > 1, "commit puts must overlap (peak {peak})");
-        assert!(peak <= width, "peak {peak} exceeds put width {width}");
     }
 
+    /// The commit is memory-bounded: peak resident encoded bytes stay within a
+    /// window of node images, never the whole tree, even as the tree grows far
+    /// past the window.
     #[test]
-    fn commit_width_one_is_serial() {
-        let mut editor: ManifestEditor<_> =
-            ManifestEditor::new(CountingPutStore::new(Store::new()));
-        for i in 0..8 {
-            let path = format!("file{i:02}.dat");
-            editor.put(path.as_str(), make_addr(&path));
-        }
-        let (_, store) = run(editor.with_put_width(0).commit()).unwrap();
-        assert_eq!(store.max_inflight.load(Ordering::SeqCst), 1);
+    fn commit_holds_at_most_a_window_of_encoded_images() {
+        let slots = 8u16;
+        let editor = wide_editor(32, 32).with_commit_window(win(slots));
+        let saver = editor.store().clone();
+        run(editor.commit()).unwrap();
+
+        let saves = saver.saves();
+        assert!(saves > 1000, "expected thousands of dirty nodes, saved {saves}");
+        assert!(
+            saver.peak_in_flight() <= usize::from(slots),
+            "in-flight saves exceeded the window"
+        );
+        // Resident encoded bytes never approach the whole tree's: a window of
+        // images is a small fraction of every node's image summed.
+        let peak = saver.peak_resident();
+        let total = saver.total();
+        let mean = total / saves.max(1);
+        assert!(
+            peak <= usize::from(slots) * mean * 4,
+            "resident bytes {peak} exceed a window of images (mean {mean})"
+        );
+        assert!(
+            peak * 4 < total,
+            "resident bytes {peak} are not bounded below the whole tree {total}"
+        );
     }
 
     /// Replay the committed seed corpus of the `mantaray_editor_differential`

@@ -20,7 +20,6 @@ workspace = true
 [dependencies]
 alloy-primitives = { workspace = true, features = ["map"], optional = true }
 bitflags = { workspace = true, optional = true }
-bytes = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 nectar-kernel = { workspace = true, optional = true }
 nectar-primitives = { workspace = true, optional = true }
@@ -31,6 +30,7 @@ rand = { workspace = true, optional = true }
 
 [dev-dependencies]
 arbitrary = { workspace = true }
+bytes.workspace = true
 # Registry-pinned legacy oracle for the submission-order differential gate:
 # identical op sequences must produce byte-identical roots.
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
@@ -49,7 +49,6 @@ std = [
 	"alloy-primitives?/std",
 	"dep:alloy-primitives",
 	"dep:bitflags",
-	"dep:bytes",
 	"dep:futures",
 	"dep:nectar-kernel",
 	"dep:nectar-primitives",

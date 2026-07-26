@@ -17,47 +17,8 @@
 //! `tokio` adapter module, streaming upload on `TokioWriter`, restartable
 //! download on [`DownloadBuilder`], the executor-agnostic stream on
 //! [`FileStream`], and a whole-file guest read under [`sync::drive`].
-//! Publishing a root under a manifest path rides the mantaray edit surface:
-//!
-//! ```
-//! use nectar_file::AnyFile;
-//! use nectar_mantaray::{ManifestEditor, Reader};
-//! use nectar_primitives::store::ContentGet;
-//!
-//! # nectar_testing::run(async {
-//! let data = b"hello swarm".to_vec();
-//! # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
-//! # let root = nectar_file::Split::<_, nectar_file::Plain, 4096>::collect(
-//! #     std::sync::Arc::clone(&store),
-//! #     &data,
-//! # )
-//! # .await
-//! # .unwrap();
-//! let mut editor = ManifestEditor::new(store);
-//! editor.put("hello.txt", root);
-//! editor.put("stale.txt", root);
-//! editor.remove("stale.txt");
-//! let (manifest_root, store) = editor.commit().await.unwrap();
-//!
-//! let reader = Reader::new(ContentGet::new(store.clone()));
-//! assert!(
-//!     reader
-//!         .get(&manifest_root, b"stale.txt")
-//!         .await
-//!         .unwrap()
-//!         .is_none()
-//! );
-//! let entry = reader
-//!     .get(&manifest_root, b"hello.txt")
-//!     .await
-//!     .unwrap()
-//!     .unwrap();
-//! let file = AnyFile::open(ContentGet::new(store), entry.reference().unwrap().clone())
-//!     .await
-//!     .unwrap();
-//! assert_eq!(file.collect(u64::MAX).await.unwrap(), data);
-//! # });
-//! ```
+//! Publishing a root under a manifest path lives in the workspace
+//! integration tests, on the manifest side of the layering.
 
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]

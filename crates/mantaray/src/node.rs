@@ -11,11 +11,11 @@ use core::pin::Pin;
 
 use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
 use crate::obfuscation::ObfuscationKey;
+use crate::persist::NodeLoader;
 use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
-use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ChunkRef, Reference};
-use nectar_primitives::store::{MaybeSend, TrustedGet};
+use nectar_primitives::chunk::{ChunkRef, Reference};
+use nectar_primitives::store::MaybeSend;
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
-use nectar_primitives::{AnyChunkSet, EncryptedChunkRef, EncryptionKey};
 
 /// Boxed recursion future: `Send` on multi-threaded targets, unbounded on
 /// wasm32 and under the `unsync` feature, so `!Send` stores stay usable.
@@ -194,27 +194,6 @@ pub(crate) enum NodeState<R: Reference> {
     Dirty,
     /// Persisted under this reference with its forks loaded from storage.
     Clean(R),
-}
-
-/// Constructor for the reference `save` records for a persisted node chunk.
-///
-/// Node chunks are stored as plain content chunks, so the encrypted width
-/// carries an all-zero key alongside the address.
-pub(crate) trait StoredReference: Reference {
-    /// Full-width reference for a node chunk persisted at `address`.
-    fn from_stored(address: ChunkAddress) -> Self;
-}
-
-impl StoredReference for ChunkRef {
-    fn from_stored(address: ChunkAddress) -> Self {
-        Self::new(address)
-    }
-}
-
-impl StoredReference for EncryptedChunkRef {
-    fn from_stored(address: ChunkAddress) -> Self {
-        Self::new(address, EncryptionKey::from([0u8; EncryptionKey::SIZE]))
-    }
 }
 
 /// A node in the mantaray trie.
@@ -400,21 +379,15 @@ impl<R: Reference> Node<R> {
     }
 
     /// Load forks from storage if the node hasn't been loaded yet.
-    pub(crate) async fn ensure_loaded<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
-        &mut self,
-        store: &S,
-    ) -> Result<()> {
+    pub(crate) async fn ensure_loaded<L: NodeLoader>(&mut self, loader: &L) -> Result<()> {
         if !self.is_loaded() {
-            self.load(store).await?;
+            self.load(loader).await?;
         }
         Ok(())
     }
 
-    /// Load this node from storage by its reference.
-    pub(crate) async fn load<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
-        &mut self,
-        store: &S,
-    ) -> Result<()> {
+    /// Load this node through the loader by its full-width reference.
+    pub(crate) async fn load<L: NodeLoader>(&mut self, loader: &L) -> Result<()> {
         let reference = match &self.state {
             NodeState::Stub(reference) | NodeState::Clean(reference) => reference.clone(),
             // A dirty node holds its content in memory; nothing to fetch.
@@ -422,13 +395,13 @@ impl<R: Reference> Node<R> {
         };
 
         let address = *reference.address();
-        let chunk = store
-            .get(&address)
+        let bytes = loader
+            .load(&reference.clone().into_entry_ref())
             .await
             .map_err(|e| MantarayError::StoreGet {
                 source: alloc::sync::Arc::new(e),
             })?;
-        let mut loaded = Self::decode(chunk.envelope().data().as_ref())
+        let mut loaded = Self::decode(bytes.as_slice())
             .map_err(|source| MantarayError::Corrupt { address, source })?;
         loaded.mark_persisted(reference);
         // Preserve fields that live in the parent's fork data, not in this node's chunk:
@@ -448,12 +421,12 @@ impl<R: Reference> Node<R> {
     // <= min(prefix.len(), path.len()), bounding every split; the fork at
     // `path[0]` is checked present (`contains_key`) before each get/expect.
     #[allow(clippy::indexing_slicing, clippy::expect_used)]
-    pub(crate) fn add<'a, S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
+    pub(crate) fn add<'a, L: NodeLoader>(
         &'a mut self,
         path: &'a [u8],
         entry: Option<R>,
         metadata: BTreeMap<String, String>,
-        store: &'a S,
+        loader: &'a L,
     ) -> RecurseFuture<'a>
     where
         R: MaybeSend,
@@ -465,7 +438,7 @@ impl<R: Reference> Node<R> {
                 // value, or the overwrite would drop its subtree at the next
                 // save.
                 if !self.is_loaded() {
-                    self.load(store).await?;
+                    self.load(loader).await?;
                 }
                 self.entry = entry;
                 self.make_value();
@@ -481,7 +454,7 @@ impl<R: Reference> Node<R> {
 
             // load forks if needed
             if !self.is_loaded() {
-                self.load(store).await?;
+                self.load(loader).await?;
                 self.mark_dirty();
             }
 
@@ -494,7 +467,7 @@ impl<R: Reference> Node<R> {
 
                 if path.len() > PREFIX_MAX_LEN {
                     let (prefix, rest) = path.split_at(PREFIX_MAX_LEN);
-                    nn.add(rest, entry, metadata, store).await?;
+                    nn.add(rest, entry, metadata, loader).await?;
                     nn.update_is_with_path_separator(prefix);
                     self.forks.insert(
                         path[0],
@@ -562,7 +535,7 @@ impl<R: Reference> Node<R> {
             };
 
             nn.update_is_with_path_separator(path);
-            nn.add(&path[c..], entry, metadata, store).await?;
+            nn.add(&path[c..], entry, metadata, loader).await?;
 
             self.forks.insert(
                 path[0],
@@ -584,10 +557,10 @@ impl<R: Reference> Node<R> {
     // `path.starts_with(&prefix)` guarantees `prefix.len() <= path.len()`;
     // the fork at `first` is checked present before the get_mut/expect.
     #[allow(clippy::indexing_slicing, clippy::expect_used)]
-    pub(crate) fn remove<'a, S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
+    pub(crate) fn remove<'a, L: NodeLoader>(
         &'a mut self,
         path: &'a [u8],
-        store: &'a S,
+        loader: &'a L,
     ) -> RecurseFuture<'a>
     where
         R: MaybeSend,
@@ -597,7 +570,7 @@ impl<R: Reference> Node<R> {
                 return Err(MantarayError::EmptyPath);
             }
 
-            self.ensure_loaded(store).await?;
+            self.ensure_loaded(loader).await?;
 
             let first = path[0];
 
@@ -623,7 +596,7 @@ impl<R: Reference> Node<R> {
                 Ok(())
             } else {
                 let fork = self.forks.get_mut(&first).expect("checked above");
-                fork.node.remove(rest, store).await
+                fork.node.remove(rest, loader).await
             };
 
             // Always clear reference so the node gets re-saved.
@@ -763,29 +736,27 @@ mod arbitrary_impls {
 /// checked against.
 #[cfg(test)]
 mod test_traversal {
-    use bytes::Bytes;
-    use nectar_primitives::chunk::{ChunkOps, ContentChunk, Reference};
-    use nectar_primitives::store::{ChunkPut, TrustedGet};
-    use nectar_primitives::{AnyChunkSet, Chunk};
+    use nectar_primitives::chunk::Reference;
 
     use alloc::collections::{BTreeMap, btree_map};
 
-    use super::{Fork, Node, NodeState, Prefix, StoredReference, common_prefix_len};
+    use super::{Fork, Node, NodeState, Prefix, common_prefix_len};
     use crate::error::{MantarayError, Result};
+    use crate::persist::{NodeLoader, NodeSaver};
 
     impl<R: Reference> Node<R> {
         /// Look up the node at the given path, loading from storage as needed.
         #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-        pub(crate) async fn lookup_node<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
+        pub(crate) async fn lookup_node<L: NodeLoader>(
             &mut self,
             path: &[u8],
-            store: &S,
+            loader: &L,
         ) -> Result<&mut Self> {
             // Iterative descent: reborrow `current` to the chosen child each step.
             let mut current = self;
             let mut rest = path;
             loop {
-                current.ensure_loaded(store).await?;
+                current.ensure_loaded(loader).await?;
 
                 if rest.is_empty() {
                     return Ok(current);
@@ -809,12 +780,12 @@ mod test_traversal {
         }
 
         /// Look up the entry at the given path, loading from storage as needed.
-        pub(crate) async fn lookup<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
+        pub(crate) async fn lookup<L: NodeLoader>(
             &mut self,
             path: &[u8],
-            store: &S,
+            loader: &L,
         ) -> Result<Option<&R>> {
-            let node = self.lookup_node(path, store).await?;
+            let node = self.lookup_node(path, loader).await?;
             if !node.is_value() && !path.is_empty() {
                 return Err(MantarayError::NoEntryFound {
                     reference: node.reference().map(|r| *r.address()),
@@ -825,10 +796,10 @@ mod test_traversal {
 
         /// Test whether a prefix exists in the trie, loading from storage as needed.
         #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-        pub(crate) async fn has_prefix<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize>(
+        pub(crate) async fn has_prefix<L: NodeLoader>(
             &mut self,
             path: &[u8],
-            store: &S,
+            loader: &L,
         ) -> Result<bool> {
             // Iterative descent: reborrow `current` to the chosen child each step.
             let mut current = self;
@@ -838,7 +809,7 @@ mod test_traversal {
                     return Ok(true);
                 }
 
-                current.ensure_loaded(store).await?;
+                current.ensure_loaded(loader).await?;
 
                 let fork = match current.forks.get_mut(&rest[0]) {
                     Some(f) => f,
@@ -861,19 +832,12 @@ mod test_traversal {
             }
         }
 
-        /// Save this node and all children to storage in post-order.
+        /// Save this node and all children through the saver in post-order.
         ///
-        /// Uses BMT content-addressing via `ContentChunk`. Each owned frame
-        /// drains its node's fork map and reattaches saved children on pop;
-        /// on failure the detached subtree is dropped and `self` is left
-        /// empty.
-        pub(crate) async fn save<S: ChunkPut<AnyChunkSet<BS>>, const BS: usize>(
-            &mut self,
-            store: &S,
-        ) -> Result<()>
-        where
-            R: StoredReference,
-        {
+        /// Each owned frame drains its node's fork map and reattaches saved
+        /// children on pop; on failure the detached subtree is dropped and
+        /// `self` is left empty.
+        pub(crate) async fn save<L: NodeSaver<R>>(&mut self, saver: &L) -> Result<()> {
             if self.reference().is_some() {
                 return Ok(());
             }
@@ -920,21 +884,18 @@ mod test_traversal {
                 let Some(mut finished) = stack.pop() else {
                     break;
                 };
-                // All children saved; encode and put this node.
+                // All children saved; encode and persist this node.
                 finished.node.forks = core::mem::take(&mut finished.done);
                 let data = finished.node.encode()?;
-                let chunk = ContentChunk::<BS>::new(Bytes::from(data))?;
-                let address = *chunk.address();
-                let sealed: Chunk<_, AnyChunkSet<BS>> = Chunk::from_envelope(chunk.into())?;
-                store
-                    .put(sealed)
+                let reference = saver
+                    .save(data)
                     .await
                     .map_err(|e| MantarayError::StorePut {
                         source: alloc::sync::Arc::new(e),
                     })?;
                 // Persist the reference and drop the now-redundant forks: the node
                 // becomes a stub, reloaded on demand.
-                finished.node.state = NodeState::Stub(R::from_stored(address));
+                finished.node.state = NodeState::Stub(reference);
                 finished.node.forks.clear();
                 match stack.last_mut() {
                     Some(parent) => {
@@ -957,23 +918,19 @@ mod test_traversal {
         }
 
         /// Walk all nodes depth-first, calling `f` for each node with its path.
-        pub(crate) async fn walk<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize, F>(
-            &mut self,
-            store: &S,
-            f: &mut F,
-        ) -> Result<()>
+        pub(crate) async fn walk<L: NodeLoader, F>(&mut self, loader: &L, f: &mut F) -> Result<()>
         where
             F: FnMut(&[u8], &Self) -> Result<()>,
         {
             let mut path_buf = Vec::new();
-            walk_inner(&mut path_buf, self, store, f).await
+            walk_inner(&mut path_buf, self, loader, f).await
         }
 
         /// Walk the subtree at `root`, calling `f` for each node.
-        pub(crate) async fn walk_from<S: TrustedGet<AnyChunkSet<BS>>, const BS: usize, F>(
+        pub(crate) async fn walk_from<L: NodeLoader, F>(
             &mut self,
             root: &[u8],
-            store: &S,
+            loader: &L,
             f: &mut F,
         ) -> Result<()>
         where
@@ -981,11 +938,11 @@ mod test_traversal {
         {
             let mut path_buf = root.to_vec();
             if root.is_empty() {
-                return walk_inner(&mut path_buf, self, store, f).await;
+                return walk_inner(&mut path_buf, self, loader, f).await;
             }
 
-            let target = self.lookup_node(root, store).await?;
-            walk_inner(&mut path_buf, target, store, f).await
+            let target = self.lookup_node(root, loader).await?;
+            walk_inner(&mut path_buf, target, loader, f).await
         }
     }
 
@@ -995,10 +952,10 @@ mod test_traversal {
     /// `FnMut`. Each frame drains its node's fork map and reattaches walked
     /// children on pop, so the trie is intact (and loaded) on return; on
     /// failure the detached subtree is dropped and `node` is left empty.
-    async fn walk_inner<R: Reference, S: TrustedGet<AnyChunkSet<BS>>, const BS: usize, F>(
+    async fn walk_inner<R: Reference, L: NodeLoader, F>(
         path_buf: &mut Vec<u8>,
         node: &mut Node<R>,
-        store: &S,
+        loader: &L,
         f: &mut F,
     ) -> Result<()>
     where
@@ -1033,7 +990,7 @@ mod test_traversal {
         }
 
         let mut root = core::mem::take(node);
-        root.ensure_loaded(store).await?;
+        root.ensure_loaded(loader).await?;
         f(path_buf, &root)?;
 
         let mut stack = vec![frame(None, root, path_buf.len())];
@@ -1044,7 +1001,7 @@ mod test_traversal {
                 path_buf.extend_from_slice(&fork.prefix);
 
                 let mut child = fork.node;
-                child.ensure_loaded(store).await?;
+                child.ensure_loaded(loader).await?;
                 f(path_buf, &child)?;
 
                 stack.push(frame(Some((key, fork.prefix)), child, prev_len));
@@ -1081,11 +1038,14 @@ mod test_traversal {
 mod tests {
     use bytes::Bytes;
     use nectar_primitives::bmt::DEFAULT_BODY_SIZE;
-    use nectar_primitives::chunk::ContentChunk;
+    use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ContentChunk};
     use nectar_primitives::store::{ChunkPut, MemoryStore, NullLoader};
     use nectar_primitives::{Chunk, StandardChunkSet};
 
     use super::*;
+    use crate::persist::single_chunk::SingleChunkLoadSaver;
+
+    type LoadSaver = SingleChunkLoadSaver<MemoryStore<StandardChunkSet>>;
 
     struct TestCase {
         _name: &'static str,
@@ -1252,7 +1212,6 @@ mod tests {
     use nectar_testing::run;
 
     const NL: NullLoader = NullLoader;
-    const BS: usize = DEFAULT_BODY_SIZE;
 
     /// Create a plain reference from a string, left-padded with zeroes.
     fn make_entry(s: &str) -> ChunkRef {
@@ -1265,27 +1224,27 @@ mod tests {
 
     /// In-memory add: delegates to `add` with NullLoader.
     fn node_add(n: &mut Node, path: &[u8], entry: ChunkRef, meta: BTreeMap<String, String>) {
-        run(n.add::<NullLoader, BS>(path, Some(entry), meta, &NL)).unwrap();
+        run(n.add(path, Some(entry), meta, &NL)).unwrap();
     }
 
     /// In-memory lookup: delegates to `lookup` with NullLoader.
     fn node_lookup<'n>(n: &'n mut Node, path: &[u8]) -> Result<Option<&'n ChunkRef>> {
-        run(n.lookup::<NullLoader, BS>(path, &NL))
+        run(n.lookup(path, &NL))
     }
 
     /// In-memory lookup_node: delegates to `lookup_node` with NullLoader.
     fn node_lookup_node<'n>(n: &'n mut Node, path: &[u8]) -> Result<&'n mut Node> {
-        run(n.lookup_node::<NullLoader, BS>(path, &NL))
+        run(n.lookup_node(path, &NL))
     }
 
     /// In-memory remove: delegates to `remove` with NullLoader.
     fn node_remove(n: &mut Node, path: &[u8]) -> Result<()> {
-        run(n.remove::<NullLoader, BS>(path, &NL))
+        run(n.remove(path, &NL))
     }
 
     /// In-memory has_prefix: delegates to `has_prefix` with NullLoader.
     fn node_has_prefix(n: &mut Node, path: &[u8]) -> Result<bool> {
-        run(n.has_prefix::<NullLoader, BS>(path, &NL))
+        run(n.has_prefix(path, &NL))
     }
 
     /// In-memory walk: delegates to `walk` with NullLoader.
@@ -1293,7 +1252,7 @@ mod tests {
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        run(n.walk::<NullLoader, BS, _>(&NL, f))
+        run(n.walk(&NL, f))
     }
 
     /// In-memory walk_node: delegates to `walk_from` with NullLoader.
@@ -1301,7 +1260,7 @@ mod tests {
     where
         F: FnMut(&[u8], &Node) -> Result<()>,
     {
-        run(n.walk_from::<NullLoader, BS, _>(root, &NL, f))
+        run(n.walk_from(root, &NL, f))
     }
 
     #[test]
@@ -1472,18 +1431,18 @@ mod tests {
 
         for c in items {
             let e = make_entry(c);
-            n.add::<NullLoader, BS>(c.as_bytes(), Some(e), BTreeMap::new(), &NL)
+            n.add(c.as_bytes(), Some(e), BTreeMap::new(), &NL)
                 .await
                 .unwrap();
         }
 
-        let store = MemoryStore::<StandardChunkSet>::new();
-        n.save(&store).await.unwrap();
+        let loadsaver = LoadSaver::new(MemoryStore::new());
+        n.save(&loadsaver).await.unwrap();
 
         let mut n2: Node = Node::from_reference(*n.reference().unwrap());
 
         for &d in items {
-            let node = n2.lookup_node(d.as_bytes(), &store).await.unwrap();
+            let node = n2.lookup_node(d.as_bytes(), &loadsaver).await.unwrap();
             assert!(node.is_value());
             assert_eq!(node.entry(), Some(&make_entry(d)));
         }
@@ -1503,7 +1462,7 @@ mod tests {
         run(store.put(Chunk::from_envelope(chunk.into()).unwrap())).unwrap();
 
         let mut node: Node = Node::from_reference(ChunkRef::from(address));
-        let err = run(node.load(&store)).unwrap_err();
+        let err = run(node.load(&LoadSaver::new(store))).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1614,31 +1573,31 @@ mod tests {
     // Tests save->reload->remove->save->reload->verify-removed cycle.
 
     async fn run_persist_remove(tc: RemoveTestCase) {
-        let store = MemoryStore::<StandardChunkSet>::new();
+        let loadsaver = LoadSaver::new(MemoryStore::new());
 
         // add entries and persist
         let mut n = Node::default();
         for c in &tc.items {
             let e = make_entry(&c.path);
-            n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &store)
+            n.add(c.path.as_bytes(), Some(e), c.metadata.clone(), &loadsaver)
                 .await
                 .unwrap();
         }
-        n.save(&store).await.unwrap();
+        n.save(&loadsaver).await.unwrap();
         let ref_ = *n.reference().unwrap();
 
         // reload and remove
         let mut nn: Node = Node::from_reference(ref_);
         for path in &tc.remove {
-            nn.remove(path.as_bytes(), &store).await.unwrap();
+            nn.remove(path.as_bytes(), &loadsaver).await.unwrap();
         }
-        nn.save(&store).await.unwrap();
+        nn.save(&loadsaver).await.unwrap();
         let ref2 = *nn.reference().unwrap();
 
         // reload and verify removed paths are gone
         let mut nnn: Node = Node::from_reference(ref2);
         for path in &tc.remove {
-            let result = nnn.lookup_node(path.as_bytes(), &store).await;
+            let result = nnn.lookup_node(path.as_bytes(), &loadsaver).await;
             assert!(
                 result.is_err(),
                 "expected removed path '{path}' to be not found"
@@ -1665,15 +1624,15 @@ mod tests {
     #[test]
     fn root_value_survives_reload() {
         run(async {
-            let store = MemoryStore::<StandardChunkSet>::new();
+            let loadsaver = LoadSaver::new(MemoryStore::new());
             let mut n = Node::default();
-            n.add(b"", Some(make_entry("root")), BTreeMap::new(), &store)
+            n.add(b"", Some(make_entry("root")), BTreeMap::new(), &loadsaver)
                 .await
                 .unwrap();
-            n.save(&store).await.unwrap();
+            n.save(&loadsaver).await.unwrap();
 
             let mut n2: Node = Node::from_reference(*n.reference().unwrap());
-            let node = n2.lookup_node(b"", &store).await.unwrap();
+            let node = n2.lookup_node(b"", &loadsaver).await.unwrap();
             assert!(node.is_value());
             assert_eq!(node.entry(), Some(&make_entry("root")));
         });
@@ -1684,13 +1643,13 @@ mod tests {
     #[test]
     fn save_rejects_root_metadata() {
         run(async {
-            let store = MemoryStore::<StandardChunkSet>::new();
+            let loadsaver = LoadSaver::new(MemoryStore::new());
             let mut n = Node::default();
             let meta = BTreeMap::from([("k".to_string(), "v".to_string())]);
-            n.add(b"", Some(make_entry("root")), meta, &store)
+            n.add(b"", Some(make_entry("root")), meta, &loadsaver)
                 .await
                 .unwrap();
-            let err = n.save(&store).await.unwrap_err();
+            let err = n.save(&loadsaver).await.unwrap_err();
             assert!(matches!(err, MantarayError::RootMetadata));
         });
     }
@@ -1846,16 +1805,18 @@ mod tests {
             node_add(&mut n, path, entry, BTreeMap::new());
         }
 
-        let store = MemoryStore::<StandardChunkSet>::new();
-        run(n.save(&store)).unwrap();
+        let loadsaver = LoadSaver::new(MemoryStore::new());
+        run(n.save(&loadsaver)).unwrap();
 
         let mut n2: Node = Node::from_reference(*n.reference().unwrap());
 
         let mut walked: Vec<Vec<u8>> = Vec::new();
-        run(n2.walk_from(b"", &store, &mut |path: &[u8], _node: &Node| {
-            walked.push(path.to_vec());
-            Ok(())
-        }))
+        run(
+            n2.walk_from(b"", &loadsaver, &mut |path: &[u8], _node: &Node| {
+                walked.push(path.to_vec());
+                Ok(())
+            }),
+        )
         .unwrap();
 
         assert_eq!(

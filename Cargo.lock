@@ -2466,6 +2466,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "digest 0.11.3",
  "nectar-file",
+ "nectar-loadsave",
  "nectar-mantaray 0.4.0",
  "nectar-postage",
  "nectar-postage-issuer",
@@ -2552,7 +2553,6 @@ dependencies = [
  "futures-util",
  "nectar-clock",
  "nectar-kernel",
- "nectar-mantaray 0.4.0",
  "nectar-marker",
  "nectar-primitives 0.4.0",
  "nectar-tasks",
@@ -2575,6 +2575,7 @@ dependencies = [
  "bytes",
  "futures",
  "nectar-file",
+ "nectar-loadsave",
  "nectar-manifest",
  "nectar-mantaray 0.3.0",
  "nectar-mantaray 0.4.0",
@@ -2594,6 +2595,18 @@ dependencies = [
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",
+]
+
+[[package]]
+name = "nectar-loadsave"
+version = "0.4.0"
+dependencies = [
+ "bytes",
+ "nectar-file",
+ "nectar-mantaray 0.4.0",
+ "nectar-primitives 0.4.0",
+ "nectar-testing",
+ "thiserror",
 ]
 
 [[package]]
