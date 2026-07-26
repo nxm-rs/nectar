@@ -1,5 +1,5 @@
 [package]
-name = "nectar-feeds-sim"
+name = "nectar-feeds-bench"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

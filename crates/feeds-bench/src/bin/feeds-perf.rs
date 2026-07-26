@@ -8,10 +8,10 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::process::Command;
 
-use nectar_feeds_sim::corpus::{Corpus, TOPIC_LABEL};
-use nectar_feeds_sim::measure::{self, FinderKind, LENGTHS, LINEAR_BUDGET, WIDTHS};
-use nectar_feeds_sim::reference;
-use nectar_feeds_sim::results::{self, Document, FinderCell, Meta};
+use nectar_feeds_bench::corpus::{Corpus, TOPIC_LABEL};
+use nectar_feeds_bench::measure::{self, FinderKind, LENGTHS, LINEAR_BUDGET, WIDTHS};
+use nectar_feeds_bench::reference;
+use nectar_feeds_bench::results::{self, Document, FinderCell, Meta};
 
 const DEFAULT_OUT: &str = "feeds-perf-results.json";
 
