@@ -583,7 +583,8 @@ mod tests {
 
     /// Round-trip totality: compact metadata filling the `u16` length field
     /// cannot be re-padded into it, so decode rejects what encode cannot
-    /// emit. Takes a ~64KB crafted region to reach.
+    /// emit. Only reachable by decoding a crafted region larger than a chunk
+    /// (the fuzz path); a real node is one content chunk and never nears it.
     #[test]
     fn decode_rejects_metadata_that_cannot_reencode() {
         let json = format!(r#"{{"k":"{}"}}"#, "a".repeat(65527));
