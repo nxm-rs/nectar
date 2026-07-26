@@ -1,10 +1,12 @@
-//! Bounded-admission kernel beneath the streaming walkers: the
-//! fixed-membership [`InFlight`] set, the read-ahead [`Window`], the
-//! head-slot [`Admission`] predicate, the [`AdmitPolicy`] adaptive-window
-//! seam, and the [`BoxFuture`] alias the sets hold.
+//! Bounded-admission kernel beneath the streaming walkers: the shared
+//! [`Driver`] loop over a [`WalkPolicy`], the fixed-membership [`InFlight`]
+//! set, the read-ahead [`Window`], the head-slot [`Admission`] predicate, the
+//! [`AdmitPolicy`] adaptive-window seam, and the [`BoxFuture`] alias the sets
+//! hold.
 //!
-//! The walker engines stay bespoke in their own crates; this crate carries
-//! only the admission layer they share.
+//! The driver owns the `admit`/`take`/`poll` loop; each walker's frontier,
+//! ordering, and completion fold stay bespoke as a [`WalkPolicy`] impl in its
+//! own crate, and a monomorphised driver is the hand-rolled walk.
 
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -38,6 +40,7 @@ use nectar_marker as _;
 mod admission;
 #[cfg(feature = "chunk")]
 mod chunk;
+mod driver;
 mod future;
 mod inflight;
 mod policy;
@@ -47,6 +50,7 @@ pub use admission::Admission;
 #[cfg(feature = "chunk")]
 #[cfg_attr(docsrs, doc(cfg(feature = "chunk")))]
 pub use chunk::get_verified;
+pub use driver::{Driver, WalkPolicy};
 pub use future::BoxFuture;
 pub use inflight::InFlight;
 pub use policy::{AdmitPolicy, Fixed, FromFn, Observations, from_fn};
