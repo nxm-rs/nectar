@@ -8,12 +8,19 @@
 //! [`NodeSaver`], so the storage layout and any put concurrency are the
 //! adapter's.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::collections::btree_map;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::{Future, poll_fn};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
+use futures::Stream;
+use futures::stream::FuturesUnordered;
+use nectar_kernel::{Admission, Window};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::store::MaybeSend;
 use nectar_primitives::{EncryptedChunkRef, EntryRef};
@@ -69,6 +76,7 @@ pub struct ManifestEditor<S, R: Reference = ChunkRef> {
     trie: Node<R>,
     ops: Vec<(Vec<u8>, Op<R>)>,
     store: S,
+    commit_window: Window,
 }
 
 impl<S> ManifestEditor<S, ChunkRef> {
@@ -108,6 +116,7 @@ impl<S, R: Reference> ManifestEditor<S, R> {
             trie,
             ops: Vec::new(),
             store,
+            commit_window: Window::DEFAULT,
         }
     }
 
@@ -115,6 +124,14 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     #[must_use]
     pub const fn store(&self) -> &S {
         &self.store
+    }
+
+    /// Replace the commit save window: the cap on node saves in flight while
+    /// the dirty trie is persisted post-order.
+    #[must_use]
+    pub const fn with_commit_window(mut self, window: Window) -> Self {
+        self.commit_window = window;
+        self
     }
 
     /// The recorded ops in submission order.
@@ -229,7 +246,8 @@ impl<S: NodeLoader + NodeSaver<ChunkRef>> ManifestEditor<S, ChunkRef> {
     /// and the loadsaver.
     pub async fn commit(mut self) -> Result<(ChunkAddress, S), EditorError> {
         self.apply_ops().await?;
-        let committed = commit_trie::<S, ChunkRef>(self.trie, &self.store)
+        let window = self.commit_window;
+        let committed = commit_trie::<S, ChunkRef>(self.trie, &self.store, window)
             .await
             .map_err(EditorError::Commit)?;
         let address = *committed
@@ -245,7 +263,8 @@ impl<S: NodeLoader + NodeSaver<EncryptedChunkRef>> ManifestEditor<S, EncryptedCh
     /// reference (address plus decryption key) and the loadsaver.
     pub async fn commit(mut self) -> Result<(EncryptedChunkRef, S), EditorError> {
         self.apply_ops().await?;
-        let committed = commit_trie::<S, EncryptedChunkRef>(self.trie, &self.store)
+        let window = self.commit_window;
+        let committed = commit_trie::<S, EncryptedChunkRef>(self.trie, &self.store, window)
             .await
             .map_err(EditorError::Commit)?;
         let reference = committed
@@ -332,12 +351,20 @@ where
 /// Persist the dirty subtree post-order through the saver and return the
 /// root as a persisted stub.
 ///
-/// A parent embeds each child's saver-issued reference, so every child save
-/// is awaited before its parent encodes; put concurrency is the saver's.
-async fn commit_trie<S, R>(root: Node<R>, saver: &S) -> Result<Node<R>, MantarayError>
+/// Independent subtrees save concurrently up to `window`; a parent is
+/// admitted to save only once every child save has completed, so it embeds
+/// each child's saver-issued reference and the committed root is byte- and
+/// address-identical to a serial save. A node's encoded image is held only
+/// while its own save is in flight and dropped when it collapses to a stub,
+/// so peak encoded bytes beyond the dirty trie stay within the window.
+async fn commit_trie<S, R>(
+    root: Node<R>,
+    saver: &S,
+    window: Window,
+) -> Result<Node<R>, MantarayError>
 where
     S: NodeSaver<R>,
-    R: Reference,
+    R: Reference + MaybeSend,
 {
     if root.reference().is_some() {
         return Ok(root);
@@ -347,75 +374,242 @@ where
     if !root.metadata.is_empty() {
         return Err(MantarayError::RootMetadata);
     }
+    let mut commit = Commit::new(saver, window, root);
+    poll_fn(|cx| commit.poll(cx)).await
+}
 
-    struct CommitFrame<R: Reference> {
-        /// Fork slot (key and prefix) this node re-attaches to in its
-        /// parent; `None` only for the root frame.
-        slot: Option<(u8, Prefix)>,
-        node: Node<R>,
-        /// Children still to visit, drained from the node's fork map.
-        todo: btree_map::IntoIter<u8, Fork<R>>,
-        /// Children already persisted, keyed for re-attachment.
-        done: BTreeMap<u8, Fork<R>>,
+/// Save completion: the dispatch id and the saver's reference outcome.
+type SaveDone<R> = (u64, Result<R, MantarayError>);
+
+/// One node save in flight: borrows the saver, so the persisted chunks land
+/// in the very store the commit hands back. `Send` on the multi-threaded
+/// targets, unbounded on wasm32 and under `unsync`, mirroring the store seam.
+#[cfg(multi_thread)]
+type BoxSave<'s, R> = Pin<Box<dyn Future<Output = SaveDone<R>> + Send + 's>>;
+/// One node save in flight: borrows the saver, so the persisted chunks land
+/// in the very store the commit hands back. `Send` on the multi-threaded
+/// targets, unbounded on wasm32 and under `unsync`, mirroring the store seam.
+#[cfg(not(multi_thread))]
+type BoxSave<'s, R> = Pin<Box<dyn Future<Output = SaveDone<R>> + 's>>;
+
+/// One node mid-commit: its parent frame, its reattachment slot, the children
+/// still to descend and the ones already saved, and the count of its own
+/// children whose saves are outstanding.
+struct CommitFrame<R: Reference> {
+    /// Routes a child completion back to this frame; the root's is unused.
+    id: u64,
+    /// Parent frame id; `None` only for the root frame.
+    parent: Option<u64>,
+    /// Fork slot (key and prefix) this node reattaches to in its parent;
+    /// `None` only for the root frame.
+    slot: Option<(u8, Prefix)>,
+    node: Node<R>,
+    /// Children still to visit, drained from the node's fork map.
+    todo: btree_map::IntoIter<u8, Fork<R>>,
+    /// Children already persisted, keyed for reattachment.
+    done: BTreeMap<u8, Fork<R>>,
+    /// This node's children whose saves are dispatched but not yet folded
+    /// into `done`.
+    saving: usize,
+}
+
+/// A node whose own save is in flight: held only until its reference arrives,
+/// then collapsed to a stub and reattached to its parent.
+struct Saving<R: Reference> {
+    parent: Option<u64>,
+    slot: Option<(u8, Prefix)>,
+    node: Node<R>,
+}
+
+/// A frame over `node`, its forks drained into the visit queue.
+fn commit_frame<R: Reference>(
+    id: u64,
+    parent: Option<u64>,
+    slot: Option<(u8, Prefix)>,
+    mut node: Node<R>,
+) -> CommitFrame<R> {
+    let todo = core::mem::take(&mut node.forks).into_iter();
+    CommitFrame {
+        id,
+        parent,
+        slot,
+        node,
+        todo,
+        done: BTreeMap::new(),
+        saving: 0,
     }
+}
 
-    fn frame<R: Reference>(slot: Option<(u8, Prefix)>, mut node: Node<R>) -> CommitFrame<R> {
-        let todo = core::mem::take(&mut node.forks).into_iter();
-        CommitFrame {
-            slot,
-            node,
-            todo,
-            done: BTreeMap::new(),
+/// The bounded-concurrent post-order commit: a depth-first descent whose
+/// ready frames dispatch their saves into a window, folding completions back
+/// into their parents until the root is persisted last.
+///
+/// The frontier shape mirrors the read walk's: a window of saves runs ahead
+/// through [`Admission`], their futures borrowing the saver so the writes
+/// land in the store the commit returns.
+struct Commit<'s, S, R: Reference> {
+    saver: &'s S,
+    admission: Admission,
+    /// Depth-first path of open frames, root at the base.
+    stack: Vec<CommitFrame<R>>,
+    /// Nodes whose own save is in flight, keyed by dispatch id.
+    inflight_nodes: BTreeMap<u64, Saving<R>>,
+    in_flight: FuturesUnordered<BoxSave<'s, R>>,
+    /// The persisted root, set when the root's own save completes.
+    root: Option<Node<R>>,
+    next_id: u64,
+}
+
+impl<'s, S, R> Commit<'s, S, R>
+where
+    S: NodeSaver<R>,
+    R: Reference + MaybeSend,
+{
+    fn new(saver: &'s S, window: Window, root: Node<R>) -> Self {
+        Self {
+            saver,
+            admission: Admission::new(window),
+            stack: alloc::vec![commit_frame(0, None, None, root)],
+            inflight_nodes: BTreeMap::new(),
+            in_flight: FuturesUnordered::new(),
+            root: None,
+            next_id: 1,
         }
     }
 
-    let mut stack = alloc::vec![frame(None, root)];
-    let mut committed_root = None;
-
-    while let Some(top) = stack.last_mut() {
-        if let Some((key, fork)) = top.todo.next() {
-            if fork.node.reference().is_some() {
-                // Already persisted; nothing below it changed.
-                top.done.insert(key, fork);
-            } else {
-                stack.push(frame(Some((key, fork.prefix)), fork.node));
+    /// Drive the commit: descend and dispatch ready saves up to the window,
+    /// fold one completion in, repeat until the root is persisted.
+    ///
+    /// Cancel-safe: all progress lives in `self`.
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Node<R>, MantarayError>> {
+        loop {
+            if let Err(error) = self.advance() {
+                return Poll::Ready(Err(error));
             }
-            continue;
-        }
-
-        let Some(mut finished) = stack.pop() else {
-            break;
-        };
-        finished.node.forks = core::mem::take(&mut finished.done);
-        let data = finished.node.encode()?;
-        let reference = saver
-            .save(data)
-            .await
-            .map_err(|e| MantarayError::StorePut {
-                source: Arc::new(e),
-            })?;
-
-        // The persisted node collapses to a stub, reloaded on demand.
-        finished.node.state = NodeState::Stub(reference);
-        finished.node.forks.clear();
-        match stack.last_mut() {
-            Some(parent) => {
-                if let Some((key, prefix)) = finished.slot {
-                    parent.done.insert(
-                        key,
-                        Fork {
-                            prefix,
-                            node: finished.node,
-                        },
-                    );
+            if self.stack.is_empty() && self.in_flight.is_empty() {
+                return Poll::Ready(self.root.take().ok_or(MantarayError::MissingReference));
+            }
+            // `advance` leaves the window non-empty whenever the stack still
+            // holds work, so the poll below always has a future to drive.
+            match Pin::new(&mut self.in_flight).poll_next(cx) {
+                Poll::Ready(Some((id, result))) => {
+                    if let Err(error) = self.absorb(id, result) {
+                        return Poll::Ready(Err(error));
+                    }
                 }
-                // A slotless frame is the root, which never has a parent.
+                Poll::Ready(None) | Poll::Pending => return Poll::Pending,
             }
-            None => committed_root = Some(finished.node),
         }
     }
 
-    committed_root.ok_or(MantarayError::MissingReference)
+    /// Walk the frontier: queue persisted children, descend dirty ones, and
+    /// dispatch a frame's own save once its children are all saved and the
+    /// window has room. Stops when the deepest frame waits on its children
+    /// or the window is full.
+    fn advance(&mut self) -> Result<(), MantarayError> {
+        loop {
+            let Some(top) = self.stack.last_mut() else {
+                return Ok(());
+            };
+            if let Some((key, fork)) = top.todo.next() {
+                if fork.node.reference().is_some() {
+                    // Already persisted; nothing below it changed.
+                    top.done.insert(key, fork);
+                } else {
+                    let parent = top.id;
+                    let id = self.next_id;
+                    self.next_id = self.next_id.wrapping_add(1);
+                    self.stack.push(commit_frame(
+                        id,
+                        Some(parent),
+                        Some((key, fork.prefix)),
+                        fork.node,
+                    ));
+                }
+                continue;
+            }
+            if top.saving > 0 {
+                // Children still saving; this deepest frame, and so the whole
+                // stack, waits on their completions.
+                return Ok(());
+            }
+            // Saves are order-independent, so there is no serial-drain head to
+            // reserve a slot for: the whole window admits.
+            if !self.admission.admits(self.in_flight.len(), true) {
+                // The window is full; wait for a save to complete.
+                return Ok(());
+            }
+            self.dispatch()?;
+        }
+    }
+
+    /// Encode the top frame's node, dispatch its save into the window, and
+    /// pop it; its parent's outstanding-child count rises until the save
+    /// completes.
+    fn dispatch(&mut self) -> Result<(), MantarayError> {
+        let Some(mut frame) = self.stack.pop() else {
+            return Ok(());
+        };
+        // Fold the saved children back in, then encode the node's image.
+        frame.node.forks = core::mem::take(&mut frame.done);
+        let data = frame.node.encode()?;
+        let id = frame.id;
+        let saver = self.saver;
+        let future: BoxSave<'s, R> = Box::pin(async move {
+            let outcome = saver.save(data).await.map_err(|e| MantarayError::StorePut {
+                source: Arc::new(e),
+            });
+            (id, outcome)
+        });
+        if let Some(parent) = frame.parent {
+            let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent) else {
+                // A dispatched child's parent is always still on the stack.
+                return Err(MantarayError::MissingReference);
+            };
+            parent_frame.saving = parent_frame.saving.saturating_add(1);
+        }
+        self.inflight_nodes.insert(
+            id,
+            Saving {
+                parent: frame.parent,
+                slot: frame.slot,
+                node: frame.node,
+            },
+        );
+        self.in_flight.push(future);
+        Ok(())
+    }
+
+    /// Fold one completed save in: collapse its node to a stub and reattach
+    /// it to its parent, or crown the root.
+    fn absorb(&mut self, id: u64, result: Result<R, MantarayError>) -> Result<(), MantarayError> {
+        let reference = result?;
+        let Some(Saving {
+            parent,
+            slot,
+            mut node,
+        }) = self.inflight_nodes.remove(&id)
+        else {
+            // Every completion matches a dispatched node.
+            return Err(MantarayError::MissingReference);
+        };
+        // The persisted node collapses to a stub, reloaded on demand.
+        node.state = NodeState::Stub(reference);
+        node.forks.clear();
+        match (parent, slot) {
+            (Some(parent), Some((key, prefix))) => {
+                let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent)
+                else {
+                    return Err(MantarayError::MissingReference);
+                };
+                parent_frame.done.insert(key, Fork { prefix, node });
+                parent_frame.saving = parent_frame.saving.saturating_sub(1);
+            }
+            // A parentless, slotless node is the root.
+            _ => self.root = Some(node),
+        }
+        Ok(())
+    }
 }
 
 /// True when the reference would occupy the wire's absent-entry slot.
@@ -695,10 +889,10 @@ mod tests {
     fn noop_commit_on_opened_root_is_stable_and_save_free() {
         let (root, loadsaver) = editor_replay(&[Script::Add("a", "1"), Script::Add("b", "2")]);
         let counting = CountingSaver::new(loadsaver);
-        let editor: ManifestEditor<_> = ManifestEditor::open(root, counting);
-        let (again, counting) = run(editor.commit()).unwrap();
+        let editor: ManifestEditor<_> = ManifestEditor::open(root, counting.clone());
+        let (again, _) = run(editor.commit()).unwrap();
         assert_eq!(again, root);
-        assert_eq!(counting.saves.load(Ordering::SeqCst), 0);
+        assert_eq!(counting.saves(), 0);
     }
 
     #[test]
@@ -731,18 +925,23 @@ mod tests {
         assert_eq!(got, want);
     }
 
-    /// A loadsaver wrapper counting save calls.
+    /// A loadsaver wrapper counting save calls; `Clone` shares one count.
+    #[derive(Clone)]
     struct CountingSaver {
         inner: LoadSaver,
-        saves: AtomicUsize,
+        saves: Arc<AtomicUsize>,
     }
 
     impl CountingSaver {
         fn new(inner: LoadSaver) -> Self {
             Self {
                 inner,
-                saves: AtomicUsize::new(0),
+                saves: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        fn saves(&self) -> usize {
+            self.saves.load(Ordering::SeqCst)
         }
     }
 
@@ -761,6 +960,174 @@ mod tests {
             self.saves.fetch_add(1, Ordering::SeqCst);
             NodeSaver::<ChunkRef>::save(&self.inner, data).await
         }
+    }
+
+    /// A saver that parks each save once before completing and records the
+    /// concurrency and the resident encoded bytes it observes, so a test can
+    /// witness sibling overlap and the window bound directly. `Clone` shares
+    /// one recording.
+    #[derive(Clone)]
+    struct WindowSaver {
+        inner: LoadSaver,
+        probe: Arc<SaveProbe>,
+    }
+
+    struct SaveProbe {
+        saves: AtomicUsize,
+        in_flight: AtomicUsize,
+        peak_in_flight: AtomicUsize,
+        resident: AtomicUsize,
+        peak_resident: AtomicUsize,
+        total: AtomicUsize,
+    }
+
+    impl WindowSaver {
+        fn new(inner: LoadSaver) -> Self {
+            Self {
+                inner,
+                probe: Arc::new(SaveProbe {
+                    saves: AtomicUsize::new(0),
+                    in_flight: AtomicUsize::new(0),
+                    peak_in_flight: AtomicUsize::new(0),
+                    resident: AtomicUsize::new(0),
+                    peak_resident: AtomicUsize::new(0),
+                    total: AtomicUsize::new(0),
+                }),
+            }
+        }
+
+        fn saves(&self) -> usize {
+            self.probe.saves.load(Ordering::SeqCst)
+        }
+
+        fn peak_in_flight(&self) -> usize {
+            self.probe.peak_in_flight.load(Ordering::SeqCst)
+        }
+
+        fn peak_resident(&self) -> usize {
+            self.probe.peak_resident.load(Ordering::SeqCst)
+        }
+
+        fn total(&self) -> usize {
+            self.probe.total.load(Ordering::SeqCst)
+        }
+    }
+
+    impl NodeLoader for WindowSaver {
+        type Error = SingleChunkError;
+
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            self.inner.load(reference).await
+        }
+    }
+
+    impl NodeSaver<ChunkRef> for WindowSaver {
+        type Error = SingleChunkError;
+
+        async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
+            let bytes = data.len();
+            self.probe.saves.fetch_add(1, Ordering::SeqCst);
+            self.probe.total.fetch_add(bytes, Ordering::SeqCst);
+            let level = self.probe.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.probe.peak_in_flight.fetch_max(level, Ordering::SeqCst);
+            let held = self.probe.resident.fetch_add(bytes, Ordering::SeqCst) + bytes;
+            self.probe.peak_resident.fetch_max(held, Ordering::SeqCst);
+            // Park once so queued siblings ramp their in-flight count before
+            // any single save resolves.
+            yield_once().await;
+            let result = NodeSaver::<ChunkRef>::save(&self.inner, data).await;
+            self.probe.resident.fetch_sub(bytes, Ordering::SeqCst);
+            self.probe.in_flight.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
+
+    /// Yield once, waking immediately, so pending saves accumulate.
+    async fn yield_once() {
+        let mut yielded = false;
+        core::future::poll_fn(|cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+
+    /// A wide, two-level dirty manifest: `groups` first-byte fan-outs, each an
+    /// intermediate node with `leaves` value children keyed `[group, leaf]`.
+    /// Independent siblings under one intermediate are what a bounded window
+    /// overlaps; two levels keep the node count in the thousands without a
+    /// single node exceeding one chunk.
+    fn wide_editor(groups: u8, leaves: u8) -> ManifestEditor<WindowSaver> {
+        let mut editor = ManifestEditor::new(WindowSaver::new(LoadSaver::new(Store::new())));
+        for g in 0..groups {
+            for l in 0..leaves {
+                editor.put([g, l], make_addr(&format!("{g}-{l}")));
+            }
+        }
+        editor
+    }
+
+    /// A window of `slots`.
+    fn win(slots: u16) -> Window {
+        Window::new(slots).unwrap()
+    }
+
+    /// Independent siblings save concurrently and exactly fill the window: the
+    /// descent dispatches leaf saves until the window is full, so the peak is
+    /// the window whenever a group has at least that many leaves.
+    #[test]
+    fn commit_overlaps_siblings_within_the_window() {
+        for slots in [1u16, 4, 16] {
+            let editor = wide_editor(4, 24).with_commit_window(win(slots));
+            let saver = editor.store().clone();
+            let (_root, _store) = run(editor.commit()).unwrap();
+            let peak = saver.peak_in_flight();
+            assert!(
+                peak <= usize::from(slots),
+                "window {slots}: peak in-flight {peak} exceeds the window"
+            );
+            assert_eq!(
+                peak,
+                usize::from(slots),
+                "window {slots}: independent siblings must fill the window (peak {peak})"
+            );
+        }
+    }
+
+    /// The commit is memory-bounded: peak resident encoded bytes stay within a
+    /// window of node images, never the whole tree, even as the tree grows far
+    /// past the window.
+    #[test]
+    fn commit_holds_at_most_a_window_of_encoded_images() {
+        let slots = 8u16;
+        let editor = wide_editor(32, 32).with_commit_window(win(slots));
+        let saver = editor.store().clone();
+        run(editor.commit()).unwrap();
+
+        let saves = saver.saves();
+        assert!(saves > 1000, "expected thousands of dirty nodes, saved {saves}");
+        assert!(
+            saver.peak_in_flight() <= usize::from(slots),
+            "in-flight saves exceeded the window"
+        );
+        // Resident encoded bytes never approach the whole tree's: a window of
+        // images is a small fraction of every node's image summed.
+        let peak = saver.peak_resident();
+        let total = saver.total();
+        let mean = total / saves.max(1);
+        assert!(
+            peak <= usize::from(slots) * mean * 4,
+            "resident bytes {peak} exceed a window of images (mean {mean})"
+        );
+        assert!(
+            peak * 4 < total,
+            "resident bytes {peak} are not bounded below the whole tree {total}"
+        );
     }
 
     /// Replay the committed seed corpus of the `mantaray_editor_differential`
