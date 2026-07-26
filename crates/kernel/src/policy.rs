@@ -51,6 +51,13 @@ impl AdmitPolicy for Fixed {
 /// Policy wrapping a closure; built by [`from_fn`].
 pub struct FromFn<F>(F);
 
+impl<F> FromFn<F> {
+    /// Unwrap the closure with its accumulated state.
+    pub fn into_inner(self) -> F {
+        self.0
+    }
+}
+
 /// Policy from `f`, called once per admission round.
 pub const fn from_fn<F>(f: F) -> FromFn<F>
 where
@@ -91,6 +98,21 @@ mod tests {
         };
         assert_eq!(policy.window(&observations), window);
         assert_eq!(policy.window(&Observations::default()), window);
+    }
+
+    #[test]
+    fn into_inner_keeps_closure_state() {
+        let mut policy = from_fn(|observations: &Observations| {
+            Window::new(u16::try_from(observations.completions.max(1)).unwrap()).unwrap()
+        });
+        assert_eq!(policy.window(&Observations::default()).get(), 1);
+        let mut closure = policy.into_inner();
+        let observations = Observations {
+            completions: 3,
+            occupancy: 0,
+            in_flight: 0,
+        };
+        assert_eq!(closure(&observations).get(), 3);
     }
 
     #[test]

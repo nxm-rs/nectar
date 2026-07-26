@@ -2550,6 +2550,7 @@ dependencies = [
  "futures",
  "futures-channel",
  "futures-util",
+ "nectar-clock",
  "nectar-kernel",
  "nectar-mantaray 0.4.0",
  "nectar-marker",

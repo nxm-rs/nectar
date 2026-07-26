@@ -16,7 +16,7 @@ use super::frames::FileFrames;
 use crate::config::Window;
 use crate::num::u64_from_usize;
 use crate::sink::DataSink;
-use crate::walk::{Walk, WalkMode};
+use crate::walk::{Walk, WalkMode, WindowPolicyFn};
 
 /// Progress snapshot delivered after each frame lands in the sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +80,7 @@ pub struct DownloadBuilder<S, M: WalkMode, const B: usize = DEFAULT_BODY_SIZE> {
     context: M::Context,
     span: u64,
     window: Window,
+    policy: Option<WindowPolicyFn>,
     range: Range<u64>,
     progress: Option<ProgressFn>,
 }
@@ -99,6 +100,7 @@ impl<S, M: WalkMode, const B: usize> DownloadBuilder<S, M, B> {
             context,
             span,
             window,
+            policy: None,
             range,
             progress: None,
         }
@@ -120,6 +122,38 @@ impl<S, M: WalkMode, const B: usize> DownloadBuilder<S, M, B> {
             mean_latency,
             body_size::<B>(),
         ))
+    }
+
+    /// Adaptive cap: `policy` recomputes the window between admission
+    /// rounds from realized occupancy; the built window is its seed. The
+    /// policy runs in the poll path and must be cheap and non-blocking.
+    #[must_use]
+    pub fn window_policy(mut self, policy: WindowPolicyFn) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// Closed-loop window: seed from the throughput hint and let an
+    /// [`AdaptiveWindow`](super::AdaptiveWindow) controller retune the cap
+    /// against realized latency, never past `max`.
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+    #[must_use]
+    pub fn adaptive_throughput(
+        self,
+        bytes_per_second: u64,
+        mean_latency: Duration,
+        max: Window,
+    ) -> Self {
+        let controller = super::AdaptiveWindow::new(
+            bytes_per_second,
+            mean_latency,
+            body_size::<B>(),
+            max,
+            nectar_clock::SystemClock,
+        );
+        let window = controller.window();
+        self.window(window).window_policy(controller.into_policy())
     }
 
     /// Absolute byte range to download, clipped to the file.
@@ -150,14 +184,18 @@ where
         self,
         sink: &mut K,
     ) -> Result<u64, DownloadError<S::Error, K::Error>> {
-        let mut frames: FileFrames<S, M, B> = FileFrames::new(Walk::new(
+        let mut walk = Walk::new(
             self.store,
             self.root,
             self.context,
             self.span,
             self.range,
             self.window,
-        ));
+        );
+        if let Some(policy) = self.policy {
+            walk = walk.with_policy(policy);
+        }
+        let mut frames: FileFrames<S, M, B> = FileFrames::new(walk);
         let clipped = frames.range();
         let total = clipped.end.saturating_sub(clipped.start);
         let mut callback = self.progress;
@@ -182,6 +220,7 @@ impl<S, M: WalkMode, const B: usize> fmt::Debug for DownloadBuilder<S, M, B> {
             .field("root", &self.root)
             .field("span", &self.span)
             .field("window", &self.window)
+            .field("policy", &self.policy.is_some())
             .field("range", &self.range)
             .field("progress", &self.progress.is_some())
             .finish_non_exhaustive()

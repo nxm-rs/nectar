@@ -20,7 +20,7 @@ use super::error::{CollectError, SeekPastEnd};
 use super::frames::FileFrames;
 use crate::config::Window;
 use crate::num::u64_from_usize;
-use crate::walk::{Walk, WalkError, WalkMode, WalkStats};
+use crate::walk::{Walk, WalkError, WalkMode, WalkStats, WindowPolicyFn};
 
 /// Builder of one ordered read; construction is infallible.
 ///
@@ -33,6 +33,7 @@ pub struct ReadBuilder<S, M: WalkMode, const B: usize = DEFAULT_BODY_SIZE> {
     context: M::Context,
     span: u64,
     window: Window,
+    policy: Option<WindowPolicyFn>,
     range: Range<u64>,
 }
 
@@ -51,6 +52,7 @@ impl<S, M: WalkMode, const B: usize> ReadBuilder<S, M, B> {
             context,
             span,
             window,
+            policy: None,
             range,
         }
     }
@@ -73,6 +75,38 @@ impl<S, M: WalkMode, const B: usize> ReadBuilder<S, M, B> {
         ))
     }
 
+    /// Adaptive cap: `policy` recomputes the window between admission
+    /// rounds from realized occupancy; the built window is its seed. The
+    /// policy runs in the poll path and must be cheap and non-blocking.
+    #[must_use]
+    pub fn window_policy(mut self, policy: WindowPolicyFn) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// Closed-loop window: seed from the throughput hint and let an
+    /// [`AdaptiveWindow`](super::AdaptiveWindow) controller retune the cap
+    /// against realized latency, never past `max`.
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+    #[must_use]
+    pub fn adaptive_throughput(
+        self,
+        bytes_per_second: u64,
+        mean_latency: Duration,
+        max: Window,
+    ) -> Self {
+        let controller = super::AdaptiveWindow::new(
+            bytes_per_second,
+            mean_latency,
+            body_size::<B>(),
+            max,
+            nectar_clock::SystemClock,
+        );
+        let window = controller.window();
+        self.window(window).window_policy(controller.into_policy())
+    }
+
     /// Absolute byte range to read, clipped to the file.
     #[must_use]
     pub const fn range(mut self, range: Range<u64>) -> Self {
@@ -88,7 +122,7 @@ where
 {
     /// Build the ordered, seekable reader.
     pub fn build(self) -> FileReader<S, M, B> {
-        let walk = Walk::new(
+        let mut walk = Walk::new(
             self.store.clone(),
             self.root,
             self.context.clone(),
@@ -96,6 +130,9 @@ where
             self.range,
             self.window,
         );
+        if let Some(policy) = self.policy {
+            walk = walk.with_policy(policy);
+        }
         let clipped = walk.range();
         FileReader {
             store: self.store,
@@ -118,14 +155,18 @@ where
 
     /// Build the completion-order frames drain.
     pub fn frames(self) -> FileFrames<S, M, B> {
-        FileFrames::new(Walk::new(
+        let mut walk = Walk::new(
             self.store,
             self.root,
             self.context,
             self.span,
             self.range,
             self.window,
-        ))
+        );
+        if let Some(policy) = self.policy {
+            walk = walk.with_policy(policy);
+        }
+        FileFrames::new(walk)
     }
 
     /// Assemble the clipped range in memory, at most `max` bytes.
@@ -165,6 +206,7 @@ impl<S, M: WalkMode, const B: usize> fmt::Debug for ReadBuilder<S, M, B> {
             .field("root", &self.root)
             .field("span", &self.span)
             .field("window", &self.window)
+            .field("policy", &self.policy.is_some())
             .field("range", &self.range)
             .finish_non_exhaustive()
     }
@@ -231,7 +273,9 @@ where
         let target = self.start.saturating_add(pos);
         if target != self.position {
             self.current = Bytes::new();
-            self.walk = Walk::new(
+            // The policy rides across the re-walk, keeping its estimate warm.
+            let policy = self.walk.take_policy();
+            let mut walk = Walk::new(
                 self.store.clone(),
                 self.root,
                 self.context.clone(),
@@ -239,6 +283,10 @@ where
                 target..self.end,
                 self.window,
             );
+            if let Some(policy) = policy {
+                walk = walk.with_policy(policy);
+            }
+            self.walk = walk;
             self.position = target;
         }
         Ok(())

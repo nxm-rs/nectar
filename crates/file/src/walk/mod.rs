@@ -23,6 +23,10 @@
 //!    any window depth.
 //! 4. No retries: every store error is terminal and typed; retry policy
 //!    composes beneath the store seam.
+//!
+//! A [`WindowPolicyFn`] may retune the window between admission rounds;
+//! occupancy above a shrunk cap drains by attrition and never exceeds the
+//! largest cap held.
 
 mod engine;
 mod error;
@@ -30,11 +34,29 @@ mod mode;
 #[cfg(test)]
 mod tests;
 
+use alloc::boxed::Box;
+
 use bytes::Bytes;
+pub use nectar_kernel::Observations;
+
+use crate::config::Window;
 
 pub use engine::Walk;
 pub use error::{DecodeError, ShapeError, WalkError};
 pub use mode::{Encrypted, Plain, WalkMode};
+
+/// Boxed window policy: recomputes the leaf admission cap between admission
+/// rounds from the walk's [`Observations`]. Runs in the poll path, so it
+/// must be cheap and non-blocking. `Send` on multi-threaded targets,
+/// unbounded on wasm32 and under the `unsync` feature.
+#[cfg(multi_thread)]
+pub type WindowPolicyFn = Box<dyn FnMut(&Observations) -> Window + Send>;
+/// Boxed window policy: recomputes the leaf admission cap between admission
+/// rounds from the walk's [`Observations`]. Runs in the poll path, so it
+/// must be cheap and non-blocking. `Send` on multi-threaded targets,
+/// unbounded on wasm32 and under the `unsync` feature.
+#[cfg(not(multi_thread))]
+pub type WindowPolicyFn = Box<dyn FnMut(&Observations) -> Window>;
 
 /// One delivered run of file bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]

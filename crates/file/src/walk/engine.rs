@@ -7,14 +7,16 @@ use core::ops::Range;
 use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
-use nectar_kernel::{Admission, BoxFuture, InFlight, get_verified};
+use nectar_kernel::{
+    Admission, AdmitPolicy, BoxFuture, FromFn, InFlight, Observations, from_fn, get_verified,
+};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkOps, ContentOnlyChunkSet, Verified};
 use nectar_primitives::store::TrustedGet;
 
 use super::error::{ShapeError, WalkError};
 use super::mode::WalkMode;
-use super::{Frame, WalkStats};
+use super::{Frame, WalkStats, WindowPolicyFn};
 use crate::config::{BranchBudget, Window};
 use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 
@@ -72,6 +74,10 @@ where
     branches: u64,
     admission: Admission,
     branch_budget: usize,
+    /// Adaptive cap: retunes the window between admission rounds.
+    policy: Option<FromFn<WindowPolicyFn>>,
+    /// Leaf completions since the last policy call.
+    completed: usize,
     /// Discovered leaves awaiting a window slot, ascending by key.
     leaf_frontier: VecDeque<Node<M>>,
     /// Discovered intermediates awaiting descent, ascending by key; the
@@ -124,7 +130,6 @@ where
         let branches = fan_out(body, u64_from_u32(M::MODE.ref_size()));
         let range_end = range.end.min(span);
         let range_start = range.start.min(range_end);
-        let budget = BranchBudget::derive(window, u32::try_from(branches).unwrap_or(u32::MAX));
         let mut walk = Self {
             store,
             range_start,
@@ -132,7 +137,9 @@ where
             body,
             branches,
             admission: Admission::new(window),
-            branch_budget: usize::try_from(budget.get()).unwrap_or(usize::MAX),
+            branch_budget: branch_budget(window, branches),
+            policy: None,
+            completed: 0,
             leaf_frontier: VecDeque::new(),
             branch_frontier: VecDeque::new(),
             in_flight: InFlight::new(),
@@ -152,6 +159,21 @@ where
             span,
         });
         walk
+    }
+
+    /// Adaptive cap: `policy` recomputes the window between admission
+    /// rounds, seeded with the built window. Occupancy above a shrunk cap
+    /// drains by attrition; the head stays admissible at any depth.
+    #[must_use]
+    pub fn with_policy(mut self, policy: WindowPolicyFn) -> Self {
+        self.policy = Some(from_fn(policy));
+        self
+    }
+
+    /// Detach the policy with its accumulated state; a successor walk
+    /// re-arms it.
+    pub(crate) fn take_policy(&mut self) -> Option<WindowPolicyFn> {
+        self.policy.take().map(FromFn::into_inner)
     }
 
     /// Clipped absolute byte range this walk delivers.
@@ -231,8 +253,29 @@ where
         }
     }
 
+    /// Let the policy recompute the window; a change re-derives the branch
+    /// budget.
+    fn retune(&mut self) {
+        let occupancy = self.occupancy();
+        let Some(policy) = self.policy.as_mut() else {
+            return;
+        };
+        let observations = Observations {
+            completions: self.completed,
+            occupancy,
+            in_flight: self.leaf_in_flight,
+        };
+        self.completed = 0;
+        let window = policy.window(&observations);
+        if window != self.admission.window() {
+            self.admission = Admission::new(window);
+            self.branch_budget = branch_budget(window, self.branches);
+        }
+    }
+
     /// Admit queued nodes until neither lane may proceed.
     fn admit(&mut self) {
+        self.retune();
         loop {
             let Some(head) = self.head_key() else { return };
             let branch = self.try_admit_branch(head);
@@ -303,8 +346,17 @@ where
         let Some(front) = self.leaf_frontier.front() else {
             return false;
         };
-        let head_served = front.key(self.range_start) == head || self.head_holds_slot(head);
-        if !self.admission.admits(self.occupancy(), head_served) {
+        let head_candidate = front.key(self.range_start) == head;
+        let head_holds = self.head_holds_slot(head);
+        // An unserved head is admitted at any occupancy: a shrunk cap may
+        // sit below the buffered frames, and only the head drains them.
+        // With a fixed window an unserved head implies a free slot, so this
+        // never lifts the fixed bound.
+        let admitted = (head_candidate && !head_holds)
+            || self
+                .admission
+                .admits(self.occupancy(), head_candidate || head_holds);
+        if !admitted {
             return false;
         }
         let Some(node) = self.leaf_frontier.pop_front() else {
@@ -363,6 +415,7 @@ where
         }
         if leaf {
             self.leaf_in_flight = self.leaf_in_flight.saturating_sub(1);
+            self.completed = self.completed.saturating_add(1);
         } else {
             self.branch_in_flight = self.branch_in_flight.saturating_sub(1);
         }
@@ -510,11 +563,18 @@ where
             .field("range_end", &self.range_end)
             .field("window", &self.admission.window())
             .field("branch_budget", &self.branch_budget)
+            .field("policy", &self.policy.is_some())
             .field("leaf_in_flight", &self.leaf_in_flight)
             .field("branch_in_flight", &self.branch_in_flight)
             .field("done", &self.done)
             .finish_non_exhaustive()
     }
+}
+
+/// Branch budget for `window`, widened into the engine's counter type.
+fn branch_budget(window: Window, branches: u64) -> usize {
+    let budget = BranchBudget::derive(window, u32::try_from(branches).unwrap_or(u32::MAX));
+    usize::try_from(budget.get()).unwrap_or(usize::MAX)
 }
 
 /// Child span under a parent covering `span` bytes: the smallest
