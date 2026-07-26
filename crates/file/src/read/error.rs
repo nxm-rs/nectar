@@ -17,15 +17,6 @@ pub enum OpenError<E> {
         /// Store error behind the failure.
         source: E,
     },
-    /// The store completed the root fetch with a chunk at a different
-    /// address.
-    #[error("store returned {returned} for requested {requested}")]
-    AddressMismatch {
-        /// Address the open asked for.
-        requested: ChunkAddress,
-        /// Address of the chunk the store handed back.
-        returned: ChunkAddress,
-    },
     /// The root body cannot be decoded under the mode's reference grammar.
     #[error(transparent)]
     Decode(#[from] DecodeError),
