@@ -170,12 +170,7 @@ pub use stamper::{BatchStamper, Stamper};
 // The streaming stamp pipeline; its sign window is the kernel window.
 pub use nectar_kernel::Window;
 pub use pipeline::{Eip191, SignPrehash, StampPipeline, StampResult, Stamped};
-#[cfg(any(
-    feature = "std",
-    target_arch = "wasm32",
-    target_os = "none",
-    feature = "unsync"
-))]
+#[cfg(any(feature = "std", not(multi_thread)))]
 pub use pipeline::{IssuedBound, StampedPut, StampedPutError};
 
 // Mutable (ring) issuing with a type-state reservation guard

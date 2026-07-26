@@ -12,7 +12,7 @@ use core::task::Context;
 use core::task::{Poll, Waker};
 #[cfg(feature = "std")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
-#[cfg(not(any(target_arch = "wasm32", target_os = "none", feature = "unsync")))]
+#[cfg(multi_thread)]
 use std::sync::{Mutex, PoisonError};
 
 use nectar_clock::Clock;
@@ -90,27 +90,27 @@ impl<I> State<I> {
     }
 }
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "none", feature = "unsync")))]
+#[cfg(multi_thread)]
 type SharedState<I> = Arc<Mutex<State<I>>>;
-#[cfg(any(target_arch = "wasm32", target_os = "none", feature = "unsync"))]
+#[cfg(not(multi_thread))]
 type SharedState<I> = alloc::rc::Rc<core::cell::RefCell<State<I>>>;
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "none", feature = "unsync")))]
+#[cfg(multi_thread)]
 fn new_shared<I>(state: State<I>) -> SharedState<I> {
     Arc::new(Mutex::new(state))
 }
-#[cfg(any(target_arch = "wasm32", target_os = "none", feature = "unsync"))]
+#[cfg(not(multi_thread))]
 fn new_shared<I>(state: State<I>) -> SharedState<I> {
     alloc::rc::Rc::new(core::cell::RefCell::new(state))
 }
 
 /// Runs `f` under the state lock; never held across an await.
-#[cfg(not(any(target_arch = "wasm32", target_os = "none", feature = "unsync")))]
+#[cfg(multi_thread)]
 fn with_state<I, R>(shared: &SharedState<I>, f: impl FnOnce(&mut State<I>) -> R) -> R {
     f(&mut shared.lock().unwrap_or_else(PoisonError::into_inner))
 }
 /// Runs `f` under the state cell; never held across an await.
-#[cfg(any(target_arch = "wasm32", target_os = "none", feature = "unsync"))]
+#[cfg(not(multi_thread))]
 fn with_state<I, R>(shared: &SharedState<I>, f: impl FnOnce(&mut State<I>) -> R) -> R {
     f(&mut shared.borrow_mut())
 }
