@@ -12,7 +12,8 @@
 //!   and yields results unordered, tagged by address.
 //! - [`BatchStamper`]: the one-off entry for stamping a single chunk;
 //!   [`BatchStamper::into_parts`] moves an issuer between the doors.
-//! - Stamping at put lands later as a store decorator over the same engine.
+//! - [`StampedPut`]: the store decorator; wraps a stamped sink so every
+//!   `ChunkPut` call site stamps at put.
 //!
 //! # Immutable and mutable issuance
 //!
@@ -169,6 +170,13 @@ pub use stamper::{BatchStamper, Stamper};
 // The streaming stamp pipeline; its sign window is the kernel window.
 pub use nectar_kernel::Window;
 pub use pipeline::{Eip191, SignPrehash, StampPipeline, StampResult, Stamped};
+#[cfg(any(
+    feature = "std",
+    target_arch = "wasm32",
+    target_os = "none",
+    feature = "unsync"
+))]
+pub use pipeline::{IssuedBound, StampedPut, StampedPutError};
 
 // Mutable (ring) issuing with a type-state reservation guard
 pub use ring::{Reservation, Reserved, RingIssuer, RingIssuerFor, Unreserved};

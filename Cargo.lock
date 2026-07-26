@@ -2699,6 +2699,7 @@ dependencies = [
  "nectar-marker",
  "nectar-postage",
  "nectar-primitives 0.4.0",
+ "nectar-testing",
  "proptest",
  "rand 0.10.1",
  "rayon",
