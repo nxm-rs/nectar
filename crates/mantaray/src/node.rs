@@ -17,12 +17,13 @@ use nectar_primitives::store::{MaybeSend, TrustedGet};
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
 use nectar_primitives::{AnyChunkSet, EncryptedChunkRef, EncryptionKey};
 
-/// Boxed recursion future: `Send` on native, unbounded on wasm32 so `!Send`
-/// browser stores stay usable. `MaybeSend` cannot appear in a `dyn` bound
-/// directly (it is not an auto trait), so the auto trait is cfg-gated here.
-#[cfg(not(target_arch = "wasm32"))]
+/// Boxed recursion future: `Send` on multi-threaded targets, unbounded on
+/// wasm32 and under the `unsync` feature, so `!Send` stores stay usable.
+/// `MaybeSend` cannot appear in a `dyn` bound directly (it is not an auto
+/// trait), so the auto trait is cfg-gated here.
+#[cfg(multi_thread)]
 type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(multi_thread))]
 type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
 /// Inline-only byte buffer for fork prefixes (max 30 bytes).
