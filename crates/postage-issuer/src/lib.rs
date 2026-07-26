@@ -169,6 +169,8 @@ pub use stamper::{BatchStamper, Stamper};
 
 // The streaming stamp pipeline; its sign window is the kernel window.
 pub use nectar_kernel::Window;
+#[cfg(feature = "std")]
+pub use pipeline::StampSink;
 pub use pipeline::{Eip191, SignPrehash, StampPipeline, StampResult, Stamped};
 #[cfg(any(feature = "std", not(multi_thread)))]
 pub use pipeline::{IssuedBound, StampedPut, StampedPutError};
