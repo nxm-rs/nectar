@@ -7,8 +7,10 @@
 //! key set enters through a sorted map, so the published tree is a pure function
 //! of the keys, identical whatever order the caller streamed them in.
 
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::convert::Infallible;
-use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use nectar_file::{Plain, PutWindow, SplitError, collect_into};

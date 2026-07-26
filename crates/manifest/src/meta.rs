@@ -4,9 +4,9 @@
 //! registered names always travel as their one-byte id, and the encoded
 //! length is bounded by `F::META_MAX` at construction.
 
+use alloc::collections::BTreeMap;
 use core::marker::PhantomData;
 use core::mem::size_of;
-use std::collections::BTreeMap;
 
 use bytes::Bytes;
 
@@ -302,6 +302,9 @@ const fn pair_len<F: Format>(key: &MetadataKey<F>, value: &Bytes) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+    use std::vec::Vec;
+
     use super::*;
 
     const ALL_IDS: [KeyId; 7] = [

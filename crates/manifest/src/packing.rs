@@ -7,6 +7,7 @@
 //! re-rooting a subtree does not churn its cuts. The forced caps and the
 //! single-chunk-node invariant keep every produced node within one chunk.
 
+use alloc::vec::Vec;
 use core::mem::size_of;
 use core::ops::Range;
 
@@ -268,6 +269,8 @@ pub fn spill<F: Format>(forks: &[(Prefix<F>, SegmentWeight<F>)], domain: Domain)
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use super::*;
     use crate::format::{V1, V1Read};
 

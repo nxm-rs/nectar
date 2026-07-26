@@ -28,6 +28,7 @@
 //!
 //! [`embed`]: crate::embed
 
+use alloc::boxed::Box;
 use core::future::Future;
 
 use alloy_primitives::Keccak256;

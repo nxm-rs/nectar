@@ -15,6 +15,7 @@
 //! whole frontier, so peak retained state stays O(depth) at the same fetch
 //! count a serial walk pays.
 
+use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use bytes::Bytes;
@@ -597,6 +598,7 @@ pub(crate) fn successor(prefix: &[u8]) -> Option<Bytes> {
 #[cfg(test)]
 mod tests {
     use core::task::Poll;
+    use std::vec;
 
     use nectar_primitives::store::{
         ChunkGet, ChunkStoreError, ContentGet, ContentGetError, MemoryStore,

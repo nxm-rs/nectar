@@ -10,6 +10,8 @@
 //! seam binds the content-only registry, so a non-content chunk is rejected
 //! at decode rather than decoded as a node.
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::future::Future;
 
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};

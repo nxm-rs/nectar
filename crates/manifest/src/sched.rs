@@ -7,11 +7,14 @@
 //! mirrors the walk's own termination and launches exactly the nodes the
 //! walk fetches, in the order the walk needs them.
 
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 
 use bytes::Bytes;
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use crate::format::Format;
 use crate::reader::ReaderError;
@@ -22,27 +25,28 @@ use crate::scan::Step;
 type Completion<T> = (usize, Result<T, ReaderError>);
 
 /// An in-flight fetch. Boxed to hold heterogeneous fetch futures in one
-/// queue; `Send` on native, unbounded on the single-threaded wasm executor.
-#[cfg(not(target_arch = "wasm32"))]
+/// queue; `Send` on multi-threaded targets, unbounded on wasm32 and under
+/// the `unsync` feature.
+#[cfg(multi_thread)]
 type Fetch<'a, T> = Pin<Box<dyn Future<Output = Completion<T>> + Send + 'a>>;
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(multi_thread))]
 type Fetch<'a, T> = Pin<Box<dyn Future<Output = Completion<T>> + 'a>>;
 
-/// Bound on a schedulable fetch: `Send` on native, unbounded on the
-/// single-threaded wasm executor.
-#[cfg(not(target_arch = "wasm32"))]
+/// Bound on a schedulable fetch: `Send` on multi-threaded targets, unbounded
+/// on wasm32 and under the `unsync` feature.
+#[cfg(multi_thread)]
 pub(crate) trait FetchFuture<'a, T>:
     Future<Output = Result<T, ReaderError>> + Send + 'a
 {
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(multi_thread)]
 impl<'a, T, Fut> FetchFuture<'a, T> for Fut where
     Fut: Future<Output = Result<T, ReaderError>> + Send + 'a
 {
 }
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(multi_thread))]
 pub(crate) trait FetchFuture<'a, T>: Future<Output = Result<T, ReaderError>> + 'a {}
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(multi_thread))]
 impl<'a, T, Fut> FetchFuture<'a, T> for Fut where Fut: Future<Output = Result<T, ReaderError>> + 'a {}
 
 /// One chunk's ordered contents plus the walk position within them.

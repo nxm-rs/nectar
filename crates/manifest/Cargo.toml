@@ -21,13 +21,14 @@ workspace = true
 alloy-primitives = { workspace = true }
 arbitrary = { workspace = true, optional = true }
 bytes.workspace = true
-futures.workspace = true
+futures-util.workspace = true
 nectar-file = { workspace = true, features = ["primitives"] }
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]
 arbitrary.workspace = true
+futures.workspace = true
 # Self dev-dependency: exposes the `generators` module to integration tests.
 nectar-manifest = { workspace = true, features = ["arbitrary"] }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
@@ -57,10 +58,14 @@ encryption = []
 std = [
 	"alloy-primitives/std",
 	"bytes/std",
+	"futures-util/std",
 	"nectar-file/std",
 	"nectar-primitives/std",
 	"thiserror/std",
 ]
+# Single-thread send escape: relaxes the boxed fetch futures off `Send` in
+# lockstep with the store traits.
+unsync = [ "nectar-file/unsync", "nectar-primitives/unsync" ]
 
 [package.metadata.docs.rs]
 all-features = true

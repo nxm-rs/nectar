@@ -8,6 +8,7 @@
 //! [`U16Le`]. Emission is total, so [`Node::encode`] validates the packing
 //! bounds the types do not carry before any byte is written.
 
+use alloc::vec::Vec;
 use core::mem::size_of;
 
 use bytes::Bytes;
@@ -1128,6 +1129,8 @@ pub fn recanonicalize<F: Format>(payload: &[u8]) -> Result<Vec<u8>, DecodeError>
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use nectar_primitives::EncryptionKey;
 
     use crate::format::V1;

@@ -10,6 +10,7 @@
 //! root's typed metadata, so the conventions travel as registered metadata,
 //! never magic keys.
 
+use alloc::vec::Vec;
 use core::mem::size_of;
 
 use bytes::Bytes;
@@ -336,6 +337,9 @@ fn directory_index<F: Format>(path: &[u8], index: &[u8]) -> Key {
 
 #[cfg(test)]
 mod tests {
+    use std::format;
+    use std::vec;
+
     use bytes::Bytes;
     use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef};
