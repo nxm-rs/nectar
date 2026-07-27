@@ -87,8 +87,8 @@ pub trait NodeGet: TrustedGet<ContentOnlyChunkSet> {
     /// forks from its segments so the caller always sees one logical node.
     ///
     /// Reassembling a segmented node fetches its segment chunks under a
-    /// bounded window and holds only that one node's forks, bounded by the
-    /// fork count, so peak retained state stays O(depth).
+    /// bounded window and reassembles one node's forks, so peak retained
+    /// state stays bounded by the fork count and that window.
     fn get_node<F: Format>(
         &self,
         address: &ChunkAddress,
@@ -161,8 +161,12 @@ fn decode_fetched<F: Format>(
     )
 }
 
-/// Bounds a spilled node's concurrent segment fetches.
-const SEGMENT_WINDOW: Window = Window::DEFAULT;
+/// The concurrent segment-fetch window: the format's read-ahead saturated
+/// into a nonzero window, matching the enclosing scan and traverse walks.
+fn segment_window<F: Format>() -> Window {
+    let slots = u16::try_from(F::READ_AHEAD).unwrap_or(u16::MAX);
+    Window::new(slots).unwrap_or(Window::DEFAULT)
+}
 
 /// A malformed segment structure.
 const fn segment_context() -> StoreError {
@@ -282,8 +286,9 @@ fn launch_segments<'a, S>(
 }
 
 /// Gather every fork of a spilled node: fetch the segments its directory
-/// routes to under [`SEGMENT_WINDOW`], folding completions strictly in
-/// directory order and recording each segment chunk address into `trace`.
+/// routes to under the format's read-ahead window, folding completions
+/// strictly in directory order and recording each segment chunk address into
+/// `trace`.
 ///
 /// Only the fetches overlap; the width checks, the record fold and the trace
 /// all run in directory order, so the reassembled node matches a serial
@@ -300,7 +305,7 @@ where
 {
     let mut slots = Vec::with_capacity(dir.descriptors.len());
     let mut head = splice_directory(&mut slots, dir, 0, None);
-    let admission = Admission::new(SEGMENT_WINDOW);
+    let admission = Admission::new(segment_window::<F>());
     let mut in_flight = InFlight::new();
     let mut buffered: usize = 0;
     let mut table = ForkTable::new();
@@ -603,7 +608,7 @@ mod tests {
 
         let peak = store.peak.load(Ordering::Relaxed);
         assert!(peak > 1, "segment fetches overlapped, peak {peak}");
-        assert!(peak <= usize::from(SEGMENT_WINDOW.get()));
+        assert!(peak <= usize::from(segment_window::<V1>().get()));
     }
 
     #[test]
