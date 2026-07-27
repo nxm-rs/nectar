@@ -13,7 +13,7 @@ use core::convert::Infallible;
 use core::future::poll_fn;
 
 use bytes::Bytes;
-use nectar_kernel::{Driver, InFlight, WalkPolicy};
+use nectar_kernel::{BoxFuture, Driver, FuturesUnordered, WalkPolicy};
 use nectar_primitives::ChunkAddress;
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
@@ -120,7 +120,7 @@ where
     type Error = Infallible;
     type Drain = ();
 
-    fn admit(&mut self, in_flight: &mut InFlight<'a, Fetched<F>>) {
+    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, Fetched<F>>>) {
         if self.staged.is_none() {
             self.staged = self.advance();
         }
@@ -259,7 +259,7 @@ where
     F: Format,
 {
     /// A stream positioned before its root visit.
-    const fn start(store: &'a S, root: Root) -> Self {
+    fn start(store: &'a S, root: Root) -> Self {
         Self {
             store,
             root: Some(root),
@@ -315,7 +315,7 @@ where
     /// Every chunk address the manifest rooted at `root` depends on, in
     /// depth-first key order.
     #[must_use]
-    pub const fn addresses(&self, root: &ChunkAddress) -> AddressStream<'_, S, F> {
+    pub fn addresses(&self, root: &ChunkAddress) -> AddressStream<'_, S, F> {
         AddressStream::start(self.store(), Root::Plain(*root))
     }
 

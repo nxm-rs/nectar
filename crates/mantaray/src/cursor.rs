@@ -18,7 +18,7 @@ use core::task::{Context, Poll};
 
 use futures::Stream;
 pub use nectar_kernel::Window;
-use nectar_kernel::{Admission, BoxFuture, InFlight, StaticDriver, WalkPolicy};
+use nectar_kernel::{Admission, BoxFuture, FuturesUnordered, StaticDriver, WalkPolicy};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ChunkAddress;
 
@@ -147,7 +147,7 @@ where
     /// fetches never exceed the window. The scan is O(window): every slot
     /// passed over or filled counts toward occupancy, which the window caps.
     #[inline]
-    fn admit(&mut self, in_flight: &mut InFlight<'static, Fetched>) {
+    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'static, Fetched>>) {
         let admission = self.admission;
         let mut occupancy = in_flight.len().saturating_add(self.resolved.len());
         let mut head_holds_slot = matches!(self.frontier.front(), Some(Slot::Fetching(_)));

@@ -8,8 +8,8 @@ use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
 use nectar_kernel::{
-    Admission, AdmitPolicy, BoxFuture, FromFn, InFlight, Observations, StaticDriver, WalkPolicy,
-    from_fn, get_verified,
+    Admission, AdmitPolicy, BoxFuture, FromFn, FuturesUnordered, Observations, StaticDriver,
+    WalkPolicy, from_fn, get_verified,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkOps, ContentOnlyChunkSet, Verified};
@@ -231,7 +231,7 @@ where
     type Drain = Drain;
 
     #[inline]
-    fn admit(&mut self, in_flight: &mut InFlight<'static, Self::Fetched>) {
+    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'static, Self::Fetched>>) {
         self.retune();
         loop {
             let Some(head) = self.head_key() else { return };
@@ -385,7 +385,7 @@ where
     fn try_admit_branch(
         &mut self,
         head: u64,
-        in_flight: &mut InFlight<'static, Fetched<M, S::Error, B>>,
+        in_flight: &mut FuturesUnordered<BoxFuture<'static, Fetched<M, S::Error, B>>>,
     ) -> bool {
         if self.branch_in_flight >= self.branch_budget {
             return false;
@@ -408,7 +408,7 @@ where
     fn try_admit_leaf(
         &mut self,
         head: u64,
-        in_flight: &mut InFlight<'static, Fetched<M, S::Error, B>>,
+        in_flight: &mut FuturesUnordered<BoxFuture<'static, Fetched<M, S::Error, B>>>,
     ) -> bool {
         let Some(front) = self.leaf_frontier.front() else {
             return false;
@@ -450,7 +450,7 @@ where
     fn dispatch(
         &mut self,
         node: Node<M>,
-        in_flight: &mut InFlight<'static, Fetched<M, S::Error, B>>,
+        in_flight: &mut FuturesUnordered<BoxFuture<'static, Fetched<M, S::Error, B>>>,
     ) {
         let key = node.key(self.range_start);
         if node.span <= self.body {

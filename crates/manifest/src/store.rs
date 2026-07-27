@@ -14,8 +14,10 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::{Future, poll_fn};
 use core::mem;
+use core::pin::Pin;
 
-use nectar_kernel::{Admission, InFlight, Window};
+use futures_core::Stream;
+use nectar_kernel::{Admission, BoxFuture, FuturesUnordered, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, EncryptionKey, Verified,
@@ -258,7 +260,7 @@ fn launch_segments<'a, S>(
     admission: Admission,
     slots: &mut [SegmentSlot],
     head: usize,
-    in_flight: &mut InFlight<'a, SegmentFetch>,
+    in_flight: &mut FuturesUnordered<BoxFuture<'a, SegmentFetch>>,
     buffered: usize,
 ) where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
@@ -306,7 +308,7 @@ where
     let mut slots = Vec::with_capacity(dir.descriptors.len());
     let mut head = splice_directory(&mut slots, dir, 0, None);
     let admission = Admission::new(segment_window::<F>());
-    let mut in_flight = InFlight::new();
+    let mut in_flight = FuturesUnordered::new();
     let mut buffered: usize = 0;
     let mut table = ForkTable::new();
     while let Some(current) = head {
@@ -332,7 +334,8 @@ where
         let Some((outcome, address, key, depth, next)) = landed else {
             // The head is launched before every wait, so an empty set here is
             // a lost completion, not a legal drain.
-            let Some((index, outcome)) = poll_fn(|cx| in_flight.poll(cx)).await else {
+            let Some((index, outcome)) = poll_fn(|cx| Pin::new(&mut in_flight).poll_next(cx)).await
+            else {
                 return Err(segment_context());
             };
             if let Some(slot) = slots.get_mut(index) {

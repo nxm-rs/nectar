@@ -1,6 +1,6 @@
 # nectar-kernel
 
-Bounded-admission kernel beneath the streaming walkers: the fixed-membership `InFlight` set, the read-ahead `Window`, the head-slot `Admission` predicate, the `AdmitPolicy` adaptive-window seam, and the `BoxFuture` alias whose `Send` bound relaxes on single-threaded targets.
+Bounded-admission kernel beneath the streaming walkers: the shared `Driver` loop over a `WalkPolicy`, the `FuturesUnordered` in-flight set it drains, the read-ahead `Window`, the head-slot `Admission` predicate, the `AdmitPolicy` adaptive-window seam, and the `BoxFuture` alias whose `Send` bound relaxes on single-threaded targets.
 
 Part of the [nectar](https://github.com/nxm-rs/nectar) workspace, a collection of low-level Ethereum Swarm primitives in Rust. See the [workspace README](https://github.com/nxm-rs/nectar) for the full crate list and project context.
 

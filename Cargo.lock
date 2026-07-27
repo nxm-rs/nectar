@@ -2590,6 +2590,7 @@ name = "nectar-kernel"
 version = "0.4.0"
 dependencies = [
  "futures-core",
+ "futures-util",
  "nectar-marker",
  "nectar-primitives 0.4.0",
  "nectar-testing",
@@ -2616,6 +2617,7 @@ dependencies = [
  "arbitrary",
  "bytes",
  "futures",
+ "futures-core",
  "nectar-file",
  "nectar-kernel",
  "nectar-manifest",
@@ -2706,6 +2708,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "futures-channel",
+ "futures-core",
  "nectar-clock",
  "nectar-file",
  "nectar-kernel",

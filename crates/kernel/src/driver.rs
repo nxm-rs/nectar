@@ -1,9 +1,13 @@
 //! The shared bounded-admission walk loop.
 
 use core::fmt;
+use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use crate::inflight::InFlight;
+use futures_core::Stream;
+use futures_util::stream::FuturesUnordered;
+
+use crate::future::BoxFuture;
 
 /// Per-walker divergence beneath the shared driver: the frontier and its
 /// admission, the ready ordering, the completion fold with its error timing,
@@ -25,7 +29,7 @@ pub trait WalkPolicy<'a> {
     type Drain: Copy;
 
     /// Dispatch queued work into `in_flight` until neither lane may proceed.
-    fn admit(&mut self, in_flight: &mut InFlight<'a, Self::Fetched>);
+    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, Self::Fetched>>);
 
     /// Take the next deliverable outcome, if the drain permits one; an `Err`
     /// is a fault surfacing at its serial turn, terminal like any other.
@@ -55,7 +59,7 @@ pub trait WalkPolicy<'a> {
 /// the poll delegation with it.
 pub struct Driver<'a, P, F> {
     policy: P,
-    in_flight: InFlight<'a, F>,
+    in_flight: FuturesUnordered<BoxFuture<'a, F>>,
     done: bool,
 }
 
@@ -87,10 +91,10 @@ impl<P, F> Driver<'_, P, F> {
 impl<'a, P: WalkPolicy<'a>> Driver<'a, P, P::Fetched> {
     /// Drive `policy` from an empty in-flight set. Bounded so `F` can only be
     /// `P::Fetched`: a mismatched `Driver` has no constructor.
-    pub const fn new(policy: P) -> Self {
+    pub fn new(policy: P) -> Self {
         Self {
             policy,
-            in_flight: InFlight::new(),
+            in_flight: FuturesUnordered::new(),
             done: false,
         }
     }
@@ -114,7 +118,7 @@ impl<'a, P: WalkPolicy<'a>> Driver<'a, P, P::Fetched> {
                 }
                 return Poll::Ready(Some(outcome));
             }
-            match self.in_flight.poll(cx) {
+            match Pin::new(&mut self.in_flight).poll_next(cx) {
                 Poll::Ready(Some(fetched)) => {
                     if let Err(error) = self.policy.absorb(fetched) {
                         self.done = true;

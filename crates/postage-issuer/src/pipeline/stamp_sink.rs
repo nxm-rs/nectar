@@ -17,8 +17,9 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use futures_channel::oneshot;
+use futures_core::Stream;
 use nectar_clock::Clock;
-use nectar_kernel::InFlight;
+use nectar_kernel::{BoxFuture, FuturesUnordered};
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;
@@ -65,11 +66,7 @@ where
     /// and splitter-fed inputs: offer addresses through
     /// [`StampSink::poll_admit`], collect through
     /// [`StampSink::poll_next`]. Sign jobs run on `spawner`.
-    pub const fn sink<'p, I, S>(
-        &'p self,
-        issuer: &'p mut I,
-        spawner: S,
-    ) -> StampSink<'p, Sg, C, I, S>
+    pub fn sink<'p, I, S>(&'p self, issuer: &'p mut I, spawner: S) -> StampSink<'p, Sg, C, I, S>
     where
         I: StampIssuer + ?Sized,
         S: Spawn,
@@ -78,7 +75,7 @@ where
             pipeline: self,
             issuer,
             spawner,
-            in_flight: InFlight::new(),
+            in_flight: FuturesUnordered::new(),
             ready: VecDeque::new(),
             failed: false,
             paused: false,
@@ -96,7 +93,7 @@ pub struct StampSink<'p, Sg, C, I: ?Sized, S> {
     pipeline: &'p StampPipeline<Sg, C>,
     issuer: &'p mut I,
     spawner: S,
-    in_flight: InFlight<'static, StampResult>,
+    in_flight: FuturesUnordered<BoxFuture<'static, StampResult>>,
     /// Results complete at admission: allocation failures and `NotAdmitted`.
     ready: VecDeque<StampResult>,
     failed: bool,
@@ -119,7 +116,7 @@ impl<Sg, C, I: ?Sized, S> fmt::Debug for StampSink<'_, Sg, C, I, S> {
 
 impl<Sg, C, I: ?Sized, S> StampSink<'_, Sg, C, I, S> {
     /// Admitted jobs not yet yielded.
-    pub const fn in_flight(&self) -> usize {
+    pub fn in_flight(&self) -> usize {
         self.in_flight.len()
     }
 
@@ -239,7 +236,7 @@ where
 
     /// Polls the in-flight set for one completion and applies fail-fast.
     fn harvest(&mut self, cx: &mut Context<'_>) -> Poll<Option<StampResult>> {
-        let polled = self.in_flight.poll(cx);
+        let polled = Pin::new(&mut self.in_flight).poll_next(cx);
         if let Poll::Ready(Some(result)) = &polled
             && self.pipeline.fail_fast
             && !self.failed

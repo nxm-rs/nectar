@@ -1,8 +1,8 @@
 //! Bounded-admission kernel beneath the streaming walkers: the shared
-//! [`Driver`] loop over a [`WalkPolicy`], the fixed-membership [`InFlight`]
-//! set, the read-ahead [`Window`], the head-slot [`Admission`] predicate, the
-//! [`AdmitPolicy`] adaptive-window seam, and the [`BoxFuture`] alias the sets
-//! hold.
+//! [`Driver`] loop over a [`WalkPolicy`], the [`FuturesUnordered`] in-flight
+//! set it drains, the read-ahead [`Window`], the head-slot [`Admission`]
+//! predicate, the [`AdmitPolicy`] adaptive-window seam, and the [`BoxFuture`]
+//! alias the sets hold.
 //!
 //! The driver owns the `admit`/`take`/`poll` loop; each walker's frontier,
 //! ordering, and completion fold stay bespoke as a [`WalkPolicy`] impl in its
@@ -29,7 +29,6 @@
     )
 )]
 
-extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
@@ -42,7 +41,6 @@ mod admission;
 mod chunk;
 mod driver;
 mod future;
-mod inflight;
 mod policy;
 mod window;
 
@@ -52,6 +50,6 @@ pub use admission::Admission;
 pub use chunk::get_verified;
 pub use driver::{Driver, StaticDriver, WalkPolicy};
 pub use future::BoxFuture;
-pub use inflight::InFlight;
+pub use futures_util::stream::FuturesUnordered;
 pub use policy::{AdmitPolicy, Fixed, FromFn, Observations, from_fn};
 pub use window::Window;

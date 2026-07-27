@@ -16,7 +16,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::poll_fn;
 
-use nectar_kernel::{Admission, BoxFuture, Driver, InFlight, WalkPolicy, Window};
+use nectar_kernel::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::store::MaybeSend;
 use nectar_primitives::{EncryptedChunkRef, EntryRef};
@@ -471,7 +471,10 @@ where
     /// Encode the top frame's node, dispatch its save into the window, and
     /// pop it; its parent's outstanding-child count rises until the save
     /// completes.
-    fn dispatch(&mut self, in_flight: &mut InFlight<'s, SaveDone<R>>) -> Result<(), MantarayError> {
+    fn dispatch(
+        &mut self,
+        in_flight: &mut FuturesUnordered<BoxFuture<'s, SaveDone<R>>>,
+    ) -> Result<(), MantarayError> {
         let Some(mut frame) = self.stack.pop() else {
             return Ok(());
         };
@@ -521,7 +524,7 @@ where
     /// window has room. Stops when the deepest frame waits on its children,
     /// the window is full, or a dispatch faults.
     #[inline]
-    fn admit(&mut self, in_flight: &mut InFlight<'s, SaveDone<R>>) {
+    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'s, SaveDone<R>>>) {
         loop {
             let Some(top) = self.stack.last_mut() else {
                 return;
