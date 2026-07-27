@@ -1,0 +1,97 @@
+//! Blocking-bridge machinery: the unpark waker and the sink spawner the
+//! [`Stamped`](super::Stamped) iterator drives the poll-native sink with.
+
+use alloc::sync::Arc;
+use core::task::{Context, Waker};
+use std::task::Wake;
+use std::thread::{self, Thread};
+
+use nectar_tasks::{BoxFuture, Spawn, TaskHandle};
+
+/// Waker that unparks the thread which registered it.
+struct Unpark(Thread);
+
+impl Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// Waker for the calling thread; a completion unparks it.
+pub(super) fn unpark_current() -> Waker {
+    Waker::from(Arc::new(Unpark(thread::current())))
+}
+
+/// Runs one sign job to completion.
+fn drive(mut task: BoxFuture<'static, ()>) {
+    let mut cx = Context::from_waker(Waker::noop());
+    let poll = task.as_mut().poll(&mut cx);
+    // Sign jobs are single-poll futures.
+    debug_assert!(poll.is_ready(), "sign job pended");
+}
+
+/// The blocking iterator's spawner: signs on the rayon pool.
+#[cfg(feature = "parallel")]
+pub(super) struct BlockingSpawn;
+
+#[cfg(feature = "parallel")]
+impl Spawn for BlockingSpawn {
+    fn spawn(&self, task: BoxFuture<'static, ()>) -> TaskHandle {
+        rayon::spawn(move || drive(task));
+        TaskHandle::new(|| {})
+    }
+}
+
+#[cfg(not(feature = "parallel"))]
+use alloc::collections::VecDeque;
+#[cfg(not(feature = "parallel"))]
+use std::sync::{Mutex, PoisonError};
+
+/// Queued sign jobs the bridge runs inline, one per pending poll, so `next`
+/// blocks for at most one signer round-trip.
+#[cfg(not(feature = "parallel"))]
+#[derive(Clone, Default)]
+pub(super) struct Jobs(Arc<Mutex<VecDeque<BoxFuture<'static, ()>>>>);
+
+#[cfg(not(feature = "parallel"))]
+impl Jobs {
+    /// Runs one queued job; reports whether one was queued.
+    pub(super) fn run_one(&self) -> bool {
+        let job = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front();
+        job.map(drive).is_some()
+    }
+}
+
+/// The blocking iterator's spawner: queues each sign job on [`Jobs`] for
+/// the bridge to run inline.
+#[cfg(not(feature = "parallel"))]
+#[derive(Default)]
+pub(super) struct BlockingSpawn(Jobs);
+
+#[cfg(not(feature = "parallel"))]
+impl BlockingSpawn {
+    /// The queue this spawner feeds.
+    pub(super) fn jobs(&self) -> Jobs {
+        self.0.clone()
+    }
+}
+
+#[cfg(not(feature = "parallel"))]
+impl Spawn for BlockingSpawn {
+    fn spawn(&self, task: BoxFuture<'static, ()>) -> TaskHandle {
+        self.0
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(task);
+        TaskHandle::new(|| {})
+    }
+}

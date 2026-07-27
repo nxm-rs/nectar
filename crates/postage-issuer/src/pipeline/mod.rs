@@ -33,41 +33,44 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
-#[cfg(all(feature = "std", not(feature = "parallel")))]
-use std::panic::{AssertUnwindSafe, catch_unwind};
-#[cfg(feature = "parallel")]
-use std::sync::mpsc::{Receiver, Sender, channel};
+#[cfg(feature = "std")]
+use core::task::{Context, Poll};
 
 use nectar_clock::Clock;
 #[cfg(feature = "std")]
 use nectar_clock::SystemClock;
 use nectar_kernel::Window;
 use nectar_marker::{MaybeSend, MaybeSync};
-use nectar_postage::{Stamp, StampDigest};
+use nectar_postage::Stamp;
+#[cfg(not(feature = "std"))]
+use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;
 
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
+#[cfg(not(feature = "std"))]
 use crate::prepared::prepare_stamps;
 
+#[cfg(feature = "std")]
+mod bridge;
 mod signer;
+#[cfg(feature = "std")]
+mod stamp_sink;
 // The shared cell behind the decorator: a mutex under std, a cell wherever
 // the Send/Sync bounds relax. Hosted no-std builds without `unsync` have
 // neither, so the surface is absent there.
 #[cfg(any(feature = "std", not(multi_thread)))]
 mod stamped_put;
 #[cfg(feature = "std")]
-mod stamp_sink;
-#[cfg(feature = "std")]
 mod task;
 
-#[cfg(not(feature = "parallel"))]
+#[cfg(not(feature = "std"))]
 use signer::sign_digest;
 pub use signer::{Eip191, SignPrehash};
-#[cfg(any(feature = "std", not(multi_thread)))]
-pub use stamped_put::{IssuedBound, StampedPut, StampedPutError};
 #[cfg(feature = "std")]
 pub use stamp_sink::StampSink;
+#[cfg(any(feature = "std", not(multi_thread)))]
+pub use stamped_put::{IssuedBound, StampedPut, StampedPutError};
 
 /// A completed stamping attempt, tagged with its input address.
 #[derive(Debug)]
@@ -241,25 +244,34 @@ where
             "stamp must not be called from a rayon pool thread"
         );
 
-        Stamped {
-            pipeline: self,
-            issuer,
-            input: addresses.into_iter(),
-            input_done: false,
-            failed: false,
-            ready: VecDeque::new(),
-            not_admitted: VecDeque::new(),
-            #[cfg(feature = "parallel")]
-            channel: channel(),
-            #[cfg(feature = "parallel")]
-            in_flight: 0,
-            #[cfg(not(feature = "parallel"))]
-            prepared: VecDeque::new(),
-        }
+        Stamped::new(self, issuer, addresses.into_iter())
     }
 }
 
 /// Unordered completion stream returned by [`StampPipeline::stamp`].
+///
+/// A blocking bridge over [`StampSink`]: admission, windowing and fail-fast
+/// live in the sink; this iterator feeds input in window-sized batches,
+/// parks between completions and orders the fail-fast tail after the
+/// admitted results.
+#[cfg(feature = "std")]
+#[must_use = "iterators are lazy; nothing is admitted until polled"]
+pub struct Stamped<'p, Sg, C, I: ?Sized, A> {
+    sink: StampSink<'p, Sg, C, I, bridge::BlockingSpawn>,
+    /// Sign jobs the bridge runs inline, one per pending poll.
+    #[cfg(not(feature = "parallel"))]
+    jobs: bridge::Jobs,
+    input: A,
+    input_done: bool,
+    /// The fail-fast tail: addresses never admitted.
+    not_admitted: VecDeque<ChunkAddress>,
+}
+
+/// Unordered completion stream returned by [`StampPipeline::stamp`].
+///
+/// Without `std` there is no executor seam: admitted digests sign inline,
+/// one per `next`.
+#[cfg(not(feature = "std"))]
 #[must_use = "iterators are lazy; nothing is admitted until polled"]
 pub struct Stamped<'p, Sg, C, I: ?Sized, A> {
     pipeline: &'p StampPipeline<Sg, C>,
@@ -271,22 +283,26 @@ pub struct Stamped<'p, Sg, C, I: ?Sized, A> {
     ready: VecDeque<StampResult>,
     /// The fail-fast tail: addresses never admitted.
     not_admitted: VecDeque<ChunkAddress>,
-    /// Both ends held: the sender half keeps the channel connected while
-    /// tasks are in flight, so the drain counts instead of detecting
-    /// disconnects.
-    #[cfg(feature = "parallel")]
-    channel: (Sender<StampResult>, Receiver<StampResult>),
-    #[cfg(feature = "parallel")]
-    in_flight: usize,
     /// Admitted digests awaiting the inline signing step.
-    #[cfg(not(feature = "parallel"))]
     prepared: VecDeque<StampDigest>,
 }
 
+#[cfg(feature = "std")]
 impl<Sg, C, I: ?Sized, A> fmt::Debug for Stamped<'_, Sg, C, I, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Stamped")
-            .field("in_window", &self.in_window())
+            .field("sink", &self.sink)
+            .field("not_admitted", &self.not_admitted.len())
+            .field("input_done", &self.input_done)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl<Sg, C, I: ?Sized, A> fmt::Debug for Stamped<'_, Sg, C, I, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Stamped")
+            .field("in_window", &self.prepared.len())
             .field("ready", &self.ready.len())
             .field("not_admitted", &self.not_admitted.len())
             .field("input_done", &self.input_done)
@@ -295,20 +311,38 @@ impl<Sg, C, I: ?Sized, A> fmt::Debug for Stamped<'_, Sg, C, I, A> {
     }
 }
 
-impl<Sg, C, I: ?Sized, A> Stamped<'_, Sg, C, I, A> {
-    /// Allocated, unsigned stamps currently held in flight.
+#[cfg(feature = "std")]
+impl<'p, Sg, C, I, A> Stamped<'p, Sg, C, I, A>
+where
+    Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
+    C: Clock,
+    I: StampIssuer + ?Sized,
+{
     #[cfg(feature = "parallel")]
-    const fn in_window(&self) -> usize {
-        self.in_flight
+    const fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p mut I, input: A) -> Self {
+        Self {
+            sink: pipeline.sink(issuer, bridge::BlockingSpawn),
+            input,
+            input_done: false,
+            not_admitted: VecDeque::new(),
+        }
     }
 
-    /// Allocated, unsigned stamps currently held in flight.
     #[cfg(not(feature = "parallel"))]
-    fn in_window(&self) -> usize {
-        self.prepared.len()
+    fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p mut I, input: A) -> Self {
+        let spawn = bridge::BlockingSpawn::default();
+        let jobs = spawn.jobs();
+        Self {
+            sink: pipeline.sink(issuer, spawn),
+            jobs,
+            input,
+            input_done: false,
+            not_admitted: VecDeque::new(),
+        }
     }
 }
 
+#[cfg(feature = "std")]
 impl<Sg, C, I, A> Stamped<'_, Sg, C, I, A>
 where
     Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
@@ -316,13 +350,117 @@ where
     I: StampIssuer + ?Sized,
     A: Iterator<Item = ChunkAddress>,
 {
-    /// Refills the window: allocates a micro-batch with one clock read and
-    /// submits every successful allocation for signing.
+    /// Refills the sink's window: one micro-batch, one clock read.
+    fn refill(&mut self) {
+        if self.input_done || self.sink.is_failed() {
+            return;
+        }
+        let room = self.sink.room();
+        if room == 0 {
+            return;
+        }
+        let mut batch = Vec::with_capacity(room);
+        while batch.len() < room {
+            match self.input.next() {
+                Some(address) => batch.push(address),
+                None => {
+                    self.input_done = true;
+                    break;
+                }
+            }
+        }
+        if !batch.is_empty() {
+            self.sink.admit_batch(&batch);
+        }
+    }
+
+    /// Fail-fast: consumes the rest of the input as the never-admitted
+    /// tail, yielded after the admitted completions drain.
+    fn stop_admission(&mut self) {
+        self.not_admitted.extend(self.input.by_ref());
+        self.input_done = true;
+    }
+
+    /// Blocks until the sink can make progress: runs one queued sign job
+    /// inline, or parks until a completion unparks this thread.
+    fn wait(&mut self) {
+        #[cfg(not(feature = "parallel"))]
+        if self.jobs.run_one() {
+            return;
+        }
+        std::thread::park();
+    }
+}
+
+#[cfg(feature = "std")]
+impl<Sg, C, I, A> Iterator for Stamped<'_, Sg, C, I, A>
+where
+    Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
+    C: Clock,
+    I: StampIssuer + ?Sized,
+    A: Iterator<Item = ChunkAddress>,
+{
+    type Item = StampResult;
+
+    fn next(&mut self) -> Option<StampResult> {
+        let waker = bridge::unpark_current();
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            self.refill();
+            match self.sink.poll_next(&mut cx) {
+                Poll::Ready(Some(result)) => {
+                    if self.sink.is_failed() && !self.input_done {
+                        self.stop_admission();
+                    }
+                    return Some(result);
+                }
+                Poll::Ready(None) => {
+                    if let Some(address) = self.not_admitted.pop_front() {
+                        return Some(StampResult {
+                            address,
+                            result: Err(SigningError::NotAdmitted),
+                        });
+                    }
+                    if self.input_done {
+                        return None;
+                    }
+                }
+                Poll::Pending => self.wait(),
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl<'p, Sg, C, I: ?Sized, A> Stamped<'p, Sg, C, I, A> {
+    const fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p mut I, input: A) -> Self {
+        Self {
+            pipeline,
+            issuer,
+            input,
+            input_done: false,
+            failed: false,
+            ready: VecDeque::new(),
+            not_admitted: VecDeque::new(),
+            prepared: VecDeque::new(),
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl<Sg, C, I, A> Stamped<'_, Sg, C, I, A>
+where
+    Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
+    C: Clock,
+    I: StampIssuer + ?Sized,
+    A: Iterator<Item = ChunkAddress>,
+{
+    /// Refills the window: allocates a micro-batch with one clock read.
     fn admit(&mut self) {
         if self.failed || self.input_done {
             return;
         }
-        let room = usize::from(self.pipeline.window.get()).saturating_sub(self.in_window());
+        let room = usize::from(self.pipeline.window.get()).saturating_sub(self.prepared.len());
         if room == 0 {
             return;
         }
@@ -341,7 +479,7 @@ where
         }
         for preparation in prepare_stamps(&mut *self.issuer, &batch, &self.pipeline.clock) {
             match preparation.result {
-                Ok(digest) => self.submit(digest),
+                Ok(digest) => self.prepared.push_back(digest),
                 Err(error) => self.ready.push_back(StampResult {
                     address: preparation.address,
                     result: Err(SigningError::Stamp(error)),
@@ -358,58 +496,8 @@ where
         self.input_done = true;
     }
 
-    #[cfg(feature = "parallel")]
-    fn submit(&mut self, digest: StampDigest) {
-        task::spawn_sign(
-            Arc::clone(&self.pipeline.signer),
-            digest,
-            self.channel.0.clone(),
-        );
-        self.in_flight = self.in_flight.saturating_add(1);
-    }
-
-    #[cfg(not(feature = "parallel"))]
-    fn submit(&mut self, digest: StampDigest) {
-        self.prepared.push_back(digest);
-    }
-
-    /// Blocks for the next in-flight completion, if any.
-    #[cfg(feature = "parallel")]
-    fn complete_one(&mut self) -> Option<StampResult> {
-        if self.in_flight == 0 {
-            return None;
-        }
-        match self.channel.1.recv() {
-            Ok(result) => {
-                self.in_flight = self.in_flight.saturating_sub(1);
-                Some(result)
-            }
-            // Unreachable: self.channel.0 keeps the channel connected. Treat
-            // it as a drained window rather than panicking.
-            Err(_) => {
-                self.in_flight = 0;
-                None
-            }
-        }
-    }
-
-    /// Signs the next admitted digest inline, if any.
-    #[cfg(all(feature = "std", not(feature = "parallel")))]
-    fn complete_one(&mut self) -> Option<StampResult> {
-        let digest = self.prepared.pop_front()?;
-        let address = digest.chunk_address;
-        // The signer outlives a caught panic; its interior state across that
-        // panic is the caller's contract.
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            sign_digest(self.pipeline.signer.as_ref(), &digest)
-        }))
-        .unwrap_or_else(|_| Err(SigningError::Dropped));
-        Some(StampResult { address, result })
-    }
-
-    /// Signs the next admitted digest inline, if any. Without `std` there is
-    /// no unwind boundary: a signer panic propagates.
-    #[cfg(not(any(feature = "std", feature = "parallel")))]
+    /// Signs the next admitted digest inline, if any. There is no unwind
+    /// boundary: a signer panic propagates.
     fn complete_one(&mut self) -> Option<StampResult> {
         let digest = self.prepared.pop_front()?;
         let address = digest.chunk_address;
@@ -418,6 +506,7 @@ where
     }
 }
 
+#[cfg(not(feature = "std"))]
 impl<Sg, C, I, A> Iterator for Stamped<'_, Sg, C, I, A>
 where
     Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
@@ -546,6 +635,26 @@ mod tests {
             } else {
                 Ok(fixed_signature())
             }
+        }
+
+        fn chain_id_sync(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    /// Counts signing calls.
+    #[cfg(not(feature = "parallel"))]
+    struct CountingSigner(Arc<AtomicUsize>);
+
+    #[cfg(not(feature = "parallel"))]
+    impl SignerSync for CountingSigner {
+        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
+            Ok(fixed_signature())
+        }
+
+        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(fixed_signature())
         }
 
         fn chain_id_sync(&self) -> Option<u64> {
@@ -809,6 +918,25 @@ mod tests {
         }
     }
 
+    /// The inline engine signs lazily: admission allocates a window, but
+    /// each `next` performs exactly one signer round-trip.
+    #[cfg(not(feature = "parallel"))]
+    #[test]
+    fn next_signs_one_digest_per_call() {
+        let mut issuer = issuer24();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let pipeline =
+            StampPipeline::from_signer(CountingSigner(Arc::clone(&calls))).with_window(window(8));
+
+        let mut stream = pipeline.stamp(&mut issuer, addresses(20));
+        for expected in 1..=5 {
+            assert!(stream.next().is_some());
+            assert_eq!(calls.load(Ordering::SeqCst), expected);
+        }
+        drop(stream);
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+    }
+
     #[test]
     fn manual_clock_sets_timestamps() {
         let mut issuer = issuer24();
@@ -837,6 +965,14 @@ mod tests {
 
         assert_eq!(results.len(), 64);
         assert!(max.load(Ordering::SeqCst) <= 4);
+        // A serialised window collapses the peak to 1; >= 2 proves genuine
+        // overlap without demanding the full window on few-core CI. Gated
+        // because the non-parallel build signs inline (peak 1 is correct).
+        #[cfg(feature = "parallel")]
+        assert!(
+            max.load(Ordering::SeqCst) >= 2,
+            "blocking iterator serialised the window"
+        );
         assert_eq!(issuer.stamps_issued(), Some(64));
     }
 
@@ -865,7 +1001,7 @@ mod tests {
 
     #[test]
     fn eip191_signature_recovers_to_signer() {
-        use nectar_postage::StampIndex;
+        use nectar_postage::{StampDigest, StampIndex};
 
         let mut issuer = issuer24();
         let signer = PrivateKeySigner::random();

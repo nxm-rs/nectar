@@ -204,8 +204,8 @@ where
                 });
                 return Poll::Ready(());
             }
-            if self.in_flight.len() < usize::from(self.pipeline.window.get()) {
-                self.admit(address);
+            if self.room() > 0 {
+                self.admit_batch(&[address]);
                 return Poll::Ready(());
             }
             match self.harvest(cx) {
@@ -228,11 +228,16 @@ where
         self.harvest(cx)
     }
 
-    /// Allocates a digest for `address` and submits it for signing; an
-    /// allocation failure queues its result instead.
-    fn admit(&mut self, address: ChunkAddress) {
-        let batch = [address];
-        for preparation in prepare_stamps(&mut *self.issuer, &batch, &self.pipeline.clock) {
+    /// Window slots currently free.
+    pub(super) fn room(&self) -> usize {
+        usize::from(self.pipeline.window.get()).saturating_sub(self.in_flight.len())
+    }
+
+    /// Allocates a digest per address with one clock read and submits each
+    /// for signing; an allocation failure queues its result instead. The
+    /// batch must not exceed [`room`](Self::room).
+    pub(super) fn admit_batch(&mut self, batch: &[ChunkAddress]) {
+        for preparation in prepare_stamps(&mut *self.issuer, batch, &self.pipeline.clock) {
             match preparation.result {
                 Ok(digest) => self.submit(digest),
                 Err(error) => self.ready.push_back(StampResult {
@@ -276,6 +281,7 @@ mod tests {
     use alloc::vec::Vec;
     use alloy_primitives::{B256, Signature, U256};
     use alloy_signer::SignerSync;
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use nectar_kernel::Window;
     use std::sync::mpsc;
     use std::task::Wake;
@@ -394,6 +400,30 @@ mod tests {
         }
     }
 
+    /// Tracks the highest number of concurrent signing calls.
+    struct Gauge {
+        current: Arc<AtomicUsize>,
+        max: Arc<AtomicUsize>,
+    }
+
+    impl SignerSync for Gauge {
+        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
+            Ok(fixed_signature())
+        }
+
+        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+            let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(1));
+            self.current.fetch_sub(1, Ordering::SeqCst);
+            Ok(fixed_signature())
+        }
+
+        fn chain_id_sync(&self) -> Option<u64> {
+            None
+        }
+    }
+
     /// Runs each job on its own thread.
     struct ThreadSpawner;
 
@@ -491,6 +521,32 @@ mod tests {
             sorted(input)
         );
         assert_eq!(issuer.stamps_issued(), Some(50));
+    }
+
+    /// The threaded sink must overlap sign jobs, not serialise the window.
+    #[test]
+    fn threaded_sink_reaches_window_concurrency() {
+        let mut issuer = issuer24();
+        let max = Arc::new(AtomicUsize::new(0));
+        let gauge = Gauge {
+            current: Arc::new(AtomicUsize::new(0)),
+            max: Arc::clone(&max),
+        };
+        let pipeline = StampPipeline::from_signer(gauge).with_window(window(4));
+
+        let mut sink = pipeline.sink(&mut issuer, ThreadSpawner);
+        let results = drive(&mut sink, &addresses(64), 4);
+        drop(sink);
+
+        assert_eq!(results.len(), 64);
+        assert!(max.load(Ordering::SeqCst) <= 4);
+        // A serialised window collapses the peak to 1; >= 2 proves genuine
+        // overlap without demanding the full window on few-core CI.
+        assert!(
+            max.load(Ordering::SeqCst) >= 2,
+            "async sink serialised the window"
+        );
+        assert_eq!(issuer.stamps_issued(), Some(64));
     }
 
     #[test]
