@@ -17,8 +17,11 @@
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
+use core::convert::Infallible;
+use core::future::poll_fn;
 
 use bytes::Bytes;
+use nectar_kernel::{Driver, InFlight, WalkPolicy};
 use nectar_primitives::ChunkAddress;
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
@@ -26,9 +29,9 @@ use nectar_primitives::store::MaybeSync;
 
 use crate::fork::{Child, ForkTable};
 use crate::format::{Format, V1};
+use crate::frontier::{Completion, Frame, Plan, claim, fill};
 use crate::node::Node;
 use crate::reader::{Reader, ReaderError};
-use crate::sched::{Frame, Plan, Scheduler};
 use crate::store::NodeGet;
 use crate::value::{Entry, Key};
 
@@ -76,6 +79,13 @@ impl<F: Format> Step<F> {
     }
 }
 
+/// One completed prefetch payload: the fetched child's flattened steps.
+type Fetched<F> = Completion<Vec<Step<F>>>;
+
+/// One delivered turn of the walk: a key-value pair, the end of the walk, or
+/// a non-terminal fault.
+type Turn<F> = Result<Option<(Key, Entry<F>)>, ReaderError>;
+
 /// An ordered cursor over a manifest, yielding `(key, value)` in key order.
 ///
 /// The cursor fetches trie nodes on demand and retains one frame per referenced
@@ -93,28 +103,195 @@ impl<F: Format> Step<F> {
 /// so a dropped [`next`](Self::next) future replays the same descent.
 #[derive(Debug)]
 pub struct Cursor<'a, S, F: Format = V1> {
-    store: &'a S,
-    stack: Vec<Frame<F>>,
-    end: Option<Bytes>,
+    /// The walk, advanced by the policy and driven by the kernel driver.
+    driver: Driver<'a, ScanPolicy<'a, S, F>, Fetched<F>>,
     done: bool,
-    /// The read-ahead window over prefetched node fetches.
-    sched: Scheduler<'a, Vec<Step<F>>>,
     /// Remaining yields a paginated cursor may return; `None` is unbounded.
     remaining: Option<usize>,
 }
 
 /// What visiting the top frame's next step resolves to, computed under a short
-/// borrow so the awaited fetch and the stack push never overlap it.
+/// borrow so the bound check and the stack push never overlap it.
 enum Advance<F: Format> {
     /// The frame is spent; drop it and resume its parent.
     Pop,
     /// A key and its value at this position.
     Yield(Vec<u8>, Entry<F>),
-    /// Descend into the referenced child rooted at this key prefix, awaiting the
-    /// prefetch launched under this sequence id when one was scheduled.
-    Descend(Vec<u8>, ChunkAddress, Option<usize>),
+    /// Descend into the referenced child rooted at this key prefix, claiming
+    /// the prefetch landed under this sequence id once tagged.
+    Descend(Vec<u8>, Option<usize>),
     /// An encrypted child blocks the walk at this key prefix.
     Encrypted(Vec<u8>),
+}
+
+/// The cursor's walk policy over the kernel driver.
+///
+/// Every fault is non-terminal (a failed descent replays, an encrypted edge
+/// is stepped past), so faults ride the delivered turn and the driver error
+/// is uninhabited. The walk advances inside `admit`, where the launch a
+/// fresh descent needs is reachable; `take_ready` hands over the staged
+/// turn.
+struct ScanPolicy<'a, S, F: Format> {
+    store: &'a S,
+    /// One frame per referenced hop on the current path.
+    stack: Vec<Frame<F>>,
+    /// Exclusive upper bound on yielded keys.
+    end: Option<Bytes>,
+    /// Completions that arrived before the descent awaiting them; drained by
+    /// sequence id and bounded with the in-flight set by the window.
+    ready: Vec<Fetched<F>>,
+    /// The next fetch sequence id to hand out.
+    next_seq: usize,
+    /// The turn advanced to under `admit`, awaiting hand-over.
+    staged: Option<Turn<F>>,
+}
+
+impl<'a, S, F> WalkPolicy<'a> for ScanPolicy<'a, S, F>
+where
+    S: NodeGet + MaybeSync,
+    F: Format,
+{
+    type Fetched = Fetched<F>;
+    type Frame = Turn<F>;
+    type Error = Infallible;
+    type Drain = ();
+
+    fn admit(&mut self, in_flight: &mut InFlight<'a, Fetched<F>>) {
+        if self.staged.is_none() {
+            self.staged = self.advance();
+        }
+        let store = self.store;
+        let end = self.end.as_ref();
+        fill(
+            F::READ_AHEAD,
+            self.ready.len(),
+            &mut self.next_seq,
+            &mut self.stack,
+            in_flight,
+            |base, step| {
+                let key = join(base, step.suffix());
+                if end.is_some_and(|end| key.as_slice() >= end.as_ref()) {
+                    // The walk stops at this bound; nothing beyond it is fetched.
+                    return Plan::Stop;
+                }
+                match step {
+                    // The walk errors here; no deeper node is fetched.
+                    Step::Encrypted { .. } => Plan::Stop,
+                    Step::Value { .. } => Plan::Skip,
+                    Step::Ref { addr, .. } => {
+                        let addr = *addr;
+                        Plan::Fetch(async move {
+                            store
+                                .get_node::<F>(&addr)
+                                .await
+                                .map(|node| flatten(&node, false))
+                                .map_err(ReaderError::from)
+                        })
+                    }
+                }
+            },
+        );
+    }
+
+    fn take_ready(&mut self, (): ()) -> Option<Result<Turn<F>, Infallible>> {
+        self.staged.take().map(Ok)
+    }
+
+    fn absorb(&mut self, completion: Fetched<F>) -> Result<(), Infallible> {
+        self.ready.push(completion);
+        Ok(())
+    }
+
+    fn drained(&self) -> Result<(), Infallible> {
+        Ok(())
+    }
+}
+
+impl<S, F> ScanPolicy<'_, S, F>
+where
+    S: NodeGet + MaybeSync,
+    F: Format,
+{
+    /// Advance the walk to its next deliverable turn: pop spent frames, yield
+    /// values, and descend once a child's fetch has landed. `None` parks the
+    /// walk on the head fetch the fill launches.
+    fn advance(&mut self) -> Option<Turn<F>> {
+        loop {
+            let advance = match self.stack.last_mut() {
+                None => return None,
+                Some(frame) => {
+                    let index = frame.index;
+                    match frame.steps.get(index) {
+                        None => Advance::Pop,
+                        Some(step) => match step {
+                            Step::Value { suffix, entry } => {
+                                frame.index = index.saturating_add(1);
+                                Advance::Yield(join(&frame.base, suffix), entry.clone())
+                            }
+                            Step::Ref { suffix, .. } => {
+                                Advance::Descend(join(&frame.base, suffix), frame.tag(index))
+                            }
+                            Step::Encrypted { suffix, .. } => {
+                                frame.index = index.saturating_add(1);
+                                Advance::Encrypted(join(&frame.base, suffix))
+                            }
+                        },
+                    }
+                }
+            };
+            match advance {
+                Advance::Pop => {
+                    self.stack.pop();
+                }
+                Advance::Yield(key, entry) => {
+                    if self.past_end(&key) {
+                        return Some(Ok(None));
+                    }
+                    return Some(Ok(Some((Key::new(Bytes::from(key)), entry))));
+                }
+                Advance::Descend(child_base, seq) => {
+                    if self.past_end(&child_base) {
+                        return Some(Ok(None));
+                    }
+                    let seq = seq?;
+                    let result = claim(&mut self.ready, seq)?;
+                    match result {
+                        Ok(steps) => {
+                            // The step is consumed only now, so a cancelled or
+                            // failed fetch replays the same descent.
+                            if let Some(frame) = self.stack.last_mut() {
+                                frame.index = frame.index.saturating_add(1);
+                            }
+                            self.stack
+                                .push(Frame::new(Bytes::from(child_base), steps, 0));
+                        }
+                        Err(error) => {
+                            // The launch is spent; untag so the replay
+                            // relaunches the fetch.
+                            if let Some(frame) = self.stack.last_mut() {
+                                let index = frame.index;
+                                frame.clear_tag(index);
+                            }
+                            return Some(Err(error));
+                        }
+                    }
+                }
+                Advance::Encrypted(child_base) => {
+                    if self.past_end(&child_base) {
+                        return Some(Ok(None));
+                    }
+                    return Some(Err(ReaderError::EncryptedChild));
+                }
+            }
+        }
+    }
+
+    /// Whether `key` has reached the exclusive upper bound. A referenced child
+    /// whose least key is already at the bound holds nothing in range, so the
+    /// same test prunes the descent.
+    fn past_end(&self, key: &[u8]) -> bool {
+        self.end.as_ref().is_some_and(|end| key >= end.as_ref())
+    }
 }
 
 impl<'a, S, F> Cursor<'a, S, F>
@@ -184,24 +361,32 @@ where
             }
         }
         Ok(Self {
-            store,
-            stack,
-            end,
+            driver: Driver::new(ScanPolicy {
+                store,
+                stack,
+                end,
+                ready: Vec::new(),
+                next_seq: 0,
+                staged: None,
+            }),
             done: false,
-            sched: Scheduler::new(),
             remaining: None,
         })
     }
 
     /// An already-exhausted cursor: yields nothing. Used when a paginated seek
     /// starts past the last key.
-    pub(crate) fn exhausted(store: &'a S) -> Self {
+    pub(crate) const fn exhausted(store: &'a S) -> Self {
         Self {
-            store,
-            stack: Vec::new(),
-            end: None,
+            driver: Driver::new(ScanPolicy {
+                store,
+                stack: Vec::new(),
+                end: None,
+                ready: Vec::new(),
+                next_seq: 0,
+                staged: None,
+            }),
             done: true,
-            sched: Scheduler::new(),
             remaining: None,
         }
     }
@@ -226,126 +411,26 @@ where
             self.done = true;
             return Ok(None);
         }
-        loop {
-            self.schedule();
-            let advance = match self.stack.last_mut() {
-                None => {
-                    self.done = true;
-                    return Ok(None);
-                }
-                Some(frame) => {
-                    let index = frame.index;
-                    match frame.steps.get(index) {
-                        None => Advance::Pop,
-                        Some(step) => match step {
-                            Step::Value { suffix, entry } => {
-                                frame.index = index.saturating_add(1);
-                                Advance::Yield(join(&frame.base, suffix), entry.clone())
-                            }
-                            Step::Ref { suffix, addr } => {
-                                let seq = frame.tag(index);
-                                Advance::Descend(join(&frame.base, suffix), *addr, seq)
-                            }
-                            Step::Encrypted { suffix, .. } => {
-                                frame.index = index.saturating_add(1);
-                                Advance::Encrypted(join(&frame.base, suffix))
-                            }
-                        },
-                    }
-                }
-            };
-            match advance {
-                Advance::Pop => {
-                    self.stack.pop();
-                }
-                Advance::Yield(key, entry) => {
-                    if self.past_end(&key) {
-                        self.done = true;
-                        return Ok(None);
-                    }
+        let Some(turn) = poll_fn(|cx| self.driver.poll(cx, ())).await else {
+            self.done = true;
+            return Ok(None);
+        };
+        match turn {
+            Ok(turn) => match turn {
+                Ok(Some((key, entry))) => {
                     if let Some(left) = self.remaining {
                         self.remaining = Some(left.saturating_sub(1));
                     }
-                    return Ok(Some((Key::new(Bytes::from(key)), entry)));
+                    Ok(Some((key, entry)))
                 }
-                Advance::Descend(child_base, addr, seq) => {
-                    if self.past_end(&child_base) {
-                        self.done = true;
-                        return Ok(None);
-                    }
-                    let steps = self.resolve(seq, &addr).await?;
-                    // The step is consumed only now, so a cancelled or failed
-                    // resolve replays the same descent.
-                    if let Some(frame) = self.stack.last_mut() {
-                        frame.index = frame.index.saturating_add(1);
-                    }
-                    self.stack
-                        .push(Frame::new(Bytes::from(child_base), steps, 0));
+                Ok(None) => {
+                    self.done = true;
+                    Ok(None)
                 }
-                Advance::Encrypted(child_base) => {
-                    if self.past_end(&child_base) {
-                        self.done = true;
-                        return Ok(None);
-                    }
-                    return Err(ReaderError::EncryptedChild);
-                }
-            }
+                Err(error) => Err(error),
+            },
+            Err(error) => match error {},
         }
-    }
-
-    /// Fill the read-ahead window with the referenced children the walk will
-    /// reach next: it stops at the first step at or past the upper bound and
-    /// at the first encrypted child, which the walk errors on.
-    fn schedule(&mut self) {
-        let store = self.store;
-        let end = self.end.as_ref();
-        self.sched
-            .fill(F::READ_AHEAD, &mut self.stack, |base, step| {
-                let key = join(base, step.suffix());
-                if end.is_some_and(|end| key.as_slice() >= end.as_ref()) {
-                    // The walk stops at this bound; nothing beyond it is fetched.
-                    return Plan::Stop;
-                }
-                match step {
-                    // The walk errors here; no deeper node is fetched.
-                    Step::Encrypted { .. } => Plan::Stop,
-                    Step::Value { .. } => Plan::Skip,
-                    Step::Ref { addr, .. } => {
-                        let addr = *addr;
-                        Plan::Fetch(async move {
-                            store
-                                .get_node::<F>(&addr)
-                                .await
-                                .map(|node| flatten(&node, false))
-                                .map_err(ReaderError::from)
-                        })
-                    }
-                }
-            });
-    }
-
-    /// The steps of the child reached by a descent: take the prefetch
-    /// launched under `seq`, or fetch directly when the descent was not
-    /// prefetched.
-    async fn resolve(
-        &mut self,
-        seq: Option<usize>,
-        addr: &ChunkAddress,
-    ) -> Result<Vec<Step<F>>, ReaderError> {
-        if let Some(seq) = seq
-            && let Some(result) = self.sched.take(seq).await
-        {
-            return result;
-        }
-        let node = self.store.get_node::<F>(addr).await?;
-        Ok(flatten(&node, false))
-    }
-
-    /// Whether `key` has reached the exclusive upper bound. A referenced child
-    /// whose least key is already at the bound holds nothing in range, so the
-    /// same test prunes the descent.
-    fn past_end(&self, key: &[u8]) -> bool {
-        self.end.as_ref().is_some_and(|end| key >= end.as_ref())
     }
 }
 
