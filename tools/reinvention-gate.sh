@@ -12,6 +12,7 @@
 #   nectar-tasks wake.rs  the shared thread-unpark waker (`unpark_current`)
 #   nectar-tasks handoff  the pool-to-poll blocking bridge
 #   postage-issuer pump   the Stamped sign-admission pump
+#   nectar-marker         the sole MaybeSend/MaybeSync cfg dance
 
 set -euo pipefail
 
@@ -42,6 +43,13 @@ deny() {
 # Re-exports use `pub use`; a `type BoxFuture = ...` is always a reinvention.
 deny 'hand-rolled BoxFuture alias (re-export futures_core::future::BoxFuture)' \
     'type[[:space:]]+(Local)?BoxFuture[[:space:]]*[<=]'
+
+# The Send/Sync cfg dance re-declared instead of consumed from nectar-marker.
+# The marker traits live in exactly one home; a fresh declaration elsewhere is
+# a copy. Re-exports use `pub use` and do not match `trait`.
+deny 'copied MaybeSend/MaybeSync marker (consume from nectar_marker)' \
+    'trait[[:space:]]+Maybe(Send|Sync)' \
+    'crates/marker/src/lib.rs'
 
 # A completion cell: a waker parked inside a mutex, woken on result. Use
 # futures_channel::oneshot.
