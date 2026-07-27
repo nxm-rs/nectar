@@ -31,7 +31,7 @@ type PutDone<E> = (ChunkAddress, Result<(), E>);
 
 /// Boxed put future; the kernel alias relaxes `Send` off the multi-threaded
 /// targets.
-type BoxPut<E> = BoxFuture<PutDone<E>>;
+type BoxPut<E> = BoxFuture<'static, PutDone<E>>;
 
 /// Handoff carrying one pool leaf seal back to the engine.
 #[cfg(feature = "rayon")]
@@ -117,7 +117,7 @@ where
     spine: Vec<Level<M>>,
     /// Sealed chunks awaiting a put slot; bounded by the spine height.
     pending: VecDeque<Chunk<Verified, AnyChunkSet<B>>>,
-    in_flight: InFlight<PutDone<S::Error>>,
+    in_flight: InFlight<'static, PutDone<S::Error>>,
     /// Pool fan-out for leaf seals; `None` keeps sealing inline.
     #[cfg(feature = "rayon")]
     hash: Option<HashFan<M, B>>,

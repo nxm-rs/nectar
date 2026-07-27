@@ -22,12 +22,15 @@ use crate::future::BoxFuture;
 ///
 /// The routing contract is payload-in-future: a future carries its own
 /// context back in its output, so completions need no slot identity.
-pub struct InFlight<T> {
-    slots: Vec<Option<BoxFuture<T>>>,
+///
+/// `'a` bounds the held futures' captures and is covariant: an owning walker
+/// uses `InFlight<'static, T>`, a borrowing walker its store's lifetime.
+pub struct InFlight<'a, T> {
+    slots: Vec<Option<BoxFuture<'a, T>>>,
     live: usize,
 }
 
-impl<T> InFlight<T> {
+impl<'a, T> InFlight<'a, T> {
     /// An empty set.
     pub const fn new() -> Self {
         Self {
@@ -47,7 +50,7 @@ impl<T> InFlight<T> {
     }
 
     /// Admit one future, reusing a vacated slot before growing the vector.
-    pub fn push(&mut self, future: BoxFuture<T>) {
+    pub fn push(&mut self, future: BoxFuture<'a, T>) {
         self.live = self.live.saturating_add(1);
         for slot in &mut self.slots {
             if slot.is_none() {
@@ -77,13 +80,13 @@ impl<T> InFlight<T> {
     }
 }
 
-impl<T> Default for InFlight<T> {
+impl<T> Default for InFlight<'_, T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> fmt::Debug for InFlight<T> {
+impl<T> fmt::Debug for InFlight<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InFlight")
             .field("live", &self.live)
@@ -102,7 +105,7 @@ mod tests {
     fn poll_contract_holds() {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
-        let mut set: InFlight<u32> = InFlight::new();
+        let mut set: InFlight<'_, u32> = InFlight::new();
         assert!(set.is_empty());
         assert_eq!(set.poll(&mut cx), Poll::Ready(None));
 
@@ -120,5 +123,14 @@ mod tests {
         set.push(Box::pin(ready(3)));
         assert_eq!(set.slots.len(), 3);
         assert_eq!(set.poll(&mut cx), Poll::Ready(Some(3)));
+    }
+
+    #[test]
+    fn lifetime_is_covariant() {
+        fn shorten<'a, T>(set: InFlight<'static, T>) -> InFlight<'a, T> {
+            set
+        }
+        let set: InFlight<'_, u32> = shorten(InFlight::new());
+        assert!(set.is_empty());
     }
 }

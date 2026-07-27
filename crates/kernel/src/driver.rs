@@ -10,7 +10,11 @@ use crate::inflight::InFlight;
 /// and the drain outcome. The driver owns only the loop and the in-flight
 /// set; every semantic decision stays here, so a monomorphised [`Driver`] is
 /// the hand-rolled walk.
-pub trait WalkPolicy {
+///
+/// `'a` bounds the fetch futures a policy admits: an owning policy
+/// implements `WalkPolicy<'static>`, a borrowing policy its store's
+/// lifetime.
+pub trait WalkPolicy<'a> {
     /// One completed fetch, carrying its own routing back.
     type Fetched;
     /// One delivered unit of the walk.
@@ -21,7 +25,7 @@ pub trait WalkPolicy {
     type Drain: Copy;
 
     /// Dispatch queued work into `in_flight` until neither lane may proceed.
-    fn admit(&mut self, in_flight: &mut InFlight<Self::Fetched>);
+    fn admit(&mut self, in_flight: &mut InFlight<'a, Self::Fetched>);
 
     /// Take the next deliverable outcome, if the drain permits one; an `Err`
     /// is a fault surfacing at its serial turn, terminal like any other.
@@ -40,19 +44,25 @@ pub trait WalkPolicy {
 /// else poll one completion into the policy. All state lives in the policy
 /// and the in-flight set, so every poll is cancel-safe.
 ///
+/// `'a` bounds the fetch futures; a clone-based holder writes
+/// [`StaticDriver`].
+///
 /// `F` is `P::Fetched`, kept a separate parameter ON PURPOSE so a holder names
 /// the in-flight set at the policy's own bounds: borrow-based walkers must not
 /// inherit the file walk's `Clone + 'static`. Do NOT collapse to `Driver<P>`
 /// (projecting `P::Fetched` in the field virally widens every holder). Holders
 /// embed `Driver<Policy, Policy's Fetched alias>` as a private field and land
 /// the poll delegation with it.
-pub struct Driver<P, F> {
+pub struct Driver<'a, P, F> {
     policy: P,
-    in_flight: InFlight<F>,
+    in_flight: InFlight<'a, F>,
     done: bool,
 }
 
-impl<P, F> Driver<P, F> {
+/// Driver over `'static` fetch futures, for clone-based policies.
+pub type StaticDriver<P, F> = Driver<'static, P, F>;
+
+impl<P, F> Driver<'_, P, F> {
     /// The driven policy.
     pub const fn policy(&self) -> &P {
         &self.policy
@@ -74,7 +84,7 @@ impl<P, F> Driver<P, F> {
     }
 }
 
-impl<P: WalkPolicy> Driver<P, P::Fetched> {
+impl<'a, P: WalkPolicy<'a>> Driver<'a, P, P::Fetched> {
     /// Drive `policy` from an empty in-flight set. Bounded so `F` can only be
     /// `P::Fetched`: a mismatched `Driver` has no constructor.
     pub const fn new(policy: P) -> Self {
@@ -124,7 +134,7 @@ impl<P: WalkPolicy> Driver<P, P::Fetched> {
     }
 }
 
-impl<P, F> fmt::Debug for Driver<P, F> {
+impl<P, F> fmt::Debug for Driver<'_, P, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Driver")
             .field("in_flight", &self.in_flight.len())

@@ -122,7 +122,7 @@ pub struct StampSink<'p, Sg, C, I: ?Sized, S> {
     pipeline: &'p StampPipeline<Sg, C>,
     issuer: &'p mut I,
     spawner: S,
-    in_flight: InFlight<StampResult>,
+    in_flight: InFlight<'static, StampResult>,
     /// Results complete at admission: allocation failures and `NotAdmitted`.
     ready: VecDeque<StampResult>,
     failed: bool,

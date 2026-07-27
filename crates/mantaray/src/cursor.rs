@@ -18,7 +18,7 @@ use core::task::{Context, Poll};
 
 use futures::Stream;
 pub use nectar_kernel::Window;
-use nectar_kernel::{Admission, BoxFuture, Driver, InFlight, WalkPolicy};
+use nectar_kernel::{Admission, BoxFuture, InFlight, StaticDriver, WalkPolicy};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ChunkAddress;
 
@@ -76,7 +76,7 @@ struct Visit {
 /// The shared bounded-lookahead walk: a depth-first frontier whose head is
 /// consumed in serial order while up to a window of fetches runs ahead.
 struct TrieWalk<L> {
-    driver: Driver<CursorPolicy<L>, Fetched>,
+    driver: StaticDriver<CursorPolicy<L>, Fetched>,
 }
 
 impl<L> TrieWalk<L>
@@ -99,7 +99,7 @@ where
             after,
         }));
         Self {
-            driver: Driver::new(CursorPolicy {
+            driver: StaticDriver::new(CursorPolicy {
                 store,
                 admission: Admission::new(window),
                 frontier,
@@ -132,7 +132,7 @@ struct CursorPolicy<L> {
     next_id: u64,
 }
 
-impl<L> WalkPolicy for CursorPolicy<L>
+impl<L> WalkPolicy<'static> for CursorPolicy<L>
 where
     L: NodeLoader + Clone + 'static,
 {
@@ -147,7 +147,7 @@ where
     /// fetches never exceed the window. The scan is O(window): every slot
     /// passed over or filled counts toward occupancy, which the window caps.
     #[inline]
-    fn admit(&mut self, in_flight: &mut InFlight<Fetched>) {
+    fn admit(&mut self, in_flight: &mut InFlight<'static, Fetched>) {
         let admission = self.admission;
         let mut occupancy = in_flight.len().saturating_add(self.resolved.len());
         let mut head_holds_slot = matches!(self.frontier.front(), Some(Slot::Fetching(_)));
@@ -166,7 +166,7 @@ where
             };
             let store = self.store.clone();
             let reference = pending.reference.clone();
-            let fetch: BoxFuture<Fetched> =
+            let fetch: BoxFuture<'static, Fetched> =
                 Box::pin(async move {
                     let fetched = store.load_with_addresses(&reference).await.map_err(|e| {
                         CursorError::Store {
