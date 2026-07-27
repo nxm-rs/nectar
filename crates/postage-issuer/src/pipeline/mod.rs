@@ -965,6 +965,14 @@ mod tests {
 
         assert_eq!(results.len(), 64);
         assert!(max.load(Ordering::SeqCst) <= 4);
+        // A serialised window collapses the peak to 1; >= 2 proves genuine
+        // overlap without demanding the full window on few-core CI. Gated
+        // because the non-parallel build signs inline (peak 1 is correct).
+        #[cfg(feature = "parallel")]
+        assert!(
+            max.load(Ordering::SeqCst) >= 2,
+            "blocking iterator serialised the window"
+        );
         assert_eq!(issuer.stamps_issued(), Some(64));
     }
 
