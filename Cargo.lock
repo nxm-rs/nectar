@@ -2589,6 +2589,7 @@ dependencies = [
 name = "nectar-kernel"
 version = "0.4.0"
 dependencies = [
+ "futures-core",
  "nectar-marker",
  "nectar-primitives 0.4.0",
  "nectar-testing",
@@ -2829,6 +2830,7 @@ name = "nectar-tasks"
 version = "0.4.0"
 dependencies = [
  "futures-channel",
+ "futures-core",
  "futures-util",
  "nectar-marker",
  "rayon",
