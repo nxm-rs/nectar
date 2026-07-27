@@ -66,8 +66,8 @@ use nectar_marker::{MaybeSend, MaybeSync};
 /// re-exported for `.boxed()`/`.boxed_local()` interop.
 #[cfg(multi_thread)]
 pub use futures_core::future::BoxFuture;
-/// Boxed future, unbounded on wasm32, bare metal, and under `unsync`: the
-/// futures-core alias, re-exported for `.boxed_local()` interop.
+/// Boxed future, unbounded on wasm32 and under `unsync`: the futures-core
+/// alias, re-exported for `.boxed_local()` interop.
 #[cfg(not(multi_thread))]
 pub use futures_core::future::LocalBoxFuture as BoxFuture;
 
