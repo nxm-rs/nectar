@@ -14,13 +14,9 @@ use alloc::collections::btree_map;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::future::{Future, poll_fn};
-use core::pin::Pin;
-use core::task::{Context, Poll};
+use core::future::poll_fn;
 
-use futures::Stream;
-use futures::stream::FuturesUnordered;
-use nectar_kernel::{Admission, Window};
+use nectar_kernel::{Admission, BoxFuture, Driver, InFlight, WalkPolicy, Window};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::store::MaybeSend;
 use nectar_primitives::{EncryptedChunkRef, EntryRef};
@@ -374,23 +370,14 @@ where
     if !root.metadata.is_empty() {
         return Err(MantarayError::RootMetadata);
     }
-    let mut commit = Commit::new(saver, window, root);
-    poll_fn(|cx| commit.poll(cx)).await
+    let mut driver = Driver::new(CommitPolicy::new(saver, window, root));
+    poll_fn(|cx| driver.poll(cx, ()))
+        .await
+        .unwrap_or(Err(MantarayError::MissingReference))
 }
 
 /// Save completion: the dispatch id and the saver's reference outcome.
 type SaveDone<R> = (u64, Result<R, MantarayError>);
-
-/// One node save in flight: borrows the saver, so the persisted chunks land
-/// in the very store the commit hands back. `Send` on the multi-threaded
-/// targets, unbounded on wasm32 and under `unsync`, mirroring the store seam.
-#[cfg(multi_thread)]
-type BoxSave<'s, R> = Pin<Box<dyn Future<Output = SaveDone<R>> + Send + 's>>;
-/// One node save in flight: borrows the saver, so the persisted chunks land
-/// in the very store the commit hands back. `Send` on the multi-threaded
-/// targets, unbounded on wasm32 and under `unsync`, mirroring the store seam.
-#[cfg(not(multi_thread))]
-type BoxSave<'s, R> = Pin<Box<dyn Future<Output = SaveDone<R>> + 's>>;
 
 /// One node mid-commit: its parent frame, its reattachment slot, the children
 /// still to descend and the ones already saved, and the count of its own
@@ -440,27 +427,30 @@ fn commit_frame<R: Reference>(
     }
 }
 
-/// The bounded-concurrent post-order commit: a depth-first descent whose
-/// ready frames dispatch their saves into a window, folding completions back
-/// into their parents until the root is persisted last.
+/// The commit's [`WalkPolicy`]: a depth-first descent whose ready frames
+/// dispatch their saves into a window, folding completions back into their
+/// parents until the root is persisted last and delivered as the one frame.
 ///
 /// The frontier shape mirrors the read walk's: a window of saves runs ahead
 /// through [`Admission`], their futures borrowing the saver so the writes
 /// land in the store the commit returns.
-struct Commit<'s, S, R: Reference> {
+struct CommitPolicy<'s, S, R: Reference> {
     saver: &'s S,
     admission: Admission,
     /// Depth-first path of open frames, root at the base.
     stack: Vec<CommitFrame<R>>,
     /// Nodes whose own save is in flight, keyed by dispatch id.
     inflight_nodes: BTreeMap<u64, Saving<R>>,
-    in_flight: FuturesUnordered<BoxSave<'s, R>>,
     /// The persisted root, set when the root's own save completes.
     root: Option<Node<R>>,
     next_id: u64,
+    /// A descent fault, surfaced at the next `take_ready`.
+    fault: Option<MantarayError>,
+    /// Whether the persisted root has been delivered.
+    delivered: bool,
 }
 
-impl<'s, S, R> Commit<'s, S, R>
+impl<'s, S, R> CommitPolicy<'s, S, R>
 where
     S: NodeSaver<R>,
     R: Reference + MaybeSend,
@@ -471,45 +461,70 @@ where
             admission: Admission::new(window),
             stack: alloc::vec![commit_frame(0, None, None, root)],
             inflight_nodes: BTreeMap::new(),
-            in_flight: FuturesUnordered::new(),
             root: None,
             next_id: 1,
+            fault: None,
+            delivered: false,
         }
     }
 
-    /// Drive the commit: descend and dispatch ready saves up to the window,
-    /// fold one completion in, repeat until the root is persisted.
-    ///
-    /// Cancel-safe: all progress lives in `self`.
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Node<R>, MantarayError>> {
-        loop {
-            if let Err(error) = self.advance() {
-                return Poll::Ready(Err(error));
-            }
-            if self.stack.is_empty() && self.in_flight.is_empty() {
-                return Poll::Ready(self.root.take().ok_or(MantarayError::MissingReference));
-            }
-            // `advance` leaves the window non-empty whenever the stack still
-            // holds work, so the poll below always has a future to drive.
-            match Pin::new(&mut self.in_flight).poll_next(cx) {
-                Poll::Ready(Some((id, result))) => {
-                    if let Err(error) = self.absorb(id, result) {
-                        return Poll::Ready(Err(error));
-                    }
-                }
-                Poll::Ready(None) | Poll::Pending => return Poll::Pending,
-            }
+    /// Encode the top frame's node, dispatch its save into the window, and
+    /// pop it; its parent's outstanding-child count rises until the save
+    /// completes.
+    fn dispatch(&mut self, in_flight: &mut InFlight<'s, SaveDone<R>>) -> Result<(), MantarayError> {
+        let Some(mut frame) = self.stack.pop() else {
+            return Ok(());
+        };
+        // Fold the saved children back in, then encode the node's image.
+        frame.node.forks = core::mem::take(&mut frame.done);
+        let data = frame.node.encode()?;
+        let id = frame.id;
+        let saver = self.saver;
+        let future: BoxFuture<'s, SaveDone<R>> = Box::pin(async move {
+            let outcome = saver.save(data).await.map_err(|e| MantarayError::StorePut {
+                source: Arc::new(e),
+            });
+            (id, outcome)
+        });
+        if let Some(parent) = frame.parent {
+            let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent) else {
+                // A dispatched child's parent is always still on the stack.
+                return Err(MantarayError::MissingReference);
+            };
+            parent_frame.saving = parent_frame.saving.saturating_add(1);
         }
+        self.inflight_nodes.insert(
+            id,
+            Saving {
+                parent: frame.parent,
+                slot: frame.slot,
+                node: frame.node,
+            },
+        );
+        in_flight.push(future);
+        Ok(())
     }
+}
+
+impl<'s, S, R> WalkPolicy<'s> for CommitPolicy<'s, S, R>
+where
+    S: NodeSaver<R>,
+    R: Reference + MaybeSend,
+{
+    type Fetched = SaveDone<R>;
+    type Frame = Node<R>;
+    type Error = MantarayError;
+    type Drain = ();
 
     /// Walk the frontier: queue persisted children, descend dirty ones, and
     /// dispatch a frame's own save once its children are all saved and the
-    /// window has room. Stops when the deepest frame waits on its children
-    /// or the window is full.
-    fn advance(&mut self) -> Result<(), MantarayError> {
+    /// window has room. Stops when the deepest frame waits on its children,
+    /// the window is full, or a dispatch faults.
+    #[inline]
+    fn admit(&mut self, in_flight: &mut InFlight<'s, SaveDone<R>>) {
         loop {
             let Some(top) = self.stack.last_mut() else {
-                return Ok(());
+                return;
             };
             if let Some((key, fork)) = top.todo.next() {
                 if fork.node.reference().is_some() {
@@ -531,58 +546,36 @@ where
             if top.saving > 0 {
                 // Children still saving; this deepest frame, and so the whole
                 // stack, waits on their completions.
-                return Ok(());
+                return;
             }
             // Saves are order-independent, so there is no serial-drain head to
             // reserve a slot for: the whole window admits.
-            if !self.admission.admits(self.in_flight.len(), true) {
+            if !self.admission.admits(in_flight.len(), true) {
                 // The window is full; wait for a save to complete.
-                return Ok(());
+                return;
             }
-            self.dispatch()?;
+            if let Err(error) = self.dispatch(in_flight) {
+                self.fault = Some(error);
+                return;
+            }
         }
     }
 
-    /// Encode the top frame's node, dispatch its save into the window, and
-    /// pop it; its parent's outstanding-child count rises until the save
-    /// completes.
-    fn dispatch(&mut self) -> Result<(), MantarayError> {
-        let Some(mut frame) = self.stack.pop() else {
-            return Ok(());
-        };
-        // Fold the saved children back in, then encode the node's image.
-        frame.node.forks = core::mem::take(&mut frame.done);
-        let data = frame.node.encode()?;
-        let id = frame.id;
-        let saver = self.saver;
-        let future: BoxSave<'s, R> = Box::pin(async move {
-            let outcome = saver.save(data).await.map_err(|e| MantarayError::StorePut {
-                source: Arc::new(e),
-            });
-            (id, outcome)
-        });
-        if let Some(parent) = frame.parent {
-            let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent) else {
-                // A dispatched child's parent is always still on the stack.
-                return Err(MantarayError::MissingReference);
-            };
-            parent_frame.saving = parent_frame.saving.saturating_add(1);
+    /// Deliver a parked fault first, else the persisted root, once.
+    #[inline]
+    fn take_ready(&mut self, (): ()) -> Option<Result<Node<R>, MantarayError>> {
+        if let Some(error) = self.fault.take() {
+            return Some(Err(error));
         }
-        self.inflight_nodes.insert(
-            id,
-            Saving {
-                parent: frame.parent,
-                slot: frame.slot,
-                node: frame.node,
-            },
-        );
-        self.in_flight.push(future);
-        Ok(())
+        let root = self.root.take()?;
+        self.delivered = true;
+        Some(Ok(root))
     }
 
     /// Fold one completed save in: collapse its node to a stub and reattach
     /// it to its parent, or crown the root.
-    fn absorb(&mut self, id: u64, result: Result<R, MantarayError>) -> Result<(), MantarayError> {
+    #[inline]
+    fn absorb(&mut self, (id, result): SaveDone<R>) -> Result<(), MantarayError> {
         let reference = result?;
         let Some(Saving {
             parent,
@@ -610,6 +603,16 @@ where
         }
         Ok(())
     }
+
+    /// An undelivered root at drain is a stalled commit.
+    #[inline]
+    fn drained(&self) -> Result<(), MantarayError> {
+        if self.delivered {
+            Ok(())
+        } else {
+            Err(MantarayError::MissingReference)
+        }
+    }
 }
 
 /// True when the reference would occupy the wire's absent-entry slot.
@@ -626,6 +629,7 @@ fn is_zero_reference<R: Reference>(reference: &R) -> bool {
 mod tests {
     use super::*;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::task::Poll;
 
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{EncryptionKey, StandardChunkSet};
@@ -1110,7 +1114,10 @@ mod tests {
         run(editor.commit()).unwrap();
 
         let saves = saver.saves();
-        assert!(saves > 1000, "expected thousands of dirty nodes, saved {saves}");
+        assert!(
+            saves > 1000,
+            "expected thousands of dirty nodes, saved {saves}"
+        );
         assert!(
             saver.peak_in_flight() <= usize::from(slots),
             "in-flight saves exceeded the window"
