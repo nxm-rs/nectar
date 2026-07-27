@@ -60,6 +60,7 @@ std = [
 	"nectar-clock/std",
 	"nectar-postage/std",
 	"nectar-primitives/std",
+	"nectar-tasks/std",
 ]
 
 # Local key signing for testing and development

@@ -21,6 +21,8 @@ workspace = true
 nectar-marker = { workspace = true }
 
 # optional
+futures-channel = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -31,6 +33,11 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync"] }
 
 [features]
+# Standard library interop: the thread-unpark waker helper.
+std = []
+# Pool handoff over `futures-channel` oneshot: a panic-catching submit seam
+# onto the rayon pool. Implies `std`.
+rayon = [ "std", "dep:futures-channel", "dep:rayon" ]
 # Spawner onto the ambient tokio runtime.
 tokio = [ "dep:tokio" ]
 # Spawner onto the browser event loop (wasm32 only).
@@ -43,5 +50,5 @@ unsync = [ "nectar-marker/unsync" ]
 # mutually exclusive, so the doc build names the tokio feature rather than
 # enabling all at once (which would hide the tokio spawner).
 [package.metadata.docs.rs]
-features = ["tokio"]
+features = ["tokio", "rayon"]
 rustdoc-args = ["--cfg", "docsrs"]
