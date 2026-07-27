@@ -59,19 +59,17 @@ pub use self::wasm::WasmSpawner;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::fmt;
-use core::future::Future;
-use core::pin::Pin;
 
 use nectar_marker::{MaybeSend, MaybeSync};
 
-/// Boxed future: `Send` on multi-threaded targets, unbounded on wasm32 and
-/// under the `unsync` feature.
+/// Boxed future, `Send` on multi-threaded targets: the futures-core alias,
+/// re-exported for `.boxed()`/`.boxed_local()` interop.
 #[cfg(multi_thread)]
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-/// Boxed future: `Send` on multi-threaded targets, unbounded on wasm32 and
-/// under the `unsync` feature.
+pub use futures_core::future::BoxFuture;
+/// Boxed future, unbounded on wasm32 and under `unsync`: the futures-core
+/// alias, re-exported for `.boxed_local()` interop.
 #[cfg(not(multi_thread))]
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+pub use futures_core::future::LocalBoxFuture as BoxFuture;
 
 /// Abort callback: `Send` on multi-threaded targets, unbounded on wasm32
 /// and under the `unsync` feature.

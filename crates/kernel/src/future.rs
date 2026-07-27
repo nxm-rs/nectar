@@ -1,25 +1,17 @@
 //! The boxed-future alias every bounded set holds.
 
-use alloc::boxed::Box;
-use core::future::Future;
-use core::pin::Pin;
-
-/// Boxed future capturing no more than `'a`: `Send` on multi-threaded
-/// targets, unbounded on wasm32, bare metal, and under the `unsync` feature,
-/// mirroring the marker traits.
+/// Boxed future capturing no more than `'a`, `Send` on multi-threaded
+/// targets: the futures-core alias, re-exported for `.boxed()` interop.
 ///
-/// Feature unification: `unsync` enabled by any crate in a build relaxes
-/// the alias for every consumer in that build.
+/// Feature unification: `unsync`, wasm32, or a bare-metal target relaxes
+/// the alias off `Send` for every consumer in that build.
 #[cfg(multi_thread)]
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-/// Boxed future capturing no more than `'a`: `Send` on multi-threaded
-/// targets, unbounded on wasm32, bare metal, and under the `unsync` feature,
-/// mirroring the marker traits.
-///
-/// Feature unification: `unsync` enabled by any crate in a build relaxes
-/// the alias for every consumer in that build.
+pub use futures_core::future::BoxFuture;
+/// Boxed future capturing no more than `'a`, unbounded on wasm32, bare
+/// metal, and under `unsync`: the futures-core alias, re-exported for
+/// `.boxed_local()` interop.
 #[cfg(not(multi_thread))]
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+pub use futures_core::future::LocalBoxFuture as BoxFuture;
 
 // The default build keeps the alias `Send`; only `unsync` or a
 // single-threaded target may relax it.
