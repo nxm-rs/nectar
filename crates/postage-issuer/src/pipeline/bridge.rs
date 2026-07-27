@@ -1,30 +1,13 @@
-//! Blocking-bridge machinery: the unpark waker and the sink spawner the
-//! [`Stamped`](super::Stamped) iterator drives the poll-native sink with.
+//! Blocking-bridge machinery: the sink spawner the
+//! [`Stamped`](super::Stamped) iterator drives the poll-native sink with,
+//! parked between completions by the shared unpark waker.
 
-use alloc::sync::Arc;
 use core::task::{Context, Waker};
-use std::task::Wake;
-use std::thread::{self, Thread};
 
 use nectar_tasks::{BoxFuture, Spawn, TaskHandle};
 
-/// Waker that unparks the thread which registered it.
-struct Unpark(Thread);
-
-impl Wake for Unpark {
-    fn wake(self: Arc<Self>) {
-        self.0.unpark();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.0.unpark();
-    }
-}
-
 /// Waker for the calling thread; a completion unparks it.
-pub(super) fn unpark_current() -> Waker {
-    Waker::from(Arc::new(Unpark(thread::current())))
-}
+pub(super) use nectar_tasks::unpark_current;
 
 /// Runs one sign job to completion.
 fn drive(mut task: BoxFuture<'static, ()>) {
@@ -48,6 +31,8 @@ impl Spawn for BlockingSpawn {
 
 #[cfg(not(feature = "parallel"))]
 use alloc::collections::VecDeque;
+#[cfg(not(feature = "parallel"))]
+use alloc::sync::Arc;
 #[cfg(not(feature = "parallel"))]
 use std::sync::{Mutex, PoisonError};
 
