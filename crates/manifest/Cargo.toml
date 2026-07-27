@@ -64,7 +64,11 @@ std = [
 ]
 # Single-thread send escape: relaxes the boxed fetch futures off `Send` in
 # lockstep with the store traits.
-unsync = [ "nectar-file/unsync", "nectar-kernel/unsync", "nectar-primitives/unsync" ]
+unsync = [
+	"nectar-file/unsync",
+	"nectar-kernel/unsync",
+	"nectar-primitives/unsync",
+]
 
 [package.metadata.docs.rs]
 all-features = true
