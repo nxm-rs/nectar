@@ -204,8 +204,8 @@ where
                 });
                 return Poll::Ready(());
             }
-            if self.in_flight.len() < usize::from(self.pipeline.window.get()) {
-                self.admit(address);
+            if self.room() > 0 {
+                self.admit_batch(&[address]);
                 return Poll::Ready(());
             }
             match self.harvest(cx) {
@@ -228,11 +228,16 @@ where
         self.harvest(cx)
     }
 
-    /// Allocates a digest for `address` and submits it for signing; an
-    /// allocation failure queues its result instead.
-    fn admit(&mut self, address: ChunkAddress) {
-        let batch = [address];
-        for preparation in prepare_stamps(&mut *self.issuer, &batch, &self.pipeline.clock) {
+    /// Window slots currently free.
+    pub(super) fn room(&self) -> usize {
+        usize::from(self.pipeline.window.get()).saturating_sub(self.in_flight.len())
+    }
+
+    /// Allocates a digest per address with one clock read and submits each
+    /// for signing; an allocation failure queues its result instead. The
+    /// batch must not exceed [`room`](Self::room).
+    pub(super) fn admit_batch(&mut self, batch: &[ChunkAddress]) {
+        for preparation in prepare_stamps(&mut *self.issuer, batch, &self.pipeline.clock) {
             match preparation.result {
                 Ok(digest) => self.submit(digest),
                 Err(error) => self.ready.push_back(StampResult {
