@@ -4,14 +4,20 @@
 //! buffers track the trie depth rather than the key count, and the files path
 //! splits through BMT and references the stored roots.
 
+use core::convert::Infallible;
+use core::task::Poll;
+
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
 use nectar_manifest::{
     BuildStats, Builder, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node, NodeGet,
-    Prefix, RootExtension, V1, build_files,
+    Prefix, RootExtension, V1, Window, build_files,
 };
-use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, ContentGet, MemoryStore};
-use nectar_testing::{run, split_whole};
+use nectar_primitives::store::ChunkPut;
+use nectar_primitives::{
+    Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentGet, MemoryStore, Verified,
+};
+use nectar_testing::{Drive, GateStore, run, split_whole};
 
 const fn ref32(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))
@@ -220,6 +226,81 @@ fn build_files_splits_through_bmt_and_references_the_stored_roots() -> Result<()
         }
         Ok(())
     })
+}
+
+/// A store whose puts park on a gate until released, so the put window's
+/// backpressure and overlap are observable from outside.
+struct GatedStore {
+    inner: MemoryStore,
+    gate: GateStore,
+}
+
+impl ChunkPut for GatedStore {
+    type Error = Infallible;
+
+    async fn put(&self, chunk: Chunk<Verified>) -> Result<(), Self::Error> {
+        self.gate.enter().await;
+        self.inner.put(chunk).await
+    }
+}
+
+/// A key set exercising both spill regimes: 256 single-byte keys spill the
+/// root into segments, and sixteen 80-wide subtrees spill their nodes.
+fn insert_spilling_keys(builder: &mut Builder) {
+    for byte in 0..=255u8 {
+        builder.insert(Key::from(&[byte][..]), Entry::from(ref32(byte)), None);
+    }
+    for hi in 0..16u8 {
+        for lo in 0..80u8 {
+            builder.insert(Key::from(&[hi, lo][..]), Entry::from(ref32(lo)), None);
+        }
+    }
+}
+
+#[test]
+fn spill_puts_overlap_up_to_the_put_window() -> Result<()> {
+    let slots = 4u16;
+    let store = GatedStore {
+        inner: MemoryStore::default(),
+        gate: GateStore::new(),
+    };
+    let mut builder: Builder = Builder::new();
+    insert_spilling_keys(&mut builder);
+    let builder = builder.with_put_window(Window::new(slots).context("window")?);
+
+    let mut build = Drive::new(builder.build(&store));
+    ensure!(build.poll().is_pending(), "puts park on the gate");
+    // The build stalls only once the window is full: exactly `slots` puts
+    // are parked, so independent spills genuinely overlap.
+    ensure!(store.gate.waiting() == usize::from(slots), "window fills");
+
+    let mut delivered = None;
+    for _ in 0..10_000 {
+        store.gate.release(1);
+        if let Poll::Ready(out) = build.poll() {
+            delivered = Some(out?);
+            break;
+        }
+    }
+    let built = delivered.context("build did not complete")?;
+    ensure!(
+        store.gate.peak() <= usize::from(slots),
+        "peak within window"
+    );
+    // Every put settled before the root returned.
+    ensure!(store.gate.waiting() == 0, "drained");
+    ensure!(store.inner.get(built.root()).is_some(), "root stored");
+
+    // Overlap never moves a byte: the windowed root equals a serial build's.
+    let serial_store = MemoryStore::default();
+    let mut serial: Builder = Builder::new();
+    insert_spilling_keys(&mut serial);
+    let serial = serial.with_put_window(Window::new(1).context("window")?);
+    ensure!(
+        built.root() == run(serial.build(&serial_store))?.root(),
+        "windowed root equals a serial build's",
+    );
+    Ok(())
 }
 
 #[test]

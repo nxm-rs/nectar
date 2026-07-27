@@ -15,18 +15,21 @@
 //! merged keys agree bit for bit (invariant I6 under updates).
 //!
 //! Peak retained state is O(depth + changeset frontier): the descent holds one
-//! node per level on the current path, never a whole subtree.
+//! node per level on the current path, never a whole subtree. Rewritten-node
+//! addresses are content-derived at seal time, so their puts overlap under a
+//! bounded window and all settle before the new root returns.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use bytes::Bytes;
+use nectar_kernel::Window;
 use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::{ChunkPut, MaybeSync};
 
 use crate::bounded::Prefix;
-use crate::builder::{BuildError, BuildStats, Item, build_table, emit_node, resolve};
+use crate::builder::{BuildError, BuildStats, Item, PutSink, build_table, emit_node, resolve};
 use crate::count::SubtreeCount;
 use crate::error::{ForkPrefixEmpty, PrefixTooLong};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
@@ -178,8 +181,9 @@ where
         .collect();
 
     let mut stats = BuildStats::default();
+    let mut puts = PutSink::new(store, Window::DEFAULT);
     let forks = Box::pin(apply_forks(
-        store,
+        &mut puts,
         node.forks().clone(),
         0,
         &changes,
@@ -187,7 +191,9 @@ where
     ))
     .await?;
     let new_node = Node::new(root_ext, forks);
-    Ok(emit_node(store, &new_node, &mut stats).await?)
+    let address = emit_node(&mut puts, &new_node, &mut stats).await?;
+    puts.drain().await?;
+    Ok(address)
 }
 
 /// One staged update paired with its key, borrowed for the length of the apply.
@@ -213,7 +219,7 @@ impl<F: Format> Change<'_, F> {
 /// Every change shares the `consumed`-byte prefix that reaches this table, so a
 /// change group is the contiguous run sharing the byte at `consumed`.
 async fn apply_forks<'c, S, F>(
-    store: &S,
+    puts: &mut PutSink<'_, S>,
     mut table: ForkTable<F>,
     consumed: usize,
     changes: &[Change<'c, F>],
@@ -237,7 +243,7 @@ where
         let group = changes.get(i..j).ok_or(ApplyError::Internal)?;
         let existing = table.remove(byte);
         if let Some(record) =
-            Box::pin(reconcile(store, consumed, byte, existing, group, stats)).await?
+            Box::pin(reconcile(puts, consumed, byte, existing, group, stats)).await?
         {
             table.insert_record(byte, record);
         }
@@ -249,7 +255,7 @@ where
 /// Reconcile the fork indexed under `byte` with its change group, returning the
 /// rewritten fork or `None` when it collapses away.
 async fn reconcile<'c, S, F>(
-    store: &S,
+    puts: &mut PutSink<'_, S>,
     consumed: usize,
     byte: u8,
     existing: Option<ForkRecord<F>>,
@@ -268,7 +274,7 @@ where
             if items.is_empty() {
                 return Ok(None);
             }
-            let mut fresh = build_table(store, &items, consumed, stats).await?;
+            let mut fresh = build_table(puts, &items, consumed, stats).await?;
             return Ok(fresh.remove(byte));
         }
     };
@@ -291,19 +297,16 @@ where
     }
 
     if cut < edge.len() {
-        split(store, consumed, &edge, cut, existing, group, stats).await
+        split(puts, consumed, &edge, cut, existing, group, stats).await
     } else {
-        Box::pin(descend(
-            store, consumed, &edge, plen, existing, group, stats,
-        ))
-        .await
+        Box::pin(descend(puts, consumed, &edge, plen, existing, group, stats)).await
     }
 }
 
 /// The existing edge stays intact: update the terminal value and fold the
 /// deeper updates into the child.
 async fn descend<'c, S, F>(
-    store: &S,
+    puts: &mut PutSink<'_, S>,
     consumed: usize,
     edge: &[u8],
     plen: usize,
@@ -345,7 +348,7 @@ where
         // build would have run on into the edge; nothing else here can.
         if new_entry.is_none()
             && let Some((merged, absorbed)) =
-                absorb(store, consumed, edge, existing.child()).await?
+                absorb(puts.store(), consumed, edge, existing.child()).await?
         {
             let child = Counted {
                 child: absorbed.child().cloned(),
@@ -365,7 +368,7 @@ where
             child: existing.child().cloned(),
             count: existing.child_count(),
         };
-        return finish(store, consumed, edge, new_entry, new_meta, child, stats).await;
+        return finish(puts, consumed, edge, new_entry, new_meta, child, stats).await;
     }
 
     let child_table = match existing.child() {
@@ -375,7 +378,7 @@ where
                 // A deletion of an absent deeper key: the fork is unchanged bar
                 // its terminal value.
                 return finish(
-                    store,
+                    puts,
                     consumed,
                     edge,
                     new_entry,
@@ -385,15 +388,15 @@ where
                 )
                 .await;
             }
-            build_table(store, &items, plen, stats).await?
+            build_table(puts, &items, plen, stats).await?
         }
         Some(Child::Embedded(inner)) => {
-            Box::pin(apply_forks(store, inner.clone(), plen, &deeper, stats)).await?
+            Box::pin(apply_forks(puts, inner.clone(), plen, &deeper, stats)).await?
         }
         Some(Child::Ref32(reference)) => {
-            let node = store.get_node::<F>(reference.address()).await?;
+            let node = puts.store().get_node::<F>(reference.address()).await?;
             Box::pin(apply_forks(
-                store,
+                puts,
                 node.forks().clone(),
                 plen,
                 &deeper,
@@ -404,7 +407,7 @@ where
         Some(Child::Ref64(_)) => return Err(ApplyError::EncryptedChild),
     };
     assemble(
-        store,
+        puts,
         consumed,
         edge,
         new_entry,
@@ -441,7 +444,7 @@ impl<F: Format> Counted<F> {
 /// The single-fork merge runs before the child is resolved, so a lone branch
 /// re-inlines whatever its size would spill to.
 async fn assemble<S, F>(
-    store: &S,
+    puts: &mut PutSink<'_, S>,
     at: usize,
     edge: &[u8],
     entry: Option<Entry<F>>,
@@ -454,7 +457,7 @@ where
     F: Format,
 {
     if table.is_empty() {
-        return finish(store, at, edge, entry, meta, Counted::none(), stats).await;
+        return finish(puts, at, edge, entry, meta, Counted::none(), stats).await;
     }
     // Edge-compaction: a child-only fork over a single-fork child merges into
     // one edge, exactly as a from-scratch build would compact the shared run.
@@ -462,20 +465,20 @@ where
         && table.len() == 1
         && let Some((first, record)) = table.iter().next()
     {
-        return compact(store, at, edge, first, record, stats).await;
+        return compact(puts, at, edge, first, record, stats).await;
     }
-    let resolved = resolve(store, table, stats).await?;
+    let resolved = resolve(puts, table, stats).await?;
     let child = Counted {
         count: resolved.child_count(),
         child: Some(resolved.into_child()),
     };
-    finish(store, at, edge, entry, meta, child, stats).await
+    finish(puts, at, edge, entry, meta, child, stats).await
 }
 
 /// An insertion diverges within the edge: branch at the divergence, re-rooting
 /// the existing subtree verbatim under the edge remainder.
 async fn split<'c, S, F>(
-    store: &S,
+    puts: &mut PutSink<'_, S>,
     consumed: usize,
     edge: &[u8],
     cut: usize,
@@ -518,9 +521,9 @@ where
     if let Some(record) = reroot(remainder, existing)? {
         branch.insert_record(first, record);
     }
-    let table = Box::pin(apply_forks(store, branch, boundary, &remaining, stats)).await?;
+    let table = Box::pin(apply_forks(puts, branch, boundary, &remaining, stats)).await?;
     assemble(
-        store,
+        puts,
         consumed,
         new_edge,
         split_entry,
@@ -553,7 +556,7 @@ fn reroot<F: Format>(
 /// so a deletion that strips a fork's terminal value re-inlines its lone
 /// remaining branch exactly as a from-scratch build would.
 async fn finish<S, F>(
-    store: &S,
+    puts: &mut PutSink<'_, S>,
     at: usize,
     edge: &[u8],
     entry: Option<Entry<F>>,
@@ -570,7 +573,7 @@ where
         && table.len() == 1
         && let Some((first, record)) = table.iter().next()
     {
-        return compact(store, at, edge, first, record, stats).await;
+        return compact(puts, at, edge, first, record, stats).await;
     }
     settle(edge, entry, meta, child)
 }
@@ -599,7 +602,7 @@ fn settle<F: Format>(
 /// absolute offsets a build places, so the merged run re-segments into a
 /// canonical chain and the record's own boundary stays where it was.
 async fn compact<S, F>(
-    store: &S,
+    puts: &mut PutSink<'_, S>,
     at: usize,
     edge: &[u8],
     first: u8,
@@ -614,7 +617,7 @@ where
     merged.push(first);
     merged.extend_from_slice(record.tail().as_bytes());
     chain(
-        store,
+        puts,
         at,
         &merged,
         record.payload().clone(),
@@ -684,7 +687,7 @@ where
 /// innermost fork carries the payload and its metadata; every wrapping fork
 /// carries only the continuation.
 async fn chain<S, F>(
-    store: &S,
+    puts: &mut PutSink<'_, S>,
     at: usize,
     prefix: &[u8],
     payload: ForkPayload<F>,
@@ -704,7 +707,7 @@ where
     let rest = prefix.get(allowed..).ok_or(ApplyError::Internal)?;
     let &first = rest.first().ok_or(ApplyError::Internal)?;
     let inner = Box::pin(chain(
-        store,
+        puts,
         at.saturating_add(allowed),
         rest,
         payload,
@@ -718,7 +721,7 @@ where
     table.insert_record(first, inner);
     // The wrapping child-only fork routes the same subtree; its reference count
     // is recomputed from the resolved table, not the terminal payload's.
-    let resolved = resolve(store, table, stats).await?;
+    let resolved = resolve(puts, table, stats).await?;
     let count = resolved.child_count();
     let child = resolved.into_child();
     make_fork(head, ForkPayload::Child(child), None, count)

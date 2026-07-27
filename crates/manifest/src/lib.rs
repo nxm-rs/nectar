@@ -134,6 +134,7 @@ pub use folder::{DirEntry, Listing, Served, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
+pub use nectar_kernel::Window;
 pub use node::{Node, RootExtension};
 pub use packing::{Directory, Domain, SegmentKind, cut, embed, h64, segment, spill};
 pub use reader::{Reader, ReaderError};
