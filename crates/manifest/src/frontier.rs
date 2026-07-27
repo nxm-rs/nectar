@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 
 use bytes::Bytes;
-use nectar_kernel::{BoxFuture, InFlight};
+use nectar_kernel::{BoxFuture, FuturesUnordered};
 
 use crate::format::Format;
 use crate::reader::ReaderError;
@@ -113,7 +113,7 @@ pub(crate) fn fill<'a, F, T, Fut>(
     buffered: usize,
     next_seq: &mut usize,
     frames: &mut [Frame<F>],
-    in_flight: &mut InFlight<'a, Completion<T>>,
+    in_flight: &mut FuturesUnordered<BoxFuture<'a, Completion<T>>>,
     mut plan: impl FnMut(&Bytes, &Step<F>) -> Plan<Fut>,
 ) where
     F: Format,

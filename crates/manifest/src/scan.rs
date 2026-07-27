@@ -21,7 +21,7 @@ use core::convert::Infallible;
 use core::future::poll_fn;
 
 use bytes::Bytes;
-use nectar_kernel::{Driver, InFlight, WalkPolicy};
+use nectar_kernel::{BoxFuture, Driver, FuturesUnordered, WalkPolicy};
 use nectar_primitives::ChunkAddress;
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
@@ -156,7 +156,7 @@ where
     type Error = Infallible;
     type Drain = ();
 
-    fn admit(&mut self, in_flight: &mut InFlight<'a, Fetched<F>>) {
+    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, Fetched<F>>>) {
         if self.staged.is_none() {
             self.staged = self.advance();
         }
@@ -376,7 +376,7 @@ where
 
     /// An already-exhausted cursor: yields nothing. Used when a paginated seek
     /// starts past the last key.
-    pub(crate) const fn exhausted(store: &'a S) -> Self {
+    pub(crate) fn exhausted(store: &'a S) -> Self {
         Self {
             driver: Driver::new(ScanPolicy {
                 store,

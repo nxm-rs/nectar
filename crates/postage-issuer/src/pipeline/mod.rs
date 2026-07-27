@@ -319,7 +319,7 @@ where
     I: StampIssuer + ?Sized,
 {
     #[cfg(feature = "parallel")]
-    const fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p mut I, input: A) -> Self {
+    fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p mut I, input: A) -> Self {
         Self {
             sink: pipeline.sink(issuer, bridge::BlockingSpawn),
             input,

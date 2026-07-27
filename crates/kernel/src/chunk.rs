@@ -4,8 +4,8 @@ use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
 use nectar_primitives::store::TrustedGet;
 
 /// Fetch one chunk from a trusted store, carrying `payload` back with the
-/// outcome: the payload-in-future routing an [`InFlight`](crate::InFlight)
-/// completion relies on.
+/// outcome: the payload-in-future routing a drained
+/// [`FuturesUnordered`](crate::FuturesUnordered) completion relies on.
 pub async fn get_verified<S, R, P>(
     store: S,
     address: ChunkAddress,

@@ -3,6 +3,7 @@
 
 use core::convert::Infallible;
 use core::future::poll_fn;
+use core::pin::Pin;
 use core::task::Poll;
 
 use alloc::boxed::Box;
@@ -18,7 +19,8 @@ use std::collections::VecDeque;
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex, PoisonError};
 
-use nectar_kernel::InFlight;
+use futures_util::stream::Stream;
+use nectar_kernel::{BoxFuture, FuturesUnordered};
 use nectar_marker::MaybeSync;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 use nectar_primitives::store::ChunkPut;
@@ -64,7 +66,7 @@ where
 {
     let relay = Relay::<B>::default();
     let mut split: Split<Relay<B>, M, B> = Split::new(relay.clone(), window);
-    let mut puts: InFlight<'_, PutDone<T::Error>> = InFlight::new();
+    let mut puts: FuturesUnordered<BoxFuture<'_, PutDone<T::Error>>> = FuturesUnordered::new();
     let limit = usize::from(window.get());
     let mut rest = data;
     while !rest.is_empty() {
@@ -104,7 +106,7 @@ fn widen<E>(error: SplitError<Infallible>) -> SplitError<E> {
 async fn drain<'a, T, const B: usize>(
     relay: &Relay<B>,
     store: &'a T,
-    puts: &mut InFlight<'a, PutDone<T::Error>>,
+    puts: &mut FuturesUnordered<BoxFuture<'a, PutDone<T::Error>>>,
     limit: usize,
 ) -> Result<(), SplitError<T::Error>>
 where
@@ -123,15 +125,19 @@ where
 }
 
 /// Await one completion; an empty window is a no-op.
-async fn settle_one<E>(puts: &mut InFlight<'_, PutDone<E>>) -> Result<(), SplitError<E>> {
-    match poll_fn(|cx| puts.poll(cx)).await {
+async fn settle_one<E>(
+    puts: &mut FuturesUnordered<BoxFuture<'_, PutDone<E>>>,
+) -> Result<(), SplitError<E>> {
+    match poll_fn(|cx| Pin::new(&mut *puts).poll_next(cx)).await {
         Some((address, result)) => result.map_err(|source| SplitError::Put { address, source }),
         None => Ok(()),
     }
 }
 
 /// Await every outstanding put, so the root covers a fully stored tree.
-async fn settle<E>(puts: &mut InFlight<'_, PutDone<E>>) -> Result<(), SplitError<E>> {
+async fn settle<E>(
+    puts: &mut FuturesUnordered<BoxFuture<'_, PutDone<E>>>,
+) -> Result<(), SplitError<E>> {
     while !puts.is_empty() {
         settle_one(puts).await?;
     }
@@ -140,10 +146,12 @@ async fn settle<E>(puts: &mut InFlight<'_, PutDone<E>>) -> Result<(), SplitError
 
 /// Fold settled puts without parking: every live put is polled once with the
 /// task's waker, so freshly admitted puts start before more bytes enter.
-async fn sweep<E>(puts: &mut InFlight<'_, PutDone<E>>) -> Result<(), SplitError<E>> {
+async fn sweep<E>(
+    puts: &mut FuturesUnordered<BoxFuture<'_, PutDone<E>>>,
+) -> Result<(), SplitError<E>> {
     poll_fn(|cx| {
         loop {
-            match puts.poll(cx) {
+            match Pin::new(&mut *puts).poll_next(cx) {
                 Poll::Ready(Some((address, result))) => {
                     if let Err(source) = result {
                         return Poll::Ready(Err(SplitError::Put { address, source }));

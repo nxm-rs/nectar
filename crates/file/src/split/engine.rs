@@ -6,10 +6,12 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::future::poll_fn;
 use core::mem;
+use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
-use nectar_kernel::{BoxFuture, InFlight};
+use futures_util::stream::Stream;
+use nectar_kernel::{BoxFuture, FuturesUnordered};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::bmt::SPAN_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
@@ -117,7 +119,7 @@ where
     spine: Vec<Level<M>>,
     /// Sealed chunks awaiting a put slot; bounded by the spine height.
     pending: VecDeque<Chunk<Verified, AnyChunkSet<B>>>,
-    in_flight: InFlight<'static, PutDone<S::Error>>,
+    in_flight: FuturesUnordered<BoxPut<S::Error>>,
     /// Pool fan-out for leaf seals; `None` keeps sealing inline.
     #[cfg(feature = "rayon")]
     hash: Option<HashFan<M, B>>,
@@ -166,7 +168,7 @@ where
             leaf: Vec::new(),
             spine: Vec::new(),
             pending: VecDeque::new(),
-            in_flight: InFlight::new(),
+            in_flight: FuturesUnordered::new(),
             #[cfg(feature = "rayon")]
             hash: None,
             phase: Phase::Writing,
@@ -717,7 +719,7 @@ where
             if self.in_flight.is_empty() {
                 return Ok(());
             }
-            match self.in_flight.poll(cx) {
+            match Pin::new(&mut self.in_flight).poll_next(cx) {
                 Poll::Ready(Some((address, result))) => {
                     result.map_err(|source| SplitError::Put { address, source })?;
                 }

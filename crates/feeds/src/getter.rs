@@ -6,7 +6,7 @@ use core::future::poll_fn;
 use core::num::{NonZeroU16, NonZeroUsize};
 use std::collections::BTreeSet;
 
-use nectar_kernel::{Admission, Driver, InFlight, WalkPolicy, Window};
+use nectar_kernel::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, IntoVerified, SingleOwnerOnlyChunkSet};
 use nectar_primitives::store::{ChunkGet, ChunkHas};
@@ -243,7 +243,7 @@ where
     type Error = Infallible;
     type Drain = ();
 
-    fn admit(&mut self, in_flight: &mut InFlight<'a, Probed>) {
+    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, Probed>>) {
         if self.verdict.is_some() {
             return;
         }
