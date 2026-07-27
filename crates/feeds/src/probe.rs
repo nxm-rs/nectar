@@ -1,10 +1,11 @@
-//! Pure replay resolvers and round planning for the windowed finders.
+//! Pure replay resolvers and probe planning for the windowed finders.
 //!
 //! A resolver replays a sequential scan's decision procedure over a map of
 //! completed presence answers and faults on the first index it consults
-//! without one. The driver answers faults in rounds of bounded concurrent
-//! probes; speculative answers the replay never consults are inert, so any
-//! window width commits the boundary the sequential scan would.
+//! without one. The driver keeps a bounded window of probes in flight,
+//! absorbing each answer as it lands and re-resolving; speculative answers
+//! the replay never consults are inert, so any window width and any
+//! completion order commit the boundary the sequential scan would.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -314,8 +315,9 @@ mod tests {
         }
     }
 
-    /// Pure round driver: faults are always answered, speculative probes may
-    /// be adversarially dropped (left unanswered) per the mask.
+    /// Pure batched driver, one valid completion order: faults are always
+    /// answered, speculative probes may be adversarially dropped (left
+    /// unanswered) per the mask.
     fn simulate(
         resolve: fn(u64, &Answers) -> Step,
         base: u64,
@@ -343,6 +345,53 @@ mod tests {
                             answers.insert(index, oracle.has(index));
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// Pure as-it-lands driver, the policy's shape: a head-reserved bounded
+    /// outstanding set, one adversarially chosen completion per turn, a
+    /// re-resolve and top-up after each.
+    fn simulate_streaming(
+        resolve: fn(u64, &Answers) -> Step,
+        base: u64,
+        oracle: &Oracle,
+        width: NonZeroUsize,
+        picks: &[usize],
+    ) -> Outcome {
+        let mut answers = Answers::new();
+        let mut outstanding: Vec<u64> = Vec::new();
+        let mut plan = Vec::new();
+        let mut cursor = 0usize;
+        loop {
+            match resolve(base, &answers) {
+                Step::Empty => return Outcome::Empty,
+                Step::Commit { lo } => return Outcome::Commit(lo),
+                Step::Fault(fault) => {
+                    fault.plan(width, &mut plan);
+                    let head = plan.first().copied();
+                    for &index in &plan {
+                        if answers.contains_key(&index) || outstanding.contains(&index) {
+                            continue;
+                        }
+                        let head_served =
+                            head.is_some_and(|head| index == head || outstanding.contains(&head));
+                        let cap = if head_served {
+                            width.get()
+                        } else {
+                            width.get() - 1
+                        };
+                        if outstanding.len() >= cap {
+                            break;
+                        }
+                        outstanding.push(index);
+                    }
+                    // The head always admits, so the set is never empty here.
+                    let pick = picks.get(cursor).copied().unwrap_or(0) % outstanding.len();
+                    cursor += 1;
+                    let index = outstanding.swap_remove(pick);
+                    answers.insert(index, oracle.has(index));
                 }
             }
         }
@@ -453,6 +502,39 @@ mod tests {
             let got = simulate(
                 resolve_linear, base, &oracle, width(w), &drops, &mut Vec::new(),
             );
+            prop_assert_eq!(got, expected);
+        }
+
+        /// Any completion order, any width: absorbing one answer at a time
+        /// reaches the sequential probing scan's verdict.
+        #[test]
+        fn streaming_probing_matches_sequential(
+            base in prop_oneof![0u64..=192, u64::MAX - 192..=u64::MAX],
+            pattern in proptest::collection::vec(any::<bool>(), 0..96),
+            beyond in any::<bool>(),
+            w in 1usize..=16,
+            picks in proptest::collection::vec(any::<usize>(), 0..256),
+        ) {
+            let oracle = Oracle { base, pattern, beyond };
+            let expected = sequential_probing(base, &oracle, &mut Vec::new());
+            let got = simulate_streaming(resolve_probing, base, &oracle, width(w), &picks);
+            prop_assert_eq!(got, expected);
+        }
+
+        /// Any completion order, any width: absorbing one answer at a time
+        /// reaches the sequential stepwise scan's verdict.
+        #[test]
+        fn streaming_linear_matches_sequential(
+            base in prop_oneof![0u64..=192, u64::MAX - 192..=u64::MAX],
+            pattern in proptest::collection::vec(any::<bool>(), 0..96),
+            w in 1usize..=16,
+            picks in proptest::collection::vec(any::<usize>(), 0..256),
+        ) {
+            // A constant-present tail would make the stepwise reference walk
+            // the whole index space; the finite pattern keeps it bounded.
+            let oracle = Oracle { base, pattern, beyond: false };
+            let expected = sequential_linear(base, &oracle, &mut Vec::new());
+            let got = simulate_streaming(resolve_linear, base, &oracle, width(w), &picks);
             prop_assert_eq!(got, expected);
         }
 
