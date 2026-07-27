@@ -7,14 +7,14 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::future::{Future, poll_fn};
 use core::num::NonZeroUsize;
-#[cfg(feature = "parallel")]
-use core::task::Context;
 use core::task::{Poll, Waker};
 #[cfg(feature = "std")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(multi_thread)]
 use std::sync::{Mutex, PoisonError};
 
+#[cfg(feature = "parallel")]
+use futures_channel::oneshot;
 use nectar_clock::Clock;
 #[cfg(feature = "std")]
 use nectar_clock::SystemClock;
@@ -214,45 +214,6 @@ fn sign_now<Sg: SignPrehash + ?Sized>(
     digest: &StampDigest,
 ) -> Result<Stamp, SigningError> {
     sign_digest(signer, digest)
-}
-
-/// The owner put's sign completion slot: waker-per-poll, woken on delivery.
-#[cfg(feature = "parallel")]
-#[derive(Default)]
-struct SignSlot {
-    inner: Mutex<SlotState>,
-}
-
-#[cfg(feature = "parallel")]
-#[derive(Default)]
-struct SlotState {
-    result: Option<Result<Stamp, SigningError>>,
-    waker: Option<Waker>,
-}
-
-#[cfg(feature = "parallel")]
-impl SignSlot {
-    fn complete(&self, result: Result<Stamp, SigningError>) {
-        let waker = {
-            let mut state = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-            state.result = Some(result);
-            state.waker.take()
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
-    }
-
-    fn poll(&self, cx: &mut Context<'_>) -> Poll<Result<Stamp, SigningError>> {
-        let mut state = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        state.result.take().map_or_else(
-            || {
-                state.waker = Some(cx.waker().clone());
-                Poll::Pending
-            },
-            Poll::Ready,
-        )
-    }
 }
 
 /// One step of the put flow, decided under a single lock.
@@ -487,8 +448,7 @@ where
     /// waking duplicate waiters on completion.
     #[cfg(feature = "parallel")]
     async fn sign(&self, digest: StampDigest, tracked: bool) -> Result<Stamp, SigningError> {
-        let slot = Arc::new(SignSlot::default());
-        let job_slot = Arc::clone(&slot);
+        let (tx, rx) = oneshot::channel();
         let signer = Arc::clone(&self.signer);
         let shared = self.shared.clone();
         let address = digest.chunk_address;
@@ -499,9 +459,10 @@ where
                 .unwrap_or_else(|_| Err(SigningError::Dropped));
             let wakers = with_state(&shared, |state| resolve(state, &address, &result, tracked));
             wake_all(wakers);
-            job_slot.complete(result);
+            let _ = tx.send(result);
         });
-        poll_fn(|cx| slot.poll(cx)).await
+        // A cancelled receiver means the job was lost before sending.
+        rx.await.unwrap_or(Err(SigningError::Dropped))
     }
 
     /// Signs an allocated digest inline, resolving the issued map and
