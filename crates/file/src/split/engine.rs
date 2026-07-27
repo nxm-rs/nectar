@@ -27,7 +27,7 @@ use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 
 /// Completion payload; the future carries the chunk's address back for the
 /// error context.
-type PutDone<E> = (ChunkAddress, Result<(), E>);
+pub(super) type PutDone<E> = (ChunkAddress, Result<(), E>);
 
 /// Boxed put future; the kernel alias relaxes `Send` off the multi-threaded
 /// targets.

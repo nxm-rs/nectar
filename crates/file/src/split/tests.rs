@@ -1239,6 +1239,121 @@ fn huge_stream_root_matches_the_batch_ingest() {
     assert_eq!(split.stats().bytes, size);
 }
 
+/// Relay oracles: borrowed-store roots byte-identical to the owned engine,
+/// bounded concurrent puts against the borrowed store, and fault surfacing.
+#[cfg(any(feature = "std", not(multi_thread)))]
+mod relay {
+    use std::sync::Mutex;
+
+    use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
+    use nectar_primitives::store::{ChunkPut, ChunkStoreError};
+    use nectar_testing::{run, yield_now};
+
+    use super::{TINY, TINY_ROOTS, TestStore, fill, pinned, sorted, stream_split};
+    use crate::config::PutWindow;
+    use crate::split::{SplitError, collect_into};
+    use crate::testutil::failing_at;
+    use crate::walk::Plain;
+
+    /// Store counting concurrent put occupancy behind a yield delay.
+    struct OverlapStore<const B: usize> {
+        /// Live puts and their peak.
+        counts: Mutex<(usize, usize)>,
+        delay: usize,
+    }
+
+    impl<const B: usize> OverlapStore<B> {
+        fn new(delay: usize) -> Self {
+            Self {
+                counts: Mutex::default(),
+                delay,
+            }
+        }
+
+        fn peak(&self) -> usize {
+            self.counts.lock().unwrap().1
+        }
+    }
+
+    impl<const B: usize> ChunkPut<AnyChunkSet<B>> for OverlapStore<B> {
+        type Error = ChunkStoreError;
+
+        async fn put(&self, _chunk: Chunk<Verified, AnyChunkSet<B>>) -> Result<(), Self::Error> {
+            {
+                let mut counts = self.counts.lock().unwrap();
+                counts.0 += 1;
+                counts.1 = counts.1.max(counts.0);
+            }
+            for _ in 0..self.delay {
+                yield_now().await;
+            }
+            self.counts.lock().unwrap().0 -= 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn borrowed_roots_and_chunk_sets_match_the_owned_engine() {
+        for &(size, root_hex) in TINY_ROOTS {
+            let data = fill(size);
+            let store = TestStore::<TINY>::new(1);
+            let root = run(collect_into::<_, Plain, TINY>(
+                &store,
+                PutWindow::new(4).unwrap(),
+                &data,
+            ))
+            .unwrap();
+            assert_eq!(root, pinned(root_hex), "root diverged at {size}");
+            let (_, owned, _) = stream_split::<TINY>(&data, 4, 719, 1);
+            assert_eq!(
+                sorted(store.log()),
+                sorted(owned.log()),
+                "chunk set diverged at {size}"
+            );
+        }
+    }
+
+    #[test]
+    fn borrowed_puts_overlap_within_the_window() {
+        let data = fill(40 * TINY + 63);
+        let (owned_root, _, _) = stream_split::<TINY>(&data, 4, 719, 1);
+        for window in [1u16, 2, 4] {
+            let store = OverlapStore::<TINY>::new(3);
+            let root = run(collect_into::<_, Plain, TINY>(
+                &store,
+                PutWindow::new(window).unwrap(),
+                &data,
+            ))
+            .unwrap();
+            assert_eq!(root, owned_root);
+            assert!(
+                store.peak() <= usize::from(window),
+                "puts in flight {} exceeded the window {window}",
+                store.peak()
+            );
+            if window > 1 {
+                assert!(
+                    store.peak() > 1,
+                    "the borrowed path put one chunk at a time under window {window}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_borrowed_put_failure_surfaces_typed() {
+        let data = fill(3 * TINY);
+        let store = failing_at::<_, TINY>(TestStore::<TINY>::new(0), 3);
+        let error = run(collect_into::<_, Plain, TINY>(
+            &store,
+            PutWindow::new(2).unwrap(),
+            &data,
+        ))
+        .unwrap_err();
+        assert!(matches!(error, SplitError::Put { .. }), "got {error:?}");
+    }
+}
+
 /// Shrinking stable coverage: root idempotence over write segmentation,
 /// composed from the structural-regime generators.
 mod properties {
