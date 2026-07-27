@@ -64,6 +64,7 @@ std = [
 	"futures-util?/std",
 	"nectar-clock/std",
 	"nectar-primitives?/std",
+	"nectar-tasks?/std",
 	"primitives",
 	"thiserror/std",
 ]

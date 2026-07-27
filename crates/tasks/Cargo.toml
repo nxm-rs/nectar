@@ -37,7 +37,7 @@ tokio = { workspace = true, features = ["sync"] }
 std = []
 # Pool handoff over `futures-channel` oneshot: a panic-catching submit seam
 # onto the rayon pool. Implies `std`.
-rayon = [ "std", "dep:futures-channel", "dep:rayon" ]
+rayon = [ "dep:futures-channel", "dep:rayon", "std" ]
 # Spawner onto the ambient tokio runtime.
 tokio = [ "dep:tokio" ]
 # Spawner onto the browser event loop (wasm32 only).
