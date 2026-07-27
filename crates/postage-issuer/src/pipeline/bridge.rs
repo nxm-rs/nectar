@@ -1,4 +1,4 @@
-//! Blocking-bridge machinery: the sink spawners the
+//! Blocking-bridge machinery: the sink spawner the
 //! [`Stamped`](super::Stamped) iterator drives the poll-native sink with.
 
 use nectar_tasks::{BoxFuture, Spawn, TaskHandle, block_on};
