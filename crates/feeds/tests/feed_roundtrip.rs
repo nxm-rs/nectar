@@ -24,8 +24,15 @@ use nectar_primitives::{
     Chunk, ChunkRegistry, DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultMemoryStore,
     StandardChunkSet,
 };
-use nectar_testing::run;
+use nectar_testing::{Drive, run};
 use proptest::prelude::*;
+
+use core::future::Future;
+use core::num::NonZeroUsize;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 /// Single-owner-only store the feed handles are typed against.
 type SocStore = MemoryStore<SingleOwnerOnlyChunkSet>;
@@ -365,6 +372,212 @@ fn shared_general_store_adapts_through_the_narrowing_get() {
         assert_eq!(latest.update.unwrap().index(), &Sequence::ZERO);
         assert_eq!(latest.next, Sequence::ZERO.next());
     });
+}
+
+/// Probe-completion gate: a `has` probe parks by address until the test
+/// grants it, so completion order is the caller's, not the store's. Records
+/// the high-water mark of concurrently parked probes.
+#[derive(Clone, Default)]
+struct Gate {
+    inner: Arc<Mutex<GateInner>>,
+}
+
+#[derive(Default)]
+struct GateInner {
+    parked: Vec<(ChunkAddress, Waker)>,
+    granted: BTreeSet<ChunkAddress>,
+    peak: usize,
+}
+
+impl Gate {
+    /// Addresses currently parked, in arrival order.
+    fn parked(&self) -> Vec<ChunkAddress> {
+        self.inner
+            .lock()
+            .unwrap()
+            .parked
+            .iter()
+            .map(|(address, _)| *address)
+            .collect()
+    }
+
+    /// Grant one parked probe and wake it.
+    fn grant(&self, address: ChunkAddress) {
+        let waker = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.granted.insert(address);
+            inner
+                .parked
+                .iter()
+                .position(|(parked, _)| *parked == address)
+                .map(|pos| inner.parked.remove(pos).1)
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// High-water mark of concurrently parked probes.
+    fn peak(&self) -> usize {
+        self.inner.lock().unwrap().peak
+    }
+}
+
+/// A `has` probe parked on the gate; resolves once its address is granted.
+struct HasProbe {
+    address: ChunkAddress,
+    present: bool,
+    gate: Gate,
+}
+
+impl Future for HasProbe {
+    type Output = bool;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<bool> {
+        let this = self.get_mut();
+        let mut inner = this.gate.inner.lock().unwrap();
+        if inner.granted.remove(&this.address) {
+            return Poll::Ready(this.present);
+        }
+        match inner.parked.iter_mut().find(|(a, _)| *a == this.address) {
+            Some(slot) => slot.1 = cx.waker().clone(),
+            None => {
+                inner.parked.push((this.address, cx.waker().clone()));
+                let depth = inner.parked.len();
+                inner.peak = inner.peak.max(depth);
+            }
+        }
+        Poll::Pending
+    }
+}
+
+/// Store double over a single-owner store: `get` resolves at once; `has`
+/// parks on the gate, so the caller chooses the order presence answers land.
+struct GatedStore<'a> {
+    inner: &'a SocStore,
+    gate: Gate,
+}
+
+impl ChunkGet<SingleOwnerOnlyChunkSet> for GatedStore<'_> {
+    type Trust = nectar_primitives::Verified;
+    type Error = ChunkStoreError;
+
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<Chunk<nectar_primitives::Verified, SingleOwnerOnlyChunkSet>, Self::Error> {
+        ChunkGet::get(self.inner, address).await
+    }
+}
+
+impl ChunkHas for GatedStore<'_> {
+    async fn has(&self, address: &ChunkAddress) -> bool {
+        HasProbe {
+            address: *address,
+            present: self.inner.get(address).is_some(),
+            gate: self.gate.clone(),
+        }
+        .await
+    }
+}
+
+/// Chooses the next probe to grant from the parked set, given the turn.
+type Pick = fn(usize, &[ChunkAddress]) -> ChunkAddress;
+
+/// Drive the real finder to a verdict, granting one parked probe per pending
+/// turn in the order `pick` chooses. Returns the found index, the next slot
+/// and the peak concurrency the run reached.
+fn drive_order(
+    feed: Feed,
+    inner: &SocStore,
+    floor: Sequence,
+    linear: bool,
+    window: NonZeroUsize,
+    mut pick: impl FnMut(usize, &[ChunkAddress]) -> ChunkAddress,
+) -> (Option<Sequence>, Option<Sequence>, usize) {
+    let gate = Gate::default();
+    let getter = Getter::new(
+        feed,
+        GatedStore {
+            inner,
+            gate: gate.clone(),
+        },
+    )
+    .with_window(window);
+    let mut driver = Drive::new(async {
+        if linear {
+            getter.latest_linear_from(floor).await
+        } else {
+            getter.latest_from(floor).await
+        }
+    });
+
+    let mut step = 0usize;
+    let mut budget = 100_000usize;
+    let latest = loop {
+        match driver.poll() {
+            Poll::Ready(result) => break result.unwrap(),
+            Poll::Pending => {
+                let parked = gate.parked();
+                assert!(!parked.is_empty(), "finder parked with no probe in flight");
+                gate.grant(pick(step, &parked));
+                step += 1;
+            }
+        }
+        budget -= 1;
+        assert!(budget > 0, "finder did not converge");
+    };
+    (latest.update.map(|u| *u.index()), latest.next, gate.peak())
+}
+
+/// The shipped async `ProbePolicy`, driven through the kernel driver under
+/// adversarial out-of-order probe completion, reaches the in-order verdict.
+///
+/// The property test in `probe.rs` proves this of a model; this pins the real
+/// code, where a divergence surfacing only under true out-of-order landing
+/// would otherwise go untested.
+#[test]
+fn probe_policy_holds_under_adversarial_completion_order() {
+    let signer = signer();
+    let feed = feed_for(&signer);
+    let store = SocStore::new();
+    run(async {
+        let mut updater = Updater::new(feed, &store, &signer);
+        for n in 0u64..21 {
+            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+        }
+    });
+
+    let floor = Sequence::ZERO;
+    let one = NonZeroUsize::MIN;
+    let wide = NonZeroUsize::new(8).unwrap();
+
+    // Width one is the sequential scan: the in-order baseline.
+    let (base_index, base_next, _) = drive_order(feed, &store, floor, false, one, |_, p| p[0]);
+    assert_eq!(base_index, Some(Sequence::new(20)));
+    assert_eq!(base_next, Some(Sequence::new(21)));
+
+    // Deterministic adversarial orders, no clock or rng: newest-first, a
+    // fixed rotation, and the mid probe first.
+    let orders: [(&str, Pick); 3] = [
+        ("reverse", |_, parked| *parked.last().unwrap()),
+        ("rotate", |step, parked| {
+            parked[(step * 3 + 1) % parked.len()]
+        }),
+        ("middle", |_, parked| parked[parked.len() / 2]),
+    ];
+
+    for linear in [false, true] {
+        for (name, pick) in orders {
+            let (index, next, peak) = drive_order(feed, &store, floor, linear, wide, pick);
+            assert_eq!(index, base_index, "order {name}, linear {linear}");
+            assert_eq!(next, base_next, "order {name}, linear {linear}");
+            assert!(
+                peak >= 2,
+                "order {name}, linear {linear}: no concurrent probes, order was not exercised"
+            );
+        }
+    }
 }
 
 proptest! {
