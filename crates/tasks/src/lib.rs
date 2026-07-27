@@ -4,6 +4,7 @@
 //!
 //! # Features
 //!
+//! - `std`: the pool-to-poll `handoff` and the `block_on` sync driver
 //! - `tokio`: `TokioSpawner`, spawns onto the ambient tokio runtime
 //! - `wasm` (wasm32 only): `WasmSpawner`, spawns onto the browser event
 //!   loop
@@ -32,12 +33,22 @@
 )]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
+#[cfg(feature = "std")]
+mod block_on;
+#[cfg(feature = "std")]
+mod handoff;
 #[cfg(all(feature = "tokio", multi_thread))]
 mod tokio;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 
+#[cfg(feature = "std")]
+pub use self::block_on::{block_on, unpark_waker};
+#[cfg(feature = "std")]
+pub use self::handoff::{Handoff, HandoffSender, handoff};
 #[cfg(all(feature = "tokio", multi_thread))]
 pub use self::tokio::TokioSpawner;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

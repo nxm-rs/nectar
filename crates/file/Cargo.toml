@@ -20,7 +20,6 @@ workspace = true
 [dependencies]
 arbitrary = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 nectar-clock = { workspace = true, optional = true }
 nectar-kernel = { workspace = true }
@@ -66,6 +65,7 @@ std = [
 	"futures-util?/std",
 	"nectar-clock/std",
 	"nectar-primitives?/std",
+	"nectar-tasks?/std",
 	"primitives",
 	"thiserror/std",
 ]
@@ -76,7 +76,7 @@ tokio = [ "dep:nectar-tasks", "dep:tokio", "nectar-tasks/tokio", "std" ]
 # Pool leaf hashing: the split hash window and the read-at ingest. Implies
 # `std`; rayon on wasm32 or under `unsync` is a compile error, never a
 # silent fallback.
-rayon = [ "dep:futures-channel", "dep:rayon", "std" ]
+rayon = [ "dep:nectar-tasks", "dep:rayon", "std" ]
 
 # The shared malformed-walk oracle, the structural-regime body generators
 # and the stable seed replays. Never reachable from `default` or any

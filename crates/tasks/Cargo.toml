@@ -31,6 +31,8 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync"] }
 
 [features]
+# The pool-to-poll oneshot handoff and the block-on sync driver.
+std = []
 # Spawner onto the ambient tokio runtime.
 tokio = [ "dep:tokio" ]
 # Spawner onto the browser event loop (wasm32 only).
@@ -43,5 +45,5 @@ unsync = [ "nectar-marker/unsync" ]
 # mutually exclusive, so the doc build names the tokio feature rather than
 # enabling all at once (which would hide the tokio spawner).
 [package.metadata.docs.rs]
-features = ["tokio"]
+features = ["std", "tokio"]
 rustdoc-args = ["--cfg", "docsrs"]

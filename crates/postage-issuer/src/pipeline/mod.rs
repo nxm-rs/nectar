@@ -34,7 +34,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 #[cfg(feature = "std")]
-use core::task::{Context, Poll};
+use core::future::poll_fn;
+#[cfg(feature = "std")]
+use core::task::Poll;
 
 use nectar_clock::Clock;
 #[cfg(feature = "std")]
@@ -45,6 +47,8 @@ use nectar_postage::Stamp;
 #[cfg(not(feature = "std"))]
 use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;
+#[cfg(feature = "std")]
+use nectar_tasks::block_on;
 
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
@@ -380,16 +384,6 @@ where
         self.not_admitted.extend(self.input.by_ref());
         self.input_done = true;
     }
-
-    /// Blocks until the sink can make progress: runs one queued sign job
-    /// inline, or parks until a completion unparks this thread.
-    fn wait(&mut self) {
-        #[cfg(not(feature = "parallel"))]
-        if self.jobs.run_one() {
-            return;
-        }
-        std::thread::park();
-    }
 }
 
 #[cfg(feature = "std")]
@@ -403,31 +397,39 @@ where
     type Item = StampResult;
 
     fn next(&mut self) -> Option<StampResult> {
-        let waker = bridge::unpark_current();
-        let mut cx = Context::from_waker(&waker);
-        loop {
-            self.refill();
-            match self.sink.poll_next(&mut cx) {
-                Poll::Ready(Some(result)) => {
-                    if self.sink.is_failed() && !self.input_done {
-                        self.stop_admission();
+        block_on(poll_fn(|cx| {
+            loop {
+                self.refill();
+                match self.sink.poll_next(cx) {
+                    Poll::Ready(Some(result)) => {
+                        if self.sink.is_failed() && !self.input_done {
+                            self.stop_admission();
+                        }
+                        return Poll::Ready(Some(result));
                     }
-                    return Some(result);
+                    Poll::Ready(None) => {
+                        if let Some(address) = self.not_admitted.pop_front() {
+                            return Poll::Ready(Some(StampResult {
+                                address,
+                                result: Err(SigningError::NotAdmitted),
+                            }));
+                        }
+                        if self.input_done {
+                            return Poll::Ready(None);
+                        }
+                    }
+                    Poll::Pending => {
+                        // Run one queued sign job inline, then re-poll; the
+                        // driver parks only when nothing is queued.
+                        #[cfg(not(feature = "parallel"))]
+                        if self.jobs.run_one() {
+                            continue;
+                        }
+                        return Poll::Pending;
+                    }
                 }
-                Poll::Ready(None) => {
-                    if let Some(address) = self.not_admitted.pop_front() {
-                        return Some(StampResult {
-                            address,
-                            result: Err(SigningError::NotAdmitted),
-                        });
-                    }
-                    if self.input_done {
-                        return None;
-                    }
-                }
-                Poll::Pending => self.wait(),
             }
-        }
+        }))
     }
 }
 

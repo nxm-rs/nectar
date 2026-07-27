@@ -14,11 +14,13 @@ use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::bmt::SPAN_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::ChunkPut;
+#[cfg(feature = "rayon")]
+use nectar_tasks::Handoff;
 
 use super::SplitStats;
 use super::error::{SealError, SplitError};
 #[cfg(feature = "rayon")]
-use super::handoff::{self, Handoff};
+use super::handoff;
 use super::mode::{Sealed, SplitMode};
 #[cfg(feature = "rayon")]
 use crate::config::HashWindow;

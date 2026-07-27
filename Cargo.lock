@@ -2549,7 +2549,6 @@ dependencies = [
  "arbitrary",
  "bytes",
  "futures",
- "futures-channel",
  "futures-util",
  "nectar-clock",
  "nectar-kernel",

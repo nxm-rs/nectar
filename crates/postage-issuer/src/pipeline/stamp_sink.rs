@@ -12,75 +12,21 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::fmt;
-use core::future::Future;
-use core::pin::Pin;
+use core::future::poll_fn;
 use core::task::{Context, Poll, Waker};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use nectar_clock::Clock;
 use nectar_kernel::InFlight;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;
-use nectar_tasks::{Spawn, TaskHandle};
+use nectar_tasks::{Spawn, handoff};
 
 use super::task::sign_task;
 use super::{SignPrehash, StampPipeline, StampResult};
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
 use crate::prepared::prepare_stamps;
-
-fn lock(mutex: &Mutex<SlotState>) -> MutexGuard<'_, SlotState> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// One job's completion cell: at most one result, plus the latest waker.
-#[derive(Default)]
-struct Slot {
-    state: Mutex<SlotState>,
-}
-
-#[derive(Default)]
-struct SlotState {
-    result: Option<StampResult>,
-    waker: Option<Waker>,
-}
-
-impl Slot {
-    /// Stores the result and wakes the latest registered waker.
-    fn complete(&self, result: StampResult) {
-        let waker = {
-            let mut state = lock(&self.state);
-            state.result = Some(result);
-            state.waker.take()
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
-    }
-}
-
-/// Awaits one job's completion; dropping it aborts the job.
-///
-/// The waker registration is overwritten on every poll: the first poll may
-/// carry a noop waker (a synchronous split-style first poll), and only the
-/// latest waker is entitled to the wakeup.
-struct Completion {
-    slot: Arc<Slot>,
-    _task: TaskHandle,
-}
-
-impl Future for Completion {
-    type Output = StampResult;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<StampResult> {
-        let mut state = lock(&self.slot.state);
-        if state.result.is_none() {
-            state.waker = Some(cx.waker().clone());
-        }
-        state.result.take().map_or(Poll::Pending, Poll::Ready)
-    }
-}
 
 impl<Sg, C> StampPipeline<Sg, C>
 where
@@ -249,15 +195,25 @@ where
     }
 
     /// Spawns the sign job and tracks its completion in the in-flight set.
+    /// Dropping the collector drops the task handle, aborting the job; a
+    /// job dropped unrun reads as [`SigningError::Dropped`] for the address
+    /// captured at admission.
     fn submit(&mut self, digest: StampDigest) {
-        let slot = Arc::new(Slot::default());
-        let completion = Arc::clone(&slot);
+        let (sender, mut receiver) = handoff();
         let signer = Arc::clone(&self.pipeline.signer);
+        let address = digest.chunk_address;
         let task = self.spawner.spawn(Box::pin(async move {
-            completion.complete(sign_task(signer.as_ref(), &digest));
+            sender.complete(sign_task(signer.as_ref(), &digest));
         }));
-        self.in_flight
-            .push(Box::pin(Completion { slot, _task: task }));
+        self.in_flight.push(Box::pin(async move {
+            let _task = task;
+            poll_fn(|cx| receiver.poll_recv(cx))
+                .await
+                .unwrap_or_else(|| StampResult {
+                    address,
+                    result: Err(SigningError::Dropped),
+                })
+        }));
     }
 
     /// Polls the in-flight set for one completion and applies fail-fast.
@@ -283,7 +239,8 @@ mod tests {
     use alloy_signer::SignerSync;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use nectar_kernel::Window;
-    use std::sync::mpsc;
+    use nectar_tasks::TaskHandle;
+    use std::sync::{Mutex, mpsc};
     use std::task::Wake;
     use std::time::{Duration, Instant};
 

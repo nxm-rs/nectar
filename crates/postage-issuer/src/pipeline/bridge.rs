@@ -1,38 +1,7 @@
-//! Blocking-bridge machinery: the unpark waker and the sink spawner the
+//! Blocking-bridge machinery: the sink spawners the
 //! [`Stamped`](super::Stamped) iterator drives the poll-native sink with.
 
-use alloc::sync::Arc;
-use core::task::{Context, Waker};
-use std::task::Wake;
-use std::thread::{self, Thread};
-
-use nectar_tasks::{BoxFuture, Spawn, TaskHandle};
-
-/// Waker that unparks the thread which registered it.
-struct Unpark(Thread);
-
-impl Wake for Unpark {
-    fn wake(self: Arc<Self>) {
-        self.0.unpark();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.0.unpark();
-    }
-}
-
-/// Waker for the calling thread; a completion unparks it.
-pub(super) fn unpark_current() -> Waker {
-    Waker::from(Arc::new(Unpark(thread::current())))
-}
-
-/// Runs one sign job to completion.
-fn drive(mut task: BoxFuture<'static, ()>) {
-    let mut cx = Context::from_waker(Waker::noop());
-    let poll = task.as_mut().poll(&mut cx);
-    // Sign jobs are single-poll futures.
-    debug_assert!(poll.is_ready(), "sign job pended");
-}
+use nectar_tasks::{BoxFuture, Spawn, TaskHandle, block_on};
 
 /// The blocking iterator's spawner: signs on the rayon pool.
 #[cfg(feature = "parallel")]
@@ -41,13 +10,16 @@ pub(super) struct BlockingSpawn;
 #[cfg(feature = "parallel")]
 impl Spawn for BlockingSpawn {
     fn spawn(&self, task: BoxFuture<'static, ()>) -> TaskHandle {
-        rayon::spawn(move || drive(task));
+        // Sign jobs are single-poll futures; the driver never parks.
+        rayon::spawn(move || block_on(task));
         TaskHandle::new(|| {})
     }
 }
 
 #[cfg(not(feature = "parallel"))]
 use alloc::collections::VecDeque;
+#[cfg(not(feature = "parallel"))]
+use alloc::sync::Arc;
 #[cfg(not(feature = "parallel"))]
 use std::sync::{Mutex, PoisonError};
 
@@ -66,7 +38,8 @@ impl Jobs {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop_front();
-        job.map(drive).is_some()
+        // Sign jobs are single-poll futures; the driver never parks.
+        job.map(block_on).is_some()
     }
 }
 

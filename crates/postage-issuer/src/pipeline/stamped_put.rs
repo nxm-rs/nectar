@@ -7,8 +7,6 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::future::{Future, poll_fn};
 use core::num::NonZeroUsize;
-#[cfg(feature = "parallel")]
-use core::task::Context;
 use core::task::{Poll, Waker};
 #[cfg(feature = "std")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -193,9 +191,9 @@ impl<I> Drop for DeliveryGuard<'_, I> {
     }
 }
 
-/// Signs one digest inline, converting a signer panic into
+/// Signs one digest, converting a signer panic into
 /// [`SigningError::Dropped`].
-#[cfg(all(feature = "std", not(feature = "parallel")))]
+#[cfg(feature = "std")]
 fn sign_now<Sg: SignPrehash + ?Sized>(
     signer: &Sg,
     digest: &StampDigest,
@@ -208,51 +206,12 @@ fn sign_now<Sg: SignPrehash + ?Sized>(
 
 /// Signs one digest inline. Without `std` there is no unwind boundary: a
 /// signer panic propagates.
-#[cfg(not(any(feature = "std", feature = "parallel")))]
+#[cfg(not(feature = "std"))]
 fn sign_now<Sg: SignPrehash + ?Sized>(
     signer: &Sg,
     digest: &StampDigest,
 ) -> Result<Stamp, SigningError> {
     sign_digest(signer, digest)
-}
-
-/// The owner put's sign completion slot: waker-per-poll, woken on delivery.
-#[cfg(feature = "parallel")]
-#[derive(Default)]
-struct SignSlot {
-    inner: Mutex<SlotState>,
-}
-
-#[cfg(feature = "parallel")]
-#[derive(Default)]
-struct SlotState {
-    result: Option<Result<Stamp, SigningError>>,
-    waker: Option<Waker>,
-}
-
-#[cfg(feature = "parallel")]
-impl SignSlot {
-    fn complete(&self, result: Result<Stamp, SigningError>) {
-        let waker = {
-            let mut state = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-            state.result = Some(result);
-            state.waker.take()
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
-    }
-
-    fn poll(&self, cx: &mut Context<'_>) -> Poll<Result<Stamp, SigningError>> {
-        let mut state = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        state.result.take().map_or_else(
-            || {
-                state.waker = Some(cx.waker().clone());
-                Poll::Pending
-            },
-            Poll::Ready,
-        )
-    }
 }
 
 /// One step of the put flow, decided under a single lock.
@@ -487,21 +446,19 @@ where
     /// waking duplicate waiters on completion.
     #[cfg(feature = "parallel")]
     async fn sign(&self, digest: StampDigest, tracked: bool) -> Result<Stamp, SigningError> {
-        let slot = Arc::new(SignSlot::default());
-        let job_slot = Arc::clone(&slot);
+        let (sender, mut receiver) = nectar_tasks::handoff();
         let signer = Arc::clone(&self.signer);
         let shared = self.shared.clone();
         let address = digest.chunk_address;
         rayon::spawn(move || {
-            // The signer outlives a caught panic; its interior state across
-            // that panic is the caller's contract.
-            let result = catch_unwind(AssertUnwindSafe(|| sign_digest(signer.as_ref(), &digest)))
-                .unwrap_or_else(|_| Err(SigningError::Dropped));
+            let result = sign_now(signer.as_ref(), &digest);
             let wakers = with_state(&shared, |state| resolve(state, &address, &result, tracked));
             wake_all(wakers);
-            job_slot.complete(result);
+            sender.complete(result);
         });
-        poll_fn(|cx| slot.poll(cx)).await
+        poll_fn(|cx| receiver.poll_recv(cx))
+            .await
+            .unwrap_or(Err(SigningError::Dropped))
     }
 
     /// Signs an allocated digest inline, resolving the issued map and
@@ -912,18 +869,8 @@ mod tests {
     fn concurrent_duplicates_share_one_allocation_and_delivery() {
         use core::pin::pin;
         use core::task::{Context, Poll, Waker};
-        use std::task::Wake;
-        use std::thread::{self, Thread};
+        use std::thread;
         use std::time::{Duration, Instant};
-
-        /// Waker that unparks the thread which registered it.
-        struct Unpark(Thread);
-
-        impl Wake for Unpark {
-            fn wake(self: Arc<Self>) {
-                self.0.unpark();
-            }
-        }
 
         /// Signs after a delay, pinning the pending window open.
         struct SlowSigner;
@@ -955,7 +902,7 @@ mod tests {
         assert!(owner.as_mut().poll(noop).is_pending());
         assert!(waiter.as_mut().poll(noop).is_pending());
 
-        let waker = Waker::from(Arc::new(Unpark(thread::current())));
+        let waker = nectar_tasks::unpark_waker();
         let cx = &mut Context::from_waker(&waker);
         let budget = Duration::from_secs(10);
         let start = Instant::now();
