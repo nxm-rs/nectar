@@ -2706,6 +2706,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "futures-channel",
  "nectar-clock",
  "nectar-file",
  "nectar-kernel",

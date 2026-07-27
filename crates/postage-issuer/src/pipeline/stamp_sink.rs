@@ -15,8 +15,8 @@ use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use futures_channel::oneshot;
 use nectar_clock::Clock;
 use nectar_kernel::InFlight;
 use nectar_marker::{MaybeSend, MaybeSync};
@@ -30,43 +30,13 @@ use crate::error::SigningError;
 use crate::issuer::StampIssuer;
 use crate::prepared::prepare_stamps;
 
-fn lock(mutex: &Mutex<SlotState>) -> MutexGuard<'_, SlotState> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// One job's completion cell: at most one result, plus the latest waker.
-#[derive(Default)]
-struct Slot {
-    state: Mutex<SlotState>,
-}
-
-#[derive(Default)]
-struct SlotState {
-    result: Option<StampResult>,
-    waker: Option<Waker>,
-}
-
-impl Slot {
-    /// Stores the result and wakes the latest registered waker.
-    fn complete(&self, result: StampResult) {
-        let waker = {
-            let mut state = lock(&self.state);
-            state.result = Some(result);
-            state.waker.take()
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
-    }
-}
-
 /// Awaits one job's completion; dropping it aborts the job.
 ///
-/// The waker registration is overwritten on every poll: the first poll may
-/// carry a noop waker (a synchronous split-style first poll), and only the
-/// latest waker is entitled to the wakeup.
+/// A cancelled receiver (the sign task dropped before sending) yields a
+/// systemic [`SigningError::Dropped`], so a lost job never wedges the sink.
 struct Completion {
-    slot: Arc<Slot>,
+    address: ChunkAddress,
+    rx: oneshot::Receiver<StampResult>,
     _task: TaskHandle,
 }
 
@@ -74,11 +44,15 @@ impl Future for Completion {
     type Output = StampResult;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<StampResult> {
-        let mut state = lock(&self.slot.state);
-        if state.result.is_none() {
-            state.waker = Some(cx.waker().clone());
+        let this = self.get_mut();
+        match Pin::new(&mut this.rx).poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(result)) => Poll::Ready(result),
+            Poll::Ready(Err(oneshot::Canceled)) => Poll::Ready(StampResult {
+                address: this.address,
+                result: Err(SigningError::Dropped),
+            }),
         }
-        state.result.take().map_or(Poll::Pending, Poll::Ready)
     }
 }
 
@@ -250,14 +224,17 @@ where
 
     /// Spawns the sign job and tracks its completion in the in-flight set.
     fn submit(&mut self, digest: StampDigest) {
-        let slot = Arc::new(Slot::default());
-        let completion = Arc::clone(&slot);
+        let (tx, rx) = oneshot::channel();
         let signer = Arc::clone(&self.pipeline.signer);
+        let address = digest.chunk_address;
         let task = self.spawner.spawn(Box::pin(async move {
-            completion.complete(sign_task(signer.as_ref(), &digest));
+            let _ = tx.send(sign_task(signer.as_ref(), &digest));
         }));
-        self.in_flight
-            .push(Box::pin(Completion { slot, _task: task }));
+        self.in_flight.push(Box::pin(Completion {
+            address,
+            rx,
+            _task: task,
+        }));
     }
 
     /// Polls the in-flight set for one completion and applies fail-fast.
@@ -283,7 +260,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use nectar_kernel::Window;
-    use std::sync::mpsc;
+    use std::sync::{Mutex, mpsc};
     use std::task::Wake;
     use std::time::{Duration, Instant};
 
@@ -421,6 +398,16 @@ mod tests {
 
         fn chain_id_sync(&self) -> Option<u64> {
             None
+        }
+    }
+
+    /// Drops each job without polling it: the sign task and its sender die
+    /// unrun, cancelling the completion receiver.
+    struct DroppingSpawner;
+
+    impl Spawn for DroppingSpawner {
+        fn spawn(&self, _task: nectar_tasks::BoxFuture<'static, ()>) -> TaskHandle {
+            TaskHandle::new(|| {})
         }
     }
 
@@ -643,6 +630,33 @@ mod tests {
             .iter()
             .filter(|r| matches!(r.result, Err(SigningError::NotAdmitted)))
             .count();
+        assert_eq!(dropped, 4);
+        assert_eq!(not_admitted, 6);
+        assert_eq!(issuer.stamps_issued(), Some(4));
+    }
+
+    /// A sign task dropped before it runs must yield [`SigningError::Dropped`]
+    /// rather than leaving its completion pending forever.
+    #[test]
+    fn dropped_unrun_task_yields_dropped_without_hanging() {
+        let mut issuer = issuer24();
+        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
+        let input = addresses(10);
+
+        let mut sink = pipeline.sink(&mut issuer, DroppingSpawner);
+        let results = drive(&mut sink, &input, 4);
+        drop(sink);
+
+        assert_eq!(results.len(), 10);
+        let dropped = results
+            .iter()
+            .filter(|r| matches!(r.result, Err(SigningError::Dropped)))
+            .count();
+        let not_admitted = results
+            .iter()
+            .filter(|r| matches!(r.result, Err(SigningError::NotAdmitted)))
+            .count();
+        // Fail-fast trips after the first window of lost jobs.
         assert_eq!(dropped, 4);
         assert_eq!(not_admitted, 6);
         assert_eq!(issuer.stamps_issued(), Some(4));
