@@ -98,6 +98,7 @@ mod error;
 mod folder;
 mod fork;
 mod format;
+mod frontier;
 #[cfg(any(test, feature = "arbitrary"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "arbitrary")))]
 pub mod generators;
@@ -112,7 +113,6 @@ mod order;
 mod packing;
 mod reader;
 mod scan;
-mod sched;
 mod store;
 mod traverse;
 mod value;
