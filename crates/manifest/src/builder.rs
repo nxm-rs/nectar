@@ -719,8 +719,7 @@ where
 /// Each `(key, file)` pair splits into stored content chunks and binds to the
 /// file's root reference; the manifest is then assembled and published. The
 /// splits ride one bounded window, so many files' content chunks store
-/// concurrently rather than draining a file at a time. The iteration order does
-/// not affect the published root.
+/// concurrently. The iteration order does not affect the published root.
 ///
 /// ```
 /// use nectar_manifest::{build_files, Key};
@@ -744,8 +743,7 @@ where
 }
 
 /// Split every file into `builder`, overlapping the splits on one bounded
-/// window so a many-small-files site stores concurrently instead of a per-file
-/// drain.
+/// window.
 ///
 /// The window admits at most [`put_window`] splits at once, so at most that
 /// many files are resident; a split's root address is content-derived, so the
