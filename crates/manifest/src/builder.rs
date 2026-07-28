@@ -716,10 +716,11 @@ where
 
 /// Stream files through BMT into one published manifest.
 ///
-/// Each `(key, file)` pair streams through the bounded splitter into stored
-/// content chunks and binds to the file's root reference; the manifest is then
-/// assembled and published. The iteration order does not affect the published
-/// root.
+/// Each `(key, file)` pair splits into stored content chunks and binds to the
+/// file's root reference; the manifest is then assembled and published. The
+/// splits ride one bounded window, so many files' content chunks store
+/// concurrently rather than draining a file at a time. The iteration order does
+/// not affect the published root.
 ///
 /// ```
 /// use nectar_manifest::{build_files, Key};
@@ -738,9 +739,121 @@ where
     I: IntoIterator<Item = (Key, Bytes)>,
 {
     let mut builder = Builder::<V1>::new();
-    for (key, data) in files {
-        let reference = split_file(store, &data).await?;
-        builder.insert(key, Entry::from(reference), None);
-    }
+    ingest_files(store, files, &mut builder).await?;
     builder.build(store).await
+}
+
+/// Split every file into `builder`, overlapping the splits on one bounded
+/// window so a many-small-files site stores concurrently instead of a per-file
+/// drain.
+///
+/// The window admits at most [`put_window`] splits at once, so at most that
+/// many files are resident; a split's root address is content-derived, so the
+/// bound is order-free and the manifest is a pure function of the key set.
+async fn ingest_files<S, I>(
+    store: &S,
+    files: I,
+    builder: &mut Builder<V1>,
+) -> Result<(), BuildError>
+where
+    S: ChunkPut + MaybeSync,
+    I: IntoIterator<Item = (Key, Bytes)>,
+{
+    let mut splits: nectar_kernel::PutSink<'_, Result<(Key, ChunkRef), BuildError>> =
+        nectar_kernel::PutSink::new(put_window::<V1>());
+    let mut bind = |resolved: Result<(Key, ChunkRef), BuildError>| -> Result<(), BuildError> {
+        let (key, reference) = resolved?;
+        builder.insert(key, Entry::from(reference), None);
+        Ok(())
+    };
+    for (key, data) in files {
+        if let Some(resolved) = splits.admit().await {
+            bind(resolved)?;
+        }
+        if let Some(resolved) = splits.push(Box::pin(async move {
+            split_file(store, &data)
+                .await
+                .map(|reference| (key, reference))
+        })) {
+            bind(resolved)?;
+        }
+        splits.sweep(&mut bind).await?;
+    }
+    splits.settle(&mut bind).await
+}
+
+#[cfg(test)]
+mod tests {
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::task::{Context, Poll};
+
+    use std::vec;
+    use std::vec::Vec;
+
+    use bytes::Bytes;
+    use nectar_primitives::chunk::{Chunk, Verified};
+    use nectar_primitives::store::{ChunkPut, MemoryStore};
+    use nectar_testing::run;
+
+    use super::{build_files, put_window};
+    use crate::format::V1;
+    use crate::value::Key;
+
+    /// Parks for several polls, waking itself each time, so a put stays in
+    /// flight past one file's inline drain and overlaps the next file's split.
+    struct Delay(u32);
+
+    impl Future for Delay {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 == 0 {
+                return Poll::Ready(());
+            }
+            self.0 -= 1;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    /// A memory store recording the peak number of concurrent puts.
+    struct GatedStore {
+        inner: MemoryStore,
+        in_flight: AtomicUsize,
+        peak: AtomicUsize,
+    }
+
+    impl ChunkPut for GatedStore {
+        type Error = <MemoryStore as ChunkPut>::Error;
+
+        async fn put(&self, chunk: Chunk<Verified>) -> Result<(), Self::Error> {
+            let now = self.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+            self.peak.fetch_max(now, Ordering::Relaxed);
+            Delay(4).await;
+            let outcome = self.inner.put(chunk).await;
+            self.in_flight.fetch_sub(1, Ordering::Relaxed);
+            outcome
+        }
+    }
+
+    #[test]
+    fn many_small_file_splits_overlap_on_one_window() {
+        let store = GatedStore {
+            inner: MemoryStore::default(),
+            in_flight: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        };
+        // More single-chunk files than the window, so admission bounds the
+        // overlap rather than the file count.
+        let files: Vec<(Key, Bytes)> = (0u8..40)
+            .map(|byte| (Key::from(&[byte][..]), Bytes::from(vec![byte; 16])))
+            .collect();
+        run(build_files(&store, files)).unwrap();
+
+        let peak = store.peak.load(Ordering::Relaxed);
+        assert!(peak > 1, "file splits overlapped, peak {peak}");
+        assert!(peak <= usize::from(put_window::<V1>().get()));
+    }
 }
