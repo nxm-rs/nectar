@@ -14,14 +14,10 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::convert::Infallible;
-use core::future::poll_fn;
-use core::pin::Pin;
-use core::task::Poll;
 
 use bytes::Bytes;
-use futures_core::Stream;
 use nectar_file::{Plain, PutWindow, SplitError, collect_into};
-use nectar_kernel::{Admission, BoxFuture, FuturesUnordered, Window};
+use nectar_kernel::{BoxFuture, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkRef, ContentChunk, DEFAULT_BODY_SIZE, PrimitivesError,
@@ -113,8 +109,8 @@ impl BuildStats {
         self.nodes_embedded
     }
 
-    /// Most puts ever riding the window at once. Above one when siblings store
-    /// concurrently; one iff every put settled before the next was admitted.
+    /// Peak puts ever parked in the window at once: above one when siblings
+    /// overlap, zero when every put stored inline without taking a slot.
     #[must_use]
     pub const fn peak_in_flight(&self) -> usize {
         self.peak_in_flight
@@ -236,11 +232,12 @@ fn put_window<F: Format>() -> Window {
 /// A chunk's address is content-derived at seal, so a parent references a
 /// child the moment it seals while the child's put still rides the window.
 /// Puts are order-free, so the whole window admits; every put is settled
-/// before the root is returned.
+/// before the root is returned. The window itself is the shared kernel
+/// put-sink; this wrapper only seals chunks, maps faults to [`BuildError`],
+/// and records the peak occupancy.
 struct PutSink<'s, S: ChunkPut + MaybeSync> {
     store: &'s S,
-    admission: Admission,
-    in_flight: FuturesUnordered<BoxFuture<'s, Result<(), BuildError>>>,
+    sink: nectar_kernel::PutSink<'s, Result<(), BuildError>>,
 }
 
 impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
@@ -248,8 +245,7 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
     fn new(store: &'s S, window: Window) -> Self {
         Self {
             store,
-            admission: Admission::new(window),
-            in_flight: FuturesUnordered::new(),
+            sink: nectar_kernel::PutSink::new(window),
         }
     }
 
@@ -263,7 +259,7 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
         let chunk = node.to_chunk()?;
         let address = *chunk.address();
         let store = self.store;
-        self.admit(
+        self.dispatch(
             Box::pin(async move {
                 store
                     .put(chunk)
@@ -288,7 +284,7 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
         let chunk = Chunk::from_envelope(content.into()).map_err(BuildError::Seal)?;
         let address = *chunk.address();
         let store = self.store;
-        self.admit(
+        self.dispatch(
             Box::pin(async move { store.put(chunk).await.map_err(BuildError::backend) }),
             stats,
         )
@@ -297,53 +293,28 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
         Ok(address)
     }
 
-    /// Park on completions until the window has a free slot, push `put`, then
-    /// poll the set once so the fresh put starts without parking. Records the
-    /// window's high-water occupancy so a build reports its put concurrency.
-    async fn admit(
+    /// Admit `put`, dispatch it into the window, then sweep the puts ready now.
+    /// Records the window's high-water occupancy so a build reports its put
+    /// concurrency.
+    async fn dispatch(
         &mut self,
         put: BoxFuture<'s, Result<(), BuildError>>,
         stats: &mut BuildStats,
     ) -> Result<(), BuildError> {
-        while !self.admission.admits(self.in_flight.len(), true) {
-            self.settle_one().await?;
+        if let Some(completion) = self.sink.admit().await {
+            completion?;
         }
-        self.in_flight.push(put);
-        stats.peak_in_flight = stats.peak_in_flight.max(self.in_flight.len());
-        self.sweep().await
-    }
-
-    /// Await one completion; an empty window is a no-op.
-    async fn settle_one(&mut self) -> Result<(), BuildError> {
-        let in_flight = &mut self.in_flight;
-        poll_fn(|cx| Pin::new(&mut *in_flight).poll_next(cx))
-            .await
-            .unwrap_or(Ok(()))
+        if let Some(completion) = self.sink.push(put) {
+            completion?;
+        }
+        stats.peak_in_flight = stats.peak_in_flight.max(self.sink.len());
+        self.sink.sweep(|completion| completion).await
     }
 
     /// Await every outstanding put, so the returned root covers a fully stored
     /// tree.
     async fn settle(&mut self) -> Result<(), BuildError> {
-        while !self.in_flight.is_empty() {
-            self.settle_one().await?;
-        }
-        Ok(())
-    }
-
-    /// Fold settled puts without parking: every live put is polled once with
-    /// the task's waker so freshly admitted puts make progress.
-    async fn sweep(&mut self) -> Result<(), BuildError> {
-        let in_flight = &mut self.in_flight;
-        poll_fn(|cx| {
-            loop {
-                match Pin::new(&mut *in_flight).poll_next(cx) {
-                    Poll::Ready(Some(Err(error))) => return Poll::Ready(Err(error)),
-                    Poll::Ready(Some(Ok(()))) => {}
-                    Poll::Ready(None) | Poll::Pending => return Poll::Ready(Ok(())),
-                }
-            }
-        })
-        .await
+        self.sink.settle(|completion| completion).await
     }
 }
 
