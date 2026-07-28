@@ -1,4 +1,4 @@
-//! Bounded handoff from the thread pool back to the polling future.
+//! Bounded handoff from a spawned job back to the polling future.
 
 use core::fmt;
 use core::future::Future;
@@ -7,11 +7,27 @@ use core::task::{Context, Poll};
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use futures_channel::oneshot;
+use alloc::boxed::Box;
+
+use futures_channel::oneshot::{self, Canceled};
+use futures_util::FutureExt;
+use futures_util::future::Map;
+use nectar_marker::MaybeSend;
+
+use crate::{Spawn, TaskHandle};
+
+/// The oneshot resolves to the reply, or to `None` when the sender dropped
+/// unsent: a caught panic, an aborted task, or a dropped job. Stated here
+/// once; both poll paths route through it.
+type Recovered<T> = Map<oneshot::Receiver<T>, fn(Result<T, Canceled>) -> Option<T>>;
 
 /// Receiving half of one submitted job; polled by the caller's future.
+///
+/// A [`submit_on`] handoff owns the job's abort handle, so dropping it before
+/// the reply arrives aborts the task.
 pub struct Handoff<T> {
-    rx: oneshot::Receiver<T>,
+    inner: Recovered<T>,
+    _guard: Option<TaskHandle>,
 }
 
 impl<T> fmt::Debug for Handoff<T> {
@@ -21,10 +37,29 @@ impl<T> fmt::Debug for Handoff<T> {
 }
 
 impl<T> Handoff<T> {
-    /// Ready with the reply, or `None` when the job finished without one:
-    /// the job panicked, or the pool dropped it.
+    /// Wrap `rx` in the reply-or-`None` map, holding `guard` until drop.
+    fn over(rx: oneshot::Receiver<T>, guard: Option<TaskHandle>) -> Self {
+        let recover: fn(Result<T, Canceled>) -> Option<T> = Result::ok;
+        Self {
+            inner: rx.map(recover),
+            _guard: guard,
+        }
+    }
+
+    /// Ready with the reply, or `None` when the job finished without one.
+    ///
+    /// A thin delegate for poll-native callers; equivalent to polling the
+    /// handoff as a [`Future`].
     pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
-        Pin::new(&mut self.rx).poll(cx).map(Result::ok)
+        Pin::new(&mut self.inner).poll(cx)
+    }
+}
+
+impl<T> Future for Handoff<T> {
+    type Output = Option<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
+        self.get_mut().poll_recv(cx)
     }
 }
 
@@ -45,13 +80,33 @@ where
             drop(tx.send(value));
         }
     });
-    Handoff { rx }
+    Handoff::over(rx, None)
+}
+
+/// Spawn `job` on `spawner`, returning the handoff its output arrives on.
+///
+/// The `Spawn`-generic sibling of [`submit`]: the returned handoff holds the
+/// task's abort handle, so dropping it before the job resolves aborts the
+/// task, and that drop then reads as `None`.
+pub fn submit_on<S, F, T>(spawner: &S, job: F) -> Handoff<T>
+where
+    S: Spawn,
+    F: Future<Output = T> + MaybeSend + 'static,
+    T: MaybeSend + 'static,
+{
+    let (tx, rx) = oneshot::channel();
+    let handle = spawner.spawn(Box::pin(async move {
+        drop(tx.send(job.await));
+    }));
+    Handoff::over(rx, Some(handle))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicU32, Ordering};
     use core::time::Duration;
     use std::thread;
     use std::time::Instant;
@@ -81,7 +136,10 @@ mod tests {
         for _ in 0..1_000 {
             let (tx, rx) = oneshot::channel::<u32>();
             let sender = thread::spawn(move || drop(tx));
-            assert_eq!(recv_before(Handoff { rx }, Duration::from_secs(10)), None);
+            assert_eq!(
+                recv_before(Handoff::over(rx, None), Duration::from_secs(10)),
+                None
+            );
             sender.join().unwrap();
         }
     }
@@ -93,7 +151,7 @@ mod tests {
             let (tx, rx) = oneshot::channel::<u32>();
             let sender = thread::spawn(move || tx.send(7).unwrap());
             assert_eq!(
-                recv_before(Handoff { rx }, Duration::from_secs(10)),
+                recv_before(Handoff::over(rx, None), Duration::from_secs(10)),
                 Some(7)
             );
             sender.join().unwrap();
@@ -105,5 +163,64 @@ mod tests {
     fn a_panicking_job_reads_as_a_drop() {
         let handoff = submit(|| panic!("job panicked"));
         assert_eq!(recv_before::<u32>(handoff, Duration::from_secs(10)), None);
+    }
+
+    /// A handoff resolves through its `Future` impl as it does through
+    /// [`Handoff::poll_recv`].
+    #[test]
+    fn drives_as_a_future() {
+        let (tx, rx) = oneshot::channel::<u32>();
+        tx.send(9).unwrap();
+        let mut handoff = Handoff::over(rx, None);
+        let waker = crate::unpark_current();
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(Pin::new(&mut handoff).poll(&mut cx), Poll::Ready(Some(9)));
+    }
+
+    /// Spawner that never runs the task and records its abort.
+    struct RecordingSpawner {
+        aborts: Arc<AtomicU32>,
+    }
+
+    impl Spawn for RecordingSpawner {
+        fn spawn(&self, task: crate::BoxFuture<'static, ()>) -> TaskHandle {
+            drop(task);
+            let aborts = Arc::clone(&self.aborts);
+            TaskHandle::new(move || {
+                aborts.fetch_add(1, Ordering::Relaxed);
+            })
+        }
+    }
+
+    /// Spawner that polls the task once; a ready future completes inline.
+    struct InlineSpawner;
+
+    impl Spawn for InlineSpawner {
+        fn spawn(&self, mut task: crate::BoxFuture<'static, ()>) -> TaskHandle {
+            let waker = crate::unpark_current();
+            let mut cx = Context::from_waker(&waker);
+            let _ = task.as_mut().poll(&mut cx);
+            TaskHandle::new(|| {})
+        }
+    }
+
+    /// `submit_on` delivers the spawned job's output on its handoff.
+    #[test]
+    fn submit_on_delivers_the_job_output() {
+        let handoff = submit_on(&InlineSpawner, async { 4_u32 });
+        assert_eq!(recv_before(handoff, Duration::from_secs(10)), Some(4));
+    }
+
+    /// Dropping the handoff aborts the task through the captured handle.
+    #[test]
+    fn dropping_a_submit_on_handoff_aborts_the_task() {
+        let aborts = Arc::new(AtomicU32::new(0));
+        let spawner = RecordingSpawner {
+            aborts: Arc::clone(&aborts),
+        };
+        let handoff = submit_on(&spawner, async { 1_u32 });
+        assert_eq!(aborts.load(Ordering::Relaxed), 0);
+        drop(handoff);
+        assert_eq!(aborts.load(Ordering::Relaxed), 1);
     }
 }
