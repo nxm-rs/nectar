@@ -1,4 +1,4 @@
-//! Memory-bounded streaming builder: files -> BMT -> assemble -> publish.
+//! Memory-bounded streaming builder: key entries -> assemble -> publish.
 //!
 //! The trie is assembled bottom-up over an explicit stack of open nodes. Each
 //! finished node is embedded into its parent when the packing predicate allows,
@@ -13,15 +13,11 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::convert::Infallible;
 
 use bytes::Bytes;
-use nectar_file::{Plain, PutWindow, SplitError, collect_into};
 use nectar_kernel::{BoxFuture, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
-use nectar_primitives::{
-    Chunk, ChunkAddress, ChunkRef, ContentChunk, DEFAULT_BODY_SIZE, PrimitivesError,
-};
+use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentChunk, PrimitivesError};
 
 use crate::bounded::{Prefix, SegmentWeight};
 use crate::codec::{
@@ -46,15 +42,11 @@ pub enum BuildError {
     /// here as an encode error.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// Splitting a file into BMT chunks failed. The relay put is infallible,
-    /// so every failure here is an engine or seal error.
-    #[error("split file")]
-    Split(#[from] SplitError<Infallible>),
-    /// Sealing a file chunk failed.
-    #[error("seal file chunk")]
+    /// Sealing a content chunk failed.
+    #[error("seal content chunk")]
     Seal(#[source] PrimitivesError),
-    /// The backing store rejected a file chunk.
-    #[error("store file chunk")]
+    /// The backing store rejected a content chunk.
+    #[error("store content chunk")]
     Backend(#[source] BoxedError),
     /// A compacted edge exceeded the format's prefix bound.
     #[error(transparent)]
@@ -680,67 +672,4 @@ where
 /// forks' (or nested descriptors') counts.
 fn descriptor_count(counts: impl Iterator<Item = u64>) -> SubtreeCount {
     SubtreeCount::new(counts.fold(0, u64::saturating_add))
-}
-
-/// Split `data` through the bounded splitter into the borrowed `store`,
-/// returning the file's plain root reference. Memory stays bounded: the split
-/// forwards each sealed chunk before consuming more bytes.
-async fn split_file<S>(store: &S, data: &[u8]) -> Result<ChunkRef, BuildError>
-where
-    S: ChunkPut + MaybeSync,
-{
-    let root = collect_into::<_, Plain, DEFAULT_BODY_SIZE>(store, PutWindow::DEFAULT, data)
-        .await
-        .map_err(split_error::<S::Error>)?;
-    Ok(ChunkRef::new(root))
-}
-
-/// Map a file-split failure into a build failure: a store put becomes a
-/// backend error, every engine or seal fault keeps its typed shape.
-fn split_error<E>(error: SplitError<E>) -> BuildError
-where
-    E: core::error::Error + MaybeSend + MaybeSync + 'static,
-{
-    match error {
-        SplitError::Put { source, .. } => BuildError::backend(source),
-        SplitError::Seal(seal) => BuildError::Split(SplitError::Seal(seal)),
-        SplitError::SpanOverflow { span, add } => {
-            BuildError::Split(SplitError::SpanOverflow { span, add })
-        }
-        SplitError::Finished => BuildError::Split(SplitError::Finished),
-        SplitError::Poisoned => BuildError::Split(SplitError::Poisoned),
-        SplitError::PoolDropped => BuildError::Split(SplitError::PoolDropped),
-        SplitError::SpineDepleted => BuildError::Split(SplitError::SpineDepleted),
-    }
-}
-
-/// Stream files through BMT into one published manifest.
-///
-/// Each `(key, file)` pair streams through the bounded splitter into stored
-/// content chunks and binds to the file's root reference; the manifest is then
-/// assembled and published. The iteration order does not affect the published
-/// root.
-///
-/// ```
-/// use nectar_manifest::{build_files, Key};
-/// use nectar_primitives::MemoryStore;
-///
-/// # async fn demo() -> Result<(), nectar_manifest::BuildError> {
-/// let store = MemoryStore::default();
-/// let files = [(Key::from(&b"index.html"[..]), bytes::Bytes::from_static(b"<h1>hi</h1>"))];
-/// let built = build_files(&store, files).await?;
-/// let _root = built.root();
-/// # Ok(()) }
-/// ```
-pub async fn build_files<S, I>(store: &S, files: I) -> Result<Built, BuildError>
-where
-    S: ChunkPut + MaybeSync,
-    I: IntoIterator<Item = (Key, Bytes)>,
-{
-    let mut builder = Builder::<V1>::new();
-    for (key, data) in files {
-        let reference = split_file(store, &data).await?;
-        builder.insert(key, Entry::from(reference), None);
-    }
-    builder.build(store).await
 }
