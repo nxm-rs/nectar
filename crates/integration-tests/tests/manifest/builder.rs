@@ -14,7 +14,9 @@ use nectar_manifest::{
     Prefix, RootExtension, V1, build_files,
 };
 use nectar_primitives::store::ChunkPut;
-use nectar_primitives::{Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentGet, MemoryStore, Verified};
+use nectar_primitives::{
+    Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentGet, MemoryStore, Verified,
+};
 use nectar_testing::{Drive, GateStore, run, split_whole};
 
 const fn ref32(byte: u8) -> ChunkRef {
