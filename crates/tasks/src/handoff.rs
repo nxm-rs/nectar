@@ -17,8 +17,7 @@ use nectar_marker::MaybeSend;
 use crate::{Spawn, TaskHandle};
 
 /// The oneshot resolves to the reply, or to `None` when the sender dropped
-/// unsent: a caught panic, an aborted task, or a dropped job. Stated here
-/// once; both poll paths route through it.
+/// unsent: a caught panic, an aborted task, or a dropped job.
 type Recovered<T> = Map<oneshot::Receiver<T>, fn(Result<T, Canceled>) -> Option<T>>;
 
 /// Receiving half of one submitted job; polled by the caller's future.

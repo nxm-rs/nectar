@@ -63,8 +63,8 @@ pub enum BuildError {
     #[error(transparent)]
     EmptyPrefix(#[from] ForkPrefixEmpty),
     /// A single fork record outweighed a whole segment. Unreachable under the
-    /// frozen bounds (worst record weight 2952 <= CAP_FORK 4091); the guard
-    /// stays so a future parameter drift fails loud rather than silently.
+    /// frozen bounds (worst record weight 2952 <= CAP_FORK 4091); a parameter
+    /// drift trips it rather than corrupting silently.
     #[error(transparent)]
     Weight(#[from] WeightOverBudget),
     /// A stack invariant did not hold; a builder bug rather than bad input.
@@ -232,9 +232,8 @@ fn put_window<F: Format>() -> Window {
 /// A chunk's address is content-derived at seal, so a parent references a
 /// child the moment it seals while the child's put still rides the window.
 /// Puts are order-free, so the whole window admits; every put is settled
-/// before the root is returned. The window itself is the shared kernel
-/// put-sink; this wrapper only seals chunks, maps faults to [`BuildError`],
-/// and records the peak occupancy.
+/// before the root is returned. Wraps the shared kernel put-sink, sealing
+/// chunks and mapping faults to [`BuildError`].
 struct PutSink<'s, S: ChunkPut + MaybeSync> {
     store: &'s S,
     sink: nectar_kernel::PutSink<'s, Result<(), BuildError>>,
@@ -623,7 +622,7 @@ where
 /// `F::BUDGET` seals as one node, and a wider body partitions at content-defined
 /// boundaries into leaf and directory segments no larger than one chunk. The
 /// `OverBudget` guard on [`Node::encode`] therefore stays unreachable on this
-/// path, kept only as a fail-closed backstop for a future parameter drift.
+/// path.
 pub(crate) async fn emit_node<S, F>(
     store: &S,
     node: &Node<F>,

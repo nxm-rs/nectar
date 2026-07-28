@@ -16,11 +16,10 @@ use crate::window::Window;
 /// Bounded set of in-flight puts, order-free within `window` slots.
 ///
 /// Every put is admitted head-served, so the whole window is usable and
-/// completions surface in any order; the caller keeps its own error mapping
-/// and stats over `C`. Opening polls run on a noop waker, so a synchronously
-/// ready put settles inline and never occupies a slot; a parked put is driven
-/// only by [`poll_step`](Self::poll_step) and the wrappers over it under the
-/// caller's waker.
+/// completions surface in any order. Opening polls run on a noop waker, so a
+/// synchronously ready put settles inline and never occupies a slot; a parked
+/// put is driven only by [`poll_step`](Self::poll_step) and the wrappers over
+/// it under the caller's waker.
 pub struct PutSink<'a, C> {
     in_flight: FuturesUnordered<BoxFuture<'a, C>>,
     admission: Admission,
