@@ -14,19 +14,28 @@
 //! depth would. Hence `apply(root, delta)` and a from-scratch build of the
 //! merged keys agree bit for bit (invariant I6 under updates).
 //!
-//! Peak retained state is O(depth + changeset frontier): the descent holds one
-//! node per level on the current path, never a whole subtree.
+//! Node puts across the whole changeset ride one bounded window, and each level
+//! prefetches the referenced children its groups descend into on a second
+//! bounded window, so disjoint changed subtrees read and write concurrently.
+//! Peak retained state is O(depth + changeset frontier + window): the descent
+//! holds one node per level on the current path plus a level's prefetched
+//! children, never a whole subtree.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::convert::Infallible;
+use core::future::poll_fn;
 
 use bytes::Bytes;
+use nectar_kernel::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
 use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::{ChunkPut, MaybeSync};
 
 use crate::bounded::Prefix;
-use crate::builder::{BuildError, BuildStats, Item, build_table, emit_node, resolve};
+use crate::builder::{
+    BuildError, BuildStats, Item, PutSink, build_table_in, emit_node_in, put_window, resolve_in,
+};
 use crate::count::SubtreeCount;
 use crate::error::{ForkPrefixEmpty, PrefixTooLong};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
@@ -177,9 +186,13 @@ where
         })
         .collect();
 
+    // One put window over the whole changeset. Puts are order-free
+    // (content-derived addresses), so it admits freely and every put settles
+    // before the root returns.
+    let mut sink = PutSink::new(store, put_window::<F>());
     let mut stats = BuildStats::default();
     let forks = Box::pin(apply_forks(
-        store,
+        &mut sink,
         node.forks().clone(),
         0,
         &changes,
@@ -187,7 +200,9 @@ where
     ))
     .await?;
     let new_node = Node::new(root_ext, forks);
-    Ok(emit_node(store, &new_node, &mut stats).await?)
+    let root = emit_node_in(&mut sink, &new_node, &mut stats).await?;
+    sink.settle().await?;
+    Ok(root)
 }
 
 /// One staged update paired with its key, borrowed for the length of the apply.
@@ -213,7 +228,7 @@ impl<F: Format> Change<'_, F> {
 /// Every change shares the `consumed`-byte prefix that reaches this table, so a
 /// change group is the contiguous run sharing the byte at `consumed`.
 async fn apply_forks<'c, S, F>(
-    store: &S,
+    sink: &mut PutSink<'_, S>,
     mut table: ForkTable<F>,
     consumed: usize,
     changes: &[Change<'c, F>],
@@ -223,10 +238,49 @@ where
     S: NodeGet + ChunkPut + MaybeSync,
     F: Format,
 {
+    let groups = group_changes(consumed, changes);
+
+    // Fetch every referenced child a group descends into up front on one bounded
+    // window; the rewrite below consumes each in group order. A missed or failed
+    // prefetch falls back to an inline descent fetch, so the result is
+    // byte-identical.
+    let mut fetched = prefetch_children::<S, F>(
+        sink.store(),
+        groups
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, &(i, j, byte))| {
+                let group = changes.get(i..j)?;
+                descent_child(consumed, byte, table.get(byte)?, group)
+                    .map(|address| (slot, address))
+            }),
+        groups.len(),
+    )
+    .await;
+
+    for (slot, &(i, j, byte)) in groups.iter().enumerate() {
+        let group = changes.get(i..j).ok_or(ApplyError::Internal)?;
+        let existing = table.remove(byte);
+        let child = fetched.get_mut(slot).and_then(Option::take).transpose()?;
+        if let Some(record) = Box::pin(reconcile(
+            sink, consumed, byte, existing, group, child, stats,
+        ))
+        .await?
+        {
+            table.insert_record(byte, record);
+        }
+    }
+    Ok(table)
+}
+
+/// The change groups at depth `consumed`: each `(start, end, byte)` is the
+/// contiguous run of changes sharing the byte at `consumed`. Keys too short to
+/// index here belong to the parent boundary and are skipped.
+fn group_changes<F: Format>(consumed: usize, changes: &[Change<'_, F>]) -> Vec<(usize, usize, u8)> {
+    let mut groups = Vec::new();
     let mut i = 0usize;
     while let Some(first) = changes.get(i) {
         let Some(&byte) = first.key.get(consumed) else {
-            // A key with no byte here belongs to the parent boundary already.
             i = i.saturating_add(1);
             continue;
         };
@@ -234,26 +288,56 @@ where
         while changes.get(j).and_then(|c| c.key.get(consumed)) == Some(&byte) {
             j = j.saturating_add(1);
         }
-        let group = changes.get(i..j).ok_or(ApplyError::Internal)?;
-        let existing = table.remove(byte);
-        if let Some(record) =
-            Box::pin(reconcile(store, consumed, byte, existing, group, stats)).await?
-        {
-            table.insert_record(byte, record);
-        }
+        groups.push((i, j, byte));
         i = j;
     }
-    Ok(table)
+    groups
+}
+
+/// The referenced child address a group descends into, or `None` when its
+/// reconcile splits within the edge, stays on the boundary, or has no plain
+/// referenced child to fetch. Mirrors the head of [`reconcile`]/[`descend`],
+/// so a returned address is exactly the descent's inline fetch.
+fn descent_child<F: Format>(
+    consumed: usize,
+    byte: u8,
+    existing: &ForkRecord<F>,
+    group: &[Change<'_, F>],
+) -> Option<ChunkAddress> {
+    let Some(Child::Ref32(reference)) = existing.child() else {
+        return None;
+    };
+    let mut edge = Vec::with_capacity(existing.tail().len().saturating_add(1));
+    edge.push(byte);
+    edge.extend_from_slice(existing.tail().as_bytes());
+    let plen = consumed.saturating_add(edge.len());
+    for change in group {
+        if let Op::Put { .. } = change.op {
+            let suffix = change.key.get(consumed..).unwrap_or_default();
+            if common_prefix(suffix, &edge) < edge.len() {
+                // An insertion diverges within the edge: a split, not a descent.
+                return None;
+            }
+        }
+    }
+    // A change past the edge is what folds into the child; a bare terminal
+    // update or off-edge deletion never reads it.
+    let deeper = group.iter().any(|change| {
+        let suffix = change.key.get(consumed..).unwrap_or_default();
+        suffix.starts_with(&edge) && change.key.len() > plen
+    });
+    deeper.then(|| *reference.address())
 }
 
 /// Reconcile the fork indexed under `byte` with its change group, returning the
 /// rewritten fork or `None` when it collapses away.
 async fn reconcile<'c, S, F>(
-    store: &S,
+    sink: &mut PutSink<'_, S>,
     consumed: usize,
     byte: u8,
     existing: Option<ForkRecord<F>>,
     group: &[Change<'c, F>],
+    child: Option<Node<F>>,
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F>>, ApplyError>
 where
@@ -268,7 +352,7 @@ where
             if items.is_empty() {
                 return Ok(None);
             }
-            let mut fresh = build_table(store, &items, consumed, stats).await?;
+            let mut fresh = build_table_in(sink, &items, consumed, stats).await?;
             return Ok(fresh.remove(byte));
         }
     };
@@ -277,7 +361,6 @@ where
     let mut edge = Vec::with_capacity(existing.tail().len().saturating_add(1));
     edge.push(byte);
     edge.extend_from_slice(existing.tail().as_bytes());
-    let plen = consumed.saturating_add(edge.len());
 
     // The merged key set's compacted edge shortens to the least point any
     // insertion diverges from the existing edge; deletions off the edge target
@@ -291,10 +374,10 @@ where
     }
 
     if cut < edge.len() {
-        split(store, consumed, &edge, cut, existing, group, stats).await
+        split(sink, consumed, &edge, cut, existing, group, stats).await
     } else {
         Box::pin(descend(
-            store, consumed, &edge, plen, existing, group, stats,
+            sink, consumed, &edge, existing, group, child, stats,
         ))
         .await
     }
@@ -303,18 +386,20 @@ where
 /// The existing edge stays intact: update the terminal value and fold the
 /// deeper updates into the child.
 async fn descend<'c, S, F>(
-    store: &S,
+    sink: &mut PutSink<'_, S>,
     consumed: usize,
     edge: &[u8],
-    plen: usize,
     existing: ForkRecord<F>,
     group: &[Change<'c, F>],
+    child: Option<Node<F>>,
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F>>, ApplyError>
 where
     S: NodeGet + ChunkPut + MaybeSync,
     F: Format,
 {
+    // The absolute key offset past the edge: where a deeper change forks off.
+    let plen = consumed.saturating_add(edge.len());
     let mut new_entry = existing.entry().cloned();
     let mut new_meta = existing.metadata().cloned();
     let mut deeper: Vec<Change<'_, F>> = Vec::new();
@@ -345,7 +430,7 @@ where
         // build would have run on into the edge; nothing else here can.
         if new_entry.is_none()
             && let Some((merged, absorbed)) =
-                absorb(store, consumed, edge, existing.child()).await?
+                absorb(sink.store(), consumed, edge, existing.child()).await?
         {
             let child = Counted {
                 child: absorbed.child().cloned(),
@@ -365,7 +450,7 @@ where
             child: existing.child().cloned(),
             count: existing.child_count(),
         };
-        return finish(store, consumed, edge, new_entry, new_meta, child, stats).await;
+        return finish(sink, consumed, edge, new_entry, new_meta, child, stats).await;
     }
 
     let child_table = match existing.child() {
@@ -375,7 +460,7 @@ where
                 // A deletion of an absent deeper key: the fork is unchanged bar
                 // its terminal value.
                 return finish(
-                    store,
+                    sink,
                     consumed,
                     edge,
                     new_entry,
@@ -385,15 +470,20 @@ where
                 )
                 .await;
             }
-            build_table(store, &items, plen, stats).await?
+            build_table_in(sink, &items, plen, stats).await?
         }
         Some(Child::Embedded(inner)) => {
-            Box::pin(apply_forks(store, inner.clone(), plen, &deeper, stats)).await?
+            Box::pin(apply_forks(sink, inner.clone(), plen, &deeper, stats)).await?
         }
         Some(Child::Ref32(reference)) => {
-            let node = store.get_node::<F>(reference.address()).await?;
+            // The prefetch supplies this exact node when it landed; otherwise
+            // the read runs here.
+            let node = match child {
+                Some(node) => node,
+                None => sink.store().get_node::<F>(reference.address()).await?,
+            };
             Box::pin(apply_forks(
-                store,
+                sink,
                 node.forks().clone(),
                 plen,
                 &deeper,
@@ -404,7 +494,7 @@ where
         Some(Child::Ref64(_)) => return Err(ApplyError::EncryptedChild),
     };
     assemble(
-        store,
+        sink,
         consumed,
         edge,
         new_entry,
@@ -441,7 +531,7 @@ impl<F: Format> Counted<F> {
 /// The single-fork merge runs before the child is resolved, so a lone branch
 /// re-inlines whatever its size would spill to.
 async fn assemble<S, F>(
-    store: &S,
+    sink: &mut PutSink<'_, S>,
     at: usize,
     edge: &[u8],
     entry: Option<Entry<F>>,
@@ -454,7 +544,7 @@ where
     F: Format,
 {
     if table.is_empty() {
-        return finish(store, at, edge, entry, meta, Counted::none(), stats).await;
+        return finish(sink, at, edge, entry, meta, Counted::none(), stats).await;
     }
     // Edge-compaction: a child-only fork over a single-fork child merges into
     // one edge, exactly as a from-scratch build would compact the shared run.
@@ -462,20 +552,20 @@ where
         && table.len() == 1
         && let Some((first, record)) = table.iter().next()
     {
-        return compact(store, at, edge, first, record, stats).await;
+        return compact(sink, at, edge, first, record, stats).await;
     }
-    let resolved = resolve(store, table, stats).await?;
+    let resolved = resolve_in(sink, table, stats).await?;
     let child = Counted {
         count: resolved.child_count(),
         child: Some(resolved.into_child()),
     };
-    finish(store, at, edge, entry, meta, child, stats).await
+    finish(sink, at, edge, entry, meta, child, stats).await
 }
 
 /// An insertion diverges within the edge: branch at the divergence, re-rooting
 /// the existing subtree verbatim under the edge remainder.
 async fn split<'c, S, F>(
-    store: &S,
+    sink: &mut PutSink<'_, S>,
     consumed: usize,
     edge: &[u8],
     cut: usize,
@@ -518,9 +608,9 @@ where
     if let Some(record) = reroot(remainder, existing)? {
         branch.insert_record(first, record);
     }
-    let table = Box::pin(apply_forks(store, branch, boundary, &remaining, stats)).await?;
+    let table = Box::pin(apply_forks(sink, branch, boundary, &remaining, stats)).await?;
     assemble(
-        store,
+        sink,
         consumed,
         new_edge,
         split_entry,
@@ -553,7 +643,7 @@ fn reroot<F: Format>(
 /// so a deletion that strips a fork's terminal value re-inlines its lone
 /// remaining branch exactly as a from-scratch build would.
 async fn finish<S, F>(
-    store: &S,
+    sink: &mut PutSink<'_, S>,
     at: usize,
     edge: &[u8],
     entry: Option<Entry<F>>,
@@ -570,7 +660,7 @@ where
         && table.len() == 1
         && let Some((first, record)) = table.iter().next()
     {
-        return compact(store, at, edge, first, record, stats).await;
+        return compact(sink, at, edge, first, record, stats).await;
     }
     settle(edge, entry, meta, child)
 }
@@ -599,7 +689,7 @@ fn settle<F: Format>(
 /// absolute offsets a build places, so the merged run re-segments into a
 /// canonical chain and the record's own boundary stays where it was.
 async fn compact<S, F>(
-    store: &S,
+    sink: &mut PutSink<'_, S>,
     at: usize,
     edge: &[u8],
     first: u8,
@@ -614,7 +704,7 @@ where
     merged.push(first);
     merged.extend_from_slice(record.tail().as_bytes());
     chain(
-        store,
+        sink,
         at,
         &merged,
         record.payload().clone(),
@@ -684,7 +774,7 @@ where
 /// innermost fork carries the payload and its metadata; every wrapping fork
 /// carries only the continuation.
 async fn chain<S, F>(
-    store: &S,
+    sink: &mut PutSink<'_, S>,
     at: usize,
     prefix: &[u8],
     payload: ForkPayload<F>,
@@ -704,7 +794,7 @@ where
     let rest = prefix.get(allowed..).ok_or(ApplyError::Internal)?;
     let &first = rest.first().ok_or(ApplyError::Internal)?;
     let inner = Box::pin(chain(
-        store,
+        sink,
         at.saturating_add(allowed),
         rest,
         payload,
@@ -718,7 +808,7 @@ where
     table.insert_record(first, inner);
     // The wrapping child-only fork routes the same subtree; its reference count
     // is recomputed from the resolved table, not the terminal payload's.
-    let resolved = resolve(store, table, stats).await?;
+    let resolved = resolve_in(sink, table, stats).await?;
     let count = resolved.child_count();
     let child = resolved.into_child();
     make_fork(head, ForkPayload::Child(child), None, count)
@@ -772,14 +862,103 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
     len
 }
 
+/// The child-prefetch window: the format's read-ahead saturated into a nonzero
+/// window, matching the scan and segment-join read windows.
+fn child_window<F: Format>() -> Window {
+    let slots = u16::try_from(F::READ_AHEAD).unwrap_or(u16::MAX);
+    Window::new(slots).unwrap_or(Window::DEFAULT)
+}
+
+/// One landed child prefetch: its request slot and the fetched node.
+type Prefetched<F> = (usize, Result<Node<F>, StoreError>);
+
+/// Drives concurrent child fetches on one bounded window, landing each node in
+/// its request slot. Reads are order-free, so the whole window admits.
+struct PrefetchPolicy<'a, S, F: Format> {
+    store: &'a S,
+    /// Outstanding `(slot, address)` requests, drained as the window admits.
+    queue: Vec<(usize, ChunkAddress)>,
+    admission: Admission,
+    /// Landed nodes indexed by request slot.
+    landed: Vec<Option<Result<Node<F>, StoreError>>>,
+}
+
+impl<'a, S, F> WalkPolicy<'a> for PrefetchPolicy<'a, S, F>
+where
+    S: NodeGet + MaybeSync,
+    F: Format,
+{
+    type Fetched = Prefetched<F>;
+    type Frame = ();
+    type Error = Infallible;
+    type Drain = ();
+
+    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, Prefetched<F>>>) {
+        while self.admission.admits(in_flight.len(), true) {
+            let Some((slot, address)) = self.queue.pop() else {
+                return;
+            };
+            let store = self.store;
+            in_flight.push(Box::pin(async move {
+                (slot, store.get_node::<F>(&address).await)
+            }));
+        }
+    }
+
+    fn take_ready(&mut self, (): ()) -> Option<Result<(), Infallible>> {
+        // Nothing streams: completions land in their slots and are read back
+        // once the window drains.
+        None
+    }
+
+    fn absorb(&mut self, (slot, outcome): Prefetched<F>) -> Result<(), Infallible> {
+        if let Some(cell) = self.landed.get_mut(slot) {
+            *cell = Some(outcome);
+        }
+        Ok(())
+    }
+
+    fn drained(&self) -> Result<(), Infallible> {
+        Ok(())
+    }
+}
+
+/// Prefetch each requested child node concurrently, returning the landed nodes
+/// indexed by slot; `slots` sizes the result and every slot without a request
+/// stays `None`.
+async fn prefetch_children<S, F>(
+    store: &S,
+    requests: impl Iterator<Item = (usize, ChunkAddress)>,
+    slots: usize,
+) -> Vec<Option<Result<Node<F>, StoreError>>>
+where
+    S: NodeGet + MaybeSync,
+    F: Format,
+{
+    let queue: Vec<(usize, ChunkAddress)> = requests.collect();
+    if queue.is_empty() {
+        return (0..slots).map(|_| None).collect();
+    }
+    let mut driver = Driver::new(PrefetchPolicy {
+        store,
+        queue,
+        admission: Admission::new(child_window::<F>()),
+        landed: (0..slots).map(|_| None).collect(),
+    });
+    while poll_fn(|cx| driver.poll(cx, ())).await.is_some() {}
+    driver.into_policy().landed
+}
+
 #[cfg(test)]
 mod tests {
     use core::future::Future;
     use core::pin::Pin;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::task::{Context, Poll};
     use std::vec;
 
-    use nectar_primitives::store::{ContentGet, MemoryStore};
-    use nectar_primitives::{ChunkAddress, ChunkRef};
+    use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, MemoryStore};
+    use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
     use nectar_testing::run;
 
     use crate::builder::Builder;
@@ -1137,6 +1316,100 @@ mod tests {
         let out = run(apply(&store, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&borrowed));
         assert_eq!(out, root);
+    }
+
+    /// Completes on its second poll, so counted fetches genuinely overlap
+    /// under the single-threaded test executor.
+    struct YieldOnce(bool);
+
+    impl Future for YieldOnce {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                Poll::Ready(())
+            } else {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+
+    /// A store recording the peak number of concurrent reads; puts pass
+    /// straight through.
+    struct GatedStore {
+        inner: ContentGet<MemoryStore>,
+        inflight: AtomicUsize,
+        peak: AtomicUsize,
+    }
+
+    impl ChunkGet<ContentOnlyChunkSet> for GatedStore {
+        type Trust = Verified;
+        type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
+
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
+            let now = self.inflight.fetch_add(1, Ordering::Relaxed) + 1;
+            self.peak.fetch_max(now, Ordering::Relaxed);
+            YieldOnce(false).await;
+            let chunk = ChunkGet::get(&self.inner, address).await;
+            self.inflight.fetch_sub(1, Ordering::Relaxed);
+            chunk
+        }
+    }
+
+    impl ChunkPut for GatedStore {
+        type Error = <ContentGet<MemoryStore> as ChunkPut>::Error;
+
+        async fn put(&self, chunk: Chunk<Verified>) -> Result<(), Self::Error> {
+            self.inner.put(chunk).await
+        }
+    }
+
+    #[test]
+    fn disjoint_subtree_reads_overlap_under_the_window() {
+        let inner = ContentGet::new(MemoryStore::default());
+        // Four top-level subtrees, each wide enough to spill to a reference; the
+        // root keeps four forks, so it is one chunk, not a segment directory.
+        let mut builder = Builder::<V1>::new();
+        for p in 0u8..4 {
+            for x in 0u8..44 {
+                builder.insert(Key::from(&[p, x][..]), entry(x), None);
+            }
+        }
+        let root = *run(builder.build(&inner)).unwrap().root();
+        let store = GatedStore {
+            inner,
+            inflight: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        };
+
+        // A deeper insert under each subtree forces a descent into all four
+        // referenced children at the root at once.
+        let mut cs = Changeset::<V1>::new();
+        for p in 0u8..4 {
+            cs.put(Key::from(&[p, 0, 9][..]), entry(99), None);
+        }
+        let applied = run(apply(&store, &root, &cs)).unwrap();
+
+        let mut scratch = Builder::<V1>::new();
+        for p in 0u8..4 {
+            for x in 0u8..44 {
+                scratch.insert(Key::from(&[p, x][..]), entry(x), None);
+            }
+            scratch.insert(Key::from(&[p, 0, 9][..]), entry(99), None);
+        }
+        let expected = *run(scratch.build(&ContentGet::new(MemoryStore::default())))
+            .unwrap()
+            .root();
+        assert_eq!(applied, expected, "apply must match a from-scratch build");
+
+        let peak = store.peak.load(Ordering::Relaxed);
+        assert!(peak > 1, "disjoint subtree reads overlapped, peak {peak}");
+        assert!(peak <= usize::from(child_window::<V1>().get()));
     }
 
     #[test]
