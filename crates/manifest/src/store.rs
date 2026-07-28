@@ -14,10 +14,8 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::{Future, poll_fn};
 use core::mem;
-use core::pin::Pin;
 
-use futures_core::Stream;
-use nectar_kernel::{Admission, BoxFuture, FuturesUnordered, Window};
+use nectar_kernel::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, EncryptionKey, Verified,
@@ -287,6 +285,155 @@ fn launch_segments<'a, S>(
     }
 }
 
+/// The segment join as a [`WalkPolicy`]: a directory-order frontier of slots
+/// over the kernel driver's in-flight set.
+///
+/// `admit` grows the frontier by splicing a decoded inner directory, then
+/// launches queued fetches from the head; `absorb` lands a completion in its
+/// slot; `take_ready` drains the head slot strictly in directory order,
+/// folding leaf records and parking an inner directory for the next admit;
+/// `drained` reports a lost completion. The in-order fold is the reassembly's
+/// byte-exact semantics, not head-of-line blocking: only the fetches overlap.
+struct SegmentJoinPolicy<'a, S, F: Format> {
+    store: &'a S,
+    /// Descriptor slots in directory order; grows as inner directories splice.
+    slots: Vec<SegmentSlot>,
+    admission: Admission,
+    /// The slot to drain next; `None` once the join is complete.
+    head: Option<usize>,
+    /// Completions landed but not yet drained.
+    buffered: usize,
+    /// Whether every descriptor must carry a key.
+    encrypted: bool,
+    /// An inner directory decoded at the head, awaiting its admit-side splice:
+    /// its descriptors, child depth, and the directory slot's successor.
+    pending: Option<(SegmentDir, usize, Option<usize>)>,
+    /// The reassembled forks, folded in directory order.
+    table: ForkTable<F>,
+    /// Each drained segment chunk address, in directory order.
+    trace: Vec<ChunkAddress>,
+}
+
+impl<'a, S, F> SegmentJoinPolicy<'a, S, F>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+{
+    /// A join over `dir`'s descriptors, spliced as the initial frontier.
+    fn new(store: &'a S, dir: &SegmentDir, encrypted: bool) -> Self {
+        let mut slots = Vec::with_capacity(dir.descriptors.len());
+        let head = splice_directory(&mut slots, dir, 0, None);
+        Self {
+            store,
+            slots,
+            admission: Admission::new(segment_window::<F>()),
+            head,
+            buffered: 0,
+            encrypted,
+            pending: None,
+            table: ForkTable::new(),
+            trace: Vec::with_capacity(dir.descriptors.len()),
+        }
+    }
+
+    /// The folded forks and the directory-order segment trace.
+    fn into_parts(self) -> (ForkTable<F>, Vec<ChunkAddress>) {
+        (self.table, self.trace)
+    }
+}
+
+impl<'a, S, F> WalkPolicy<'a> for SegmentJoinPolicy<'a, S, F>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    F: Format,
+{
+    type Fetched = SegmentFetch;
+    type Frame = ();
+    type Error = StoreError;
+    type Drain = ();
+
+    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, SegmentFetch>>) {
+        if let Some((inner, depth, next)) = self.pending.take() {
+            self.head = splice_directory(&mut self.slots, &inner, depth, next);
+        }
+        if let Some(head) = self.head {
+            launch_segments(
+                self.store,
+                self.admission,
+                &mut self.slots,
+                head,
+                in_flight,
+                self.buffered,
+            );
+        }
+    }
+
+    fn take_ready(&mut self, (): ()) -> Option<Result<(), StoreError>> {
+        let head = self.head?;
+        let slot = self.slots.get_mut(head)?;
+        let outcome = slot.take_landed()?;
+        let address = slot.address;
+        let key = slot.key.clone();
+        let depth = slot.depth;
+        let next = slot.next;
+        self.buffered = self.buffered.saturating_sub(1);
+        // Descriptor width must match the arrival on both sides.
+        if key.is_some() != self.encrypted {
+            return Some(Err(segment_context()));
+        }
+        self.trace.push(address);
+        let chunk = match outcome {
+            Ok(chunk) => chunk,
+            Err(error) => return Some(Err(error)),
+        };
+        match decode_fetched::<F>(&chunk, key.as_ref()) {
+            Ok(DecodedChunk::Leaf(sub)) => {
+                for (first, record) in sub.into_records() {
+                    if self.table.insert_record(first, record).is_some() {
+                        return Some(Err(segment_context()));
+                    }
+                }
+                self.head = next;
+                Some(Ok(()))
+            }
+            Ok(DecodedChunk::Directory(inner)) => {
+                let child_depth = depth.saturating_add(1);
+                if child_depth >= MAX_DIR_DEPTH {
+                    return Some(Err(segment_context()));
+                }
+                // The splice is admit-side frontier growth; the drained head
+                // stays put until admit repositions it onto the spliced run.
+                self.pending = Some((inner, child_depth, next));
+                Some(Ok(()))
+            }
+            // A segment chunk is a leaf or an inner directory, never a node.
+            Ok(DecodedChunk::Node(_) | DecodedChunk::Segmented(_, _)) => {
+                Some(Err(segment_context()))
+            }
+            Err(error) => Some(Err(error.into())),
+        }
+    }
+
+    fn absorb(&mut self, fetched: SegmentFetch) -> Result<(), StoreError> {
+        let (index, outcome) = fetched;
+        if let Some(slot) = self.slots.get_mut(index) {
+            slot.state = SlotState::Landed(Box::new(outcome));
+            self.buffered = self.buffered.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    fn drained(&self) -> Result<(), StoreError> {
+        // The head launches before every wait, so an empty set with work still
+        // owed is a lost completion, not a legal drain.
+        if self.head.is_some() || self.pending.is_some() {
+            Err(segment_context())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Gather every fork of a spilled node: fetch the segments its directory
 /// routes to under the format's read-ahead window, folding completions
 /// strictly in directory order and recording each segment chunk address into
@@ -305,74 +452,12 @@ where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
 {
-    let mut slots = Vec::with_capacity(dir.descriptors.len());
-    let mut head = splice_directory(&mut slots, dir, 0, None);
-    let admission = Admission::new(segment_window::<F>());
-    let mut in_flight = FuturesUnordered::new();
-    let mut buffered: usize = 0;
-    let mut table = ForkTable::new();
-    while let Some(current) = head {
-        launch_segments(
-            store,
-            admission,
-            &mut slots,
-            current,
-            &mut in_flight,
-            buffered,
-        );
-        let landed = slots.get_mut(current).and_then(|slot| {
-            slot.take_landed().map(|outcome| {
-                (
-                    outcome,
-                    slot.address,
-                    slot.key.clone(),
-                    slot.depth,
-                    slot.next,
-                )
-            })
-        });
-        let Some((outcome, address, key, depth, next)) = landed else {
-            // The head is launched before every wait, so an empty set here is
-            // a lost completion, not a legal drain.
-            let Some((index, outcome)) = poll_fn(|cx| Pin::new(&mut in_flight).poll_next(cx)).await
-            else {
-                return Err(segment_context());
-            };
-            if let Some(slot) = slots.get_mut(index) {
-                slot.state = SlotState::Landed(Box::new(outcome));
-                buffered = buffered.saturating_add(1);
-            }
-            continue;
-        };
-        buffered = buffered.saturating_sub(1);
-        // Descriptor width must match the arrival on both sides.
-        if key.is_some() != encrypted {
-            return Err(segment_context());
-        }
-        trace.push(address);
-        let chunk = outcome?;
-        match decode_fetched::<F>(&chunk, key.as_ref())? {
-            DecodedChunk::Leaf(sub) => {
-                for (first, record) in sub.into_records() {
-                    if table.insert_record(first, record).is_some() {
-                        return Err(segment_context());
-                    }
-                }
-                head = next;
-            }
-            DecodedChunk::Directory(inner) => {
-                let child_depth = depth.saturating_add(1);
-                if child_depth >= MAX_DIR_DEPTH {
-                    return Err(segment_context());
-                }
-                head = splice_directory(&mut slots, &inner, child_depth, next);
-            }
-            // A segment chunk is a leaf or an inner directory, never a node.
-            DecodedChunk::Node(_) | DecodedChunk::Segmented(_, _) => {
-                return Err(segment_context());
-            }
-        }
+    let mut driver = Driver::new(SegmentJoinPolicy::<S, F>::new(store, dir, encrypted));
+    while let Some(turn) = poll_fn(|cx| driver.poll(cx, ())).await {
+        turn?;
     }
+    let (table, segments) = driver.into_policy().into_parts();
+    trace.extend(segments);
     Ok(table)
 }
 
