@@ -425,8 +425,8 @@ where
         if !self.leaf.is_empty() || self.stats.bytes == 0 {
             self.begin_leaf();
             let mut payload = mem::take(&mut self.leaf);
-            // The tail rarely fills the reserved body; give the slack back
-            // before the payload is pinned inside the sealed chunk.
+            // Give the reserved slack back before the payload is pinned in
+            // the sealed chunk.
             payload.shrink_to_fit();
             self.spill_leaf(payload)?;
         }

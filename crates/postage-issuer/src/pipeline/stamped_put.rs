@@ -62,11 +62,9 @@ pub enum StampedPutError<E> {
 
 /// One address's stamping progress, shared across clones.
 ///
-/// Sanctioned hand-rolled registry, kept over `futures::Shared`: it folds
-/// in-flight duplicates onto one allocation, one sign and one delivery, and
-/// redelivers the retained stamp to the next put when a delivery fails or is
-/// cancelled, which `Shared`, cloning one output to every waiter, cannot
-/// express.
+/// Hand-rolled over `futures::Shared`: folds duplicates onto one allocation,
+/// sign and delivery, and redelivers the retained stamp on failure or
+/// cancellation, which `Shared` can't express.
 enum Issued {
     /// Allocated; signing in flight. Wakers re-poll when it resolves.
     Pending(Vec<Waker>),
@@ -243,16 +241,14 @@ enum Step {
 /// # Contracts
 ///
 /// - Clone-shared state: every clone drives one issuer watermark and one
-///   issued map. A value-cloned issuer would allocate duplicate indices,
-///   so the issuer is held behind a shared handle and never cloned.
+///   issued map. The issuer is held behind a shared handle and never cloned.
 /// - Per-address idempotence: the issued map is consulted before
 ///   allocation. A duplicate put reuses the signed stamp, or returns
 ///   without a second sink put once the first succeeded; in-flight
 ///   duplicates share one allocation and one sink delivery, a failed or
-///   cancelled delivery handing the signed stamp to the next put. A
-///   bucket-capacity-exceeding run of identical chunks (a large zeroed
-///   region) would otherwise refuse with `BucketFull`. Cost is ~145 B per
-///   unique address; see [`IssuedBound`] for the bound and off switches.
+///   cancelled delivery handing the signed stamp to the next put. Cost is
+///   ~145 B per unique address; see [`IssuedBound`] for the bound and off
+///   switches.
 /// - The decorator stamps per put, not per reachable chunk: a wrapped
 ///   re-commit stamps only newly-put chunks.
 /// - Transport retries compose below [`PutStamped`], reusing the already
