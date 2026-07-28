@@ -376,7 +376,10 @@ where
     if cut < edge.len() {
         split(sink, consumed, &edge, cut, existing, group, stats).await
     } else {
-        Box::pin(descend(sink, consumed, &edge, existing, group, child, stats)).await
+        Box::pin(descend(
+            sink, consumed, &edge, existing, group, child, stats,
+        ))
+        .await
     }
 }
 
