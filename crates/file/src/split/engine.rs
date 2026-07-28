@@ -6,12 +6,11 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::future::poll_fn;
 use core::mem;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
+use core::num::NonZeroU16;
+use core::task::{Context, Poll};
 
 use bytes::Bytes;
-use futures_util::stream::Stream;
-use nectar_kernel::{BoxFuture, FuturesUnordered};
+use nectar_kernel::{BoxFuture, PutSink, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::bmt::SPAN_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
@@ -111,7 +110,6 @@ where
     mode: M,
     /// Data-carrying reference slots per intermediate, from the mode.
     slots: u64,
-    window: usize,
     /// Tail leaf payload under build: the span placeholder, then content
     /// shorter than one body; empty between leaves.
     leaf: Vec<u8>,
@@ -119,7 +117,8 @@ where
     spine: Vec<Level<M>>,
     /// Sealed chunks awaiting a put slot; bounded by the spine height.
     pending: VecDeque<Chunk<Verified, AnyChunkSet<B>>>,
-    in_flight: FuturesUnordered<BoxPut<S::Error>>,
+    /// Bounded put window over sealed chunks; `pending` feeds it as slots free.
+    puts: PutSink<'static, PutDone<S::Error>>,
     /// Pool fan-out for leaf seals; `None` keeps sealing inline.
     #[cfg(feature = "rayon")]
     hash: Option<HashFan<M, B>>,
@@ -164,11 +163,10 @@ where
             store,
             mode,
             slots,
-            window: usize::from(window.get()),
             leaf: Vec::new(),
             spine: Vec::new(),
             pending: VecDeque::new(),
-            in_flight: FuturesUnordered::new(),
+            puts: PutSink::new(Window::from(NonZeroU16::from(window))),
             #[cfg(feature = "rayon")]
             hash: None,
             phase: Phase::Writing,
@@ -309,7 +307,7 @@ where
                             return Poll::Pending;
                         }
                     }
-                    if !self.pending.is_empty() || self.in_flight.len() >= self.window {
+                    if !self.pending.is_empty() || !self.puts.admits() {
                         return Poll::Pending;
                     }
                     let step = if let Phase::Writing = self.phase {
@@ -325,7 +323,7 @@ where
                     if let Err(error) = self.step_puts(cx) {
                         return Poll::Ready(Err(self.poison(error)));
                     }
-                    if self.pending.is_empty() && self.in_flight.is_empty() {
+                    if self.pending.is_empty() && self.puts.is_empty() {
                         self.phase = Phase::Finished;
                         continue;
                     }
@@ -526,7 +524,7 @@ where
         if let Some(fan) = &self.hash {
             return fan.seals.len() >= fan.window;
         }
-        !self.pending.is_empty() || self.in_flight.len() >= self.window
+        !self.pending.is_empty() || !self.puts.admits()
     }
 
     /// Admit pool-sealed leaves in leaf order while put capacity allows.
@@ -542,7 +540,7 @@ where
     fn drain_seals(&mut self, cx: &mut Context<'_>) -> Result<(), SplitError<S::Error>> {
         loop {
             self.step_puts(cx)?;
-            if !self.pending.is_empty() || self.in_flight.len() >= self.window {
+            if !self.pending.is_empty() || !self.puts.admits() {
                 return Ok(());
             }
             let Some(fan) = self.hash.as_mut() else {
@@ -673,7 +671,7 @@ where
     /// Move pending chunks into the put window while slots are free; a put
     /// that fails on its opening poll is terminal.
     fn admit(&mut self) -> Result<(), SplitError<S::Error>> {
-        while self.in_flight.len() < self.window {
+        while self.puts.admits() {
             let Some(chunk) = self.pending.pop_front() else {
                 return Ok(());
             };
@@ -693,19 +691,15 @@ where
         chunk: Chunk<Verified, AnyChunkSet<B>>,
     ) -> Result<(), SplitError<S::Error>> {
         let store = self.store.clone();
-        let mut put: BoxPut<S::Error> = Box::pin(async move {
+        let put: BoxPut<S::Error> = Box::pin(async move {
             let address = *chunk.address();
             (address, store.put(chunk).await)
         });
         self.stats.puts = self.stats.puts.saturating_add(1);
-        match put.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-            Poll::Ready((address, result)) => {
-                result.map_err(|source| SplitError::Put { address, source })
-            }
-            Poll::Pending => {
-                self.in_flight.push(put);
-                self.stats.peak_put_in_flight =
-                    self.stats.peak_put_in_flight.max(self.in_flight.len());
+        match self.puts.push(put) {
+            Some((address, result)) => result.map_err(|source| SplitError::Put { address, source }),
+            None => {
+                self.stats.peak_put_in_flight = self.stats.peak_put_in_flight.max(self.puts.len());
                 Ok(())
             }
         }
@@ -716,10 +710,10 @@ where
     fn step_puts(&mut self, cx: &mut Context<'_>) -> Result<(), SplitError<S::Error>> {
         loop {
             self.admit()?;
-            if self.in_flight.is_empty() {
+            if self.puts.is_empty() {
                 return Ok(());
             }
-            match Pin::new(&mut self.in_flight).poll_next(cx) {
+            match self.puts.poll_step(cx) {
                 Poll::Ready(Some((address, result))) => {
                     result.map_err(|source| SplitError::Put { address, source })?;
                 }
@@ -737,12 +731,12 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Split")
             .field("phase", &self.phase)
-            .field("window", &self.window)
+            .field("window", &self.puts.window().get())
             .field("slots", &self.slots)
             .field("leaf_len", &self.leaf.len().saturating_sub(SPAN_SIZE))
             .field("spine_levels", &self.spine.len())
             .field("pending", &self.pending.len())
-            .field("in_flight", &self.in_flight.len())
+            .field("in_flight", &self.puts.len())
             .finish_non_exhaustive()
     }
 }
