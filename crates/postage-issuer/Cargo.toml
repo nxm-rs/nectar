@@ -32,6 +32,7 @@ alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 nectar-tasks = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
@@ -56,12 +57,13 @@ default = [ "std" ]
 # this gate.
 std = [
 	"dep:alloy-signer",
-	"dep:futures-channel",
 	"dep:futures-core",
+	"dep:futures-util",
 	"dep:nectar-tasks",
 	"nectar-clock/std",
 	"nectar-postage/std",
 	"nectar-primitives/std",
+	"nectar-tasks/rayon",
 	"nectar-tasks/std",
 ]
 
@@ -71,6 +73,7 @@ local-signer = [ "dep:alloy-signer-local", "std" ]
 # The pipeline's parallel signing engine using rayon. Rayon on wasm32 or
 # under `unsync` is a compile error, never a silent fallback.
 parallel = [
+	"dep:futures-channel",
 	"dep:rayon",
 	"nectar-postage/parallel",
 	"nectar-primitives/parallel",
