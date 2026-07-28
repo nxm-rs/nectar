@@ -10,6 +10,8 @@ use core::num::NonZeroU16;
 use core::task::{Context, Poll};
 
 use bytes::Bytes;
+#[cfg(feature = "rayon")]
+use futures_util::stream::{FuturesOrdered, StreamExt};
 use nectar_kernel::{BoxFuture, PutSink, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::bmt::SPAN_SIZE;
@@ -34,30 +36,32 @@ pub(super) type PutDone<E> = (ChunkAddress, Result<(), E>);
 /// targets.
 type BoxPut<E> = BoxFuture<'static, PutDone<E>>;
 
+/// Pool leaf seal reply: its span rides back alongside the sealed chunk so
+/// the ordered stream needs no side channel.
+#[cfg(feature = "rayon")]
+type SealOut<M, const B: usize> = (u64, Result<Sealed<M, B>, SealError>);
+
 /// Handoff carrying one pool leaf seal back to the engine.
 #[cfg(feature = "rayon")]
-type SealHandoff<M, const B: usize> = Handoff<Result<Sealed<M, B>, SealError>>;
+type SealHandoff<M, const B: usize> = Handoff<SealOut<M, B>>;
 
-/// Submitter queueing one leaf payload on the pool under its drawn state.
+/// Submitter queueing one leaf payload on the pool under its drawn state,
+/// tagging the reply with the leaf's span.
 #[cfg(feature = "rayon")]
 type SealSubmit<M, const B: usize> =
-    Box<dyn Fn(<M as SplitMode>::Draw, Bytes) -> SealHandoff<M, B> + Send + Sync>;
+    Box<dyn Fn(<M as SplitMode>::Draw, Bytes, u64) -> SealHandoff<M, B> + Send + Sync>;
 
-/// One leaf seal in flight on the pool: its span and the handoff its sealed
-/// chunk arrives on.
-#[cfg(feature = "rayon")]
-struct PendingSeal<M: SplitMode, const B: usize> {
-    span: u64,
-    handoff: SealHandoff<M, B>,
-}
-
-/// Pool fan-out for leaf seals: a bounded deque of in-flight jobs and the
+/// Pool fan-out for leaf seals: an ordered stream of in-flight jobs and the
 /// submitter that queues one payload.
+///
+/// `FuturesOrdered` yields in submission order and parks out-of-order
+/// completions, so admission stays in leaf order while wakers register for
+/// every in-flight seal, not just the head.
 #[cfg(feature = "rayon")]
 struct HashFan<M: SplitMode, const B: usize> {
     window: usize,
     submit: SealSubmit<M, B>,
-    seals: VecDeque<PendingSeal<M, B>>,
+    seals: FuturesOrdered<SealHandoff<M, B>>,
     /// Draws stashed at submission for the ascent seals the queued leaves
     /// trigger on admission; spent front-first.
     draws: VecDeque<M::Draw>,
@@ -210,10 +214,10 @@ where
     {
         self.hash = Some(HashFan {
             window: usize::from(window.get()),
-            submit: Box::new(|draw, payload| {
-                handoff::submit(move || M::seal_with::<B>(draw, payload))
+            submit: Box::new(|draw, payload, span| {
+                handoff::submit(move || (span, M::seal_with::<B>(draw, payload)))
             }),
-            seals: VecDeque::new(),
+            seals: FuturesOrdered::new(),
             draws: VecDeque::new(),
             submitted: 0,
         });
@@ -506,8 +510,8 @@ where
                 };
                 filled = next;
             }
-            let handoff = (fan.submit)(draw, Bytes::from(payload));
-            fan.seals.push_back(PendingSeal { span, handoff });
+            fan.seals
+                .push_back((fan.submit)(draw, Bytes::from(payload), span));
             self.stats.peak_hash_in_flight = self.stats.peak_hash_in_flight.max(fan.seals.len());
             return Ok(());
         }
@@ -529,13 +533,11 @@ where
 
     /// Admit pool-sealed leaves in leaf order while put capacity allows.
     ///
-    /// Only the front handoff is ever polled, so ascent order, intermediate
-    /// sealing and put dispatch order match the serial engine; out-of-order
-    /// completions park in their slots. `Ok` with jobs still queued means
-    /// the front is not ready or the put gate is shut, and a waker is
-    /// registered either way: every admission loops back through
-    /// `step_puts`, so a put dispatched here is re-polled with the caller's
-    /// waker before any return.
+    /// The ordered stream yields the next leaf only once its predecessors
+    /// have, so ascent, intermediate sealing and put dispatch order match the
+    /// serial engine; later completions park until their turn. Pulling one
+    /// leaf per put slot keeps admission behind the put gate, and the stream
+    /// registers a waker for every in-flight seal before it parks.
     #[cfg(feature = "rayon")]
     fn drain_seals(&mut self, cx: &mut Context<'_>) -> Result<(), SplitError<S::Error>> {
         loop {
@@ -546,17 +548,10 @@ where
             let Some(fan) = self.hash.as_mut() else {
                 return Ok(());
             };
-            let Some(front) = fan.seals.front_mut() else {
-                return Ok(());
-            };
-            let (span, sealed) = match front.handoff.poll_recv(cx) {
-                Poll::Pending => return Ok(()),
-                Poll::Ready(None) => return Err(SplitError::PoolDropped),
-                Poll::Ready(Some(result)) => {
-                    let span = front.span;
-                    fan.seals.pop_front();
-                    (span, result?)
-                }
+            let (span, sealed) = match fan.seals.poll_next_unpin(cx) {
+                Poll::Pending | Poll::Ready(None) => return Ok(()),
+                Poll::Ready(Some(None)) => return Err(SplitError::PoolDropped),
+                Poll::Ready(Some(Some((span, result)))) => (span, result?),
             };
             let (chunk, reference) = sealed;
             self.stats.leaves = self.stats.leaves.saturating_add(1);
