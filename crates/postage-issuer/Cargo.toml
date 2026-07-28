@@ -30,7 +30,6 @@ thiserror = { workspace = true }
 # The signer stack requires std; the no_std core only allocates digests.
 alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
-futures-channel = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 nectar-tasks = { workspace = true, optional = true }
@@ -73,7 +72,6 @@ local-signer = [ "dep:alloy-signer-local", "std" ]
 # The pipeline's parallel signing engine using rayon. Rayon on wasm32 or
 # under `unsync` is a compile error, never a silent fallback.
 parallel = [
-	"dep:futures-channel",
 	"dep:rayon",
 	"nectar-postage/parallel",
 	"nectar-primitives/parallel",

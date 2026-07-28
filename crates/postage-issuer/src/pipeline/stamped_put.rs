@@ -8,13 +8,9 @@ use core::fmt;
 use core::future::{Future, poll_fn};
 use core::num::NonZeroUsize;
 use core::task::{Poll, Waker};
-#[cfg(feature = "std")]
-use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(multi_thread)]
 use std::sync::{Mutex, PoisonError};
 
-#[cfg(feature = "parallel")]
-use futures_channel::oneshot;
 use nectar_clock::Clock;
 #[cfg(feature = "std")]
 use nectar_clock::SystemClock;
@@ -24,7 +20,11 @@ use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, ChunkGet, ChunkHas, Ch
 
 #[cfg(feature = "std")]
 use super::signer::Eip191;
-use super::signer::{SignPrehash, sign_digest};
+use super::signer::SignPrehash;
+#[cfg(not(feature = "std"))]
+use super::signer::sign_digest;
+#[cfg(feature = "std")]
+use super::task::sign_task;
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
 use crate::stamper::stamp_timestamp;
@@ -61,6 +61,11 @@ pub enum StampedPutError<E> {
 }
 
 /// One address's stamping progress, shared across clones.
+///
+/// Kept over a shared signing future: this registry folds in-flight
+/// duplicates onto one allocation, one sign and one delivery, and hands the
+/// retained stamp to the next put when a delivery fails or is cancelled,
+/// which a shared future cannot express.
 enum Issued {
     /// Allocated; signing in flight. Wakers re-poll when it resolves.
     Pending(Vec<Waker>),
@@ -193,17 +198,14 @@ impl<I> Drop for DeliveryGuard<'_, I> {
     }
 }
 
-/// Signs one digest inline, converting a signer panic into
-/// [`SigningError::Dropped`].
+/// Signs one digest inline through the crate's sole panic boundary,
+/// converting a signer panic into [`SigningError::Dropped`].
 #[cfg(all(feature = "std", not(feature = "parallel")))]
 fn sign_now<Sg: SignPrehash + ?Sized>(
     signer: &Sg,
     digest: &StampDigest,
 ) -> Result<Stamp, SigningError> {
-    // The signer outlives a caught panic; its interior state across that
-    // panic is the caller's contract.
-    catch_unwind(AssertUnwindSafe(|| sign_digest(signer, digest)))
-        .unwrap_or_else(|_| Err(SigningError::Dropped))
+    sign_task(signer, digest).result
 }
 
 /// Signs one digest inline. Without `std` there is no unwind boundary: a
@@ -448,21 +450,20 @@ where
     /// waking duplicate waiters on completion.
     #[cfg(feature = "parallel")]
     async fn sign(&self, digest: StampDigest, tracked: bool) -> Result<Stamp, SigningError> {
-        let (tx, rx) = oneshot::channel();
         let signer = Arc::clone(&self.signer);
         let shared = self.shared.clone();
         let address = digest.chunk_address;
-        rayon::spawn(move || {
-            // The signer outlives a caught panic; its interior state across
-            // that panic is the caller's contract.
-            let result = catch_unwind(AssertUnwindSafe(|| sign_digest(signer.as_ref(), &digest)))
-                .unwrap_or_else(|_| Err(SigningError::Dropped));
+        // The resolve/wake fold runs on the pool thread before the reply is
+        // sent, so waiters wake in the same order as an inline sign; a lost
+        // job reads as a dropped signature.
+        nectar_tasks::submit(move || {
+            let result = sign_task(signer.as_ref(), &digest).result;
             let wakers = with_state(&shared, |state| resolve(state, &address, &result, tracked));
             wake_all(wakers);
-            let _ = tx.send(result);
-        });
-        // A cancelled receiver means the job was lost before sending.
-        rx.await.unwrap_or(Err(SigningError::Dropped))
+            result
+        })
+        .await
+        .unwrap_or(Err(SigningError::Dropped))
     }
 
     /// Signs an allocated digest inline, resolving the issued map and
