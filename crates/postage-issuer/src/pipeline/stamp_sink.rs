@@ -12,50 +12,23 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::fmt;
-use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
-use futures_channel::oneshot;
 use futures_core::Stream;
+use futures_util::FutureExt;
 use nectar_clock::Clock;
-use nectar_kernel::{BoxFuture, FuturesUnordered};
+use nectar_kernel::{Admission, BoxFuture, FuturesUnordered};
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;
-use nectar_tasks::{Spawn, TaskHandle};
+use nectar_tasks::{Spawn, submit_on};
 
 use super::task::sign_task;
 use super::{SignPrehash, StampPipeline, StampResult};
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
 use crate::prepared::prepare_stamps;
-
-/// Awaits one job's completion; dropping it aborts the job.
-///
-/// A cancelled receiver (the sign task dropped before sending) yields a
-/// systemic [`SigningError::Dropped`], so a lost job never wedges the sink.
-struct Completion {
-    address: ChunkAddress,
-    rx: oneshot::Receiver<StampResult>,
-    _task: TaskHandle,
-}
-
-impl Future for Completion {
-    type Output = StampResult;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<StampResult> {
-        let this = self.get_mut();
-        match Pin::new(&mut this.rx).poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(result)) => Poll::Ready(result),
-            Poll::Ready(Err(oneshot::Canceled)) => Poll::Ready(StampResult {
-                address: this.address,
-                result: Err(SigningError::Dropped),
-            }),
-        }
-    }
-}
 
 impl<Sg, C> StampPipeline<Sg, C>
 where
@@ -175,7 +148,7 @@ where
                 });
                 return Poll::Ready(());
             }
-            if self.room() > 0 {
+            if self.admits() {
                 self.admit_batch(&[address]);
                 return Poll::Ready(());
             }
@@ -199,7 +172,15 @@ where
         self.harvest(cx)
     }
 
-    /// Window slots currently free.
+    /// Whether the window admits one more job.
+    ///
+    /// Completions yield unordered, so no slot is reserved for a serial head:
+    /// every admission counts as head-served, opening the full window.
+    pub(super) fn admits(&self) -> bool {
+        Admission::new(self.pipeline.window).admits(self.in_flight.len(), true)
+    }
+
+    /// Window slots currently free, sizing a refill micro-batch.
     pub(super) fn room(&self) -> usize {
         usize::from(self.pipeline.window.get()).saturating_sub(self.in_flight.len())
     }
@@ -219,19 +200,25 @@ where
         }
     }
 
-    /// Spawns the sign job and tracks its completion in the in-flight set.
+    /// Submits the sign job and tracks its completion in the in-flight set.
+    ///
+    /// The handoff owns the job's abort handle, so dropping it aborts the
+    /// task; a cancelled handoff (the task dropped before replying) maps to a
+    /// systemic [`SigningError::Dropped`] for the admitted address, so a lost
+    /// job never wedges the sink.
     fn submit(&mut self, digest: StampDigest) {
-        let (tx, rx) = oneshot::channel();
         let signer = Arc::clone(&self.pipeline.signer);
         let address = digest.chunk_address;
-        let task = self.spawner.spawn(Box::pin(async move {
-            let _ = tx.send(sign_task(signer.as_ref(), &digest));
-        }));
-        self.in_flight.push(Box::pin(Completion {
-            address,
-            rx,
-            _task: task,
-        }));
+        let handoff = submit_on(
+            &self.spawner,
+            async move { sign_task(signer.as_ref(), &digest) },
+        );
+        self.in_flight.push(Box::pin(handoff.map(move |reply| {
+            reply.unwrap_or(StampResult {
+                address,
+                result: Err(SigningError::Dropped),
+            })
+        })));
     }
 
     /// Polls the in-flight set for one completion and applies fail-fast.
@@ -257,6 +244,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use nectar_kernel::Window;
+    use nectar_tasks::TaskHandle;
     use std::sync::{Mutex, mpsc};
     use std::task::Wake;
     use std::time::{Duration, Instant};
