@@ -14,13 +14,12 @@
 //! depth would. Hence `apply(root, delta)` and a from-scratch build of the
 //! merged keys agree bit for bit (invariant I6 under updates).
 //!
-//! The rewrite rides one bounded window over the whole changeset: every
-//! subtree's node puts share it, and each level prefetches the referenced
-//! children its groups descend into on the same window, so disjoint changed
-//! subtrees read and write concurrently rather than head-of-line. Peak retained
-//! state is O(depth + changeset frontier + window): the descent holds one node
-//! per level on the current path plus a level's prefetched children, never a
-//! whole subtree.
+//! Node puts across the whole changeset ride one bounded window, and each level
+//! prefetches the referenced children its groups descend into on a second
+//! bounded window, so disjoint changed subtrees read and write concurrently.
+//! Peak retained state is O(depth + changeset frontier + window): the descent
+//! holds one node per level on the current path plus a level's prefetched
+//! children, never a whole subtree.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -187,10 +186,9 @@ where
         })
         .collect();
 
-    // One window over the whole changeset: every rewritten subtree's puts ride
-    // it, so disjoint changed subtrees store concurrently rather than settling a
-    // private window each. Puts are order-free (content-derived addresses), so
-    // the window admits freely and every put settles before the root returns.
+    // One put window over the whole changeset. Puts are order-free
+    // (content-derived addresses), so it admits freely and every put settles
+    // before the root returns.
     let mut sink = PutSink::new(store, put_window::<F>());
     let mut stats = BuildStats::default();
     let forks = Box::pin(apply_forks(
@@ -242,11 +240,10 @@ where
 {
     let groups = group_changes(consumed, changes);
 
-    // Every referenced child a group descends into is fetched up front on one
-    // bounded window, so the reads of disjoint changed subtrees overlap; the
-    // structural rewrite below then consumes each prefetched node in group
-    // order. A missed or failed prefetch is not an error: the descent fetches
-    // it inline instead, so the outcome is byte-identical either way.
+    // Fetch every referenced child a group descends into up front on one bounded
+    // window; the rewrite below consumes each in group order. A missed or failed
+    // prefetch falls back to an inline descent fetch, so the result is
+    // byte-identical.
     let mut fetched = prefetch_children::<S, F>(
         sink.store(),
         groups
@@ -872,11 +869,8 @@ fn child_window<F: Format>() -> Window {
 /// One landed child prefetch: its request slot and the fetched node.
 type Prefetched<F> = (usize, Result<Node<F>, StoreError>);
 
-/// Fetch every requested child concurrently on one bounded window, landing each
-/// node in its request slot.
-///
-/// Reads are order-free, so the whole window admits; a slot with no request, or
-/// one whose fetch is still owed, stays `None` and the descent reads it inline.
+/// Drives concurrent child fetches on one bounded window, landing each node in
+/// its request slot. Reads are order-free, so the whole window admits.
 struct PrefetchPolicy<'a, S, F: Format> {
     store: &'a S,
     /// Outstanding `(slot, address)` requests, drained as the window admits.
