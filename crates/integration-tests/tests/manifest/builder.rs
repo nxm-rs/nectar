@@ -4,14 +4,18 @@
 //! buffers track the trie depth rather than the key count, and the files path
 //! splits through BMT and references the stored roots.
 
+use core::convert::Infallible;
+use core::task::Poll;
+
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
 use nectar_manifest::{
     BuildStats, Builder, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node, NodeGet,
     Prefix, RootExtension, V1, build_files,
 };
-use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef, ContentGet, MemoryStore};
-use nectar_testing::{run, split_whole};
+use nectar_primitives::store::ChunkPut;
+use nectar_primitives::{Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentGet, MemoryStore, Verified};
+use nectar_testing::{Drive, GateStore, run, split_whole};
 
 const fn ref32(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))
@@ -168,6 +172,78 @@ fn peak_node_buffers_track_depth_not_key_count() -> Result<()> {
     ensure!(
         narrow_stats.peak_open_nodes() == wide_stats.peak_open_nodes(),
         "peak is key-count independent",
+    );
+    Ok(())
+}
+
+/// A store that parks every put on a gate before storing it, so a test can hold
+/// puts un-settled and observe how many the builder admits at once.
+#[derive(Debug)]
+struct GatedStore {
+    inner: MemoryStore,
+    gate: GateStore,
+}
+
+impl GatedStore {
+    fn new(gate: GateStore) -> Self {
+        Self {
+            inner: MemoryStore::default(),
+            gate,
+        }
+    }
+}
+
+impl ChunkPut for GatedStore {
+    type Error = Infallible;
+
+    async fn put(&self, chunk: Chunk<Verified>) -> Result<(), Infallible> {
+        self.gate.enter().await;
+        self.inner.put(chunk).await
+    }
+}
+
+#[test]
+fn the_put_window_overlaps_sibling_spills() -> Result<()> {
+    // A wide two-level manifest whose eight children each spill to their own
+    // chunk. Every put parks on the gate before storing, so the window fills
+    // with un-settled sibling puts instead of settling one before admitting the
+    // next. Both the store's own high-water mark and the build's reported peak
+    // must exceed one; a regression of the window to fully serial puts pins each
+    // to exactly one and fails here.
+    let gate = GateStore::new();
+    let store = GatedStore::new(gate.clone());
+    let mut builder: Builder<V1> = Builder::new();
+    for hi in 0u16..8 {
+        let hi = u8::try_from(hi)?;
+        for lo in 0u8..80 {
+            builder.insert(Key::from(&[hi, lo][..]), Entry::from(ref32(hi)), None);
+        }
+    }
+
+    // Single-step the build: it parks only once its window is full of parked
+    // puts, so releasing them each time it stalls carries it to the root while
+    // the gate records the overlap.
+    let mut drive = Drive::new(builder.build(&store));
+    let built = loop {
+        match drive.poll() {
+            Poll::Ready(result) => break result?,
+            Poll::Pending => {
+                let waiting = gate.waiting();
+                ensure!(waiting > 0, "build parked with no put in flight");
+                gate.release(waiting);
+            }
+        }
+    };
+
+    ensure!(
+        gate.peak() > 1,
+        "puts never overlapped: gate peak {}",
+        gate.peak(),
+    );
+    ensure!(
+        built.stats().peak_in_flight() > 1,
+        "reported peak in flight {} is serial",
+        built.stats().peak_in_flight(),
     );
     Ok(())
 }

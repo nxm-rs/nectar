@@ -83,12 +83,14 @@ impl BuildError {
     }
 }
 
-/// Peak and total work of one build, enough to witness the memory bound.
+/// Peak and total work of one build, enough to witness the memory bound and
+/// the put window's concurrency.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BuildStats {
     peak_open_nodes: usize,
     nodes_written: usize,
     nodes_embedded: usize,
+    peak_in_flight: usize,
 }
 
 impl BuildStats {
@@ -109,6 +111,13 @@ impl BuildStats {
     #[must_use]
     pub const fn nodes_embedded(&self) -> usize {
         self.nodes_embedded
+    }
+
+    /// Most puts ever riding the window at once. Above one when siblings store
+    /// concurrently; one iff every put settled before the next was admitted.
+    #[must_use]
+    pub const fn peak_in_flight(&self) -> usize {
+        self.peak_in_flight
     }
 }
 
@@ -254,12 +263,15 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
         let chunk = node.to_chunk()?;
         let address = *chunk.address();
         let store = self.store;
-        self.admit(Box::pin(async move {
-            store
-                .put(chunk)
-                .await
-                .map_err(|error| BuildError::from(StoreError::store(error)))
-        }))
+        self.admit(
+            Box::pin(async move {
+                store
+                    .put(chunk)
+                    .await
+                    .map_err(|error| BuildError::from(StoreError::store(error)))
+            }),
+            stats,
+        )
         .await?;
         stats.nodes_written = stats.nodes_written.saturating_add(1);
         Ok(address)
@@ -276,24 +288,28 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
         let chunk = Chunk::from_envelope(content.into()).map_err(BuildError::Seal)?;
         let address = *chunk.address();
         let store = self.store;
-        self.admit(Box::pin(async move {
-            store.put(chunk).await.map_err(BuildError::backend)
-        }))
+        self.admit(
+            Box::pin(async move { store.put(chunk).await.map_err(BuildError::backend) }),
+            stats,
+        )
         .await?;
         stats.nodes_written = stats.nodes_written.saturating_add(1);
         Ok(address)
     }
 
     /// Park on completions until the window has a free slot, push `put`, then
-    /// poll the set once so the fresh put starts without parking.
+    /// poll the set once so the fresh put starts without parking. Records the
+    /// window's high-water occupancy so a build reports its put concurrency.
     async fn admit(
         &mut self,
         put: BoxFuture<'s, Result<(), BuildError>>,
+        stats: &mut BuildStats,
     ) -> Result<(), BuildError> {
         while !self.admission.admits(self.in_flight.len(), true) {
             self.settle_one().await?;
         }
         self.in_flight.push(put);
+        stats.peak_in_flight = stats.peak_in_flight.max(self.in_flight.len());
         self.sweep().await
     }
 
