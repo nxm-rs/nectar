@@ -119,7 +119,10 @@ mod value;
 
 pub use apply::{ApplyError, Changeset, apply};
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
-pub use builder::{BuildError, BuildStats, Builder, Built, build_files};
+pub use builder::{BuildError, BuildStats, Builder, Built};
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use builder::build_files;
 pub use codec::{DecodeError, EncodeError, recanonicalize};
 pub use count::{CountError, SubtreeCount};
 pub use dx::FetchError;

@@ -51,6 +51,8 @@ pub use error::{SealError, SplitError};
 pub use mode::{Sealed, SplitMode};
 #[cfg(any(feature = "std", not(multi_thread)))]
 pub use relay::collect_into;
+#[cfg(feature = "std")]
+pub use relay::collect_read_at_into;
 
 /// Occupancy witnesses of one split.
 ///

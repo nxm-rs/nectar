@@ -27,6 +27,10 @@ use super::engine::{PutDone, Split};
 use super::error::SplitError;
 use super::mode::SplitMode;
 use crate::config::PutWindow;
+#[cfg(feature = "std")]
+use crate::num::u64_from_usize;
+#[cfg(feature = "std")]
+use crate::read_at::{ReadAt, ReadAtError, read_full};
 
 /// Split `data` under put `window` into the tree, storing every chunk in the
 /// borrowed `store`, and return the root.
@@ -79,6 +83,82 @@ where
         // Forward every chunk sealed this round before more bytes enter, so
         // the relay never holds more than one round's seals.
         forward(&relay, store, &mut sink, fold).await?;
+    }
+    let root = poll_fn(|cx| split.poll_finish(cx))
+        .await
+        .map_err(widen::<T::Error>)?;
+    forward(&relay, store, &mut sink, fold).await?;
+    sink.settle(fold).await?;
+    Ok(root)
+}
+
+/// Split `source` under put `window` into the tree, storing every chunk in
+/// the borrowed `store`, and return the root.
+///
+/// The reader companion to [`collect_into`]: leaf bodies are pulled from the
+/// random-access `source` one body at a time and fed through the same relay
+/// and bounded put window, so the source never becomes fully resident and the
+/// memory bound is the split's own plus one leaf body. The root is delivered
+/// only after every put has settled; for deterministic modes it equals the
+/// slice split of the same bytes.
+///
+/// ```
+/// # nectar_testing::run(async {
+/// use nectar_file::split::collect_read_at_into;
+/// use nectar_file::{Plain, PutWindow};
+/// use nectar_primitives::chunk::AnyChunkSet;
+/// use nectar_primitives::store::MemoryStore;
+///
+/// let store = MemoryStore::<AnyChunkSet<4096>>::new();
+/// let window = PutWindow::new(4).unwrap();
+/// let root = collect_read_at_into::<_, _, Plain, 4096>(&store, window, &b"hello swarm"[..])
+///     .await
+///     .unwrap();
+/// # let _ = root;
+/// # });
+/// ```
+#[cfg(feature = "std")]
+pub async fn collect_read_at_into<R, T, M, const B: usize>(
+    store: &T,
+    window: PutWindow,
+    source: R,
+) -> Result<M::Root, ReadAtError<T::Error>>
+where
+    R: ReadAt,
+    T: ChunkPut<AnyChunkSet<B>> + MaybeSync,
+    M: SplitMode + Default,
+{
+    let size = source
+        .len()
+        .map_err(|source| ReadAtError::Length { source })?;
+    let relay = Relay::<B>::default();
+    let mut split: Split<Relay<B>, M, B> = Split::new(relay.clone(), window);
+    let mut sink: PutSink<'_, PutDone<T::Error>> =
+        PutSink::new(Window::from(NonZeroU16::from(window)));
+    let fold = |(address, result): PutDone<T::Error>| {
+        result.map_err(|source| SplitError::Put { address, source })
+    };
+    let mut buf = alloc::vec![0u8; B];
+    let mut offset = 0u64;
+    while offset < size {
+        // The remainder is capped by the body size, so the narrowing is
+        // lossless and `take` never exceeds the buffer length.
+        let take = usize::try_from(size.saturating_sub(offset).min(u64_from_usize(B))).unwrap_or(B);
+        let Some((body, _)) = buf.split_at_mut_checked(take) else {
+            break;
+        };
+        read_full(&source, offset, body)?;
+        let mut piece: &[u8] = body;
+        while !piece.is_empty() {
+            let taken = poll_fn(|cx| split.poll_write(cx, piece))
+                .await
+                .map_err(widen::<T::Error>)?;
+            piece = piece.get(taken..).unwrap_or(&[]);
+            // Forward every chunk sealed this round before more bytes enter, so
+            // the relay never holds more than one round's seals.
+            forward(&relay, store, &mut sink, fold).await?;
+        }
+        offset = offset.saturating_add(u64_from_usize(take));
     }
     let root = poll_fn(|cx| split.poll_finish(cx))
         .await

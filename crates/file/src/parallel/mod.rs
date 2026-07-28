@@ -6,8 +6,6 @@
 //! task. Retained memory stays at the hash window of leaf bodies plus the
 //! spine and the put window.
 
-mod error;
-mod source;
 #[cfg(test)]
 mod tests;
 
@@ -17,11 +15,11 @@ use core::future::poll_fn;
 use nectar_primitives::chunk::AnyChunkSet;
 use nectar_primitives::store::ChunkPut;
 
-pub use error::ReadAtError;
-pub use source::ReadAt;
+pub use crate::read_at::{ReadAt, ReadAtError};
 
 use crate::config::{HashWindow, PutWindow};
 use crate::num::u64_from_usize;
+use crate::read_at::read_full;
 use crate::split::{Split, SplitMode};
 
 /// Split `source` into the tree under `store`, sealing leaves on the rayon
@@ -84,38 +82,4 @@ where
     poll_fn(|cx| split.poll_finish(cx))
         .await
         .map_err(ReadAtError::from)
-}
-
-/// Fill `buf` from `offset`, looping over short reads; running out of
-/// source is an error, never a silent truncation.
-fn read_full<R, E>(source: &R, offset: u64, buf: &mut [u8]) -> Result<(), ReadAtError<E>>
-where
-    R: ReadAt + ?Sized,
-{
-    let mut filled = 0usize;
-    while filled < buf.len() {
-        let at = offset.saturating_add(u64_from_usize(filled));
-        let Some(rest) = buf.get_mut(filled..) else {
-            return Ok(());
-        };
-        let capacity = rest.len();
-        let count = source
-            .read_at(at, rest)
-            .map_err(|source| ReadAtError::Read { offset: at, source })?;
-        if count == 0 {
-            return Err(ReadAtError::ShortRead {
-                offset: at,
-                remaining: capacity,
-            });
-        }
-        if count > capacity {
-            return Err(ReadAtError::ReadOverrun {
-                offset: at,
-                count,
-                capacity,
-            });
-        }
-        filled = filled.saturating_add(count);
-    }
-    Ok(())
 }

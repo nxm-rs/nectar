@@ -74,6 +74,9 @@ pub mod parallel;
 #[cfg(feature = "primitives")]
 #[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
 pub mod read;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod read_at;
 pub mod sink;
 #[cfg(feature = "primitives")]
 #[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
@@ -98,10 +101,13 @@ pub use self::tokio::{SpawnedReader, TokioWriter};
 pub use config::{BranchBudget, HashWindow, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
 #[cfg(feature = "rayon")]
-pub use parallel::{ReadAt, ReadAtError, split_read_at};
+pub use parallel::split_read_at;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use read::AdaptiveWindow;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use read_at::{ReadAt, ReadAtError};
 #[cfg(feature = "primitives")]
 pub use read::{
     AnyFile, CollectError, DownloadBuilder, DownloadError, File, FileFrames, FileReader,
@@ -112,6 +118,9 @@ pub use sink::FsSink;
 pub use sink::{DataSink, MemSink, MemSinkError};
 #[cfg(all(feature = "primitives", any(feature = "std", not(multi_thread))))]
 pub use split::collect_into;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use split::collect_read_at_into;
 #[cfg(all(feature = "primitives", feature = "encryption"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use split::{KeyError, KeySource, RandomKeys};

@@ -16,12 +16,14 @@ use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use bytes::Bytes;
-use nectar_file::{Plain, PutWindow, SplitError, collect_into};
+use nectar_file::SplitError;
+#[cfg(feature = "std")]
+use nectar_file::{Plain, PutWindow, ReadAt, ReadAtError, collect_read_at_into};
 use nectar_kernel::{BoxFuture, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
-use nectar_primitives::{
-    Chunk, ChunkAddress, ChunkRef, ContentChunk, DEFAULT_BODY_SIZE, PrimitivesError,
-};
+#[cfg(feature = "std")]
+use nectar_primitives::DEFAULT_BODY_SIZE;
+use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentChunk, PrimitivesError};
 
 use crate::bounded::{Prefix, SegmentWeight};
 use crate::codec::{
@@ -50,6 +52,12 @@ pub enum BuildError {
     /// so every failure here is an engine or seal error.
     #[error("split file")]
     Split(#[from] SplitError<Infallible>),
+    /// Reading a file source failed, or the source misreported its length. The
+    /// store put arm is routed to [`BuildError::Backend`], so this carries no
+    /// backend error.
+    #[cfg(feature = "std")]
+    #[error(transparent)]
+    Read(ReadAtError<Infallible>),
     /// Sealing a file chunk failed.
     #[error("seal file chunk")]
     Seal(#[source] PrimitivesError),
@@ -682,21 +690,57 @@ fn descriptor_count(counts: impl Iterator<Item = u64>) -> SubtreeCount {
     SubtreeCount::new(counts.fold(0, u64::saturating_add))
 }
 
-/// Split `data` through the bounded splitter into the borrowed `store`,
-/// returning the file's plain root reference. Memory stays bounded: the split
-/// forwards each sealed chunk before consuming more bytes.
-async fn split_file<S>(store: &S, data: &[u8]) -> Result<ChunkRef, BuildError>
+/// Split `source` through the bounded splitter into the borrowed `store`,
+/// returning the file's plain root reference. Memory stays bounded: leaf
+/// bodies are pulled from the reader one at a time and each sealed chunk
+/// forwards before more bytes enter, so the source never becomes resident.
+#[cfg(feature = "std")]
+async fn split_file<S, R>(store: &S, source: R) -> Result<ChunkRef, BuildError>
 where
     S: ChunkPut + MaybeSync,
+    R: ReadAt,
 {
-    let root = collect_into::<_, Plain, DEFAULT_BODY_SIZE>(store, PutWindow::DEFAULT, data)
-        .await
-        .map_err(split_error::<S::Error>)?;
+    let root = collect_read_at_into::<_, _, Plain, DEFAULT_BODY_SIZE>(
+        store,
+        PutWindow::DEFAULT,
+        source,
+    )
+    .await
+    .map_err(read_at_error::<S::Error>)?;
     Ok(ChunkRef::new(root))
+}
+
+/// Map a file-read failure into a build failure: a store put becomes a backend
+/// error via [`split_error`], every read fault keeps its typed shape.
+#[cfg(feature = "std")]
+fn read_at_error<E>(error: ReadAtError<E>) -> BuildError
+where
+    E: core::error::Error + MaybeSend + MaybeSync + 'static,
+{
+    match error {
+        ReadAtError::Split(split) => split_error::<E>(split),
+        ReadAtError::Length { source } => BuildError::Read(ReadAtError::Length { source }),
+        ReadAtError::Read { offset, source } => {
+            BuildError::Read(ReadAtError::Read { offset, source })
+        }
+        ReadAtError::ShortRead { offset, remaining } => {
+            BuildError::Read(ReadAtError::ShortRead { offset, remaining })
+        }
+        ReadAtError::ReadOverrun {
+            offset,
+            count,
+            capacity,
+        } => BuildError::Read(ReadAtError::ReadOverrun {
+            offset,
+            count,
+            capacity,
+        }),
+    }
 }
 
 /// Map a file-split failure into a build failure: a store put becomes a
 /// backend error, every engine or seal fault keeps its typed shape.
+#[cfg(feature = "std")]
 fn split_error<E>(error: SplitError<E>) -> BuildError
 where
     E: core::error::Error + MaybeSend + MaybeSync + 'static,
@@ -716,10 +760,12 @@ where
 
 /// Stream files through BMT into one published manifest.
 ///
-/// Each `(key, file)` pair splits into stored content chunks and binds to the
-/// file's root reference; the manifest is then assembled and published. The
-/// splits ride one bounded window, so many files' content chunks store
-/// concurrently. The iteration order does not affect the published root.
+/// Each `(key, source)` pair splits into stored content chunks and binds to
+/// the file's root reference; the manifest is then assembled and published.
+/// Files arrive as [`ReadAt`] sources read one leaf body at a time, so a
+/// file-backed source never becomes fully resident. The splits ride one
+/// bounded window, so many files' content chunks store concurrently. The
+/// iteration order does not affect the published root.
 ///
 /// ```
 /// use nectar_manifest::{build_files, Key};
@@ -732,10 +778,12 @@ where
 /// let _root = built.root();
 /// # Ok(()) }
 /// ```
-pub async fn build_files<S, I>(store: &S, files: I) -> Result<Built, BuildError>
+#[cfg(feature = "std")]
+pub async fn build_files<S, R, I>(store: &S, files: I) -> Result<Built, BuildError>
 where
     S: ChunkPut + MaybeSync,
-    I: IntoIterator<Item = (Key, Bytes)>,
+    R: ReadAt + MaybeSend,
+    I: IntoIterator<Item = (Key, R)>,
 {
     let mut builder = Builder::<V1>::new();
     ingest_files(store, files, &mut builder).await?;
@@ -748,14 +796,16 @@ where
 /// The window admits at most [`put_window`] splits at once, so at most that
 /// many files are resident; a split's root address is content-derived, so the
 /// bound is order-free and the manifest is a pure function of the key set.
-async fn ingest_files<S, I>(
+#[cfg(feature = "std")]
+async fn ingest_files<S, R, I>(
     store: &S,
     files: I,
     builder: &mut Builder<V1>,
 ) -> Result<(), BuildError>
 where
     S: ChunkPut + MaybeSync,
-    I: IntoIterator<Item = (Key, Bytes)>,
+    R: ReadAt + MaybeSend,
+    I: IntoIterator<Item = (Key, R)>,
 {
     let mut splits: nectar_kernel::PutSink<'_, Result<(Key, ChunkRef), BuildError>> =
         nectar_kernel::PutSink::new(put_window::<V1>());
@@ -764,12 +814,12 @@ where
         builder.insert(key, Entry::from(reference), None);
         Ok(())
     };
-    for (key, data) in files {
+    for (key, source) in files {
         if let Some(resolved) = splits.admit().await {
             bind(resolved)?;
         }
         if let Some(resolved) = splits.push(Box::pin(async move {
-            split_file(store, &data)
+            split_file(store, source)
                 .await
                 .map(|reference| (key, reference))
         })) {
@@ -790,7 +840,10 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
+    use std::io;
+
     use bytes::Bytes;
+    use nectar_file::ReadAt;
     use nectar_primitives::chunk::{Chunk, Verified};
     use nectar_primitives::store::{ChunkPut, MemoryStore};
     use nectar_testing::run;
@@ -853,5 +906,48 @@ mod tests {
         let peak = store.peak.load(Ordering::Relaxed);
         assert!(peak > 1, "file splits overlapped, peak {peak}");
         assert!(peak <= usize::from(put_window::<V1>().get()));
+    }
+
+    /// A byte source that hands back no more than one body per read, so the
+    /// ingest cannot slurp the whole file in a single call.
+    struct Trickle {
+        data: Vec<u8>,
+    }
+
+    impl ReadAt for Trickle {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+            // One body per read at most; the ingest loops until a leaf fills.
+            let capped = buf.len().min(4096);
+            let head = buf.get_mut(..capped).unwrap_or_default();
+            self.data.read_at(offset, head)
+        }
+
+        fn len(&self) -> io::Result<u64> {
+            ReadAt::len(&self.data)
+        }
+    }
+
+    #[test]
+    fn a_reader_source_publishes_the_slice_root() {
+        let keys = [&b"a.bin"[..], &b"b/c.bin"[..], &b"index.html"[..]];
+        let bodies: [Vec<u8>; 3] = [vec![1u8; 20_000], vec![2u8; 9], vec![3u8; 8193]];
+
+        let from_bytes = MemoryStore::default();
+        let bytes_files: Vec<(Key, Bytes)> = keys
+            .iter()
+            .zip(&bodies)
+            .map(|(key, body)| (Key::from(*key), Bytes::from(body.clone())))
+            .collect();
+        let slice_root = *run(build_files(&from_bytes, bytes_files)).unwrap().root();
+
+        let from_reader = MemoryStore::default();
+        let reader_files: Vec<(Key, Trickle)> = keys
+            .iter()
+            .zip(&bodies)
+            .map(|(key, body)| (Key::from(*key), Trickle { data: body.clone() }))
+            .collect();
+        let reader_root = *run(build_files(&from_reader, reader_files)).unwrap().root();
+
+        assert_eq!(slice_root, reader_root, "reader ingest matches the slice ingest");
     }
 }
