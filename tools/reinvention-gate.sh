@@ -56,16 +56,17 @@ deny 'copied MaybeSend/MaybeSync marker (consume from nectar_marker)' \
 deny 'Mutex-guarded waker cell (use futures_channel::oneshot)' \
     'Mutex[[:space:]]*<[^>]*Waker'
 
-# The same cell by its waker slot; the pump keeps one cooperative slot.
+# The same cell by its waker slot; the pump keeps one cooperative slot. Only
+# the pump sink is sanctioned; test modules must not grow one.
 deny 'hand-rolled completion-cell waker slot (use futures_channel::oneshot)' \
     '[A-Za-z_]*waker[[:space:]]*:[[:space:]]*Option[[:space:]]*<[[:space:]]*Waker' \
-    'crates/postage-issuer/src/pipeline/'
+    'crates/postage-issuer/src/pipeline/stamp_sink.rs'
 
-# The thread-unpark waker copied out of nectar-tasks.
+# The thread-unpark waker copied out of nectar-tasks. Sanctioned in exactly one
+# home; a copy anywhere else, test modules included, is a reinvention.
 deny 'copied Unpark waker (use nectar_tasks::unpark_current)' \
     'struct[[:space:]]+Unpark[[:space:]]*\([[:space:]]*Thread' \
-    'crates/tasks/src/wake.rs' \
-    'crates/postage-issuer/src/pipeline/'
+    'crates/tasks/src/wake.rs'
 
 # Any ad-hoc waker/executor: a fresh Wake impl outside the sanctioned homes.
 deny 'ad-hoc Wake impl (route through nectar_testing/nectar_tasks)' \
@@ -79,11 +80,14 @@ deny 'hand-rolled oneshot type (use futures_channel::oneshot)' \
     'struct[[:space:]]+[A-Za-z_]*[Oo]ne[Ss]hot'
 
 # A park-loop executor: poll-then-park on the calling thread. Bridges belong in
-# nectar-tasks; futures run through nectar_testing::run.
+# nectar-tasks; futures run through nectar_testing::run. The pump admission loop
+# and the duplicate-share test driver each park against unpark_current; every
+# other file, test modules included, is a reinvention.
 deny 'thread::park executor loop (use nectar_testing::run or nectar_tasks)' \
     'thread::park(_timeout)?[[:space:]]*\(' \
     'crates/tasks/src/handoff.rs' \
-    'crates/postage-issuer/src/pipeline/'
+    'crates/postage-issuer/src/pipeline/mod.rs' \
+    'crates/postage-issuer/src/pipeline/stamped_put.rs'
 
 if [ "$fail" -ne 0 ]; then
     printf '\nreinvention gate failed: see matches above.\n' >&2
