@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 
 use bytes::Bytes;
-use nectar_kernel::{BoxFuture, FuturesUnordered};
+use nectar_kernel::{Admission, BoxFuture, FuturesUnordered, Window};
 
 use crate::format::Format;
 use crate::reader::ReaderError;
@@ -119,6 +119,9 @@ pub(crate) fn fill<'a, F, T, Fut>(
     F: Format,
     Fut: FetchFuture<'a, T>,
 {
+    let admission = Admission::new(
+        Window::new(u16::try_from(window).unwrap_or(u16::MAX)).unwrap_or(Window::DEFAULT),
+    );
     let mut head_served = false;
     'outer: for frame in frames.iter_mut().rev() {
         let mut index = frame.index;
@@ -131,7 +134,9 @@ pub(crate) fn fill<'a, F, T, Fut>(
                         head_served = true;
                     } else {
                         let occupancy = in_flight.len().saturating_add(buffered);
-                        if head_served && occupancy >= window {
+                        // The head always launches; once served, admission caps
+                        // the lookahead behind it at the read-ahead window.
+                        if head_served && !admission.admits(occupancy, head_served) {
                             break 'outer;
                         }
                         let seq = *next_seq;
