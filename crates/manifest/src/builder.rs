@@ -109,8 +109,8 @@ impl BuildStats {
         self.nodes_embedded
     }
 
-    /// Most puts ever riding the window at once. Above one when siblings store
-    /// concurrently; one iff every put settled before the next was admitted.
+    /// Peak puts ever parked in the window at once: above one when siblings
+    /// overlap, zero when every put stored inline without taking a slot.
     #[must_use]
     pub const fn peak_in_flight(&self) -> usize {
         self.peak_in_flight
