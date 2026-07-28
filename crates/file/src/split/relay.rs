@@ -3,8 +3,7 @@
 
 use core::convert::Infallible;
 use core::future::poll_fn;
-use core::pin::Pin;
-use core::task::Poll;
+use core::num::NonZeroU16;
 
 use alloc::boxed::Box;
 
@@ -19,8 +18,7 @@ use std::collections::VecDeque;
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex, PoisonError};
 
-use futures_util::stream::Stream;
-use nectar_kernel::{BoxFuture, FuturesUnordered};
+use nectar_kernel::{PutSink, Window};
 use nectar_marker::MaybeSync;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 use nectar_primitives::store::ChunkPut;
@@ -66,8 +64,12 @@ where
 {
     let relay = Relay::<B>::default();
     let mut split: Split<Relay<B>, M, B> = Split::new(relay.clone(), window);
-    let mut puts: FuturesUnordered<BoxFuture<'_, PutDone<T::Error>>> = FuturesUnordered::new();
-    let limit = usize::from(window.get());
+    let mut sink: PutSink<'_, PutDone<T::Error>> =
+        PutSink::new(Window::from(NonZeroU16::from(window)));
+    // Map each settled put's carried address and result to the typed error.
+    let fold = |(address, result): PutDone<T::Error>| {
+        result.map_err(|source| SplitError::Put { address, source })
+    };
     let mut rest = data;
     while !rest.is_empty() {
         let taken = poll_fn(|cx| split.poll_write(cx, rest))
@@ -76,13 +78,13 @@ where
         rest = rest.get(taken..).unwrap_or(&[]);
         // Forward every chunk sealed this round before more bytes enter, so
         // the relay never holds more than one round's seals.
-        drain(&relay, store, &mut puts, limit).await?;
+        forward(&relay, store, &mut sink, fold).await?;
     }
     let root = poll_fn(|cx| split.poll_finish(cx))
         .await
         .map_err(widen::<T::Error>)?;
-    drain(&relay, store, &mut puts, limit).await?;
-    settle(&mut puts).await?;
+    forward(&relay, store, &mut sink, fold).await?;
+    sink.settle(fold).await?;
     Ok(root)
 }
 
@@ -100,73 +102,37 @@ fn widen<E>(error: SplitError<Infallible>) -> SplitError<E> {
     }
 }
 
-/// Forward every queued chunk into the put window in seal order, parking on a
-/// completion whenever the window is full, then start the new puts without
-/// parking.
-async fn drain<'a, T, const B: usize>(
+/// Forward every queued chunk into the bounded window in seal order: admit a
+/// slot (parking when full), open the put, then sweep the ready completions so
+/// freshly admitted puts start before more bytes enter. `fold` maps each
+/// settled put to the typed error.
+async fn forward<'a, T, F, const B: usize>(
     relay: &Relay<B>,
     store: &'a T,
-    puts: &mut FuturesUnordered<BoxFuture<'a, PutDone<T::Error>>>,
-    limit: usize,
+    sink: &mut PutSink<'a, PutDone<T::Error>>,
+    mut fold: F,
 ) -> Result<(), SplitError<T::Error>>
 where
     T: ChunkPut<AnyChunkSet<B>> + MaybeSync,
+    F: FnMut(PutDone<T::Error>) -> Result<(), SplitError<T::Error>>,
 {
     while let Some(chunk) = relay.pop() {
-        while puts.len() >= limit {
-            settle_one(puts).await?;
+        if let Some(completion) = sink.admit().await {
+            fold(completion)?;
         }
-        puts.push(Box::pin(async move {
+        if let Some(completion) = sink.push(Box::pin(async move {
             let address = *chunk.address();
             (address, store.put(chunk).await)
-        }));
-    }
-    sweep(puts).await
-}
-
-/// Await one completion; an empty window is a no-op.
-async fn settle_one<E>(
-    puts: &mut FuturesUnordered<BoxFuture<'_, PutDone<E>>>,
-) -> Result<(), SplitError<E>> {
-    match poll_fn(|cx| Pin::new(&mut *puts).poll_next(cx)).await {
-        Some((address, result)) => result.map_err(|source| SplitError::Put { address, source }),
-        None => Ok(()),
-    }
-}
-
-/// Await every outstanding put, so the root covers a fully stored tree.
-async fn settle<E>(
-    puts: &mut FuturesUnordered<BoxFuture<'_, PutDone<E>>>,
-) -> Result<(), SplitError<E>> {
-    while !puts.is_empty() {
-        settle_one(puts).await?;
-    }
-    Ok(())
-}
-
-/// Fold settled puts without parking: every live put is polled once with the
-/// task's waker, so freshly admitted puts start before more bytes enter.
-async fn sweep<E>(
-    puts: &mut FuturesUnordered<BoxFuture<'_, PutDone<E>>>,
-) -> Result<(), SplitError<E>> {
-    poll_fn(|cx| {
-        loop {
-            match Pin::new(&mut *puts).poll_next(cx) {
-                Poll::Ready(Some((address, result))) => {
-                    if let Err(source) = result {
-                        return Poll::Ready(Err(SplitError::Put { address, source }));
-                    }
-                }
-                Poll::Ready(None) | Poll::Pending => return Poll::Ready(Ok(())),
-            }
+        })) {
+            fold(completion)?;
         }
-    })
-    .await
+    }
+    sink.sweep(fold).await
 }
 
 /// Shared put queue bridging a borrowed store to the owned-handle store the
-/// split clones per put: relay puts land here in seal order and [`drain`]
-/// forwards them into the bounded window borrowing the real store, so the
+/// split clones per put: relay puts land here in seal order and [`forward`]
+/// moves them into the bounded window borrowing the real store, so the
 /// split never parks and its put concurrency lands on the borrowed store.
 #[derive(Clone, Default)]
 struct Relay<const B: usize> {
