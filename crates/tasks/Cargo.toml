@@ -23,11 +23,11 @@ futures-core = { workspace = true, features = ["alloc"] }
 
 # optional
 futures-channel = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-futures-util = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -37,8 +37,9 @@ tokio = { workspace = true, features = ["sync"] }
 # Standard library interop: the thread-unpark waker helper.
 std = []
 # Pool handoff over `futures-channel` oneshot: a panic-catching submit seam
-# onto the rayon pool. Implies `std`.
-rayon = [ "dep:futures-channel", "dep:rayon", "std" ]
+# onto the rayon pool. `Handoff` maps the oneshot via `futures-util`. Implies
+# `std`.
+rayon = [ "dep:futures-channel", "dep:futures-util", "dep:rayon", "std" ]
 # Spawner onto the ambient tokio runtime.
 tokio = [ "dep:tokio" ]
 # Spawner onto the browser event loop (wasm32 only).

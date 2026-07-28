@@ -5,8 +5,8 @@
 //! # Features
 //!
 //! - `std`: [`unpark_current`], a thread-unpark waker for blocking bridges
-//! - `rayon`: [`submit`]/[`Handoff`], a panic-catching pool handoff over a
-//!   oneshot channel
+//! - `rayon`: [`submit`]/[`submit_on`]/[`Handoff`], a panic-catching pool
+//!   handoff over a oneshot channel; [`Handoff`] is itself a `Future`
 //! - `tokio`: `TokioSpawner`, spawns onto the ambient tokio runtime
 //! - `wasm` (wasm32 only): `WasmSpawner`, spawns onto the browser event
 //!   loop
@@ -48,7 +48,7 @@ mod wake;
 mod wasm;
 
 #[cfg(feature = "rayon")]
-pub use self::handoff::{Handoff, submit};
+pub use self::handoff::{Handoff, submit, submit_on};
 #[cfg(all(feature = "tokio", multi_thread))]
 pub use self::tokio::TokioSpawner;
 #[cfg(feature = "std")]
