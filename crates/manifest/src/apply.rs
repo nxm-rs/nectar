@@ -743,14 +743,17 @@ fn make_fork<F: Format>(
 }
 
 /// The insertions of a change group as builder items, dropping deletions.
-fn inserts_to_items<F: Format>(changes: &[Change<'_, F>]) -> Vec<Item<F>> {
+///
+/// The items borrow their key and value from `changes`, so the change group
+/// outlives the table build it feeds.
+fn inserts_to_items<'a, F: Format>(changes: &'a [Change<'_, F>]) -> Vec<Item<'a, F>> {
     changes
         .iter()
         .filter_map(|change| match change.op {
             Op::Put { entry, meta } => Some(Item {
-                key: change.key.clone(),
-                entry: entry.clone(),
-                meta: meta.clone(),
+                key: &change.key,
+                entry,
+                meta,
             }),
             Op::Delete => None,
         })

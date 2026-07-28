@@ -2,18 +2,26 @@
 //!
 //! The trie is assembled bottom-up over an explicit stack of open nodes. Each
 //! finished node is embedded into its parent when the packing predicate allows,
-//! otherwise sealed and spilled to the store the moment it is complete, so the
-//! peak retained node buffer count is the stack depth, never the key count. The
-//! key set enters through a sorted map, so the published tree is a pure function
-//! of the keys, identical whatever order the caller streamed them in.
+//! otherwise sealed and dispatched into a bounded put window the moment it is
+//! complete, so the peak retained node buffer count is the stack depth plus the
+//! window, never the key count. Puts are order-free (content-derived
+//! addresses), so siblings store concurrently and every put settles before the
+//! root returns. The key set enters through a sorted map borrowed in place, so
+//! the published tree is a pure function of the keys, identical whatever order
+//! the caller streamed them in.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::convert::Infallible;
+use core::future::poll_fn;
+use core::pin::Pin;
+use core::task::Poll;
 
 use bytes::Bytes;
+use futures_core::Stream;
 use nectar_file::{Plain, PutWindow, SplitError, collect_into};
+use nectar_kernel::{Admission, BoxFuture, FuturesUnordered, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkRef, ContentChunk, DEFAULT_BODY_SIZE, PrimitivesError,
@@ -31,7 +39,7 @@ use crate::format::{Format, V1};
 use crate::meta::Metadata;
 use crate::node::{Node, RootExtension};
 use crate::packing::{Domain, cut_allowance, embed, spill};
-use crate::store::{NodePut, StoreError};
+use crate::store::StoreError;
 use crate::value::{Entry, Key};
 
 /// A build or publish failure.
@@ -75,12 +83,14 @@ impl BuildError {
     }
 }
 
-/// Peak and total work of one build, enough to witness the memory bound.
+/// Peak and total work of one build, enough to witness the memory bound and
+/// the put window's concurrency.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BuildStats {
     peak_open_nodes: usize,
     nodes_written: usize,
     nodes_embedded: usize,
+    peak_in_flight: usize,
 }
 
 impl BuildStats {
@@ -101,6 +111,13 @@ impl BuildStats {
     #[must_use]
     pub const fn nodes_embedded(&self) -> usize {
         self.nodes_embedded
+    }
+
+    /// Most puts ever riding the window at once. Above one when siblings store
+    /// concurrently; one iff every put settled before the next was admitted.
+    #[must_use]
+    pub const fn peak_in_flight(&self) -> usize {
+        self.peak_in_flight
     }
 }
 
@@ -183,26 +200,150 @@ impl<F: Format> Builder<F> {
     /// Assemble and publish the manifest, returning the root address.
     ///
     /// Peak retained node buffers stay at the trie's node depth: a finished
-    /// subtree is embedded or spilled to `store` before the next sibling opens.
+    /// subtree is embedded, or sealed and dispatched into the put window, before
+    /// the next sibling opens. The root address covers a fully stored tree.
     pub async fn build<S>(&self, store: &S) -> Result<Built, BuildError>
     where
         S: ChunkPut + MaybeSync,
     {
-        let items: Vec<Item<F>> = self
+        // Items borrow the sorted map: the descent indexes them without a
+        // second owned copy of the key set.
+        let items: Vec<Item<'_, F>> = self
             .keys
             .iter()
-            .map(|(key, (entry, meta))| Item {
-                key: key.clone(),
-                entry: entry.clone(),
-                meta: meta.clone(),
-            })
+            .map(|(key, (entry, meta))| Item { key, entry, meta })
             .collect();
         let root_ext = RootExtension::new(self.root_entry.clone(), self.root_metadata.clone());
         let mut stats = BuildStats::default();
-        let table = build_table(store, &items, 0, &mut stats).await?;
+        let mut sink = PutSink::new(store, put_window::<F>());
+        let table = build_table_in(&mut sink, &items, 0, &mut stats).await?;
         let node = Node::new(root_ext, table);
-        let root = emit_node(store, &node, &mut stats).await?;
+        let root = emit_node_in(&mut sink, &node, &mut stats).await?;
+        sink.settle().await?;
         Ok(Built { root, stats })
+    }
+}
+
+/// The builder's put window: the format's read-ahead saturated into a nonzero
+/// window, matching the segment reassembly and walk windows.
+fn put_window<F: Format>() -> Window {
+    let slots = u16::try_from(F::READ_AHEAD).unwrap_or(u16::MAX);
+    Window::new(slots).unwrap_or(Window::DEFAULT)
+}
+
+/// A bounded window of node and segment puts riding the borrowed store.
+///
+/// A chunk's address is content-derived at seal, so a parent references a
+/// child the moment it seals while the child's put still rides the window.
+/// Puts are order-free, so the whole window admits; every put is settled
+/// before the root is returned.
+struct PutSink<'s, S: ChunkPut + MaybeSync> {
+    store: &'s S,
+    admission: Admission,
+    in_flight: FuturesUnordered<BoxFuture<'s, Result<(), BuildError>>>,
+}
+
+impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
+    /// A window admitting `window` puts at once over `store`.
+    fn new(store: &'s S, window: Window) -> Self {
+        Self {
+            store,
+            admission: Admission::new(window),
+            in_flight: FuturesUnordered::new(),
+        }
+    }
+
+    /// Seal `node`, dispatch its put into the window, and return the derived
+    /// address. A backend fault surfaces as a store error.
+    async fn put_node<F: Format>(
+        &mut self,
+        node: &Node<F>,
+        stats: &mut BuildStats,
+    ) -> Result<ChunkAddress, BuildError> {
+        let chunk = node.to_chunk()?;
+        let address = *chunk.address();
+        let store = self.store;
+        self.admit(
+            Box::pin(async move {
+                store
+                    .put(chunk)
+                    .await
+                    .map_err(|error| BuildError::from(StoreError::store(error)))
+            }),
+            stats,
+        )
+        .await?;
+        stats.nodes_written = stats.nodes_written.saturating_add(1);
+        Ok(address)
+    }
+
+    /// Seal `payload` into a content chunk, dispatch its put into the window,
+    /// and return the derived address.
+    async fn put_payload(
+        &mut self,
+        payload: Vec<u8>,
+        stats: &mut BuildStats,
+    ) -> Result<ChunkAddress, BuildError> {
+        let content = ContentChunk::new(payload).map_err(BuildError::Seal)?;
+        let chunk = Chunk::from_envelope(content.into()).map_err(BuildError::Seal)?;
+        let address = *chunk.address();
+        let store = self.store;
+        self.admit(
+            Box::pin(async move { store.put(chunk).await.map_err(BuildError::backend) }),
+            stats,
+        )
+        .await?;
+        stats.nodes_written = stats.nodes_written.saturating_add(1);
+        Ok(address)
+    }
+
+    /// Park on completions until the window has a free slot, push `put`, then
+    /// poll the set once so the fresh put starts without parking. Records the
+    /// window's high-water occupancy so a build reports its put concurrency.
+    async fn admit(
+        &mut self,
+        put: BoxFuture<'s, Result<(), BuildError>>,
+        stats: &mut BuildStats,
+    ) -> Result<(), BuildError> {
+        while !self.admission.admits(self.in_flight.len(), true) {
+            self.settle_one().await?;
+        }
+        self.in_flight.push(put);
+        stats.peak_in_flight = stats.peak_in_flight.max(self.in_flight.len());
+        self.sweep().await
+    }
+
+    /// Await one completion; an empty window is a no-op.
+    async fn settle_one(&mut self) -> Result<(), BuildError> {
+        let in_flight = &mut self.in_flight;
+        poll_fn(|cx| Pin::new(&mut *in_flight).poll_next(cx))
+            .await
+            .unwrap_or(Ok(()))
+    }
+
+    /// Await every outstanding put, so the returned root covers a fully stored
+    /// tree.
+    async fn settle(&mut self) -> Result<(), BuildError> {
+        while !self.in_flight.is_empty() {
+            self.settle_one().await?;
+        }
+        Ok(())
+    }
+
+    /// Fold settled puts without parking: every live put is polled once with
+    /// the task's waker so freshly admitted puts make progress.
+    async fn sweep(&mut self) -> Result<(), BuildError> {
+        let in_flight = &mut self.in_flight;
+        poll_fn(|cx| {
+            loop {
+                match Pin::new(&mut *in_flight).poll_next(cx) {
+                    Poll::Ready(Some(Err(error))) => return Poll::Ready(Err(error)),
+                    Poll::Ready(Some(Ok(()))) => {}
+                    Poll::Ready(None) | Poll::Pending => return Poll::Ready(Ok(())),
+                }
+            }
+        })
+        .await
     }
 }
 
@@ -213,7 +354,7 @@ impl<F: Format> Builder<F> {
 /// always spills, a subtree defers its own embed decision to [`resolve`].
 pub(crate) async fn build_table<S, F>(
     store: &S,
-    items: &[Item<F>],
+    items: &[Item<'_, F>],
     consumed: usize,
     stats: &mut BuildStats,
 ) -> Result<ForkTable<F>, BuildError>
@@ -221,7 +362,25 @@ where
     S: ChunkPut + MaybeSync,
     F: Format,
 {
-    let mut stack: Vec<Frame<'_, F>> = Vec::new();
+    let mut sink = PutSink::new(store, put_window::<F>());
+    let table = build_table_in(&mut sink, items, consumed, stats).await?;
+    sink.settle().await?;
+    Ok(table)
+}
+
+/// Assemble the top fork table for `items`, spilling each finished subtree into
+/// the shared put window as it closes so siblings store concurrently.
+async fn build_table_in<'a, S, F>(
+    sink: &mut PutSink<'_, S>,
+    items: &'a [Item<'a, F>],
+    consumed: usize,
+    stats: &mut BuildStats,
+) -> Result<ForkTable<F>, BuildError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
+    let mut stack: Vec<Frame<'a, F>> = Vec::new();
     stack.push(Frame::new(consumed, items));
     let mut returned: Option<Resolved<F>> = None;
 
@@ -242,17 +401,17 @@ where
                 if stack.is_empty() {
                     return Ok(frame.table);
                 }
-                returned = Some(resolve(store, frame.table, stats).await?);
+                returned = Some(resolve_in(sink, frame.table, stats).await?);
             }
         }
     }
 }
 
-/// One key-value binding, cloned into a linear array for indexed descent.
-pub(crate) struct Item<F: Format> {
-    pub(crate) key: Bytes,
-    pub(crate) entry: Entry<F>,
-    pub(crate) meta: Option<Metadata<F>>,
+/// One key-value binding, borrowed from the sorted map for indexed descent.
+pub(crate) struct Item<'a, F: Format> {
+    pub(crate) key: &'a Bytes,
+    pub(crate) entry: &'a Entry<F>,
+    pub(crate) meta: &'a Option<Metadata<F>>,
 }
 
 /// A resolved subtree bubbling up to its parent fork.
@@ -294,7 +453,7 @@ struct OpenFork<F: Format> {
 /// table built so far, and the fork whose child is open.
 struct Frame<'a, F: Format> {
     consumed: usize,
-    items: &'a [Item<F>],
+    items: &'a [Item<'a, F>],
     cursor: usize,
     table: ForkTable<F>,
     open: Option<OpenFork<F>>,
@@ -305,13 +464,13 @@ enum Action<'a, F: Format> {
     /// A terminal fork was inserted; keep processing this frame.
     Continue,
     /// A fork opened onto the given child keys at the given consumed depth.
-    Descend(&'a [Item<F>], usize),
+    Descend(&'a [Item<'a, F>], usize),
     /// The frame is complete.
     Finalize,
 }
 
 impl<'a, F: Format> Frame<'a, F> {
-    const fn new(consumed: usize, items: &'a [Item<F>]) -> Self {
+    const fn new(consumed: usize, items: &'a [Item<'a, F>]) -> Self {
         Self {
             consumed,
             items,
@@ -369,7 +528,7 @@ struct Group<'a, F: Format> {
     plen: usize,
     entry: Option<Entry<F>>,
     meta: Option<Metadata<F>>,
-    child: Option<&'a [Item<F>]>,
+    child: Option<&'a [Item<'a, F>]>,
     end: usize,
 }
 
@@ -377,7 +536,7 @@ struct Group<'a, F: Format> {
 /// its compacted edge (capped at the prefix bound), the value of any key that
 /// terminates on the edge, and the child keys that continue past it.
 fn next_group<'a, F: Format>(
-    items: &'a [Item<F>],
+    items: &'a [Item<'a, F>],
     cursor: usize,
     consumed: usize,
 ) -> Result<Group<'a, F>, BuildError> {
@@ -399,12 +558,7 @@ fn next_group<'a, F: Format>(
     let last = items
         .get(end.saturating_sub(1))
         .ok_or(BuildError::Internal)?;
-    let lcp = common_prefix_len(
-        &first.key,
-        &last.key,
-        consumed,
-        cut_allowance::<F>(consumed),
-    );
+    let lcp = common_prefix_len(first.key, last.key, consumed, cut_allowance::<F>(consumed));
     let plen = consumed.saturating_add(lcp);
     let edge = first.key.get(consumed..plen).ok_or(BuildError::Internal)?;
     let prefix = Prefix::try_from(edge)?;
@@ -460,6 +614,22 @@ where
     S: ChunkPut + MaybeSync,
     F: Format,
 {
+    let mut sink = PutSink::new(store, put_window::<F>());
+    let resolved = resolve_in(&mut sink, table, stats).await?;
+    sink.settle().await?;
+    Ok(resolved)
+}
+
+/// Embed a finished subtree, or spill it through the put window.
+async fn resolve_in<S, F>(
+    sink: &mut PutSink<'_, S>,
+    table: ForkTable<F>,
+    stats: &mut BuildStats,
+) -> Result<Resolved<F>, BuildError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
     let flat = Node::new(None, table.clone())
         .encoded_len()
         .saturating_sub(F::PREAMBLE.len());
@@ -471,7 +641,7 @@ where
     // before the table is consumed; the parent stamps it on the reference.
     let count = Some(SubtreeCount::new(table_count(&table)));
     let node = Node::new(None, table);
-    let address = emit_node(store, &node, stats).await?;
+    let address = emit_node_in(sink, &node, stats).await?;
     Ok(Resolved::Reference(ChunkRef::new(address), count))
 }
 
@@ -492,16 +662,33 @@ where
     S: ChunkPut + MaybeSync,
     F: Format,
 {
+    let mut sink = PutSink::new(store, put_window::<F>());
+    let address = emit_node_in(&mut sink, node, stats).await?;
+    sink.settle().await?;
+    Ok(address)
+}
+
+/// Dispatch `node`'s put into the window, spilling an over-budget node into a
+/// segment directory whose parts also ride the window.
+async fn emit_node_in<S, F>(
+    sink: &mut PutSink<'_, S>,
+    node: &Node<F>,
+    stats: &mut BuildStats,
+) -> Result<ChunkAddress, BuildError>
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+{
     if body_len(node) <= F::BUDGET {
-        return put_counted(store, node, stats).await;
+        return sink.put_node(node, stats).await;
     }
-    spill_node(store, node, stats).await
+    spill_node_in(sink, node, stats).await
 }
 
 /// Spill an over-budget node into a `<=` depth-two segment directory, storing
 /// each leaf and directory segment and returning the segmented node's address.
-async fn spill_node<S, F>(
-    store: &S,
+async fn spill_node_in<S, F>(
+    sink: &mut PutSink<'_, S>,
     node: &Node<F>,
     stats: &mut BuildStats,
 ) -> Result<ChunkAddress, BuildError>
@@ -535,7 +722,7 @@ where
         // its covered forks' counts, so a reader descends by rank without a
         // fetch.
         let seg_count = descriptor_count(slice.iter().map(|(_, record)| fork_count(record)));
-        let address = put_payload(store, encode_leaf_segment(&leaf), stats).await?;
+        let address = sink.put_payload(encode_leaf_segment(&leaf), stats).await?;
         leaf_descs.push((first_key, address, seg_count));
     }
 
@@ -548,56 +735,25 @@ where
             let group = leaf_descs.get(range.clone()).ok_or(BuildError::Internal)?;
             let &(first_key, _, _) = group.first().ok_or(BuildError::Internal)?;
             let seg_count = descriptor_count(group.iter().map(|(_, _, count)| count.get()));
-            let address = put_payload(
-                store,
-                encode_dir_segment::<F>(&SegmentDir::plain(group.to_vec())),
-                stats,
-            )
-            .await?;
+            let address = sink
+                .put_payload(
+                    encode_dir_segment::<F>(&SegmentDir::plain(group.to_vec())),
+                    stats,
+                )
+                .await?;
             dir_descs.push((first_key, address, seg_count));
         }
         SegmentDir::plain(dir_descs)
     };
 
-    put_payload(store, encode_segmented_node::<F>(node.root(), &top), stats).await
+    sink.put_payload(encode_segmented_node::<F>(node.root(), &top), stats)
+        .await
 }
 
 /// The subtree count a segment descriptor routes: the sum of the covered
 /// forks' (or nested descriptors') counts.
 fn descriptor_count(counts: impl Iterator<Item = u64>) -> SubtreeCount {
     SubtreeCount::new(counts.fold(0, u64::saturating_add))
-}
-
-/// Seal a ready payload into a content chunk, store it, and count it.
-async fn put_payload<S>(
-    store: &S,
-    payload: Vec<u8>,
-    stats: &mut BuildStats,
-) -> Result<ChunkAddress, BuildError>
-where
-    S: ChunkPut + MaybeSync,
-{
-    let content = ContentChunk::new(payload).map_err(BuildError::Seal)?;
-    let chunk = Chunk::from_envelope(content.into()).map_err(BuildError::Seal)?;
-    let address = *chunk.address();
-    store.put(chunk).await.map_err(BuildError::backend)?;
-    stats.nodes_written = stats.nodes_written.saturating_add(1);
-    Ok(address)
-}
-
-/// Spill one node to the store, counting it.
-async fn put_counted<S, F>(
-    store: &S,
-    node: &Node<F>,
-    stats: &mut BuildStats,
-) -> Result<ChunkAddress, BuildError>
-where
-    S: ChunkPut + MaybeSync,
-    F: Format,
-{
-    let address = store.put_node(node).await?;
-    stats.nodes_written = stats.nodes_written.saturating_add(1);
-    Ok(address)
 }
 
 /// Split `data` through the bounded splitter into the borrowed `store`,
