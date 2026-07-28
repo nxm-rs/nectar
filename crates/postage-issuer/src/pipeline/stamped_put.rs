@@ -873,18 +873,8 @@ mod tests {
     fn concurrent_duplicates_share_one_allocation_and_delivery() {
         use core::pin::pin;
         use core::task::{Context, Poll, Waker};
-        use std::task::Wake;
-        use std::thread::{self, Thread};
+        use std::thread;
         use std::time::{Duration, Instant};
-
-        /// Waker that unparks the thread which registered it.
-        struct Unpark(Thread);
-
-        impl Wake for Unpark {
-            fn wake(self: Arc<Self>) {
-                self.0.unpark();
-            }
-        }
 
         /// Signs after a delay, pinning the pending window open.
         struct SlowSigner;
@@ -916,7 +906,7 @@ mod tests {
         assert!(owner.as_mut().poll(noop).is_pending());
         assert!(waiter.as_mut().poll(noop).is_pending());
 
-        let waker = Waker::from(Arc::new(Unpark(thread::current())));
+        let waker = nectar_tasks::unpark_current();
         let cx = &mut Context::from_waker(&waker);
         let budget = Duration::from_secs(10);
         let start = Instant::now();
