@@ -10,8 +10,10 @@
 # Sanctioned homes:
 #   nectar-testing        the sole block_on entry (`run`) plus its Drive waker
 #   nectar-tasks wake.rs  the shared thread-unpark waker (`unpark_current`)
-#   nectar-tasks handoff  the pool-to-poll blocking bridge
+#   nectar-tasks handoff  the pool-to-poll blocking bridge and pool submit
+#   nectar-kernel PutSink the bounded put window over FuturesUnordered
 #   postage-issuer pump   the Stamped sign-admission pump
+#   postage-issuer task   the sign-job panic boundary
 #   nectar-marker         the sole MaybeSend/MaybeSync cfg dance
 
 set -euo pipefail
@@ -32,6 +34,33 @@ deny() {
         hits=$(printf '%s\n' "$hits" | grep -vE "^${allow}" || true)
     done
     hits=$(printf '%s\n' "$hits" | grep -v '^$' || true)
+    if [ -n "$hits" ]; then
+        printf 'reinvention gate: %s\n' "$label" >&2
+        printf '%s\n' "$hits" | sed 's/^/  /' >&2
+        fail=1
+    fi
+}
+
+# deny_pair <label> <ere-a> <ere-b> [allow-path-prefix ...]
+# Reports every `crates/**/*.rs` FILE matching BOTH patterns outside the
+# allowed paths: a shape whose tell is the co-occurrence, not either line
+# alone, so neither pattern on its own trips it.
+deny_pair() {
+    local label=$1 pat_a=$2 pat_b=$3
+    shift 3
+    local files file allow skip hits=''
+    files=$(grep -rlE --include='*.rs' -- "$pat_a" crates/ | sort -u || true)
+    for file in $files; do
+        grep -qE -- "$pat_b" "$file" || continue
+        skip=0
+        for allow in "$@"; do
+            case "$file" in
+                "$allow"*) skip=1; break ;;
+            esac
+        done
+        [ "$skip" -eq 0 ] && hits="${hits}${file}"$'\n'
+    done
+    hits=$(printf '%s' "$hits" | grep -v '^$' || true)
     if [ -n "$hits" ]; then
         printf 'reinvention gate: %s\n' "$label" >&2
         printf '%s\n' "$hits" | sed 's/^/  /' >&2
@@ -88,6 +117,34 @@ deny 'thread::park executor loop (use nectar_testing::run or nectar_tasks)' \
     'crates/tasks/src/handoff.rs' \
     'crates/postage-issuer/src/pipeline/mod.rs' \
     'crates/postage-issuer/src/pipeline/stamped_put.rs'
+
+# The bounded put window: a fresh `FuturesUnordered` set drained by
+# `settle_one`/`sweep`. The kernel `PutSink` is its sole home; a new in-flight
+# set or a drain-settle loop elsewhere is a copy. Only the sign-admission pump
+# owns its own set. `settle`/`drain` alone (a `Format` fold, `VecDeque::drain`)
+# is not this shape and is left alone.
+deny 'hand-rolled put window (use nectar_kernel::PutSink)' \
+    'fn[[:space:]]+(settle_one|sweep)[[:space:]]*[<(]|FuturesUnordered::new[[:space:]]*\(\)' \
+    'crates/kernel/' \
+    'crates/postage-issuer/src/pipeline/stamp_sink.rs'
+
+# The pool submit: a rayon pool job whose reply arrives on a oneshot. The
+# handoff owns this pairing; `submit`/`submit_on` return it. A bare pool
+# adapter (rayon::spawn, no oneshot) is not this shape and is left alone.
+deny_pair 'hand-rolled pool submit (use nectar_tasks::submit/submit_on)' \
+    'rayon::spawn' \
+    'oneshot::channel' \
+    'crates/tasks/'
+
+# The panic boundary: catch a job's unwind so a poisoned signer or pool worker
+# drops its reply unsent instead of aborting the process. Two boundaries only;
+# the seed-replay harness catches to assert a panic message, not to bound a
+# job, so it stays sanctioned in its own home.
+deny 'catch_unwind panic boundary (use the sanctioned task.rs/handoff.rs)' \
+    'catch_unwind' \
+    'crates/postage-issuer/src/pipeline/task.rs' \
+    'crates/tasks/src/handoff.rs' \
+    'crates/testing/src/seeds.rs'
 
 if [ "$fail" -ne 0 ]; then
     printf '\nreinvention gate failed: see matches above.\n' >&2

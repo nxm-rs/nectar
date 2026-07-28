@@ -62,10 +62,11 @@ pub enum StampedPutError<E> {
 
 /// One address's stamping progress, shared across clones.
 ///
-/// Kept over a shared signing future: this registry folds in-flight
-/// duplicates onto one allocation, one sign and one delivery, and hands the
-/// retained stamp to the next put when a delivery fails or is cancelled,
-/// which a shared future cannot express.
+/// Sanctioned hand-rolled registry, kept over `futures::Shared`: it folds
+/// in-flight duplicates onto one allocation, one sign and one delivery, and
+/// redelivers the retained stamp to the next put when a delivery fails or is
+/// cancelled, which `Shared`, cloning one output to every waiter, cannot
+/// express.
 enum Issued {
     /// Allocated; signing in flight. Wakers re-poll when it resolves.
     Pending(Vec<Waker>),
