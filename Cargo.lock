@@ -2617,7 +2617,6 @@ dependencies = [
  "arbitrary",
  "bytes",
  "futures",
- "futures-core",
  "nectar-file",
  "nectar-kernel",
  "nectar-manifest",
