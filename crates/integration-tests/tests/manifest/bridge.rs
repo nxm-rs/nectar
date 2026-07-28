@@ -5,13 +5,42 @@
 //! and the stored chunk address set must match exactly. Chunks are
 //! content-addressed, so address equality pins the stored bytes.
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
-use nectar_manifest::{Builder, Entry, Key, Reader, build_files};
-use nectar_primitives::{ChunkRef, ContentGet, DEFAULT_BODY_SIZE, MemoryStore};
+use nectar_file::{File, Plain, PutWindow, collect_into};
+use nectar_manifest::{Builder, Built, Entry, Key, Reader};
+use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, DEFAULT_BODY_SIZE, MemoryStore};
 use nectar_testing::{run, split_whole};
 
 const B: usize = DEFAULT_BODY_SIZE;
+
+/// Split each file through the plain splitter into `store`, binding its root
+/// reference under the key, then publish the manifest.
+async fn build_files(
+    store: &MemoryStore,
+    files: impl IntoIterator<Item = (Key, Bytes)>,
+) -> Result<Built> {
+    let mut builder: Builder = Builder::new();
+    for (key, data) in files {
+        let root =
+            collect_into::<_, Plain, DEFAULT_BODY_SIZE>(store, PutWindow::DEFAULT, &data).await?;
+        builder.insert(key, Entry::from(ChunkRef::new(root)), None);
+    }
+    Ok(builder.build(store).await?)
+}
+
+/// Look `key` up in the manifest at `root`, then reassemble the referenced file
+/// byte-exact from its stored chunks.
+async fn fetch_file(store: &MemoryStore, root: &ChunkAddress, key: &Key) -> Result<Bytes> {
+    let reader: Reader<_> = Reader::new(ContentGet::new(store.clone()));
+    let entry = reader.get(root, key).await?.context("key present")?;
+    let address = *entry.address().context("entry is a reference")?;
+    let file = File::<_, Plain, DEFAULT_BODY_SIZE>::open(ContentGet::new(store.clone()), address)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    let bytes = file.collect(u64::MAX).await.map_err(|e| anyhow!("{e}"))?;
+    Ok(Bytes::from(bytes))
+}
 /// Reference fan-out of one intermediate chunk at the default body size.
 const FAN: usize = B / 32;
 
@@ -85,13 +114,12 @@ fn bridged_files_round_trip_byte_exact() -> Result<()> {
     ];
     let root = *run(build_files(&store, files))?.root();
 
-    let reader: Reader<_> = Reader::new(ContentGet::new(store));
     ensure!(
-        run(reader.fetch(&root, &Key::from(&b"a/big"[..])))? == Some(big),
+        run(fetch_file(&store, &root, &Key::from(&b"a/big"[..])))? == big,
         "deep file round trip",
     );
     ensure!(
-        run(reader.fetch(&root, &Key::from(&b"a/small"[..])))? == Some(Bytes::from_static(b"x")),
+        run(fetch_file(&store, &root, &Key::from(&b"a/small"[..])))? == Bytes::from_static(b"x"),
         "single-leaf round trip",
     );
     Ok(())

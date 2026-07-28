@@ -9,15 +9,31 @@ use core::task::Poll;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
+use nectar_file::{Plain, PutWindow, collect_into};
 use nectar_manifest::{
-    BuildStats, Builder, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node, NodeGet,
-    Prefix, RootExtension, V1, build_files,
+    BuildStats, Builder, Built, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node,
+    NodeGet, Prefix, RootExtension, V1,
 };
 use nectar_primitives::store::ChunkPut;
 use nectar_primitives::{
-    Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentGet, MemoryStore, Verified,
+    Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentGet, DEFAULT_BODY_SIZE, MemoryStore, Verified,
 };
 use nectar_testing::{Drive, GateStore, run, split_whole};
+
+/// Split each file through the plain splitter into `store`, binding its root
+/// reference under the key, then publish the manifest.
+async fn build_files(
+    store: &MemoryStore,
+    files: impl IntoIterator<Item = (Key, Bytes)>,
+) -> Result<Built> {
+    let mut builder: Builder = Builder::new();
+    for (key, data) in files {
+        let root =
+            collect_into::<_, Plain, DEFAULT_BODY_SIZE>(store, PutWindow::DEFAULT, &data).await?;
+        builder.insert(key, Entry::from(ChunkRef::new(root)), None);
+    }
+    Ok(builder.build(store).await?)
+}
 
 const fn ref32(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))

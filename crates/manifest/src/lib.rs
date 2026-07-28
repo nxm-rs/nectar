@@ -91,7 +91,6 @@ mod bounded;
 mod builder;
 mod codec;
 mod count;
-mod dx;
 #[cfg(feature = "encryption")]
 mod encryption;
 mod error;
@@ -119,10 +118,9 @@ mod value;
 
 pub use apply::{ApplyError, Changeset, apply};
 pub use bounded::{MetadataLen, Prefix, SegmentWeight};
-pub use builder::{BuildError, BuildStats, Builder, Built, build_files};
+pub use builder::{BuildError, BuildStats, Builder, Built};
 pub use codec::{DecodeError, EncodeError, recanonicalize};
 pub use count::{CountError, SubtreeCount};
-pub use dx::FetchError;
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use encryption::{EncryptedNode, EncryptedNodeGet, EncryptedNodePut, derive_key};

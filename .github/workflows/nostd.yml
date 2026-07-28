@@ -67,10 +67,8 @@ jobs:
                   cargo check --locked -p nectar-kernel \
                     --no-default-features --features chunk \
                     --target ${{ matrix.target }}
-            # The manifest core over the file read and split paths. Separate
-            # from the shared list above: the manifest edge pins the file
-            # crate's primitives feature, which unification would leak into
-            # the bare nectar-file pass.
+            # The manifest core, primitives-only. Separate from the shared
+            # list above to keep its bare-metal edge pinned in its own pass.
             - name: Check nectar-manifest without std
               run: |
                   cargo check --locked -p nectar-manifest \
