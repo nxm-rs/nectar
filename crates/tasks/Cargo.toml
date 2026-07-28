@@ -36,10 +36,11 @@ tokio = { workspace = true, features = ["sync"] }
 [features]
 # Standard library interop: the thread-unpark waker helper.
 std = []
-# Pool handoff over `futures-channel` oneshot: a panic-catching submit seam
-# onto the rayon pool. `Handoff` maps the oneshot via `futures-util`. Implies
-# `std`.
-rayon = [ "dep:futures-channel", "dep:futures-util", "dep:rayon", "std" ]
+# Spawn-generic job handoff over a `futures-channel` oneshot: [`Handoff`] and
+# [`submit_on`], mapped via `futures-util`. Implies `std`.
+handoff = [ "dep:futures-channel", "dep:futures-util", "std" ]
+# Panic-catching [`submit`] onto the rayon pool. Implies `handoff`.
+rayon = [ "dep:rayon", "handoff" ]
 # Spawner onto the ambient tokio runtime.
 tokio = [ "dep:tokio" ]
 # Spawner onto the browser event loop (wasm32 only).
