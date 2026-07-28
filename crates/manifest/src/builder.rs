@@ -222,7 +222,7 @@ impl<F: Format> Builder<F> {
 
 /// The builder's put window: the format's read-ahead saturated into a nonzero
 /// window, matching the segment reassembly and walk windows.
-fn put_window<F: Format>() -> Window {
+pub(crate) fn put_window<F: Format>() -> Window {
     let slots = u16::try_from(F::READ_AHEAD).unwrap_or(u16::MAX);
     Window::new(slots).unwrap_or(Window::DEFAULT)
 }
@@ -234,18 +234,23 @@ fn put_window<F: Format>() -> Window {
 /// Puts are order-free, so the whole window admits; every put is settled
 /// before the root is returned. Wraps the shared kernel put-sink, sealing
 /// chunks and mapping faults to [`BuildError`].
-struct PutSink<'s, S: ChunkPut + MaybeSync> {
+pub(crate) struct PutSink<'s, S: ChunkPut + MaybeSync> {
     store: &'s S,
     sink: nectar_kernel::PutSink<'s, Result<(), BuildError>>,
 }
 
 impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
     /// A window admitting `window` puts at once over `store`.
-    fn new(store: &'s S, window: Window) -> Self {
+    pub(crate) fn new(store: &'s S, window: Window) -> Self {
         Self {
             store,
             sink: nectar_kernel::PutSink::new(window),
         }
+    }
+
+    /// The store the window rides, for a caller that fetches on the same seam.
+    pub(crate) const fn store(&self) -> &'s S {
+        self.store
     }
 
     /// Seal `node`, dispatch its put into the window, and return the derived
@@ -312,35 +317,18 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
 
     /// Await every outstanding put, so the returned root covers a fully stored
     /// tree.
-    async fn settle(&mut self) -> Result<(), BuildError> {
+    pub(crate) async fn settle(&mut self) -> Result<(), BuildError> {
         self.sink.settle(|completion| completion).await
     }
 }
 
-/// Assemble the top fork table for `items` at depth `consumed`, resolving every
-/// finished subtree to an embedded table or a spilled reference as it closes.
+/// Assemble the top fork table for `items` at depth `consumed`, spilling each
+/// finished subtree into the shared put window as it closes so siblings store
+/// concurrently.
 ///
 /// The returned table is the caller's to wrap: a root wears its extension and
-/// always spills, a subtree defers its own embed decision to [`resolve`].
-pub(crate) async fn build_table<S, F>(
-    store: &S,
-    items: &[Item<'_, F>],
-    consumed: usize,
-    stats: &mut BuildStats,
-) -> Result<ForkTable<F>, BuildError>
-where
-    S: ChunkPut + MaybeSync,
-    F: Format,
-{
-    let mut sink = PutSink::new(store, put_window::<F>());
-    let table = build_table_in(&mut sink, items, consumed, stats).await?;
-    sink.settle().await?;
-    Ok(table)
-}
-
-/// Assemble the top fork table for `items`, spilling each finished subtree into
-/// the shared put window as it closes so siblings store concurrently.
-async fn build_table_in<'a, S, F>(
+/// always spills, a subtree defers its own embed decision to [`resolve_in`].
+pub(crate) async fn build_table_in<'a, S, F>(
     sink: &mut PutSink<'_, S>,
     items: &'a [Item<'a, F>],
     consumed: usize,
@@ -571,27 +559,11 @@ fn common_prefix_len(a: &Bytes, b: &Bytes, consumed: usize, cap: usize) -> usize
     len
 }
 
-/// Embed a finished subtree into its parent, or spill it to the store.
+/// Embed a finished subtree into its parent, or spill it through the put window.
 ///
 /// The embed decision is child-local: it reads the subtree's flat length alone,
 /// so it is stable under re-rooting and history-independent.
-pub(crate) async fn resolve<S, F>(
-    store: &S,
-    table: ForkTable<F>,
-    stats: &mut BuildStats,
-) -> Result<Resolved<F>, BuildError>
-where
-    S: ChunkPut + MaybeSync,
-    F: Format,
-{
-    let mut sink = PutSink::new(store, put_window::<F>());
-    let resolved = resolve_in(&mut sink, table, stats).await?;
-    sink.settle().await?;
-    Ok(resolved)
-}
-
-/// Embed a finished subtree, or spill it through the put window.
-async fn resolve_in<S, F>(
+pub(crate) async fn resolve_in<S, F>(
     sink: &mut PutSink<'_, S>,
     table: ForkTable<F>,
     stats: &mut BuildStats,
@@ -616,31 +588,15 @@ where
 }
 
 /// Publish `node` as one chunk, or, when its flat body overruns the format
-/// budget, spill it into a segment directory of sub-chunks that each fit.
+/// budget, spill it into a segment directory of sub-chunks that each fit, every
+/// part riding the shared put window.
 ///
 /// The single-chunk-node invariant holds here by construction: a body within
 /// `F::BUDGET` seals as one node, and a wider body partitions at content-defined
 /// boundaries into leaf and directory segments no larger than one chunk. The
 /// `OverBudget` guard on [`Node::encode`] therefore stays unreachable on this
 /// path.
-pub(crate) async fn emit_node<S, F>(
-    store: &S,
-    node: &Node<F>,
-    stats: &mut BuildStats,
-) -> Result<ChunkAddress, BuildError>
-where
-    S: ChunkPut + MaybeSync,
-    F: Format,
-{
-    let mut sink = PutSink::new(store, put_window::<F>());
-    let address = emit_node_in(&mut sink, node, stats).await?;
-    sink.settle().await?;
-    Ok(address)
-}
-
-/// Dispatch `node`'s put into the window, spilling an over-budget node into a
-/// segment directory whose parts also ride the window.
-async fn emit_node_in<S, F>(
+pub(crate) async fn emit_node_in<S, F>(
     sink: &mut PutSink<'_, S>,
     node: &Node<F>,
     stats: &mut BuildStats,
