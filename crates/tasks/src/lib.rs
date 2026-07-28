@@ -5,8 +5,10 @@
 //! # Features
 //!
 //! - `std`: [`unpark_current`], a thread-unpark waker for blocking bridges
-//! - `rayon`: [`submit`]/[`submit_on`]/[`Handoff`], a panic-catching pool
-//!   handoff over a oneshot channel; [`Handoff`] is itself a `Future`
+//! - `handoff`: [`submit_on`]/[`Handoff`], a `Spawn`-generic job handoff
+//!   over a oneshot channel; [`Handoff`] is itself a `Future`
+//! - `rayon`: [`submit`], a panic-catching submit onto the rayon pool;
+//!   implies `handoff`
 //! - `tokio`: `TokioSpawner`, spawns onto the ambient tokio runtime
 //! - `wasm` (wasm32 only): `WasmSpawner`, spawns onto the browser event
 //!   loop
@@ -38,7 +40,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-#[cfg(feature = "rayon")]
+#[cfg(feature = "handoff")]
 mod handoff;
 #[cfg(all(feature = "tokio", multi_thread))]
 mod tokio;
@@ -48,7 +50,9 @@ mod wake;
 mod wasm;
 
 #[cfg(feature = "rayon")]
-pub use self::handoff::{Handoff, submit, submit_on};
+pub use self::handoff::submit;
+#[cfg(feature = "handoff")]
+pub use self::handoff::{Handoff, submit_on};
 #[cfg(all(feature = "tokio", multi_thread))]
 pub use self::tokio::TokioSpawner;
 #[cfg(feature = "std")]

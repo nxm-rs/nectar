@@ -7,6 +7,10 @@
 //! ops are never reordered or batched. Nodes persist through a
 //! [`NodeSaver`], so the storage layout and any put concurrency are the
 //! adapter's.
+//!
+//! Commit cost is O(touched trie), not O(whole trie): a deliberate trade for
+//! the submission-order pin. Bulk construction should use the manifest 1.0
+//! builder instead.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;

@@ -5,6 +5,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
+#[cfg(feature = "rayon")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use alloc::boxed::Box;
@@ -68,6 +69,7 @@ impl<T> Future for Handoff<T> {
 /// future ever blocks on the pool. A panicking job is caught here and drops
 /// its sender unsent, so the receiver sees a dropped job instead of a
 /// process abort.
+#[cfg(feature = "rayon")]
 pub fn submit<T, F>(job: F) -> Handoff<T>
 where
     T: Send + 'static,
@@ -158,6 +160,7 @@ mod tests {
     }
 
     /// The pool path end to end: a panicking job reads as a drop.
+    #[cfg(feature = "rayon")]
     #[test]
     fn a_panicking_job_reads_as_a_drop() {
         let handoff = submit(|| panic!("job panicked"));
