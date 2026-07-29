@@ -224,7 +224,7 @@ pub(crate) fn put_window<F: Format>() -> Window {
 /// A chunk's address is content-derived at seal, so a parent references a
 /// child the moment it seals while the child's put still rides the window.
 /// Puts are order-free, so the whole window admits; every put is settled
-/// before the root is returned. Wraps the shared kernel put-sink, sealing
+/// before the root is returned. Wraps the shared governor put-sink, sealing
 /// chunks and mapping faults to [`BuildError`].
 pub(crate) struct PutSink<'s, S: ChunkPut + MaybeSync> {
     store: &'s S,

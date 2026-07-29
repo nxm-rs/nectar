@@ -23,7 +23,7 @@ use crate::walk::Plain;
 #[error("erased store fetch failed")]
 pub struct BoxedStoreError(#[source] BoxedError);
 
-/// Boxed erased fetch future; the kernel alias relaxes `Send` off the
+/// Boxed erased fetch future; the governor alias relaxes `Send` off the
 /// multi-threaded targets.
 type BoxGet<const B: usize> =
     BoxFuture<'static, Result<Chunk<Verified, ContentOnlyChunkSet<B>>, BoxedStoreError>>;
