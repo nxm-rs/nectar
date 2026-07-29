@@ -790,24 +790,6 @@ fn take_entry<F: Format>(
     })
 }
 
-/// Reads exactly one `R::SIZE`-wide structural reference.
-///
-/// The slice is cut to the width first, so reconstruction reads a
-/// full-width field or the cursor reports the underrun; the fallback keeps
-/// the read total and is unreachable.
-fn take_reference<R: NodeRef>(cur: &mut Cursor<'_>) -> Result<R, DecodeError> {
-    let bytes = cur.take_slice(R::SIZE)?;
-    R::from_wire_bytes(bytes).ok_or(DecodeError::Underrun(Underrun {
-        expected: R::SIZE,
-        available: bytes.len(),
-    }))
-}
-
-/// Emits one `R::SIZE`-wide structural reference.
-fn put_reference<R: NodeRef>(w: &mut Writer<'_>, reference: &R) {
-    w.put(&*reference.to_bytes());
-}
-
 /// Reads a child in the format its flags declared; an embedded child is an
 /// exactly `ilen`-delimited node body with zero flags and at least one fork.
 fn take_child<F: Format, R: NodeRef>(
@@ -816,7 +798,9 @@ fn take_child<F: Format, R: NodeRef>(
 ) -> Result<Option<Child<F, R>>, DecodeError> {
     Ok(match fmt {
         ChildFmt::None => None,
-        ChildFmt::Ref => Some(Child::Ref(take_reference::<R>(cur)?)),
+        // The reference's own wire seam reads exactly `R::SIZE` bytes, the
+        // width the enclosing image's flags byte witnessed.
+        ChildFmt::Ref => Some(Child::Ref(cur.take::<R>()?)),
         ChildFmt::Inline => {
             let ilen = cur.take::<U16Le>()?.get();
             if ilen == 0 || ilen > F::INLINE_MAX {
@@ -843,7 +827,7 @@ fn take_child<F: Format, R: NodeRef>(
 /// never restates the width witness.
 fn put_child<F: Format, R: NodeRef>(w: &mut Writer<'_>, child: &Child<F, R>) {
     match child {
-        Child::Ref(reference) => put_reference(w, reference),
+        Child::Ref(reference) => w.put(reference),
         Child::Embedded(table) => {
             w.put(&U16Le::of(embedded_len(table)));
             w.put(&0u8);
@@ -1037,7 +1021,7 @@ fn put_segment_dir<R: NodeRef>(w: &mut Writer<'_>, dir: &SegmentDir<R>) {
         w.put(&desc.first_key);
     }
     for desc in &dir.descriptors {
-        put_reference(w, &desc.reference);
+        w.put(&desc.reference);
         w.put(&desc.seg_count);
     }
 }
@@ -1115,7 +1099,7 @@ fn take_segment_dir<F: Format, R: NodeRef>(
     }
     let mut descriptors = Vec::with_capacity(scount);
     for &first_key in &keys {
-        let reference = take_reference::<R>(cur)?;
+        let reference = cur.take::<R>()?;
         let seg_count = cur.take::<SubtreeCount>()?;
         descriptors.push(SegDesc {
             first_key,
@@ -1854,6 +1838,10 @@ mod tests {
                 image[1] = V1::VERSION;
             }
             let _ = Node::<V1>::decode(&image);
+            // The wide reader walks the same grammar at the other stride, so
+            // every field read is exercised at both widths.
+            let _ = Node::<V1, EncryptedChunkRef>::decode(&image);
+            let _ = Node::<V1, EncryptedChunkRef>::decode_chunk(&image);
         }
     }
 
@@ -1897,6 +1885,51 @@ mod tests {
             recanonicalize::<V1, ChunkRef>(&segmented).unwrap(),
             segmented
         );
+    }
+
+    // The width witness guards every chunk kind, not just the plain node: a
+    // segment image read at the other width fails loud rather than reading its
+    // descriptors at the wrong stride.
+    #[test]
+    fn segment_chunks_reject_the_other_structural_width() {
+        let mut leaf_table: ForkTable<V1> = ForkTable::new();
+        leaf_table
+            .insert(prefix(b"ab"), Entry::from(ref32(1)).into(), None)
+            .unwrap();
+        let dir = SegmentDir::new(vec![(b'a', ref32(1), SubtreeCount::default())]);
+        let wide = SegmentDir::new(vec![(b'a', ref64(1), SubtreeCount::default())]);
+
+        for plain in [
+            encode_leaf_segment::<V1, ChunkRef>(&leaf_table),
+            encode_dir_segment::<V1, ChunkRef>(&dir),
+            encode_segmented_node::<V1, ChunkRef>(None, &dir),
+        ] {
+            assert!(matches!(
+                Node::<V1, EncryptedChunkRef>::decode_chunk(&plain),
+                Err(DecodeError::RefWidth {
+                    expected: RefKind::Encrypted,
+                    ..
+                })
+            ));
+        }
+
+        let mut wide_table: ForkTable<V1, EncryptedChunkRef> = ForkTable::new();
+        wide_table
+            .insert(prefix(b"ab"), Entry::from(ref32(1)).into(), None)
+            .unwrap();
+        for encrypted in [
+            encode_leaf_segment::<V1, EncryptedChunkRef>(&wide_table),
+            encode_dir_segment::<V1, EncryptedChunkRef>(&wide),
+            encode_segmented_node::<V1, EncryptedChunkRef>(None, &wide),
+        ] {
+            assert!(matches!(
+                Node::<V1>::decode_chunk(&encrypted),
+                Err(DecodeError::RefWidth {
+                    expected: RefKind::Plain,
+                    ..
+                })
+            ));
+        }
     }
 
     // A node carrying one referenced-child fork: the child count rides as a

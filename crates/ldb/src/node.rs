@@ -5,6 +5,7 @@
 //! presence bits are derived from the structure at encode time.
 
 use nectar_primitives::store::{MaybeSend, MaybeSync};
+use nectar_primitives::wire::{FromCursor, ToWriter, Underrun};
 use nectar_primitives::{ChunkRef, EncryptedChunkRef, Reference};
 
 use crate::fork::ForkTable;
@@ -14,11 +15,14 @@ use crate::value::Entry;
 
 /// A structural reference width a database can be keyed by.
 ///
-/// The sealed [`Reference`] set plus the thread bounds the async read and
-/// write seams carry, so it names exactly the two widths and no third can
-/// appear. `MaybeSend` and `MaybeSync` are inert on wasm32, on bare metal and
-/// under the `unsync` feature.
-pub trait NodeRef: Reference + MaybeSend + MaybeSync {}
+/// The sealed [`Reference`] set plus the wire seam the codec reads and writes
+/// it through and the thread bounds the async seams carry, so it names exactly
+/// the two widths and no third can appear. `MaybeSend` and `MaybeSync` are
+/// inert on wasm32, on bare metal and under the `unsync` feature.
+pub trait NodeRef:
+    Reference + FromCursor<Error = Underrun> + ToWriter + MaybeSend + MaybeSync
+{
+}
 
 impl NodeRef for ChunkRef {}
 
