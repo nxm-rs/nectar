@@ -20,8 +20,9 @@ workspace = true
 [dependencies]
 # nectar
 nectar-clock.workspace = true
+nectar-marker.workspace = true
 # The chunk-verification core, re-exported wholesale at its original paths.
-# It carries the BMT, chunk and marker deps this crate no longer names.
+# It carries the BMT and chunk deps this crate no longer names.
 nectar-primitives-core.workspace = true
 
 ## alloy crypto
@@ -40,6 +41,8 @@ derive_more.workspace = true
 
 # Core dependencies
 bytes.workspace = true
+# The boxed-stream alias in `marker`; nothing else here is async.
+futures-core.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, optional = true }
 
@@ -105,6 +108,7 @@ default = [ "std" ]
 std = [
 	"dep:parking_lot",
 	"dep:web-time",
+	"futures-core/std",
 	"k256/precomputed-tables",
 	"k256/std",
 	"nectar-clock/std",
@@ -113,10 +117,12 @@ std = [
 # WASM thread pool via wasm-bindgen-rayon. OFF by default so the default wasm
 # build needs no SharedArrayBuffer / cross-origin isolation — letting it run on
 # hosts that can't set COOP/COEP (e.g. the eth.limo ENS gateway). Enable it
-# (`--features wasm-threads`) for the threaded build (faster BMT hashing, but
-# requires shared memory). Must stay out of `default`: dependents pull this
-# crate with default features, so a default-on threads feature would be forced
-# on transitively and couldn't be opted out.
+# (`--features wasm-threads`) only to export `initThreadPool` for a consumer
+# that drives rayon itself: this crate's own parallel BMT path is gated to
+# non-wasm targets, so the pool speeds nothing here and costs shared memory.
+# Must stay out of `default`: dependents pull this crate with default features,
+# so a default-on threads feature would be forced on transitively and couldn't
+# be opted out.
 wasm-threads = [ "dep:wasm-bindgen-rayon" ]
 # Plain-terminology umbrella for "run in parallel", matching the `parallel`
 # feature on nectar-postage and nectar-postage-issuer. Native builds already
@@ -141,7 +147,7 @@ envelope = [ "dep:chacha20poly1305", "dep:hkdf", "dep:sha2" ]
 # the wasm32 relaxation of MaybeSend/MaybeSync and the boxed error aliases on
 # any target. An explicit feature rather than a target cfg so CI can exercise
 # the relaxed shape off-wasm.
-unsync = [ "nectar-primitives-core/unsync" ]
+unsync = [ "nectar-marker/unsync", "nectar-primitives-core/unsync" ]
 
 [package.metadata.docs.rs]
 all-features = true

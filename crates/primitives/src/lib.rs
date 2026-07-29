@@ -61,7 +61,7 @@ pub use bytes;
 
 // The verification core, re-exported module by module so every path a
 // consumer imported before the carve still resolves.
-pub use nectar_primitives_core::{error, marker, nonce, wire};
+pub use nectar_primitives_core::{error, nonce, wire};
 #[cfg(any(test, feature = "arbitrary"))]
 pub use nectar_primitives_core::{generators, oracles};
 
@@ -73,6 +73,7 @@ pub mod ecies;
 pub mod entry_ref;
 #[cfg(feature = "envelope")]
 pub mod envelope;
+pub mod marker;
 pub mod neighborhood_depth;
 pub mod network_id;
 pub mod overlay;

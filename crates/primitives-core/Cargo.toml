@@ -41,7 +41,6 @@ derive_more.workspace = true
 
 # Core dependencies
 bytes.workspace = true
-futures-core.workspace = true
 once_cell.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, optional = true }
@@ -79,16 +78,16 @@ std = [
 	"dep:alloy-signer-local",
 	"dep:keccak-batch",
 	"dep:rayon",
-	"futures-core/std",
 	"k256/precomputed-tables",
 	"k256/std",
 ]
 serde = [ "dep:serde" ]
 arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "std" ]
 # Single-thread send escape for non-wasm targets (e.g. zkVM guests): applies
-# the wasm32 relaxation of MaybeSend/MaybeSync on any target. An explicit
-# feature rather than a target cfg so CI can exercise the relaxed shape
-# off-wasm.
+# the wasm32 relaxation of the boxed store-error aliases on any target, and
+# forwards to nectar-marker so the MaybeSend/MaybeSync bounds in
+# nectar-primitives relax with them. An explicit feature rather than a target
+# cfg so CI can exercise the relaxed shape off-wasm.
 unsync = [ "nectar-marker/unsync" ]
 
 [package.metadata.docs.rs]

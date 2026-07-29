@@ -115,13 +115,15 @@ mod tests {
     }
 
     /// The width-carrying borrow the XOR metric in `nectar-primitives` builds
-    /// on, and the BMT hash width that keys off it.
+    /// on. `HASH_SIZE` is defined as this width, so pin the width itself: the
+    /// keccak digest the BMT hashes into is 32 bytes.
     #[test]
     fn as_array_is_the_same_bytes_at_the_declared_width() {
         let addr = ChunkAddress::new([3u8; 32]);
         assert_eq!(addr.as_array().as_slice(), addr.as_bytes());
         assert_eq!(addr.as_array().len(), ChunkAddress::SIZE);
-        assert_eq!(crate::bmt::HASH_SIZE, ChunkAddress::SIZE);
+        assert_eq!(ChunkAddress::SIZE, 32);
+        assert_eq!(crate::bmt::HASH_SIZE, 32);
     }
 
     #[test]

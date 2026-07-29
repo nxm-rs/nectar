@@ -5,9 +5,9 @@
 //! and single-owner carriers with their acceptance rules, single-owner owner
 //! recovery, and the address, error and wire types those need.
 //!
-//! Storage, encryption, envelopes, ECIES and the routing metrics live in
-//! `nectar-primitives`, which depends on this crate and re-exports every item
-//! at its original path.
+//! Storage, encryption, envelopes, ECIES, the thread-safety markers and the
+//! routing metrics live in `nectar-primitives`, which depends on this crate
+//! and re-exports every item at its original path.
 //!
 //! ## Usage Examples
 //!
@@ -46,6 +46,12 @@ extern crate alloc;
 // its precomputed tables; nothing here names the crate.
 use k256 as _;
 
+// The thread-safety markers live in `nectar-primitives`, beside the store
+// traits that carry them. The direct dependency exists only so `unsync`
+// relaxes those markers and the boxed store-error aliases below in lockstep;
+// nothing here names the crate.
+use nectar_marker as _;
+
 // Re-export dependencies that are part of our public API
 pub use bytes;
 
@@ -55,7 +61,6 @@ pub mod chunk;
 pub mod error;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod generators;
-pub mod marker;
 pub mod nonce;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod oracles;
