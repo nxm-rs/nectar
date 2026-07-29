@@ -33,7 +33,7 @@ Two viable homes once `nectar-kernel` (a name that reads as "executor") retires.
   Both crates are `no_std` + `alloc` and depend on `futures-core`, so it compiles.
   `nectar-tasks` becomes the single async-primitives crate: spawn seam plus bounded admission.
 
-**Recommendation: (A).**
+**Decision: (A)** — confirmed with the maintainer.
 
 - `nectar-tasks` owns one documented concern — the runtime-agnostic *spawn* seam (`Spawn`, `TaskHandle`, handoff, tokio/wasm spawners).
   Bounded admission over a `FuturesUnordered` is *flow control*, a different concern.
