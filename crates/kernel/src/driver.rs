@@ -7,7 +7,7 @@ use core::task::{Context, Poll};
 use futures_core::Stream;
 use futures_util::stream::FuturesUnordered;
 
-use crate::future::BoxFuture;
+use crate::BoxFuture;
 
 /// Per-walker divergence beneath the shared driver: the frontier and its
 /// admission, the ready ordering, the completion fold with its error timing,
