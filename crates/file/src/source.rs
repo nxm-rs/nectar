@@ -11,7 +11,9 @@
 use core::convert::Infallible;
 use core::task::{Context, Poll};
 
-#[cfg(feature = "std")]
+// The positional adapter needs `io`; a test build links std even when
+// the feature is off, so the in-crate tests keep covering it.
+#[cfg(any(test, feature = "std"))]
 use std::io;
 
 use crate::num::u64_from_usize;
@@ -24,14 +26,9 @@ pub trait Source {
     /// Typed pull failure.
     type Error;
 
-    /// Total bytes the source will deliver, when known up front. The write
-    /// side never relies on it; it is a hint for callers.
-    fn size_hint(&self) -> Option<u64> {
-        None
-    }
-
     /// Fill the front of `buf`, delivering the byte count; zero ends the
-    /// source.
+    /// source. A count past `buf.len()` breaks the contract and the driver
+    /// clamps it, so a broken source cannot stall the write.
     fn poll_fill(
         &mut self,
         cx: &mut Context<'_>,
@@ -41,10 +38,6 @@ pub trait Source {
 
 impl Source for &[u8] {
     type Error = Infallible;
-
-    fn size_hint(&self) -> Option<u64> {
-        Some(u64_from_usize(<[u8]>::len(self)))
-    }
 
     fn poll_fill(
         &mut self,
@@ -64,10 +57,6 @@ impl Source for &[u8] {
 impl<T: Source + ?Sized> Source for &mut T {
     type Error = T::Error;
 
-    fn size_hint(&self) -> Option<u64> {
-        (**self).size_hint()
-    }
-
     fn poll_fill(
         &mut self,
         cx: &mut Context<'_>,
@@ -79,7 +68,7 @@ impl<T: Source + ?Sized> Source for &mut T {
 
 /// Random-access byte source; reads at distinct offsets are independent, so
 /// a positional target needs no cursor of its own.
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub trait ReadAt {
     /// Read into `buf` at `offset`, returning the bytes read; zero at or
@@ -95,7 +84,7 @@ pub trait ReadAt {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 impl ReadAt for [u8] {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let Ok(offset) = usize::try_from(offset) else {
@@ -117,7 +106,7 @@ impl ReadAt for [u8] {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 impl ReadAt for alloc::vec::Vec<u8> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         self.as_slice().read_at(offset, buf)
@@ -128,7 +117,7 @@ impl ReadAt for alloc::vec::Vec<u8> {
     }
 }
 
-#[cfg(all(feature = "std", feature = "primitives"))]
+#[cfg(all(any(test, feature = "std"), feature = "primitives"))]
 impl ReadAt for bytes::Bytes {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         <[u8] as ReadAt>::read_at(self.as_ref(), offset, buf)
@@ -139,7 +128,7 @@ impl ReadAt for bytes::Bytes {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 impl<T: ReadAt + ?Sized> ReadAt for &T {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         (**self).read_at(offset, buf)
@@ -150,7 +139,7 @@ impl<T: ReadAt + ?Sized> ReadAt for &T {
     }
 }
 
-#[cfg(all(feature = "std", unix))]
+#[cfg(all(any(test, feature = "std"), unix))]
 impl ReadAt for std::fs::File {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         std::os::unix::fs::FileExt::read_at(self, buf, offset)
@@ -161,7 +150,7 @@ impl ReadAt for std::fs::File {
     }
 }
 
-#[cfg(all(feature = "std", windows))]
+#[cfg(all(any(test, feature = "std"), windows))]
 impl ReadAt for std::fs::File {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         std::os::windows::fs::FileExt::seek_read(self, buf, offset)
@@ -174,7 +163,7 @@ impl ReadAt for std::fs::File {
 
 /// Terminal failure pulling from a [`ReadAt`] target; every variant is
 /// final for the write that met it.
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[derive(Debug, thiserror::Error)]
 pub enum ReadAtError {
@@ -217,7 +206,7 @@ pub enum ReadAtError {
 /// The declared length is read once, at the first pull, and every pull after
 /// it fills its request exactly; running out early is a typed
 /// [`ReadAtError::ShortRead`], never a silent truncation.
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[derive(Debug)]
 pub struct ReadAtSource<R> {
@@ -226,7 +215,7 @@ pub struct ReadAtSource<R> {
     len: Option<u64>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 impl<R> ReadAtSource<R> {
     /// Adapt `source`; its length is read at the first pull.
     pub const fn new(source: R) -> Self {
@@ -243,7 +232,7 @@ impl<R> ReadAtSource<R> {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 impl<R: ReadAt> ReadAtSource<R> {
     /// The declared length, sized once and memoized.
     fn declared(&mut self) -> Result<u64, ReadAtError> {
@@ -278,13 +267,9 @@ impl<R: ReadAt> ReadAtSource<R> {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 impl<R: ReadAt> Source for ReadAtSource<R> {
     type Error = ReadAtError;
-
-    fn size_hint(&self) -> Option<u64> {
-        self.len
-    }
 
     fn poll_fill(
         &mut self,
@@ -297,7 +282,7 @@ impl<R: ReadAt> Source for ReadAtSource<R> {
 
 /// Fill `buf` from `offset`, looping over short reads; running out of
 /// source is an error, never a silent truncation.
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 fn read_full<R: ReadAt + ?Sized>(
     source: &R,
     offset: u64,

@@ -86,7 +86,7 @@ impl<S, M: WalkMode, const B: usize> DownloadBuilder<S, M, B> {
     /// Adaptive cap: `policy` recomputes the window between admission
     /// rounds from realized occupancy; the built window is its seed. The
     /// policy runs in the poll path and must be cheap and non-blocking.
-    #[cfg(feature = "std")]
+    #[cfg(any(test, feature = "std"))]
     #[must_use]
     pub fn window_policy(mut self, policy: WindowPolicyFn) -> Self {
         self.policy = Some(policy);

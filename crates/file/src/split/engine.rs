@@ -35,7 +35,7 @@ pub(super) type PutDone<E> = (ChunkAddress, Result<(), E>);
 
 /// Boxed put future; the governor alias relaxes `Send` off the multi-threaded
 /// targets.
-type BoxPut<E> = BoxFuture<'static, PutDone<E>>;
+type BoxPut<'a, E> = BoxFuture<'a, PutDone<E>>;
 
 /// Pool leaf seal reply: its span rides back alongside the sealed chunk so
 /// the ordered stream needs no side channel.
@@ -106,7 +106,7 @@ enum Phase {
 /// All state lives here, so every poll is cancel-safe and dropping the
 /// split loses only in-flight puts. The module docs state the normative
 /// admission invariants.
-pub struct Split<S, M, const B: usize = DEFAULT_BODY_SIZE>
+pub struct Split<'a, S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
     S: ChunkPut<AnyChunkSet<B>>,
     M: SplitMode,
@@ -123,7 +123,7 @@ where
     /// Sealed chunks awaiting a put slot; bounded by the spine height.
     pending: VecDeque<Chunk<Verified, AnyChunkSet<B>>>,
     /// Bounded put window over sealed chunks; `pending` feeds it as slots free.
-    puts: PutSink<'static, PutDone<S::Error>>,
+    puts: PutSink<'a, PutDone<S::Error>>,
     /// Pool fan-out for leaf seals; `None` keeps sealing inline.
     #[cfg(feature = "rayon")]
     hash: Option<HashFan<M, B>>,
@@ -132,9 +132,9 @@ where
     stats: SplitStats,
 }
 
-impl<S, M, const B: usize> Split<S, M, B>
+impl<'a, S, M, const B: usize> Split<'a, S, M, B>
 where
-    S: ChunkPut<AnyChunkSet<B>> + Clone + 'static,
+    S: ChunkPut<AnyChunkSet<B>> + Clone + 'a,
     M: SplitMode,
 {
     /// Compile-time profile guard for the split's span arithmetic.
@@ -150,6 +150,7 @@ where
 
     /// Split a byte stream into the tree under `store`, holding at most
     /// `window` puts in flight.
+    #[cfg(test)]
     pub fn new(store: S, window: PutWindow) -> Self
     where
         M: Default,
@@ -625,7 +626,7 @@ where
         chunk: Chunk<Verified, AnyChunkSet<B>>,
     ) -> Result<(), SplitError<S::Error>> {
         let store = self.store.clone();
-        let put: BoxPut<S::Error> = Box::pin(async move {
+        let put: BoxPut<'a, S::Error> = Box::pin(async move {
             let address = *chunk.address();
             (address, store.put(chunk).await)
         });
@@ -657,7 +658,7 @@ where
     }
 }
 
-impl<S, M, const B: usize> fmt::Debug for Split<S, M, B>
+impl<S, M, const B: usize> fmt::Debug for Split<'_, S, M, B>
 where
     S: ChunkPut<AnyChunkSet<B>>,
     M: SplitMode,

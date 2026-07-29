@@ -2639,7 +2639,6 @@ dependencies = [
  "nectar-mantaray 0.4.0",
  "nectar-primitives 0.4.0",
  "nectar-testing",
- "thiserror",
 ]
 
 [[package]]

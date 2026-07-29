@@ -69,7 +69,7 @@ impl<S, M: WalkMode, const B: usize> ReadBuilder<S, M, B> {
     /// Adaptive cap: `policy` recomputes the window between admission
     /// rounds from realized occupancy; the built window is its seed. The
     /// policy runs in the poll path and must be cheap and non-blocking.
-    #[cfg(feature = "std")]
+    #[cfg(any(test, feature = "std"))]
     #[must_use]
     pub fn window_policy(mut self, policy: WindowPolicyFn) -> Self {
         self.policy = Some(policy);
@@ -97,18 +97,6 @@ impl<S, M: WalkMode, const B: usize> ReadBuilder<S, M, B> {
         );
         let window = controller.window();
         self.window(window).window_policy(controller.into_policy())
-    }
-
-    /// Fetch window sized to sustain `bytes_per_second` at `mean_latency`
-    /// per leaf fetch; see [`Window::for_throughput`].
-    #[cfg(test)]
-    #[must_use]
-    pub const fn throughput(self, bytes_per_second: u64, mean_latency: Duration) -> Self {
-        self.window(Window::for_throughput(
-            bytes_per_second,
-            mean_latency,
-            body_size::<B>(),
-        ))
     }
 
     /// Absolute byte range to read, clipped to the file.

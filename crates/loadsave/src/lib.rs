@@ -49,7 +49,6 @@ use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, ContentGetError, TrustedGet};
 use nectar_primitives::{AnyChunkSet, DEFAULT_BODY_SIZE, EntryRef};
 
-
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
 
@@ -89,9 +88,7 @@ impl<S, const B: usize> NodeLoadSaver<S, B> {
     pub fn into_store(self) -> S {
         self.store
     }
-}
 
-impl<S, const B: usize> NodeLoadSaver<S, B> {
     /// One write handle over the borrowed store at the save-side window.
     const fn file(&self) -> File<&S, B> {
         File::new(&self.store, Policy::DEFAULT.with_put_window(self.window))
@@ -109,9 +106,7 @@ fn unwrap_save<E>(error: SaveError<E, core::convert::Infallible>) -> SplitError<
 
 /// Failure loading one node through the file joiner: the open, the join, or
 /// the [`MAX_NODE_BYTES`] bound.
-#[derive(Debug, thiserror::Error)]
-#[error(transparent)]
-pub struct LoadError<E>(#[from] CollectError<ContentGetError<E>>);
+pub type LoadError<E> = CollectError<ContentGetError<E>>;
 
 impl<S, const B: usize> NodeLoader for NodeLoadSaver<S, B>
 where
@@ -121,7 +116,7 @@ where
 
     async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
         let file = File::<_, B>::new(ContentGet::new(self.store.clone()), Policy::DEFAULT);
-        Ok(file.collect(reference.clone(), MAX_NODE_BYTES).await?)
+        file.collect(reference.clone(), MAX_NODE_BYTES).await
     }
 
     async fn load_with_addresses(

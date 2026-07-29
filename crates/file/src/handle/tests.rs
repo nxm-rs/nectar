@@ -457,4 +457,112 @@ fn a_failed_put_surfaces_as_a_split_error() {
     );
 }
 
+/// Source over-reporting its fill count once: the driver must clamp to the
+/// buffer rather than treat the round as empty and spin.
+struct OverReportingSource {
+    byte: u8,
+    sent: bool,
+}
+
+impl crate::source::Source for OverReportingSource {
+    type Error = core::convert::Infallible;
+
+    fn poll_fill(
+        &mut self,
+        _cx: &mut core::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> core::task::Poll<Result<usize, Self::Error>> {
+        if self.sent {
+            return core::task::Poll::Ready(Ok(0));
+        }
+        buf.fill(self.byte);
+        self.sent = true;
+        core::task::Poll::Ready(Ok(buf.len() + 5))
+    }
+}
+
+#[test]
+fn an_over_reporting_source_is_clamped_to_the_buffer() {
+    let store = TestStore::<TINY>::new(0);
+    let root = run(File::<_, TINY>::new(store, Policy::DEFAULT).save(OverReportingSource {
+        byte: 0x5a,
+        sent: false,
+    }))
+    .unwrap();
+    // Clamped, so the tree is exactly one body of the reported byte; an
+    // unclamped driver would see an empty round and save nothing.
+    let (expected, _) = stream_split::<TINY>(&std::vec![0x5a; TINY]);
+    assert_eq!(root, expected);
+}
+
+/// Key source seeded by the caller: keys count up from the seed, so the
+/// keys a save uses are observable.
+#[cfg(feature = "encryption")]
+struct SeededKeys {
+    next: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "encryption")]
+impl crate::split::KeySource for SeededKeys {
+    fn next_key(
+        &self,
+    ) -> Result<nectar_primitives::chunk::encryption::EncryptionKey, crate::split::KeyError> {
+        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&n.to_le_bytes());
+        Ok(nectar_primitives::chunk::encryption::EncryptionKey::from(
+            bytes,
+        ))
+    }
+}
+
+/// A caller-owned key source reaches the ascent: every chunk is sealed
+/// under a key the caller supplied, in seal order, and the tree reads back.
+/// Ciphertexts are not byte-reproducible (short bodies carry random
+/// padding), so the witness is the key stream, not the root address.
+#[cfg(feature = "encryption")]
+#[test]
+fn a_constructed_key_source_seals_every_chunk() {
+    use core::future::poll_fn;
+
+    use nectar_primitives::store::ContentGet;
+
+    use crate::config::Window;
+    use crate::walk::{Encrypted, Walk};
+
+    const SEED: u64 = 7;
+    let data = fill(9 * TINY + 5);
+    let store = TestStore::<TINY>::new(0);
+    let mode = Encrypted::new(SeededKeys {
+        next: std::sync::atomic::AtomicU64::new(SEED),
+    });
+    let (root, stats) = run(
+        File::<_, TINY>::new(store.clone(), Policy::DEFAULT)
+            .save_with_mode(mode, data.as_slice()),
+    )
+    .unwrap();
+
+    // The root is the last seal, so its key is the last draw of the stream.
+    let mut last = [0u8; 8];
+    last.copy_from_slice(&root.key().as_bytes()[..8]);
+    assert_eq!(u64::from_le_bytes(last), SEED + stats.puts - 1);
+
+    let mut walk: Walk<ContentGet<TestStore<TINY>>, Encrypted, TINY> = Walk::new(
+        ContentGet::new(store),
+        *root.address(),
+        root.key().clone(),
+        data.len() as u64,
+        0..u64::MAX,
+        Window::new(4).unwrap(),
+    );
+    let plaintext = run(async {
+        let mut bytes = Vec::new();
+        while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+            bytes.extend_from_slice(&frame.unwrap().data);
+        }
+        bytes
+    });
+    assert_eq!(plaintext, data);
+}
+
 mod round_trip;

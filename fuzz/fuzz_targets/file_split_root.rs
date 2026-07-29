@@ -102,11 +102,14 @@ fn stream_split(data: &[u8], window: u16, steps: &[u16]) -> (ChunkAddress, Share
     let store = SharedStore::default();
     let window = PutWindow::new((window % 16) + 1).expect("bounded slots are nonzero");
     let file = File::<_, BODY>::new(store.clone(), Policy::DEFAULT.with_put_window(window));
-    let root = nectar_testing::run(file.save(Segmented {
+    // A ready store must settle every put inline, so one poll finishes the
+    // save; a `Pending` here is a stall finding, not a slow store.
+    let root = drive(file.save(Segmented {
         data,
         steps,
         index: 0,
     }))
+    .expect("a ready store must never pend")
     .expect("save must succeed over a ready store");
     (root, store)
 }

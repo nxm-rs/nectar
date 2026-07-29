@@ -39,12 +39,8 @@ use core::time::Duration;
 
 use bytes::Bytes;
 use futures_util::stream::Stream;
-#[cfg(any(feature = "std", not(multi_thread)))]
-use nectar_primitives::chunk::AnyChunkSet;
-use nectar_primitives::chunk::{ChunkAddress, ContentOnlyChunkSet};
-#[cfg(any(feature = "std", not(multi_thread)))]
-use nectar_primitives::store::ChunkPut;
-use nectar_primitives::store::TrustedGet;
+use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress, ContentOnlyChunkSet};
+use nectar_primitives::store::{ChunkPut, TrustedGet};
 use nectar_primitives::{DEFAULT_BODY_SIZE, EntryRef};
 
 use crate::config::{HashWindow, PutWindow, Window};
@@ -54,9 +50,7 @@ use crate::read::{
     ProgressFn, ReadBuilder, SeekPastEnd,
 };
 use crate::sink::DataSink;
-#[cfg(any(feature = "std", not(multi_thread)))]
 use crate::source::Source;
-#[cfg(any(feature = "std", not(multi_thread)))]
 use crate::split::{SaveError, SplitMode, SplitStats, save_source};
 use crate::walk::{Encrypted, Plain, WalkError, WalkMode, WalkStats};
 
@@ -387,10 +381,6 @@ where
     }
 }
 
-// The relay behind a save needs a shared queue: a mutex under std, a cell
-// wherever the Send/Sync bounds relax. A hosted no-std build without
-// `unsync` has neither, so the write verbs are absent there.
-#[cfg(any(feature = "std", not(multi_thread)))]
 impl<S, const B: usize> File<S, B>
 where
     S: ChunkPut<AnyChunkSet<B>>,
@@ -442,7 +432,23 @@ where
         M: SplitMode + Default,
         Src: Source,
     {
-        save_source::<S, M, Src, B>(&self.store, self.policy, src).await
+        self.save_with_mode(M::default(), src).await
+    }
+
+    /// Split `src` under an explicitly constructed grammar, such as an
+    /// [`Encrypted`] mode over a caller-owned
+    /// [`KeySource`](crate::KeySource); the only entry point for a grammar
+    /// that is not default-constructible.
+    pub async fn save_with_mode<M, Src>(
+        &self,
+        mode: M,
+        src: Src,
+    ) -> Result<(M::Root, SplitStats), SaveError<S::Error, Src::Error>>
+    where
+        M: SplitMode,
+        Src: Source,
+    {
+        save_source::<S, M, Src, B>(&self.store, self.policy, mode, src).await
     }
 }
 

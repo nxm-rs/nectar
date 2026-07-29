@@ -44,10 +44,9 @@ fn probe(
     let store = store.clone();
     let outcome = drive(async move {
         let file = File::<_, BODY>::new(store, Policy::DEFAULT);
-        let Ok(reader) = file.open(root.into()).await else {
+        let Ok(span) = file.size(root.into()).await else {
             return Ok(false);
         };
-        let span = reader.len();
         let mut delivered = false;
         if let Ok(bytes) = file.collect(root.into(), COLLECT_BOUND).await {
             if crate::num::u64_from_usize(bytes.len()) != span {

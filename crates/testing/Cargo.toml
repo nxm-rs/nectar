@@ -29,13 +29,11 @@ nectar-primitives = { workspace = true, optional = true, features = ["std"] }
 alloc = [ "dep:allocation-counter" ]
 
 # Shared split fixtures and SwarmSpec doubles. Encrypted-mode splits ride the
-# mode-generic `split_into`; callers bring their own encryption features. The
-# fixtures are std-only, so they carry the file crate's std lane with them.
+# mode-generic `split_into`; callers bring their own encryption features.
 fixtures = [
 	"dep:nectar-file",
 	"dep:nectar-postage",
 	"dep:nectar-primitives",
-	"nectar-file?/std",
 	"nectar-postage?/std",
 	"nectar-primitives?/std",
 ]

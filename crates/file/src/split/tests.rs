@@ -24,7 +24,7 @@ use crate::walk::{Plain, Walk};
 const TINY: usize = 256;
 const BRANCHES: usize = 8;
 
-type TinySplit = Split<TestStore<TINY>, Plain, TINY>;
+type TinySplit = Split<'static, TestStore<TINY>, Plain, TINY>;
 
 /// Distinct byte per file position so every node address is unique.
 fn fill(len: usize) -> Vec<u8> {
@@ -201,7 +201,7 @@ fn stream_split<const B: usize>(
     delay: usize,
 ) -> (ChunkAddress, TestStore<B>, SplitStats) {
     let store = TestStore::<B>::new(delay);
-    let mut split: Split<TestStore<B>, Plain, B> =
+    let mut split: Split<'_, TestStore<B>, Plain, B> =
         Split::new(store.clone(), PutWindow::new(window).unwrap());
     let root = run(async {
         for piece in data.chunks(step.max(1)) {
@@ -536,7 +536,7 @@ mod encrypted {
         delay: usize,
     ) -> (EncryptedChunkRef, TestStore<TINY>, SplitStats) {
         let store = TestStore::<TINY>::new(delay);
-        let mut split: Split<TestStore<TINY>, Encrypted<K>, TINY> =
+        let mut split: Split<'_, TestStore<TINY>, Encrypted<K>, TINY> =
             Split::with_mode(store.clone(), mode, PutWindow::new(4).unwrap());
         let root = run(async {
             for piece in data.chunks(step.max(1)) {
@@ -564,7 +564,7 @@ mod encrypted {
         use crate::config::HashWindow;
 
         let store = TestStore::<TINY>::new(delay);
-        let mut split: Split<TestStore<TINY>, Encrypted<K>, TINY> =
+        let mut split: Split<'_, TestStore<TINY>, Encrypted<K>, TINY> =
             Split::with_mode(store.clone(), mode, PutWindow::new(4).unwrap())
                 .with_hash_window(HashWindow::new(hash_window).unwrap());
         let root = run(async {
@@ -609,7 +609,7 @@ mod encrypted {
                 let data = fill(size);
                 // The rand-gated default source through the `Default` mode.
                 let store = TestStore::<TINY>::new(1);
-                let mut split: Split<TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
+                let mut split: Split<'_, TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
                     Split::new(store.clone(), PutWindow::new(4).unwrap());
                 let root = {
                     let mut buf = data.as_slice();
@@ -750,7 +750,7 @@ mod encrypted {
         let size = 17 * TINY + 43;
         let data = fill(size);
         let store = TestStore::<TINY>::new(0);
-        let mut split: Split<TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
+        let mut split: Split<'_, TestStore<TINY>, Encrypted<RandomKeys>, TINY> =
             Split::new(store.clone(), PutWindow::new(4).unwrap())
                 .with_hash_window(HashWindow::new(4).unwrap());
         let root = run(async {
@@ -787,7 +787,7 @@ mod encrypted {
             issued: Arc::new(AtomicU64::new(0)),
         };
         let store = TestStore::<TINY>::new(0);
-        let mut split: Split<TestStore<TINY>, Encrypted<LimitedKeys>, TINY> =
+        let mut split: Split<'_, TestStore<TINY>, Encrypted<LimitedKeys>, TINY> =
             Split::with_mode(store, Encrypted::new(source), PutWindow::new(4).unwrap());
         let error = run(async {
             let mut buf = data.as_slice();
@@ -935,7 +935,7 @@ mod pooled {
         delay: usize,
     ) -> (ChunkAddress, TestStore<TINY>, SplitStats) {
         let store = TestStore::<TINY>::new(delay);
-        let mut split: Split<TestStore<TINY>, Plain, TINY> =
+        let mut split: Split<'_, TestStore<TINY>, Plain, TINY> =
             Split::new(store.clone(), PutWindow::new(put_window).unwrap())
                 .with_hash_window(HashWindow::new(hash_window).unwrap());
         let root = run(async {
@@ -1024,7 +1024,7 @@ mod pooled {
         let gate = Arc::new(Mutex::new(false));
         let store = TestStore::<TINY>::gated(Arc::clone(&gate));
         let mode = CountedMode::default();
-        let mut split: Split<TestStore<TINY>, CountedMode, TINY> =
+        let mut split: Split<'_, TestStore<TINY>, CountedMode, TINY> =
             Split::with_mode(store, mode.clone(), PutWindow::new(1).unwrap())
                 .with_hash_window(HashWindow::new(1).unwrap());
         let waker = noop_waker();
@@ -1112,7 +1112,7 @@ mod pooled {
     #[test]
     fn a_worker_panic_is_a_typed_error_not_an_abort() {
         let store = TestStore::<TINY>::new(0);
-        let mut split: Split<TestStore<TINY>, PanicMode, TINY> =
+        let mut split: Split<'_, TestStore<TINY>, PanicMode, TINY> =
             Split::new(store, PutWindow::DEFAULT).with_hash_window(HashWindow::new(2).unwrap());
         let data = fill(TINY);
         let error = run(async {
@@ -1140,7 +1140,7 @@ mod pooled {
     fn dropping_a_pooled_split_abandons_live_jobs() {
         let store = TestStore::<TINY>::new(0);
         let mode = CountedMode::stalling(Duration::from_millis(10));
-        let mut split: Split<TestStore<TINY>, CountedMode, TINY> =
+        let mut split: Split<'_, TestStore<TINY>, CountedMode, TINY> =
             Split::with_mode(store, mode.clone(), PutWindow::DEFAULT)
                 .with_hash_window(HashWindow::new(4).unwrap());
         let waker = noop_waker();
@@ -1216,7 +1216,7 @@ fn huge_stream_root_matches_the_batch_ingest() {
     )
     .unwrap();
 
-    let mut split: Split<Discard, Plain, B> = Split::new(Discard, PutWindow::new(16).unwrap());
+    let mut split: Split<'_, Discard, Plain, B> = Split::new(Discard, PutWindow::new(16).unwrap());
     let root = run(async {
         let mut buf = vec![0u8; 1 << 20];
         let mut offset = 0u64;
@@ -1239,10 +1239,9 @@ fn huge_stream_root_matches_the_batch_ingest() {
     assert_eq!(split.stats().bytes, size);
 }
 
-/// Relay oracles: borrowed-store roots byte-identical to the owned engine,
+/// Borrowed-store oracles: roots byte-identical to the owned engine,
 /// bounded concurrent puts against the borrowed store, and fault surfacing.
-#[cfg(any(feature = "std", not(multi_thread)))]
-mod relay {
+mod borrowed {
     use std::sync::Mutex;
 
     use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};

@@ -74,9 +74,7 @@ pub mod sink;
 #[cfg(feature = "primitives")]
 #[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
 pub mod source;
-// The split engine only has a driver where the relay can live: under std, or
-// wherever the Send/Sync bounds relax.
-#[cfg(all(feature = "primitives", any(feature = "std", not(multi_thread))))]
+#[cfg(feature = "primitives")]
 #[allow(unreachable_pub, reason = "crate-private module: `pub` is crate visibility")]
 pub(crate) mod split;
 pub mod sync;
@@ -111,14 +109,10 @@ pub use source::{ReadAt, ReadAtError, ReadAtSource};
 #[cfg(feature = "tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub use source::AsyncReadSource;
-#[cfg(all(
-    feature = "primitives",
-    feature = "encryption",
-    any(feature = "std", not(multi_thread))
-))]
+#[cfg(all(feature = "primitives", feature = "encryption"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use split::{KeyError, KeySource, RandomKeys};
-#[cfg(all(feature = "primitives", any(feature = "std", not(multi_thread))))]
+#[cfg(feature = "primitives")]
 pub use split::{SaveError, SealError, SplitError, SplitMode, SplitStats};
 #[cfg(feature = "primitives")]
 pub use walk::{
