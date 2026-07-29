@@ -456,6 +456,21 @@ mod tests {
         assert_eq!(plan, vec![12, 10, 14]);
     }
 
+    /// The stepwise plan is width-bound, not shape-bound: it fills whatever
+    /// width it is handed. The finder must therefore hand it the clamped
+    /// window, never the raw one, or a huge window allocates a huge plan.
+    #[test]
+    fn the_stepwise_plan_fills_the_width() {
+        let answers = Answers::new();
+        let Step::Fault(fault) = resolve_linear(0, &answers) else {
+            panic!("expected a floor fault");
+        };
+        let mut plan = Vec::new();
+        fault.plan(width(4096), &mut plan);
+        assert_eq!(plan.len(), 4096);
+        assert_eq!(plan[4095], 4095);
+    }
+
     #[test]
     fn ladder_near_the_top_plans_the_top_slot_once() {
         let answers = Answers::new();

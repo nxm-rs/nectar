@@ -131,6 +131,9 @@ where
     ) -> Result<Latest<BODY_SIZE>> {
         let slots = NonZeroU16::try_from(self.window).unwrap_or(NonZeroU16::MAX);
         let admission = Admission::new(Window::from(slots));
+        // One clamped width: planning past what the window admits only grows
+        // the scratch plan, so the clamp binds the plan too.
+        let width = NonZeroUsize::from(slots);
         let base = floor.get();
         let mut answers = Answers::new();
         // Indices probed but not yet landed, and the round's probe plan.
@@ -148,7 +151,7 @@ where
                 Step::Commit { lo } => return self.found(lo).await,
                 Step::Fault(fault) => fault,
             };
-            fault.plan(self.window, &mut plan);
+            fault.plan(width, &mut plan);
             let head = plan.first().copied();
             for &index in &plan {
                 if answers.contains_key(&index) || outstanding.contains(&index) {
@@ -164,8 +167,15 @@ where
                 outstanding.insert(index);
                 in_flight.push(async move { (index, store.has(&address).await) });
             }
-            // The head always holds a slot here, so a drained set can only
-            // mean a plan of answers already held: re-resolving is total.
+            // The head is never already answered and the window always has a
+            // free slot here, so the set is never empty. Were it empty the
+            // re-resolve would repeat verbatim, so the loop would spin without
+            // yielding; the assertion turns that into a test failure rather
+            // than a wedged executor.
+            debug_assert!(
+                !in_flight.is_empty(),
+                "probe set drained with a fault pending"
+            );
             if let Some((index, present)) = in_flight.next().await {
                 outstanding.remove(&index);
                 answers.insert(index, present);
