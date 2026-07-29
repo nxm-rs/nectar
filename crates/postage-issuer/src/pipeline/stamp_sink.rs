@@ -15,10 +15,10 @@ use core::fmt;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
-use futures_core::Stream;
 use futures_util::FutureExt;
+use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_clock::Clock;
-use nectar_governor::{Admission, BoxFuture, FuturesUnordered};
+use nectar_governor::{Admission, BoxFuture};
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;

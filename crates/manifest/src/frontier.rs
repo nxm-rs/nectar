@@ -12,7 +12,8 @@ use alloc::vec::Vec;
 use core::future::Future;
 
 use bytes::Bytes;
-use nectar_governor::{Admission, BoxFuture, FuturesUnordered, Window};
+use futures_util::stream::FuturesUnordered;
+use nectar_governor::{Admission, BoxFuture, Window};
 
 use crate::format::Format;
 use crate::reader::ReaderError;

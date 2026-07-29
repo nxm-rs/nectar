@@ -20,7 +20,7 @@ workspace = true
 [dependencies]
 alloy-primitives = { workspace = true, features = ["map"], optional = true }
 bitflags = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 nectar-governor = { workspace = true, optional = true }
 nectar-primitives = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
@@ -49,11 +49,12 @@ std = [
 	"alloy-primitives?/std",
 	"dep:alloy-primitives",
 	"dep:bitflags",
-	"dep:futures",
+	"dep:futures-util",
 	"dep:nectar-governor",
 	"dep:nectar-primitives",
 	"dep:serde_json",
 	"dep:thiserror",
+	"futures-util?/std",
 	"nectar-primitives?/std",
 	"serde_json?/std",
 	"thiserror?/std",

@@ -2549,7 +2549,6 @@ version = "0.4.0"
 dependencies = [
  "arbitrary",
  "bytes",
- "futures",
  "futures-util",
  "nectar-clock",
  "nectar-governor",
@@ -2567,7 +2566,6 @@ dependencies = [
 name = "nectar-governor"
 version = "0.4.0"
 dependencies = [
- "futures-core",
  "futures-util",
  "nectar-marker",
  "nectar-primitives 0.4.0",
@@ -2618,8 +2616,7 @@ dependencies = [
  "alloy-primitives",
  "arbitrary",
  "bytes",
- "futures",
- "futures-core",
+ "futures-util",
  "nectar-governor",
  "nectar-manifest",
  "nectar-primitives 0.4.0",
@@ -2666,7 +2663,7 @@ dependencies = [
  "arbitrary",
  "bitflags",
  "bytes",
- "futures",
+ "futures-util",
  "nectar-governor",
  "nectar-primitives 0.4.0",
  "nectar-testing",
@@ -2708,7 +2705,6 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
- "futures-core",
  "futures-util",
  "nectar-clock",
  "nectar-file",

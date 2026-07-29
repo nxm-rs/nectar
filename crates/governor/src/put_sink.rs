@@ -6,11 +6,10 @@ use core::future::poll_fn;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
-use futures_core::Stream;
-use futures_util::stream::FuturesUnordered;
+use futures_util::stream::{FuturesUnordered, Stream};
 
-use crate::admission::Admission;
 use crate::BoxFuture;
+use crate::admission::Admission;
 use crate::window::Window;
 
 /// Bounded set of in-flight puts, order-free within `window` slots.

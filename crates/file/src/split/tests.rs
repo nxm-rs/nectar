@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::vec;
 use std::vec::Vec;
 
-use futures::task::noop_waker;
+use futures_util::task::noop_waker;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
 use nectar_testing::{run, yield_now};
@@ -810,7 +810,7 @@ mod encrypted {
         );
 
         // The fuse is shut for good.
-        let waker = futures::task::noop_waker();
+        let waker = futures_util::task::noop_waker();
         let mut cx = core::task::Context::from_waker(&waker);
         assert!(matches!(
             split.poll_finish(&mut cx),
@@ -832,7 +832,7 @@ mod pooled {
     use std::vec::Vec;
 
     use bytes::Bytes;
-    use futures::task::noop_waker;
+    use futures_util::task::noop_waker;
     use nectar_primitives::chunk::{ChunkAddress, ContentChunk};
     use nectar_testing::run;
 

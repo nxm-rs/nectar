@@ -30,7 +30,6 @@ thiserror = { workspace = true }
 # The signer stack requires std; the no_std core only allocates digests.
 alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
-futures-core = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 nectar-tasks = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
@@ -56,7 +55,6 @@ default = [ "std" ]
 # this gate.
 std = [
 	"dep:alloy-signer",
-	"dep:futures-core",
 	"dep:futures-util",
 	"dep:nectar-tasks",
 	"nectar-clock/std",

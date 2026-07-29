@@ -322,7 +322,7 @@ fn stream_tiles_the_range_and_carries_reader_leftovers() {
     // Fresh stream over a mid-file range.
     let range = 100u64..(11 * TINY) as u64;
     let collected = run(async {
-        use futures::StreamExt;
+        use futures_util::StreamExt;
         let mut stream = file.read().range(range.clone()).stream();
         let mut out = Vec::new();
         while let Some(segment) = stream.next().await {
@@ -341,7 +341,7 @@ fn stream_tiles_the_range_and_carries_reader_leftovers() {
         reader.read(&mut buf).await.unwrap();
     });
     let rest = run(async {
-        use futures::StreamExt;
+        use futures_util::StreamExt;
         let mut stream = reader.into_stream();
         let mut out = Vec::new();
         while let Some(segment) = stream.next().await {
@@ -472,7 +472,7 @@ where
     M: WalkMode,
 {
     run(async {
-        use futures::StreamExt;
+        use futures_util::StreamExt;
         let mut out = Vec::new();
         while let Some(frame) = frames.next().await {
             out.push(frame.unwrap());

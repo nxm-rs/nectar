@@ -22,8 +22,8 @@ use core::future::poll_fn;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use futures::Stream;
-use nectar_governor::{Admission, BoxFuture, FuturesUnordered, Window};
+use futures_util::stream::{FuturesUnordered, Stream};
+use nectar_governor::{Admission, BoxFuture, Window};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::store::MaybeSend;
 use nectar_primitives::{EncryptedChunkRef, EntryRef};

@@ -20,7 +20,6 @@ workspace = true
 [dependencies]
 nectar-marker = { workspace = true }
 nectar-tasks = { workspace = true }
-futures-core = { workspace = true, features = ["alloc"] }
 futures-util = { workspace = true, features = ["alloc"] }
 
 # optional

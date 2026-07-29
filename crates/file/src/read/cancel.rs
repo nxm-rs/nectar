@@ -11,8 +11,8 @@ use core::task::{Context, Poll};
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
-use futures::Stream;
-use futures::task::noop_waker;
+use futures_util::stream::Stream;
+use futures_util::task::noop_waker;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkStoreError, MemoryStore, TrustedGet};
 use nectar_testing::{run, split_fixture, yield_now};
