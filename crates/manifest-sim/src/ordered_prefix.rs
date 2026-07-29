@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 
 use nectar_ldb::{V1, V1Read};
 
-use crate::arm::{Arm, Capability, Err, NullWithReason, OpCost, OpOutcome};
+use crate::arm::{Arm, Capability, Err, NullWithReason, OpCost, OpOutcome, build_checked};
 use crate::arm_ldb::LdbArm;
 use crate::arm_mantaray::MantarayArm;
 use crate::corpus::{Corpus, GenKey};
@@ -81,16 +81,16 @@ fn measure(
     max_mantaray_scale: u64,
 ) -> Result<(Vec<OrderedOpCell>, Vec<PrefixListingCell>), Err> {
     let mut v1 = LdbArm::<V1>::new();
-    v1.build(keys)?;
+    build_checked(&mut v1, keys)?;
     let mut v1read = LdbArm::<V1Read>::new();
-    v1read.build(keys)?;
+    build_checked(&mut v1read, keys)?;
 
     // The 0.2 arm runs up to the cap only: above it the editor commit
     // materialises the whole trie in RAM.
     let capped = scale > max_mantaray_scale;
     let mut mantaray = MantarayArm::new();
     if !capped {
-        mantaray.build(keys)?;
+        build_checked(&mut mantaray, keys)?;
     }
     let mut arms: Vec<&dyn Arm> = vec![&v1, &v1read];
     if !capped {

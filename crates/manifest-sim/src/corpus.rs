@@ -102,6 +102,51 @@ impl IdxStream {
     }
 }
 
+/// Running digest of the key stream one arm's build loop consumed.
+///
+/// Each key is framed by its length before its bytes, so the digest is
+/// injective over key sequences: a plain concatenation would let two different
+/// streams share one digest. The digest is the same-corpus witness the two arms
+/// are compared on (red-team check 9).
+#[derive(Clone, Debug)]
+pub struct KeyStreamHasher(Sha256);
+
+impl Default for KeyStreamHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KeyStreamHasher {
+    /// An empty stream digest.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Sha256::new())
+    }
+
+    /// Absorb one key, framed by its length.
+    pub fn push(&mut self, raw: &[u8]) {
+        self.0.update((raw.len() as u64).to_le_bytes());
+        self.0.update(raw);
+    }
+
+    /// Close the stream.
+    #[must_use]
+    pub fn finish(self) -> [u8; 32] {
+        self.0.finalize().into()
+    }
+}
+
+/// The digest of a whole key stream, in order.
+#[must_use]
+pub fn key_stream_digest(keys: &[GenKey]) -> [u8; 32] {
+    let mut h = KeyStreamHasher::new();
+    for k in keys {
+        h.push(&k.raw);
+    }
+    h.finish()
+}
+
 /// A tagged deterministic address over a key's bytes: `sha256(tag || key)`.
 #[must_use]
 pub fn tagged_addr(tag: &[u8], key_bytes: &[u8]) -> [u8; 32] {

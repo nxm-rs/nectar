@@ -19,7 +19,7 @@ use std::error::Error;
 
 use serde::{Deserialize, Serialize};
 
-use crate::corpus::GenKey;
+use crate::corpus::{GenKey, key_stream_digest};
 use crate::store::Counters;
 
 /// The harness error type, boxed like the rest of the harness
@@ -151,6 +151,11 @@ pub trait Arm {
     fn label(&self) -> &'static str;
     /// Build every key into a fresh store; sets the arm's root.
     fn build(&mut self, keys: &[GenKey]) -> Result<BuildReport, Err>;
+    /// Digest of the key stream the last [`Arm::build`] fed the format, hashed
+    /// inside that build loop; `None` before the first build. The harness
+    /// compares it against the corpus digest at every build site, so an arm
+    /// that consumed a different stream cannot publish a number.
+    fn consumed_digest(&self) -> Option<[u8; 32]>;
     /// Counter snapshot of the arm's store (storage metrics after build).
     fn counters(&self) -> Counters;
     /// Point lookup; both formats native.
@@ -175,4 +180,41 @@ pub trait Arm {
     /// One timed cold build over a fresh plain store; wall-time lane only
     /// (spec section 5).
     fn timed_build(&self, keys: &[GenKey]) -> Result<core::time::Duration, Err>;
+}
+
+/// Build `keys` into `arm` and refuse the result unless the arm's build loop
+/// consumed exactly that key stream.
+///
+/// This is the same-corpus gate: every harness build site goes through it, so
+/// apples-for-apples is witnessed per `(corpus, scale)` rather than assumed
+/// from the caller passing one slice. A mismatch is an error, and the calling
+/// module turns it into a null-with-reason; a divergent arm never publishes a
+/// number.
+///
+/// # Errors
+///
+/// Returns the arm's own build error, or a digest mismatch naming the arm.
+pub fn build_checked(arm: &mut dyn Arm, keys: &[GenKey]) -> Result<BuildReport, Err> {
+    let report = arm.build(keys)?;
+    let expected = key_stream_digest(keys);
+    match arm.consumed_digest() {
+        Some(got) if got == expected => Ok(report),
+        Some(got) => Err(format!(
+            "{}: consumed key stream {} but the corpus is {}",
+            arm.label(),
+            hex32(&got),
+            hex32(&expected)
+        )
+        .into()),
+        None => Err(format!("{}: build recorded no key-stream digest", arm.label()).into()),
+    }
+}
+
+/// Lower-case hex of a digest, for the mismatch message.
+fn hex32(d: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for b in d {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }

@@ -21,7 +21,7 @@ use nectar_ldb::{
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, StandardChunkSet};
 
-use crate::arm::Arm;
+use crate::arm::build_checked;
 use crate::arm_mantaray::MantarayArm;
 use crate::corpus::{Corpus, GenKey, tagged_addr, value_addr};
 use crate::results::{
@@ -437,7 +437,7 @@ pub fn paginate_cells(
     });
     let mut mantaray = MantarayArm::new();
     if !capped {
-        mantaray.build(keys)?;
+        build_checked(&mut mantaray, keys)?;
     }
 
     let mut cells = Vec::new();

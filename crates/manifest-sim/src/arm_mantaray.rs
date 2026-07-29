@@ -27,7 +27,7 @@ use nectar_primitives::chunk::{Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore};
 
 use crate::arm::{Arm, BatchMode, BuildReport, Capability, Err, FrontierClass, OpCost, OpOutcome};
-use crate::corpus::{GenKey, tagged_addr, value_addr};
+use crate::corpus::{GenKey, KeyStreamHasher, tagged_addr, value_addr};
 use crate::store::{Counters, CountingStore};
 
 // Emulation labels, shared with the capability matrix so the rendered class of
@@ -121,6 +121,7 @@ pub struct MantarayArm {
     store: SharedCounting,
     loadsaver: LoadSaver,
     root: Option<ChunkAddress>,
+    consumed: Option<[u8; 32]>,
 }
 
 impl Default for MantarayArm {
@@ -139,6 +140,7 @@ impl MantarayArm {
             store,
             loadsaver,
             root: None,
+            consumed: None,
         }
     }
 
@@ -244,7 +246,11 @@ impl Arm for MantarayArm {
         let store = SharedCounting::new();
         let loadsaver = NodeLoadSaver::new(store.clone());
         let mut editor = ManifestEditor::new(loadsaver);
+        // The digest is taken in the loop that feeds the editor, so it witnesses
+        // what the format consumed and not what the caller held.
+        let mut stream = KeyStreamHasher::new();
         for k in keys {
+            stream.push(&k.raw);
             let reference = ChunkAddress::new(value_addr(&k.raw));
             Self::put(&mut editor, &k.raw, reference, Self::metadata(k));
         }
@@ -253,6 +259,7 @@ impl Arm for MantarayArm {
         self.store = store;
         self.loadsaver = loadsaver;
         self.root = Some(root);
+        self.consumed = Some(stream.finish());
         // The commit persists a fully materialised trie post-order, so every
         // node is resident at once: O(N) RAM, witnessed by the resident node
         // chunks. The format has no embedding.
@@ -263,6 +270,10 @@ impl Arm for MantarayArm {
             nodes_written: counters.total_chunks,
             nodes_embedded: None,
         })
+    }
+
+    fn consumed_digest(&self) -> Option<[u8; 32]> {
+        self.consumed
     }
 
     fn counters(&self) -> Counters {

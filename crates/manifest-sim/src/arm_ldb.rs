@@ -19,7 +19,7 @@ use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, StandardChunkSet};
 
 use crate::arm::{Arm, BatchMode, BuildReport, Capability, Err, FrontierClass, OpCost, OpOutcome};
-use crate::corpus::{GenKey, tagged_addr, value_addr};
+use crate::corpus::{GenKey, KeyStreamHasher, tagged_addr, value_addr};
 use crate::store::{Counters, CountingStore};
 
 /// A key sorting strictly above every corpus key: the open upper bound for the
@@ -31,6 +31,7 @@ const MAX_KEY: [u8; 48] = [0xff; 48];
 pub struct LdbArm<F: Format> {
     store: CountingStore<StandardChunkSet>,
     root: Option<ChunkRef>,
+    consumed: Option<[u8; 32]>,
     _f: PhantomData<F>,
 }
 
@@ -47,6 +48,7 @@ impl<F: Format> LdbArm<F> {
         Self {
             store: CountingStore::new(),
             root: None,
+            consumed: None,
             _f: PhantomData,
         }
     }
@@ -112,7 +114,11 @@ impl<F: Format> Arm for LdbArm<F> {
     fn build(&mut self, keys: &[GenKey]) -> Result<BuildReport, Err> {
         let store = CountingStore::<StandardChunkSet>::new();
         let mut builder = Builder::<F>::new();
+        // The digest is taken in the loop that feeds the format, so it witnesses
+        // what the builder consumed and not what the caller held.
+        let mut stream = KeyStreamHasher::new();
         for k in keys {
+            stream.push(&k.raw);
             builder.insert(
                 Key::from(k.raw.as_slice()),
                 entry_for::<F>(&k.raw),
@@ -123,6 +129,7 @@ impl<F: Format> Arm for LdbArm<F> {
         let stats = *built.stats();
         self.root = Some(*built.root());
         self.store = store;
+        self.consumed = Some(stream.finish());
         Ok(BuildReport {
             frontier: FrontierClass::Bounded {
                 peak_open_nodes: stats.peak_open_nodes() as u64,
@@ -130,6 +137,10 @@ impl<F: Format> Arm for LdbArm<F> {
             nodes_written: stats.nodes_written() as u64,
             nodes_embedded: Some(stats.nodes_embedded() as u64),
         })
+    }
+
+    fn consumed_digest(&self) -> Option<[u8; 32]> {
+        self.consumed
     }
 
     fn counters(&self) -> Counters {

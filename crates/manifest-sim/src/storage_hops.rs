@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use nectar_ldb::{V1, V1Read};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
-use crate::arm::{Arm, Err, NullWithReason};
+use crate::arm::{Arm, Err, NullWithReason, build_checked};
 use crate::arm_ldb::LdbArm;
 use crate::arm_mantaray::MantarayArm;
 use crate::corpus::{Corpus, GenKey};
@@ -100,7 +100,7 @@ struct ArmMeasure {
 /// must equal the whole-loop delta, so no fetch is double-counted and none is
 /// lost between probes.
 fn measure(arm: &mut dyn Arm, keys: &[GenKey], probes: &[usize]) -> Result<ArmMeasure, Err> {
-    let report = arm.build(keys)?;
+    let report = build_checked(arm, keys)?;
     let counters = arm.counters();
     let total_chunks = counters.total_chunks;
     let embed_fraction = report.nodes_embedded.map(|embedded| {

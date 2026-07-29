@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use nectar_ldb::{V1, V1Read};
 
-use crate::arm::{Arm, BatchMode, Capability, NullWithReason};
+use crate::arm::{Arm, BatchMode, Capability, NullWithReason, build_checked};
 use crate::arm_ldb::LdbArm;
 use crate::arm_mantaray::MantarayArm;
 use crate::corpus::{Corpus, GenKey};
@@ -84,7 +84,7 @@ fn profile(
     nulls: &mut Vec<NullWithReason>,
 ) -> bool {
     let label = arm.label();
-    match arm.build(keys) {
+    match build_checked(arm, keys) {
         Ok(report) => {
             let counters = arm.counters();
             per_arm.insert(
