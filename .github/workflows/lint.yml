@@ -67,8 +67,8 @@ jobs:
               run: cargo clippy --locked --all-targets -p nectar-postage-issuer --features parallel
             # The encrypted node walk sits behind the encryption feature,
             # likewise outside the default-features pass.
-            - name: cargo clippy (manifest encryption)
-              run: cargo clippy --locked --all-targets -p nectar-manifest --features encryption
+            - name: cargo clippy (ldb encryption)
+              run: cargo clippy --locked --all-targets -p nectar-ldb --features encryption
             # The modern envelope sits behind the primitives envelope
             # feature, likewise outside the default-features pass.
             - name: cargo clippy (envelope)

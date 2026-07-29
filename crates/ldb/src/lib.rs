@@ -1,4 +1,4 @@
-//! Mantaray 1.0: a content-addressed key-value manifest, stored as a
+//! Mantaray 1.0: a content-addressed key-value database, stored as a
 //! compacted radix-256 trie of content chunks.
 //!
 //! Every frozen layout parameter of the wire format lives as an associated
@@ -56,7 +56,7 @@
 //! privately. See the `encryption` module.
 //!
 //! ```
-//! use nectar_manifest::{Format, Prefix, V1};
+//! use nectar_ldb::{Format, Prefix, V1};
 //!
 //! assert_eq!(V1::PREAMBLE, [0x6D, 0x01]);
 //! let prefix: Prefix = Prefix::try_from(&b"index.html"[..]).unwrap();

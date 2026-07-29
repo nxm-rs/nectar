@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use alloy_primitives::{b256, keccak256};
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
-use nectar_manifest::{
+use nectar_ldb::{
     Child, CustomKeyError, DecodeError, Domain, Entry, ForkPayload, ForkTable, Format, KeyId,
     Metadata, Node, Prefix, RootExtension, SegmentKind, SegmentWeight, V1, cut, embed, h64,
     segment,

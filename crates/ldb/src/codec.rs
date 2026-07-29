@@ -435,11 +435,11 @@ impl<F: Format> Node<F> {
     /// [`encoded_len`](Self::encoded_len).
     ///
     /// ```
-    /// use nectar_manifest::Node;
+    /// use nectar_ldb::Node;
     ///
     /// let node: Node = Node::empty();
     /// assert_eq!(node.encode()?, [0x6D, 0x01, 0x00, 0x00, 0x00]);
-    /// # Ok::<(), nectar_manifest::EncodeError>(())
+    /// # Ok::<(), nectar_ldb::EncodeError>(())
     /// ```
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         validate_tables(self.forks())?;
@@ -461,7 +461,7 @@ impl<F: Format> Node<F> {
     /// `F::PREAMBLE`.
     ///
     /// ```
-    /// use nectar_manifest::{DecodeError, Node, V1};
+    /// use nectar_ldb::{DecodeError, Node, V1};
     ///
     /// let node: Node = Node::decode(&[0x6D, 0x01, 0x00, 0x00, 0x00])?;
     /// assert!(node.is_empty());
@@ -1940,15 +1940,15 @@ mod tests {
         ));
     }
 
-    /// Replay the committed seed corpus of the `manifest_node_decode` fuzz
+    /// Replay the committed seed corpus of the `ldb_node_decode` fuzz
     /// target through the shared canonical-decode oracle the fuzzer drives.
     /// Seed intent is pinned by name: `valid-*` must decode (and therefore
     /// re-encode canonically), `invalid-*` must stay rejected. This keeps
     /// the fuzz seeds meaningful on stable without running the fuzzer
     /// itself.
     #[test]
-    fn seed_replay_manifest_node_decode() {
-        nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "manifest_node_decode")
+    fn seed_replay_ldb_node_decode() {
+        nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "ldb_node_decode")
             .on("valid-", |name, data| {
                 let outcome = crate::oracles::node_decode_canonical(data)
                     .unwrap_or_else(|v| panic!("seed {name}: {v}"));

@@ -100,13 +100,13 @@ jobs:
               run: cargo test --doc -p nectar-file --features encryption --locked
             # The encrypted node walk and its per-reference crypto sit behind
             # the encryption feature; cover its tests and doctest here.
-            - name: Run manifest encryption tests
+            - name: Run ldb encryption tests
               run: |
                   cargo nextest run \
-                    -p nectar-manifest --features encryption --locked \
+                    -p nectar-ldb --features encryption --locked \
                     --no-tests=warn --no-fail-fast
-            - name: Run manifest encryption doctests
-              run: cargo test --doc -p nectar-manifest --features encryption --locked
+            - name: Run ldb encryption doctests
+              run: cargo test --doc -p nectar-ldb --features encryption --locked
             # The modern envelope (KAT, differential and forgery batteries)
             # sits behind the primitives envelope feature; cover its tests
             # and the no-downgrade compile-fail doctest here.
@@ -182,12 +182,12 @@ jobs:
                   cargo check \
                     -p nectar-postage-usage --features client --locked \
                     --target wasm32-unknown-unknown
-            - name: Check manifest builds for wasm32
-              # The mantaray 1.0 manifest is memory-bounded and browser-facing,
+            - name: Check ldb builds for wasm32
+              # The mantaray 1.0 key-value database is memory-bounded and browser-facing,
               # so its default build must stay wasm32-clean.
               run: |
                   cargo check \
-                    -p nectar-manifest --locked \
+                    -p nectar-ldb --locked \
                     --target wasm32-unknown-unknown
             - name: Check the browser spawner builds for wasm32
               # The spawn seam's wasm implementation only exists on wasm32, so

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use nectar_manifest::{Builder, Changeset, Entry, Key, KeyId, Metadata, V1, apply};
+use nectar_ldb::{Builder, Changeset, Entry, Key, KeyId, Metadata, V1, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, MemoryStore};
 use nectar_testing::run;
 use proptest::prelude::*;

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, ensure};
 use arbitrary::Unstructured;
-use nectar_manifest::{
+use nectar_ldb::{
     Builder, Domain, Entry, ForkTable, Format, Key, Node, Prefix, SegmentKind, SegmentWeight, V1,
     cut, generators, h64, segment, spill,
 };

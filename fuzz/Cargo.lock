@@ -1427,28 +1427,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 
 [[package]]
-name = "futures"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d"
-dependencies = [
- "futures-channel",
- "futures-core",
- "futures-executor",
- "futures-io",
- "futures-sink",
- "futures-task",
- "futures-util",
-]
-
-[[package]]
 name = "futures-channel"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
 dependencies = [
  "futures-core",
- "futures-sink",
 ]
 
 [[package]]
@@ -1469,29 +1453,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "futures-io"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
-
-[[package]]
-name = "futures-macro"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.118",
-]
-
-[[package]]
-name = "futures-sink"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893"
-
-[[package]]
 name = "futures-task"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1503,13 +1464,8 @@ version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
- "futures-channel",
  "futures-core",
- "futures-io",
- "futures-macro",
- "futures-sink",
  "futures-task",
- "memchr",
  "pin-project-lite",
  "slab",
 ]
@@ -1953,7 +1909,7 @@ dependencies = [
  "bytes",
  "libfuzzer-sys",
  "nectar-file",
- "nectar-manifest",
+ "nectar-ldb",
  "nectar-mantaray",
  "nectar-postage",
  "nectar-postage-usage",
@@ -1965,7 +1921,6 @@ dependencies = [
 name = "nectar-governor"
 version = "0.4.0"
 dependencies = [
- "futures-core",
  "futures-util",
  "nectar-marker",
  "nectar-primitives",
@@ -1973,12 +1928,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "nectar-manifest"
+name = "nectar-ldb"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "arbitrary",
  "bytes",
+ "futures-util",
  "nectar-governor",
  "nectar-primitives",
  "thiserror",
@@ -1991,7 +1947,7 @@ dependencies = [
  "alloy-primitives",
  "arbitrary",
  "bitflags",
- "futures",
+ "futures-util",
  "nectar-governor",
  "nectar-primitives",
  "rand 0.10.2",
@@ -2023,7 +1979,6 @@ version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
- "futures-core",
  "futures-util",
  "nectar-clock",
  "nectar-governor",

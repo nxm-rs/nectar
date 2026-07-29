@@ -2,7 +2,7 @@
 //!
 //! A base key set is built, then a fuzzed changeset of puts and deletes is
 //! folded in with `apply`. The oracle is that folding a changeset into a
-//! manifest lands on the exact same root as building the merged key set from
+//! database lands on the exact same root as building the merged key set from
 //! scratch: `apply(build(base), delta) == build(base <+ delta)`. The order the
 //! updates were staged in never reaches the root. A build or apply that cannot
 //! fit a node returns a typed error rather than panicking; equality is asserted
@@ -12,7 +12,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use nectar_fuzz::{Val, entry};
-use nectar_manifest::{Builder, Changeset, Entry, Key, V1, apply};
+use nectar_ldb::{Builder, Changeset, Entry, Key, V1, apply};
 use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_testing::run;

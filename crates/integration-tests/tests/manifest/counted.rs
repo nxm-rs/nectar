@@ -5,11 +5,11 @@
 
 use anyhow::{Result, ensure};
 use bytes::Bytes;
-use nectar_manifest::{Builder, Changeset, Entry, Key, Reader, V1, apply};
+use nectar_ldb::{Builder, Changeset, Entry, Key, Reader, V1, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, MemoryStore};
 use nectar_testing::run;
 
-fn ref_entry<F: nectar_manifest::Format>(fill: u8) -> Entry<F> {
+fn ref_entry<F: nectar_ldb::Format>(fill: u8) -> Entry<F> {
     Entry::from(ChunkRef::new(ChunkAddress::new([fill; 32])))
 }
 
@@ -25,7 +25,7 @@ fn keys() -> Vec<(Key, u8)> {
     out
 }
 
-fn build<F: nectar_manifest::Format>(order: &[(Key, u8)]) -> Result<ChunkAddress> {
+fn build<F: nectar_ldb::Format>(order: &[(Key, u8)]) -> Result<ChunkAddress> {
     let store = MemoryStore::default();
     let mut builder = Builder::<F>::new();
     for (key, fill) in order {

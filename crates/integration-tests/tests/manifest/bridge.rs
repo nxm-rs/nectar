@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
 use nectar_file::{File, Plain, PutWindow, collect_into};
-use nectar_manifest::{Builder, Built, Entry, Key, Reader};
+use nectar_ldb::{Builder, Built, Entry, Key, Reader};
 use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, DEFAULT_BODY_SIZE, MemoryStore};
 use nectar_testing::{run, split_whole};
 

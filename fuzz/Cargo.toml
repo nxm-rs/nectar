@@ -17,10 +17,10 @@ libfuzzer-sys = "0.4"
 # engine driven for split-then-read consistency. `arbitrary` exposes the
 # shared malformed-walk oracle and the regime generators.
 nectar-file = { path = "../crates/file", features = ["arbitrary"] }
-# The mantaray 1.0 manifest codec, builder and apply path under test.
+# The mantaray 1.0 key-value codec, builder and apply path under test.
 # `arbitrary` exposes the node-decode oracle, the value-model impls and the
 # regime generators.
-nectar-manifest = { path = "../crates/manifest", features = ["arbitrary"] }
+nectar-ldb = { path = "../crates/ldb", features = ["arbitrary"] }
 # No `encryption` feature: the `EncryptedChunkRef` representation the
 # mantaray targets drive for the 64-byte entry path is unconditional.
 # `hazmat` exposes the raw node types and codec the mantaray targets
@@ -109,22 +109,22 @@ doc = false
 bench = false
 
 [[bin]]
-name = "manifest_node_decode"
-path = "fuzz_targets/manifest_node_decode.rs"
+name = "ldb_node_decode"
+path = "fuzz_targets/ldb_node_decode.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "manifest_build_roundtrip"
-path = "fuzz_targets/manifest_build_roundtrip.rs"
+name = "ldb_build_roundtrip"
+path = "fuzz_targets/ldb_build_roundtrip.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "manifest_apply_rebuild"
-path = "fuzz_targets/manifest_apply_rebuild.rs"
+name = "ldb_apply_rebuild"
+path = "fuzz_targets/ldb_apply_rebuild.rs"
 test = false
 doc = false
 bench = false
