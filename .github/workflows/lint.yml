@@ -86,7 +86,8 @@ jobs:
             # that also covers non-lib targets.
             - name: unused lib dependencies
               run: |
-                  for crate in nectar-primitives nectar-postage \
+                  for crate in nectar-primitives nectar-primitives-core \
+                               nectar-postage \
                                nectar-postage-issuer nectar-postage-usage \
                                nectar-swarms nectar-contracts nectar-file \
                                nectar-marker nectar-clock nectar-governor \

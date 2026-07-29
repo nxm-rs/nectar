@@ -6,6 +6,7 @@ on:
         paths:
             - "crates/primitives/examples/wasm-demo/**"
             - "crates/primitives/src/**"
+            - "crates/primitives-core/src/**"
     workflow_dispatch: # Allow manual triggering
 
 env:

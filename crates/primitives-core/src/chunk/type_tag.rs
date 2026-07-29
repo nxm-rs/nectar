@@ -39,7 +39,7 @@ impl ChunkVersion {
 /// # Examples
 ///
 /// ```
-/// use nectar_primitives::{ChunkTypeId, ChunkTypeTag, ChunkVersion};
+/// use nectar_primitives_core::{ChunkTypeId, ChunkTypeTag, ChunkVersion};
 ///
 /// let tag = ChunkTypeTag::new(ChunkTypeId::SINGLE_OWNER, ChunkVersion::new(2));
 /// assert_eq!(tag.to_u16(), 0x0102);

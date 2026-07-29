@@ -7,9 +7,9 @@
 use crate::bmt::SPAN_SIZE;
 
 #[cfg(any(test, feature = "encryption"))]
-use super::cipher::transcrypt;
+use super::EncryptionError;
 #[cfg(any(test, feature = "encryption"))]
-use super::error::EncryptionError;
+use super::cipher::transcrypt;
 #[cfg(any(test, feature = "encryption"))]
 use super::key::EncryptionKey;
 

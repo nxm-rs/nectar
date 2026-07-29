@@ -74,7 +74,10 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
     }
 
     /// The span half of the body wire encoding, serialised little-endian.
-    pub(crate) const fn span_bytes(&self) -> [u8; SPAN_SIZE] {
+    ///
+    /// Little-endian here and everywhere in the BMT; the redistribution wire
+    /// encodings elsewhere are big-endian.
+    pub const fn span_bytes(&self) -> [u8; SPAN_SIZE] {
         self.span.to_le_bytes()
     }
 
@@ -104,8 +107,8 @@ impl<const BODY_SIZE: usize> BmtBody<BODY_SIZE> {
     /// the redistribution sampler's per-round, per-node re-hash of a chunk
     /// body. The span is serialised little-endian by the hasher.
     ///
-    /// The body already carries everything the hash needs — `span()`,
-    /// `data()`, and the `BODY_SIZE` const — so callers pass only the
+    /// The body already carries everything the hash needs (`span()`,
+    /// `data()`, and the `BODY_SIZE` const), so callers pass only the
     /// `anchor`, and the body is borrowed (nothing is cloned).
     pub fn transformed_root(&self, anchor: &[u8]) -> alloy_primitives::B256 {
         let mut hasher: Hasher<BODY_SIZE> = Hasher::with_prefix(anchor);

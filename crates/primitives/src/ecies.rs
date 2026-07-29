@@ -7,26 +7,14 @@
 
 use alloc::vec::Vec;
 use alloy_primitives::Keccak256;
-use thiserror::Error;
 
 pub use k256::{PublicKey, SecretKey};
 
 use crate::chunk::encryption::{EncryptionKey, transcrypt_in_place};
 use crate::error::WrongLength;
 
-/// Errors from ECIES operations.
-#[non_exhaustive]
-#[derive(Debug, Error)]
-pub enum EciesError {
-    /// Plaintext exceeds the requested padded length.
-    #[error("plaintext too long: {len} bytes, padded length {padded}")]
-    PlaintextTooLong {
-        /// Plaintext length.
-        len: usize,
-        /// Requested padded length.
-        padded: usize,
-    },
-}
+// Defined in the core crate because `PrimitivesError` wraps it.
+pub use nectar_primitives_core::error::EciesError;
 
 /// KDF salt for the shared-key derivation.
 ///

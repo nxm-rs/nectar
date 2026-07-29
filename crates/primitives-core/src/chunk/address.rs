@@ -3,8 +3,8 @@
 //! A [`ChunkAddress`] names a chunk by the hash the network validates it
 //! against: the BMT root for content chunks, `keccak256(id || owner)` for
 //! single-owner chunks. It is nominally distinct from the node-identity
-//! address kind; cross-kind proximity goes through
-//! [`XorMetric`](crate::XorMetric).
+//! address kind; cross-kind proximity goes through the `XorMetric` trait in
+//! `nectar-primitives`, which implements it for this type.
 
 use alloy_primitives::B256;
 use derive_more::{AsRef, Display, From, Into};
@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::bmt::DerivedAddress;
 use crate::error::{Result, WrongLength};
-use crate::xor_metric::XorMetric;
 
 /// 32-byte content address of a chunk.
 ///
@@ -52,6 +51,14 @@ impl ChunkAddress {
         self.0.as_slice()
     }
 
+    /// Borrow the underlying 32 bytes as a fixed-width array.
+    ///
+    /// The width-carrying borrow the XOR metric needs; `as_bytes` loses it.
+    #[inline]
+    pub const fn as_array(&self) -> &[u8; Self::SIZE] {
+        &self.0.0
+    }
+
     /// Creates a new address from a slice, checking the length.
     ///
     /// The error carries expected and actual lengths via [`WrongLength`].
@@ -74,12 +81,6 @@ impl ChunkAddress {
 impl From<DerivedAddress> for ChunkAddress {
     fn from(derived: DerivedAddress) -> Self {
         Self(derived.into())
-    }
-}
-
-impl XorMetric for ChunkAddress {
-    fn point(&self) -> &[u8; 32] {
-        &self.0.0
     }
 }
 
@@ -111,6 +112,18 @@ mod tests {
     fn zero_is_all_zero_bytes() {
         assert_eq!(ChunkAddress::ZERO.as_bytes(), &[0u8; 32]);
         assert!(ChunkAddress::zero().is_zero());
+    }
+
+    /// The width-carrying borrow the XOR metric in `nectar-primitives` builds
+    /// on. `HASH_SIZE` is defined as this width, so pin the width itself: the
+    /// keccak digest the BMT hashes into is 32 bytes.
+    #[test]
+    fn as_array_is_the_same_bytes_at_the_declared_width() {
+        let addr = ChunkAddress::new([3u8; 32]);
+        assert_eq!(addr.as_array().as_slice(), addr.as_bytes());
+        assert_eq!(addr.as_array().len(), ChunkAddress::SIZE);
+        assert_eq!(ChunkAddress::SIZE, 32);
+        assert_eq!(crate::bmt::HASH_SIZE, 32);
     }
 
     #[test]

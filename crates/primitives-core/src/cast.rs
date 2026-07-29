@@ -1,4 +1,4 @@
-//! Crate-internal explicit-cast helpers.
+//! Explicit-cast helpers shared with `nectar-primitives`.
 //!
 //! Single justified home for the `usize`/`u64` conversions the chunk-tree
 //! math needs, replacing scattered silent `as` casts
@@ -9,7 +9,7 @@
 // never loses information; `u64: From<usize>` does not exist in std, and
 // `try_from` is not const-callable.
 #[allow(clippy::as_conversions)]
-pub(crate) const fn u64_from_usize(n: usize) -> u64 {
+pub const fn u64_from_usize(n: usize) -> u64 {
     n as u64
 }
 
@@ -21,6 +21,6 @@ pub(crate) const fn u64_from_usize(n: usize) -> u64 {
 // truncation-on-32-bit behavior must be preserved verbatim. Do NOT use this
 // for values that must be range-checked: use `usize::try_from` there.
 #[allow(clippy::as_conversions)]
-pub(crate) const fn usize_from_u64(n: u64) -> usize {
+pub const fn usize_from_u64(n: u64) -> usize {
     n as usize
 }

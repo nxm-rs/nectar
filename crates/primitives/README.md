@@ -20,6 +20,9 @@ let address = chunk.address();
 
 This crate is `no_std` compatible (default features enable `std`).
 
+The chunk-verification subset (BMT, chunk carriers, single-owner recovery) lives in [`nectar-primitives-core`](../primitives-core) and is re-exported here at the same paths.
+Depend on the core crate directly when you only need to verify chunks, such as inside a zkVM guest.
+
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](https://github.com/nxm-rs/nectar/blob/main/LICENSE).

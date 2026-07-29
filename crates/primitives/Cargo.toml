@@ -21,21 +21,19 @@ workspace = true
 # nectar
 nectar-clock.workspace = true
 nectar-marker.workspace = true
+# The chunk-verification core, re-exported wholesale at its original paths.
+# It carries the BMT and chunk deps this crate no longer names.
+nectar-primitives-core.workspace = true
 
 ## alloy crypto
 # Base set: signature recovery (k256) stays in the bare-metal core; the
 # asm-keccak and getrandom extras ride the target tables below.
 alloy-primitives = { workspace = true, features = ["k256"] }
-alloy-signer = { workspace = true, optional = true }
-alloy-signer-local = { workspace = true, optional = true }
 
 ## rust crypto
 chacha20poly1305 = { workspace = true, optional = true }
-digest.workspace = true
 hkdf = { workspace = true, optional = true }
-hybrid-array.workspace = true
 k256 = { workspace = true, features = ["ecdh"] }
-keccak-batch = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 # derive macros
@@ -43,8 +41,8 @@ derive_more.workspace = true
 
 # Core dependencies
 bytes.workspace = true
+# The boxed-stream alias in `marker`; nothing else here is async.
 futures-core.workspace = true
-once_cell.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, optional = true }
 
@@ -61,9 +59,6 @@ web-time = { workspace = true, optional = true }
 # arbitrary
 arbitrary = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
-
-# rayon for parallelism (works on both native and WASM via wasm-bindgen-rayon)
-rayon = { workspace = true, optional = true }
 
 # Only for hosted non-WASM targets (bare metal has no asm keccak or entropy)
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "none")))'.dependencies]
@@ -90,9 +85,16 @@ getrandom_04.workspace = true
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "asm-keccak"] }
+# Signing is a test and doctest concern here; the signer-driven constructors
+# live in the core crate.
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 
 arbitrary = { workspace = true }
 futures.workspace = true
+# The core's `Arbitrary` impls and generators ride its own feature: this
+# crate's `cfg(test)` does not reach them.
+nectar-primitives-core = { workspace = true, features = ["arbitrary"] }
 hpke-rs.workspace = true
 hpke-rs-crypto.workspace = true
 hpke-rs-rust-crypto.workspace = true
@@ -104,25 +106,24 @@ rand.workspace = true
 [features]
 default = [ "std" ]
 std = [
-	"dep:alloy-signer",
-	"dep:alloy-signer-local",
-	"dep:keccak-batch",
 	"dep:parking_lot",
-	"dep:rayon",
 	"dep:web-time",
 	"futures-core/std",
 	"k256/precomputed-tables",
 	"k256/std",
 	"nectar-clock/std",
+	"nectar-primitives-core/std",
 ]
 # WASM thread pool via wasm-bindgen-rayon. OFF by default so the default wasm
 # build needs no SharedArrayBuffer / cross-origin isolation — letting it run on
 # hosts that can't set COOP/COEP (e.g. the eth.limo ENS gateway). Enable it
-# (`--features wasm-threads`) for the threaded build (faster BMT hashing, but
-# requires shared memory). Must stay out of `default`: dependents pull this
-# crate with default features, so a default-on threads feature would be forced
-# on transitively and couldn't be opted out.
-wasm-threads = [ "dep:rayon", "dep:wasm-bindgen-rayon" ]
+# (`--features wasm-threads`) only to export `initThreadPool` for a consumer
+# that drives rayon itself: this crate's own parallel BMT path is gated to
+# non-wasm targets, so the pool speeds nothing here and costs shared memory.
+# Must stay out of `default`: dependents pull this crate with default features,
+# so a default-on threads feature would be forced on transitively and couldn't
+# be opted out.
+wasm-threads = [ "dep:wasm-bindgen-rayon" ]
 # Plain-terminology umbrella for "run in parallel", matching the `parallel`
 # feature on nectar-postage and nectar-postage-issuer. Native builds already
 # parallelize through rayon, so this is a no-op there; on wasm32 it opts into the
@@ -131,8 +132,14 @@ wasm-threads = [ "dep:rayon", "dep:wasm-bindgen-rayon" ]
 # express intent; use `wasm-threads` directly only to toggle the wasm thread pool
 # on its own.
 parallel = [ "wasm-threads" ]
-serde = [ "dep:serde" ]
-arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "dep:rand", "std" ]
+serde = [ "dep:serde", "nectar-primitives-core/serde" ]
+arbitrary = [
+	"alloy-primitives/arbitrary",
+	"dep:arbitrary",
+	"dep:rand",
+	"nectar-primitives-core/arbitrary",
+	"std",
+]
 encryption = [ "dep:rand" ]
 # Modern envelope: RFC 9180 HPKE over the frozen ecies compat baseline.
 envelope = [ "dep:chacha20poly1305", "dep:hkdf", "dep:sha2" ]
@@ -140,7 +147,7 @@ envelope = [ "dep:chacha20poly1305", "dep:hkdf", "dep:sha2" ]
 # the wasm32 relaxation of MaybeSend/MaybeSync and the boxed error aliases on
 # any target. An explicit feature rather than a target cfg so CI can exercise
 # the relaxed shape off-wasm.
-unsync = [ "nectar-marker/unsync" ]
+unsync = [ "nectar-marker/unsync", "nectar-primitives-core/unsync" ]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -1,9 +1,9 @@
 //! Typed nonce used in overlay address derivation.
 //!
 //! A [`Nonce`] is the 32-byte value mixed with an Ethereum address and a
-//! [`NetworkId`](crate::NetworkId) when deriving the Swarm overlay address.
-//! See [`compute_overlay`](crate::compute_overlay) for the canonical
-//! derivation (`SPEC.md#overlay-derivation`).
+//! network id when deriving the Swarm overlay address. See
+//! `nectar_primitives::compute_overlay` for the canonical derivation
+//! (`SPEC.md#overlay-derivation`).
 
 use alloy_primitives::B256;
 use derive_more::{AsRef, Display, From, Into};
