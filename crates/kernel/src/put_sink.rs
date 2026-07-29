@@ -10,7 +10,7 @@ use futures_core::Stream;
 use futures_util::stream::FuturesUnordered;
 
 use crate::admission::Admission;
-use crate::future::BoxFuture;
+use crate::BoxFuture;
 use crate::window::Window;
 
 /// Bounded set of in-flight puts, order-free within `window` slots.

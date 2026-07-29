@@ -40,7 +40,6 @@ mod admission;
 #[cfg(feature = "chunk")]
 mod chunk;
 mod driver;
-mod future;
 mod policy;
 mod put_sink;
 mod window;
@@ -50,7 +49,7 @@ pub use admission::Admission;
 #[cfg_attr(docsrs, doc(cfg(feature = "chunk")))]
 pub use chunk::get_verified;
 pub use driver::{Driver, StaticDriver, WalkPolicy};
-pub use future::BoxFuture;
+pub use nectar_tasks::BoxFuture;
 pub use futures_util::stream::FuturesUnordered;
 pub use policy::{AdmitPolicy, Fixed, FromFn, Observations, from_fn};
 pub use put_sink::PutSink;

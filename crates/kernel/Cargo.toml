@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 nectar-marker = { workspace = true }
+nectar-tasks = { workspace = true }
 futures-core = { workspace = true, features = ["alloc"] }
 futures-util = { workspace = true, features = ["alloc"] }
 
@@ -37,7 +38,11 @@ proptest.workspace = true
 chunk = [ "dep:nectar-primitives" ]
 # Single-thread send escape: relaxes the boxed future off `Send` in lockstep
 # with the marker traits.
-unsync = [ "nectar-marker/unsync", "nectar-primitives?/unsync" ]
+unsync = [
+	"nectar-marker/unsync",
+	"nectar-primitives?/unsync",
+	"nectar-tasks/unsync",
+]
 
 [package.metadata.docs.rs]
 all-features = true

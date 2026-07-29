@@ -2593,6 +2593,7 @@ dependencies = [
  "futures-util",
  "nectar-marker",
  "nectar-primitives 0.4.0",
+ "nectar-tasks",
  "nectar-testing",
  "proptest",
 ]
