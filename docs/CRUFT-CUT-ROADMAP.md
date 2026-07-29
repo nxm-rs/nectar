@@ -17,16 +17,23 @@ gate**; nothing in a later phase starts until the earlier phase's gate is green.
 These were converged with the maintainer and are non-negotiable for this plan.
 
 ### Layer discipline
-- **Layer 1 — the single chunk (atomic swarm unit).** Only `get` / `put` /
-  `has`, over the Store abstraction. Traits live in `nectar-primitives::store`:
+- **Content-addressed pool (Layer 1 chunk store).** The key is `hash(value)`, so
+  the verbs are `get(addr)` / `put(chunk)` / `has(addr)` (`put`, because there is
+  no caller key to `insert`). Traits live in `nectar-primitives::store`:
   `ChunkGet<R>` (associated `Trust` typestate: local = `Verified`, remote =
   `Unverified`), `ChunkPut` (accepts `Chunk<Verified, R>` **only**), `ChunkHas`,
   `TrustedGet`. **Kept exactly as-is** — vertex implements remote
-  retrieve/pushsync behind these; nectar ships in-memory test stores. `get`/`put`
-  exist *nowhere else*.
-- **Layer 2 — files, feeds, manifests.** Never `get`/`put`. The **read handle is
-  uniformly `Reader`** (feeds, mantaray, file). The **write verb is
-  domain-specific**: files `save`, feeds `publish`, manifests `save`/`build`.
+  retrieve/pushsync behind these; nectar ships in-memory test stores.
+- **Arbitrary-key maps (nectar-ldb, mantaray, the `Manifest` trait).** These are
+  KV stores, so they speak the std HashMap vocabulary through a root-bound handle:
+  `db.at(root)` reads (`get`, `contains_key`, `range`, `floor`, `iter`, `dir`,
+  `load`); `db.edit(base)` writes (`insert`, `remove`, `commit -> Root`), with
+  one-shot `insert(root, key, ref) -> Root` / `remove(root, key) -> Root`. A write
+  on an immutable map yields a **new root**, never an in-place mutation. There is
+  **no shared write trait** with the chunk store: content-addressed `put` and
+  arbitrary-key `insert` are different maps.
+- **Structured content (files, feeds).** Not maps, so the write verb is
+  domain-specific: files `save`/`load`, feeds `publish`/`publish_at`.
 
 ### Concurrency
 - One bounded-concurrency substrate: **`futures_util::stream::FuturesUnordered`**
@@ -139,11 +146,17 @@ native/wasm/no_std; SIMD path unchanged; `get_level_segments` gone.
   `f.load(root, &mut sink)`, `f.save(src) -> Root`); one `Source` trait +
   adapters (`&[u8]`/`ReadAt`/`AsyncRead`); keep positional `DataSink`; engines
   internal; `tokio/` optional shim. `[breaking][dx][effort/days]`
-- **3.3 Manifest via the trait** — `mantaray` and `nectar-ldb::website` expose
-  `list`/`load`/`save` + `Metadata` through the trait. `[dx][effort/days]`
+- **3.3 Manifest/KV surface on HashMap idioms** — model `nectar-ldb`, `mantaray`
+  and the `Manifest` trait as root-bound maps: `at(root)` (`get`/`contains_key`/
+  `range`/`floor`/`iter`/`dir`/`load`) and `edit(base)` (`insert`/`remove`/
+  `commit`), plus one-shot `insert`/`remove`. Redesigns the `Manifest` trait from
+  `list`/`load`/`apply` (#644) into `at`/`edit` + `MapView`/`MapWriter`
+  (`list` becomes `dir`, `apply` becomes `edit`/`commit`). `[breaking][dx][effort/days]`
 
-**Exit gate:** no L2 `get`/`put` verbs anywhere; read handle uniformly `Reader`;
-write verbs are `save`/`publish`/`build`.
+**Exit gate:** the KV surfaces (chunk store, `nectar-ldb`, mantaray, the
+`Manifest` trait) speak the HashMap vocabulary (`get`, `put`/`insert`,
+`has`/`contains_key`, `range`, `iter`); `save`/`publish`/`build` are reserved for
+files and feeds.
 
 ### Phase 4 — Test/bench topology `[epic] [debt]`
 **Depends on: nothing structurally (do after Phase 0 to avoid churn on moved files).**
