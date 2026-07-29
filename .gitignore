@@ -8,8 +8,12 @@ cspell.json
 # Nix
 .direnv/
 
-# Agent / local worktrees (created under these paths; never tracked)
-.claude/
+# Agent config: track shared Claude settings + hooks, ignore personal/session state.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+.claude/settings.local.json
+.claude/worktrees/
 .worktrees/
 
 # feeds finder benchmark output (generated on demand, never committed)

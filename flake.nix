@@ -59,6 +59,9 @@
             git-cliff
             cargo-deny
             cargo-audit
+            # Agent tooling: fast code search (ripgrep) and structural search (ast-grep).
+            ripgrep
+            ast-grep
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.mold ];
 
           OPENSSL_DIR = "${pkgs.openssl.dev}";
