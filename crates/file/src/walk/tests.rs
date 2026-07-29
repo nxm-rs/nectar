@@ -221,6 +221,28 @@ impl ChunkGet<TinyRegistry> for HeadLast {
     }
 }
 
+/// Late-miss store: a present chunk resolves after one yield, the missing one
+/// only after every other admitted fetch has settled, so the walk owes
+/// nothing below the fault when it surfaces.
+#[derive(Clone)]
+struct LateMiss {
+    chunks: Arc<HashMap<ChunkAddress, TinyChunk>>,
+}
+
+impl ChunkGet<TinyRegistry> for LateMiss {
+    type Trust = Verified;
+    type Error = ChunkStoreError;
+
+    async fn get(&self, address: &ChunkAddress) -> Result<TinyChunk, ChunkStoreError> {
+        let found = self.chunks.as_ref().get(address).cloned();
+        let delay = if found.is_some() { 1 } else { 64 };
+        for _ in 0..delay {
+            yield_now().await;
+        }
+        found.ok_or_else(|| ChunkStoreError::not_found(address))
+    }
+}
+
 /// Misrouting store: answers `from` with the chunk stored at `to`, declared
 /// untrusted so the verifying boundary is the guard.
 #[derive(Clone)]
@@ -477,6 +499,83 @@ fn store_error_is_terminal_without_retry() {
     run(async {
         assert!(poll_fn(|cx| walk.poll_next_ordered(cx)).await.is_none());
     });
+}
+
+#[test]
+fn deliverable_prefix_precedes_a_terminal_error() {
+    let data = fill(24 * TINY);
+    let mut tree = build_tree(&data);
+    let mut offsets: Vec<(u64, ChunkAddress)> = tree.leaves.iter().map(|(a, o)| (*o, *a)).collect();
+    offsets.sort();
+    let (offset, missing) = offsets[9];
+    tree.chunks.remove(&missing);
+
+    let store = LateMiss {
+        chunks: Arc::new(tree.chunks.clone()),
+    };
+    let mut walk = walk_range(store, &tree, 0..tree.span, 4);
+    let (frames, error) = run(async {
+        let mut frames = Vec::new();
+        loop {
+            match poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+                Some(Ok(frame)) => frames.push(frame),
+                Some(Err(error)) => break (frames, error),
+                None => panic!("the walk completed over a missing chunk"),
+            }
+        }
+    });
+    // A ready frame outranks a fresh completion, so every byte the walk
+    // already owed below the fault is delivered before the fault surfaces.
+    assert_tiles(&frames, 0, &data[..offset as usize]);
+    match error {
+        WalkError::Fetch { address, .. } => assert_eq!(address, missing),
+        other => panic!("expected Fetch, got {other:?}"),
+    }
+    assert!(walk.is_finished());
+    run(async {
+        assert!(poll_fn(|cx| walk.poll_next_ordered(cx)).await.is_none());
+        assert!(poll_fn(|cx| walk.poll_next_any(cx)).await.is_none());
+    });
+}
+
+#[test]
+fn finish_latches_only_after_the_last_frame() {
+    let data = fill(20 * TINY + 3);
+    let tree = build_tree(&data);
+    let store = Recording::new(&tree, 1);
+    let mut walk = walk_range(store, &tree, 0..tree.span, 4);
+    let frames = run(async {
+        let mut frames = Vec::new();
+        while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+            assert!(
+                !walk.is_finished(),
+                "a delivered frame must not finish the walk"
+            );
+            frames.push(frame.unwrap());
+        }
+        frames
+    });
+    assert_tiles(&frames, 0, &data);
+    assert!(walk.is_finished());
+    // The drained set latches: both drains stay empty afterwards.
+    run(async {
+        assert!(poll_fn(|cx| walk.poll_next_ordered(cx)).await.is_none());
+        assert!(poll_fn(|cx| walk.poll_next_any(cx)).await.is_none());
+    });
+}
+
+#[test]
+fn delivered_range_is_clipped_to_the_span() {
+    let data = fill(6 * TINY);
+    let tree = build_tree(&data);
+    let store = Recording::new(&tree, 0);
+    let mut walk = walk_range(store.clone(), &tree, 100..u64::MAX, 4);
+    assert_eq!(walk.range(), 100..tree.span);
+    let frames = collect_ordered(&mut walk).unwrap();
+    assert_tiles(&frames, 100, &data[100..]);
+
+    let past_end = walk_range(store, &tree, tree.span + 10..tree.span + 20, 4);
+    assert_eq!(past_end.range(), tree.span..tree.span);
 }
 
 #[test]

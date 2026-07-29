@@ -7,9 +7,10 @@ use core::ops::Range;
 use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
+use futures_util::stream::StreamExt;
 use nectar_governor::{
-    Admission, AdmitPolicy, BoxFuture, FromFn, FuturesUnordered, Observations, StaticDriver,
-    WalkPolicy, from_fn, get_verified,
+    Admission, AdmitPolicy, BoxFuture, FromFn, FuturesUnordered, Observations, from_fn,
+    get_verified,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkOps, ContentOnlyChunkSet, Verified};
@@ -44,7 +45,7 @@ impl<M: WalkMode> Node<M> {
 /// of sequence routing.
 type Fetched<M, E, const B: usize> = (Node<M>, Result<Chunk<Verified, ContentOnlyChunkSet<B>>, E>);
 
-/// Boxed fetch future; the kernel alias relaxes `Send` off the
+/// Boxed fetch future; the governor alias relaxes `Send` off the
 /// multi-threaded targets.
 type BoxFetch<M, E, const B: usize> = BoxFuture<'static, Fetched<M, E, B>>;
 
@@ -60,22 +61,15 @@ enum Drain {
 /// The one poll-native walk: a bounded, sequence-routed descent of a chunk
 /// tree over a byte range.
 ///
+/// The two-lane branch/leaf frontier, its head-reserved admission, the
+/// byte-offset ordering, the eager-terminal error and the clip/expand
+/// completion fold all live here, over a [`FuturesUnordered`] fetch set
+/// bounded by [`Admission`].
+///
 /// All state lives here, so every poll is cancel-safe and dropping the walk
 /// loses only in-flight round trips. The module docs state the normative
 /// admission invariants.
 pub struct Walk<S, M, const B: usize = DEFAULT_BODY_SIZE>
-where
-    S: TrustedGet<ContentOnlyChunkSet<B>>,
-    M: WalkMode,
-{
-    driver: StaticDriver<FileWalkPolicy<S, M, B>, Fetched<M, S::Error, B>>,
-}
-
-/// The file walk's [`WalkPolicy`]: the two-lane branch/leaf frontier, its
-/// head-reserved admission, byte-offset ordering, eager-terminal error, and
-/// clip/expand completion fold. The kernel driver owns only the loop and the
-/// in-flight set.
-struct FileWalkPolicy<S, M, const B: usize>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>>,
     M: WalkMode,
@@ -107,6 +101,10 @@ where
     /// Staging buffer the mode's body decoder reuses across nodes.
     scratch: BytesMut,
     stats: WalkStats,
+    /// Dispatched fetches, drained one completion per poll.
+    in_flight: FuturesUnordered<BoxFetch<M, S::Error, B>>,
+    /// Latched once the last frame is delivered or the walk has failed.
+    done: bool,
 }
 
 impl<S, M, const B: usize> Walk<S, M, B>
@@ -125,12 +123,12 @@ where
         range: Range<u64>,
         window: Window,
     ) -> Self {
-        const { FileWalkPolicy::<S, M, B>::PROFILE };
+        const { Self::PROFILE };
         let body = u64_from_usize(B);
         let branches = fan_out(body, u64_from_u32(M::MODE.ref_size()));
         let range_end = range.end.min(span);
         let range_start = range.start.min(range_end);
-        let mut policy = FileWalkPolicy {
+        let mut walk = Self {
             store,
             range_start,
             range_end,
@@ -149,16 +147,16 @@ where
             ready: BTreeMap::new(),
             scratch: BytesMut::new(),
             stats: WalkStats::default(),
+            in_flight: FuturesUnordered::new(),
+            done: false,
         };
-        policy.enqueue(Node {
+        walk.enqueue(Node {
             address: root,
             context,
             start: 0,
             span,
         });
-        Self {
-            driver: StaticDriver::new(policy),
-        }
+        walk
     }
 
     /// Adaptive cap: `policy` recomputes the window between admission
@@ -166,34 +164,29 @@ where
     /// drains by attrition; the head stays admissible at any depth.
     #[must_use]
     pub fn with_policy(mut self, policy: WindowPolicyFn) -> Self {
-        self.driver.policy_mut().policy = Some(from_fn(policy));
+        self.policy = Some(from_fn(policy));
         self
     }
 
     /// Detach the policy with its accumulated state; a successor walk
     /// re-arms it.
     pub(crate) fn take_policy(&mut self) -> Option<WindowPolicyFn> {
-        self.driver
-            .policy_mut()
-            .policy
-            .take()
-            .map(FromFn::into_inner)
+        self.policy.take().map(FromFn::into_inner)
     }
 
     /// Clipped absolute byte range this walk delivers.
     pub const fn range(&self) -> Range<u64> {
-        let policy = self.driver.policy();
-        policy.range_start..policy.range_end
+        self.range_start..self.range_end
     }
 
     /// Occupancy witnesses accumulated so far.
     pub const fn stats(&self) -> WalkStats {
-        self.driver.policy().stats
+        self.stats
     }
 
     /// Whether the walk has delivered its last frame or failed.
     pub const fn is_finished(&self) -> bool {
-        self.driver.is_finished()
+        self.done
     }
 
     /// Deliver the next frame in file order: consecutive frames tile the
@@ -206,7 +199,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame, WalkError<S::Error>>>> {
-        self.driver.poll(cx, Drain::Ordered)
+        self.poll(cx, Drain::Ordered)
     }
 
     /// Deliver the next frame in completion order, lowest ready offset
@@ -216,35 +209,63 @@ where
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame, WalkError<S::Error>>>> {
-        self.driver.poll(cx, Drain::Any)
+        self.poll(cx, Drain::Any)
     }
-}
 
-impl<S, M, const B: usize> WalkPolicy<'static> for FileWalkPolicy<S, M, B>
-where
-    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
-    M: WalkMode,
-{
-    type Fetched = Fetched<M, S::Error, B>;
-    type Frame = Frame;
-    type Error = WalkError<S::Error>;
-    type Drain = Drain;
+    /// The bounded-admission loop: admit, then drain a ready frame, else fold
+    /// one completion. A deliverable frame always outranks a fresh
+    /// completion, so a terminal error surfaces only once nothing below it is
+    /// owed.
+    fn poll(
+        &mut self,
+        cx: &mut Context<'_>,
+        drain: Drain,
+    ) -> Poll<Option<Result<Frame, WalkError<S::Error>>>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+        loop {
+            self.admit();
+            if let Some(outcome) = self.take_ready(drain) {
+                if outcome.is_err() {
+                    self.done = true;
+                }
+                return Poll::Ready(Some(outcome));
+            }
+            match self.in_flight.poll_next_unpin(cx) {
+                Poll::Ready(Some(fetched)) => {
+                    if let Err(error) = self.absorb(fetched) {
+                        self.done = true;
+                        return Poll::Ready(Some(Err(error)));
+                    }
+                }
+                Poll::Ready(None) => {
+                    self.done = true;
+                    return match self.drained() {
+                        Ok(()) => Poll::Ready(None),
+                        Err(error) => Poll::Ready(Some(Err(error))),
+                    };
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
 
-    #[inline]
-    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'static, Self::Fetched>>) {
+    /// Dispatch queued work until neither lane may proceed.
+    fn admit(&mut self) {
         self.retune();
         loop {
             let Some(head) = self.head_key() else { return };
-            let branch = self.try_admit_branch(head, in_flight);
-            let leaf = self.try_admit_leaf(head, in_flight);
+            let branch = self.try_admit_branch(head);
+            let leaf = self.try_admit_leaf(head);
             if !branch && !leaf {
                 return;
             }
         }
     }
 
-    #[inline]
-    fn take_ready(&mut self, drain: Drain) -> Option<Result<Frame, Self::Error>> {
+    /// Take the next deliverable frame, if `drain` permits one.
+    fn take_ready(&mut self, drain: Drain) -> Option<Result<Frame, WalkError<S::Error>>> {
         if let Drain::Ordered = drain {
             let head = self.head_key()?;
             let (&key, _) = self.ready.first_key_value()?;
@@ -257,8 +278,11 @@ where
             .map(|(offset, data)| Ok(Frame { offset, data }))
     }
 
-    #[inline]
-    fn absorb(&mut self, (node, fetched): Self::Fetched) -> Result<(), Self::Error> {
+    /// Fold one completion; an `Err` terminates the walk eagerly.
+    fn absorb(
+        &mut self,
+        (node, fetched): Fetched<M, S::Error, B>,
+    ) -> Result<(), WalkError<S::Error>> {
         let leaf = node.span <= self.body;
         let key = node.key(self.range_start);
         self.retire(key, leaf);
@@ -292,8 +316,9 @@ where
         }
     }
 
-    #[inline]
-    fn drained(&self) -> Result<(), Self::Error> {
+    /// Outcome once the fetch set empties: `Ok` is clean completion, `Err` a
+    /// stall with work still owed.
+    fn drained(&self) -> Result<(), WalkError<S::Error>> {
         let pending = self
             .leaf_frontier
             .len()
@@ -307,13 +332,7 @@ where
             })
         }
     }
-}
 
-impl<S, M, const B: usize> FileWalkPolicy<S, M, B>
-where
-    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
-    M: WalkMode,
-{
     /// Compile-time profile guard for the walk's span arithmetic.
     const PROFILE: () = {
         assert!(B.is_power_of_two(), "body size must be a power of two");
@@ -382,11 +401,7 @@ where
     /// Admit the lowest queued branch. The head branch only needs a budget
     /// slot (liveness over the reference cap); any other branch also needs
     /// absorption room.
-    fn try_admit_branch(
-        &mut self,
-        head: u64,
-        in_flight: &mut FuturesUnordered<BoxFuture<'static, Fetched<M, S::Error, B>>>,
-    ) -> bool {
+    fn try_admit_branch(&mut self, head: u64) -> bool {
         if self.branch_in_flight >= self.branch_budget {
             return false;
         }
@@ -399,17 +414,13 @@ where
         let Some(node) = self.branch_frontier.pop_front() else {
             return false;
         };
-        self.dispatch(node, in_flight);
+        self.dispatch(node);
         true
     }
 
     /// Admit the lowest queued leaf. The head leaf may take the last window
     /// slot; any other leaf must leave it free until the head holds one.
-    fn try_admit_leaf(
-        &mut self,
-        head: u64,
-        in_flight: &mut FuturesUnordered<BoxFuture<'static, Fetched<M, S::Error, B>>>,
-    ) -> bool {
+    fn try_admit_leaf(&mut self, head: u64) -> bool {
         let Some(front) = self.leaf_frontier.front() else {
             return false;
         };
@@ -429,7 +440,7 @@ where
         let Some(node) = self.leaf_frontier.pop_front() else {
             return false;
         };
-        self.dispatch(node, in_flight);
+        self.dispatch(node);
         true
     }
 
@@ -447,11 +458,7 @@ where
 
     /// Start one fetch, moving the node into its future; the completion
     /// carries it back.
-    fn dispatch(
-        &mut self,
-        node: Node<M>,
-        in_flight: &mut FuturesUnordered<BoxFuture<'static, Fetched<M, S::Error, B>>>,
-    ) {
+    fn dispatch(&mut self, node: Node<M>) {
         let key = node.key(self.range_start);
         if node.span <= self.body {
             let slot = self.leaf_keys.entry(key).or_insert(0);
@@ -468,7 +475,7 @@ where
         self.stats.fetches = self.stats.fetches.saturating_add(1);
         let store = self.store.clone();
         let fetch: BoxFetch<M, S::Error, B> = Box::pin(get_verified(store, node.address, node));
-        in_flight.push(fetch);
+        self.in_flight.push(fetch);
     }
 
     /// Retire a completed fetch from the in-flight accounting.
@@ -574,16 +581,15 @@ where
     M: WalkMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let policy = self.driver.policy();
         f.debug_struct("Walk")
-            .field("range_start", &policy.range_start)
-            .field("range_end", &policy.range_end)
-            .field("window", &policy.admission.window())
-            .field("branch_budget", &policy.branch_budget)
-            .field("policy", &policy.policy.is_some())
-            .field("leaf_in_flight", &policy.leaf_in_flight)
-            .field("branch_in_flight", &policy.branch_in_flight)
-            .field("done", &self.driver.is_finished())
+            .field("range_start", &self.range_start)
+            .field("range_end", &self.range_end)
+            .field("window", &self.admission.window())
+            .field("branch_budget", &self.branch_budget)
+            .field("policy", &self.policy.is_some())
+            .field("leaf_in_flight", &self.leaf_in_flight)
+            .field("branch_in_flight", &self.branch_in_flight)
+            .field("done", &self.done)
             .finish_non_exhaustive()
     }
 }

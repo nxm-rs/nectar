@@ -12,6 +12,7 @@
 #   nectar-tasks wake.rs  the shared thread-unpark waker (`unpark_current`)
 #   nectar-tasks handoff  the pool-to-poll blocking bridge and pool submit
 #   nectar-governor PutSink the bounded put window over FuturesUnordered
+#   nectar-file walk engine the bounded read fetch set under Admission
 #   postage-issuer pump   the Stamped sign-admission pump
 #   postage-issuer task   the sign-job panic boundary
 #   nectar-marker         the sole MaybeSend/MaybeSync cfg dance
@@ -122,10 +123,13 @@ deny 'thread::park executor loop (use nectar_testing::run or nectar_tasks)' \
 # `settle_one`/`sweep`. The governor `PutSink` is its sole home; a new in-flight
 # set or a drain-settle loop elsewhere is a copy. Only the sign-admission pump
 # owns its own set. `settle`/`drain` alone (a `Format` fold, `VecDeque::drain`)
-# is not this shape and is left alone.
+# is not this shape and is left alone. The file walk engine owns the read-side
+# fetch set: the shared walk loop is gone, so each walker drives its own set
+# under `Admission`, which is the other side of the governor, not a put window.
 deny 'hand-rolled put window (use nectar_governor::PutSink)' \
     'fn[[:space:]]+(settle_one|sweep)[[:space:]]*[<(]|FuturesUnordered::new[[:space:]]*\(\)' \
     'crates/governor/' \
+    'crates/file/src/walk/engine.rs' \
     'crates/postage-issuer/src/pipeline/stamp_sink.rs'
 
 # The pool submit: a rayon pool job whose reply arrives on a oneshot. The
