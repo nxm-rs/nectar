@@ -34,9 +34,10 @@ futures.workspace = true
 # identical op sequences must produce byte-identical roots.
 mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
 nectar-file = { workspace = true, features = ["std"] }
-nectar-ldb = { workspace = true, features = ["arbitrary"] }
+nectar-ldb = { workspace = true, features = ["arbitrary", "manifest"] }
 nectar-loadsave.workspace = true
-nectar-mantaray.workspace = true
+nectar-manifest.workspace = true
+nectar-mantaray = { workspace = true, features = ["manifest"] }
 nectar-postage = { workspace = true, features = ["std"] }
 nectar-postage-issuer.workspace = true
 nectar-postage-usage.workspace = true
@@ -51,6 +52,7 @@ encryption = [
 	"nectar-file/encryption",
 	"nectar-ldb/encryption",
 	"nectar-loadsave/encryption",
+	"nectar-mantaray/encryption",
 	"nectar-primitives/encryption",
 ]
 issuer = [ "nectar-postage-usage/issuer" ]
@@ -120,6 +122,14 @@ path = "tests/ldb/read_profile.rs"
 [[test]]
 name = "ldb_scan"
 path = "tests/ldb/scan.rs"
+
+[[test]]
+name = "manifest_dyn_roundtrip"
+path = "tests/manifest/dyn_roundtrip.rs"
+
+[[test]]
+name = "manifest_encrypted"
+path = "tests/manifest/encrypted.rs"
 
 [[test]]
 name = "mantaray_bmt_nodes"
