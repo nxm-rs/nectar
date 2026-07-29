@@ -530,8 +530,8 @@ fn drive_order(
     (latest.update.map(|u| *u.index()), latest.next, gate.peak())
 }
 
-/// The shipped async `ProbePolicy`, driven through the kernel driver under
-/// adversarial out-of-order probe completion, reaches the in-order verdict.
+/// The shipped async finder, under adversarial out-of-order probe completion,
+/// reaches the in-order verdict.
 ///
 /// The property test in `probe.rs` proves this of a model; this pins the real
 /// code, where a divergence surfacing only under true out-of-order landing
@@ -578,6 +578,93 @@ fn probe_policy_holds_under_adversarial_completion_order() {
             );
         }
     }
+}
+
+/// Admission fills the window and stops there: the first round parks the head
+/// slot plus its speculation, never one probe more and never one fewer.
+///
+/// Admitting past the window exceeds the store capacity the window buys;
+/// admitting short of it silently serializes the finder.
+#[test]
+fn probes_fill_exactly_the_window() {
+    let signer = signer();
+    let feed = feed_for(&signer);
+    let store = SocStore::new();
+    run(async {
+        let mut updater = Updater::new(feed, &store, &signer);
+        for n in 0u64..21 {
+            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+        }
+    });
+
+    for width in [1usize, 2, 7, 15] {
+        for linear in [false, true] {
+            let (index, next, peak) = drive_order(
+                feed,
+                &store,
+                Sequence::ZERO,
+                linear,
+                NonZeroUsize::new(width).unwrap(),
+                |_, parked| parked[0],
+            );
+            assert_eq!(index, Some(Sequence::new(20)), "width {width}");
+            assert_eq!(next, Some(Sequence::new(21)), "width {width}");
+            assert_eq!(peak, width, "width {width}, linear {linear}");
+        }
+    }
+}
+
+/// Store answering presence from a real feed but failing every fetch: the
+/// search converges on probes alone.
+struct ProbeOnly<'a>(&'a SocStore);
+
+impl ChunkGet<SingleOwnerOnlyChunkSet> for ProbeOnly<'_> {
+    type Trust = nectar_primitives::Verified;
+    type Error = ChunkStoreError;
+
+    async fn get(
+        &self,
+        address: &ChunkAddress,
+    ) -> Result<Chunk<nectar_primitives::Verified, SingleOwnerOnlyChunkSet>, Self::Error> {
+        Err(ChunkStoreError::not_found(address))
+    }
+}
+
+impl ChunkHas for ProbeOnly<'_> {
+    async fn has(&self, address: &ChunkAddress) -> bool {
+        ChunkHas::has(self.0, address).await
+    }
+}
+
+/// The fetch of the committed update is the only fallible step of the search,
+/// so its error surfaces at the commit and nowhere earlier: an absent floor
+/// still returns an empty result.
+#[test]
+fn fetch_failure_surfaces_only_at_the_commit() {
+    run(async {
+        let signer = signer();
+        let feed = feed_for(&signer);
+        let store = SocStore::new();
+        let mut updater = Updater::new(feed, &store, &signer);
+        for n in 0u64..5 {
+            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+        }
+
+        let getter =
+            Getter::new(feed, ProbeOnly(&store)).with_window(NonZeroUsize::new(4).unwrap());
+        assert!(matches!(
+            getter.latest().await.unwrap_err(),
+            FeedError::Store(_)
+        ));
+        assert!(matches!(
+            getter.latest_linear_from(Sequence::ZERO).await.unwrap_err(),
+            FeedError::Store(_)
+        ));
+
+        let empty = getter.latest_from(Sequence::new(5)).await.unwrap();
+        assert!(empty.update.is_none());
+        assert_eq!(empty.next, Some(Sequence::new(5)));
+    });
 }
 
 proptest! {

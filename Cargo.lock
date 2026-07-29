@@ -2520,6 +2520,7 @@ dependencies = [
  "arbitrary",
  "bytes",
  "derive_more",
+ "futures-util",
  "nectar-feeds",
  "nectar-governor",
  "nectar-primitives 0.4.0",

@@ -24,6 +24,7 @@ alloy-signer-local = { workspace = true, optional = true }
 arbitrary = { workspace = true, optional = true }
 bytes.workspace = true
 derive_more.workspace = true
+futures-util = { workspace = true }
 nectar-governor = { workspace = true }
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
@@ -52,6 +53,7 @@ arbitrary = [
 std = [
 	"alloy-primitives/std",
 	"bytes/std",
+	"futures-util/std",
 	"nectar-primitives/std",
 	"thiserror/std",
 ]
