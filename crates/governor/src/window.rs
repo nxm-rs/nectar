@@ -43,7 +43,7 @@ impl Window {
     /// ```
     /// use core::num::NonZeroUsize;
     /// use core::time::Duration;
-    /// use nectar_kernel::Window;
+    /// use nectar_governor::Window;
     ///
     /// let body = NonZeroUsize::new(4096).unwrap();
     /// // A 1 MB/s stream at 120 ms per fetch needs thirty slots.

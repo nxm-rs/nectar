@@ -1,4 +1,4 @@
-//! Bounded-admission kernel beneath the streaming walkers: the shared
+//! Bounded-admission governor beneath the streaming walkers: the shared
 //! [`Driver`] loop over a [`WalkPolicy`], the [`FuturesUnordered`] in-flight
 //! set it drains, the write-side [`PutSink`] over the same set, the read-ahead
 //! [`Window`], the head-slot [`Admission`] predicate, the [`AdmitPolicy`]

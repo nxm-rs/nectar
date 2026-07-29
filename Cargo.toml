@@ -63,7 +63,7 @@ nectar-clock = { version = "0.4.0", path = "crates/clock", default-features = fa
 nectar-contracts = { version = "0.4.0", path = "crates/contracts" }
 nectar-feeds = { version = "0.4.0", path = "crates/feeds" }
 nectar-file = { version = "0.4.0", path = "crates/file", default-features = false }
-nectar-kernel = { version = "0.4.0", path = "crates/kernel", default-features = false }
+nectar-governor = { version = "0.4.0", path = "crates/governor", default-features = false }
 nectar-loadsave = { version = "0.4.0", path = "crates/loadsave" }
 nectar-manifest = { version = "0.4.0", path = "crates/manifest" }
 nectar-mantaray = { version = "0.4.0", path = "crates/mantaray" }

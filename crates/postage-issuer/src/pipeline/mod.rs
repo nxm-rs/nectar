@@ -39,7 +39,7 @@ use core::task::{Context, Poll};
 use nectar_clock::Clock;
 #[cfg(feature = "std")]
 use nectar_clock::SystemClock;
-use nectar_kernel::Window;
+use nectar_governor::Window;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::Stamp;
 #[cfg(not(feature = "std"))]

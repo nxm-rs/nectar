@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 
 use bytes::Bytes;
-use nectar_kernel::{Admission, BoxFuture, FuturesUnordered, Window};
+use nectar_governor::{Admission, BoxFuture, FuturesUnordered, Window};
 
 use crate::format::Format;
 use crate::reader::ReaderError;

@@ -11,7 +11,7 @@
 #   nectar-testing        the sole block_on entry (`run`) plus its Drive waker
 #   nectar-tasks wake.rs  the shared thread-unpark waker (`unpark_current`)
 #   nectar-tasks handoff  the pool-to-poll blocking bridge and pool submit
-#   nectar-kernel PutSink the bounded put window over FuturesUnordered
+#   nectar-governor PutSink the bounded put window over FuturesUnordered
 #   postage-issuer pump   the Stamped sign-admission pump
 #   postage-issuer task   the sign-job panic boundary
 #   nectar-marker         the sole MaybeSend/MaybeSync cfg dance
@@ -119,13 +119,13 @@ deny 'thread::park executor loop (use nectar_testing::run or nectar_tasks)' \
     'crates/postage-issuer/src/pipeline/stamped_put.rs'
 
 # The bounded put window: a fresh `FuturesUnordered` set drained by
-# `settle_one`/`sweep`. The kernel `PutSink` is its sole home; a new in-flight
+# `settle_one`/`sweep`. The governor `PutSink` is its sole home; a new in-flight
 # set or a drain-settle loop elsewhere is a copy. Only the sign-admission pump
 # owns its own set. `settle`/`drain` alone (a `Format` fold, `VecDeque::drain`)
 # is not this shape and is left alone.
-deny 'hand-rolled put window (use nectar_kernel::PutSink)' \
+deny 'hand-rolled put window (use nectar_governor::PutSink)' \
     'fn[[:space:]]+(settle_one|sweep)[[:space:]]*[<(]|FuturesUnordered::new[[:space:]]*\(\)' \
-    'crates/kernel/' \
+    'crates/governor/' \
     'crates/postage-issuer/src/pipeline/stamp_sink.rs'
 
 # The pool submit: a rayon pool job whose reply arrives on a oneshot. The

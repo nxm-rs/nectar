@@ -1938,9 +1938,10 @@ dependencies = [
  "bytes",
  "futures-util",
  "nectar-clock",
- "nectar-kernel",
+ "nectar-governor",
  "nectar-marker",
  "nectar-primitives",
+ "nectar-tasks",
  "thiserror",
 ]
 
@@ -1961,11 +1962,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "nectar-kernel"
+name = "nectar-governor"
 version = "0.4.0"
 dependencies = [
+ "futures-core",
+ "futures-util",
  "nectar-marker",
  "nectar-primitives",
+ "nectar-tasks",
 ]
 
 [[package]]
@@ -1975,8 +1979,7 @@ dependencies = [
  "alloy-primitives",
  "arbitrary",
  "bytes",
- "futures-util",
- "nectar-file",
+ "nectar-governor",
  "nectar-primitives",
  "thiserror",
 ]
@@ -1989,7 +1992,7 @@ dependencies = [
  "arbitrary",
  "bitflags",
  "futures",
- "nectar-kernel",
+ "nectar-governor",
  "nectar-primitives",
  "rand 0.10.2",
  "serde_json",
@@ -2020,8 +2023,10 @@ version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
+ "futures-core",
+ "futures-util",
  "nectar-clock",
- "nectar-kernel",
+ "nectar-governor",
  "nectar-marker",
  "nectar-postage",
  "nectar-primitives",
@@ -2079,7 +2084,11 @@ dependencies = [
 name = "nectar-tasks"
 version = "0.4.0"
 dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-util",
  "nectar-marker",
+ "rayon",
 ]
 
 [[package]]

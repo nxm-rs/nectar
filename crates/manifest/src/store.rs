@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use core::future::{Future, poll_fn};
 use core::mem;
 
-use nectar_kernel::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
+use nectar_governor::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, EncryptionKey, Verified,

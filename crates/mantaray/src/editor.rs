@@ -20,7 +20,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::poll_fn;
 
-use nectar_kernel::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
+use nectar_governor::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::store::MaybeSend;
 use nectar_primitives::{EncryptedChunkRef, EntryRef};

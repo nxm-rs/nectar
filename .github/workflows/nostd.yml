@@ -41,7 +41,7 @@ jobs:
                   # gated sequential core.
                   cargo check --locked \
                     -p nectar-swarms -p nectar-contracts -p nectar-file \
-                    -p nectar-marker -p nectar-clock -p nectar-kernel \
+                    -p nectar-marker -p nectar-clock -p nectar-governor \
                     -p nectar-postage -p nectar-postage-issuer \
                     --no-default-features \
                     --target ${{ matrix.target }}
@@ -60,11 +60,11 @@ jobs:
                   cargo check --locked -p nectar-file \
                     --no-default-features --features primitives \
                     --target ${{ matrix.target }}
-            # The kernel's chunk-typed fetch helper pins the primitives core,
+            # The governor's chunk-typed fetch helper pins the primitives core,
             # which unification would leak into the bare pass above.
-            - name: Check nectar-kernel with the chunk helper
+            - name: Check nectar-governor with the chunk helper
               run: |
-                  cargo check --locked -p nectar-kernel \
+                  cargo check --locked -p nectar-governor \
                     --no-default-features --features chunk \
                     --target ${{ matrix.target }}
             # The manifest core, primitives-only. Separate from the shared

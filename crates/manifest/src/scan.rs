@@ -21,7 +21,7 @@ use core::convert::Infallible;
 use core::future::poll_fn;
 
 use bytes::Bytes;
-use nectar_kernel::{BoxFuture, Driver, FuturesUnordered, WalkPolicy};
+use nectar_governor::{BoxFuture, Driver, FuturesUnordered, WalkPolicy};
 use nectar_primitives::ChunkAddress;
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;

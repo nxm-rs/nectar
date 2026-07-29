@@ -6,7 +6,7 @@ use core::future::poll_fn;
 use core::num::{NonZeroU16, NonZeroUsize};
 use std::collections::BTreeSet;
 
-use nectar_kernel::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
+use nectar_governor::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, IntoVerified, SingleOwnerOnlyChunkSet};
 use nectar_primitives::store::{ChunkGet, ChunkHas};

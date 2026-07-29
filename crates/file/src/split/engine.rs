@@ -12,7 +12,7 @@ use core::task::{Context, Poll};
 use bytes::Bytes;
 #[cfg(feature = "rayon")]
 use futures_util::stream::{FuturesOrdered, StreamExt};
-use nectar_kernel::{BoxFuture, PutSink, Window};
+use nectar_governor::{BoxFuture, PutSink, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::bmt::SPAN_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
@@ -32,7 +32,7 @@ use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 /// error context.
 pub(super) type PutDone<E> = (ChunkAddress, Result<(), E>);
 
-/// Boxed put future; the kernel alias relaxes `Send` off the multi-threaded
+/// Boxed put future; the governor alias relaxes `Send` off the multi-threaded
 /// targets.
 type BoxPut<E> = BoxFuture<'static, PutDone<E>>;
 

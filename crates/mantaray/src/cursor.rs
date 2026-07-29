@@ -17,8 +17,8 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use futures::Stream;
-pub use nectar_kernel::Window;
-use nectar_kernel::{Admission, BoxFuture, FuturesUnordered, StaticDriver, WalkPolicy};
+pub use nectar_governor::Window;
+use nectar_governor::{Admission, BoxFuture, FuturesUnordered, StaticDriver, WalkPolicy};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ChunkAddress;
 

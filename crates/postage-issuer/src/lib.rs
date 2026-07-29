@@ -167,8 +167,8 @@ pub use issuer::{MemoryIssuer, MemoryIssuerFor, StampIssuer};
 pub use sharded::{ShardedIssuer, ShardedIssuerFor};
 pub use stamper::{BatchStamper, Stamper};
 
-// The streaming stamp pipeline; its sign window is the kernel window.
-pub use nectar_kernel::Window;
+// The streaming stamp pipeline; its sign window is the governor window.
+pub use nectar_governor::Window;
 #[cfg(feature = "std")]
 pub use pipeline::StampSink;
 pub use pipeline::{Eip191, SignPrehash, StampPipeline, StampResult, Stamped};

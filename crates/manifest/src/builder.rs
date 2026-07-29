@@ -15,7 +15,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use bytes::Bytes;
-use nectar_kernel::{BoxFuture, Window};
+use nectar_governor::{BoxFuture, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentChunk, PrimitivesError};
 
@@ -224,11 +224,11 @@ pub(crate) fn put_window<F: Format>() -> Window {
 /// A chunk's address is content-derived at seal, so a parent references a
 /// child the moment it seals while the child's put still rides the window.
 /// Puts are order-free, so the whole window admits; every put is settled
-/// before the root is returned. Wraps the shared kernel put-sink, sealing
+/// before the root is returned. Wraps the shared governor put-sink, sealing
 /// chunks and mapping faults to [`BuildError`].
 pub(crate) struct PutSink<'s, S: ChunkPut + MaybeSync> {
     store: &'s S,
-    sink: nectar_kernel::PutSink<'s, Result<(), BuildError>>,
+    sink: nectar_governor::PutSink<'s, Result<(), BuildError>>,
 }
 
 impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
@@ -236,7 +236,7 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
     pub(crate) fn new(store: &'s S, window: Window) -> Self {
         Self {
             store,
-            sink: nectar_kernel::PutSink::new(window),
+            sink: nectar_governor::PutSink::new(window),
         }
     }
 

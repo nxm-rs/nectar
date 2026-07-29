@@ -3,7 +3,7 @@
 
 use core::num::{NonZeroU16, NonZeroU32};
 
-pub use nectar_kernel::Window;
+pub use nectar_governor::Window;
 
 /// Sixteen slots: the default depth of both bounded windows.
 const DEFAULT_SLOTS: NonZeroU16 = match NonZeroU16::new(16) {

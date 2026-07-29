@@ -18,7 +18,7 @@ use core::task::{Context, Poll, Waker};
 use futures_core::Stream;
 use futures_util::FutureExt;
 use nectar_clock::Clock;
-use nectar_kernel::{Admission, BoxFuture, FuturesUnordered};
+use nectar_governor::{Admission, BoxFuture, FuturesUnordered};
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;
@@ -243,7 +243,7 @@ mod tests {
     use alloy_primitives::{B256, Signature, U256};
     use alloy_signer::SignerSync;
     use core::sync::atomic::{AtomicUsize, Ordering};
-    use nectar_kernel::Window;
+    use nectar_governor::Window;
     use nectar_tasks::TaskHandle;
     use std::sync::{Mutex, mpsc};
     use std::task::Wake;
