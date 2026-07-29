@@ -310,6 +310,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use core::pin::pin;
     use core::task::Poll;
     use std::collections::HashSet;
     use std::vec;
@@ -644,8 +645,7 @@ mod tests {
         run(async {
             let mut stream = reader.addresses(&root);
             {
-                let fut = stream.next();
-                futures_util::pin_mut!(fut);
+                let mut fut = pin!(stream.next());
                 let state = poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await;
                 assert!(state.is_pending());
             }

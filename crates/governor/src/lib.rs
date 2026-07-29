@@ -8,8 +8,9 @@
 //! ordering, and completion fold bespoke in its own crate. This crate says
 //! nothing but when one more fetch may start.
 //!
-//! A consumer therefore takes the substrate from `futures_util` directly:
-//! this crate re-exports no part of it, so the following does not compile.
+//! A consumer therefore takes the in-flight set from `futures_util`
+//! directly: this crate does not re-export it, so the following does not
+//! compile.
 //!
 //! ```compile_fail
 //! use nectar_governor::FuturesUnordered;

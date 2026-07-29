@@ -716,7 +716,7 @@ mod tests {
     /// before any single fetch resolves.
     async fn yield_once() {
         let mut yielded = false;
-        futures_util::future::poll_fn(|cx| {
+        core::future::poll_fn(|cx| {
             if yielded {
                 Poll::Ready(())
             } else {

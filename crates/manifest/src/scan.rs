@@ -666,6 +666,7 @@ pub(crate) fn successor(prefix: &[u8]) -> Option<Bytes> {
 
 #[cfg(test)]
 mod tests {
+    use core::pin::pin;
     use core::task::Poll;
     use std::vec;
 
@@ -970,8 +971,7 @@ mod tests {
             );
             // Drop a next future mid-fetch of the referenced leaf.
             {
-                let fut = cursor.next();
-                futures_util::pin_mut!(fut);
+                let mut fut = pin!(cursor.next());
                 let state = poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await;
                 assert!(state.is_pending());
             }
