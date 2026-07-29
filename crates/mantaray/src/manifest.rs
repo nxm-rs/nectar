@@ -138,9 +138,10 @@ where
         let root = root.clone().into_entry_ref();
         let store = self.data.clone();
         let path = path.clone();
+        let key = edit_path(&path);
         async move {
             let entry = reader
-                .get(root, path.as_bytes())
+                .get(root, &key)
                 .await?
                 .ok_or_else(|| ManifestError::NotFound { path: path.clone() })?;
             let reference = entry
@@ -211,11 +212,12 @@ where
     }
 }
 
-/// The trie path an op edits.
+/// The trie key a path addresses.
 ///
 /// The manifest root has no metadata slot of its own on the wire; the trie
 /// keeps the site-level documents on the `/` node instead, so a root-scope op
-/// lands there.
+/// lands there. Reads apply the same mapping, or a root put would never load
+/// back.
 fn edit_path(path: &ManifestPath) -> Vec<u8> {
     if path.is_root() {
         metadata::ROOT_PATH.as_bytes().to_vec()

@@ -119,6 +119,31 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
             .is_err(),
         "a removed path names no data"
     );
+
+    // The root path addresses the manifest's own entry, and every operation
+    // maps it to the same slot: what a put binds there, a load reads back.
+    let rooted = manifest
+        .dyn_apply(base, vec![ManifestOp::Put {
+            path: ManifestPath::root(),
+            reference: *file,
+            meta: content_type(),
+        }])
+        .await
+        .unwrap();
+    let mut sink = MemSink::new();
+    manifest
+        .dyn_load(&rooted, &ManifestPath::root(), &mut sink)
+        .await
+        .expect("a root put loads back");
+    assert_eq!(sink.as_ref(), data);
+    assert!(
+        manifest
+            .dyn_list(&rooted, &ManifestPath::root())
+            .await
+            .unwrap()
+            .is_empty(),
+        "the manifest's own entry is not one of its children"
+    );
 }
 
 /// An empty trie manifest, and the seams it is read and written through.
