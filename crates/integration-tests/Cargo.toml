@@ -132,6 +132,10 @@ name = "manifest_encrypted"
 path = "tests/manifest/encrypted.rs"
 
 [[test]]
+name = "manifest_listing"
+path = "tests/manifest/listing.rs"
+
+[[test]]
 name = "mantaray_bmt_nodes"
 path = "tests/mantaray/bmt_nodes.rs"
 
