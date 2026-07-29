@@ -1,15 +1,59 @@
-//! Feed identity and address derivation.
+//! Feed identity, topic and address derivation.
 
-use alloy_primitives::{Address, Keccak256};
+use alloy_primitives::{Address, B256, Keccak256, keccak256};
+use derive_more::{AsRef, Display, From, Into};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, SocId};
 
 use crate::index::Index;
-use crate::topic::Topic;
+
+/// 32-byte feed topic, mixed raw (never hashed again) into every update id.
+///
+/// Nominally distinct from the hash it wraps: a bare `B256` is rejected
+/// where a `Topic` is expected. Arbitrary-length labels go through
+/// [`from_label`](Self::from_label); [`new`](Self::new) wraps 32 bytes
+/// verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, Into, AsRef)]
+#[display("{_0}")]
+#[from(B256, [u8; 32])]
+#[into(B256, [u8; 32])]
+#[as_ref([u8])]
+#[repr(transparent)]
+pub struct Topic(B256);
+
+impl Topic {
+    /// Zero topic, useful for tests and deterministic vectors.
+    pub const ZERO: Self = Self(B256::ZERO);
+
+    /// Construct from raw 32 bytes. `const` for static contexts; for runtime
+    /// conversions prefer the `From` impls.
+    #[inline]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(B256::new(bytes))
+    }
+
+    /// Derive a topic from an arbitrary-length label: `keccak256(label)`.
+    pub fn from_label(label: impl AsRef<[u8]>) -> Self {
+        Self(keccak256(label))
+    }
+
+    /// Borrow the underlying 32 bytes.
+    #[inline]
+    pub const fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for Topic {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self::new(u.arbitrary()?))
+    }
+}
 
 /// Feed identity: the `(topic, owner)` pair.
 ///
-/// `BODY_SIZE` fixes the chunk geometry the getter and updater operate at;
+/// `BODY_SIZE` fixes the chunk geometry the reader and publisher operate at;
 /// the address derivation itself is body-independent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Feed<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
@@ -54,7 +98,6 @@ impl<const BODY_SIZE: usize> Feed<BODY_SIZE> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::keccak256;
     use nectar_primitives::DEFAULT_BODY_SIZE;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
@@ -62,6 +105,18 @@ mod tests {
     use crate::Sequence;
 
     use super::*;
+
+    #[test]
+    fn from_label_is_keccak_of_label() {
+        assert_eq!(Topic::from_label("abc"), Topic::from(keccak256("abc")));
+    }
+
+    #[test]
+    fn new_wraps_verbatim() {
+        let raw = [0x5au8; 32];
+        assert_eq!(Topic::new(raw).as_slice(), &raw);
+        assert_eq!(Topic::ZERO.as_slice(), &[0u8; 32]);
+    }
 
     proptest! {
         /// Derivation oracle: both hashes recomputed by hand over the raw

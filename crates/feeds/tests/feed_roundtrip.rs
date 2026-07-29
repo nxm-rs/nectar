@@ -13,7 +13,7 @@
 
 use alloy_primitives::hex;
 use alloy_signer_local::PrivateKeySigner;
-use nectar_feeds::{Feed, FeedError, Getter, Index, Sequence, Topic, Updater};
+use nectar_feeds::{Feed, FeedError, Index, Latest, Publisher, Reader, Sequence, Topic};
 use nectar_primitives::chunk::{
     ChunkAddress, ChunkOps, SingleOwnerChunk, SingleOwnerOnlyChunkSet, TrustedSource, Unverified,
 };
@@ -47,22 +47,22 @@ fn feed_for(signer: &PrivateKeySigner) -> Feed {
 }
 
 #[test]
-fn append_then_read_round_trips() {
+fn publish_then_read_round_trips() {
     run(async {
         let signer = signer();
         let feed = feed_for(&signer);
         let store = SocStore::new();
-        let mut updater = Updater::new(feed, &store, &signer);
+        let mut publisher = Publisher::new(feed, &store, &signer);
 
         let payloads: [&[u8]; 3] = [b"first", b"second", b"third"];
         for payload in payloads {
-            updater.append(payload.to_vec()).await.unwrap();
+            publisher.publish(payload.to_vec()).await.unwrap();
         }
-        assert_eq!(updater.next_index(), Some(Sequence::new(3)));
+        assert_eq!(publisher.next_index(), Some(Sequence::new(3)));
 
-        let getter = Getter::new(feed, &store);
+        let reader = Reader::new(feed, &store);
         for (n, payload) in (0u64..).zip(payloads) {
-            let update = getter.at(Sequence::new(n)).await.unwrap();
+            let update = reader.at(Sequence::new(n)).await.unwrap();
             assert_eq!(update.payload().as_ref(), payload);
             assert_eq!(update.index(), &Sequence::new(n));
             assert_eq!(update.address(), &feed.update_address(&Sequence::new(n)));
@@ -75,11 +75,11 @@ fn append_then_read_round_trips() {
 fn empty_feed_has_no_latest() {
     run(async {
         let signer = signer();
-        let getter = Getter::new(feed_for(&signer), SocStore::new());
+        let reader = Reader::new(feed_for(&signer), SocStore::new());
 
         for latest in [
-            getter.latest().await.unwrap(),
-            getter.latest_linear_from(Sequence::ZERO).await.unwrap(),
+            reader.latest().await.unwrap(),
+            reader.latest_linear_from(Sequence::ZERO).await.unwrap(),
         ] {
             assert!(latest.update.is_none());
             assert_eq!(latest.next, Some(Sequence::ZERO));
@@ -93,14 +93,14 @@ fn finders_agree_while_the_feed_grows() {
         let signer = signer();
         let feed = feed_for(&signer);
         let store = SocStore::new();
-        let mut updater = Updater::new(feed, &store, &signer);
-        let getter = Getter::new(feed, &store);
+        let mut publisher = Publisher::new(feed, &store, &signer);
+        let reader = Reader::new(feed, &store);
 
         for n in 0u64..33 {
-            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+            publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
 
-            let latest = getter.latest().await.unwrap();
-            let linear = getter.latest_linear_from(Sequence::ZERO).await.unwrap();
+            let latest = reader.latest().await.unwrap();
+            let linear = reader.latest_linear_from(Sequence::ZERO).await.unwrap();
 
             for found in [&latest, &linear] {
                 let update = found.update.as_ref().unwrap();
@@ -118,18 +118,18 @@ fn latest_from_respects_the_floor() {
         let signer = signer();
         let feed = feed_for(&signer);
         let store = SocStore::new();
-        let mut updater = Updater::new(feed, &store, &signer);
+        let mut publisher = Publisher::new(feed, &store, &signer);
         for n in 0u64..5 {
-            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+            publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
         }
-        let getter = Getter::new(feed, &store);
+        let reader = Reader::new(feed, &store);
 
-        let latest = getter.latest_from(Sequence::new(3)).await.unwrap();
+        let latest = reader.latest_from(Sequence::new(3)).await.unwrap();
         assert_eq!(latest.update.unwrap().index(), &Sequence::new(4));
         assert_eq!(latest.next, Some(Sequence::new(5)));
 
         // A floor past the head is an empty result carrying the floor back.
-        let latest = getter.latest_from(Sequence::new(5)).await.unwrap();
+        let latest = reader.latest_from(Sequence::new(5)).await.unwrap();
         assert!(latest.update.is_none());
         assert_eq!(latest.next, Some(Sequence::new(5)));
     });
@@ -142,13 +142,13 @@ fn wrong_signer_is_rejected_before_the_write() {
         let other = PrivateKeySigner::from_slice(&[0x42u8; 32]).unwrap();
         let feed = Feed::<DEFAULT_BODY_SIZE>::new(Topic::from_label("roundtrip"), other.address());
         let store = SocStore::new();
-        let mut updater = Updater::new(feed, &store, &signer);
+        let mut publisher = Publisher::new(feed, &store, &signer);
 
-        let err = updater.append(b"payload".to_vec()).await.unwrap_err();
+        let err = publisher.publish(b"payload".to_vec()).await.unwrap_err();
         assert!(matches!(err, FeedError::OwnerMismatch { .. }));
         assert!(store.is_empty());
-        // The rejected append does not advance the cursor.
-        assert_eq!(updater.next_index(), Some(Sequence::ZERO));
+        // The rejected publish does not advance the cursor.
+        assert_eq!(publisher.next_index(), Some(Sequence::ZERO));
     });
 }
 
@@ -158,22 +158,22 @@ fn sequence_space_exhausts_at_the_top_slot() {
         let signer = signer();
         let feed = feed_for(&signer);
         let store = SocStore::new();
-        let mut updater = Updater::resume(feed, &store, &signer, Sequence::MAX);
+        let mut publisher = Publisher::resume(feed, &store, &signer, Sequence::MAX);
 
-        let update = updater.append(b"last".to_vec()).await.unwrap();
+        let update = publisher.publish(b"last".to_vec()).await.unwrap();
         assert_eq!(update.index(), &Sequence::MAX);
-        assert_eq!(updater.next_index(), None);
+        assert_eq!(publisher.next_index(), None);
         assert!(matches!(
-            updater.append(b"over".to_vec()).await.unwrap_err(),
+            publisher.publish(b"over".to_vec()).await.unwrap_err(),
             FeedError::Exhausted
         ));
 
         // The finder resumed at the top slot reports the space as spent.
-        let getter = Getter::new(feed, &store);
-        let latest = getter.latest_from(Sequence::MAX).await.unwrap();
+        let reader = Reader::new(feed, &store);
+        let latest = reader.latest_from(Sequence::MAX).await.unwrap();
         assert_eq!(latest.update.unwrap().index(), &Sequence::MAX);
         assert_eq!(latest.next, None);
-        let linear = getter.latest_linear_from(Sequence::MAX).await.unwrap();
+        let linear = reader.latest_linear_from(Sequence::MAX).await.unwrap();
         assert_eq!(linear.update.unwrap().index(), &Sequence::MAX);
         assert_eq!(linear.next, None);
     });
@@ -183,16 +183,16 @@ fn sequence_space_exhausts_at_the_top_slot() {
 fn missing_update_surfaces_the_store_error() {
     run(async {
         let signer = signer();
-        let getter = Getter::new(feed_for(&signer), SocStore::new());
+        let reader = Reader::new(feed_for(&signer), SocStore::new());
         assert!(matches!(
-            getter.at(Sequence::ZERO).await.unwrap_err(),
+            reader.at(Sequence::ZERO).await.unwrap_err(),
             FeedError::Store(_)
         ));
     });
 }
 
 /// Store double reading back unverified parses of what the inner store holds,
-/// exercising the getter's certification path.
+/// exercising the reader's certification path.
 struct Unverifying<'a>(&'a SocStore);
 
 impl ChunkGet<SingleOwnerOnlyChunkSet> for Unverifying<'_> {
@@ -221,14 +221,14 @@ fn unverified_reads_are_certified() {
         let signer = signer();
         let feed = feed_for(&signer);
         let store = SocStore::new();
-        let mut updater = Updater::new(feed, &store, &signer);
-        updater.append(b"payload".to_vec()).await.unwrap();
+        let mut publisher = Publisher::new(feed, &store, &signer);
+        publisher.publish(b"payload".to_vec()).await.unwrap();
 
-        let getter = Getter::new(feed, Unverifying(&store));
-        let update = getter.at(Sequence::ZERO).await.unwrap();
+        let reader = Reader::new(feed, Unverifying(&store));
+        let update = reader.at(Sequence::ZERO).await.unwrap();
         assert_eq!(update.payload().as_ref(), b"payload");
 
-        let latest = getter.latest().await.unwrap();
+        let latest = reader.latest().await.unwrap();
         assert_eq!(latest.update.unwrap().index(), &Sequence::ZERO);
     });
 }
@@ -260,10 +260,10 @@ fn relabelled_chunk_fails_certification() {
         let signer = signer();
         let feed = feed_for(&signer);
         let store = SocStore::new();
-        let mut updater = Updater::new(feed, &store, &signer);
-        updater.append(b"payload".to_vec()).await.unwrap();
+        let mut publisher = Publisher::new(feed, &store, &signer);
+        publisher.publish(b"payload".to_vec()).await.unwrap();
 
-        let getter = Getter::new(
+        let reader = Reader::new(
             feed,
             Rebinding {
                 inner: &store,
@@ -271,7 +271,7 @@ fn relabelled_chunk_fails_certification() {
             },
         );
         assert!(matches!(
-            getter.at(Sequence::new(1)).await.unwrap_err(),
+            reader.at(Sequence::new(1)).await.unwrap_err(),
             FeedError::Chunk(_)
         ));
     });
@@ -310,9 +310,9 @@ fn content_chunk_at_a_feed_slot_is_a_typed_store_error() {
             source: unsafe { TrustedSource::grant() },
         };
 
-        let getter = Getter::new(feed, SingleOwnerGet::new(store));
+        let reader = Reader::new(feed, SingleOwnerGet::new(store));
         assert!(matches!(
-            getter.at(Sequence::ZERO).await.unwrap_err(),
+            reader.at(Sequence::ZERO).await.unwrap_err(),
             FeedError::Store(_)
         ));
     });
@@ -324,24 +324,24 @@ fn windowed_finders_agree_with_sequential() {
         let signer = signer();
         let feed = feed_for(&signer);
         let store = SocStore::new();
-        let mut updater = Updater::new(feed, &store, &signer);
+        let mut publisher = Publisher::new(feed, &store, &signer);
         for n in 0u64..21 {
-            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+            publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
         }
 
         for width in [1usize, 2, 7, 15] {
-            let getter =
-                Getter::new(feed, &store).with_window(core::num::NonZeroUsize::new(width).unwrap());
+            let reader =
+                Reader::new(feed, &store).with_window(core::num::NonZeroUsize::new(width).unwrap());
             for latest in [
-                getter.latest().await.unwrap(),
-                getter.latest_from(Sequence::new(3)).await.unwrap(),
-                getter.latest_linear_from(Sequence::ZERO).await.unwrap(),
+                reader.latest().await.unwrap(),
+                reader.latest_from(Sequence::new(3)).await.unwrap(),
+                reader.latest_linear_from(Sequence::ZERO).await.unwrap(),
             ] {
                 assert_eq!(latest.update.unwrap().index(), &Sequence::new(20));
                 assert_eq!(latest.next, Some(Sequence::new(21)));
             }
 
-            let empty = getter.latest_from(Sequence::new(21)).await.unwrap();
+            let empty = reader.latest_from(Sequence::new(21)).await.unwrap();
             assert!(empty.update.is_none());
             assert_eq!(empty.next, Some(Sequence::new(21)));
         }
@@ -364,11 +364,11 @@ fn shared_general_store_adapts_through_the_narrowing_get() {
             .await
             .unwrap();
 
-        let getter = Getter::new(feed, SingleOwnerGet::new(&shared));
-        let update = getter.at(Sequence::ZERO).await.unwrap();
+        let reader = Reader::new(feed, SingleOwnerGet::new(&shared));
+        let update = reader.at(Sequence::ZERO).await.unwrap();
         assert_eq!(update.payload().as_ref(), b"payload");
 
-        let latest = getter.latest().await.unwrap();
+        let latest = reader.latest().await.unwrap();
         assert_eq!(latest.update.unwrap().index(), &Sequence::ZERO);
         assert_eq!(latest.next, Sequence::ZERO.next());
     });
@@ -496,7 +496,7 @@ fn drive_order(
     mut pick: impl FnMut(usize, &[ChunkAddress]) -> ChunkAddress,
 ) -> (Option<Sequence>, Option<Sequence>, usize) {
     let gate = Gate::default();
-    let getter = Getter::new(
+    let reader = Reader::new(
         feed,
         GatedStore {
             inner,
@@ -506,9 +506,9 @@ fn drive_order(
     .with_window(window);
     let mut driver = Drive::new(async {
         if linear {
-            getter.latest_linear_from(floor).await
+            reader.latest_linear_from(floor).await
         } else {
-            getter.latest_from(floor).await
+            reader.latest_from(floor).await
         }
     });
 
@@ -542,9 +542,9 @@ fn probe_policy_holds_under_adversarial_completion_order() {
     let feed = feed_for(&signer);
     let store = SocStore::new();
     run(async {
-        let mut updater = Updater::new(feed, &store, &signer);
+        let mut publisher = Publisher::new(feed, &store, &signer);
         for n in 0u64..21 {
-            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+            publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
         }
     });
 
@@ -591,9 +591,9 @@ fn probes_fill_exactly_the_window() {
     let feed = feed_for(&signer);
     let store = SocStore::new();
     run(async {
-        let mut updater = Updater::new(feed, &store, &signer);
+        let mut publisher = Publisher::new(feed, &store, &signer);
         for n in 0u64..21 {
-            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+            publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
         }
     });
 
@@ -645,31 +645,91 @@ fn fetch_failure_surfaces_only_at_the_commit() {
         let signer = signer();
         let feed = feed_for(&signer);
         let store = SocStore::new();
-        let mut updater = Updater::new(feed, &store, &signer);
+        let mut publisher = Publisher::new(feed, &store, &signer);
         for n in 0u64..5 {
-            updater.append(n.to_be_bytes().to_vec()).await.unwrap();
+            publisher.publish(n.to_be_bytes().to_vec()).await.unwrap();
         }
 
-        let getter =
-            Getter::new(feed, ProbeOnly(&store)).with_window(NonZeroUsize::new(4).unwrap());
+        let reader =
+            Reader::new(feed, ProbeOnly(&store)).with_window(NonZeroUsize::new(4).unwrap());
         assert!(matches!(
-            getter.latest().await.unwrap_err(),
+            reader.latest().await.unwrap_err(),
             FeedError::Store(_)
         ));
         assert!(matches!(
-            getter.latest_linear_from(Sequence::ZERO).await.unwrap_err(),
+            reader.latest_linear_from(Sequence::ZERO).await.unwrap_err(),
             FeedError::Store(_)
         ));
 
-        let empty = getter.latest_from(Sequence::new(5)).await.unwrap();
+        let empty = reader.latest_from(Sequence::new(5)).await.unwrap();
         assert!(empty.update.is_none());
         assert_eq!(empty.next, Some(Sequence::new(5)));
     });
 }
 
+/// Pins the layer-2 vocabulary: the read handle is `Reader`, the write handle
+/// is `Publisher`, and the explicit-slot verb is `publish_at`. The written
+/// types are spelled out, so a rename back to a `get` or `put` verb fails this
+/// test at compile time.
+#[test]
+fn publish_at_writes_an_explicit_slot_without_moving_the_cursor() {
+    run(async {
+        let signer = signer();
+        let feed = feed_for(&signer);
+        let store = SocStore::new();
+        let publisher: Publisher<&SocStore, &PrivateKeySigner> =
+            Publisher::new(feed, &store, &signer);
+
+        let written = publisher
+            .publish_at(Sequence::new(7), b"seven".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(written.index(), &Sequence::new(7));
+        // The explicit verb takes `&self`, so the cursor never moves.
+        assert_eq!(publisher.next_index(), Some(Sequence::ZERO));
+
+        let reader: Reader<&SocStore> = Reader::new(feed, &store);
+        let read = reader.at(Sequence::new(7)).await.unwrap();
+        assert_eq!(read.payload().as_ref(), b"seven");
+        assert_eq!(read.address(), written.address());
+
+        // The hole at zero still ends the feed for the finder.
+        let latest: Latest = reader.latest().await.unwrap();
+        assert!(latest.update.is_none());
+        assert_eq!(latest.next, Some(Sequence::ZERO));
+    });
+}
+
+/// `publish` is `publish_at` at the cursor plus the advance, so both verbs
+/// land the same payload at the same derived address.
+#[test]
+fn publish_matches_publish_at_the_cursor() {
+    run(async {
+        let signer = signer();
+        let feed = feed_for(&signer);
+
+        let store = SocStore::new();
+        let mut publisher = Publisher::new(feed, &store, &signer);
+        let sequential = publisher.publish(b"payload".to_vec()).await.unwrap();
+        assert_eq!(publisher.next_index(), Some(Sequence::new(1)));
+
+        let other = SocStore::new();
+        let explicit_publisher = Publisher::new(feed, &other, &signer);
+        let explicit = explicit_publisher
+            .publish_at(Sequence::ZERO, b"payload".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(explicit_publisher.next_index(), Some(Sequence::ZERO));
+
+        assert_eq!(sequential.index(), explicit.index());
+        assert_eq!(sequential.address(), explicit.address());
+        assert_eq!(sequential.payload(), explicit.payload());
+    });
+}
+
 proptest! {
     /// Round trip over generator-drawn feeds: whatever identity and payload,
-    /// an appended update reads back byte-identical.
+    /// a published update reads back byte-identical.
     #[test]
     fn arbitrary_feed_round_trips(
         seed in proptest::collection::vec(any::<u8>(), 64..256),
@@ -677,23 +737,23 @@ proptest! {
     ) {
         let mut u = arbitrary::Unstructured::new(&seed);
         let Ok((feed, signer)) =
-            nectar_feeds::generators::feed_with_signer::<DEFAULT_BODY_SIZE>(&mut u)
+            nectar_feeds::arbitrary::feed_with_signer::<DEFAULT_BODY_SIZE>(&mut u)
         else {
             return Ok(());
         };
 
         run(async {
             let store = SocStore::new();
-            let mut updater = Updater::new(feed, &store, &signer);
-            let written = updater.append(payload.clone()).await.unwrap();
+            let mut publisher = Publisher::new(feed, &store, &signer);
+            let written = publisher.publish(payload.clone()).await.unwrap();
 
-            let getter = Getter::new(feed, &store);
-            let read = getter.at(Sequence::ZERO).await.unwrap();
+            let reader = Reader::new(feed, &store);
+            let read = reader.at(Sequence::ZERO).await.unwrap();
             prop_assert_eq!(read.payload().as_ref(), payload.as_slice());
             prop_assert_eq!(read.address(), written.address());
             prop_assert_eq!(read.chunk(), written.chunk());
 
-            let latest = getter.latest().await.unwrap();
+            let latest = reader.latest().await.unwrap();
             prop_assert_eq!(latest.next, Sequence::ZERO.next());
             Ok(())
         })?;

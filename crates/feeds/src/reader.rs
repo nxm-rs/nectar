@@ -18,7 +18,7 @@ use crate::sequence::Sequence;
 use crate::update::FeedUpdate;
 
 /// Read handle over a feed: a [`Feed`] plus a chunk store.
-pub struct Getter<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
+pub struct Reader<S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     feed: Feed<BODY_SIZE>,
     store: S,
     window: NonZeroUsize,
@@ -35,17 +35,17 @@ pub struct Latest<const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     pub next: Option<Sequence>,
 }
 
-impl<S, const BODY_SIZE: usize> fmt::Debug for Getter<S, BODY_SIZE> {
+impl<S, const BODY_SIZE: usize> fmt::Debug for Reader<S, BODY_SIZE> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Getter")
+        f.debug_struct("Reader")
             .field("feed", &self.feed)
             .field("window", &self.window)
             .finish_non_exhaustive()
     }
 }
 
-impl<S, const BODY_SIZE: usize> Getter<S, BODY_SIZE> {
-    /// Create a getter over `feed` reading from `store`.
+impl<S, const BODY_SIZE: usize> Reader<S, BODY_SIZE> {
+    /// Create a reader over `feed` reading from `store`.
     pub const fn new(feed: Feed<BODY_SIZE>, store: S) -> Self {
         Self {
             feed,
@@ -66,13 +66,13 @@ impl<S, const BODY_SIZE: usize> Getter<S, BODY_SIZE> {
         self
     }
 
-    /// The feed this getter reads.
+    /// The feed this reader reads.
     pub const fn feed(&self) -> &Feed<BODY_SIZE> {
         &self.feed
     }
 }
 
-impl<S, const BODY_SIZE: usize> Getter<S, BODY_SIZE>
+impl<S, const BODY_SIZE: usize> Reader<S, BODY_SIZE>
 where
     S: ChunkGet<SingleOwnerOnlyChunkSet<BODY_SIZE>>,
     Chunk<S::Trust, SingleOwnerOnlyChunkSet<BODY_SIZE>>:
@@ -96,7 +96,7 @@ where
     }
 }
 
-impl<S, const BODY_SIZE: usize> Getter<S, BODY_SIZE>
+impl<S, const BODY_SIZE: usize> Reader<S, BODY_SIZE>
 where
     S: ChunkGet<SingleOwnerOnlyChunkSet<BODY_SIZE>> + ChunkHas,
     Chunk<S::Trust, SingleOwnerOnlyChunkSet<BODY_SIZE>>:

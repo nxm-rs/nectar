@@ -54,7 +54,7 @@ fn git(args: &[&str]) -> String {
 
 fn caveats() -> Vec<String> {
     vec![
-        "Every figure is a measured work count from driving the real getter over a counting \
+        "Every figure is a measured work count from driving the real reader over a counting \
 presence store; nothing is wall time. rounds is elapsed virtual time under a paused clock with \
 one tick per presence probe, so the probes of one concurrent batch collapse into one round, and \
 one round is one network round trip."

@@ -1,10 +1,14 @@
 //! Valid-by-construction test-value generators.
+//!
+//! The raw tier is the `arbitrary::Arbitrary` impls on the types themselves.
+//! This module is the valid tier: every value it returns satisfies the feed
+//! invariants, and every generator stays deterministic in `u`, so shrinking
+//! and replay work.
 
 use alloy_signer_local::PrivateKeySigner;
 use arbitrary::{Arbitrary, Unstructured};
 
-use crate::feed::Feed;
-use crate::topic::Topic;
+use crate::feed::{Feed, Topic};
 
 /// A feed whose owner is controlled by the returned signer.
 ///
