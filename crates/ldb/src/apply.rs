@@ -148,6 +148,10 @@ pub enum ApplyError {
 /// result equals a from-scratch build of the merged key set, byte for byte: an
 /// empty changeset returns `root` unchanged, and a single update is just a
 /// one-entry changeset.
+///
+/// An untouched subtree is spliced in verbatim, key and all, so an encrypted
+/// `seal` must carry the secret the base tree was sealed under; a different one
+/// still reads back, but the result no longer matches a from-scratch build.
 pub async fn apply<S, F, R, K>(
     store: &S,
     seal: &K,
