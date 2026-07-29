@@ -1,11 +1,14 @@
-//! Drive the two-arm manifest measurements across every `(corpus, scale)` and
-//! write one JSON result document, split into a bit-reproducible deterministic
-//! section and a non-deterministic build wall-time section.
+//! The two-arm manifest harness binary, in two modes.
 //!
-//! This is the unit-A minimal run path: the capability matrix and the v4
-//! metric cells are populated, and the new two-arm metric modules (Units B-E)
-//! are wired in and currently return empty vectors until their bodies land.
-//! The render mode is Unit F's.
+//! `manifest-perf run` drives every `(corpus, scale)` over both arms and writes
+//! one JSON result document, split into a bit-reproducible deterministic
+//! section and a non-deterministic build wall-time section. `manifest-perf
+//! render --in <json> --out <md>` reads that document back and prints the
+//! markdown tables; it measures nothing and fills nothing.
+//!
+//! Run flags: `--out`, `--scales`, `--max-mantaray-scale`, `--build-samples`.
+//! Render flags: `--in`, `--out`. With no mode word the binary runs, so the
+//! bare invocation keeps working.
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -17,10 +20,12 @@ use nectar_manifest_sim::corpus::{self, Corpus};
 use nectar_manifest_sim::results::{
     self, ArmMeta, DeterministicSection, Document, Meta, WallTimeSection,
 };
-use nectar_manifest_sim::{build_time, matrix, perf};
+use nectar_manifest_sim::{build_time, matrix, perf, render};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
 const DEFAULT_OUT: &str = "manifest-perf-results.json";
+/// The default markdown target of the render mode.
+const DEFAULT_RENDER_OUT: &str = "manifest-perf-tables.md";
 /// The 0.2 arm scale cap: above it the editor commit materialises the whole
 /// trie in RAM, so every 0.2 cell is a null-with-reason.
 const DEFAULT_MAX_MANTARAY_SCALE: u64 = 100_000;
@@ -34,17 +39,39 @@ struct Args {
     build_samples: u32,
 }
 
-fn parse_args() -> Args {
-    let mut out = PathBuf::from(DEFAULT_OUT);
+/// What the invocation asked for.
+enum Mode {
+    /// Measure and write the JSON document.
+    Run(Args),
+    /// Read a document back and write the markdown tables.
+    Render { input: PathBuf, out: PathBuf },
+}
+
+fn parse_args() -> Mode {
+    let mut out: Option<PathBuf> = None;
+    let mut input: Option<PathBuf> = None;
     let mut scales = vec![1_000u64, 10_000, 100_000, 1_000_000];
     let mut max_mantaray_scale = DEFAULT_MAX_MANTARAY_SCALE;
     let mut build_samples = DEFAULT_BUILD_SAMPLES;
-    let mut it = std::env::args().skip(1);
+    // No mode word means `run`, so the bare invocation keeps working.
+    let mut render_mode = false;
+    let mut it = std::env::args().skip(1).peekable();
+    if let Some(first) = it.peek()
+        && matches!(first.as_str(), "run" | "render")
+    {
+        render_mode = first == "render";
+        let _ = it.next();
+    }
     while let Some(a) = it.next() {
         match a.as_str() {
             "--out" => {
                 if let Some(v) = it.next() {
-                    out = PathBuf::from(v);
+                    out = Some(PathBuf::from(v));
+                }
+            }
+            "--in" => {
+                if let Some(v) = it.next() {
+                    input = Some(PathBuf::from(v));
                 }
             }
             "--scales" => {
@@ -69,12 +96,18 @@ fn parse_args() -> Args {
             _ => {}
         }
     }
-    Args {
-        out,
+    if render_mode {
+        return Mode::Render {
+            input: input.unwrap_or_else(|| PathBuf::from(DEFAULT_OUT)),
+            out: out.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_OUT)),
+        };
+    }
+    Mode::Run(Args {
+        out: out.unwrap_or_else(|| PathBuf::from(DEFAULT_OUT)),
         scales,
         max_mantaray_scale,
         build_samples,
-    }
+    })
 }
 
 fn git(args: &[&str]) -> String {
@@ -118,8 +151,26 @@ ordered iteration and ceiling."
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args = parse_args();
+    match parse_args() {
+        Mode::Run(args) => run(args),
+        Mode::Render { input, out } => render_mode(&input, &out),
+    }
+}
 
+/// Read a finished document back and write its markdown tables.
+fn render_mode(input: &std::path::Path, out: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let json = std::fs::read_to_string(input)?;
+    let doc: Document = serde_json::from_str(&json)?;
+    let md = render::render(&doc);
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(out, md.as_bytes())?;
+    eprintln!("wrote {} ({} bytes)", out.display(), md.len());
+    Ok(())
+}
+
+fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let mut det = DeterministicSection {
         capability_matrix: matrix::capability_matrix(),
         ..DeterministicSection::default()
@@ -137,8 +188,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .extend(perf::parallel_cursor_cells(corpus, scale, &keys)?);
             det.v1read
                 .push(perf::read_profile_cell(corpus, scale, &keys)?);
-            det.paginate
-                .extend(perf::paginate_cells(corpus, scale, &keys)?);
+            det.paginate.extend(perf::paginate_cells(
+                corpus,
+                scale,
+                &keys,
+                args.max_mantaray_scale,
+            )?);
             det.subtree_serve
                 .extend(perf::subtree_serve_cell(corpus, scale, &keys)?);
 
@@ -152,7 +207,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             det.write_amp.extend(metrics.write_amp);
             det.build_profile.extend(metrics.build_profile);
 
-            // Build wall-time lane (Unit E).
+            // Build wall-time lane (Unit E). A capped arm has no cell at all,
+            // so its gap rides the section's null list instead.
             wall.build_wall.extend(build_time::build_wall(
                 corpus,
                 scale,
@@ -160,6 +216,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 args.max_mantaray_scale,
                 args.build_samples,
             ));
+            wall.nulls
+                .extend(build_time::cap_nulls(scale, args.max_mantaray_scale));
         }
     }
 

@@ -21,6 +21,8 @@ use nectar_ldb::{
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, StandardChunkSet};
 
+use crate::arm::Arm;
+use crate::arm_mantaray::MantarayArm;
 use crate::corpus::{Corpus, GenKey, tagged_addr, value_addr};
 use crate::results::{
     CursorLatency, PaginateCell, ParallelCursorCell, ReadProfileCell, ReadProfileSide,
@@ -408,16 +410,36 @@ pub fn read_profile_cell(
 
 // ---- paginate ------------------------------------------------------------
 
-/// The pagination sweep for one `(corpus, scale)`: rank-directed paginate.
+/// The pagination sweep for one `(corpus, scale)`: rank-directed paginate on
+/// 1.0, the O(offset) skip baseline, and the 0.2 resume-token page walk to the
+/// same offset (whitepaper 4.3).
+///
+/// Above `max_mantaray_scale` the 0.2 column is a null carrying the policy
+/// reason, never an extrapolation from a smaller scale.
 pub fn paginate_cells(
     corpus: Corpus,
     scale: u64,
     keys: &[GenKey],
+    max_mantaray_scale: u64,
 ) -> Result<Vec<PaginateCell>, Err> {
     let (store, root) = build_counting::<V1>(keys)?;
     let reader = Reader::<_, V1>::new(ContentGet::new(&store));
     let n = keys.len() as u64;
     let empty = Key::empty();
+
+    // The 0.2 arm builds once and every offset resumes from the same root.
+    let capped = scale > max_mantaray_scale;
+    let cap_reason = capped.then(|| {
+        format!(
+            "mantaray 0.2 skipped by policy above {max_mantaray_scale}: the editor commit \
+             materialises the whole trie in RAM"
+        )
+    });
+    let mut mantaray = MantarayArm::new();
+    if !capped {
+        mantaray.build(keys)?;
+    }
+
     let mut cells = Vec::new();
     for &offset in &PAGE_OFFSETS {
         if offset >= n {
@@ -445,6 +467,16 @@ pub fn paginate_cells(
         }
         let skip_fetch = store.gets().saturating_sub(before);
 
+        // The 0.2 emulation: offset/limit resume-token pages, then the page.
+        let v02 = if capped {
+            None
+        } else {
+            mantaray
+                .resume_paginate(offset, PAGE_LIMIT)?
+                .cost
+                .map(|c| c.fetches)
+        };
+
         cells.push(PaginateCell {
             corpus: corpus.name().to_string(),
             scale,
@@ -455,9 +487,12 @@ pub fn paginate_cells(
             skip_baseline_fetch_count: skip_fetch,
             skip_over_paginate: (paginate_fetch > 0)
                 .then(|| skip_fetch as f64 / paginate_fetch as f64),
-            // The 0.2 resume-walk column (whitepaper 4.3) is filled by Unit D.
-            v02_resume_fetch_count: None,
-            v02_resume_null_reason: None,
+            v02_resume_fetch_count: v02,
+            v02_resume_null_reason: v02.is_none().then(|| {
+                cap_reason
+                    .clone()
+                    .unwrap_or_else(|| "the 0.2 resume walk returned no cost".to_string())
+            }),
         });
     }
     Ok(cells)
@@ -526,8 +561,11 @@ mod tests {
     use super::*;
     use crate::corpus;
 
-    /// Two full measurement runs serialize byte-identically: the determinism
-    /// the checked-in figures rest on.
+    /// Two full measurement runs of the v4 cells serialize byte-identically.
+    ///
+    /// The whole-section counterpart lives in
+    /// `crate::render::tests::the_deterministic_section_is_byte_identical_across_runs`;
+    /// this one keeps the v4 lane's own regression tight.
     #[test]
     fn two_runs_serialize_byte_identically() {
         let corpus = Corpus::Kiwix;
@@ -536,11 +574,58 @@ mod tests {
             let keys = corpus::generate(corpus, scale as usize);
             let pc = parallel_cursor_cells(corpus, scale, &keys).unwrap();
             let rp = read_profile_cell(corpus, scale, &keys).unwrap();
-            let pg = paginate_cells(corpus, scale, &keys).unwrap();
+            let pg = paginate_cells(corpus, scale, &keys, scale).unwrap();
             let ss = subtree_serve_cell(corpus, scale, &keys).unwrap();
             serde_json::to_string(&(pc, rp, pg, ss)).unwrap()
         };
         assert_eq!(run_once(), run_once());
+    }
+
+    /// The 0.2 resume walk pays O(offset): its fetch count grows with the
+    /// offset, where the rank-directed 1.0 paginate stays flat.
+    #[test]
+    fn the_02_resume_walk_grows_with_offset() {
+        let corpus = Corpus::Kiwix;
+        let keys = corpus::generate(corpus, 2_000);
+        let cells = paginate_cells(corpus, 2_000, &keys, 2_000).unwrap();
+        let walks: Vec<u64> = cells
+            .iter()
+            .filter_map(|c| c.v02_resume_fetch_count)
+            .collect();
+        assert_eq!(
+            walks.len(),
+            cells.len(),
+            "every offset measured the 0.2 walk"
+        );
+        assert!(walks.len() >= 3, "want offsets 0, 100 and 1000");
+        for w in walks.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            assert!(b > a, "the resume walk did not grow: {a} then {b}");
+        }
+        for c in &cells {
+            assert!(
+                c.v02_resume_null_reason.is_none(),
+                "a measured cell is null"
+            );
+        }
+    }
+
+    /// Above the cap the 0.2 column is a null carrying the policy reason, never
+    /// a number extrapolated from a smaller scale.
+    #[test]
+    fn the_02_resume_column_above_the_cap_is_a_null_with_reason() {
+        let corpus = Corpus::Kiwix;
+        let keys = corpus::generate(corpus, 1_000);
+        let cells = paginate_cells(corpus, 1_000, &keys, 999).unwrap();
+        assert!(!cells.is_empty());
+        for c in &cells {
+            assert!(c.v02_resume_fetch_count.is_none());
+            let reason = c.v02_resume_null_reason.as_deref().unwrap_or_default();
+            assert!(
+                reason.contains("skipped by policy above 999"),
+                "the gap does not state the policy: {reason}"
+            );
+        }
     }
 
     /// Rank-directed paginate stays flat in offset while the skip baseline
@@ -549,7 +634,7 @@ mod tests {
     fn paginate_fetch_count_is_flat_across_offsets() {
         let corpus = Corpus::Kiwix;
         let keys = corpus::generate(corpus, 2_000);
-        let cells = paginate_cells(corpus, 2_000, &keys).unwrap();
+        let cells = paginate_cells(corpus, 2_000, &keys, 2_000).unwrap();
         assert!(cells.len() >= 3, "want offsets 0, 100 and 1000");
         let min = cells.iter().map(|c| c.paginate_fetch_count).min().unwrap();
         let max = cells.iter().map(|c| c.paginate_fetch_count).max().unwrap();

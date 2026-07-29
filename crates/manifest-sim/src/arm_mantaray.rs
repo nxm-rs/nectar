@@ -47,6 +47,8 @@ pub(crate) const FULL_ITER_HOW: &str = "trie DFS stream, documented path order";
 pub(crate) const FULL_ITER_CLASS: &str = "O(N) fetches, O(depth + window) memory";
 pub(crate) const BATCH_HOW: &str = "multi-op editor commit";
 pub(crate) const BATCH_CLASS: &str = "O(touched spine), whole-trie RAM";
+pub(crate) const RESUME_HOW: &str = "resume-token page walk";
+pub(crate) const RESUME_CLASS: &str = "O(offset) fetches";
 pub(crate) const INLINE_UNSUPPORTED: &str = "0.2 entries are 32/64-byte references only";
 pub(crate) const RECANON_UNSUPPORTED: &str = "no canonical-form guarantee in 0.2";
 
@@ -169,6 +171,54 @@ impl MantarayArm {
                 editor.put(path, reference);
             }
         }
+    }
+
+    /// The whitepaper 4.3 emulation: reach the page at `offset` by resume
+    /// token, then read it.
+    ///
+    /// 0.2 has no rank-directed seek, so a client walks `offset / limit` pages
+    /// of `limit` entries, carrying the last path of each page into
+    /// [`Cursor::after`], and then reads the page it wanted. The cost is
+    /// O(offset), which is the finding; the 1.0 side serves the same page in
+    /// O(depth). The walk is exact when `limit` divides `offset`, which every
+    /// swept offset does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before the first build, or if the store fails.
+    pub fn resume_paginate(&self, offset: u64, limit: usize) -> Result<OpOutcome, Err> {
+        let root = self.root()?;
+        let before = self.store.snapshot();
+        let capability = Capability::emulated(RESUME_HOW, RESUME_CLASS);
+        if limit == 0 {
+            return Ok(self.outcome(before, capability, 0));
+        }
+        let pages = offset / limit as u64;
+        let mut token: Option<Vec<u8>> = None;
+        let mut returned = 0u64;
+        for page in 0..=pages {
+            let mut cursor = Cursor::new(self.loadsaver.clone(), root).with_limit(limit);
+            if let Some(t) = &token {
+                cursor = cursor.after(t);
+            }
+            let mut last: Option<Vec<u8>> = None;
+            let mut seen = 0u64;
+            while let Some(item) = run(cursor.next()) {
+                let entry = item?;
+                last = Some(entry.path().to_vec());
+                seen = seen.saturating_add(1);
+            }
+            if page == pages {
+                returned = seen;
+            }
+            match last {
+                Some(l) => token = Some(l),
+                // The manifest ran out before the offset; the page is empty and
+                // the walk stops rather than looping on a stale token.
+                None => break,
+            }
+        }
+        Ok(self.outcome(before, capability, returned))
     }
 
     /// Close a measured operation as its counter delta plus a capability.

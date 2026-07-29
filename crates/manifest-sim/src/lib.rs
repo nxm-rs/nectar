@@ -10,6 +10,11 @@
 //! bin drives every `(corpus, scale)` and writes one JSON document split into
 //! a bit-reproducible deterministic section and a non-deterministic build
 //! wall-time section.
+//!
+//! The bin has two modes. `run` measures and writes the JSON document; `render`
+//! reads a document back and prints the markdown tables ([`render`]). The
+//! renderer never measures and never fills a gap: a null prints as `--` with
+//! its recorded reason in a footnote.
 
 pub mod arm;
 pub mod arm_ldb;
@@ -19,6 +24,7 @@ pub mod corpus;
 pub mod matrix;
 pub mod ordered_prefix;
 pub mod perf;
+pub mod render;
 pub mod results;
 pub mod storage_hops;
 pub mod store;

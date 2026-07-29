@@ -226,7 +226,10 @@ pub fn writeamp_and_build(
 /// open-put-commit cycles on every arm and the top of the sweep is minutes of
 /// unoptimised build time; the metric itself is unchanged, only the number of
 /// K rows differs.
-fn sweep(
+///
+/// Visible to the crate so the determinism gate in `crate::render` can sweep
+/// the same code over the same corpus and scale under a shorter K list.
+pub(crate) fn sweep(
     corpus: Corpus,
     scale: u64,
     keys: &[GenKey],
