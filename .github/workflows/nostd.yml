@@ -43,8 +43,12 @@ jobs:
                   # verification surface: it carries the BMT, the chunk
                   # carriers and single-owner recovery, and rides both
                   # targets bare.
+                  # nectar-manifest is the format-agnostic manifest seam: the
+                  # trait, the op vocabulary and the erased wrapper, with no
+                  # engine behind them.
                   cargo check --locked \
                     -p nectar-swarms -p nectar-contracts -p nectar-file \
+                    -p nectar-manifest \
                     -p nectar-marker -p nectar-clock -p nectar-governor \
                     -p nectar-postage -p nectar-postage-issuer \
                     -p nectar-primitives-core \

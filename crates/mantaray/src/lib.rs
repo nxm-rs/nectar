@@ -126,6 +126,9 @@ pub mod entry;
 pub mod error;
 #[cfg(feature = "std")]
 mod format;
+#[cfg(feature = "manifest")]
+#[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
+pub mod manifest;
 #[cfg(feature = "std")]
 mod node;
 pub mod obfuscation;
@@ -161,6 +164,8 @@ pub use entry::Entry;
 pub use error::{
     CursorError, DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result,
 };
+#[cfg(feature = "manifest")]
+pub use manifest::{ManifestError, MantarayManifest};
 #[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;

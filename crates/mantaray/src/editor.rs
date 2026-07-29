@@ -114,6 +114,16 @@ impl<S> ManifestEditor<S, EncryptedChunkRef> {
 }
 
 impl<S, R: Reference> ManifestEditor<S, R> {
+    /// Editor over the persisted manifest `root` reaches, at whatever width
+    /// the reference carries.
+    ///
+    /// The width-generic twin of [`open`](Self::open) and
+    /// [`open_encrypted`](Self::open_encrypted), for callers that are
+    /// themselves generic over the reference.
+    pub fn open_reference(root: R, store: S) -> Self {
+        Self::with_root(Node::from_reference(root), store)
+    }
+
     const fn with_root(trie: Node<R>, store: S) -> Self {
         Self {
             trie,
@@ -244,30 +254,16 @@ impl<S: NodeLoader, R: Reference + MaybeSend> ManifestEditor<S, R> {
     }
 }
 
-impl<S: NodeLoader + NodeSaver<ChunkRef>> ManifestEditor<S, ChunkRef> {
-    /// Apply the log and persist the trie, returning the root chunk address
-    /// and the loadsaver.
-    pub async fn commit(mut self) -> Result<(ChunkAddress, S), EditorError> {
-        self.apply_ops().await?;
-        let window = self.commit_window;
-        let committed = commit_trie::<S, ChunkRef>(self.trie, &self.store, window)
-            .await
-            .map_err(EditorError::Commit)?;
-        let address = *committed
-            .reference()
-            .ok_or(EditorError::Commit(MantarayError::MissingReference))?
-            .address();
-        Ok((address, self.store))
-    }
-}
-
-impl<S: NodeLoader + NodeSaver<EncryptedChunkRef>> ManifestEditor<S, EncryptedChunkRef> {
+impl<S: NodeLoader + NodeSaver<R>, R: Reference + MaybeSend> ManifestEditor<S, R> {
     /// Apply the log and persist the trie, returning the root's full-width
-    /// reference (address plus decryption key) and the loadsaver.
-    pub async fn commit(mut self) -> Result<(EncryptedChunkRef, S), EditorError> {
+    /// reference and the loadsaver.
+    ///
+    /// The width-generic commit the two typed commits delegate to; an
+    /// encrypted root's reference carries its decryption key.
+    pub async fn commit_reference(mut self) -> Result<(R, S), EditorError> {
         self.apply_ops().await?;
         let window = self.commit_window;
-        let committed = commit_trie::<S, EncryptedChunkRef>(self.trie, &self.store, window)
+        let committed = commit_trie::<S, R>(self.trie, &self.store, window)
             .await
             .map_err(EditorError::Commit)?;
         let reference = committed
@@ -275,6 +271,23 @@ impl<S: NodeLoader + NodeSaver<EncryptedChunkRef>> ManifestEditor<S, EncryptedCh
             .cloned()
             .ok_or(EditorError::Commit(MantarayError::MissingReference))?;
         Ok((reference, self.store))
+    }
+}
+
+impl<S: NodeLoader + NodeSaver<ChunkRef>> ManifestEditor<S, ChunkRef> {
+    /// Apply the log and persist the trie, returning the root chunk address
+    /// and the loadsaver.
+    pub async fn commit(self) -> Result<(ChunkAddress, S), EditorError> {
+        let (reference, store) = self.commit_reference().await?;
+        Ok((*reference.address(), store))
+    }
+}
+
+impl<S: NodeLoader + NodeSaver<EncryptedChunkRef>> ManifestEditor<S, EncryptedChunkRef> {
+    /// Apply the log and persist the trie, returning the root's full-width
+    /// reference (address plus decryption key) and the loadsaver.
+    pub async fn commit(self) -> Result<(EncryptedChunkRef, S), EditorError> {
+        self.commit_reference().await
     }
 }
 

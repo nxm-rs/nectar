@@ -110,6 +110,9 @@ mod frontier;
 #[cfg(any(test, feature = "arbitrary"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "arbitrary")))]
 pub mod generators;
+#[cfg(feature = "manifest")]
+#[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
+pub mod manifest;
 mod meta;
 mod node;
 /// Shared fuzz and test oracle for the node codec. Compiled for in-crate
@@ -138,6 +141,8 @@ pub use error::{
     WeightOverBudget,
 };
 pub use folder::{DirEntry, Listing, Served, Website};
+#[cfg(feature = "manifest")]
+pub use manifest::{LdbManifest, ManifestError};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};

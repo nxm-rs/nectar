@@ -2587,6 +2587,7 @@ dependencies = [
  "nectar-file",
  "nectar-ldb",
  "nectar-loadsave",
+ "nectar-manifest",
  "nectar-mantaray 0.3.0",
  "nectar-mantaray 0.4.0",
  "nectar-postage",
@@ -2605,8 +2606,10 @@ dependencies = [
  "arbitrary",
  "bytes",
  "futures-util",
+ "nectar-file",
  "nectar-governor",
  "nectar-ldb",
+ "nectar-manifest",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",
@@ -2640,6 +2643,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-manifest"
+version = "0.4.0"
+dependencies = [
+ "nectar-file",
+ "nectar-marker",
+ "nectar-primitives 0.4.0",
+ "nectar-tasks",
+]
+
+[[package]]
 name = "nectar-mantaray"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2664,7 +2677,9 @@ dependencies = [
  "bitflags",
  "bytes",
  "futures-util",
+ "nectar-file",
  "nectar-governor",
+ "nectar-manifest",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",

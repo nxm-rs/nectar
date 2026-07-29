@@ -1,0 +1,43 @@
+[package]
+name = "nectar-manifest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Manifest seam for Ethereum Swarm: one trait over the trie and key-value manifest formats"
+documentation = "https://docs.rs/nectar-manifest"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "manifest", "no_std", "trait"]
+categories = ["data-structures", "no-std", "asynchronous"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The positional sink a load writes into; the bare dependency carries the
+# sink module alone, no engine and no primitives.
+nectar-file = { workspace = true }
+nectar-marker = { workspace = true }
+# Reference, ChunkRef and the boxed-error alias the erased seam reports through.
+nectar-primitives = { workspace = true }
+nectar-tasks = { workspace = true }
+
+[features]
+default = [ "std" ]
+std = [ "nectar-file/std", "nectar-primitives/std", "nectar-tasks/std" ]
+# Single-thread send escape: relaxes the boxed manifest futures off `Send` in
+# lockstep with the store traits.
+unsync = [
+	"nectar-file/unsync",
+	"nectar-marker/unsync",
+	"nectar-primitives/unsync",
+	"nectar-tasks/unsync",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
