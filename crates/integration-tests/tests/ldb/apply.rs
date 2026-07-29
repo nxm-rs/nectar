@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use nectar_ldb::{Builder, Changeset, Entry, Key, KeyId, Metadata, V1, apply};
+use nectar_ldb::{Builder, Changeset, Entry, Key, KeyId, Metadata, Plaintext, V1, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, MemoryStore};
 use nectar_testing::run;
 use proptest::prelude::*;
@@ -48,13 +48,14 @@ fn value(inline: bool, fill: u8, blob: &[u8], meta: bool) -> Result<Value, TestC
 
 /// The root a from-scratch build of `map` produces in a fresh store, so the
 /// address depends on the merged bytes alone.
-fn rebuild(map: &BTreeMap<Vec<u8>, Value>) -> Result<ChunkAddress, TestCaseError> {
+fn rebuild(map: &BTreeMap<Vec<u8>, Value>) -> Result<ChunkRef, TestCaseError> {
     let store = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
     for (key, (entry, meta)) in map {
         builder.insert(Key::from(key.clone()), entry.clone(), meta.clone());
     }
-    let built = run(builder.build(&store)).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let built =
+        run(builder.build(&store, &Plaintext)).map_err(|e| TestCaseError::fail(e.to_string()))?;
     Ok(*built.root())
 }
 
@@ -119,7 +120,7 @@ fn assert_apply_equals_rebuild(
     for (key, val) in &map {
         builder.insert(Key::from(key.clone()), val.0.clone(), val.1.clone());
     }
-    let root = *run(builder.build(&store))
+    let root = *run(builder.build(&store, &Plaintext))
         .map_err(|e| TestCaseError::fail(e.to_string()))?
         .root();
 
@@ -151,8 +152,13 @@ fn assert_apply_equals_rebuild(
         }
     }
 
-    let applied = run(apply(&ContentGet::new(&store), &root, &changeset))
-        .map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let applied = run(apply(
+        &ContentGet::new(&store),
+        &Plaintext,
+        &root,
+        &changeset,
+    ))
+    .map_err(|e| TestCaseError::fail(e.to_string()))?;
     let expected = rebuild(&map)?;
     prop_assert_eq!(applied, expected);
     Ok(())

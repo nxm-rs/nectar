@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use arbitrary::Unstructured;
 use bytes::Bytes;
-use nectar_ldb::{Builder, Cursor, Entry, Format, Key, Reader, V1, generators};
+use nectar_ldb::{Builder, Cursor, Entry, Format, Key, Plaintext, Reader, V1, generators};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
-use nectar_primitives::{Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
+use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
 use proptest::prelude::*;
 
@@ -71,7 +71,7 @@ fn corpus() -> Vec<(Key, Vec<u8>)> {
 }
 
 /// Build the corpus into `store` and return the root and an ordered oracle.
-fn build(store: &MemoryStore) -> Result<(ChunkAddress, Oracle)> {
+fn build(store: &MemoryStore) -> Result<(ChunkRef, Oracle)> {
     let mut builder = Builder::new();
     let mut oracle = Oracle::new();
     for (key, bytes) in corpus() {
@@ -79,7 +79,7 @@ fn build(store: &MemoryStore) -> Result<(ChunkAddress, Oracle)> {
         builder.insert(key.clone(), value.clone(), None);
         oracle.insert(key.as_bytes().to_vec(), value);
     }
-    let built = run(builder.build(store))?;
+    let built = run(builder.build(store, &Plaintext))?;
     Ok((*built.root(), oracle))
 }
 
@@ -237,7 +237,7 @@ impl ChunkGet<ContentOnlyChunkSet> for GatedStore {
 /// Build a wide manifest whose first-byte subtrees each outgrow the inline bound
 /// and become referenced children, so the root fans out into many sibling nodes
 /// a scan must fetch. Returns the root and an ordered oracle.
-fn wide_build(store: &MemoryStore) -> Result<(ChunkAddress, Oracle)> {
+fn wide_build(store: &MemoryStore) -> Result<(ChunkRef, Oracle)> {
     let mut builder = Builder::new();
     let mut oracle = Oracle::new();
     for a in 0u8..48 {
@@ -248,7 +248,7 @@ fn wide_build(store: &MemoryStore) -> Result<(ChunkAddress, Oracle)> {
             oracle.insert(key, value);
         }
     }
-    let built = run(builder.build(store))?;
+    let built = run(builder.build(store, &Plaintext))?;
     Ok((*built.root(), oracle))
 }
 
@@ -321,7 +321,7 @@ proptest! {
         for (key, value) in &oracle {
             builder.insert(Key::from(key.clone()), value.clone(), None);
         }
-        let built = run(builder.build(&store))
+        let built = run(builder.build(&store, &Plaintext))
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
         let reader: Reader<_> = Reader::new(ContentGet::new(&store));
         let got: Rows = {
@@ -374,7 +374,7 @@ proptest! {
         for (key, value) in &oracle {
             builder.insert(Key::from(key.clone()), value.clone(), None);
         }
-        let built = run(builder.build(&store))
+        let built = run(builder.build(&store, &Plaintext))
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
         let reader: Reader<_> = Reader::new(ContentGet::new(&store));
         let got: Rows = {

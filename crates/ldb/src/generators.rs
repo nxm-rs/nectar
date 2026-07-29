@@ -64,7 +64,7 @@ pub fn diverging_pair(u: &mut Unstructured<'_>, shared: usize) -> arbitrary::Res
     Ok((Key::from(left), Key::from(right)))
 }
 
-/// A ref64 entry: an encrypted child carrying its decryption key in-band.
+/// A ref64 entry: an encrypted value chunk carrying its key in-band.
 pub fn encrypted_entry<F: Format>(u: &mut Unstructured<'_>) -> arbitrary::Result<Entry<F>> {
     Ok(Entry::from(EncryptedChunkRef::arbitrary(u)?))
 }

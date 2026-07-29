@@ -12,21 +12,21 @@
 
 use libfuzzer_sys::fuzz_target;
 use nectar_fuzz::{Val, entry};
-use nectar_ldb::{Builder, Changeset, Entry, Key, V1, apply};
-use nectar_primitives::ChunkAddress;
+use nectar_ldb::{Builder, Changeset, Entry, Key, Plaintext, V1, apply};
+use nectar_primitives::ChunkRef;
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_testing::run;
 
 use std::collections::BTreeMap;
 
 /// Build a key set into a fresh store, returning the store and root.
-fn build(pairs: &BTreeMap<Vec<u8>, Entry<V1>>) -> Option<(MemoryStore, ChunkAddress)> {
+fn build(pairs: &BTreeMap<Vec<u8>, Entry<V1>>) -> Option<(MemoryStore, ChunkRef)> {
     let store = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
     for (key, entry) in pairs {
         builder.insert(Key::from(key.clone()), entry.clone(), None);
     }
-    let built = run(builder.build(&store)).ok()?;
+    let built = run(builder.build(&store, &Plaintext)).ok()?;
     Some((store, *built.root()))
 }
 
@@ -58,7 +58,7 @@ fuzz_target!(
             }
         }
 
-        let applied = run(apply(&ContentGet::new(&store), &root, &changeset));
+        let applied = run(apply(&ContentGet::new(&store), &Plaintext, &root, &changeset));
         let rebuilt = build(&merged).map(|(_, root)| root);
 
         if let (Ok(applied), Some(rebuilt)) = (applied, rebuilt) {

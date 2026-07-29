@@ -9,6 +9,13 @@
 //! [`NodeGet`] and [`NodePut`] reuse the primitives store traits; the read
 //! seam binds the content-only registry, so a non-content chunk is rejected
 //! at decode rather than decoded as a node.
+//!
+//! Both seams are generic over the structural reference width `R`. Reading
+//! needs nothing but the reference: an encrypted one carries its own key, so
+//! the arrival decides whether the fetched bytes are decrypted. Writing needs
+//! a [`Seal`], which turns one payload into the stored chunk and the reference
+//! that reaches it, and so owns whatever secret an encrypted database derives
+//! its keys from.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -21,14 +28,14 @@ use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::{Admission, BoxFuture, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
-    Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, EncryptionKey, Verified,
-    transcrypt_in_place,
+    Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk, ContentOnlyChunkSet, EncryptionKey,
+    EntryRef, Verified, transcrypt_in_place,
 };
 
 use crate::codec::{DecodeError, DecodedChunk, EncodeError, SegmentDir};
 use crate::fork::ForkTable;
 use crate::format::Format;
-use crate::node::Node;
+use crate::node::{Node, NodeRef};
 
 /// A manifest node sealed as a verified content chunk over the standard
 /// registry, whose content-chunk member carries the node payload.
@@ -63,21 +70,93 @@ impl StoreError {
     }
 }
 
+/// Write seam: seal one node or segment payload into its stored chunk and the
+/// reference of width `R` that reaches it.
+///
+/// The address is derived from the sealed bytes, never supplied, so a sealer
+/// cannot make a chunk lie about its own content. An encrypted sealer owns the
+/// secret its per-reference keys derive from; the read path needs no such
+/// state, because an encrypted reference carries its key in band.
+pub trait Seal<R: NodeRef> {
+    /// Seal `payload`, returning the chunk to store and its reference.
+    fn seal(&self, payload: Vec<u8>) -> Result<(NodeChunk, R), StoreError>;
+}
+
+/// Plaintext sealing: the payload is the chunk body, and the reference is its
+/// content address.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Plaintext;
+
+impl Seal<ChunkRef> for Plaintext {
+    fn seal(&self, payload: Vec<u8>) -> Result<(NodeChunk, ChunkRef), StoreError> {
+        let content = ContentChunk::new(payload).map_err(StoreError::Seal)?;
+        let chunk = Chunk::from_envelope(content.into()).map_err(StoreError::Seal)?;
+        let reference = ChunkRef::new(*chunk.address());
+        Ok((chunk, reference))
+    }
+}
+
+/// The decryption key a structural reference carries; `None` for a plain one.
+pub(crate) fn reference_key<R: NodeRef>(reference: &R) -> Option<EncryptionKey> {
+    match reference.clone().into_entry_ref() {
+        EntryRef::Plain(_) => None,
+        EntryRef::Encrypted(encrypted) => Some(encrypted.key().clone()),
+    }
+}
+
+impl<F: Format, R: NodeRef> Node<F, R> {
+    /// Seal this node with `seal`, returning the chunk and its reference.
+    pub fn to_sealed<K: Seal<R>>(&self, seal: &K) -> Result<(NodeChunk, R), StoreError> {
+        seal.seal(self.encode()?)
+    }
+
+    /// Decode a node from a chunk the store has already certified, opening it
+    /// with the key `reference` carries.
+    ///
+    /// The [`Verified`] type is the trust boundary: the payload is decoded
+    /// from the certified bytes, never re-hashed.
+    pub fn from_chunk(chunk: &NodeChunk, reference: &R) -> Result<Self, DecodeError> {
+        opened(chunk.envelope().data(), reference, Self::decode)
+    }
+}
+
+/// Run `decode` over a chunk body, decrypting it first with the key
+/// `reference` carries.
+///
+/// The one place the arrival's key meets the stored bytes; a plain reference
+/// carries none, so a plaintext database never copies its payload.
+fn opened<R, T>(
+    body: &[u8],
+    reference: &R,
+    decode: impl Fn(&[u8]) -> Result<T, DecodeError>,
+) -> Result<T, DecodeError>
+where
+    R: NodeRef,
+{
+    reference_key(reference).map_or_else(
+        || decode(body),
+        |key| {
+            let mut payload = body.to_vec();
+            transcrypt_in_place(&key, 0, &mut payload);
+            decode(&payload)
+        },
+    )
+}
+
+/// Decode any manifest chunk the store has certified, opening it with the key
+/// `reference` carries.
+pub(crate) fn open_chunk<F: Format, R: NodeRef>(
+    body: &[u8],
+    reference: &R,
+) -> Result<DecodedChunk<F, R>, DecodeError> {
+    opened(body, reference, Node::decode_chunk)
+}
+
 impl<F: Format> Node<F> {
     /// Seal this node as its content chunk, deriving the content address by
     /// BMT over the encoded payload; the address is derived, never supplied.
     pub fn to_chunk(&self) -> Result<NodeChunk, StoreError> {
-        let payload = self.encode()?;
-        let content = ContentChunk::new(payload).map_err(StoreError::Seal)?;
-        Chunk::from_envelope(content.into()).map_err(StoreError::Seal)
-    }
-
-    /// Decode a node from a chunk the store has already certified.
-    ///
-    /// The [`Verified`] type is the trust boundary: the payload is decoded
-    /// from the certified bytes, never re-hashed.
-    pub fn from_chunk(chunk: &NodeChunk) -> Result<Self, DecodeError> {
-        Self::decode(chunk.envelope().data())
+        Ok(self.to_sealed(&Plaintext)?.0)
     }
 }
 
@@ -86,20 +165,21 @@ impl<F: Format> Node<F> {
 /// Blanket-implemented for every [`TrustedGet`]; the `Trust = Verified`
 /// bound is what lets [`get_node`](Self::get_node) skip re-hashing.
 pub trait NodeGet: TrustedGet<ContentOnlyChunkSet> {
-    /// Load and decode the node at `address`, materializing a spilled node's
-    /// forks from its segments so the caller always sees one logical node.
+    /// Load and decode the node `reference` reaches, materializing a spilled
+    /// node's forks from its segments so the caller always sees one logical
+    /// node.
     ///
     /// Reassembling a segmented node fetches its segment chunks under a
     /// bounded window and reassembles one node's forks, so peak retained
     /// state stays bounded by the fork count and that window.
-    fn get_node<F: Format>(
+    fn get_node<F: Format, R: NodeRef>(
         &self,
-        address: &ChunkAddress,
-    ) -> impl Future<Output = Result<Node<F>, StoreError>> + MaybeSend
+        reference: &R,
+    ) -> impl Future<Output = Result<Node<F, R>, StoreError>> + MaybeSend
     where
         Self: Sized + MaybeSync,
     {
-        materialize_node::<Self, F>(self, address)
+        materialize_node::<Self, F, R>(self, reference)
     }
 }
 
@@ -109,37 +189,42 @@ impl<T: TrustedGet<ContentOnlyChunkSet>> NodeGet for T {}
 /// malformed image, not a tree this format ever produces.
 const MAX_DIR_DEPTH: usize = 2;
 
-/// Load the node at `address`, reassembling a segmented node's forks in place.
-async fn materialize_node<S, F>(store: &S, address: &ChunkAddress) -> Result<Node<F>, StoreError>
+/// Load the node `reference` reaches, reassembling a segmented node's forks in
+/// place.
+async fn materialize_node<S, F, R>(store: &S, reference: &R) -> Result<Node<F, R>, StoreError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
-    let (node, _) = materialize_traced::<S, F>(store, address, None).await?;
+    let (node, _) = materialize_traced::<S, F, R>(store, reference).await?;
     Ok(node)
 }
 
-/// Load the node at `address`, decrypting with `key` when the reference
-/// carried one, and record each segment chunk address the reassembly fetches.
+/// Load the node `reference` reaches, decrypting with the key it carries, and
+/// record each segment chunk address the reassembly fetches.
 ///
-/// The arrival fixes the segment widths: a plain node's descriptors must be
-/// bare, an encrypted node's must carry keys.
-pub(crate) async fn materialize_traced<S, F>(
+/// The arrival fixes every width below: a segment descriptor is `R::SIZE`
+/// wide, so a plain database read as encrypted (or the reverse) fails at the
+/// chunk's own width witness rather than mis-parsing.
+pub(crate) async fn materialize_traced<S, F, R>(
     store: &S,
-    address: &ChunkAddress,
-    key: Option<&EncryptionKey>,
-) -> Result<(Node<F>, Vec<ChunkAddress>), StoreError>
+    reference: &R,
+) -> Result<(Node<F, R>, Vec<ChunkAddress>), StoreError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
-    let chunk = store.get(address).await.map_err(StoreError::store)?;
-    match decode_fetched::<F>(&chunk, key)? {
+    let chunk = store
+        .get(reference.address())
+        .await
+        .map_err(StoreError::store)?;
+    match open_chunk::<F, R>(chunk.envelope().data(), reference)? {
         DecodedChunk::Node(node) => Ok((node, Vec::new())),
         DecodedChunk::Segmented(root, dir) => {
             let mut trace = Vec::with_capacity(dir.descriptors.len());
-            let forks =
-                collect_segment_forks::<S, F>(store, &dir, key.is_some(), &mut trace).await?;
+            let forks = collect_segment_forks::<S, F, R>(store, &dir, &mut trace).await?;
             Ok((Node::new(root, forks), trace))
         }
         // A fork child reference names a node, never a bare segment.
@@ -147,21 +232,6 @@ where
             Err(StoreError::Decode(DecodeError::SegmentContext))
         }
     }
-}
-
-/// Decode a certified chunk, decrypting first when a key travels with it.
-fn decode_fetched<F: Format>(
-    chunk: &FetchedChunk,
-    key: Option<&EncryptionKey>,
-) -> Result<DecodedChunk<F>, DecodeError> {
-    key.map_or_else(
-        || Node::decode_chunk(chunk.envelope().data()),
-        |key| {
-            let mut payload = chunk.envelope().data().to_vec();
-            transcrypt_in_place(key, 0, &mut payload);
-            Node::decode_chunk(&payload)
-        },
-    )
 }
 
 /// The concurrent segment-fetch window: the format's read-ahead saturated
@@ -194,11 +264,10 @@ enum SlotState {
 
 /// One segment descriptor in the bounded join: its fetch identity, nesting
 /// depth and successor in directory order.
-struct SegmentSlot {
-    /// The segment chunk address.
-    address: ChunkAddress,
-    /// The segment's decryption key, when the directory carries keys.
-    key: Option<EncryptionKey>,
+struct SegmentSlot<R: NodeRef> {
+    /// The reference reaching the segment chunk; an encrypted one carries the
+    /// key that opens it.
+    reference: R,
     /// Nesting depth of the directory holding this descriptor.
     depth: usize,
     /// The slot that follows in directory order; `None` ends the join.
@@ -207,7 +276,7 @@ struct SegmentSlot {
     state: SlotState,
 }
 
-impl SegmentSlot {
+impl<R: NodeRef> SegmentSlot<R> {
     /// The landed outcome, once; `None` while queued, in flight or spent.
     fn take_landed(&mut self) -> Option<Result<FetchedChunk, StoreError>> {
         match mem::replace(&mut self.state, SlotState::Spent) {
@@ -223,9 +292,9 @@ impl SegmentSlot {
 /// Queue `dir`'s descriptors as slots in directory order ahead of `tail`;
 /// returns the head of the spliced run, or `tail` when the directory is
 /// empty.
-fn splice_directory(
-    slots: &mut Vec<SegmentSlot>,
-    dir: &SegmentDir,
+fn splice_directory<R: NodeRef>(
+    slots: &mut Vec<SegmentSlot<R>>,
+    dir: &SegmentDir<R>,
     depth: usize,
     tail: Option<usize>,
 ) -> Option<usize> {
@@ -239,8 +308,7 @@ fn splice_directory(
             tail
         };
         slots.push(SegmentSlot {
-            address: descriptor.address,
-            key: descriptor.key.clone(),
+            reference: descriptor.reference.clone(),
             depth,
             next,
             state: SlotState::Queued,
@@ -256,15 +324,16 @@ fn splice_directory(
 /// Fill the window: admit queued fetches from `head` onward in directory
 /// order, stopping at the first denial. The head always launches, so the
 /// in-order drain never waits on an unlaunched slot.
-fn launch_segments<'a, S>(
+fn launch_segments<'a, S, R>(
     store: &'a S,
     admission: Admission,
-    slots: &mut [SegmentSlot],
+    slots: &mut [SegmentSlot<R>],
     head: usize,
     in_flight: &mut FuturesUnordered<BoxFuture<'a, SegmentFetch>>,
     buffered: usize,
 ) where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    R: NodeRef,
 {
     let mut cursor = Some(head);
     let mut head_served = false;
@@ -277,7 +346,7 @@ fn launch_segments<'a, S>(
             if !admission.admits(occupancy, head_served || index == head) {
                 return;
             }
-            let address = slot.address;
+            let address = *slot.reference.address();
             slot.state = SlotState::Launched;
             in_flight.push(Box::pin(async move {
                 (index, store.get(&address).await.map_err(StoreError::store))
@@ -297,10 +366,10 @@ fn launch_segments<'a, S>(
 /// and reports a lost completion once the set drains. The in-order fold is
 /// the reassembly's byte-exact semantics, not head-of-line blocking: only the
 /// fetches overlap.
-struct SegmentJoin<'a, S, F: Format> {
+struct SegmentJoin<'a, S, F: Format, R: NodeRef> {
     store: &'a S,
     /// Descriptor slots in directory order; grows as inner directories splice.
-    slots: Vec<SegmentSlot>,
+    slots: Vec<SegmentSlot<R>>,
     admission: Admission,
     /// Fetches launched ahead of the in-order fold.
     in_flight: FuturesUnordered<BoxFuture<'a, SegmentFetch>>,
@@ -308,24 +377,23 @@ struct SegmentJoin<'a, S, F: Format> {
     head: Option<usize>,
     /// Completions landed but not yet drained.
     buffered: usize,
-    /// Whether every descriptor must carry a key.
-    encrypted: bool,
     /// An inner directory decoded at the head, awaiting its admit-side splice:
     /// its descriptors, child depth, and the directory slot's successor.
-    pending: Option<(SegmentDir, usize, Option<usize>)>,
+    pending: Option<(SegmentDir<R>, usize, Option<usize>)>,
     /// The reassembled forks, folded in directory order.
-    table: ForkTable<F>,
+    table: ForkTable<F, R>,
     /// Each drained segment chunk address, in directory order.
     trace: Vec<ChunkAddress>,
 }
 
-impl<'a, S, F> SegmentJoin<'a, S, F>
+impl<'a, S, F, R> SegmentJoin<'a, S, F, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     /// A join over `dir`'s descriptors, spliced as the initial frontier.
-    fn new(store: &'a S, dir: &SegmentDir, encrypted: bool) -> Self {
+    fn new(store: &'a S, dir: &SegmentDir<R>) -> Self {
         let mut slots = Vec::with_capacity(dir.descriptors.len());
         let head = splice_directory(&mut slots, dir, 0, None);
         Self {
@@ -335,7 +403,6 @@ where
             in_flight: FuturesUnordered::new(),
             head,
             buffered: 0,
-            encrypted,
             pending: None,
             table: ForkTable::new(),
             trace: Vec::with_capacity(dir.descriptors.len()),
@@ -343,7 +410,7 @@ where
     }
 
     /// The folded forks and the directory-order segment trace.
-    fn into_parts(self) -> (ForkTable<F>, Vec<ChunkAddress>) {
+    fn into_parts(self) -> (ForkTable<F, R>, Vec<ChunkAddress>) {
         (self.table, self.trace)
     }
 
@@ -400,21 +467,16 @@ where
         let head = self.head?;
         let slot = self.slots.get_mut(head)?;
         let outcome = slot.take_landed()?;
-        let address = slot.address;
-        let key = slot.key.clone();
+        let reference = slot.reference.clone();
         let depth = slot.depth;
         let next = slot.next;
         self.buffered = self.buffered.saturating_sub(1);
-        // Descriptor width must match the arrival on both sides.
-        if key.is_some() != self.encrypted {
-            return Some(Err(segment_context()));
-        }
-        self.trace.push(address);
+        self.trace.push(*reference.address());
         let chunk = match outcome {
             Ok(chunk) => chunk,
             Err(error) => return Some(Err(error)),
         };
-        match decode_fetched::<F>(&chunk, key.as_ref()) {
+        match open_chunk::<F, R>(chunk.envelope().data(), &reference) {
             Ok(DecodedChunk::Leaf(sub)) => {
                 for (first, record) in sub.into_records() {
                     if self.table.insert_record(first, record).is_some() {
@@ -451,17 +513,17 @@ where
 /// Only the fetches overlap; the width checks, the record fold and the trace
 /// all run in directory order, so the reassembled node matches a serial
 /// gather exactly.
-async fn collect_segment_forks<S, F>(
+async fn collect_segment_forks<S, F, R>(
     store: &S,
-    dir: &SegmentDir,
-    encrypted: bool,
+    dir: &SegmentDir<R>,
     trace: &mut Vec<ChunkAddress>,
-) -> Result<ForkTable<F>, StoreError>
+) -> Result<ForkTable<F, R>, StoreError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
-    let mut join = SegmentJoin::<S, F>::new(store, dir, encrypted);
+    let mut join = SegmentJoin::<S, F, R>::new(store, dir);
     while let Some(turn) = poll_fn(|cx| join.poll_turn(cx)).await {
         turn?;
     }
@@ -475,20 +537,21 @@ where
 /// Blanket-implemented for every [`ChunkPut`]; sealing happens before the
 /// first await, so the returned future never holds the source node.
 pub trait NodePut: ChunkPut {
-    /// Seal `node`, store its chunk, and return the derived address.
-    fn put_node<F: Format>(
+    /// Seal `node` with `seal`, store its chunk, and return the reference that
+    /// reaches it.
+    fn put_node<F: Format, R: NodeRef, K: Seal<R>>(
         &self,
-        node: &Node<F>,
-    ) -> impl Future<Output = Result<ChunkAddress, StoreError>> + MaybeSend
+        node: &Node<F, R>,
+        seal: &K,
+    ) -> impl Future<Output = Result<R, StoreError>> + MaybeSend
     where
         Self: Sized + MaybeSync,
     {
-        let sealed = node.to_chunk();
+        let sealed = node.to_sealed(seal);
         async move {
-            let chunk = sealed?;
-            let address = *chunk.address();
+            let (chunk, reference) = sealed?;
             self.put(chunk).await.map_err(StoreError::store)?;
-            Ok(address)
+            Ok(reference)
         }
     }
 }
@@ -497,6 +560,7 @@ impl<T: ChunkPut> NodePut for T {}
 
 #[cfg(test)]
 mod tests {
+    use crate::store::Plaintext;
     use core::pin::Pin;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use core::task::{Context, Poll};
@@ -545,7 +609,7 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let node = sample();
 
-        let address = run(store.put_node(&node)).unwrap();
+        let address = run(store.put_node(&node, &Plaintext)).unwrap();
         let loaded: Node = run(store.get_node(&address)).unwrap();
 
         assert_eq!(loaded, node);
@@ -565,13 +629,16 @@ mod tests {
     fn from_chunk_decodes_without_a_store() {
         let node = sample();
         let chunk = node.to_chunk().unwrap();
-        assert_eq!(Node::from_chunk(&chunk).unwrap(), node);
+        let reference = ChunkRef::new(*chunk.address());
+        assert_eq!(Node::from_chunk(&chunk, &reference).unwrap(), node);
     }
 
     #[test]
     fn missing_address_is_a_store_error() {
         let store = ContentGet::new(MemoryStore::default());
-        let err = run(store.get_node::<crate::V1>(&ChunkAddress::new([0; 32]))).unwrap_err();
+        let err =
+            run(store.get_node::<crate::V1, ChunkRef>(&ChunkRef::new(ChunkAddress::new([0; 32]))))
+                .unwrap_err();
         assert!(matches!(err, StoreError::Store(_)));
     }
 
@@ -587,22 +654,23 @@ mod tests {
         Prefix::try_from(bytes).unwrap()
     }
 
-    /// Seal a raw payload as a content chunk and store it.
-    fn put_raw(store: &ContentGet<MemoryStore>, payload: Vec<u8>) -> ChunkAddress {
+    /// Seal a raw payload as a content chunk, store it, and return its
+    /// reference.
+    fn put_raw(store: &ContentGet<MemoryStore>, payload: Vec<u8>) -> ChunkRef {
         let content = ContentChunk::new(payload).unwrap();
         let chunk: NodeChunk = Chunk::from_envelope(content.into()).unwrap();
-        let address = *chunk.address();
+        let reference = ChunkRef::new(*chunk.address());
         run(ChunkPut::put(store, chunk)).unwrap();
-        address
+        reference
     }
 
-    /// Build a spilled 256-fork manifest root, returning its address.
-    fn spilled_root(store: &ContentGet<MemoryStore>) -> ChunkAddress {
+    /// Build a spilled 256-fork manifest root, returning its reference.
+    fn spilled_root(store: &ContentGet<MemoryStore>) -> ChunkRef {
         let mut builder = Builder::<V1>::new();
         for byte in 0u8..=255 {
             builder.insert(Key::from(&[byte][..]), entry(byte), None);
         }
-        *run(builder.build(store)).unwrap().root()
+        *run(builder.build(store, &Plaintext)).unwrap().root()
     }
 
     /// A serial reference gather: fetch each segment in directory order,
@@ -614,8 +682,8 @@ mod tests {
         trace: &mut Vec<ChunkAddress>,
     ) {
         for descriptor in &dir.descriptors {
-            trace.push(descriptor.address);
-            let chunk = store.inner().get(&descriptor.address).unwrap();
+            trace.push(*descriptor.reference.address());
+            let chunk = store.inner().get(descriptor.reference.address()).unwrap();
             match Node::<V1>::decode_chunk(chunk.envelope().data()).unwrap() {
                 DecodedChunk::Leaf(sub) => {
                     for (first, record) in sub.into_records() {
@@ -635,7 +703,7 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let root = spilled_root(&store);
 
-        let chunk = store.inner().get(&root).unwrap();
+        let chunk = store.inner().get(root.address()).unwrap();
         let DecodedChunk::Segmented(root_ext, dir) =
             Node::<V1>::decode_chunk(chunk.envelope().data()).unwrap()
         else {
@@ -646,7 +714,7 @@ mod tests {
         let mut expected_trace = Vec::new();
         serial_gather(&store, &dir, &mut expected, &mut expected_trace);
 
-        let (node, trace) = run(materialize_traced::<_, V1>(&store, &root, None)).unwrap();
+        let (node, trace) = run(materialize_traced::<_, V1, ChunkRef>(&store, &root)).unwrap();
         assert_eq!(node, Node::new(root_ext, expected));
         assert_eq!(trace, expected_trace);
     }
@@ -712,7 +780,7 @@ mod tests {
     fn a_depth_two_directory_reassembles_in_directory_order() {
         let store = ContentGet::new(MemoryStore::default());
         let leaf = |bytes: &[u8]| {
-            let mut table = ForkTable::new();
+            let mut table: ForkTable = ForkTable::new();
             for &byte in bytes {
                 table
                     .insert(prefix(&[byte]), entry(byte).into(), None)
@@ -724,22 +792,31 @@ mod tests {
         let leaf_b = leaf(&[0x20, 0x21]);
         let leaf_c = leaf(&[0x30]);
         let leaf_d = leaf(&[0x40, 0x41]);
-        let inner = SegmentDir::plain(vec![
+        let inner = SegmentDir::new(vec![
             (0x20, leaf_b, SubtreeCount::new(2)),
             (0x30, leaf_c, SubtreeCount::new(1)),
         ]);
-        let inner_dir = put_raw(&store, encode_dir_segment::<V1>(&inner));
-        let top = SegmentDir::plain(vec![
+        let inner_dir = put_raw(&store, encode_dir_segment::<V1, ChunkRef>(&inner));
+        let top = SegmentDir::new(vec![
             (0x10, leaf_a, SubtreeCount::new(2)),
             (0x20, inner_dir, SubtreeCount::new(3)),
             (0x40, leaf_d, SubtreeCount::new(2)),
         ]);
-        let root = put_raw(&store, encode_segmented_node::<V1>(None, &top));
+        let root = put_raw(&store, encode_segmented_node::<V1, ChunkRef>(None, &top));
 
-        let (node, trace) = run(materialize_traced::<_, V1>(&store, &root, None)).unwrap();
+        let (node, trace) = run(materialize_traced::<_, V1, ChunkRef>(&store, &root)).unwrap();
         // Depth-first, directory order: the inner directory's leaves land
         // between its siblings.
-        assert_eq!(trace, vec![leaf_a, inner_dir, leaf_b, leaf_c, leaf_d]);
+        assert_eq!(
+            trace,
+            vec![
+                *leaf_a.address(),
+                *inner_dir.address(),
+                *leaf_b.address(),
+                *leaf_c.address(),
+                *leaf_d.address()
+            ]
+        );
         let mut expected = ForkTable::new();
         for byte in [0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41] {
             expected
@@ -787,7 +864,7 @@ mod tests {
     }
 
     /// A leaf segment over `bytes`, stored and addressed.
-    fn leaf_segment(store: &ContentGet<MemoryStore>, bytes: &[u8]) -> ChunkAddress {
+    fn leaf_segment(store: &ContentGet<MemoryStore>, bytes: &[u8]) -> ChunkRef {
         let mut table = ForkTable::<V1>::new();
         for &byte in bytes {
             table
@@ -803,27 +880,41 @@ mod tests {
         let leaf_a = leaf_segment(&store, &[0x10, 0x11]);
         let leaf_b = leaf_segment(&store, &[0x20, 0x21]);
         let leaf_c = leaf_segment(&store, &[0x30, 0x31]);
-        let dir = SegmentDir::plain(vec![
+        let dir = SegmentDir::new(vec![
             (0x10, leaf_a, SubtreeCount::new(2)),
             (0x20, leaf_b, SubtreeCount::new(2)),
             (0x30, leaf_c, SubtreeCount::new(2)),
         ]);
-        let root = put_raw(&store, encode_segmented_node::<V1>(None, &dir));
+        let root = put_raw(&store, encode_segmented_node::<V1, ChunkRef>(None, &dir));
 
         // The three fetches overlap and land last-first, so a fold in
         // completion order would invert the trace.
         let skewed = SkewedStore {
-            rounds: [(leaf_a, 6), (leaf_b, 4), (leaf_c, 2)].into_iter().collect(),
+            rounds: [
+                (*leaf_a.address(), 6),
+                (*leaf_b.address(), 4),
+                (*leaf_c.address(), 2),
+            ]
+            .into_iter()
+            .collect(),
             inner: store,
             arrivals: std::sync::Mutex::new(Vec::new()),
         };
-        let (node, trace) = run(materialize_traced::<_, V1>(&skewed, &root, None)).unwrap();
+        let (node, trace) = run(materialize_traced::<_, V1, ChunkRef>(&skewed, &root)).unwrap();
         // The skew held: the segments really did land back to front.
         assert_eq!(
             skewed.arrivals.lock().unwrap().as_slice(),
-            [root, leaf_c, leaf_b, leaf_a]
+            [
+                *root.address(),
+                *leaf_c.address(),
+                *leaf_b.address(),
+                *leaf_a.address()
+            ]
         );
-        assert_eq!(trace, vec![leaf_a, leaf_b, leaf_c]);
+        assert_eq!(
+            trace,
+            vec![*leaf_a.address(), *leaf_b.address(), *leaf_c.address()]
+        );
         let mut expected = ForkTable::new();
         for byte in [0x10, 0x11, 0x20, 0x21, 0x30, 0x31] {
             expected

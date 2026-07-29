@@ -1,11 +1,12 @@
 //! Dependency traversal: the chunk closure a persisted manifest depends on.
 //!
 //! Pinning, garbage collection, integrity checks and whole-collection push
-//! treat a manifest as a chunk set. Key iteration yields entry references
+//! treat a database as a chunk set. Key iteration yields entry references
 //! only; the trie's own node chunks, and the segment chunks a spilled node
 //! reassembles from, never surface there. [`AddressStream`] yields that full
 //! closure: every node chunk, every segment chunk and each entry's referenced
-//! address.
+//! address. An encrypted database walks the same way: each reference carries
+//! the key that opens the chunk it names.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -16,40 +17,29 @@ use core::task::{Context, Poll};
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::BoxFuture;
-use nectar_primitives::ChunkAddress;
-#[cfg(feature = "encryption")]
-use nectar_primitives::EncryptedChunkRef;
 use nectar_primitives::store::MaybeSync;
+use nectar_primitives::{ChunkAddress, ChunkRef};
 
 use crate::format::{Format, V1};
 use crate::frontier::{Completion, Frame, Plan, claim, fill};
+use crate::node::NodeRef;
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Step, flatten};
 use crate::store::{NodeGet, materialize_traced};
 
 /// A visited node's completion payload: its steps and the segment chunk
 /// addresses its reassembly visited.
-type Visited<F> = (Vec<Step<F>>, Vec<ChunkAddress>);
+type Visited<F, R> = (Vec<Step<F, R>>, Vec<ChunkAddress>);
 
 /// One completed prefetch payload: the fetched child's visit.
-type Fetched<F> = Completion<Visited<F>>;
+type Fetched<F, R> = Completion<Visited<F, R>>;
 
 /// One delivered turn of the walk: an address or a non-terminal fault.
 type Turn = Result<ChunkAddress, ReaderError>;
 
-/// The stream's root reference, pending its first visit.
-#[derive(Debug)]
-enum Root {
-    /// A plain root address.
-    Plain(ChunkAddress),
-    /// An encrypted root reference.
-    #[cfg(feature = "encryption")]
-    Encrypted(EncryptedChunkRef),
-}
-
 /// What visiting the top frame's next step resolves to, computed under a
 /// short borrow so the stack push never overlaps it.
-enum Advance {
+enum Advance<R: NodeRef> {
     /// The frame is spent; drop it and resume its parent.
     Pop,
     /// The step is consumed; a reference entry yields its address.
@@ -57,8 +47,8 @@ enum Advance {
     /// Descend into the referenced child, claiming the prefetch landed under
     /// `seq` once tagged.
     Descend {
-        /// The child chunk address.
-        address: ChunkAddress,
+        /// The child's reference.
+        reference: R,
         /// The prefetch sequence id, once the window launched one.
         seq: Option<usize>,
     },
@@ -71,9 +61,7 @@ enum Advance {
 /// Delivery order is fixed by the trie: a node's own chunk, its segment
 /// chunks in directory order, then its steps in ascending key order, with a
 /// referenced subtree streamed in full at its key position. Shared subtrees
-/// repeat, matching the serial walk. An encrypted child is opened with the
-/// key its record carries; without the `encryption` feature it ends the walk
-/// with [`ReaderError::EncryptedChild`].
+/// repeat, matching the serial walk.
 ///
 /// Referenced children ahead of the walk are prefetched with a sliding
 /// window of at most [`Format::READ_AHEAD`] fetches in flight, so the walk
@@ -81,36 +69,37 @@ enum Advance {
 /// progress lives in `self`, and a step is consumed only once its fetch has
 /// completed, so a dropped [`next`](Self::next) future loses no addresses.
 ///
-/// Every fault is non-terminal (a failed descent replays, an encrypted edge
-/// re-errors), so a fault rides the delivered turn rather than ending the
-/// walk. The walk advances inside [`admit`](Self::admit), where the launch a
-/// fresh descent needs is reachable.
+/// Every fault is non-terminal (a failed descent replays), so a fault rides
+/// the delivered turn rather than ending the walk. The walk advances inside
+/// [`admit`](Self::admit), where the launch a fresh descent needs is
+/// reachable.
 #[derive(Debug)]
-pub struct AddressStream<'a, S, F: Format = V1> {
+pub struct AddressStream<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
     /// The root reference, pending its visit.
-    root: Option<Root>,
+    root: Option<R>,
     done: bool,
     /// Addresses discovered ahead of delivery: a visited node's own chunk
     /// and its segment chunks.
     pending: VecDeque<ChunkAddress>,
     /// One frame per referenced hop on the current path.
-    stack: Vec<Frame<F>>,
+    stack: Vec<Frame<F, R>>,
     /// Node fetches launched ahead of the walk.
-    in_flight: FuturesUnordered<BoxFuture<'a, Fetched<F>>>,
+    in_flight: FuturesUnordered<BoxFuture<'a, Fetched<F, R>>>,
     /// Completions that arrived before the descent awaiting them; drained by
     /// sequence id and bounded with the in-flight set by the window.
-    ready: Vec<Fetched<F>>,
+    ready: Vec<Fetched<F, R>>,
     /// The next fetch sequence id to hand out.
     next_seq: usize,
     /// The turn advanced to under `admit`, awaiting hand-over.
     staged: Option<Turn>,
 }
 
-impl<'a, S, F> AddressStream<'a, S, F>
+impl<'a, S, F, R> AddressStream<'a, S, F, R>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     /// Stage the next turn, then launch the read-ahead the walk needs.
     ///
@@ -128,22 +117,12 @@ where
             &mut self.stack,
             &mut self.in_flight,
             |_base, step| {
-                let target = match step {
-                    Step::Value { .. } => None,
-                    Step::Ref { addr, .. } => Some((*addr, None)),
-                    #[cfg(feature = "encryption")]
-                    Step::Encrypted { reference, .. } => {
-                        Some((*reference.address(), Some(reference.key().clone())))
-                    }
-                    // The walk errors here; nothing beyond it is fetched.
-                    #[cfg(not(feature = "encryption"))]
-                    Step::Encrypted { .. } => return Plan::Stop,
-                };
-                let Some((address, key)) = target else {
+                let Step::Ref { reference, .. } = step else {
                     return Plan::Skip;
                 };
+                let reference = reference.clone();
                 Plan::Fetch(async move {
-                    materialize_traced::<S, F>(store, &address, key.as_ref())
+                    materialize_traced::<S, F, R>(store, &reference)
                         .await
                         .map(|(node, segments)| (flatten(&node, false), segments))
                         .map_err(ReaderError::from)
@@ -186,21 +165,10 @@ where
                         frame.index = frame.index.saturating_add(1);
                         Advance::Step(entry.address().copied())
                     }
-                    Some(Step::Ref { addr, .. }) => Advance::Descend {
-                        address: *addr,
+                    Some(Step::Ref { reference, .. }) => Advance::Descend {
+                        reference: reference.clone(),
                         seq: frame.tag(frame.index),
                     },
-                    #[cfg(feature = "encryption")]
-                    Some(Step::Encrypted { reference, .. }) => Advance::Descend {
-                        address: *reference.address(),
-                        seq: frame.tag(frame.index),
-                    },
-                    // The blocked step is never consumed, so the error is
-                    // stable.
-                    #[cfg(not(feature = "encryption"))]
-                    Some(Step::Encrypted { .. }) => {
-                        return Some(Err(ReaderError::EncryptedChild));
-                    }
                 },
             };
             match advance {
@@ -212,7 +180,7 @@ where
                         return Some(Ok(address));
                     }
                 }
-                Advance::Descend { address, seq } => {
+                Advance::Descend { reference, seq } => {
                     let seq = seq?;
                     let result = claim(&mut self.ready, seq)?;
                     match result {
@@ -222,7 +190,7 @@ where
                             if let Some(frame) = self.stack.last_mut() {
                                 frame.index = frame.index.saturating_add(1);
                             }
-                            self.enter(address, segments, steps);
+                            self.enter(*reference.address(), segments, steps);
                         }
                         Err(error) => {
                             // The launch is spent; untag so the replay
@@ -241,14 +209,19 @@ where
 
     /// Record a visited node: queue its own chunk and its segment chunks for
     /// delivery, and push its steps for descent.
-    fn enter(&mut self, address: ChunkAddress, segments: Vec<ChunkAddress>, steps: Vec<Step<F>>) {
+    fn enter(
+        &mut self,
+        address: ChunkAddress,
+        segments: Vec<ChunkAddress>,
+        steps: Vec<Step<F, R>>,
+    ) {
         self.pending.push_back(address);
         self.pending.extend(segments);
         self.stack.push(Frame::new(Bytes::new(), steps, 0));
     }
 
     /// A stream positioned before its root visit.
-    fn start(store: &'a S, root: Root) -> Self {
+    fn start(store: &'a S, root: R) -> Self {
         Self {
             store,
             root: Some(root),
@@ -268,13 +241,8 @@ where
             return Ok(None);
         }
         if let Some(root) = &self.root {
-            let (address, key) = match root {
-                Root::Plain(address) => (*address, None),
-                #[cfg(feature = "encryption")]
-                Root::Encrypted(reference) => (*reference.address(), Some(reference.key().clone())),
-            };
-            let (node, segments) =
-                materialize_traced::<S, F>(self.store, &address, key.as_ref()).await?;
+            let address = *root.address();
+            let (node, segments) = materialize_traced::<S, F, R>(self.store, root).await?;
             self.root = None;
             self.enter(address, segments, flatten(&node, true));
         }
@@ -286,25 +254,17 @@ where
     }
 }
 
-impl<S, F> Reader<S, F>
+impl<S, F, R> Reader<S, F, R>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
-    /// Every chunk address the manifest rooted at `root` depends on, in
+    /// Every chunk address the database rooted at `root` depends on, in
     /// depth-first key order.
     #[must_use]
-    pub fn addresses(&self, root: &ChunkAddress) -> AddressStream<'_, S, F> {
-        AddressStream::start(self.store(), Root::Plain(*root))
-    }
-
-    /// The same closure over an encrypted manifest, opening each node with
-    /// the key its reference carries.
-    #[cfg(feature = "encryption")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
-    #[must_use]
-    pub fn addresses_encrypted(&self, reference: &EncryptedChunkRef) -> AddressStream<'_, S, F> {
-        AddressStream::start(self.store(), Root::Encrypted(reference.clone()))
+    pub fn addresses(&self, root: &R) -> AddressStream<'_, S, F, R> {
+        AddressStream::start(self.store(), root.clone())
     }
 }
 
@@ -316,23 +276,18 @@ mod tests {
     use std::vec;
 
     use bytes::Bytes;
-    #[cfg(not(feature = "encryption"))]
-    use nectar_primitives::EncryptedChunkRef;
-    use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, MemoryStore};
+    use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
     use nectar_primitives::{
-        Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk, ContentOnlyChunkSet, Verified,
+        Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentOnlyChunkSet, Verified,
     };
-
     use nectar_testing::run;
 
     use crate::bounded::Prefix;
     use crate::builder::Builder;
-    use crate::codec::{SegDesc, SegmentDir, encode_segmented_node};
-    use crate::count::SubtreeCount;
     use crate::fork::{Child, ForkTable};
     use crate::format::V1;
     use crate::node::{Node, RootExtension};
-    use crate::store::{NodeChunk, NodePut, StoreError};
+    use crate::store::{NodePut, Plaintext};
     use crate::value::{Entry, Key};
 
     use super::*;
@@ -347,15 +302,6 @@ mod tests {
 
     fn prefix(bytes: &[u8]) -> Prefix {
         Prefix::try_from(bytes).unwrap()
-    }
-
-    /// Seal a raw payload as a content chunk and store it.
-    fn put_raw(store: &ContentGet<MemoryStore>, payload: Vec<u8>) -> ChunkAddress {
-        let content = ContentChunk::new(payload).unwrap();
-        let chunk: NodeChunk = Chunk::from_envelope(content.into()).unwrap();
-        let address = *chunk.address();
-        run(ChunkPut::put(store, chunk)).unwrap();
-        address
     }
 
     fn drain<S>(mut stream: AddressStream<'_, S>) -> Vec<ChunkAddress>
@@ -373,10 +319,10 @@ mod tests {
 
     // A two-level manifest: a root fork "a" behind an embedded child holding
     // "aa"/"ab", and "b" behind a referenced leaf holding "ba".
-    fn sample(store: &ContentGet<MemoryStore>) -> (ChunkAddress, ChunkAddress) {
+    fn sample(store: &ContentGet<MemoryStore>) -> (ChunkRef, ChunkRef) {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
-        let leaf_addr = run(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_addr = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
 
         let mut embedded = ForkTable::new();
         embedded
@@ -390,13 +336,9 @@ mod tests {
             .insert(prefix(b"a"), Child::Embedded(embedded).into(), None)
             .unwrap();
         forks
-            .insert(
-                prefix(b"b"),
-                Child::Ref32(ChunkRef::new(leaf_addr)).into(),
-                None,
-            )
+            .insert(prefix(b"b"), Child::Ref(leaf_addr).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
         (root, leaf_addr)
     }
 
@@ -406,7 +348,16 @@ mod tests {
         let (root, leaf) = sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(reader.addresses(&root));
-        assert_eq!(got, vec![root, addr(0xAA), addr(0xAB), leaf, addr(0xBA)]);
+        assert_eq!(
+            got,
+            vec![
+                *root.address(),
+                addr(0xAA),
+                addr(0xAB),
+                *leaf.address(),
+                addr(0xBA)
+            ]
+        );
     }
 
     #[test]
@@ -415,9 +366,12 @@ mod tests {
         let root_ext = RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
-        let root = run(store.put_node(&Node::new(root_ext, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(root_ext, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
-        assert_eq!(drain(reader.addresses(&root)), vec![root, addr(9), addr(1)]);
+        assert_eq!(
+            drain(reader.addresses(&root)),
+            vec![*root.address(), addr(9), addr(1)]
+        );
     }
 
     #[test]
@@ -431,9 +385,9 @@ mod tests {
                 None,
             )
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
-        assert_eq!(drain(reader.addresses(&root)), vec![root]);
+        assert_eq!(drain(reader.addresses(&root)), vec![*root.address()]);
     }
 
     #[test]
@@ -451,9 +405,12 @@ mod tests {
                 None,
             )
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
-        assert_eq!(drain(reader.addresses(&root)), vec![root, addr(0x77)]);
+        assert_eq!(
+            drain(reader.addresses(&root)),
+            vec![*root.address(), addr(0x77)]
+        );
     }
 
     #[test]
@@ -461,22 +418,24 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"x"), entry(0x33).into(), None).unwrap();
-        let leaf_addr = run(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_addr = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
         let mut forks = ForkTable::new();
         for first in [b"a", b"b"] {
             forks
-                .insert(
-                    prefix(first),
-                    Child::Ref32(ChunkRef::new(leaf_addr)).into(),
-                    None,
-                )
+                .insert(prefix(first), Child::Ref(leaf_addr).into(), None)
                 .unwrap();
         }
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
             drain(reader.addresses(&root)),
-            vec![root, leaf_addr, addr(0x33), leaf_addr, addr(0x33)]
+            vec![
+                *root.address(),
+                *leaf_addr.address(),
+                addr(0x33),
+                *leaf_addr.address(),
+                addr(0x33)
+            ]
         );
     }
 
@@ -487,20 +446,24 @@ mod tests {
         for byte in 0u8..=255 {
             builder.insert(Key::from(&[byte][..]), entry(byte), None);
         }
-        let root = *run(builder.build(&store)).unwrap().root();
+        let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
 
         // The expected segment addresses, straight off the root chunk's wire.
-        let chunk = store.inner().get(&root).unwrap();
+        let chunk = store.inner().get(root.address()).unwrap();
         let decoded = Node::<V1>::decode_chunk(chunk.envelope().data()).unwrap();
         let crate::codec::DecodedChunk::Segmented(_, dir) = decoded else {
             panic!("a 256-fork root must spill");
         };
-        let segments: Vec<ChunkAddress> = dir.descriptors.iter().map(|d| d.address).collect();
+        let segments: Vec<ChunkAddress> = dir
+            .descriptors
+            .iter()
+            .map(|d| *d.reference.address())
+            .collect();
         assert!(!segments.is_empty());
 
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(reader.addresses(&root));
-        let mut expected = vec![root];
+        let mut expected = vec![*root.address()];
         expected.extend(segments);
         expected.extend((0u8..=255).map(addr));
         assert_eq!(got, expected);
@@ -519,65 +482,28 @@ mod tests {
         );
     }
 
+    // A database has one structural width, witnessed in every chunk's flags
+    // byte, so a plain-typed walk of an encrypted image fails loud rather than
+    // reading 64-byte references as 32-byte ones.
+    #[cfg(feature = "encryption")]
     #[test]
-    fn keyed_descriptors_under_a_plain_arrival_are_rejected() {
-        let store = ContentGet::new(MemoryStore::default());
-        let dir = SegmentDir {
-            wide: true,
-            descriptors: vec![SegDesc {
-                first_key: b'a',
-                address: addr(2),
-                key: Some(nectar_primitives::EncryptionKey::from([3; 32])),
-                seg_count: SubtreeCount::new(1),
-            }],
-        };
-        let root = put_raw(&store, encode_segmented_node::<V1>(None, &dir));
-        let reader: Reader<_> = Reader::new(&store);
-        let mut stream = reader.addresses(&root);
-        let err = run(stream.next()).unwrap_err();
-        assert!(matches!(
-            err,
-            ReaderError::Store(StoreError::Decode(
-                crate::codec::DecodeError::SegmentContext
-            ))
-        ));
-    }
+    fn a_mis_typed_arrival_is_rejected_by_the_width_witness() {
+        use nectar_primitives::ChunkRef;
 
-    #[cfg(not(feature = "encryption"))]
-    #[test]
-    fn an_encrypted_child_ends_the_walk_and_stays_an_error() {
+        use crate::encryption::Encrypted;
+
         let store = ContentGet::new(MemoryStore::default());
-        let mut forks = ForkTable::new();
-        forks
-            .insert(prefix(b"a"), entry(0xA1).into(), None)
-            .unwrap();
-        forks
-            .insert(
-                prefix(b"m"),
-                Child::Ref64(EncryptedChunkRef::new(
-                    addr(0x4D),
-                    nectar_primitives::EncryptionKey::from([0x4D; 32]),
-                ))
-                .into(),
-                None,
-            )
-            .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let mut builder = Builder::<V1>::new();
+        builder.insert(Key::from(&b"a"[..]), entry(0xA1), None);
+        let encrypted = run(builder.build(&store, &Encrypted::<V1>::new(b"secret")))
+            .unwrap()
+            .root()
+            .clone();
+        // Same chunk, read as a plaintext database: the ciphertext is not even
+        // a manifest preamble.
         let reader: Reader<_> = Reader::new(&store);
-        run(async {
-            let mut stream = reader.addresses(&root);
-            assert_eq!(stream.next().await.unwrap(), Some(root));
-            assert_eq!(stream.next().await.unwrap(), Some(addr(0xA1)));
-            // The blocked step is never consumed, so the error is stable.
-            assert!(matches!(
-                stream.next().await.unwrap_err(),
-                ReaderError::EncryptedChild
-            ));
-            assert!(matches!(
-                stream.next().await.unwrap_err(),
-                ReaderError::EncryptedChild
-            ));
-        });
+        let mut stream = reader.addresses(&ChunkRef::new(*encrypted.address()));
+        assert!(run(stream.next()).is_err());
     }
 
     /// Store wrapper that records fetches and yields once per get, so a
@@ -653,7 +579,16 @@ mod tests {
             while let Some(address) = stream.next().await.unwrap() {
                 out.push(address);
             }
-            assert_eq!(out, vec![root, addr(0xAA), addr(0xAB), leaf, addr(0xBA)]);
+            assert_eq!(
+                out,
+                vec![
+                    *root.address(),
+                    addr(0xAA),
+                    addr(0xAB),
+                    *leaf.address(),
+                    addr(0xBA)
+                ]
+            );
         });
     }
 
@@ -696,7 +631,7 @@ mod tests {
                 builder.insert(Key::from(&[p, x][..]), entry(x.wrapping_add(p)), None);
             }
         }
-        let root = *run(builder.build(&inner)).unwrap().root();
+        let root = *run(builder.build(&inner, &Plaintext)).unwrap().root();
         let store = GatedStore {
             inner,
             inflight: AtomicUsize::new(0),
@@ -730,7 +665,7 @@ mod tests {
         // Entry addresses are named, never fetched; each node is fetched
         // exactly once, the descent taking the prefetched copy.
         let mut fetched = slow.fetched();
-        let mut expected = vec![root, leaf];
+        let mut expected = vec![*root.address(), *leaf.address()];
         fetched.sort_unstable();
         expected.sort_unstable();
         assert_eq!(fetched, expected);
@@ -738,150 +673,99 @@ mod tests {
 
     #[cfg(feature = "encryption")]
     mod encrypted {
-        use nectar_primitives::{EncryptedChunkRef, EncryptionKey, transcrypt_in_place};
+        use nectar_primitives::EncryptedChunkRef;
 
-        use crate::codec::encode_leaf_segment;
-        use crate::encryption::EncryptedNodePut;
+        use crate::encryption::Encrypted;
 
         use super::*;
 
         const SECRET: &[u8] = b"correct horse battery staple";
 
+        fn seal() -> Encrypted<'static, V1> {
+            Encrypted::new(SECRET)
+        }
+
+        /// Drain an encrypted-database address stream.
+        fn drain_encrypted<S>(
+            mut stream: AddressStream<'_, S, V1, EncryptedChunkRef>,
+        ) -> Vec<ChunkAddress>
+        where
+            S: NodeGet + MaybeSync,
+        {
+            run(async {
+                let mut out = Vec::new();
+                while let Some(address) = stream.next().await.unwrap() {
+                    out.push(address);
+                }
+                out
+            })
+        }
+
+        // The closure of an encrypted database has the plaintext shape: the
+        // root chunk, then each entry and referenced subtree in key order,
+        // every hop opened by the key its own reference carries.
         #[test]
-        fn a_plain_parent_opens_its_encrypted_child() {
+        fn an_encrypted_database_streams_the_same_closure_shape() {
             let store = ContentGet::new(MemoryStore::default());
-            let mut child = Node::empty();
+            let mut child = Node::<V1, EncryptedChunkRef>::empty();
             child
                 .forks_mut()
                 .insert(prefix(b"x"), entry(0x11).into(), None)
                 .unwrap();
-            run(async {
-                let reference = store.put_node_encrypted(&child, SECRET).await.unwrap();
-                let mut root = Node::empty();
-                root.forks_mut()
-                    .insert(prefix(b"m"), Child::Ref64(reference.clone()).into(), None)
-                    .unwrap();
-                let root_addr = store.put_node(&root).await.unwrap();
-                let reader: Reader<_> = Reader::new(&store);
-                let mut stream = reader.addresses(&root_addr);
-                let mut out = Vec::new();
-                while let Some(address) = stream.next().await.unwrap() {
-                    out.push(address);
-                }
-                assert_eq!(out, vec![root_addr, *reference.address(), addr(0x11)]);
-            });
+            let child_ref = run(store.put_node(&child, &seal())).unwrap();
+
+            let root_ext = RootExtension::new(Some(entry(9)), None);
+            let mut forks = ForkTable::new();
+            forks
+                .insert(prefix(b"a"), Child::Ref(child_ref.clone()).into(), None)
+                .unwrap();
+            forks
+                .insert(prefix(b"b"), entry(0x22).into(), None)
+                .unwrap();
+            let root = Node::new(root_ext, forks);
+            let root_ref = run(store.put_node(&root, &seal())).unwrap();
+
+            let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
+            assert_eq!(
+                drain_encrypted(reader.addresses(&root_ref)),
+                vec![
+                    *root_ref.address(),
+                    addr(9),
+                    *child_ref.address(),
+                    addr(0x11),
+                    addr(0x22),
+                ]
+            );
         }
 
+        // A spilled encrypted node: its segment chunks are ciphertext too, and
+        // the walk names each one before the keys it covers.
         #[test]
-        fn an_encrypted_root_streams_the_same_closure_shape() {
+        fn an_encrypted_spilled_node_streams_its_segment_chunks() {
             let store = ContentGet::new(MemoryStore::default());
-            run(async {
-                let mut child = Node::empty();
-                child
-                    .forks_mut()
-                    .insert(prefix(b"x"), entry(0x11).into(), None)
-                    .unwrap();
-                let child_ref = store.put_node_encrypted(&child, SECRET).await.unwrap();
+            let mut builder = Builder::<V1>::new();
+            for byte in 0u8..=255 {
+                builder.insert(Key::from(&[byte][..]), entry(byte), None);
+            }
+            let root = run(builder.build(&store, &seal())).unwrap().root().clone();
 
-                let mut leaf = Node::empty();
-                leaf.forks_mut()
-                    .insert(prefix(b"y"), entry(0x22).into(), None)
-                    .unwrap();
-                let leaf_addr = store.put_node(&leaf).await.unwrap();
-
-                let root_ext = RootExtension::new(Some(entry(9)), None);
-                let mut forks = ForkTable::new();
-                forks
-                    .insert(prefix(b"a"), Child::Ref64(child_ref.clone()).into(), None)
-                    .unwrap();
-                forks
-                    .insert(
-                        prefix(b"b"),
-                        Child::Ref32(ChunkRef::new(leaf_addr)).into(),
-                        None,
-                    )
-                    .unwrap();
-                let root = Node::new(root_ext, forks);
-                let root_ref = store.put_node_encrypted(&root, SECRET).await.unwrap();
-
-                let reader: Reader<_> = Reader::new(&store);
-                let mut stream = reader.addresses_encrypted(&root_ref);
-                let mut out = Vec::new();
-                while let Some(address) = stream.next().await.unwrap() {
-                    out.push(address);
-                }
-                assert_eq!(
-                    out,
-                    vec![
-                        *root_ref.address(),
-                        addr(9),
-                        *child_ref.address(),
-                        addr(0x11),
-                        leaf_addr,
-                        addr(0x22),
-                    ]
-                );
-            });
-        }
-
-        #[test]
-        fn an_encrypted_spilled_node_streams_its_keyed_segments() {
-            let store = ContentGet::new(MemoryStore::default());
-            let mut table = ForkTable::new();
-            table.insert(prefix(b"a"), entry(1).into(), None).unwrap();
-            table.insert(prefix(b"b"), entry(2).into(), None).unwrap();
-            let mut leaf_payload = encode_leaf_segment(&table);
-            let leaf_key = EncryptionKey::from([7; 32]);
-            transcrypt_in_place(&leaf_key, 0, &mut leaf_payload);
-            let leaf_addr = put_raw(&store, leaf_payload);
-
-            let dir = SegmentDir {
-                wide: true,
-                descriptors: vec![SegDesc {
-                    first_key: b'a',
-                    address: leaf_addr,
-                    key: Some(leaf_key),
-                    seg_count: SubtreeCount::new(2),
-                }],
+            let chunk = store.inner().get(root.address()).unwrap();
+            let payload = {
+                let mut bytes = chunk.envelope().data().to_vec();
+                nectar_primitives::transcrypt_in_place(root.key(), 0, &mut bytes);
+                bytes
             };
-            let mut root_payload = encode_segmented_node::<V1>(None, &dir);
-            let root_key = EncryptionKey::from([9; 32]);
-            transcrypt_in_place(&root_key, 0, &mut root_payload);
-            let root_addr = put_raw(&store, root_payload);
-            let reference = EncryptedChunkRef::new(root_addr, root_key);
-
-            let reader: Reader<_> = Reader::new(&store);
-            let got = drain(reader.addresses_encrypted(&reference));
-            assert_eq!(got, vec![root_addr, leaf_addr, addr(1), addr(2)]);
-        }
-
-        #[test]
-        fn bare_descriptors_under_an_encrypted_arrival_are_rejected() {
-            let store = ContentGet::new(MemoryStore::default());
-            let dir = SegmentDir {
-                wide: false,
-                descriptors: vec![SegDesc {
-                    first_key: b'a',
-                    address: addr(2),
-                    key: None,
-                    seg_count: SubtreeCount::new(1),
-                }],
+            let decoded = Node::<V1, EncryptedChunkRef>::decode_chunk(&payload).unwrap();
+            let crate::codec::DecodedChunk::Segmented(_, dir) = decoded else {
+                panic!("a 256-fork root must spill");
             };
-            let mut payload = encode_segmented_node::<V1>(None, &dir);
-            let root_key = EncryptionKey::from([9; 32]);
-            transcrypt_in_place(&root_key, 0, &mut payload);
-            let root_addr = put_raw(&store, payload);
-            let reference = EncryptedChunkRef::new(root_addr, root_key);
+            assert!(dir.descriptors.len() > 1);
 
-            let reader: Reader<_> = Reader::new(&store);
-            let mut stream = reader.addresses_encrypted(&reference);
-            let err = run(stream.next()).unwrap_err();
-            assert!(matches!(
-                err,
-                ReaderError::Store(StoreError::Decode(
-                    crate::codec::DecodeError::SegmentContext
-                ))
-            ));
+            let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
+            let mut expected = vec![*root.address()];
+            expected.extend(dir.descriptors.iter().map(|d| *d.reference.address()));
+            expected.extend((0u8..=255).map(addr));
+            assert_eq!(drain_encrypted(reader.addresses(&root)), expected);
         }
     }
 }

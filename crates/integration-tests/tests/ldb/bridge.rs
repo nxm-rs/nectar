@@ -8,8 +8,8 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
 use nectar_file::{File, Plain, PutWindow, collect_into};
-use nectar_ldb::{Builder, Built, Entry, Key, Reader};
-use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, DEFAULT_BODY_SIZE, MemoryStore};
+use nectar_ldb::{Builder, Built, Entry, Key, Plaintext, Reader};
+use nectar_primitives::{ChunkRef, ContentGet, DEFAULT_BODY_SIZE, MemoryStore};
 use nectar_testing::{run, split_whole};
 
 const B: usize = DEFAULT_BODY_SIZE;
@@ -26,12 +26,12 @@ async fn build_files(
             collect_into::<_, Plain, DEFAULT_BODY_SIZE>(store, PutWindow::DEFAULT, &data).await?;
         builder.insert(key, Entry::from(ChunkRef::new(root)), None);
     }
-    Ok(builder.build(store).await?)
+    Ok(builder.build(store, &Plaintext).await?)
 }
 
 /// Look `key` up in the manifest at `root`, then reassemble the referenced file
 /// byte-exact from its stored chunks.
-async fn fetch_file(store: &MemoryStore, root: &ChunkAddress, key: &Key) -> Result<Bytes> {
+async fn fetch_file(store: &MemoryStore, root: &ChunkRef, key: &Key) -> Result<Bytes> {
     let reader: Reader<_> = Reader::new(ContentGet::new(store.clone()));
     let entry = reader.get(root, key).await?.context("key present")?;
     let address = *entry.address().context("entry is a reference")?;
@@ -83,7 +83,7 @@ fn streaming_bridge_pins_the_direct_split_bytes() -> Result<()> {
             let node_store = MemoryStore::default();
             let mut builder: Builder = Builder::new();
             builder.insert(key, Entry::from(ChunkRef::new(direct_root)), None);
-            let direct_built = builder.build(&node_store).await?;
+            let direct_built = builder.build(&node_store, &Plaintext).await?;
             ensure!(built.root() == direct_built.root(), "manifest root");
 
             let direct = direct_store.into_chunks();

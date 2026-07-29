@@ -13,19 +13,19 @@
 
 use libfuzzer_sys::fuzz_target;
 use nectar_fuzz::{Val, entry};
-use nectar_ldb::{Builder, Entry, Key, V1, recanonicalize};
+use nectar_ldb::{Builder, Entry, Key, Plaintext, V1, recanonicalize};
 use nectar_primitives::store::MemoryStore;
-use nectar_primitives::{ChunkAddress, ChunkOps, DEFAULT_BODY_SIZE};
+use nectar_primitives::{ChunkOps, ChunkRef, DEFAULT_BODY_SIZE};
 use nectar_testing::run;
 
 /// Build the key set into a fresh store, returning the root and the store.
-fn build(pairs: &[(Key, Entry<V1>)]) -> Option<(ChunkAddress, MemoryStore)> {
+fn build(pairs: &[(Key, Entry<V1>)]) -> Option<(ChunkRef, MemoryStore)> {
     let store = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
     for (key, entry) in pairs {
         builder.insert(key.clone(), entry.clone(), None);
     }
-    let built = run(builder.build(&store)).ok()?;
+    let built = run(builder.build(&store, &Plaintext)).ok()?;
     Some((*built.root(), store))
 }
 
@@ -49,7 +49,7 @@ fuzz_target!(|input: Vec<(Vec<u8>, Val)>| {
             "chunk {} bytes exceeds one chunk body",
             payload.len(),
         );
-        let reencoded = recanonicalize::<V1>(payload.as_ref()).expect("a stored chunk must decode");
+        let reencoded = recanonicalize::<V1, ChunkRef>(payload.as_ref()).expect("a stored chunk must decode");
         assert_eq!(
             reencoded.as_slice(),
             payload.as_ref(),

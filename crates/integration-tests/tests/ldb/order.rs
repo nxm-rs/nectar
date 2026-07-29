@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, ensure};
-use nectar_ldb::{Builder, Entry, Key, Reader, V1};
+use nectar_ldb::{Builder, Entry, Key, Plaintext, Reader, V1};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
@@ -91,16 +91,16 @@ fn wide_keys() -> KeySet {
     out
 }
 
-fn build(store: &MemoryStore, keys: &[(Key, u8)]) -> Result<ChunkAddress> {
+fn build(store: &MemoryStore, keys: &[(Key, u8)]) -> Result<ChunkRef> {
     let mut builder = Builder::<V1>::new();
     for (key, fill) in keys {
         builder.insert(key.clone(), entry(*fill), None);
     }
-    Ok(*run(builder.build(store))?.root())
+    Ok(*run(builder.build(store, &Plaintext))?.root())
 }
 
 /// The ground-truth ordering: every `(key, value)` a full walk yields.
-fn oracle(reader: &Reader<ContentGet<MemoryStore>, V1>, root: &ChunkAddress) -> Result<Pairs> {
+fn oracle(reader: &Reader<ContentGet<MemoryStore>, V1>, root: &ChunkRef) -> Result<Pairs> {
     let mut out = Vec::new();
     let mut cursor = run(reader.iter(root))?;
     while let Some(pair) = run(cursor.next())? {

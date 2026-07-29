@@ -4,10 +4,25 @@
 //! Magic, version and every bound come from `F`; no flags are stored, the
 //! presence bits are derived from the structure at encode time.
 
+use nectar_primitives::store::{MaybeSend, MaybeSync};
+use nectar_primitives::{ChunkRef, EncryptedChunkRef, Reference};
+
 use crate::fork::ForkTable;
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
 use crate::value::Entry;
+
+/// A structural reference width a database can be keyed by.
+///
+/// The sealed [`Reference`] set plus the thread bounds the async read and
+/// write seams carry, so it names exactly the two widths and no third can
+/// appear. `MaybeSend` and `MaybeSync` are inert on wasm32, on bare metal and
+/// under the `unsync` feature.
+pub trait NodeRef: Reference + MaybeSend + MaybeSync {}
+
+impl NodeRef for ChunkRef {}
+
+impl NodeRef for EncryptedChunkRef {}
 
 /// The root extension: what a trie root carries about itself, complete in
 /// the root's own bytes.
@@ -73,18 +88,21 @@ impl<F: Format> From<Metadata<F>> for RootExtension<F> {
     }
 }
 
-/// One in-memory manifest node of format `F`.
+/// One in-memory manifest node of format `F`, linking its children by
+/// references of width `R`.
 ///
 /// The wire preamble is `F::PREAMBLE`, carried by the type, not the value.
 /// A node reached through a fork child must have no root extension; the
-/// fetching party knows the context and enforces that on fetch.
+/// fetching party knows the context and enforces that on fetch. The
+/// structural reference width is a whole-database fact carried by `R`, so a
+/// plain and an encrypted database are distinct types.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Node<F: Format = V1> {
+pub struct Node<F: Format = V1, R: NodeRef = ChunkRef> {
     root: Option<RootExtension<F>>,
-    forks: ForkTable<F>,
+    forks: ForkTable<F, R>,
 }
 
-impl<F: Format> Node<F> {
+impl<F: Format, R: NodeRef> Node<F, R> {
     /// The empty-map root: no extension, no forks.
     #[must_use]
     pub const fn empty() -> Self {
@@ -96,7 +114,7 @@ impl<F: Format> Node<F> {
 
     /// A node from its parts.
     #[must_use]
-    pub const fn new(root: Option<RootExtension<F>>, forks: ForkTable<F>) -> Self {
+    pub const fn new(root: Option<RootExtension<F>>, forks: ForkTable<F, R>) -> Self {
         Self { root, forks }
     }
 
@@ -137,17 +155,17 @@ impl<F: Format> Node<F> {
 
     /// The fork table.
     #[must_use]
-    pub const fn forks(&self) -> &ForkTable<F> {
+    pub const fn forks(&self) -> &ForkTable<F, R> {
         &self.forks
     }
 
     /// Mutable access to the fork table.
-    pub const fn forks_mut(&mut self) -> &mut ForkTable<F> {
+    pub const fn forks_mut(&mut self) -> &mut ForkTable<F, R> {
         &mut self.forks
     }
 }
 
-impl<F: Format> Default for Node<F> {
+impl<F: Format, R: NodeRef> Default for Node<F, R> {
     fn default() -> Self {
         Self::empty()
     }
@@ -205,7 +223,7 @@ mod tests {
 
     #[test]
     fn node_reads_through_the_root_extension() {
-        let mut node = Node::new(
+        let mut node: Node = Node::new(
             RootExtension::new(Some(entry()), Some(metadata())),
             ForkTable::new(),
         );
@@ -219,7 +237,7 @@ mod tests {
 
     #[test]
     fn forks_make_a_node_non_empty() {
-        let mut node = Node::empty();
+        let mut node: Node = Node::empty();
         node.forks_mut()
             .insert(Prefix::try_from(&b"a"[..]).unwrap(), entry().into(), None)
             .unwrap();

@@ -13,21 +13,21 @@ use alloc::vec::Vec;
 
 use bytes::Bytes;
 use nectar_primitives::store::MaybeSync;
-use nectar_primitives::{ChunkAddress, ChunkOps};
+use nectar_primitives::{ChunkOps, ChunkRef};
 
 use crate::codec::{DecodeError, DecodedChunk, SegDesc, SegmentDir};
 use crate::fork::{Child, ForkTable};
 use crate::format::Format;
-use crate::node::{Node, RootExtension};
+use crate::node::{NodeRef, RootExtension};
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Cursor, successor};
-use crate::store::{NodeGet, StoreError};
+use crate::store::{NodeGet, StoreError, open_chunk};
 use crate::value::{Entry, Key};
 
 /// One flattened position of a chunk's fork table, in ascending key order, with
 /// the count of the keys it stands for. A value stands for itself; a referenced
-/// or encrypted child stands for its whole subtree, counted without a fetch.
-enum Ranked<F: Format> {
+/// child stands for its whole subtree, counted without a fetch.
+enum Ranked<F: Format, R: NodeRef> {
     /// A key terminates here with this value; it counts once.
     Value {
         /// Key bytes below the chunk root.
@@ -39,28 +39,18 @@ enum Ranked<F: Format> {
     Ref {
         /// Key bytes below the chunk root leading to the child.
         suffix: Vec<u8>,
-        /// The child chunk address.
-        addr: ChunkAddress,
-        /// The child subtree's distinct key-count.
-        count: u64,
-    },
-    /// An encrypted child the plain reader cannot open, holding `count` keys.
-    /// Its count still routes a rank past it; only a descent into it fails.
-    Encrypted {
-        /// Key bytes below the chunk root leading to the child.
-        suffix: Vec<u8>,
+        /// The reference reaching the child chunk.
+        reference: R,
         /// The child subtree's distinct key-count.
         count: u64,
     },
 }
 
-impl<F: Format> Ranked<F> {
+impl<F: Format, R: NodeRef> Ranked<F, R> {
     /// The key bytes below the chunk root.
     fn suffix(&self) -> &[u8] {
         match self {
-            Self::Value { suffix, .. }
-            | Self::Ref { suffix, .. }
-            | Self::Encrypted { suffix, .. } => suffix,
+            Self::Value { suffix, .. } | Self::Ref { suffix, .. } => suffix,
         }
     }
 
@@ -68,7 +58,7 @@ impl<F: Format> Ranked<F> {
     const fn count(&self) -> u64 {
         match self {
             Self::Value { .. } => 1,
-            Self::Ref { count, .. } | Self::Encrypted { count, .. } => *count,
+            Self::Ref { count, .. } => *count,
         }
     }
 }
@@ -78,7 +68,7 @@ impl<F: Format> Ranked<F> {
 ///
 /// A referenced child's count is the stored annotation; an embedded child is
 /// expanded in place, so the positions of one chunk carry no fetch between them.
-fn ranked<F: Format>(table: &ForkTable<F>) -> Vec<Ranked<F>> {
+fn ranked<F: Format, R: NodeRef>(table: &ForkTable<F, R>) -> Vec<Ranked<F, R>> {
     let mut steps = Vec::new();
     let mut prefix = Vec::new();
     ranked_table(table, &mut prefix, &mut steps);
@@ -87,7 +77,11 @@ fn ranked<F: Format>(table: &ForkTable<F>) -> Vec<Ranked<F>> {
 
 /// Walk a fork table in wire order, appending each terminal and referenced child
 /// as a ranked position and recursing embedded children in place.
-fn ranked_table<F: Format>(table: &ForkTable<F>, prefix: &mut Vec<u8>, steps: &mut Vec<Ranked<F>>) {
+fn ranked_table<F: Format, R: NodeRef>(
+    table: &ForkTable<F, R>,
+    prefix: &mut Vec<u8>,
+    steps: &mut Vec<Ranked<F, R>>,
+) {
     for (first, record) in table.iter() {
         let mark = prefix.len();
         prefix.push(first);
@@ -100,13 +94,9 @@ fn ranked_table<F: Format>(table: &ForkTable<F>, prefix: &mut Vec<u8>, steps: &m
         }
         match record.child() {
             Some(Child::Embedded(inner)) => ranked_table(inner, prefix, steps),
-            Some(Child::Ref32(reference)) => steps.push(Ranked::Ref {
+            Some(Child::Ref(reference)) => steps.push(Ranked::Ref {
                 suffix: prefix.clone(),
-                addr: *reference.address(),
-                count: record.child_count().unwrap_or_default().get(),
-            }),
-            Some(Child::Ref64(_)) => steps.push(Ranked::Encrypted {
-                suffix: prefix.clone(),
+                reference: reference.clone(),
                 count: record.child_count().unwrap_or_default().get(),
             }),
             None => {}
@@ -118,7 +108,7 @@ fn ranked_table<F: Format>(table: &ForkTable<F>, prefix: &mut Vec<u8>, steps: &m
 /// The on-path contents of one node: its fork-table positions and the keys in
 /// the segments strictly before them. A spilled node contributes only the
 /// covering leaf's positions; `Before` means the target precedes every fork.
-enum OnPath<F: Format> {
+enum OnPath<F: Format, R: NodeRef> {
     /// The target precedes every fork in the node; nothing at or below it.
     Before,
     /// The covering fragment's positions and the count skipped before them.
@@ -126,12 +116,12 @@ enum OnPath<F: Format> {
         /// Keys in the segments strictly before the covering fragment.
         before: u64,
         /// The covering fragment's ranked positions.
-        steps: Vec<Ranked<F>>,
+        steps: Vec<Ranked<F, R>>,
     },
 }
 
 /// The empty-key value a decoded root carries: its root extension entry.
-fn root_entry<F: Format>(decoded: &DecodedChunk<F>) -> Option<Entry<F>> {
+fn root_entry<F: Format, R: NodeRef>(decoded: &DecodedChunk<F, R>) -> Option<Entry<F>> {
     match decoded {
         DecodedChunk::Node(node) => node.entry().cloned(),
         DecodedChunk::Segmented(root, _) => root.as_ref().and_then(RootExtension::entry).cloned(),
@@ -142,9 +132,9 @@ fn root_entry<F: Format>(decoded: &DecodedChunk<F>) -> Option<Entry<F>> {
 /// The descriptor covering `byte`: the one with the greatest first key not past
 /// it, and the summed count of every descriptor before it. `None` when `byte`
 /// precedes the first descriptor.
-fn covering(dir: &SegmentDir, byte: u8) -> Option<(u64, &SegDesc)> {
+fn covering<R: NodeRef>(dir: &SegmentDir<R>, byte: u8) -> Option<(u64, &SegDesc<R>)> {
     let mut before = 0u64;
-    let mut cover: Option<&SegDesc> = None;
+    let mut cover: Option<&SegDesc<R>> = None;
     for desc in &dir.descriptors {
         if desc.first_key > byte {
             break;
@@ -160,7 +150,7 @@ fn covering(dir: &SegmentDir, byte: u8) -> Option<(u64, &SegDesc)> {
 /// Where an index falls across a directory's descriptors: the residual index
 /// into the covering descriptor and the descriptor itself, subtracting the
 /// skipped segments' counts. `None` when the index runs past the node's total.
-fn covering_index(dir: &SegmentDir, index: u64) -> Option<(u64, &SegDesc)> {
+fn covering_index<R: NodeRef>(dir: &SegmentDir<R>, index: u64) -> Option<(u64, &SegDesc<R>)> {
     let mut index = index;
     for desc in &dir.descriptors {
         let count = desc.seg_count.get();
@@ -172,14 +162,15 @@ fn covering_index(dir: &SegmentDir, index: u64) -> Option<(u64, &SegDesc)> {
     None
 }
 
-impl<S, F> Reader<S, F>
+impl<S, F, R> Reader<S, F, R>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     /// The number of keys with `lo <= key < hi`, computed as `rank(hi) -
     /// rank(lo)` in two O(depth) descents, so a window's size never fetches it.
-    pub async fn count(&self, root: &ChunkAddress, lo: &Key, hi: &Key) -> Result<u64, ReaderError> {
+    pub async fn count(&self, root: &R, lo: &Key, hi: &Key) -> Result<u64, ReaderError> {
         let high = self.rank(root, hi).await?;
         let low = self.rank(root, lo).await?;
         Ok(high.saturating_sub(low))
@@ -190,16 +181,15 @@ where
     ///
     /// Descends one referenced hop per level, adding the whole-subtree count of
     /// every fork and segment strictly before the target and recursing only the
-    /// one child on its path. An encrypted subtree on the path cannot be opened;
-    /// one merely before the target routes by its stored count.
-    pub async fn rank(&self, root: &ChunkAddress, key: &Key) -> Result<u64, ReaderError> {
+    /// one child on its path.
+    pub async fn rank(&self, root: &R, key: &Key) -> Result<u64, ReaderError> {
         let target = key.as_bytes();
-        let mut address = *root;
+        let mut reference = root.clone();
         let mut consumed = 0usize;
         let mut acc = 0u64;
         let mut is_root = true;
         loop {
-            let decoded = decode_at::<S, F>(self.store(), &address).await?;
+            let decoded = decode_at::<S, F, R>(self.store(), &reference).await?;
             if is_root && !target.is_empty() && root_entry(&decoded).is_some() {
                 acc = acc.saturating_add(1);
             }
@@ -215,15 +205,14 @@ where
             };
             match rank_fragment(&steps, remaining) {
                 Step::Here(count) => return Ok(acc.saturating_add(count)),
-                Step::Encrypted => return Err(ReaderError::EncryptedChild),
                 Step::Cross {
-                    addr,
+                    child,
                     matched,
                     before,
                 } => {
                     acc = acc.saturating_add(before);
                     consumed = consumed.saturating_add(matched);
-                    address = addr;
+                    reference = child;
                     is_root = false;
                 }
             }
@@ -238,15 +227,15 @@ where
     /// the offset costs O(depth), never O(index).
     pub async fn select(
         &self,
-        root: &ChunkAddress,
+        root: &R,
         index: u64,
     ) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
-        let mut address = *root;
+        let mut reference = root.clone();
         let mut index = index;
         let mut path: Vec<u8> = Vec::new();
         let mut is_root = true;
         loop {
-            let decoded = decode_at::<S, F>(self.store(), &address).await?;
+            let decoded = decode_at::<S, F, R>(self.store(), &reference).await?;
             if is_root && let Some(entry) = root_entry(&decoded) {
                 if index == 0 {
                     return Ok(Some((Key::new(Bytes::from(path)), entry)));
@@ -261,10 +250,9 @@ where
                     path.extend_from_slice(&suffix);
                     return Ok(Some((Key::new(Bytes::from(path)), entry)));
                 }
-                Some(Reach::Encrypted) => return Err(ReaderError::EncryptedChild),
-                Some(Reach::Cross { addr, suffix }) => {
+                Some(Reach::Cross { child, suffix }) => {
                     path.extend_from_slice(&suffix);
-                    address = addr;
+                    reference = child;
                     is_root = false;
                 }
                 None => return Ok(None),
@@ -280,30 +268,30 @@ where
     /// `offset` and taken `limit`.
     pub async fn paginate(
         &self,
-        root: &ChunkAddress,
+        root: &R,
         lo: &Key,
         hi: &Key,
         offset: u64,
         limit: usize,
-    ) -> Result<Cursor<'_, S, F>, ReaderError> {
+    ) -> Result<Cursor<'_, S, F, R>, ReaderError> {
         let end = Some(Bytes::copy_from_slice(hi.as_bytes()));
         let start = self.rank(root, lo).await?.saturating_add(offset);
         self.page(root, start, end, limit).await
     }
 
     /// A cursor over the keys carrying `prefix`, positioned `offset` keys in and
-    /// yielding at most `limit`; the empty prefix pages the whole manifest.
+    /// yielding at most `limit`; the empty prefix pages the whole database.
     ///
     /// The offset is a rank-directed seek, so it costs O(depth), not O(offset);
     /// the yielded slice equals `prefix(prefix)` skipped `offset` and taken
     /// `limit`.
     pub async fn paginate_prefix(
         &self,
-        root: &ChunkAddress,
+        root: &R,
         prefix: &Key,
         offset: u64,
         limit: usize,
-    ) -> Result<Cursor<'_, S, F>, ReaderError> {
+    ) -> Result<Cursor<'_, S, F, R>, ReaderError> {
         let end = successor(prefix.as_bytes());
         let start = self.rank(root, prefix).await?.saturating_add(offset);
         self.page(root, start, end, limit).await
@@ -314,11 +302,11 @@ where
     /// yields an exhausted cursor.
     async fn page(
         &self,
-        root: &ChunkAddress,
+        root: &R,
         start: u64,
         end: Option<Bytes>,
         limit: usize,
-    ) -> Result<Cursor<'_, S, F>, ReaderError> {
+    ) -> Result<Cursor<'_, S, F, R>, ReaderError> {
         match self.select(root, start).await? {
             None => Ok(Cursor::exhausted(self.store())),
             Some((key, _)) => Ok(Cursor::seek(self.store(), root, key.as_bytes(), end)
@@ -328,29 +316,34 @@ where
     }
 }
 
-/// Fetch and decode the chunk at `address` without materializing a spilled
-/// node's segments: the descent routes them itself by `seg_count`.
-async fn decode_at<S, F>(store: &S, address: &ChunkAddress) -> Result<DecodedChunk<F>, ReaderError>
+/// Fetch and decode the chunk `reference` reaches without materializing a
+/// spilled node's segments: the descent routes them itself by `seg_count`.
+async fn decode_at<S, F, R>(store: &S, reference: &R) -> Result<DecodedChunk<F, R>, ReaderError>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
-    let chunk = store.get(address).await.map_err(StoreError::store)?;
-    Node::<F>::decode_chunk(chunk.envelope().data())
+    let chunk = store
+        .get(reference.address())
+        .await
+        .map_err(StoreError::store)?;
+    open_chunk::<F, R>(chunk.envelope().data(), reference)
         .map_err(|error| ReaderError::Store(StoreError::Decode(error)))
 }
 
 /// Resolve the ranked positions on the target's path through a decoded chunk,
 /// routing a spilled node's segments by `seg_count` so only the covering one is
 /// fetched. `remaining` is the target key from this node's root, never empty.
-async fn on_path<S, F>(
+async fn on_path<S, F, R>(
     store: &S,
-    decoded: &DecodedChunk<F>,
+    decoded: &DecodedChunk<F, R>,
     remaining: &[u8],
-) -> Result<OnPath<F>, ReaderError>
+) -> Result<OnPath<F, R>, ReaderError>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     match decoded {
         DecodedChunk::Node(node) => Ok(OnPath::Fragment {
@@ -365,14 +358,15 @@ where
 /// Route a spilled node's directory to the leaf fragment covering `remaining`,
 /// summing the counts of the segments strictly before it. Descends at most the
 /// two directory levels the frozen bounds allow (spec 5.4).
-async fn route_key<S, F>(
+async fn route_key<S, F, R>(
     store: &S,
-    dir: &SegmentDir,
+    dir: &SegmentDir<R>,
     remaining: &[u8],
-) -> Result<OnPath<F>, ReaderError>
+) -> Result<OnPath<F, R>, ReaderError>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     let Some(&byte) = remaining.first() else {
         return Ok(OnPath::Before);
@@ -386,10 +380,7 @@ where
         None => return Ok(OnPath::Before),
     };
     for _ in 0..2 {
-        if current.key.is_some() {
-            return Err(ReaderError::EncryptedChild);
-        }
-        match decode_at::<S, F>(store, &current.address).await? {
+        match decode_at::<S, F, R>(store, &current.reference).await? {
             DecodedChunk::Leaf(table) => {
                 return Ok(OnPath::Fragment {
                     before,
@@ -412,14 +403,15 @@ where
 /// Route a decoded chunk to the ranked positions holding the `index`th key,
 /// subtracting a spilled node's skipped-segment counts from `index`. `None` when
 /// the index runs past the node's total.
-async fn index_path<S, F>(
+async fn index_path<S, F, R>(
     store: &S,
-    decoded: &DecodedChunk<F>,
+    decoded: &DecodedChunk<F, R>,
     index: &mut u64,
-) -> Result<Option<Vec<Ranked<F>>>, ReaderError>
+) -> Result<Option<Vec<Ranked<F, R>>>, ReaderError>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     match decoded {
         DecodedChunk::Node(node) => Ok(Some(ranked(node.forks()))),
@@ -430,10 +422,8 @@ where
                     return Ok(None);
                 };
                 *index = residual;
-                if desc.key.is_some() {
-                    return Err(ReaderError::EncryptedChild);
-                }
-                match decode_at::<S, F>(store, &desc.address).await? {
+                let child = desc.reference.clone();
+                match decode_at::<S, F, R>(store, &child).await? {
                     DecodedChunk::Leaf(table) => return Ok(Some(ranked(&table))),
                     DecodedChunk::Directory(inner) => dir = inner,
                     _ => return Err(segment_context()),
@@ -452,18 +442,16 @@ const fn segment_context() -> ReaderError {
 }
 
 /// The outcome of ranking `remaining` through one chunk's fork-table fragment.
-enum Step {
+enum Step<R: NodeRef> {
     /// The rank resolves here, adding this many in-fragment keys before it.
     Here(u64),
-    /// The target descends into a referenced child at `addr`, `matched` key
-    /// bytes below the fragment root, with this many in-fragment keys before it.
+    /// The target descends into the referenced `child`, `matched` key bytes
+    /// below the fragment root, with this many in-fragment keys before it.
     Cross {
-        addr: ChunkAddress,
+        child: R,
         matched: usize,
         before: u64,
     },
-    /// The target descends into an encrypted child that cannot be opened.
-    Encrypted,
 }
 
 /// Count the keys strictly before `remaining` within one fragment's positions,
@@ -471,7 +459,7 @@ enum Step {
 ///
 /// A position wholly before the target adds its whole-subtree count; the one the
 /// target funnels into is recursed, not counted; the rest are past the target.
-fn rank_fragment<F: Format>(steps: &[Ranked<F>], remaining: &[u8]) -> Step {
+fn rank_fragment<F: Format, R: NodeRef>(steps: &[Ranked<F, R>], remaining: &[u8]) -> Step<R> {
     let mut before = 0u64;
     for step in steps {
         let suffix = step.suffix();
@@ -482,19 +470,15 @@ fn rank_fragment<F: Format>(steps: &[Ranked<F>], remaining: &[u8]) -> Step {
         let descends = remaining.starts_with(suffix);
         match step {
             Ranked::Value { .. } => before = before.saturating_add(1),
-            Ranked::Ref { addr, count, .. } => {
+            Ranked::Ref {
+                reference, count, ..
+            } => {
                 if descends {
                     return Step::Cross {
-                        addr: *addr,
+                        child: reference.clone(),
                         matched: suffix.len(),
                         before,
                     };
-                }
-                before = before.saturating_add(*count);
-            }
-            Ranked::Encrypted { count, .. } => {
-                if descends {
-                    return Step::Encrypted;
                 }
                 before = before.saturating_add(*count);
             }
@@ -504,26 +488,31 @@ fn rank_fragment<F: Format>(steps: &[Ranked<F>], remaining: &[u8]) -> Step {
 }
 
 /// Where an index lands within one fragment's positions.
-enum Reach<F: Format> {
+enum Reach<F: Format, R: NodeRef = ChunkRef> {
     /// The index is this fragment's value at `suffix`.
     Found { suffix: Vec<u8>, entry: Entry<F> },
-    /// The index falls inside the referenced child at `addr`, `suffix` below the
+    /// The index falls inside the referenced `child`, `suffix` below the
     /// fragment root; the residual index stays in the caller's counter.
-    Cross { addr: ChunkAddress, suffix: Vec<u8> },
-    /// The index falls inside an encrypted child that cannot be opened.
-    Encrypted,
+    Cross { child: R, suffix: Vec<u8> },
 }
 
 /// Resolve `index` within one fragment's positions, subtracting the counts of
 /// the positions before it. `None` when the index runs past the fragment total.
-fn select_fragment<F: Format>(steps: Vec<Ranked<F>>, index: &mut u64) -> Option<Reach<F>> {
+fn select_fragment<F: Format, R: NodeRef>(
+    steps: Vec<Ranked<F, R>>,
+    index: &mut u64,
+) -> Option<Reach<F, R>> {
     for step in steps {
         let count = step.count();
         if *index < count {
             return Some(match step {
                 Ranked::Value { suffix, entry } => Reach::Found { suffix, entry },
-                Ranked::Ref { suffix, addr, .. } => Reach::Cross { addr, suffix },
-                Ranked::Encrypted { .. } => Reach::Encrypted,
+                Ranked::Ref {
+                    suffix, reference, ..
+                } => Reach::Cross {
+                    child: reference,
+                    suffix,
+                },
             });
         }
         *index = index.saturating_sub(count);
@@ -533,15 +522,16 @@ fn select_fragment<F: Format>(steps: Vec<Ranked<F>>, index: &mut u64) -> Option<
 
 #[cfg(test)]
 mod tests {
+    use crate::node::Node;
+    use crate::store::Plaintext;
     use nectar_primitives::store::{ContentGet, MemoryStore};
-    use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
+    use nectar_primitives::{ChunkAddress, ChunkRef};
     use nectar_testing::run;
 
     use crate::bounded::Prefix;
-    use crate::count::SubtreeCount;
-    use crate::fork::{Child, ForkTable};
+    use crate::fork::ForkTable;
     use crate::format::V1;
-    use crate::node::{Node, RootExtension};
+    use crate::node::RootExtension;
     use crate::store::NodePut;
     use crate::value::{Entry, Key};
 
@@ -561,7 +551,7 @@ mod tests {
         let root_ext = RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
-        let root = run(store.put_node(&Node::<V1>::new(root_ext, forks))).unwrap();
+        let root = run(store.put_node(&Node::<V1>::new(root_ext, forks), &Plaintext)).unwrap();
         let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
 
         // The empty key leads iteration at index 0; "k" follows at index 1.
@@ -586,74 +576,51 @@ mod tests {
         );
     }
 
-    // A root holding "a" and "z" as plain values with an encrypted five-key
-    // subtree wedged between them under "m"; the count rides the fork record.
-    fn with_encrypted(store: &ContentGet<MemoryStore>) -> ChunkAddress {
-        let mut forks = ForkTable::new();
-        forks
-            .insert(prefix(b"a"), entry(0xA1).into(), None)
-            .unwrap();
-        forks
-            .insert(
-                prefix(b"m"),
-                Child::Ref64(EncryptedChunkRef::new(
-                    ChunkAddress::new([0x4D; 32]),
-                    EncryptionKey::from([0xC7; 32]),
-                ))
-                .into(),
-                None,
-            )
-            .unwrap();
-        forks
-            .get_mut(b'm')
+    // Rank and select over a structurally encrypted database: every node is
+    // ciphertext and every hop rides a 64-byte reference, yet the order
+    // statistics answer exactly as the plaintext build does.
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn order_statistics_hold_over_an_encrypted_database() {
+        use nectar_primitives::EncryptedChunkRef;
+
+        use crate::builder::Builder;
+        use crate::encryption::Encrypted;
+
+        let store = ContentGet::new(MemoryStore::default());
+        let keys: [&[u8]; 6] = [b"a", b"ab", b"b", b"m", b"mx", b"z"];
+        let mut builder = Builder::<V1>::new();
+        let mut plain = Builder::<V1>::new();
+        for (index, key) in keys.iter().enumerate() {
+            let fill = u8::try_from(index).unwrap();
+            builder.insert(Key::from(&key[..]), entry(fill), None);
+            plain.insert(Key::from(&key[..]), entry(fill), None);
+        }
+        let root = run(builder.build(&store, &Encrypted::<V1>::new(b"secret")))
             .unwrap()
-            .set_child_count(Some(SubtreeCount::new(5)));
-        forks
-            .insert(prefix(b"z"), entry(0x2C).into(), None)
-            .unwrap();
-        run(store.put_node(&Node::<V1>::new(None, forks))).unwrap()
-    }
+            .root()
+            .clone();
+        let plain_root = *run(plain.build(&store, &Plaintext)).unwrap().root();
 
-    #[test]
-    fn an_encrypted_subtree_is_counted_without_being_opened() {
-        let store = ContentGet::new(MemoryStore::default());
-        let root = with_encrypted(&store);
-        let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
-
-        // Ranking past the encrypted subtree adds its stored count: "a", then its
-        // five keys, all strictly before "z".
-        assert_eq!(run(reader.rank(&root, &Key::from(&b"z"[..]))).unwrap(), 6);
-        // A key at the encrypted prefix does not descend; its keys are longer.
-        assert_eq!(run(reader.rank(&root, &Key::from(&b"m"[..]))).unwrap(), 1);
-        // Selecting the key just past the subtree skips all five by count.
-        assert_eq!(
-            run(reader.select(&root, 6)).unwrap(),
-            Some((Key::from(&b"z"[..]), entry(0x2C)))
-        );
-    }
-
-    #[test]
-    fn descending_into_an_encrypted_subtree_is_an_error() {
-        let store = ContentGet::new(MemoryStore::default());
-        let root = with_encrypted(&store);
-        let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
-
-        // A rank whose key funnels into the encrypted subtree cannot be answered.
-        assert!(matches!(
-            run(reader.rank(&root, &Key::from(&b"mx"[..]))),
-            Err(ReaderError::EncryptedChild)
-        ));
-        // An index landing inside the encrypted subtree cannot be opened.
-        assert!(matches!(
-            run(reader.select(&root, 3)),
-            Err(ReaderError::EncryptedChild)
-        ));
+        let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
+        let plain_reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
+        for (index, key) in keys.iter().enumerate() {
+            let key = Key::from(&key[..]);
+            let rank = run(reader.rank(&root, &key)).unwrap();
+            assert_eq!(rank, u64::try_from(index).unwrap());
+            assert_eq!(rank, run(plain_reader.rank(&plain_root, &key)).unwrap());
+            assert_eq!(
+                run(reader.select(&root, rank)).unwrap(),
+                run(plain_reader.select(&plain_root, rank)).unwrap()
+            );
+        }
+        assert_eq!(run(reader.select(&root, 6)).unwrap(), None);
     }
 
     #[test]
     fn an_empty_manifest_has_no_keys() {
         let store = ContentGet::new(MemoryStore::default());
-        let root = run(store.put_node(&Node::<V1>::empty())).unwrap();
+        let root = run(store.put_node(&Node::<V1>::empty(), &Plaintext)).unwrap();
         let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
         assert_eq!(run(reader.rank(&root, &Key::from(&b"x"[..]))).unwrap(), 0);
         assert_eq!(run(reader.select(&root, 0)).unwrap(), None);

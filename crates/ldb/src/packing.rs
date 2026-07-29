@@ -12,12 +12,13 @@ use core::mem::size_of;
 use core::ops::Range;
 
 use alloy_primitives::keccak256;
-use nectar_primitives::{ChunkRef, EncryptedChunkRef};
+use nectar_primitives::{ChunkRef, EncryptedChunkRef, RefKind, Reference};
 
 use crate::bounded::{Prefix, SegmentWeight};
 use crate::count::MAX_WIRE_BYTES;
 use crate::fork::Child;
 use crate::format::Format;
+use crate::node::NodeRef;
 use crate::value::Entry;
 
 /// Bytes an edge starting at `consumed` may span before the next forced cut.
@@ -50,6 +51,16 @@ pub enum Domain {
 }
 
 impl Domain {
+    /// The domain a structural reference width names: the whole-database
+    /// fact `R` carries.
+    #[must_use]
+    pub const fn of<R: Reference>() -> Self {
+        match R::KIND {
+            RefKind::Plain => Self::Plain,
+            RefKind::Encrypted => Self::Encrypted,
+        }
+    }
+
     /// The domain a resolved entry reference belongs to: plaintext for a
     /// 32-byte reference, encrypted for a key-carrying 64-byte reference.
     /// `None` for inline bytes, which are not a reference and so have no
@@ -63,15 +74,13 @@ impl Domain {
         }
     }
 
-    /// The domain a resolved child reference belongs to: plaintext for a
-    /// 32-byte reference, encrypted for a key-carrying 64-byte reference.
-    /// `None` for an embedded subtree, which carries no reference and inherits
-    /// its parent's domain.
+    /// The domain a resolved child reference belongs to: the database's own
+    /// width. `None` for an embedded subtree, which carries no reference and
+    /// inherits its parent's domain.
     #[must_use]
-    pub const fn of_child<F: Format>(child: &Child<F>) -> Option<Self> {
+    pub const fn of_child<F: Format, R: NodeRef>(child: &Child<F, R>) -> Option<Self> {
         match child {
-            Child::Ref32(_) => Some(Self::Plain),
-            Child::Ref64(_) => Some(Self::Encrypted),
+            Child::Ref(_) => Some(Self::of::<R>()),
             Child::Embedded(_) => None,
         }
     }
@@ -432,11 +441,17 @@ mod tests {
         let inline = Entry::<V1>::inline(bytes::Bytes::from_static(b"v")).unwrap();
         assert_eq!(Domain::of_entry(&inline), None);
 
+        // A child's domain is the database's own reference width, so the two
+        // domains cannot meet in one table at all.
         let plain_child = Child::<V1>::from(ChunkRef::new(addr));
-        let enc_child =
-            Child::<V1>::from(EncryptedChunkRef::new(addr, EncryptionKey::from([9; 32])));
+        let enc_child = Child::<V1, EncryptedChunkRef>::from(EncryptedChunkRef::new(
+            addr,
+            EncryptionKey::from([9; 32]),
+        ));
         assert_eq!(Domain::of_child(&plain_child), Some(Domain::Plain));
         assert_eq!(Domain::of_child(&enc_child), Some(Domain::Encrypted));
+        assert_eq!(Domain::of::<ChunkRef>(), Domain::Plain);
+        assert_eq!(Domain::of::<EncryptedChunkRef>(), Domain::Encrypted);
 
         // An encrypted child never inlines into a plaintext parent, however
         // small: the boundary is structural, not a size decision.

@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, ensure};
 use bytes::Bytes;
-use nectar_ldb::{Builder, Child, Entry, ForkTable, Key, Node, NodePut, Prefix, Reader, V1};
+use nectar_ldb::{
+    Builder, Child, Entry, ForkTable, Key, Node, NodePut, Plaintext, Prefix, Reader, V1,
+};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
@@ -45,20 +47,20 @@ fn entry(byte: u8) -> Entry {
 /// Build a deliberately wide two-level manifest: a root whose fork table holds
 /// one referenced leaf per first byte, each leaf terminating a single key. The
 /// second level is `width` chunks wide, but any one key sits two nodes deep.
-async fn wide_manifest(store: &MemoryStore, width: u16) -> Result<ChunkAddress> {
+async fn wide_manifest(store: &MemoryStore, width: u16) -> Result<ChunkRef> {
     let mut forks = ForkTable::<V1>::new();
     for first in 0..width {
         let first = u8::try_from(first)?;
         let mut leaf = ForkTable::new();
         leaf.insert(Prefix::try_from(&[0xFFu8][..])?, entry(first).into(), None)?;
-        let leaf_ref = store.put_node(&Node::new(None, leaf)).await?;
+        let leaf_ref = store.put_node(&Node::new(None, leaf), &Plaintext).await?;
         forks.insert(
             Prefix::try_from(&[first][..])?,
-            Child::Ref32(ChunkRef::new(leaf_ref)).into(),
+            Child::Ref(leaf_ref).into(),
             None,
         )?;
     }
-    Ok(store.put_node(&Node::new(None, forks)).await?)
+    Ok(store.put_node(&Node::new(None, forks), &Plaintext).await?)
 }
 
 #[test]
@@ -131,7 +133,7 @@ fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
     // The empty key sets the manifest's own value in the root extension.
     builder.insert(Key::empty(), entry(0x99), None);
 
-    let built = run(builder.build(&memory))?;
+    let built = run(builder.build(&memory, &Plaintext))?;
     let root = *built.root();
     // More than one node spilled: the builder emitted referenced children, so
     // reading keys beneath them genuinely drives the fetch-and-descend path.

@@ -13,7 +13,7 @@ use core::mem::size_of;
 
 use bytes::Bytes;
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
-use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
+use nectar_primitives::{ChunkRef, EncryptedChunkRef, RefKind};
 
 use crate::bounded::{MetadataLen, Prefix};
 use crate::count::{CountError, SubtreeCount};
@@ -21,7 +21,7 @@ use crate::error::{CustomKeyError, ForkPrefixEmpty, MetadataTooLong, PrefixTooLo
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::Format;
 use crate::meta::{CustomKey, KeyId, Metadata, MetadataKey};
-use crate::node::{Node, RootExtension};
+use crate::node::{Node, NodeRef, RootExtension};
 use crate::value::{Entry, InlineValue};
 
 /// Grammar facts of the shared flags byte and the metadata key escape.
@@ -33,7 +33,9 @@ struct Wire;
 impl Wire {
     /// Bits 0-1: the entry presence and width discriminant.
     const ENTRY_MASK: u8 = 0b0000_0011;
-    /// Bits 2-3: the child presence and width discriminant (forks only).
+    /// Bits 2-3: the child presence discriminant (forks only). The child's
+    /// width is not encoded here: it is the whole image's, stated once by
+    /// [`Wire::WIDE`].
     const CHILD_MASK: u8 = 0b0000_1100;
     /// Bit 4: a metadata block follows.
     const HAS_META: u8 = 0b0001_0000;
@@ -41,28 +43,42 @@ impl Wire {
     const SEGMENTED: u8 = 0b0010_0000;
     /// Bit 6: the body is a segment, not a node (nodes only).
     const SEGMENT: u8 = 0b0100_0000;
-    /// Bit 7: reserved, never set.
-    const RESERVED: u8 = 0b1000_0000;
+    /// Bit 7: every structural reference in this image is encrypted-width
+    /// (nodes and segments only). One bit per chunk, not per record, so a
+    /// database has a single structural width and a width-typed reader that
+    /// meets the other fails loud rather than mis-parsing.
+    const WIDE: u8 = 0b1000_0000;
     /// The metadata key byte introducing an unregistered key.
     const META_ESCAPE: u8 = 0xFF;
 }
 
-/// The two-bit entry/child format discriminant of the flags byte.
+/// The [`Wire::WIDE`] bit a database of reference width `R` writes.
+const fn wide_bit<R: NodeRef>() -> u8 {
+    match R::KIND {
+        RefKind::Plain => 0,
+        RefKind::Encrypted => Wire::WIDE,
+    }
+}
+
+/// The two-bit entry format discriminant of the flags byte (bits 0-1).
+///
+/// The value layer keeps both widths per record: a plain database may still
+/// bind a key to an encrypted value chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WireFmt {
+enum EntryFmt {
     /// Absent field.
     None,
     /// A plain 32-byte reference.
     Ref32,
     /// An encrypted 64-byte reference.
     Ref64,
-    /// Inline bytes: a length-prefixed value, or an embedded child body.
+    /// Inline bytes: a length-prefixed value.
     Inline,
 }
 
-impl WireFmt {
-    /// The discriminant read from the entry position (bits 0-1).
-    const fn from_entry(flags: u8) -> Self {
+impl EntryFmt {
+    /// The discriminant read from the entry position.
+    const fn read(flags: u8) -> Self {
         match flags & Wire::ENTRY_MASK {
             0b01 => Self::Ref32,
             0b10 => Self::Ref64,
@@ -71,18 +87,8 @@ impl WireFmt {
         }
     }
 
-    /// The discriminant read from the child position (bits 2-3).
-    const fn from_child(flags: u8) -> Self {
-        match flags & Wire::CHILD_MASK {
-            0b0100 => Self::Ref32,
-            0b1000 => Self::Ref64,
-            0b1100 => Self::Inline,
-            _ => Self::None,
-        }
-    }
-
     /// The discriminant bits in the entry position.
-    const fn entry_bits(self) -> u8 {
+    const fn bits(self) -> u8 {
         match self {
             Self::None => 0b00,
             Self::Ref32 => 0b01,
@@ -91,18 +97,8 @@ impl WireFmt {
         }
     }
 
-    /// The discriminant bits in the child position.
-    const fn child_bits(self) -> u8 {
-        match self {
-            Self::None => 0b0000,
-            Self::Ref32 => 0b0100,
-            Self::Ref64 => 0b1000,
-            Self::Inline => 0b1100,
-        }
-    }
-
     /// The discriminant an entry encodes as.
-    const fn of_entry<F: Format>(entry: Option<&Entry<F>>) -> Self {
+    const fn of<F: Format>(entry: Option<&Entry<F>>) -> Self {
         match entry {
             None => Self::None,
             Some(Entry::Ref32(_)) => Self::Ref32,
@@ -110,13 +106,48 @@ impl WireFmt {
             Some(Entry::Inline(_)) => Self::Inline,
         }
     }
+}
+
+/// The two-bit child format discriminant of a fork flags byte (bits 2-3).
+///
+/// Presence alone: a referenced child is `R::SIZE` wide by the image's own
+/// width bit, so no per-record width lives here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildFmt {
+    /// Absent field.
+    None,
+    /// A reference of the image's structural width.
+    Ref,
+    /// An embedded child body.
+    Inline,
+}
+
+impl ChildFmt {
+    /// The discriminant read from the child position; `None` for the one
+    /// unassigned pattern, which the fork grammar rejects.
+    const fn read(flags: u8) -> Option<Self> {
+        match flags & Wire::CHILD_MASK {
+            0b0000 => Some(Self::None),
+            0b0100 => Some(Self::Ref),
+            0b1100 => Some(Self::Inline),
+            _ => None,
+        }
+    }
+
+    /// The discriminant bits in the child position.
+    const fn bits(self) -> u8 {
+        match self {
+            Self::None => 0b0000,
+            Self::Ref => 0b0100,
+            Self::Inline => 0b1100,
+        }
+    }
 
     /// The discriminant a child encodes as.
-    const fn of_child<F: Format>(child: Option<&Child<F>>) -> Self {
+    const fn of<F: Format, R: NodeRef>(child: Option<&Child<F, R>>) -> Self {
         match child {
             None => Self::None,
-            Some(Child::Ref32(_)) => Self::Ref32,
-            Some(Child::Ref64(_)) => Self::Ref64,
+            Some(Child::Ref(_)) => Self::Ref,
             Some(Child::Embedded(_)) => Self::Inline,
         }
     }
@@ -178,9 +209,18 @@ pub enum DecodeError {
         /// The two bytes found in place of the preamble.
         found: [u8; 2],
     },
-    /// A node flags byte sets reserved or position-illegal bits.
+    /// A node flags byte sets position-illegal bits.
     #[error("illegal node flags {0:#04x}")]
     NodeFlags(u8),
+    /// The image's structural reference width is not the reader's: a plain
+    /// database read as encrypted, or the reverse.
+    #[error("structural reference width mismatch: flags {found:#04x}, expected {expected:?}")]
+    RefWidth {
+        /// The flags byte found.
+        found: u8,
+        /// The reference kind the reader is typed at.
+        expected: RefKind,
+    },
     /// The flags declare a segment or segment-directory body; those carry
     /// the packing grammar, not the plain node grammar decoded here.
     #[error("segmented body: flags {0:#04x}")]
@@ -245,7 +285,8 @@ pub enum DecodeError {
     /// Bytes remain after the body's last record.
     #[error("{0} trailing bytes after the body")]
     Trailing(usize),
-    /// A segment directory sflags byte sets a reserved bit.
+    /// A segment directory sflags byte is not the reserved zero: the
+    /// descriptor width rides the chunk's own flags byte, not this one.
     #[error("illegal segment directory flags {0:#04x}")]
     SegmentFlags(u8),
     /// A segment directory descriptor count of zero or over `FORKS_MAX`.
@@ -305,23 +346,23 @@ const fn meta_len<F: Format>(metadata: &Metadata<F>) -> usize {
     size_of::<u16>().saturating_add(metadata.encoded_len().get())
 }
 
-/// Exact encoded bytes of a child in its declared format.
-fn child_len<F: Format>(child: &Child<F>) -> usize {
+/// Exact encoded bytes of a child: one full-width reference, or the embedded
+/// body behind its length field.
+fn child_len<F: Format, R: NodeRef>(child: &Child<F, R>) -> usize {
     match child {
-        Child::Ref32(_) => ChunkRef::SIZE,
-        Child::Ref64(_) => EncryptedChunkRef::SIZE,
+        Child::Ref(_) => R::SIZE,
         Child::Embedded(table) => size_of::<u16>().saturating_add(embedded_len(table)),
     }
 }
 
 /// Exact encoded bytes of an embedded child body: its forced zero flags
 /// byte plus its fork table.
-fn embedded_len<F: Format>(table: &ForkTable<F>) -> usize {
+fn embedded_len<F: Format, R: NodeRef>(table: &ForkTable<F, R>) -> usize {
     size_of::<u8>().saturating_add(table_len(table))
 }
 
 /// Exact encoded bytes of one fork record, including any trailing count.
-fn record_len<F: Format>(record: &ForkRecord<F>) -> usize {
+fn record_len<F: Format, R: NodeRef>(record: &ForkRecord<F, R>) -> usize {
     let mut len = size_of::<u8>() // fflags
         .saturating_add(size_of::<u8>()) // plen
         .saturating_add(record.tail().len());
@@ -339,7 +380,7 @@ fn record_len<F: Format>(record: &ForkRecord<F>) -> usize {
 
 /// The trailing count bytes a fork record carries: a referenced child's
 /// `child_count`; an embedded or leaf fork carries none.
-fn child_count_len<F: Format>(record: &ForkRecord<F>) -> usize {
+fn child_count_len<F: Format, R: NodeRef>(record: &ForkRecord<F, R>) -> usize {
     if record.child().is_some_and(Child::is_reference) {
         record.child_count().unwrap_or_default().wire_len()
     } else {
@@ -350,20 +391,18 @@ fn child_count_len<F: Format>(record: &ForkRecord<F>) -> usize {
 /// The subtree key-count of one fork: its terminal key, plus its child's count.
 /// A referenced child's count is the stored annotation; an embedded child's is
 /// walked in place, so a node's total is the in-buffer sum of its fork counts.
-pub(crate) fn fork_count<F: Format>(record: &ForkRecord<F>) -> u64 {
+pub(crate) fn fork_count<F: Format, R: NodeRef>(record: &ForkRecord<F, R>) -> u64 {
     let entry = u64::from(record.entry().is_some());
     let child = match record.child() {
         None => 0,
         Some(Child::Embedded(table)) => table_count(table),
-        Some(Child::Ref32(_) | Child::Ref64(_)) => {
-            record.child_count().map_or(0, SubtreeCount::get)
-        }
+        Some(Child::Ref(_)) => record.child_count().map_or(0, SubtreeCount::get),
     };
     entry.saturating_add(child)
 }
 
 /// The subtree key-count of a fork table: the sum of its forks' counts.
-pub(crate) fn table_count<F: Format>(table: &ForkTable<F>) -> u64 {
+pub(crate) fn table_count<F: Format, R: NodeRef>(table: &ForkTable<F, R>) -> u64 {
     table
         .iter()
         .map(|(_, record)| fork_count(record))
@@ -371,7 +410,7 @@ pub(crate) fn table_count<F: Format>(table: &ForkTable<F>) -> u64 {
 }
 
 /// Exact encoded bytes of a fork table: count, index, records.
-fn table_len<F: Format>(table: &ForkTable<F>) -> usize {
+fn table_len<F: Format, R: NodeRef>(table: &ForkTable<F, R>) -> usize {
     let slot = size_of::<u8>().saturating_add(size_of::<u16>());
     let mut len = size_of::<u16>().saturating_add(table.len().saturating_mul(slot));
     for (_, record) in table.iter() {
@@ -382,13 +421,13 @@ fn table_len<F: Format>(table: &ForkTable<F>) -> usize {
 
 /// The packing weight of one fork: its record bytes plus the three-byte fork
 /// index slot the record sits behind (spec 5.2).
-pub(crate) fn record_weight<F: Format>(record: &ForkRecord<F>) -> usize {
+pub(crate) fn record_weight<F: Format, R: NodeRef>(record: &ForkRecord<F, R>) -> usize {
     let slot = size_of::<u8>().saturating_add(size_of::<u16>());
     slot.saturating_add(record_len(record))
 }
 
 /// Exact encoded bytes of a node body: flags, root extension, fork table.
-pub(crate) fn body_len<F: Format>(node: &Node<F>) -> usize {
+pub(crate) fn body_len<F: Format, R: NodeRef>(node: &Node<F, R>) -> usize {
     let mut len = size_of::<u8>();
     if let Some(entry) = node.entry() {
         len = len.saturating_add(entry_len(entry));
@@ -401,7 +440,7 @@ pub(crate) fn body_len<F: Format>(node: &Node<F>) -> usize {
 
 /// Walks every embedded child, rejecting the packing bounds the data model
 /// cannot rule out: an empty table and a body over `INLINE_MAX`.
-fn validate_tables<F: Format>(table: &ForkTable<F>) -> Result<(), EncodeError> {
+fn validate_tables<F: Format, R: NodeRef>(table: &ForkTable<F, R>) -> Result<(), EncodeError> {
     for (_, record) in table.iter() {
         if let Some(Child::Embedded(inner)) = record.child() {
             if inner.is_empty() {
@@ -420,7 +459,7 @@ fn validate_tables<F: Format>(table: &ForkTable<F>) -> Result<(), EncodeError> {
     Ok(())
 }
 
-impl<F: Format> Node<F> {
+impl<F: Format, R: NodeRef> Node<F, R> {
     /// Exact encoded payload length: the preamble plus the body.
     #[must_use]
     pub fn encoded_len(&self) -> usize {
@@ -481,11 +520,22 @@ impl<F: Format> Node<F> {
     }
 }
 
-/// Validates a node-position flags byte, passing it through.
-const fn node_flags_checked(flags: u8) -> Result<u8, DecodeError> {
-    if flags & Wire::RESERVED != 0 {
-        return Err(DecodeError::NodeFlags(flags));
+/// Checks a node- or segment-position flags byte's width witness against the
+/// reader's own, stripping it so the caller matches on the body bits alone.
+const fn width_checked<R: NodeRef>(flags: u8) -> Result<u8, DecodeError> {
+    if flags & Wire::WIDE == wide_bit::<R>() {
+        Ok(flags & !Wire::WIDE)
+    } else {
+        Err(DecodeError::RefWidth {
+            found: flags,
+            expected: R::KIND,
+        })
     }
+}
+
+/// Validates a plain-node flags byte with its width witness already stripped,
+/// passing it through.
+const fn node_flags_checked(flags: u8) -> Result<u8, DecodeError> {
     if flags & Wire::SEGMENT != 0 {
         // The only legal segment bodies are exactly the leaf and directory
         // markers; anything else riding the segment bit is illegal outright.
@@ -504,7 +554,7 @@ const fn node_flags_checked(flags: u8) -> Result<u8, DecodeError> {
     Ok(flags)
 }
 
-impl<F: Format> FromCursor for Node<F> {
+impl<F: Format, R: NodeRef> FromCursor for Node<F, R> {
     type Error = DecodeError;
 
     /// Reads the preamble and the whole node body; the body extends to the
@@ -514,15 +564,18 @@ impl<F: Format> FromCursor for Node<F> {
         if found != F::PREAMBLE {
             return Err(DecodeError::NotAManifest { found });
         }
-        let flags = node_flags_checked(cur.take::<u8>()?)?;
+        let flags = node_flags_checked(width_checked::<R>(cur.take::<u8>()?)?)?;
         take_plain_body(cur, flags)
     }
 }
 
 /// Reads a plain node body (root extension then fork table) behind an already
 /// validated, already consumed flags byte.
-fn take_plain_body<F: Format>(cur: &mut Cursor<'_>, flags: u8) -> Result<Node<F>, DecodeError> {
-    let entry = take_entry(cur, WireFmt::from_entry(flags))?;
+fn take_plain_body<F: Format, R: NodeRef>(
+    cur: &mut Cursor<'_>,
+    flags: u8,
+) -> Result<Node<F, R>, DecodeError> {
+    let entry = take_entry(cur, EntryFmt::read(flags))?;
     let metadata = if flags & Wire::HAS_META != 0 {
         Some(cur.take::<Metadata<F>>()?)
     } else {
@@ -532,7 +585,7 @@ fn take_plain_body<F: Format>(cur: &mut Cursor<'_>, flags: u8) -> Result<Node<F>
     Ok(Node::new(RootExtension::new(entry, metadata), forks))
 }
 
-impl<F: Format> ToWriter for Node<F> {
+impl<F: Format, R: NodeRef> ToWriter for Node<F, R> {
     /// Emits the full payload: preamble, flags, root extension, fork table.
     /// The presence bits are derived from the structure, never stored.
     fn put_into(&self, w: &mut Writer<'_>) {
@@ -548,19 +601,19 @@ impl<F: Format> ToWriter for Node<F> {
     }
 }
 
-/// The node flags byte, derived from the structure.
-const fn node_flag_bits<F: Format>(node: &Node<F>) -> u8 {
-    let mut flags = WireFmt::of_entry(node.entry()).entry_bits();
+/// The node flags byte, derived from the structure and the database's width.
+const fn node_flag_bits<F: Format, R: NodeRef>(node: &Node<F, R>) -> u8 {
+    let mut flags = EntryFmt::of(node.entry()).bits() | wide_bit::<R>();
     if node.metadata().is_some() {
         flags |= Wire::HAS_META;
     }
     flags
 }
 
-/// The fork flags byte, derived from the structure.
-const fn fork_flag_bits<F: Format>(record: &ForkRecord<F>) -> u8 {
-    let mut flags = WireFmt::of_entry(record.entry()).entry_bits()
-        | WireFmt::of_child(record.child()).child_bits();
+/// The fork flags byte, derived from the structure. The width witness is the
+/// enclosing node's, never a record's.
+const fn fork_flag_bits<F: Format, R: NodeRef>(record: &ForkRecord<F, R>) -> u8 {
+    let mut flags = EntryFmt::of(record.entry()).bits() | ChildFmt::of(record.child()).bits();
     if record.metadata().is_some() {
         flags |= Wire::HAS_META;
     }
@@ -569,7 +622,9 @@ const fn fork_flag_bits<F: Format>(record: &ForkRecord<F>) -> u8 {
 
 /// Reads a fork table that extends to the end of the cursor: the count, the
 /// index, then each record cut to exactly its indexed span.
-fn take_fork_table<F: Format>(cur: &mut Cursor<'_>) -> Result<ForkTable<F>, DecodeError> {
+fn take_fork_table<F: Format, R: NodeRef>(
+    cur: &mut Cursor<'_>,
+) -> Result<ForkTable<F, R>, DecodeError> {
     let fcount = cur.take::<U16Le>()?.get();
     if fcount > F::FORKS_MAX {
         return Err(DecodeError::ForkCount(fcount));
@@ -600,7 +655,7 @@ fn take_fork_table<F: Format>(cur: &mut Cursor<'_>) -> Result<ForkTable<F>, Deco
             _ => return Err(DecodeError::ForkOffsets),
         };
         let mut body = Cursor::new(cur.take_slice(span)?);
-        let record = body.take::<ForkRecord<F>>()?;
+        let record = body.take::<ForkRecord<F, R>>()?;
         if !body.is_empty() {
             return Err(DecodeError::RecordSpan {
                 span,
@@ -619,7 +674,7 @@ fn take_fork_table<F: Format>(cur: &mut Cursor<'_>) -> Result<ForkTable<F>, Deco
 
 /// Emits the count, the index with offsets cumulative from zero, then the
 /// records in ascending key order.
-fn put_fork_table<F: Format>(w: &mut Writer<'_>, table: &ForkTable<F>) {
+fn put_fork_table<F: Format, R: NodeRef>(w: &mut Writer<'_>, table: &ForkTable<F, R>) {
     w.put(&U16Le::of(table.len()));
     let mut off = 0usize;
     for (key, record) in table.iter() {
@@ -632,30 +687,30 @@ fn put_fork_table<F: Format>(w: &mut Writer<'_>, table: &ForkTable<F>) {
     }
 }
 
-impl<F: Format> FromCursor for ForkRecord<F> {
+impl<F: Format, R: NodeRef> FromCursor for ForkRecord<F, R> {
     type Error = DecodeError;
 
     /// Reads one record; the fork-table key byte is not part of the record,
     /// so the produced prefix is the tail alone.
     fn take_from(cur: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         let flags = cur.take::<u8>()?;
-        if flags & (Wire::RESERVED | Wire::SEGMENTED | Wire::SEGMENT) != 0 {
+        if flags & (Wire::WIDE | Wire::SEGMENTED | Wire::SEGMENT) != 0 {
             return Err(DecodeError::ForkFlags(flags));
         }
-        let entry_fmt = WireFmt::from_entry(flags);
-        let child_fmt = WireFmt::from_child(flags);
-        if entry_fmt == WireFmt::None && child_fmt == WireFmt::None {
+        let entry_fmt = EntryFmt::read(flags);
+        let child_fmt = ChildFmt::read(flags).ok_or(DecodeError::ForkFlags(flags))?;
+        if entry_fmt == EntryFmt::None && child_fmt == ChildFmt::None {
             return Err(DecodeError::ForkFlags(flags));
         }
         let tail = cur.take::<Prefix<F>>()?;
         let entry = take_entry(cur, entry_fmt)?;
-        let child = take_child(cur, child_fmt)?;
+        let child = take_child::<F, R>(cur, child_fmt)?;
         let metadata = if flags & Wire::HAS_META != 0 {
             Some(cur.take::<Metadata<F>>()?)
         } else {
             None
         };
-        let referenced_child = matches!(child_fmt, WireFmt::Ref32 | WireFmt::Ref64);
+        let referenced_child = child_fmt == ChildFmt::Ref;
         let payload = ForkPayload::new(entry, child).ok_or(DecodeError::ForkFlags(flags))?;
         let mut record = Self::from_tail_parts(tail, payload, metadata);
         // The trailing count rides only a referenced child; an embedded or
@@ -667,7 +722,7 @@ impl<F: Format> FromCursor for ForkRecord<F> {
     }
 }
 
-impl<F: Format> ToWriter for ForkRecord<F> {
+impl<F: Format, R: NodeRef> ToWriter for ForkRecord<F, R> {
     /// Emits the flags, the tail behind its count, then the flag-gated
     /// fields, and last the trailing referenced-child count.
     fn put_into(&self, w: &mut Writer<'_>) {
@@ -722,30 +777,47 @@ impl<F: Format> ToWriter for Prefix<F> {
 /// Reads an entry in the format its flags declared.
 fn take_entry<F: Format>(
     cur: &mut Cursor<'_>,
-    fmt: WireFmt,
+    fmt: EntryFmt,
 ) -> Result<Option<Entry<F>>, DecodeError> {
     Ok(match fmt {
-        WireFmt::None => None,
-        WireFmt::Ref32 => Some(Entry::Ref32(cur.take::<ChunkRef>()?)),
-        WireFmt::Ref64 => Some(Entry::Ref64(cur.take::<EncryptedChunkRef>()?)),
-        WireFmt::Inline => {
+        EntryFmt::None => None,
+        EntryFmt::Ref32 => Some(Entry::Ref32(cur.take::<ChunkRef>()?)),
+        EntryFmt::Ref64 => Some(Entry::Ref64(cur.take::<EncryptedChunkRef>()?)),
+        EntryFmt::Inline => {
             let vlen = usize::from(cur.take::<u8>()?);
             Some(Entry::Inline(InlineValue::try_from(cur.take_slice(vlen)?)?))
         }
     })
 }
 
+/// Reads exactly one `R::SIZE`-wide structural reference.
+///
+/// The slice is cut to the width first, so reconstruction reads a
+/// full-width field or the cursor reports the underrun; the fallback keeps
+/// the read total and is unreachable.
+fn take_reference<R: NodeRef>(cur: &mut Cursor<'_>) -> Result<R, DecodeError> {
+    let bytes = cur.take_slice(R::SIZE)?;
+    R::from_wire_bytes(bytes).ok_or(DecodeError::Underrun(Underrun {
+        expected: R::SIZE,
+        available: bytes.len(),
+    }))
+}
+
+/// Emits one `R::SIZE`-wide structural reference.
+fn put_reference<R: NodeRef>(w: &mut Writer<'_>, reference: &R) {
+    w.put(&*reference.to_bytes());
+}
+
 /// Reads a child in the format its flags declared; an embedded child is an
 /// exactly `ilen`-delimited node body with zero flags and at least one fork.
-fn take_child<F: Format>(
+fn take_child<F: Format, R: NodeRef>(
     cur: &mut Cursor<'_>,
-    fmt: WireFmt,
-) -> Result<Option<Child<F>>, DecodeError> {
+    fmt: ChildFmt,
+) -> Result<Option<Child<F, R>>, DecodeError> {
     Ok(match fmt {
-        WireFmt::None => None,
-        WireFmt::Ref32 => Some(Child::Ref32(cur.take::<ChunkRef>()?)),
-        WireFmt::Ref64 => Some(Child::Ref64(cur.take::<EncryptedChunkRef>()?)),
-        WireFmt::Inline => {
+        ChildFmt::None => None,
+        ChildFmt::Ref => Some(Child::Ref(take_reference::<R>(cur)?)),
+        ChildFmt::Inline => {
             let ilen = cur.take::<U16Le>()?.get();
             if ilen == 0 || ilen > F::INLINE_MAX {
                 return Err(DecodeError::EmbeddedLen(ilen));
@@ -764,16 +836,16 @@ fn take_child<F: Format>(
     })
 }
 
-/// Emits a child in its declared format; an embedded child carries its
+/// Emits a child: one full-width reference, or an embedded body carrying its
 /// exact length, its forced zero flags byte, then its fork table.
-fn put_child<F: Format>(w: &mut Writer<'_>, child: &Child<F>) {
+///
+/// An embedded body inherits the enclosing node's width, so its flags byte
+/// never restates the width witness.
+fn put_child<F: Format, R: NodeRef>(w: &mut Writer<'_>, child: &Child<F, R>) {
     match child {
-        Child::Ref32(reference) => w.put(reference),
-        Child::Ref64(reference) => w.put(reference),
+        Child::Ref(reference) => put_reference(w, reference),
         Child::Embedded(table) => {
             w.put(&U16Le::of(embedded_len(table)));
-            // An embedded body cannot carry a root extension or
-            // segmentation, so its flags byte is always zero.
             w.put(&0u8);
             put_fork_table(w, table);
         }
@@ -877,48 +949,40 @@ impl<F: Format> ToWriter for Metadata<F> {
 const SEG_LEAF: u8 = Wire::SEGMENT;
 /// Node/segment flags for a directory segment body: `SEGMENT | SEGMENTED`.
 const SEG_DIR: u8 = Wire::SEGMENT | Wire::SEGMENTED;
-/// Segment-directory sflags bit 0: descriptors carry ref64, not ref32.
-const WIDE_REFS: u8 = 0b0000_0001;
 
 /// One segment-directory descriptor: the first fork key of the child segment
 /// it routes to, and the reference that reaches that segment chunk.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SegDesc {
+pub(crate) struct SegDesc<R: NodeRef = ChunkRef> {
     /// The key of the child segment's first fork; the segment covers keys from
     /// here up to the next descriptor's key.
     pub(crate) first_key: u8,
-    /// The child segment chunk address.
-    pub(crate) address: ChunkAddress,
-    /// The child's decryption key, present iff the directory is wide.
-    pub(crate) key: Option<EncryptionKey>,
+    /// The reference that reaches the child segment chunk.
+    pub(crate) reference: R,
     /// The sum of the covered forks' subtree counts, so a spilled node routes a
     /// whole segment by rank without fetching it.
     pub(crate) seg_count: SubtreeCount,
 }
 
-/// A decoded segment directory: uniform-width descriptors in ascending key
-/// order. Directory depth never exceeds two by the frozen bounds (spec 5.4).
+/// A decoded segment directory: descriptors in ascending key order, each one
+/// `R::SIZE` wide. Directory depth never exceeds two by the frozen bounds
+/// (spec 5.4).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SegmentDir {
-    /// Whether the descriptors carry ref64; set iff the node's chunks are
-    /// encrypted, so a tree's descriptor widths stay uniform.
-    pub(crate) wide: bool,
+pub(crate) struct SegmentDir<R: NodeRef = ChunkRef> {
     /// The descriptors, strictly ascending by `first_key`.
-    pub(crate) descriptors: Vec<SegDesc>,
+    pub(crate) descriptors: Vec<SegDesc<R>>,
 }
 
-impl SegmentDir {
-    /// A plaintext directory over `(first_key, address)` descriptors, with the
-    /// subtree count each descriptor routes.
-    pub(crate) fn plain(descriptors: Vec<(u8, ChunkAddress, SubtreeCount)>) -> Self {
+impl<R: NodeRef> SegmentDir<R> {
+    /// A directory over `(first_key, reference)` descriptors, with the subtree
+    /// count each descriptor routes.
+    pub(crate) fn new(descriptors: Vec<(u8, R, SubtreeCount)>) -> Self {
         Self {
-            wide: false,
             descriptors: descriptors
                 .into_iter()
-                .map(|(first_key, address, seg_count)| SegDesc {
+                .map(|(first_key, reference, seg_count)| SegDesc {
                     first_key,
-                    address,
-                    key: None,
+                    reference,
                     seg_count,
                 })
                 .collect(),
@@ -932,18 +996,18 @@ impl SegmentDir {
 /// bytes, so canonical-form validation is decode-then-re-encode-and-compare
 /// (spec 6.2) whatever the chunk kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DecodedChunk<F: Format> {
+pub(crate) enum DecodedChunk<F: Format, R: NodeRef = ChunkRef> {
     /// A one-chunk node: root extension over a fork table.
-    Node(Node<F>),
+    Node(Node<F, R>),
     /// An oversized node: root extension over the top segment directory.
-    Segmented(Option<RootExtension<F>>, SegmentDir),
+    Segmented(Option<RootExtension<F>>, SegmentDir<R>),
     /// A leaf segment: a fork-table fragment of a spilled node.
-    Leaf(ForkTable<F>),
+    Leaf(ForkTable<F, R>),
     /// A directory segment: an inner level of a spilled node's directory.
-    Directory(SegmentDir),
+    Directory(SegmentDir<R>),
 }
 
-impl<F: Format> DecodedChunk<F> {
+impl<F: Format, R: NodeRef> DecodedChunk<F, R> {
     /// Re-encode to the exact chunk bytes; total, so it never rejects a value
     /// decode already accepted.
     pub(crate) fn reencode(&self) -> Vec<u8> {
@@ -953,61 +1017,63 @@ impl<F: Format> DecodedChunk<F> {
                 Writer::new(&mut payload).put(node);
                 payload
             }
-            Self::Segmented(root, dir) => encode_segmented_node::<F>(root.as_ref(), dir),
+            Self::Segmented(root, dir) => encode_segmented_node::<F, R>(root.as_ref(), dir),
             Self::Leaf(table) => encode_leaf_segment(table),
-            Self::Directory(dir) => encode_dir_segment::<F>(dir),
+            Self::Directory(dir) => encode_dir_segment::<F, R>(dir),
         }
     }
 }
 
-/// Emit a segment directory body: sflags, count, the ascending keys, then the
-/// uniform-width references, each trailed by its `seg_count`.
-fn put_segment_dir(w: &mut Writer<'_>, dir: &SegmentDir) {
-    w.put(&(if dir.wide { WIDE_REFS } else { 0u8 }));
+/// Emit a segment directory body: the reserved sflags byte, the count, the
+/// ascending keys, then the `R::SIZE` references, each trailed by its
+/// `seg_count`.
+///
+/// The descriptor width is the enclosing chunk's own, witnessed once by its
+/// flags byte, so sflags carries nothing.
+fn put_segment_dir<R: NodeRef>(w: &mut Writer<'_>, dir: &SegmentDir<R>) {
+    w.put(&0u8);
     w.put(&U16Le::of(dir.descriptors.len()));
     for desc in &dir.descriptors {
         w.put(&desc.first_key);
     }
     for desc in &dir.descriptors {
-        w.put(desc.address.as_bytes());
-        if let Some(key) = &desc.key {
-            w.put(key.as_bytes());
-        }
+        put_reference(w, &desc.reference);
         w.put(&desc.seg_count);
     }
 }
 
-/// Encode a leaf segment chunk: preamble, the leaf marker, then the fragment's
-/// fork table.
-pub(crate) fn encode_leaf_segment<F: Format>(table: &ForkTable<F>) -> Vec<u8> {
+/// Encode a leaf segment chunk: preamble, the leaf marker with its width
+/// witness, then the fragment's fork table.
+pub(crate) fn encode_leaf_segment<F: Format, R: NodeRef>(table: &ForkTable<F, R>) -> Vec<u8> {
     let mut payload = Vec::new();
     let mut w = Writer::new(&mut payload);
     w.put(&F::PREAMBLE);
-    w.put(&SEG_LEAF);
+    w.put(&(SEG_LEAF | wide_bit::<R>()));
     put_fork_table(&mut w, table);
     payload
 }
 
-/// Encode a directory segment chunk: preamble, the directory marker, then the
-/// segment directory.
-pub(crate) fn encode_dir_segment<F: Format>(dir: &SegmentDir) -> Vec<u8> {
+/// Encode a directory segment chunk: preamble, the directory marker with its
+/// width witness, then the segment directory.
+pub(crate) fn encode_dir_segment<F: Format, R: NodeRef>(dir: &SegmentDir<R>) -> Vec<u8> {
     let mut payload = Vec::new();
     let mut w = Writer::new(&mut payload);
     w.put(&F::PREAMBLE);
-    w.put(&SEG_DIR);
+    w.put(&(SEG_DIR | wide_bit::<R>()));
     put_segment_dir(&mut w, dir);
     payload
 }
 
 /// Encode a segmented node chunk: preamble, `SEGMENTED` flags with any root
-/// extension bits, the root extension, then the top segment directory.
-pub(crate) fn encode_segmented_node<F: Format>(
+/// extension bits and the width witness, the root extension, then the top
+/// segment directory.
+pub(crate) fn encode_segmented_node<F: Format, R: NodeRef>(
     root: Option<&RootExtension<F>>,
-    dir: &SegmentDir,
+    dir: &SegmentDir<R>,
 ) -> Vec<u8> {
     let entry = root.and_then(RootExtension::entry);
     let metadata = root.and_then(RootExtension::metadata);
-    let mut flags = WireFmt::of_entry(entry).entry_bits() | Wire::SEGMENTED;
+    let mut flags = EntryFmt::of(entry).bits() | Wire::SEGMENTED | wide_bit::<R>();
     if metadata.is_some() {
         flags |= Wire::HAS_META;
     }
@@ -1026,12 +1092,13 @@ pub(crate) fn encode_segmented_node<F: Format>(
 }
 
 /// Read a segment directory body behind an already consumed marker.
-fn take_segment_dir<F: Format>(cur: &mut Cursor<'_>) -> Result<SegmentDir, DecodeError> {
+fn take_segment_dir<F: Format, R: NodeRef>(
+    cur: &mut Cursor<'_>,
+) -> Result<SegmentDir<R>, DecodeError> {
     let sflags = cur.take::<u8>()?;
-    if sflags & !WIDE_REFS != 0 {
+    if sflags != 0 {
         return Err(DecodeError::SegmentFlags(sflags));
     }
-    let wide = sflags & WIDE_REFS != 0;
     let scount = cur.take::<U16Le>()?.get();
     if scount == 0 || scount > F::FORKS_MAX {
         return Err(DecodeError::SegmentCount(scount));
@@ -1048,28 +1115,22 @@ fn take_segment_dir<F: Format>(cur: &mut Cursor<'_>) -> Result<SegmentDir, Decod
     }
     let mut descriptors = Vec::with_capacity(scount);
     for &first_key in &keys {
-        let address = ChunkAddress::new(cur.take::<[u8; ChunkAddress::SIZE]>()?);
-        let key = if wide {
-            Some(EncryptionKey::from(
-                cur.take::<[u8; EncryptionKey::SIZE]>()?,
-            ))
-        } else {
-            None
-        };
+        let reference = take_reference::<R>(cur)?;
         let seg_count = cur.take::<SubtreeCount>()?;
         descriptors.push(SegDesc {
             first_key,
-            address,
-            key,
+            reference,
             seg_count,
         });
     }
-    Ok(SegmentDir { wide, descriptors })
+    Ok(SegmentDir { descriptors })
 }
 
 /// A leaf segment carries a fork table that must hold at least one fork; the
 /// empty-map root is never a segment.
-fn take_leaf_segment<F: Format>(cur: &mut Cursor<'_>) -> Result<ForkTable<F>, DecodeError> {
+fn take_leaf_segment<F: Format, R: NodeRef>(
+    cur: &mut Cursor<'_>,
+) -> Result<ForkTable<F, R>, DecodeError> {
     let table = take_fork_table(cur)?;
     if table.is_empty() {
         return Err(DecodeError::EmbeddedEmpty);
@@ -1077,36 +1138,35 @@ fn take_leaf_segment<F: Format>(cur: &mut Cursor<'_>) -> Result<ForkTable<F>, De
     Ok(table)
 }
 
-impl<F: Format> Node<F> {
+impl<F: Format, R: NodeRef> Node<F, R> {
     /// Decode any manifest chunk: a plain node, a segmented node, or a segment.
     ///
-    /// Dispatches on the flags byte after the preamble. A plain node decodes
-    /// through [`decode`](Self::decode); the segmented and segment bodies carry
-    /// the packing grammar and decode here into a [`DecodedChunk`].
-    pub(crate) fn decode_chunk(payload: &[u8]) -> Result<DecodedChunk<F>, DecodeError> {
+    /// Dispatches on the flags byte after the preamble, rejecting any image
+    /// whose structural reference width is not `R`'s.
+    pub(crate) fn decode_chunk(payload: &[u8]) -> Result<DecodedChunk<F, R>, DecodeError> {
         let mut cur = Cursor::new(payload);
         let found = cur.take::<[u8; 2]>()?;
         if found != F::PREAMBLE {
             return Err(DecodeError::NotAManifest { found });
         }
-        let flags = cur.take::<u8>()?;
+        let flags = width_checked::<R>(cur.take::<u8>()?)?;
         let decoded = if flags & Wire::SEGMENT != 0 {
             match flags {
                 SEG_LEAF => DecodedChunk::Leaf(take_leaf_segment(&mut cur)?),
-                SEG_DIR => DecodedChunk::Directory(take_segment_dir::<F>(&mut cur)?),
+                SEG_DIR => DecodedChunk::Directory(take_segment_dir::<F, R>(&mut cur)?),
                 _ => return Err(DecodeError::NodeFlags(flags)),
             }
         } else if flags & Wire::SEGMENTED != 0 {
-            if flags & (Wire::RESERVED | Wire::CHILD_MASK) != 0 {
+            if flags & Wire::CHILD_MASK != 0 {
                 return Err(DecodeError::NodeFlags(flags));
             }
-            let entry = take_entry(&mut cur, WireFmt::from_entry(flags))?;
+            let entry = take_entry(&mut cur, EntryFmt::read(flags))?;
             let metadata = if flags & Wire::HAS_META != 0 {
                 Some(cur.take::<Metadata<F>>()?)
             } else {
                 None
             };
-            let dir = take_segment_dir::<F>(&mut cur)?;
+            let dir = take_segment_dir::<F, R>(&mut cur)?;
             DecodedChunk::Segmented(RootExtension::new(entry, metadata), dir)
         } else {
             DecodedChunk::Node(take_plain_body(&mut cur, node_flags_checked(flags)?)?)
@@ -1123,15 +1183,15 @@ impl<F: Format> Node<F> {
 /// The spec's canonical-form check (`encode(decode(bytes)) == bytes`, spec 6.2)
 /// for a whole stored chunk set, including the segmented nodes and segments a
 /// spilled node produces.
-pub fn recanonicalize<F: Format>(payload: &[u8]) -> Result<Vec<u8>, DecodeError> {
-    Ok(Node::<F>::decode_chunk(payload)?.reencode())
+pub fn recanonicalize<F: Format, R: NodeRef>(payload: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    Ok(Node::<F, R>::decode_chunk(payload)?.reencode())
 }
 
 #[cfg(test)]
 mod tests {
     use std::vec;
 
-    use nectar_primitives::EncryptionKey;
+    use nectar_primitives::{ChunkAddress, EncryptionKey};
 
     use crate::format::V1;
 
@@ -1297,7 +1357,7 @@ mod tests {
             )
             .unwrap();
         forks
-            .insert(prefix(b"e"), Child::from(ref64(6)).into(), None)
+            .insert(prefix(b"e"), Child::from(ref32(6)).into(), None)
             .unwrap();
         forks
             .insert(prefix(b"f"), Child::Embedded(sub).into(), None)
@@ -1405,10 +1465,21 @@ mod tests {
 
     #[test]
     fn node_flag_positions_reject() {
-        // Reserved bit.
+        // Bit 7 is the structural width witness: an encrypted-width image is
+        // not a plaintext database and vice versa.
         assert!(matches!(
             Node::<V1>::decode(&body(0x80, &[0x00, 0x00])),
-            Err(DecodeError::NodeFlags(0x80))
+            Err(DecodeError::RefWidth {
+                found: 0x80,
+                expected: RefKind::Plain
+            })
+        ));
+        assert!(matches!(
+            Node::<V1, EncryptedChunkRef>::decode(&body(0x00, &[0x00, 0x00])),
+            Err(DecodeError::RefWidth {
+                found: 0x00,
+                expected: RefKind::Encrypted
+            })
         ));
         // Child bits are fork-only.
         assert!(matches!(
@@ -1795,31 +1866,37 @@ mod tests {
         leaf_table
             .insert(prefix(b"cd"), Entry::from(ref32(2)).into(), None)
             .unwrap();
-        let leaf = encode_leaf_segment::<V1>(&leaf_table);
+        let leaf = encode_leaf_segment::<V1, ChunkRef>(&leaf_table);
         assert!(matches!(
             Node::<V1>::decode_chunk(&leaf).unwrap(),
             DecodedChunk::Leaf(_)
         ));
-        assert_eq!(recanonicalize::<V1>(&leaf).unwrap(), leaf);
+        assert_eq!(recanonicalize::<V1, ChunkRef>(&leaf).unwrap(), leaf);
 
-        let dir = SegmentDir::plain(vec![
-            (b'a', addr(1), SubtreeCount::default()),
-            (b'c', addr(2), SubtreeCount::default()),
+        let dir = SegmentDir::new(vec![
+            (b'a', ref32(1), SubtreeCount::default()),
+            (b'c', ref32(2), SubtreeCount::default()),
         ]);
-        let directory = encode_dir_segment::<V1>(&dir);
+        let directory = encode_dir_segment::<V1, ChunkRef>(&dir);
         assert!(matches!(
             Node::<V1>::decode_chunk(&directory).unwrap(),
             DecodedChunk::Directory(_)
         ));
-        assert_eq!(recanonicalize::<V1>(&directory).unwrap(), directory);
+        assert_eq!(
+            recanonicalize::<V1, ChunkRef>(&directory).unwrap(),
+            directory
+        );
 
         let root = RootExtension::new(Some(Entry::from(ref32(9))), None);
-        let segmented = encode_segmented_node::<V1>(root.as_ref(), &dir);
+        let segmented = encode_segmented_node::<V1, ChunkRef>(root.as_ref(), &dir);
         assert!(matches!(
             Node::<V1>::decode_chunk(&segmented).unwrap(),
             DecodedChunk::Segmented(Some(_), _)
         ));
-        assert_eq!(recanonicalize::<V1>(&segmented).unwrap(), segmented);
+        assert_eq!(
+            recanonicalize::<V1, ChunkRef>(&segmented).unwrap(),
+            segmented
+        );
     }
 
     // A node carrying one referenced-child fork: the child count rides as a
@@ -1830,7 +1907,7 @@ mod tests {
         forks
             .insert(
                 Prefix::try_from(&b"a"[..]).unwrap(),
-                Child::Ref32(ChunkRef::new(addr(0x11))).into(),
+                Child::Ref(ref32(0x11)).into(),
                 None,
             )
             .unwrap();
@@ -1887,14 +1964,17 @@ mod tests {
             None,
         )
         .unwrap();
-        let leaf_chunk = encode_leaf_segment::<V1>(&leaf);
-        assert_eq!(recanonicalize::<V1>(&leaf_chunk).unwrap(), leaf_chunk);
+        let leaf_chunk = encode_leaf_segment::<V1, ChunkRef>(&leaf);
+        assert_eq!(
+            recanonicalize::<V1, ChunkRef>(&leaf_chunk).unwrap(),
+            leaf_chunk
+        );
 
-        let dir = SegmentDir::plain(vec![
-            (b'a', addr(1), SubtreeCount::new(3)),
-            (b'c', addr(2), SubtreeCount::new(4)),
+        let dir = SegmentDir::new(vec![
+            (b'a', ref32(1), SubtreeCount::new(3)),
+            (b'c', ref32(2), SubtreeCount::new(4)),
         ]);
-        let dir_chunk = encode_dir_segment::<V1>(&dir);
+        let dir_chunk = encode_dir_segment::<V1, ChunkRef>(&dir);
         // The descriptor's seg_count follows its address: ...addr(32) 03, addr(32) 04.
         assert_eq!(dir_chunk.last(), Some(&0x04));
         match Node::<V1>::decode_chunk(&dir_chunk).unwrap() {
@@ -1904,7 +1984,10 @@ mod tests {
             }
             _ => panic!("expected a directory"),
         }
-        assert_eq!(recanonicalize::<V1>(&dir_chunk).unwrap(), dir_chunk);
+        assert_eq!(
+            recanonicalize::<V1, ChunkRef>(&dir_chunk).unwrap(),
+            dir_chunk
+        );
     }
 
     #[test]
