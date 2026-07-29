@@ -10,7 +10,7 @@ use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
 use nectar_primitives::store::TrustedGet;
 
-use crate::walk::{Frame, Walk, WalkError, WalkMode, WalkStats};
+use crate::walk::{Frame, Walk, WalkError, WalkMode};
 
 /// Offset-tagged frames of one clipped range in completion order: the
 /// frames tile the range exactly once, in no particular order.
@@ -34,11 +34,6 @@ where
     /// Clipped absolute byte range the frames tile.
     pub const fn range(&self) -> Range<u64> {
         self.walk.range()
-    }
-
-    /// Occupancy witnesses of the underlying walk.
-    pub const fn stats(&self) -> WalkStats {
-        self.walk.stats()
     }
 }
 

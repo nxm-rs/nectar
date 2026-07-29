@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::fmt;
+#[cfg(test)]
 use core::future::poll_fn;
 use core::mem;
 use core::num::NonZeroU16;
@@ -34,7 +35,7 @@ pub(super) type PutDone<E> = (ChunkAddress, Result<(), E>);
 
 /// Boxed put future; the governor alias relaxes `Send` off the multi-threaded
 /// targets.
-type BoxPut<E> = BoxFuture<'static, PutDone<E>>;
+type BoxPut<'a, E> = BoxFuture<'a, PutDone<E>>;
 
 /// Pool leaf seal reply: its span rides back alongside the sealed chunk so
 /// the ordered stream needs no side channel.
@@ -105,7 +106,7 @@ enum Phase {
 /// All state lives here, so every poll is cancel-safe and dropping the
 /// split loses only in-flight puts. The module docs state the normative
 /// admission invariants.
-pub struct Split<S, M, const B: usize = DEFAULT_BODY_SIZE>
+pub struct Split<'a, S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
     S: ChunkPut<AnyChunkSet<B>>,
     M: SplitMode,
@@ -122,7 +123,7 @@ where
     /// Sealed chunks awaiting a put slot; bounded by the spine height.
     pending: VecDeque<Chunk<Verified, AnyChunkSet<B>>>,
     /// Bounded put window over sealed chunks; `pending` feeds it as slots free.
-    puts: PutSink<'static, PutDone<S::Error>>,
+    puts: PutSink<'a, PutDone<S::Error>>,
     /// Pool fan-out for leaf seals; `None` keeps sealing inline.
     #[cfg(feature = "rayon")]
     hash: Option<HashFan<M, B>>,
@@ -131,9 +132,9 @@ where
     stats: SplitStats,
 }
 
-impl<S, M, const B: usize> Split<S, M, B>
+impl<'a, S, M, const B: usize> Split<'a, S, M, B>
 where
-    S: ChunkPut<AnyChunkSet<B>> + Clone + 'static,
+    S: ChunkPut<AnyChunkSet<B>> + Clone + 'a,
     M: SplitMode,
 {
     /// Compile-time profile guard for the split's span arithmetic.
@@ -149,6 +150,7 @@ where
 
     /// Split a byte stream into the tree under `store`, holding at most
     /// `window` puts in flight.
+    #[cfg(test)]
     pub fn new(store: S, window: PutWindow) -> Self
     where
         M: Default,
@@ -183,28 +185,8 @@ where
     /// in flight; sealed leaves are admitted in leaf order and every draw
     /// lands at submission, so a deterministic mode's chunk stream is
     /// byte-identical to the serial engine's. Configure before the first
-    /// write.
-    ///
-    /// ```
-    /// use core::future::poll_fn;
-    /// use nectar_file::{HashWindow, Plain, PutWindow, Split};
-    /// use nectar_primitives::chunk::AnyChunkSet;
-    /// use nectar_primitives::store::MemoryStore;
-    ///
-    /// # nectar_testing::run(async {
-    /// let store = MemoryStore::<AnyChunkSet<4096>>::new();
-    /// let mut split = Split::<_, Plain, 4096>::new(store, PutWindow::DEFAULT)
-    ///     .with_hash_window(HashWindow::DEFAULT);
-    /// let data = vec![7u8; 10_000];
-    /// let mut buf = data.as_slice();
-    /// while !buf.is_empty() {
-    ///     let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-    ///     buf = &buf[n..];
-    /// }
-    /// let root = poll_fn(|cx| split.poll_finish(cx)).await.unwrap();
-    /// assert_eq!(root.as_bytes().len(), 32);
-    /// # });
-    /// ```
+    /// write. [`Policy::with_hash_window`](crate::Policy::with_hash_window)
+    /// is the public knob.
     #[cfg(feature = "rayon")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
     #[must_use]
@@ -230,6 +212,7 @@ where
     }
 
     /// Whether the split has delivered its root or failed.
+    #[cfg(test)]
     pub const fn is_finished(&self) -> bool {
         matches!(self.phase, Phase::Finished | Phase::Poisoned)
     }
@@ -337,57 +320,14 @@ where
         }
     }
 
-    /// Split all of `data`, store its chunks, and return the root.
+    /// Split all of `data`, store its chunks, and return the root under an
+    /// explicit put `window`.
     ///
-    /// A one-shot convenience over [`poll_write`](Self::poll_write) and
-    /// [`poll_finish`](Self::poll_finish), driven to completion in place under
-    /// the default put window. Drive the poll surface directly for
-    /// back-pressure control or incremental input.
-    ///
-    /// ```
-    /// # nectar_testing::run(async {
-    /// use std::sync::Arc;
-    ///
-    /// use nectar_file::{Plain, Split};
-    /// use nectar_primitives::chunk::AnyChunkSet;
-    /// use nectar_primitives::store::MemoryStore;
-    ///
-    /// let store = Arc::new(MemoryStore::<AnyChunkSet<4096>>::new());
-    /// let root = Split::<_, Plain, 4096>::collect(Arc::clone(&store), b"hello swarm")
-    ///     .await
-    ///     .unwrap();
-    /// # let _ = root;
-    /// # });
-    /// ```
-    pub async fn collect(store: S, data: &[u8]) -> Result<M::Root, SplitError<S::Error>>
-    where
-        M: Default,
-    {
-        Self::collect_with(store, PutWindow::DEFAULT, data).await
-    }
-
-    /// Split all of `data` under an explicit put `window`, store its chunks,
-    /// and return the root.
-    ///
-    /// [`collect`](Self::collect) at the default window; take this to tune the
-    /// back-pressure the one-shot drives under.
-    ///
-    /// ```
-    /// # nectar_testing::run(async {
-    /// use std::sync::Arc;
-    ///
-    /// use nectar_file::{Plain, PutWindow, Split};
-    /// use nectar_primitives::chunk::AnyChunkSet;
-    /// use nectar_primitives::store::MemoryStore;
-    ///
-    /// let store = Arc::new(MemoryStore::<AnyChunkSet<4096>>::new());
-    /// let window = PutWindow::new(4).unwrap();
-    /// let root = Split::<_, Plain, 4096>::collect_with(Arc::clone(&store), window, b"hello swarm")
-    ///     .await
-    ///     .unwrap();
-    /// # let _ = root;
-    /// # });
-    /// ```
+    /// A test-only one-shot over [`poll_write`](Self::poll_write) and
+    /// [`poll_finish`](Self::poll_finish); production writes ride
+    /// [`File::save`](crate::File::save), which drives the same poll surface
+    /// through a borrowed store.
+    #[cfg(test)]
     pub async fn collect_with(
         store: S,
         window: PutWindow,
@@ -686,7 +626,7 @@ where
         chunk: Chunk<Verified, AnyChunkSet<B>>,
     ) -> Result<(), SplitError<S::Error>> {
         let store = self.store.clone();
-        let put: BoxPut<S::Error> = Box::pin(async move {
+        let put: BoxPut<'a, S::Error> = Box::pin(async move {
             let address = *chunk.address();
             (address, store.put(chunk).await)
         });
@@ -718,7 +658,7 @@ where
     }
 }
 
-impl<S, M, const B: usize> fmt::Debug for Split<S, M, B>
+impl<S, M, const B: usize> fmt::Debug for Split<'_, S, M, B>
 where
     S: ChunkPut<AnyChunkSet<B>>,
     M: SplitMode,

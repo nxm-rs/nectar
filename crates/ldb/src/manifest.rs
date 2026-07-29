@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 
 use bytes::Bytes;
-use nectar_file::read::AnyFile;
+use nectar_file::{File, Policy};
 use nectar_manifest::{
     DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, SinkError,
     WellKnownKey,
@@ -156,14 +156,10 @@ where
                     .map_err(ManifestError::sink)?,
                 bound => {
                     let reference = EntryRef::try_from(bound)?;
-                    match AnyFile::open(self.store.clone(), reference)
+                    File::new(self.store.clone(), Policy::DEFAULT)
+                        .load(reference, sink)
                         .await
-                        .map_err(ManifestError::data)?
-                    {
-                        AnyFile::Plain(file) => file.download().run(sink).await,
-                        AnyFile::Encrypted(file) => file.download().run(sink).await,
-                    }
-                    .map_err(ManifestError::data)?;
+                        .map_err(ManifestError::data)?;
                 }
             }
             Ok(())

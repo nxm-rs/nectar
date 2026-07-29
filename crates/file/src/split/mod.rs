@@ -35,22 +35,22 @@ mod error;
 #[cfg(feature = "rayon")]
 mod handoff;
 mod mode;
-// The relay needs a shared queue: a mutex under std, a cell wherever the
-// Send/Sync bounds relax. Hosted no-std builds without `unsync` have
-// neither, so the surface is absent there.
-#[cfg(any(feature = "std", not(multi_thread)))]
-mod relay;
+mod save;
 #[cfg(test)]
 mod tests;
 
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use encrypted::{KeyError, KeySource, RandomKeys};
+#[cfg(test)]
 pub use engine::Split;
-pub use error::{SealError, SplitError};
-pub use mode::{Sealed, SplitMode};
-#[cfg(any(feature = "std", not(multi_thread)))]
-pub use relay::collect_into;
+pub use error::{SaveError, SealError, SplitError};
+#[cfg(all(test, feature = "rayon"))]
+pub use mode::Sealed;
+pub use mode::SplitMode;
+#[cfg(test)]
+pub(crate) use save::collect_into;
+pub(crate) use save::save_source;
 
 /// Occupancy witnesses of one split.
 ///

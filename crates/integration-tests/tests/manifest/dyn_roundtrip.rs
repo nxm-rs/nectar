@@ -5,8 +5,7 @@
 //! calls drive both, and the metadata a caller writes through the erased view
 //! lands in each format's own native slot.
 
-use nectar_file::split::collect_into;
-use nectar_file::{MemSink, Plain, PutWindow};
+use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{Builder, LdbManifest, Plaintext, Reader as LdbReader, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
@@ -167,7 +166,7 @@ fn both_formats_round_trip_through_one_erased_handle() {
         let store = ContentGet::new(Arc::clone(&raw));
         let data = payload();
         let file = ChunkRef::new(
-            collect_into::<_, Plain, DEFAULT_BODY_SIZE>(&raw, PutWindow::DEFAULT, &data)
+            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT).save(&data[..])
                 .await
                 .unwrap(),
         );
@@ -193,7 +192,7 @@ fn root_scope_metadata_lands_in_each_format_native_slot() {
         let store = ContentGet::new(Arc::clone(&raw));
         let data = payload();
         let file = ChunkRef::new(
-            collect_into::<_, Plain, DEFAULT_BODY_SIZE>(&raw, PutWindow::DEFAULT, &data)
+            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT).save(&data[..])
                 .await
                 .unwrap(),
         );

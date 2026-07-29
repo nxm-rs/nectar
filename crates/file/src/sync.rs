@@ -25,24 +25,19 @@ pub struct Pending;
 /// A whole-file read over a synchronous store completes in the single poll:
 ///
 /// ```
-/// use nectar_file::File;
 /// use nectar_file::sync::drive;
+/// use nectar_file::{File, Policy};
+/// use nectar_primitives::chunk::AnyChunkSet;
+/// use nectar_primitives::store::{ContentGet, MemoryStore};
+/// use std::sync::Arc;
 ///
 /// let data = b"guest payload".to_vec();
-/// # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
-/// # let root = drive(nectar_file::Split::<_, nectar_file::Plain, 4096>::collect(
-/// #     std::sync::Arc::clone(&store),
-/// #     &data,
-/// # ))
-/// # .unwrap()
-/// # .unwrap();
-/// let bytes = drive(async {
-///     let file = File::open(nectar_primitives::store::ContentGet::new(store), root)
-///         .await
-///         .unwrap();
-///     file.collect(u64::MAX).await.unwrap()
-/// })
-/// .unwrap();
+/// let store = Arc::new(MemoryStore::<AnyChunkSet<4096>>::new());
+/// let root = drive(File::<_, 4096>::new(Arc::clone(&store), Policy::DEFAULT).save(&data[..]))
+///     .unwrap()
+///     .unwrap();
+/// let file = File::<_, 4096>::new(ContentGet::new(store), Policy::DEFAULT);
+/// let bytes = drive(file.collect(root.into(), u64::MAX)).unwrap().unwrap();
 /// assert_eq!(bytes, data);
 /// ```
 pub fn drive<F: Future>(future: F) -> Result<F::Output, Pending> {
@@ -61,8 +56,7 @@ mod tests {
     use nectar_testing::split_fixture;
 
     use super::*;
-    use crate::read::File;
-    use crate::walk::Plain;
+    use crate::handle::{File, Policy};
 
     #[test]
     fn ready_future_completes_in_one_poll() {
@@ -81,11 +75,8 @@ mod tests {
             .map(|i| (i % 251) as u8)
             .collect();
         let (root, store) = split_fixture::<TINY>(&data);
-        let bytes = drive(async move {
-            let file = File::<_, Plain, TINY>::open(store, root).await.unwrap();
-            file.collect(u64::MAX).await.unwrap()
-        })
-        .unwrap();
+        let file = File::<_, TINY>::new(store, Policy::DEFAULT);
+        let bytes = drive(file.collect(root.into(), u64::MAX)).unwrap().unwrap();
         assert_eq!(bytes, data);
     }
 }

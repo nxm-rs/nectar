@@ -9,7 +9,7 @@ use core::task::Poll;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
-use nectar_file::{Plain, PutWindow, collect_into};
+use nectar_file::{File, Policy};
 use nectar_ldb::{
     BuildStats, Builder, Built, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node,
     NodeGet, Plaintext, Prefix, RootExtension, V1,
@@ -29,7 +29,9 @@ async fn build_files(
     let mut builder: Builder = Builder::new();
     for (key, data) in files {
         let root =
-            collect_into::<_, Plain, DEFAULT_BODY_SIZE>(store, PutWindow::DEFAULT, &data).await?;
+            File::<_, DEFAULT_BODY_SIZE>::new(store, Policy::DEFAULT)
+                .save(&data[..])
+                .await?;
         builder.insert(key, Entry::from(ChunkRef::new(root)), None);
     }
     Ok(builder.build(store, &Plaintext).await?)

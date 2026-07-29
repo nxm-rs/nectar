@@ -1,6 +1,5 @@
-//! Adapter battery: differential reads over both drivers, seek semantics,
-//! typed-to-io error mapping, driver handover and the writer shim's
-//! shutdown-to-root path.
+//! Adapter battery: reads over the shim, seek semantics, typed-to-io error
+//! mapping, and the `AsyncRead` source feeding a save.
 
 use std::io::{ErrorKind, SeekFrom};
 use std::string::ToString;
@@ -10,14 +9,12 @@ use std::vec::Vec;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet, MemoryStore};
 use nectar_testing::split_fixture;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use super::{SpawnedReader, TokioReader, TokioWriter};
-use crate::config::PutWindow;
-use crate::read::File;
-use crate::split::Split;
+use super::TokioReader;
+use crate::handle::{File, Policy, Reader};
+use crate::source::AsyncReadSource;
 use crate::testutil::reject_all;
-use crate::walk::Plain;
 
 /// Tiny body size shared with the facade tests: fan-out 8, so small files
 /// already build deep trees.
@@ -32,9 +29,20 @@ fn fill(len: usize) -> Vec<u8> {
         .collect()
 }
 
-async fn open(data: &[u8]) -> File<TinyStore, Plain, TINY> {
+async fn open(data: &[u8]) -> Reader<TinyStore, TINY> {
     let (root, store) = split_fixture::<TINY>(data);
-    File::open(store, root).await.unwrap()
+    File::<_, TINY>::new(store, Policy::DEFAULT)
+        .open(root.into())
+        .await
+        .unwrap()
+}
+
+async fn open_range(data: &[u8], range: core::ops::Range<u64>) -> Reader<TinyStore, TINY> {
+    let (root, store) = split_fixture::<TINY>(data);
+    File::<_, TINY>::new(store, Policy::DEFAULT)
+        .open_range(root.into(), range)
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -49,8 +57,7 @@ async fn shim_reads_match_the_split_input() {
         33 * TINY + 17,
     ] {
         let data = fill(len);
-        let file = open(&data).await;
-        let mut reader = TokioReader::from(file.read().build());
+        let mut reader = TokioReader::from(open(&data).await);
         assert_eq!(reader.effective_len(), len as u64);
         let mut out = Vec::new();
         reader.read_to_end(&mut out).await.unwrap();
@@ -62,8 +69,7 @@ async fn shim_reads_match_the_split_input() {
 #[tokio::test]
 async fn shim_seeks_resolve_against_start_current_and_end() {
     let data = fill(9 * TINY + 21);
-    let file = open(&data).await;
-    let mut reader = TokioReader::from(file.read().build());
+    let mut reader = TokioReader::from(open(&data).await);
 
     assert_eq!(reader.seek(SeekFrom::Start(5)).await.unwrap(), 5);
     let mut buf = [0u8; 4];
@@ -93,8 +99,7 @@ async fn shim_seeks_resolve_against_start_current_and_end() {
 #[tokio::test]
 async fn shim_rejects_out_of_range_seeks_without_moving() {
     let data = fill(2 * TINY);
-    let file = open(&data).await;
-    let mut reader = TokioReader::from(file.read().build());
+    let mut reader = TokioReader::from(open(&data).await);
     reader.seek(SeekFrom::Start(7)).await.unwrap();
 
     for bad in [
@@ -115,100 +120,12 @@ async fn shim_rejects_out_of_range_seeks_without_moving() {
 #[tokio::test]
 async fn shim_range_positions_are_range_relative() {
     let data = fill(6 * TINY);
-    let file = open(&data).await;
-    let mut reader = TokioReader::from(file.read().range(100..1000).build());
+    let mut reader = TokioReader::from(open_range(&data, 100..1000).await);
     assert_eq!(reader.effective_len(), 900);
     reader.seek(SeekFrom::End(-100)).await.unwrap();
     let mut out = Vec::new();
     reader.read_to_end(&mut out).await.unwrap();
     assert_eq!(out, &data[900..1000]);
-}
-
-#[tokio::test]
-async fn spawned_reads_match_the_split_input() {
-    for len in [0usize, 1, TINY, 8 * TINY + 3, 33 * TINY + 17] {
-        let data = fill(len);
-        let file = open(&data).await;
-        let mut reader = SpawnedReader::spawn(file.read().build());
-        assert_eq!(reader.effective_len(), len as u64);
-        let mut out = Vec::new();
-        reader.read_to_end(&mut out).await.unwrap();
-        assert_eq!(out, data, "diverged at {len}");
-        assert_eq!(reader.position(), len as u64);
-    }
-}
-
-#[tokio::test]
-async fn spawned_seek_restarts_the_driver_mid_stream() {
-    let data = fill(17 * TINY + 5);
-    let file = open(&data).await;
-    let mut reader = SpawnedReader::spawn(file.read().build());
-    let mut buf = [0u8; 300];
-    reader.read_exact(&mut buf).await.unwrap();
-    assert_eq!(&buf[..], &data[..300]);
-
-    // A no-op seek keeps the driver and its prefetched frames.
-    assert_eq!(reader.seek(SeekFrom::Current(0)).await.unwrap(), 300);
-
-    reader.seek(SeekFrom::Start(4000)).await.unwrap();
-    let mut buf = [0u8; 100];
-    reader.read_exact(&mut buf).await.unwrap();
-    assert_eq!(&buf[..], &data[4000..4100]);
-
-    reader.seek(SeekFrom::Current(-100)).await.unwrap();
-    let mut out = Vec::new();
-    reader.read_to_end(&mut out).await.unwrap();
-    assert_eq!(out, &data[4000..]);
-
-    let error = reader.seek(SeekFrom::End(1)).await.unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::InvalidInput);
-}
-
-#[tokio::test]
-async fn spawn_carries_reader_progress_and_lead_bytes() {
-    let data = fill(5 * TINY + 9);
-    let file = open(&data).await;
-    let mut inner = file.read().build();
-    let mut buf = [0u8; 100];
-    assert_eq!(inner.read(&mut buf).await.unwrap(), 100);
-
-    let mut reader = SpawnedReader::spawn(inner);
-    assert_eq!(reader.position(), 100);
-    let mut out = Vec::new();
-    reader.read_to_end(&mut out).await.unwrap();
-    assert_eq!(out, &data[100..]);
-}
-
-/// Spawner counting every dispatch before delegating to the runtime.
-#[derive(Default)]
-struct CountingSpawner(std::sync::atomic::AtomicUsize);
-
-impl nectar_tasks::Spawn for CountingSpawner {
-    fn spawn(&self, task: nectar_tasks::BoxFuture<'static, ()>) -> nectar_tasks::TaskHandle {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        nectar_tasks::TokioSpawner.spawn(task)
-    }
-}
-
-#[tokio::test]
-async fn spawn_on_routes_every_driver_through_the_executor() {
-    let data = fill(17 * TINY + 5);
-    let file = open(&data).await;
-    let counter = Arc::new(CountingSpawner::default());
-    let executor: Arc<dyn nectar_tasks::Spawn> = Arc::<CountingSpawner>::clone(&counter);
-    let mut reader = SpawnedReader::spawn_on(executor, file.read().build());
-    assert_eq!(counter.0.load(std::sync::atomic::Ordering::Relaxed), 1);
-
-    let mut buf = [0u8; 300];
-    reader.read_exact(&mut buf).await.unwrap();
-    assert_eq!(&buf[..], &data[..300]);
-
-    // A moving seek respawns the driver on the caller-supplied executor.
-    reader.seek(SeekFrom::Start(4000)).await.unwrap();
-    assert_eq!(counter.0.load(std::sync::atomic::Ordering::Relaxed), 2);
-    let mut out = Vec::new();
-    reader.read_to_end(&mut out).await.unwrap();
-    assert_eq!(out, &data[4000..]);
 }
 
 /// Store failing every fetch after a countdown of successes.
@@ -238,24 +155,17 @@ impl ChunkGet<ContentOnlyChunkSet<TINY>> for FailAfter {
 }
 
 #[tokio::test]
-async fn walk_failures_surface_as_io_errors_on_both_drivers() {
+async fn walk_failures_surface_as_io_errors() {
     let data = fill(9 * TINY);
     let (root, store) = split_fixture::<TINY>(&data);
     let store = FailAfter {
         inner: Arc::new(store),
         countdown: Arc::new(Mutex::new(3)),
     };
-    let file = File::<_, Plain, TINY>::open(store, root).await.unwrap();
+    let file = File::<_, TINY>::new(store, Policy::DEFAULT);
 
     let mut out = Vec::new();
-    let error = TokioReader::from(file.read().build())
-        .read_to_end(&mut out)
-        .await
-        .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Other);
-
-    let mut out = Vec::new();
-    let error = SpawnedReader::spawn(file.read().build())
+    let error = TokioReader::from(file.open(root.into()).await.unwrap())
         .read_to_end(&mut out)
         .await
         .unwrap_err();
@@ -290,12 +200,8 @@ impl ChunkGet<AnyChunkSet<TINY>> for SharedStore {
     }
 }
 
-fn writer(store: SharedStore) -> TokioWriter<SharedStore, Plain, TINY> {
-    TokioWriter::from(Split::new(store, PutWindow::new(2).unwrap()))
-}
-
 #[tokio::test]
-async fn writer_roots_match_the_whole_buffer_split() {
+async fn an_async_read_source_saves_the_same_root_as_a_slice() {
     for len in [
         0usize,
         1,
@@ -307,21 +213,17 @@ async fn writer_roots_match_the_whole_buffer_split() {
     ] {
         let data = fill(len);
         let store = SharedStore::default();
-        let mut writer = writer(store.clone());
-        writer.write_all(&data).await.unwrap();
-        writer.flush().await.unwrap();
-        writer.shutdown().await.unwrap();
-        assert!(writer.is_finished());
-        assert_eq!(writer.stats().bytes, len as u64);
-        let root = writer.into_inner().unwrap();
+        let file = File::<_, TINY>::new(store.clone(), Policy::DEFAULT);
+        let root = file
+            .save(AsyncReadSource::new(&data[..]))
+            .await
+            .unwrap();
         let (expected, _) = split_fixture::<TINY>(&data);
         assert_eq!(root, expected, "diverged at {len}");
 
-        let file = File::<_, Plain, TINY>::open(ContentGet::new(store), root)
-            .await
-            .unwrap();
+        let reader = File::<_, TINY>::new(ContentGet::new(store), Policy::DEFAULT);
         let mut out = Vec::new();
-        TokioReader::from(file.read().build())
+        TokioReader::from(reader.open(root.into()).await.unwrap())
             .read_to_end(&mut out)
             .await
             .unwrap();
@@ -330,33 +232,19 @@ async fn writer_roots_match_the_whole_buffer_split() {
 }
 
 #[tokio::test]
-async fn writer_shutdown_is_fused_and_later_writes_fail() {
-    let data = fill(3 * TINY + 7);
-    assert!(writer(SharedStore::default()).into_inner().is_none());
-
-    let mut writer = writer(SharedStore::default());
-    writer.write_all(&data).await.unwrap();
-    writer.shutdown().await.unwrap();
-    writer.shutdown().await.unwrap();
-
-    let error = writer.write_all(b"late").await.unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Other);
-
-    let (expected, _) = split_fixture::<TINY>(&data);
-    assert_eq!(writer.into_inner().unwrap(), expected);
-}
-
-#[tokio::test]
-async fn writer_put_failures_surface_as_io_errors() {
+async fn put_failures_surface_as_a_typed_save_error() {
     let store = reject_all::<_, TINY>(MemoryStore::<AnyChunkSet<TINY>>::default());
-    let mut writer = TokioWriter::from(Split::<_, Plain, TINY>::new(store, PutWindow::DEFAULT));
+    let file = File::<_, TINY>::new(store, Policy::DEFAULT);
     let data = fill(2 * TINY);
-    let error = async {
-        writer.write_all(&data).await?;
-        writer.shutdown().await
-    }
-    .await
-    .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Other);
-    assert!(writer.into_inner().is_none());
+    let error = file
+        .save(AsyncReadSource::new(&data[..]))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::split::SaveError::Split(crate::split::SplitError::Put { .. })
+        ),
+        "got {error:?}"
+    );
 }

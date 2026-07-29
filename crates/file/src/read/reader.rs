@@ -7,6 +7,7 @@ use core::mem;
 use core::ops::Range;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+#[cfg(feature = "std")]
 use core::time::Duration;
 
 use bytes::Bytes;
@@ -15,6 +16,7 @@ use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ContentOnlyChunkSet};
 use nectar_primitives::store::TrustedGet;
 
+#[cfg(feature = "std")]
 use super::body_size;
 use super::error::{CollectError, SeekPastEnd};
 use super::frames::FileFrames;
@@ -64,20 +66,10 @@ impl<S, M: WalkMode, const B: usize> ReadBuilder<S, M, B> {
         self
     }
 
-    /// Fetch window sized to sustain `bytes_per_second` at `mean_latency`
-    /// per leaf fetch; see [`Window::for_throughput`].
-    #[must_use]
-    pub const fn throughput(self, bytes_per_second: u64, mean_latency: Duration) -> Self {
-        self.window(Window::for_throughput(
-            bytes_per_second,
-            mean_latency,
-            body_size::<B>(),
-        ))
-    }
-
     /// Adaptive cap: `policy` recomputes the window between admission
     /// rounds from realized occupancy; the built window is its seed. The
     /// policy runs in the poll path and must be cheap and non-blocking.
+    #[cfg(any(test, feature = "std"))]
     #[must_use]
     pub fn window_policy(mut self, policy: WindowPolicyFn) -> Self {
         self.policy = Some(policy);
@@ -149,6 +141,7 @@ where
     }
 
     /// Build the ordered stream directly.
+    #[cfg(test)]
     pub fn stream(self) -> FileStream<S, M, B> {
         self.build().into_stream()
     }
@@ -292,7 +285,7 @@ where
         Ok(())
     }
 
-    /// Poll twin of [`read`](Self::read): copy the next in-order bytes into
+    /// Copy the next in-order bytes into
     /// `buf`, delivering the count; zero means end of range (or an empty
     /// `buf`).
     ///
@@ -323,6 +316,7 @@ where
 
     /// Copy the next in-order bytes into `buf`, returning the count; zero
     /// means end of range (or an empty `buf`).
+    #[cfg(test)]
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, WalkError<S::Error>> {
         poll_fn(|cx| self.poll_read(cx, buf)).await
     }
@@ -355,43 +349,6 @@ where
         }
     }
 
-    /// Decompose into the io adapters' state: the live walk and lead bytes
-    /// plus the rebuild recipe a seek re-walks from.
-    #[cfg(all(feature = "tokio", multi_thread))]
-    pub(crate) fn into_parts(self) -> ReaderParts<S, M, B> {
-        ReaderParts {
-            store: self.store,
-            root: self.root,
-            context: self.context,
-            span: self.span,
-            window: self.window,
-            start: self.start,
-            end: self.end,
-            position: self.position,
-            current: self.current,
-            walk: self.walk,
-        }
-    }
-}
-
-/// Decomposed reader state for the io adapters; fields mirror
-/// [`FileReader`].
-#[cfg(all(feature = "tokio", multi_thread))]
-pub(crate) struct ReaderParts<S, M, const B: usize>
-where
-    S: TrustedGet<ContentOnlyChunkSet<B>>,
-    M: WalkMode,
-{
-    pub(crate) store: S,
-    pub(crate) root: ChunkAddress,
-    pub(crate) context: M::Context,
-    pub(crate) span: u64,
-    pub(crate) window: Window,
-    pub(crate) start: u64,
-    pub(crate) end: u64,
-    pub(crate) position: u64,
-    pub(crate) current: Bytes,
-    pub(crate) walk: Walk<S, M, B>,
 }
 
 impl<S, M, const B: usize> fmt::Debug for FileReader<S, M, B>
@@ -414,33 +371,7 @@ where
 ///
 /// Runtime-free: no spawns, threads or timers, so the stream drains under
 /// any single-threaded executor, wasm32 included.
-///
-/// ```
-/// use futures_util::StreamExt;
-/// use nectar_file::File;
-///
-/// # nectar_testing::run(async {
-/// let data: Vec<u8> = (0u32..20_000)
-///     .map(|i| u8::try_from(i % 251).unwrap())
-///     .collect();
-/// # let store = std::sync::Arc::new(nectar_primitives::store::MemoryStore::new());
-/// # let root = nectar_file::Split::<_, nectar_file::Plain, 4096>::collect(
-/// #     std::sync::Arc::clone(&store),
-/// #     &data,
-/// # )
-/// # .await
-/// # .unwrap();
-/// let file = File::open(nectar_primitives::store::ContentGet::new(store), root)
-///     .await
-///     .unwrap();
-/// let mut stream = file.read().range(4_096..12_288).stream();
-/// let mut out = Vec::new();
-/// while let Some(run) = stream.next().await {
-///     out.extend_from_slice(&run.unwrap());
-/// }
-/// assert_eq!(out, &data[4_096..12_288]);
-/// # });
-/// ```
+/// [`Segments`](crate::Segments) is the public seam over it.
 pub struct FileStream<S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>>,

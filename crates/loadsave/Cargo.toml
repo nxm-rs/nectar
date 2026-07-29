@@ -21,7 +21,6 @@ workspace = true
 nectar-file = { workspace = true, features = ["std"] }
 nectar-mantaray.workspace = true
 nectar-primitives = { workspace = true, features = ["std"] }
-thiserror.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true

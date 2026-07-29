@@ -55,3 +55,19 @@ pub enum SplitError<E> {
     #[error("spine depleted without a root")]
     SpineDepleted,
 }
+
+/// Terminal failure of one save: the tree build or the byte source behind
+/// it.
+#[derive(Debug, thiserror::Error)]
+pub enum SaveError<E, SE> {
+    /// The split ascent failed; a dropped pool seal arrives here as
+    /// [`SplitError::PoolDropped`].
+    #[error(transparent)]
+    Split(#[from] SplitError<E>),
+    /// The byte source failed before it reported its end.
+    #[error("source pull failed")]
+    Source {
+        /// Source error behind the failure.
+        source: SE,
+    },
+}

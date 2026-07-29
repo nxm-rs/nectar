@@ -1,14 +1,10 @@
-//! File facade over the walk engine: open a tree by either reference width
-//! and read it in order.
+//! Internal read facade over the walk engine: open a tree by either
+//! reference width and read it in order.
 //!
-//! [`File`] pins the mode at the type level; [`AnyFile`] dispatches it at
-//! runtime from an [`EntryRef`](nectar_primitives::EntryRef) wire reference.
-//! [`ReadBuilder`] and [`DownloadBuilder`] ranges use clip semantics:
-//! out-of-file bounds shrink the read instead of failing, and the clipped
-//! length is readable as [`FileReader::effective_len`]. Only
-//! [`FileReader::seek`] is typed-strict: it never clamps.
-//! [`ReadBuilder::collect`] assembles a bounded in-memory copy, typed
-//! [`CollectError::TooLarge`] past its bound.
+//! [`Opened`] pins the grammar at the type level; [`AnyOpened`] dispatches
+//! it at runtime from an [`EntryRef`](nectar_primitives::EntryRef) wire
+//! reference. The builders are crate-private: the public seam is
+//! [`File`](crate::File), which wires them to one policy.
 
 use core::num::NonZeroUsize;
 
@@ -26,7 +22,7 @@ mod tests;
 
 /// The profile's body size as a typed nonzero. A zero profile never walks;
 /// the floor only keeps the conversion total.
-const fn body_size<const B: usize>() -> NonZeroUsize {
+pub(crate) const fn body_size<const B: usize>() -> NonZeroUsize {
     match NonZeroUsize::new(B) {
         Some(body) => body,
         None => NonZeroUsize::MIN,
@@ -37,7 +33,8 @@ const fn body_size<const B: usize>() -> NonZeroUsize {
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use adaptive::AdaptiveWindow;
 pub use download::{DownloadBuilder, Progress, ProgressFn};
-pub use error::{CollectError, DownloadError, OpenError, SeekPastEnd};
-pub use file::{AnyFile, File};
+pub use error::{CollectError, LoadError, OpenError, SeekPastEnd};
+pub use file::{AnyOpened, Opened};
+#[cfg(test)]
 pub use frames::FileFrames;
 pub use reader::{FileReader, FileStream, ReadBuilder};

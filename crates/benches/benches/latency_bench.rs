@@ -20,7 +20,7 @@ use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, black_box,
     criterion_group, criterion_main,
 };
-use nectar_file::{File, Plain, PutWindow, Split, Window};
+use nectar_file::{File, Policy, PutWindow, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
@@ -108,13 +108,14 @@ fn runtime() -> Runtime {
         .unwrap()
 }
 
-/// Stream `data` through a plain split into `store`, returning the root.
+/// Stream `data` through a plain save into `store`, returning the root.
 async fn split_into<const B: usize>(
     store: LatencyStore<B>,
     data: &[u8],
     window: PutWindow,
 ) -> ChunkAddress {
-    Split::<LatencyStore<B>, Plain, B>::collect_with(store, window, data)
+    File::<LatencyStore<B>, B>::new(store, Policy::DEFAULT.with_put_window(window))
+        .save(data)
         .await
         .unwrap()
 }
@@ -152,11 +153,11 @@ fn read_group<const B: usize>(c: &mut Criterion, name: &str, latency: Duration, 
         group.bench_with_input(BenchmarkId::from_parameter(window), &window, |b, &w| {
             b.iter(|| {
                 rt.block_on(async {
-                    let file: File<ContentGet<LatencyStore<B>>, Plain, B> =
-                        File::open(ContentGet::new(store.clone()), root)
-                            .await
-                            .unwrap();
-                    let mut reader = file.read().window(Window::new(w).unwrap()).build();
+                    let file: File<ContentGet<LatencyStore<B>>, B> = File::new(
+                        ContentGet::new(store.clone()),
+                        Policy::DEFAULT.with_window(Window::new(w).unwrap()),
+                    );
+                    let mut reader = file.open(root.into()).await.unwrap();
                     let mut total = 0usize;
                     while let Some(segment) = reader.next_segment().await {
                         total += segment.unwrap().len();

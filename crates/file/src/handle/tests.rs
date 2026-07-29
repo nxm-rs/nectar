@@ -4,26 +4,59 @@
 use std::collections::HashMap;
 use std::format;
 use std::sync::{Arc, Mutex};
-use std::vec;
 use std::vec::Vec;
 
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkPut, ChunkStoreError};
 use nectar_testing::{run, yield_now};
 
-use super::{ReadAt, ReadAtError, split_read_at};
+use super::{File, Policy};
 use crate::config::PutWindow;
-use crate::split::{Split, SplitError};
+use crate::source::{ReadAt, ReadAtError, ReadAtSource};
+use crate::split::{SaveError, SplitError, SplitMode};
 use crate::testutil::reject_all;
 use crate::walk::Plain;
 
+/// The batch ingest through the handle: a positional source drained into
+/// one save under an explicit put window.
+async fn split_read_at<R, S, M, const B: usize>(
+    source: R,
+    store: S,
+    window: PutWindow,
+) -> Result<M::Root, SaveError<S::Error, ReadAtError>>
+where
+    R: ReadAt,
+    S: ChunkPut<AnyChunkSet<B>>,
+    M: SplitMode + Default,
+{
+    File::<S, B>::new(store, Policy::DEFAULT.with_put_window(window))
+        .save_as::<M, _>(ReadAtSource::new(source))
+        .await
+}
+
+/// The streaming oracle: the same bytes through the same handle from a
+/// slice source, which never meets the positional adapter.
+async fn split_slice<S, M, const B: usize>(
+    data: &[u8],
+    store: S,
+    window: PutWindow,
+) -> Result<M::Root, SaveError<S::Error, core::convert::Infallible>>
+where
+    S: ChunkPut<AnyChunkSet<B>>,
+    M: SplitMode + Default,
+{
+    File::<S, B>::new(store, Policy::DEFAULT.with_put_window(window))
+        .save_as::<M, _>(data)
+        .await
+}
+
 /// Tiny body size: fan-out 8, so a few dozen leaves already build a deep
 /// tree.
-const TINY: usize = 256;
+pub(super) const TINY: usize = 256;
 const BRANCHES: usize = 8;
 
 /// Distinct byte per file position so every node address is unique.
-fn fill(len: usize) -> Vec<u8> {
+pub(super) fn fill(len: usize) -> Vec<u8> {
     (0..len as u64).map(pattern).collect()
 }
 
@@ -96,9 +129,10 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
 /// same bytes, returning root plus every sealed chunk address.
 fn stream_split<const B: usize>(data: &[u8]) -> (ChunkAddress, Vec<ChunkAddress>) {
     let store = TestStore::<B>::new(0);
-    let root = run(Split::<TestStore<B>, Plain, B>::collect(
-        store.clone(),
+    let root = run(split_slice::<_, Plain, B>(
         data,
+        store.clone(),
+        PutWindow::DEFAULT,
     ))
     .unwrap();
     (root, store.log())
@@ -309,7 +343,7 @@ fn a_read_failure_is_typed_with_its_offset() {
         PutWindow::DEFAULT,
     ))
     .unwrap_err();
-    let ReadAtError::Read { offset, .. } = error else {
+    let SaveError::Source { source: ReadAtError::Read { offset, .. } } = error else {
         panic!("expected a read error, got {error:?}");
     };
     assert_eq!(offset, u64::try_from(TINY).unwrap());
@@ -344,7 +378,7 @@ fn a_source_ending_early_is_a_short_read() {
         PutWindow::DEFAULT,
     ))
     .unwrap_err();
-    let ReadAtError::ShortRead { offset, remaining } = error else {
+    let SaveError::Source { source: ReadAtError::ShortRead { offset, remaining } } = error else {
         panic!("expected a short read, got {error:?}");
     };
     assert_eq!(offset, u64::try_from(TINY + 100).unwrap());
@@ -374,7 +408,7 @@ fn an_overlong_read_count_is_refused() {
     ))
     .unwrap_err();
     assert!(
-        matches!(error, ReadAtError::ReadOverrun { count, capacity, .. }
+        matches!(error, SaveError::Source { source: ReadAtError::ReadOverrun { count, capacity, .. } }
             if count == TINY + 1 && capacity == TINY),
         "got {error:?}"
     );
@@ -402,7 +436,10 @@ fn a_sizing_failure_is_typed() {
         PutWindow::DEFAULT,
     ))
     .unwrap_err();
-    assert!(matches!(error, ReadAtError::Length { .. }), "got {error:?}");
+    assert!(
+        matches!(error, SaveError::Source { source: ReadAtError::Length { .. } }),
+        "got {error:?}"
+    );
 }
 
 #[test]
@@ -415,25 +452,117 @@ fn a_failed_put_surfaces_as_a_split_error() {
     ))
     .unwrap_err();
     assert!(
-        matches!(error, ReadAtError::Split(SplitError::Put { .. })),
+        matches!(error, SaveError::Split(SplitError::Put { .. })),
         "got {error:?}"
     );
 }
 
-#[test]
-fn read_at_sources_honour_offsets_and_ends() {
-    let data = fill(100);
-    let slice: &[u8] = &data;
-    let mut buf = vec![0u8; 40];
-    assert_eq!(slice.read_at(0, &mut buf).unwrap(), 40);
-    assert_eq!(buf, data[..40]);
-    assert_eq!(slice.read_at(80, &mut buf).unwrap(), 20);
-    assert_eq!(buf[..20], data[80..]);
-    assert_eq!(slice.read_at(100, &mut buf).unwrap(), 0);
-    assert_eq!(slice.read_at(u64::MAX, &mut buf).unwrap(), 0);
-    assert_eq!(ReadAt::len(slice).unwrap(), 100);
-    let owned = bytes::Bytes::from(data.clone());
-    assert_eq!(owned.read_at(60, &mut buf).unwrap(), 40);
-    assert_eq!(buf, data[60..]);
-    assert_eq!(ReadAt::len(&owned).unwrap(), 100);
+/// Source over-reporting its fill count once: the driver must clamp to the
+/// buffer rather than treat the round as empty and spin.
+struct OverReportingSource {
+    byte: u8,
+    sent: bool,
 }
+
+impl crate::source::Source for OverReportingSource {
+    type Error = core::convert::Infallible;
+
+    fn poll_fill(
+        &mut self,
+        _cx: &mut core::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> core::task::Poll<Result<usize, Self::Error>> {
+        if self.sent {
+            return core::task::Poll::Ready(Ok(0));
+        }
+        buf.fill(self.byte);
+        self.sent = true;
+        core::task::Poll::Ready(Ok(buf.len() + 5))
+    }
+}
+
+#[test]
+fn an_over_reporting_source_is_clamped_to_the_buffer() {
+    let store = TestStore::<TINY>::new(0);
+    let root = run(File::<_, TINY>::new(store, Policy::DEFAULT).save(OverReportingSource {
+        byte: 0x5a,
+        sent: false,
+    }))
+    .unwrap();
+    // Clamped, so the tree is exactly one body of the reported byte; an
+    // unclamped driver would see an empty round and save nothing.
+    let (expected, _) = stream_split::<TINY>(&std::vec![0x5a; TINY]);
+    assert_eq!(root, expected);
+}
+
+/// Key source seeded by the caller: keys count up from the seed, so the
+/// keys a save uses are observable.
+#[cfg(feature = "encryption")]
+struct SeededKeys {
+    next: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "encryption")]
+impl crate::split::KeySource for SeededKeys {
+    fn next_key(
+        &self,
+    ) -> Result<nectar_primitives::chunk::encryption::EncryptionKey, crate::split::KeyError> {
+        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&n.to_le_bytes());
+        Ok(nectar_primitives::chunk::encryption::EncryptionKey::from(
+            bytes,
+        ))
+    }
+}
+
+/// A caller-owned key source reaches the ascent: every chunk is sealed
+/// under a key the caller supplied, in seal order, and the tree reads back.
+/// Ciphertexts are not byte-reproducible (short bodies carry random
+/// padding), so the witness is the key stream, not the root address.
+#[cfg(feature = "encryption")]
+#[test]
+fn a_constructed_key_source_seals_every_chunk() {
+    use core::future::poll_fn;
+
+    use nectar_primitives::store::ContentGet;
+
+    use crate::config::Window;
+    use crate::walk::{Encrypted, Walk};
+
+    const SEED: u64 = 7;
+    let data = fill(9 * TINY + 5);
+    let store = TestStore::<TINY>::new(0);
+    let mode = Encrypted::new(SeededKeys {
+        next: std::sync::atomic::AtomicU64::new(SEED),
+    });
+    let (root, stats) = run(
+        File::<_, TINY>::new(store.clone(), Policy::DEFAULT)
+            .save_with_mode(mode, data.as_slice()),
+    )
+    .unwrap();
+
+    // The root is the last seal, so its key is the last draw of the stream.
+    let mut last = [0u8; 8];
+    last.copy_from_slice(&root.key().as_bytes()[..8]);
+    assert_eq!(u64::from_le_bytes(last), SEED + stats.puts - 1);
+
+    let mut walk: Walk<ContentGet<TestStore<TINY>>, Encrypted, TINY> = Walk::new(
+        ContentGet::new(store),
+        *root.address(),
+        root.key().clone(),
+        data.len() as u64,
+        0..u64::MAX,
+        Window::new(4).unwrap(),
+    );
+    let plaintext = run(async {
+        let mut bytes = Vec::new();
+        while let Some(frame) = poll_fn(|cx| walk.poll_next_ordered(cx)).await {
+            bytes.extend_from_slice(&frame.unwrap().data);
+        }
+        bytes
+    });
+    assert_eq!(plaintext, data);
+}
+
+mod round_trip;

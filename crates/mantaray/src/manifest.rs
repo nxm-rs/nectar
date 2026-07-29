@@ -13,7 +13,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 
-use nectar_file::read::AnyFile;
+use nectar_file::{File, Policy};
 use nectar_manifest::{
     DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, SinkError,
     WellKnownKey,
@@ -148,14 +148,10 @@ where
                 .reference()
                 .cloned()
                 .ok_or(ManifestError::NoReference { path })?;
-            match AnyFile::<S, B>::open(store, reference)
+            File::<S, B>::new(store, Policy::DEFAULT)
+                .load(reference, sink)
                 .await
-                .map_err(ManifestError::data)?
-            {
-                AnyFile::Plain(file) => file.download().run(sink).await,
-                AnyFile::Encrypted(file) => file.download().run(sink).await,
-            }
-            .map_err(ManifestError::data)?;
+                .map_err(ManifestError::data)?;
             Ok(())
         }
     }

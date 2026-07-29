@@ -1,40 +1,40 @@
-//! Async io adapters over the poll-native read and write surfaces.
+//! Async io adapters over the poll-native handle surfaces.
 //!
 //! [`TokioReader`] shims [`AsyncRead`](::tokio::io::AsyncRead) and
 //! [`AsyncSeek`](::tokio::io::AsyncSeek) straight over a
-//! [`FileReader`](crate::FileReader): every poll drains the walk in place,
-//! so the fetch window stays in flight across polls and no future is
-//! created per call. [`SpawnedReader`] opts into a driver task that keeps
-//! the walk advancing between reads, spawned on the ambient runtime or a
-//! caller-supplied executor. Positions are zero-based within the
-//! clipped range, so [`SeekFrom::End`] resolves against the effective
-//! length. [`TokioWriter`] shims [`AsyncWrite`](::tokio::io::AsyncWrite)
-//! over a [`Split`](crate::Split): `poll_shutdown` drives the finish and
-//! `into_inner` hands back the delivered root.
+//! [`Reader`](crate::Reader): every poll drains the walk in place, so the
+//! fetch window stays in flight across polls and no future is created per
+//! call. Positions are zero-based within the clipped range, so
+//! [`SeekFrom::End`] resolves against the effective length. The write
+//! direction needs no shim: wrap any `AsyncRead` in
+//! [`AsyncReadSource`](crate::AsyncReadSource) and hand it to
+//! [`File::save`](crate::File::save).
 //!
 //! Reading a byte range through the shim:
 //!
 //! ```
 //! use std::sync::Arc;
 //!
-//! use nectar_file::{File, Plain, Split, TokioReader};
+//! use nectar_file::{File, Policy, TokioReader};
 //! use nectar_primitives::chunk::AnyChunkSet;
 //! use nectar_primitives::store::{ContentGet, MemoryStore};
 //! use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-//!
-//! type Store = Arc<MemoryStore<AnyChunkSet<4096>>>;
 //!
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() {
 //! let data: Vec<u8> = (0u32..20_000)
 //!     .map(|i| u8::try_from(i % 251).unwrap())
 //!     .collect();
-//! # let store: Store = Arc::new(MemoryStore::new());
-//! # let root = Split::<_, Plain, 4096>::collect(Arc::clone(&store), &data).await.unwrap();
-//! let file: File<ContentGet<Store>> = File::open(ContentGet::new(store), root).await.unwrap();
+//! let store = Arc::new(MemoryStore::<AnyChunkSet<4096>>::new());
+//! let root = File::<_, 4096>::new(Arc::clone(&store), Policy::DEFAULT)
+//!     .save(&data[..])
+//!     .await
+//!     .unwrap();
+//!
+//! let file = File::<_, 4096>::new(ContentGet::new(store), Policy::DEFAULT);
 //!
 //! // A plain AsyncRead + AsyncSeek: seek to a range, then read it back.
-//! let mut reader = TokioReader::from(file.read().build());
+//! let mut reader = TokioReader::from(file.open(root.into()).await.unwrap());
 //! reader.seek(SeekFrom::Start(5_000)).await.unwrap();
 //! let mut range = vec![0u8; 5_000];
 //! reader.read_exact(&mut range).await.unwrap();
@@ -46,24 +46,14 @@
 //! `Bytes` for a streaming http body.
 
 mod reader;
-#[cfg(multi_thread)]
-mod spawned;
 // Sanctioned tokio adapter tests: the test macro expands to `Runtime::block_on`.
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests;
-// The writer maps split failures into `io::Error`, which boxes them
-// `Send + Sync`; the wasm32 and `unsync` error chains are not.
-#[cfg(multi_thread)]
-mod writer;
 
 use std::io::SeekFrom;
 
 pub use reader::TokioReader;
-#[cfg(multi_thread)]
-pub use spawned::SpawnedReader;
-#[cfg(multi_thread)]
-pub use writer::TokioWriter;
 
 /// A relative seek whose resolved target leaves the unsigned position
 /// space.
@@ -77,7 +67,7 @@ pub struct SeekOverflow {
 }
 
 /// Resolve a [`SeekFrom`] into a target within the clipped range;
-/// past-the-end targets are the readers' typed concern.
+/// past-the-end targets are the reader's typed concern.
 fn resolve(seek: SeekFrom, position: u64, effective_len: u64) -> Result<u64, SeekOverflow> {
     let (base, delta) = match seek {
         SeekFrom::Start(target) => return Ok(target),

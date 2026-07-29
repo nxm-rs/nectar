@@ -10,7 +10,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use nectar_file::{File, Plain};
+use nectar_file::{File, Policy};
 use nectar_fuzz::tile;
 use nectar_testing::{run, split_fixture};
 
@@ -52,10 +52,11 @@ fuzz_target!(|input: (Vec<u8>, u16, (u64, u64), Vec<Op>)| {
 
     let (root, store) = split_fixture::<BODY>(&data);
     run(async move {
-        let file = File::<_, Plain, BODY>::open(store, root)
+        let file = File::<_, BODY>::new(store, Policy::DEFAULT);
+        let mut reader = file
+            .open_range(root.into(), start_req..end_req)
             .await
             .expect("open must succeed over a complete store");
-        let mut reader = file.read().range(start_req..end_req).build();
         assert_eq!(reader.effective_len(), eff, "clip diverged from the model");
 
         let mut pos: u64 = 0;
