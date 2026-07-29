@@ -49,6 +49,7 @@ proptest.workspace = true
 # gates in the test files keep their meaning; CI selects the shapes.
 encryption = [
 	"nectar-file/encryption",
+	"nectar-ldb/encryption",
 	"nectar-loadsave/encryption",
 	"nectar-primitives/encryption",
 ]
@@ -91,6 +92,10 @@ path = "tests/ldb/conformance.rs"
 [[test]]
 name = "ldb_counted"
 path = "tests/ldb/counted.rs"
+
+[[test]]
+name = "ldb_encrypted"
+path = "tests/ldb/encrypted.rs"
 
 [[test]]
 name = "ldb_determinism"

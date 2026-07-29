@@ -31,7 +31,6 @@ use core::task::Poll;
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::{Admission, BoxFuture, Window};
-use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::{ChunkPut, MaybeSync};
 
 use crate::bounded::Prefix;
@@ -43,9 +42,9 @@ use crate::error::{ForkPrefixEmpty, PrefixTooLong};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
-use crate::node::{Node, RootExtension};
+use crate::node::{Node, NodeRef, RootExtension};
 use crate::packing::cut_allowance;
-use crate::store::{NodeGet, StoreError};
+use crate::store::{NodeGet, Seal, StoreError};
 use crate::value::{Entry, Key};
 
 /// One key's update within a changeset.
@@ -136,32 +135,39 @@ pub enum ApplyError {
     /// A fork prefix consumed no byte to index under.
     #[error(transparent)]
     EmptyPrefix(#[from] ForkPrefixEmpty),
-    /// An update descended into an encrypted subtree the plain path cannot open.
-    #[error("descent reached an encrypted subtree")]
-    EncryptedChild,
     /// A merge invariant did not hold; an apply bug rather than bad input.
     #[error("apply invariant violated")]
     Internal,
 }
 
-/// Fold `changeset` into the manifest rooted at `root`, returning the new root.
+/// Fold `changeset` into the database rooted at `root`, returning the new
+/// root reference.
 ///
-/// The result equals a from-scratch build of the merged key set, byte for byte:
-/// an empty changeset returns `root` unchanged, and a single update is just a
+/// `seal` publishes the rewritten nodes at the same structural width `root`
+/// arrived at, so an encrypted database stays encrypted across an update. The
+/// result equals a from-scratch build of the merged key set, byte for byte: an
+/// empty changeset returns `root` unchanged, and a single update is just a
 /// one-entry changeset.
-pub async fn apply<S, F>(
+///
+/// An untouched subtree is spliced in verbatim, key and all, so an encrypted
+/// `seal` must carry the secret the base tree was sealed under; a different one
+/// still reads back, but the result no longer matches a from-scratch build.
+pub async fn apply<S, F, R, K>(
     store: &S,
-    root: &ChunkAddress,
+    seal: &K,
+    root: &R,
     changeset: &Changeset<F>,
-) -> Result<ChunkAddress, ApplyError>
+) -> Result<R, ApplyError>
 where
     S: NodeGet + ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     if changeset.is_empty() {
-        return Ok(*root);
+        return Ok(root.clone());
     }
-    let node = store.get_node::<F>(root).await?;
+    let node = store.get_node::<F, R>(root).await?;
 
     // The empty key is the root's own value; every other key descends the trie.
     let mut root_entry = node.entry().cloned();
@@ -191,7 +197,7 @@ where
     // One put window over the whole changeset. Puts are order-free
     // (content-derived addresses), so it admits freely and every put settles
     // before the root returns.
-    let mut sink = PutSink::new(store, put_window::<F>());
+    let mut sink = PutSink::new(store, seal, put_window::<F>());
     let mut stats = BuildStats::default();
     let forks = Box::pin(apply_forks(
         &mut sink,
@@ -229,16 +235,18 @@ impl<F: Format> Change<'_, F> {
 ///
 /// Every change shares the `consumed`-byte prefix that reaches this table, so a
 /// change group is the contiguous run sharing the byte at `consumed`.
-async fn apply_forks<'c, S, F>(
-    sink: &mut PutSink<'_, S>,
-    mut table: ForkTable<F>,
+async fn apply_forks<'c, S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
+    mut table: ForkTable<F, R>,
     consumed: usize,
     changes: &[Change<'c, F>],
     stats: &mut BuildStats,
-) -> Result<ForkTable<F>, ApplyError>
+) -> Result<ForkTable<F, R>, ApplyError>
 where
     S: NodeGet + ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     let groups = group_changes(consumed, changes);
 
@@ -246,7 +254,7 @@ where
     // window; the rewrite below consumes each in group order. A missed or failed
     // prefetch falls back to an inline descent fetch, so the result is
     // byte-identical.
-    let mut fetched = prefetch_children::<S, F>(
+    let mut fetched = prefetch_children::<S, F, R>(
         sink.store(),
         groups
             .iter()
@@ -254,7 +262,7 @@ where
             .filter_map(|(slot, &(i, j, byte))| {
                 let group = changes.get(i..j)?;
                 descent_child(consumed, byte, table.get(byte)?, group)
-                    .map(|address| (slot, address))
+                    .map(|reference| (slot, reference))
             }),
         groups.len(),
     )
@@ -296,17 +304,17 @@ fn group_changes<F: Format>(consumed: usize, changes: &[Change<'_, F>]) -> Vec<(
     groups
 }
 
-/// The referenced child address a group descends into, or `None` when its
-/// reconcile splits within the edge, stays on the boundary, or has no plain
-/// referenced child to fetch. Mirrors the head of [`reconcile`]/[`descend`],
-/// so a returned address is exactly the descent's inline fetch.
-fn descent_child<F: Format>(
+/// The referenced child a group descends into, or `None` when its reconcile
+/// splits within the edge, stays on the boundary, or has no referenced child to
+/// fetch. Mirrors the head of [`reconcile`]/[`descend`], so a returned
+/// reference is exactly the descent's inline fetch.
+fn descent_child<F: Format, R: NodeRef>(
     consumed: usize,
     byte: u8,
-    existing: &ForkRecord<F>,
+    existing: &ForkRecord<F, R>,
     group: &[Change<'_, F>],
-) -> Option<ChunkAddress> {
-    let Some(Child::Ref32(reference)) = existing.child() else {
+) -> Option<R> {
+    let Some(Child::Ref(reference)) = existing.child() else {
         return None;
     };
     let mut edge = Vec::with_capacity(existing.tail().len().saturating_add(1));
@@ -328,23 +336,25 @@ fn descent_child<F: Format>(
         let suffix = change.key.get(consumed..).unwrap_or_default();
         suffix.starts_with(&edge) && change.key.len() > plen
     });
-    deeper.then(|| *reference.address())
+    deeper.then(|| reference.clone())
 }
 
 /// Reconcile the fork indexed under `byte` with its change group, returning the
 /// rewritten fork or `None` when it collapses away.
-async fn reconcile<'c, S, F>(
-    sink: &mut PutSink<'_, S>,
+async fn reconcile<'c, S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
     consumed: usize,
     byte: u8,
-    existing: Option<ForkRecord<F>>,
+    existing: Option<ForkRecord<F, R>>,
     group: &[Change<'c, F>],
-    child: Option<Node<F>>,
+    child: Option<Node<F, R>>,
     stats: &mut BuildStats,
-) -> Result<Option<ForkRecord<F>>, ApplyError>
+) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
     S: NodeGet + ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     let existing = match existing {
         Some(record) => record,
@@ -387,18 +397,20 @@ where
 
 /// The existing edge stays intact: update the terminal value and fold the
 /// deeper updates into the child.
-async fn descend<'c, S, F>(
-    sink: &mut PutSink<'_, S>,
+async fn descend<'c, S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
     consumed: usize,
     edge: &[u8],
-    existing: ForkRecord<F>,
+    existing: ForkRecord<F, R>,
     group: &[Change<'c, F>],
-    child: Option<Node<F>>,
+    child: Option<Node<F, R>>,
     stats: &mut BuildStats,
-) -> Result<Option<ForkRecord<F>>, ApplyError>
+) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
     S: NodeGet + ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     // The absolute key offset past the edge: where a deeper change forks off.
     let plen = consumed.saturating_add(edge.len());
@@ -477,12 +489,12 @@ where
         Some(Child::Embedded(inner)) => {
             Box::pin(apply_forks(sink, inner.clone(), plen, &deeper, stats)).await?
         }
-        Some(Child::Ref32(reference)) => {
+        Some(Child::Ref(reference)) => {
             // The prefetch supplies this exact node when it landed; otherwise
             // the read runs here.
             let node = match child {
                 Some(node) => node,
-                None => sink.store().get_node::<F>(reference.address()).await?,
+                None => sink.store().get_node::<F, R>(reference).await?,
             };
             Box::pin(apply_forks(
                 sink,
@@ -493,7 +505,6 @@ where
             ))
             .await?
         }
-        Some(Child::Ref64(_)) => return Err(ApplyError::EncryptedChild),
     };
     assemble(
         sink,
@@ -509,14 +520,14 @@ where
 
 /// A fork's child paired with the subtree count that rides it when it is a
 /// reference.
-struct Counted<F: Format> {
+struct Counted<F: Format, R: NodeRef> {
     /// The child, or `None` for a leaf fork.
-    child: Option<Child<F>>,
+    child: Option<Child<F, R>>,
     /// The count stamped on a referenced child.
     count: Option<SubtreeCount>,
 }
 
-impl<F: Format> Counted<F> {
+impl<F: Format, R: NodeRef> Counted<F, R> {
     /// No child, and so no count.
     const fn none() -> Self {
         Self {
@@ -532,18 +543,20 @@ impl<F: Format> Counted<F> {
 ///
 /// The single-fork merge runs before the child is resolved, so a lone branch
 /// re-inlines whatever its size would spill to.
-async fn assemble<S, F>(
-    sink: &mut PutSink<'_, S>,
+async fn assemble<S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
     at: usize,
     edge: &[u8],
     entry: Option<Entry<F>>,
     meta: Option<Metadata<F>>,
-    table: ForkTable<F>,
+    table: ForkTable<F, R>,
     stats: &mut BuildStats,
-) -> Result<Option<ForkRecord<F>>, ApplyError>
+) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
     S: ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     if table.is_empty() {
         return finish(sink, at, edge, entry, meta, Counted::none(), stats).await;
@@ -566,18 +579,20 @@ where
 
 /// An insertion diverges within the edge: branch at the divergence, re-rooting
 /// the existing subtree verbatim under the edge remainder.
-async fn split<'c, S, F>(
-    sink: &mut PutSink<'_, S>,
+async fn split<'c, S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
     consumed: usize,
     edge: &[u8],
     cut: usize,
-    existing: ForkRecord<F>,
+    existing: ForkRecord<F, R>,
     group: &[Change<'c, F>],
     stats: &mut BuildStats,
-) -> Result<Option<ForkRecord<F>>, ApplyError>
+) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
     S: NodeGet + ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     let boundary = consumed.saturating_add(cut);
     let new_edge = edge.get(..cut).ok_or(ApplyError::Internal)?;
@@ -626,10 +641,10 @@ where
 /// Re-root an existing fork under a shortened `remainder` edge. Anchoring
 /// leaves every cut below the split where it was, so the fork re-roots
 /// verbatim.
-fn reroot<F: Format>(
+fn reroot<F: Format, R: NodeRef>(
     remainder: &[u8],
-    existing: ForkRecord<F>,
-) -> Result<Option<ForkRecord<F>>, ApplyError> {
+    existing: ForkRecord<F, R>,
+) -> Result<Option<ForkRecord<F, R>>, ApplyError> {
     make_fork(
         remainder,
         existing.payload().clone(),
@@ -644,18 +659,20 @@ fn reroot<F: Format>(
 /// A child-only fork over a single-fork embedded child compacts into one edge,
 /// so a deletion that strips a fork's terminal value re-inlines its lone
 /// remaining branch exactly as a from-scratch build would.
-async fn finish<S, F>(
-    sink: &mut PutSink<'_, S>,
+async fn finish<S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
     at: usize,
     edge: &[u8],
     entry: Option<Entry<F>>,
     meta: Option<Metadata<F>>,
-    child: Counted<F>,
+    child: Counted<F, R>,
     stats: &mut BuildStats,
-) -> Result<Option<ForkRecord<F>>, ApplyError>
+) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
     S: ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     if entry.is_none()
         && let Some(Child::Embedded(table)) = &child.child
@@ -669,12 +686,12 @@ where
 
 /// A fork record over `edge` from its parts, dropping metadata that no terminal
 /// value carries, or `None` when neither a value nor a child survives.
-fn settle<F: Format>(
+fn settle<F: Format, R: NodeRef>(
     edge: &[u8],
     entry: Option<Entry<F>>,
     meta: Option<Metadata<F>>,
-    child: Counted<F>,
-) -> Result<Option<ForkRecord<F>>, ApplyError> {
+    child: Counted<F, R>,
+) -> Result<Option<ForkRecord<F, R>>, ApplyError> {
     let Counted { child, count } = child;
     let has_entry = entry.is_some();
     ForkPayload::new(entry, child).map_or_else(
@@ -690,17 +707,19 @@ fn settle<F: Format>(
 /// One hop suffices: anchoring pins every cut below the merge to the same
 /// absolute offsets a build places, so the merged run re-segments into a
 /// canonical chain and the record's own boundary stays where it was.
-async fn compact<S, F>(
-    sink: &mut PutSink<'_, S>,
+async fn compact<S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
     at: usize,
     edge: &[u8],
     first: u8,
-    record: &ForkRecord<F>,
+    record: &ForkRecord<F, R>,
     stats: &mut BuildStats,
-) -> Result<Option<ForkRecord<F>>, ApplyError>
+) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
     S: ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     let mut merged = edge.to_vec();
     merged.push(first);
@@ -730,15 +749,16 @@ where
 /// `None` when no merge applies, and then nothing was fetched: an edge already
 /// at its forced cut short-circuits before the child is read at all, so
 /// splitting and re-rooting stay fetch-free.
-async fn absorb<S, F>(
+async fn absorb<S, F, R>(
     store: &S,
     at: usize,
     edge: &[u8],
-    child: Option<&Child<F>>,
-) -> Result<Option<(Vec<u8>, ForkRecord<F>)>, ApplyError>
+    child: Option<&Child<F, R>>,
+) -> Result<Option<(Vec<u8>, ForkRecord<F, R>)>, ApplyError>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     // The edge already reaches its forced cut, so the boundary is the one a
     // build places: nothing to absorb, and no read.
@@ -746,12 +766,10 @@ where
         return Ok(None);
     }
     let reference = match child {
-        Some(Child::Ref32(reference)) => reference,
-        // The plain path cannot open an encrypted subtree to decide the merge.
-        Some(Child::Ref64(_)) => return Err(ApplyError::EncryptedChild),
+        Some(Child::Ref(reference)) => reference,
         Some(Child::Embedded(_)) | None => return Ok(None),
     };
-    let node = store.get_node::<F>(reference.address()).await?;
+    let node = store.get_node::<F, R>(reference).await?;
     // A branch below is a boundary a build keeps; only a lone continuation runs
     // on into the edge.
     if node.forks().len() != 1 {
@@ -775,18 +793,20 @@ where
 /// through [`cut_allowance`], so a re-rooted run keeps a build's boundaries. The
 /// innermost fork carries the payload and its metadata; every wrapping fork
 /// carries only the continuation.
-async fn chain<S, F>(
-    sink: &mut PutSink<'_, S>,
+async fn chain<S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
     at: usize,
     prefix: &[u8],
-    payload: ForkPayload<F>,
+    payload: ForkPayload<F, R>,
     meta: Option<Metadata<F>>,
     child_count: Option<SubtreeCount>,
     stats: &mut BuildStats,
-) -> Result<Option<ForkRecord<F>>, ApplyError>
+) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
     S: ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     let allowed = cut_allowance::<F>(at);
     if prefix.len() <= allowed {
@@ -818,12 +838,12 @@ where
 
 /// A fork record for `edge` (its index byte plus tail) carrying `payload`,
 /// stamping the referenced-child subtree count so it survives the rewrite.
-fn make_fork<F: Format>(
+fn make_fork<F: Format, R: NodeRef>(
     edge: &[u8],
-    payload: ForkPayload<F>,
+    payload: ForkPayload<F, R>,
     meta: Option<Metadata<F>>,
     child_count: Option<SubtreeCount>,
-) -> Result<Option<ForkRecord<F>>, ApplyError> {
+) -> Result<Option<ForkRecord<F, R>>, ApplyError> {
     let tail = Prefix::try_from(edge.get(1..).ok_or(ApplyError::Internal)?)?;
     let mut record = ForkRecord::from_tail_parts(tail, payload, meta);
     // The count rides only a referenced child; an embedded or leaf fork walks
@@ -872,7 +892,7 @@ fn child_window<F: Format>() -> Window {
 }
 
 /// One landed child prefetch: its request slot and the fetched node.
-type Prefetched<F> = (usize, Result<Node<F>, StoreError>);
+type Prefetched<F, R> = (usize, Result<Node<F, R>, StoreError>);
 
 /// Prefetch each requested child node concurrently, returning the landed nodes
 /// indexed by slot; `slots` sizes the result and every slot without a request
@@ -881,30 +901,32 @@ type Prefetched<F> = (usize, Result<Node<F>, StoreError>);
 /// Nothing streams: the window admits freely because reads are order-free,
 /// and every completion lands in its own slot, so the result is independent
 /// of completion order.
-async fn prefetch_children<S, F>(
+async fn prefetch_children<S, F, R>(
     store: &S,
-    requests: impl Iterator<Item = (usize, ChunkAddress)>,
+    requests: impl Iterator<Item = (usize, R)>,
     slots: usize,
-) -> Vec<Option<Result<Node<F>, StoreError>>>
+) -> Vec<Option<Result<Node<F, R>, StoreError>>>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
-    let mut landed: Vec<Option<Result<Node<F>, StoreError>>> = (0..slots).map(|_| None).collect();
-    let mut queue: Vec<(usize, ChunkAddress)> = requests.collect();
+    let mut landed: Vec<Option<Result<Node<F, R>, StoreError>>> =
+        (0..slots).map(|_| None).collect();
+    let mut queue: Vec<(usize, R)> = requests.collect();
     if queue.is_empty() {
         return landed;
     }
     let admission = Admission::new(child_window::<F>());
-    let mut in_flight: FuturesUnordered<BoxFuture<'_, Prefetched<F>>> = FuturesUnordered::new();
+    let mut in_flight: FuturesUnordered<BoxFuture<'_, Prefetched<F, R>>> = FuturesUnordered::new();
     poll_fn(|cx| {
         loop {
             while admission.admits(in_flight.len(), true) {
-                let Some((slot, address)) = queue.pop() else {
+                let Some((slot, reference)) = queue.pop() else {
                     break;
                 };
                 in_flight.push(Box::pin(async move {
-                    (slot, store.get_node::<F>(&address).await)
+                    (slot, store.get_node::<F, R>(&reference).await)
                 }));
             }
             match Pin::new(&mut in_flight).poll_next(cx) {
@@ -924,6 +946,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::store::Plaintext;
     use core::future::Future;
     use core::pin::Pin;
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -956,8 +979,8 @@ mod tests {
                 let child = match record.child() {
                     None => 0,
                     Some(Child::Embedded(inner)) => walk_counts(store, inner).await,
-                    Some(Child::Ref32(reference)) => {
-                        let node = store.get_node::<V1>(reference.address()).await.unwrap();
+                    Some(Child::Ref(reference)) => {
+                        let node = store.get_node::<V1, ChunkRef>(reference).await.unwrap();
                         let actual = walk_counts(store, node.forks()).await;
                         assert_eq!(
                             record.child_count(),
@@ -965,9 +988,6 @@ mod tests {
                             "stored count must equal the walked subtree size"
                         );
                         actual
-                    }
-                    Some(Child::Ref64(_)) => {
-                        unreachable!("a plaintext build has no encrypted child")
                     }
                 };
                 total += u64::from(record.entry().is_some()) + child;
@@ -990,8 +1010,8 @@ mod tests {
                 expected += 1;
             }
         }
-        let root = *run(builder.build(&store)).unwrap().root();
-        let node = run(store.get_node::<V1>(&root)).unwrap();
+        let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
+        let node = run(store.get_node::<V1, ChunkRef>(&root)).unwrap();
         let total = u64::from(node.entry().is_some()) + run(walk_counts(&store, node.forks()));
         assert_eq!(total, expected);
     }
@@ -1005,41 +1025,42 @@ mod tests {
         for x in 0u8..40 {
             base.insert(Key::from(&[b'a', x][..]), entry(x), None);
         }
-        let base_root = *run(base.build(&store)).unwrap().root();
+        let base_root = *run(base.build(&store, &Plaintext)).unwrap().root();
 
         let mut cs = Changeset::<V1>::new();
         for x in 40u8..64 {
             cs.put(Key::from(&[b'a', x][..]), entry(x), None);
         }
-        let applied = run(apply(&store, &base_root, &cs)).unwrap();
+        let applied = run(apply(&store, &Plaintext, &base_root, &cs)).unwrap();
 
         let mut scratch = Builder::<V1>::new();
         for x in 0u8..64 {
             scratch.insert(Key::from(&[b'a', x][..]), entry(x), None);
         }
-        let scratch_root = *run(scratch.build(&ContentGet::new(MemoryStore::default())))
-            .unwrap()
-            .root();
+        let scratch_root =
+            *run(scratch.build(&ContentGet::new(MemoryStore::default()), &Plaintext))
+                .unwrap()
+                .root();
         assert_eq!(applied, scratch_root, "apply must match a counted rebuild");
 
         // The applied tree's stored counts still equal the walked subtree sizes.
-        let node = run(store.get_node::<V1>(&applied)).unwrap();
+        let node = run(store.get_node::<V1, ChunkRef>(&applied)).unwrap();
         let total = u64::from(node.entry().is_some()) + run(walk_counts(&store, node.forks()));
         assert_eq!(total, 64);
     }
 
     // Build a manifest from `keys` and return its root.
-    fn build(store: &ContentGet<MemoryStore>, keys: &[(&[u8], u8)]) -> ChunkAddress {
+    fn build(store: &ContentGet<MemoryStore>, keys: &[(&[u8], u8)]) -> ChunkRef {
         let mut builder = Builder::<V1>::new();
         for (key, fill) in keys {
             builder.insert(Key::from(*key), entry(*fill), None);
         }
-        *run(builder.build(store)).unwrap().root()
+        *run(builder.build(store, &Plaintext)).unwrap().root()
     }
 
     // The root a from-scratch build of `keys` produces, for the byte-identity
     // check: a fresh store makes the address depend on the bytes alone.
-    fn rebuilt(keys: &[(&[u8], u8)]) -> ChunkAddress {
+    fn rebuilt(keys: &[(&[u8], u8)]) -> ChunkRef {
         build(&ContentGet::new(MemoryStore::default()), keys)
     }
 
@@ -1047,7 +1068,7 @@ mod tests {
     fn an_empty_changeset_returns_the_root_unchanged() {
         let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
-        let out = run(apply(&store, &root, &Changeset::<V1>::new())).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &Changeset::<V1>::new())).unwrap();
         assert_eq!(out, root);
     }
 
@@ -1057,7 +1078,7 @@ mod tests {
         let root = build(&store, &[(b"a", 1), (b"c", 3)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"b"[..]), entry(2), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"a", 1), (b"b", 2), (b"c", 3)]));
     }
 
@@ -1069,7 +1090,7 @@ mod tests {
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"rock"[..]), entry(3), None);
         cs.put(Key::from(&b"rose"[..]), entry(4), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(
             out,
             rebuilt(&[(b"road", 1), (b"roam", 2), (b"rock", 3), (b"rose", 4)])
@@ -1082,7 +1103,7 @@ mod tests {
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"a"[..]), entry(9), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"a", 9), (b"b", 2)]));
     }
 
@@ -1094,7 +1115,7 @@ mod tests {
         let root = build(&store, &[(b"roam", 1), (b"road", 2), (b"x", 3)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&b"road"[..]));
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"roam", 1), (b"x", 3)]));
     }
 
@@ -1104,7 +1125,7 @@ mod tests {
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&b"a"[..]));
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"b", 2)]));
     }
 
@@ -1116,7 +1137,7 @@ mod tests {
         cs.remove(Key::from(&b"absent"[..]));
         cs.remove(Key::from(&b"a"[..]));
         cs.put(Key::from(&b"a"[..]), entry(1), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"a", 1), (b"ab", 2)]));
     }
 
@@ -1128,7 +1149,7 @@ mod tests {
         let root = build(&store, &[(b"abcdef", 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"abz"[..]), entry(2), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"abcdef", 1), (b"abz", 2)]));
     }
 
@@ -1145,7 +1166,7 @@ mod tests {
         let mut cs = Changeset::<V1>::new();
         let branched = [2u8, 2, 1];
         cs.put(Key::from(&branched[..]), entry(2), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&base[..], 1), (&branched[..], 2)]));
     }
 
@@ -1162,7 +1183,7 @@ mod tests {
         let root = build(&store, &[(&long[..], 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&prefix[..]), entry(2), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 1), (&prefix[..], 2)]));
     }
 
@@ -1177,7 +1198,7 @@ mod tests {
         let root = build(&store, &[(&long[..], 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&prefix[..]), entry(2), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 1), (&prefix[..], 2)]));
     }
 
@@ -1195,7 +1216,7 @@ mod tests {
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&[0u8, 0][..]));
         cs.put(Key::from(&long[..]), entry(2), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
 
@@ -1205,19 +1226,19 @@ mod tests {
         let root = build(&store, &[(b"a", 1)]);
         let mut set = Changeset::<V1>::new();
         set.put(Key::empty(), entry(7), None);
-        let with_root = run(apply(&store, &root, &set)).unwrap();
+        let with_root = run(apply(&store, &Plaintext, &root, &set)).unwrap();
 
         let mut expect = Builder::<V1>::new();
         expect.insert(Key::empty(), entry(7), None);
         expect.insert(Key::from(&b"a"[..]), entry(1), None);
-        let rebuilt_root = *run(expect.build(&ContentGet::new(MemoryStore::default())))
+        let rebuilt_root = *run(expect.build(&ContentGet::new(MemoryStore::default()), &Plaintext))
             .unwrap()
             .root();
         assert_eq!(with_root, rebuilt_root);
 
         let mut clear = Changeset::<V1>::new();
         clear.remove(Key::empty());
-        let cleared = run(apply(&store, &with_root, &clear)).unwrap();
+        let cleared = run(apply(&store, &Plaintext, &with_root, &clear)).unwrap();
         assert_eq!(cleared, rebuilt(&[(b"a", 1)]));
     }
 
@@ -1234,7 +1255,7 @@ mod tests {
         let root = build(&store, &[(&short[..], 1), (&long[..], 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&short[..]));
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
 
@@ -1247,7 +1268,7 @@ mod tests {
         let root = build(&store, &[(&long[..], 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&[0x07u8][..]), entry(2), None);
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 1), (&[0x07u8][..], 2)]));
     }
 
@@ -1262,7 +1283,7 @@ mod tests {
         let root = build(&store, &[(&short[..], 1), (&long[..], 2)]);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&short[..]));
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
 
@@ -1286,7 +1307,7 @@ mod tests {
         let root = build(&store, &borrowed);
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&shared[..V1::PLEN_MAX]));
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&borrowed));
         assert_eq!(out, root);
     }
@@ -1353,7 +1374,7 @@ mod tests {
                 builder.insert(Key::from(&[p, x][..]), entry(x), None);
             }
         }
-        let root = *run(builder.build(&inner)).unwrap().root();
+        let root = *run(builder.build(&inner, &Plaintext)).unwrap().root();
         let store = GatedStore {
             inner,
             inflight: AtomicUsize::new(0),
@@ -1366,7 +1387,7 @@ mod tests {
         for p in 0u8..4 {
             cs.put(Key::from(&[p, 0, 9][..]), entry(99), None);
         }
-        let applied = run(apply(&store, &root, &cs)).unwrap();
+        let applied = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
 
         let mut scratch = Builder::<V1>::new();
         for p in 0u8..4 {
@@ -1375,7 +1396,7 @@ mod tests {
             }
             scratch.insert(Key::from(&[p, 0, 9][..]), entry(99), None);
         }
-        let expected = *run(scratch.build(&ContentGet::new(MemoryStore::default())))
+        let expected = *run(scratch.build(&ContentGet::new(MemoryStore::default()), &Plaintext))
             .unwrap()
             .root();
         assert_eq!(applied, expected, "apply must match a from-scratch build");
@@ -1399,12 +1420,12 @@ mod tests {
                 builder.insert(Key::from(&[p, x][..]), entry(x), None);
             }
         }
-        let root = *run(builder.build(&inner)).unwrap().root();
+        let root = *run(builder.build(&inner, &Plaintext)).unwrap().root();
         let node: Node<V1> = run(inner.get_node(&root)).unwrap();
         let children = node
             .forks()
             .iter()
-            .filter(|(_, record)| matches!(record.child(), Some(Child::Ref32(_))))
+            .filter(|(_, record)| matches!(record.child(), Some(Child::Ref(_))))
             .count();
         let window = usize::from(child_window::<V1>().get());
         assert!(
@@ -1423,7 +1444,7 @@ mod tests {
         for p in 0u8..24 {
             cs.put(Key::from(&[p, 0, 9][..]), entry(99), None);
         }
-        run(apply(&store, &root, &cs)).unwrap();
+        run(apply(&store, &Plaintext, &root, &cs)).unwrap();
 
         let peak = store.peak.load(Ordering::Relaxed);
         // The cap is what bounds the fan-out: a lost window would show up here.
@@ -1493,13 +1514,13 @@ mod tests {
                 builder.insert(Key::from(&[p, x][..]), entry(x.wrapping_add(p)), None);
             }
         }
-        let root = *run(builder.build(&inner)).unwrap().root();
+        let root = *run(builder.build(&inner, &Plaintext)).unwrap().root();
         let node: Node<V1> = run(inner.get_node(&root)).unwrap();
         let children: Vec<ChunkAddress> = node
             .forks()
             .iter()
             .filter_map(|(_, record)| match record.child() {
-                Some(Child::Ref32(reference)) => Some(*reference.address()),
+                Some(Child::Ref(reference)) => Some(*reference.address()),
                 _ => None,
             })
             .collect();
@@ -1534,7 +1555,7 @@ mod tests {
         for p in 0u8..4 {
             cs.put(Key::from(&[p, 0, 9][..]), entry(99), None);
         }
-        let applied = run(apply(&store, &root, &cs)).unwrap();
+        let applied = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
 
         // The skew held: the children landed scrambled, so a fold that filled
         // slots in completion order would misroute three of the four.
@@ -1558,7 +1579,7 @@ mod tests {
             }
             scratch.insert(Key::from(&[p, 0, 9][..]), entry(99), None);
         }
-        let expected = *run(scratch.build(&ContentGet::new(MemoryStore::default())))
+        let expected = *run(scratch.build(&ContentGet::new(MemoryStore::default()), &Plaintext))
             .unwrap()
             .root();
         // Each prefetched child reconciled with its own group, whatever the
@@ -1573,12 +1594,12 @@ mod tests {
         let root = build(&store, &[(b"a", 1)]);
         let mut cs = Changeset::<V1>::new();
         cs.put(Key::from(&b"index.html"[..]), entry(2), Some(meta.clone()));
-        let out = run(apply(&store, &root, &cs)).unwrap();
+        let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
 
         let mut expect = Builder::<V1>::new();
         expect.insert(Key::from(&b"a"[..]), entry(1), None);
         expect.insert(Key::from(&b"index.html"[..]), entry(2), Some(meta));
-        let rebuilt_root = *run(expect.build(&ContentGet::new(MemoryStore::default())))
+        let rebuilt_root = *run(expect.build(&ContentGet::new(MemoryStore::default()), &Plaintext))
             .unwrap()
             .root();
         assert_eq!(out, rebuilt_root);

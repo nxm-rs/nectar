@@ -14,12 +14,12 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 
 use bytes::Bytes;
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::ChunkRef;
 use nectar_primitives::store::MaybeSync;
 
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, MetadataKey};
-use crate::node::Node;
+use crate::node::{Node, NodeRef};
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Cursor, successor};
 use crate::store::NodeGet;
@@ -68,9 +68,9 @@ impl<F: Format> DirEntry<F> {
 /// walk seeks past each named subtree rather than descending it, so a directory
 /// of any width or depth lists in O(depth) retained state and no value fetch.
 #[derive(Debug)]
-pub struct Listing<'a, S, F: Format = V1> {
+pub struct Listing<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
-    root: ChunkAddress,
+    root: R,
     /// The exclusive bound of the directory's prefix range.
     end: Option<Bytes>,
     /// Key bytes the cursor walks below; prepended to each cursor key to
@@ -82,13 +82,14 @@ pub struct Listing<'a, S, F: Format = V1> {
     dir_len: usize,
     /// Set once a named subtree has no successor, so the walk stops.
     done: bool,
-    cursor: Cursor<'a, S, F>,
+    cursor: Cursor<'a, S, F, R>,
 }
 
-impl<S, F> Listing<'_, S, F>
+impl<S, F, R> Listing<'_, S, F, R>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     /// The next immediate child of the directory in key order, or `None` at its
     /// end.
@@ -223,10 +224,11 @@ impl<F: Format> Served<F> {
     }
 }
 
-impl<S, F> Reader<S, F>
+impl<S, F, R> Reader<S, F, R>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     /// List the immediate children of the directory named by `dir` in key
     /// order, collapsing deeper keys at the next separator.
@@ -234,11 +236,7 @@ where
     /// `dir` is used as a key prefix: the root is the empty key and a nested
     /// directory conventionally ends with the separator. Only the trie nodes on
     /// the frontier are fetched; the value chunks a listing names are not.
-    pub async fn list(
-        &self,
-        root: &ChunkAddress,
-        dir: &Key,
-    ) -> Result<Listing<'_, S, F>, ReaderError> {
+    pub async fn list(&self, root: &R, dir: &Key) -> Result<Listing<'_, S, F, R>, ReaderError> {
         let prefix = dir.as_bytes();
         // When the directory's keys are exactly one referenced chunk reached at
         // the prefix boundary, delegate the walk to that subtree root: it holds
@@ -248,7 +246,7 @@ where
         if let Some(found) = self.descend_subtree(root, prefix).await?
             && found.base == prefix.len()
         {
-            let subtree = *found.reference.address();
+            let subtree = found.reference;
             let cursor = Cursor::seek(self.store(), &subtree, &[], None).await?;
             return Ok(Listing {
                 store: self.store(),
@@ -264,7 +262,7 @@ where
         let cursor = Cursor::seek(self.store(), root, prefix, end.clone()).await?;
         Ok(Listing {
             store: self.store(),
-            root: *root,
+            root: root.clone(),
             end,
             base: Bytes::new(),
             dir_len: prefix.len(),
@@ -275,8 +273,8 @@ where
 
     /// The manifest's site-level document conventions, read from the root's
     /// typed metadata.
-    pub async fn website(&self, root: &ChunkAddress) -> Result<Website, ReaderError> {
-        let node = self.store().get_node::<F>(root).await?;
+    pub async fn website(&self, root: &R) -> Result<Website, ReaderError> {
+        let node = self.store().get_node::<F, R>(root).await?;
         Ok(Website {
             index: document(&node, KeyId::WebsiteIndexDocument),
             error: document(&node, KeyId::WebsiteErrorDocument),
@@ -290,7 +288,7 @@ where
     /// path already ending in the separator name a directory directly; any
     /// other path is read as a directory by inserting a separator before the
     /// index document.
-    pub async fn serve(&self, root: &ChunkAddress, path: &Key) -> Result<Served<F>, ReaderError> {
+    pub async fn serve(&self, root: &R, path: &Key) -> Result<Served<F>, ReaderError> {
         if let Some(entry) = self.get(root, path).await? {
             return Ok(Served::Exact {
                 key: path.clone(),
@@ -315,7 +313,7 @@ where
 }
 
 /// A root-scope metadata document value, cloned out of the node's metadata.
-fn document<F: Format>(node: &Node<F>, id: KeyId) -> Option<Bytes> {
+fn document<F: Format, R: NodeRef>(node: &Node<F, R>, id: KeyId) -> Option<Bytes> {
     node.metadata()?.get(&MetadataKey::from(id)).cloned()
 }
 
@@ -337,6 +335,7 @@ fn directory_index<F: Format>(path: &[u8], index: &[u8]) -> Key {
 
 #[cfg(test)]
 mod tests {
+    use crate::store::Plaintext;
     use std::format;
     use std::vec;
 
@@ -354,13 +353,13 @@ mod tests {
         ChunkRef::new(ChunkAddress::new([byte; 32])).into()
     }
 
-    /// Build a manifest from `(key, value)` pairs and return its root address.
-    fn manifest(store: &ContentGet<MemoryStore>, pairs: &[(&[u8], u8)]) -> ChunkAddress {
+    /// Build a manifest from `(key, value)` pairs and return its root.
+    fn manifest(store: &ContentGet<MemoryStore>, pairs: &[(&[u8], u8)]) -> ChunkRef {
         let mut builder = Builder::new();
         for (key, byte) in pairs {
             builder.insert(Key::from(&key[..]), entry(*byte), None);
         }
-        *run(builder.build(store)).unwrap().root()
+        *run(builder.build(store, &Plaintext)).unwrap().root()
     }
 
     /// Drain a listing into its entries.
@@ -521,17 +520,17 @@ mod tests {
             None,
         )
         .unwrap();
-        let leaf_ref = run(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_ref = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
 
         let mut forks: ForkTable = ForkTable::new();
         forks
             .insert(
                 Prefix::try_from(&b"mg/"[..]).unwrap(),
-                Child::Ref32(ChunkRef::new(leaf_ref)).into(),
+                Child::Ref(leaf_ref).into(),
                 None,
             )
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         let got = entries(run(reader.list(&root, &Key::from(&b"mg/"[..]))).unwrap());
@@ -565,7 +564,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let root = *run(builder.build(&store)).unwrap().root();
+        let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
         let reader: Reader<_> = Reader::new(&store);
 
         // The root path resolves to the top-level index document.
@@ -602,7 +601,7 @@ mod tests {
         builder.manifest_metadata(
             Metadata::new(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html")).unwrap(),
         );
-        let root = *run(builder.build(&store)).unwrap().root();
+        let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
         let reader: Reader<_> = Reader::new(&store);
 
         assert_eq!(
@@ -638,7 +637,7 @@ mod tests {
         meta.insert(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html"))
             .unwrap();
         builder.manifest_metadata(meta);
-        let root = *run(builder.build(&store)).unwrap().root();
+        let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
         let reader: Reader<_> = Reader::new(&store);
 
         let site = run(reader.website(&root)).unwrap();

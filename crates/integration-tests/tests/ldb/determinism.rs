@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, ensure};
 use arbitrary::Unstructured;
 use nectar_ldb::{
-    Builder, Domain, Entry, ForkTable, Format, Key, Node, Prefix, SegmentKind, SegmentWeight, V1,
-    cut, generators, h64, segment, spill,
+    Builder, Entry, ForkTable, Format, Key, Node, Plaintext, Prefix, SegmentKind,
+    SegmentWeight, V1, cut, generators, h64, segment, spill,
 };
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef};
@@ -64,7 +64,7 @@ fn to_forks(forks: &[(Vec<u8>, usize)]) -> Result<Vec<(Prefix, SegmentWeight)>, 
 fn forks_through_table(
     order: &[(Vec<u8>, usize)],
 ) -> Result<Vec<(Prefix, SegmentWeight)>, TestCaseError> {
-    let mut table = ForkTable::new();
+    let mut table: ForkTable = ForkTable::new();
     let mut weights = BTreeMap::new();
     for (prefix, weight) in order {
         let Some(&first) = prefix.first() else {
@@ -90,7 +90,7 @@ fn forks_through_table(
 /// Encode a node whose fork table is built by inserting `forks` in the given
 /// order; distinct first bytes mean no insert ever replaces another.
 fn encode_in_order(forks: &[(Vec<u8>, u8)]) -> Result<Vec<u8>, TestCaseError> {
-    let mut table = ForkTable::new();
+    let mut table: ForkTable = ForkTable::new();
     for (prefix, fill) in forks {
         table
             .insert(to_prefix(prefix)?, Entry::from(ref32(*fill)).into(), None)
@@ -215,7 +215,7 @@ proptest! {
     // top directory node routes every sub-directory it produces.
     #[test]
     fn spill_directory_depth_never_exceeds_two(forks in weighted_fork_set()) {
-        let dir = spill::<V1>(&to_forks(&forks)?, Domain::Plain);
+        let dir = spill::<V1, ChunkRef>(&to_forks(&forks)?);
         prop_assert!(dir.depth() <= 2);
         // One directory record is its index slot, flags, prefix-length byte and
         // a single plain reference.
@@ -256,13 +256,14 @@ fn chain_rows_case(seed: &[u8]) -> Result<Vec<ChainRow>, TestCaseError> {
 /// root and every stored chunk payload by address.
 fn build_in_order<'a>(
     rows: impl Iterator<Item = &'a ChainRow>,
-) -> Result<(ChunkAddress, BTreeMap<ChunkAddress, Vec<u8>>), TestCaseError> {
+) -> Result<(ChunkRef, BTreeMap<ChunkAddress, Vec<u8>>), TestCaseError> {
     let store = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
     for (key, entry, meta) in rows {
         builder.insert(key.clone(), entry.clone(), meta.clone());
     }
-    let built = run(builder.build(&store)).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let built =
+        run(builder.build(&store, &Plaintext)).map_err(|e| TestCaseError::fail(e.to_string()))?;
     let chunks = store
         .into_chunks()
         .into_iter()
@@ -347,7 +348,7 @@ fn spill_of_a_full_radix_table_stays_depth_two() -> Result<()> {
             SegmentWeight::new(V1::SEG_TARGET)?,
         ));
     }
-    let dir = spill::<V1>(&forks, Domain::Plain);
+    let dir = spill::<V1, ChunkRef>(&forks);
     ensure!(dir.leaves().len() == V1::FORKS_MAX, "one leaf per fork");
     ensure!(dir.depth() == 2, "a full table needs two levels");
 

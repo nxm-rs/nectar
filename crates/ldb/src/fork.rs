@@ -7,13 +7,14 @@
 
 use alloc::collections::BTreeMap;
 
-use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef};
+use nectar_primitives::{ChunkAddress, ChunkRef};
 
 use crate::bounded::Prefix;
 use crate::count::SubtreeCount;
 use crate::error::ForkPrefixEmpty;
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
+use crate::node::NodeRef;
 use crate::value::Entry;
 
 /// A fork's child: the trie continuation below the fork's prefix.
@@ -22,23 +23,33 @@ use crate::value::Entry;
 /// root extension and is never segmented, so nothing else survives the
 /// type. Its encoded size bound (`F::INLINE_MAX`) and non-emptiness are the
 /// packing and codec cars' checks.
+///
+/// The reference width is `R`, one whole-database fact rather than a
+/// per-record choice, so a plain and an encrypted structure are distinct
+/// types and never mix on one wire image.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Child<F: Format = V1> {
-    /// A plain 32-byte reference to the child chunk.
-    Ref32(ChunkRef),
-    /// An encrypted 64-byte reference: address plus decryption key.
-    Ref64(EncryptedChunkRef),
+pub enum Child<F: Format = V1, R: NodeRef = ChunkRef> {
+    /// A reference to the child chunk, `R::SIZE` bytes wide.
+    Ref(R),
     /// The child's body held in the parent instead of a chunk of its own.
-    Embedded(ForkTable<F>),
+    Embedded(ForkTable<F, R>),
 }
 
-impl<F: Format> Child<F> {
+impl<F: Format, R: NodeRef> Child<F, R> {
     /// The referenced chunk address; `None` for an embedded child.
     #[must_use]
-    pub const fn address(&self) -> Option<&ChunkAddress> {
+    pub fn address(&self) -> Option<&ChunkAddress> {
         match self {
-            Self::Ref32(r) => Some(r.address()),
-            Self::Ref64(r) => Some(r.address()),
+            Self::Ref(reference) => Some(reference.address()),
+            Self::Embedded(_) => None,
+        }
+    }
+
+    /// The child's reference; `None` for an embedded child.
+    #[must_use]
+    pub const fn reference(&self) -> Option<&R> {
+        match self {
+            Self::Ref(reference) => Some(reference),
             Self::Embedded(_) => None,
         }
     }
@@ -46,24 +57,18 @@ impl<F: Format> Child<F> {
     /// Returns `true` when the child lives in a chunk of its own.
     #[must_use]
     pub const fn is_reference(&self) -> bool {
-        matches!(self, Self::Ref32(_) | Self::Ref64(_))
+        matches!(self, Self::Ref(_))
     }
 }
 
-impl<F: Format> From<ChunkRef> for Child<F> {
-    fn from(reference: ChunkRef) -> Self {
-        Self::Ref32(reference)
+impl<F: Format, R: NodeRef> From<R> for Child<F, R> {
+    fn from(reference: R) -> Self {
+        Self::Ref(reference)
     }
 }
 
-impl<F: Format> From<EncryptedChunkRef> for Child<F> {
-    fn from(reference: EncryptedChunkRef) -> Self {
-        Self::Ref64(reference)
-    }
-}
-
-impl<F: Format> From<ForkTable<F>> for Child<F> {
-    fn from(forks: ForkTable<F>) -> Self {
+impl<F: Format, R: NodeRef> From<ForkTable<F, R>> for Child<F, R> {
+    fn from(forks: ForkTable<F, R>) -> Self {
         Self::Embedded(forks)
     }
 }
@@ -73,24 +78,24 @@ impl<F: Format> From<ForkTable<F>> for Child<F> {
 /// Neither is unrepresentable: a fork with no entry and no child has no
 /// meaning.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ForkPayload<F: Format = V1> {
+pub enum ForkPayload<F: Format = V1, R: NodeRef = ChunkRef> {
     /// The accumulated path ending in this prefix is a key with this value.
     Entry(Entry<F>),
     /// The trie continues below this prefix.
-    Child(Child<F>),
+    Child(Child<F, R>),
     /// A key terminates here and the trie continues below it.
     Both {
         /// The value at the accumulated path.
         entry: Entry<F>,
         /// The continuation below the prefix.
-        child: Child<F>,
+        child: Child<F, R>,
     },
 }
 
-impl<F: Format> ForkPayload<F> {
+impl<F: Format, R: NodeRef> ForkPayload<F, R> {
     /// Assemble from parts; `None` when both are absent.
     #[must_use]
-    pub fn new(entry: Option<Entry<F>>, child: Option<Child<F>>) -> Option<Self> {
+    pub fn new(entry: Option<Entry<F>>, child: Option<Child<F, R>>) -> Option<Self> {
         match (entry, child) {
             (Some(entry), Some(child)) => Some(Self::Both { entry, child }),
             (Some(entry), None) => Some(Self::Entry(entry)),
@@ -110,7 +115,7 @@ impl<F: Format> ForkPayload<F> {
 
     /// The trie continuation below this fork.
     #[must_use]
-    pub const fn child(&self) -> Option<&Child<F>> {
+    pub const fn child(&self) -> Option<&Child<F, R>> {
         match self {
             Self::Child(child) | Self::Both { child, .. } => Some(child),
             Self::Entry(_) => None,
@@ -118,14 +123,14 @@ impl<F: Format> ForkPayload<F> {
     }
 }
 
-impl<F: Format> From<Entry<F>> for ForkPayload<F> {
+impl<F: Format, R: NodeRef> From<Entry<F>> for ForkPayload<F, R> {
     fn from(entry: Entry<F>) -> Self {
         Self::Entry(entry)
     }
 }
 
-impl<F: Format> From<Child<F>> for ForkPayload<F> {
-    fn from(child: Child<F>) -> Self {
+impl<F: Format, R: NodeRef> From<Child<F, R>> for ForkPayload<F, R> {
+    fn from(child: Child<F, R>) -> Self {
         Self::Child(child)
     }
 }
@@ -136,9 +141,9 @@ impl<F: Format> From<Child<F>> for ForkPayload<F> {
 /// a record cannot disagree with its index position, and the full prefix
 /// length stays in `1..=F::PLEN_MAX` by construction.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ForkRecord<F: Format = V1> {
+pub struct ForkRecord<F: Format = V1, R: NodeRef = ChunkRef> {
     tail: Prefix<F>,
-    payload: ForkPayload<F>,
+    payload: ForkPayload<F, R>,
     metadata: Option<Metadata<F>>,
     child_count: Option<SubtreeCount>,
 }
@@ -146,20 +151,22 @@ pub struct ForkRecord<F: Format = V1> {
 /// The count a fresh record starts with: a referenced child always owns a
 /// wire count, zero until the builder or apply stamps the real subtree size;
 /// an embedded or absent child carries none, its count is walked in place.
-const fn initial_child_count<F: Format>(payload: &ForkPayload<F>) -> Option<SubtreeCount> {
+const fn initial_child_count<F: Format, R: NodeRef>(
+    payload: &ForkPayload<F, R>,
+) -> Option<SubtreeCount> {
     match payload.child() {
-        Some(Child::Ref32(_) | Child::Ref64(_)) => Some(SubtreeCount::new(0)),
+        Some(Child::Ref(_)) => Some(SubtreeCount::new(0)),
         _ => None,
     }
 }
 
-impl<F: Format> ForkRecord<F> {
+impl<F: Format, R: NodeRef> ForkRecord<F, R> {
     /// Split `prefix` into its first byte (the table key) and a record
     /// holding the tail. Rejects the empty prefix: a fork consumes at least
     /// the byte it is indexed under.
     pub fn new(
         prefix: Prefix<F>,
-        payload: ForkPayload<F>,
+        payload: ForkPayload<F, R>,
         metadata: Option<Metadata<F>>,
     ) -> Result<(u8, Self), ForkPrefixEmpty> {
         let (first, tail) = prefix.split_first().ok_or(ForkPrefixEmpty)?;
@@ -179,7 +186,7 @@ impl<F: Format> ForkRecord<F> {
     /// fork-table key byte, so no split is needed.
     pub(crate) const fn from_tail_parts(
         tail: Prefix<F>,
-        payload: ForkPayload<F>,
+        payload: ForkPayload<F, R>,
         metadata: Option<Metadata<F>>,
     ) -> Self {
         let child_count = initial_child_count(&payload);
@@ -205,12 +212,12 @@ impl<F: Format> ForkRecord<F> {
 
     /// What the fork holds.
     #[must_use]
-    pub const fn payload(&self) -> &ForkPayload<F> {
+    pub const fn payload(&self) -> &ForkPayload<F, R> {
         &self.payload
     }
 
     /// Mutable access to what the fork holds.
-    pub const fn payload_mut(&mut self) -> &mut ForkPayload<F> {
+    pub const fn payload_mut(&mut self) -> &mut ForkPayload<F, R> {
         &mut self.payload
     }
 
@@ -222,7 +229,7 @@ impl<F: Format> ForkRecord<F> {
 
     /// The trie continuation below this fork.
     #[must_use]
-    pub const fn child(&self) -> Option<&Child<F>> {
+    pub const fn child(&self) -> Option<&Child<F, R>> {
         self.payload.child()
     }
 
@@ -256,11 +263,11 @@ impl<F: Format> ForkRecord<F> {
 /// Radix-256: the `u8` key makes the table sorted-unique and caps it at
 /// `F::FORKS_MAX` records structurally. Iteration order is the wire order.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ForkTable<F: Format = V1> {
-    records: BTreeMap<u8, ForkRecord<F>>,
+pub struct ForkTable<F: Format = V1, R: NodeRef = ChunkRef> {
+    records: BTreeMap<u8, ForkRecord<F, R>>,
 }
 
-impl<F: Format> ForkTable<F> {
+impl<F: Format, R: NodeRef> ForkTable<F, R> {
     /// The empty table.
     #[must_use]
     pub const fn new() -> Self {
@@ -276,9 +283,9 @@ impl<F: Format> ForkTable<F> {
     pub fn insert(
         &mut self,
         prefix: Prefix<F>,
-        payload: ForkPayload<F>,
+        payload: ForkPayload<F, R>,
         metadata: Option<Metadata<F>>,
-    ) -> Result<Option<ForkRecord<F>>, ForkPrefixEmpty> {
+    ) -> Result<Option<ForkRecord<F, R>>, ForkPrefixEmpty> {
         let (first, record) = ForkRecord::new(prefix, payload, metadata)?;
         Ok(self.records.insert(first, record))
     }
@@ -288,34 +295,34 @@ impl<F: Format> ForkTable<F> {
     pub(crate) fn insert_record(
         &mut self,
         first: u8,
-        record: ForkRecord<F>,
-    ) -> Option<ForkRecord<F>> {
+        record: ForkRecord<F, R>,
+    ) -> Option<ForkRecord<F, R>> {
         self.records.insert(first, record)
     }
 
     /// The record indexed under `first`.
     #[must_use]
-    pub fn get(&self, first: u8) -> Option<&ForkRecord<F>> {
+    pub fn get(&self, first: u8) -> Option<&ForkRecord<F, R>> {
         self.records.get(&first)
     }
 
     /// Mutable access to the record indexed under `first`.
-    pub fn get_mut(&mut self, first: u8) -> Option<&mut ForkRecord<F>> {
+    pub fn get_mut(&mut self, first: u8) -> Option<&mut ForkRecord<F, R>> {
         self.records.get_mut(&first)
     }
 
     /// Remove and return the record indexed under `first`.
-    pub fn remove(&mut self, first: u8) -> Option<ForkRecord<F>> {
+    pub fn remove(&mut self, first: u8) -> Option<ForkRecord<F, R>> {
         self.records.remove(&first)
     }
 
     /// The forks in wire order: ascending first byte.
-    pub fn iter(&self) -> impl Iterator<Item = (u8, &ForkRecord<F>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (u8, &ForkRecord<F, R>)> {
         self.records.iter().map(|(first, record)| (*first, record))
     }
 
     /// Consume the table into its records in ascending first-byte order.
-    pub(crate) fn into_records(self) -> impl Iterator<Item = (u8, ForkRecord<F>)> {
+    pub(crate) fn into_records(self) -> impl Iterator<Item = (u8, ForkRecord<F, R>)> {
         self.records.into_iter()
     }
 
@@ -332,7 +339,7 @@ impl<F: Format> ForkTable<F> {
     }
 }
 
-impl<F: Format> Default for ForkTable<F> {
+impl<F: Format, R: NodeRef> Default for ForkTable<F, R> {
     fn default() -> Self {
         Self::new()
     }
@@ -357,7 +364,7 @@ mod tests {
 
     #[test]
     fn insert_splits_the_prefix_and_iterates_in_wire_order() {
-        let mut table = ForkTable::new();
+        let mut table: ForkTable = ForkTable::new();
         table
             .insert(prefix(b"beta"), entry(1).into(), None)
             .unwrap();
@@ -377,7 +384,7 @@ mod tests {
 
     #[test]
     fn empty_prefix_is_rejected() {
-        let mut table = ForkTable::new();
+        let mut table: ForkTable = ForkTable::new();
         let err = table
             .insert(Prefix::empty(), entry(1).into(), None)
             .unwrap_err();
@@ -388,7 +395,8 @@ mod tests {
     #[test]
     fn full_prefix_length_is_bounded_by_plen_max() {
         let bytes = vec![0x61; V1::PLEN_MAX];
-        let (first, record) = ForkRecord::new(prefix(&bytes), entry(1).into(), None).unwrap();
+        let (first, record): (u8, ForkRecord) =
+            ForkRecord::new(prefix(&bytes), entry(1).into(), None).unwrap();
         assert_eq!(first, 0x61);
         assert_eq!(record.tail().len(), V1::PLEN_MAX - 1);
         assert_eq!(record.prefix_len(), V1::PLEN_MAX);
@@ -396,7 +404,8 @@ mod tests {
 
     #[test]
     fn single_byte_prefix_has_an_empty_tail() {
-        let (first, record) = ForkRecord::new(prefix(b"x"), entry(1).into(), None).unwrap();
+        let (first, record): (u8, ForkRecord) =
+            ForkRecord::new(prefix(b"x"), entry(1).into(), None).unwrap();
         assert_eq!(first, b'x');
         assert!(record.tail().is_empty());
         assert_eq!(record.prefix_len(), 1);
@@ -404,7 +413,7 @@ mod tests {
 
     #[test]
     fn a_shared_first_byte_replaces_the_record() {
-        let mut table = ForkTable::new();
+        let mut table: ForkTable = ForkTable::new();
         table.insert(prefix(b"aa"), entry(1).into(), None).unwrap();
         let replaced = table
             .insert(prefix(b"ab"), entry(2).into(), None)
@@ -417,7 +426,7 @@ mod tests {
 
     #[test]
     fn the_table_saturates_at_forks_max() {
-        let mut table = ForkTable::new();
+        let mut table: ForkTable = ForkTable::new();
         for first in u8::MIN..=u8::MAX {
             table
                 .insert(prefix(&[first]), entry(first).into(), None)
@@ -433,11 +442,11 @@ mod tests {
     fn payload_requires_an_entry_or_a_child() {
         assert_eq!(ForkPayload::<V1>::new(None, None), None);
 
-        let only_entry = ForkPayload::new(Some(entry(1)), None).unwrap();
+        let only_entry: ForkPayload = ForkPayload::new(Some(entry(1)), None).unwrap();
         assert_eq!(only_entry.entry(), Some(&entry(1)));
         assert_eq!(only_entry.child(), None);
 
-        let child = Child::from(ChunkRef::new(ChunkAddress::new([2; 32])));
+        let child: Child = Child::from(ChunkRef::new(ChunkAddress::new([2; 32])));
         let only_child = ForkPayload::new(None, Some(child.clone())).unwrap();
         assert_eq!(only_child.entry(), None);
         assert_eq!(only_child.child(), Some(&child));
@@ -449,7 +458,7 @@ mod tests {
 
     #[test]
     fn an_embedded_child_is_a_fork_table() {
-        let mut inner = ForkTable::new();
+        let mut inner: ForkTable = ForkTable::new();
         inner
             .insert(prefix(b"leaf"), entry(3).into(), None)
             .unwrap();
@@ -458,7 +467,7 @@ mod tests {
         assert_eq!(embedded.address(), None);
         assert!(!embedded.is_reference());
 
-        let mut outer = ForkTable::new();
+        let mut outer: ForkTable = ForkTable::new();
         outer
             .insert(prefix(b"dir/"), embedded.into(), None)
             .unwrap();
@@ -473,14 +482,14 @@ mod tests {
             Bytes::from_static(b"text/html"),
         )
         .unwrap();
-        let (_, record) =
+        let (_, record): (u8, ForkRecord) =
             ForkRecord::new(prefix(b"index.html"), entry(1).into(), Some(meta.clone())).unwrap();
         assert_eq!(record.metadata(), Some(&meta));
     }
 
     #[test]
     fn removal_and_mutation_address_the_first_byte() {
-        let mut table = ForkTable::new();
+        let mut table: ForkTable = ForkTable::new();
         table.insert(prefix(b"aa"), entry(1).into(), None).unwrap();
         table.insert(prefix(b"bb"), entry(2).into(), None).unwrap();
 

@@ -13,8 +13,8 @@ use anyhow::{Result, ensure};
 use arbitrary::Unstructured;
 use bytes::Bytes;
 use nectar_ldb::{
-    ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, Metadata, Reader, V1, apply,
-    generators, recanonicalize,
+    ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, Metadata, Plaintext, Reader, V1,
+    apply, generators, recanonicalize,
 };
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{
@@ -76,7 +76,7 @@ fn fill_radix(builder: &mut Builder<V1>, radix: u8, remaining: u32, key: &mut Ve
 fn build_radix(store: &MemoryStore, radix: u8, len: u32) -> Result<BuildStats> {
     let mut builder = Builder::<V1>::new();
     fill_radix(&mut builder, radix, len, &mut Vec::new(), 0x11);
-    let built = run(builder.build(store))?;
+    let built = run(builder.build(store, &Plaintext))?;
     Ok(*built.stats())
 }
 
@@ -155,7 +155,7 @@ fn a_million_key_manifest_is_depth_bounded() -> Result<()> {
     let inner = MemoryStore::default();
     let mut builder = Builder::<V1>::new();
     fill_radix256(&mut builder, 16, 0x22)?;
-    let built = run(builder.build(&inner))?;
+    let built = run(builder.build(&inner, &Plaintext))?;
     let stats = *built.stats();
     let root = *built.root();
 
@@ -213,7 +213,7 @@ fn a_full_radix_256_node_of_heavy_records_packs_and_reads() -> Result<()> {
         let meta = Metadata::new(KeyId::ContentType, Bytes::from(vec![b'a'; 900]))?;
         builder.insert(Key::from(vec![byte]), entry(byte), Some(meta));
     }
-    let built = run(builder.build(&store))?;
+    let built = run(builder.build(&store, &Plaintext))?;
 
     // The node did not fit one chunk, so it was spilled across several.
     ensure!(
@@ -248,12 +248,12 @@ fn every_spilled_chunk_re_encodes_to_its_own_bytes() -> Result<()> {
         let meta = Metadata::new(KeyId::ContentType, Bytes::from(vec![b'a'; 700]))?;
         builder.insert(Key::from(vec![byte]), entry(byte), Some(meta));
     }
-    run(builder.build(&store))?;
+    run(builder.build(&store, &Plaintext))?;
 
     let mut saw_segment = false;
     for chunk in store.into_chunks().into_values() {
         let payload = chunk.envelope().data();
-        let reencoded = recanonicalize::<V1>(payload.as_ref())?;
+        let reencoded = recanonicalize::<V1, ChunkRef>(payload.as_ref())?;
         ensure!(
             reencoded.as_slice() == payload.as_ref(),
             "a stored chunk did not re-encode to its own bytes",
@@ -287,7 +287,7 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> Result<()> {
         let byte = u8::try_from(first)?;
         base_builder.insert(Key::from(vec![byte]), entry(byte), Some(heavy()?));
     }
-    let base = run(base_builder.build(&base_store))?;
+    let base = run(base_builder.build(&base_store, &Plaintext))?;
     ensure!(
         base.stats().nodes_written() > 1,
         "the base root node must spill",
@@ -302,6 +302,7 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> Result<()> {
     }
     let applied = run(apply(
         &ContentGet::new(&base_store),
+        &Plaintext,
         base.root(),
         &changeset,
     ))?;
@@ -313,7 +314,7 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> Result<()> {
         let byte = u8::try_from(first)?;
         scratch_builder.insert(Key::from(vec![byte]), entry(byte), Some(heavy()?));
     }
-    let scratch = run(scratch_builder.build(&scratch_store))?;
+    let scratch = run(scratch_builder.build(&scratch_store, &Plaintext))?;
 
     ensure!(
         applied == *scratch.root(),
@@ -364,7 +365,7 @@ proptest! {
             };
             builder.insert(Key::from(key.clone()), entry(*fill), metadata);
         }
-        let built = run(builder.build(&store));
+        let built = run(builder.build(&store, &Plaintext));
         prop_assert!(built.is_ok(), "a wide/heavy set must spill, not error: {built:?}");
         for len in chunk_lengths(&store) {
             prop_assert!(len <= DEFAULT_BODY_SIZE, "built node over one chunk body");
@@ -383,14 +384,14 @@ proptest! {
         for (key, fill, _) in &base {
             builder.insert(Key::from(key.clone()), entry(*fill), None);
         }
-        let Ok(built) = run(builder.build(&store)) else {
+        let Ok(built) = run(builder.build(&store, &Plaintext)) else {
             return Ok(());
         };
         let mut changeset = Changeset::<V1>::new();
         for (key, fill, _) in &delta {
             changeset.put(Key::from(key.clone()), entry(*fill), None);
         }
-        match run(apply(&ContentGet::new(&store), built.root(), &changeset)) {
+        match run(apply(&ContentGet::new(&store), &Plaintext, built.root(), &changeset)) {
             Ok(_) => {
                 for len in chunk_lengths(&store) {
                     prop_assert!(len <= DEFAULT_BODY_SIZE, "applied node over one chunk body");
@@ -421,7 +422,7 @@ proptest! {
         for (key, entry, meta) in rows {
             builder.insert(key, entry, meta);
         }
-        let built = run(builder.build(&store));
+        let built = run(builder.build(&store, &Plaintext));
         prop_assert!(built.is_ok(), "a chain set must pack, not error: {built:?}");
         for len in chunk_lengths(&store) {
             prop_assert!(len <= DEFAULT_BODY_SIZE, "built chain node over one chunk body");

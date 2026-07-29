@@ -20,8 +20,14 @@
 //! The data model is [`Node`]: an optional [`RootExtension`] (the root's
 //! own entry and manifest metadata, complete in the root's own bytes) over
 //! a [`ForkTable`] of [`ForkRecord`]s keyed on the first prefix byte, so
-//! fork order and the radix-256 bound are structural. No flags are stored;
-//! presence bits are derived from the structure at encode time.
+//! fork order and the radix-256 bound are structural. Only presence bits are
+//! derived from the structure at encode time.
+//!
+//! Node addressing is generic over the sealed `Reference` trait: `Node<F, R>`
+//! links its children by `R::SIZE` references, defaulting to `ChunkRef`. The
+//! width is one whole-database fact, witnessed once per chunk in its flags
+//! byte, so a plaintext and a structurally encrypted database are distinct
+//! types that can neither mix on the wire nor be read as one another.
 //!
 //! The codec is [`Node::encode`] and [`Node::decode`] over the primitives
 //! wire cursor and writer. Decode is reject-or-accept and dispatches on the
@@ -34,14 +40,18 @@
 //! oversized fork table). Every boundary is a pure function of content, so an
 //! insert disturbs `O(1)` boundaries and re-rooting does not churn.
 //!
-//! Encryption is per-reference: a ref64 ([`Entry::Ref64`], [`Child::Ref64`])
-//! carries `address || key`, transporting the child's decryption key in the
-//! parent record with no side channel, so reading a node opens every child it
-//! references, recursively. The 64-byte representation is always available, so
-//! a build without the `encryption` feature still decodes and re-serializes an
-//! encrypted manifest losslessly; only the crypto (key derivation, sealing,
-//! opening) sits behind the feature. The key derivation is deterministic, so an
-//! encrypted tree keeps canonical bytes and cross-build dedup.
+//! Encryption is per-reference: an encrypted reference carries `address ||
+//! key`, transporting the child's decryption key in the parent record with no
+//! side channel, so reading a node opens every child it references,
+//! recursively. Structural encryption is the reference parameter: a database
+//! keyed by `EncryptedChunkRef` stores every node and segment as ciphertext.
+//! Reading needs the reference alone, so a build without the `encryption`
+//! feature still opens and re-serializes an encrypted database losslessly; only
+//! the write side (key derivation and sealing, [`Encrypted`]) sits behind the
+//! feature. The key derivation is deterministic, so an encrypted tree keeps
+//! canonical bytes and cross-build dedup. Values stay width-free: an
+//! [`Entry`] names a plain or an encrypted chunk whatever the structure's own
+//! width.
 //!
 //! The folder view ([`Reader::list`], [`Reader::serve`]) is a path
 //! interpretation over the flat KV core: the separator is [`Format::SEPARATOR`],
@@ -50,10 +60,9 @@
 //! magic keys. A listing collapses deeper keys at the next separator and seeks
 //! past each named subtree, so it stays O(depth) and fetches no value chunk.
 //!
-//! PRIVACY: a ref64 IS a read capability for its whole subtree. Writing one
-//! into a PLAINTEXT parent publishes that key to anyone who reads the parent;
-//! confidentiality rests solely on the outermost ref64 being distributed
-//! privately. See the `encryption` module.
+//! PRIVACY: an encrypted reference IS a read capability for its whole
+//! subtree. Confidentiality rests solely on the outermost reference being
+//! distributed privately. See the `encryption` module.
 //!
 //! ```
 //! use nectar_ldb::{Format, Prefix, V1};
@@ -123,7 +132,7 @@ pub use codec::{DecodeError, EncodeError, recanonicalize};
 pub use count::{CountError, SubtreeCount};
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
-pub use encryption::{EncryptedNode, EncryptedNodeGet, EncryptedNodePut, derive_key};
+pub use encryption::{Encrypted, derive_key};
 pub use error::{
     CustomKeyError, ForkPrefixEmpty, MetadataTooLong, NotAReference, PrefixTooLong, ValueTooLong,
     WeightOverBudget,
@@ -132,10 +141,10 @@ pub use folder::{DirEntry, Listing, Served, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
-pub use node::{Node, RootExtension};
-pub use packing::{Directory, Domain, SegmentKind, cut, embed, h64, segment, spill};
+pub use node::{Node, NodeRef, RootExtension};
+pub use packing::{Directory, SegmentKind, cut, embed, h64, segment, spill};
 pub use reader::{Reader, ReaderError};
 pub use scan::Cursor;
-pub use store::{NodeChunk, NodeGet, NodePut, StoreError};
+pub use store::{NodeChunk, NodeGet, NodePut, Plaintext, Seal, StoreError};
 pub use traverse::AddressStream;
 pub use value::{Entry, InlineValue, Key};

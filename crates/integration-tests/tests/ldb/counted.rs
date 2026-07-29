@@ -5,7 +5,7 @@
 
 use anyhow::{Result, ensure};
 use bytes::Bytes;
-use nectar_ldb::{Builder, Changeset, Entry, Key, Reader, V1, apply};
+use nectar_ldb::{Builder, Changeset, Entry, Key, Plaintext, Reader, V1, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, MemoryStore};
 use nectar_testing::run;
 
@@ -25,13 +25,13 @@ fn keys() -> Vec<(Key, u8)> {
     out
 }
 
-fn build<F: nectar_ldb::Format>(order: &[(Key, u8)]) -> Result<ChunkAddress> {
+fn build<F: nectar_ldb::Format>(order: &[(Key, u8)]) -> Result<ChunkRef> {
     let store = MemoryStore::default();
     let mut builder = Builder::<F>::new();
     for (key, fill) in order {
         builder.insert(key.clone(), ref_entry::<F>(*fill), None);
     }
-    Ok(*run(builder.build(&store))?.root())
+    Ok(*run(builder.build(&store, &Plaintext))?.root())
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn build_then_read_round_trips_every_key() -> Result<()> {
     for (key, fill) in &all {
         builder.insert(key.clone(), ref_entry::<V1>(*fill), None);
     }
-    let root = *run(builder.build(&store))?.root();
+    let root = *run(builder.build(&store, &Plaintext))?.root();
 
     let reader = Reader::<_, V1>::new(ContentGet::new(store));
     run(async {
@@ -80,13 +80,18 @@ fn apply_matches_a_from_scratch_build() -> Result<()> {
     for (key, fill) in all.iter().take(split) {
         base.insert(key.clone(), ref_entry::<V1>(*fill), None);
     }
-    let base_root = *run(base.build(&store))?.root();
+    let base_root = *run(base.build(&store, &Plaintext))?.root();
 
     let mut changeset = Changeset::<V1>::new();
     for (key, fill) in all.iter().skip(split) {
         changeset.put(key.clone(), ref_entry::<V1>(*fill), None);
     }
-    let applied = run(apply(&ContentGet::new(&store), &base_root, &changeset))?;
+    let applied = run(apply(
+        &ContentGet::new(&store),
+        &Plaintext,
+        &base_root,
+        &changeset,
+    ))?;
 
     let scratch = build::<V1>(&all)?;
     ensure!(applied == scratch, "apply must match a from-scratch build");
@@ -99,7 +104,7 @@ fn an_inline_value_round_trips() -> Result<()> {
     let mut builder = Builder::<V1>::new();
     let value = Entry::<V1>::inline(Bytes::from_static(b"<h1>hi</h1>"))?;
     builder.insert(Key::from(&b"index.html"[..]), value.clone(), None);
-    let root = *run(builder.build(&store))?.root();
+    let root = *run(builder.build(&store, &Plaintext))?.root();
 
     let reader = Reader::<_, V1>::new(ContentGet::new(store));
     let got = run(reader.get(&root, &Key::from(&b"index.html"[..])))?;

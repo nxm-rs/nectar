@@ -12,7 +12,7 @@ use bytes::Bytes;
 use nectar_file::{Plain, PutWindow, collect_into};
 use nectar_ldb::{
     BuildStats, Builder, Built, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node,
-    NodeGet, Prefix, RootExtension, V1,
+    NodeGet, Plaintext, Prefix, RootExtension, V1,
 };
 use nectar_primitives::store::ChunkPut;
 use nectar_primitives::{
@@ -32,7 +32,7 @@ async fn build_files(
             collect_into::<_, Plain, DEFAULT_BODY_SIZE>(store, PutWindow::DEFAULT, &data).await?;
         builder.insert(key, Entry::from(ChunkRef::new(root)), None);
     }
-    Ok(builder.build(store).await?)
+    Ok(builder.build(store, &Plaintext).await?)
 }
 
 const fn ref32(byte: u8) -> ChunkRef {
@@ -98,13 +98,15 @@ fn builds_the_worked_example_byte_for_byte() -> Result<()> {
         )
         .manifest_metadata(website_index()?);
 
-    let built = run(builder.build(&store))?;
+    let built = run(builder.build(&store, &Plaintext))?;
 
     // The shared child is inlined, so the whole manifest is one chunk.
     ensure!(built.stats().nodes_written() == 1, "one node written");
     ensure!(built.stats().nodes_embedded() == 1, "one child embedded");
 
-    let chunk = store.get(built.root()).context("root not stored")?;
+    let chunk = store
+        .get(built.root().address())
+        .context("root not stored")?;
     let expected = worked_example_node()?.encode()?;
     ensure!(expected.len() == 150, "worked example is 150 bytes");
     ensure!(
@@ -117,13 +119,13 @@ fn builds_the_worked_example_byte_for_byte() -> Result<()> {
     Ok(())
 }
 
-fn root_of(order: &[(&[u8], u8)]) -> Result<ChunkAddress> {
+fn root_of(order: &[(&[u8], u8)]) -> Result<ChunkRef> {
     let store = MemoryStore::default();
     let mut builder: Builder = Builder::new();
     for (key, fill) in order {
         builder.insert(Key::from(*key), Entry::from(ref32(*fill)), None);
     }
-    Ok(*run(builder.build(&store))?.root())
+    Ok(*run(builder.build(&store, &Plaintext))?.root())
 }
 
 #[test]
@@ -159,7 +161,7 @@ fn two_level_stats(store: &MemoryStore, fan: u16, width: u8) -> Result<BuildStat
             builder.insert(Key::from(&[hi, lo][..]), Entry::from(ref32(hi)), None);
         }
     }
-    Ok(*run(builder.build(store))?.stats())
+    Ok(*run(builder.build(store, &Plaintext))?.stats())
 }
 
 #[test]
@@ -241,7 +243,7 @@ fn the_put_window_overlaps_sibling_spills() -> Result<()> {
     // Single-step the build: it parks only once its window is full of parked
     // puts, so releasing them each time it stalls carries it to the root while
     // the gate records the overlap.
-    let mut drive = Drive::new(builder.build(&store));
+    let mut drive = Drive::new(builder.build(&store, &Plaintext));
     let built = loop {
         match drive.poll() {
             Poll::Ready(result) => break result?,
@@ -270,7 +272,7 @@ fn the_put_window_overlaps_sibling_spills() -> Result<()> {
 fn the_empty_builder_publishes_the_empty_root() -> Result<()> {
     let store = MemoryStore::default();
     let builder: Builder = Builder::new();
-    let built = run(builder.build(&store))?;
+    let built = run(builder.build(&store, &Plaintext))?;
 
     ensure!(built.stats().peak_open_nodes() == 1, "one open node");
     ensure!(built.stats().nodes_written() == 1, "one node written");
@@ -323,7 +325,7 @@ fn a_key_that_prefixes_another_shares_a_fork() -> Result<()> {
     builder
         .insert(Key::from(&b"a"[..]), Entry::from(ref32(1)), None)
         .insert(Key::from(&b"ab"[..]), Entry::from(ref32(2)), None);
-    let built = run(builder.build(&store))?;
+    let built = run(builder.build(&store, &Plaintext))?;
 
     let node: Node = run(ContentGet::new(&store).get_node(built.root()))?;
     let record = node.forks().get(b'a').context("missing fork a")?;

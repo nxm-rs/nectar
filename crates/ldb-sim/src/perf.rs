@@ -16,7 +16,7 @@ use bytes::Bytes;
 use nectar_testing::run;
 
 use nectar_ldb::{
-    Builder, Changeset, Entry, Format, Key, KeyId, Metadata, Reader, V1, V1Read, apply,
+    Builder, Changeset, Entry, Format, Key, KeyId, Metadata, Plaintext, Reader, V1, V1Read, apply,
 };
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, StandardChunkSet};
@@ -64,7 +64,7 @@ fn meta_for<F: Format>(k: &GenKey) -> Option<Metadata<F>> {
 }
 
 /// Build every key into a fresh in-memory store, returning the root.
-fn build_mem<F: Format>(keys: &[GenKey]) -> Result<(MemoryStore, ChunkAddress), Err> {
+fn build_mem<F: Format>(keys: &[GenKey]) -> Result<(MemoryStore, ChunkRef), Err> {
     let store = MemoryStore::default();
     let mut builder = Builder::<F>::new();
     for k in keys {
@@ -74,7 +74,7 @@ fn build_mem<F: Format>(keys: &[GenKey]) -> Result<(MemoryStore, ChunkAddress), 
             meta_for::<F>(k),
         );
     }
-    let built = run(builder.build(&store))?;
+    let built = run(builder.build(&store, &Plaintext))?;
     let root = *built.root();
     Ok((store, root))
 }
@@ -82,7 +82,7 @@ fn build_mem<F: Format>(keys: &[GenKey]) -> Result<(MemoryStore, ChunkAddress), 
 /// Build every key into a fresh counting store, returning the root.
 fn build_counting<F: Format>(
     keys: &[GenKey],
-) -> Result<(CountingStore<StandardChunkSet>, ChunkAddress), Err> {
+) -> Result<(CountingStore<StandardChunkSet>, ChunkRef), Err> {
     let store = CountingStore::<StandardChunkSet>::new();
     let mut builder = Builder::<F>::new();
     for k in keys {
@@ -92,7 +92,7 @@ fn build_counting<F: Format>(
             meta_for::<F>(k),
         );
     }
-    let built = run(builder.build(&store))?;
+    let built = run(builder.build(&store, &Plaintext))?;
     let root = *built.root();
     Ok((store, root))
 }
@@ -176,7 +176,7 @@ fn block_on_paused<T>(f: impl Future<Output = T>) -> Result<T, Err> {
 /// bounded-concurrency read-ahead collapses independent fetches into one round.
 fn range_rounds<F: Format>(
     store: &MemoryStore,
-    root: &ChunkAddress,
+    root: &ChunkRef,
     lo: &Key,
     hi: &Key,
 ) -> Result<(u64, u64, u64), Err> {
@@ -198,7 +198,7 @@ fn range_rounds<F: Format>(
 /// Drain a prefix scan under the paused virtual clock, as [`range_rounds`].
 fn prefix_rounds<F: Format>(
     store: &MemoryStore,
-    root: &ChunkAddress,
+    root: &ChunkRef,
     prefix: &Key,
 ) -> Result<(u64, u64, u64), Err> {
     let out = block_on_paused(async {
@@ -289,7 +289,7 @@ pub fn parallel_cursor_cells(
 fn get_depth<F: Format>(
     store: &CountingStore<StandardChunkSet>,
     reader: &Reader<ContentGet<&CountingStore<StandardChunkSet>>, F>,
-    root: &ChunkAddress,
+    root: &ChunkRef,
     keys: &[GenKey],
     idxs: &[usize],
 ) -> Result<(f64, u64), Err> {
@@ -341,7 +341,7 @@ fn read_side<F: Format>(keys: &[GenKey]) -> Result<ReadProfileSide, Err> {
                 meta_for::<F>(k),
             );
             let before = store.puts();
-            let _ = run(apply(&ContentGet::new(&store), &root, &cs))?;
+            let _ = run(apply(&ContentGet::new(&store), &Plaintext, &root, &cs))?;
             rewrites.push(store.puts().saturating_sub(before));
         }
     }

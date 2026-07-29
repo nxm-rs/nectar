@@ -16,6 +16,7 @@ use futures_util::stream::FuturesUnordered;
 use nectar_governor::{Admission, BoxFuture, Window};
 
 use crate::format::Format;
+use crate::node::NodeRef;
 use crate::reader::ReaderError;
 use crate::scan::Step;
 
@@ -42,12 +43,12 @@ impl<'a, T, Fut> FetchFuture<'a, T> for Fut where Fut: Future<Output = Result<T,
 
 /// One chunk's ordered contents plus the walk position within them.
 #[derive(Clone, Debug)]
-pub(crate) struct Frame<F: Format> {
+pub(crate) struct Frame<F: Format, R: NodeRef> {
     /// Key bytes consumed to reach this chunk's root; empty for a walker
     /// that does not track keys.
     pub(crate) base: Bytes,
     /// The chunk's steps in ascending key order.
-    pub(crate) steps: Vec<Step<F>>,
+    pub(crate) steps: Vec<Step<F, R>>,
     /// The next step to visit.
     pub(crate) index: usize,
     /// Per-step prefetch tag, parallel to `steps`: the sequence id a
@@ -55,9 +56,9 @@ pub(crate) struct Frame<F: Format> {
     tags: Vec<Option<usize>>,
 }
 
-impl<F: Format> Frame<F> {
+impl<F: Format, R: NodeRef> Frame<F, R> {
     /// A frame over `steps`, resuming at `index`, with no prefetch tags.
-    pub(crate) fn new(base: Bytes, steps: Vec<Step<F>>, index: usize) -> Self {
+    pub(crate) fn new(base: Bytes, steps: Vec<Step<F, R>>, index: usize) -> Self {
         let tags = vec![None; steps.len()];
         Self {
             base,
@@ -108,15 +109,16 @@ pub(crate) enum Plan<Fut> {
 /// serial walk's own fetch; only the lookahead behind it is capped.
 /// [`Plan::Stop`] ends admission where the walk itself stops, and a step
 /// already tagged is never relaunched.
-pub(crate) fn fill<'a, F, T, Fut>(
+pub(crate) fn fill<'a, F, R, T, Fut>(
     window: usize,
     buffered: usize,
     next_seq: &mut usize,
-    frames: &mut [Frame<F>],
+    frames: &mut [Frame<F, R>],
     in_flight: &mut FuturesUnordered<BoxFuture<'a, Completion<T>>>,
-    mut plan: impl FnMut(&Bytes, &Step<F>) -> Plan<Fut>,
+    mut plan: impl FnMut(&Bytes, &Step<F, R>) -> Plan<Fut>,
 ) where
     F: Format,
+    R: NodeRef,
     Fut: FetchFuture<'a, T>,
 {
     let admission = Admission::new(

@@ -24,15 +24,13 @@ use core::task::{Context, Poll};
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::BoxFuture;
-use nectar_primitives::ChunkAddress;
-#[cfg(feature = "encryption")]
-use nectar_primitives::EncryptedChunkRef;
+use nectar_primitives::ChunkRef;
 use nectar_primitives::store::MaybeSync;
 
 use crate::fork::{Child, ForkTable};
 use crate::format::{Format, V1};
 use crate::frontier::{Completion, Frame, Plan, claim, fill};
-use crate::node::Node;
+use crate::node::{Node, NodeRef};
 use crate::reader::{Reader, ReaderError};
 use crate::store::NodeGet;
 use crate::value::{Entry, Key};
@@ -43,7 +41,7 @@ use crate::value::{Entry, Key};
 /// chunk base followed by the suffix. A referenced child is a descent point,
 /// never a value: iteration fetches it only to keep walking, not to read it.
 #[derive(Clone, Debug)]
-pub(crate) enum Step<F: Format> {
+pub(crate) enum Step<F: Format, R: NodeRef> {
     /// A key terminates here with this value.
     Value {
         /// Key bytes below the chunk root.
@@ -55,34 +53,23 @@ pub(crate) enum Step<F: Format> {
     Ref {
         /// Key bytes below the chunk root leading to the child.
         suffix: Bytes,
-        /// The child chunk address.
-        addr: ChunkAddress,
-    },
-    /// The trie continues into an encrypted child the plain cursor cannot
-    /// open.
-    Encrypted {
-        /// Key bytes below the chunk root leading to the child.
-        suffix: Bytes,
-        /// The child's reference: address plus decryption key, carried for
-        /// the traversal that can open it.
-        #[cfg(feature = "encryption")]
-        reference: EncryptedChunkRef,
+        /// The reference reaching the child chunk; an encrypted one carries
+        /// the key that opens it.
+        reference: R,
     },
 }
 
-impl<F: Format> Step<F> {
+impl<F: Format, R: NodeRef> Step<F, R> {
     /// The key bytes below the chunk root.
     fn suffix(&self) -> &[u8] {
         match self {
-            Self::Value { suffix, .. }
-            | Self::Ref { suffix, .. }
-            | Self::Encrypted { suffix, .. } => suffix,
+            Self::Value { suffix, .. } | Self::Ref { suffix, .. } => suffix,
         }
     }
 }
 
 /// One completed prefetch payload: the fetched child's flattened steps.
-type Fetched<F> = Completion<Vec<Step<F>>>;
+type Fetched<F, R> = Completion<Vec<Step<F, R>>>;
 
 /// One delivered turn of the walk: a key-value pair, the end of the walk, or
 /// a non-terminal fault.
@@ -104,22 +91,22 @@ type Turn<F> = Result<Option<(Key, Entry<F>)>, ReaderError>;
 /// Cancel-safe: a descent's step is consumed only after its fetch completes,
 /// so a dropped [`next`](Self::next) future replays the same descent.
 ///
-/// Every fault is non-terminal (a failed descent replays, an encrypted edge
-/// is stepped past), so a fault rides the delivered turn rather than ending
-/// the walk. The walk advances inside [`admit`](Self::admit), where the
-/// launch a fresh descent needs is reachable.
+/// Every fault is non-terminal (a failed descent replays), so a fault rides
+/// the delivered turn rather than ending the walk. The walk advances inside
+/// [`admit`](Self::admit), where the launch a fresh descent needs is
+/// reachable.
 #[derive(Debug)]
-pub struct Cursor<'a, S, F: Format = V1> {
+pub struct Cursor<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
     /// One frame per referenced hop on the current path.
-    stack: Vec<Frame<F>>,
+    stack: Vec<Frame<F, R>>,
     /// Exclusive upper bound on yielded keys.
     end: Option<Bytes>,
     /// Node fetches launched ahead of the walk.
-    in_flight: FuturesUnordered<BoxFuture<'a, Fetched<F>>>,
+    in_flight: FuturesUnordered<BoxFuture<'a, Fetched<F, R>>>,
     /// Completions that arrived before the descent awaiting them; drained by
     /// sequence id and bounded with the in-flight set by the window.
-    ready: Vec<Fetched<F>>,
+    ready: Vec<Fetched<F, R>>,
     /// The next fetch sequence id to hand out.
     next_seq: usize,
     /// The turn advanced to under `admit`, awaiting hand-over.
@@ -139,14 +126,13 @@ enum Advance<F: Format> {
     /// Descend into the referenced child rooted at this key prefix, claiming
     /// the prefetch landed under this sequence id once tagged.
     Descend(Vec<u8>, Option<usize>),
-    /// An encrypted child blocks the walk at this key prefix.
-    Encrypted(Vec<u8>),
 }
 
-impl<'a, S, F> Cursor<'a, S, F>
+impl<'a, S, F, R> Cursor<'a, S, F, R>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     /// Stage the next turn, then launch the read-ahead the walk needs.
     ///
@@ -171,14 +157,12 @@ where
                     return Plan::Stop;
                 }
                 match step {
-                    // The walk errors here; no deeper node is fetched.
-                    Step::Encrypted { .. } => Plan::Stop,
                     Step::Value { .. } => Plan::Skip,
-                    Step::Ref { addr, .. } => {
-                        let addr = *addr;
+                    Step::Ref { reference, .. } => {
+                        let reference = reference.clone();
                         Plan::Fetch(async move {
                             store
-                                .get_node::<F>(&addr)
+                                .get_node::<F, R>(&reference)
                                 .await
                                 .map(|node| flatten(&node, false))
                                 .map_err(ReaderError::from)
@@ -226,10 +210,6 @@ where
                             Step::Ref { suffix, .. } => {
                                 Advance::Descend(join(&frame.base, suffix), frame.tag(index))
                             }
-                            Step::Encrypted { suffix, .. } => {
-                                frame.index = index.saturating_add(1);
-                                Advance::Encrypted(join(&frame.base, suffix))
-                            }
                         },
                     }
                 }
@@ -271,12 +251,6 @@ where
                         }
                     }
                 }
-                Advance::Encrypted(child_base) => {
-                    if self.past_end(&child_base) {
-                        return Some(Ok(None));
-                    }
-                    return Some(Err(ReaderError::EncryptedChild));
-                }
             }
         }
     }
@@ -292,16 +266,16 @@ where
     /// `end` (exclusive), descending only the referenced hops on the seek path.
     pub(crate) async fn seek(
         store: &'a S,
-        root: &ChunkAddress,
+        root: &R,
         start: &[u8],
         end: Option<Bytes>,
     ) -> Result<Self, ReaderError> {
-        let mut stack: Vec<Frame<F>> = Vec::new();
+        let mut stack: Vec<Frame<F, R>> = Vec::new();
         let mut base: Vec<u8> = Vec::new();
-        let mut addr = *root;
+        let mut reference = root.clone();
         let mut is_root = true;
         loop {
-            let node = store.get_node::<F>(&addr).await?;
+            let node = store.get_node::<F, R>(&reference).await?;
             let steps = flatten(&node, is_root);
             let remaining = start.get(base.len()..).unwrap_or(&[]);
             if remaining.is_empty() {
@@ -309,7 +283,7 @@ where
                 break;
             }
             let mut chosen = steps.len();
-            let mut deeper: Option<(usize, ChunkAddress, Bytes)> = None;
+            let mut deeper: Option<(usize, R, Bytes)> = None;
             for (i, step) in steps.iter().enumerate() {
                 let v = step.suffix();
                 if v >= remaining {
@@ -318,18 +292,14 @@ where
                 }
                 // `v < remaining`: the seek key descends only into a referenced
                 // child whose whole edge is a prefix of what remains.
-                match step {
-                    Step::Ref {
-                        suffix,
-                        addr: child,
-                    } if remaining.starts_with(v) => {
-                        deeper = Some((i, *child, suffix.clone()));
-                        break;
-                    }
-                    Step::Encrypted { .. } if remaining.starts_with(v) => {
-                        return Err(ReaderError::EncryptedChild);
-                    }
-                    _ => {}
+                if let Step::Ref {
+                    suffix,
+                    reference: child,
+                } = step
+                    && remaining.starts_with(v)
+                {
+                    deeper = Some((i, child.clone(), suffix.clone()));
+                    break;
                 }
             }
             match deeper {
@@ -340,7 +310,7 @@ where
                         i.saturating_add(1),
                     ));
                     base.extend_from_slice(&suffix);
-                    addr = child;
+                    reference = child;
                     is_root = false;
                 }
                 None => {
@@ -418,23 +388,24 @@ where
     }
 }
 
-impl<S, F> Reader<S, F>
+impl<S, F, R> Reader<S, F, R>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     /// Every `(key, value)` in ascending key order.
-    pub async fn iter(&self, root: &ChunkAddress) -> Result<Cursor<'_, S, F>, ReaderError> {
+    pub async fn iter(&self, root: &R) -> Result<Cursor<'_, S, F, R>, ReaderError> {
         Cursor::seek(self.store(), root, &[], None).await
     }
 
     /// Every `(key, value)` with `lo <= key < hi`, in ascending key order.
     pub async fn range(
         &self,
-        root: &ChunkAddress,
+        root: &R,
         lo: &Key,
         hi: &Key,
-    ) -> Result<Cursor<'_, S, F>, ReaderError> {
+    ) -> Result<Cursor<'_, S, F, R>, ReaderError> {
         let end = Bytes::copy_from_slice(hi.as_bytes());
         Cursor::seek(self.store(), root, lo.as_bytes(), Some(end)).await
     }
@@ -443,11 +414,7 @@ where
     ///
     /// The prefix range is `[prefix, successor(prefix))`; an all-`0xFF` or empty
     /// prefix has no successor and the scan runs unbounded to the last key.
-    pub async fn prefix(
-        &self,
-        root: &ChunkAddress,
-        prefix: &Key,
-    ) -> Result<Cursor<'_, S, F>, ReaderError> {
+    pub async fn prefix(&self, root: &R, prefix: &Key) -> Result<Cursor<'_, S, F, R>, ReaderError> {
         let end = successor(prefix.as_bytes());
         Cursor::seek(self.store(), root, prefix.as_bytes(), end).await
     }
@@ -458,25 +425,21 @@ where
     /// Follows the target down the trie and, where the path dead-ends, takes the
     /// rightmost key of the largest branch left of it, so the cost stays
     /// O(depth) rather than a scan of the level.
-    pub async fn floor(
-        &self,
-        root: &ChunkAddress,
-        key: &Key,
-    ) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
+    pub async fn floor(&self, root: &R, key: &Key) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
         let store = self.store();
         let target = key.as_bytes();
         let mut base: Vec<u8> = Vec::new();
-        let mut addr = *root;
+        let mut reference = root.clone();
         let mut is_root = true;
         // The greatest branch strictly left of the target found at a shallower
         // level; a deeper left branch always outranks it, so one slot suffices.
-        let mut fallback: Option<(Bytes, Step<F>)> = None;
+        let mut fallback: Option<(Bytes, Step<F, R>)> = None;
         loop {
-            let node = store.get_node::<F>(&addr).await?;
+            let node = store.get_node::<F, R>(&reference).await?;
             let steps = flatten(&node, is_root);
             let remaining = target.get(base.len()..).unwrap_or(&[]);
-            let mut left: Option<Step<F>> = None;
-            let mut descend: Option<(ChunkAddress, Bytes)> = None;
+            let mut left: Option<Step<F, R>> = None;
+            let mut descend: Option<(R, Bytes)> = None;
             let mut exact: Option<Entry<F>> = None;
             for step in &steps {
                 match step.suffix().cmp(remaining) {
@@ -491,17 +454,11 @@ where
                         Step::Value { .. } => left = Some(step.clone()),
                         Step::Ref {
                             suffix,
-                            addr: child,
+                            reference: child,
                         } => {
                             if remaining.starts_with(step.suffix()) {
-                                descend = Some((*child, suffix.clone()));
+                                descend = Some((child.clone(), suffix.clone()));
                                 break;
-                            }
-                            left = Some(step.clone());
-                        }
-                        Step::Encrypted { .. } => {
-                            if remaining.starts_with(step.suffix()) {
-                                return Err(ReaderError::EncryptedChild);
                             }
                             left = Some(step.clone());
                         }
@@ -516,7 +473,7 @@ where
                     fallback = Some((Bytes::from(base.clone()), step));
                 }
                 base.extend_from_slice(&suffix);
-                addr = child;
+                reference = child;
                 is_root = false;
                 continue;
             }
@@ -530,15 +487,16 @@ where
 }
 
 /// The greatest key at or below a resolved step: a value is itself, a
-/// referenced child is its rightmost key, an encrypted child cannot be opened.
-async fn max_key<S, F>(
+/// referenced child is its rightmost key.
+async fn max_key<S, F, R>(
     store: &S,
     base: Bytes,
-    step: Step<F>,
+    step: Step<F, R>,
 ) -> Result<Option<(Key, Entry<F>)>, ReaderError>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     let mut path = base.to_vec();
     match step {
@@ -546,27 +504,27 @@ where
             path.extend_from_slice(&suffix);
             Ok(Some((Key::new(Bytes::from(path)), entry)))
         }
-        Step::Encrypted { .. } => Err(ReaderError::EncryptedChild),
-        Step::Ref { suffix, addr } => {
+        Step::Ref { suffix, reference } => {
             path.extend_from_slice(&suffix);
-            rightmost(store, path, addr).await
+            rightmost(store, path, reference).await
         }
     }
 }
 
-/// The rightmost key of the subtree rooted at `addr`: the greatest step of each
+/// The rightmost key of the subtree at `reference`: the greatest step of each
 /// chunk on the descent is the last one, so one hop per level reaches it.
-async fn rightmost<S, F>(
+async fn rightmost<S, F, R>(
     store: &S,
     mut path: Vec<u8>,
-    mut addr: ChunkAddress,
+    mut reference: R,
 ) -> Result<Option<(Key, Entry<F>)>, ReaderError>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     loop {
-        let node = store.get_node::<F>(&addr).await?;
+        let node = store.get_node::<F, R>(&reference).await?;
         let steps = flatten(&node, false);
         match steps.last() {
             None => return Ok(None),
@@ -576,19 +534,18 @@ where
             }
             Some(Step::Ref {
                 suffix,
-                addr: child,
+                reference: child,
             }) => {
                 path.extend_from_slice(suffix);
-                addr = *child;
+                reference = child.clone();
             }
-            Some(Step::Encrypted { .. }) => return Err(ReaderError::EncryptedChild),
         }
     }
 }
 
 /// A chunk's contents flattened into ascending-key steps. The root chunk's own
 /// value is the empty key, the least of all, so it leads the list.
-pub(crate) fn flatten<F: Format>(node: &Node<F>, is_root: bool) -> Vec<Step<F>> {
+pub(crate) fn flatten<F: Format, R: NodeRef>(node: &Node<F, R>, is_root: bool) -> Vec<Step<F, R>> {
     let mut steps = Vec::new();
     if is_root && let Some(entry) = node.entry() {
         steps.push(Step::Value {
@@ -605,7 +562,11 @@ pub(crate) fn flatten<F: Format>(node: &Node<F>, is_root: bool) -> Vec<Step<F>> 
 /// child as a step. Embedded children stay in the chunk and recurse in place, so
 /// a whole chunk flattens without a fetch; the value of a fork precedes its
 /// child, matching key order.
-fn flatten_table<F: Format>(table: &ForkTable<F>, prefix: &mut Vec<u8>, steps: &mut Vec<Step<F>>) {
+fn flatten_table<F: Format, R: NodeRef>(
+    table: &ForkTable<F, R>,
+    prefix: &mut Vec<u8>,
+    steps: &mut Vec<Step<F, R>>,
+) {
     for (first, record) in table.iter() {
         let mark = prefix.len();
         prefix.push(first);
@@ -618,18 +579,9 @@ fn flatten_table<F: Format>(table: &ForkTable<F>, prefix: &mut Vec<u8>, steps: &
         }
         match record.child() {
             Some(Child::Embedded(inner)) => flatten_table(inner, prefix, steps),
-            Some(Child::Ref32(reference)) => steps.push(Step::Ref {
-                suffix: Bytes::copy_from_slice(prefix.as_slice()),
-                addr: *reference.address(),
-            }),
-            #[cfg(feature = "encryption")]
-            Some(Child::Ref64(reference)) => steps.push(Step::Encrypted {
+            Some(Child::Ref(reference)) => steps.push(Step::Ref {
                 suffix: Bytes::copy_from_slice(prefix.as_slice()),
                 reference: reference.clone(),
-            }),
-            #[cfg(not(feature = "encryption"))]
-            Some(Child::Ref64(_)) => steps.push(Step::Encrypted {
-                suffix: Bytes::copy_from_slice(prefix.as_slice()),
             }),
             None => {}
         }
@@ -666,6 +618,7 @@ pub(crate) fn successor(prefix: &[u8]) -> Option<Bytes> {
 
 #[cfg(test)]
 mod tests {
+    use crate::store::Plaintext;
     use core::pin::pin;
     use core::task::Poll;
     use std::vec;
@@ -673,10 +626,7 @@ mod tests {
     use nectar_primitives::store::{
         ChunkGet, ChunkStoreError, ContentGet, ContentGetError, MemoryStore,
     };
-    use nectar_primitives::{
-        Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, EncryptedChunkRef, EncryptionKey,
-        Verified,
-    };
+    use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
     use nectar_testing::run;
 
     use crate::bounded::Prefix;
@@ -705,10 +655,10 @@ mod tests {
 
     // A two-level manifest: a root fork "a" behind an embedded child holding
     // "aa"/"ab", and "b" behind a referenced leaf holding "ba".
-    fn sample(store: &ContentGet<MemoryStore>) -> ChunkAddress {
+    fn sample(store: &ContentGet<MemoryStore>) -> ChunkRef {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
-        let leaf_ref = run(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_ref = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
 
         let mut embedded = ForkTable::new();
         embedded
@@ -722,13 +672,9 @@ mod tests {
             .insert(prefix(b"a"), Child::Embedded(embedded).into(), None)
             .unwrap();
         forks
-            .insert(
-                prefix(b"b"),
-                Child::Ref32(ChunkRef::new(leaf_ref)).into(),
-                None,
-            )
+            .insert(prefix(b"b"), Child::Ref(leaf_ref).into(), None)
             .unwrap();
-        run(store.put_node(&Node::new(None, forks))).unwrap()
+        run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap()
     }
 
     #[test]
@@ -753,7 +699,7 @@ mod tests {
         let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
-        let root = run(store.put_node(&Node::new(root_ext, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(root_ext, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(run(reader.iter(&root)).unwrap());
         assert_eq!(got, vec![(Vec::new(), entry(9)), (b"k".to_vec(), entry(1))]);
@@ -823,103 +769,70 @@ mod tests {
         );
     }
 
-    // An encrypted (ref64) child the plain reader cannot open.
-    fn encrypted(byte: u8) -> Child {
-        Child::Ref64(EncryptedChunkRef::new(
-            ChunkAddress::new([byte; 32]),
-            EncryptionKey::from([byte ^ 0xFF; 32]),
-        ))
-    }
-
-    // A root holding "a" and "z" as plain values with an encrypted subtree
-    // wedged between them under "m".
-    fn with_encrypted(store: &ContentGet<MemoryStore>) -> ChunkAddress {
-        let mut forks = ForkTable::new();
-        forks
-            .insert(prefix(b"a"), entry(0xA1).into(), None)
-            .unwrap();
-        forks
-            .insert(prefix(b"m"), encrypted(0x4D).into(), None)
-            .unwrap();
-        forks
-            .insert(prefix(b"z"), entry(0x2C).into(), None)
-            .unwrap();
-        run(store.put_node(&Node::new(None, forks))).unwrap()
-    }
-
+    // The walks are width-generic: a structurally encrypted database iterates,
+    // ranges and floors exactly as the plaintext one does, opening each node
+    // with the key its own reference carries.
+    #[cfg(feature = "encryption")]
     #[test]
-    fn iteration_surfaces_an_encrypted_subtree_as_an_error() {
+    fn the_walks_hold_over_an_encrypted_database() {
+        use nectar_primitives::EncryptedChunkRef;
+
+        use crate::builder::Builder;
+        use crate::encryption::Encrypted;
+
         let store = ContentGet::new(MemoryStore::default());
-        let root = with_encrypted(&store);
-        let reader: Reader<_> = Reader::new(&store);
+        let rows: [(&[u8], u8); 3] = [(b"aa", 0xAA), (b"ab", 0xAB), (b"ba", 0xBA)];
+        let mut builder = Builder::<V1>::new();
+        for (key, fill) in rows {
+            builder.insert(Key::from(key), entry(fill), None);
+        }
+        let root = run(builder.build(&store, &Encrypted::<V1>::new(b"secret")))
+            .unwrap()
+            .root()
+            .clone();
+
+        let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
         let mut cursor = run(reader.iter(&root)).unwrap();
-        // The plain value before the encrypted edge reads back.
+        let mut got = Vec::new();
+        while let Some((key, value)) = run(cursor.next()).unwrap() {
+            got.push((key.as_bytes().to_vec(), value));
+        }
         assert_eq!(
-            run(cursor.next()).unwrap(),
-            Some((Key::from(&b"a"[..]), entry(0xA1)))
+            got,
+            vec![
+                (b"aa".to_vec(), entry(0xAA)),
+                (b"ab".to_vec(), entry(0xAB)),
+                (b"ba".to_vec(), entry(0xBA)),
+            ]
         );
-        // Reaching the encrypted child stops the walk with an error.
-        assert!(matches!(
-            run(cursor.next()).unwrap_err(),
-            ReaderError::EncryptedChild
-        ));
-    }
 
-    #[test]
-    fn a_bound_short_of_the_encrypted_edge_prunes_it() {
-        let store = ContentGet::new(MemoryStore::default());
-        let root = with_encrypted(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        // "m" is the exclusive upper bound, so the encrypted child at "m" is
-        // pruned rather than fetched, and the scan completes without error.
-        let got =
-            drain(run(reader.range(&root, &Key::from(&b"a"[..]), &Key::from(&b"m"[..]))).unwrap());
-        assert_eq!(got, vec![(b"a".to_vec(), entry(0xA1))]);
-    }
-
-    #[test]
-    fn floor_past_an_encrypted_edge_reads_the_plain_key() {
-        let store = ContentGet::new(MemoryStore::default());
-        let root = with_encrypted(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        // The floor of "z" is "z" itself; the encrypted subtree is left of the
-        // path and never opened.
+        // A half-open range and a floor lookup follow the same encrypted hops.
+        let mut cursor =
+            run(reader.range(&root, &Key::from(&b"aa"[..]), &Key::from(&b"ba"[..]))).unwrap();
+        let mut ranged = Vec::new();
+        while let Some((key, _)) = run(cursor.next()).unwrap() {
+            ranged.push(key.as_bytes().to_vec());
+        }
+        assert_eq!(ranged, vec![b"aa".to_vec(), b"ab".to_vec()]);
         assert_eq!(
-            run(reader.floor(&root, &Key::from(&b"z"[..]))).unwrap(),
-            Some((Key::from(&b"z"[..]), entry(0x2C)))
+            run(reader.floor(&root, &Key::from(&b"az"[..]))).unwrap(),
+            Some((Key::from(&b"ab"[..]), entry(0xAB)))
         );
-    }
-
-    #[test]
-    fn floor_landing_in_an_encrypted_subtree_cannot_be_read() {
-        let store = ContentGet::new(MemoryStore::default());
-        let root = with_encrypted(&store);
-        let reader: Reader<_> = Reader::new(&store);
-        // Every key at or below "n" that could be the floor lives in the
-        // encrypted subtree under "m", so the answer is unreadable.
-        assert!(matches!(
-            run(reader.floor(&root, &Key::from(&b"n"[..]))).unwrap_err(),
-            ReaderError::EncryptedChild
-        ));
     }
 
     // A root value "a" plus a referenced leaf under "b" holding "ba".
-    fn with_ref(store: &ContentGet<MemoryStore>) -> (ChunkAddress, ChunkAddress) {
+    fn with_ref(store: &ContentGet<MemoryStore>) -> (ChunkRef, ChunkRef) {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
-        let leaf_addr = run(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_addr = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
         let mut forks = ForkTable::new();
         forks
             .insert(prefix(b"a"), entry(0xA1).into(), None)
             .unwrap();
         forks
-            .insert(
-                prefix(b"b"),
-                Child::Ref32(ChunkRef::new(leaf_addr)).into(),
-                None,
-            )
+            .insert(prefix(b"b"), Child::Ref(leaf_addr).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
         (root, leaf_addr)
     }
 
@@ -1016,7 +929,7 @@ mod tests {
         let (root, leaf) = with_ref(&store);
         let flaky = FlakyStore {
             inner: store,
-            deny: leaf,
+            deny: *leaf.address(),
             failures: std::sync::Mutex::new(1),
         };
         let reader: Reader<_> = Reader::new(&flaky);

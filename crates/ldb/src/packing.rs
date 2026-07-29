@@ -12,13 +12,11 @@ use core::mem::size_of;
 use core::ops::Range;
 
 use alloy_primitives::keccak256;
-use nectar_primitives::{ChunkRef, EncryptedChunkRef};
+use nectar_primitives::Reference;
 
 use crate::bounded::{Prefix, SegmentWeight};
 use crate::count::MAX_WIRE_BYTES;
-use crate::fork::Child;
 use crate::format::Format;
-use crate::value::Entry;
 
 /// Bytes an edge starting at `consumed` may span before the next forced cut.
 ///
@@ -33,47 +31,6 @@ pub(crate) const fn cut_allowance<F: Format>(consumed: usize) -> usize {
         Some(spent) => F::PLEN_MAX.saturating_sub(spent),
         // A zero cap admits no edge byte at all; the format forbids it.
         None => F::PLEN_MAX,
-    }
-}
-
-/// The encryption regime of a subtree: plaintext 32-byte references, or
-/// encrypted 64-byte references carrying in-band keys.
-///
-/// Embedding never crosses the domain, so an encrypted child never inlines
-/// into a plaintext parent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Domain {
-    /// Plaintext subtree: 32-byte references.
-    Plain,
-    /// Encrypted subtree: 64-byte references carrying in-band keys.
-    Encrypted,
-}
-
-impl Domain {
-    /// The domain a resolved entry reference belongs to: plaintext for a
-    /// 32-byte reference, encrypted for a key-carrying 64-byte reference.
-    /// `None` for inline bytes, which are not a reference and so have no
-    /// independent domain.
-    #[must_use]
-    pub const fn of_entry<F: Format>(entry: &Entry<F>) -> Option<Self> {
-        match entry {
-            Entry::Ref32(_) => Some(Self::Plain),
-            Entry::Ref64(_) => Some(Self::Encrypted),
-            Entry::Inline(_) => None,
-        }
-    }
-
-    /// The domain a resolved child reference belongs to: plaintext for a
-    /// 32-byte reference, encrypted for a key-carrying 64-byte reference.
-    /// `None` for an embedded subtree, which carries no reference and inherits
-    /// its parent's domain.
-    #[must_use]
-    pub const fn of_child<F: Format>(child: &Child<F>) -> Option<Self> {
-        match child {
-            Child::Ref32(_) => Some(Self::Plain),
-            Child::Ref64(_) => Some(Self::Encrypted),
-            Child::Embedded(_) => None,
-        }
     }
 }
 
@@ -110,15 +67,14 @@ pub fn h64(prefix: &[u8]) -> u64 {
 }
 
 /// The child-local embedding predicate: a child inlines into its parent iff
-/// its flat body fits `F::INLINE_MAX` and shares the parent's encryption
-/// domain.
+/// its flat body fits `F::INLINE_MAX`.
 ///
-/// The size test reads nothing but the child, so the decision is stable under
-/// re-rooting; the domain test keeps an encrypted child out of a plaintext
-/// parent.
+/// The test reads nothing but the child, so the decision is stable under
+/// re-rooting. Encryption needs no second test: a database has one structural
+/// reference width, so a child and its parent always share it.
 #[must_use]
-pub fn embed<F: Format>(flat_body_len: usize, parent: Domain, child: Domain) -> bool {
-    flat_body_len <= F::INLINE_MAX && parent == child
+pub const fn embed<F: Format>(flat_body_len: usize) -> bool {
+    flat_body_len <= F::INLINE_MAX
 }
 
 /// The content-cut predicate for one fork: a boundary falls after it when its
@@ -229,20 +185,16 @@ impl Directory {
 
 /// The packing weight of one directory fork: it routes a single first byte,
 /// with no tail, to one segment child, so its record is the flags and
-/// prefix-length bytes plus one reference of the domain's width, behind its
-/// fork-table index slot. A descriptor also trails a `seg_count`; its
-/// worst-case width is charged so a directory stays within one chunk by
-/// construction, as the leaf path charges the count on its records.
-const fn dir_entry_weight(domain: Domain) -> usize {
-    let reference = match domain {
-        Domain::Plain => ChunkRef::SIZE,
-        Domain::Encrypted => EncryptedChunkRef::SIZE,
-    };
+/// prefix-length bytes plus one `R::SIZE` reference, behind its fork-table
+/// index slot. A descriptor also trails a `seg_count`; its worst-case width is
+/// charged so a directory stays within one chunk by construction, as the leaf
+/// path charges the count on its records.
+const fn dir_entry_weight<R: Reference>() -> usize {
     let count = MAX_WIRE_BYTES;
     let slot = size_of::<u8>().saturating_add(size_of::<u16>());
     slot.saturating_add(size_of::<u8>()) // fflags
         .saturating_add(size_of::<u8>()) // plen (routes by the first byte)
-        .saturating_add(reference)
+        .saturating_add(R::SIZE)
         .saturating_add(count)
 }
 
@@ -253,9 +205,9 @@ const fn dir_entry_weight(domain: Domain) -> usize {
 /// the same content-defined boundary, so the whole structure stays a pure
 /// function of content.
 #[must_use]
-pub fn spill<F: Format>(forks: &[(Prefix<F>, SegmentWeight<F>)], domain: Domain) -> Directory {
+pub fn spill<F: Format, R: Reference>(forks: &[(Prefix<F>, SegmentWeight<F>)]) -> Directory {
     let leaves = segment::<F>(forks, SegmentKind::Leaf);
-    let weight = dir_entry_weight(domain);
+    let weight = dir_entry_weight::<R>();
     let dirs = partition::<F>(
         leaves.iter().filter_map(|leaf| {
             forks
@@ -271,20 +223,27 @@ pub fn spill<F: Format>(forks: &[(Prefix<F>, SegmentWeight<F>)], domain: Domain)
 mod tests {
     use std::vec;
 
+    use nectar_primitives::{ChunkRef, EncryptedChunkRef};
+
     use super::*;
     use crate::format::{V1, V1Read};
 
     // The directory packing weight must cover the widest descriptor its segment
     // chunk can actually carry, including the worst-case trailing seg_count,
-    // so a spilled directory stays within one chunk by construction.
+    // so a spilled directory stays within one chunk by construction. Both
+    // structural widths are charged, since a directory is as wide as its
+    // database.
     #[test]
     fn the_directory_weight_covers_the_widest_descriptor() {
         // The on-wire descriptor: its first-key byte, the routed reference and
         // a seg_count of up to MAX_WIRE_BYTES.
-        let widest = size_of::<u8>()
-            .saturating_add(ChunkRef::SIZE)
-            .saturating_add(MAX_WIRE_BYTES);
-        assert!(widest <= dir_entry_weight(Domain::Plain));
+        let widest = |size: usize| {
+            size_of::<u8>()
+                .saturating_add(size)
+                .saturating_add(MAX_WIRE_BYTES)
+        };
+        assert!(widest(ChunkRef::SIZE) <= dir_entry_weight::<ChunkRef>());
+        assert!(widest(EncryptedChunkRef::SIZE) <= dir_entry_weight::<EncryptedChunkRef>());
     }
 
     // The eight worked forks a..h with the spec's weights and hash-cut bits.
@@ -416,44 +375,9 @@ mod tests {
     }
 
     #[test]
-    fn reference_domains_gate_cross_boundary_embedding() {
-        use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
-
-        let addr = ChunkAddress::new([7; 32]);
-        let plain = Entry::<V1>::from(ChunkRef::new(addr));
-        let encrypted =
-            Entry::<V1>::from(EncryptedChunkRef::new(addr, EncryptionKey::from([9; 32])));
-
-        let plain_dom = Domain::of_entry(&plain).unwrap();
-        let enc_dom = Domain::of_entry(&encrypted).unwrap();
-        assert_eq!(plain_dom, Domain::Plain);
-        assert_eq!(enc_dom, Domain::Encrypted);
-        // Inline bytes carry no reference, so no domain.
-        let inline = Entry::<V1>::inline(bytes::Bytes::from_static(b"v")).unwrap();
-        assert_eq!(Domain::of_entry(&inline), None);
-
-        let plain_child = Child::<V1>::from(ChunkRef::new(addr));
-        let enc_child =
-            Child::<V1>::from(EncryptedChunkRef::new(addr, EncryptionKey::from([9; 32])));
-        assert_eq!(Domain::of_child(&plain_child), Some(Domain::Plain));
-        assert_eq!(Domain::of_child(&enc_child), Some(Domain::Encrypted));
-
-        // An encrypted child never inlines into a plaintext parent, however
-        // small: the boundary is structural, not a size decision.
-        assert!(!embed::<V1>(1, plain_dom, enc_dom));
-        assert!(embed::<V1>(1, enc_dom, enc_dom));
-    }
-
-    #[test]
-    fn embed_gates_on_inline_max_and_domain() {
-        assert!(embed::<V1>(V1::INLINE_MAX, Domain::Plain, Domain::Plain));
-        assert!(!embed::<V1>(
-            V1::INLINE_MAX + 1,
-            Domain::Plain,
-            Domain::Plain
-        ));
-        assert!(!embed::<V1>(1, Domain::Plain, Domain::Encrypted));
-        assert!(embed::<V1>(1, Domain::Encrypted, Domain::Encrypted));
+    fn embed_gates_on_inline_max_alone() {
+        assert!(embed::<V1>(V1::INLINE_MAX));
+        assert!(!embed::<V1>(V1::INLINE_MAX + 1));
     }
 
     // A subtree sized in the window between the two budgets is referenced under
@@ -462,23 +386,17 @@ mod tests {
     #[test]
     fn the_read_profile_embeds_where_v1_references() {
         for len in [V1::INLINE_MAX + 1, V1Read::INLINE_MAX] {
-            assert!(!embed::<V1>(len, Domain::Plain, Domain::Plain));
-            assert!(embed::<V1Read>(len, Domain::Plain, Domain::Plain));
+            assert!(!embed::<V1>(len));
+            assert!(embed::<V1Read>(len));
         }
-        // The read profile does not embed across the domain boundary either.
-        assert!(!embed::<V1Read>(1, Domain::Plain, Domain::Encrypted));
         // Nor beyond its own, larger budget.
-        assert!(!embed::<V1Read>(
-            V1Read::INLINE_MAX + 1,
-            Domain::Plain,
-            Domain::Plain
-        ));
+        assert!(!embed::<V1Read>(V1Read::INLINE_MAX + 1));
     }
 
     #[test]
     fn spill_of_a_small_table_is_a_single_directory() {
         let forks = worked_forks();
-        let dir = spill::<V1>(&forks, Domain::Plain);
+        let dir = spill::<V1, ChunkRef>(&forks);
         assert_eq!(dir.leaves(), &[0..3, 3..7, 7..8]);
         assert_eq!(dir.depth(), 1);
         assert_eq!(dir.dirs(), core::slice::from_ref(&(0..3)));
@@ -496,8 +414,25 @@ mod tests {
                 )
             })
             .collect();
-        let dir = spill::<V1>(&forks, Domain::Plain);
+        let dir = spill::<V1, ChunkRef>(&forks);
         assert_eq!(dir.leaves().len(), 200);
         assert_eq!(dir.depth(), 2);
+    }
+
+    // A wider structural reference charges a heavier directory entry, so an
+    // encrypted database escalates to depth two over fewer leaves.
+    #[test]
+    fn the_encrypted_width_charges_a_heavier_directory_entry() {
+        assert!(dir_entry_weight::<EncryptedChunkRef>() > dir_entry_weight::<ChunkRef>());
+        let forks: Vec<(Prefix, SegmentWeight)> = (0u8..64)
+            .map(|first| {
+                (
+                    Prefix::try_from(&[first][..]).unwrap(),
+                    SegmentWeight::new(V1::SEG_TARGET).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(spill::<V1, ChunkRef>(&forks).dirs().len(), 3);
+        assert_eq!(spill::<V1, EncryptedChunkRef>(&forks).dirs().len(), 4);
     }
 }

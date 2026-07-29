@@ -9,13 +9,13 @@
 use core::marker::PhantomData;
 
 use nectar_primitives::store::MaybeSync;
-use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef};
+use nectar_primitives::{ChunkOps, ChunkRef};
 
 use crate::codec::{DecodedChunk, SegmentDir};
 use crate::fork::{Child, ForkTable};
 use crate::format::{Format, V1};
-use crate::node::{Node, RootExtension};
-use crate::store::{NodeGet, StoreError};
+use crate::node::{NodeRef, RootExtension};
+use crate::store::{NodeGet, StoreError, open_chunk};
 use crate::value::{Entry, Key};
 
 /// A lookup failure.
@@ -25,29 +25,30 @@ pub enum ReaderError {
     /// Loading or decoding a node across the store seam failed.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// Descent reached an encrypted subtree; following it needs the
-    /// decryption key the plain reader does not carry.
-    #[error("descent reached an encrypted subtree")]
-    EncryptedChild,
 }
 
-/// Lazy trie reader over a trusted node store of format `F`.
+/// Lazy trie reader over a trusted node store of format `F`, addressing nodes
+/// by references of width `R`.
 ///
 /// Descent is serial: each referenced hop is one fetch, so a lookup costs
 /// O(depth) round trips and retains one node at a time, never a whole level.
+/// An encrypted database needs no extra state here: every reference carries
+/// the key that opens the chunk it names.
 #[derive(Clone, Copy, Debug)]
-pub struct Reader<S, F: Format = V1> {
+pub struct Reader<S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: S,
     _format: PhantomData<F>,
+    _reference: PhantomData<R>,
 }
 
-impl<S, F: Format> Reader<S, F> {
+impl<S, F: Format, R: NodeRef> Reader<S, F, R> {
     /// Wrap `store` as a reader; compose a caching store here to cache hops.
     #[must_use]
     pub const fn new(store: S) -> Self {
         Self {
             store,
             _format: PhantomData,
+            _reference: PhantomData,
         }
     }
 
@@ -64,29 +65,23 @@ impl<S, F: Format> Reader<S, F> {
     }
 }
 
-impl<S, F: Format> Reader<S, F>
+impl<S, F: Format, R: NodeRef> Reader<S, F, R>
 where
     S: NodeGet + MaybeSync,
 {
-    /// The value bound to `key` under the manifest rooted at `root`, or `None`
+    /// The value bound to `key` under the database rooted at `root`, or `None`
     /// when the key is absent.
     ///
     /// The empty key reads the root extension's own value; every other key
     /// descends the trie, matching each compacted edge byte for byte and
     /// fetching one node per referenced hop.
-    pub async fn get(
-        &self,
-        root: &ChunkAddress,
-        key: &Key,
-    ) -> Result<Option<Entry<F>>, ReaderError> {
+    pub async fn get(&self, root: &R, key: &Key) -> Result<Option<Entry<F>>, ReaderError> {
         let key = key.as_bytes();
-        let mut address = *root;
+        let mut reference = root.clone();
         let mut pos = 0usize;
         let mut is_root = true;
         loop {
-            let chunk = self.store.get(&address).await.map_err(StoreError::store)?;
-            let decoded =
-                Node::<F>::decode_chunk(chunk.envelope().data()).map_err(StoreError::Decode)?;
+            let decoded = fetch_chunk::<S, F, R>(&self.store, &reference).await?;
             // The empty key reads the root's own value; a spilled root carries
             // it in the segmented node's bytes just as a plain root does.
             if is_root && key.is_empty() {
@@ -95,22 +90,19 @@ where
             let descent = match &decoded {
                 DecodedChunk::Node(node) => descend(node.forks(), key, pos),
                 DecodedChunk::Segmented(_, dir) => {
-                    covering_leaf::<S, F>(&self.store, dir, key, pos)
+                    covering_leaf::<S, F, R>(&self.store, dir, key, pos)
                         .await?
                         .map_or(Descent::Absent, |table| descend(&table, key, pos))
                 }
                 DecodedChunk::Leaf(_) | DecodedChunk::Directory(_) => {
-                    return Err(ReaderError::Store(StoreError::Decode(
-                        crate::codec::DecodeError::SegmentContext,
-                    )));
+                    return Err(segment_context());
                 }
             };
             match descent {
                 Descent::Absent => return Ok(None),
                 Descent::Found(entry) => return Ok(Some(entry)),
-                Descent::Encrypted => return Err(ReaderError::EncryptedChild),
-                Descent::Follow(next_address, next) => {
-                    address = next_address;
+                Descent::Follow(child, next) => {
+                    reference = child;
                     pos = next;
                     is_root = false;
                 }
@@ -122,17 +114,11 @@ where
     /// `prefix`, so a folder or prefix listing can be handed off in one
     /// delegation rather than walked.
     ///
-    /// The empty prefix selects the whole manifest and returns the root
+    /// The empty prefix selects the whole database and returns the root
     /// reference. The result is `None` when no single chunk's key set is
     /// exactly the prefix's: the prefix selects nothing, ends inside an embedded
-    /// child, or ends at a fork that also terminates a key. Descent into an
-    /// encrypted subtree surfaces as [`ReaderError::EncryptedChild`], since a
-    /// plain reference cannot carry it.
-    pub async fn subtree(
-        &self,
-        root: &ChunkAddress,
-        prefix: &Key,
-    ) -> Result<Option<ChunkRef>, ReaderError> {
+    /// child, or ends at a fork that also terminates a key.
+    pub async fn subtree(&self, root: &R, prefix: &Key) -> Result<Option<R>, ReaderError> {
         Ok(self
             .descend_subtree(root, prefix.as_bytes())
             .await?
@@ -147,27 +133,29 @@ where
     /// down to the boundary and nothing below it.
     pub(crate) async fn descend_subtree(
         &self,
-        root: &ChunkAddress,
+        root: &R,
         prefix: &[u8],
-    ) -> Result<Option<Subtree>, ReaderError> {
+    ) -> Result<Option<Subtree<R>>, ReaderError> {
         if prefix.is_empty() {
             return Ok(Some(Subtree {
-                reference: ChunkRef::new(*root),
+                reference: root.clone(),
                 base: 0,
             }));
         }
-        let mut address = *root;
+        let mut reference = root.clone();
         let mut base = 0usize;
         loop {
-            let node = self.store.get_node::<F>(&address).await?;
+            let node = self.store.get_node::<F, R>(&reference).await?;
             match subtree_step(node.forks(), prefix, base) {
                 SubtreeStep::Absent => return Ok(None),
-                SubtreeStep::Encrypted => return Err(ReaderError::EncryptedChild),
-                SubtreeStep::Boundary(reference, base) => {
-                    return Ok(Some(Subtree { reference, base }));
+                SubtreeStep::Boundary(found, base) => {
+                    return Ok(Some(Subtree {
+                        reference: found,
+                        base,
+                    }));
                 }
-                SubtreeStep::Descend(next_address, next) => {
-                    address = next_address;
+                SubtreeStep::Descend(child, next) => {
+                    reference = child;
                     base = next;
                 }
             }
@@ -175,11 +163,32 @@ where
     }
 }
 
+/// A malformed segment structure reached out of directory context.
+const fn segment_context() -> ReaderError {
+    ReaderError::Store(StoreError::Decode(
+        crate::codec::DecodeError::SegmentContext,
+    ))
+}
+
+/// Fetch and decode one chunk, opening it with the key `reference` carries.
+async fn fetch_chunk<S, F, R>(store: &S, reference: &R) -> Result<DecodedChunk<F, R>, ReaderError>
+where
+    S: NodeGet + MaybeSync,
+    F: Format,
+    R: NodeRef,
+{
+    let chunk = store
+        .get(reference.address())
+        .await
+        .map_err(StoreError::store)?;
+    Ok(open_chunk::<F, R>(chunk.envelope().data(), reference).map_err(StoreError::Decode)?)
+}
+
 /// A prefix's subtree: the chunk holding exactly the prefix's keys, and the key
 /// bytes consumed to reach that chunk's root.
-pub(crate) struct Subtree {
+pub(crate) struct Subtree<R: NodeRef = ChunkRef> {
     /// The subtree chunk's reference.
-    pub(crate) reference: ChunkRef,
+    pub(crate) reference: R,
     /// Key bytes consumed to reach the subtree chunk's root; at least the
     /// prefix length, and equal to it when the prefix ends at the chunk root.
     pub(crate) base: usize,
@@ -187,17 +196,15 @@ pub(crate) struct Subtree {
 
 /// Where following `prefix` from `pos` through a chunk's embedded fork tables
 /// lands, stopping at the first boundary, referenced hop, or dead end.
-enum SubtreeStep {
+enum SubtreeStep<R: NodeRef> {
     /// No single chunk's key set is exactly the prefix's below here.
     Absent,
-    /// The prefix funnels into an encrypted child the plain reader cannot open.
-    Encrypted,
     /// The prefix's key set is exactly this referenced child's; its reference
     /// and the key bytes consumed to reach the child's root.
-    Boundary(ChunkRef, usize),
-    /// The prefix continues past this edge into a referenced child at the given
-    /// address, with this many key bytes consumed.
-    Descend(ChunkAddress, usize),
+    Boundary(R, usize),
+    /// The prefix continues past this edge into the referenced child, with this
+    /// many key bytes consumed.
+    Descend(R, usize),
 }
 
 /// Follow `prefix` from `pos` down a node's fork table and its embedded
@@ -207,7 +214,11 @@ enum SubtreeStep {
 /// Stays within one chunk: an embedded child lives in the parent's bytes, so
 /// the walk crosses embedded tables without a fetch and only a referenced edge
 /// bubbles up as a hop or a boundary.
-fn subtree_step<F: Format>(table: &ForkTable<F>, prefix: &[u8], pos: usize) -> SubtreeStep {
+fn subtree_step<F: Format, R: NodeRef>(
+    table: &ForkTable<F, R>,
+    prefix: &[u8],
+    pos: usize,
+) -> SubtreeStep<R> {
     let mut table = table;
     let mut pos = pos;
     loop {
@@ -237,8 +248,7 @@ fn subtree_step<F: Format>(table: &ForkTable<F>, prefix: &[u8], pos: usize) -> S
                 return SubtreeStep::Absent;
             }
             return match record.child() {
-                Some(Child::Ref32(reference)) => SubtreeStep::Boundary(*reference, end),
-                Some(Child::Ref64(_)) => SubtreeStep::Encrypted,
+                Some(Child::Ref(reference)) => SubtreeStep::Boundary(reference.clone(), end),
                 Some(Child::Embedded(_)) | None => SubtreeStep::Absent,
             };
         }
@@ -253,17 +263,16 @@ fn subtree_step<F: Format>(table: &ForkTable<F>, prefix: &[u8], pos: usize) -> S
                 table = inner;
                 pos = end;
             }
-            Some(Child::Ref32(reference)) => {
-                return SubtreeStep::Descend(*reference.address(), end);
+            Some(Child::Ref(reference)) => {
+                return SubtreeStep::Descend(reference.clone(), end);
             }
-            Some(Child::Ref64(_)) => return SubtreeStep::Encrypted,
             None => return SubtreeStep::Absent,
         }
     }
 }
 
 /// The empty-key value a decoded root carries: its root extension entry.
-fn root_entry<F: Format>(decoded: &DecodedChunk<F>) -> Option<Entry<F>> {
+fn root_entry<F: Format, R: NodeRef>(decoded: &DecodedChunk<F, R>) -> Option<Entry<F>> {
     match decoded {
         DecodedChunk::Node(node) => node.entry().cloned(),
         DecodedChunk::Segmented(root, _) => root.as_ref().and_then(RootExtension::entry).cloned(),
@@ -273,7 +282,7 @@ fn root_entry<F: Format>(decoded: &DecodedChunk<F>) -> Option<Entry<F>> {
 
 /// The descriptor covering `byte`: the one with the greatest first key not past
 /// it. `None` when `byte` precedes the first fork, so the key is absent.
-fn covering_desc(dir: &SegmentDir, byte: u8) -> Option<&crate::codec::SegDesc> {
+fn covering_desc<R: NodeRef>(dir: &SegmentDir<R>, byte: u8) -> Option<&crate::codec::SegDesc<R>> {
     dir.descriptors
         .iter()
         .take_while(|desc| desc.first_key <= byte)
@@ -285,15 +294,16 @@ fn covering_desc(dir: &SegmentDir, byte: u8) -> Option<&crate::codec::SegDesc> {
 ///
 /// One segment per directory level, never the whole node, so a lookup through a
 /// spilled node stays O(depth) in fetches, not O(node width).
-async fn covering_leaf<S, F>(
+async fn covering_leaf<S, F, R>(
     store: &S,
-    top: &SegmentDir,
+    top: &SegmentDir<R>,
     key: &[u8],
     pos: usize,
-) -> Result<Option<ForkTable<F>>, ReaderError>
+) -> Result<Option<ForkTable<F, R>>, ReaderError>
 where
     S: NodeGet + MaybeSync,
     F: Format,
+    R: NodeRef,
 {
     let Some(&byte) = key.get(pos) else {
         return Ok(None);
@@ -305,42 +315,27 @@ where
         None => return Ok(None),
     };
     for _ in 0..2 {
-        if current.key.is_some() {
-            return Err(ReaderError::EncryptedChild);
-        }
-        let chunk = store
-            .get(&current.address)
-            .await
-            .map_err(StoreError::store)?;
-        match Node::<F>::decode_chunk(chunk.envelope().data()).map_err(StoreError::Decode)? {
+        match fetch_chunk::<S, F, R>(store, &current.reference).await? {
             DecodedChunk::Leaf(table) => return Ok(Some(table)),
             DecodedChunk::Directory(dir) => match covering_desc(&dir, byte) {
                 Some(desc) => current = desc.clone(),
                 None => return Ok(None),
             },
-            _ => {
-                return Err(ReaderError::Store(StoreError::Decode(
-                    crate::codec::DecodeError::SegmentContext,
-                )));
-            }
+            _ => return Err(segment_context()),
         }
     }
-    Err(ReaderError::Store(StoreError::Decode(
-        crate::codec::DecodeError::SegmentContext,
-    )))
+    Err(segment_context())
 }
 
 /// The outcome of walking one node's embedded tables as far as they reach.
-enum Descent<F: Format> {
+enum Descent<F: Format, R: NodeRef> {
     /// No fork matches the key below this node: the key is absent.
     Absent,
     /// The key terminates here with this value.
     Found(Entry<F>),
-    /// The key continues into a referenced child at the given address, with
-    /// this many key bytes already consumed.
-    Follow(ChunkAddress, usize),
-    /// The key continues into an encrypted child the plain reader cannot open.
-    Encrypted,
+    /// The key continues into the referenced child, with this many key bytes
+    /// already consumed.
+    Follow(R, usize),
 }
 
 /// Walk `key` from `pos` down a node's fork table and its embedded children,
@@ -349,7 +344,11 @@ enum Descent<F: Format> {
 /// Stays within one chunk: an embedded child lives in the parent's bytes, so
 /// the walk crosses embedded tables without a fetch and only a referenced edge
 /// bubbles up as a hop.
-fn descend<F: Format>(table: &ForkTable<F>, key: &[u8], pos: usize) -> Descent<F> {
+fn descend<F: Format, R: NodeRef>(
+    table: &ForkTable<F, R>,
+    key: &[u8],
+    pos: usize,
+) -> Descent<F, R> {
     let mut table = table;
     let mut pos = pos;
     loop {
@@ -379,8 +378,7 @@ fn descend<F: Format>(table: &ForkTable<F>, key: &[u8], pos: usize) -> Descent<F
         }
         match record.child() {
             Some(Child::Embedded(inner)) => table = inner,
-            Some(Child::Ref32(reference)) => return Descent::Follow(*reference.address(), pos),
-            Some(Child::Ref64(_)) => return Descent::Encrypted,
+            Some(Child::Ref(reference)) => return Descent::Follow(reference.clone(), pos),
             None => return Descent::Absent,
         }
     }
@@ -388,11 +386,12 @@ fn descend<F: Format>(table: &ForkTable<F>, key: &[u8], pos: usize) -> Descent<F
 
 #[cfg(test)]
 mod tests {
+    use crate::store::Plaintext;
     use std::vec::Vec;
 
     use bytes::Bytes;
     use nectar_primitives::store::{ContentGet, MemoryStore};
-    use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
+    use nectar_primitives::{ChunkAddress, ChunkRef};
     use nectar_testing::run;
 
     use crate::bounded::Prefix;
@@ -419,7 +418,7 @@ mod tests {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"logo.png"), entry(0xBB).into(), None)
             .unwrap();
-        let leaf_ref = run(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_ref = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
 
         // The root: "index.html" behind an embedded child, "mg/" behind the
         // referenced leaf.
@@ -432,13 +431,9 @@ mod tests {
             .insert(prefix(b"i"), Child::Embedded(embedded).into(), None)
             .unwrap();
         forks
-            .insert(
-                prefix(b"mg/"),
-                Child::Ref32(ChunkRef::new(leaf_ref)).into(),
-                None,
-            )
+            .insert(prefix(b"mg/"), Child::Ref(leaf_ref).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -470,7 +465,7 @@ mod tests {
         forks
             .insert(prefix(b"a"), Child::Embedded(child).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         // "ab" terminates, "a" is only a branch.
@@ -485,7 +480,7 @@ mod tests {
     fn the_empty_key_reads_the_root_extension_value() {
         let store = ContentGet::new(MemoryStore::default());
         let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
-        let root = run(store.put_node(&Node::new(root_ext, ForkTable::new()))).unwrap();
+        let root = run(store.put_node(&Node::new(root_ext, ForkTable::new()), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -502,7 +497,7 @@ mod tests {
         forks
             .insert(prefix(b"k"), ForkPayload::Entry(value.clone()), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -513,11 +508,11 @@ mod tests {
 
     // A manifest whose "mg/" directory is a referenced subtree holding one key
     // "mg/logo.png", with "index.html" embedded in the root under "i".
-    fn subtree_sample(store: &ContentGet<MemoryStore>) -> (ChunkAddress, ChunkAddress) {
+    fn subtree_sample(store: &ContentGet<MemoryStore>) -> (ChunkRef, ChunkRef) {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"logo.png"), entry(0xBB).into(), None)
             .unwrap();
-        let leaf_ref = run(store.put_node(&Node::new(None, leaf))).unwrap();
+        let leaf_ref = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
 
         let mut embedded = ForkTable::new();
         embedded
@@ -528,13 +523,9 @@ mod tests {
             .insert(prefix(b"i"), Child::Embedded(embedded).into(), None)
             .unwrap();
         forks
-            .insert(
-                prefix(b"mg/"),
-                Child::Ref32(ChunkRef::new(leaf_ref)).into(),
-                None,
-            )
+            .insert(prefix(b"mg/"), Child::Ref(leaf_ref).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
+        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
         (root, leaf_ref)
     }
 
@@ -545,7 +536,7 @@ mod tests {
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
             run(reader.subtree(&root, &Key::empty())).unwrap(),
-            Some(ChunkRef::new(root)),
+            Some(root)
         );
     }
 
@@ -558,13 +549,13 @@ mod tests {
         // subtree root, and its key set is exactly the "mg/" keys.
         assert_eq!(
             run(reader.subtree(&root, &Key::from(&b"mg/"[..]))).unwrap(),
-            Some(ChunkRef::new(leaf_ref)),
+            Some(leaf_ref),
         );
         // A shorter prefix funnels into the same lone child with no branch or
         // key between: still one node boundary, still the child.
         assert_eq!(
             run(reader.subtree(&root, &Key::from(&b"m"[..]))).unwrap(),
-            Some(ChunkRef::new(leaf_ref)),
+            Some(leaf_ref),
         );
     }
 
@@ -605,35 +596,44 @@ mod tests {
         );
     }
 
+    // A structurally encrypted database reads back through the same descent:
+    // the reference carries the key, so no separate opening state exists, and
+    // a subtree hand-off yields an encrypted reference of its own.
+    #[cfg(feature = "encryption")]
     #[test]
-    fn subtree_through_an_encrypted_child_is_an_error() {
+    fn an_encrypted_database_reads_through_the_same_descent() {
+        use nectar_primitives::EncryptedChunkRef;
+
+        use crate::builder::Builder;
+        use crate::encryption::Encrypted;
+
         let store = ContentGet::new(MemoryStore::default());
-        // A "sec/" directory referenced through an encrypted (ref64) child: the
-        // plain reader cannot open it, and a 32-byte reference cannot carry it.
-        let mut forks = ForkTable::new();
-        forks
-            .insert(
-                prefix(b"sec/"),
-                Child::Ref64(EncryptedChunkRef::new(
-                    ChunkAddress::new([0x5E; 32]),
-                    EncryptionKey::from([0xA1; 32]),
-                ))
-                .into(),
-                None,
-            )
-            .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks))).unwrap();
-        let reader: Reader<_> = Reader::new(&store);
-        // The boundary lands exactly on the encrypted edge.
-        assert!(matches!(
-            run(reader.subtree(&root, &Key::from(&b"sec/"[..]))),
-            Err(ReaderError::EncryptedChild),
-        ));
-        // A shorter prefix funnelling into the same encrypted child errs alike.
-        assert!(matches!(
-            run(reader.subtree(&root, &Key::from(&b"s"[..]))),
-            Err(ReaderError::EncryptedChild),
-        ));
+        let mut builder = Builder::<V1>::new();
+        builder.insert(Key::from(&b"index.html"[..]), entry(0xAA), None);
+        builder.insert(Key::from(&b"mg/logo.png"[..]), entry(0xBB), None);
+        let root = run(builder.build(&store, &Encrypted::<V1>::new(b"secret")))
+            .unwrap()
+            .root()
+            .clone();
+
+        let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
+        assert_eq!(
+            run(reader.get(&root, &Key::from(&b"index.html"[..]))).unwrap(),
+            Some(entry(0xAA)),
+        );
+        assert_eq!(
+            run(reader.get(&root, &Key::from(&b"mg/logo.png"[..]))).unwrap(),
+            Some(entry(0xBB)),
+        );
+        assert_eq!(
+            run(reader.get(&root, &Key::from(&b"absent"[..]))).unwrap(),
+            None
+        );
+        // The empty prefix hands back the encrypted root itself.
+        assert_eq!(
+            run(reader.subtree(&root, &Key::empty())).unwrap(),
+            Some(root)
+        );
     }
 
     #[test]
@@ -644,12 +644,12 @@ mod tests {
         let sub = run(reader.subtree(&root, &Key::from(&b"mg/"[..])))
             .unwrap()
             .unwrap();
-        assert_eq!(sub.address(), &leaf_ref);
+        assert_eq!(sub, leaf_ref);
 
         // The delegated subtree, walked from its own root, yields the same keys
         // as the prefix range walked from the manifest root.
         let mut delegated = Vec::new();
-        let mut cursor = run(reader.iter(sub.address())).unwrap();
+        let mut cursor = run(reader.iter(&sub)).unwrap();
         run(async {
             while let Some((key, value)) = cursor.next().await.unwrap() {
                 let mut full = b"mg/".to_vec();
@@ -672,7 +672,11 @@ mod tests {
     fn a_missing_root_is_a_store_error() {
         let store = ContentGet::new(MemoryStore::default());
         let reader: Reader<_> = Reader::new(&store);
-        let err = run(reader.get(&ChunkAddress::new([0; 32]), &Key::from(&b"x"[..]))).unwrap_err();
+        let err = run(reader.get(
+            &ChunkRef::new(ChunkAddress::new([0; 32])),
+            &Key::from(&b"x"[..]),
+        ))
+        .unwrap_err();
         assert!(matches!(err, ReaderError::Store(StoreError::Store(_))));
     }
 }

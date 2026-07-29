@@ -1,47 +1,48 @@
 //! Per-reference encryption: deterministic, feature-gated crypto over nodes.
 //!
-//! A ref64 carries `address || key`: the parent record transports the child's
-//! decryption key in band, with no side channel, so whoever reads a node can
-//! open every child it references, recursively. The key is derived
-//! deterministically as `keccak256(F::DERIVE_TAG || secret || plaintext)`, so
-//! an identical subtree under the same secret yields the same key, the same
-//! ciphertext and the same address: canonical bytes and cross-build dedup
-//! survive encryption.
+//! A database keyed by [`EncryptedChunkRef`] is structurally encrypted: every
+//! node and segment chunk is ciphertext, and every structural reference carries
+//! `address || key`. The parent record transports the child's decryption key in
+//! band, with no side channel, so whoever reads a node can open every child it
+//! references, recursively. The key is derived deterministically as
+//! `keccak256(F::DERIVE_TAG || secret || plaintext)`, so an identical subtree
+//! under the same secret yields the same key, the same ciphertext and the same
+//! address: canonical bytes and cross-build dedup survive encryption.
 //!
 //! Encryption is a stream cipher over the exact node payload, so ciphertext
 //! length equals plaintext length and the sealed chunk stays within one chunk
 //! body. The chunk body is opaque to a plain reader: its bytes are not a
 //! manifest preamble, so a plain decode of an encrypted chunk fails loud.
 //!
+//! Only the write side needs the secret. Reading takes the reference alone, so
+//! [`Reader`](crate::Reader) and [`apply`](crate::apply) open an encrypted
+//! database with no extra state.
+//!
 //! # Privacy
 //!
-//! A ref64 IS a read capability for the whole subtree beneath it. Writing a
-//! ref64 into a PLAINTEXT parent therefore PUBLISHES that child's key to anyone
-//! who can read the parent. Confidentiality rests entirely on the outermost
-//! ref64 being distributed privately: the root reference of an encrypted tree
-//! is the single secret. Never place an encrypted reference in a plaintext
-//! manifest you intend to publish.
+//! An encrypted reference IS a read capability for the whole subtree beneath
+//! it. Writing one into a PLAINTEXT parent therefore PUBLISHES that child's key
+//! to anyone who can read the parent. Confidentiality rests entirely on the
+//! outermost reference being distributed privately: the root reference of an
+//! encrypted database is the single secret. Never place an encrypted reference
+//! in a plaintext manifest you intend to publish.
 //!
-//! Embedding never crosses the encryption boundary (see [`embed`]): an
-//! encrypted subtree inlines only into an encrypted parent, so the boundary is
-//! structural, never a runtime choice.
-//!
-//! [`embed`]: crate::embed
+//! The structure itself cannot mix widths: a database is keyed by one reference
+//! type throughout, so an encrypted subtree can never hang off a plaintext
+//! node. Only the value layer stays width-free, where an
+//! [`Entry`](crate::Entry) may name an encrypted value chunk from a plaintext
+//! database.
 
-use alloc::boxed::Box;
-use core::future::Future;
+use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use alloy_primitives::Keccak256;
-use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
-    Chunk, ChunkOps, ContentChunk, ContentOnlyChunkSet, EncryptedChunkRef, EncryptionKey,
-    transcrypt_in_place,
+    Chunk, ContentChunk, EncryptedChunkRef, EncryptionKey, transcrypt_in_place,
 };
 
-use crate::codec::DecodeError;
-use crate::format::Format;
-use crate::node::Node;
-use crate::store::{NodeChunk, StoreError};
+use crate::format::{Format, V1};
+use crate::store::{NodeChunk, Seal, StoreError};
 
 /// Derive the deterministic reference key `keccak256(DERIVE_TAG || secret ||
 /// plaintext)`.
@@ -58,127 +59,52 @@ pub fn derive_key<F: Format>(secret: &[u8], plaintext: &[u8]) -> EncryptionKey {
     EncryptionKey::from(hasher.finalize())
 }
 
-/// A node sealed as an encrypted chunk together with the ref64 that opens it.
+/// Encrypted sealing: each payload is enciphered under a key derived from
+/// `secret` and the payload itself, and the reference is `address || key`.
 ///
-/// The chunk is the ciphertext under its own derived address; the reference is
-/// `address || key`, the capability a parent record carries to reach and
-/// decrypt this node.
-#[derive(Debug)]
-pub struct EncryptedNode {
-    chunk: NodeChunk,
-    reference: EncryptedChunkRef,
+/// Deriving from the plaintext is what keeps an encrypted build canonical: the
+/// same subtree under the same secret always seals to the same bytes, so dedup
+/// and bit-exact rebuilds survive.
+#[derive(Clone, Copy)]
+pub struct Encrypted<'s, F: Format = V1> {
+    secret: &'s [u8],
+    _format: PhantomData<F>,
 }
 
-impl EncryptedNode {
-    /// The ciphertext chunk, ready to store under its derived address.
-    #[must_use]
-    pub const fn chunk(&self) -> &NodeChunk {
-        &self.chunk
-    }
-
-    /// The ref64 that reaches and decrypts this node.
-    #[must_use]
-    pub const fn reference(&self) -> &EncryptedChunkRef {
-        &self.reference
-    }
-
-    /// Consume into the ciphertext chunk and its ref64.
-    #[must_use]
-    pub fn into_parts(self) -> (NodeChunk, EncryptedChunkRef) {
-        (self.chunk, self.reference)
+/// Redacted: the sealer holds the master secret of a whole database, so it
+/// never prints it.
+impl<F: Format> core::fmt::Debug for Encrypted<'_, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Encrypted(..)")
     }
 }
 
-impl<F: Format> Node<F> {
-    /// Seal this node as an encrypted content chunk under a key derived from
-    /// `secret` and the node's own plaintext.
-    ///
-    /// The address is the BMT of the ciphertext, so an identical node under the
-    /// same secret always seals to the same chunk and ref64.
-    pub fn to_encrypted_chunk(&self, secret: &[u8]) -> Result<EncryptedNode, StoreError> {
-        let mut payload = self.encode()?;
-        let key = derive_key::<F>(secret, &payload);
+impl<'s, F: Format> Encrypted<'s, F> {
+    /// A sealer deriving every reference key from `secret`.
+    #[must_use]
+    pub const fn new(secret: &'s [u8]) -> Self {
+        Self {
+            secret,
+            _format: PhantomData,
+        }
+    }
+}
+
+impl<F: Format> Seal<EncryptedChunkRef> for Encrypted<'_, F> {
+    fn seal(&self, mut payload: Vec<u8>) -> Result<(NodeChunk, EncryptedChunkRef), StoreError> {
+        let key = derive_key::<F>(self.secret, &payload);
         transcrypt_in_place(&key, 0, &mut payload);
         let content = ContentChunk::new(payload).map_err(StoreError::Seal)?;
         let chunk = Chunk::from_envelope(content.into()).map_err(StoreError::Seal)?;
         let reference = EncryptedChunkRef::new(*chunk.address(), key);
-        Ok(EncryptedNode { chunk, reference })
-    }
-
-    /// Decrypt and decode a node from a certified encrypted chunk and its key.
-    ///
-    /// A wrong key decrypts to bytes that are not a manifest and the decode
-    /// fails loud rather than producing a spurious node.
-    pub fn from_encrypted_chunk(
-        chunk: &NodeChunk,
-        key: &EncryptionKey,
-    ) -> Result<Self, DecodeError> {
-        let mut payload = chunk.envelope().data().to_vec();
-        transcrypt_in_place(key, 0, &mut payload);
-        Self::decode(&payload)
+        Ok((chunk, reference))
     }
 }
-
-/// Async encrypted-node storage over a chunk putter.
-///
-/// Blanket-implemented for every [`ChunkPut`]; sealing happens before the first
-/// await, so the returned future never holds the source node.
-pub trait EncryptedNodePut: ChunkPut {
-    /// Seal `node` under `secret`, store its ciphertext chunk, and return the
-    /// ref64 that reaches and decrypts it.
-    fn put_node_encrypted<F: Format>(
-        &self,
-        node: &Node<F>,
-        secret: &[u8],
-    ) -> impl Future<Output = Result<EncryptedChunkRef, StoreError>> + MaybeSend
-    where
-        Self: Sized + MaybeSync,
-    {
-        let sealed = node.to_encrypted_chunk(secret);
-        async move {
-            let (chunk, reference) = sealed?.into_parts();
-            self.put(chunk)
-                .await
-                .map_err(|err| StoreError::Store(Box::new(err)))?;
-            Ok(reference)
-        }
-    }
-}
-
-impl<T: ChunkPut> EncryptedNodePut for T {}
-
-/// Async encrypted-node retrieval over a trusted store.
-///
-/// Blanket-implemented for every [`TrustedGet`]; the ref64 carries both the
-/// address to fetch and the key to decrypt with.
-pub trait EncryptedNodeGet: TrustedGet<ContentOnlyChunkSet> {
-    /// Load the chunk at `reference`'s address and decrypt it with its key,
-    /// materializing a spilled node's forks from its keyed segments so the
-    /// caller always sees one logical node.
-    fn get_node_encrypted<F: Format>(
-        &self,
-        reference: &EncryptedChunkRef,
-    ) -> impl Future<Output = Result<Node<F>, StoreError>> + MaybeSend
-    where
-        Self: Sized + MaybeSync,
-    {
-        async move {
-            let (node, _) = crate::store::materialize_traced::<Self, F>(
-                self,
-                reference.address(),
-                Some(reference.key()),
-            )
-            .await?;
-            Ok(node)
-        }
-    }
-}
-
-impl<T: TrustedGet<ContentOnlyChunkSet>> EncryptedNodeGet for T {}
 
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
+    use nectar_primitives::ChunkOps;
     use nectar_primitives::store::{ContentGet, MemoryStore};
     use nectar_primitives::{ChunkAddress, ChunkRef};
     use nectar_testing::run;
@@ -186,14 +112,19 @@ mod tests {
     use crate::bounded::Prefix;
     use crate::fork::Child;
     use crate::meta::{KeyId, Metadata};
-    use crate::node::RootExtension;
+    use crate::node::{Node, RootExtension};
+    use crate::store::{NodeGet, NodePut};
     use crate::value::Entry;
 
     use super::*;
 
     const SECRET: &[u8] = b"correct horse battery staple";
 
-    fn sample() -> Node {
+    fn seal() -> Encrypted<'static, V1> {
+        Encrypted::new(SECRET)
+    }
+
+    fn sample() -> Node<V1, EncryptedChunkRef> {
         let root = RootExtension::new(
             Some(Entry::from(ChunkRef::new(ChunkAddress::new([1; 32])))),
             Some(
@@ -218,91 +149,101 @@ mod tests {
     #[test]
     fn derivation_is_deterministic_and_secret_dependent() {
         let plaintext = b"payload bytes";
-        let a = derive_key::<crate::V1>(SECRET, plaintext);
-        let b = derive_key::<crate::V1>(SECRET, plaintext);
+        let a = derive_key::<V1>(SECRET, plaintext);
+        let b = derive_key::<V1>(SECRET, plaintext);
         assert_eq!(a, b);
-        assert_ne!(a, derive_key::<crate::V1>(b"other secret", plaintext));
-        assert_ne!(a, derive_key::<crate::V1>(SECRET, b"other payload"));
+        assert_ne!(a, derive_key::<V1>(b"other secret", plaintext));
+        assert_ne!(a, derive_key::<V1>(SECRET, b"other payload"));
     }
 
     #[test]
     fn sealing_is_deterministic_and_dedups() {
         let node = sample();
-        let first = node.to_encrypted_chunk(SECRET).unwrap();
-        let second = node.to_encrypted_chunk(SECRET).unwrap();
+        let (first_chunk, first) = node.to_sealed(&seal()).unwrap();
+        let (second_chunk, second) = node.to_sealed(&seal()).unwrap();
         // Same plaintext, same secret: same key, ciphertext and address.
-        assert_eq!(first.reference(), second.reference());
-        assert_eq!(first.chunk().address(), second.chunk().address());
+        assert_eq!(first, second);
+        assert_eq!(first_chunk.address(), second_chunk.address());
         // A different secret reseals to a different address and key.
-        let other = node.to_encrypted_chunk(b"different").unwrap();
-        assert_ne!(first.reference(), other.reference());
-        assert_ne!(first.chunk().address(), other.chunk().address());
+        let (other_chunk, other) = node.to_sealed(&Encrypted::<V1>::new(b"different")).unwrap();
+        assert_ne!(first, other);
+        assert_ne!(first_chunk.address(), other_chunk.address());
     }
 
     #[test]
     fn ciphertext_is_opaque_to_a_plain_reader() {
         let node = sample();
         let plaintext = node.encode().unwrap();
-        let sealed = node.to_encrypted_chunk(SECRET).unwrap();
+        let (chunk, _) = node.to_sealed(&seal()).unwrap();
         // The stored body is neither the plaintext nor a decodable manifest.
-        assert_ne!(
-            sealed.chunk().envelope().data().as_ref(),
-            plaintext.as_slice()
-        );
-        assert!(Node::<crate::V1>::from_chunk(sealed.chunk()).is_err());
+        assert_ne!(chunk.envelope().data().as_ref(), plaintext.as_slice());
+        assert!(Node::<V1>::decode(chunk.envelope().data()).is_err());
     }
 
     #[test]
     fn round_trips_through_the_derived_key() {
         let node = sample();
-        let sealed = node.to_encrypted_chunk(SECRET).unwrap();
-        let (chunk, reference) = sealed.into_parts();
-        let opened: Node = Node::from_encrypted_chunk(&chunk, reference.key()).unwrap();
+        let (chunk, reference) = node.to_sealed(&seal()).unwrap();
+        let opened = Node::<V1, EncryptedChunkRef>::from_chunk(&chunk, &reference).unwrap();
         assert_eq!(opened, node);
     }
 
     #[test]
     fn a_wrong_key_fails_to_decode() {
         let node = sample();
-        let sealed = node.to_encrypted_chunk(SECRET).unwrap();
-        let wrong = derive_key::<crate::V1>(b"wrong", &node.encode().unwrap());
-        assert!(Node::<crate::V1>::from_encrypted_chunk(sealed.chunk(), &wrong).is_err());
+        let (chunk, reference) = node.to_sealed(&seal()).unwrap();
+        let wrong = EncryptedChunkRef::new(
+            *reference.address(),
+            derive_key::<V1>(b"wrong", &node.encode().unwrap()),
+        );
+        assert!(Node::<V1, EncryptedChunkRef>::from_chunk(&chunk, &wrong).is_err());
     }
 
     #[test]
     fn round_trips_through_a_memory_store() {
         let store = ContentGet::new(MemoryStore::default());
         let node = sample();
-        let reference = run(store.put_node_encrypted(&node, SECRET)).unwrap();
-        let opened: Node = run(store.get_node_encrypted(&reference)).unwrap();
+        let reference = run(store.put_node(&node, &seal())).unwrap();
+        let opened: Node<V1, EncryptedChunkRef> = run(store.get_node(&reference)).unwrap();
         assert_eq!(opened, node);
     }
 
     #[test]
-    fn a_ref64_transports_the_child_key_into_its_parent() {
-        // The privacy rule made concrete: sealing a child yields a ref64 whose
-        // key is exactly the child's derived key, so a parent that records the
-        // ref64 carries that key in its own bytes.
+    fn a_reference_transports_the_child_key_into_its_parent() {
+        // The privacy rule made concrete: sealing a child yields a reference
+        // whose key is exactly the child's derived key, so a parent that
+        // records the reference carries that key in its own bytes.
         let store = ContentGet::new(MemoryStore::default());
         let child = sample();
-        let reference = run(store.put_node_encrypted(&child, SECRET)).unwrap();
+        let reference = run(store.put_node(&child, &seal())).unwrap();
         assert_eq!(
             reference.key(),
-            &derive_key::<crate::V1>(SECRET, &child.encode().unwrap())
+            &derive_key::<V1>(SECRET, &child.encode().unwrap())
         );
 
-        let mut parent = Node::empty();
+        let mut parent = Node::<V1, EncryptedChunkRef>::empty();
         parent
             .forks_mut()
             .insert(
                 Prefix::try_from(&b"dir/"[..]).unwrap(),
-                Child::Ref64(reference).into(),
+                Child::Ref(reference).into(),
                 None,
             )
             .unwrap();
         // The child key round-trips through the parent's own wire bytes.
         let bytes = parent.encode().unwrap();
-        let decoded: Node = Node::decode(&bytes).unwrap();
+        let decoded = Node::<V1, EncryptedChunkRef>::decode(&bytes).unwrap();
         assert_eq!(decoded, parent);
+    }
+
+    // The width witness in the flags byte is what makes a mis-typed read fail
+    // loud instead of parsing 64-byte child references as 32-byte ones.
+    #[test]
+    fn the_width_witness_rejects_a_mis_typed_decode() {
+        let encrypted = sample().encode().unwrap();
+        assert!(Node::<V1>::decode(&encrypted).is_err());
+
+        let plain = Node::<V1>::empty().encode().unwrap();
+        assert!(Node::<V1, EncryptedChunkRef>::decode(&plain).is_err());
     }
 }

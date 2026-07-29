@@ -13,11 +13,12 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use bytes::Bytes;
 use nectar_governor::{BoxFuture, Window};
+use nectar_primitives::ChunkRef;
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
-use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentChunk, PrimitivesError};
 
 use crate::bounded::{Prefix, SegmentWeight};
 use crate::codec::{
@@ -29,9 +30,9 @@ use crate::error::{ForkPrefixEmpty, PrefixTooLong, WeightOverBudget};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
-use crate::node::{Node, RootExtension};
-use crate::packing::{Domain, cut_allowance, embed, spill};
-use crate::store::StoreError;
+use crate::node::{Node, NodeRef, RootExtension};
+use crate::packing::{cut_allowance, embed, spill};
+use crate::store::{Seal, StoreError};
 use crate::value::{Entry, Key};
 
 /// A build or publish failure.
@@ -42,9 +43,6 @@ pub enum BuildError {
     /// here as an encode error.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// Sealing a content chunk failed.
-    #[error("seal content chunk")]
-    Seal(#[source] PrimitivesError),
     /// The backing store rejected a content chunk.
     #[error("store content chunk")]
     Backend(#[source] BoxedError),
@@ -109,17 +107,18 @@ impl BuildStats {
     }
 }
 
-/// The published manifest: the root chunk address and the build's work profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Built {
-    root: ChunkAddress,
+/// The published manifest: the root reference and the build's work profile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Built<R: NodeRef = ChunkRef> {
+    root: R,
     stats: BuildStats,
 }
 
-impl Built {
-    /// The root chunk address; the reference a reader descends from.
+impl<R: NodeRef> Built<R> {
+    /// The root reference a reader descends from; for an encrypted database
+    /// this is the whole tree's read capability.
     #[must_use]
-    pub const fn root(&self) -> &ChunkAddress {
+    pub const fn root(&self) -> &R {
         &self.root
     }
 
@@ -185,14 +184,19 @@ impl<F: Format> Builder<F> {
         self
     }
 
-    /// Assemble and publish the manifest, returning the root address.
+    /// Assemble and publish the manifest, returning its root reference.
     ///
-    /// Peak retained node buffers stay at the trie's node depth: a finished
-    /// subtree is embedded, or sealed and dispatched into the put window, before
-    /// the next sibling opens. The root address covers a fully stored tree.
-    pub async fn build<S>(&self, store: &S) -> Result<Built, BuildError>
+    /// `seal` decides the structural width: [`Plaintext`](crate::Plaintext) publishes
+    /// a plaintext database keyed by [`ChunkRef`], an encrypted sealer one
+    /// keyed by encrypted references. Peak retained node buffers stay at the
+    /// trie's node depth: a finished subtree is embedded, or sealed and
+    /// dispatched into the put window, before the next sibling opens. The
+    /// returned reference covers a fully stored tree.
+    pub async fn build<S, R, K>(&self, store: &S, seal: &K) -> Result<Built<R>, BuildError>
     where
         S: ChunkPut + MaybeSync,
+        R: NodeRef,
+        K: Seal<R>,
     {
         // Items borrow the sorted map: the descent indexes them without a
         // second owned copy of the key set.
@@ -203,7 +207,7 @@ impl<F: Format> Builder<F> {
             .collect();
         let root_ext = RootExtension::new(self.root_entry.clone(), self.root_metadata.clone());
         let mut stats = BuildStats::default();
-        let mut sink = PutSink::new(store, put_window::<F>());
+        let mut sink = PutSink::new(store, seal, put_window::<F>());
         let table = build_table_in(&mut sink, &items, 0, &mut stats).await?;
         let node = Node::new(root_ext, table);
         let root = emit_node_in(&mut sink, &node, &mut stats).await?;
@@ -226,17 +230,22 @@ pub(crate) fn put_window<F: Format>() -> Window {
 /// Puts are order-free, so the whole window admits; every put is settled
 /// before the root is returned. Wraps the shared governor put-sink, sealing
 /// chunks and mapping faults to [`BuildError`].
-pub(crate) struct PutSink<'s, S: ChunkPut + MaybeSync> {
+pub(crate) struct PutSink<'s, S: ChunkPut + MaybeSync, R: NodeRef, K: Seal<R>> {
     store: &'s S,
+    seal: &'s K,
     sink: nectar_governor::PutSink<'s, Result<(), BuildError>>,
+    _reference: PhantomData<R>,
 }
 
-impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
-    /// A window admitting `window` puts at once over `store`.
-    pub(crate) fn new(store: &'s S, window: Window) -> Self {
+impl<'s, S: ChunkPut + MaybeSync, R: NodeRef, K: Seal<R>> PutSink<'s, S, R, K> {
+    /// A window admitting `window` puts at once over `store`, sealing every
+    /// chunk with `seal`.
+    pub(crate) fn new(store: &'s S, seal: &'s K, window: Window) -> Self {
         Self {
             store,
+            seal,
             sink: nectar_governor::PutSink::new(window),
+            _reference: PhantomData,
         }
     }
 
@@ -245,40 +254,25 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
         self.store
     }
 
-    /// Seal `node`, dispatch its put into the window, and return the derived
-    /// address. A backend fault surfaces as a store error.
+    /// Seal `node`, dispatch its put into the window, and return its
+    /// reference. A backend fault surfaces as a store error.
     async fn put_node<F: Format>(
         &mut self,
-        node: &Node<F>,
+        node: &Node<F, R>,
         stats: &mut BuildStats,
-    ) -> Result<ChunkAddress, BuildError> {
-        let chunk = node.to_chunk()?;
-        let address = *chunk.address();
-        let store = self.store;
-        self.dispatch(
-            Box::pin(async move {
-                store
-                    .put(chunk)
-                    .await
-                    .map_err(|error| BuildError::from(StoreError::store(error)))
-            }),
-            stats,
-        )
-        .await?;
-        stats.nodes_written = stats.nodes_written.saturating_add(1);
-        Ok(address)
+    ) -> Result<R, BuildError> {
+        let payload = node.encode().map_err(StoreError::from)?;
+        self.put_payload(payload, stats).await
     }
 
-    /// Seal `payload` into a content chunk, dispatch its put into the window,
-    /// and return the derived address.
+    /// Seal `payload` into its chunk, dispatch the put into the window, and
+    /// return the reference that reaches it.
     async fn put_payload(
         &mut self,
         payload: Vec<u8>,
         stats: &mut BuildStats,
-    ) -> Result<ChunkAddress, BuildError> {
-        let content = ContentChunk::new(payload).map_err(BuildError::Seal)?;
-        let chunk = Chunk::from_envelope(content.into()).map_err(BuildError::Seal)?;
-        let address = *chunk.address();
+    ) -> Result<R, BuildError> {
+        let (chunk, reference) = self.seal.seal(payload)?;
         let store = self.store;
         self.dispatch(
             Box::pin(async move { store.put(chunk).await.map_err(BuildError::backend) }),
@@ -286,7 +280,7 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
         )
         .await?;
         stats.nodes_written = stats.nodes_written.saturating_add(1);
-        Ok(address)
+        Ok(reference)
     }
 
     /// Admit `put`, dispatch it into the window, then sweep the puts ready now.
@@ -320,19 +314,21 @@ impl<'s, S: ChunkPut + MaybeSync> PutSink<'s, S> {
 ///
 /// The returned table is the caller's to wrap: a root wears its extension and
 /// always spills, a subtree defers its own embed decision to [`resolve_in`].
-pub(crate) async fn build_table_in<'a, S, F>(
-    sink: &mut PutSink<'_, S>,
+pub(crate) async fn build_table_in<'a, S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
     items: &'a [Item<'a, F>],
     consumed: usize,
     stats: &mut BuildStats,
-) -> Result<ForkTable<F>, BuildError>
+) -> Result<ForkTable<F, R>, BuildError>
 where
     S: ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
-    let mut stack: Vec<Frame<'a, F>> = Vec::new();
+    let mut stack: Vec<Frame<'a, F, R>> = Vec::new();
     stack.push(Frame::new(consumed, items));
-    let mut returned: Option<Resolved<F>> = None;
+    let mut returned: Option<Resolved<F, R>> = None;
 
     loop {
         stats.peak_open_nodes = stats.peak_open_nodes.max(stack.len());
@@ -365,20 +361,20 @@ pub(crate) struct Item<'a, F: Format> {
 }
 
 /// A resolved subtree bubbling up to its parent fork.
-pub(crate) enum Resolved<F: Format> {
+pub(crate) enum Resolved<F: Format, R: NodeRef> {
     /// Small enough to inline into the parent's chunk.
-    Embedded(ForkTable<F>),
+    Embedded(ForkTable<F, R>),
     /// Spilled to a chunk of its own, carrying its subtree count so the
     /// parent fork stamps it on the reference.
-    Reference(ChunkRef, Option<SubtreeCount>),
+    Reference(R, Option<SubtreeCount>),
 }
 
-impl<F: Format> Resolved<F> {
+impl<F: Format, R: NodeRef> Resolved<F, R> {
     /// The child a parent fork holds for this resolved subtree.
-    pub(crate) fn into_child(self) -> Child<F> {
+    pub(crate) fn into_child(self) -> Child<F, R> {
         match self {
             Self::Embedded(table) => Child::Embedded(table),
-            Self::Reference(reference, _) => Child::Ref32(reference),
+            Self::Reference(reference, _) => Child::Ref(reference),
         }
     }
 
@@ -401,11 +397,11 @@ struct OpenFork<F: Format> {
 
 /// One node under construction: the keys below it, the cursor into them, the
 /// table built so far, and the fork whose child is open.
-struct Frame<'a, F: Format> {
+struct Frame<'a, F: Format, R: NodeRef> {
     consumed: usize,
     items: &'a [Item<'a, F>],
     cursor: usize,
-    table: ForkTable<F>,
+    table: ForkTable<F, R>,
     open: Option<OpenFork<F>>,
 }
 
@@ -419,7 +415,7 @@ enum Action<'a, F: Format> {
     Finalize,
 }
 
-impl<'a, F: Format> Frame<'a, F> {
+impl<'a, F: Format, R: NodeRef> Frame<'a, F, R> {
     const fn new(consumed: usize, items: &'a [Item<'a, F>]) -> Self {
         Self {
             consumed,
@@ -432,7 +428,7 @@ impl<'a, F: Format> Frame<'a, F> {
 
     /// Close the open fork with its resolved child, stamping the referenced
     /// child's subtree count onto the record.
-    fn attach(&mut self, resolved: Resolved<F>) -> Result<(), BuildError> {
+    fn attach(&mut self, resolved: Resolved<F, R>) -> Result<(), BuildError> {
         let open = self.open.take().ok_or(BuildError::Internal)?;
         let count = resolved.child_count();
         let child = resolved.into_child();
@@ -555,19 +551,21 @@ fn common_prefix_len(a: &Bytes, b: &Bytes, consumed: usize, cap: usize) -> usize
 ///
 /// The embed decision is child-local: it reads the subtree's flat length alone,
 /// so it is stable under re-rooting and history-independent.
-pub(crate) async fn resolve_in<S, F>(
-    sink: &mut PutSink<'_, S>,
-    table: ForkTable<F>,
+pub(crate) async fn resolve_in<S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
+    table: ForkTable<F, R>,
     stats: &mut BuildStats,
-) -> Result<Resolved<F>, BuildError>
+) -> Result<Resolved<F, R>, BuildError>
 where
     S: ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     let flat = Node::new(None, table.clone())
         .encoded_len()
         .saturating_sub(F::PREAMBLE.len());
-    if embed::<F>(flat, Domain::Plain, Domain::Plain) {
+    if embed::<F>(flat) {
         stats.nodes_embedded = stats.nodes_embedded.saturating_add(1);
         return Ok(Resolved::Embedded(table));
     }
@@ -575,8 +573,8 @@ where
     // before the table is consumed; the parent stamps it on the reference.
     let count = Some(SubtreeCount::new(table_count(&table)));
     let node = Node::new(None, table);
-    let address = emit_node_in(sink, &node, stats).await?;
-    Ok(Resolved::Reference(ChunkRef::new(address), count))
+    let reference = emit_node_in(sink, &node, stats).await?;
+    Ok(Resolved::Reference(reference, count))
 }
 
 /// Publish `node` as one chunk, or, when its flat body overruns the format
@@ -588,14 +586,16 @@ where
 /// boundaries into leaf and directory segments no larger than one chunk. The
 /// `OverBudget` guard on [`Node::encode`] therefore stays unreachable on this
 /// path.
-pub(crate) async fn emit_node_in<S, F>(
-    sink: &mut PutSink<'_, S>,
-    node: &Node<F>,
+pub(crate) async fn emit_node_in<S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
+    node: &Node<F, R>,
     stats: &mut BuildStats,
-) -> Result<ChunkAddress, BuildError>
+) -> Result<R, BuildError>
 where
     S: ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
     if body_len(node) <= F::BUDGET {
         return sink.put_node(node, stats).await;
@@ -605,16 +605,18 @@ where
 
 /// Spill an over-budget node into a `<=` depth-two segment directory, storing
 /// each leaf and directory segment and returning the segmented node's address.
-async fn spill_node_in<S, F>(
-    sink: &mut PutSink<'_, S>,
-    node: &Node<F>,
+async fn spill_node_in<S, F, R, K>(
+    sink: &mut PutSink<'_, S, R, K>,
+    node: &Node<F, R>,
     stats: &mut BuildStats,
-) -> Result<ChunkAddress, BuildError>
+) -> Result<R, BuildError>
 where
     S: ChunkPut + MaybeSync,
     F: Format,
+    R: NodeRef,
+    K: Seal<R>,
 {
-    let forks: Vec<(u8, &ForkRecord<F>)> = node.forks().iter().collect();
+    let forks: Vec<(u8, &ForkRecord<F, R>)> = node.forks().iter().collect();
     let mut items: Vec<(Prefix<F>, SegmentWeight<F>)> = Vec::with_capacity(forks.len());
     for (first, record) in &forks {
         let mut full = Vec::with_capacity(record.tail().len().saturating_add(1));
@@ -626,9 +628,8 @@ where
         ));
     }
 
-    let directory = spill::<F>(&items, Domain::Plain);
-    let mut leaf_descs: Vec<(u8, ChunkAddress, SubtreeCount)> =
-        Vec::with_capacity(directory.leaves().len());
+    let directory = spill::<F, R>(&items);
+    let mut leaf_descs: Vec<(u8, R, SubtreeCount)> = Vec::with_capacity(directory.leaves().len());
     for range in directory.leaves() {
         let slice = forks.get(range.clone()).ok_or(BuildError::Internal)?;
         let &(first_key, _) = slice.first().ok_or(BuildError::Internal)?;
@@ -640,31 +641,30 @@ where
         // its covered forks' counts, so a reader descends by rank without a
         // fetch.
         let seg_count = descriptor_count(slice.iter().map(|(_, record)| fork_count(record)));
-        let address = sink.put_payload(encode_leaf_segment(&leaf), stats).await?;
-        leaf_descs.push((first_key, address, seg_count));
+        let reference = sink.put_payload(encode_leaf_segment(&leaf), stats).await?;
+        leaf_descs.push((first_key, reference, seg_count));
     }
 
     let top = if directory.dirs().len() <= 1 {
-        SegmentDir::plain(leaf_descs)
+        SegmentDir::new(leaf_descs)
     } else {
-        let mut dir_descs: Vec<(u8, ChunkAddress, SubtreeCount)> =
-            Vec::with_capacity(directory.dirs().len());
+        let mut dir_descs: Vec<(u8, R, SubtreeCount)> = Vec::with_capacity(directory.dirs().len());
         for range in directory.dirs() {
             let group = leaf_descs.get(range.clone()).ok_or(BuildError::Internal)?;
-            let &(first_key, _, _) = group.first().ok_or(BuildError::Internal)?;
+            let first_key = group.first().ok_or(BuildError::Internal)?.0;
             let seg_count = descriptor_count(group.iter().map(|(_, _, count)| count.get()));
-            let address = sink
+            let reference = sink
                 .put_payload(
-                    encode_dir_segment::<F>(&SegmentDir::plain(group.to_vec())),
+                    encode_dir_segment::<F, R>(&SegmentDir::new(group.to_vec())),
                     stats,
                 )
                 .await?;
-            dir_descs.push((first_key, address, seg_count));
+            dir_descs.push((first_key, reference, seg_count));
         }
-        SegmentDir::plain(dir_descs)
+        SegmentDir::new(dir_descs)
     };
 
-    sink.put_payload(encode_segmented_node::<F>(node.root(), &top), stats)
+    sink.put_payload(encode_segmented_node::<F, R>(node.root(), &top), stats)
         .await
 }
 
