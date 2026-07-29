@@ -65,10 +65,18 @@ pub fn derive_key<F: Format>(secret: &[u8], plaintext: &[u8]) -> EncryptionKey {
 /// Deriving from the plaintext is what keeps an encrypted build canonical: the
 /// same subtree under the same secret always seals to the same bytes, so dedup
 /// and bit-exact rebuilds survive.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Encrypted<'s, F: Format = V1> {
     secret: &'s [u8],
     _format: PhantomData<F>,
+}
+
+/// Redacted: the sealer holds the master secret of a whole database, so it
+/// never prints it.
+impl<F: Format> core::fmt::Debug for Encrypted<'_, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Encrypted(..)")
+    }
 }
 
 impl<'s, F: Format> Encrypted<'s, F> {
