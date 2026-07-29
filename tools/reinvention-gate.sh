@@ -119,15 +119,22 @@ deny 'thread::park executor loop (use nectar_testing::run or nectar_tasks)' \
     'crates/postage-issuer/src/pipeline/mod.rs' \
     'crates/postage-issuer/src/pipeline/stamped_put.rs'
 
-# The bounded put window: a fresh `FuturesUnordered` set drained by
-# `settle_one`/`sweep`. The governor `PutSink` is its sole home; a new in-flight
-# set or a drain-settle loop elsewhere is a copy. Only the sign-admission pump
-# owns its own set. `settle`/`drain` alone (a `Format` fold, `VecDeque::drain`)
-# is not this shape and is left alone. The file walk engine owns the read-side
-# fetch set: the shared walk loop is gone, so each walker drives its own set
-# under `Admission`, which is the other side of the governor, not a put window.
+# The bounded put window's drain: a set settled by `settle_one`/`sweep`. The
+# governor `PutSink` is its sole home; only the sign-admission pump drains its
+# own set. `settle`/`drain` alone (a `Format` fold, `VecDeque::drain`) is not
+# this shape and is left alone. The read-side walkers are NOT sanctioned here,
+# so a put window landing in one still trips this.
 deny 'hand-rolled put window (use nectar_governor::PutSink)' \
-    'fn[[:space:]]+(settle_one|sweep)[[:space:]]*[<(]|FuturesUnordered::new[[:space:]]*\(\)' \
+    'fn[[:space:]]+(settle_one|sweep)[[:space:]]*[<(]' \
+    'crates/governor/' \
+    'crates/postage-issuer/src/pipeline/stamp_sink.rs'
+
+# A fresh in-flight set. The write side owns exactly two (the governor
+# `PutSink` and the sign-admission pump); the read side owns one per walker,
+# because the shared walk loop is gone and each walker now admits into its own
+# set under `Admission`. Sanctioned by file, one line per rewired walker.
+deny 'stray in-flight set (drive the sanctioned PutSink or walker set)' \
+    'FuturesUnordered::new[[:space:]]*\(\)' \
     'crates/governor/' \
     'crates/file/src/walk/engine.rs' \
     'crates/postage-issuer/src/pipeline/stamp_sink.rs'
