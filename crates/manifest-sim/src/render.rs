@@ -5,24 +5,45 @@
 //! capped arm from a smaller scale. A missing figure prints as `--` and its
 //! reason becomes a footnote, so a gap stays legible as a gap.
 //!
-//! The table shapes mirror the whitepaper: the capability matrix, 2.1 storage,
-//! 2.2 get hops with the RTT columns, 2.3 listing fair and pessimal, section 3
-//! ordered multipliers, 6.1 the build frontier, 6.2 write amplification against
-//! K, 4.3 pagination with the 0.2 resume column, and the build wall-time table
-//! under its caveat.
+//! # The two audiences
 //!
-//! Two rules ride the layout. Every table is keyed by corpus, because a figure
-//! from one corpus never speaks for another. Every multiplier prints beside the
-//! 1.0 absolute cost it divides, because a widening ratio and a growing floor
-//! are different findings.
+//! The whitepaper is read by two people and the layout keeps them apart. The
+//! `User experience` group answers what a reader of a manifest pays: the
+//! capability matrix, storage, get hops, listing, ordered operations, cursor
+//! rounds, pagination and subtree serve. The `Developer experience` group
+//! answers what a writer of a manifest pays: the format choice, the build
+//! frontier, write amplification and build wall-time. No table sits in both
+//! groups, so neither audience reads the other's number as its own.
+//!
+//! # Native against emulated
+//!
+//! A number is not comparable to another number until the reader knows how each
+//! was served. Every table whose cells come from a measured operation carries a
+//! capability legend beneath it: an unmarked figure is a native primitive, and a
+//! marked one names the emulation and its cost class. The legend is per table,
+//! because a marker is only useful beside the cells it explains.
+//!
+//! Two labels matter most. The 1.0 ceiling is composed from the range cursor,
+//! so its figure is an upper bound on a dedicated seek and says so. The 1.0
+//! pessimal cells repeat the native cost, because 1.0 has no degraded path, so
+//! they are labelled `native (no 1.0 fallback)` and never read as a measured
+//! whole-manifest walk.
+//!
+//! Two further rules ride the layout. Every table is keyed by corpus, because a
+//! figure from one corpus never speaks for another. Every multiplier prints
+//! beside the 1.0 absolute cost it divides, because a widening ratio and a
+//! growing floor are different findings.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use crate::arm::{Capability, FrontierClass, NullWithReason, OpOutcome};
+use crate::arm_ldb::NO_FALLBACK;
+use crate::arm_mantaray::{BATCH_CLASS, BATCH_HOW};
 use crate::results::{
     BuildProfileCell, BuildWallCell, CapabilityRow, Document, GetHopsCell, OrderedOpCell,
-    PaginateCell, PrefixListingCell, StorageCell, WriteAmpCell,
+    PaginateCell, ParallelCursorCell, PrefixListingCell, ReadProfileCell, StorageCell,
+    SubtreeServeCell, WriteAmpCell,
 };
 
 /// The cell every gap prints as.
@@ -74,14 +95,92 @@ impl Footnotes {
     }
 }
 
-/// The recorded reason for one arm's gap in one field, preferring an exact
-/// field match and falling back to any gap the same arm recorded.
+/// The recorded reason for one arm's gap in one field.
+///
+/// The match is exact. An earlier version fell back to any gap the same arm
+/// recorded, which let a storage footnote explain a hop cell; a wrong reason is
+/// worse than none, so a field with no gap of its own prints a bare `--`.
 fn reason_for<'a>(nulls: &'a [NullWithReason], arm: &str, field: &str) -> Option<&'a str> {
     nulls
         .iter()
         .find(|n| n.arm == arm && n.field == field)
-        .or_else(|| nulls.iter().find(|n| n.arm == arm))
         .map(|n| n.reason.as_str())
+}
+
+// ---- the capability legend -----------------------------------------------
+
+/// The per-table legend of capability markers.
+///
+/// A native primitive is unmarked. Anything else takes a letter that resolves
+/// under the table it appears in, so a reader never has to open the JSON to
+/// learn which numbers the format served itself and which a client emulated.
+#[derive(Debug, Default)]
+struct Legend {
+    entries: Vec<String>,
+}
+
+impl Legend {
+    /// The marker for `text`, allocating a letter on first sight.
+    fn marker(&mut self, text: &str) -> String {
+        let idx = match self.entries.iter().position(|e| e == text) {
+            Some(i) => i,
+            None => {
+                self.entries.push(text.to_string());
+                self.entries.len().saturating_sub(1)
+            }
+        };
+        format!(" [{}]", Self::letter(idx))
+    }
+
+    /// The `idx`-th marker letter, falling back to a number past `z`.
+    fn letter(idx: usize) -> String {
+        u32::try_from(idx)
+            .ok()
+            .filter(|i| *i < 26)
+            .and_then(|i| char::from_u32(u32::from(b'a').saturating_add(i)))
+            .map_or_else(|| idx.saturating_add(1).to_string(), String::from)
+    }
+
+    /// The marker a fair-column figure carries: none when the format served the
+    /// operation itself.
+    fn fair(&mut self, c: &Capability) -> String {
+        match c {
+            Capability::Native => String::new(),
+            Capability::Emulated { how, cost_class } => {
+                self.marker(&format!("emulated: {how} ({cost_class})"))
+            }
+            Capability::Unsupported { .. } => String::new(),
+        }
+    }
+
+    /// The marker a pessimal-column figure carries.
+    ///
+    /// A pessimal column prices the degraded path a client without the
+    /// primitive must run. A native cell there is not a measured whole-manifest
+    /// walk: it is the native cost repeated, because the arm has no degraded
+    /// path at all. The marker says exactly that.
+    fn pessimal(&mut self, c: &Capability) -> String {
+        match c {
+            Capability::Native => self.marker(NO_FALLBACK),
+            other => self.fair(other),
+        }
+    }
+
+    /// The legend block, or an empty string when every figure was native.
+    fn block(&self) -> String {
+        if self.entries.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from(
+            "Capability legend (an unmarked figure is a native primitive \
+of the format):\n\n",
+        );
+        for (i, text) in self.entries.iter().enumerate() {
+            let _ = writeln!(out, "- `[{}]` {text}", Self::letter(i));
+        }
+        out.push('\n');
+        out
+    }
 }
 
 // ---- formatting ----------------------------------------------------------
@@ -145,12 +244,27 @@ fn capability_cell(c: &Capability, fx: &mut Footnotes) -> String {
     }
 }
 
-/// The fetch count of an outcome, or a null carrying the outcome's own reason.
-fn outcome_fetches(o: Option<&OpOutcome>, fx: &mut Footnotes, fallback: Option<&str>) -> String {
+/// The fetch count of an outcome with its capability marker, or a null carrying
+/// the outcome's own reason.
+fn outcome_fetches(
+    o: Option<&OpOutcome>,
+    fx: &mut Footnotes,
+    lg: &mut Legend,
+    pessimal: bool,
+    fallback: Option<&str>,
+) -> String {
     match o {
         Some(OpOutcome {
-            cost: Some(cost), ..
-        }) => int(cost.fetches),
+            capability,
+            cost: Some(cost),
+        }) => {
+            let mark = if pessimal {
+                lg.pessimal(capability)
+            } else {
+                lg.fair(capability)
+            };
+            format!("{}{mark}", int(cost.fetches))
+        }
         Some(OpOutcome {
             capability: Capability::Unsupported { reason },
             ..
@@ -164,13 +278,18 @@ fn outcome_mean(
     o: Option<&OpOutcome>,
     probes: u64,
     fx: &mut Footnotes,
+    lg: &mut Legend,
     fallback: Option<&str>,
 ) -> String {
     match o {
         Some(OpOutcome {
-            cost: Some(cost), ..
-        }) if probes > 0 => f2(cost.fetches as f64 / probes as f64),
-        other => outcome_fetches(other, fx, fallback),
+            capability,
+            cost: Some(cost),
+        }) if probes > 0 => {
+            let mark = lg.fair(capability);
+            format!("{}{mark}", f2(cost.fetches as f64 / probes as f64))
+        }
+        other => outcome_fetches(other, fx, lg, false, fallback),
     }
 }
 
@@ -188,6 +307,17 @@ fn by_corpus<'a, T>(cells: &'a [T], key: impl Fn(&'a T) -> &'a str) -> Vec<(&'a 
     out
 }
 
+/// The RTT column keys present across a group, ascending by value.
+fn rtt_keys<'a, T>(cells: &'a [&'a T], keys: impl Fn(&'a T) -> Vec<&'a String>) -> Vec<String> {
+    let mut set: BTreeSet<(u64, String)> = BTreeSet::new();
+    for c in cells {
+        for k in keys(c) {
+            set.insert((k.parse::<u64>().unwrap_or(u64::MAX), k.clone()));
+        }
+    }
+    set.into_iter().map(|(_, k)| k).collect()
+}
+
 // ---- the document --------------------------------------------------------
 
 /// Render a whole result document as GitHub markdown.
@@ -199,6 +329,14 @@ pub fn render(doc: &Document) -> String {
 
     out.push_str("# Two-arm manifest benchmark: mantaray 0.2 against mantaray 1.0\n\n");
     out.push_str(&provenance(doc));
+
+    // The end user's side: what reading a manifest costs.
+    out.push_str("## User experience\n\n");
+    out.push_str(
+        "What a client pays to read a manifest: which operations exist, how many chunks the tree \
+holds, how many hops a lookup takes, and what a listing, an ordered seek, a cursor round and a \
+page cost.\n\n",
+    );
     out.push_str(&capability_matrix(
         &doc.deterministic.capability_matrix,
         &arms,
@@ -217,18 +355,29 @@ pub fn render(doc: &Document) -> String {
         &mut fx,
     ));
     out.push_str(&ordered_ops(&doc.deterministic.ordered_ops, &arms, &mut fx));
+    out.push_str(&parallel_cursor(&doc.deterministic.parallel_cursor));
+    out.push_str(&paginate(&doc.deterministic.paginate, &mut fx));
+    out.push_str(&subtree_serve(&doc.deterministic.subtree_serve, &mut fx));
+
+    // The builder's side: what writing a manifest costs.
+    out.push_str("## Developer experience\n\n");
+    out.push_str(
+        "What a builder pays to write a manifest: which format parameters to pick, how much memory \
+one build holds live, how many chunks an update rewrites, and how long a cold build runs.\n\n",
+    );
+    out.push_str(&read_profile(&doc.deterministic.v1read));
     out.push_str(&build_profile(
         &doc.deterministic.build_profile,
         &arms,
         &mut fx,
     ));
     out.push_str(&write_amp(&doc.deterministic.write_amp, &arms, &mut fx));
-    out.push_str(&paginate(&doc.deterministic.paginate, &mut fx));
     out.push_str(&build_wall(
         &doc.wall_time.build_wall,
         &doc.wall_time.nulls,
         &mut fx,
     ));
+
     out.push_str(&fx.definitions());
     out
 }
@@ -280,19 +429,45 @@ no multiplier exists.",
 /// them, and all three move in 0.2's favour, so leaving them unstated would
 /// overstate the 1.0 case.
 pub(crate) const DIVERGENCE_NOTE: &str = "Re-derived from the crates in tree, not from the \
-whitepaper's historical classifications. Three rows diverge. Ordered iteration is a streaming \
-walk in documented path order, not an unordered O(N)-memory drain. Ceiling rides an after-bound \
-pruned seek, not an unsupported O(N) scan. Batch update amortises inside one multi-op editor \
-commit, so the 6.2 batched column is measured and is not the whitepaper's flat per-edit line.";
+whitepaper's historical classifications. Three rows diverge, and all three move in 0.2's favour, \
+so the table below states each was-and-is pair rather than absorbing the correction silently.";
+
+/// One whitepaper row the in-tree 0.2 crate has moved past.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Divergence {
+    /// Which whitepaper row moved.
+    pub row: &'static str,
+    /// How the whitepaper-era crate classified it.
+    pub was: &'static str,
+    /// How the crate in tree measures today.
+    pub is: &'static str,
+}
+
+/// Every divergence the harness corrects, in whitepaper row order.
+pub(crate) const DIVERGENCES: [Divergence; 3] = [
+    Divergence {
+        row: "row 7, ceiling",
+        was: "unsupported, so a client scanned the manifest: O(N)",
+        is: "an after-bound pruned seek through the public cursor: O(depth + window)",
+    },
+    Divergence {
+        row: "row 10, ordered iteration",
+        was: "unordered, and it held O(N) entries in memory",
+        is: "a streaming trie walk in documented path order: O(depth + window) memory",
+    },
+    Divergence {
+        row: "6.2, batch update",
+        was: "one flat per-edit line, because batching was not credited",
+        is: "one multi-op editor commit amortises its writes: O(touched spine)",
+    },
+];
 
 /// The measured capability matrix, one row per operation.
 fn capability_matrix(rows: &[CapabilityRow], arms: &[&str], fx: &mut Footnotes) -> String {
     if rows.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## Capability matrix\n\n");
-    out.push_str(DIVERGENCE_NOTE);
-    out.push_str("\n\n");
+    let mut out = String::from("### Capability matrix\n\n");
     let mut head = vec!["Operation"];
     head.extend_from_slice(arms);
     out.push_str(&header(&head));
@@ -307,6 +482,24 @@ fn capability_matrix(rows: &[CapabilityRow], arms: &[&str], fx: &mut Footnotes) 
         out.push_str(&row(&cells));
     }
     out.push('\n');
+    out.push_str(&divergences());
+    out
+}
+
+/// The was-and-is table of every whitepaper row the in-tree crate has moved.
+fn divergences() -> String {
+    let mut out = String::from("#### Divergences from the whitepaper-era 0.2 crate\n\n");
+    out.push_str(DIVERGENCE_NOTE);
+    out.push_str("\n\n");
+    out.push_str(&header(&["Whitepaper row", "Was", "Is"]));
+    for d in DIVERGENCES {
+        out.push_str(&row(&[
+            d.row.to_string(),
+            d.was.to_string(),
+            d.is.to_string(),
+        ]));
+    }
+    out.push('\n');
     out
 }
 
@@ -318,9 +511,9 @@ fn storage(cells: &[StorageCell], arms: &[&str], fx: &mut Footnotes) -> String {
     if cells.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## 2.1 Storage, slot utilisation and embedding\n\n");
+    let mut out = String::from("### 2.1 Storage, slot utilisation and embedding\n\n");
     for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
-        let _ = writeln!(out, "### Corpus `{corpus}`\n");
+        let _ = writeln!(out, "#### Corpus `{corpus}`\n");
         out.push_str(&header(&[
             "Scale",
             "Arm",
@@ -365,7 +558,10 @@ fn storage(cells: &[StorageCell], arms: &[&str], fx: &mut Footnotes) -> String {
                 ),
             ]));
         }
-        out.push('\n');
+        out.push_str(
+            "\nBuilding is native on both arms, so no figure above is an emulation. The 0.2 build \
+is one multi-op editor commit; the 1.0 build is the format's own builder.\n\n",
+        );
     }
     out
 }
@@ -377,14 +573,9 @@ fn get_hops(cells: &[GetHopsCell], arms: &[&str], rtts: &[u32], fx: &mut Footnot
     if cells.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## 2.2 Get hops and modelled latency\n\n");
-    out.push_str(
-        "Hops are the measured currency. Every millisecond column is that measured mean times a \
-stated RTT under a sequential model with no pipelining and no caching; it is illustrative, not a \
-timing.\n\n",
-    );
+    let mut out = String::from("### 2.2 Get hops and modelled latency\n\n");
     for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
-        let _ = writeln!(out, "### Corpus `{corpus}`\n");
+        let _ = writeln!(out, "#### Corpus `{corpus}`\n");
         let rtt_heads: Vec<String> = rtts.iter().map(|r| format!("{r} ms")).collect();
         let mut head = vec![
             "Scale".to_string(),
@@ -440,7 +631,12 @@ timing.\n\n",
                 ),
             ]));
         }
-        out.push('\n');
+        out.push_str(
+            "\nHops are the measured currency. Every millisecond column is that measured mean \
+times a stated RTT under a sequential model with no pipelining and no caching; it is \
+illustrative, not a timing. `get` is a native primitive on both arms, so no figure here is an \
+emulation.\n\n",
+        );
     }
     out
 }
@@ -453,14 +649,10 @@ fn prefix_listing(cells: &[PrefixListingCell], arms: &[&str], fx: &mut Footnotes
     if cells.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## 2.3 Prefix listing: fair and pessimal\n\n");
-    out.push_str(
-        "The fair column is each arm's best public-API path: a prefix scan on 1.0, a pruned \
-prefix walk on 0.2. The pessimal column is the whole-manifest walk a client without the pruned \
-path must run.\n\n",
-    );
+    let mut out = String::from("### 2.3 Prefix listing: fair and pessimal\n\n");
     for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
-        let _ = writeln!(out, "### Corpus `{corpus}`\n");
+        let mut lg = Legend::default();
+        let _ = writeln!(out, "#### Corpus `{corpus}`\n");
         out.push_str(&header(&[
             "Scale",
             "Prefix",
@@ -476,10 +668,18 @@ path must run.\n\n",
                     format!("`{}`", c.prefix),
                     int(c.keys_returned),
                     format!("`{arm}`"),
-                    outcome_fetches(c.fair.get(*arm), fx, reason_for(&c.nulls, arm, "fair")),
+                    outcome_fetches(
+                        c.fair.get(*arm),
+                        fx,
+                        &mut lg,
+                        false,
+                        reason_for(&c.nulls, arm, "fair"),
+                    ),
                     outcome_fetches(
                         c.pessimal.get(*arm),
                         fx,
+                        &mut lg,
+                        true,
                         reason_for(&c.nulls, arm, "pessimal"),
                     ),
                 ]));
@@ -490,20 +690,60 @@ path must run.\n\n",
         for c in &group {
             out.push_str(&row(&[
                 int(c.scale),
-                c.fair_multiplier
-                    .map_or_else(|| fx.null(reason_for(&c.nulls, "mantaray-0.2", "fair")), f2),
+                c.fair_multiplier.map_or_else(
+                    || fx.null(reason_for(&c.nulls, "mantaray-0.2", "fair_multiplier")),
+                    f2,
+                ),
                 c.pessimal_multiplier.map_or_else(
-                    || fx.null(reason_for(&c.nulls, "mantaray-0.2", "pessimal")),
+                    || fx.null(reason_for(&c.nulls, "mantaray-0.2", "pessimal_multiplier")),
                     f2,
                 ),
             ]));
         }
         out.push('\n');
+        out.push_str(
+            "The fair column is each arm's best public-API path: a prefix scan on 1.0, a pruned \
+prefix walk on 0.2. The pessimal column is the whole-manifest walk a client without the pruned \
+path must run. 1.0 has no degraded path at all, so no whole-manifest walk was measured on the 1.0 \
+arms: their pessimal cells repeat the fair measurement and carry the marker that says so.\n\n",
+        );
+        out.push_str(&lg.block());
     }
     out
 }
 
 // ---- section 3 ordered ops ------------------------------------------------
+
+/// The reading order of the section-3 ops, so a sorted table reads floor, then
+/// ceiling, then the range windows.
+fn op_rank(op: &str) -> u8 {
+    match op {
+        "floor" => 0,
+        "ceiling" => 1,
+        "range" => 2,
+        _ => 3,
+    }
+}
+
+/// Sort a corpus group so each op's N-series reads ascending.
+///
+/// The multiplier table is where "the ratio widens with N" is read, and that
+/// reading needs the scales of one op adjacent and ascending. The measured
+/// table above it stays in run order, which is scale-major, so a reader can
+/// still take one scale as a block.
+fn by_op_then_scale<'a>(group: &[&'a OrderedOpCell]) -> Vec<&'a OrderedOpCell> {
+    let mut rows: Vec<&OrderedOpCell> = group.to_vec();
+    rows.sort_by(|a, b| {
+        op_rank(&a.op).cmp(&op_rank(&b.op)).then_with(|| {
+            a.window
+                .unwrap_or(0.0)
+                .partial_cmp(&b.window.unwrap_or(0.0))
+                .unwrap_or(core::cmp::Ordering::Equal)
+                .then_with(|| a.scale.cmp(&b.scale))
+        })
+    });
+    rows
+}
 
 /// Whitepaper section 3: floor, ceiling and range, per scale.
 ///
@@ -514,13 +754,10 @@ fn ordered_ops(cells: &[OrderedOpCell], arms: &[&str], fx: &mut Footnotes) -> St
     if cells.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## 3 Ordered operations: floor, ceiling and range\n\n");
-    out.push_str(
-        "Fair and pessimal fetches are per-probe means. The pessimal path is measured once per \
-cell, because a whole-manifest walk costs the same whichever probe asked for it.\n\n",
-    );
+    let mut out = String::from("### 3 Ordered operations: floor, ceiling and range\n\n");
     for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
-        let _ = writeln!(out, "### Corpus `{corpus}`\n");
+        let mut lg = Legend::default();
+        let _ = writeln!(out, "#### Corpus `{corpus}`\n");
         out.push_str(&header(&[
             "Scale",
             "Op",
@@ -542,17 +779,23 @@ cell, because a whole-manifest walk costs the same whichever probe asked for it.
                         c.fair.get(*arm),
                         c.probes,
                         fx,
+                        &mut lg,
                         reason_for(&c.nulls, arm, "fair"),
                     ),
                     outcome_fetches(
                         c.pessimal.get(*arm),
                         fx,
+                        &mut lg,
+                        true,
                         reason_for(&c.nulls, arm, "pessimal"),
                     ),
                 ]));
             }
         }
-        out.push_str("\nMultipliers beside the 1.0 absolute cost they divide:\n\n");
+        out.push_str(
+            "\nMultipliers beside the 1.0 absolute cost they divide, each op's scales \
+ascending:\n\n",
+        );
         out.push_str(&header(&[
             "Scale",
             "Op",
@@ -562,15 +805,17 @@ cell, because a whole-manifest walk costs the same whichever probe asked for it.
             "1.0 mean fetches",
             "1.0 max fetches",
         ]));
-        for c in &group {
+        for c in by_op_then_scale(&group) {
             out.push_str(&row(&[
                 int(c.scale),
                 format!("`{}`", c.op),
                 window(c.window),
-                c.fair_multiplier
-                    .map_or_else(|| fx.null(reason_for(&c.nulls, "mantaray-0.2", "fair")), f2),
+                c.fair_multiplier.map_or_else(
+                    || fx.null(reason_for(&c.nulls, "mantaray-0.2", "fair_multiplier")),
+                    f2,
+                ),
                 c.pessimal_multiplier.map_or_else(
-                    || fx.null(reason_for(&c.nulls, "mantaray-0.2", "pessimal")),
+                    || fx.null(reason_for(&c.nulls, "mantaray-0.2", "pessimal_multiplier")),
                     f2,
                 ),
                 c.native_abs_mean.map_or_else(|| fx.null(None), f2),
@@ -578,6 +823,273 @@ cell, because a whole-manifest walk costs the same whichever probe asked for it.
             ]));
         }
         out.push('\n');
+        out.push_str(
+            "Fair fetches are per-probe means over the cell's probes. The pessimal path is \
+measured once per cell, because a whole-manifest walk costs the same whichever probe asked for \
+it. Read every multiplier with N beside it: it widens because the 0.2 side grows, while the 1.0 \
+absolute grows only with depth. 1.0 has no degraded path at all, so no whole-manifest walk was \
+measured on the 1.0 arms: their pessimal cells repeat the fair measurement of the same op.\n\n",
+        );
+        out.push_str(
+            "The 1.0 ceiling absolute is an upper bound, not a dedicated-seek cost. 1.0 has no \
+dedicated ceiling primitive, so the arm rides `range(key, MAX)` and takes one item; that cursor \
+fills a read-ahead window of speculative child fetches on its first poll, so the figure counts \
+nodes a dedicated seek would never fetch. The number is kept and labelled, not corrected.\n\n",
+        );
+        out.push_str(&lg.block());
+    }
+    out
+}
+
+// ---- 4.1 the parallel cursor ---------------------------------------------
+
+/// Whitepaper 4.1: the bounded-concurrency cursor's fetch rounds, and the
+/// latency model those rounds drive.
+///
+/// Rounds are measured off the real cursor under a paused virtual clock, never
+/// derived from the fetch count, so the speedup column is a measurement and not
+/// an assumption about how a client would pipeline.
+fn parallel_cursor(cells: &[ParallelCursorCell]) -> String {
+    if cells.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("### 4.1 Cursor fetch rounds under bounded concurrency\n\n");
+    for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
+        let _ = writeln!(out, "#### Corpus `{corpus}`\n");
+        out.push_str(&header(&[
+            "Scale",
+            "Op",
+            "Window",
+            "Keys",
+            "Fetches",
+            "Rounds",
+            "Read-ahead",
+        ]));
+        for c in &group {
+            out.push_str(&row(&[
+                int(c.scale),
+                format!("`{}`", c.op),
+                window(c.window),
+                int(c.keys_returned),
+                int(c.fetch_count),
+                int(c.rounds),
+                int(u64::from(c.read_ahead)),
+            ]));
+        }
+        let rtts = rtt_keys(&group, |c| c.by_rtt_ms.keys().collect());
+        if !rtts.is_empty() {
+            out.push_str("\nModelled latency per round trip:\n\n");
+            out.push_str(&header(&[
+                "Scale",
+                "Op",
+                "Window",
+                "RTT ms",
+                "Serial ms",
+                "Concurrent ms",
+                "Speedup",
+            ]));
+            for c in &group {
+                for rtt in &rtts {
+                    let Some(l) = c.by_rtt_ms.get(rtt) else {
+                        continue;
+                    };
+                    out.push_str(&row(&[
+                        int(c.scale),
+                        format!("`{}`", c.op),
+                        window(c.window),
+                        rtt.clone(),
+                        f2(l.serial_ms),
+                        f2(l.concurrent_ms),
+                        l.speedup.map_or_else(|| NULL.to_string(), f2),
+                    ]));
+                }
+            }
+        }
+        out.push('\n');
+        if let Some(model) = group.first().map(|c| c.model.as_str()) {
+            let _ = writeln!(out, "> {model}\n");
+        }
+    }
+    out
+}
+
+// ---- 4.3 pagination -------------------------------------------------------
+
+/// Whitepaper 4.3: rank-directed pagination against the skip baseline and the
+/// 0.2 resume-token walk to the same offset.
+fn paginate(cells: &[PaginateCell], fx: &mut Footnotes) -> String {
+    if cells.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("### 4.3 Pagination to an offset\n\n");
+    for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
+        let mut lg = Legend::default();
+        let _ = writeln!(out, "#### Corpus `{corpus}`\n");
+        out.push_str(&header(&[
+            "Scale",
+            "Offset",
+            "Limit",
+            "Keys",
+            "1.0 paginate fetches",
+            "1.0 skip-baseline fetches",
+            "Skip / paginate",
+            "0.2 resume-walk fetches",
+        ]));
+        for c in &group {
+            let resume = match (c.v02_resume_fetch_count, c.v02_resume_capability.as_ref()) {
+                (Some(n), Some(cap)) => format!("{}{}", int(n), lg.fair(cap)),
+                (Some(n), None) => int(n),
+                (None, _) => fx.null(c.v02_resume_null_reason.as_deref()),
+            };
+            out.push_str(&row(&[
+                int(c.scale),
+                int(c.offset),
+                int(u64::from(c.limit)),
+                int(c.keys_returned),
+                int(c.paginate_fetch_count),
+                int(c.skip_baseline_fetch_count),
+                c.skip_over_paginate.map_or_else(|| fx.null(None), f2),
+                resume,
+            ]));
+        }
+        out.push('\n');
+        out.push_str(
+            "1.0 seeks the page by rank in O(depth). The skip baseline and the 0.2 resume-token \
+walk both pay O(offset): 0.2 has no rank-directed seek, so a client carries the last path of each \
+page into the next.\n\n",
+        );
+        out.push_str(&lg.block());
+    }
+    out
+}
+
+// ---- subtree serve --------------------------------------------------------
+
+/// The subtree-reference handoff against the full cursor walk for the same
+/// folder listing: what a gateway saves by serving a subtree reference.
+fn subtree_serve(cells: &[SubtreeServeCell], fx: &mut Footnotes) -> String {
+    if cells.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("### Subtree serve: one reference against a full walk\n\n");
+    for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
+        let _ = writeln!(out, "#### Corpus `{corpus}`\n");
+        out.push_str(&header(&[
+            "Scale",
+            "Prefix",
+            "Keys",
+            "Handoff found",
+            "Handoff fetches",
+            "Cursor-walk fetches",
+            "Walk / handoff",
+        ]));
+        for c in &group {
+            out.push_str(&row(&[
+                int(c.scale),
+                format!("`{}`", c.prefix),
+                int(c.keys_returned),
+                if c.handoff_found { "yes" } else { "no" }.to_string(),
+                int(c.handoff_fetch_count),
+                int(c.cursor_walk_fetch_count),
+                c.walk_over_handoff.map_or_else(
+                    || {
+                        fx.null((!c.handoff_found).then_some(
+                            "no single chunk covers exactly this prefix, so there \
+is no reference to hand off",
+                        ))
+                    },
+                    f2,
+                ),
+            ]));
+        }
+        out.push('\n');
+        out.push_str(
+            "The handoff resolves the covering subtree reference in O(depth) and fetches nothing \
+below the boundary; the walk drains the same listing from the database root. This is a 1.0-only \
+lane: 0.2 has no subtree reference to hand off.\n\n",
+        );
+    }
+    out
+}
+
+// ---- 4.2 V1Read against V1 ------------------------------------------------
+
+/// Whitepaper 4.2: what the read-optimised format parameters buy and what they
+/// cost, which is a build-side choice and so sits with the builder.
+fn read_profile(cells: &[ReadProfileCell]) -> String {
+    if cells.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("### 4.2 V1Read against V1\n\n");
+    for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
+        let _ = writeln!(out, "#### Corpus `{corpus}`\n");
+        out.push_str(&header(&[
+            "Scale",
+            "Format",
+            "Version byte",
+            "Inline max",
+            "Mean get depth",
+            "Max get depth",
+            "Chunks rewritten per single update",
+        ]));
+        for c in &group {
+            for (name, side) in [("V1", &c.v1), ("V1Read", &c.v1read)] {
+                out.push_str(&row(&[
+                    int(c.scale),
+                    format!("`{name}`"),
+                    int(u64::from(side.version_byte)),
+                    int(u64::from(side.inline_max)),
+                    f2(side.tree_depth_mean),
+                    int(side.tree_depth_max),
+                    f2(side.single_update_chunks_mean),
+                ]));
+            }
+        }
+        out.push_str("\nFetches to drain each range window:\n\n");
+        out.push_str(&header(&[
+            "Scale",
+            "Window",
+            "V1 fetches",
+            "V1Read fetches",
+            "V1Read / V1",
+        ]));
+        for c in &group {
+            for (w, v1) in &c.v1.range_fetch_by_window {
+                out.push_str(&row(&[
+                    int(c.scale),
+                    w.clone(),
+                    int(*v1),
+                    c.v1read
+                        .range_fetch_by_window
+                        .get(w)
+                        .map_or_else(|| NULL.to_string(), |v| int(*v)),
+                    c.fetch_ratio_by_window
+                        .get(w)
+                        .map_or_else(|| NULL.to_string(), |v| f2(*v)),
+                ]));
+            }
+        }
+        out.push_str("\nThe read win beside the write cost it is paid for with:\n\n");
+        out.push_str(&header(&[
+            "Scale",
+            "Depth ratio",
+            "Single-update chunk delta",
+            "Single-update ratio",
+        ]));
+        for c in &group {
+            out.push_str(&row(&[
+                int(c.scale),
+                c.depth_ratio.map_or_else(|| NULL.to_string(), f2),
+                f2(c.single_update_wa_delta),
+                c.single_update_wa_ratio
+                    .map_or_else(|| NULL.to_string(), f2),
+            ]));
+        }
+        out.push('\n');
+        out.push_str(
+            "A ratio below 1.0 is the read win; the chunk delta is what one update pays for it. \
+Both formats serve every operation natively, so no figure here is an emulation.\n\n",
+        );
     }
     out
 }
@@ -590,14 +1102,9 @@ fn build_profile(cells: &[BuildProfileCell], arms: &[&str], fx: &mut Footnotes) 
     if cells.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## 6.1 Build frontier and profile\n\n");
-    out.push_str(
-        "`bounded` is an O(depth) frontier of simultaneously open nodes; `whole_trie` is an O(N) \
-commit that materialises every node at once. Peak bytes are the store's live bytes, never process \
-RSS.\n\n",
-    );
+    let mut out = String::from("### 6.1 Build frontier and profile\n\n");
     for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
-        let _ = writeln!(out, "### Corpus `{corpus}`\n");
+        let _ = writeln!(out, "#### Corpus `{corpus}`\n");
         out.push_str(&header(&[
             "Scale",
             "Arm",
@@ -642,6 +1149,11 @@ RSS.\n\n",
             }
         }
         out.push('\n');
+        out.push_str(
+            "`bounded` is an O(depth) frontier of simultaneously open nodes; `whole_trie` is an \
+O(N) commit that materialises every node at once. Peak bytes are the store's live bytes, never \
+process RSS.\n\n",
+        );
     }
     out
 }
@@ -662,15 +1174,10 @@ fn write_amp(cells: &[WriteAmpCell], arms: &[&str], fx: &mut Footnotes) -> Strin
     if cells.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## 6.2 Write amplification against K\n\n");
-    out.push_str(
-        "Chunks written per edit. `batched` is one changeset on 1.0 and one multi-op commit on \
-0.2; `per edit` is one commit or apply for every edit. The K=1 row is a point on this curve and \
-is never printed apart from it.\n\n",
-    );
+    let mut out = String::from("### 6.2 Write amplification against K\n\n");
     for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
         for (scale, rows) in by_scale(&group) {
-            let _ = writeln!(out, "### Corpus `{corpus}`, scale {}\n", int(scale));
+            let _ = writeln!(out, "#### Corpus `{corpus}`, scale {}\n", int(scale));
             if rows.len() < 2 {
                 let ks = rows.iter().map(|c| int(c.k)).collect::<Vec<_>>().join(", ");
                 let reason = format!(
@@ -703,6 +1210,16 @@ withheld: a write amplification read apart from its K curve is the hazard this t
                 out.push_str(&row(&line));
             }
             out.push('\n');
+            out.push_str(
+                "Chunks written per edit. `batched` is one changeset on 1.0 and one multi-op \
+commit on 0.2; `per edit` is one commit or apply for every edit. The K=1 row is a point on this \
+curve and is never printed apart from it.\n\n",
+            );
+            let _ = writeln!(
+                out,
+                "Capability legend: the 1.0 columns are native `Changeset` applies. The 0.2 \
+columns are an emulation: {BATCH_HOW} ({BATCH_CLASS}).\n"
+            );
         }
     }
     out
@@ -720,68 +1237,24 @@ fn by_scale<'a>(cells: &[&'a WriteAmpCell]) -> Vec<(u64, Vec<&'a WriteAmpCell>)>
     out
 }
 
-// ---- 4.3 pagination -------------------------------------------------------
-
-/// Whitepaper 4.3: rank-directed pagination against the skip baseline and the
-/// 0.2 resume-token walk to the same offset.
-fn paginate(cells: &[PaginateCell], fx: &mut Footnotes) -> String {
-    if cells.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("## 4.3 Pagination to an offset\n\n");
-    out.push_str(
-        "1.0 seeks the page by rank in O(depth). The skip baseline and the 0.2 resume-token walk \
-both pay O(offset): 0.2 has no rank-directed seek, so a client carries the last path of each page \
-into the next.\n\n",
-    );
-    for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
-        let _ = writeln!(out, "### Corpus `{corpus}`\n");
-        out.push_str(&header(&[
-            "Scale",
-            "Offset",
-            "Limit",
-            "Keys",
-            "1.0 paginate fetches",
-            "1.0 skip-baseline fetches",
-            "Skip / paginate",
-            "0.2 resume-walk fetches",
-        ]));
-        for c in &group {
-            out.push_str(&row(&[
-                int(c.scale),
-                int(c.offset),
-                int(u64::from(c.limit)),
-                int(c.keys_returned),
-                int(c.paginate_fetch_count),
-                int(c.skip_baseline_fetch_count),
-                c.skip_over_paginate.map_or_else(|| fx.null(None), f2),
-                c.v02_resume_fetch_count
-                    .map_or_else(|| fx.null(c.v02_resume_null_reason.as_deref()), int),
-            ]));
-        }
-        out.push('\n');
-    }
-    out
-}
-
 // ---- the wall-time section ------------------------------------------------
 
 /// The build wall-time table, under the verbatim cold-pass caveat.
 ///
-/// The caveat prints above the table, once, so no reader meets a nanosecond
-/// before meeting the reason it is not the currency.
+/// The caveat prints once per corpus table, not once per document, so a reader
+/// who lands on one corpus meets the reason nanoseconds are not the currency
+/// before meeting the nanoseconds.
 fn build_wall(cells: &[BuildWallCell], nulls: &[NullWithReason], fx: &mut Footnotes) -> String {
     if cells.is_empty() && nulls.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## Build wall-time (non-deterministic)\n\n");
-    let caveat = cells
-        .first()
-        .map_or(String::new(), |c| format!("> {}\n\n", c.caveat));
-    out.push_str(&caveat);
+    let mut out = String::from("### Build wall-time (non-deterministic)\n\n");
     if !cells.is_empty() {
         for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
-            let _ = writeln!(out, "### Corpus `{corpus}`\n");
+            let _ = writeln!(out, "#### Corpus `{corpus}`\n");
+            if let Some(caveat) = group.first().map(|c| c.caveat.as_str()) {
+                let _ = writeln!(out, "> {caveat}\n");
+            }
             out.push_str(&header(&[
                 "Scale", "Arm", "Samples", "Mean ns", "Min ns", "Keys / s",
             ]));
@@ -826,11 +1299,34 @@ fn build_wall(cells: &[BuildWallCell], nulls: &[NullWithReason], fx: &mut Footno
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{Footnotes, NULL, f3, int, render};
+    use super::{Footnotes, Legend, NULL, f3, int, render};
     use crate::arm::{Capability, NullWithReason, OpCost, OpOutcome};
     use crate::results::{
         ArmMeta, Document, Meta, PaginateCell, PrefixListingCell, WriteAmpCell, generated_iso,
     };
+
+    /// The body of one markdown section, from its heading to the next heading
+    /// of the same or a higher level.
+    fn section(md: &str, heading: &str) -> String {
+        let level = heading.chars().take_while(|c| *c == '#').count();
+        let mut out = String::new();
+        let mut inside = false;
+        for line in md.lines() {
+            let hashes = line.chars().take_while(|c| *c == '#').count();
+            if line.starts_with(heading) && line.trim_end() == heading.trim_end() {
+                inside = true;
+                continue;
+            }
+            if inside && hashes > 0 && hashes <= level {
+                break;
+            }
+            if inside {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
+    }
 
     /// A document with one gap in every shape the renderer must print as `--`.
     fn doc() -> Document {
@@ -879,20 +1375,39 @@ mod tests {
                 }),
             },
         );
+        let mut pessimal = BTreeMap::new();
+        pessimal.insert(
+            "ldb-v1".to_string(),
+            OpOutcome {
+                capability: Capability::native(),
+                cost: Some(OpCost {
+                    fetches: 7,
+                    puts: 0,
+                    keys_returned: 3,
+                }),
+            },
+        );
         d.deterministic.prefix_listing.push(PrefixListingCell {
             corpus: "kiwix".to_string(),
             scale: 1_000,
             prefix: "a/".to_string(),
             keys_returned: 3,
             fair,
-            pessimal: BTreeMap::new(),
+            pessimal,
             fair_multiplier: None,
             pessimal_multiplier: None,
-            nulls: vec![NullWithReason {
-                arm: "mantaray-0.2".to_string(),
-                field: "fair".to_string(),
-                reason: capped.clone(),
-            }],
+            nulls: vec![
+                NullWithReason {
+                    arm: "mantaray-0.2".to_string(),
+                    field: "fair".to_string(),
+                    reason: capped.clone(),
+                },
+                NullWithReason {
+                    arm: "mantaray-0.2".to_string(),
+                    field: "fair_multiplier".to_string(),
+                    reason: capped.clone(),
+                },
+            ],
         });
         for k in [1u64, 10] {
             let mut batched = BTreeMap::new();
@@ -920,6 +1435,7 @@ mod tests {
             skip_baseline_fetch_count: 4,
             skip_over_paginate: Some(1.0),
             v02_resume_fetch_count: None,
+            v02_resume_capability: None,
             v02_resume_null_reason: Some(capped),
         });
         d
@@ -957,13 +1473,96 @@ mod tests {
         );
     }
 
+    /// A footnote is only ever the reason recorded against the exact field
+    /// printed. Borrowing another gap the same arm filed would attach a
+    /// confident explanation to the wrong cell.
+    #[test]
+    fn a_footnote_never_borrows_an_unrelated_gap_the_same_arm_filed() {
+        let mut d = doc();
+        let cell = d
+            .deterministic
+            .prefix_listing
+            .first_mut()
+            .expect("the listing cell");
+        // A gap filed against a different field of the same arm.
+        cell.nulls = vec![NullWithReason {
+            arm: "mantaray-0.2".to_string(),
+            field: "slot_utilisation".to_string(),
+            reason: "an unrelated storage gap".to_string(),
+        }];
+        let md = render(&d);
+        assert!(
+            !md.contains("an unrelated storage gap"),
+            "a listing cell borrowed a storage reason:\n{md}"
+        );
+        assert!(md.contains(NULL), "the gap stopped printing as a dash");
+    }
+
+    /// The two audiences are separated and no table sits in both. A reader of
+    /// the user-experience group must not meet a build-side figure there.
+    #[test]
+    fn the_document_splits_the_user_and_developer_audiences() {
+        use crate::arm::FrontierClass;
+        use crate::results::{ArmBuildProfile, BuildProfileCell, BuildWallCell};
+
+        let mut d = doc();
+        d.deterministic.capability_matrix = crate::matrix::capability_matrix();
+        let mut per_arm = BTreeMap::new();
+        per_arm.insert(
+            "ldb-v1".to_string(),
+            ArmBuildProfile {
+                frontier: FrontierClass::Bounded { peak_open_nodes: 4 },
+                nodes_written: 39,
+                nodes_embedded: Some(11),
+                peak_live_store_bytes: 1_024,
+                total_put_bytes: 2_048,
+            },
+        );
+        d.deterministic.build_profile.push(BuildProfileCell {
+            corpus: "kiwix".to_string(),
+            scale: 1_000,
+            per_arm,
+            nulls: vec![NullWithReason {
+                arm: "mantaray-0.2".to_string(),
+                field: "per_arm".to_string(),
+                reason: "mantaray 0.2 skipped by policy above 100".to_string(),
+            }],
+        });
+        d.wall_time.build_wall.push(BuildWallCell {
+            corpus: "kiwix".to_string(),
+            scale: 1_000,
+            arm: "ldb-v1".to_string(),
+            samples: 1,
+            mean_ns: 12_345,
+            min_ns: 12_345,
+            keys_per_sec: 81_000.0,
+            caveat: crate::build_time::BUILD_CAVEAT.to_string(),
+        });
+        let md = render(&d);
+        let ux = section(&md, "## User experience");
+        let dx = section(&md, "## Developer experience");
+        assert!(!ux.is_empty(), "no user-experience group in:\n{md}");
+        assert!(!dx.is_empty(), "no developer-experience group in:\n{md}");
+        assert!(
+            md.find("## User experience") < md.find("## Developer experience"),
+            "the audiences are out of order"
+        );
+        for heading in ["### Capability matrix", "### 2.3", "### 4.3"] {
+            assert!(ux.contains(heading), "{heading} is not a user-side table");
+            assert!(!dx.contains(heading), "{heading} leaked into the DX group");
+        }
+        for heading in ["### 6.1", "### 6.2", "### Build wall-time"] {
+            assert!(
+                dx.contains(heading),
+                "{heading} is not a builder-side table"
+            );
+            assert!(!ux.contains(heading), "{heading} leaked into the UX group");
+        }
+    }
+
     /// The 6.2 section of a rendered document.
     fn sweep_section(md: &str) -> String {
-        md.split("## 6.2")
-            .nth(1)
-            .and_then(|s| s.split("\n## ").next())
-            .unwrap_or_default()
-            .to_string()
+        section(md, "### 6.2 Write amplification against K")
     }
 
     /// The K=1 write-amplification row never stands alone: it is a row of the
@@ -982,8 +1581,8 @@ mod tests {
         // Grep the whole document: only 6.2 carries a write-amplification
         // column, so no single-update figure can be met away from its curve.
         let elsewhere: Vec<&str> = md
-            .split("\n## ")
-            .filter(|s| !s.starts_with("6.2") && s.contains("batched"))
+            .split("\n### ")
+            .filter(|s| !s.starts_with("6.2") && s.contains("` batched"))
             .collect();
         assert!(
             elsewhere.is_empty(),
@@ -1020,18 +1619,14 @@ mod tests {
     }
 
     /// Red-team check 11: the rendered matrix states the current crates, and
-    /// every divergence from the whitepaper is named where the matrix is read.
+    /// every divergence from the whitepaper is named where the matrix is read,
+    /// as an explicit was-and-is pair.
     #[test]
     fn the_capability_matrix_states_the_in_tree_crate_and_its_divergence() {
         let mut d = doc();
         d.deterministic.capability_matrix = crate::matrix::capability_matrix();
         let md = render(&d);
-        let section = md
-            .split("## Capability matrix")
-            .nth(1)
-            .and_then(|s| s.split("\n## ").next())
-            .unwrap_or_default()
-            .to_string();
+        let section = section(&md, "### Capability matrix");
 
         // The in-tree classifications, not the whitepaper's historical ones.
         for how in [
@@ -1043,29 +1638,55 @@ mod tests {
         ] {
             assert!(section.contains(how), "the matrix does not print {how}");
         }
-        // No table row is left at its whitepaper class. The note names the old
-        // classifications to contrast them, so only the rows are checked.
+        // No table row is left at its whitepaper class. The was-and-is table
+        // names the old classifications to contrast them, so only the matrix
+        // rows are checked.
         for line in section.lines().filter(|l| l.starts_with("| `")) {
             assert!(
                 !line.contains("unordered") && !line.contains("unsupported"),
                 "a matrix row still carries a whitepaper-era class: {line}"
             );
         }
-        // The divergence is stated in the rendered notes, all three rows of it.
+        // The divergence is stated in the rendered notes as was-and-is pairs.
         assert!(section.contains(super::DIVERGENCE_NOTE));
-        for finding in ["Ordered iteration", "Ceiling", "Batch update"] {
-            assert!(
-                section.contains(finding),
-                "the notes do not state the {finding} divergence"
-            );
+        for d in super::DIVERGENCES {
+            assert!(section.contains(d.row), "the notes drop {}", d.row);
+            assert!(section.contains(d.was), "the notes drop what {} was", d.row);
+            assert!(section.contains(d.is), "the notes drop what {} is", d.row);
         }
+        assert!(
+            section.contains("| Whitepaper row | Was | Is |"),
+            "the divergences are prose, not a was-and-is table"
+        );
+    }
+
+    /// The 1.0 ceiling rides the range cursor, so the matrix says so where the
+    /// number is read: the read-ahead bound is named, not implied.
+    #[test]
+    fn the_ldb_ceiling_carries_its_read_ahead_bound() {
+        let mut d = doc();
+        d.deterministic.capability_matrix = crate::matrix::capability_matrix();
+        let md = render(&d);
+        let section = section(&md, "### Capability matrix");
+        let line = section
+            .lines()
+            .find(|l| l.starts_with("| `ceiling`"))
+            .unwrap_or_default();
+        assert!(
+            line.contains(crate::arm_ldb::CEILING_HOW),
+            "the 1.0 ceiling reads as a plain native seek: {line}"
+        );
+        assert!(
+            line.contains("READ_AHEAD"),
+            "the ceiling row hides the read-ahead bound: {line}"
+        );
     }
 
     /// Grouping is by corpus and nothing crosses corpora or averages them.
     #[test]
     fn every_table_is_keyed_by_corpus() {
         let md = render(&doc());
-        assert!(md.contains("### Corpus `kiwix`"));
+        assert!(md.contains("#### Corpus `kiwix`"));
         assert!(!md.to_lowercase().contains("all corpora"));
         assert!(!md.to_lowercase().contains("average across"));
     }
@@ -1082,6 +1703,104 @@ mod tests {
         let defs = fx.definitions();
         assert!(defs.contains("[^1]: a"));
         assert!(defs.contains("[^2]: b"));
+    }
+
+    /// A native figure is unmarked, an emulation takes a letter that resolves
+    /// in the legend, and a native cell in a pessimal column is labelled as the
+    /// repeat it is rather than as a measured whole walk.
+    #[test]
+    fn the_legend_marks_emulations_and_the_absent_fallback() {
+        let mut lg = Legend::default();
+        assert_eq!(lg.fair(&Capability::native()), "");
+        let m = lg.fair(&Capability::emulated("a walk", "O(N)"));
+        assert_eq!(m, " [a]");
+        // The same emulation reuses its letter; a different one takes the next.
+        assert_eq!(lg.fair(&Capability::emulated("a walk", "O(N)")), " [a]");
+        assert_eq!(lg.fair(&Capability::emulated("a seek", "O(1)")), " [b]");
+        assert_eq!(lg.pessimal(&Capability::native()), " [c]");
+        let block = lg.block();
+        assert!(block.contains("`[a]` emulated: a walk (O(N))"));
+        assert!(block.contains("`[b]` emulated: a seek (O(1))"));
+        assert!(block.contains(crate::arm_ldb::NO_FALLBACK));
+        assert!(block.contains("unmarked figure is a native primitive"));
+    }
+
+    /// Every emulated figure in a rendered table carries its label, and a 1.0
+    /// pessimal cell never reads as a measured whole-manifest walk.
+    #[test]
+    fn rendered_tables_label_every_emulated_and_repeated_figure() {
+        let mut d = doc();
+        let cell = d
+            .deterministic
+            .prefix_listing
+            .first_mut()
+            .expect("the listing cell");
+        cell.fair.insert(
+            "mantaray-0.2".to_string(),
+            OpOutcome {
+                capability: Capability::emulated(
+                    crate::arm_mantaray::PREFIX_HOW,
+                    crate::arm_mantaray::PREFIX_CLASS,
+                ),
+                cost: Some(OpCost {
+                    fetches: 91,
+                    puts: 0,
+                    keys_returned: 3,
+                }),
+            },
+        );
+        cell.nulls.clear();
+        d.deterministic.paginate[0].v02_resume_fetch_count = Some(42);
+        d.deterministic.paginate[0].v02_resume_capability = Some(Capability::emulated(
+            crate::arm_mantaray::RESUME_HOW,
+            crate::arm_mantaray::RESUME_CLASS,
+        ));
+        d.deterministic.paginate[0].v02_resume_null_reason = None;
+        let md = render(&d);
+
+        let listing = section(&md, "### 2.3 Prefix listing: fair and pessimal");
+        let emulated = listing
+            .lines()
+            .find(|l| l.contains("`mantaray-0.2`"))
+            .unwrap_or_default();
+        assert!(
+            emulated.contains("91 ["),
+            "the 0.2 listing figure carries no marker: {emulated}"
+        );
+        assert!(
+            listing.contains(crate::arm_mantaray::PREFIX_HOW),
+            "the legend does not resolve the 0.2 marker:\n{listing}"
+        );
+        // The 1.0 pessimal cell is the native cost repeated, and says so, in
+        // the marker and in the prose the whole-walk sentence sits in.
+        assert!(
+            listing.contains(crate::arm_ldb::NO_FALLBACK),
+            "a 1.0 pessimal cell reads as a measured whole walk:\n{listing}"
+        );
+        assert!(
+            listing.contains("no whole-manifest walk was measured on the 1.0 arms"),
+            "the whole-walk prose still speaks for the 1.0 arms:\n{listing}"
+        );
+
+        // The 4.3 resume column carries its emulation label too.
+        let pages = section(&md, "### 4.3 Pagination to an offset");
+        assert!(
+            pages.contains(crate::arm_mantaray::RESUME_HOW),
+            "the resume walk lost its emulation label:\n{pages}"
+        );
+        assert!(
+            pages.lines().any(|l| l.contains("42 [")),
+            "the resume figure carries no marker:\n{pages}"
+        );
+    }
+
+    /// Thousands separators land on the right boundaries.
+    #[test]
+    fn integers_group_in_threes() {
+        assert_eq!(int(0), "0");
+        assert_eq!(int(999), "999");
+        assert_eq!(int(1_000), "1,000");
+        assert_eq!(int(1_000_000), "1,000,000");
     }
 
     /// The scale both determinism gates measure at.
@@ -1185,6 +1904,96 @@ mod tests {
         });
     }
 
+    /// Every measured lane of the deterministic section reaches the markdown.
+    ///
+    /// The parallel cursor, the V1Read profile and the subtree handoff were
+    /// measured and serialized but never rendered, so a reader of the tables
+    /// could not see them at all. A populated lane with no table is a dropped
+    /// finding, not a formatting choice.
+    #[test]
+    fn every_measured_lane_reaches_the_markdown() {
+        let det = read_lanes(crate::corpus::Corpus::Kiwix, DET_SCALE);
+        assert!(!det.parallel_cursor.is_empty(), "no cursor cells measured");
+        assert!(!det.v1read.is_empty(), "no read-profile cells measured");
+        assert!(!det.subtree_serve.is_empty(), "no subtree cells measured");
+        let mut d = doc();
+        d.deterministic = det;
+        let md = render(&d);
+        for heading in [
+            "### 4.1 Cursor fetch rounds under bounded concurrency",
+            "### 4.2 V1Read against V1",
+            "### 4.3 Pagination to an offset",
+            "### Subtree serve: one reference against a full walk",
+        ] {
+            assert!(md.contains(heading), "the {heading} lane was dropped");
+            let rows = section(&md, heading)
+                .lines()
+                .filter(|l| l.starts_with("| "))
+                .count();
+            assert!(rows >= 2, "{heading} rendered a heading with no rows");
+        }
+    }
+
+    /// The section-3 multiplier table reads each op's N-series ascending, so
+    /// "the ratio widens with N" can be read off the rows rather than
+    /// reconstructed from a scale-major block.
+    #[test]
+    fn the_multiplier_rows_read_ascending_in_n_per_op() {
+        use crate::results::OrderedOpCell;
+        let cell = |scale: u64, op: &str| OrderedOpCell {
+            corpus: "kiwix".to_string(),
+            scale,
+            op: op.to_string(),
+            window: None,
+            probes: 2,
+            fair: BTreeMap::new(),
+            pessimal: BTreeMap::new(),
+            fair_multiplier: Some(scale as f64),
+            pessimal_multiplier: None,
+            native_abs_mean: None,
+            native_abs_max: None,
+            nulls: Vec::new(),
+        };
+        let mut d = doc();
+        // Run order is scale-major: 1e3 floor, 1e3 ceiling, 1e4 floor, ...
+        d.deterministic.ordered_ops = vec![
+            cell(1_000, "floor"),
+            cell(1_000, "ceiling"),
+            cell(10_000, "floor"),
+            cell(10_000, "ceiling"),
+        ];
+        let md = render(&d);
+        let ordered = section(&md, "### 3 Ordered operations: floor, ceiling and range");
+        let mult: Vec<&str> = ordered
+            .split("Multipliers beside")
+            .nth(1)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("| 1"))
+            .collect();
+        assert_eq!(mult.len(), 4, "the multiplier table lost rows: {ordered}");
+        let ops: Vec<&str> = mult
+            .iter()
+            .map(|l| {
+                if l.contains("`floor`") {
+                    "floor"
+                } else {
+                    "ceiling"
+                }
+            })
+            .collect();
+        assert_eq!(
+            ops,
+            ["floor", "floor", "ceiling", "ceiling"],
+            "the ops are still interleaved by scale: {mult:?}"
+        );
+        assert!(
+            mult.first().unwrap_or(&"").starts_with("| 1,000 |")
+                && mult.get(1).unwrap_or(&"").starts_with("| 10,000 |"),
+            "the N-series does not ascend: {mult:?}"
+        );
+    }
+
     /// The document split holds: a wall-time cell lives in its own section and
     /// nothing it carries appears in the serialized deterministic section.
     #[test]
@@ -1209,12 +2018,29 @@ mod tests {
         assert!(wall.contains("mean_ns"), "the wall-time cell went missing");
     }
 
-    /// Thousands separators land on the right boundaries.
+    /// The cold-pass caveat prints inside every corpus table, so a reader who
+    /// lands on one corpus meets it before the nanoseconds.
     #[test]
-    fn integers_group_in_threes() {
-        assert_eq!(int(0), "0");
-        assert_eq!(int(999), "999");
-        assert_eq!(int(1_000), "1,000");
-        assert_eq!(int(1_000_000), "1,000,000");
+    fn the_wall_time_caveat_prints_once_per_corpus_table() {
+        use crate::results::BuildWallCell;
+        let mut d = doc();
+        for corpus in ["kiwix", "uniform"] {
+            d.wall_time.build_wall.push(BuildWallCell {
+                corpus: corpus.to_string(),
+                scale: 1_000,
+                arm: "ldb-v1".to_string(),
+                samples: 1,
+                mean_ns: 12_345,
+                min_ns: 12_345,
+                keys_per_sec: 81_000.0,
+                caveat: crate::build_time::BUILD_CAVEAT.to_string(),
+            });
+        }
+        let md = render(&d);
+        let printed = md.matches(crate::build_time::BUILD_CAVEAT).count();
+        assert_eq!(
+            printed, 2,
+            "the caveat printed {printed} times, want one per corpus:\n{md}"
+        );
     }
 }

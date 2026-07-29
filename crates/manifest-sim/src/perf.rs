@@ -468,14 +468,18 @@ pub fn paginate_cells(
         let skip_fetch = store.gets().saturating_sub(before);
 
         // The 0.2 emulation: offset/limit resume-token pages, then the page.
-        let v02 = if capped {
+        // The outcome's capability rides the cell, so the rendered column
+        // states the emulation instead of reading as a native figure.
+        let outcome = if capped {
             None
         } else {
-            mantaray
-                .resume_paginate(offset, PAGE_LIMIT)?
-                .cost
-                .map(|c| c.fetches)
+            Some(mantaray.resume_paginate(offset, PAGE_LIMIT)?)
         };
+        let v02 = outcome.as_ref().and_then(|o| o.cost).map(|c| c.fetches);
+        let v02_capability = outcome
+            .as_ref()
+            .filter(|o| o.cost.is_some())
+            .map(|o| o.capability.clone());
 
         cells.push(PaginateCell {
             corpus: corpus.name().to_string(),
@@ -488,6 +492,7 @@ pub fn paginate_cells(
             skip_over_paginate: (paginate_fetch > 0)
                 .then(|| skip_fetch as f64 / paginate_fetch as f64),
             v02_resume_fetch_count: v02,
+            v02_resume_capability: v02_capability,
             v02_resume_null_reason: v02.is_none().then(|| {
                 cap_reason
                     .clone()

@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use crate::arm::Capability;
+use crate::arm_ldb::{CEILING_CLASS as LDB_CEILING_CLASS, CEILING_HOW as LDB_CEILING_HOW};
 use crate::arm_mantaray::{
     BATCH_CLASS, BATCH_HOW, CEILING_CLASS, CEILING_HOW, FLOOR_CLASS, FLOOR_HOW, FULL_ITER_CLASS,
     FULL_ITER_HOW, INLINE_UNSUPPORTED, PREFIX_CLASS, PREFIX_HOW, RANGE_CLASS, RANGE_HOW,
@@ -54,9 +55,12 @@ pub fn capability_matrix() -> Vec<CapabilityRow> {
             Capability::native(),
             Capability::emulated(FLOOR_HOW, FLOOR_CLASS),
         ),
+        // Neither format has a dedicated ceiling primitive: 1.0 composes its
+        // range cursor and 0.2 its after-bound seek, so both sides carry an
+        // emulation label rather than the 1.0 side reading flat native.
         row(
             "ceiling",
-            Capability::native(),
+            Capability::emulated(LDB_CEILING_HOW, LDB_CEILING_CLASS),
             Capability::emulated(CEILING_HOW, CEILING_CLASS),
         ),
         row(

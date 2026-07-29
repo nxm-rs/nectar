@@ -1,10 +1,15 @@
 //! The mantaray 1.0 arm: [`LdbArm`] over a counting store, generic over the
 //! format `F` (`V1` or `V1Read`).
 //!
-//! Every operation is native: the reader and cursor are the format's own
+//! Nearly every operation is native: the reader and cursor are the format's own
 //! O(depth) primitives, so the pessimal columns return the same native cost
 //! (there is no degraded 1.0 path; the pessimal columns exist to price the 0.2
-//! side).
+//! side). [`Arm::ceiling`] is the one exception and is labelled as one: 1.0 has
+//! no dedicated ceiling primitive, so the arm composes `range(key, MAX)` with
+//! one `next()`. That cursor launches up to `READ_AHEAD` speculative child
+//! fetches on its first poll, so the figure is an UPPER BOUND on a dedicated
+//! seek, not the cost of one. The label rides every ceiling measurement and the
+//! capability matrix, so no reader meets the number without meeting the bound.
 
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
@@ -25,6 +30,26 @@ use crate::store::{Counters, CountingStore};
 /// A key sorting strictly above every corpus key: the open upper bound for the
 /// ceiling seek.
 const MAX_KEY: [u8; 48] = [0xff; 48];
+
+/// How the 1.0 arm serves `ceiling`: there is no dedicated primitive.
+pub(crate) const CEILING_HOW: &str = "range(key, MAX) cursor, first item";
+
+/// What that composition costs, stated as the bound it is.
+///
+/// The cursor's first poll stages the descent and then fills a read-ahead
+/// window of referenced children ahead of the walk position
+/// (`crates/ldb/src/scan.rs`), so the measured figure includes speculative
+/// fetches a dedicated seek would never make.
+pub(crate) const CEILING_CLASS: &str = "O(depth) descent plus up to READ_AHEAD speculative child fetches: \
+     an upper bound on a dedicated seek";
+
+/// Why the 1.0 pessimal columns repeat the native cost.
+///
+/// A pessimal column prices the degraded path a client without the primitive
+/// must run. 1.0 has no degraded path, so no whole-manifest walk was measured
+/// here and the cell repeats the native figure.
+pub(crate) const NO_FALLBACK: &str = "native (no 1.0 fallback): 1.0 has no degraded path, so the \
+pessimal column repeats the native cost; no whole-manifest walk was measured";
 
 /// mantaray 1.0 over a counting store; `F` is `V1` or `V1Read`.
 #[derive(Debug)]
@@ -180,7 +205,11 @@ impl<F: Format> Arm for LdbArm<F> {
     }
 
     fn ceiling(&self, key: &[u8]) -> Result<OpOutcome, Err> {
-        // The least key >= `key`: the first key of the open-ended range.
+        // The least key >= `key`: the first key of the open-ended range. 1.0
+        // has no dedicated ceiling primitive, so this composes the range cursor
+        // and takes one item. The first poll also fills the cursor's read-ahead
+        // window, so the delta is an upper bound on a dedicated seek. The
+        // capability says so on every measurement.
         let root = *self.root()?;
         let reader = self.reader();
         let before = self.store.snapshot();
@@ -188,7 +217,7 @@ impl<F: Format> Arm for LdbArm<F> {
         let first = run(cursor.next())?;
         let after = self.store.snapshot();
         Ok(OpOutcome {
-            capability: Capability::native(),
+            capability: Capability::emulated(CEILING_HOW, CEILING_CLASS),
             cost: Some(OpCost {
                 fetches: after.gets.saturating_sub(before.gets),
                 puts: after.puts.saturating_sub(before.puts),
@@ -217,7 +246,11 @@ impl<F: Format> Arm for LdbArm<F> {
     }
 
     fn range_pessimal(&self, lo: &[u8], hi: &[u8]) -> Result<OpOutcome, Err> {
-        // No degraded 1.0 path: the pessimal column is the same native cost.
+        // No degraded 1.0 path, so no whole-manifest walk is measured here:
+        // the pessimal column repeats the native cost. The outcome stays
+        // classed [`Capability::Native`], which is what the renderer reads to
+        // label the cell `native (no 1.0 fallback)` rather than printing it
+        // under whole-walk prose (see [`NO_FALLBACK`]).
         self.range(lo, hi)
     }
 
@@ -241,6 +274,7 @@ impl<F: Format> Arm for LdbArm<F> {
     }
 
     fn prefix_list_pessimal(&self, prefix: &[u8]) -> Result<OpOutcome, Err> {
+        // As [`Arm::range_pessimal`]: the native cost, labelled as such.
         self.prefix_list(prefix)
     }
 

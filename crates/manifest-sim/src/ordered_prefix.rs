@@ -33,6 +33,23 @@
 //! - A range probe drains O(window) keys, so the range windows use eight
 //!   evenly spaced placements rather than the point-op probe set. Every cell
 //!   states its own `probes` count.
+//!
+//! # A seek on a shallow tree can touch the whole tree
+//!
+//! On the uniform corpus at 1e3 the 1.0 floor and ceiling each charge 39
+//! fetches, which is exactly that arm's resident chunk count. The figure reads
+//! like a whole-tree walk and is not one. The uniform corpus is 48 random bytes
+//! per key, so its trie is a wide, shallow node whose chunks all sit on or
+//! beside the single descent, and the cursor's read-ahead window covers the
+//! rest. A seek can never cost more than the tree holds, so a 39-chunk tree
+//! caps the seek at 39.
+//!
+//! The law is settled by scale, not by one number: the same probe costs 7.0
+//! fetches over 262 chunks at 1e4 and 21.8 fetches over 3910 chunks at 1e5, so
+//! the touched fraction collapses from 100% to 2.7% to 0.6% while N grows a
+//! hundredfold. A real whole-tree walk would hold that fraction at 1.0 and grow
+//! with N. `the_ldb_seek_is_not_a_whole_tree_walk` is the gate that separates
+//! the two.
 
 use std::collections::BTreeMap;
 
@@ -293,6 +310,7 @@ fn prefix_cell(
     let (fair_multiplier, pessimal_multiplier) = cols.multipliers();
     let mut nulls = cols.nulls;
     push_cap_nulls(&mut nulls, cap_null);
+    push_multiplier_nulls(&mut nulls, fair_multiplier, pessimal_multiplier);
     Ok(Some(PrefixListingCell {
         corpus: corpus.name().to_string(),
         scale,
@@ -426,6 +444,7 @@ impl Columns {
         let (fair_multiplier, pessimal_multiplier) = self.multipliers();
         let mut nulls = self.nulls;
         push_cap_nulls(&mut nulls, cap_null);
+        push_multiplier_nulls(&mut nulls, fair_multiplier, pessimal_multiplier);
         OrderedOpCell {
             corpus: corpus.name().to_string(),
             scale,
@@ -469,6 +488,43 @@ fn push_cap_nulls(nulls: &mut Vec<NullWithReason>, cap_null: Option<&str>) {
             arm: MANTARAY.to_string(),
             field: field.to_string(),
             reason: reason.to_string(),
+        });
+    }
+}
+
+/// Name a missing multiplier under its OWN field, carrying the reason its
+/// numerator carries.
+///
+/// The renderer matches a footnote to the exact field it prints and never
+/// borrows an unrelated gap the same arm recorded, so a multiplier cell only
+/// gets a reason if one was filed against the multiplier itself.
+fn push_multiplier_nulls(
+    nulls: &mut Vec<NullWithReason>,
+    fair_multiplier: Option<f64>,
+    pessimal_multiplier: Option<f64>,
+) {
+    for (missing, source, field) in [
+        (fair_multiplier.is_none(), "fair", "fair_multiplier"),
+        (
+            pessimal_multiplier.is_none(),
+            "pessimal",
+            "pessimal_multiplier",
+        ),
+    ] {
+        if !missing || nulls.iter().any(|n| n.arm == MANTARAY && n.field == field) {
+            continue;
+        }
+        let reason = nulls
+            .iter()
+            .find(|n| n.arm == MANTARAY && n.field == source)
+            .map_or_else(
+                || format!("no 0.2 {source} figure and no 1.0 baseline to divide it by"),
+                |n| n.reason.clone(),
+            );
+        nulls.push(NullWithReason {
+            arm: MANTARAY.to_string(),
+            field: field.to_string(),
+            reason,
         });
     }
 }
@@ -557,6 +613,119 @@ mod tests {
             assert!(cell.fair_multiplier.is_none(), "capped 0.2 listing ratio");
             assert_capped(&cell.nulls);
         }
+    }
+
+    /// The mean per-probe fetches of one arm on one cell.
+    fn fair_mean(cell: &OrderedOpCell, arm: &str) -> f64 {
+        fair_fetches(cell, arm) as f64 / (cell.probes.max(1) as f64)
+    }
+
+    /// The `(mean fetches, resident chunks)` of one 1.0 point op at one scale
+    /// on the uniform corpus, measured over one build.
+    fn uniform_seek(op: &str, scale: u64) -> (f64, u64) {
+        use crate::arm::{Arm as _, build_checked};
+        use crate::arm_ldb::LdbArm;
+        use nectar_ldb::V1;
+
+        let keys = corpus::generate(Corpus::Uniform, scale as usize);
+        let mut arm = LdbArm::<V1>::new();
+        build_checked(&mut arm, &keys).expect("build the uniform arm");
+        let chunks = arm.counters().total_chunks;
+        let (ordered, _) = ordered_and_prefix(Corpus::Uniform, scale, &keys, 0);
+        let cell = ordered
+            .iter()
+            .find(|c| c.op == op)
+            .expect("the point-op cell");
+        (fair_mean(cell, LDB_V1), chunks)
+    }
+
+    /// A seek must not be a whole-tree walk wearing a seek's name.
+    ///
+    /// The uniform corpus at 1e3 is the trap: the 1.0 floor and ceiling each
+    /// charge 39 fetches over a 39-chunk tree, so the arm reads the whole tree
+    /// for one key. That is legitimate at that shape (see the module docs), and
+    /// the way to tell it apart from a real O(N) walk is to change N: a seek's
+    /// cost stays bounded while the tree grows, so the touched fraction must
+    /// collapse. A whole-tree walk would hold the fraction at 1.0 and grow
+    /// tenfold with the corpus.
+    #[test]
+    fn the_ldb_seek_is_not_a_whole_tree_walk() {
+        for op in ["floor", "ceiling"] {
+            let (small_fetches, small_chunks) = uniform_seek(op, 1_000);
+            let (big_fetches, big_chunks) = uniform_seek(op, 10_000);
+            assert!(
+                big_chunks > small_chunks.saturating_mul(4),
+                "{op}: the tree did not grow between the scales"
+            );
+            // The cost must not scale with the corpus: tenfold N, at most
+            // double the fetches.
+            assert!(
+                big_fetches <= small_fetches * 2.0,
+                "{op}: {small_fetches} fetches at 1e3 became {big_fetches} at 1e4, which tracks N"
+            );
+            // And the touched fraction must collapse, which a whole-tree walk
+            // can never do.
+            let small_fraction = small_fetches / (small_chunks.max(1) as f64);
+            let big_fraction = big_fetches / (big_chunks.max(1) as f64);
+            assert!(
+                big_fraction < small_fraction / 4.0,
+                "{op}: touched fraction {small_fraction} then {big_fraction}: the seek reads the \
+                 whole tree at every scale"
+            );
+            assert!(
+                big_fraction < 0.25,
+                "{op}: one probe still touches {big_fraction} of a {big_chunks}-chunk tree"
+            );
+        }
+    }
+
+    /// Red-team check 6, the 1.0 side: the ceiling rides the range cursor, so
+    /// its absolute is an upper bound on a dedicated seek. The bound must still
+    /// behave like a seek across scales (near-flat, never O(N)), and every
+    /// ceiling measurement must carry the label that says what it is.
+    #[test]
+    fn the_ldb_ceiling_is_labelled_and_stays_seek_grade_across_scales() {
+        use crate::arm::Capability;
+
+        let (small, _) = uniform_seek("ceiling", 1_000);
+        let (big, _) = uniform_seek("ceiling", 10_000);
+        assert!(
+            big <= small * 2.0,
+            "the ceiling bound grew with N: {small} then {big}"
+        );
+
+        let keys = corpus::generate(Corpus::Kiwix, 1_000);
+        let (ordered, _) = ordered_and_prefix(Corpus::Kiwix, 1_000, &keys, 0);
+        let cell = ordered
+            .iter()
+            .find(|c| c.op == "ceiling")
+            .expect("the ceiling cell");
+        for arm in [LDB_V1, LDB_V1READ] {
+            let outcome = cell.fair.get(arm).expect("a 1.0 ceiling outcome");
+            match &outcome.capability {
+                Capability::Emulated { how, cost_class } => {
+                    assert_eq!(how, crate::arm_ldb::CEILING_HOW);
+                    assert!(
+                        cost_class.contains("READ_AHEAD"),
+                        "the ceiling class hides the read-ahead: {cost_class}"
+                    );
+                }
+                other => panic!("{arm}: the ceiling is classed {other:?}, not as the bound it is"),
+            }
+        }
+        // The floor is a real primitive and stays native, so the label is not
+        // being sprayed over the whole 1.0 arm.
+        let floor = ordered
+            .iter()
+            .find(|c| c.op == "floor")
+            .expect("the floor cell");
+        assert!(
+            matches!(
+                floor.fair.get(LDB_V1).map(|o| &o.capability),
+                Some(Capability::Native)
+            ),
+            "the 1.0 floor lost its native class"
+        );
     }
 
     /// With the 0.2 arm inside the cap: the fair emulation is cheaper than its

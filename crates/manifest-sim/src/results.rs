@@ -220,9 +220,15 @@ pub struct OrderedOpCell {
     pub window: Option<f64>,
     /// Deterministic probe count (present and mutated-absent keys).
     pub probes: u64,
-    /// Mean fetches per probe, per arm, best public-API path.
+    /// AGGREGATE cost over the cell's `probes` probes, per arm, best
+    /// public-API path. `OpCost` is integral, so the per-probe mean cannot be
+    /// stored without loss; it is `fetches / probes` and the renderer divides.
     pub fair: BTreeMap<String, OpOutcome>,
-    /// Mean fetches per probe, per arm, pessimal full-walk path.
+    /// ONE pessimal measurement per arm, not an aggregate: a whole-manifest
+    /// walk costs the same whichever probe asked for it, so the figure is
+    /// already a per-probe cost. On the 1.0 arms there is no degraded path, so
+    /// the entry repeats the native cost and stays classed
+    /// [`Capability::Native`] for the renderer to label as such.
     pub pessimal: BTreeMap<String, OpOutcome>,
     /// fair 0.2 mean fetches / 1.0 native mean fetches.
     pub fair_multiplier: Option<f64>,
@@ -403,6 +409,10 @@ pub struct PaginateCell {
     /// 0.2 resume-token page walk to the same offset: cursor.after(token)
     /// pages of `limit` repeated offset/limit times; O(offset) fetches.
     pub v02_resume_fetch_count: Option<u64>,
+    /// How the 0.2 side served the page, so the rendered column carries its
+    /// emulation label instead of reading as a native figure.
+    #[serde(default)]
+    pub v02_resume_capability: Option<Capability>,
     /// Reason when absent (scale above the 0.2 cap).
     pub v02_resume_null_reason: Option<String>,
 }
