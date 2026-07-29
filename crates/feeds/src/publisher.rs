@@ -16,29 +16,29 @@ use crate::update::FeedUpdate;
 
 /// Write handle over a feed: a [`Feed`], a store, a signer and the next
 /// sequence position.
-pub struct Updater<S, Sig, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
+pub struct Publisher<S, Sig, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     feed: Feed<BODY_SIZE>,
     store: S,
     signer: Sig,
     next: Option<Sequence>,
 }
 
-impl<S, Sig, const BODY_SIZE: usize> fmt::Debug for Updater<S, Sig, BODY_SIZE> {
+impl<S, Sig, const BODY_SIZE: usize> fmt::Debug for Publisher<S, Sig, BODY_SIZE> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Updater")
+        f.debug_struct("Publisher")
             .field("feed", &self.feed)
             .field("next", &self.next)
             .finish_non_exhaustive()
     }
 }
 
-impl<S, Sig, const BODY_SIZE: usize> Updater<S, Sig, BODY_SIZE> {
-    /// Updater for a fresh feed, appending from index zero.
+impl<S, Sig, const BODY_SIZE: usize> Publisher<S, Sig, BODY_SIZE> {
+    /// Publisher for a fresh feed, publishing from index zero.
     pub const fn new(feed: Feed<BODY_SIZE>, store: S, signer: Sig) -> Self {
         Self::resume(feed, store, signer, Sequence::ZERO)
     }
 
-    /// Updater resuming at a known next free index (see
+    /// Publisher resuming at a known next free index (see
     /// [`Latest::next`](crate::Latest::next)).
     pub const fn resume(feed: Feed<BODY_SIZE>, store: S, signer: Sig, next: Sequence) -> Self {
         Self {
@@ -49,30 +49,30 @@ impl<S, Sig, const BODY_SIZE: usize> Updater<S, Sig, BODY_SIZE> {
         }
     }
 
-    /// The feed this updater publishes to.
+    /// The feed this publisher writes to.
     pub const fn feed(&self) -> &Feed<BODY_SIZE> {
         &self.feed
     }
 
-    /// The next append position; `None` once the sequence space is spent.
+    /// The next publish position; `None` once the sequence space is spent.
     pub const fn next_index(&self) -> Option<Sequence> {
         self.next
     }
 }
 
-impl<S, Sig, const BODY_SIZE: usize> Updater<S, Sig, BODY_SIZE>
+impl<S, Sig, const BODY_SIZE: usize> Publisher<S, Sig, BODY_SIZE>
 where
     S: ChunkPut<SingleOwnerOnlyChunkSet<BODY_SIZE>>,
     Sig: SignerSync,
 {
     /// Sign and publish `payload` at the next sequence position, advancing
     /// the position on success.
-    pub async fn append(
+    pub async fn publish(
         &mut self,
         payload: impl Into<Bytes>,
     ) -> Result<FeedUpdate<Sequence, BODY_SIZE>> {
         let index = self.next.ok_or(FeedError::Exhausted)?;
-        let update = self.put_at(index, payload).await?;
+        let update = self.publish_at(index, payload).await?;
         self.next = index.next();
         Ok(update)
     }
@@ -83,7 +83,7 @@ where
     ///
     /// The signer must be the feed owner; a mismatch is rejected before the
     /// write.
-    pub async fn put_at<I: Index>(
+    pub async fn publish_at<I: Index>(
         &self,
         index: I,
         payload: impl Into<Bytes>,

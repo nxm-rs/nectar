@@ -6,7 +6,7 @@ use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::time::Duration;
 
-use nectar_feeds::{Sequence, Updater};
+use nectar_feeds::{Publisher, Sequence};
 use nectar_primitives::chunk::{Chunk, ChunkAddress, SingleOwnerOnlyChunkSet, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkHas, MemoryStore};
 
@@ -48,10 +48,10 @@ impl<'a> ProbeStore<'a> {
             return Err(format!("feed length {n} outside corpus 1..={}", corpus.len()).into());
         }
         let inner = MemoryStore::new();
-        let updater = Updater::new(corpus.feed(), &inner, corpus.signer());
+        let publisher = Publisher::new(corpus.feed(), &inner, corpus.signer());
         let boundary = n - 1;
-        updater
-            .put_at(Sequence::new(boundary), boundary.to_be_bytes().to_vec())
+        publisher
+            .publish_at(Sequence::new(boundary), boundary.to_be_bytes().to_vec())
             .await?;
         Ok(ProbeStore {
             corpus,

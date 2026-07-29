@@ -16,7 +16,8 @@
 //! 2. Two tiers: raw `Arbitrary` impls may yield structured-but-invalid
 //!    values and exist only where such values are representable and consumed
 //!    (decode-target food); valid-by-construction constructors
-//!    (`arbitrary_signed`, the `generators` modules) feed round-trips. Pure
+//!    (`arbitrary_signed`, the valid-tier generator modules) feed
+//!    round-trips. Pure
 //!    wire decoders eat raw fuzzer bytes and need no structured raw tier.
 //! 3. One generator per type: fuzz targets compose the crate generators,
 //!    never local duplicates. Target-specific input grammars with no
@@ -37,6 +38,7 @@
 //! 7. Derive hygiene: crate-side impls are hand-written (the two-tier
 //!    pattern is semantic, not derivable); only the fuzz workspace pulls the
 //!    `arbitrary` derive, for its target-local input grammars.
+//!
 //! Behind `fixtures`: the shared split fixtures and spec doubles. Behind
 //! `alloc`: the allocation witness.
 

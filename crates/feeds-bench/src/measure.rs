@@ -1,4 +1,4 @@
-//! Per-cell work-count measurement: drive a real getter over the counting
+//! Per-cell work-count measurement: drive a real reader over the counting
 //! store and read probes, wasted probes, certified gets and rounds, the
 //! rounds off a paused virtual clock.
 
@@ -6,7 +6,7 @@ use core::num::NonZeroUsize;
 use std::error::Error;
 use std::future::Future;
 
-use nectar_feeds::{Getter, Sequence};
+use nectar_feeds::{Reader, Sequence};
 
 use crate::corpus::Corpus;
 use crate::store::ProbeStore;
@@ -87,11 +87,11 @@ pub fn measure(
 ) -> Result<Cell, Err> {
     block_on_paused(async {
         let store = ProbeStore::new(corpus, n).await?;
-        let getter = Getter::new(corpus.feed(), &store).with_window(width);
+        let reader = Reader::new(corpus.feed(), &store).with_window(width);
         let t0 = tokio::time::Instant::now();
         let latest = match kind {
-            FinderKind::Probing => getter.latest().await?,
-            FinderKind::Stepwise => getter.latest_linear_from(Sequence::ZERO).await?,
+            FinderKind::Probing => reader.latest().await?,
+            FinderKind::Stepwise => reader.latest_linear_from(Sequence::ZERO).await?,
         };
         let rounds = t0.elapsed().as_millis() as u64;
         let counts = store.counts();

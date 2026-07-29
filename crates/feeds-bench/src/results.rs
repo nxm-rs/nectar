@@ -1,6 +1,6 @@
 //! Serializable schema for the finder lookup-cost run.
 //!
-//! Every numeric field is a work count measured by driving the real getter;
+//! Every numeric field is a work count measured by driving the real reader;
 //! a `null` is only ever a capability gap left with a reason, never
 //! back-filled by estimate.
 

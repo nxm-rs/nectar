@@ -32,7 +32,7 @@ thiserror.workspace = true
 [dev-dependencies]
 alloy-signer-local.workspace = true
 arbitrary.workspace = true
-# Self dev-dependency: exposes the `generators` module to integration tests.
+# Self dev-dependency: exposes the `arbitrary` module to integration tests.
 nectar-feeds = { workspace = true, features = ["arbitrary"] }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
 nectar-testing.workspace = true
@@ -41,7 +41,7 @@ proptest-arbitrary-interop.workspace = true
 
 [features]
 default = [ "std" ]
-# The `Arbitrary` impls and the valid-by-construction `generators` module.
+# The `Arbitrary` impls and the valid-by-construction `arbitrary` module.
 # Never reachable from `default` or any shipped feature.
 arbitrary = [
 	"alloy-primitives/arbitrary",

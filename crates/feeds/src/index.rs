@@ -4,6 +4,10 @@
 ///
 /// The marshalled bytes enter the update id preimage raw
 /// (`keccak256(topic || marshal)`), so the byte layout is wire critical.
+///
+/// [`Sequence`](crate::Sequence) is the only implementation today. The seam
+/// stays open for a future epoch index, whose lookup is a different search
+/// and not a drop-in for the sequence finders.
 pub trait Index: Clone {
     /// The wire bytes appended to the topic in the id preimage.
     fn marshal(&self) -> impl AsRef<[u8]>;

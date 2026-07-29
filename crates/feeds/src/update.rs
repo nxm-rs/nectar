@@ -8,7 +8,7 @@ use crate::index::Index;
 
 /// One published update: its index and the single-owner chunk carrying it.
 ///
-/// Only [`Getter`](crate::Getter) and [`Updater`](crate::Updater) construct
+/// Only [`Reader`](crate::Reader) and [`Publisher`](crate::Publisher) construct
 /// one, so the chunk is always certified against the feed-derived address.
 #[derive(Debug, Clone)]
 pub struct FeedUpdate<I, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {

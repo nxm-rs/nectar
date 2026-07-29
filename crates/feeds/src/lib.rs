@@ -7,8 +7,8 @@
 //! - `id = keccak256(topic || i.marshal())`
 //! - `address = keccak256(id || owner)`
 //!
-//! [`Updater`] signs and publishes updates through
-//! [`ChunkPut`](nectar_primitives::store::ChunkPut); [`Getter`] fetches and
+//! [`Publisher`] signs and publishes updates through
+//! [`ChunkPut`](nectar_primitives::store::ChunkPut); [`Reader`] fetches and
 //! certifies them through [`ChunkGet`](nectar_primitives::store::ChunkGet)
 //! and locates the latest [`Sequence`] update by probing
 //! [`ChunkHas`](nectar_primitives::store::ChunkHas). No clock and no network
@@ -47,22 +47,23 @@
 
 mod error;
 mod feed;
-mod getter;
 mod index;
 mod probe;
+mod publisher;
+mod reader;
 mod sequence;
-mod topic;
 mod update;
-mod updater;
 
+// Shadows the `arbitrary` crate at the crate root only: a root-level
+// `use arbitrary::...` needs `::arbitrary::`. Non-root modules resolve the
+// bare path to the crate.
 #[cfg(any(test, feature = "arbitrary"))]
-pub mod generators;
+pub mod arbitrary;
 
 pub use error::{FeedError, Result};
-pub use feed::Feed;
-pub use getter::{Getter, Latest};
+pub use feed::{Feed, Topic};
 pub use index::Index;
+pub use publisher::Publisher;
+pub use reader::{Latest, Reader};
 pub use sequence::Sequence;
-pub use topic::Topic;
 pub use update::FeedUpdate;
-pub use updater::Updater;

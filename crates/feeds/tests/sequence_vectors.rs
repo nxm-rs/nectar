@@ -19,7 +19,7 @@
 use alloy_primitives::{B256, Signature, address, b256, hex};
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
-use nectar_feeds::{Feed, Getter, Sequence, Topic};
+use nectar_feeds::{Feed, Reader, Sequence, Topic};
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps, SingleOwnerOnlyChunkSet, SocId};
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{Chunk, DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultSingleOwnerChunk};
@@ -147,9 +147,9 @@ fn reference_sequence_update_vector() {
 }
 
 /// The public read path reproduces the reference vector: a store holding the
-/// captured chunk serves it back through the getter with the payload intact.
+/// captured chunk serves it back through the reader with the payload intact.
 #[test]
-fn getter_reads_reference_vector() {
+fn reader_reads_reference_vector() {
     let key = hex!("2c7536e3605d9c16a7a3d7b1898e529396a65c23a3bcbd4012a11cf2731b0fbc");
     let signer = PrivateKeySigner::from_slice(&key).unwrap();
     let feed = Feed::<DEFAULT_BODY_SIZE>::new(Topic::from_label("testtopic"), signer.address());
@@ -160,7 +160,7 @@ fn getter_reads_reference_vector() {
     let store =
         MemoryStore::<SingleOwnerOnlyChunkSet>::from_chunks([Chunk::from_envelope(soc).unwrap()]);
 
-    let update = nectar_testing::run(Getter::new(feed, &store).at(Sequence::ZERO)).unwrap();
+    let update = nectar_testing::run(Reader::new(feed, &store).at(Sequence::ZERO)).unwrap();
     assert_eq!(update.payload().as_ref(), b"data");
     assert_eq!(
         update.address().as_ref(),
