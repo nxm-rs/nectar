@@ -16,6 +16,8 @@ use core::task::{Context, Poll};
 #[cfg(any(test, feature = "std"))]
 use std::io;
 
+// Only the positional adapter measures lengths.
+#[cfg(any(test, feature = "std"))]
 use crate::num::u64_from_usize;
 
 /// Pull-based byte source feeding one write.
