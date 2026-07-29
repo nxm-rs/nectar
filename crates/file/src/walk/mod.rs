@@ -37,7 +37,7 @@ mod tests;
 use alloc::boxed::Box;
 
 use bytes::Bytes;
-pub use nectar_kernel::Observations;
+pub use nectar_governor::Observations;
 
 use crate::config::Window;
 

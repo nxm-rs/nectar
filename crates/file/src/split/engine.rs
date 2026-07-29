@@ -12,7 +12,7 @@ use core::task::{Context, Poll};
 use bytes::Bytes;
 #[cfg(feature = "rayon")]
 use futures_util::stream::{FuturesOrdered, StreamExt};
-use nectar_kernel::{BoxFuture, PutSink, Window};
+use nectar_governor::{BoxFuture, PutSink, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::bmt::SPAN_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};

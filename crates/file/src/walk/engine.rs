@@ -7,7 +7,7 @@ use core::ops::Range;
 use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
-use nectar_kernel::{
+use nectar_governor::{
     Admission, AdmitPolicy, BoxFuture, FromFn, FuturesUnordered, Observations, StaticDriver,
     WalkPolicy, from_fn, get_verified,
 };

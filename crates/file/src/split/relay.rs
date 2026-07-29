@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex, PoisonError};
 
-use nectar_kernel::{PutSink, Window};
+use nectar_governor::{PutSink, Window};
 use nectar_marker::MaybeSync;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 use nectar_primitives::store::ChunkPut;

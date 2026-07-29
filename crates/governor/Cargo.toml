@@ -1,5 +1,5 @@
 [package]
-name = "nectar-kernel"
+name = "nectar-governor"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,8 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
-description = "Bounded-admission kernel for Ethereum Swarm walkers: in-flight set, window, head-slot admission"
-documentation = "https://docs.rs/nectar-kernel"
+description = "Bounded-admission governor for Ethereum Swarm walkers: in-flight set, window, head-slot admission"
+documentation = "https://docs.rs/nectar-governor"
 readme = "README.md"
 keywords = ["swarm", "ethereum", "no_std", "async", "admission"]
 categories = ["no-std", "asynchronous", "data-structures"]

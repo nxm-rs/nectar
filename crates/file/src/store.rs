@@ -8,7 +8,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::fmt;
 
-use nectar_kernel::BoxFuture;
+use nectar_governor::BoxFuture;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};

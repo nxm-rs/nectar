@@ -21,7 +21,7 @@ workspace = true
 alloy-primitives = { workspace = true }
 arbitrary = { workspace = true, optional = true }
 bytes.workspace = true
-nectar-kernel = { workspace = true }
+nectar-governor = { workspace = true }
 nectar-primitives = { workspace = true }
 thiserror.workspace = true
 
@@ -61,7 +61,7 @@ std = [
 ]
 # Single-thread send escape: relaxes the boxed fetch futures off `Send` in
 # lockstep with the store traits.
-unsync = [ "nectar-kernel/unsync", "nectar-primitives/unsync" ]
+unsync = [ "nectar-governor/unsync", "nectar-primitives/unsync" ]
 
 [package.metadata.docs.rs]
 all-features = true

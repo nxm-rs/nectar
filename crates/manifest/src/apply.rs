@@ -28,7 +28,7 @@ use core::convert::Infallible;
 use core::future::poll_fn;
 
 use bytes::Bytes;
-use nectar_kernel::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
+use nectar_governor::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
 use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::{ChunkPut, MaybeSync};
 

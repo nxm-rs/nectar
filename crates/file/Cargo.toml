@@ -22,7 +22,7 @@ arbitrary = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 nectar-clock = { workspace = true, optional = true }
-nectar-kernel = { workspace = true }
+nectar-governor = { workspace = true }
 nectar-marker = { workspace = true }
 nectar-primitives = { workspace = true, optional = true }
 nectar-tasks = { workspace = true, optional = true }
@@ -53,7 +53,7 @@ primitives = [
 	"dep:bytes",
 	"dep:futures-util",
 	"dep:nectar-primitives",
-	"nectar-kernel/chunk",
+	"nectar-governor/chunk",
 ]
 
 # Standard library interop; the filesystem and io adapters land with the
@@ -89,7 +89,7 @@ encryption = [ "dep:zeroize", "nectar-primitives?/encryption" ]
 # lockstep with the primitives store traits.
 unsync = [
 	"nectar-clock?/unsync",
-	"nectar-kernel/unsync",
+	"nectar-governor/unsync",
 	"nectar-marker/unsync",
 	"nectar-primitives?/unsync",
 	"nectar-tasks?/unsync",

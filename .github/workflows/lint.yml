@@ -89,7 +89,7 @@ jobs:
                   for crate in nectar-primitives nectar-postage \
                                nectar-postage-issuer nectar-postage-usage \
                                nectar-swarms nectar-contracts nectar-file \
-                               nectar-marker nectar-clock nectar-kernel \
+                               nectar-marker nectar-clock nectar-governor \
                                nectar-tasks nectar-loadsave; do
                       cargo rustc --locked -p "$crate" --lib -- -D unused_crate_dependencies
                   done

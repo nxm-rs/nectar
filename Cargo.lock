@@ -2521,7 +2521,7 @@ dependencies = [
  "bytes",
  "derive_more",
  "nectar-feeds",
- "nectar-kernel",
+ "nectar-governor",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",
@@ -2551,7 +2551,7 @@ dependencies = [
  "futures",
  "futures-util",
  "nectar-clock",
- "nectar-kernel",
+ "nectar-governor",
  "nectar-marker",
  "nectar-primitives 0.4.0",
  "nectar-tasks",
@@ -2560,6 +2560,19 @@ dependencies = [
  "thiserror",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "nectar-governor"
+version = "0.4.0"
+dependencies = [
+ "futures-core",
+ "futures-util",
+ "nectar-marker",
+ "nectar-primitives 0.4.0",
+ "nectar-tasks",
+ "nectar-testing",
+ "proptest",
 ]
 
 [[package]]
@@ -2586,19 +2599,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nectar-kernel"
-version = "0.4.0"
-dependencies = [
- "futures-core",
- "futures-util",
- "nectar-marker",
- "nectar-primitives 0.4.0",
- "nectar-tasks",
- "nectar-testing",
- "proptest",
-]
-
-[[package]]
 name = "nectar-loadsave"
 version = "0.4.0"
 dependencies = [
@@ -2618,7 +2618,7 @@ dependencies = [
  "arbitrary",
  "bytes",
  "futures",
- "nectar-kernel",
+ "nectar-governor",
  "nectar-manifest",
  "nectar-primitives 0.4.0",
  "nectar-testing",
@@ -2665,7 +2665,7 @@ dependencies = [
  "bitflags",
  "bytes",
  "futures",
- "nectar-kernel",
+ "nectar-governor",
  "nectar-primitives 0.4.0",
  "nectar-testing",
  "proptest",
@@ -2710,7 +2710,7 @@ dependencies = [
  "futures-util",
  "nectar-clock",
  "nectar-file",
- "nectar-kernel",
+ "nectar-governor",
  "nectar-marker",
  "nectar-postage",
  "nectar-primitives 0.4.0",
