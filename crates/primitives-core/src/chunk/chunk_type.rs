@@ -23,7 +23,7 @@ use super::type_id::ChunkTypeId;
 /// # Example
 ///
 /// ```ignore
-/// use nectar_primitives::{ChunkType, ChunkTypeId, HeaderedChunk};
+/// use nectar_primitives_core::{ChunkType, ChunkTypeId, HeaderedChunk};
 ///
 /// struct MyCustomChunk { /* ... */ }
 ///

@@ -32,7 +32,7 @@ use super::type_tag::ChunkTypeTag;
 /// # Examples
 ///
 /// ```
-/// use nectar_primitives::{AnyChunk, ChunkOps, ContentChunk, ChunkTypeId};
+/// use nectar_primitives_core::{AnyChunk, ChunkOps, ContentChunk, ChunkTypeId};
 ///
 /// // Create a content chunk
 /// let content = ContentChunk::new(&b"hello world"[..]).unwrap();
@@ -204,7 +204,7 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
     /// # Examples
     ///
     /// ```
-    /// use nectar_primitives::{AnyChunk, ChunkOps, ContentChunk};
+    /// use nectar_primitives_core::{AnyChunk, ChunkOps, ContentChunk};
     ///
     /// let content = ContentChunk::new(&b"hello world"[..]).unwrap();
     /// let address = *content.address();

@@ -4,7 +4,7 @@
 
 use alloy_primitives::Keccak256;
 
-use super::error::EncryptionError;
+use super::EncryptionError;
 use super::key::EncryptionKey;
 
 /// Precompute the hasher state with the key absorbed.

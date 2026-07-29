@@ -1,0 +1,96 @@
+[package]
+name = "nectar-primitives-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Chunk verification core for Ethereum Swarm: BMT, content addresses and single-owner recovery"
+documentation = "https://docs.rs/nectar-primitives-core"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "chunk", "bmt", "no-std"]
+categories = ["data-structures", "cryptography", "no-std"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# nectar
+nectar-marker.workspace = true
+
+## alloy crypto
+# Signature recovery (k256) is part of the bare-metal verify closure; the
+# asm-keccak and getrandom extras ride the target tables below.
+alloy-primitives = { workspace = true, features = ["k256"] }
+# Signing is not part of the verify closure: both ride the `std` feature so a
+# guest never links them.
+alloy-signer = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
+
+## rust crypto
+digest.workspace = true
+hybrid-array.workspace = true
+k256.workspace = true
+keccak-batch = { workspace = true, optional = true }
+
+# derive macros
+derive_more.workspace = true
+
+# Core dependencies
+bytes.workspace = true
+futures-core.workspace = true
+once_cell.workspace = true
+thiserror.workspace = true
+serde = { workspace = true, optional = true }
+
+# arbitrary
+arbitrary = { workspace = true, optional = true }
+
+# rayon for parallelism (hosted non-wasm only)
+rayon = { workspace = true, optional = true }
+
+# Only for hosted non-WASM targets (bare metal has no asm keccak or entropy)
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "none")))'.dependencies]
+alloy-primitives = { workspace = true, features = ["asm-keccak", "getrandom"] }
+
+# Only for WASM-specific targets
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+# Pulls in the getrandom 0.4 "wasm_js" backend that alloy-primitives needs so
+# B256::random (used by Nonce::random) links on wasm32-unknown-unknown.
+getrandom_04.workspace = true
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "asm-keccak"] }
+
+arbitrary = { workspace = true }
+nectar-testing.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
+rand.workspace = true
+
+[features]
+default = [ "std" ]
+std = [
+	"dep:alloy-signer",
+	"dep:alloy-signer-local",
+	"dep:keccak-batch",
+	"dep:rayon",
+	"futures-core/std",
+	"k256/precomputed-tables",
+	"k256/std",
+]
+serde = [ "dep:serde" ]
+arbitrary = [ "alloy-primitives/arbitrary", "dep:arbitrary", "std" ]
+# Single-thread send escape for non-wasm targets (e.g. zkVM guests): applies
+# the wasm32 relaxation of MaybeSend/MaybeSync on any target. An explicit
+# feature rather than a target cfg so CI can exercise the relaxed shape
+# off-wasm.
+unsync = [ "nectar-marker/unsync" ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

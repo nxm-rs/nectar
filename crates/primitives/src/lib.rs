@@ -3,6 +3,12 @@
 //! This crate provides the fundamental types and operations used in a decentralized
 //! storage system, including chunk types, address calculations, and binary merkle trees.
 //!
+//! The chunk-verification subset (the binary merkle tree, the chunk carriers
+//! and their acceptance rules, and the types those need) lives in
+//! [`nectar_primitives_core`] and is re-exported here at its original paths;
+//! storage, encryption, envelopes, ECIES and the routing metrics are this
+//! crate's own.
+//!
 //! ## Key Components
 //!
 //! - **Chunks**: Content-addressed and signed data chunks ([`ContentChunk`], [`SingleOwnerChunk`])
@@ -53,32 +59,28 @@ extern crate alloc;
 // Re-export dependencies that are part of our public API
 pub use bytes;
 
+// The verification core, re-exported module by module so every path a
+// consumer imported before the carve still resolves.
+pub use nectar_primitives_core::{error, marker, nonce, wire};
+#[cfg(any(test, feature = "arbitrary"))]
+pub use nectar_primitives_core::{generators, oracles};
+
 pub mod address;
 pub mod bin;
 pub mod bmt;
-mod cache;
-mod cast;
 pub mod chunk;
 pub mod ecies;
 pub mod entry_ref;
 #[cfg(feature = "envelope")]
 pub mod envelope;
-pub mod error;
-#[cfg(any(test, feature = "arbitrary"))]
-pub mod generators;
-pub mod marker;
 pub mod neighborhood_depth;
 pub mod network_id;
-pub mod nonce;
-#[cfg(any(test, feature = "arbitrary"))]
-pub mod oracles;
 pub mod overlay;
 pub mod proximity_order;
 pub mod signing;
 pub mod spec;
 pub mod store;
 pub mod timestamp;
-pub mod wire;
 pub mod xor_metric;
 
 #[cfg(target_arch = "wasm32")]

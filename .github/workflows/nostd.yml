@@ -39,10 +39,15 @@ jobs:
                   # nectar-postage is the proving-grade surface (stamp wire
                   # types and verification); nectar-postage-issuer rides as its
                   # gated sequential core.
+                  # nectar-primitives-core is the guest-facing chunk
+                  # verification surface: it carries the BMT, the chunk
+                  # carriers and single-owner recovery, and rides both
+                  # targets bare.
                   cargo check --locked \
                     -p nectar-swarms -p nectar-contracts -p nectar-file \
                     -p nectar-marker -p nectar-clock -p nectar-governor \
                     -p nectar-postage -p nectar-postage-issuer \
+                    -p nectar-primitives-core \
                     --no-default-features \
                     --target ${{ matrix.target }}
                   # nectar-mantaray by path: the editor's differential gate pins a
@@ -97,7 +102,9 @@ jobs:
             # rv64 lane, the target shape the escape exists for.
             - name: Check the unsync send escape
               if: matrix.target == 'riscv64imac-unknown-none-elf'
-              run: cargo check --locked -p nectar-primitives --features unsync
+              run: |
+                  cargo check --locked -p nectar-primitives --features unsync
+                  cargo check --locked -p nectar-primitives-core --features unsync
 
     nostd-success:
         name: no_std success

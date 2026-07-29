@@ -3,7 +3,7 @@
 //! Kademlia routing measures closeness between two 256-bit points as the
 //! number of leading matching bits (the proximity order, PO) or as the full
 //! XOR distance. The address kinds ([`OverlayAddress`](crate::OverlayAddress),
-//! [`ChunkAddress`](crate::ChunkAddress)) are distinct nominal types over the
+//! [`ChunkAddress`]) are distinct nominal types over the
 //! same point space, and the protocol compares across kinds (a chunk address
 //! against a node overlay for the storage radius and pushsync targeting), so
 //! the ops live here on a shared trait rather than on any one kind.
@@ -40,7 +40,7 @@ use core::cmp::Ordering;
 
 use alloy_primitives::U256;
 
-use crate::{Bin, ProximityOrder, SwarmSpec};
+use crate::{Bin, ChunkAddress, ProximityOrder, SwarmSpec};
 
 /// Maximum proximity order for standard routing operations.
 ///
@@ -195,6 +195,15 @@ pub trait XorMetric {
 impl<T: XorMetric> XorMetric for &T {
     fn point(&self) -> &[u8; 32] {
         (**self).point()
+    }
+}
+
+/// The content-address kind occupies the same point space as the node-identity
+/// kind; the impl lives here rather than beside the type because the metric is
+/// routing, not verification.
+impl XorMetric for ChunkAddress {
+    fn point(&self) -> &[u8; 32] {
+        self.as_array()
     }
 }
 

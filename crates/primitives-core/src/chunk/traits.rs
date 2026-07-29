@@ -27,9 +27,9 @@ use super::type_tag::ChunkVersion;
 ///
 /// ```
 /// use alloy_primitives::{Address, B256, Keccak256};
-/// use nectar_primitives::bytes::BytesMut;
-/// use nectar_primitives::chunk::{ChunkAddress, ChunkError, ChunkHeader};
-/// use nectar_primitives::{ChunkTypeId, ChunkVersion, wire};
+/// use nectar_primitives_core::bytes::BytesMut;
+/// use nectar_primitives_core::chunk::{ChunkAddress, ChunkError, ChunkHeader};
+/// use nectar_primitives_core::{ChunkTypeId, ChunkVersion, wire};
 ///
 /// /// Custom headerless type: address = keccak256(0xC0 || body_hash).
 /// struct TaggedHeader;

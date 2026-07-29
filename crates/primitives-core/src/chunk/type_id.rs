@@ -18,7 +18,7 @@ use core::fmt;
 /// # Examples
 ///
 /// ```
-/// use nectar_primitives::ChunkTypeId;
+/// use nectar_primitives_core::ChunkTypeId;
 ///
 /// // Use predefined constants
 /// let content_type = ChunkTypeId::CONTENT;
@@ -63,7 +63,7 @@ impl ChunkTypeId {
     /// # Examples
     ///
     /// ```
-    /// use nectar_primitives::ChunkTypeId;
+    /// use nectar_primitives_core::ChunkTypeId;
     ///
     /// let custom = ChunkTypeId::custom(200);
     /// assert!(custom.is_custom());
@@ -114,7 +114,7 @@ impl ChunkTypeId {
     /// # Examples
     ///
     /// ```
-    /// use nectar_primitives::ChunkTypeId;
+    /// use nectar_primitives_core::ChunkTypeId;
     ///
     /// assert_eq!(ChunkTypeId::CONTENT.abbreviation(), Some("CAC"));
     /// assert_eq!(ChunkTypeId::SINGLE_OWNER.abbreviation(), Some("SOC"));

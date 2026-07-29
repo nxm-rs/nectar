@@ -74,7 +74,7 @@ impl ChunkTypeInfo {
 /// # Example
 ///
 /// ```
-/// use nectar_primitives::{AnyChunk, ChunkOps, ChunkRegistry, ContentChunk, StandardChunkSet};
+/// use nectar_primitives_core::{AnyChunk, ChunkOps, ChunkRegistry, ContentChunk, StandardChunkSet};
 ///
 /// let content = ContentChunk::new(&b"hello registry"[..]).unwrap();
 /// let address = *content.address();

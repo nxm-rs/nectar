@@ -7,7 +7,7 @@
 //! panics on underrun.
 //!
 //! ```
-//! use nectar_primitives::wire::Cursor;
+//! use nectar_primitives_core::wire::Cursor;
 //!
 //! let data = [0x20, 0xaa, 0xbb];
 //! let mut cur = Cursor::new(&data);
@@ -16,7 +16,7 @@
 //! assert_eq!(tag, 0x20);
 //! assert_eq!(field, [0xaa, 0xbb]);
 //! assert!(cur.finish().is_empty());
-//! # Ok::<(), nectar_primitives::wire::Underrun>(())
+//! # Ok::<(), nectar_primitives_core::wire::Underrun>(())
 //! ```
 
 use alloc::vec::Vec;
@@ -166,7 +166,7 @@ impl<'a> Cursor<'a> {
 /// each field in the order it was put.
 ///
 /// ```
-/// use nectar_primitives::wire::{Cursor, Writer};
+/// use nectar_primitives_core::wire::{Cursor, Writer};
 ///
 /// let mut buf = Vec::new();
 /// let mut w = Writer::new(&mut buf);
@@ -176,7 +176,7 @@ impl<'a> Cursor<'a> {
 /// let mut cur = Cursor::new(&buf);
 /// assert_eq!(cur.take::<u8>()?, 0x20);
 /// assert_eq!(cur.take::<[u8; 2]>()?, [0xaa, 0xbb]);
-/// # Ok::<(), nectar_primitives::wire::Underrun>(())
+/// # Ok::<(), nectar_primitives_core::wire::Underrun>(())
 /// ```
 #[derive(Debug)]
 pub struct Writer<'a> {

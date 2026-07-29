@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// ```compile_fail
 /// use alloy_primitives::B256;
-/// use nectar_primitives::SocId;
+/// use nectar_primitives_core::SocId;
 ///
 /// fn sign_under(_id: SocId) {}
 /// sign_under(B256::ZERO);

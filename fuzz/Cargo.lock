@@ -2008,6 +2008,30 @@ name = "nectar-primitives"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
+ "arbitrary",
+ "bytes",
+ "derive_more",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
+ "js-sys",
+ "k256",
+ "nectar-clock",
+ "nectar-primitives-core",
+ "parking_lot",
+ "rand 0.10.2",
+ "subtle",
+ "thiserror",
+ "wasm-bindgen",
+ "web-time",
+ "zeroize",
+]
+
+[[package]]
+name = "nectar-primitives-core"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
  "arbitrary",
@@ -2015,24 +2039,14 @@ dependencies = [
  "derive_more",
  "digest 0.11.3",
  "futures-core",
- "getrandom 0.2.17",
- "getrandom 0.3.4",
  "getrandom 0.4.3",
  "hybrid-array",
- "js-sys",
  "k256",
  "keccak-batch",
- "nectar-clock",
  "nectar-marker",
  "once_cell",
- "parking_lot",
- "rand 0.10.2",
  "rayon",
- "subtle",
  "thiserror",
- "wasm-bindgen",
- "web-time",
- "zeroize",
 ]
 
 [[package]]

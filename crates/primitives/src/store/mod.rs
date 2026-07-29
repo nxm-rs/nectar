@@ -21,50 +21,11 @@ pub use single_owner::{SingleOwnerGet, SingleOwnerGetError};
 pub use typed::{ChunkGet, ChunkHas, ChunkPut, TrustedGet};
 pub use verify::{VerifyError, VerifyingStore};
 
-use alloc::boxed::Box;
-
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
 
-/// Boxed store error: `Send + Sync` on multi-threaded targets, unbounded on
-/// wasm32 and under the `unsync` feature where a backend error may hold
-/// single-thread state (a JS handle).
-#[cfg(multi_thread)]
-pub type BoxedError = Box<dyn core::error::Error + Send + Sync>;
-/// Boxed store error: `Send + Sync` on multi-threaded targets, unbounded on
-/// wasm32 and under the `unsync` feature where a backend error may hold
-/// single-thread state (a JS handle).
-#[cfg(not(multi_thread))]
-pub type BoxedError = Box<dyn core::error::Error>;
-
-/// Shared store error: `Send + Sync` on multi-threaded targets, unbounded on
-/// wasm32 and under the `unsync` feature where a backend error may hold
-/// single-thread state (a JS handle).
-#[cfg(multi_thread)]
-pub type SharedError = alloc::sync::Arc<dyn core::error::Error + Send + Sync>;
-/// Shared store error: `Send + Sync` on multi-threaded targets, unbounded on
-/// wasm32 and under the `unsync` feature where a backend error may hold
-/// single-thread state (a JS handle).
-#[cfg(not(multi_thread))]
-pub type SharedError = alloc::sync::Arc<dyn core::error::Error>;
-
-/// Errors from chunk storage operations.
-#[non_exhaustive]
-#[derive(Debug, thiserror::Error)]
-pub enum ChunkStoreError {
-    /// Chunk not found at the given address.
-    #[error("chunk not found: {0}")]
-    NotFound(ChunkAddress),
-    /// Catch-all for backend-specific errors.
-    #[error("{0}")]
-    Other(#[source] BoxedError),
-}
-
-impl ChunkStoreError {
-    /// Create a `NotFound` error for the given address.
-    pub const fn not_found(address: &ChunkAddress) -> Self {
-        Self::NotFound(*address)
-    }
-}
+// The store error and its boxed aliases are defined in the core crate because
+// `PrimitivesError` wraps them; the stores themselves are here.
+pub use nectar_primitives_core::error::{BoxedError, ChunkStoreError, SharedError};
 
 /// A no-op loader that always returns [`ChunkStoreError::NotFound`].
 ///

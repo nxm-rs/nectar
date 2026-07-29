@@ -3,8 +3,7 @@
 use alloc::format;
 use alloc::string::ToString;
 
-use super::content::ContentChunk;
-use super::traits::ChunkOps;
+use super::{ChunkOps, ContentChunk};
 use crate::bmt::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE};
 use js_sys::Uint8Array;
 use wasm_bindgen::prelude::*;

@@ -1,13 +1,8 @@
-//! Binary Merkle Tree (BMT) implementation
+//! Binary Merkle Tree (BMT) implementation.
 //!
-//! This module provides an optimized implementation of a Binary Merkle Tree
-//! for hashing data in parallel and generating proofs of inclusion.
-//!
-//! ## Key Components
-//!
-//! - **Hasher**: Core BMT hashing functionality with span support
-//! - **Proof**: Inclusion proofs for efficient verification
-//! - **Prover**: Interface for generating and verifying proofs
+//! The hasher, the inclusion proofs and their constants live in
+//! [`nectar_primitives_core::bmt`] and are re-exported here unchanged; this
+//! module adds only the wasm bindings.
 //!
 //! ## Example Usage
 //!
@@ -30,23 +25,7 @@
 //! assert!(Hasher::verify_proof(&proof, &hash).unwrap());
 //! ```
 
-mod constants;
-mod derived;
-pub(crate) mod error;
-mod hasher;
-mod proof;
-
-pub use constants::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE};
-pub use derived::DerivedAddress;
-pub use error::BmtError;
-pub use hasher::{Hasher, HasherFactory};
-pub use proof::{Proof, Prover};
-
-// Re-export for convenience
-pub use crate::error::{PrimitivesError, Result};
+pub use nectar_primitives_core::bmt::*;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
-
-#[cfg(test)]
-mod tests;
