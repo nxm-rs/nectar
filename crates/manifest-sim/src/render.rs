@@ -273,16 +273,26 @@ no multiplier exists.",
 
 // ---- the capability matrix ------------------------------------------------
 
+/// Where the in-tree crates depart from the whitepaper's classifications.
+///
+/// The harness reports the crate in front of it, so every departure is stated
+/// where the matrix is read. Three rows moved since the whitepaper measured
+/// them, and all three move in 0.2's favour, so leaving them unstated would
+/// overstate the 1.0 case.
+pub(crate) const DIVERGENCE_NOTE: &str = "Re-derived from the crates in tree, not from the \
+whitepaper's historical classifications. Three rows diverge. Ordered iteration is a streaming \
+walk in documented path order, not an unordered O(N)-memory drain. Ceiling rides an after-bound \
+pruned seek, not an unsupported O(N) scan. Batch update amortises inside one multi-op editor \
+commit, so the 6.2 batched column is measured and is not the whitepaper's flat per-edit line.";
+
 /// The measured capability matrix, one row per operation.
 fn capability_matrix(rows: &[CapabilityRow], arms: &[&str], fx: &mut Footnotes) -> String {
     if rows.is_empty() {
         return String::new();
     }
     let mut out = String::from("## Capability matrix\n\n");
-    out.push_str(
-        "Re-derived from the crates in tree, not from the whitepaper's historical \
-classifications: the current 0.2 cursor is pruned, ordered and resumable.\n\n",
-    );
+    out.push_str(DIVERGENCE_NOTE);
+    out.push_str("\n\n");
     let mut head = vec!["Operation"];
     head.extend_from_slice(arms);
     out.push_str(&header(&head));
@@ -643,6 +653,11 @@ RSS.\n\n",
 /// K is the row axis and every swept K shares one table, so the K=1 row can
 /// never be read outside the curve that explains it. A single-update figure in
 /// isolation is the hazard this layout removes.
+///
+/// A sweep that holds one row carries no curve, so it publishes no figure. The
+/// layout alone is not the guard: a corpus and scale small enough to drop every
+/// K above the first would otherwise print the single-update number by itself,
+/// which is the reading this section exists to prevent.
 fn write_amp(cells: &[WriteAmpCell], arms: &[&str], fx: &mut Footnotes) -> String {
     if cells.is_empty() {
         return String::new();
@@ -656,6 +671,15 @@ is never printed apart from it.\n\n",
     for (corpus, group) in by_corpus(cells, |c| c.corpus.as_str()) {
         for (scale, rows) in by_scale(&group) {
             let _ = writeln!(out, "### Corpus `{corpus}`, scale {}\n", int(scale));
+            if rows.len() < 2 {
+                let ks = rows.iter().map(|c| int(c.k)).collect::<Vec<_>>().join(", ");
+                let reason = format!(
+                    "the K sweep holds one row at this scale (K = {ks}), so the figure is \
+withheld: a write amplification read apart from its K curve is the hazard this table removes"
+                );
+                let _ = writeln!(out, "{}\n", fx.null(Some(reason.as_str())));
+                continue;
+            }
             let mut head = vec!["K".to_string()];
             for arm in arms {
                 head.push(format!("`{arm}` batched"));
@@ -802,7 +826,7 @@ fn build_wall(cells: &[BuildWallCell], nulls: &[NullWithReason], fx: &mut Footno
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{Footnotes, int, render};
+    use super::{Footnotes, NULL, f3, int, render};
     use crate::arm::{Capability, NullWithReason, OpCost, OpOutcome};
     use crate::results::{
         ArmMeta, Document, Meta, PaginateCell, PrefixListingCell, WriteAmpCell, generated_iso,
@@ -933,21 +957,108 @@ mod tests {
         );
     }
 
+    /// The 6.2 section of a rendered document.
+    fn sweep_section(md: &str) -> String {
+        md.split("## 6.2")
+            .nth(1)
+            .and_then(|s| s.split("\n## ").next())
+            .unwrap_or_default()
+            .to_string()
+    }
+
     /// The K=1 write-amplification row never stands alone: it is a row of the
-    /// same table as the rest of the sweep (whitepaper hazard 1).
+    /// same table as the rest of the sweep, and write amplification is printed
+    /// in that one section and nowhere else (whitepaper hazard 1).
     #[test]
     fn the_k1_row_stays_inside_the_sweep_table() {
         let md = render(&doc());
-        let table = md
-            .split("## 6.2")
-            .nth(1)
-            .and_then(|s| s.split("\n## ").next())
-            .unwrap_or_default();
+        let table = sweep_section(&md);
         let ks: Vec<&str> = table
             .lines()
             .filter(|l| l.starts_with("| 1 |") || l.starts_with("| 10 |"))
             .collect();
         assert_eq!(ks.len(), 2, "K=1 and K=10 must share one table: {table}");
+
+        // Grep the whole document: only 6.2 carries a write-amplification
+        // column, so no single-update figure can be met away from its curve.
+        let elsewhere: Vec<&str> = md
+            .split("\n## ")
+            .filter(|s| !s.starts_with("6.2") && s.contains("batched"))
+            .collect();
+        assert!(
+            elsewhere.is_empty(),
+            "write amplification printed outside 6.2: {elsewhere:?}"
+        );
+    }
+
+    /// A sweep that collapsed to one row publishes no figure at all: the
+    /// layout alone cannot keep K=1 inside a curve that has no other point,
+    /// so the renderer withholds the number and states why.
+    #[test]
+    fn a_one_row_sweep_publishes_no_write_amp_figure() {
+        let mut d = doc();
+        d.deterministic.write_amp.truncate(1);
+        let value = *d.deterministic.write_amp[0]
+            .wa_batched
+            .get("ldb-v1")
+            .expect("the K=1 row carries a 1.0 figure");
+        let md = render(&d);
+        let table = sweep_section(&md);
+        assert!(
+            !table.contains(&f3(value)),
+            "a lone K=1 figure was published: {table}"
+        );
+        assert!(
+            !table.lines().any(|l| l.starts_with("| 1 |")),
+            "a lone K=1 row was printed: {table}"
+        );
+        assert!(table.contains(NULL), "the withheld figure prints no dash");
+        assert!(
+            md.contains("apart from its K curve"),
+            "the reason is not footnoted: {md}"
+        );
+    }
+
+    /// Red-team check 11: the rendered matrix states the current crates, and
+    /// every divergence from the whitepaper is named where the matrix is read.
+    #[test]
+    fn the_capability_matrix_states_the_in_tree_crate_and_its_divergence() {
+        let mut d = doc();
+        d.deterministic.capability_matrix = crate::matrix::capability_matrix();
+        let md = render(&d);
+        let section = md
+            .split("## Capability matrix")
+            .nth(1)
+            .and_then(|s| s.split("\n## ").next())
+            .unwrap_or_default()
+            .to_string();
+
+        // The in-tree classifications, not the whitepaper's historical ones.
+        for how in [
+            crate::arm_mantaray::CEILING_HOW,
+            crate::arm_mantaray::FULL_ITER_HOW,
+            crate::arm_mantaray::PREFIX_HOW,
+            crate::arm_mantaray::RANGE_HOW,
+            crate::arm_mantaray::BATCH_HOW,
+        ] {
+            assert!(section.contains(how), "the matrix does not print {how}");
+        }
+        // No table row is left at its whitepaper class. The note names the old
+        // classifications to contrast them, so only the rows are checked.
+        for line in section.lines().filter(|l| l.starts_with("| `")) {
+            assert!(
+                !line.contains("unordered") && !line.contains("unsupported"),
+                "a matrix row still carries a whitepaper-era class: {line}"
+            );
+        }
+        // The divergence is stated in the rendered notes, all three rows of it.
+        assert!(section.contains(super::DIVERGENCE_NOTE));
+        for finding in ["Ordered iteration", "Ceiling", "Batch update"] {
+            assert!(
+                section.contains(finding),
+                "the notes do not state the {finding} divergence"
+            );
+        }
     }
 
     /// Grouping is by corpus and nothing crosses corpora or averages them.

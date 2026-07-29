@@ -144,8 +144,9 @@ addition of real timing and is fenced off from the deterministic currency."
 value-read cell is charted and inline values stay a 1.0-only capability row."
             .to_string(),
         "The capability matrix reports the crates in front of it: the current 0.2 cursor is \
-pruned, ordered and resumable, an honest improvement over the whitepaper-era classifications for \
-ordered iteration and ceiling."
+pruned, ordered and resumable, and one multi-op editor commit amortises its writes. These are \
+honest improvements over the whitepaper-era classifications for ordered iteration, ceiling and \
+batch update."
             .to_string(),
     ]
 }
