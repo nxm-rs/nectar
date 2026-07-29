@@ -31,7 +31,7 @@ use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
 use crate::node::{Node, NodeRef, RootExtension};
-use crate::packing::{Domain, cut_allowance, embed, spill};
+use crate::packing::{cut_allowance, embed, spill};
 use crate::store::{Seal, StoreError};
 use crate::value::{Entry, Key};
 
@@ -565,10 +565,7 @@ where
     let flat = Node::new(None, table.clone())
         .encoded_len()
         .saturating_sub(F::PREAMBLE.len());
-    // The whole database shares one structural domain, so embedding never
-    // crosses the encryption boundary and only the size test can refuse.
-    let domain = Domain::of::<R>();
-    if embed::<F>(flat, domain, domain) {
+    if embed::<F>(flat) {
         stats.nodes_embedded = stats.nodes_embedded.saturating_add(1);
         return Ok(Resolved::Embedded(table));
     }
@@ -631,7 +628,7 @@ where
         ));
     }
 
-    let directory = spill::<F>(&items, Domain::of::<R>());
+    let directory = spill::<F, R>(&items);
     let mut leaf_descs: Vec<(u8, R, SubtreeCount)> = Vec::with_capacity(directory.leaves().len());
     for range in directory.leaves() {
         let slice = forks.get(range.clone()).ok_or(BuildError::Internal)?;

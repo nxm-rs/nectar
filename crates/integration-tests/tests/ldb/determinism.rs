@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, ensure};
 use arbitrary::Unstructured;
 use nectar_ldb::{
-    Builder, Domain, Entry, ForkTable, Format, Key, Node, Plaintext, Prefix, SegmentKind,
+    Builder, Entry, ForkTable, Format, Key, Node, Plaintext, Prefix, SegmentKind,
     SegmentWeight, V1, cut, generators, h64, segment, spill,
 };
 use nectar_primitives::store::MemoryStore;
@@ -215,7 +215,7 @@ proptest! {
     // top directory node routes every sub-directory it produces.
     #[test]
     fn spill_directory_depth_never_exceeds_two(forks in weighted_fork_set()) {
-        let dir = spill::<V1>(&to_forks(&forks)?, Domain::Plain);
+        let dir = spill::<V1, ChunkRef>(&to_forks(&forks)?);
         prop_assert!(dir.depth() <= 2);
         // One directory record is its index slot, flags, prefix-length byte and
         // a single plain reference.
@@ -348,7 +348,7 @@ fn spill_of_a_full_radix_table_stays_depth_two() -> Result<()> {
             SegmentWeight::new(V1::SEG_TARGET)?,
         ));
     }
-    let dir = spill::<V1>(&forks, Domain::Plain);
+    let dir = spill::<V1, ChunkRef>(&forks);
     ensure!(dir.leaves().len() == V1::FORKS_MAX, "one leaf per fork");
     ensure!(dir.depth() == 2, "a full table needs two levels");
 

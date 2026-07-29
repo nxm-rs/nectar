@@ -142,7 +142,7 @@ pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, NodeRef, RootExtension};
-pub use packing::{Directory, Domain, SegmentKind, cut, embed, h64, segment, spill};
+pub use packing::{Directory, SegmentKind, cut, embed, h64, segment, spill};
 pub use reader::{Reader, ReaderError};
 pub use scan::Cursor;
 pub use store::{NodeChunk, NodeGet, NodePut, Plaintext, Seal, StoreError};

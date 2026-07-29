@@ -8,7 +8,7 @@ use alloy_primitives::{b256, keccak256};
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use nectar_ldb::{
-    Child, CustomKeyError, DecodeError, Domain, Entry, ForkPayload, ForkTable, Format, KeyId,
+    Child, CustomKeyError, DecodeError, Entry, ForkPayload, ForkTable, Format, KeyId,
     Metadata, Node, Prefix, RootExtension, SegmentKind, SegmentWeight, V1, cut, embed, h64,
     segment,
 };
@@ -263,26 +263,23 @@ fn cut_thresholds_are_exact_integer_comparisons() {
     assert!(1156u64.checked_mul(V1::CUT_SCALE).is_some_and(|t| h < t));
 }
 
-// Child-local embedding: a child inlines iff its flat body fits INLINE_MAX
-// and shares its parent's encryption domain. The worked example's shared
-// child is a 123-byte plaintext body, so it embeds (its ilen is 123 there).
+// Child-local embedding: a child inlines iff its flat body fits INLINE_MAX.
+// The worked example's shared child is a 123-byte body, so it embeds (its
+// ilen is 123 there). Encryption needs no second test: a database carries one
+// structural reference width, so a child always shares its parent's.
 #[test]
-fn child_embedding_gates_on_inline_max_and_domain() -> Result<()> {
+fn child_embedding_gates_on_inline_max() -> Result<()> {
     ensure!(
-        embed::<V1>(123, Domain::Plain, Domain::Plain),
+        embed::<V1>(123),
         "the worked child within INLINE_MAX embeds",
     );
     ensure!(
-        embed::<V1>(V1::INLINE_MAX, Domain::Plain, Domain::Plain),
+        embed::<V1>(V1::INLINE_MAX),
         "a body at INLINE_MAX embeds",
     );
     ensure!(
-        !embed::<V1>(V1::INLINE_MAX + 1, Domain::Plain, Domain::Plain),
+        !embed::<V1>(V1::INLINE_MAX + 1),
         "a body over INLINE_MAX spills",
-    );
-    ensure!(
-        !embed::<V1>(123, Domain::Plain, Domain::Encrypted),
-        "a cross-domain child spills",
     );
     Ok(())
 }
