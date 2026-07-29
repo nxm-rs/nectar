@@ -13,7 +13,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use nectar_fuzz::{Val, entry};
-use nectar_manifest::{Builder, Entry, Key, V1, recanonicalize};
+use nectar_ldb::{Builder, Entry, Key, V1, recanonicalize};
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{ChunkAddress, ChunkOps, DEFAULT_BODY_SIZE};
 use nectar_testing::run;

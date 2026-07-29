@@ -1,4 +1,4 @@
-# Fuzzes the wire-format decoders and the file and manifest differential
+# Fuzzes the wire-format decoders and the file and key-value differential
 # properties. Targets build once under nightly plus the
 # sanitizer; each run job then executes the prebuilt binary, so nothing is
 # rebuilt and the run jobs need no toolchain.
@@ -71,9 +71,9 @@ jobs:
                     - mantaray_view_differential
                     - mantaray_record_roundtrip
                     - mantaray_editor_differential
-                    - manifest_node_decode
-                    - manifest_build_roundtrip
-                    - manifest_apply_rebuild
+                    - ldb_node_decode
+                    - ldb_build_roundtrip
+                    - ldb_apply_rebuild
                     - chunk_decode
                     - stamp_decode
                     - usage_snapshot_decode
@@ -128,9 +128,9 @@ jobs:
                     - mantaray_view_differential
                     - mantaray_record_roundtrip
                     - mantaray_editor_differential
-                    - manifest_node_decode
-                    - manifest_build_roundtrip
-                    - manifest_apply_rebuild
+                    - ldb_node_decode
+                    - ldb_build_roundtrip
+                    - ldb_apply_rebuild
                     - chunk_decode
                     - stamp_decode
                     - usage_snapshot_decode

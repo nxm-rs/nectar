@@ -1,8 +1,8 @@
-//! Shared fixtures for the file-pipeline and manifest fuzz targets.
+//! Shared fixtures for the file-pipeline and key-value fuzz targets.
 
 use arbitrary::Arbitrary;
 use bytes::Bytes;
-use nectar_manifest::{Entry, Format, V1};
+use nectar_ldb::{Entry, Format, V1};
 use nectar_primitives::ChunkRef;
 use nectar_primitives::chunk::ChunkAddress;
 
@@ -21,11 +21,11 @@ pub fn tile(seed: &[u8], copies: u16) -> Vec<u8> {
     seed.iter().copied().cycle().take(len).collect()
 }
 
-/// One fuzzed manifest value: a plain reference or an inline byte string.
+/// One fuzzed entry value: a plain reference or an inline byte string.
 ///
 /// Compact by design: a reference costs one input byte, so mutation explores
 /// trie structure rather than address space. The general value model is the
-/// `Entry` impl and `nectar_manifest::generators`.
+/// `Entry` impl and `nectar_ldb::generators`.
 #[derive(Arbitrary, Clone, Debug)]
 pub enum Val {
     /// A 32-byte reference synthesized from one byte.

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use arbitrary::Unstructured;
 use bytes::Bytes;
-use nectar_manifest::{Builder, Cursor, Entry, Format, Key, Reader, V1, generators};
+use nectar_ldb::{Builder, Cursor, Entry, Format, Key, Reader, V1, generators};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;

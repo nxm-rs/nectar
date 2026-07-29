@@ -34,8 +34,8 @@ futures.workspace = true
 # identical op sequences must produce byte-identical roots.
 mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
 nectar-file = { workspace = true, features = ["std"] }
+nectar-ldb = { workspace = true, features = ["arbitrary"] }
 nectar-loadsave.workspace = true
-nectar-manifest = { workspace = true, features = ["arbitrary"] }
 nectar-mantaray.workspace = true
 nectar-postage = { workspace = true, features = ["std"] }
 nectar-postage-issuer.workspace = true
@@ -73,48 +73,48 @@ name = "file_split_membound"
 path = "tests/file/split_membound.rs"
 
 [[test]]
-name = "manifest_apply"
-path = "tests/manifest/apply.rs"
+name = "ldb_apply"
+path = "tests/ldb/apply.rs"
 
 [[test]]
-name = "manifest_bridge"
-path = "tests/manifest/bridge.rs"
+name = "ldb_bridge"
+path = "tests/ldb/bridge.rs"
 
 [[test]]
-name = "manifest_builder"
-path = "tests/manifest/builder.rs"
+name = "ldb_builder"
+path = "tests/ldb/builder.rs"
 
 [[test]]
-name = "manifest_conformance"
-path = "tests/manifest/conformance.rs"
+name = "ldb_conformance"
+path = "tests/ldb/conformance.rs"
 
 [[test]]
-name = "manifest_counted"
-path = "tests/manifest/counted.rs"
+name = "ldb_counted"
+path = "tests/ldb/counted.rs"
 
 [[test]]
-name = "manifest_determinism"
-path = "tests/manifest/determinism.rs"
+name = "ldb_determinism"
+path = "tests/ldb/determinism.rs"
 
 [[test]]
-name = "manifest_membound"
-path = "tests/manifest/membound.rs"
+name = "ldb_membound"
+path = "tests/ldb/membound.rs"
 
 [[test]]
-name = "manifest_order"
-path = "tests/manifest/order.rs"
+name = "ldb_order"
+path = "tests/ldb/order.rs"
 
 [[test]]
-name = "manifest_reader"
-path = "tests/manifest/reader.rs"
+name = "ldb_reader"
+path = "tests/ldb/reader.rs"
 
 [[test]]
-name = "manifest_read_profile"
-path = "tests/manifest/read_profile.rs"
+name = "ldb_read_profile"
+path = "tests/ldb/read_profile.rs"
 
 [[test]]
-name = "manifest_scan"
-path = "tests/manifest/scan.rs"
+name = "ldb_scan"
+path = "tests/ldb/scan.rs"
 
 [[test]]
 name = "mantaray_bmt_nodes"

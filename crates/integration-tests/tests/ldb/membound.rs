@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use arbitrary::Unstructured;
 use bytes::Bytes;
-use nectar_manifest::{
+use nectar_ldb::{
     ApplyError, BuildStats, Builder, Changeset, Entry, Key, KeyId, Metadata, Reader, V1, apply,
     generators, recanonicalize,
 };

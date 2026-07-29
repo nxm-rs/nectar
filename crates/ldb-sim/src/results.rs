@@ -127,7 +127,7 @@ pub struct PaginateCell {
 }
 
 /// One `(corpus, scale)` subtree-serve cell: a folder listing handed off as a
-/// single subtree reference versus walked in full from the manifest root.
+/// single subtree reference versus walked in full from the database root.
 #[derive(Debug, Serialize)]
 pub struct SubtreeServeCell {
     pub corpus: String,

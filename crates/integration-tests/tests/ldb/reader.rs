@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, ensure};
 use bytes::Bytes;
-use nectar_manifest::{Builder, Child, Entry, ForkTable, Key, Node, NodePut, Prefix, Reader, V1};
+use nectar_ldb::{Builder, Child, Entry, ForkTable, Key, Node, NodePut, Prefix, Reader, V1};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;

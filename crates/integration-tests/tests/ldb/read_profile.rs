@@ -5,11 +5,11 @@
 
 use anyhow::{Result, ensure};
 use bytes::Bytes;
-use nectar_manifest::{Builder, Changeset, Entry, Key, Reader, V1, V1Read, apply};
+use nectar_ldb::{Builder, Changeset, Entry, Key, Reader, V1, V1Read, apply};
 use nectar_primitives::{ChunkAddress, ChunkRef, ContentGet, MemoryStore};
 use nectar_testing::run;
 
-fn ref_entry<F: nectar_manifest::Format>(fill: u8) -> Entry<F> {
+fn ref_entry<F: nectar_ldb::Format>(fill: u8) -> Entry<F> {
     Entry::from(ChunkRef::new(ChunkAddress::new([fill; 32])))
 }
 
@@ -23,7 +23,7 @@ fn windowed_keys() -> Vec<(Key, u8)> {
 
 /// Build the windowed key set under `F`, returning the root and the number of
 /// distinct chunks the build stored.
-fn build_windowed<F: nectar_manifest::Format>() -> Result<(ChunkAddress, usize)> {
+fn build_windowed<F: nectar_ldb::Format>() -> Result<(ChunkAddress, usize)> {
     let store = MemoryStore::default();
     let mut builder = Builder::<F>::new();
     for (key, fill) in windowed_keys() {

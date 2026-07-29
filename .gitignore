@@ -16,5 +16,6 @@ cspell.json
 .claude/worktrees/
 .worktrees/
 
-# feeds finder benchmark output (generated on demand, never committed)
+# Measurement harness output (generated on demand, never committed)
 feeds-perf-results.json
+ldb-perf-results.json

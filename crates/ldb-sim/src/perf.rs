@@ -15,7 +15,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use nectar_testing::run;
 
-use nectar_manifest::{
+use nectar_ldb::{
     Builder, Changeset, Entry, Format, Key, KeyId, Metadata, Reader, V1, V1Read, apply,
 };
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -190,7 +190,7 @@ fn range_rounds<F: Format>(
             keys = keys.saturating_add(1);
         }
         let rounds = t0.elapsed().as_millis() as u64;
-        Ok::<_, nectar_manifest::ReaderError>((latency.gets(), rounds, keys))
+        Ok::<_, nectar_ldb::ReaderError>((latency.gets(), rounds, keys))
     })?;
     Ok(out?)
 }
@@ -211,7 +211,7 @@ fn prefix_rounds<F: Format>(
             keys = keys.saturating_add(1);
         }
         let rounds = t0.elapsed().as_millis() as u64;
-        Ok::<_, nectar_manifest::ReaderError>((latency.gets(), rounds, keys))
+        Ok::<_, nectar_ldb::ReaderError>((latency.gets(), rounds, keys))
     })?;
     Ok(out?)
 }
@@ -475,7 +475,7 @@ fn listing_prefix(corpus: Corpus, keys: &[GenKey]) -> Option<Vec<u8>> {
 
 /// The subtree-serve cell for one `(corpus, scale)`: resolving a folder
 /// listing's single covering subtree reference (a one-ref handoff) versus
-/// draining the full prefix cursor from the manifest root. `None` when the
+/// draining the full prefix cursor from the database root. `None` when the
 /// corpus yields no listing prefix.
 pub fn subtree_serve_cell(
     corpus: Corpus,

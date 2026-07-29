@@ -7,15 +7,15 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::process::Command;
 
-use nectar_manifest::V1;
-use nectar_manifest_sim::corpus::{self, Corpus};
-use nectar_manifest_sim::perf;
-use nectar_manifest_sim::results::{self, Document, Meta};
+use nectar_ldb::V1;
+use nectar_ldb_sim::corpus::{self, Corpus};
+use nectar_ldb_sim::perf;
+use nectar_ldb_sim::results::{self, Document, Meta};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
-use nectar_manifest::Format;
+use nectar_ldb::Format;
 
-const DEFAULT_OUT: &str = "manifest-perf-results.json";
+const DEFAULT_OUT: &str = "ldb-perf-results.json";
 
 struct Args {
     out: PathBuf,
@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for corpus in Corpus::all() {
         for &scale in &args.scales {
             let n = scale as usize;
-            eprintln!("[manifest-perf] {} n={}", corpus.name(), n);
+            eprintln!("[ldb-perf] {} n={}", corpus.name(), n);
             let keys = corpus::generate(corpus, n);
             parallel_cursor.extend(perf::parallel_cursor_cells(corpus, scale, &keys)?);
             v1read.push(perf::read_profile_cell(corpus, scale, &keys)?);

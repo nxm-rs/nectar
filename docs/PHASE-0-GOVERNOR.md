@@ -51,14 +51,14 @@ Only the `Driver`/`WalkPolicy` users carry real work; the rest is a one-line imp
 **Real rewire, the walk loop dies (drive `FuturesUnordered` directly, admit via `Admission`):**
 
 - `feeds/src/getter.rs`: `Driver`, `WalkPolicy`
-- `manifest/src/{traverse,store,scan,apply}.rs`: `Driver`, `WalkPolicy`
+- `ldb/src/{traverse,store,scan,apply}.rs`: `Driver`, `WalkPolicy`
 - `mantaray/src/editor.rs`: `Driver`, `WalkPolicy`; `mantaray/src/cursor.rs`: `StaticDriver`, `WalkPolicy`
 - `file/src/walk/engine.rs`: `StaticDriver`
 
 **Import-path only, items kept:**
 
 - `PutSink` users: `file/src/split/{engine,relay}.rs`
-- `Admission` / `Window` users: `postage-issuer/src/pipeline/*`, `manifest/src/{builder,frontier}.rs`, `file/src/{store,config}.rs`
+- `Admission` / `Window` users: `postage-issuer/src/pipeline/*`, `ldb/src/{builder,frontier}.rs`, `file/src/{store,config}.rs`
 
 `file/src/inflight.rs` does not exist; the roadmap's step 0.2 wording is stale.
 The file fan-out already sits in `walk/engine.rs` (`StaticDriver`) and `split/{engine,relay}.rs` (`PutSink`).

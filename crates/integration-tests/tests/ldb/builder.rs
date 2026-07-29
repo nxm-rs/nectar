@@ -10,7 +10,7 @@ use core::task::Poll;
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
 use nectar_file::{Plain, PutWindow, collect_into};
-use nectar_manifest::{
+use nectar_ldb::{
     BuildStats, Builder, Built, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node,
     NodeGet, Prefix, RootExtension, V1,
 };

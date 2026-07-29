@@ -64,8 +64,8 @@ nectar-contracts = { version = "0.4.0", path = "crates/contracts" }
 nectar-feeds = { version = "0.4.0", path = "crates/feeds" }
 nectar-file = { version = "0.4.0", path = "crates/file", default-features = false }
 nectar-governor = { version = "0.4.0", path = "crates/governor", default-features = false }
+nectar-ldb = { version = "0.4.0", path = "crates/ldb" }
 nectar-loadsave = { version = "0.4.0", path = "crates/loadsave" }
-nectar-manifest = { version = "0.4.0", path = "crates/manifest" }
 nectar-mantaray = { version = "0.4.0", path = "crates/mantaray" }
 nectar-marker = { version = "0.4.0", path = "crates/marker" }
 nectar-primitives = { version = "0.4.0", path = "crates/primitives", default-features = false }

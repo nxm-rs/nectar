@@ -1,5 +1,5 @@
 [package]
-name = "nectar-manifest"
+name = "nectar-ldb"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,10 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
-description = "Mantaray 1.0 content-addressed key-value manifest for Ethereum Swarm"
-documentation = "https://docs.rs/nectar-manifest"
+description = "Mantaray 1.0 content-addressed key-value database for Ethereum Swarm"
+documentation = "https://docs.rs/nectar-ldb"
 readme = "README.md"
-keywords = ["swarm", "ethereum", "manifest", "mantaray", "key-value"]
+keywords = ["swarm", "ethereum", "database", "mantaray", "key-value"]
 categories = ["data-structures"]
 
 [lints]
@@ -31,7 +31,7 @@ thiserror.workspace = true
 [dev-dependencies]
 arbitrary.workspace = true
 # Self dev-dependency: exposes the `generators` module to integration tests.
-nectar-manifest = { workspace = true, features = ["arbitrary"] }
+nectar-ldb = { workspace = true, features = ["arbitrary"] }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
 nectar-testing = { workspace = true, features = ["fixtures"] }
 proptest.workspace = true
