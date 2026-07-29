@@ -416,7 +416,7 @@ where
 /// any single-threaded executor, wasm32 included.
 ///
 /// ```
-/// use futures::StreamExt;
+/// use futures_util::StreamExt;
 /// use nectar_file::File;
 ///
 /// # nectar_testing::run(async {

@@ -22,8 +22,8 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use bytes::Bytes;
-use futures_core::Stream;
-use nectar_governor::{BoxFuture, FuturesUnordered};
+use futures_util::stream::{FuturesUnordered, Stream};
+use nectar_governor::BoxFuture;
 use nectar_primitives::ChunkAddress;
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
@@ -925,7 +925,7 @@ mod tests {
     /// Yield once, waking immediately, so the caller observes a pending poll.
     async fn yield_once() {
         let mut yielded = false;
-        futures::future::poll_fn(|cx| {
+        poll_fn(|cx| {
             if yielded {
                 Poll::Ready(())
             } else {
@@ -971,8 +971,8 @@ mod tests {
             // Drop a next future mid-fetch of the referenced leaf.
             {
                 let fut = cursor.next();
-                futures::pin_mut!(fut);
-                let state = futures::future::poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await;
+                futures_util::pin_mut!(fut);
+                let state = poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await;
                 assert!(state.is_pending());
             }
             // The descent replays; no key under the leaf is lost.

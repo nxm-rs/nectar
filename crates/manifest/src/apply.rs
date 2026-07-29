@@ -29,8 +29,8 @@ use core::pin::Pin;
 use core::task::Poll;
 
 use bytes::Bytes;
-use futures_core::Stream;
-use nectar_governor::{Admission, BoxFuture, FuturesUnordered, Window};
+use futures_util::stream::{FuturesUnordered, Stream};
+use nectar_governor::{Admission, BoxFuture, Window};
 use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::{ChunkPut, MaybeSync};
 

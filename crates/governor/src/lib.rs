@@ -1,12 +1,22 @@
-//! Bounded-admission governor beneath the streaming walkers: the shared
-//! [`Driver`] loop over a [`WalkPolicy`], the [`FuturesUnordered`] in-flight
-//! set it drains, the write-side [`PutSink`] over the same set, the read-ahead
+//! Bounded-admission governor beneath the streaming walkers: the read-ahead
 //! [`Window`], the head-slot [`Admission`] predicate, the [`AdmitPolicy`]
-//! adaptive-window seam, and the [`BoxFuture`] alias the sets hold.
+//! adaptive-window seam, the write-side [`PutSink`], and the [`BoxFuture`]
+//! alias the in-flight sets hold.
 //!
-//! The driver owns the `admit`/`take`/`poll` loop; each walker's frontier,
-//! ordering, and completion fold stay bespoke as a [`WalkPolicy`] impl in its
-//! own crate, and a monomorphised driver is the hand-rolled walk.
+//! Admission only: `futures_util` is the walk substrate, and each walker
+//! owns its own loop over a `FuturesUnordered` set, with its frontier,
+//! ordering, and completion fold bespoke in its own crate. This crate says
+//! nothing but when one more fetch may start.
+//!
+//! A consumer therefore takes the substrate from `futures_util` directly:
+//! this crate re-exports no part of it, so the following does not compile.
+//!
+//! ```compile_fail
+//! use nectar_governor::FuturesUnordered;
+//! ```
+//!
+//! The shared walk loop, and the per-walker trait it once ran over, are
+//! gone with it: the surface below is all the crate exports.
 
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -39,7 +49,6 @@ use nectar_marker as _;
 mod admission;
 #[cfg(feature = "chunk")]
 mod chunk;
-mod driver;
 mod policy;
 mod put_sink;
 mod window;
@@ -48,9 +57,7 @@ pub use admission::Admission;
 #[cfg(feature = "chunk")]
 #[cfg_attr(docsrs, doc(cfg(feature = "chunk")))]
 pub use chunk::get_verified;
-pub use driver::{Driver, StaticDriver, WalkPolicy};
 pub use nectar_tasks::BoxFuture;
-pub use futures_util::stream::FuturesUnordered;
 pub use policy::{AdmitPolicy, Fixed, FromFn, Observations, from_fn};
 pub use put_sink::PutSink;
 pub use window::Window;

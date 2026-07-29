@@ -17,8 +17,8 @@ use core::mem;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use futures_core::Stream;
-use nectar_governor::{Admission, BoxFuture, FuturesUnordered, Window};
+use futures_util::stream::{FuturesUnordered, Stream};
+use nectar_governor::{Admission, BoxFuture, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, EncryptionKey, Verified,

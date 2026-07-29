@@ -7,10 +7,9 @@ use core::ops::Range;
 use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
-use futures_util::stream::StreamExt;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use nectar_governor::{
-    Admission, AdmitPolicy, BoxFuture, FromFn, FuturesUnordered, Observations, from_fn,
-    get_verified,
+    Admission, AdmitPolicy, BoxFuture, FromFn, Observations, from_fn, get_verified,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkOps, ContentOnlyChunkSet, Verified};

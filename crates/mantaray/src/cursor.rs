@@ -16,9 +16,9 @@ use alloc::vec::Vec;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use futures::Stream;
+use futures_util::stream::{FuturesUnordered, Stream};
 pub use nectar_governor::Window;
-use nectar_governor::{Admission, BoxFuture, FuturesUnordered};
+use nectar_governor::{Admission, BoxFuture};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ChunkAddress;
 
@@ -716,7 +716,7 @@ mod tests {
     /// before any single fetch resolves.
     async fn yield_once() {
         let mut yielded = false;
-        futures::future::poll_fn(|cx| {
+        futures_util::future::poll_fn(|cx| {
             if yielded {
                 Poll::Ready(())
             } else {
@@ -1256,7 +1256,7 @@ mod tests {
 
     #[test]
     fn cursor_and_address_stream_drive_as_streams() {
-        use futures::StreamExt;
+        use futures_util::StreamExt;
         let (root, loadsaver) = build(&["a", "b", "c"]);
         let entries: Vec<_> = run(Cursor::new(loadsaver.clone(), root).collect::<Vec<_>>());
         assert_eq!(entries.len(), 3);
