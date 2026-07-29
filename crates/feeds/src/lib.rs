@@ -54,6 +54,9 @@ mod reader;
 mod sequence;
 mod update;
 
+// Shadows the `arbitrary` crate at the crate root only: a root-level
+// `use arbitrary::...` needs `::arbitrary::`. Non-root modules resolve the
+// bare path to the crate.
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod arbitrary;
 
