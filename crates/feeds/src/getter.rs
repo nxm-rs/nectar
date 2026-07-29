@@ -1,12 +1,11 @@
 //! Read side: fetch, certify and interpret updates over a chunk store.
 
-use core::convert::Infallible;
 use core::fmt;
-use core::future::poll_fn;
 use core::num::{NonZeroU16, NonZeroUsize};
 use std::collections::BTreeSet;
 
-use nectar_governor::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
+use futures_util::stream::{FuturesUnordered, StreamExt};
+use nectar_governor::{Admission, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, IntoVerified, SingleOwnerOnlyChunkSet};
 use nectar_primitives::store::{ChunkGet, ChunkHas};
@@ -121,32 +120,55 @@ where
     /// Only a completed probe answers an index; a speculative answer the
     /// replay never consults is inert, so any width and any completion order
     /// commit the boundary the sequential scan would.
+    ///
+    /// The faulting index leads each round's plan and is the head slot;
+    /// [`Admission`] reserves it a slot, so speculation never starves the
+    /// probe the replay is blocked on and the set never drains verdictless.
     async fn drive(
         &self,
         floor: Sequence,
         resolve: fn(u64, &Answers) -> Step,
     ) -> Result<Latest<BODY_SIZE>> {
-        let mut driver = Driver::new(ProbePolicy::new(
-            &self.feed,
-            &self.store,
-            resolve,
-            floor,
-            self.window,
-        ));
+        let slots = NonZeroU16::try_from(self.window).unwrap_or(NonZeroU16::MAX);
+        let admission = Admission::new(Window::from(slots));
+        let base = floor.get();
+        let mut answers = Answers::new();
+        // Indices probed but not yet landed, and the round's probe plan.
+        let mut outstanding = BTreeSet::new();
+        let mut plan = Vec::new();
+        let mut in_flight = FuturesUnordered::new();
         loop {
-            match poll_fn(|cx| driver.poll(cx, ())).await {
-                Some(Ok(Verdict::Empty)) => {
+            let fault = match resolve(base, &answers) {
+                Step::Empty => {
                     return Ok(Latest {
                         update: None,
                         next: Some(floor),
                     });
                 }
-                Some(Ok(Verdict::Commit(lo))) => return self.found(lo).await,
-                Some(Err(error)) => match error {},
-                // A fault always keeps its own probe in flight, so the set
-                // cannot drain verdictless; resuming over the retained
-                // answers keeps this arm total without a panic path.
-                None => driver = Driver::new(driver.into_policy()),
+                Step::Commit { lo } => return self.found(lo).await,
+                Step::Fault(fault) => fault,
+            };
+            fault.plan(self.window, &mut plan);
+            let head = plan.first().copied();
+            for &index in &plan {
+                if answers.contains_key(&index) || outstanding.contains(&index) {
+                    continue;
+                }
+                let head_served =
+                    head.is_some_and(|head| index == head || outstanding.contains(&head));
+                if !admission.admits(outstanding.len(), head_served) {
+                    break;
+                }
+                let address = self.feed.update_address(&Sequence::new(index));
+                let store = &self.store;
+                outstanding.insert(index);
+                in_flight.push(async move { (index, store.has(&address).await) });
+            }
+            // The head always holds a slot here, so a drained set can only
+            // mean a plan of answers already held: re-resolving is total.
+            if let Some((index, present)) = in_flight.next().await {
+                outstanding.remove(&index);
+                answers.insert(index, present);
             }
         }
     }
@@ -173,121 +195,5 @@ where
     /// [`latest`](Self::latest) applies.
     pub async fn latest_linear_from(&self, floor: Sequence) -> Result<Latest<BODY_SIZE>> {
         self.drive(floor, probe::resolve_linear).await
-    }
-}
-
-/// One landed presence answer, routed by index.
-type Probed = (u64, bool);
-
-/// Terminal outcome of a finder walk.
-enum Verdict {
-    /// The floor slot is absent.
-    Empty,
-    /// The boundary update lives at this index.
-    Commit(u64),
-}
-
-/// Presence-probe walk policy: each landed answer re-resolves the replay and
-/// tops the window back up.
-///
-/// The head slot is the faulting index; [`Admission`] reserves it a slot, so
-/// speculation never starves the probe the replay is blocked on.
-struct ProbePolicy<'a, S, const BODY_SIZE: usize> {
-    feed: &'a Feed<BODY_SIZE>,
-    store: &'a S,
-    resolve: fn(u64, &Answers) -> Step,
-    /// The search floor the resolver replays from.
-    base: u64,
-    /// Probe-plan width; the admission window is its clamp.
-    width: NonZeroUsize,
-    admission: Admission,
-    answers: Answers,
-    /// Indices probed but not yet landed.
-    outstanding: BTreeSet<u64>,
-    /// Scratch for the fault's probe plan.
-    plan: Vec<u64>,
-    /// Staged terminal outcome awaiting hand-over.
-    verdict: Option<Verdict>,
-}
-
-impl<'a, S, const BODY_SIZE: usize> ProbePolicy<'a, S, BODY_SIZE> {
-    fn new(
-        feed: &'a Feed<BODY_SIZE>,
-        store: &'a S,
-        resolve: fn(u64, &Answers) -> Step,
-        floor: Sequence,
-        width: NonZeroUsize,
-    ) -> Self {
-        let slots = NonZeroU16::try_from(width).unwrap_or(NonZeroU16::MAX);
-        Self {
-            feed,
-            store,
-            resolve,
-            base: floor.get(),
-            width,
-            admission: Admission::new(Window::from(slots)),
-            answers: Answers::new(),
-            outstanding: BTreeSet::new(),
-            plan: Vec::new(),
-            verdict: None,
-        }
-    }
-}
-
-impl<'a, S, const BODY_SIZE: usize> WalkPolicy<'a> for ProbePolicy<'a, S, BODY_SIZE>
-where
-    S: ChunkHas,
-{
-    type Fetched = Probed;
-    type Frame = Verdict;
-    type Error = Infallible;
-    type Drain = ();
-
-    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, Probed>>) {
-        if self.verdict.is_some() {
-            return;
-        }
-        let fault = match (self.resolve)(self.base, &self.answers) {
-            Step::Empty => {
-                self.verdict = Some(Verdict::Empty);
-                return;
-            }
-            Step::Commit { lo } => {
-                self.verdict = Some(Verdict::Commit(lo));
-                return;
-            }
-            Step::Fault(fault) => fault,
-        };
-        fault.plan(self.width, &mut self.plan);
-        // The faulting index leads the plan: it is the head slot.
-        let head = self.plan.first().copied();
-        for &index in &self.plan {
-            if self.answers.contains_key(&index) || self.outstanding.contains(&index) {
-                continue;
-            }
-            let head_served =
-                head.is_some_and(|head| index == head || self.outstanding.contains(&head));
-            if !self.admission.admits(self.outstanding.len(), head_served) {
-                break;
-            }
-            let address = self.feed.update_address(&Sequence::new(index));
-            let store = self.store;
-            self.outstanding.insert(index);
-            in_flight.push(Box::pin(async move { (index, store.has(&address).await) }));
-        }
-    }
-
-    fn take_ready(&mut self, (): ()) -> Option<Result<Verdict, Infallible>> {
-        self.verdict.take().map(Ok)
-    }
-
-    fn absorb(&mut self, (index, present): Probed) -> Result<(), Infallible> {
-        self.outstanding.remove(&index);
-        self.answers.insert(index, present);
-        Ok(())
-    }
-
-    fn drained(&self) -> Result<(), Infallible> {
-        Ok(())
     }
 }
