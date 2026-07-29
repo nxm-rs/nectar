@@ -2,7 +2,7 @@
 
 This file gives guidance to agents and contributors who work in nectar.
 It is terse by design.
-When in doubt, two gates win over anything written here: `cargo clippy -- -D warnings` and `tools/reinvention-gate.sh`.
+When in doubt, one gate wins over anything written here: `cargo clippy -- -D warnings`.
 
 `CLAUDE.md` at the same level is a symlink to this file.
 
@@ -54,9 +54,8 @@ Prefer them for new code, and align existing code when you touch it.
   Do not hand-roll a future-set, an executor, a waker, a oneshot, or a channel.
   The no_std excuse is false: futures-core, futures-util, and futures-channel are no_std plus alloc and compile for wasm32 and riscv64.
   `nectar-tasks` is the one sanctioned spawn seam and owns the single `BoxFuture` alias.
-- The reinvention gate (`tools/reinvention-gate.sh`) fails CI if a deleted primitive returns.
-  The banned shapes are hand-rolled `BoxFuture` aliases, copied `MaybeSend` or `MaybeSync`, `Mutex<Waker>` cells, `waker: Option<Waker>` slots, copied `Unpark` wakers, ad-hoc `impl Wake`, hand-rolled one-shots, `thread::park` loops, stray `FuturesUnordered::new()` put-windows, unpaired rayon plus oneshot submits, and stray `catch_unwind`.
-  Each shape has exactly one sanctioned home.
+- One sanctioned home per concurrency primitive; a copy elsewhere is a reinvention (code review enforces this).
+  Do not reintroduce hand-rolled `BoxFuture` aliases, copied `MaybeSend` or `MaybeSync`, `Mutex<Waker>` cells, `waker: Option<Waker>` slots, copied `Unpark` wakers, ad-hoc `impl Wake`, hand-rolled one-shots, `thread::park` loops, stray `FuturesUnordered::new()` put-windows, unpaired rayon plus oneshot submits, or stray `catch_unwind`.
   A copy elsewhere is a reinvention.
 - Keep production code panic-free.
   The clippy deny set forbids `unwrap`, `expect`, indexing, slicing, `as` casts, arithmetic overflow, `panic`, `todo`, `unimplemented`, and other panics.
