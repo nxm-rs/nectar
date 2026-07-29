@@ -1382,7 +1382,55 @@ mod tests {
 
         let peak = store.peak.load(Ordering::Relaxed);
         assert!(peak > 1, "disjoint subtree reads overlapped, peak {peak}");
+        // Four requests never reach the window; the fan-out test below is what
+        // pins the cap.
         assert!(peak <= usize::from(child_window::<V1>().get()));
+    }
+
+    #[test]
+    fn the_child_window_bounds_the_prefetch_fan_out() {
+        let inner = ContentGet::new(MemoryStore::default());
+        // More referenced children under the root than the window has slots,
+        // each wide enough to spill to a reference, so an unbounded prefetch
+        // would launch the whole group at once.
+        let mut builder = Builder::<V1>::new();
+        for p in 0u8..24 {
+            for x in 0u8..44 {
+                builder.insert(Key::from(&[p, x][..]), entry(x), None);
+            }
+        }
+        let root = *run(builder.build(&inner)).unwrap().root();
+        let node: Node<V1> = run(inner.get_node(&root)).unwrap();
+        let children = node
+            .forks()
+            .iter()
+            .filter(|(_, record)| matches!(record.child(), Some(Child::Ref32(_))))
+            .count();
+        let window = usize::from(child_window::<V1>().get());
+        assert!(
+            children > window,
+            "the frontier must outgrow the window, {children} children"
+        );
+
+        let store = GatedStore {
+            inner,
+            inflight: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        };
+        // A deeper insert under every subtree descends into all of them at
+        // once, so the whole group rides one prefetch.
+        let mut cs = Changeset::<V1>::new();
+        for p in 0u8..24 {
+            cs.put(Key::from(&[p, 0, 9][..]), entry(99), None);
+        }
+        run(apply(&store, &root, &cs)).unwrap();
+
+        let peak = store.peak.load(Ordering::Relaxed);
+        // The cap is what bounds the fan-out: a lost window would show up here.
+        assert_eq!(
+            peak, window,
+            "peak in-flight {peak} is not the child window {window}"
+        );
     }
 
     /// Yields once per round before completing, so a test picks the order
