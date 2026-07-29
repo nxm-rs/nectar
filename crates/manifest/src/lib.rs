@@ -60,7 +60,7 @@ mod meta;
 mod op;
 mod path;
 
-pub use dynamic::{DynManifest, DynSink};
+pub use dynamic::{DynManifest, DynSink, DynSinkError};
 pub use listing::{ListEntry, Listing};
 pub use meta::{ManifestMetadata, MetadataView, WellKnownKey};
 pub use op::ManifestOp;
@@ -88,6 +88,11 @@ impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 /// Static dispatch only, exactly like the L1 store traits: the futures are
 /// RPITIT and the reference width is a type parameter, so nothing here costs
 /// an allocation. Use [`DynManifest`] where the format is a runtime choice.
+///
+/// [`ManifestPath::root`] addresses the manifest's own entry, the slot the
+/// site-level documents live in, and every operation maps it to the same
+/// place: what a put binds there, a load reads back. It is not a child of
+/// itself, so it never appears in a listing.
 pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend;
@@ -98,7 +103,9 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The immediate children of the directory `dir` names, in path order.
     ///
     /// Deeper paths collapse into one [`ListEntry::Dir`] at the next
-    /// separator; the referenced chunks are never fetched.
+    /// separator; the referenced chunks are never fetched. `dir` is matched as
+    /// a byte prefix, so end it in the separator to mean the directory: `img`
+    /// also lists `imgx.png`, where `img/` does not.
     fn list(
         &self,
         root: &R,

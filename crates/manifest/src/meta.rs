@@ -12,8 +12,10 @@ use nectar_marker::{MaybeSend, MaybeSync};
 
 /// A metadata key both formats understand.
 ///
-/// The three registered keys are the ones the manifest layer itself acts on; a
-/// [`Custom`](Self::Custom) key travels by name and is looked up verbatim.
+/// The three registered keys are the ones the manifest layer itself acts on. A
+/// [`Custom`](Self::Custom) key travels by name and is looked up verbatim, but
+/// only the registered keys cross the erased apply path, because the view
+/// cannot be enumerated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WellKnownKey<'a> {
     /// MIME type of the entry's content.
@@ -27,9 +29,6 @@ pub enum WellKnownKey<'a> {
 }
 
 impl WellKnownKey<'_> {
-    /// The registered keys, for a view that reconstructs native metadata.
-    pub const REGISTERED: [Self; 3] = [Self::ContentType, Self::IndexDocument, Self::ErrorDocument];
-
     /// The key's canonical name; a custom key is its own name.
     #[must_use]
     pub const fn name(&self) -> &str {
@@ -44,8 +43,9 @@ impl WellKnownKey<'_> {
 
 /// Read access to one entry's metadata, whatever the format stores.
 ///
-/// The erased apply path reconstructs native metadata from this view, so a key
-/// a format cannot represent is dropped there and nowhere else.
+/// The view answers by key and cannot be enumerated, so the erased apply path
+/// reconstructs native metadata from the registered keys alone: a custom key,
+/// or one the format cannot represent, is dropped there and nowhere else.
 pub trait ManifestMetadata: MaybeSend + MaybeSync {
     /// The value bound to `key`, or `None` when the entry carries no such key.
     fn get(&self, key: &WellKnownKey<'_>) -> Option<&str>;

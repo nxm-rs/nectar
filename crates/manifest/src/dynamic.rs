@@ -93,8 +93,9 @@ pub trait DynManifest: MaybeSend + MaybeSync {
 
     /// Fold `ops` into the manifest rooted at `base`, returning the new root.
     ///
-    /// Each op's metadata is rebuilt into the format's native type through the
-    /// well-known-key view, so a key the format cannot carry is dropped here.
+    /// Each op's metadata is rebuilt into the format's native type from the
+    /// registered keys of the well-known-key view, so a custom key, or one the
+    /// format cannot carry, is dropped here.
     fn dyn_apply<'a>(
         &'a self,
         base: &'a ChunkRef,
