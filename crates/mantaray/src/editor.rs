@@ -1011,6 +1011,16 @@ mod tests {
     /// save.
     #[test]
     fn a_failing_save_fails_the_commit() {
+        // Pin that shape, so a trie change fails here rather than silently
+        // dropping the root from the indices below.
+        let control = FailingSaver::new(LoadSaver::new(Store::new()), usize::MAX);
+        let mut editor = ManifestEditor::new(control.clone());
+        for p in ["a", "b", "c"] {
+            editor.put(p, make_addr(p));
+        }
+        run(editor.commit()).unwrap();
+        assert_eq!(control.dispatched.load(Ordering::SeqCst), 4, "dirty nodes");
+
         for fail_at in [0usize, 2, 3] {
             let saver = FailingSaver::new(LoadSaver::new(Store::new()), fail_at);
             let mut editor = ManifestEditor::new(saver);

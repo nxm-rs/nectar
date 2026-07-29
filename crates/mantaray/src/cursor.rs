@@ -87,8 +87,9 @@ struct TrieWalk<L> {
     resolved: BTreeMap<u64, Resolved>,
     in_flight: FuturesUnordered<BoxFuture<'static, Fetched>>,
     next_id: u64,
-    /// Latched once the last node is delivered or the walk has failed; a
-    /// later poll must not resume the frontier past a terminal error.
+    /// Latched when a fault surfaces at the head or the in-flight set
+    /// empties; a later poll must not resume the frontier past a terminal
+    /// error.
     done: bool,
 }
 
