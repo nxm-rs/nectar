@@ -12,12 +12,12 @@
 //! the default body; the peak stays flat.
 // Integration-test code: unwraps, direct indexing, casts, and assertions are
 // setup and illustration, not shipped surface.
-use core::future::{Future, poll_fn};
+use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::sync::{Arc, Mutex};
 
-use nectar_file::{Plain, PutWindow, Split};
+use nectar_file::{File, Policy, PutWindow, Source};
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 use nectar_primitives::store::{ChunkPut, ChunkStoreError};
 use nectar_testing::{measure_allocations, run};
@@ -74,38 +74,52 @@ impl ChunkPut<AnyChunkSet<B>> for DropStore {
     }
 }
 
-/// Stream `total` deterministic bytes through a plain split from a small
-/// reused block, so the input never lives as one payload-sized allocation,
-/// and return the peak live bytes (`bytes_max`) the split added over the
-/// witness baseline.
+/// Deterministic byte source generated on the fly, so the input never lives
+/// as one payload-sized allocation.
+struct Splitmix {
+    produced: usize,
+    total: usize,
+}
+
+impl Source for Splitmix {
+    type Error = core::convert::Infallible;
+
+    fn poll_fill(
+        &mut self,
+        _cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, Self::Error>> {
+        let take = buf.len().min(self.total - self.produced);
+        for (j, slot) in buf[..take].iter_mut().enumerate() {
+            // splitmix64 of the absolute byte index: aperiodic, so every body
+            // is unique and nothing dedups.
+            let i = (self.produced + j) as u64;
+            let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            *slot = z as u8;
+        }
+        self.produced += take;
+        Poll::Ready(Ok(take))
+    }
+}
+
+/// Stream `total` deterministic bytes through a plain save and return the
+/// peak live bytes (`bytes_max`) the write added over the witness baseline.
 fn split_peak(total: usize) -> u64 {
-    const BLOCK: usize = 4096;
-    let store = DropStore::new();
-    let mut split: Split<DropStore, Plain, B> = Split::new(store, PutWindow::new(WINDOW).unwrap());
-    let mut block = vec![0u8; BLOCK];
+    let file = File::<DropStore, B>::new(
+        DropStore::new(),
+        Policy::DEFAULT.with_put_window(PutWindow::new(WINDOW).unwrap()),
+    );
     let ((), info) = measure_allocations(|| {
         run(async {
-            let mut produced = 0usize;
-            while produced < total {
-                let take = BLOCK.min(total - produced);
-                for (j, slot) in block[..take].iter_mut().enumerate() {
-                    // splitmix64 of the absolute byte index: aperiodic, so
-                    // every body is unique and nothing dedups.
-                    let i = (produced + j) as u64;
-                    let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-                    z ^= z >> 31;
-                    *slot = z as u8;
-                }
-                let mut buf = &block[..take];
-                while !buf.is_empty() {
-                    let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-                    buf = &buf[n..];
-                }
-                produced += take;
-            }
-            poll_fn(|cx| split.poll_finish(cx)).await.unwrap();
+            file.save(Splitmix {
+                produced: 0,
+                total,
+            })
+            .await
+            .unwrap();
         })
     });
     info.bytes_max

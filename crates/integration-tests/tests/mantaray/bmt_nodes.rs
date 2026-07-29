@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
-use nectar_file::AnyFile;
+use nectar_file::{File, Policy};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_mantaray::{AddressStream, Cursor, ManifestEditor, NodeLoader, Reader};
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ContentChunk};
@@ -167,11 +167,10 @@ fn publish_root_under_path() {
     run(async {
         let data = b"hello swarm".to_vec();
         let store = Store::new();
-        let window = nectar_file::PutWindow::DEFAULT;
-        let root =
-            nectar_file::split::collect_into::<_, nectar_file::Plain, BODY>(&store, window, &data)
-                .await
-                .unwrap();
+        let root = File::<_, BODY>::new(&store, Policy::DEFAULT)
+            .save(&data[..])
+            .await
+            .unwrap();
 
         let mut editor = Editor::new(LoadSaver::new(store));
         editor.put("hello.txt", root);
@@ -192,13 +191,15 @@ fn publish_root_under_path() {
             .await
             .unwrap()
             .unwrap();
-        let file = AnyFile::<_, BODY>::open(
+        let file = File::<_, BODY>::new(
             ContentGet::new(loadsaver.into_store()),
-            entry.reference().unwrap().clone(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(file.collect(u64::MAX).await.unwrap(), data);
+            Policy::DEFAULT,
+        );
+        let bytes = file
+            .collect(entry.reference().unwrap().clone(), u64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes, data);
     });
 }
 

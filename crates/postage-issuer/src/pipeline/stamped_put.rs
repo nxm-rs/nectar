@@ -572,7 +572,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use core::convert::Infallible;
-    use nectar_file::{Plain, Split};
+    use nectar_file::{File, Policy};
     use nectar_postage::calculate_bucket;
     use nectar_primitives::{ContentChunk, MemoryStore};
     use nectar_testing::run;
@@ -696,7 +696,8 @@ mod tests {
                 StampedPut::from_signer(issuer(20), PrivateKeySigner::random(), sink.clone());
             let data = vec![0u8; 1 << 20];
 
-            Split::<_, Plain, 4096>::collect(store.clone(), &data)
+            File::<_, 4096>::new(store.clone(), Policy::DEFAULT)
+                .save(&data[..])
                 .await
                 .expect("dedup keeps the zero region under bucket capacity");
 

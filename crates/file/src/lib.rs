@@ -1,24 +1,19 @@
 //! Streaming file pipeline for Swarm chunk trees: bounded reads and writes
 //! over a chunk store.
 //!
-//! This crate carries the pipeline's foundations: per-profile tree
-//! [`geometry`] pinned at compile time, the [`config`] admission budgets the
-//! engines drain against, the poll-native [`walk`] engine every read mode
-//! drains, the poll-native [`split`] engine every write mode feeds, the
-//! [`read`] facade that opens files by either reference width and drains the
-//! walk in file order, the [`sink`] targets a restartable download writes
-//! into, the [`store`] erasure that makes file handles nameable, the
-//! [`sync`] driver for Ready-only guests, and the `parallel` read-at ingest
-//! over a random-access source (behind the `rayon` feature).
+//! [`File`] is the whole surface: bind a store to a [`Policy`], then
+//! `load` a root into a positional [`DataSink`] or `save` a [`Source`] into
+//! a fresh tree. The sink is positional on purpose: frames land at their
+//! offsets in completion order, which is what makes unordered retrieval
+//! possible.
 //!
-//! # Exhibits
-//!
-//! Runnable exhibits sit on their surfaces: http range serving on the
-//! `tokio` adapter module, streaming upload on `TokioWriter`, restartable
-//! download on [`DownloadBuilder`], the executor-agnostic stream on
-//! [`FileStream`], and a whole-file guest read under [`sync::drive`].
-//! Publishing a root under a manifest path lives in the workspace
-//! integration tests, on the manifest side of the layering.
+//! The rest of the crate is supporting cast: per-profile tree [`geometry`]
+//! pinned at compile time, the [`config`] admission budgets the engines
+//! drain against, the [`sink`] targets a restartable load writes into, the
+//! [`source`] adapters a save pulls from, and the [`sync`] driver for
+//! Ready-only guests. The walk and split engines and their builders are
+//! crate-private; `tokio` is an optional adapter shim over the same
+//! handles.
 
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -60,6 +55,10 @@ pub mod config;
 #[cfg_attr(docsrs, doc(cfg(feature = "arbitrary")))]
 pub mod generators;
 pub mod geometry;
+// The engines and their builders are internal: `pub` inside a crate-private
+// module is crate visibility, and only the handle seam is re-exported.
+#[cfg(feature = "primitives")]
+mod handle;
 #[cfg(feature = "primitives")]
 mod num;
 /// Shared fuzz and test oracle for the malformed-intermediate walk.
@@ -68,19 +67,18 @@ mod num;
 #[cfg(any(all(test, feature = "primitives"), feature = "arbitrary"))]
 #[doc(hidden)]
 pub mod oracles;
-#[cfg(feature = "rayon")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
-pub mod parallel;
 #[cfg(feature = "primitives")]
-#[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
-pub mod read;
+#[allow(unreachable_pub, reason = "crate-private module: `pub` is crate visibility")]
+pub(crate) mod read;
 pub mod sink;
 #[cfg(feature = "primitives")]
 #[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
-pub mod split;
-#[cfg(feature = "primitives")]
-#[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
-pub mod store;
+pub mod source;
+// The split engine only has a driver where the relay can live: under std, or
+// wherever the Send/Sync bounds relax.
+#[cfg(all(feature = "primitives", any(feature = "std", not(multi_thread))))]
+#[allow(unreachable_pub, reason = "crate-private module: `pub` is crate visibility")]
+pub(crate) mod split;
 pub mod sync;
 #[cfg(all(test, feature = "primitives"))]
 mod testutil;
@@ -88,39 +86,41 @@ mod testutil;
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub mod tokio;
 #[cfg(feature = "primitives")]
-#[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
-pub mod walk;
+#[allow(unreachable_pub, reason = "crate-private module: `pub` is crate visibility")]
+pub(crate) mod walk;
 
 #[cfg(feature = "tokio")]
 pub use self::tokio::{SeekOverflow, TokioReader};
-#[cfg(all(feature = "tokio", multi_thread))]
-pub use self::tokio::{SpawnedReader, TokioWriter};
 pub use config::{BranchBudget, HashWindow, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
-#[cfg(feature = "rayon")]
-pub use parallel::{ReadAt, ReadAtError, split_read_at};
+#[cfg(feature = "primitives")]
+pub use handle::{File, Policy, Reader, Segments};
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use read::AdaptiveWindow;
 #[cfg(feature = "primitives")]
-pub use read::{
-    AnyFile, CollectError, DownloadBuilder, DownloadError, File, FileFrames, FileReader,
-    FileStream, OpenError, Progress, ProgressFn, ReadBuilder, SeekPastEnd,
-};
+pub use read::{CollectError, LoadError, OpenError, Progress, ProgressFn, SeekPastEnd};
 #[cfg(feature = "std")]
 pub use sink::FsSink;
 pub use sink::{DataSink, MemSink, MemSinkError};
-#[cfg(all(feature = "primitives", any(feature = "std", not(multi_thread))))]
-pub use split::collect_into;
-#[cfg(all(feature = "primitives", feature = "encryption"))]
+#[cfg(feature = "primitives")]
+pub use source::Source;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use source::{ReadAt, ReadAtError, ReadAtSource};
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+pub use source::AsyncReadSource;
+#[cfg(all(
+    feature = "primitives",
+    feature = "encryption",
+    any(feature = "std", not(multi_thread))
+))]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use split::{KeyError, KeySource, RandomKeys};
-#[cfg(feature = "primitives")]
-pub use split::{SealError, Sealed, Split, SplitError, SplitMode, SplitStats};
-#[cfg(feature = "primitives")]
-pub use store::{BoxedStore, BoxedStoreError, DynAnyFile, DynFile, DynFileReader, DynFileStream};
+#[cfg(all(feature = "primitives", any(feature = "std", not(multi_thread))))]
+pub use split::{SaveError, SealError, SplitError, SplitMode, SplitStats};
 #[cfg(feature = "primitives")]
 pub use walk::{
-    DecodeError, Encrypted, Frame, Observations, Plain, ShapeError, Walk, WalkError, WalkMode,
-    WalkStats, WindowPolicyFn,
+    DecodeError, Encrypted, Frame, Observations, Plain, ShapeError, WalkError, WalkStats,
 };

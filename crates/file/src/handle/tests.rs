@@ -4,26 +4,59 @@
 use std::collections::HashMap;
 use std::format;
 use std::sync::{Arc, Mutex};
-use std::vec;
 use std::vec::Vec;
 
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkPut, ChunkStoreError};
 use nectar_testing::{run, yield_now};
 
-use super::{ReadAt, ReadAtError, split_read_at};
+use super::{File, Policy};
 use crate::config::PutWindow;
-use crate::split::{Split, SplitError};
+use crate::source::{ReadAt, ReadAtError, ReadAtSource};
+use crate::split::{SaveError, SplitError, SplitMode};
 use crate::testutil::reject_all;
 use crate::walk::Plain;
 
+/// The batch ingest through the handle: a positional source drained into
+/// one save under an explicit put window.
+async fn split_read_at<R, S, M, const B: usize>(
+    source: R,
+    store: S,
+    window: PutWindow,
+) -> Result<M::Root, SaveError<S::Error, ReadAtError>>
+where
+    R: ReadAt,
+    S: ChunkPut<AnyChunkSet<B>>,
+    M: SplitMode + Default,
+{
+    File::<S, B>::new(store, Policy::DEFAULT.with_put_window(window))
+        .save_as::<M, _>(ReadAtSource::new(source))
+        .await
+}
+
+/// The streaming oracle: the same bytes through the same handle from a
+/// slice source, which never meets the positional adapter.
+async fn split_slice<S, M, const B: usize>(
+    data: &[u8],
+    store: S,
+    window: PutWindow,
+) -> Result<M::Root, SaveError<S::Error, core::convert::Infallible>>
+where
+    S: ChunkPut<AnyChunkSet<B>>,
+    M: SplitMode + Default,
+{
+    File::<S, B>::new(store, Policy::DEFAULT.with_put_window(window))
+        .save_as::<M, _>(data)
+        .await
+}
+
 /// Tiny body size: fan-out 8, so a few dozen leaves already build a deep
 /// tree.
-const TINY: usize = 256;
+pub(super) const TINY: usize = 256;
 const BRANCHES: usize = 8;
 
 /// Distinct byte per file position so every node address is unique.
-fn fill(len: usize) -> Vec<u8> {
+pub(super) fn fill(len: usize) -> Vec<u8> {
     (0..len as u64).map(pattern).collect()
 }
 
@@ -96,9 +129,10 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
 /// same bytes, returning root plus every sealed chunk address.
 fn stream_split<const B: usize>(data: &[u8]) -> (ChunkAddress, Vec<ChunkAddress>) {
     let store = TestStore::<B>::new(0);
-    let root = run(Split::<TestStore<B>, Plain, B>::collect(
-        store.clone(),
+    let root = run(split_slice::<_, Plain, B>(
         data,
+        store.clone(),
+        PutWindow::DEFAULT,
     ))
     .unwrap();
     (root, store.log())
@@ -309,7 +343,7 @@ fn a_read_failure_is_typed_with_its_offset() {
         PutWindow::DEFAULT,
     ))
     .unwrap_err();
-    let ReadAtError::Read { offset, .. } = error else {
+    let SaveError::Source { source: ReadAtError::Read { offset, .. } } = error else {
         panic!("expected a read error, got {error:?}");
     };
     assert_eq!(offset, u64::try_from(TINY).unwrap());
@@ -344,7 +378,7 @@ fn a_source_ending_early_is_a_short_read() {
         PutWindow::DEFAULT,
     ))
     .unwrap_err();
-    let ReadAtError::ShortRead { offset, remaining } = error else {
+    let SaveError::Source { source: ReadAtError::ShortRead { offset, remaining } } = error else {
         panic!("expected a short read, got {error:?}");
     };
     assert_eq!(offset, u64::try_from(TINY + 100).unwrap());
@@ -374,7 +408,7 @@ fn an_overlong_read_count_is_refused() {
     ))
     .unwrap_err();
     assert!(
-        matches!(error, ReadAtError::ReadOverrun { count, capacity, .. }
+        matches!(error, SaveError::Source { source: ReadAtError::ReadOverrun { count, capacity, .. } }
             if count == TINY + 1 && capacity == TINY),
         "got {error:?}"
     );
@@ -402,7 +436,10 @@ fn a_sizing_failure_is_typed() {
         PutWindow::DEFAULT,
     ))
     .unwrap_err();
-    assert!(matches!(error, ReadAtError::Length { .. }), "got {error:?}");
+    assert!(
+        matches!(error, SaveError::Source { source: ReadAtError::Length { .. } }),
+        "got {error:?}"
+    );
 }
 
 #[test]
@@ -415,25 +452,9 @@ fn a_failed_put_surfaces_as_a_split_error() {
     ))
     .unwrap_err();
     assert!(
-        matches!(error, ReadAtError::Split(SplitError::Put { .. })),
+        matches!(error, SaveError::Split(SplitError::Put { .. })),
         "got {error:?}"
     );
 }
 
-#[test]
-fn read_at_sources_honour_offsets_and_ends() {
-    let data = fill(100);
-    let slice: &[u8] = &data;
-    let mut buf = vec![0u8; 40];
-    assert_eq!(slice.read_at(0, &mut buf).unwrap(), 40);
-    assert_eq!(buf, data[..40]);
-    assert_eq!(slice.read_at(80, &mut buf).unwrap(), 20);
-    assert_eq!(buf[..20], data[80..]);
-    assert_eq!(slice.read_at(100, &mut buf).unwrap(), 0);
-    assert_eq!(slice.read_at(u64::MAX, &mut buf).unwrap(), 0);
-    assert_eq!(ReadAt::len(slice).unwrap(), 100);
-    let owned = bytes::Bytes::from(data.clone());
-    assert_eq!(owned.read_at(60, &mut buf).unwrap(), 40);
-    assert_eq!(buf, data[60..]);
-    assert_eq!(ReadAt::len(&owned).unwrap(), 100);
-}
+mod round_trip;

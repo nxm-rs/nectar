@@ -22,9 +22,12 @@ pub enum OpenError<E> {
     Decode(#[from] DecodeError),
 }
 
-/// Terminal failure of one download run; a full re-run restarts it.
+/// Terminal failure of one load run; a full re-run restarts it.
 #[derive(Debug, thiserror::Error)]
-pub enum DownloadError<E, SE> {
+pub enum LoadError<E, SE> {
+    /// The root reference did not open as a file.
+    #[error(transparent)]
+    Open(#[from] OpenError<E>),
     /// The walk failed before the range was tiled.
     #[error(transparent)]
     Walk(#[from] WalkError<E>),
@@ -41,6 +44,9 @@ pub enum DownloadError<E, SE> {
 /// Failure assembling a bounded in-memory read.
 #[derive(Debug, thiserror::Error)]
 pub enum CollectError<E> {
+    /// The root reference did not open as a file.
+    #[error(transparent)]
+    Open(#[from] OpenError<E>),
     /// The clipped read exceeds the collect bound.
     #[error("read of {len} bytes exceeds the collect bound {max}")]
     TooLarge {

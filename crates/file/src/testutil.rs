@@ -106,15 +106,12 @@ pub(crate) fn split_encrypted_fixture<const B: usize>(
     EncryptedChunkRef,
     MemoryStore<nectar_primitives::chunk::ContentOnlyChunkSet<B>>,
 ) {
-    use crate::split::{RandomKeys, Split};
-    use crate::walk::Encrypted;
+    use crate::handle::{File, Policy};
 
-    let store = Arc::new(MemoryStore::new());
-    let root = nectar_testing::run(Split::<
-        Arc<MemoryStore<AnyChunkSet<B>>>,
-        Encrypted<RandomKeys>,
-        B,
-    >::collect(Arc::clone(&store), data))
+    let store: Arc<MemoryStore<AnyChunkSet<B>>> = Arc::new(MemoryStore::new());
+    let root = nectar_testing::run(
+        File::<_, B>::new(Arc::clone(&store), Policy::DEFAULT).save_encrypted(data),
+    )
     .unwrap();
     let chunks = Arc::into_inner(store)
         .unwrap()

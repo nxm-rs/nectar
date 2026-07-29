@@ -5,7 +5,7 @@ use core::num::NonZeroU8;
 use std::error::Error;
 use std::sync::Arc;
 
-use nectar_file::{Plain, Split, SplitMode};
+use nectar_file::{File, Plain, Policy, SplitMode};
 use nectar_postage::BucketDepth;
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress, ContentOnlyChunkSet};
 use nectar_primitives::store::MemoryStore;
@@ -28,8 +28,9 @@ where
     M: SplitMode + Default,
 {
     let store = Arc::new(MemoryStore::new());
-    let root =
-        Split::<Arc<MemoryStore<AnyChunkSet<B>>>, M, B>::collect(Arc::clone(&store), data).await?;
+    let root = File::<Arc<MemoryStore<AnyChunkSet<B>>>, B>::new(Arc::clone(&store), Policy::DEFAULT)
+        .save_as::<M, _>(data)
+        .await?;
     let store = Arc::into_inner(store).ok_or("split still holds the store")?;
     let chunks = store
         .into_chunks()

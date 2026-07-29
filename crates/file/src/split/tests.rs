@@ -1173,7 +1173,8 @@ mod pooled {
 #[test]
 #[ignore = "nightly: streams more than 4 GiB"]
 fn huge_stream_root_matches_the_batch_ingest() {
-    use crate::parallel::{ReadAt, split_read_at};
+    use crate::handle::{File, Policy};
+    use crate::source::{ReadAt, ReadAtSource};
 
     const B: usize = nectar_primitives::DEFAULT_BODY_SIZE;
     let size: u64 = (1u64 << 32) + (B as u64) + 17;
@@ -1209,11 +1210,10 @@ fn huge_stream_root_matches_the_batch_ingest() {
         }
     }
 
-    let batch_root = run(split_read_at::<_, _, Plain, B>(
-        Pattern { len: size },
-        Discard,
-        PutWindow::new(16).unwrap(),
-    ))
+    let batch_root = run(
+        File::<Discard, B>::new(Discard, Policy::DEFAULT.with_put_window(PutWindow::new(16).unwrap()))
+            .save_as::<Plain, _>(ReadAtSource::new(Pattern { len: size })),
+    )
     .unwrap();
 
     let mut split: Split<Discard, Plain, B> = Split::new(Discard, PutWindow::new(16).unwrap());

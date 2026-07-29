@@ -16,7 +16,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use nectar_testing::run;
 use rand::{Rng, rng};
 
-use nectar_file::{Plain, PutWindow, ReadAt, Split, split_read_at};
+use nectar_file::{File, HashWindow, Policy, PutWindow, ReadAt, ReadAtSource};
 use nectar_postage_issuer::{
     BatchId, BatchStamper, BucketDepth, MemoryIssuer, ShardedIssuer, StampPipeline, Stamper,
 };
@@ -59,23 +59,24 @@ impl ReadAt for SharedBuf {
 /// Sequential streaming split of the whole buffer.
 fn split_sequential(data: &[u8]) -> (ChunkAddress, Vec<SealedChunk>) {
     let sink = Collect::default();
-    let root = run(Split::<Collect, Plain, DEFAULT_BODY_SIZE>::collect(
-        sink.clone(),
-        data,
-    ))
+    let root = run(
+        File::<Collect, DEFAULT_BODY_SIZE>::new(sink.clone(), Policy::DEFAULT).save(data),
+    )
     .unwrap();
     let chunks = std::mem::take(&mut *sink.0.lock().unwrap());
     (root, chunks)
 }
 
-/// Parallel batch ingest of the whole shared buffer.
+/// Pooled batch ingest of the whole shared buffer.
 fn split_parallel(source: &SharedBuf) -> (ChunkAddress, Vec<SealedChunk>) {
     let sink = Collect::default();
-    let root = run(split_read_at::<_, _, Plain, DEFAULT_BODY_SIZE>(
-        source.clone(),
-        sink.clone(),
-        PutWindow::DEFAULT,
-    ))
+    let policy = Policy::DEFAULT
+        .with_put_window(PutWindow::DEFAULT)
+        .with_hash_window(HashWindow::DEFAULT);
+    let root = run(
+        File::<Collect, DEFAULT_BODY_SIZE>::new(sink.clone(), policy)
+            .save(ReadAtSource::new(source.clone())),
+    )
     .unwrap();
     let chunks = std::mem::take(&mut *sink.0.lock().unwrap());
     (root, chunks)

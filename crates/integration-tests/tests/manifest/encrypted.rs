@@ -8,8 +8,7 @@
 
 use std::sync::Arc;
 
-use nectar_file::split::collect_into;
-use nectar_file::{Encrypted as EncryptedSplit, MemSink, PutWindow, RandomKeys};
+use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{Builder, Encrypted as EncryptedSeal, LdbManifest, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{ListEntry, Manifest, ManifestPath, MetadataView, WellKnownKey};
@@ -71,13 +70,10 @@ fn both_formats_drive_an_encrypted_manifest() {
             .collect();
         // The entry's own data is an encrypted chunk tree, so its reference
         // carries the key that opens it.
-        let file = collect_into::<_, EncryptedSplit<RandomKeys>, DEFAULT_BODY_SIZE>(
-            &raw,
-            PutWindow::DEFAULT,
-            &data,
-        )
-        .await
-        .unwrap();
+        let file = File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
+            .save_encrypted(&data[..])
+            .await
+            .unwrap();
 
         let nodes = NodeLoadSaver::new(Arc::clone(&raw));
         let editor: ManifestEditor<_, EncryptedChunkRef> =

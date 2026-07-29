@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use futures::StreamExt;
-use nectar_file::{File, Plain, Split, Window};
+use nectar_file::{File, Policy, Window};
 use nectar_primitives::{
     AnyChunkSet, Chunk, ChunkAddress, ChunkGet, ChunkPut, ChunkStoreError, ContentGet,
     DEFAULT_BODY_SIZE, Verified,
@@ -60,9 +60,10 @@ fn sample_data() -> Vec<u8> {
         .collect()
 }
 
-/// Split `data` into the store, delivering the plain root address.
+/// Save `data` into the store, delivering the plain root address.
 async fn write_file(store: &RcStore, data: &[u8]) -> ChunkAddress {
-    Split::<_, Plain, DEFAULT_BODY_SIZE>::collect(store.clone(), data)
+    File::<_, DEFAULT_BODY_SIZE>::new(store.clone(), Policy::DEFAULT)
+        .save(data)
         .await
         .unwrap()
 }
@@ -72,10 +73,8 @@ async fn non_send_store_round_trips_a_file() {
     let store = RcStore::default();
     let data = sample_data();
     let root = write_file(&store, &data).await;
-    let file = File::<_, Plain, DEFAULT_BODY_SIZE>::open(ContentGet::new(store.clone()), root)
-        .await
-        .unwrap();
-    let out = file.collect(u64::MAX).await.unwrap();
+    let file = File::<_, DEFAULT_BODY_SIZE>::new(ContentGet::new(store.clone()), Policy::DEFAULT);
+    let out = file.collect(root.into(), u64::MAX).await.unwrap();
     assert_eq!(out, data);
 }
 
@@ -85,14 +84,16 @@ async fn windowed_read_ahead_stays_within_bound() {
     let store = RcStore::default();
     let data = sample_data();
     let root = write_file(&store, &data).await;
-    let file = File::<_, Plain, DEFAULT_BODY_SIZE>::open(ContentGet::new(store.clone()), root)
-        .await
-        .unwrap();
+    let file = File::<_, DEFAULT_BODY_SIZE>::new(
+        ContentGet::new(store.clone()),
+        Policy::DEFAULT.with_window(Window::new(WINDOW).unwrap()),
+    );
+    let reader = file.open(root.into()).await.unwrap();
 
     store.in_flight.set(0);
     store.peak.set(0);
 
-    let mut stream = file.read().window(Window::new(WINDOW).unwrap()).stream();
+    let mut stream = reader.into_segments();
     let mut out = Vec::new();
     while let Some(run) = stream.next().await {
         out.extend_from_slice(&run.unwrap());

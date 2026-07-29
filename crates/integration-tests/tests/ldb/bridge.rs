@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result, anyhow, ensure};
 use bytes::Bytes;
-use nectar_file::{File, Plain, PutWindow, collect_into};
+use nectar_file::{File, Policy};
 use nectar_ldb::{Builder, Built, Entry, Key, Plaintext, Reader};
 use nectar_primitives::{ChunkRef, ContentGet, DEFAULT_BODY_SIZE, MemoryStore};
 use nectar_testing::{run, split_whole};
@@ -23,7 +23,9 @@ async fn build_files(
     let mut builder: Builder = Builder::new();
     for (key, data) in files {
         let root =
-            collect_into::<_, Plain, DEFAULT_BODY_SIZE>(store, PutWindow::DEFAULT, &data).await?;
+            File::<_, DEFAULT_BODY_SIZE>::new(store, Policy::DEFAULT)
+                .save(&data[..])
+                .await?;
         builder.insert(key, Entry::from(ChunkRef::new(root)), None);
     }
     Ok(builder.build(store, &Plaintext).await?)
@@ -35,10 +37,11 @@ async fn fetch_file(store: &MemoryStore, root: &ChunkRef, key: &Key) -> Result<B
     let reader: Reader<_> = Reader::new(ContentGet::new(store.clone()));
     let entry = reader.get(root, key).await?.context("key present")?;
     let address = *entry.address().context("entry is a reference")?;
-    let file = File::<_, Plain, DEFAULT_BODY_SIZE>::open(ContentGet::new(store.clone()), address)
+    let file = File::<_, DEFAULT_BODY_SIZE>::new(ContentGet::new(store.clone()), Policy::DEFAULT);
+    let bytes = file
+        .collect(ChunkRef::new(address).into(), u64::MAX)
         .await
         .map_err(|e| anyhow!("{e}"))?;
-    let bytes = file.collect(u64::MAX).await.map_err(|e| anyhow!("{e}"))?;
     Ok(Bytes::from(bytes))
 }
 /// Reference fan-out of one intermediate chunk at the default body size.

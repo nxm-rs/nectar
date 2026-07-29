@@ -39,13 +39,14 @@ pub enum KeyError {
 /// Default source: an independent random key per chunk.
 ///
 /// ```
-/// use nectar_file::{Encrypted, RandomKeys, Split};
+/// use nectar_file::{File, Policy};
 /// use nectar_primitives::chunk::AnyChunkSet;
 /// use nectar_primitives::store::MemoryStore;
 ///
 /// # nectar_testing::run(async {
 /// let store = MemoryStore::<AnyChunkSet<4096>>::new();
-/// let root = Split::<_, Encrypted<RandomKeys>, 4096>::collect(store, b"secret")
+/// let root = File::<_, 4096>::new(store, Policy::DEFAULT)
+///     .save_encrypted(&b"secret"[..])
 ///     .await
 ///     .unwrap();
 /// assert_eq!(root.to_bytes().len(), 64);

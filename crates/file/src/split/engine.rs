@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::fmt;
+#[cfg(test)]
 use core::future::poll_fn;
 use core::mem;
 use core::num::NonZeroU16;
@@ -183,28 +184,8 @@ where
     /// in flight; sealed leaves are admitted in leaf order and every draw
     /// lands at submission, so a deterministic mode's chunk stream is
     /// byte-identical to the serial engine's. Configure before the first
-    /// write.
-    ///
-    /// ```
-    /// use core::future::poll_fn;
-    /// use nectar_file::{HashWindow, Plain, PutWindow, Split};
-    /// use nectar_primitives::chunk::AnyChunkSet;
-    /// use nectar_primitives::store::MemoryStore;
-    ///
-    /// # nectar_testing::run(async {
-    /// let store = MemoryStore::<AnyChunkSet<4096>>::new();
-    /// let mut split = Split::<_, Plain, 4096>::new(store, PutWindow::DEFAULT)
-    ///     .with_hash_window(HashWindow::DEFAULT);
-    /// let data = vec![7u8; 10_000];
-    /// let mut buf = data.as_slice();
-    /// while !buf.is_empty() {
-    ///     let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-    ///     buf = &buf[n..];
-    /// }
-    /// let root = poll_fn(|cx| split.poll_finish(cx)).await.unwrap();
-    /// assert_eq!(root.as_bytes().len(), 32);
-    /// # });
-    /// ```
+    /// write. [`Policy::with_hash_window`](crate::Policy::with_hash_window)
+    /// is the public knob.
     #[cfg(feature = "rayon")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
     #[must_use]
@@ -230,6 +211,7 @@ where
     }
 
     /// Whether the split has delivered its root or failed.
+    #[cfg(test)]
     pub const fn is_finished(&self) -> bool {
         matches!(self.phase, Phase::Finished | Phase::Poisoned)
     }
@@ -337,57 +319,14 @@ where
         }
     }
 
-    /// Split all of `data`, store its chunks, and return the root.
+    /// Split all of `data`, store its chunks, and return the root under an
+    /// explicit put `window`.
     ///
-    /// A one-shot convenience over [`poll_write`](Self::poll_write) and
-    /// [`poll_finish`](Self::poll_finish), driven to completion in place under
-    /// the default put window. Drive the poll surface directly for
-    /// back-pressure control or incremental input.
-    ///
-    /// ```
-    /// # nectar_testing::run(async {
-    /// use std::sync::Arc;
-    ///
-    /// use nectar_file::{Plain, Split};
-    /// use nectar_primitives::chunk::AnyChunkSet;
-    /// use nectar_primitives::store::MemoryStore;
-    ///
-    /// let store = Arc::new(MemoryStore::<AnyChunkSet<4096>>::new());
-    /// let root = Split::<_, Plain, 4096>::collect(Arc::clone(&store), b"hello swarm")
-    ///     .await
-    ///     .unwrap();
-    /// # let _ = root;
-    /// # });
-    /// ```
-    pub async fn collect(store: S, data: &[u8]) -> Result<M::Root, SplitError<S::Error>>
-    where
-        M: Default,
-    {
-        Self::collect_with(store, PutWindow::DEFAULT, data).await
-    }
-
-    /// Split all of `data` under an explicit put `window`, store its chunks,
-    /// and return the root.
-    ///
-    /// [`collect`](Self::collect) at the default window; take this to tune the
-    /// back-pressure the one-shot drives under.
-    ///
-    /// ```
-    /// # nectar_testing::run(async {
-    /// use std::sync::Arc;
-    ///
-    /// use nectar_file::{Plain, PutWindow, Split};
-    /// use nectar_primitives::chunk::AnyChunkSet;
-    /// use nectar_primitives::store::MemoryStore;
-    ///
-    /// let store = Arc::new(MemoryStore::<AnyChunkSet<4096>>::new());
-    /// let window = PutWindow::new(4).unwrap();
-    /// let root = Split::<_, Plain, 4096>::collect_with(Arc::clone(&store), window, b"hello swarm")
-    ///     .await
-    ///     .unwrap();
-    /// # let _ = root;
-    /// # });
-    /// ```
+    /// A test-only one-shot over [`poll_write`](Self::poll_write) and
+    /// [`poll_finish`](Self::poll_finish); production writes ride
+    /// [`File::save`](crate::File::save), which drives the same poll surface
+    /// through a borrowed store.
+    #[cfg(test)]
     pub async fn collect_with(
         store: S,
         window: PutWindow,

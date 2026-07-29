@@ -10,8 +10,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use nectar_file::split::collect_into;
-use nectar_file::{Plain, PutWindow};
+use nectar_file::{File, Policy};
 use nectar_ldb::{Builder, LdbManifest, Plaintext, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{DynManifest, ManifestMetadata, ManifestOp, ManifestPath};
@@ -115,7 +114,7 @@ fn both_formats_list_a_level_the_way_the_model_does() {
             let raw: Raw = Arc::new(MemoryStore::new());
             let store: Store = ContentGet::new(Arc::clone(&raw));
             let file = ChunkRef::new(
-                collect_into::<_, Plain, DEFAULT_BODY_SIZE>(&raw, PutWindow::DEFAULT, b"payload")
+                File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT).save(&b"payload"[..])
                     .await
                     .unwrap(),
             );

@@ -13,7 +13,7 @@ use nectar_primitives::oracles::Violation;
 use nectar_primitives::store::MemoryStore;
 
 use crate::sync::drive;
-use crate::{File, Plain};
+use crate::{File, Policy};
 
 /// Tiny body size: fan-out 8, so shallow inputs reach deep shape checks.
 const BODY: usize = 256;
@@ -43,12 +43,13 @@ fn probe(
 ) -> Result<bool, Violation> {
     let store = store.clone();
     let outcome = drive(async move {
-        let Ok(file) = File::<_, Plain, BODY>::open(store, root).await else {
+        let file = File::<_, BODY>::new(store, Policy::DEFAULT);
+        let Ok(reader) = file.open(root.into()).await else {
             return Ok(false);
         };
-        let span = file.len();
+        let span = reader.len();
         let mut delivered = false;
-        if let Ok(bytes) = file.collect(COLLECT_BOUND).await {
+        if let Ok(bytes) = file.collect(root.into(), COLLECT_BOUND).await {
             if crate::num::u64_from_usize(bytes.len()) != span {
                 return Err(Violation::new(
                     "an accepted tree must deliver exactly its declared span",
@@ -57,7 +58,9 @@ fn probe(
             delivered = true;
         }
         // A mid-file reader probe walks the same tree down a partial range.
-        let mut reader = file.read().range(span / 2..span).build();
+        let Ok(mut reader) = file.open_range(root.into(), span / 2..span).await else {
+            return Ok(delivered);
+        };
         let mut buf = [0u8; 64];
         while let Ok(n) = reader.read(&mut buf).await {
             if n == 0 {

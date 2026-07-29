@@ -184,6 +184,7 @@ where
     }
 
     /// Whether the walk has delivered its last frame or failed.
+    #[cfg(test)]
     pub const fn is_finished(&self) -> bool {
         self.done
     }

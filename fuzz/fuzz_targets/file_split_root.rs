@@ -7,21 +7,19 @@
 
 #![no_main]
 
-use core::task::{Context, Poll, Waker};
+use core::task::{Context, Poll};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use libfuzzer_sys::fuzz_target;
 use nectar_file::sync::drive;
-use nectar_file::{File, Plain, PutWindow, Split};
+use nectar_file::{File, Policy, PutWindow, Source};
 use nectar_fuzz::tile;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
 
 /// Tiny body size: fan-out 8, so a few KiB already builds a deep tree.
 const BODY: usize = 256;
-/// Poll budget per drive; a ready store must finish well within it.
-const SPIN_BOUND: u32 = 1 << 20;
 
 /// Shared ready store: clones alias one map, so the engine's per-put clones
 /// and the read-back handle see the same chunks.
@@ -67,42 +65,49 @@ impl ChunkGet<AnyChunkSet<BODY>> for SharedStore {
     }
 }
 
-/// Poll to completion under a no-op waker; a ready store re-polls to
-/// progress, so exhausting the budget is a stall finding.
-fn drive_poll<T>(mut poll: impl FnMut(&mut Context<'_>) -> Poll<T>) -> T {
-    let mut cx = Context::from_waker(Waker::noop());
-    for _ in 0..SPIN_BOUND {
-        if let Poll::Ready(value) = poll(&mut cx) {
-            return value;
-        }
-    }
-    panic!("split stalled under a ready store");
+/// Byte source handing out fuzzed-size pieces, so one save meets an
+/// arbitrary pull segmentation.
+struct Segmented<'a> {
+    data: &'a [u8],
+    steps: &'a [u16],
+    index: usize,
 }
 
-/// Stream `data` through a fresh split in fuzzed write segments, returning
+impl Source for Segmented<'_> {
+    type Error = core::convert::Infallible;
+
+    fn poll_fill(
+        &mut self,
+        _cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, Self::Error>> {
+        let step = usize::from(
+            self.steps
+                .get(self.index % self.steps.len().max(1))
+                .copied()
+                .unwrap_or(97),
+        ) % 719
+            + 1;
+        self.index += 1;
+        let take = step.min(buf.len()).min(self.data.len());
+        buf[..take].copy_from_slice(&self.data[..take]);
+        self.data = &self.data[take..];
+        Poll::Ready(Ok(take))
+    }
+}
+
+/// Stream `data` through a fresh save in fuzzed pull segments, returning
 /// the root and the written store.
 fn stream_split(data: &[u8], window: u16, steps: &[u16]) -> (ChunkAddress, SharedStore) {
     let store = SharedStore::default();
     let window = PutWindow::new((window % 16) + 1).expect("bounded slots are nonzero");
-    let mut split: Split<_, Plain, BODY> = Split::new(store.clone(), window);
-    let mut rest = data;
-    let mut index = 0usize;
-    while !rest.is_empty() {
-        let step =
-            usize::from(steps.get(index % steps.len().max(1)).copied().unwrap_or(97)) % 719 + 1;
-        index += 1;
-        let (mut piece, tail) = rest.split_at(step.min(rest.len()));
-        rest = tail;
-        while !piece.is_empty() {
-            let n = drive_poll(|cx| split.poll_write(cx, piece))
-                .expect("write must succeed over a ready store");
-            assert!(n > 0, "write made no progress on a non-empty buffer");
-            piece = &piece[n..];
-        }
-    }
-    let root = drive_poll(|cx| split.poll_finish(cx)).expect("finish must succeed");
-    let again = drive_poll(|cx| split.poll_finish(cx)).expect("finish must stay fused");
-    assert_eq!(again, root, "a repeated finish delivered a different root");
+    let file = File::<_, BODY>::new(store.clone(), Policy::DEFAULT.with_put_window(window));
+    let root = nectar_testing::run(file.save(Segmented {
+        data,
+        steps,
+        index: 0,
+    }))
+    .expect("save must succeed over a ready store");
     (root, store)
 }
 
@@ -115,10 +120,8 @@ fuzz_target!(|input: (Vec<u8>, u16, Vec<u16>, Vec<u16>, u16, u16)| {
     assert_eq!(root_a, root_b, "root diverged across write segmentations");
 
     let read_back = drive(async move {
-        let file = File::<_, Plain, BODY>::open(ContentGet::new(store), root_a)
-            .await
-            .expect("open must succeed over the written store");
-        file.collect(u64::MAX)
+        let file = File::<_, BODY>::new(ContentGet::new(store), Policy::DEFAULT);
+        file.collect(root_a.into(), u64::MAX)
             .await
             .expect("collect must succeed over the written store")
     })

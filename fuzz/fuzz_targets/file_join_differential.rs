@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use libfuzzer_sys::fuzz_target;
-use nectar_file::{File, Plain};
+use nectar_file::{File, Policy};
 use nectar_fuzz::tile;
 use nectar_testing::{run, split_fixture};
 
@@ -25,10 +25,8 @@ fuzz_target!(|input: (Vec<u8>, u16)| {
     let store = Arc::new(store);
 
     let collected = run(async {
-        let file = File::<_, Plain, BODY>::open(Arc::clone(&store), root)
-            .await
-            .expect("open must succeed over a complete store");
-        file.collect(u64::MAX)
+        let file = File::<_, BODY>::new(Arc::clone(&store), Policy::DEFAULT);
+        file.collect(root.into(), u64::MAX)
             .await
             .expect("collect must succeed over a complete store")
     });
@@ -36,10 +34,11 @@ fuzz_target!(|input: (Vec<u8>, u16)| {
 
     // The buffered reader drains the same bytes through its own path.
     let drained = run(async {
-        let file = File::<_, Plain, BODY>::open(store, root)
+        let file = File::<_, BODY>::new(store, Policy::DEFAULT);
+        let mut reader = file
+            .open(root.into())
             .await
             .expect("reopen must succeed over a complete store");
-        let mut reader = file.read().build();
         let mut out = Vec::new();
         let mut buf = [0u8; 97];
         loop {

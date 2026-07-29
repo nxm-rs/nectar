@@ -1,6 +1,5 @@
-//! File handles: one opened chunk tree, mode pinned or runtime-dispatched.
+//! Opened tree handles: one chunk tree, grammar pinned or runtime-dispatched.
 
-use alloc::vec::Vec;
 use core::fmt;
 
 use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey, transcrypt_in_place};
@@ -8,41 +7,58 @@ use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ContentOnlyChunkSet};
 use nectar_primitives::store::TrustedGet;
 use nectar_primitives::{DEFAULT_BODY_SIZE, EntryRef};
 
+#[cfg(test)]
+use alloc::vec::Vec;
+
 use super::download::DownloadBuilder;
-use super::error::{CollectError, OpenError};
+#[cfg(test)]
+use super::error::CollectError;
+use super::error::OpenError;
 use super::reader::ReadBuilder;
 use crate::config::Window;
-use crate::geometry::Mode;
 use crate::walk::{DecodeError, Encrypted, Plain, WalkMode};
 
 /// One opened file: the root reference resolved to its address, context and
 /// total span. Opening fetches the root chunk once; reads re-fetch it so the
 /// fetch set stays identical to a cold walk.
-pub struct File<S, M: WalkMode = Plain, const B: usize = DEFAULT_BODY_SIZE> {
+pub struct Opened<S, M: WalkMode = Plain, const B: usize = DEFAULT_BODY_SIZE> {
     store: S,
     root: ChunkAddress,
     context: M::Context,
     span: u64,
 }
 
-impl<S, M: WalkMode, const B: usize> File<S, M, B> {
+impl<S, M: WalkMode, const B: usize> Opened<S, M, B> {
     /// Total file length in bytes.
     pub const fn len(&self) -> u64 {
         self.span
-    }
-
-    /// Whether the file carries no bytes.
-    pub const fn is_empty(&self) -> bool {
-        self.span == 0
     }
 
     /// Address of the root chunk.
     pub const fn root(&self) -> &ChunkAddress {
         &self.root
     }
+
+    /// Whether the file carries no bytes.
+    #[cfg(test)]
+    pub const fn is_empty(&self) -> bool {
+        self.span == 0
+    }
 }
 
-impl<S: Clone, M: WalkMode, const B: usize> File<S, M, B> {
+#[cfg(test)]
+impl<S, M, const B: usize> Opened<S, M, B>
+where
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
+    M: WalkMode,
+{
+    /// Assemble the whole file in memory, at most `max` bytes.
+    pub async fn collect(&self, max: u64) -> Result<Vec<u8>, CollectError<S::Error>> {
+        self.read().collect(max).await
+    }
+}
+
+impl<S: Clone, M: WalkMode, const B: usize> Opened<S, M, B> {
     /// Start building an ordered, seekable read over the whole file.
     pub fn read(&self) -> ReadBuilder<S, M, B> {
         ReadBuilder::new(
@@ -68,18 +84,7 @@ impl<S: Clone, M: WalkMode, const B: usize> File<S, M, B> {
     }
 }
 
-impl<S, M, const B: usize> File<S, M, B>
-where
-    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
-    M: WalkMode,
-{
-    /// Assemble the whole file in memory, at most `max` bytes.
-    pub async fn collect(&self, max: u64) -> Result<Vec<u8>, CollectError<S::Error>> {
-        self.read().collect(max).await
-    }
-}
-
-impl<S, const B: usize> File<S, Plain, B>
+impl<S, const B: usize> Opened<S, Plain, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
 {
@@ -97,7 +102,7 @@ where
     }
 }
 
-impl<S, const B: usize> File<S, Encrypted, B>
+impl<S, const B: usize> Opened<S, Encrypted, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
 {
@@ -127,9 +132,9 @@ where
     }
 }
 
-impl<S, M: WalkMode, const B: usize> fmt::Debug for File<S, M, B> {
+impl<S, M: WalkMode, const B: usize> fmt::Debug for Opened<S, M, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("File")
+        f.debug_struct("Opened")
             .field("root", &self.root)
             .field("span", &self.span)
             .field("mode", &M::MODE)
@@ -139,14 +144,14 @@ impl<S, M: WalkMode, const B: usize> fmt::Debug for File<S, M, B> {
 
 /// One opened file of either reference width, dispatched at runtime.
 #[derive(Debug)]
-pub enum AnyFile<S, const B: usize = DEFAULT_BODY_SIZE> {
+pub enum AnyOpened<S, const B: usize = DEFAULT_BODY_SIZE> {
     /// A plain tree behind a 32-byte reference.
-    Plain(File<S, Plain, B>),
+    Plain(Opened<S, Plain, B>),
     /// An encrypted tree behind a 64-byte reference.
-    Encrypted(File<S, Encrypted, B>),
+    Encrypted(Opened<S, Encrypted, B>),
 }
 
-impl<S, const B: usize> AnyFile<S, B>
+impl<S, const B: usize> AnyOpened<S, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
 {
@@ -154,16 +159,17 @@ where
     /// reference width.
     pub async fn open(store: S, root: EntryRef) -> Result<Self, OpenError<S::Error>> {
         match root {
-            EntryRef::Plain(reference) => File::open(store, reference.into_address())
+            EntryRef::Plain(reference) => Opened::open(store, reference.into_address())
                 .await
                 .map(Self::Plain),
-            EntryRef::Encrypted(reference) => File::open_encrypted(store, reference)
+            EntryRef::Encrypted(reference) => Opened::open_encrypted(store, reference)
                 .await
                 .map(Self::Encrypted),
         }
     }
 
     /// Assemble the whole file in memory, at most `max` bytes.
+    #[cfg(test)]
     pub async fn collect(&self, max: u64) -> Result<Vec<u8>, CollectError<S::Error>> {
         match self {
             Self::Plain(file) => file.collect(max).await,
@@ -172,7 +178,7 @@ where
     }
 }
 
-impl<S, const B: usize> AnyFile<S, B> {
+impl<S, const B: usize> AnyOpened<S, B> {
     /// Total file length in bytes.
     pub const fn len(&self) -> u64 {
         match self {
@@ -181,12 +187,8 @@ impl<S, const B: usize> AnyFile<S, B> {
         }
     }
 
-    /// Whether the file carries no bytes.
-    pub const fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Address of the root chunk.
+    #[cfg(test)]
     pub const fn root(&self) -> &ChunkAddress {
         match self {
             Self::Plain(file) => file.root(),
@@ -195,22 +197,23 @@ impl<S, const B: usize> AnyFile<S, B> {
     }
 
     /// Reference layout of the opened tree.
-    pub const fn mode(&self) -> Mode {
+    #[cfg(test)]
+    pub const fn mode(&self) -> crate::geometry::Mode {
         match self {
-            Self::Plain(_) => Mode::Plain,
-            Self::Encrypted(_) => Mode::Encrypted,
+            Self::Plain(_) => crate::geometry::Mode::Plain,
+            Self::Encrypted(_) => crate::geometry::Mode::Encrypted,
         }
     }
 }
 
-impl<S, const B: usize> From<File<S, Plain, B>> for AnyFile<S, B> {
-    fn from(file: File<S, Plain, B>) -> Self {
+impl<S, const B: usize> From<Opened<S, Plain, B>> for AnyOpened<S, B> {
+    fn from(file: Opened<S, Plain, B>) -> Self {
         Self::Plain(file)
     }
 }
 
-impl<S, const B: usize> From<File<S, Encrypted, B>> for AnyFile<S, B> {
-    fn from(file: File<S, Encrypted, B>) -> Self {
+impl<S, const B: usize> From<Opened<S, Encrypted, B>> for AnyOpened<S, B> {
+    fn from(file: Opened<S, Encrypted, B>) -> Self {
         Self::Encrypted(file)
     }
 }

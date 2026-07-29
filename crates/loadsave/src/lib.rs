@@ -43,15 +43,13 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use nectar_file::split::collect_into;
-use nectar_file::{AnyFile, CollectError, OpenError, Plain, PutWindow, SplitError};
+use nectar_file::{CollectError, File, Policy, PutWindow, SaveError, SplitError};
 use nectar_mantaray::persist::{MAX_NODE_BYTES, NodeLoader, NodeSaver};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, ContentGetError, TrustedGet};
 use nectar_primitives::{AnyChunkSet, DEFAULT_BODY_SIZE, EntryRef};
 
-#[cfg(feature = "encryption")]
-use nectar_file::{Encrypted, RandomKeys};
+
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
 
@@ -93,16 +91,27 @@ impl<S, const B: usize> NodeLoadSaver<S, B> {
     }
 }
 
-/// Failure loading one node through the file joiner.
-#[derive(Debug, thiserror::Error)]
-pub enum LoadError<E> {
-    /// The root reference did not open as a file.
-    #[error(transparent)]
-    Open(#[from] OpenError<ContentGetError<E>>),
-    /// Joining the node bytes failed or exceeded [`MAX_NODE_BYTES`].
-    #[error(transparent)]
-    Collect(#[from] CollectError<ContentGetError<E>>),
+impl<S, const B: usize> NodeLoadSaver<S, B> {
+    /// One write handle over the borrowed store at the save-side window.
+    const fn file(&self) -> File<&S, B> {
+        File::new(&self.store, Policy::DEFAULT.with_put_window(self.window))
+    }
 }
+
+/// Narrow a save failure to the split arm; an in-memory slice source never
+/// fails, so the source arm is uninhabited.
+fn unwrap_save<E>(error: SaveError<E, core::convert::Infallible>) -> SplitError<E> {
+    match error {
+        SaveError::Split(error) => error,
+        SaveError::Source { source } => match source {},
+    }
+}
+
+/// Failure loading one node through the file joiner: the open, the join, or
+/// the [`MAX_NODE_BYTES`] bound.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct LoadError<E>(#[from] CollectError<ContentGetError<E>>);
 
 impl<S, const B: usize> NodeLoader for NodeLoadSaver<S, B>
 where
@@ -111,9 +120,8 @@ where
     type Error = LoadError<S::Error>;
 
     async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
-        let store = ContentGet::new(self.store.clone());
-        let file = AnyFile::<_, B>::open(store, reference.clone()).await?;
-        Ok(file.collect(MAX_NODE_BYTES).await?)
+        let file = File::<_, B>::new(ContentGet::new(self.store.clone()), Policy::DEFAULT);
+        Ok(file.collect(reference.clone(), MAX_NODE_BYTES).await?)
     }
 
     async fn load_with_addresses(
@@ -121,9 +129,8 @@ where
         reference: &EntryRef,
     ) -> Result<(Vec<u8>, Vec<ChunkAddress>), Self::Error> {
         let recorder = RecordingGet::new(self.store.clone());
-        let store = ContentGet::new(recorder.clone());
-        let file = AnyFile::<_, B>::open(store, reference.clone()).await?;
-        let bytes = file.collect(MAX_NODE_BYTES).await?;
+        let file = File::<_, B>::new(ContentGet::new(recorder.clone()), Policy::DEFAULT);
+        let bytes = file.collect(reference.clone(), MAX_NODE_BYTES).await?;
         Ok((bytes, recorder.addresses()))
     }
 }
@@ -135,7 +142,7 @@ where
     type Error = SplitError<S::Error>;
 
     async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
-        let root = collect_into::<_, Plain, B>(&self.store, self.window, &data).await?;
+        let root = self.file().save(data.as_slice()).await.map_err(unwrap_save)?;
         Ok(ChunkRef::new(root))
     }
 }
@@ -151,7 +158,10 @@ where
     type Error = SplitError<S::Error>;
 
     async fn save(&self, data: Vec<u8>) -> Result<EncryptedChunkRef, Self::Error> {
-        collect_into::<_, Encrypted<RandomKeys>, B>(&self.store, self.window, &data).await
+        self.file()
+            .save_encrypted(data.as_slice())
+            .await
+            .map_err(unwrap_save)
     }
 }
 

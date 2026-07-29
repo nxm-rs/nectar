@@ -1,9 +1,9 @@
 //! Allocation probe over the real encrypted read path.
 //!
-//! Splits a file through the encrypted splitter into a `MemoryStore`, then
-//! reads it back through `File::open_encrypted` and `collect` under the
-//! allocation witness. Fetched bodies are shared offset sub-views, so the
-//! walk's staging buffer is the only place plaintext can land: `collect`
+//! Splits a file through the encrypted save into a `MemoryStore`, then
+//! reads it back through `File::collect` under the allocation witness.
+//! Fetched bodies are shared offset sub-views, so the walk's staging buffer
+//! is the only place plaintext can land: `collect`
 //! reserves the output exactly, so allocated bytes beyond the output must
 //! grow by less than a quarter body per added chunk, never by a per-chunk
 //! plaintext staging buffer.
@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use nectar_file::{Encrypted, File, RandomKeys};
+use nectar_file::{Encrypted, File, Policy, RandomKeys};
 use nectar_primitives::chunk::ContentOnlyChunkSet;
 use nectar_primitives::store::MemoryStore;
 use nectar_testing::{AllocationInfo, measure_allocations, run, split_into};
@@ -35,12 +35,9 @@ fn probe(leaves: usize) -> AllocationInfo {
     let (root, store) = split_into::<Encrypted<RandomKeys>, BODY>(&data);
     let store: Store = Arc::new(store);
 
+    let file: File<Store, BODY> = File::new(store, Policy::DEFAULT);
     let (out, info) = measure_allocations(|| {
-        run(async {
-            let file: File<Store, Encrypted, BODY> =
-                File::open_encrypted(store, root).await.unwrap();
-            file.collect(u64::MAX).await.unwrap()
-        })
+        run(async { file.collect(root.into(), u64::MAX).await.unwrap() })
     });
 
     assert_eq!(out, data, "plaintext diverged at {leaves} leaves");

@@ -68,8 +68,9 @@ std = [
 	"thiserror/std",
 ]
 
-# Async reader and writer adapters over the poll surface. Implies `std`.
-tokio = [ "dep:nectar-tasks", "dep:tokio", "nectar-tasks/tokio", "std" ]
+# Async reader adapter over the poll surface, plus the `AsyncRead` source.
+# Implies `std`.
+tokio = [ "dep:tokio", "std" ]
 
 # Pool leaf hashing: the split hash window and the read-at ingest. Implies
 # `std`; rayon on wasm32 or under `unsync` is a compile error, never a

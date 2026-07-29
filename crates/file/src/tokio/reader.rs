@@ -12,27 +12,24 @@ use nectar_primitives::store::TrustedGet;
 use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 
 use super::resolve;
-use crate::read::FileReader;
-use crate::walk::WalkMode;
+use crate::handle::Reader;
 
-/// [`AsyncRead`] plus [`AsyncSeek`] over one [`FileReader`].
+/// [`AsyncRead`] plus [`AsyncSeek`] over one [`Reader`].
 ///
 /// Every poll drains the reader's walk in place, so the fetch window stays
 /// in flight across polls and no future is created per call. Positions are
 /// zero-based within the clipped range; a seek outside it is
 /// `InvalidInput`, never a clamp.
-pub struct TokioReader<S, M, const B: usize = DEFAULT_BODY_SIZE>
+pub struct TokioReader<S, const B: usize = DEFAULT_BODY_SIZE>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>>,
-    M: WalkMode,
 {
-    inner: FileReader<S, M, B>,
+    inner: Reader<S, B>,
 }
 
-impl<S, M, const B: usize> TokioReader<S, M, B>
+impl<S, const B: usize> TokioReader<S, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
-    M: WalkMode,
 {
     /// Current position within the clipped range.
     pub const fn position(&self) -> u64 {
@@ -45,40 +42,32 @@ where
     }
 }
 
-impl<S, M, const B: usize> From<FileReader<S, M, B>> for TokioReader<S, M, B>
+impl<S, const B: usize> From<Reader<S, B>> for TokioReader<S, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>>,
-    M: WalkMode,
 {
-    fn from(inner: FileReader<S, M, B>) -> Self {
+    fn from(inner: Reader<S, B>) -> Self {
         Self { inner }
     }
 }
 
-impl<S, M, const B: usize> From<TokioReader<S, M, B>> for FileReader<S, M, B>
+impl<S, const B: usize> From<TokioReader<S, B>> for Reader<S, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>>,
-    M: WalkMode,
 {
-    fn from(reader: TokioReader<S, M, B>) -> Self {
+    fn from(reader: TokioReader<S, B>) -> Self {
         reader.inner
     }
 }
 
-/// Movable regardless of the store or context types: the shim owns plain
-/// state and boxed futures, never a self-reference.
-impl<S, M, const B: usize> Unpin for TokioReader<S, M, B>
-where
-    S: TrustedGet<ContentOnlyChunkSet<B>>,
-    M: WalkMode,
-{
-}
+/// Movable regardless of the store type: the shim owns plain state and
+/// boxed futures, never a self-reference.
+impl<S, const B: usize> Unpin for TokioReader<S, B> where S: TrustedGet<ContentOnlyChunkSet<B>> {}
 
-impl<S, M, const B: usize> AsyncRead for TokioReader<S, M, B>
+impl<S, const B: usize> AsyncRead for TokioReader<S, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     S::Error: std::error::Error + Send + Sync + 'static,
-    M: WalkMode,
 {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -97,11 +86,10 @@ where
     }
 }
 
-impl<S, M, const B: usize> AsyncSeek for TokioReader<S, M, B>
+impl<S, const B: usize> AsyncSeek for TokioReader<S, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
     S::Error: std::error::Error + Send + Sync + 'static,
-    M: WalkMode,
 {
     /// Seeks resolve synchronously here; completion only reports the
     /// position.
@@ -119,10 +107,9 @@ where
     }
 }
 
-impl<S, M, const B: usize> fmt::Debug for TokioReader<S, M, B>
+impl<S, const B: usize> fmt::Debug for TokioReader<S, B>
 where
     S: TrustedGet<ContentOnlyChunkSet<B>>,
-    M: WalkMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TokioReader")

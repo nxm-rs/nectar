@@ -1935,9 +1935,21 @@ dependencies = [
  "arbitrary",
  "bytes",
  "futures-util",
+ "nectar-file",
  "nectar-governor",
+ "nectar-manifest",
  "nectar-primitives",
  "thiserror",
+]
+
+[[package]]
+name = "nectar-manifest"
+version = "0.4.0"
+dependencies = [
+ "nectar-file",
+ "nectar-marker",
+ "nectar-primitives",
+ "nectar-tasks",
 ]
 
 [[package]]
@@ -1948,7 +1960,9 @@ dependencies = [
  "arbitrary",
  "bitflags",
  "futures-util",
+ "nectar-file",
  "nectar-governor",
+ "nectar-manifest",
  "nectar-primitives",
  "rand 0.10.2",
  "serde_json",

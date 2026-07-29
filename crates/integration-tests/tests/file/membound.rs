@@ -12,15 +12,13 @@
 //! at adversarial boundary sizes, range positions and completion orders,
 //! not proven.
 
-use core::future::poll_fn;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use futures::StreamExt;
 use nectar_file::{
-    BranchBudget, CollectError, File, FileReader, Frame, MemSink, Plain, PutWindow, Split,
-    SplitStats, WalkMode, WalkStats, Window,
+    BranchBudget, CollectError, DataSink, File, MemSink, MemSinkError, Plain, Policy, PutWindow,
+    Reader, SplitStats, WalkStats, Window,
 };
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
@@ -31,7 +29,24 @@ use nectar_testing::{run, yield_now};
 const TINY: usize = 256;
 const BRANCHES: usize = 8;
 
-type PlainFile = File<ContentGet<GaugeStore<TINY>>, Plain, TINY>;
+type PlainReader = Reader<ContentGet<GaugeStore<TINY>>, TINY>;
+
+/// Sink recording every positional write, so a load's tiling is observable
+/// independently of its final bytes.
+#[derive(Debug, Default)]
+struct RecordingSink {
+    inner: MemSink,
+    writes: Vec<(u64, usize)>,
+}
+
+impl DataSink for RecordingSink {
+    type Error = MemSinkError;
+
+    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), Self::Error> {
+        self.writes.push((offset, data.len()));
+        self.inner.write_at(offset, data)
+    }
+}
 
 /// Distinct byte per file position so every node address is unique.
 fn fill(len: usize) -> Vec<u8> {
@@ -192,38 +207,33 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for GaugeStore<B> {
     }
 }
 
-/// Stream `data` through a plain split, returning the root, the metered
-/// store that accepted the puts, and the split's witnesses.
+/// Stream `data` through a plain save, returning the root, the metered
+/// store that accepted the puts, and the write's witnesses.
 fn split_plain(
     data: &[u8],
     window: u16,
     delay: usize,
 ) -> (ChunkAddress, GaugeStore<TINY>, SplitStats) {
     let store = GaugeStore::new(delay);
-    let mut split: Split<GaugeStore<TINY>, Plain, TINY> =
-        Split::new(store.clone(), PutWindow::new(window).unwrap());
-    let root = run(async {
-        let mut buf = data;
-        while !buf.is_empty() {
-            let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-            buf = &buf[n..];
-        }
-        poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-    });
-    let stats = split.stats();
+    let file = File::<_, TINY>::new(
+        store.clone(),
+        Policy::DEFAULT.with_put_window(PutWindow::new(window).unwrap()),
+    );
+    let (root, stats) = run(file.save_as_with_stats::<Plain, _>(data)).unwrap();
     (root, store, stats)
 }
 
-fn open_plain(store: GaugeStore<TINY>, root: ChunkAddress) -> PlainFile {
-    run(File::open(ContentGet::new(store), root)).unwrap()
+/// One read handle over the metered store at `window` fetch slots.
+fn reader_at(store: GaugeStore<TINY>, window: u16) -> File<ContentGet<GaugeStore<TINY>>, TINY> {
+    File::new(
+        ContentGet::new(store),
+        Policy::DEFAULT.with_window(Window::new(window).unwrap()),
+    )
 }
 
 /// Drain a reader in order, pausing `pause` yields per segment to model a
 /// slow consumer.
-fn drain_reader<M: WalkMode>(
-    reader: &mut FileReader<ContentGet<GaugeStore<TINY>>, M, TINY>,
-    pause: usize,
-) -> Vec<u8> {
+fn drain_reader(reader: &mut PlainReader, pause: usize) -> Vec<u8> {
     run(async {
         let mut out = Vec::new();
         while let Some(segment) = reader.next_segment().await {
@@ -313,8 +323,8 @@ fn open_fetches_exactly_one_chunk() {
         let data = fill(size);
         let (root, built, _) = split_plain(&data, 4, 0);
         let store = built.fresh(0);
-        let file = open_plain(store.clone(), root);
-        assert_eq!(file.len(), size as u64);
+        let reader = run(reader_at(store.clone(), 4).open(root.into())).unwrap();
+        assert_eq!(reader.len(), size as u64);
         assert_eq!(
             store.gets.total(),
             1,
@@ -332,8 +342,7 @@ fn reader_holds_window_and_budget_at_every_boundary_size() {
         let chunk_count = built.chunk_count();
         for window in [1u16, 3, 16] {
             let store = built.fresh(2);
-            let file = open_plain(store.clone(), root);
-            let mut reader = file.read().window(Window::new(window).unwrap()).build();
+            let mut reader = run(reader_at(store.clone(), window).open(root.into())).unwrap();
             let out = drain_reader(&mut reader, 0);
             assert_eq!(out, data, "bytes diverged at {size}/{window}");
             let stats = reader.stats();
@@ -370,12 +379,9 @@ fn reader_bounds_hold_at_adversarial_range_positions() {
     for range in ranges {
         for window in [2u16, 4] {
             let store = built.fresh(2);
-            let file = open_plain(store.clone(), root);
-            let mut reader = file
-                .read()
-                .window(Window::new(window).unwrap())
-                .range(range.clone())
-                .build();
+            let mut reader =
+                run(reader_at(store.clone(), window).open_range(root.into(), range.clone()))
+                    .unwrap();
             let out = drain_reader(&mut reader, 0);
             let clipped_end = range.end.min(span) as usize;
             let clipped_start = (range.start as usize).min(clipped_end);
@@ -397,52 +403,26 @@ fn frames_and_download_hold_the_window_out_of_order() {
     let (root, built, _) = split_plain(&data, 8, 0);
     let window = 6u16;
 
-    // Completion-order frames: the range is tiled exactly once whatever the
+    // Completion-order writes: the range is tiled exactly once whatever the
     // arrival order, within the same window and budget.
     let store = built.fresh(3);
-    let file = open_plain(store.clone(), root);
-    let mut frames = file
-        .read()
-        .window(Window::new(window).unwrap())
-        .range(100..15_000)
-        .frames();
-    let clipped = frames.range();
-    let mut collected: Vec<Frame> = run(async {
-        let mut out = Vec::new();
-        while let Some(frame) = frames.next().await {
-            out.push(frame.unwrap());
-        }
-        out
-    });
-    collected.sort_by_key(|frame| frame.offset);
-    let mut cursor = clipped.start;
-    let mut assembled = Vec::new();
-    for frame in &collected {
-        assert_eq!(frame.offset, cursor, "frames must tile the range once");
-        cursor += frame.data.len() as u64;
-        assembled.extend_from_slice(&frame.data);
-    }
-    assert_eq!(cursor, clipped.end);
-    assert_eq!(assembled, &data[100..15_000]);
-    let stats = frames.stats();
-    assert_read_bounds(&stats, &store, window, BRANCHES, "frames");
-
-    // The download drain rides the same walk, so the same bounds hold while
-    // frames land in the sink.
-    let store = built.fresh(3);
-    let file = open_plain(store.clone(), root);
-    let mut sink = MemSink::new();
-    let written = run(file
-        .download()
-        .window(Window::new(window).unwrap())
-        .range(100..15_000)
-        .run(&mut sink))
-    .unwrap();
+    let mut sink = RecordingSink::default();
+    let written =
+        run(reader_at(store.clone(), window).load_range(root.into(), 100..15_000, &mut sink))
+            .unwrap();
     assert_eq!(written, 14_900);
-    assert_eq!(sink.as_ref(), &data[100..15_000]);
+    assert_eq!(sink.inner.as_ref(), &data[100..15_000]);
+    let mut spans = sink.writes.clone();
+    spans.sort_by_key(|(offset, _)| *offset);
+    let mut cursor = 0u64;
+    for (offset, len) in spans {
+        assert_eq!(offset, cursor, "writes must tile the range once");
+        cursor += len as u64;
+    }
+    assert_eq!(cursor, 14_900);
     assert!(
         store.gets.peak() <= usize::from(window) + budget(window, BRANCHES as u32),
-        "download fetches {} burst the window",
+        "load fetches {} burst the window",
         store.gets.peak()
     );
 }
@@ -458,8 +438,7 @@ fn parked_head_leaf_never_bursts_the_window() {
     let head = built.first_put();
     let window = 4u16;
     let store = built.fresh(4).parked(head, usize::from(window) - 1);
-    let file = open_plain(store.clone(), root);
-    let mut reader = file.read().window(Window::new(window).unwrap()).build();
+    let mut reader = run(reader_at(store.clone(), window).open(root.into())).unwrap();
     let out = drain_reader(&mut reader, 3);
     assert_eq!(out, data);
     let stats = reader.stats();
@@ -474,8 +453,8 @@ fn collect_refuses_an_oversized_range_before_any_fetch() {
 
     // One byte under the length: a typed refusal before the walk fetches.
     let store = built.fresh(0);
-    let file = open_plain(store.clone(), root);
-    let error = run(file.read().collect(size as u64 - 1)).unwrap_err();
+    let error =
+        run(reader_at(store.clone(), 4).collect(root.into(), size as u64 - 1)).unwrap_err();
     match error {
         CollectError::TooLarge { len, max } => {
             assert_eq!((len, max), (size as u64, size as u64 - 1));
@@ -490,21 +469,19 @@ fn collect_refuses_an_oversized_range_before_any_fetch() {
 
     // At the exact bound: assembled once within the window.
     let store = built.fresh(2);
-    let file = open_plain(store.clone(), root);
     let window = 4u16;
-    let out = run(file
-        .read()
-        .window(Window::new(window).unwrap())
-        .collect(size as u64))
-    .unwrap();
+    let out = run(reader_at(store.clone(), window).collect(root.into(), size as u64)).unwrap();
     assert_eq!(out, data);
     assert!(store.gets.peak() <= usize::from(window) + budget(window, BRANCHES as u32));
 
     // The empty file collects within a zero bound.
     let (root, built, _) = split_plain(&[], 4, 0);
     let store = built.fresh(0);
-    let file = open_plain(store, root);
-    assert!(run(file.collect(0)).unwrap().is_empty());
+    assert!(
+        run(reader_at(store, 4).collect(root.into(), 0))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -518,12 +495,11 @@ fn collect_assembles_out_of_order_within_the_window() {
     let head = built.first_put();
     let window = 4u16;
     let store = built.fresh(3).parked(head, usize::from(window) - 1);
-    let file = open_plain(store.clone(), root);
-    let out = run(file
-        .read()
-        .window(Window::new(window).unwrap())
-        .range(100..size as u64 - 7)
-        .collect(size as u64))
+    let out = run(reader_at(store.clone(), window).collect_range(
+        root.into(),
+        100..size as u64 - 7,
+        size as u64,
+    ))
     .unwrap();
     assert_eq!(out, &data[100..size - 7]);
     assert!(store.gets.peak() <= usize::from(window) + budget(window, BRANCHES as u32));
@@ -583,8 +559,7 @@ fn peaks_stay_flat_as_the_tree_grows() {
 
     let window = 16u16;
     let store = built.fresh(1);
-    let file = open_plain(store.clone(), root);
-    let mut reader = file.read().window(Window::new(window).unwrap()).build();
+    let mut reader = run(reader_at(store.clone(), window).open(root.into())).unwrap();
     let out = drain_reader(&mut reader, 0);
     assert_eq!(out, data);
     let stats = reader.stats();
@@ -605,11 +580,10 @@ fn peaks_stay_flat_as_the_tree_grows() {
 /// bounds hold under the narrower geometry.
 #[cfg(feature = "encryption")]
 mod encrypted {
-    use core::future::poll_fn;
     use core::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    use nectar_file::{Encrypted, File, KeyError, KeySource, PutWindow, Split, SplitStats, Window};
+    use nectar_file::{Encrypted, File, KeyError, KeySource, Policy, PutWindow, SplitStats, Window};
     use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
     use nectar_primitives::store::ContentGet;
     use nectar_testing::run;
@@ -635,28 +609,19 @@ mod encrypted {
         }
     }
 
-    /// Stream `data` through an encrypted split, returning the root, the
-    /// metered store, and the split's witnesses.
+    /// Stream `data` through an encrypted save, returning the root, the
+    /// metered store, and the write's witnesses.
     fn split_encrypted(
         data: &[u8],
         window: u16,
         delay: usize,
     ) -> (EncryptedChunkRef, GaugeStore<TINY>, SplitStats) {
         let store = GaugeStore::new(delay);
-        let mut split: Split<GaugeStore<TINY>, Encrypted<SeqKeys>, TINY> = Split::with_mode(
+        let file = File::<_, TINY>::new(
             store.clone(),
-            Encrypted::new(SeqKeys::default()),
-            PutWindow::new(window).unwrap(),
+            Policy::DEFAULT.with_put_window(PutWindow::new(window).unwrap()),
         );
-        let root = run(async {
-            let mut buf = data;
-            while !buf.is_empty() {
-                let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-                buf = &buf[n..];
-            }
-            poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-        });
-        let stats = split.stats();
+        let (root, stats) = run(file.save_as_with_stats::<Encrypted<SeqKeys>, _>(data)).unwrap();
         (root, store, stats)
     }
 
@@ -680,12 +645,14 @@ mod encrypted {
             );
 
             let store = built.fresh(2);
-            let file: File<ContentGet<GaugeStore<TINY>>, Encrypted, TINY> =
-                run(File::open_encrypted(ContentGet::new(store.clone()), root)).unwrap();
-            assert_eq!(store.gets.total(), 1, "open fetched more than the root");
-            assert_eq!(file.len(), size as u64);
             let window = 3u16;
-            let mut reader = file.read().window(Window::new(window).unwrap()).build();
+            let file: File<ContentGet<GaugeStore<TINY>>, TINY> = File::new(
+                ContentGet::new(store.clone()),
+                Policy::DEFAULT.with_window(Window::new(window).unwrap()),
+            );
+            let mut reader = run(file.open(root.into())).unwrap();
+            assert_eq!(store.gets.total(), 1, "open fetched more than the root");
+            assert_eq!(reader.len(), size as u64);
             let out = drain_reader(&mut reader, 0);
             assert_eq!(out, data, "plaintext diverged at {size}");
             let stats = reader.stats();
@@ -698,9 +665,7 @@ mod encrypted {
 /// the write-side bounds survive the fan-out, plus the hash window's own.
 #[cfg(feature = "rayon")]
 mod batch {
-    use core::future::poll_fn;
-
-    use nectar_file::{HashWindow, Plain, PutWindow, Split, split_read_at};
+    use nectar_file::{File, HashWindow, Plain, Policy, PutWindow, ReadAtSource};
     use nectar_testing::run;
 
     use super::{BRANCHES, GaugeStore, TINY, fill, split_plain};
@@ -713,11 +678,13 @@ mod batch {
         run(async {
             for window in [1u16, 4] {
                 let store = GaugeStore::<TINY>::new(2);
-                let root = split_read_at::<_, _, Plain, TINY>(
-                    data.clone(),
+                let root = File::<_, TINY>::new(
                     store.clone(),
-                    PutWindow::new(window).unwrap(),
+                    Policy::DEFAULT
+                        .with_put_window(PutWindow::new(window).unwrap())
+                        .with_hash_window(HashWindow::DEFAULT),
                 )
+                .save_as::<Plain, _>(ReadAtSource::new(data.clone()))
                 .await
                 .unwrap();
                 assert_eq!(root, streamed_root, "batch root diverged at {window}");
@@ -739,18 +706,15 @@ mod batch {
         run(async {
             for (put_window, hash_window) in [(1u16, 1u16), (2, 4), (16, 8)] {
                 let store = GaugeStore::<TINY>::new(2);
-                let mut split: Split<GaugeStore<TINY>, Plain, TINY> =
-                    Split::new(store.clone(), PutWindow::new(put_window).unwrap())
-                        .with_hash_window(HashWindow::new(hash_window).unwrap());
-                let root = {
-                    let mut buf = data.as_slice();
-                    while !buf.is_empty() {
-                        let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-                        buf = &buf[n..];
-                    }
-                    poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-                };
-                let stats = split.stats();
+                let (root, stats) = File::<_, TINY>::new(
+                    store.clone(),
+                    Policy::DEFAULT
+                        .with_put_window(PutWindow::new(put_window).unwrap())
+                        .with_hash_window(HashWindow::new(hash_window).unwrap()),
+                )
+                .save_as_with_stats::<Plain, _>(data.as_slice())
+                .await
+                .unwrap();
                 assert_eq!(root, streamed_root, "pooled root diverged at {put_window}");
                 assert!(
                     store.puts.peak() <= usize::from(put_window),

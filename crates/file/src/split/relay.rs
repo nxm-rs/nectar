@@ -1,11 +1,16 @@
 //! Borrowed-store split entry point: an internal relay queue drained into a
 //! bounded put window over the borrowed store.
+//!
+//! The borrowed store is what lets one [`File`](crate::File) handle write
+//! through a store it does not own and cannot cheaply clone; the relay keeps
+//! the split's own put concurrency on that borrowed store.
 
 use core::convert::Infallible;
 use core::future::poll_fn;
 use core::num::NonZeroU16;
 
 use alloc::boxed::Box;
+use alloc::vec;
 
 #[cfg(not(feature = "std"))]
 use alloc::collections::VecDeque;
@@ -24,68 +29,78 @@ use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 use nectar_primitives::store::ChunkPut;
 
 use super::engine::{PutDone, Split};
-use super::error::SplitError;
+use super::error::{SaveError, SplitError};
+use super::SplitStats;
 use super::mode::SplitMode;
+#[cfg(test)]
 use crate::config::PutWindow;
+use crate::handle::Policy;
+use crate::source::Source;
 
-/// Split `data` under put `window` into the tree, storing every chunk in the
-/// borrowed `store`, and return the root.
+/// Drain `src` into a chunk tree, storing every chunk in the borrowed
+/// `store`, and return the root plus the write's witnesses.
 ///
-/// The borrowed-store companion to [`Split::collect`]: where `collect` owns
-/// its store, this drives the split through an internal relay and forwards
-/// each sealed chunk into a bounded put window borrowing `store`, so up to
-/// `window` puts are concurrently in flight. The memory bound is the split's
-/// own: puts in flight stay within `window` and buffered chunks within the
-/// spine height. The root is delivered only after every put has settled.
+/// The split runs against an internal relay and each sealed chunk is
+/// forwarded into a bounded put window borrowing `store`, so up to the
+/// policy's put window are concurrently in flight. The memory bound is the
+/// split's own: puts in flight stay within the window, buffered chunks
+/// within the spine height, and one leaf body is buffered for the pull. The
+/// root is delivered only after every put has settled.
 ///
-/// ```
-/// # nectar_testing::run(async {
-/// use nectar_file::split::collect_into;
-/// use nectar_file::{Plain, PutWindow};
-/// use nectar_primitives::chunk::AnyChunkSet;
-/// use nectar_primitives::store::MemoryStore;
-///
-/// let store = MemoryStore::<AnyChunkSet<4096>>::new();
-/// let window = PutWindow::new(4).unwrap();
-/// let root = collect_into::<_, Plain, 4096>(&store, window, b"hello swarm")
-///     .await
-///     .unwrap();
-/// # let _ = root;
-/// # });
-/// ```
-pub async fn collect_into<T, M, const B: usize>(
+/// The reported [`SplitStats::peak_put_in_flight`] is the outer window's
+/// peak, not the relay's, so it witnesses the real store's concurrency.
+pub(crate) async fn save_source<T, M, Src, const B: usize>(
     store: &T,
-    window: PutWindow,
-    data: &[u8],
-) -> Result<M::Root, SplitError<T::Error>>
+    policy: Policy,
+    mut src: Src,
+) -> Result<(M::Root, SplitStats), SaveError<T::Error, Src::Error>>
 where
     T: ChunkPut<AnyChunkSet<B>> + MaybeSync,
     M: SplitMode + Default,
+    Src: Source,
 {
+    let window = policy.put_window();
     let relay = Relay::<B>::default();
+    #[allow(unused_mut, reason = "the pool fan-out is the only mutator")]
     let mut split: Split<Relay<B>, M, B> = Split::new(relay.clone(), window);
+    #[cfg(feature = "rayon")]
+    if let Some(hash) = policy.hash_window() {
+        split = split.with_hash_window(hash);
+    }
     let mut sink: PutSink<'_, PutDone<T::Error>> =
         PutSink::new(Window::from(NonZeroU16::from(window)));
     // Map each settled put's carried address and result to the typed error.
     let fold = |(address, result): PutDone<T::Error>| {
         result.map_err(|source| SplitError::Put { address, source })
     };
-    let mut rest = data;
-    while !rest.is_empty() {
-        let taken = poll_fn(|cx| split.poll_write(cx, rest))
+    let mut peak = 0usize;
+    let mut buf = vec![0u8; B];
+    loop {
+        let filled = poll_fn(|cx| src.poll_fill(cx, &mut buf))
             .await
-            .map_err(widen::<T::Error>)?;
-        rest = rest.get(taken..).unwrap_or(&[]);
-        // Forward every chunk sealed this round before more bytes enter, so
-        // the relay never holds more than one round's seals.
-        forward(&relay, store, &mut sink, fold).await?;
+            .map_err(|source| SaveError::Source { source })?;
+        if filled == 0 {
+            break;
+        }
+        let mut rest = buf.get(..filled).unwrap_or_default();
+        while !rest.is_empty() {
+            let taken = poll_fn(|cx| split.poll_write(cx, rest))
+                .await
+                .map_err(widen::<T::Error>)?;
+            rest = rest.get(taken..).unwrap_or(&[]);
+            // Forward every chunk sealed this round before more bytes enter,
+            // so the relay never holds more than one round's seals.
+            forward(&relay, store, &mut sink, fold, &mut peak).await?;
+        }
     }
     let root = poll_fn(|cx| split.poll_finish(cx))
         .await
         .map_err(widen::<T::Error>)?;
-    forward(&relay, store, &mut sink, fold).await?;
+    forward(&relay, store, &mut sink, fold, &mut peak).await?;
     sink.settle(fold).await?;
-    Ok(root)
+    let mut stats = split.stats();
+    stats.peak_put_in_flight = peak;
+    Ok((root, stats))
 }
 
 /// Widen the relay-backed split's error to the borrowed store's error. The
@@ -105,12 +120,14 @@ fn widen<E>(error: SplitError<Infallible>) -> SplitError<E> {
 /// Forward every queued chunk into the bounded window in seal order: admit a
 /// slot (parking when full), open the put, then sweep the ready completions so
 /// freshly admitted puts start before more bytes enter. `fold` maps each
-/// settled put to the typed error.
+/// settled put to the typed error, and `peak` records the window's high-water
+/// occupancy.
 async fn forward<'a, T, F, const B: usize>(
     relay: &Relay<B>,
     store: &'a T,
     sink: &mut PutSink<'a, PutDone<T::Error>>,
     mut fold: F,
+    peak: &mut usize,
 ) -> Result<(), SplitError<T::Error>>
 where
     T: ChunkPut<AnyChunkSet<B>> + MaybeSync,
@@ -126,6 +143,7 @@ where
         })) {
             fold(completion)?;
         }
+        *peak = (*peak).max(sink.len());
     }
     sink.sweep(fold).await
 }
@@ -174,5 +192,24 @@ impl<const B: usize> ChunkPut<AnyChunkSet<B>> for Relay<B> {
         #[cfg(not(feature = "std"))]
         self.queue.borrow_mut().push_back(chunk);
         Ok(())
+    }
+}
+
+/// Test-only borrowed-store split of a whole buffer, over the same relay a
+/// save drives.
+#[cfg(test)]
+pub(crate) async fn collect_into<T, M, const B: usize>(
+    store: &T,
+    window: PutWindow,
+    data: &[u8],
+) -> Result<M::Root, SplitError<T::Error>>
+where
+    T: ChunkPut<AnyChunkSet<B>> + MaybeSync,
+    M: SplitMode + Default,
+{
+    match save_source::<T, M, &[u8], B>(store, Policy::DEFAULT.with_put_window(window), data).await {
+        Ok((root, _)) => Ok(root),
+        Err(SaveError::Split(error)) => Err(error),
+        Err(SaveError::Source { source }) => match source {},
     }
 }

@@ -1,7 +1,7 @@
 //! Allocation probe over the real plain read path.
 //!
-//! Splits a file through the plain splitter into a `MemoryStore`, then reads
-//! it back through `File::open` under the allocation witness. Plain bodies
+//! Splits a file through the plain save into a `MemoryStore`, then reads it
+//! back through `File::open` under the allocation witness. Plain bodies
 //! pass through undecoded, so the marginal bytes per added fetch stay below
 //! a quarter body, and each outstanding fetch costs one boxed store future
 //! plus its task node in the in-flight set, so the marginal allocation per
@@ -9,10 +9,9 @@
 //! independent and adds no third.
 // Integration-test code: unwraps, direct indexing, casts, and assertions are
 // setup and illustration, not shipped surface.
-use core::future::poll_fn;
 use std::sync::Arc;
 
-use nectar_file::{File, Plain, PutWindow, Split};
+use nectar_file::{File, Policy};
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_testing::{AllocationInfo, measure_allocations, run};
@@ -29,18 +28,11 @@ fn fill(len: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Stream `data` through a plain split into a fresh memory store.
+/// Stream `data` through a plain save into a fresh memory store.
 fn split_plain(data: &[u8]) -> (ChunkAddress, Store) {
     let store: Store = Arc::new(MemoryStore::new());
-    let mut split: Split<Store, Plain, BODY> = Split::new(Arc::clone(&store), PutWindow::DEFAULT);
-    let root = run(async {
-        let mut buf = data;
-        while !buf.is_empty() {
-            let n = poll_fn(|cx| split.poll_write(cx, buf)).await.unwrap();
-            buf = &buf[n..];
-        }
-        poll_fn(|cx| split.poll_finish(cx)).await.unwrap()
-    });
+    let root = run(File::<Store, BODY>::new(Arc::clone(&store), Policy::DEFAULT).save(data))
+        .unwrap();
     (root, store)
 }
 
@@ -50,11 +42,10 @@ fn probe(leaves: usize) -> (AllocationInfo, u64) {
     let data = fill(leaves * BODY);
     let (root, store) = split_plain(&data);
 
+    let file: File<ContentGet<Store>, BODY> = File::new(ContentGet::new(store), Policy::DEFAULT);
     let ((read, fetches), info) = measure_allocations(|| {
         run(async {
-            let file: File<ContentGet<Store>, Plain, BODY> =
-                File::open(ContentGet::new(store), root).await.unwrap();
-            let mut reader = file.read().build();
+            let mut reader = file.open(root.into()).await.unwrap();
             let mut read = 0usize;
             while let Some(segment) = reader.next_segment().await {
                 read += segment.unwrap().len();
