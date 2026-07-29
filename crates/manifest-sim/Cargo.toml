@@ -1,5 +1,5 @@
 [package]
-name = "nectar-ldb-sim"
+name = "nectar-manifest-sim"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 publish = false
-description = "Range-query and pagination measurement harness for the on-swarm key-value database"
+description = "Two-arm manifest measurement harness comparing mantaray 0.2 and mantaray 1.0 (ldb)"
 
 # Non-shipping targets: the runtime-safety restriction set does not apply,
 # but stubs and ad-hoc executor entry points stay denied.
@@ -26,6 +26,8 @@ disallowed_methods = "deny"
 [dependencies]
 bytes.workspace = true
 nectar-ldb = { workspace = true }
+nectar-loadsave = { workspace = true }
+nectar-mantaray = { workspace = true }
 nectar-primitives = { workspace = true, features = ["std"] }
 nectar-testing.workspace = true
 serde = { workspace = true, features = ["std", "derive"] }
@@ -37,5 +39,5 @@ sha2 = "0.10"
 tokio = { workspace = true, features = ["time", "test-util"] }
 
 [[bin]]
-name = "ldb-perf"
-path = "src/bin/ldb-perf.rs"
+name = "manifest-perf"
+path = "src/bin/manifest-perf.rs"
