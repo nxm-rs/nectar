@@ -9,11 +9,13 @@
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::convert::Infallible;
 use core::future::poll_fn;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use bytes::Bytes;
-use nectar_governor::{BoxFuture, Driver, FuturesUnordered, WalkPolicy};
+use futures_core::Stream;
+use nectar_governor::{BoxFuture, FuturesUnordered};
 use nectar_primitives::ChunkAddress;
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
@@ -78,29 +80,24 @@ enum Advance {
 /// retains O(depth) frames at the serial fetch count. Cancel-safe: all
 /// progress lives in `self`, and a step is consumed only once its fetch has
 /// completed, so a dropped [`next`](Self::next) future loses no addresses.
+///
+/// Every fault is non-terminal (a failed descent replays, an encrypted edge
+/// re-errors), so a fault rides the delivered turn rather than ending the
+/// walk. The walk advances inside [`admit`](Self::admit), where the launch a
+/// fresh descent needs is reachable.
 #[derive(Debug)]
 pub struct AddressStream<'a, S, F: Format = V1> {
     store: &'a S,
     /// The root reference, pending its visit.
     root: Option<Root>,
     done: bool,
-    /// The walk, advanced by the policy and driven by the kernel driver.
-    driver: Driver<'a, TraversePolicy<'a, S, F>, Fetched<F>>,
-}
-
-/// The stream's walk policy over the kernel driver.
-///
-/// Every fault is non-terminal (a failed descent replays, an encrypted edge
-/// re-errors), so faults ride the delivered turn and the driver error is
-/// uninhabited. The walk advances inside `admit`, where the launch a fresh
-/// descent needs is reachable; `take_ready` hands over the staged turn.
-struct TraversePolicy<'a, S, F: Format> {
-    store: &'a S,
     /// Addresses discovered ahead of delivery: a visited node's own chunk
     /// and its segment chunks.
     pending: VecDeque<ChunkAddress>,
     /// One frame per referenced hop on the current path.
     stack: Vec<Frame<F>>,
+    /// Node fetches launched ahead of the walk.
+    in_flight: FuturesUnordered<BoxFuture<'a, Fetched<F>>>,
     /// Completions that arrived before the descent awaiting them; drained by
     /// sequence id and bounded with the in-flight set by the window.
     ready: Vec<Fetched<F>>,
@@ -110,17 +107,16 @@ struct TraversePolicy<'a, S, F: Format> {
     staged: Option<Turn>,
 }
 
-impl<'a, S, F> WalkPolicy<'a> for TraversePolicy<'a, S, F>
+impl<'a, S, F> AddressStream<'a, S, F>
 where
     S: NodeGet + MaybeSync,
     F: Format,
 {
-    type Fetched = Fetched<F>;
-    type Frame = Turn;
-    type Error = Infallible;
-    type Drain = ();
-
-    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, Fetched<F>>>) {
+    /// Stage the next turn, then launch the read-ahead the walk needs.
+    ///
+    /// Staging first is what makes a fresh descent reachable: the fill only
+    /// launches what the staged walk position asks for.
+    fn admit(&mut self) {
         if self.staged.is_none() {
             self.staged = self.advance();
         }
@@ -130,7 +126,7 @@ where
             self.ready.len(),
             &mut self.next_seq,
             &mut self.stack,
-            in_flight,
+            &mut self.in_flight,
             |_base, step| {
                 let target = match step {
                     Step::Value { .. } => None,
@@ -156,25 +152,24 @@ where
         );
     }
 
-    fn take_ready(&mut self, (): ()) -> Option<Result<Turn, Infallible>> {
-        self.staged.take().map(Ok)
+    /// One poll of the bounded-admission walk: admit, hand over a staged
+    /// turn, else fold one completion. `None` ends the walk.
+    ///
+    /// All state lives in `self`, so a dropped poll replays.
+    fn poll_turn(&mut self, cx: &mut Context<'_>) -> Poll<Option<Turn>> {
+        loop {
+            self.admit();
+            if let Some(turn) = self.staged.take() {
+                return Poll::Ready(Some(turn));
+            }
+            match Pin::new(&mut self.in_flight).poll_next(cx) {
+                Poll::Ready(Some(completion)) => self.ready.push(completion),
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
 
-    fn absorb(&mut self, completion: Fetched<F>) -> Result<(), Infallible> {
-        self.ready.push(completion);
-        Ok(())
-    }
-
-    fn drained(&self) -> Result<(), Infallible> {
-        Ok(())
-    }
-}
-
-impl<S, F> TraversePolicy<'_, S, F>
-where
-    S: NodeGet + MaybeSync,
-    F: Format,
-{
     /// Advance the walk to its next deliverable turn: deliver queued
     /// addresses, pop spent frames, and descend once a child's fetch has
     /// landed. `None` parks the walk on the head fetch the fill launches.
@@ -251,27 +246,19 @@ where
         self.pending.extend(segments);
         self.stack.push(Frame::new(Bytes::new(), steps, 0));
     }
-}
 
-impl<'a, S, F> AddressStream<'a, S, F>
-where
-    S: NodeGet + MaybeSync,
-    F: Format,
-{
     /// A stream positioned before its root visit.
     fn start(store: &'a S, root: Root) -> Self {
         Self {
             store,
             root: Some(root),
             done: false,
-            driver: Driver::new(TraversePolicy {
-                store,
-                pending: VecDeque::new(),
-                stack: Vec::new(),
-                ready: Vec::new(),
-                next_seq: 0,
-                staged: None,
-            }),
+            pending: VecDeque::new(),
+            stack: Vec::new(),
+            in_flight: FuturesUnordered::new(),
+            ready: Vec::new(),
+            next_seq: 0,
+            staged: None,
         }
     }
 
@@ -289,21 +276,13 @@ where
             let (node, segments) =
                 materialize_traced::<S, F>(self.store, &address, key.as_ref()).await?;
             self.root = None;
-            self.driver
-                .policy_mut()
-                .enter(address, segments, flatten(&node, true));
+            self.enter(address, segments, flatten(&node, true));
         }
-        let Some(turn) = poll_fn(|cx| self.driver.poll(cx, ())).await else {
+        let Some(turn) = poll_fn(|cx| self.poll_turn(cx)).await else {
             self.done = true;
             return Ok(None);
         };
-        match turn {
-            Ok(turn) => match turn {
-                Ok(address) => Ok(Some(address)),
-                Err(error) => Err(error),
-            },
-            Err(error) => match error {},
-        }
+        turn.map(Some)
     }
 }
 
@@ -676,6 +655,69 @@ mod tests {
             }
             assert_eq!(out, vec![root, addr(0xAA), addr(0xAB), leaf, addr(0xBA)]);
         });
+    }
+
+    /// A trusted store recording the peak number of concurrent `get` calls.
+    struct GatedStore {
+        inner: ContentGet<MemoryStore>,
+        inflight: core::sync::atomic::AtomicUsize,
+        peak: core::sync::atomic::AtomicUsize,
+    }
+
+    impl ChunkGet<ContentOnlyChunkSet> for GatedStore {
+        type Trust = Verified;
+        type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
+
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
+            use core::sync::atomic::Ordering;
+            let now = self.inflight.fetch_add(1, Ordering::Relaxed) + 1;
+            self.peak.fetch_max(now, Ordering::Relaxed);
+            yield_once().await;
+            let chunk = ChunkGet::get(&self.inner, address).await;
+            self.inflight.fetch_sub(1, Ordering::Relaxed);
+            chunk
+        }
+    }
+
+    #[test]
+    fn read_ahead_bounds_the_in_flight_node_fetches() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let inner = ContentGet::new(MemoryStore::default());
+        // More top-level subtrees than the read-ahead window has slots, each
+        // wide enough to spill into a referenced child, so an unbounded
+        // frontier would launch past the cap.
+        let mut builder = Builder::<V1>::new();
+        for p in 0u8..24 {
+            for x in 0u8..44 {
+                builder.insert(Key::from(&[p, x][..]), entry(x.wrapping_add(p)), None);
+            }
+        }
+        let root = *run(builder.build(&inner)).unwrap().root();
+        let store = GatedStore {
+            inner,
+            inflight: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        };
+
+        let reader: Reader<_> = Reader::new(&store);
+        drain(reader.addresses(&root));
+
+        let peak = store.peak.load(Ordering::Relaxed);
+        // The window overlapped fetches, and never past the read-ahead cap:
+        // the frontier is bounded, not O(width).
+        assert!(peak > 1, "read-ahead ran node fetches concurrently, {peak}");
+        assert!(
+            peak <= V1::READ_AHEAD,
+            "peak in-flight {peak} exceeded the read-ahead cap {}",
+            V1::READ_AHEAD
+        );
+        // The frontier is wider than the window, so the cap is what bounds the
+        // walk: a lost window would show up here.
+        assert_eq!(peak, V1::READ_AHEAD);
     }
 
     #[test]

@@ -21,6 +21,8 @@ workspace = true
 alloy-primitives = { workspace = true }
 arbitrary = { workspace = true, optional = true }
 bytes.workspace = true
+# The `Stream` trait the hand-rolled walk loops poll their in-flight set through.
+futures-core = { workspace = true }
 nectar-governor = { workspace = true }
 nectar-primitives = { workspace = true }
 thiserror.workspace = true

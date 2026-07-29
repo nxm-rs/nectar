@@ -14,8 +14,11 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::{Future, poll_fn};
 use core::mem;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
-use nectar_governor::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
+use futures_core::Stream;
+use nectar_governor::{Admission, BoxFuture, FuturesUnordered, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkOps, ContentChunk, ContentOnlyChunkSet, EncryptionKey, Verified,
@@ -285,20 +288,22 @@ fn launch_segments<'a, S>(
     }
 }
 
-/// The segment join as a [`WalkPolicy`]: a directory-order frontier of slots
-/// over the kernel driver's in-flight set.
+/// The segment join: a directory-order frontier of slots over its own
+/// in-flight set.
 ///
 /// `admit` grows the frontier by splicing a decoded inner directory, then
-/// launches queued fetches from the head; `absorb` lands a completion in its
-/// slot; `take_ready` drains the head slot strictly in directory order,
-/// folding leaf records and parking an inner directory for the next admit;
-/// `drained` reports a lost completion. The in-order fold is the reassembly's
-/// byte-exact semantics, not head-of-line blocking: only the fetches overlap.
-struct SegmentJoinPolicy<'a, S, F: Format> {
+/// launches queued fetches from the head; `poll_turn` folds the head slot
+/// strictly in directory order, parks an inner directory for the next admit,
+/// and reports a lost completion once the set drains. The in-order fold is
+/// the reassembly's byte-exact semantics, not head-of-line blocking: only the
+/// fetches overlap.
+struct SegmentJoin<'a, S, F: Format> {
     store: &'a S,
     /// Descriptor slots in directory order; grows as inner directories splice.
     slots: Vec<SegmentSlot>,
     admission: Admission,
+    /// Fetches launched ahead of the in-order fold.
+    in_flight: FuturesUnordered<BoxFuture<'a, SegmentFetch>>,
     /// The slot to drain next; `None` once the join is complete.
     head: Option<usize>,
     /// Completions landed but not yet drained.
@@ -314,7 +319,7 @@ struct SegmentJoinPolicy<'a, S, F: Format> {
     trace: Vec<ChunkAddress>,
 }
 
-impl<'a, S, F> SegmentJoinPolicy<'a, S, F>
+impl<'a, S, F> SegmentJoin<'a, S, F>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -327,6 +332,7 @@ where
             store,
             slots,
             admission: Admission::new(segment_window::<F>()),
+            in_flight: FuturesUnordered::new(),
             head,
             buffered: 0,
             encrypted,
@@ -340,19 +346,10 @@ where
     fn into_parts(self) -> (ForkTable<F>, Vec<ChunkAddress>) {
         (self.table, self.trace)
     }
-}
 
-impl<'a, S, F> WalkPolicy<'a> for SegmentJoinPolicy<'a, S, F>
-where
-    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
-    F: Format,
-{
-    type Fetched = SegmentFetch;
-    type Frame = ();
-    type Error = StoreError;
-    type Drain = ();
-
-    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, SegmentFetch>>) {
+    /// Splice any parked inner directory onto the frontier, then launch the
+    /// queued fetches the window admits.
+    fn admit(&mut self) {
         if let Some((inner, depth, next)) = self.pending.take() {
             self.head = splice_directory(&mut self.slots, &inner, depth, next);
         }
@@ -362,13 +359,44 @@ where
                 self.admission,
                 &mut self.slots,
                 head,
-                in_flight,
+                &mut self.in_flight,
                 self.buffered,
             );
         }
     }
 
-    fn take_ready(&mut self, (): ()) -> Option<Result<(), StoreError>> {
+    /// One poll of the bounded join: admit, fold the head slot if it has
+    /// landed, else absorb one completion. `None` ends the join.
+    ///
+    /// All state lives in `self`, so a dropped poll replays.
+    fn poll_turn(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<(), StoreError>>> {
+        loop {
+            self.admit();
+            if let Some(outcome) = self.take_ready() {
+                return Poll::Ready(Some(outcome));
+            }
+            match Pin::new(&mut self.in_flight).poll_next(cx) {
+                Poll::Ready(Some((index, outcome))) => {
+                    if let Some(slot) = self.slots.get_mut(index) {
+                        slot.state = SlotState::Landed(Box::new(outcome));
+                        self.buffered = self.buffered.saturating_add(1);
+                    }
+                }
+                // The head launches before every wait, so an empty set with
+                // work still owed is a lost completion, not a legal drain.
+                Poll::Ready(None) => {
+                    return Poll::Ready(
+                        (self.head.is_some() || self.pending.is_some())
+                            .then(|| Err(segment_context())),
+                    );
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    /// Fold the head slot once its fetch has landed, in directory order.
+    fn take_ready(&mut self) -> Option<Result<(), StoreError>> {
         let head = self.head?;
         let slot = self.slots.get_mut(head)?;
         let outcome = slot.take_landed()?;
@@ -413,25 +441,6 @@ where
             Err(error) => Some(Err(error.into())),
         }
     }
-
-    fn absorb(&mut self, fetched: SegmentFetch) -> Result<(), StoreError> {
-        let (index, outcome) = fetched;
-        if let Some(slot) = self.slots.get_mut(index) {
-            slot.state = SlotState::Landed(Box::new(outcome));
-            self.buffered = self.buffered.saturating_add(1);
-        }
-        Ok(())
-    }
-
-    fn drained(&self) -> Result<(), StoreError> {
-        // The head launches before every wait, so an empty set with work still
-        // owed is a lost completion, not a legal drain.
-        if self.head.is_some() || self.pending.is_some() {
-            Err(segment_context())
-        } else {
-            Ok(())
-        }
-    }
 }
 
 /// Gather every fork of a spilled node: fetch the segments its directory
@@ -452,11 +461,11 @@ where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
 {
-    let mut driver = Driver::new(SegmentJoinPolicy::<S, F>::new(store, dir, encrypted));
-    while let Some(turn) = poll_fn(|cx| driver.poll(cx, ())).await {
+    let mut join = SegmentJoin::<S, F>::new(store, dir, encrypted);
+    while let Some(turn) = poll_fn(|cx| join.poll_turn(cx)).await {
         turn?;
     }
-    let (table, segments) = driver.into_policy().into_parts();
+    let (table, segments) = join.into_parts();
     trace.extend(segments);
     Ok(table)
 }
@@ -733,6 +742,90 @@ mod tests {
         assert_eq!(trace, vec![leaf_a, inner_dir, leaf_b, leaf_c, leaf_d]);
         let mut expected = ForkTable::new();
         for byte in [0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41] {
+            expected
+                .insert(prefix(&[byte]), entry(byte).into(), None)
+                .unwrap();
+        }
+        assert_eq!(node, Node::new(None, expected));
+    }
+
+    /// Yields once per round before completing, so a test picks the order
+    /// concurrent fetches land in.
+    struct Yields(usize);
+
+    impl Future for Yields {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 == 0 {
+                Poll::Ready(())
+            } else {
+                self.0 -= 1;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+
+    /// A trusted store that delays each address by its own round count and
+    /// records the order fetches resolve in.
+    struct SkewedStore {
+        inner: ContentGet<MemoryStore>,
+        rounds: alloc::collections::BTreeMap<ChunkAddress, usize>,
+        arrivals: std::sync::Mutex<Vec<ChunkAddress>>,
+    }
+
+    impl ChunkGet<ContentOnlyChunkSet> for SkewedStore {
+        type Trust = Verified;
+        type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
+
+        async fn get(&self, address: &ChunkAddress) -> Result<FetchedChunk, Self::Error> {
+            Yields(self.rounds.get(address).copied().unwrap_or(0)).await;
+            self.arrivals.lock().unwrap().push(*address);
+            ChunkGet::get(&self.inner, address).await
+        }
+    }
+
+    /// A leaf segment over `bytes`, stored and addressed.
+    fn leaf_segment(store: &ContentGet<MemoryStore>, bytes: &[u8]) -> ChunkAddress {
+        let mut table = ForkTable::<V1>::new();
+        for &byte in bytes {
+            table
+                .insert(prefix(&[byte]), entry(byte).into(), None)
+                .unwrap();
+        }
+        put_raw(store, encode_leaf_segment(&table))
+    }
+
+    #[test]
+    fn out_of_order_completions_still_fold_in_directory_order() {
+        let store = ContentGet::new(MemoryStore::default());
+        let leaf_a = leaf_segment(&store, &[0x10, 0x11]);
+        let leaf_b = leaf_segment(&store, &[0x20, 0x21]);
+        let leaf_c = leaf_segment(&store, &[0x30, 0x31]);
+        let dir = SegmentDir::plain(vec![
+            (0x10, leaf_a, SubtreeCount::new(2)),
+            (0x20, leaf_b, SubtreeCount::new(2)),
+            (0x30, leaf_c, SubtreeCount::new(2)),
+        ]);
+        let root = put_raw(&store, encode_segmented_node::<V1>(None, &dir));
+
+        // The three fetches overlap and land last-first, so a fold in
+        // completion order would invert the trace.
+        let skewed = SkewedStore {
+            rounds: [(leaf_a, 6), (leaf_b, 4), (leaf_c, 2)].into_iter().collect(),
+            inner: store,
+            arrivals: std::sync::Mutex::new(Vec::new()),
+        };
+        let (node, trace) = run(materialize_traced::<_, V1>(&skewed, &root, None)).unwrap();
+        // The skew held: the segments really did land back to front.
+        assert_eq!(
+            skewed.arrivals.lock().unwrap().as_slice(),
+            [root, leaf_c, leaf_b, leaf_a]
+        );
+        assert_eq!(trace, vec![leaf_a, leaf_b, leaf_c]);
+        let mut expected = ForkTable::new();
+        for byte in [0x10, 0x11, 0x20, 0x21, 0x30, 0x31] {
             expected
                 .insert(prefix(&[byte]), entry(byte).into(), None)
                 .unwrap();

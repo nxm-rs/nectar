@@ -24,11 +24,13 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::convert::Infallible;
 use core::future::poll_fn;
+use core::pin::Pin;
+use core::task::Poll;
 
 use bytes::Bytes;
-use nectar_governor::{Admission, BoxFuture, Driver, FuturesUnordered, WalkPolicy, Window};
+use futures_core::Stream;
+use nectar_governor::{Admission, BoxFuture, FuturesUnordered, Window};
 use nectar_primitives::ChunkAddress;
 use nectar_primitives::store::{ChunkPut, MaybeSync};
 
@@ -872,60 +874,13 @@ fn child_window<F: Format>() -> Window {
 /// One landed child prefetch: its request slot and the fetched node.
 type Prefetched<F> = (usize, Result<Node<F>, StoreError>);
 
-/// Drives concurrent child fetches on one bounded window, landing each node in
-/// its request slot. Reads are order-free, so the whole window admits.
-struct PrefetchPolicy<'a, S, F: Format> {
-    store: &'a S,
-    /// Outstanding `(slot, address)` requests, drained as the window admits.
-    queue: Vec<(usize, ChunkAddress)>,
-    admission: Admission,
-    /// Landed nodes indexed by request slot.
-    landed: Vec<Option<Result<Node<F>, StoreError>>>,
-}
-
-impl<'a, S, F> WalkPolicy<'a> for PrefetchPolicy<'a, S, F>
-where
-    S: NodeGet + MaybeSync,
-    F: Format,
-{
-    type Fetched = Prefetched<F>;
-    type Frame = ();
-    type Error = Infallible;
-    type Drain = ();
-
-    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, Prefetched<F>>>) {
-        while self.admission.admits(in_flight.len(), true) {
-            let Some((slot, address)) = self.queue.pop() else {
-                return;
-            };
-            let store = self.store;
-            in_flight.push(Box::pin(async move {
-                (slot, store.get_node::<F>(&address).await)
-            }));
-        }
-    }
-
-    fn take_ready(&mut self, (): ()) -> Option<Result<(), Infallible>> {
-        // Nothing streams: completions land in their slots and are read back
-        // once the window drains.
-        None
-    }
-
-    fn absorb(&mut self, (slot, outcome): Prefetched<F>) -> Result<(), Infallible> {
-        if let Some(cell) = self.landed.get_mut(slot) {
-            *cell = Some(outcome);
-        }
-        Ok(())
-    }
-
-    fn drained(&self) -> Result<(), Infallible> {
-        Ok(())
-    }
-}
-
 /// Prefetch each requested child node concurrently, returning the landed nodes
 /// indexed by slot; `slots` sizes the result and every slot without a request
 /// stays `None`.
+///
+/// Nothing streams: the window admits freely because reads are order-free,
+/// and every completion lands in its own slot, so the result is independent
+/// of completion order.
 async fn prefetch_children<S, F>(
     store: &S,
     requests: impl Iterator<Item = (usize, ChunkAddress)>,
@@ -935,18 +890,36 @@ where
     S: NodeGet + MaybeSync,
     F: Format,
 {
-    let queue: Vec<(usize, ChunkAddress)> = requests.collect();
+    let mut landed: Vec<Option<Result<Node<F>, StoreError>>> = (0..slots).map(|_| None).collect();
+    let mut queue: Vec<(usize, ChunkAddress)> = requests.collect();
     if queue.is_empty() {
-        return (0..slots).map(|_| None).collect();
+        return landed;
     }
-    let mut driver = Driver::new(PrefetchPolicy {
-        store,
-        queue,
-        admission: Admission::new(child_window::<F>()),
-        landed: (0..slots).map(|_| None).collect(),
-    });
-    while poll_fn(|cx| driver.poll(cx, ())).await.is_some() {}
-    driver.into_policy().landed
+    let admission = Admission::new(child_window::<F>());
+    let mut in_flight: FuturesUnordered<BoxFuture<'_, Prefetched<F>>> = FuturesUnordered::new();
+    poll_fn(|cx| {
+        loop {
+            while admission.admits(in_flight.len(), true) {
+                let Some((slot, address)) = queue.pop() else {
+                    break;
+                };
+                in_flight.push(Box::pin(async move {
+                    (slot, store.get_node::<F>(&address).await)
+                }));
+            }
+            match Pin::new(&mut in_flight).poll_next(cx) {
+                Poll::Ready(Some((slot, outcome))) => {
+                    if let Some(cell) = landed.get_mut(slot) {
+                        *cell = Some(outcome);
+                    }
+                }
+                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    })
+    .await;
+    landed
 }
 
 #[cfg(test)]
@@ -1410,6 +1383,139 @@ mod tests {
         let peak = store.peak.load(Ordering::Relaxed);
         assert!(peak > 1, "disjoint subtree reads overlapped, peak {peak}");
         assert!(peak <= usize::from(child_window::<V1>().get()));
+    }
+
+    /// Yields once per round before completing, so a test picks the order
+    /// concurrent prefetches land in.
+    struct Yields(usize);
+
+    impl Future for Yields {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 == 0 {
+                Poll::Ready(())
+            } else {
+                self.0 -= 1;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+
+    /// A store that delays each address by its own round count and records the
+    /// order reads resolve in; puts pass straight through.
+    struct SkewedStore {
+        inner: ContentGet<MemoryStore>,
+        rounds: BTreeMap<ChunkAddress, usize>,
+        arrivals: std::sync::Mutex<Vec<ChunkAddress>>,
+    }
+
+    impl ChunkGet<ContentOnlyChunkSet> for SkewedStore {
+        type Trust = Verified;
+        type Error = <ContentGet<MemoryStore> as ChunkGet<ContentOnlyChunkSet>>::Error;
+
+        async fn get(
+            &self,
+            address: &ChunkAddress,
+        ) -> Result<Chunk<Verified, ContentOnlyChunkSet>, Self::Error> {
+            Yields(self.rounds.get(address).copied().unwrap_or(0)).await;
+            self.arrivals.lock().unwrap().push(*address);
+            ChunkGet::get(&self.inner, address).await
+        }
+    }
+
+    impl ChunkPut for SkewedStore {
+        type Error = <ContentGet<MemoryStore> as ChunkPut>::Error;
+
+        async fn put(&self, chunk: Chunk<Verified>) -> Result<(), Self::Error> {
+            self.inner.put(chunk).await
+        }
+    }
+
+    #[test]
+    fn out_of_order_child_prefetches_land_in_their_request_slots() {
+        let inner = ContentGet::new(MemoryStore::default());
+        // Four top-level subtrees, each wide enough to spill to a reference and
+        // each holding different values, so a misrouted child is visible in the
+        // rewritten root.
+        let mut builder = Builder::<V1>::new();
+        for p in 0u8..4 {
+            for x in 0u8..44 {
+                builder.insert(Key::from(&[p, x][..]), entry(x.wrapping_add(p)), None);
+            }
+        }
+        let root = *run(builder.build(&inner)).unwrap().root();
+        let node: Node<V1> = run(inner.get_node(&root)).unwrap();
+        let children: Vec<ChunkAddress> = node
+            .forks()
+            .iter()
+            .filter_map(|(_, record)| match record.child() {
+                Some(Child::Ref32(reference)) => Some(*reference.address()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(children.len(), 4, "each subtree spilled to a reference");
+        assert_eq!(
+            children
+                .iter()
+                .map(|address| (*address, ()))
+                .collect::<BTreeMap<_, _>>()
+                .len(),
+            4,
+            "the four children are distinct nodes"
+        );
+
+        // Round counts scrambling the completions into slot order 2, 0, 3, 1:
+        // neither the request order nor its reverse, so only routing by slot
+        // pairs each child with its own group.
+        let rounds = children
+            .iter()
+            .copied()
+            .zip([4usize, 8, 2, 6])
+            .collect::<BTreeMap<_, _>>();
+        let store = SkewedStore {
+            inner,
+            rounds,
+            arrivals: std::sync::Mutex::new(Vec::new()),
+        };
+
+        // A deeper insert under each subtree descends into all four referenced
+        // children at once, so all four ride one prefetch.
+        let mut cs = Changeset::<V1>::new();
+        for p in 0u8..4 {
+            cs.put(Key::from(&[p, 0, 9][..]), entry(99), None);
+        }
+        let applied = run(apply(&store, &root, &cs)).unwrap();
+
+        // The skew held: the children landed scrambled, so a fold that filled
+        // slots in completion order would misroute three of the four.
+        let landed: Vec<ChunkAddress> = store
+            .arrivals
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .filter(|address| children.contains(address))
+            .collect();
+        assert_eq!(
+            landed,
+            vec![children[2], children[0], children[3], children[1]]
+        );
+
+        let mut scratch = Builder::<V1>::new();
+        for p in 0u8..4 {
+            for x in 0u8..44 {
+                scratch.insert(Key::from(&[p, x][..]), entry(x.wrapping_add(p)), None);
+            }
+            scratch.insert(Key::from(&[p, 0, 9][..]), entry(99), None);
+        }
+        let expected = *run(scratch.build(&ContentGet::new(MemoryStore::default())))
+            .unwrap()
+            .root();
+        // Each prefetched child reconciled with its own group, whatever the
+        // completion order.
+        assert_eq!(applied, expected, "apply must match a from-scratch build");
     }
 
     #[test]
