@@ -4,9 +4,9 @@
 //! through a bounded read-ahead window: unconsumed fetches never exceed the
 //! window, so the fetched set is the serial walk's consumed set plus at most
 //! one window of lookahead, and errors surface at the failing node's serial
-//! position, never earlier. The kernel driver owns the loop and the
-//! in-flight set; the policy keeps the path-keyed frontier and parks each
-//! completion, fault included, until its serial turn at the head.
+//! position, never earlier. The walk owns its in-flight set directly: the
+//! path-keyed frontier parks every completion, fault included, until its
+//! serial turn at the head.
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -18,7 +18,7 @@ use core::task::{Context, Poll};
 
 use futures::Stream;
 pub use nectar_governor::Window;
-use nectar_governor::{Admission, BoxFuture, FuturesUnordered, StaticDriver, WalkPolicy};
+use nectar_governor::{Admission, BoxFuture, FuturesUnordered};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ChunkAddress;
 
@@ -73,10 +73,24 @@ struct Visit {
     view: NodeView,
 }
 
-/// The shared bounded-lookahead walk: a depth-first frontier whose head is
-/// consumed in serial order while up to a window of fetches runs ahead.
+/// The bounded-lookahead walk: a path-keyed depth-first frontier whose head
+/// is consumed in serial order while up to a window of fetches runs ahead.
+///
+/// Every completion, fault included, parks in `resolved` until its serial
+/// turn at the head, so a lookahead fetch never fails a listing that stops
+/// before it.
 struct TrieWalk<L> {
-    driver: StaticDriver<CursorPolicy<L>, Fetched>,
+    store: L,
+    admission: Admission,
+    frontier: VecDeque<Slot>,
+    /// Completed fetches awaiting their serial turn at the head, keyed by id.
+    resolved: BTreeMap<u64, Resolved>,
+    in_flight: FuturesUnordered<BoxFuture<'static, Fetched>>,
+    next_id: u64,
+    /// Latched when a fault surfaces at the head or the in-flight set
+    /// empties; a later poll must not resume the frontier past a terminal
+    /// error.
+    done: bool,
 }
 
 impl<L> TrieWalk<L>
@@ -99,13 +113,13 @@ where
             after,
         }));
         Self {
-            driver: StaticDriver::new(CursorPolicy {
-                store,
-                admission: Admission::new(window),
-                frontier,
-                resolved: BTreeMap::new(),
-                next_id: 0,
-            }),
+            store,
+            admission: Admission::new(window),
+            frontier,
+            resolved: BTreeMap::new(),
+            in_flight: FuturesUnordered::new(),
+            next_id: 0,
+            done: false,
         }
     }
 
@@ -115,31 +129,35 @@ where
     /// Cancel-safe: all progress lives in `self`. `Ready(None)` after the
     /// last node or a terminal error.
     fn poll_visit(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Visit, CursorError>>> {
-        self.driver.poll(cx, ())
+        if self.done {
+            return Poll::Ready(None);
+        }
+        loop {
+            self.admit();
+            if let Some(outcome) = self.take_ready() {
+                if outcome.is_err() {
+                    self.done = true;
+                }
+                return Poll::Ready(Some(outcome));
+            }
+            match Pin::new(&mut self.in_flight).poll_next(cx) {
+                Poll::Ready(Some(fetched)) => self.absorb(fetched),
+                Poll::Ready(None) => {
+                    // Nothing in flight and no ready head: either the walk is
+                    // complete or the frontier is owed work nobody will do.
+                    self.done = true;
+                    return Poll::Ready(if self.frontier.is_empty() {
+                        None
+                    } else {
+                        Some(Err(CursorError::Stalled {
+                            pending: self.frontier.len(),
+                        }))
+                    });
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
-}
-
-/// The cursor's [`WalkPolicy`]: a path-keyed depth-first frontier drained
-/// only at its head, so every completion, fault included, is parked in
-/// `resolved` until its serial turn; a lookahead fetch never fails a listing
-/// that stops before it.
-struct CursorPolicy<L> {
-    store: L,
-    admission: Admission,
-    frontier: VecDeque<Slot>,
-    /// Completed fetches awaiting their serial turn at the head, keyed by id.
-    resolved: BTreeMap<u64, Resolved>,
-    next_id: u64,
-}
-
-impl<L> WalkPolicy<'static> for CursorPolicy<L>
-where
-    L: NodeLoader + Clone + 'static,
-{
-    type Fetched = Fetched;
-    type Frame = Visit;
-    type Error = CursorError;
-    type Drain = ();
 
     /// Admit queued nodes into the window, lowest frontier position first.
     ///
@@ -147,9 +165,9 @@ where
     /// fetches never exceed the window. The scan is O(window): every slot
     /// passed over or filled counts toward occupancy, which the window caps.
     #[inline]
-    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'static, Fetched>>) {
+    fn admit(&mut self) {
         let admission = self.admission;
-        let mut occupancy = in_flight.len().saturating_add(self.resolved.len());
+        let mut occupancy = self.in_flight.len().saturating_add(self.resolved.len());
         let mut head_holds_slot = matches!(self.frontier.front(), Some(Slot::Fetching(_)));
         for (index, slot) in self.frontier.iter_mut().enumerate() {
             if matches!(slot, Slot::Fetching(_)) {
@@ -176,7 +194,7 @@ where
                     });
                     (id, pending, fetched)
                 });
-            in_flight.push(fetch);
+            self.in_flight.push(fetch);
             occupancy = occupancy.saturating_add(1);
             if index == 0 {
                 head_holds_slot = true;
@@ -187,7 +205,7 @@ where
     /// Consume the head once resolved, expanding it into its children; a
     /// parked fault surfaces here, at its serial turn.
     #[inline]
-    fn take_ready(&mut self, (): ()) -> Option<Result<Visit, CursorError>> {
+    fn take_ready(&mut self) -> Option<Result<Visit, CursorError>> {
         let Some(Slot::Fetching(id)) = self.frontier.front() else {
             return None;
         };
@@ -209,7 +227,7 @@ where
 
     /// Park one completion for its serial turn; never eagerly terminal.
     #[inline]
-    fn absorb(&mut self, (id, pending, fetched): Fetched) -> Result<(), CursorError> {
+    fn absorb(&mut self, (id, pending, fetched): Fetched) {
         let outcome = match fetched {
             Err(error) => Err(error),
             Ok((bytes, addresses)) => match NodeView::try_from(bytes.as_slice()) {
@@ -221,22 +239,8 @@ where
             },
         };
         self.resolved.insert(id, outcome);
-        Ok(())
     }
 
-    #[inline]
-    fn drained(&self) -> Result<(), CursorError> {
-        if self.frontier.is_empty() {
-            Ok(())
-        } else {
-            Err(CursorError::Stalled {
-                pending: self.frontier.len(),
-            })
-        }
-    }
-}
-
-impl<L> CursorPolicy<L> {
     /// Queue the node's children at the frontier head in ascending fork
     /// order, pruning subtrees the prefix and resume bounds exclude.
     fn expand(&mut self, parent: &Pending, view: &NodeView) {
@@ -1041,6 +1045,59 @@ mod tests {
             assert_eq!(entries, want_entries);
             assert!(err.is_none(), "victim {victim_pos}: parked error surfaced");
         }
+    }
+
+    /// A terminal error ends the walk. The siblings beyond the failing node
+    /// are still queued on the frontier, so a walk that resumed after the
+    /// fault would keep delivering entries past it.
+    #[test]
+    fn a_terminal_error_ends_the_listing() {
+        let (root, loadsaver) = build(&["a", "b", "c"]);
+        let (serial_seq, _) = serial_profile(root, &loadsaver);
+        // The first child: its two siblings are queued when it fails.
+        let victim = serial_seq[1];
+        assert_ne!(victim, root);
+        let mut cursor =
+            Cursor::new(RecordingStore::failing(loadsaver, victim), root).with_window(window(4));
+        run(async {
+            assert!(matches!(
+                cursor.next().await,
+                Some(Err(CursorError::Store { address, .. })) if address == victim
+            ));
+            assert!(
+                cursor.next().await.is_none(),
+                "the listing resumed past a terminal error"
+            );
+            assert!(cursor.next().await.is_none());
+        });
+    }
+
+    /// The same latch on the address stream, which shares the walk.
+    #[test]
+    fn a_terminal_error_ends_the_address_stream() {
+        let (root, loadsaver) = build(&["a", "b", "c"]);
+        let (serial_seq, _) = serial_profile(root, &loadsaver);
+        let victim = serial_seq[1];
+        let mut stream = AddressStream::new(RecordingStore::failing(loadsaver, victim), root)
+            .with_window(window(4));
+        run(async {
+            // The root's own addresses precede the failing child.
+            let mut failed = false;
+            while let Some(item) = stream.next().await {
+                if let Err(error) = item {
+                    assert!(
+                        matches!(error, CursorError::Store { address, .. } if address == victim)
+                    );
+                    failed = true;
+                    break;
+                }
+            }
+            assert!(failed, "the failing child must fault the stream");
+            assert!(
+                stream.next().await.is_none(),
+                "the stream resumed past a terminal error"
+            );
+        });
     }
 
     #[test]

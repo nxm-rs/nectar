@@ -15,6 +15,7 @@
 #   postage-issuer pump   the Stamped sign-admission pump
 #   postage-issuer task   the sign-job panic boundary
 #   nectar-marker         the sole MaybeSend/MaybeSync cfg dance
+#   each walk module      its own bounded read/write window (phase 0, #610)
 
 set -euo pipefail
 
@@ -120,13 +121,18 @@ deny 'thread::park executor loop (use nectar_testing::run or nectar_tasks)' \
 
 # The bounded put window: a fresh `FuturesUnordered` set drained by
 # `settle_one`/`sweep`. The governor `PutSink` is its sole home; a new in-flight
-# set or a drain-settle loop elsewhere is a copy. Only the sign-admission pump
-# owns its own set. `settle`/`drain` alone (a `Format` fold, `VecDeque::drain`)
-# is not this shape and is left alone.
+# set or a drain-settle loop elsewhere is a copy. `settle`/`drain` alone (a
+# `Format` fold, `VecDeque::drain`) is not this shape and is left alone.
+#
+# Phase 0 (#610) deletes the shared walk loop, so a walk drives its own
+# in-flight set under `Admission` in its own module. Each such walk home is
+# listed below; the sign-admission pump owns its set the same way.
 deny 'hand-rolled put window (use nectar_governor::PutSink)' \
     'fn[[:space:]]+(settle_one|sweep)[[:space:]]*[<(]|FuturesUnordered::new[[:space:]]*\(\)' \
     'crates/governor/' \
-    'crates/postage-issuer/src/pipeline/stamp_sink.rs'
+    'crates/postage-issuer/src/pipeline/stamp_sink.rs' \
+    'crates/mantaray/src/cursor.rs' \
+    'crates/mantaray/src/editor.rs'
 
 # The pool submit: a rayon pool job whose reply arrives on a oneshot. The
 # handoff owns this pairing; `submit`/`submit_on` return it. A bare pool
