@@ -222,8 +222,8 @@ impl ChunkGet<TinyRegistry> for HeadLast {
 }
 
 /// Late-miss store: a present chunk resolves after one yield, the missing one
-/// only after every other admitted fetch has settled, so the walk owes
-/// nothing below the fault when it surfaces.
+/// only after every other admitted fetch has settled, so the fault is the
+/// head when it surfaces.
 #[derive(Clone)]
 struct LateMiss {
     chunks: Arc<HashMap<ChunkAddress, TinyChunk>>,
@@ -238,6 +238,30 @@ impl ChunkGet<TinyRegistry> for LateMiss {
         let delay = if found.is_some() { 1 } else { 64 };
         for _ in 0..delay {
             yield_now().await;
+        }
+        found.ok_or_else(|| ChunkStoreError::not_found(address))
+    }
+}
+
+/// Early-miss store: the missing chunk resolves at once and every present
+/// leaf only after many yields, so the fault lands while lower offsets are
+/// still in flight. Branches stay prompt, or the fault never dispatches.
+#[derive(Clone)]
+struct EarlyMiss {
+    chunks: Arc<HashMap<ChunkAddress, TinyChunk>>,
+    leaves: Arc<HashMap<ChunkAddress, u64>>,
+}
+
+impl ChunkGet<TinyRegistry> for EarlyMiss {
+    type Trust = Verified;
+    type Error = ChunkStoreError;
+
+    async fn get(&self, address: &ChunkAddress) -> Result<TinyChunk, ChunkStoreError> {
+        let found = self.chunks.as_ref().get(address).cloned();
+        if found.is_some() && self.leaves.contains_key(address) {
+            for _ in 0..64 {
+                yield_now().await;
+            }
         }
         found.ok_or_else(|| ChunkStoreError::not_found(address))
     }
@@ -524,8 +548,8 @@ fn deliverable_prefix_precedes_a_terminal_error() {
             }
         }
     });
-    // A ready frame outranks a fresh completion, so every byte the walk
-    // already owed below the fault is delivered before the fault surfaces.
+    // The drain outranks a fresh completion, so the frames the head already
+    // released come out before the fault takes the head's turn.
     assert_tiles(&frames, 0, &data[..offset as usize]);
     match error {
         WalkError::Fetch { address, .. } => assert_eq!(address, missing),
@@ -536,6 +560,31 @@ fn deliverable_prefix_precedes_a_terminal_error() {
         assert!(poll_fn(|cx| walk.poll_next_ordered(cx)).await.is_none());
         assert!(poll_fn(|cx| walk.poll_next_any(cx)).await.is_none());
     });
+}
+
+#[test]
+fn a_fault_pre_empts_the_bytes_still_owed_below_it() {
+    let data = fill(24 * TINY);
+    let mut tree = build_tree(&data);
+    let mut offsets: Vec<(u64, ChunkAddress)> = tree.leaves.iter().map(|(a, o)| (*o, *a)).collect();
+    offsets.sort();
+    // Inside the first window, so it is admitted with the leaves below it.
+    let (_, missing) = offsets[2];
+    tree.chunks.remove(&missing);
+
+    let store = EarlyMiss {
+        chunks: Arc::new(tree.chunks.clone()),
+        leaves: Arc::new(tree.leaves.clone()),
+    };
+    let mut walk = walk_range(store, &tree, 0..tree.span, 4);
+    // The fault is terminal, not deferred: offsets 0 and 1 are in flight and
+    // are dropped with it, so no frame precedes the error.
+    let outcome = run(async { poll_fn(|cx| walk.poll_next_ordered(cx)).await });
+    match outcome {
+        Some(Err(WalkError::Fetch { address, .. })) => assert_eq!(address, missing),
+        other => panic!("expected the fault first, got {other:?}"),
+    }
+    assert!(walk.is_finished());
 }
 
 #[test]

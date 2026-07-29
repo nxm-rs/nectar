@@ -213,9 +213,9 @@ where
     }
 
     /// The bounded-admission loop: admit, then drain a ready frame, else fold
-    /// one completion. A deliverable frame always outranks a fresh
-    /// completion, so a terminal error surfaces only once nothing below it is
-    /// owed.
+    /// one completion. The drain outranks a fresh completion, so a fault
+    /// never displaces a frame the drain already permits; every other byte
+    /// still owed is dropped with the fault.
     fn poll(
         &mut self,
         cx: &mut Context<'_>,
@@ -226,11 +226,8 @@ where
         }
         loop {
             self.admit();
-            if let Some(outcome) = self.take_ready(drain) {
-                if outcome.is_err() {
-                    self.done = true;
-                }
-                return Poll::Ready(Some(outcome));
+            if let Some(frame) = self.take_ready(drain) {
+                return Poll::Ready(Some(Ok(frame)));
             }
             match self.in_flight.poll_next_unpin(cx) {
                 Poll::Ready(Some(fetched)) => {
@@ -264,8 +261,9 @@ where
         }
     }
 
-    /// Take the next deliverable frame, if `drain` permits one.
-    fn take_ready(&mut self, drain: Drain) -> Option<Result<Frame, WalkError<S::Error>>> {
+    /// Take the next deliverable frame, if `drain` permits one. Faults are
+    /// eager, so a frame is the only thing this yields.
+    fn take_ready(&mut self, drain: Drain) -> Option<Frame> {
         if let Drain::Ordered = drain {
             let head = self.head_key()?;
             let (&key, _) = self.ready.first_key_value()?;
@@ -275,7 +273,7 @@ where
         }
         self.ready
             .pop_first()
-            .map(|(offset, data)| Ok(Frame { offset, data }))
+            .map(|(offset, data)| Frame { offset, data })
     }
 
     /// Fold one completion; an `Err` terminates the walk eagerly.
