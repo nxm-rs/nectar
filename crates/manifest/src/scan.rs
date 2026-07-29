@@ -17,11 +17,13 @@
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
-use core::convert::Infallible;
 use core::future::poll_fn;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use bytes::Bytes;
-use nectar_governor::{BoxFuture, Driver, FuturesUnordered, WalkPolicy};
+use futures_core::Stream;
+use nectar_governor::{BoxFuture, FuturesUnordered};
 use nectar_primitives::ChunkAddress;
 #[cfg(feature = "encryption")]
 use nectar_primitives::EncryptedChunkRef;
@@ -101,10 +103,27 @@ type Turn<F> = Result<Option<(Key, Entry<F>)>, ReaderError>;
 ///
 /// Cancel-safe: a descent's step is consumed only after its fetch completes,
 /// so a dropped [`next`](Self::next) future replays the same descent.
+///
+/// Every fault is non-terminal (a failed descent replays, an encrypted edge
+/// is stepped past), so a fault rides the delivered turn rather than ending
+/// the walk. The walk advances inside [`admit`](Self::admit), where the
+/// launch a fresh descent needs is reachable.
 #[derive(Debug)]
 pub struct Cursor<'a, S, F: Format = V1> {
-    /// The walk, advanced by the policy and driven by the kernel driver.
-    driver: Driver<'a, ScanPolicy<'a, S, F>, Fetched<F>>,
+    store: &'a S,
+    /// One frame per referenced hop on the current path.
+    stack: Vec<Frame<F>>,
+    /// Exclusive upper bound on yielded keys.
+    end: Option<Bytes>,
+    /// Node fetches launched ahead of the walk.
+    in_flight: FuturesUnordered<BoxFuture<'a, Fetched<F>>>,
+    /// Completions that arrived before the descent awaiting them; drained by
+    /// sequence id and bounded with the in-flight set by the window.
+    ready: Vec<Fetched<F>>,
+    /// The next fetch sequence id to hand out.
+    next_seq: usize,
+    /// The turn advanced to under `admit`, awaiting hand-over.
+    staged: Option<Turn<F>>,
     done: bool,
     /// Remaining yields a paginated cursor may return; `None` is unbounded.
     remaining: Option<usize>,
@@ -124,39 +143,16 @@ enum Advance<F: Format> {
     Encrypted(Vec<u8>),
 }
 
-/// The cursor's walk policy over the kernel driver.
-///
-/// Every fault is non-terminal (a failed descent replays, an encrypted edge
-/// is stepped past), so faults ride the delivered turn and the driver error
-/// is uninhabited. The walk advances inside `admit`, where the launch a
-/// fresh descent needs is reachable; `take_ready` hands over the staged
-/// turn.
-struct ScanPolicy<'a, S, F: Format> {
-    store: &'a S,
-    /// One frame per referenced hop on the current path.
-    stack: Vec<Frame<F>>,
-    /// Exclusive upper bound on yielded keys.
-    end: Option<Bytes>,
-    /// Completions that arrived before the descent awaiting them; drained by
-    /// sequence id and bounded with the in-flight set by the window.
-    ready: Vec<Fetched<F>>,
-    /// The next fetch sequence id to hand out.
-    next_seq: usize,
-    /// The turn advanced to under `admit`, awaiting hand-over.
-    staged: Option<Turn<F>>,
-}
-
-impl<'a, S, F> WalkPolicy<'a> for ScanPolicy<'a, S, F>
+impl<'a, S, F> Cursor<'a, S, F>
 where
     S: NodeGet + MaybeSync,
     F: Format,
 {
-    type Fetched = Fetched<F>;
-    type Frame = Turn<F>;
-    type Error = Infallible;
-    type Drain = ();
-
-    fn admit(&mut self, in_flight: &mut FuturesUnordered<BoxFuture<'a, Fetched<F>>>) {
+    /// Stage the next turn, then launch the read-ahead the walk needs.
+    ///
+    /// Staging first is what makes a fresh descent reachable: the fill only
+    /// launches what the staged walk position asks for.
+    fn admit(&mut self) {
         if self.staged.is_none() {
             self.staged = self.advance();
         }
@@ -167,7 +163,7 @@ where
             self.ready.len(),
             &mut self.next_seq,
             &mut self.stack,
-            in_flight,
+            &mut self.in_flight,
             |base, step| {
                 let key = join(base, step.suffix());
                 if end.is_some_and(|end| key.as_slice() >= end.as_ref()) {
@@ -193,25 +189,24 @@ where
         );
     }
 
-    fn take_ready(&mut self, (): ()) -> Option<Result<Turn<F>, Infallible>> {
-        self.staged.take().map(Ok)
+    /// One poll of the bounded-admission walk: admit, hand over a staged
+    /// turn, else fold one completion. `None` ends the walk.
+    ///
+    /// All state lives in `self`, so a dropped poll replays.
+    fn poll_turn(&mut self, cx: &mut Context<'_>) -> Poll<Option<Turn<F>>> {
+        loop {
+            self.admit();
+            if let Some(turn) = self.staged.take() {
+                return Poll::Ready(Some(turn));
+            }
+            match Pin::new(&mut self.in_flight).poll_next(cx) {
+                Poll::Ready(Some(completion)) => self.ready.push(completion),
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
 
-    fn absorb(&mut self, completion: Fetched<F>) -> Result<(), Infallible> {
-        self.ready.push(completion);
-        Ok(())
-    }
-
-    fn drained(&self) -> Result<(), Infallible> {
-        Ok(())
-    }
-}
-
-impl<S, F> ScanPolicy<'_, S, F>
-where
-    S: NodeGet + MaybeSync,
-    F: Format,
-{
     /// Advance the walk to its next deliverable turn: pop spent frames, yield
     /// values, and descend once a child's fetch has landed. `None` parks the
     /// walk on the head fetch the fill launches.
@@ -292,13 +287,7 @@ where
     fn past_end(&self, key: &[u8]) -> bool {
         self.end.as_ref().is_some_and(|end| key >= end.as_ref())
     }
-}
 
-impl<'a, S, F> Cursor<'a, S, F>
-where
-    S: NodeGet + MaybeSync,
-    F: Format,
-{
     /// Position a cursor at the least key `>= start`, streaming forward until
     /// `end` (exclusive), descending only the referenced hops on the seek path.
     pub(crate) async fn seek(
@@ -361,14 +350,13 @@ where
             }
         }
         Ok(Self {
-            driver: Driver::new(ScanPolicy {
-                store,
-                stack,
-                end,
-                ready: Vec::new(),
-                next_seq: 0,
-                staged: None,
-            }),
+            store,
+            stack,
+            end,
+            in_flight: FuturesUnordered::new(),
+            ready: Vec::new(),
+            next_seq: 0,
+            staged: None,
             done: false,
             remaining: None,
         })
@@ -378,14 +366,13 @@ where
     /// starts past the last key.
     pub(crate) fn exhausted(store: &'a S) -> Self {
         Self {
-            driver: Driver::new(ScanPolicy {
-                store,
-                stack: Vec::new(),
-                end: None,
-                ready: Vec::new(),
-                next_seq: 0,
-                staged: None,
-            }),
+            store,
+            stack: Vec::new(),
+            end: None,
+            in_flight: FuturesUnordered::new(),
+            ready: Vec::new(),
+            next_seq: 0,
+            staged: None,
             done: true,
             remaining: None,
         }
@@ -411,25 +398,22 @@ where
             self.done = true;
             return Ok(None);
         }
-        let Some(turn) = poll_fn(|cx| self.driver.poll(cx, ())).await else {
+        let Some(turn) = poll_fn(|cx| self.poll_turn(cx)).await else {
             self.done = true;
             return Ok(None);
         };
         match turn {
-            Ok(turn) => match turn {
-                Ok(Some((key, entry))) => {
-                    if let Some(left) = self.remaining {
-                        self.remaining = Some(left.saturating_sub(1));
-                    }
-                    Ok(Some((key, entry)))
+            Ok(Some((key, entry))) => {
+                if let Some(left) = self.remaining {
+                    self.remaining = Some(left.saturating_sub(1));
                 }
-                Ok(None) => {
-                    self.done = true;
-                    Ok(None)
-                }
-                Err(error) => Err(error),
-            },
-            Err(error) => match error {},
+                Ok(Some((key, entry)))
+            }
+            Ok(None) => {
+                self.done = true;
+                Ok(None)
+            }
+            Err(error) => Err(error),
         }
     }
 }

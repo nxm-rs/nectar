@@ -1,6 +1,5 @@
-//! Frontier bookkeeping shared by the manifest walk policies: per-step
-//! prefetch tags and the bounded fill that admits fetches into the kernel
-//! in-flight set.
+//! Frontier bookkeeping shared by the manifest walks: per-step prefetch tags
+//! and the bounded fill that admits fetches into a walk's own in-flight set.
 //!
 //! The walker owns the walk; the fill owns the window. Each policy plans one
 //! step at a time, so admission mirrors the walk's own termination and
