@@ -2617,20 +2617,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nectar-ldb-sim"
-version = "0.4.0"
-dependencies = [
- "bytes",
- "nectar-ldb",
- "nectar-primitives 0.4.0",
- "nectar-testing",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
-]
-
-[[package]]
 name = "nectar-loadsave"
 version = "0.4.0"
 dependencies = [
@@ -2650,6 +2636,22 @@ dependencies = [
  "nectar-marker",
  "nectar-primitives 0.4.0",
  "nectar-tasks",
+]
+
+[[package]]
+name = "nectar-manifest-sim"
+version = "0.4.0"
+dependencies = [
+ "bytes",
+ "nectar-ldb",
+ "nectar-loadsave",
+ "nectar-mantaray 0.4.0",
+ "nectar-primitives 0.4.0",
+ "nectar-testing",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]

@@ -38,6 +38,9 @@ pub const RTT_SET: [u32; 3] = [25, 50, 75];
 pub const PAGE_OFFSETS: [u64; 5] = [0, 100, 1_000, 10_000, 100_000];
 /// Keys returned per pagination request.
 pub const PAGE_LIMIT: usize = 20;
+/// The write-amplification K sweep (spec section 3); K rows above n are
+/// skipped by the caller. Shared with the write-amp module (Unit D).
+pub const WRITE_AMP_KS: [u64; 5] = [1, 10, 100, 1_000, 10_000];
 /// One virtual millisecond of modelled latency per node fetch.
 const RTT_UNIT: Duration = Duration::from_millis(1);
 /// A key sorting strictly above every corpus key: the open upper bound.
@@ -97,8 +100,9 @@ fn build_counting<F: Format>(
     Ok((store, root))
 }
 
-/// Deterministic evenly-spaced sample of `count` indices in `0..n`.
-fn sample_indices(n: usize, count: usize) -> Vec<usize> {
+/// Deterministic evenly-spaced sample of `count` indices in `0..n`. Shared
+/// with the two-arm metric modules (Units B-D).
+pub(crate) fn sample_indices(n: usize, count: usize) -> Vec<usize> {
     if n == 0 {
         return Vec::new();
     }
@@ -451,6 +455,9 @@ pub fn paginate_cells(
             skip_baseline_fetch_count: skip_fetch,
             skip_over_paginate: (paginate_fetch > 0)
                 .then(|| skip_fetch as f64 / paginate_fetch as f64),
+            // The 0.2 resume-walk column (whitepaper 4.3) is filled by Unit D.
+            v02_resume_fetch_count: None,
+            v02_resume_null_reason: None,
         });
     }
     Ok(cells)
