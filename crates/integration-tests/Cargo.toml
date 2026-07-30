@@ -141,6 +141,10 @@ name = "manifest_listing"
 path = "tests/manifest/listing.rs"
 
 [[test]]
+name = "manifest_root_key"
+path = "tests/manifest/root_key.rs"
+
+[[test]]
 name = "manifest_vocabulary"
 path = "tests/manifest/vocabulary.rs"
 

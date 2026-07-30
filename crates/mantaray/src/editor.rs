@@ -45,8 +45,15 @@ pub enum Op<R: Reference = ChunkRef> {
         /// Metadata to attach; empty clears whatever the path carried.
         metadata: BTreeMap<String, String>,
     },
-    /// Remove the value at the path; an absent path fails the commit.
+    /// Clear the binding at exactly the path: its value and its metadata, and
+    /// nothing below it. An absent or unbound path is a no-op.
     Remove,
+    /// Prune the fork whose boundary the path names, taking every key under it.
+    /// An absent path fails the commit.
+    ///
+    /// The legacy 0.3.0 boundary op, kept for the compatibility differential
+    /// alone; [`Remove`](Self::Remove) is what the map vocabulary means.
+    RemoveSubtree,
     /// Merge one metadata key into the node at the path, creating the node
     /// when absent.
     SetRootMetadata {
@@ -177,9 +184,23 @@ impl<S, R: Reference> ManifestEditor<S, R> {
         }
     }
 
-    /// Record removing the value at `path`.
+    /// Record clearing the binding at exactly `path`.
+    ///
+    /// A map removal: the path's own value and metadata go, and the paths below
+    /// it stay. A childless leaf is pruned, and an absent or unbound path is a
+    /// no-op that leaves the committed root where it was.
     pub fn remove(&mut self, path: impl AsRef<[u8]>) -> &mut Self {
         self.push(path, Op::Remove)
+    }
+
+    /// Record pruning the whole subtree the fork at `path` reaches.
+    ///
+    /// The legacy 0.3.0 boundary remove, kept so the compatibility differential
+    /// can drive the behaviour it pins. It removes keys the caller never named,
+    /// so it is not the map vocabulary: use [`remove`](Self::remove) for that.
+    /// An absent path fails the commit.
+    pub fn remove_subtree(&mut self, path: impl AsRef<[u8]>) -> &mut Self {
+        self.push(path, Op::RemoveSubtree)
     }
 
     /// Record merging one metadata key into the manifest's root path node.
@@ -290,7 +311,8 @@ impl<S: NodeLoader, R: Reference + MaybeSend> ManifestEditor<S, R> {
                         self.trie.add(&path, reference, metadata, &self.store).await
                     }
                 }
-                Op::Remove => self.trie.remove(&path, &self.store).await,
+                Op::Remove => self.trie.clear(&path, &self.store).await.map(|_| ()),
+                Op::RemoveSubtree => self.trie.remove(&path, &self.store).await,
                 Op::SetRootMetadata { key, value } => {
                     apply_metadata_merge::<S, R>(&mut self.trie, &path, key, value, &self.store)
                         .await
@@ -915,12 +937,57 @@ mod tests {
     fn apply_error_names_op_index_and_path() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
         editor.insert("present", make_addr("p"));
-        editor.remove("absent");
+        // The legacy boundary remove is the one that fails on an absent path.
+        editor.remove_subtree("absent");
         let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
             err,
             EditorError::Apply { index: 1, ref path, .. } if path == b"absent"
         ));
+    }
+
+    /// The map removal is exact-key: a key with children keeps them, a
+    /// childless leaf is pruned, and an absent key changes nothing at all.
+    #[test]
+    fn remove_is_exact_key_and_absence_is_a_noop() {
+        let (root, loadsaver) = editor_replay(&[
+            Script::Add("a", "1"),
+            Script::Add("ab", "2"),
+            Script::Add("ac", "3"),
+        ]);
+
+        let mut editor = Editor::open(root, loadsaver);
+        editor.remove("a");
+        let (pruned, loadsaver) = run(editor.commit()).unwrap();
+        let reader = crate::Reader::new(loadsaver);
+        assert!(run(reader.get(pruned, b"a")).unwrap().is_none());
+        assert!(run(reader.get(pruned, b"ab")).unwrap().is_some());
+        assert!(run(reader.get(pruned, b"ac")).unwrap().is_some());
+
+        // Absent, and unbound: neither moves the root.
+        let mut editor = Editor::open(pruned, reader.into_store());
+        editor.remove("zzz");
+        editor.remove("a");
+        let (again, _) = run(editor.commit()).unwrap();
+        assert_eq!(again, pruned, "a removal of nothing removes nothing");
+    }
+
+    /// The legacy boundary remove keeps taking the whole subtree, so the
+    /// compatibility differential still has the behaviour it pins.
+    #[test]
+    fn remove_subtree_still_takes_the_whole_subtree() {
+        let (root, loadsaver) = editor_replay(&[
+            Script::Add("a", "1"),
+            Script::Add("ab", "2"),
+            Script::Add("ac", "3"),
+        ]);
+        let mut editor = Editor::open(root, loadsaver);
+        editor.remove_subtree("a");
+        let (pruned, loadsaver) = run(editor.commit()).unwrap();
+        let reader = crate::Reader::new(loadsaver);
+        for path in [&b"a"[..], &b"ab"[..], &b"ac"[..]] {
+            assert!(run(reader.get(pruned, path)).unwrap().is_none());
+        }
     }
 
     /// The clean-ancestor hazard: root metadata set after a persist boundary

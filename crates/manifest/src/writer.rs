@@ -149,6 +149,15 @@ pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
     }
 
     /// Stage the removal of `path`.
+    ///
+    /// Exact-key, on either format, exactly as `HashMap::remove` is: the path's
+    /// own value and metadata go, and no other path does. A path with children
+    /// keeps every one of them, and a childless leaf is pruned. At
+    /// [`ManifestPath::root`] that clears the manifest's own binding, the site
+    /// documents included, and leaves the whole tree below it.
+    ///
+    /// Removing an unbound or absent path is a no-op, not an error: the batch
+    /// commits and the root does not move, because nothing changed.
     fn remove(&mut self, path: ManifestPath) -> &mut Self {
         self.stage(ManifestOp::Remove { path });
         self

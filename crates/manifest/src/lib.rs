@@ -110,9 +110,10 @@ impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 /// it is the least path, `get`, `contains_key`, `floor`, `iter` and `range`
 /// treat it like any other, and the site-level documents are well-known
 /// metadata on its entry. An insert there replaces the whole binding, site
-/// documents included. The one thing that follows from the path rather than
-/// from a rule is [`MapView::dir`]: a directory lists its children, and no
-/// path is its own child, so `dir("/")` lists the top level without `"/"`.
+/// documents included, and a remove there clears that binding and leaves every
+/// child. The one thing that follows from the path rather than from a rule is
+/// [`MapView::dir`]: a directory lists its children, and no path is its own
+/// child, so `dir("/")` lists the top level without `"/"`.
 pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
@@ -170,6 +171,9 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
 
     /// Remove one path from the manifest rooted at `root`, returning the new
     /// root.
+    ///
+    /// Exact-key, as [`MapWriter::remove`] is: nothing below `path` goes with
+    /// it, and removing what is not bound returns `root` unchanged.
     fn remove(
         &self,
         root: &R,

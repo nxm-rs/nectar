@@ -154,6 +154,8 @@ where
 
     /// Remove one key from the database rooted at `root`, returning the new
     /// root.
+    ///
+    /// Exact-key, as [`Editor::remove`] is: nothing below `key` goes with it.
     pub async fn remove<R: NodeRef>(&self, root: &R, key: Key) -> Result<R, ApplyError>
     where
         K: Seal<R>,
@@ -349,6 +351,11 @@ impl<S, K, F: Format, R: NodeRef> Editor<'_, S, K, F, R> {
     }
 
     /// Stage the removal of `key`.
+    ///
+    /// Exact-key: the key's own value and metadata go, and no other key does.
+    /// The keys below it are its children, not its binding, so every one of them
+    /// survives, the root key included. Removing an unbound or absent key is a
+    /// no-op, so the commit hands the base root back.
     pub fn remove(&mut self, key: Key) -> &mut Self {
         self.changeset.remove(key);
         self

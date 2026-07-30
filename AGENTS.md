@@ -32,13 +32,16 @@ Prefer them for new code, and align existing code when you touch it.
   It is `put`, not `insert`, because the caller supplies no key.
   An arbitrary-key map (`nectar-ldb`, the manifest formats, the `Manifest` trait) uses `get`, `contains_key`, `insert`, `remove`, `range`, `floor` and `iter`.
   An `insert` replaces the whole binding, so it clears the metadata the key carried unless the call attaches new metadata.
+  A `remove` is exact-key, so it clears that key's value and metadata and no other key's: a key with children keeps every one of them, a childless leaf is pruned, and removing an unbound or absent key is a no-op that leaves the root where it was.
+  Never let a map `remove` take a subtree or a prefix.
+  mantaray's legacy boundary remove is `remove_subtree`, and it exists for the pinned 0.3.0 differential alone.
   A manifest key is absolute: the canonical `ManifestPath` starts at the separator, in the stored bytes of both formats, so `"/"` is the manifest root and `"/index.html"` a file below it.
   The root is an ordinary key.
   `get`, `contains_key`, `floor`, `iter` and `range` answer at `"/"` the way they answer anywhere, and nothing special-cases it.
   `dir` lists the children of a path, and no path is a child of itself, which is the only reason `dir("/")` lists the top level without `"/"` in it.
   Well-known metadata carries what used to want a verb of its own: the site index and error documents are metadata on the `"/"` entry, set through the chainable `with_index_document`, `with_error_document` and `with_content_type` builders on the insert guard, on top of the generic `with(key, value)`.
   Do not add a `set_*` verb for a metadata key.
-  Because they are metadata on an insert, the replace contract still holds: a bare `insert("/", reference)` clears the site documents.
+  Because they are metadata on an insert, the replace contract still holds: a bare `insert("/", reference)` clears the site documents, and a `remove("/")` clears them with the value and leaves every child.
   These maps are immutable, so a write yields a new root: bind a root with `at` for reads, bind a base with `edit` for writes, and let `commit` hand back the new root.
   One-shot `insert` and `remove` on the store are the sugar over an edit of one op.
   Structured content is not a map.
