@@ -226,11 +226,12 @@ where
     let mut root_entry = node.entry().cloned();
     let mut root_meta = node.metadata().cloned();
     match changeset.ops.get(&Bytes::new()) {
+        // A bare insert replaces the whole binding, so it clears the key's
+        // metadata unless the insert carries some. The empty key's metadata is
+        // the database's own manifest metadata; a later merge op re-sets it.
         Some(Op::Insert { entry, meta }) => {
             root_entry = Some(entry.clone());
-            if meta.is_some() {
-                root_meta = meta.clone();
-            }
+            root_meta = meta.clone();
         }
         // A removal clears the whole binding, at the empty key like everywhere
         // else: the manifest metadata is that key's metadata, so it goes with
@@ -1302,6 +1303,34 @@ mod tests {
         clear.remove(Key::empty());
         let cleared = run(apply(&store, &Plaintext, &with_root, &clear)).unwrap();
         assert_eq!(cleared, rebuilt(&[(b"a", 1)]));
+    }
+
+    #[test]
+    fn a_bare_insert_at_the_empty_key_clears_the_root_metadata() {
+        let store = ContentGet::new(MemoryStore::default());
+        let root = build(&store, &[(b"a", 1)]);
+
+        // The root carries its own manifest metadata, where the site config lives.
+        let mut set = Changeset::<V1>::new();
+        set.set_root_metadata(
+            KeyId::WebsiteIndexDocument,
+            Some(Bytes::from_static(b"index.html")),
+        );
+        let with_meta = run(apply(&store, &Plaintext, &root, &set)).unwrap();
+
+        // A bare insert at the empty key replaces the whole binding, so it clears
+        // that metadata and lands on the root a build without it would.
+        let mut bare = Changeset::<V1>::new();
+        bare.insert(Key::empty(), entry(7), None);
+        let after = run(apply(&store, &Plaintext, &with_meta, &bare)).unwrap();
+
+        let mut expect = Builder::<V1>::new();
+        expect.insert(Key::empty(), entry(7), None);
+        expect.insert(Key::from(&b"a"[..]), entry(1), None);
+        let rebuilt_root = *run(expect.build(&ContentGet::new(MemoryStore::default()), &Plaintext))
+            .unwrap()
+            .root();
+        assert_eq!(after, rebuilt_root);
     }
 
     #[test]
