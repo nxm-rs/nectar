@@ -276,8 +276,7 @@ impl<F: Format> Metadata<F> {
     /// This block with `key` removed, or `None` when nothing is left.
     ///
     /// A block is non-empty by construction, so removing its only pair yields no
-    /// block at all: that is the same `None` an absent block is, which is what a
-    /// caller holding `Option<Metadata>` stores back.
+    /// block at all, which is the `None` an absent block is.
     #[must_use]
     pub fn without(mut self, key: &MetadataKey<F>) -> Option<Self> {
         let Some(value) = self.pairs.remove(key) else {
@@ -287,7 +286,7 @@ impl<F: Format> Metadata<F> {
             return None;
         }
         // The removed pair was part of the bounded total, so what is left is
-        // bounded too and the length cannot fail its own bound.
+        // bounded too.
         self.len = MetadataLen::new(self.len.get().saturating_sub(pair_len(key, &value))).ok()?;
         Some(self)
     }

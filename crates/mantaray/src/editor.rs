@@ -51,7 +51,7 @@ pub enum Op<R: Reference = ChunkRef> {
     /// Prune the fork whose boundary the path names, taking every key under it.
     /// An absent path fails the commit.
     ///
-    /// The legacy 0.3.0 boundary op, kept for the compatibility differential
+    /// The legacy boundary op, kept for the compatibility differential
     /// alone; [`Remove`](Self::Remove) is what the map vocabulary means.
     RemoveSubtree,
     /// Merge one metadata key into the node at the path, creating the node
@@ -200,7 +200,7 @@ impl<S, R: Reference> ManifestEditor<S, R> {
 
     /// Record pruning the whole subtree the fork at `path` reaches.
     ///
-    /// The legacy 0.3.0 boundary remove, kept so the compatibility differential
+    /// The legacy boundary remove, kept so the compatibility differential
     /// can drive the behaviour it pins. It removes keys the caller never named,
     /// so it is not the map vocabulary: use [`remove`](Self::remove) for that.
     /// An absent path fails the commit.
@@ -210,11 +210,10 @@ impl<S, R: Reference> ManifestEditor<S, R> {
 
     /// Record merging one metadata key into the manifest's root path node.
     ///
-    /// The root path node is [`metadata::ROOT_PATH`], the one-byte fork under
-    /// the structural root that the reference client keeps the site-level
-    /// documents on. A merge, not a replace: only the named key moves, and a
-    /// node that binds no entry of its own is created as the metadata-only value
-    /// the reference client writes there.
+    /// The root path node is [`metadata::ROOT_PATH`], the one-byte fork the
+    /// reference client keeps the site-level documents on. A merge, not a
+    /// replace: only the named key moves. A node that binds no entry is created
+    /// as the metadata-only value the reference client writes there.
     pub fn set_root_metadata(
         &mut self,
         key: impl Into<String>,
@@ -232,9 +231,9 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     /// Record removing one metadata key from the manifest's root path node.
     ///
     /// The inverse of [`set_root_metadata`](Self::set_root_metadata): the other
-    /// keys stay, and a node the removal leaves carrying nothing is pruned, so
-    /// clearing the only key restores the root the manifest had before it was
-    /// set. A node that does not carry the key is a no-op.
+    /// keys stay, and a node left carrying nothing is pruned, so clearing the
+    /// only key restores the root the manifest had before it was set. A node
+    /// that does not carry the key is a no-op.
     pub fn clear_root_metadata(&mut self, key: impl Into<String>) -> &mut Self {
         self.push(
             metadata::ROOT_PATH,
@@ -409,11 +408,10 @@ where
 
 /// Remove one metadata key from the node at `path`.
 ///
-/// Expressed in the two ops the wire already pins, so no new shape reaches it:
-/// what the node keeps is rebound with [`Node::add`], and a node the removal
-/// leaves carrying nothing at all is cleared, which prunes it exactly as a
-/// childless leaf is pruned. An absent node, or one that does not carry the key,
-/// dirties nothing.
+/// Expressed in the two ops the wire already pins: what the node keeps is
+/// rebound with [`Node::add`], and a node left carrying nothing is cleared,
+/// which prunes it as a childless leaf. An absent node, or one that does not
+/// carry the key, dirties nothing.
 async fn apply_metadata_clear<S, R>(
     trie: &mut Node<R>,
     path: &[u8],
@@ -438,10 +436,9 @@ where
 
 /// The binding the node at `path` carries, or `None` when no node is there.
 ///
-/// Every visited node is dirtied, exactly as the merge descent dirties one: the
-/// rebind that follows loads no node it has not already loaded, so a node left
-/// clean here would keep its persisted reference and shadow the rebind at commit.
-/// Dirtying an unchanged node is safe, because it re-encodes to the same address.
+/// Every visited node is dirtied. A node left clean would keep its persisted
+/// reference and shadow the rebind at commit. Dirtying an unchanged node is
+/// safe, because it re-encodes to the same address.
 async fn binding_at<S, R>(
     trie: &mut Node<R>,
     path: &[u8],

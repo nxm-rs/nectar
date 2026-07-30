@@ -355,9 +355,9 @@ impl<S, K, F: Format, R: NodeRef> Editor<'_, S, K, F, R> {
     /// Stage the removal of `key`.
     ///
     /// Exact-key: the key's own value and metadata go, and no other key does.
-    /// The keys below it are its children, not its binding, so every one of them
-    /// survives, the root key included. Removing an unbound or absent key is a
-    /// no-op, so the commit hands the base root back.
+    /// The keys below are children, not the binding, so every one survives, the
+    /// root key included. Removing an unbound or absent key is a no-op, so the
+    /// commit hands the base root back.
     pub fn remove(&mut self, key: Key) -> &mut Self {
         self.changeset.remove(key);
         self

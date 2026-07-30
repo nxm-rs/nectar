@@ -42,8 +42,8 @@
 //!
 //! The trie is not, by design. mantaray 0.2 puts a node where the insert order
 //! first justified one and never moves it, so past the 30-byte edge bound even a
-//! plain `add` of one key set in two orders lands on two roots; the 0.3.0
-//! reference client agrees, and `mantaray/legacy_differential.rs` pins those
+//! plain `add` of one key set in two orders lands on two roots. The pinned
+//! legacy oracle confirms that, and `mantaray/legacy_differential.rs` pins those
 //! bytes. History-independence is a mantaray-1.0 guarantee (whitepaper
 //! capability matrix, row 20), which the key-value database is the
 //! implementation of. Asking 0.2 for it would mean rewriting the surviving

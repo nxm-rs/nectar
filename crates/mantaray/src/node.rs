@@ -665,23 +665,22 @@ impl<R: Reference> Node<R> {
     /// # This format is order-dependent, by design
     ///
     /// The trie the clear leaves behind is valid and decodes exactly the
-    /// surviving keys, and that is the whole contract. The root it hashes to is
+    /// surviving keys, which is the whole contract. The root it hashes to is
     /// not the root a build of those same keys produces, because mantaray 0.2
-    /// puts a node wherever the insert order first justified one and never
-    /// moves it: an edge prefix is capped at
+    /// puts a node where the insert order first justified one and never moves
+    /// it: an edge prefix is capped at
     /// [`PREFIX_MAX_LEN`](crate::PREFIX_MAX_LEN), so past that bound even a
-    /// plain `add` of the same keys in two orders lands on two roots. The
-    /// 0.3.0 reference client agrees, which is what
-    /// `mantaray/legacy_differential.rs` pins.
+    /// plain `add` of the same keys in two orders lands on two roots.
+    /// `mantaray/legacy_differential.rs` pins that behaviour against the
+    /// legacy oracle.
     ///
-    /// History-independence is therefore not offered here, and no fold or
-    /// re-cut of the surviving edges can offer it. It is a mantaray-1.0
-    /// guarantee, met by the key-value database in `nectar-ldb`, whose
-    /// canonical packing derives the whole shape from the key set alone
-    /// (whitepaper capability matrix, row 20).
+    /// History-independence is therefore not offered here, and no re-cut of the
+    /// surviving edges can offer it. It is a mantaray-1.0 guarantee, met by the
+    /// key-value database in `nectar-ldb`, whose canonical packing derives the
+    /// whole shape from the key set alone (whitepaper capability matrix, row 20).
     ///
-    /// The prefix [`remove`](Self::remove) above is the legacy 0.3.0 boundary
-    /// op and stays that way; nothing on the seam reaches it.
+    /// The prefix [`remove`](Self::remove) above is the legacy boundary op and
+    /// stays that way; nothing on the seam reaches it.
     ///
     /// Returns a boxed future so the `&mut self` recursion can name its own type.
     pub(crate) fn clear<'a, L: NodeLoader>(

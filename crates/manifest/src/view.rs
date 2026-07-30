@@ -69,12 +69,10 @@ pub trait MapCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 /// a path is read as a directory of paths, and an entry's bytes are joined into
 /// a sink.
 ///
-/// Every one of those reads is over content paths alone. The manifest's own
-/// configuration is read through [`index_document`](Self::index_document) and
-/// [`error_document`](Self::error_document), which answer `None` when the
-/// manifest declares nothing: no walk yields the slot they live in, and no read
-/// reaches a reserved path, which is a listing prefix or a root slot rather
-/// than a key.
+/// Every one of those reads is over content paths alone. The site-level
+/// documents are read through [`index_document`](Self::index_document) and
+/// [`error_document`](Self::error_document), and no walk yields the slot they
+/// live in.
 pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
@@ -98,17 +96,16 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// The site-level documents the manifest declares, read from the format's
     /// own root slot.
     ///
-    /// One read answers both, which is why it is the primitive
-    /// [`index_document`](Self::index_document) and
-    /// [`error_document`](Self::error_document) are written in terms of.
+    /// One read answers both, so [`index_document`](Self::index_document) and
+    /// [`error_document`](Self::error_document) are written in terms of it.
     fn site_config(&self) -> impl Future<Output = Result<SiteConfig, Self::Error>> + MaybeSend;
 
     /// The index document the manifest declares, or `None` when it declares
     /// none.
     ///
     /// A gateway serves it for a directory path. It is a filename joined below
-    /// each directory rather than one whole path, which is the convention the
-    /// reference client reads.
+    /// each directory rather than one whole path, as the reference client reads
+    /// it.
     fn index_document(
         &self,
     ) -> impl Future<Output = Result<Option<ManifestPath>, Self::Error>> + MaybeSend {

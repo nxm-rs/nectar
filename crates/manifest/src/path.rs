@@ -6,13 +6,11 @@ use core::fmt;
 /// A path into a manifest.
 ///
 /// The bytes are the format's own key, stored bare and verbatim: nothing is
-/// prepended and nothing is normalized, so `"index.html"` is the key
-/// `index.html` on the wire and a trailing separator marks a directory and
-/// survives a round trip. That is what keeps the mantaray image byte-identical
-/// to the reference client's.
+/// prepended and nothing is normalized, so a trailing separator survives a round
+/// trip. That keeps the mantaray image byte-identical to the reference client's.
 ///
-/// A path names content and nothing else. The manifest's own configuration is
-/// not a path: read it with [`MapView::index_document`] and
+/// A path names content and nothing else. The site-level documents are not
+/// paths: read them with [`MapView::index_document`] and
 /// [`MapView::error_document`], and write it with
 /// [`MapWriter::with_index_document`] and [`MapWriter::with_error_document`].
 ///
@@ -77,8 +75,7 @@ impl ManifestPath {
     ///
     /// The empty path is the prefix every content path carries, so
     /// [`MapView::dir`] lists the top level with it and [`MapView::range`]
-    /// bounds on it. It is not a key: nothing is bound there, no walk yields
-    /// it, and no write reaches it.
+    /// bounds on it. It is not a key.
     ///
     /// [`MapView::dir`]: crate::MapView::dir
     /// [`MapView::range`]: crate::MapView::range

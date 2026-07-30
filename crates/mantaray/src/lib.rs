@@ -29,9 +29,8 @@
 //! # Website Manifests
 //!
 //! Configure index and error documents for Swarm-hosted websites. They are
-//! metadata on the [`metadata::ROOT_PATH`] node, which is where the reference
-//! client writes and reads them, and they are set through a merge so the two
-//! documents stay independent of each other and of the content keys:
+//! metadata on the [`metadata::ROOT_PATH`] node, where the reference client
+//! writes them. Each is set through a merge, so the two stay independent:
 //!
 //! ```no_run
 //! # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
@@ -45,7 +44,7 @@
 //!
 //! Content paths are stored bare and verbatim, so `index.html` is the trie key
 //! `index.html`. That is the reference client's v0.2 wire, and the workspace
-//! differential against the pinned 0.3.0 crate holds it byte for byte.
+//! differential against the pinned legacy oracle holds it byte for byte.
 //!
 //! # Metadata Constants
 //!

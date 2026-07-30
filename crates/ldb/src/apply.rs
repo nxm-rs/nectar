@@ -65,9 +65,8 @@ enum Op<F: Format> {
 ///
 /// Keys accumulate in a sorted map, so an [`apply`] is history-independent: the
 /// order updates were staged in never reaches the produced root. The empty key
-/// carries the manifest's own value, and the manifest's own metadata is staged
-/// separately with [`set_root_metadata`](Self::set_root_metadata), because it
-/// merges rather than replacing.
+/// carries the manifest's own value. Its metadata is staged separately with
+/// [`set_root_metadata`](Self::set_root_metadata), which merges.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Changeset<F: Format = V1> {
     ops: BTreeMap<Bytes, Op<F>>,
@@ -112,10 +111,10 @@ impl<F: Format> Changeset<F> {
 
     /// Stage the removal of `key`, replacing any staged update for it.
     ///
-    /// Exact-key: the key's own value and metadata go, and no other key does. At
-    /// the root key that clears the manifest's own value and its site documents,
-    /// and leaves every key below it, because those are children rather than
-    /// part of the binding. An unbound or absent key is a no-op.
+    /// Exact-key: the key's own value and metadata go, and no other key does.
+    /// At the root key that clears the manifest's own value and its site
+    /// documents; the keys below are children, so every one of them survives.
+    /// An unbound or absent key is a no-op.
     pub fn remove(&mut self, key: Key) -> &mut Self {
         self.ops.insert(key.into_bytes(), Op::Delete);
         self
@@ -124,9 +123,8 @@ impl<F: Format> Changeset<F> {
     /// Stage a merge of `key` into the manifest's own metadata, the root slot
     /// the site-level document conventions live in.
     ///
-    /// A merge, not a replace: only `key` moves, so the other conventions stay
-    /// exactly as the base root has them. A `None` value clears the key, and
-    /// clearing the last one leaves the manifest carrying no metadata at all.
+    /// A merge, not a replace: only `key` moves, and a `None` value clears it.
+    /// Clearing the last key leaves the manifest carrying no metadata at all.
     pub fn set_root_metadata(
         &mut self,
         key: impl Into<MetadataKey<F>>,
@@ -227,16 +225,14 @@ where
     let mut root_meta = node.metadata().cloned();
     match changeset.ops.get(&Bytes::new()) {
         // A bare insert replaces the whole binding, so it clears the key's
-        // metadata unless the insert carries some. The empty key's metadata is
-        // the database's own manifest metadata; a later merge op re-sets it.
+        // metadata unless the insert carries some. A later merge op re-sets it.
         Some(Op::Insert { entry, meta }) => {
             root_entry = Some(entry.clone());
             root_meta = meta.clone();
         }
         // A removal clears the whole binding, at the empty key like everywhere
         // else: the manifest metadata is that key's metadata, so it goes with
-        // the value. The keys below are children rather than part of the
-        // binding, and every one of them survives.
+        // the value. The keys below are children, and every one survives.
         Some(Op::Delete) => {
             root_entry = None;
             root_meta = None;

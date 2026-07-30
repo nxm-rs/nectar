@@ -1,10 +1,9 @@
 //! The two reserved keys, and the error a write at one fails with.
 //!
-//! A manifest maps content paths to references. Two byte strings are not
-//! content paths on either format: the empty one, which is the structural root
-//! every path hangs below, and `"/"`, which is the slot the reference client
-//! keeps the site-level documents in. Both formats answer the same way at
-//! both: a read is absent and a write is [`ReservedKey`].
+//! Two byte strings are not content paths on either format: the empty one, the
+//! structural root every path hangs below, and `"/"`, the slot the reference
+//! client keeps the site-level documents in. At both, a read is absent and a
+//! write is [`ReservedKey`].
 //!
 //! The site documents stay reachable through the option-typed API alone:
 //! [`MapView::index_document`], [`MapView::error_document`],
@@ -53,8 +52,7 @@ impl core::error::Error for ReservedKey {}
 
 /// The reserved key `error` reports, or `None` when it reports something else.
 ///
-/// Walks the source chain, so one matcher answers for every format: a caller
-/// asks the seam's question without naming the format's error type.
+/// Walks the source chain, so one matcher answers for every format.
 ///
 /// ```
 /// use nectar_manifest::{ManifestPath, ReservedKey, reserved_key};

@@ -22,9 +22,9 @@ pub enum WellKnownKey<'a> {
     ContentType,
     /// Site index document, root scope.
     ///
-    /// The name each format stores the manifest's own configuration under. A
-    /// caller sets it through [`MapWriter::with_index_document`] rather than on
-    /// an entry, because it is not an entry's metadata.
+    /// The name each format stores the manifest's own configuration under. It
+    /// is not an entry's metadata, so a caller sets it through
+    /// [`MapWriter::with_index_document`].
     ///
     /// [`MapWriter::with_index_document`]: crate::MapWriter::with_index_document
     IndexDocument,
