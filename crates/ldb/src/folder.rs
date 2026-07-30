@@ -236,9 +236,12 @@ where
     /// List the immediate children of the directory named by `dir` in key
     /// order, collapsing deeper keys at the next separator.
     ///
-    /// `dir` is used as a key prefix: the root is the empty key and a nested
-    /// directory conventionally ends with the separator. Only the trie nodes on
-    /// the frontier are fetched; the value chunks a listing names are not.
+    /// `dir` is used as a key prefix, so the empty prefix selects the whole key
+    /// space and a directory conventionally ends with the separator: over the
+    /// absolute keys a manifest stores, that makes the root directory the
+    /// separator alone. No path is a child of itself, so a directory never
+    /// lists itself. Only the trie nodes on the frontier are fetched; the value
+    /// chunks a listing names are not.
     pub async fn dir(&self, root: &R, dir: &Key) -> Result<Listing<'_, S, F, R>, ReaderError> {
         dir_at(self.store(), root, dir).await
     }

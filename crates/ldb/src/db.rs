@@ -224,7 +224,7 @@ where
 
     /// The value bound to `key`, or `None` when the key is absent.
     ///
-    /// The empty key reads the database's own value.
+    /// The root key, the separator alone, reads the database's own value.
     pub async fn get(&self, key: &Key) -> Result<Option<Entry<F>>, ReaderError> {
         self.reader().get(&self.root, key).await
     }
@@ -236,7 +236,7 @@ where
 
     /// The metadata bound to `key`, or `None` when the key carries none.
     ///
-    /// The empty key reads the database's own manifest metadata, whether or not
+    /// The root key reads the database's own manifest metadata, whether or not
     /// the root binds an entry.
     pub async fn metadata(&self, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
         self.reader().metadata(&self.root, key).await
@@ -399,7 +399,7 @@ pub struct Insert<'e, F: Format = V1> {
 impl<F: Format> Insert<'_, F> {
     /// Attach `metadata` to the insert, replacing whatever the key carried.
     ///
-    /// On the empty key this is the database's own manifest metadata. A bare
+    /// On the root key this is the database's own manifest metadata. A bare
     /// insert carries none, so it clears the key's metadata.
     pub fn meta(&mut self, metadata: Metadata<F>) -> &mut Self {
         self.meta = Some(metadata);
