@@ -184,7 +184,7 @@ fn range_rounds<F: Format>(
         let latency = LatencyStore::<StandardChunkSet>::new(store, RTT_UNIT);
         let reader = Reader::<_, F>::new(ContentGet::new(&latency));
         let t0 = tokio::time::Instant::now();
-        let mut cursor = reader.range(root, lo, hi).await?;
+        let mut cursor = reader.range(root, lo..hi).await?;
         let mut keys = 0u64;
         while cursor.next().await?.is_some() {
             keys = keys.saturating_add(1);
@@ -324,7 +324,7 @@ fn read_side<F: Format>(keys: &[GenKey]) -> Result<ReadProfileSide, Err> {
     for &w in &RANGE_WS {
         let (lo, hi) = window_keys(keys, w);
         let before = store.gets();
-        let mut cursor = run(reader.range(&root, &lo, &hi))?;
+        let mut cursor = run(reader.range(&root, &lo..&hi))?;
         while run(cursor.next())?.is_some() {}
         range_fetch.insert(fmt_w(w), store.gets().saturating_sub(before));
     }
@@ -335,7 +335,7 @@ fn read_side<F: Format>(keys: &[GenKey]) -> Result<ReadProfileSide, Err> {
     for &i in &usample {
         if let Some(k) = keys.get(i) {
             let mut cs = Changeset::<F>::new();
-            cs.put(
+            cs.insert(
                 Key::from(k.raw.as_slice()),
                 alt_entry_for::<F>(&k.raw),
                 meta_for::<F>(k),

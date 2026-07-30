@@ -84,7 +84,7 @@ fn apply_matches_a_from_scratch_build() -> Result<()> {
 
     let mut changeset = Changeset::<V1>::new();
     for (key, fill) in all.iter().skip(split) {
-        changeset.put(key.clone(), ref_entry::<V1>(*fill), None);
+        changeset.insert(key.clone(), ref_entry::<V1>(*fill), None);
     }
     let applied = run(apply(
         &ContentGet::new(&store),

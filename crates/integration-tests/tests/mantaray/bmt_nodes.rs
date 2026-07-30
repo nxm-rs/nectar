@@ -75,7 +75,7 @@ fn small_node_roots_keep_address_parity() {
         for paths in corpora {
             let mut editor = Editor::new(LoadSaver::new(Store::new()));
             for &p in *paths {
-                editor.put(p, make_addr(p));
+                editor.insert(p, make_addr(p));
             }
             let (root, loadsaver) = editor.commit().await.unwrap();
             assert_node_parity(&loadsaver, EntryRef::from(root)).await;
@@ -88,7 +88,7 @@ fn small_node_roots_keep_address_parity() {
 fn build_wide() -> (ChunkAddress, LoadSaver) {
     let mut editor = Editor::new(LoadSaver::new(Store::new()));
     for b in 0..=u8::MAX {
-        editor.put([b], byte_addr(b));
+        editor.insert([b], byte_addr(b));
     }
     run(editor.commit()).unwrap()
 }
@@ -126,7 +126,7 @@ fn multi_chunk_root_edits_through_the_adapter() {
     let (root, loadsaver) = build_wide();
     let mut editor = Editor::open(root, loadsaver);
     editor.remove([7u8]);
-    editor.put("added.txt", make_addr("added"));
+    editor.insert("added.txt", make_addr("added"));
     let (root, loadsaver) = run(editor.commit()).unwrap();
 
     let reader = Reader::new(loadsaver);
@@ -173,8 +173,8 @@ fn publish_root_under_path() {
             .unwrap();
 
         let mut editor = Editor::new(LoadSaver::new(store));
-        editor.put("hello.txt", root);
-        editor.put("stale.txt", root);
+        editor.insert("hello.txt", root);
+        editor.insert("stale.txt", root);
         editor.remove("stale.txt");
         let (manifest_root, loadsaver) = editor.commit().await.unwrap();
 
@@ -191,10 +191,7 @@ fn publish_root_under_path() {
             .await
             .unwrap()
             .unwrap();
-        let file = File::<_, BODY>::new(
-            ContentGet::new(loadsaver.into_store()),
-            Policy::DEFAULT,
-        );
+        let file = File::<_, BODY>::new(ContentGet::new(loadsaver.into_store()), Policy::DEFAULT);
         let bytes = file
             .collect(entry.reference().unwrap().clone(), u64::MAX)
             .await
@@ -217,7 +214,7 @@ mod encrypted {
         let mut editor: ManifestEditor<LoadSaver, EncryptedChunkRef> =
             ManifestEditor::new_encrypted(LoadSaver::new(Store::new()));
         for p in paths {
-            editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
+            editor.insert(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
         }
         let (root, loadsaver) = run(editor.commit()).unwrap();
 
@@ -242,7 +239,7 @@ mod encrypted {
         // Reopen and extend from the root reference alone.
         let mut editor: ManifestEditor<LoadSaver, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(root, loadsaver);
-        editor.put("secret/c.txt", EncryptedChunkRef::new(make_addr("c"), key));
+        editor.insert("secret/c.txt", EncryptedChunkRef::new(make_addr("c"), key));
         let (root, loadsaver) = run(editor.commit()).unwrap();
         let reader = Reader::new(loadsaver);
         assert!(run(reader.get(root, b"secret/c.txt")).unwrap().is_some());

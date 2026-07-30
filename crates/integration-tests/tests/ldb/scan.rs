@@ -138,7 +138,7 @@ fn range_matches_the_oracle() -> Result<()> {
         (&b"pre"[..], &b"zzz"[..]),
         (&b"dir11/file0039.txt"[..], &b"zzz"[..]),
     ] {
-        let got = collect(run(reader.range(&root, &Key::from(lo), &Key::from(hi)))?)?;
+        let got = collect(run(reader.range(&root, Key::from(lo)..Key::from(hi)))?)?;
         let expected: Rows = oracle
             .range(lo.to_vec()..hi.to_vec())
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -427,7 +427,7 @@ fn read_ahead_never_fetches_past_the_upper_bound() -> Result<()> {
     let lo = Key::from(&[0u8][..]);
     let hi = Key::from(&[1u8][..]);
     let got: Rows = {
-        let mut cursor = run(reader.range(&root, &lo, &hi))?;
+        let mut cursor = run(reader.range(&root, &lo..&hi))?;
         run(async {
             let mut out = Vec::new();
             while let Some((key, value)) = cursor.next().await? {

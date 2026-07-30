@@ -37,9 +37,9 @@ use crate::{MantarayError, metadata};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Op<R: Reference = ChunkRef> {
-    /// Set the entry at the path; a non-empty metadata map replaces the
+    /// Insert the entry at the path; a non-empty metadata map replaces the
     /// node's metadata, an empty one leaves existing metadata in place.
-    Put {
+    Insert {
         /// Entry reference, or `None` for a metadata-only value node.
         reference: Option<R>,
         /// Metadata to attach; empty means keep what is there.
@@ -70,7 +70,7 @@ pub enum Op<R: Reference = ChunkRef> {
 /// # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
 /// # use nectar_primitives::chunk::ChunkAddress;
 /// let mut editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
-/// editor.put("index.html", ChunkAddress::from([7u8; 32]));
+/// editor.insert("index.html", ChunkAddress::from([7u8; 32]));
 /// editor.set_index_document("index.html");
 /// assert_eq!(editor.ops().len(), 2);
 /// ```
@@ -153,35 +153,22 @@ impl<S, R: Reference> ManifestEditor<S, R> {
         &self.ops
     }
 
-    /// Record setting the entry at `path`.
+    /// Record inserting the entry at `path`, with metadata as a suffix.
+    ///
+    /// The op is recorded when the returned guard is dropped, which is the end
+    /// of the statement: `editor.insert(path, reference);` records it bare and
+    /// `editor.insert(path, reference).meta(metadata);` records it with
+    /// metadata.
     ///
     /// Format limitations, both rejected at commit: an all-zero reference is
     /// the wire's absent-entry sentinel, and metadata on the empty path (the
     /// trie root) has no wire slot.
-    pub fn put(&mut self, path: impl AsRef<[u8]>, reference: impl Into<R>) -> &mut Self {
-        self.push(
-            path,
-            Op::Put {
-                reference: Some(reference.into()),
-                metadata: BTreeMap::new(),
-            },
-        )
-    }
-
-    /// Record setting the entry at `path` with metadata.
-    pub fn put_with_metadata(
-        &mut self,
-        path: impl AsRef<[u8]>,
-        reference: impl Into<R>,
-        metadata: BTreeMap<String, String>,
-    ) -> &mut Self {
-        self.push(
-            path,
-            Op::Put {
-                reference: Some(reference.into()),
-                metadata,
-            },
-        )
+    pub fn insert(&mut self, path: impl AsRef<[u8]>, reference: impl Into<R>) -> Insert<'_, R> {
+        Insert {
+            ops: &mut self.ops,
+            pending: Some((path.as_ref().to_vec(), reference.into())),
+            metadata: BTreeMap::new(),
+        }
     }
 
     /// Record removing the value at `path`.
@@ -220,13 +207,50 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     }
 }
 
+/// A recorded insert, awaiting the metadata it may carry.
+///
+/// [`ManifestEditor::insert`] hands one back so metadata reads as a suffix on
+/// the insert it belongs to. The op joins the submission-order log when the
+/// guard is dropped, so its position in the log is where the call was written.
+#[derive(Debug)]
+pub struct Insert<'e, R: Reference = ChunkRef> {
+    ops: &'e mut Vec<(Vec<u8>, Op<R>)>,
+    /// The recorded path and reference, taken by the drop that logs them.
+    pending: Option<(Vec<u8>, R)>,
+    /// Metadata to attach; empty means keep what is there.
+    metadata: BTreeMap<String, String>,
+}
+
+impl<R: Reference> Insert<'_, R> {
+    /// Attach `metadata` to the insert; a non-empty map replaces the node's
+    /// metadata, an empty one leaves what is there in place.
+    pub fn meta(&mut self, metadata: BTreeMap<String, String>) -> &mut Self {
+        self.metadata = metadata;
+        self
+    }
+}
+
+impl<R: Reference> Drop for Insert<'_, R> {
+    fn drop(&mut self) {
+        if let Some((path, reference)) = self.pending.take() {
+            self.ops.push((
+                path,
+                Op::Insert {
+                    reference: Some(reference),
+                    metadata: core::mem::take(&mut self.metadata),
+                },
+            ));
+        }
+    }
+}
+
 impl<S: NodeLoader, R: Reference + MaybeSend> ManifestEditor<S, R> {
     /// Apply the recorded ops to the trie, one at a time, in submission order.
     async fn apply_ops(&mut self) -> Result<(), EditorError> {
         let ops = core::mem::take(&mut self.ops);
         for (index, (path, op)) in ops.into_iter().enumerate() {
             let result = match op {
-                Op::Put {
+                Op::Insert {
                     reference,
                     metadata,
                 } => {
@@ -575,7 +599,8 @@ where
         node.forks.clear();
         match (parent, slot) {
             (Some(parent), Some((key, prefix))) => {
-                let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent) else {
+                let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent)
+                else {
                     return Err(MantarayError::MissingReference);
                 };
                 parent_frame.done.insert(key, Fork { prefix, node });
@@ -674,11 +699,11 @@ mod tests {
         for op in script {
             match *op {
                 Script::Add(p, seed) => {
-                    editor.put(p, make_addr(seed));
+                    editor.insert(p, make_addr(seed));
                 }
                 Script::AddMeta(p, seed, k, v) => {
                     let meta = [(k.to_string(), v.to_string())].into();
-                    editor.put_with_metadata(p, make_addr(seed), meta);
+                    editor.insert(p, make_addr(seed)).meta(meta);
                 }
                 Script::Rm(p) => {
                     editor.remove(p);
@@ -812,8 +837,8 @@ mod tests {
     #[test]
     fn root_documents_readable_on_an_edge_node() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
-        editor.put("/c", make_addr("c"));
-        editor.put("//", make_addr("s"));
+        editor.insert("/c", make_addr("c"));
+        editor.insert("//", make_addr("s"));
         editor.set_index_document("doc");
         let (root, loadsaver) = run(editor.commit()).unwrap();
         let entry = run(crate::Reader::new(loadsaver).get(root, b"/"))
@@ -835,7 +860,7 @@ mod tests {
     fn root_metadata_put_fails_commit() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
         let meta = [("k".to_string(), "v".to_string())].into();
-        editor.put_with_metadata("", make_addr("r"), meta);
+        editor.insert("", make_addr("r")).meta(meta);
         let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
             err,
@@ -846,7 +871,7 @@ mod tests {
     #[test]
     fn zero_reference_put_fails_commit() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
-        editor.put("a", ChunkAddress::from([0u8; 32]));
+        editor.insert("a", ChunkAddress::from([0u8; 32]));
         let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
             err,
@@ -861,7 +886,7 @@ mod tests {
     #[test]
     fn apply_error_names_op_index_and_path() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
-        editor.put("present", make_addr("p"));
+        editor.insert("present", make_addr("p"));
         editor.remove("absent");
         let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
@@ -882,7 +907,7 @@ mod tests {
 
         // The editor commits the metadata across a reopen boundary.
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
-        editor.put("index.html", make_addr("i"));
+        editor.insert("index.html", make_addr("i"));
         let (root, loadsaver) = run(editor.commit()).unwrap();
         assert_ne!(root, want, "the metadata must change the root");
         let mut editor = Editor::open(root, loadsaver);
@@ -920,16 +945,16 @@ mod tests {
         // Single-session replay from the seed.
         let mut single: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(seed_ref.clone(), store);
-        single.put("secret/a.txt", enc("a"));
-        single.put("secret/b.txt", enc("b"));
+        single.insert("secret/a.txt", enc("a"));
+        single.insert("secret/b.txt", enc("b"));
         single.remove("secret/a.txt");
         let (want, store) = run(single.commit()).unwrap();
 
         // The same ops across a commit boundary land on the same root.
         let mut editor: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(seed_ref, store);
-        editor.put("secret/a.txt", enc("a"));
-        editor.put("secret/b.txt", enc("b"));
+        editor.insert("secret/a.txt", enc("a"));
+        editor.insert("secret/b.txt", enc("b"));
         let (mid, store) = run(editor.commit()).unwrap();
         let mut editor: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(mid, store);
@@ -1029,7 +1054,7 @@ mod tests {
         let control = FailingSaver::new(LoadSaver::new(Store::new()), usize::MAX);
         let mut editor = ManifestEditor::new(control.clone());
         for p in ["a", "b", "c"] {
-            editor.put(p, make_addr(p));
+            editor.insert(p, make_addr(p));
         }
         run(editor.commit()).unwrap();
         assert_eq!(control.dispatched.load(Ordering::SeqCst), 4, "dirty nodes");
@@ -1038,7 +1063,7 @@ mod tests {
             let saver = FailingSaver::new(LoadSaver::new(Store::new()), fail_at);
             let mut editor = ManifestEditor::new(saver);
             for p in ["a", "b", "c"] {
-                editor.put(p, make_addr(p));
+                editor.insert(p, make_addr(p));
             }
             let err = run(editor.commit()).unwrap_err();
             assert!(
@@ -1152,7 +1177,7 @@ mod tests {
         let mut editor = ManifestEditor::new(WindowSaver::new(LoadSaver::new(Store::new())));
         for g in 0..groups {
             for l in 0..leaves {
-                editor.put([g, l], make_addr(&format!("{g}-{l}")));
+                editor.insert([g, l], make_addr(&format!("{g}-{l}")));
             }
         }
         editor

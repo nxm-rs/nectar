@@ -48,7 +48,7 @@ fuzz_target!(
             match op {
                 Some(val) => {
                     let e = entry(val);
-                    changeset.put(Key::from(key.clone()), e.clone(), None);
+                    changeset.insert(Key::from(key.clone()), e.clone(), None);
                     merged.insert(key, e);
                 }
                 None => {

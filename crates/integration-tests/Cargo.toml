@@ -33,6 +33,7 @@ futures.workspace = true
 # Registry-pinned legacy oracle for the submission-order differential gate:
 # identical op sequences must produce byte-identical roots.
 mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
+nectar-feeds = { workspace = true, features = ["std"] }
 nectar-file = { workspace = true, features = ["std"] }
 nectar-ldb = { workspace = true, features = ["arbitrary", "manifest"] }
 nectar-loadsave.workspace = true
@@ -134,6 +135,10 @@ path = "tests/manifest/encrypted.rs"
 [[test]]
 name = "manifest_listing"
 path = "tests/manifest/listing.rs"
+
+[[test]]
+name = "manifest_vocabulary"
+path = "tests/manifest/vocabulary.rs"
 
 [[test]]
 name = "mantaray_bmt_nodes"

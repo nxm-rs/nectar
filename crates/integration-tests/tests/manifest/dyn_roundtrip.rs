@@ -25,7 +25,9 @@ type Nodes = NodeLoadSaver<Raw>;
 
 /// The file bytes every manifest entry in this test points at.
 fn payload() -> Vec<u8> {
-    (0..20_000u32).map(|i| u8::try_from(i % 251).unwrap()).collect()
+    (0..20_000u32)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect()
 }
 
 /// Content type written through the erased metadata view.
@@ -40,18 +42,21 @@ fn content_type() -> Box<dyn ManifestMetadata> {
 /// root and a subdirectory, load an entry's data, then remove it.
 async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, data: &[u8]) {
     let root = manifest
-        .dyn_apply(base, vec![
-            ManifestOp::Put {
-                path: ManifestPath::from("index.html"),
-                reference: *file,
-                meta: content_type(),
-            },
-            ManifestOp::Put {
-                path: ManifestPath::from("img/logo.png"),
-                reference: *file,
-                meta: Box::new(()),
-            },
-        ])
+        .dyn_apply(
+            base,
+            vec![
+                ManifestOp::Insert {
+                    path: ManifestPath::from("index.html"),
+                    reference: *file,
+                    meta: content_type(),
+                },
+                ManifestOp::Insert {
+                    path: ManifestPath::from("img/logo.png"),
+                    reference: *file,
+                    meta: Box::new(()),
+                },
+            ],
+        )
         .await
         .unwrap();
     assert_ne!(&root, base, "the batch produced a new root");
@@ -59,7 +64,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
     // One level: the deeper path collapses into a directory entry, in path
     // order, and neither format fetches the referenced data to list it.
     let listing = manifest
-        .dyn_list(&root, &ManifestPath::root())
+        .dyn_dir(&root, &ManifestPath::root())
         .await
         .unwrap();
     let paths: Vec<&[u8]> = listing
@@ -73,7 +78,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
 
     // The subdirectory lists its one file under its full path.
     let nested = manifest
-        .dyn_list(&root, &ManifestPath::from("img/"))
+        .dyn_dir(&root, &ManifestPath::from("img/"))
         .await
         .unwrap();
     let nested_paths: Vec<&[u8]> = nested
@@ -91,16 +96,19 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .unwrap();
     assert_eq!(sink.as_ref(), data);
 
-    // A removal is the same batch vocabulary, and the removed path stops
+    // A removal is the same map vocabulary, and the removed path stops
     // resolving.
     let pruned = manifest
-        .dyn_apply(&root, vec![ManifestOp::Remove {
-            path: ManifestPath::from("index.html"),
-        }])
+        .dyn_apply(
+            &root,
+            vec![ManifestOp::Remove {
+                path: ManifestPath::from("index.html"),
+            }],
+        )
         .await
         .unwrap();
     let listing = manifest
-        .dyn_list(&pruned, &ManifestPath::root())
+        .dyn_dir(&pruned, &ManifestPath::root())
         .await
         .unwrap();
     let paths: Vec<&[u8]> = listing
@@ -120,24 +128,27 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
     );
 
     // The root path addresses the manifest's own entry, and every operation
-    // maps it to the same slot: what a put binds there, a load reads back.
+    // maps it to the same slot: what an insert binds there, a load reads back.
     let rooted = manifest
-        .dyn_apply(base, vec![ManifestOp::Put {
-            path: ManifestPath::root(),
-            reference: *file,
-            meta: content_type(),
-        }])
+        .dyn_apply(
+            base,
+            vec![ManifestOp::Insert {
+                path: ManifestPath::root(),
+                reference: *file,
+                meta: content_type(),
+            }],
+        )
         .await
         .unwrap();
     let mut sink = MemSink::new();
     manifest
         .dyn_load(&rooted, &ManifestPath::root(), &mut sink)
         .await
-        .expect("a root put loads back");
+        .expect("a root insert loads back");
     assert_eq!(sink.as_ref(), data);
     assert!(
         manifest
-            .dyn_list(&rooted, &ManifestPath::root())
+            .dyn_dir(&rooted, &ManifestPath::root())
             .await
             .unwrap()
             .is_empty(),
@@ -166,17 +177,16 @@ fn both_formats_round_trip_through_one_erased_handle() {
         let store = ContentGet::new(Arc::clone(&raw));
         let data = payload();
         let file = ChunkRef::new(
-            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT).save(&data[..])
+            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
+                .save(&data[..])
                 .await
                 .unwrap(),
         );
 
         let (nodes, trie_root) = mantaray(&raw).await;
-        let trie: Box<dyn DynManifest> =
-            Box::new(MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(
-                nodes,
-                store.clone(),
-            ));
+        let trie: Box<dyn DynManifest> = Box::new(
+            MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone()),
+        );
         let kv_root = ldb(&store).await;
         let kv: Box<dyn DynManifest> = Box::new(LdbManifest::plain(store.clone()));
 
@@ -192,7 +202,8 @@ fn root_scope_metadata_lands_in_each_format_native_slot() {
         let store = ContentGet::new(Arc::clone(&raw));
         let data = payload();
         let file = ChunkRef::new(
-            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT).save(&data[..])
+            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
+                .save(&data[..])
                 .await
                 .unwrap(),
         );
@@ -203,11 +214,14 @@ fn root_scope_metadata_lands_in_each_format_native_slot() {
         let (nodes, trie_root) = mantaray(&raw).await;
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes.clone(), store.clone());
         let root = trie
-            .dyn_apply(&trie_root, vec![ManifestOp::Put {
-                path: ManifestPath::root(),
-                reference: file,
-                meta: index,
-            }])
+            .dyn_apply(
+                &trie_root,
+                vec![ManifestOp::Insert {
+                    path: ManifestPath::root(),
+                    reference: file,
+                    meta: index,
+                }],
+            )
             .await
             .unwrap();
         let entry = MantarayReader::new(nodes)
@@ -221,7 +235,7 @@ fn root_scope_metadata_lands_in_each_format_native_slot() {
         );
         // That slot is the trie's own, not a directory: a root listing must
         // not surface it as a child.
-        let listing = trie.dyn_list(&root, &ManifestPath::root()).await.unwrap();
+        let listing = trie.dyn_dir(&root, &ManifestPath::root()).await.unwrap();
         assert!(
             listing.is_empty(),
             "the root metadata slot listed as {:?}",
@@ -235,11 +249,14 @@ fn root_scope_metadata_lands_in_each_format_native_slot() {
         let kv_root = ldb(&store).await;
         let kv = LdbManifest::plain(store.clone());
         let root = kv
-            .dyn_apply(&kv_root, vec![ManifestOp::Put {
-                path: ManifestPath::root(),
-                reference: file,
-                meta: index,
-            }])
+            .dyn_apply(
+                &kv_root,
+                vec![ManifestOp::Insert {
+                    path: ManifestPath::root(),
+                    reference: file,
+                    meta: index,
+                }],
+            )
             .await
             .unwrap();
         let reader: LdbReader<_> = LdbReader::new(&store);

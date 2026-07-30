@@ -14,6 +14,7 @@ use nectar_primitives::{ChunkOps, ChunkRef};
 use crate::codec::{DecodedChunk, SegmentDir};
 use crate::fork::{Child, ForkTable};
 use crate::format::{Format, V1};
+use crate::meta::Metadata;
 use crate::node::{NodeRef, RootExtension};
 use crate::store::{NodeGet, StoreError, open_chunk};
 use crate::value::{Entry, Key};
@@ -76,6 +77,32 @@ where
     /// descends the trie, matching each compacted edge byte for byte and
     /// fetching one node per referenced hop.
     pub async fn get(&self, root: &R, key: &Key) -> Result<Option<Entry<F>>, ReaderError> {
+        Ok(self.lookup(root, key).await?.map(|(entry, _)| entry))
+    }
+
+    /// Whether `key` is bound under the database rooted at `root`.
+    ///
+    /// The same descent a [`get`](Self::get) pays: presence is decided at the
+    /// terminal fork record, and no value chunk is fetched either way.
+    pub async fn contains_key(&self, root: &R, key: &Key) -> Result<bool, ReaderError> {
+        Ok(self.lookup(root, key).await?.is_some())
+    }
+
+    /// The metadata bound to `key`, or `None` when the key carries none.
+    ///
+    /// The empty key reads the database's own manifest metadata. An absent key
+    /// carries no metadata either, so a `None` is not a presence answer; ask
+    /// [`contains_key`](Self::contains_key) for that.
+    pub async fn metadata(&self, root: &R, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
+        Ok(self.lookup(root, key).await?.and_then(|(_, meta)| meta))
+    }
+
+    /// The value and metadata bound to `key`, or `None` when the key is absent.
+    async fn lookup(
+        &self,
+        root: &R,
+        key: &Key,
+    ) -> Result<Option<(Entry<F>, Option<Metadata<F>>)>, ReaderError> {
         let key = key.as_bytes();
         let mut reference = root.clone();
         let mut pos = 0usize;
@@ -85,7 +112,7 @@ where
             // The empty key reads the root's own value; a spilled root carries
             // it in the segmented node's bytes just as a plain root does.
             if is_root && key.is_empty() {
-                return Ok(root_entry(&decoded));
+                return Ok(root_extension(&decoded));
             }
             let descent = match &decoded {
                 DecodedChunk::Node(node) => descend(node.forks(), key, pos),
@@ -100,7 +127,7 @@ where
             };
             match descent {
                 Descent::Absent => return Ok(None),
-                Descent::Found(entry) => return Ok(Some(entry)),
+                Descent::Found(entry, meta) => return Ok(Some((entry, meta))),
                 Descent::Follow(child, next) => {
                     reference = child;
                     pos = next;
@@ -271,13 +298,20 @@ fn subtree_step<F: Format, R: NodeRef>(
     }
 }
 
-/// The empty-key value a decoded root carries: its root extension entry.
-fn root_entry<F: Format, R: NodeRef>(decoded: &DecodedChunk<F, R>) -> Option<Entry<F>> {
-    match decoded {
-        DecodedChunk::Node(node) => node.entry().cloned(),
-        DecodedChunk::Segmented(root, _) => root.as_ref().and_then(RootExtension::entry).cloned(),
-        DecodedChunk::Leaf(_) | DecodedChunk::Directory(_) => None,
-    }
+/// The empty-key binding a decoded root carries: its root extension entry and
+/// the database's own manifest metadata.
+fn root_extension<F: Format, R: NodeRef>(
+    decoded: &DecodedChunk<F, R>,
+) -> Option<(Entry<F>, Option<Metadata<F>>)> {
+    let (entry, meta) = match decoded {
+        DecodedChunk::Node(node) => (node.entry().cloned(), node.metadata().cloned()),
+        DecodedChunk::Segmented(root, _) => (
+            root.as_ref().and_then(RootExtension::entry).cloned(),
+            root.as_ref().and_then(RootExtension::metadata).cloned(),
+        ),
+        DecodedChunk::Leaf(_) | DecodedChunk::Directory(_) => (None, None),
+    };
+    entry.map(|entry| (entry, meta))
 }
 
 /// The descriptor covering `byte`: the one with the greatest first key not past
@@ -331,8 +365,8 @@ where
 enum Descent<F: Format, R: NodeRef> {
     /// No fork matches the key below this node: the key is absent.
     Absent,
-    /// The key terminates here with this value.
-    Found(Entry<F>),
+    /// The key terminates here with this value and its metadata.
+    Found(Entry<F>, Option<Metadata<F>>),
     /// The key continues into the referenced child, with this many key bytes
     /// already consumed.
     Follow(R, usize),
@@ -372,9 +406,9 @@ fn descend<F: Format, R: NodeRef>(
         }
         pos = end;
         if pos == key.len() {
-            return record
-                .entry()
-                .map_or(Descent::Absent, |entry| Descent::Found(entry.clone()));
+            return record.entry().map_or(Descent::Absent, |entry| {
+                Descent::Found(entry.clone(), record.metadata().cloned())
+            });
         }
         match record.child() {
             Some(Child::Embedded(inner)) => table = inner,
