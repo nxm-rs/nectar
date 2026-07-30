@@ -35,7 +35,9 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use nectar_file::MemSink;
-use nectar_ldb::{Builder, Key, LdbManifest, Plaintext, Reader as LdbReader, Served, V1};
+use nectar_ldb::{
+    Builder, Database, Entry, Key, LdbManifest, Plaintext, Reader as LdbReader, Served, V1,
+};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, reserved_key,
@@ -584,8 +586,17 @@ where
 /// (`alpha`/`alpine`), a shared directory (`img/`), a top-level key sharing one
 /// byte with a directory (`index.html`), a lone leaf (`beta`), and two keys
 /// past the trie's 30-byte edge bound, whose chain no removal may collapse.
+///
+/// The last two pairs are the edge bound itself. Each is a short key with one
+/// long key below it, so the trie splits the long key at the short one and the
+/// join a removal of the short one leaves runs past 30 bytes. The join cannot
+/// be one edge, so it has to be re-cut the way a build cuts it, and the second
+/// pair runs long enough that the re-cut has to reach through a whole chain of
+/// lone continuations rather than the first one only.
 fn history_keys() -> Vec<(ManifestPath, u8)> {
     let deep = |tail: &str| ManifestPath::from(format!("deep/{}{tail}", "a".repeat(30)).as_str());
+    let under =
+        |dir: &str, len: usize| ManifestPath::from(format!("{dir}{}", "e".repeat(len)).as_str());
     [
         (ManifestPath::from("alpha"), 1u8),
         (ManifestPath::from("alpine"), 2),
@@ -595,6 +606,13 @@ fn history_keys() -> Vec<(ManifestPath, u8)> {
         (ManifestPath::from("index.html"), 6),
         (deep("one"), 7),
         (deep("two"), 8),
+        // 5 + 28 bytes: the join is 33, so it is re-cut at 30 and the rest.
+        (ManifestPath::from("abcde"), 9),
+        (under("abcde", 28), 10),
+        // 5 + 31 bytes under a directory: the long key already chains through a
+        // full-length edge, so the join runs through two nodes before it ends.
+        (ManifestPath::from("wiki/"), 11),
+        (under("wiki/", 31), 12),
     ]
     .into_iter()
     .collect()
@@ -735,6 +753,73 @@ differential!(
     a_remove_is_history_independent_on_both_formats,
     a_remove_lands_where_a_build_would
 );
+
+/// A reserved key planted past the seam is not listed, whatever kind the
+/// listing calls it.
+///
+/// The seam refuses a write at `"/"`, so only a database written through the
+/// raw layer holds one. The folder view collapses it into a subdirectory entry,
+/// because it ends in the separator, and a subdirectory of nothing is still the
+/// reserved key itself. The listing steps over it either way, so the two
+/// formats list the same content.
+#[test]
+fn a_planted_separator_key_is_not_listed() {
+    run(async {
+        let raw: Raw = Arc::new(MemoryStore::new());
+        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let separator = ManifestPath::from("/");
+        let content = ManifestPath::from("a.txt");
+
+        // The raw layer knows no reserved key, so it plants what the seam
+        // refuses.
+        let builder: Builder<V1> = Builder::new();
+        let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
+        let db: Database<_> = Database::plain(&store);
+        let planted = {
+            let mut editor = db.edit(&empty);
+            editor.insert(Key::from(&b"/"[..]), Entry::from(reference(1)));
+            editor.insert(Key::from(&b"a.txt"[..]), Entry::from(reference(2)));
+            editor.commit().await.unwrap()
+        };
+        assert!(
+            db.at(&planted)
+                .get(&Key::from(&b"/"[..]))
+                .await
+                .unwrap()
+                .is_some(),
+            "the raw layer holds the planted key"
+        );
+
+        let kv = LdbManifest::plain(store.clone());
+        let view = kv.at(&planted);
+        assert_eq!(
+            listing(&view, &ManifestPath::default()).await,
+            ["a.txt"],
+            "the top level lists content alone, and never the planted key"
+        );
+        assert_eq!(
+            view.get(&separator).await.unwrap(),
+            None,
+            "and no read reaches it either"
+        );
+
+        // The trie holds the same content and lists the same level.
+        let nodes = NodeLoadSaver::new(Arc::clone(&raw));
+        let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
+        let (trie_empty, _) = editor.commit().await.unwrap();
+        let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
+        let root = {
+            let mut writer = trie.edit(&ChunkRef::new(trie_empty));
+            writer.insert(content.clone(), reference(2));
+            writer.commit().await.unwrap()
+        };
+        assert_eq!(
+            listing(&trie.at(&root), &ManifestPath::default()).await,
+            listing(&view, &ManifestPath::default()).await,
+            "both formats list the same top level"
+        );
+    });
+}
 
 /// The site documents resolve over bare keys: the index document is a filename
 /// joined below each directory, and the error document is one whole key.
