@@ -26,14 +26,16 @@ Prefer them for new code, and align existing code when you touch it.
   Every fan-out consumer runs on `futures_util::stream::FuturesUnordered` plus a thin bounded-admission governor.
   Delete reinvented machinery.
   Do not extend it.
-- Keep layer discipline.
-  Layer 1 is the single chunk.
-  Layer 1 has `get`, `put`, and `has` only, over the store traits in `nectar-primitives::store`.
-  `get` and `put` exist nowhere else.
-  Layer 2 is files, feeds, and manifests.
-  Layer 2 never uses `get` or `put`.
-  The read handle is uniformly `Reader`.
-  The write verb is domain-specific: `save`, `publish`, or `build`.
+- Name a surface after what it is: a map, or structured content.
+  A map speaks the `HashMap` vocabulary.
+  The content-addressed pool is a map whose key is the hash of the value, so the chunk store keeps `get`, `put` and `has` over the store traits in `nectar-primitives::store`.
+  It is `put`, not `insert`, because the caller supplies no key.
+  An arbitrary-key map (`nectar-ldb`, the manifest formats, the `Manifest` trait) uses `get`, `contains_key`, `insert`, `remove`, `range` and `iter`.
+  These maps are immutable, so a write yields a new root: bind a root with `at` for reads, bind a base with `edit` for writes, and let `commit` hand back the new root.
+  One-shot `insert` and `remove` on the store are the sugar over an edit of one op.
+  Structured content is not a map.
+  Files, feeds and builders speak `save`, `publish`, `build` and `load`.
+  Do not lend those verbs to a map, and do not lend the map verbs to structured content.
 - Follow the packaging plan.
   A no_std `nectar-primitives-core` carries the verify subset for the proving lane: BMT verify, keccak, SOC address, and ecrecover.
   The on-swarm KV database is `nectar-ldb`.

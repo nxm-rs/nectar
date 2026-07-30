@@ -17,7 +17,7 @@
 //! # nectar_testing::run(async {
 //! let loadsaver = NodeLoadSaver::new(MemoryStore::<StandardChunkSet>::new());
 //! let mut editor = ManifestEditor::new(loadsaver);
-//! editor.put("hello.txt", ChunkAddress::from([7u8; 32]));
+//! editor.insert("hello.txt", ChunkAddress::from([7u8; 32]));
 //! let (root, loadsaver) = editor.commit().await.unwrap();
 //! let entry = Reader::new(loadsaver).get(root, b"hello.txt").await.unwrap();
 //! assert!(entry.is_some());
@@ -137,7 +137,11 @@ where
     type Error = SplitError<S::Error>;
 
     async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
-        let root = self.file().save(data.as_slice()).await.map_err(unwrap_save)?;
+        let root = self
+            .file()
+            .save(data.as_slice())
+            .await
+            .map_err(unwrap_save)?;
         Ok(ChunkRef::new(root))
     }
 }

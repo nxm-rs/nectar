@@ -2687,6 +2687,7 @@ dependencies = [
  "arbitrary",
  "bytes",
  "futures",
+ "nectar-feeds",
  "nectar-file",
  "nectar-ldb",
  "nectar-loadsave",

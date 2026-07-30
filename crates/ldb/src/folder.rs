@@ -236,39 +236,8 @@ where
     /// `dir` is used as a key prefix: the root is the empty key and a nested
     /// directory conventionally ends with the separator. Only the trie nodes on
     /// the frontier are fetched; the value chunks a listing names are not.
-    pub async fn list(&self, root: &R, dir: &Key) -> Result<Listing<'_, S, F, R>, ReaderError> {
-        let prefix = dir.as_bytes();
-        // When the directory's keys are exactly one referenced chunk reached at
-        // the prefix boundary, delegate the walk to that subtree root: it holds
-        // precisely the directory's keys, so the walk starts there and needs no
-        // upper bound. A boundary deeper than the prefix, or none, walks from
-        // the manifest root as before.
-        if let Some(found) = self.descend_subtree(root, prefix).await?
-            && found.base == prefix.len()
-        {
-            let subtree = found.reference;
-            let cursor = Cursor::seek(self.store(), &subtree, &[], None).await?;
-            return Ok(Listing {
-                store: self.store(),
-                root: subtree,
-                end: None,
-                base: Bytes::copy_from_slice(prefix),
-                dir_len: prefix.len(),
-                done: false,
-                cursor,
-            });
-        }
-        let end = successor(prefix);
-        let cursor = Cursor::seek(self.store(), root, prefix, end.clone()).await?;
-        Ok(Listing {
-            store: self.store(),
-            root: root.clone(),
-            end,
-            base: Bytes::new(),
-            dir_len: prefix.len(),
-            done: false,
-            cursor,
-        })
+    pub async fn dir(&self, root: &R, dir: &Key) -> Result<Listing<'_, S, F, R>, ReaderError> {
+        dir_at(self.store(), root, dir).await
     }
 
     /// The manifest's site-level document conventions, read from the root's
@@ -310,6 +279,56 @@ where
         }
         Ok(Served::Missing)
     }
+}
+
+/// One directory level over `store`, listed from the database rooted at `root`.
+///
+/// The free form the root-bound view needs: the returned [`Listing`] keeps the
+/// caller's store reference, so it outlives the handle it was opened through
+/// rather than borrowing a temporary reader.
+pub(crate) async fn dir_at<'a, S, F, R>(
+    store: &'a S,
+    root: &R,
+    dir: &Key,
+) -> Result<Listing<'a, S, F, R>, ReaderError>
+where
+    S: NodeGet + MaybeSync,
+    F: Format,
+    R: NodeRef,
+{
+    let prefix = dir.as_bytes();
+    let reader: Reader<&'a S, F, R> = Reader::new(store);
+    // When the directory's keys are exactly one referenced chunk reached at the
+    // prefix boundary, delegate the walk to that subtree root: it holds
+    // precisely the directory's keys, so the walk starts there and needs no
+    // upper bound. A boundary deeper than the prefix, or none, walks from the
+    // manifest root as before.
+    if let Some(found) = reader.descend_subtree(root, prefix).await?
+        && found.base == prefix.len()
+    {
+        let subtree = found.reference;
+        let cursor = Cursor::seek(store, &subtree, &[], None).await?;
+        return Ok(Listing {
+            store,
+            root: subtree,
+            end: None,
+            base: Bytes::copy_from_slice(prefix),
+            dir_len: prefix.len(),
+            done: false,
+            cursor,
+        });
+    }
+    let end = successor(prefix);
+    let cursor = Cursor::seek(store, root, prefix, end.clone()).await?;
+    Ok(Listing {
+        store,
+        root: root.clone(),
+        end,
+        base: Bytes::new(),
+        dir_len: prefix.len(),
+        done: false,
+        cursor,
+    })
 }
 
 /// A root-scope metadata document value, cloned out of the node's metadata.
@@ -399,7 +418,7 @@ mod tests {
         let reader: Reader<_> = Reader::new(&store);
 
         // The root lists two files and one collapsed directory, in key order.
-        let got = entries(run(reader.list(&root, &Key::empty())).unwrap());
+        let got = entries(run(reader.dir(&root, &Key::empty())).unwrap());
         assert_eq!(
             got,
             vec![
@@ -424,7 +443,7 @@ mod tests {
         );
         let reader: Reader<_> = Reader::new(&store);
 
-        let got = entries(run(reader.list(&root, &Key::from(&b"img/"[..]))).unwrap());
+        let got = entries(run(reader.dir(&root, &Key::from(&b"img/"[..]))).unwrap());
         assert_eq!(got, vec![dir(b"img/icons/"), file(b"img/logo.png", 0x02)]);
     }
 
@@ -444,7 +463,7 @@ mod tests {
         );
         let reader: Reader<_> = Reader::new(&store);
 
-        let got = entries(run(reader.list(&root, &Key::empty())).unwrap());
+        let got = entries(run(reader.dir(&root, &Key::empty())).unwrap());
         assert_eq!(got, vec![dir(b"a/"), dir(b"b/"), file(b"c.txt", 0x04)]);
     }
 
@@ -456,7 +475,7 @@ mod tests {
         let root = manifest(&store, &[(b"dir/", 0x01), (b"dir/a", 0x02)]);
         let reader: Reader<_> = Reader::new(&store);
 
-        let got = entries(run(reader.list(&root, &Key::from(&b"dir/"[..]))).unwrap());
+        let got = entries(run(reader.dir(&root, &Key::from(&b"dir/"[..]))).unwrap());
         assert_eq!(got, vec![file(b"dir/a", 0x02)]);
     }
 
@@ -474,7 +493,7 @@ mod tests {
         store.reset();
 
         let reader: Reader<_> = Reader::new(&store);
-        let got = entries_counting(run(reader.list(&root, &Key::empty())).unwrap());
+        let got = entries_counting(run(reader.dir(&root, &Key::empty())).unwrap());
         assert_eq!(got, vec![dir(b"deep/"), file(b"top.txt", 0xFF)]);
         // Seeking past the subtree keeps the fetch count to the frontier, far
         // below the 64 leaves under it.
@@ -533,7 +552,7 @@ mod tests {
         let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
-        let got = entries(run(reader.list(&root, &Key::from(&b"mg/"[..]))).unwrap());
+        let got = entries(run(reader.dir(&root, &Key::from(&b"mg/"[..]))).unwrap());
         assert_eq!(got, vec![dir(b"mg/a/"), file(b"mg/logo.png", 0xBB)]);
     }
 

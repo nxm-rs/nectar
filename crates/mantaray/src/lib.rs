@@ -157,7 +157,7 @@ pub(crate) use constants::*;
 #[cfg(feature = "std")]
 pub use cursor::{AddressStream, Cursor, Window};
 #[cfg(feature = "std")]
-pub use editor::{ManifestEditor, Op};
+pub use editor::{Insert, ManifestEditor, Op};
 #[cfg(feature = "std")]
 pub use entry::Entry;
 #[cfg(feature = "std")]
@@ -165,7 +165,7 @@ pub use error::{
     CursorError, DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result,
 };
 #[cfg(feature = "manifest")]
-pub use manifest::{ManifestError, MantarayManifest};
+pub use manifest::{ManifestError, MantarayManifest, TrieCursor, TrieView, TrieWriter};
 #[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;

@@ -11,7 +11,9 @@ use std::sync::Arc;
 use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{Builder, Encrypted as EncryptedSeal, LdbManifest, V1};
 use nectar_loadsave::NodeLoadSaver;
-use nectar_manifest::{ListEntry, Manifest, ManifestPath, MetadataView, WellKnownKey};
+use nectar_manifest::{
+    ListEntry, Manifest, ManifestPath, MapEntry, MapView, MapWriter, MetadataView, WellKnownKey,
+};
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{DEFAULT_BODY_SIZE, EncryptedChunkRef, StandardChunkSet};
@@ -25,8 +27,8 @@ type Store = ContentGet<Raw>;
 /// The secret an encrypted key-value database derives its keys from.
 const SECRET: &[u8] = b"an encrypted database secret";
 
-/// Save one entry, list it back, and load its data, all at the encrypted
-/// reference width.
+/// Insert one entry through the writer, read it back through the view, and load
+/// its data, all at the encrypted reference width.
 async fn exercise<M: Manifest<EncryptedChunkRef>>(
     manifest: &M,
     base: &EncryptedChunkRef,
@@ -36,28 +38,52 @@ async fn exercise<M: Manifest<EncryptedChunkRef>>(
     let meta = manifest
         .metadata_from_view(&MetadataView::new().with(WellKnownKey::ContentType, "text/plain"))
         .unwrap();
-    let root = manifest
-        .save(
-            base,
-            ManifestPath::from("data.bin"),
-            file.clone(),
-            meta,
-        )
-        .await
-        .unwrap();
+    let root = {
+        let mut writer = manifest.edit(base);
+        writer
+            .insert(ManifestPath::from("data.bin"), file.clone())
+            .meta(meta);
+        writer.commit().await.unwrap()
+    };
 
-    let listing = manifest.list(&root, &ManifestPath::root()).await.unwrap();
-    assert_eq!(listing.entries(), [ListEntry::File {
-        path: ManifestPath::from("data.bin"),
-        reference: file.clone(),
-    }]);
+    let view = manifest.at(&root);
+    assert_eq!(
+        view.get(&ManifestPath::from("data.bin")).await.unwrap(),
+        Some(MapEntry::Reference(file.clone())),
+    );
+    assert!(
+        view.contains_key(&ManifestPath::from("data.bin"))
+            .await
+            .unwrap()
+    );
+    let listing = view.dir(&ManifestPath::root()).await.unwrap();
+    assert_eq!(
+        listing.entries(),
+        [ListEntry::File {
+            path: ManifestPath::from("data.bin"),
+            reference: file.clone(),
+        }]
+    );
 
     let mut sink = MemSink::new();
-    manifest
-        .load(&root, &ManifestPath::from("data.bin"), &mut sink)
+    view.load(&ManifestPath::from("data.bin"), &mut sink)
         .await
         .unwrap();
     assert_eq!(sink.as_ref(), data);
+
+    // The one-shot removal is the same map vocabulary, and leaves the entry
+    // unreachable under the root it produced.
+    let pruned = manifest
+        .remove(&root, ManifestPath::from("data.bin"))
+        .await
+        .unwrap();
+    assert!(
+        !manifest
+            .at(&pruned)
+            .contains_key(&ManifestPath::from("data.bin"))
+            .await
+            .unwrap()
+    );
 }
 
 #[test]

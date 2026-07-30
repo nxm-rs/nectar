@@ -205,7 +205,7 @@ fn apply_matches_a_from_scratch_encrypted_build() -> Result<()> {
 
     let mut changeset = Changeset::<V1>::new();
     for (key, fill) in all.iter().skip(split) {
-        changeset.put(key.clone(), entry(*fill), None);
+        changeset.insert(key.clone(), entry(*fill), None);
     }
     // A deletion the merged set never had: it must leave the root untouched.
     changeset.remove(Key::from(&b"absent"[..]));

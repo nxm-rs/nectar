@@ -102,7 +102,7 @@ impl ManifestMetadata for MetadataView {
     }
 }
 
-/// An entry with no metadata at all, for a put that carries none.
+/// An entry with no metadata at all, for an insert that carries none.
 impl ManifestMetadata for () {
     fn get(&self, _key: &WellKnownKey<'_>) -> Option<&str> {
         None

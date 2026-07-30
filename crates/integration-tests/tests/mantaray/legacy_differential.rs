@@ -87,11 +87,11 @@ fn record(editor: &mut Editor, script: &[ScriptOp]) {
     for op in script {
         match op {
             ScriptOp::Add(p, a) => {
-                editor.put(p.as_str(), ChunkAddress::from(*a));
+                editor.insert(p.as_str(), ChunkAddress::from(*a));
             }
             ScriptOp::AddMeta(p, a, k, v) => {
                 let meta: BTreeMap<String, String> = [(k.clone(), v.clone())].into();
-                editor.put_with_metadata(p.as_str(), ChunkAddress::from(*a), meta);
+                editor.insert(p.as_str(), ChunkAddress::from(*a)).meta(meta);
             }
             ScriptOp::Rm(p) => {
                 editor.remove(p.as_str());

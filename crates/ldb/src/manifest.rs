@@ -4,28 +4,36 @@
 //! One store serves both roles: the trie nodes and the entry data behind a
 //! reference. A key bound to inline bytes carries its own data, so a load of
 //! it never reaches the file pipeline.
+//!
+//! The seam's handles are the database's own: [`LdbView`] wraps
+//! [`Database::at`] and [`LdbWriter`] wraps [`Database::edit`], so the trait's
+//! map vocabulary and the crate's map vocabulary are the same code path with
+//! paths in place of keys.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
+use core::ops::{Bound, RangeBounds};
 
 use bytes::Bytes;
 use nectar_file::{File, Policy};
 use nectar_manifest::{
-    DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, SinkError,
-    WellKnownKey,
+    DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapCursor,
+    MapEntry, MapView, MapWriter, SinkError, WellKnownKey,
 };
+use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
-use nectar_primitives::EntryRef;
 
-use crate::apply::{ApplyError, Changeset, apply};
+use crate::apply::ApplyError;
+use crate::db::{Database, Editor, View};
 use crate::error::{MetadataTooLong, NotAReference};
 use crate::folder::DirEntry;
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, Metadata};
 use crate::node::NodeRef;
-use crate::reader::{Reader, ReaderError};
+use crate::reader::ReaderError;
+use crate::scan::Cursor;
 use crate::store::{Plaintext, Seal};
 use crate::value::{Entry, Key};
 
@@ -79,24 +87,30 @@ impl ManifestError {
 /// reference carries its own key.
 #[derive(Clone, Copy, Debug)]
 pub struct LdbManifest<S, K = Plaintext> {
-    store: S,
-    seal: K,
+    db: Database<S, K, V1>,
 }
 
 impl<S, K> LdbManifest<S, K> {
     /// A manifest over `store`, publishing rewritten nodes through `seal`.
     pub const fn new(store: S, seal: K) -> Self {
-        Self { store, seal }
+        Self {
+            db: Database::new(store, seal),
+        }
+    }
+
+    /// The backing database.
+    pub const fn db(&self) -> &Database<S, K, V1> {
+        &self.db
     }
 
     /// The backing store.
     pub const fn store(&self) -> &S {
-        &self.store
+        self.db.store()
     }
 
     /// The write-side sealer.
     pub const fn seal(&self) -> &K {
-        &self.seal
+        self.db.seal()
     }
 }
 
@@ -118,83 +132,25 @@ where
 
     type Error = ManifestError;
 
-    fn list(
-        &self,
-        root: &R,
-        dir: &ManifestPath,
-    ) -> impl Future<Output = Result<Listing<R>, Self::Error>> + MaybeSend {
-        let root = root.clone();
-        let key = Key::from(dir.as_bytes());
-        async move {
-            let reader: Reader<_, V1, R> = Reader::new(&self.store);
-            let mut listing = reader.list(&root, &key).await?;
-            let mut entries = Vec::new();
-            while let Some(item) = listing.next().await? {
-                entries.push(listed(item));
-            }
-            Ok(Listing::new(entries))
+    type View<'a>
+        = LdbView<'a, S, R>
+    where
+        Self: 'a;
+
+    type Writer<'a>
+        = LdbWriter<'a, S, K, R>
+    where
+        Self: 'a;
+
+    fn at(&self, root: &R) -> Self::View<'_> {
+        LdbView {
+            view: self.db.at(root),
         }
     }
 
-    fn load<T: DataSink<Error: SinkError> + MaybeSend>(
-        &self,
-        root: &R,
-        path: &ManifestPath,
-        sink: &mut T,
-    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
-        let root = root.clone();
-        let path = path.clone();
-        async move {
-            let reader: Reader<_, V1, R> = Reader::new(&self.store);
-            let entry = reader
-                .get(&root, &Key::from(path.as_bytes()))
-                .await?
-                .ok_or_else(|| ManifestError::NotFound { path })?;
-            match entry {
-                Entry::Inline(value) => sink
-                    .write_at(0, value.as_bytes())
-                    .map_err(ManifestError::sink)?,
-                bound => {
-                    let reference = EntryRef::try_from(bound)?;
-                    File::new(self.store.clone(), Policy::DEFAULT)
-                        .load(reference, sink)
-                        .await
-                        .map_err(ManifestError::data)?;
-                }
-            }
-            Ok(())
-        }
-    }
-
-    fn apply(
-        &self,
-        base: &R,
-        ops: impl IntoIterator<Item = ManifestOp<R, Self::Metadata>> + MaybeSend,
-    ) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
-        // Staged before the first await: the changeset is the batch, and the
-        // source iterator never crosses an await point.
-        let mut changeset = Changeset::<V1>::new();
-        for op in ops {
-            match op {
-                ManifestOp::Put {
-                    path,
-                    reference,
-                    meta,
-                } => {
-                    changeset.put(
-                        Key::from(path.as_bytes()),
-                        Entry::from(reference.into_entry_ref()),
-                        meta,
-                    );
-                }
-                ManifestOp::Remove { path } => {
-                    changeset.remove(Key::from(path.as_bytes()));
-                }
-            }
-        }
-        let base = base.clone();
-        async move {
-            Ok(apply::<S, V1, R, K>(&self.store, &self.seal, &base, &changeset).await?)
+    fn edit(&self, base: &R) -> Self::Writer<'_> {
+        LdbWriter {
+            editor: self.db.edit(base),
         }
     }
 
@@ -223,6 +179,212 @@ where
     }
 }
 
+/// The seam's read view: the database's own view, keyed by path.
+#[derive(Debug)]
+pub struct LdbView<'a, S, R: NodeRef> {
+    view: View<'a, S, V1, R>,
+}
+
+impl<'a, S, R> MapView<R> for LdbView<'a, S, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + Clone + MaybeSend + MaybeSync + 'static,
+    R: NodeRef,
+{
+    type Metadata = Option<Metadata<V1>>;
+
+    type Error = ManifestError;
+
+    type Cursor = LdbCursor<'a, S, R>;
+
+    fn get(
+        &self,
+        path: &ManifestPath,
+    ) -> impl Future<Output = Result<Option<MapEntry<R>>, Self::Error>> + MaybeSend {
+        let key = Key::from(path.as_bytes());
+        async move { Ok(self.view.get(&key).await?.map(mapped)) }
+    }
+
+    fn metadata(
+        &self,
+        path: &ManifestPath,
+    ) -> impl Future<Output = Result<Self::Metadata, Self::Error>> + MaybeSend {
+        let key = Key::from(path.as_bytes());
+        async move { Ok(self.view.metadata(&key).await?) }
+    }
+
+    fn contains_key(
+        &self,
+        path: &ManifestPath,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + MaybeSend {
+        let key = Key::from(path.as_bytes());
+        async move { Ok(self.view.contains_key(&key).await?) }
+    }
+
+    fn dir(
+        &self,
+        dir: &ManifestPath,
+    ) -> impl Future<Output = Result<Listing<R>, Self::Error>> + MaybeSend {
+        let key = Key::from(dir.as_bytes());
+        async move {
+            let mut listing = self.view.dir(&key).await?;
+            let mut entries = Vec::new();
+            while let Some(item) = listing.next().await? {
+                entries.push(listed(item));
+            }
+            Ok(Listing::new(entries))
+        }
+    }
+
+    fn load<T: DataSink<Error: SinkError> + MaybeSend>(
+        &self,
+        path: &ManifestPath,
+        sink: &mut T,
+    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
+        let path = path.clone();
+        let store = self.view.store().clone();
+        async move {
+            let entry = self
+                .view
+                .get(&Key::from(path.as_bytes()))
+                .await?
+                .ok_or_else(|| ManifestError::NotFound { path })?;
+            match entry {
+                Entry::Inline(value) => sink
+                    .write_at(0, value.as_bytes())
+                    .map_err(ManifestError::sink)?,
+                bound => {
+                    let reference = EntryRef::try_from(bound)?;
+                    File::new(store, Policy::DEFAULT)
+                        .load(reference, sink)
+                        .await
+                        .map_err(ManifestError::data)?;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn iter(&self) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend {
+        // The view is a store reference and a root, so the walk takes its own
+        // copy rather than borrowing the handle it was opened through.
+        let view = self.view.clone();
+        async move {
+            Ok(LdbCursor {
+                cursor: view.iter().await?,
+            })
+        }
+    }
+
+    fn range(
+        &self,
+        bounds: impl RangeBounds<ManifestPath> + MaybeSend,
+    ) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend {
+        let bounds = key_bounds(&bounds);
+        let view = self.view.clone();
+        async move {
+            Ok(LdbCursor {
+                cursor: view.range(bounds).await?,
+            })
+        }
+    }
+}
+
+/// The seam's ordered walk: the database's own cursor, keyed by path.
+#[derive(Debug)]
+pub struct LdbCursor<'a, S, R: NodeRef> {
+    cursor: Cursor<'a, S, V1, R>,
+}
+
+impl<S, R> MapCursor<R> for LdbCursor<'_, S, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSend + MaybeSync,
+    R: NodeRef,
+{
+    type Error = ManifestError;
+
+    fn next(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<(ManifestPath, MapEntry<R>)>, Self::Error>> + MaybeSend
+    {
+        let cursor = &mut self.cursor;
+        async move {
+            Ok(cursor
+                .next()
+                .await?
+                .map(|(key, entry)| (ManifestPath::new(key.as_bytes().to_vec()), mapped(entry))))
+        }
+    }
+}
+
+/// The seam's write handle: the database's own editor, keyed by path.
+#[derive(Debug)]
+pub struct LdbWriter<'a, S, K, R: NodeRef> {
+    editor: Editor<'a, S, K, V1, R>,
+}
+
+impl<S, K, R> MapWriter<R> for LdbWriter<'_, S, K, R>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSend + MaybeSync,
+    K: Seal<R> + MaybeSend + MaybeSync,
+    R: NodeRef,
+{
+    type Metadata = Option<Metadata<V1>>;
+
+    type Error = ManifestError;
+
+    fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
+        match op {
+            ManifestOp::Insert {
+                path,
+                reference,
+                meta,
+            } => {
+                let mut staged = self.editor.insert(
+                    Key::from(path.as_bytes()),
+                    Entry::from(reference.into_entry_ref()),
+                );
+                if let Some(meta) = meta {
+                    staged.meta(meta);
+                }
+            }
+            ManifestOp::Remove { path } => {
+                self.editor.remove(Key::from(path.as_bytes()));
+            }
+        }
+    }
+
+    fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
+        let editor = self.editor;
+        async move { Ok(editor.commit().await?) }
+    }
+}
+
+/// The key bounds a path range selects, in the database's own key type.
+fn key_bounds(bounds: &impl RangeBounds<ManifestPath>) -> (Bound<Key>, Bound<Key>) {
+    (bound(bounds.start_bound()), bound(bounds.end_bound()))
+}
+
+/// One path bound as a key bound.
+fn bound(edge: Bound<&ManifestPath>) -> Bound<Key> {
+    match edge {
+        Bound::Unbounded => Bound::Unbounded,
+        Bound::Included(path) => Bound::Included(Key::from(path.as_bytes())),
+        Bound::Excluded(path) => Bound::Excluded(Key::from(path.as_bytes())),
+    }
+}
+
+/// One bound value as a seam entry: a reference of the caller's width, or an
+/// opaque value.
+///
+/// An inline value, or a reference of the other width, is bound but names no
+/// reference the caller can read on its own; a load still reaches its bytes.
+fn mapped<R: NodeRef>(entry: Entry<V1>) -> MapEntry<R> {
+    match EntryRef::try_from(entry).map(R::from_entry_ref) {
+        Ok(Ok(reference)) => MapEntry::Reference(reference),
+        Ok(Err(_)) | Err(_) => MapEntry::Opaque,
+    }
+}
+
 /// One folder-view child as a seam listing entry.
 ///
 /// A key bound to inline bytes, or to a reference of the other width, still
@@ -234,9 +396,9 @@ fn listed<R: NodeRef>(entry: DirEntry<V1>) -> ListEntry<R> {
         },
         DirEntry::File { key, entry } => {
             let path = ManifestPath::new(key.as_bytes().to_vec());
-            match EntryRef::try_from(entry).map(R::from_entry_ref) {
-                Ok(Ok(reference)) => ListEntry::File { path, reference },
-                Ok(Err(_)) | Err(_) => ListEntry::Value { path },
+            match mapped::<R>(entry) {
+                MapEntry::Reference(reference) => ListEntry::File { path, reference },
+                MapEntry::Opaque => ListEntry::Value { path },
             }
         }
     }
