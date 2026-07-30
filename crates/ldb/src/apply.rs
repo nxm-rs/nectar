@@ -106,6 +106,11 @@ impl<F: Format> Changeset<F> {
     }
 
     /// Stage the removal of `key`, replacing any staged update for it.
+    ///
+    /// Exact-key: the key's own value and metadata go, and no other key does. At
+    /// the root key that clears the manifest's own value and its site documents,
+    /// and leaves every key below it, because those are children rather than
+    /// part of the binding. An unbound or absent key is a no-op.
     pub fn remove(&mut self, key: Key) -> &mut Self {
         self.ops.insert(key.into_bytes(), Op::Delete);
         self
@@ -172,9 +177,15 @@ where
     if changeset.is_empty() {
         return Ok(root.clone());
     }
-    // A fork indexes on a byte, so the empty key has no slot to land in: the
-    // root key, the separator alone, is the database's own slot instead.
-    if changeset.ops.keys().any(bytes::Bytes::is_empty) {
+    // A fork indexes on a byte, so the empty key has no slot to bind in: the
+    // root key, the separator alone, is the database's own slot instead. A
+    // deletion there names no key, and removing what is not there is a no-op,
+    // so only a binding fails.
+    if changeset
+        .ops
+        .iter()
+        .any(|(key, op)| key.is_empty() && matches!(op, Op::Insert { .. }))
+    {
         return Err(ForkPrefixEmpty.into());
     }
     let node = store.get_node::<F, R>(root).await?;
@@ -190,7 +201,14 @@ where
             root_entry = Some(entry.clone());
             root_meta = meta.clone();
         }
-        Some(Op::Delete) => root_entry = None,
+        // A removal clears the whole binding, at the root key like everywhere
+        // else: the site documents are that key's metadata, so they go with the
+        // value. The keys below the root are its children, not its binding, and
+        // every one of them survives.
+        Some(Op::Delete) => {
+            root_entry = None;
+            root_meta = None;
+        }
         None => {}
     }
     let root_ext = RootExtension::new(root_entry, root_meta);
@@ -198,7 +216,9 @@ where
     let changes: Vec<Change<'_, F>> = changeset
         .ops
         .iter()
-        .filter(|(key, _)| !is_root_key::<F>(key))
+        // The root key is handled above, and the empty key names no slot to
+        // descend to: a deletion of it is the no-op it has to be.
+        .filter(|(key, _)| !is_root_key::<F>(key) && !key.is_empty())
         .map(|(key, op)| Change {
             key: key.clone(),
             op,

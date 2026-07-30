@@ -26,6 +26,25 @@ type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 #[cfg(not(multi_thread))]
 type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
+/// Boxed recursion future of an exact-key clear, cfg-gated the same way.
+#[cfg(multi_thread)]
+type ClearFuture<'a> = Pin<Box<dyn Future<Output = Result<Cleared>> + Send + 'a>>;
+#[cfg(not(multi_thread))]
+type ClearFuture<'a> = Pin<Box<dyn Future<Output = Result<Cleared>> + 'a>>;
+
+/// What an exact-key clear did to the node the path names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cleared {
+    /// The path named no binding, so the trie is untouched and no ancestor is
+    /// dirtied: removing what is not there changes nothing.
+    Absent,
+    /// The binding is gone and the node stays, because it still has children.
+    Kept,
+    /// The binding is gone and the node holds nothing else, so its parent
+    /// prunes the fork that reached it.
+    Prune,
+}
+
 /// Inline-only byte buffer for fork prefixes (max 30 bytes).
 ///
 /// Always stores data inline; no heap allocation, no branching.
@@ -335,6 +354,26 @@ impl<R: Reference> Node<R> {
         self.node_type = self.node_type.union(NodeType::EDGE);
     }
 
+    /// Whether the node binds anything of its own: a value, or metadata.
+    ///
+    /// The reader's terminal test, so this is exactly what `contains_key`
+    /// answers at the node's path. A metadata-only node binds too, which is why
+    /// the entry alone does not decide it.
+    pub(crate) const fn is_bound(&self) -> bool {
+        self.node_type
+            .intersects(NodeType::VALUE.union(NodeType::METADATA))
+    }
+
+    /// Drop the node's own binding: its entry, its value flag and its metadata.
+    ///
+    /// Structure is untouched, so the forks below survive: this is one key
+    /// leaving the map, not a subtree.
+    fn unbind(&mut self) {
+        self.entry = None;
+        self.node_type = self.node_type.difference(NodeType::VALUE);
+        self.set_metadata(BTreeMap::new());
+    }
+
     /// Check if the path contains a separator.
     pub const fn is_with_path_separator(&self) -> bool {
         self.node_type.contains(NodeType::PATH_SEPARATOR)
@@ -613,6 +652,76 @@ impl<R: Reference> Node<R> {
             self.mark_dirty();
             result
         })
+    }
+
+    /// Clear the binding at exactly `path`, loading from storage as needed.
+    ///
+    /// `HashMap::remove` semantics, which is what the manifest seam contracts
+    /// for: the key's own value and metadata go, and nothing else does. A key
+    /// with children keeps every one of them, and a childless leaf is pruned
+    /// from its parent. An absent or unbound key changes nothing at all, so no
+    /// node is dirtied and a commit hands the same root back.
+    ///
+    /// The prefix [`remove`](Self::remove) above is the legacy 0.3.0 boundary
+    /// op and stays that way; nothing on the seam reaches it.
+    ///
+    /// Returns a boxed future so the `&mut self` recursion can name its own type.
+    pub(crate) fn clear<'a, L: NodeLoader>(
+        &'a mut self,
+        path: &'a [u8],
+        loader: &'a L,
+    ) -> ClearFuture<'a>
+    where
+        R: MaybeSend,
+    {
+        Box::pin(async move {
+            self.ensure_loaded(loader).await?;
+
+            // An empty path names this node, so its own binding is what goes.
+            let Some((first, _)) = path.split_first() else {
+                if !self.is_bound() {
+                    return Ok(Cleared::Absent);
+                }
+                self.unbind();
+                self.mark_dirty();
+                return Ok(self.prunable());
+            };
+
+            let Some(fork) = self.forks.get_mut(first) else {
+                return Ok(Cleared::Absent);
+            };
+            let edge: &[u8] = &fork.prefix;
+            // A path that diverges inside the edge names no node at all.
+            let Some(rest) = path.strip_prefix(edge) else {
+                return Ok(Cleared::Absent);
+            };
+            match fork.node.clear(rest, loader).await? {
+                // Nothing below changed, so nothing here does either: an
+                // untouched ancestor keeps its reference and its address.
+                Cleared::Absent => return Ok(Cleared::Absent),
+                Cleared::Kept => {}
+                Cleared::Prune => {
+                    self.forks.remove(first);
+                    if self.forks.is_empty() {
+                        self.node_type = self.node_type.difference(NodeType::EDGE);
+                    }
+                }
+            }
+            self.mark_dirty();
+            Ok(self.prunable())
+        })
+    }
+
+    /// Whether this node still holds anything after a clear below it.
+    ///
+    /// A node with neither a binding nor a child names nothing, so its parent
+    /// drops the fork that reached it.
+    fn prunable(&self) -> Cleared {
+        if self.is_bound() || !self.forks.is_empty() {
+            Cleared::Kept
+        } else {
+            Cleared::Prune
+        }
     }
 }
 

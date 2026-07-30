@@ -259,10 +259,15 @@ where
     /// Resolve a request path to the entry a website server would return.
     ///
     /// An exact key wins; otherwise the path is read as a directory and its
-    /// index document is tried, then the error document. The empty path and a
-    /// path already ending in the separator name a directory directly; any
+    /// index document is tried, then the error document.
+    ///
+    /// Keys are absolute, so a path already ending in the separator names a
+    /// directory directly and the root directory is the separator alone; any
     /// other path is read as a directory by inserting a separator before the
-    /// index document.
+    /// index document. The index document is a filename joined below each
+    /// directory, so `"/"` resolves `"/index.html"` and `"/docs/"` resolves
+    /// `"/docs/index.html"`. The error document is one whole key, so it is
+    /// absolute like any other path: `"/404.html"`.
     pub async fn serve(&self, root: &R, path: &Key) -> Result<Served<F>, ReaderError> {
         if let Some(entry) = self.get(root, path).await? {
             return Ok(Served::Exact {

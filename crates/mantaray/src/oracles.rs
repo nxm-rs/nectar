@@ -218,7 +218,7 @@ pub enum EditorOp {
         /// Metadata value seed.
         value: u8,
     },
-    /// Remove the value at the path.
+    /// Prune the subtree at the path, through the legacy boundary remove.
     Remove {
         /// Raw path bytes, mapped onto the dense four-symbol alphabet.
         path: Vec<u8>,
@@ -314,7 +314,9 @@ fn record(ops: &[EditorOp]) -> ManifestEditor<OracleLoadSaver> {
                     .meta(metadata(*key, *value));
             }
             EditorOp::Remove { path: raw } => {
-                editor.remove(path(raw));
+                // The legacy boundary remove: the op this oracle's model and
+                // committed corpus were both recorded against.
+                editor.remove_subtree(path(raw));
             }
             EditorOp::SetIndex { name } => {
                 editor.set_root_metadata(

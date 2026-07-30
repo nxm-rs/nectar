@@ -18,6 +18,15 @@
 //! boundary removes, mid-edge splits, prefix-bound chains and the root-metadata
 //! interleavings are all still pinned against the reference implementation; only
 //! the key space they run over moved.
+//!
+//! # The remove this drives
+//!
+//! 0.3.0's `remove` prunes the fork whose boundary the path names, so it takes
+//! every key under it. The map vocabulary means the exact key instead, so the
+//! editor's `remove` is exact-key and the boundary op lives on under
+//! `remove_subtree`. This differential drives `remove_subtree`, because that is
+//! the behaviour 0.3.0 pins. The exact-key contract is pinned across both
+//! formats in `manifest/root_key.rs` instead.
 
 use std::collections::BTreeMap;
 
@@ -119,8 +128,11 @@ fn record(editor: &mut Editor, script: &[ScriptOp]) {
                 let meta: BTreeMap<String, String> = [(k.clone(), v.clone())].into();
                 editor.insert(p.as_str(), ChunkAddress::from(*a)).meta(meta);
             }
+            // The legacy boundary remove, which is what 0.3.0's `remove` is and
+            // the only op this differential may drive: the seam's `remove` is
+            // exact-key now, so it would answer a different question.
             ScriptOp::Rm(p) => {
-                editor.remove(p.as_str());
+                editor.remove_subtree(p.as_str());
             }
             // The typed `set_index_document` sugar is gone: the site documents
             // are well-known metadata, and a root-scope merge is the op the
@@ -464,14 +476,17 @@ fn build_script(raw: &[(u8, u8, u8)]) -> Vec<ScriptOp> {
                     added.push(path);
                 }
             }
-            4 => {
-                if added.is_empty() {
-                    script.push(add(path));
-                    added.push(path);
-                } else {
-                    let victim = added.remove(usize::from(seed) % added.len());
-                    script.push(rm(victim));
-                }
+            // With nothing to remove yet, the word lands as an add instead;
+            // the held-out bare-add-over-metadata shape is held out here too,
+            // because a path already carrying metadata reaches this branch as
+            // readily as the add branch above.
+            4 if added.is_empty() && !with_metadata => {
+                script.push(add(path));
+                added.push(path);
+            }
+            4 if !added.is_empty() => {
+                let victim = added.remove(usize::from(seed) % added.len());
+                script.push(rm(victim));
             }
             6 => {
                 script.push(ScriptOp::SetIndex(format!("index{seed}.html")));
