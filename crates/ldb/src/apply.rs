@@ -113,18 +113,15 @@ impl<F: Format> Changeset<F> {
     ///
     /// Exact-key: the key's own value and metadata go, and no other key does.
     /// At the root key that clears the manifest's own value and its site
-    /// documents; the keys below are children, so every one of them survives.
-    /// An unbound or absent key is a no-op.
+    /// documents. An absent key is a no-op.
     pub fn remove(&mut self, key: Key) -> &mut Self {
         self.ops.insert(key.into_bytes(), Op::Delete);
         self
     }
 
-    /// Stage a merge of `key` into the manifest's own metadata, the root slot
-    /// the site-level document conventions live in.
+    /// Stage a merge of `key` into the manifest's own metadata.
     ///
     /// A merge, not a replace: only `key` moves, and a `None` value clears it.
-    /// Clearing the last key leaves the manifest carrying no metadata at all.
     pub fn set_root_metadata(
         &mut self,
         key: impl Into<MetadataKey<F>>,
@@ -224,23 +221,19 @@ where
     let mut root_entry = node.entry().cloned();
     let mut root_meta = node.metadata().cloned();
     match changeset.ops.get(&Bytes::new()) {
-        // A bare insert replaces the whole binding, so it clears the key's
-        // metadata unless the insert carries some. A later merge op re-sets it.
+        // A bare insert replaces the whole binding, clearing the key's metadata.
         Some(Op::Insert { entry, meta }) => {
             root_entry = Some(entry.clone());
             root_meta = meta.clone();
         }
-        // A removal clears the whole binding, at the empty key like everywhere
-        // else: the manifest metadata is that key's metadata, so it goes with
-        // the value. The keys below are children, and every one survives.
+        // A removal clears the whole binding, metadata included.
         Some(Op::Delete) => {
             root_entry = None;
             root_meta = None;
         }
         None => {}
     }
-    // The metadata merges land after the binding, so a batch that clears the
-    // root value and sets a site document ends with the document.
+    // Metadata merges land after the binding.
     let root_ext = RootExtension::new(root_entry, changeset.merged_root_metadata(root_meta)?);
 
     let changes: Vec<Change<'_, F>> = changeset
@@ -1306,7 +1299,6 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1)]);
 
-        // The root carries its own manifest metadata, where the site config lives.
         let mut set = Changeset::<V1>::new();
         set.set_root_metadata(
             KeyId::WebsiteIndexDocument,
@@ -1314,8 +1306,7 @@ mod tests {
         );
         let with_meta = run(apply(&store, &Plaintext, &root, &set)).unwrap();
 
-        // A bare insert at the empty key replaces the whole binding, so it clears
-        // that metadata and lands on the root a build without it would.
+        // A bare insert at the empty key replaces the whole binding.
         let mut bare = Changeset::<V1>::new();
         bare.insert(Key::empty(), entry(7), None);
         let after = run(apply(&store, &Plaintext, &with_meta, &bare)).unwrap();

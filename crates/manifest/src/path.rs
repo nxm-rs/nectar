@@ -7,17 +7,7 @@ use core::fmt;
 ///
 /// The bytes are the format's own key, stored bare and verbatim: nothing is
 /// prepended and nothing is normalized, so a trailing separator survives a round
-/// trip. That keeps the mantaray image byte-identical to the reference client's.
-///
-/// A path names content and nothing else. The site-level documents are not
-/// paths: read them with [`MapView::index_document`] and
-/// [`MapView::error_document`], and write it with
-/// [`MapWriter::with_index_document`] and [`MapWriter::with_error_document`].
-///
-/// [`MapView::index_document`]: crate::MapView::index_document
-/// [`MapView::error_document`]: crate::MapView::error_document
-/// [`MapWriter::with_index_document`]: crate::MapWriter::with_index_document
-/// [`MapWriter::with_error_document`]: crate::MapWriter::with_error_document
+/// trip. A path names content alone; the site-level documents are not paths.
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ManifestPath(Vec<u8>);
 
@@ -59,7 +49,7 @@ impl ManifestPath {
             .filter(|segment| !segment.is_empty())
     }
 
-    /// The path bytes, as both formats store them.
+    /// The path bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
@@ -71,14 +61,8 @@ impl ManifestPath {
         self.0
     }
 
-    /// Whether the path names nothing at all.
-    ///
-    /// The empty path is the prefix every content path carries, so
-    /// [`MapView::dir`] lists the top level with it and [`MapView::range`]
-    /// bounds on it. It is not a key.
-    ///
-    /// [`MapView::dir`]: crate::MapView::dir
-    /// [`MapView::range`]: crate::MapView::range
+    /// Whether the path names nothing at all. The empty path is a prefix and
+    /// a bound, not a key.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -86,12 +70,9 @@ impl ManifestPath {
 
     /// Whether the path names a key the map reserves rather than content.
     ///
-    /// Two byte strings are reserved on both formats: the empty one, which is
-    /// the structural root every path hangs below, and the lone separator,
-    /// which is the slot the site-level documents live in. A read at either is
-    /// absent and a write at either is [`ReservedKey`].
-    ///
-    /// [`ReservedKey`]: crate::ReservedKey
+    /// The empty path and the lone separator are reserved on both formats: a
+    /// read at either is absent and a write at either is
+    /// [`ReservedKey`](crate::ReservedKey).
     #[must_use]
     pub fn is_reserved(&self) -> bool {
         matches!(self.0.as_slice(), [] | [Self::SEPARATOR])
@@ -159,9 +140,6 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    /// The wire contract: a content path is the bytes it was given, so nothing
-    /// the seam does can move the mantaray image away from the reference
-    /// client's.
     #[test]
     fn a_path_is_stored_bare_and_verbatim() {
         assert_eq!(ManifestPath::from("index.html").as_bytes(), b"index.html");

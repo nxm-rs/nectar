@@ -27,8 +27,7 @@ type Store = ContentGet<Raw>;
 /// The secret an encrypted key-value database derives its keys from.
 const SECRET: &[u8] = b"an encrypted database secret";
 
-/// Insert one entry through the writer, read it back through the view, and load
-/// its data, all at the encrypted reference width.
+/// Insert, read back and load one entry at the encrypted reference width.
 async fn exercise<M: Manifest<EncryptedChunkRef>>(
     manifest: &M,
     base: &EncryptedChunkRef,
@@ -71,8 +70,7 @@ async fn exercise<M: Manifest<EncryptedChunkRef>>(
         .unwrap();
     assert_eq!(sink.as_ref(), data);
 
-    // The one-shot removal is the same map vocabulary, and leaves the entry
-    // unreachable under the root it produced.
+    // The one-shot removal leaves the entry unreachable under its new root.
     let pruned = manifest
         .remove(&root, ManifestPath::from("data.bin"))
         .await

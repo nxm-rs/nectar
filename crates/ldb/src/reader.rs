@@ -80,21 +80,17 @@ where
         Ok(self.lookup(root, key).await?.map(|(entry, _)| entry))
     }
 
-    /// Whether `key` is bound under the database rooted at `root`.
-    ///
-    /// The same descent a [`get`](Self::get) pays: presence is decided at the
-    /// terminal fork record, and no value chunk is fetched either way.
+    /// Whether `key` is bound under the database rooted at `root`. No value
+    /// chunk is fetched.
     pub async fn contains_key(&self, root: &R, key: &Key) -> Result<bool, ReaderError> {
         Ok(self.lookup(root, key).await?.is_some())
     }
 
-    /// The metadata bound to `key`, or `None` when the key carries none.
+    /// The metadata bound to `key`.
     ///
     /// The empty key reads the database's own manifest metadata, whether or not
-    /// the root binds an entry: a website root carries the index and error
-    /// documents with no root value at all. An absent key carries no metadata
-    /// either, so a `None` is not a presence answer; ask
-    /// [`contains_key`](Self::contains_key) for that.
+    /// the root binds an entry. An absent key also reads `None`, so this is no
+    /// presence answer; ask [`contains_key`](Self::contains_key) for that.
     pub async fn metadata(&self, root: &R, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
         if key.is_empty() {
             let decoded = fetch_chunk::<S, F, R>(&self.store, root).await?;
@@ -118,8 +114,6 @@ where
             // The empty key reads the root's own value; a spilled root carries
             // it in the segmented node's bytes just as a plain root does.
             if is_root && key.is_empty() {
-                // An absent root entry reads as absent, whatever metadata the
-                // root carries: presence is the entry's answer alone.
                 let (entry, meta) = root_extension(&decoded);
                 return Ok(entry.map(|entry| (entry, meta)));
             }
@@ -310,10 +304,8 @@ fn subtree_step<F: Format, R: NodeRef>(
 /// The empty-key binding a decoded root carries: its root extension entry and
 /// the database's own manifest metadata.
 ///
-/// The two halves are independent. A website root carries the index and error
-/// documents with no entry of its own, so the metadata stands alone, and a
-/// caller reading it must not have it gated on an entry that is absent by
-/// design.
+/// The two halves are independent: a website root carries the site documents
+/// with no entry of its own.
 fn root_extension<F: Format, R: NodeRef>(
     decoded: &DecodedChunk<F, R>,
 ) -> (Option<Entry<F>>, Option<Metadata<F>>) {
@@ -536,8 +528,6 @@ mod tests {
         );
     }
 
-    /// A website root carries the site documents with no root entry, so the
-    /// manifest metadata reads back while the empty key stays absent.
     #[test]
     fn the_empty_key_reads_root_metadata_without_a_root_entry() {
         let store = ContentGet::new(MemoryStore::default());
@@ -554,7 +544,6 @@ mod tests {
             run(reader.metadata(&root, &Key::empty())).unwrap(),
             Some(meta)
         );
-        // Presence is the entry's answer alone, so the empty key stays absent.
         assert_eq!(run(reader.get(&root, &Key::empty())).unwrap(), None);
         assert!(!run(reader.contains_key(&root, &Key::empty())).unwrap());
     }

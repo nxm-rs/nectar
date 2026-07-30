@@ -1,28 +1,16 @@
 //! The two reserved keys, and the error a write at one fails with.
 //!
-//! Two byte strings are not content paths on either format: the empty one, the
-//! structural root every path hangs below, and `"/"`, the slot the reference
-//! client keeps the site-level documents in. At both, a read is absent and a
-//! write is [`ReservedKey`].
-//!
-//! The site documents stay reachable through the option-typed API alone:
-//! [`MapView::index_document`], [`MapView::error_document`],
-//! [`MapWriter::with_index_document`] and [`MapWriter::with_error_document`].
-//!
-//! [`MapView::index_document`]: crate::MapView::index_document
-//! [`MapView::error_document`]: crate::MapView::error_document
-//! [`MapWriter::with_index_document`]: crate::MapWriter::with_index_document
-//! [`MapWriter::with_error_document`]: crate::MapWriter::with_error_document
+//! The empty path and `"/"` are no content paths on either format. At both, a
+//! read is absent and a write is [`ReservedKey`]. The site documents stay
+//! reachable through the option-typed API alone.
 
 use core::fmt;
 
 use crate::path::ManifestPath;
 
-/// A write named a key the map reserves, so the batch did not land.
+/// A write named a key the map reserves, so the whole batch was refused.
 ///
-/// Reported by [`MapWriter::commit`](crate::MapWriter::commit) on either
-/// format, because staging cannot fail: the whole batch is refused, so a
-/// caller never observes a half-applied root.
+/// Reported by [`MapWriter::commit`](crate::MapWriter::commit).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReservedKey {
     path: ManifestPath,
@@ -50,9 +38,7 @@ impl fmt::Display for ReservedKey {
 
 impl core::error::Error for ReservedKey {}
 
-/// The reserved key `error` reports, or `None` when it reports something else.
-///
-/// Walks the source chain, so one matcher answers for every format.
+/// The reserved key `error` reports. Walks the source chain.
 ///
 /// ```
 /// use nectar_manifest::{ManifestPath, ReservedKey, reserved_key};
@@ -79,8 +65,6 @@ pub fn reserved_key<'a>(error: &'a (dyn core::error::Error + 'static)) -> Option
 mod tests {
     use super::*;
 
-    /// A wrapper standing in for a format's own error, so the matcher is tested
-    /// through a source chain rather than at the top level alone.
     #[derive(Debug)]
     struct Wrapped(ReservedKey);
 

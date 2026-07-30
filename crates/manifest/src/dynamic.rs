@@ -4,9 +4,7 @@
 //! Erasure costs four things and states each: the futures box, the reference
 //! width is fixed to [`ChunkRef`], metadata crosses as [`ManifestMetadata`]
 //! rather than the format's own type, and an ordered walk stays on the static
-//! path, because a cursor borrows the view it came from. Everything else is
-//! the static path verbatim, root argument included: an erased call cannot
-//! hold a handle, so it takes the root it reads or writes against.
+//! path. Every erased call takes the root it reads or writes against.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -125,16 +123,14 @@ pub trait DynManifest: MaybeSend + MaybeSync {
 
     /// Replace the site-level documents, returning the new root.
     ///
-    /// A replace, not a merge: a document `config` leaves as `None` is cleared,
-    /// so the manifest declares exactly what was passed.
+    /// A replace, not a merge: a document left `None` is cleared.
     fn dyn_set_site_config<'a>(
         &'a self,
         root: &'a ChunkRef,
         config: SiteConfig,
     ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>>;
 
-    /// Insert one path into the manifest rooted at `root`, returning the new
-    /// root.
+    /// Insert one path, returning the new root.
     fn dyn_insert<'a>(
         &'a self,
         root: &'a ChunkRef,
@@ -143,8 +139,7 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         meta: Box<dyn ManifestMetadata>,
     ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>>;
 
-    /// Remove one path from the manifest rooted at `root`, returning the new
-    /// root.
+    /// Remove one path, returning the new root.
     fn dyn_remove<'a>(
         &'a self,
         root: &'a ChunkRef,

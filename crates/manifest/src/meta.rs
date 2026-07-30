@@ -20,16 +20,12 @@ use nectar_marker::{MaybeSend, MaybeSync};
 pub enum WellKnownKey<'a> {
     /// MIME type of the entry's content.
     ContentType,
-    /// Site index document, root scope.
-    ///
-    /// The name each format stores the manifest's own configuration under. It
-    /// is not an entry's metadata, so a caller sets it through
-    /// [`MapWriter::with_index_document`].
+    /// Site index document, root scope. Not an entry's metadata: set it
+    /// through [`MapWriter::with_index_document`].
     ///
     /// [`MapWriter::with_index_document`]: crate::MapWriter::with_index_document
     IndexDocument,
-    /// Site error document, root scope, the twin of
-    /// [`IndexDocument`](Self::IndexDocument).
+    /// Site error document, root scope.
     ErrorDocument,
     /// Any other key, by name.
     Custom(&'a str),

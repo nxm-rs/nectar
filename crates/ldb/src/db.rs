@@ -1,15 +1,8 @@
 //! The root-bound handle: a database read at one root, edited against one base.
 //!
-//! A database is a map, so it speaks the map vocabulary. [`Database::at`] binds
-//! a root and hands back a [`View`] to read it: `get`, `contains_key`, `range`,
-//! `iter` and the folder reads over the same keys. [`Database::edit`] binds a
-//! base root and hands back an [`Editor`] to stage `insert` and `remove` ops,
-//! and its `commit` yields the new root, because the map itself is immutable.
-//!
-//! The handle is a root plus two borrows, so building one per lookup is free:
-//! nothing reaches storage until a read or a commit is awaited. The store is
-//! the read seam and the seal is the write secret, exactly as the free
-//! [`apply`] takes them.
+//! [`Database::at`] hands back a [`View`], [`Database::edit`] an [`Editor`]
+//! whose `commit` yields the new root. Nothing reaches storage until a read or
+//! a commit is awaited.
 
 use core::marker::PhantomData;
 use core::ops::RangeBounds;
@@ -32,13 +25,11 @@ use crate::value::{Entry, Key};
 /// A key-value database over one store, at whatever root a caller names.
 ///
 /// Roots are values, not state: one database serves every root behind the same
-/// store, and a write hands back the root it produced rather than mutating the
-/// one it started from.
+/// store, and a write hands back the root it produced.
 ///
-/// The seal is the write-side secret: a plaintext database seals with
-/// [`Plaintext`], an encrypted one with the sealer that carries the secret the
-/// base tree was built under. Reads need no such state, because an encrypted
-/// reference carries its own key.
+/// The seal is the write-side secret: [`Plaintext`], or the sealer carrying
+/// the secret the base tree was built under. Reads need none, since an
+/// encrypted reference carries its own key.
 ///
 /// ```
 /// use nectar_ldb::{Builder, Database, Entry, Key, Plaintext, V1};
@@ -56,12 +47,11 @@ use crate::value::{Entry, Key};
 /// let key = Key::from(&b"index.html"[..]);
 /// let entry: Entry = ChunkRef::new(ChunkAddress::new([7; 32])).into();
 ///
-/// // A write yields a new root, and the base root stays exactly as it was.
+/// // A write yields a new root; the base root stays as it was.
 /// let root = db.insert(&empty, key.clone(), entry.clone()).await.unwrap();
 /// assert_eq!(db.at(&root).get(&key).await.unwrap(), Some(entry));
 /// assert!(!db.at(&empty).contains_key(&key).await.unwrap());
 ///
-/// // A batch stages against one base and commits to one root.
 /// let mut writer = db.edit(&root);
 /// writer.remove(key.clone());
 /// let pruned = writer.commit().await.unwrap();
@@ -135,11 +125,9 @@ where
     S: NodeGet + ChunkPut + MaybeSync,
     F: Format,
 {
-    /// Insert one key into the database rooted at `root`, returning the new
-    /// root.
+    /// Insert one key, clearing any metadata bound at it.
     ///
-    /// Sugar over an [`edit`](Self::edit) of one op; metadata rides the writer,
-    /// so an insert that carries it goes through the handle.
+    /// To set metadata, go through [`edit`](Self::edit).
     pub async fn insert<R: NodeRef>(
         &self,
         root: &R,
@@ -154,10 +142,7 @@ where
         editor.commit().await
     }
 
-    /// Remove one key from the database rooted at `root`, returning the new
-    /// root.
-    ///
-    /// Exact-key, as [`Editor::remove`] is: nothing below `key` goes with it.
+    /// Remove one key. Exact-key: nothing below `key` goes with it.
     pub async fn remove<R: NodeRef>(&self, root: &R, key: Key) -> Result<R, ApplyError>
     where
         K: Seal<R>,
@@ -168,11 +153,8 @@ where
     }
 }
 
-/// The read view of a database, bound to one immutable root.
-///
-/// Cheap: a store reference and a clone of the root. Every read descends from
-/// that root, so a view is a lookup handle rather than a cached snapshot, and
-/// two views on two roots never interfere.
+/// The read view of a database, bound to one immutable root. A lookup handle,
+/// not a cached snapshot.
 #[derive(Debug)]
 pub struct View<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
@@ -180,8 +162,6 @@ pub struct View<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     _format: PhantomData<F>,
 }
 
-/// Cloning a view clones the root and copies the store reference; the store
-/// itself is never cloned, so a clone stays as cheap as the handle is.
 impl<S, F: Format, R: NodeRef> Clone for View<'_, S, F, R> {
     fn clone(&self) -> Self {
         Self {
@@ -193,7 +173,6 @@ impl<S, F: Format, R: NodeRef> Clone for View<'_, S, F, R> {
 }
 
 impl<'a, S, F: Format, R: NodeRef> View<'a, S, F, R> {
-    /// A view over `store` at `root`.
     const fn new(store: &'a S, root: R) -> Self {
         Self {
             store,
@@ -221,14 +200,12 @@ where
     F: Format,
     R: NodeRef,
 {
-    /// The streaming reader the point reads descend through.
     const fn reader(&self) -> Reader<&'_ S, F, R> {
         Reader::new(self.store)
     }
 
-    /// The value bound to `key`, or `None` when the key is absent.
-    ///
-    /// The empty key reads the database's own value.
+    /// The value bound to `key`. The empty key reads the database's own
+    /// value.
     pub async fn get(&self, key: &Key) -> Result<Option<Entry<F>>, ReaderError> {
         self.reader().get(&self.root, key).await
     }
@@ -238,22 +215,19 @@ where
         self.reader().contains_key(&self.root, key).await
     }
 
-    /// The metadata bound to `key`, or `None` when the key carries none.
-    ///
-    /// The empty key reads the database's own manifest metadata, whether or not
-    /// the root binds an entry.
+    /// The metadata bound to `key`. The empty key reads the database's own
+    /// manifest metadata, whether or not the root binds an entry.
     pub async fn metadata(&self, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
         self.reader().metadata(&self.root, key).await
     }
 
-    /// The greatest key `<= key` and its value, or `None` when every key is
-    /// larger.
+    /// The greatest key `<= key`, with its value.
     pub async fn floor(&self, key: &Key) -> Result<Option<(Key, Entry<F>)>, ReaderError> {
         self.reader().floor(&self.root, key).await
     }
 
     /// The reference of the single chunk holding exactly the keys carrying
-    /// `prefix`, so a directory can be handed off rather than walked.
+    /// `prefix`.
     pub async fn subtree(&self, prefix: &Key) -> Result<Option<R>, ReaderError> {
         self.reader().subtree(&self.root, prefix).await
     }
@@ -275,18 +249,14 @@ where
     F: Format,
     R: NodeRef,
 {
-    /// Every `(key, value)` in ascending key order.
-    ///
-    /// The walk keeps the view's own store reference, so it outlives the view
-    /// it was opened through.
+    /// Every `(key, value)` in ascending key order. The walk outlives the
+    /// view it was opened through.
     pub async fn iter(&self) -> Result<Cursor<'a, S, F, R>, ReaderError> {
         Cursor::seek(self.store, &self.root, &[], None).await
     }
 
-    /// Every `(key, value)` within `bounds`, in ascending key order.
-    ///
-    /// Keys order as byte strings, so every bound is exact: an excluded bound
-    /// is the included one with a zero byte appended.
+    /// Every `(key, value)` within `bounds`, in ascending key order. Keys
+    /// order as byte strings.
     pub async fn range(
         &self,
         bounds: impl RangeBounds<Key>,
@@ -311,9 +281,8 @@ where
 /// The write handle of a database, bound to one base root.
 ///
 /// Staging touches no storage: the ops accumulate in a [`Changeset`], and
-/// [`commit`](Self::commit) folds the whole batch in one pass. Keys accumulate
-/// in key order, so the order they were staged in never reaches the produced
-/// root.
+/// [`commit`](Self::commit) folds the whole batch in one pass. The staging
+/// order never reaches the produced root.
 #[derive(Clone, Debug)]
 pub struct Editor<'a, S, K, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
@@ -337,13 +306,10 @@ impl<S, K, F: Format, R: NodeRef> Editor<'_, S, K, F, R> {
 
     /// Stage `key` bound to `entry`, with metadata as a suffix.
     ///
-    /// The op lands when the returned guard is dropped, which is the end of
-    /// the statement, so an insert with no metadata needs nothing extra:
-    /// `editor.insert(key, entry);` stages it, and
-    /// `editor.insert(key, entry).meta(meta);` stages it with metadata.
-    ///
-    /// An insert replaces the whole binding; existing metadata is cleared
-    /// unless [`meta`](Insert::meta) is given.
+    /// The op lands when the returned guard drops:
+    /// `editor.insert(key, entry).meta(meta);`. An insert replaces the whole
+    /// binding, clearing existing metadata unless [`meta`](Insert::meta) is
+    /// given.
     pub const fn insert(&mut self, key: Key, entry: Entry<F>) -> Insert<'_, F> {
         Insert {
             changeset: &mut self.changeset,
@@ -355,20 +321,16 @@ impl<S, K, F: Format, R: NodeRef> Editor<'_, S, K, F, R> {
     /// Stage the removal of `key`.
     ///
     /// Exact-key: the key's own value and metadata go, and no other key does.
-    /// The keys below are children, not the binding, so every one survives, the
-    /// root key included. Removing an unbound or absent key is a no-op, so the
-    /// commit hands the base root back.
+    /// The keys below it survive. An absent key is a no-op.
     pub fn remove(&mut self, key: Key) -> &mut Self {
         self.changeset.remove(key);
         self
     }
 
-    /// Stage a merge of `key` into the database's own manifest metadata, the
-    /// root slot the site-level document conventions live in.
+    /// Stage a merge of `key` into the database's own manifest metadata.
     ///
     /// A merge, not a replace: only `key` moves, and a `None` value clears it.
-    /// This is the only write that reaches that slot without binding a value at
-    /// the empty key.
+    /// It is the only write reaching that slot without binding the empty key.
     pub fn set_root_metadata(
         &mut self,
         key: impl Into<MetadataKey<F>>,
@@ -400,31 +362,25 @@ where
 {
     /// Fold the staged batch into the base root, returning the new root.
     ///
-    /// The whole batch lands or none of it does: the new root only exists once
-    /// every rewritten node is written. An empty batch returns the base root.
+    /// The whole batch lands or none of it does. An empty batch returns the
+    /// base root.
     pub async fn commit(self) -> Result<R, ApplyError> {
         apply(self.store, self.seal, &self.base, &self.changeset).await
     }
 }
 
-/// A staged insert, awaiting the metadata it may carry.
-///
-/// [`Editor::insert`] hands one back so metadata reads as a suffix on the
-/// insert it belongs to. The op is staged when the guard is dropped.
+/// A staged insert, awaiting the metadata it may carry. The op is staged when
+/// the guard drops.
 #[derive(Debug)]
 pub struct Insert<'e, F: Format = V1> {
     changeset: &'e mut Changeset<F>,
-    /// The staged key and value, taken by the drop that records them.
     pending: Option<(Key, Entry<F>)>,
-    /// Metadata to attach; none by default.
     meta: Option<Metadata<F>>,
 }
 
 impl<F: Format> Insert<'_, F> {
-    /// Attach `metadata` to the insert, replacing whatever the key carried.
-    ///
-    /// On the empty key this is the database's own manifest metadata. A bare
-    /// insert carries none, so it clears the key's metadata.
+    /// Attach `metadata`, replacing whatever the key carried. On the empty key
+    /// this is the database's own manifest metadata.
     pub fn meta(&mut self, metadata: Metadata<F>) -> &mut Self {
         self.meta = Some(metadata);
         self

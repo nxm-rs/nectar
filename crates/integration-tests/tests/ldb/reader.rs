@@ -223,11 +223,8 @@ fn an_absent_key_stops_at_the_first_unmatched_fork() -> Result<()> {
 /// no root entry, so every read of that slot has to answer with it.
 ///
 /// The three surfaces are the streaming reader, the root-bound view, and the
-/// `Manifest` seam's view over the same root. The seam reaches the slot through
-/// its own option-typed accessors rather than through a key, because the slot is
-/// not a content key: the empty path is absent on every map verb. Presence is a
-/// separate question too: the root entry is absent, so `get` and `contains_key`
-/// stay absent.
+/// `Manifest` seam's view, which reaches the slot through its option-typed
+/// accessors rather than through a key.
 #[test]
 fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
     let store = ContentGet::new(Arc::new(MemoryStore::default()));
@@ -243,13 +240,11 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
     let root = *run(builder.build(&store, &Plaintext))?.root();
 
     run(async {
-        // The website view reads the conventions off the same root metadata.
         let reader: Reader<_> = Reader::new(&store);
         let site = reader.website(&root).await?;
         ensure!(site.index() == Some(&b"index.html"[..]), "index document");
         ensure!(site.error() == Some(&b"404.html"[..]), "error document");
 
-        // The reader, the view and the seam's view all report it.
         let read = reader.metadata(&root, &Key::empty()).await?;
         ensure!(
             read.as_ref() == Some(&meta),
@@ -285,7 +280,7 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
                 == Some(&b"404.html"[..]),
             "the error document survives the seam",
         );
-        // The slot is not a content key, so no map verb reaches it.
+        // The slot is not a content key.
         let empty = ManifestPath::default();
         ensure!(
             MapView::metadata(&seam_view, &empty).await?.is_none(),

@@ -2,52 +2,33 @@
 //! configuration is an option and not a key, and `remove` is exact-key.
 //! Identically on both manifest formats.
 //!
-//! Every scenario below is generic over the [`Manifest`] seam and is run twice,
-//! once per format. Two things therefore have to hold for it to pass: each
-//! format has to answer what the contract says, which the assertions inside the
-//! scenario check, and the two formats have to answer the same thing, which the
-//! [`Observed`] comparison in each test checks. Either failing names the exact
-//! verb and path that diverged.
+//! Every scenario is generic over the [`Manifest`] seam and runs twice, once
+//! per format. The assertions inside a scenario check the contract, and the
+//! [`Observed`] comparison in each test checks that the two formats answer
+//! alike.
 //!
 //! # The contract under test
 //!
-//! A content key is the path bytes verbatim, with nothing prepended. That is
-//! what keeps the trie image byte-identical to the reference client's, and
-//! `mantaray/legacy_differential.rs` pins the bytes themselves.
+//! A content key is the path bytes verbatim, with nothing prepended.
 //!
 //! The site index and error documents are read as `Option<ManifestPath>` and
-//! written through `with_index_document` and `with_error_document`. Each lands in
-//! the format's own root slot, which is never a key: no map verb reads it, no
-//! walk yields it, and neither reserved path reaches anything at all. The two
-//! reserved paths are the empty one and `"/"`: a read at either is absent on
-//! both formats and a write at either is refused as `ReservedKey`, so the two
-//! formats keep the same key space rather than one of them storing a slot key
-//! as content.
+//! written through `with_index_document` and `with_error_document`. Each lands
+//! in the format's own root slot, which is never a key. The two reserved paths
+//! are the empty one and `"/"`: a read at either is absent and a write at
+//! either is refused as `ReservedKey`.
 //!
-//! `remove` is exact-key on both formats, exactly as `HashMap::remove` is: the
-//! path's own value and metadata go, and no other path does. A path with
-//! children keeps every one of them, a childless leaf is pruned, and removing an
-//! unbound or absent path is a no-op that leaves the root where it was.
+//! `remove` is exact-key on both formats: the path's own value and metadata go,
+//! and no other path does. A path with children keeps every one of them, a
+//! childless leaf is pruned, and removing an absent path is a no-op.
 //!
 //! # History-independence is a key-value database guarantee only
 //!
-//! What crosses the formats after a removal is the key set: both hold exactly
-//! the survivors, and two removals commute on that set. The root does not cross
-//! them, and this file does not ask it to.
-//!
-//! The key-value database is history-independent by construction: its packing
-//! derives the whole shape from the key set, so the root a removal lands on is
-//! the root a build of the survivors produces. `a_remove_is_history_independent_on_ldb`
-//! pins that, on that format alone.
-//!
-//! The trie is not, by design. mantaray 0.2 puts a node where the insert order
-//! first justified one and never moves it, so past the 30-byte edge bound even a
-//! plain `add` of one key set in two orders lands on two roots. The pinned
-//! legacy oracle confirms that, and `mantaray/legacy_differential.rs` pins those
-//! bytes. History-independence is a mantaray-1.0 guarantee (whitepaper
-//! capability matrix, row 20), which the key-value database is the
-//! implementation of. Asking 0.2 for it would mean rewriting the surviving
-//! edges, which would break the wire the differential pins.
+//! What crosses the formats after a removal is the key set, not the root.
+//! `a_remove_is_history_independent_on_ldb` pins the root on the key-value
+//! database alone, whose packing derives the whole shape from the key set.
+//! mantaray 0.2 puts a node where the insert order first justified one and
+//! never moves it, so it cannot have that without breaking the wire
+//! `mantaray/legacy_differential.rs` pins.
 
 use std::ops::Bound;
 use std::sync::Arc;
@@ -66,15 +47,14 @@ use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
 use nectar_testing::run;
 
-/// The chunk store, shared: `MemoryStore` clones its contents, so every handle
-/// in one test has to reach the same map.
+/// Shared: `MemoryStore` clones its contents, so every handle in one test has
+/// to reach the same map.
 type Raw = Arc<MemoryStore<StandardChunkSet>>;
 type Store = ContentGet<Raw>;
 
-/// The site index document: a filename joined below each directory, so it is
-/// relative on purpose.
+/// A filename joined below each directory, so relative on purpose.
 const INDEX: &str = "index.html";
-/// The site error document: one whole content key, so it is bare like any path.
+/// One whole content key.
 const ERROR: &str = "404.html";
 
 /// A reference standing in for a file root; no chunk behind it is read.
@@ -82,33 +62,27 @@ fn reference(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))
 }
 
-/// A path as text, for an assertion message a human can read.
+/// A path as text, for a readable assertion message.
 fn text(path: &ManifestPath) -> String {
     String::from_utf8(path.as_bytes().to_vec()).unwrap()
 }
 
-/// The reserved path a refused write names, or `None` when the write was not
-/// refused for that reason.
-///
-/// One matcher over every format: the seam's own, walking the source chain of
-/// whatever error type the format reports.
+/// The reserved path a refused write names. One matcher over every format.
 fn refused<T, E: std::error::Error + 'static>(result: &Result<T, E>) -> Option<ManifestPath> {
     let error = result.as_ref().err()?;
     reserved_key(error).map(|reserved| reserved.path().clone())
 }
 
-/// One format's answers to one scenario, in a shape that names no
-/// format-specific type, so the two formats compare directly.
+/// One format's answers to one scenario, in a format-independent shape.
 #[derive(Debug, PartialEq, Eq)]
 struct Observed {
     /// Every path `iter` yields, in order.
     keys: Vec<String>,
     /// Every path `range(..)` yields, in order.
     ranged: Vec<String>,
-    /// Every path `dir("")` lists, in order: the top level.
+    /// The top level: every path `dir("")` lists, in order.
     listed: Vec<String>,
-    /// Every path `dir("a")` lists: a prefix with no trailing separator, so it
-    /// matches the paths starting with it rather than a directory.
+    /// Every path `dir("a")` lists: a prefix with no trailing separator.
     prefixed: Vec<String>,
     /// The index document the manifest declares.
     index_document: Option<String>,
@@ -118,8 +92,7 @@ struct Observed {
     probes: Vec<Probe>,
 }
 
-/// Every point read at one path, with the metadata answer reduced to the one
-/// fact that crosses formats.
+/// Every point read at one path.
 #[derive(Debug, PartialEq, Eq)]
 struct Probe {
     path: String,
@@ -129,8 +102,7 @@ struct Probe {
     bare: bool,
     /// The greatest bound path at or below this one.
     floor: Option<String>,
-    /// Whether a load of the path reached the sink; the references here name no
-    /// stored chunk, so this is the verb reaching storage, not a naming answer.
+    /// Whether a load of the path reached the sink.
     loaded: bool,
 }
 
@@ -202,10 +174,9 @@ async fn listing<V: MapView<ChunkRef>>(view: &V, dir: &ManifestPath) -> Vec<Stri
         .collect()
 }
 
-/// The paths every scenario probes: the empty path and the separator alone,
-/// which name no content key on either format, a top-level file, a directory key
-/// and a file below it, an interior key with siblings past it, and one absent
-/// path.
+/// The paths every scenario probes: the two reserved ones, a top-level file, a
+/// directory key and a file below it, an interior key with siblings past it,
+/// and one absent path.
 fn probed() -> Vec<ManifestPath> {
     [
         "",
@@ -225,8 +196,7 @@ fn probed() -> Vec<ManifestPath> {
     .collect()
 }
 
-/// The site documents through their option-typed API: set, read back, cleared,
-/// and never a key in the map.
+/// The site documents: set, read back, cleared, and never a key in the map.
 async fn the_site_config_is_an_option_and_not_a_key<M>(
     manifest: &M,
     empty: &ChunkRef,
@@ -259,7 +229,7 @@ where
         "an unset error document reads as None"
     );
 
-    // Both documents, set through the chainable option-typed setters.
+    // Both documents.
     let configured = {
         let mut writer = manifest.edit(&content);
         writer
@@ -283,8 +253,7 @@ where
         "declaring a document moves the manifest root"
     );
 
-    // The slot is not a key: no map verb reaches it, at the empty path or at the
-    // separator the trie keys its own slot with.
+    // The slot is not a key: no map verb reaches it.
     for path in [&empty_path, &separator] {
         assert_eq!(
             view.get(path).await.unwrap(),
@@ -310,7 +279,7 @@ where
         );
     }
 
-    // No walk yields it either, and the listing is content alone.
+    // No walk yields it either.
     let mut walked = Vec::new();
     let mut cursor = view.iter().await.unwrap();
     while let Some((path, _)) = cursor.next().await.unwrap() {
@@ -327,8 +296,7 @@ where
         "the top level lists content alone"
     );
 
-    // A write at a reserved path is refused, and named: it is a prefix or a
-    // root slot, never a key, so neither format takes it silently.
+    // A write at a reserved path is refused, and named.
     for path in [&empty_path, &separator] {
         assert_eq!(
             refused(
@@ -348,8 +316,7 @@ where
         );
     }
 
-    // The refusal takes the whole batch with it: a reserved path anywhere in it
-    // means nothing lands, so no caller sees a half-applied root.
+    // The refusal takes the whole batch with it.
     let mixed = {
         let mut writer = manifest.edit(&configured);
         writer.insert(ManifestPath::from("landed.html"), reference(9));
@@ -370,7 +337,7 @@ where
         "and the op beside it did not land"
     );
 
-    // The two documents are independent: setting one leaves the other alone.
+    // The two documents are independent.
     let index_only = {
         let mut writer = manifest.edit(&content);
         writer.with_index_document(ManifestPath::from(INDEX));
@@ -388,7 +355,7 @@ where
         "and the error document is not"
     );
 
-    // Clearing is the same setter with `None`, one document at a time.
+    // Clearing is the same setter with `None`.
     let error_cleared = {
         let mut writer = manifest.edit(&configured);
         writer.with_error_document(None);
@@ -399,8 +366,7 @@ where
         "clearing the error document lands on the root that never declared one"
     );
 
-    // Clearing the last document lands back on the content-only root, so the
-    // configuration leaves no trace on the wire.
+    // Clearing the last document lands back on the content-only root.
     let stripped = {
         let mut writer = manifest.edit(&configured);
         writer.with_index_document(None).with_error_document(None);
@@ -425,8 +391,7 @@ where
         "clearing an undeclared document changes nothing"
     );
 
-    // Removing a content key does not touch the configuration: the documents are
-    // the manifest's own, not a property of the tree below it.
+    // Removing a content key does not touch the configuration.
     let child_gone = manifest.remove(&configured, logo.clone()).await.unwrap();
     let view = manifest.at(&child_gone);
     assert_eq!(
@@ -478,8 +443,7 @@ where
         "removing an absent path changes nothing"
     );
 
-    // An unbound directory key, with a path below it: still nothing bound at the
-    // key itself, so still nothing to remove.
+    // An unbound directory key, with a path below it: still nothing to remove.
     assert!(
         !manifest.at(&base).contains_key(&img).await.unwrap(),
         "the directory key is unbound"
@@ -523,8 +487,7 @@ where
         "its sibling is untouched"
     );
 
-    // Removing every leaf below a directory leaves the directory listing empty
-    // rather than leaving a stale entry behind.
+    // Removing every leaf below a directory leaves the listing empty.
     let emptied = manifest.remove(&leaf, logo.clone()).await.unwrap();
     let view = manifest.at(&emptied);
     assert!(
@@ -537,8 +500,7 @@ where
         "the emptied directory is gone from the top level"
     );
 
-    // A directory key that is bound keeps the paths below it, the same way any
-    // other path with children does.
+    // A directory key that is bound keeps the paths below it.
     let bound_dir = {
         let mut writer = manifest.edit(&emptied);
         writer.insert(ManifestPath::from("d/"), reference(6));
@@ -598,19 +560,12 @@ where
     .await
 }
 
-/// The key set the removal scenarios build, with the reference each key binds.
+/// The key set the removal scenarios build.
 ///
-/// Chosen to reach every shape a removal can leave behind: a mid-edge split
+/// It reaches every shape a removal can leave behind: a mid-edge split
 /// (`alpha`/`alpine`), a shared directory (`img/`), a top-level key sharing one
 /// byte with a directory (`index.html`), a lone leaf (`beta`), and pairs that
-/// run past the trie's 30-byte edge bound, where a removal leaves a chain no
-/// build would have written.
-///
-/// The last two pairs are the edge bound itself: a short key with one long key
-/// below it, so the trie splits the long key at the short one and what a
-/// removal of the short one leaves behind runs past 30 bytes. Those are exactly
-/// the shapes where the two formats' roots part company, and where the key set
-/// still has to agree.
+/// run past the trie's 30-byte edge bound.
 fn removal_keys() -> Vec<(ManifestPath, u8)> {
     let deep = |tail: &str| ManifestPath::from(format!("deep/{}{tail}", "a".repeat(30)).as_str());
     let under =
@@ -624,13 +579,11 @@ fn removal_keys() -> Vec<(ManifestPath, u8)> {
         (ManifestPath::from("index.html"), 6),
         (deep("one"), 7),
         (deep("two"), 8),
-        // 5 + 28 bytes: what a removal of "abcde" leaves joins to 33, which is
-        // past the bound and so is no edge a build writes.
+        // 5 + 28 bytes: what a removal of "abcde" leaves joins to 33, past the
+        // bound.
         (ManifestPath::from("abcde"), 9),
         (under("abcde", 28), 10),
-        // 5 + 31 bytes under a directory: the long key already chains through a
-        // full-length edge, so the leftover runs through two nodes before it
-        // ends.
+        // 5 + 31 bytes under a directory: the leftover runs through two nodes.
         (ManifestPath::from("wiki/"), 11),
         (under("wiki/", 31), 12),
     ]
@@ -652,10 +605,6 @@ async fn build<M: Manifest<ChunkRef>>(
 }
 
 /// Every path a manifest holds, in walk order.
-///
-/// The key set is what a removal contracts for on both formats, and what the
-/// two formats have to agree on. The root is a per-format matter; see the
-/// module note.
 async fn key_set<M: Manifest<ChunkRef>>(manifest: &M, root: &ChunkRef) -> Vec<String> {
     let view = manifest.at(root);
     let mut out = Vec::new();
@@ -667,12 +616,7 @@ async fn key_set<M: Manifest<ChunkRef>>(manifest: &M, root: &ChunkRef) -> Vec<St
 }
 
 /// An exact-key remove leaves the surviving key set on both formats, and two
-/// removals commute on it.
-///
-/// What a manifest holds after a removal is decided by what it held and what
-/// went, on either format and in whatever order. The root a removal lands on is
-/// not asserted here: only the key-value database derives it from the key set,
-/// and `a_remove_is_history_independent_on_ldb` pins that on that format alone.
+/// removals commute on it. The root is not asserted here; see the module note.
 async fn a_remove_leaves_the_surviving_keys<M>(manifest: &M, empty: &ChunkRef) -> Vec<Observed>
 where
     M: Manifest<ChunkRef>,
@@ -702,8 +646,7 @@ where
         roots.push(removed);
     }
 
-    // Two removals compose the same way, so the property is not a one-step
-    // accident: the order the two keys go in does not reach the key set.
+    // The order the two keys go in does not reach the key set.
     let (first, second) = (keys[0].0.clone(), keys[4].0.clone());
     let forwards = manifest
         .remove(
@@ -724,9 +667,8 @@ where
     roots.push(forwards);
     roots.push(backwards);
 
-    // Removing every key lands back on the empty manifest, which is the build
-    // of no keys at all. An empty manifest has one shape on either format, so
-    // the root is the assertion here.
+    // An empty manifest has one shape on either format, so the root is the
+    // assertion here.
     let stripped = {
         let mut writer = manifest.edit(&base);
         for (path, _) in &keys {
@@ -743,8 +685,7 @@ where
     observed(manifest, &roots.iter().collect::<Vec<_>>()).await
 }
 
-/// Every root observed in turn, so one comparison covers every state the
-/// scenario passed through.
+/// Every root observed in turn.
 async fn observed<M>(manifest: &M, roots: &[&ChunkRef]) -> Vec<Observed>
 where
     M: Manifest<ChunkRef>,
@@ -798,15 +739,9 @@ differential!(
 );
 
 /// The key-value database's removal is history-independent: the root a removal
-/// lands on is the root a build of the surviving keys produces, so a manifest's
-/// address is what it holds rather than how it came to hold it.
+/// lands on is the root a build of the surviving keys produces.
 ///
-/// One format only, on purpose. The packing derives the whole shape from the
-/// key set, so the database gets this for free; the trie cannot have it, because
-/// mantaray 0.2 leaves a node where the insert order put it and rewriting the
-/// surviving edges would break the wire `mantaray/legacy_differential.rs` pins.
-/// It is a mantaray-1.0 guarantee (whitepaper capability matrix, row 20), and
-/// the database is what meets it. See the module note.
+/// One format only, on purpose; see the module note.
 #[test]
 fn a_remove_is_history_independent_on_ldb() {
     run(async {
@@ -837,8 +772,7 @@ fn a_remove_is_history_independent_on_ldb() {
             );
         }
 
-        // Two removals compose the same way, so the property is not a one-step
-        // accident: the order the two keys go in does not reach the root either.
+        // The order the two keys go in does not reach the root either.
         let (first, second) = (keys[0].0.clone(), keys[4].0.clone());
         let forwards = kv
             .remove(
@@ -858,19 +792,14 @@ fn a_remove_is_history_independent_on_ldb() {
 /// Content keys that start with the separator list as the directory they are
 /// under, identically on both formats.
 ///
-/// `"/"` is reserved as a *key*, and it is not reserved as a *prefix*: a key
-/// like `"/a.txt"` is ordinary content that happens to sit one level down, and
-/// the top level names it by the directory it is in, which is `"/"`. Both
-/// formats collapse it that way, so a listing must not confuse the directory
-/// standing for that content with the reserved slot itself, which
-/// [`a_planted_separator_key_is_not_listed`] pins from the other side.
+/// `"/"` is reserved as a key, not as a prefix: `"/a.txt"` is ordinary content
+/// one level down, listed under the directory `"/"`.
+/// [`a_planted_separator_key_is_not_listed`] pins the other side.
 #[test]
 fn separator_prefixed_content_lists_alike_on_both_formats() {
     run(async {
         // Each case is a key set written through the seam and the top level it
-        // has to list: the directory of separator-prefixed content, a mix of
-        // that and a plain top-level key, and a doubled separator, which is one
-        // more level down and so still lists as the same directory.
+        // has to list.
         let cases: [(&[&str], &[&str]); 3] = [
             (&["/a.txt"], &["/"]),
             (&["/a.txt", "/b.txt", "top.txt"], &["/", "top.txt"]),
@@ -921,7 +850,7 @@ async fn both_top_levels(keys: &[&str]) -> (Vec<String>, Vec<String>) {
 }
 
 /// An insert replaces the whole binding: a bare re-insert takes a new reference
-/// and clears the metadata the path carried, and the one-shot writes the same.
+/// and clears the metadata the path carried.
 async fn insert_replaces_the_whole_binding<M>(manifest: &M, base: &ChunkRef)
 where
     M: Manifest<ChunkRef>,
@@ -992,8 +921,7 @@ fn an_insert_replaces_the_whole_binding_on_both_formats() {
 ///
 /// The seam refuses a write at `"/"`, so only a database written through the
 /// raw layer holds one. The folder view collapses it into a subdirectory entry,
-/// because it ends in the separator, and a subdirectory with nothing under it
-/// is that key and nothing else, so the listing steps over it. A subdirectory
+/// and a subdirectory with nothing under it is that key alone. A subdirectory
 /// with content under it is not, which
 /// [`separator_prefixed_content_lists_alike_on_both_formats`] pins.
 #[test]
@@ -1053,9 +981,8 @@ fn a_planted_separator_key_is_not_listed() {
             "both formats list the same top level"
         );
 
-        // The planted key next to content one level under it: the entry the
-        // listing yields is the directory of that content, so it stays, and the
-        // planted key is still no key of its own.
+        // Next to content one level under it, the listed entry is the
+        // directory of that content, and the planted key still no key.
         let with_content = {
             let mut editor = db.edit(&empty);
             editor.insert(Key::from(&b"/"[..]), Entry::from(reference(1)));
@@ -1079,9 +1006,8 @@ fn a_planted_separator_key_is_not_listed() {
 /// The site documents resolve over bare keys: the index document is a filename
 /// joined below each directory, and the error document is one whole key.
 ///
-/// The manifest is written through the seam's option-typed setters and read
-/// through the database's own website reader, so this pins the two halves against
-/// each other.
+/// Written through the seam's setters, read through the database's own website
+/// reader.
 #[test]
 fn website_documents_resolve_over_bare_keys() {
     run(async {

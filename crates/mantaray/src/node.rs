@@ -35,13 +35,12 @@ type ClearFuture<'a> = Pin<Box<dyn Future<Output = Result<Cleared>> + 'a>>;
 /// What an exact-key clear did to the node the path names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cleared {
-    /// The path named no binding, so the trie is untouched and no ancestor is
-    /// dirtied: removing what is not there changes nothing.
+    /// The path named no binding, so the trie is untouched.
     Absent,
-    /// The binding is gone and the node stays, because it still has children.
+    /// The binding is gone and the node stays: it still has children.
     Kept,
     /// The binding is gone and the node holds nothing else, so its parent
-    /// prunes the fork that reached it.
+    /// prunes the fork.
     Prune,
 }
 
@@ -354,20 +353,15 @@ impl<R: Reference> Node<R> {
         self.node_type = self.node_type.union(NodeType::EDGE);
     }
 
-    /// Whether the node binds anything of its own: a value, or metadata.
-    ///
-    /// The reader's terminal test, so this is exactly what `contains_key`
-    /// answers at the node's path. A metadata-only node binds too, which is why
-    /// the entry alone does not decide it.
+    /// Whether the node binds anything of its own: a value, or metadata. A
+    /// metadata-only node binds too.
     pub(crate) const fn is_bound(&self) -> bool {
         self.node_type
             .intersects(NodeType::VALUE.union(NodeType::METADATA))
     }
 
-    /// Drop the node's own binding: its entry, its value flag and its metadata.
-    ///
-    /// Structure is untouched, so the forks below survive: this is one key
-    /// leaving the map, not a subtree.
+    /// Drop the node's own binding: its entry, its value flag and its
+    /// metadata. The forks below survive.
     fn unbind(&mut self) {
         self.entry = None;
         self.node_type = self.node_type.difference(NodeType::VALUE);
@@ -389,12 +383,8 @@ impl<R: Reference> Node<R> {
         self.node_type = self.node_type.union(NodeType::METADATA);
     }
 
-    /// Replace the node's metadata, keeping the flag in step with the map.
-    ///
-    /// An insert binds the whole value, metadata included, so an empty map
-    /// clears both the pairs and the flag: the flag is what the encoder writes
-    /// a metadata section from, and a set flag over an empty map would emit an
-    /// empty one.
+    /// Replace the node's metadata, keeping the flag in step. An empty map
+    /// clears both the pairs and the flag.
     pub(crate) fn set_metadata(&mut self, metadata: BTreeMap<String, String>) {
         self.metadata = metadata;
         if self.metadata.is_empty() {
@@ -466,10 +456,8 @@ impl<R: Reference> Node<R> {
         Ok(())
     }
 
-    /// Add an entry at the given path with its metadata, loading from storage as needed.
-    ///
-    /// The add binds the whole value: `metadata` replaces whatever the target
-    /// node carried, and an empty map clears it.
+    /// Add an entry at the given path with its metadata, loading from storage
+    /// as needed. `metadata` replaces whatever the target node carried.
     ///
     /// Returns a boxed future so the `&mut self` recursion can name its own type.
     /// The `MaybeSend` bound keeps `!Send` wasm stores usable.
@@ -656,33 +644,18 @@ impl<R: Reference> Node<R> {
 
     /// Clear the binding at exactly `path`, loading from storage as needed.
     ///
-    /// `HashMap::remove` semantics, which is what the manifest seam contracts
-    /// for: the key's own value and metadata go, and nothing else does. A key
-    /// with children keeps every one of them, and a childless leaf is pruned
-    /// from its parent. An absent or unbound key changes nothing at all, so no
-    /// node is dirtied and a commit hands the same root back.
+    /// Exact-key: the key's own value and metadata go, and nothing else does.
+    /// A key with children keeps every one of them, and a childless leaf is
+    /// pruned from its parent. An absent key changes nothing.
     ///
     /// # This format is order-dependent, by design
     ///
-    /// The trie the clear leaves behind is valid and decodes exactly the
-    /// surviving keys, which is the whole contract. The root it hashes to is
-    /// not the root a build of those same keys produces, because mantaray 0.2
-    /// puts a node where the insert order first justified one and never moves
-    /// it: an edge prefix is capped at
-    /// [`PREFIX_MAX_LEN`](crate::PREFIX_MAX_LEN), so past that bound even a
-    /// plain `add` of the same keys in two orders lands on two roots.
-    /// `mantaray/legacy_differential.rs` pins that behaviour against the
-    /// legacy oracle.
-    ///
-    /// History-independence is therefore not offered here, and no re-cut of the
-    /// surviving edges can offer it. It is a mantaray-1.0 guarantee, met by the
-    /// key-value database in `nectar-ldb`, whose canonical packing derives the
-    /// whole shape from the key set alone (whitepaper capability matrix, row 20).
-    ///
-    /// The prefix [`remove`](Self::remove) above is the legacy boundary op and
-    /// stays that way; nothing on the seam reaches it.
-    ///
-    /// Returns a boxed future so the `&mut self` recursion can name its own type.
+    /// The trie the clear leaves behind decodes exactly the surviving keys,
+    /// which is the whole contract. The root it hashes to is not the root a
+    /// build of those same keys produces: mantaray 0.2 puts a node where the
+    /// insert order first justified one and never moves it. History
+    /// independence is a mantaray-1.0 guarantee, met by the key-value database
+    /// in `nectar-ldb`.
     pub(crate) fn clear<'a, L: NodeLoader>(
         &'a mut self,
         path: &'a [u8],
@@ -694,7 +667,7 @@ impl<R: Reference> Node<R> {
         Box::pin(async move {
             self.ensure_loaded(loader).await?;
 
-            // An empty path names this node, so its own binding is what goes.
+            // An empty path names this node.
             let Some((first, _)) = path.split_first() else {
                 if !self.is_bound() {
                     return Ok(Cleared::Absent);
@@ -713,12 +686,9 @@ impl<R: Reference> Node<R> {
                 return Ok(Cleared::Absent);
             };
             match fork.node.clear(rest, loader).await? {
-                // Nothing below changed, so nothing here does either: an
-                // untouched ancestor keeps its reference and its address.
+                // Nothing below changed, so nothing here does either.
                 Cleared::Absent => return Ok(Cleared::Absent),
-                // The node below survives, so the edge that reaches it stands
-                // as it is. The shape a clear leaves behind is not rewritten:
-                // see the note on the ordering of this format above.
+                // The node below survives, so its edge stands as it is.
                 Cleared::Kept => {}
                 Cleared::Prune => {
                     self.forks.remove(first);
@@ -733,9 +703,6 @@ impl<R: Reference> Node<R> {
     }
 
     /// Whether this node still holds anything after a clear below it.
-    ///
-    /// A node with neither a binding nor a child names nothing, so its parent
-    /// drops the fork that reached it.
     fn prunable(&self) -> Cleared {
         if self.is_bound() || !self.forks.is_empty() {
             Cleared::Kept
