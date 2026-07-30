@@ -444,7 +444,7 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let mut builder = Builder::<V1>::new();
         for byte in 0u8..=255 {
-            builder.insert(Key::from(&[byte][..]), entry(byte), None);
+            builder.insert(Key::from(&[byte, 0][..]), entry(byte), None);
         }
         let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
 
@@ -745,7 +745,7 @@ mod tests {
             let store = ContentGet::new(MemoryStore::default());
             let mut builder = Builder::<V1>::new();
             for byte in 0u8..=255 {
-                builder.insert(Key::from(&[byte][..]), entry(byte), None);
+                builder.insert(Key::from(&[byte, 0][..]), entry(byte), None);
             }
             let root = run(builder.build(&store, &seal())).unwrap().root().clone();
 

@@ -36,7 +36,9 @@
 //!         path: ManifestPath::from("stale.html"),
 //!     },
 //! ];
-//! assert_eq!(ops[0].path().as_bytes(), b"index.html");
+//! // A path is absolute: the canonical key is rooted at the separator, in the
+//! // stored bytes of both formats.
+//! assert_eq!(ops[0].path().as_bytes(), b"/index.html");
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -104,10 +106,13 @@ impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 /// borrows the store rather than cloning it. Use [`DynManifest`] where the
 /// format is a runtime choice.
 ///
-/// [`ManifestPath::root`] addresses the manifest's own entry, the slot the
-/// site-level documents live in, and every operation maps it to the same
-/// place: what an insert binds there, a load reads back. It is not a child of
-/// itself, so it never appears in a listing.
+/// Paths are absolute, so [`ManifestPath::root`] is the ordinary key `"/"`:
+/// it is the least path, `get`, `contains_key`, `floor`, `iter` and `range`
+/// treat it like any other, and the site-level documents are well-known
+/// metadata on its entry. An insert there replaces the whole binding, site
+/// documents included. The one thing that follows from the path rather than
+/// from a rule is [`MapView::dir`]: a directory lists its children, and no
+/// path is its own child, so `dir("/")` lists the top level without `"/"`.
 pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;

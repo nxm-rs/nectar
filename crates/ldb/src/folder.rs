@@ -151,7 +151,10 @@ where
 /// The site-level document conventions read from a manifest's root metadata.
 ///
 /// Both are optional and root-scope: an index document is served for a
-/// directory path, an error document for an otherwise unresolved path.
+/// directory path, an error document for an otherwise unresolved path. They
+/// resolve differently, so they are spelled differently: the index document is
+/// a filename joined below each directory, where the error document is one whole
+/// key and so is absolute like every other path.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Website {
     index: Option<Bytes>,

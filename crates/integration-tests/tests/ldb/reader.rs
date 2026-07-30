@@ -133,8 +133,8 @@ fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
     let inline = Entry::inline(Bytes::from_static(b"hello"))?;
     builder.insert(Key::from(&b"inline.txt"[..]), inline.clone(), None);
     expected.push(("inline.txt".to_owned(), inline));
-    // The empty key sets the manifest's own value in the root extension.
-    builder.insert(Key::empty(), entry(0x99), None);
+    // The root key sets the manifest's own value in the root extension.
+    builder.insert(Key::root::<V1>(), entry(0x99), None);
 
     let built = run(builder.build(&memory, &Plaintext))?;
     let root = *built.root();
@@ -151,10 +151,10 @@ fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
     };
     let reader: Reader<_> = Reader::new(&store);
 
-    // The root extension answers the empty key.
+    // The root extension answers the root key.
     ensure!(
-        run(reader.get(&root, &Key::empty()))? == Some(entry(0x99)),
-        "empty key reads the root value",
+        run(reader.get(&root, &Key::root::<V1>()))? == Some(entry(0x99)),
+        "the root key reads the root value",
     );
 
     // Every key reads back its exact value, and no single lookup ever fetches a
@@ -220,7 +220,7 @@ fn an_absent_key_stops_at_the_first_unmatched_fork() -> Result<()> {
 }
 
 /// A website root carries the site documents in its manifest metadata and binds
-/// no root entry, so every metadata read at the empty key has to answer with it.
+/// no root entry, so every metadata read at the root key has to answer with it.
 ///
 /// The three surfaces are the streaming reader, the root-bound view, and the
 /// `Manifest` seam's view over the same root. Presence is a separate question:
@@ -235,7 +235,7 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
     meta.insert(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html"))?;
 
     let mut builder: Builder<V1> = Builder::new();
-    builder.insert(Key::from(&b"index.html"[..]), entry(0x01), None);
+    builder.insert(Key::from(&b"/index.html"[..]), entry(0x01), None);
     builder.manifest_metadata(meta.clone());
     let root = *run(builder.build(&store, &Plaintext))?.root();
 
@@ -247,7 +247,7 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
         ensure!(site.error() == Some(&b"404.html"[..]), "error document");
 
         // The reader, the view and the seam's view all report it.
-        let read = reader.metadata(&root, &Key::empty()).await?;
+        let read = reader.metadata(&root, &Key::root::<V1>()).await?;
         ensure!(
             read.as_ref() == Some(&meta),
             "the reader reads the metadata"
@@ -256,7 +256,7 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
         let db: Database<_> = Database::plain(&store);
         let view = db.at(&root);
         ensure!(
-            view.metadata(&Key::empty()).await? == read,
+            view.metadata(&Key::root::<V1>()).await? == read,
             "the view agrees"
         );
         ensure!(
@@ -277,8 +277,14 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
         );
 
         // An absent root entry still reads as absent.
-        ensure!(view.get(&Key::empty()).await?.is_none(), "no root entry");
-        ensure!(!view.contains_key(&Key::empty()).await?, "no root binding");
+        ensure!(
+            view.get(&Key::root::<V1>()).await?.is_none(),
+            "no root entry"
+        );
+        ensure!(
+            !view.contains_key(&Key::root::<V1>()).await?,
+            "no root binding"
+        );
         Ok(())
     })
 }

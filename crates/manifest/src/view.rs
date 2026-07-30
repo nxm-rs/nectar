@@ -107,8 +107,13 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     ///
     /// Deeper paths collapse into one [`ListEntry::Dir`] at the next
     /// separator; the referenced chunks are never fetched. `dir` is matched as
-    /// a byte prefix, so end it in the separator to mean the directory: `img`
-    /// also lists `imgx.png`, where `img/` does not.
+    /// a byte prefix, so end it in the separator to mean the directory:
+    /// `/img` also lists `/imgx.png`, where `/img/` does not.
+    ///
+    /// No path is a child of itself, so the directory never lists itself. That
+    /// is the whole reason `dir("/")` lists the top level without `"/"`; the
+    /// root is otherwise an ordinary key that [`iter`](Self::iter) and
+    /// [`range`](Self::range) yield.
     ///
     /// [`ListEntry::Dir`]: crate::ListEntry::Dir
     fn dir(

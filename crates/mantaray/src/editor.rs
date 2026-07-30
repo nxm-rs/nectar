@@ -70,8 +70,10 @@ pub enum Op<R: Reference = ChunkRef> {
 /// # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
 /// # use nectar_primitives::chunk::ChunkAddress;
 /// let mut editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
-/// editor.insert("index.html", ChunkAddress::from([7u8; 32]));
-/// editor.set_index_document("index.html");
+/// editor.insert("/index.html", ChunkAddress::from([7u8; 32]));
+/// editor
+///     .insert("/", ChunkAddress::from([8u8; 32]))
+///     .with_index_document("index.html");
 /// assert_eq!(editor.ops().len(), 2);
 /// ```
 #[derive(Debug)]
@@ -181,6 +183,11 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     }
 
     /// Record merging one metadata key into the manifest's root path node.
+    ///
+    /// A merge, not a replace: it is how a site document is set on a root that
+    /// binds no entry of its own. An insert at the root path replaces the whole
+    /// binding instead, so build the site documents on it with
+    /// [`Insert::with_index_document`] and [`Insert::with_error_document`].
     pub fn set_root_metadata(
         &mut self,
         key: impl Into<String>,
@@ -193,16 +200,6 @@ impl<S, R: Reference> ManifestEditor<S, R> {
                 value: value.into(),
             },
         )
-    }
-
-    /// Record setting the website index document.
-    pub fn set_index_document(&mut self, filename: &str) -> &mut Self {
-        self.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, filename)
-    }
-
-    /// Record setting the website error document.
-    pub fn set_error_document(&mut self, path: &str) -> &mut Self {
-        self.set_root_metadata(metadata::WEBSITE_ERROR_DOCUMENT, path)
     }
 
     fn push(&mut self, path: impl AsRef<[u8]>, op: Op<R>) -> &mut Self {
@@ -233,6 +230,31 @@ impl<R: Reference> Insert<'_, R> {
     pub fn meta(&mut self, metadata: BTreeMap<String, String>) -> &mut Self {
         self.metadata = metadata;
         self
+    }
+
+    /// Set one metadata key on the insert, keeping the keys already set.
+    pub fn with(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set the entry's content type.
+    pub fn with_content_type(&mut self, value: impl Into<String>) -> &mut Self {
+        self.with(metadata::CONTENT_TYPE, value)
+    }
+
+    /// Set the website index document, served for a directory path.
+    ///
+    /// Root-scope metadata: set it on the insert at [`metadata::ROOT_PATH`].
+    pub fn with_index_document(&mut self, value: impl Into<String>) -> &mut Self {
+        self.with(metadata::WEBSITE_INDEX_DOCUMENT, value)
+    }
+
+    /// Set the website error document, served for an unresolved path.
+    ///
+    /// Root-scope metadata: set it on the insert at [`metadata::ROOT_PATH`].
+    pub fn with_error_document(&mut self, value: impl Into<String>) -> &mut Self {
+        self.with(metadata::WEBSITE_ERROR_DOCUMENT, value)
     }
 }
 
@@ -715,10 +737,10 @@ mod tests {
                     editor.remove(p);
                 }
                 Script::SetIndex(v) => {
-                    editor.set_index_document(v);
+                    editor.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, v);
                 }
                 Script::SetError(v) => {
-                    editor.set_error_document(v);
+                    editor.set_root_metadata(metadata::WEBSITE_ERROR_DOCUMENT, v);
                 }
             }
         }
@@ -845,7 +867,7 @@ mod tests {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
         editor.insert("/c", make_addr("c"));
         editor.insert("//", make_addr("s"));
-        editor.set_index_document("doc");
+        editor.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, "doc");
         let (root, loadsaver) = run(editor.commit()).unwrap();
         let entry = run(crate::Reader::new(loadsaver).get(root, b"/"))
             .unwrap()
@@ -917,7 +939,7 @@ mod tests {
         let (root, loadsaver) = run(editor.commit()).unwrap();
         assert_ne!(root, want, "the metadata must change the root");
         let mut editor = Editor::open(root, loadsaver);
-        editor.set_index_document("index.html");
+        editor.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, "index.html");
         let (got, loadsaver) = run(editor.commit()).unwrap();
         assert_eq!(got, want);
 

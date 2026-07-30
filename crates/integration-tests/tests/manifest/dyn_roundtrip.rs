@@ -72,7 +72,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .iter()
         .map(|entry| entry.path().as_bytes())
         .collect();
-    assert_eq!(paths, vec![&b"img/"[..], &b"index.html"[..]]);
+    assert_eq!(paths, vec![&b"/img/"[..], &b"/index.html"[..]]);
     assert!(listing.entries()[0].is_dir());
     assert_eq!(listing.entries()[1].reference(), Some(file));
 
@@ -86,7 +86,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .iter()
         .map(|entry| entry.path().as_bytes())
         .collect();
-    assert_eq!(nested_paths, vec![&b"img/logo.png"[..]]);
+    assert_eq!(nested_paths, vec![&b"/img/logo.png"[..]]);
 
     // The erased floor is the same ordered-map read on either format: the
     // greatest bound path at or below the probe.
@@ -95,7 +95,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .await
         .unwrap()
         .expect("a path at or below the probe");
-    assert_eq!(path.as_bytes(), b"index.html");
+    assert_eq!(path.as_bytes(), b"/index.html");
     assert_eq!(entry.reference(), Some(file));
     assert!(
         manifest
@@ -134,7 +134,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .iter()
         .map(|entry| entry.path().as_bytes())
         .collect();
-    assert_eq!(paths, vec![&b"img/"[..]]);
+    assert_eq!(paths, vec![&b"/img/"[..]]);
 
     let mut sink = MemSink::new();
     assert!(
@@ -145,8 +145,9 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         "a removed path names no data"
     );
 
-    // The root path addresses the manifest's own entry, and every operation
-    // maps it to the same slot: what an insert binds there, a load reads back.
+    // The root path is an ordinary key: what an insert binds there, a load
+    // reads back, and it is absent from its own listing only because no path is
+    // a child of itself.
     let rooted = manifest
         .dyn_apply(
             base,
@@ -251,8 +252,8 @@ fn root_scope_metadata_lands_in_each_format_native_slot() {
             entry.metadata().get(metadata::WEBSITE_INDEX_DOCUMENT),
             Some(&"index.html".to_owned())
         );
-        // That slot is the trie's own, not a directory: a root listing must
-        // not surface it as a child.
+        // The root is an ordinary key, and no key is a child of itself, so a
+        // root listing must not surface it.
         let listing = trie.dyn_dir(&root, &ManifestPath::root()).await.unwrap();
         assert!(
             listing.is_empty(),

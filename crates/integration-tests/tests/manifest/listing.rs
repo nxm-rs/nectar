@@ -52,14 +52,21 @@ const DIRS: &[&str] = &[
 
 /// The immediate children of `dir` over the key set, `dir` taken as a byte
 /// prefix and deeper keys collapsed at the next separator.
+///
+/// Keys and directories are absolute, so the model reads the same canonical
+/// bytes both formats store: the root `"/"` lists the top level and, being no
+/// child of itself, never appears in it.
 fn model(keys: &[&str], dir: &str) -> Vec<Vec<u8>> {
-    let mut sorted: Vec<&&str> = keys.iter().collect();
+    let dir = ManifestPath::from(dir).into_bytes();
+    let mut sorted: Vec<Vec<u8>> = keys
+        .iter()
+        .map(|key| ManifestPath::from(*key).into_bytes())
+        .collect();
     sorted.sort_unstable();
     let mut seen: BTreeSet<Vec<u8>> = BTreeSet::new();
     let mut out: Vec<Vec<u8>> = Vec::new();
-    for key in sorted {
-        let bytes = key.as_bytes();
-        let Some(suffix) = bytes.strip_prefix(dir.as_bytes()) else {
+    for bytes in &sorted {
+        let Some(suffix) = bytes.strip_prefix(dir.as_slice()) else {
             continue;
         };
         // The directory path itself is not one of its own children.
@@ -68,7 +75,7 @@ fn model(keys: &[&str], dir: &str) -> Vec<Vec<u8>> {
         }
         let entry = match suffix.iter().position(|&byte| byte == b'/') {
             Some(cut) => bytes[..dir.len() + cut + 1].to_vec(),
-            None => bytes.to_vec(),
+            None => bytes.clone(),
         };
         if seen.insert(entry.clone()) {
             out.push(entry);

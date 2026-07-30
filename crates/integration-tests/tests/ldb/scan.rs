@@ -65,8 +65,9 @@ fn corpus() -> Vec<(Key, Vec<u8>)> {
     // A key that is a strict prefix of another: a fork with a value and a child.
     pairs.push((Key::from(&b"pre"[..]), b"P".to_vec()));
     pairs.push((Key::from(&b"prefix"[..]), b"PX".to_vec()));
-    // The empty key: the manifest's own value in the root extension.
-    pairs.push((Key::empty(), b"root".to_vec()));
+    // The root key: the manifest's own value in the root extension. It is one
+    // byte of key space like any other, so the oracle orders it with the rest.
+    pairs.push((Key::root::<V1>(), b"root".to_vec()));
     pairs
 }
 
