@@ -5,10 +5,8 @@
 //! reference. A key bound to inline bytes carries its own data, so a load of
 //! it never reaches the file pipeline.
 //!
-//! The seam's handles are the database's own: [`LdbView`] wraps
-//! [`Database::at`] and [`LdbWriter`] wraps [`Database::edit`], so the trait's
-//! map vocabulary and the crate's map vocabulary are the same code path with
-//! paths in place of keys.
+//! [`LdbView`] wraps [`Database::at`] and [`LdbWriter`] wraps
+//! [`Database::edit`], with paths in place of keys.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -85,10 +83,9 @@ impl ManifestError {
 
 /// The key-value database as a [`Manifest`], keyed by path.
 ///
-/// The seal is the write-side secret: a plaintext database seals with
-/// [`Plaintext`], an encrypted one with the sealer that carries the secret the
-/// base tree was built under. Reads need no such state, because an encrypted
-/// reference carries its own key.
+/// The seal is the write-side secret: [`Plaintext`], or the sealer carrying
+/// the secret the base tree was built under. Reads need none, since an
+/// encrypted reference carries its own key.
 #[derive(Clone, Copy, Debug)]
 pub struct LdbManifest<S, K = Plaintext> {
     db: Database<S, K, V1>,
@@ -244,8 +241,7 @@ where
         }
     }
 
-    /// The database seeks the floor natively, so the walk the default would
-    /// pay is replaced by one O(depth) descent.
+    /// One O(depth) descent, in place of the default's walk.
     fn floor(
         &self,
         path: &ManifestPath,
@@ -261,8 +257,7 @@ where
                     Ok(Some((floored(found), mapped(entry))))
                 }
                 // The seek landed on a reserved key, so the greatest content
-                // key below it is the answer. Only a database written past the
-                // seam holds one, so no seam write provokes this walk.
+                // key below it is the answer.
                 Some(_) => {
                     let mut cursor = view.range((Bound::Unbounded, Bound::Included(key))).await?;
                     let mut last = None;
@@ -286,11 +281,10 @@ where
             let mut listing = self.view.dir(&key).await?;
             let mut entries = Vec::new();
             while let Some(item) = listing.next().await? {
-                // A reserved key is not content, so the listing never surfaces
-                // it. At the bare separator the folder view names two things:
-                // the reserved key, and the directory of content below it. What
-                // is bound strictly under it tells them apart, so the bare slot
-                // is hidden and the directory is listed, as the trie lists it.
+                // At the bare separator the folder view names both the
+                // reserved key and the directory of content below it. What is
+                // bound strictly under it tells the two apart: hide the slot,
+                // list the directory.
                 let hidden = is_reserved(item.key())
                     && !(item.is_dir() && bound_below(&self.view, item.key()).await?);
                 if hidden {
@@ -332,8 +326,7 @@ where
     }
 
     fn iter(&self) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend {
-        // The view is a store reference and a root, so the walk takes its own
-        // copy rather than borrowing the handle it was opened through.
+        // The walk takes its own copy rather than borrowing the handle.
         let view = self.view.clone();
         async move {
             Ok(LdbCursor {
@@ -375,8 +368,7 @@ where
     {
         let cursor = &mut self.cursor;
         async move {
-            // The root slot leads the walk when the root binds a value, and no
-            // reserved key is content, so the map steps over both.
+            // No reserved key is content, so the map steps over it.
             while let Some((key, entry)) = cursor.next().await? {
                 if is_reserved(&key) {
                     continue;
@@ -395,19 +387,14 @@ where
 #[derive(Debug)]
 pub struct LdbWriter<'a, S, K, R: NodeRef> {
     editor: Editor<'a, S, K, V1, R>,
-    /// The first reserved path the batch staged, which fails the commit.
-    ///
-    /// Staging is infallible, so the refusal is held here and reported once,
-    /// at the commit that would otherwise write the batch.
+    /// The first reserved path the batch staged. Staging is infallible, so the
+    /// refusal is held until the commit.
     reserved: Option<ReservedKey>,
 }
 
 impl<S, K, R: NodeRef> LdbWriter<'_, S, K, R> {
     /// Stage one site document into the database's root manifest metadata, or
-    /// clear it.
-    ///
-    /// A merge either way, so the two documents are independent. Clearing the
-    /// last one leaves the manifest carrying no metadata at all.
+    /// clear it. A merge, so the two documents are independent.
     fn document(&mut self, id: KeyId, path: Option<ManifestPath>) -> &mut Self {
         let value = path.map(|path| Bytes::copy_from_slice(path.as_bytes()));
         self.editor.set_root_metadata(id, value);
@@ -425,12 +412,9 @@ where
 
     type Error = ManifestError;
 
-    /// An insert replaces the whole binding; existing metadata is cleared
-    /// unless `meta` carries some, because the op's metadata is the key's
-    /// metadata from then on.
-    ///
-    /// A reserved path is no key, so it stages no database op and refuses the
-    /// commit instead. The site documents go through the setters below.
+    /// An insert replaces the whole binding, clearing existing metadata unless
+    /// `meta` carries some. A reserved path stages no database op and refuses
+    /// the commit instead.
     fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
         let Some(key) = content_key(op.path()) else {
             self.reserved
@@ -467,7 +451,6 @@ where
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
         let Self { editor, reserved } = self;
         async move {
-            // The whole batch is refused, so a reserved path writes nothing.
             if let Some(reserved) = reserved {
                 return Err(ManifestError::Reserved(reserved));
             }
@@ -478,10 +461,8 @@ where
 
 /// The database key `path` addresses, or `None` when it names no content key.
 ///
-/// The key bytes are the path bytes verbatim. The two reserved paths are the
-/// empty one, the database's own root slot for the site-level documents, and
-/// the lone separator, the slot the trie keys them at. Neither is read, written
-/// or walked as a key here, so the two formats answer alike.
+/// The key bytes are the path bytes verbatim. Neither reserved path is read,
+/// written or walked as a key.
 fn content_key(path: &ManifestPath) -> Option<Key> {
     (!path.is_reserved()).then(|| Key::from(path.as_bytes()))
 }
@@ -492,17 +473,14 @@ fn floored(key: Key) -> ManifestPath {
 }
 
 /// Whether `key` is one the map reserves rather than content.
-///
-/// The read-side twin of [`content_key`], over the database's own key type.
 fn is_reserved(key: &Key) -> bool {
     matches!(key.as_bytes(), [] | [ManifestPath::SEPARATOR])
 }
 
 /// Whether the database binds anything strictly below `key`.
 ///
-/// What tells a listed reserved key apart from the directory of content the
-/// folder view gives the same name to. `key` sorts first in its own prefix
-/// range, so the probe costs one seek and at most two steps.
+/// `key` sorts first in its own prefix range, so the probe costs one seek and
+/// at most two steps.
 async fn bound_below<S, R>(view: &View<'_, S, V1, R>, key: &Key) -> Result<bool, ManifestError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
@@ -532,10 +510,7 @@ fn bound(edge: Bound<&ManifestPath>) -> Bound<Key> {
 }
 
 /// One bound value as a seam entry: a reference of the caller's width, or an
-/// opaque value.
-///
-/// An inline value, or a reference of the other width, is bound but names no
-/// reference the caller can read on its own; a load still reaches its bytes.
+/// opaque value. A load still reaches an opaque value's bytes.
 fn mapped<R: NodeRef>(entry: Entry<V1>) -> MapEntry<R> {
     match EntryRef::try_from(entry).map(R::from_entry_ref) {
         Ok(Ok(reference)) => MapEntry::Reference(reference),
@@ -543,10 +518,8 @@ fn mapped<R: NodeRef>(entry: Entry<V1>) -> MapEntry<R> {
     }
 }
 
-/// One folder-view child as a seam listing entry.
-///
-/// A key bound to inline bytes, or to a reference of the other width, still
-/// names a path: it lists as a value rather than failing the listing.
+/// One folder-view child as a seam listing entry. A key bound to inline bytes,
+/// or to a reference of the other width, lists as a value.
 fn listed<R: NodeRef>(entry: DirEntry<V1>) -> ListEntry<R> {
     match entry {
         DirEntry::Dir { key } => ListEntry::Dir {
@@ -562,6 +535,5 @@ fn listed<R: NodeRef>(entry: DirEntry<V1>) -> ListEntry<R> {
     }
 }
 
-/// The seam's separator is the format's own, so a path splits into the same
-/// segments on either side of the trait.
+/// The seam's separator is the format's own.
 const _: () = assert!(ManifestPath::SEPARATOR == <V1 as Format>::SEPARATOR);

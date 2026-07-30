@@ -314,8 +314,8 @@ fn record(ops: &[EditorOp]) -> ManifestEditor<OracleLoadSaver> {
                     .meta(metadata(*key, *value));
             }
             EditorOp::Remove { path: raw } => {
-                // The legacy boundary remove: the op this oracle's model and
-                // committed corpus were both recorded against.
+                // The legacy boundary remove, which the committed corpus was
+                // recorded against.
                 editor.remove_subtree(path(raw));
             }
             EditorOp::SetIndex { name } => {

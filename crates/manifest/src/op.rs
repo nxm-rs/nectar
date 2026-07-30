@@ -1,9 +1,5 @@
 //! The shared write vocabulary: one op list, translated by each format into
 //! its own batch.
-//!
-//! The ops are the map's own verbs, so a caller that already holds a batch
-//! stages it with [`MapWriter::extend`](crate::MapWriter::extend) rather than
-//! replaying it call by call.
 
 use nectar_primitives::chunk::{ChunkRef, Reference};
 

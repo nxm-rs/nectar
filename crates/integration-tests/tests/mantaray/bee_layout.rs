@@ -1,18 +1,14 @@
 //! The mantaray v0.2 layout, asserted against what the reference client writes.
 //!
-//! The differential in `legacy_differential.rs` pins the bytes: identical op
-//! sequences produce byte-identical roots against the pinned legacy oracle.
-//! This file pins the shape those bytes carry, which is what a reader of
-//! either client has to find:
+//! `legacy_differential.rs` pins the bytes; this file pins the shape they
+//! carry:
 //!
-//! - A content path is stored bare and verbatim. `index.html` is the trie key
-//!   `index.html`, and `css/style.css` is `css/style.css`. Nothing is prepended.
+//! - A content path is stored bare and verbatim. Nothing is prepended.
 //! - The site-level documents are metadata on the `"/"` node, a one-byte fork
-//!   under the structural root. That node binds no entry: the reference client
-//!   adds it with the zero address, whose wire image is the empty entry slot, so
-//!   the node is a metadata-only value.
-//! - The structural root is the empty path. It carries no site config on either
-//!   client, and the manifest seam never exposes it.
+//!   under the structural root. That node binds no entry, so it is a
+//!   metadata-only value.
+//! - The structural root is the empty path. It carries no site config, and the
+//!   manifest seam never exposes it.
 //!
 //! The reference sites are `bee/pkg/manifest/manifest.go` (`RootPath = "/"`),
 //! `bee/pkg/api/bzz.go` (`m.Add(RootPath, NewEntry(swarm.ZeroAddress, meta))`
@@ -58,8 +54,7 @@ fn a_website_manifest_matches_the_reference_layout() {
             writer.commit().await.unwrap()
         };
 
-        // The trie is read below the seam, so what is asserted is the stored
-        // image rather than the seam's own mapping.
+        // The trie is read below the seam, so this asserts the stored image.
         let reader = Reader::new(nodes);
 
         // Content keys are the bare bytes, byte for byte.
@@ -91,8 +86,7 @@ fn a_website_manifest_matches_the_reference_layout() {
             "no content key is rooted at the separator"
         );
 
-        // The site documents live on the "/" node, which binds no entry: the
-        // reference client's zero address is the empty entry slot on the wire.
+        // The site documents live on the "/" node, which binds no entry.
         let site = reader
             .get(*root.address(), metadata::ROOT_PATH.as_bytes())
             .await
@@ -117,13 +111,11 @@ fn a_website_manifest_matches_the_reference_layout() {
             "so is the error document"
         );
 
-        // The structural root carries nothing: the reference client never stores
-        // site config there.
+        // The structural root carries nothing.
         let structural = reader.get(*root.address(), b"").await.unwrap();
         assert!(structural.is_none(), "the empty path binds nothing at all");
 
-        // Read back through the seam, the same manifest is content plus two
-        // options, and the site-config node is not one of the content keys.
+        // Read back through the seam: content plus two options.
         let view = trie.at(&root);
         let mut walked = Vec::new();
         let mut cursor = view.iter().await.unwrap();
@@ -154,8 +146,7 @@ fn a_website_manifest_matches_the_reference_layout() {
     });
 }
 
-/// The editor's own verbs write the same layout, so a caller below the seam and
-/// one above it produce one image.
+/// The editor's own verbs write the same layout as the seam's setters.
 #[test]
 fn the_editor_verbs_write_the_same_site_config_node() {
     run(async {

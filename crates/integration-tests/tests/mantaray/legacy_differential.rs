@@ -6,26 +6,20 @@
 //!
 //! Identical submission-order op sequences are replayed on the oracle and on the
 //! editor; the resulting roots must match byte for byte. The legacy replay is a
-//! fresh single-session build with one save at the end, which is the sequence's
-//! well-defined root.
+//! fresh single-session build with one save at the end.
 //!
 //! # Scope: the wire, byte for byte
 //!
-//! Content keys are stored bare and verbatim, exactly as the reference client
-//! writes them, so both sides give the same content the same byte image. This
-//! gate feeds both the same bare keys and compares the roots, so any change to
-//! the content-key encoding fails it. Submission order, boundary removes,
+//! Both sides are fed the same bare content keys, so any change to the
+//! content-key encoding fails this gate. Submission order, boundary removes,
 //! mid-edge splits, prefix-bound chains and the root-metadata interleavings are
 //! pinned with it.
 //!
 //! # The remove this drives
 //!
-//! The oracle's `remove` prunes the fork whose boundary the path names, so it
-//! takes every key under it. The map vocabulary means the exact key instead, so
-//! the editor's `remove` is exact-key and the boundary op lives on under
-//! `remove_subtree`. This differential drives `remove_subtree`, because that is
-//! the behaviour the oracle pins. The exact-key contract is pinned across both
-//! formats in `manifest/root_config.rs` instead.
+//! The oracle's `remove` is the boundary op, so this differential drives
+//! `remove_subtree`. The exact-key contract is pinned across both formats in
+//! `manifest/root_config.rs` instead.
 
 use std::collections::BTreeMap;
 
@@ -115,9 +109,8 @@ fn record(editor: &mut Editor, script: &[ScriptOp]) {
                 let meta: BTreeMap<String, String> = [(k.clone(), v.clone())].into();
                 editor.insert(p.as_str(), ChunkAddress::from(*a)).meta(meta);
             }
-            // The legacy boundary remove, which is what the oracle's `remove` is
-            // and the only op this differential may drive: the seam's `remove` is
-            // exact-key now, so it would answer a different question.
+            // The legacy boundary remove, which is what the oracle's `remove`
+            // is and the only op this differential may drive.
             ScriptOp::Rm(p) => {
                 editor.remove_subtree(p.as_str());
             }
@@ -351,10 +344,9 @@ fn clean_ancestor_hazard_regression() {
     assert_eq!(got, want, "the editor reproduced the clean-ancestor hazard");
 }
 
-/// A bare insert replaces the whole binding, so it clears the metadata the
-/// path carried; the pinned legacy keeps it. The divergence is the map contract
-/// and is pinned here, which is why the randomized generator holds the shape
-/// out.
+/// A bare insert replaces the whole binding, clearing the metadata the path
+/// carried; the pinned legacy keeps it. The randomized generator holds this
+/// shape out.
 #[test]
 fn bare_insert_clears_metadata_unlike_legacy() {
     let address = addr_bytes("logo");
@@ -367,13 +359,12 @@ fn bare_insert_clears_metadata_unlike_legacy() {
     let bare = ScriptOp::Add("logo.png".to_string(), address);
     let script = vec![with_meta.clone(), bare.clone()];
 
-    // The editor lands on the root the path would have had with no metadata at
-    // all, in one commit and across a commit boundary.
+    // The editor lands on the root the path would have had with no metadata.
     let cleared = editor_root(std::slice::from_ref(&bare));
     assert_eq!(editor_root(&script), cleared, "a bare insert clears");
     assert_eq!(editor_root_split(&script, 1), cleared, "across a commit");
 
-    // The pinned legacy keeps it: the bare add changed nothing there.
+    // The pinned legacy keeps it.
     assert_eq!(legacy_root(&script), legacy_root(&[with_meta]));
     assert_ne!(
         editor_root(&script),
@@ -438,21 +429,17 @@ const PATHS: &[&str] = &[
 /// comparison covers those runs as error-parity cases.
 ///
 /// One shape is held out on purpose: a bare add over a path that already
-/// carries metadata. The editor takes an insert as a whole-binding replace and
-/// clears the metadata, where the pinned legacy keeps it, so the two roots
-/// diverge by design. That divergence is pinned on its own by
-/// [`bare_insert_clears_metadata_unlike_legacy`], and the generator emits a
-/// metadata-carrying add there instead, which both sides treat alike.
+/// carries metadata, where the two roots diverge by design.
+/// [`bare_insert_clears_metadata_unlike_legacy`] pins that divergence, and the
+/// generator emits a metadata-carrying add instead.
 fn build_script(raw: &[(u8, u8, u8)]) -> Vec<ScriptOp> {
     let mut added: Vec<&str> = Vec::new();
-    // Paths that have carried metadata; a bare add over one of these is the
-    // held-out shape, so it is emitted with metadata instead.
+    // Paths that have carried metadata: the held-out shape.
     let mut metaed: Vec<&str> = Vec::new();
     let mut script = Vec::new();
     for &(kind, path_idx, seed) in raw {
         let path = PATHS[usize::from(path_idx) % PATHS.len()];
-        // The site documents live on the root path node, so setting one leaves
-        // metadata behind on "/" exactly as an add with metadata does.
+        // Setting a site document leaves metadata behind on "/".
         let with_metadata = metaed.contains(&path);
         match kind % 8 {
             0..=3 if !with_metadata => {
@@ -463,10 +450,8 @@ fn build_script(raw: &[(u8, u8, u8)]) -> Vec<ScriptOp> {
                     added.push(path);
                 }
             }
-            // With nothing to remove yet, the word lands as an add instead;
-            // the held-out bare-add-over-metadata shape is held out here too,
-            // because a path already carrying metadata reaches this branch as
-            // readily as the add branch above.
+            // With nothing to remove yet, the word lands as an add instead,
+            // with the same shape held out.
             4 if added.is_empty() && !with_metadata => {
                 script.push(add(path));
                 added.push(path);
@@ -487,8 +472,7 @@ fn build_script(raw: &[(u8, u8, u8)]) -> Vec<ScriptOp> {
                     metaed.push("/");
                 }
             }
-            // Every remaining word, and any bare add held out above, lands as
-            // an add carrying metadata.
+            // Every remaining word lands as an add carrying metadata.
             _ => {
                 let mut a = addr_bytes(path);
                 a[31] = seed;

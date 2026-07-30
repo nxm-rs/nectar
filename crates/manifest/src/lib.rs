@@ -7,20 +7,14 @@
 //! [`MaybeSend`], and generic over the sealed [`Reference`] width, so an
 //! encrypted manifest is the same code path as a plain one.
 //!
-//! A manifest is a map, so it speaks the map vocabulary. [`Manifest::at`]
-//! binds a root and hands back a [`MapView`] to read it: `get`,
-//! `contains_key`, `range`, `iter`, plus the two manifest additions `dir` and
-//! `load`. [`Manifest::edit`] binds a base root and hands back a
-//! [`MapWriter`]: `insert`, `remove`, and a `commit` that yields the new root,
-//! because the map itself is immutable. [`Manifest::insert`] and
-//! [`Manifest::remove`] are the one-shot sugar over an edit of one op.
+//! [`Manifest::at`] binds a root and hands back a [`MapView`];
+//! [`Manifest::edit`] binds a base root and hands back a [`MapWriter`] whose
+//! `commit` yields the new root.
 //!
-//! The map is over content paths alone. A manifest's own configuration, the
-//! site index and error documents, is not a key in it: [`MapView`] answers
-//! `index_document` and `error_document` as options, and [`MapWriter`] sets
-//! them with the chainable `with_index_document` and `with_error_document`.
-//! Each lands in the format's own root slot, so no empty key and no magic path
-//! ever crosses the seam. The two paths those slots are keyed at, the empty
+//! The map holds content paths alone. The site index and error documents are
+//! not keys: [`MapView`] reads them as options, and [`MapWriter`] sets them
+//! with `with_index_document` and `with_error_document`. Each lands in the
+//! format's own root slot. The two paths those slots are keyed at, the empty
 //! one and `"/"`, are reserved on both formats: a read at either is absent and
 //! a write at either is [`ReservedKey`].
 //!
@@ -45,13 +39,11 @@
 //!         path: ManifestPath::from("stale.html"),
 //!     },
 //! ];
-//! // A content path is stored bare and verbatim, which is what keeps the
-//! // mantaray image byte-identical to the reference client's.
+//! // A content path is stored bare and verbatim.
 //! assert_eq!(ops[0].path().as_bytes(), b"index.html");
 //! ```
 //!
-//! The manifest's own configuration is a value rather than an op, because it is
-//! not a path:
+//! The site configuration is a value, not an op:
 //!
 //! ```
 //! use nectar_manifest::{ManifestPath, SiteConfig};
@@ -63,7 +55,7 @@
 //!     config.index_document().map(ManifestPath::as_bytes),
 //!     Some(&b"index.html"[..])
 //! );
-//! // The same setter clears, so nothing needs a second verb.
+//! // The same setter clears.
 //! assert!(config.with_index_document(None).with_error_document(None).is_empty());
 //! ```
 
@@ -132,18 +124,15 @@ impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 ///
 /// Static dispatch only, exactly like the L1 store traits: the futures are
 /// RPITIT and the reference width is a type parameter, so nothing here costs
-/// an allocation. The two handles are generic associated types, so a view
-/// borrows the store rather than cloning it. Use [`DynManifest`] where the
-/// format is a runtime choice.
+/// an allocation. Use [`DynManifest`] where the format is a runtime choice.
 ///
-/// Content paths are stored bare and verbatim: `index.html` is the bytes
-/// `index.html` on both formats, byte-identical to what the reference client
-/// writes. The map holds content paths alone. The site index and error
-/// documents are not keys: read them with [`MapView::index_document`] and
-/// [`MapView::error_document`], and write them with
-/// [`MapWriter::with_index_document`] and [`MapWriter::with_error_document`].
-/// Each lands in the format's own root slot, at a path
-/// [`ManifestPath::is_reserved`] names.
+/// Content paths are stored bare and verbatim, byte-identical to what the
+/// reference client writes. The map holds content paths alone. The site index
+/// and error documents are not keys: read them with
+/// [`MapView::index_document`] and [`MapView::error_document`], and write them
+/// with [`MapWriter::with_index_document`] and
+/// [`MapWriter::with_error_document`]. Each lands in the format's own root
+/// slot, at a path [`ManifestPath::is_reserved`] names.
 pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
@@ -161,16 +150,13 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     where
         Self: 'a;
 
-    /// The read view of the manifest rooted at `root`.
-    ///
-    /// Cheap: the view holds the store and a clone of the root, and reaches
-    /// storage only when a read is awaited.
+    /// The read view of the manifest rooted at `root`. Reaches storage only
+    /// when a read is awaited.
     fn at(&self, root: &R) -> Self::View<'_>;
 
     /// A writer staging a batch against the manifest rooted at `base`.
     ///
-    /// Staging touches no storage; [`MapWriter::commit`] writes the batch and
-    /// returns the new root.
+    /// Staging touches no storage; [`MapWriter::commit`] writes the batch.
     fn edit(&self, base: &R) -> Self::Writer<'_>;
 
     /// Native metadata rebuilt from the erased view, reading the registered
@@ -183,11 +169,9 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
         view: &dyn ManifestMetadata,
     ) -> Result<Self::Metadata, Self::Error>;
 
-    /// Insert one path into the manifest rooted at `root`, returning the new
-    /// root.
+    /// Insert one path, clearing any metadata bound at it.
     ///
-    /// Sugar over an [`edit`](Self::edit) of one op. Metadata rides the
-    /// writer, so an insert that carries it goes through the handle.
+    /// To keep or set metadata, go through [`edit`](Self::edit).
     fn insert(
         &self,
         root: &R,
@@ -199,11 +183,8 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
         writer.commit()
     }
 
-    /// Remove one path from the manifest rooted at `root`, returning the new
-    /// root.
-    ///
-    /// Exact-key, as [`MapWriter::remove`] is: nothing below `path` goes with
-    /// it, and removing what is not bound returns `root` unchanged.
+    /// Remove one path. Exact-key: nothing below `path` goes with it, and an
+    /// absent `path` returns `root` unchanged.
     fn remove(
         &self,
         root: &R,

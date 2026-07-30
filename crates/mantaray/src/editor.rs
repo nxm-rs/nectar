@@ -37,22 +37,21 @@ use crate::{MantarayError, metadata};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Op<R: Reference = ChunkRef> {
-    /// Insert the entry at the path, replacing the whole binding: `metadata`
-    /// becomes the node's metadata, and an empty map clears it.
+    /// Insert the entry at the path, replacing the whole binding. An empty
+    /// `metadata` clears the node's.
     Insert {
         /// Entry reference, or `None` for a metadata-only value node.
         reference: Option<R>,
-        /// Metadata to attach; empty clears whatever the path carried.
+        /// Metadata to attach; empty clears the node's.
         metadata: BTreeMap<String, String>,
     },
     /// Clear the binding at exactly the path: its value and its metadata, and
-    /// nothing below it. An absent or unbound path is a no-op.
+    /// nothing below it. An absent path is a no-op.
     Remove,
     /// Prune the fork whose boundary the path names, taking every key under it.
     /// An absent path fails the commit.
     ///
-    /// The legacy boundary op, kept for the compatibility differential
-    /// alone; [`Remove`](Self::Remove) is what the map vocabulary means.
+    /// The legacy boundary op; [`Remove`](Self::Remove) is the map verb.
     RemoveSubtree,
     /// Merge one metadata key into the node at the path, creating the node
     /// when absent.
@@ -63,8 +62,8 @@ pub enum Op<R: Reference = ChunkRef> {
         value: String,
     },
     /// Remove one metadata key from the node at the path, pruning a node the
-    /// removal leaves with neither a binding nor a child. An absent node, or a
-    /// node that does not carry the key, is a no-op.
+    /// removal leaves with neither a binding nor a child. An absent key is a
+    /// no-op.
     ClearRootMetadata {
         /// Metadata key to remove.
         key: String,
@@ -169,14 +168,10 @@ impl<S, R: Reference> ManifestEditor<S, R> {
 
     /// Record inserting the entry at `path`, with metadata as a suffix.
     ///
-    /// The op is recorded when the returned guard is dropped, which is the end
-    /// of the statement: `editor.insert(path, reference);` records it bare and
-    /// `editor.insert(path, reference).meta(metadata);` records it with
-    /// metadata.
-    ///
-    /// An insert replaces the whole binding. Existing metadata at `path` is
-    /// cleared unless [`meta`](Insert::meta) is given, exactly as a map replaces
-    /// the value it holds under a key.
+    /// The op is recorded when the returned guard drops:
+    /// `editor.insert(path, reference).meta(metadata);`. An insert replaces the
+    /// whole binding, clearing existing metadata unless
+    /// [`meta`](Insert::meta) is given.
     ///
     /// Format limitations, both rejected at commit: an all-zero reference is
     /// the wire's absent-entry sentinel, and metadata on the empty path (the
@@ -191,29 +186,26 @@ impl<S, R: Reference> ManifestEditor<S, R> {
 
     /// Record clearing the binding at exactly `path`.
     ///
-    /// A map removal: the path's own value and metadata go, and the paths below
-    /// it stay. A childless leaf is pruned, and an absent or unbound path is a
-    /// no-op that leaves the committed root where it was.
+    /// Exact-key: the path's own value and metadata go, and the paths below it
+    /// stay. A childless leaf is pruned. An absent path is a no-op.
     pub fn remove(&mut self, path: impl AsRef<[u8]>) -> &mut Self {
         self.push(path, Op::Remove)
     }
 
     /// Record pruning the whole subtree the fork at `path` reaches.
     ///
-    /// The legacy boundary remove, kept so the compatibility differential
-    /// can drive the behaviour it pins. It removes keys the caller never named,
-    /// so it is not the map vocabulary: use [`remove`](Self::remove) for that.
-    /// An absent path fails the commit.
+    /// The legacy boundary remove: it takes keys the caller never named. Use
+    /// [`remove`](Self::remove) for the map verb. An absent path fails the
+    /// commit.
     pub fn remove_subtree(&mut self, path: impl AsRef<[u8]>) -> &mut Self {
         self.push(path, Op::RemoveSubtree)
     }
 
     /// Record merging one metadata key into the manifest's root path node.
     ///
-    /// The root path node is [`metadata::ROOT_PATH`], the one-byte fork the
-    /// reference client keeps the site-level documents on. A merge, not a
-    /// replace: only the named key moves. A node that binds no entry is created
-    /// as the metadata-only value the reference client writes there.
+    /// The root path node is [`metadata::ROOT_PATH`], where the reference
+    /// client keeps the site-level documents. A merge, not a replace: only the
+    /// named key moves.
     pub fn set_root_metadata(
         &mut self,
         key: impl Into<String>,
@@ -230,10 +222,8 @@ impl<S, R: Reference> ManifestEditor<S, R> {
 
     /// Record removing one metadata key from the manifest's root path node.
     ///
-    /// The inverse of [`set_root_metadata`](Self::set_root_metadata): the other
-    /// keys stay, and a node left carrying nothing is pruned, so clearing the
-    /// only key restores the root the manifest had before it was set. A node
-    /// that does not carry the key is a no-op.
+    /// The other keys stay, and a node left carrying nothing is pruned. An
+    /// absent key is a no-op.
     pub fn clear_root_metadata(&mut self, key: impl Into<String>) -> &mut Self {
         self.push(
             metadata::ROOT_PATH,
@@ -257,25 +247,17 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     }
 }
 
-/// A recorded insert, awaiting the metadata it may carry.
-///
-/// [`ManifestEditor::insert`] hands one back so metadata reads as a suffix on
-/// the insert it belongs to. The op joins the submission-order log when the
-/// guard is dropped, so its position in the log is where the call was written.
+/// A recorded insert, awaiting the metadata it may carry. The op joins the
+/// submission-order log when the guard drops.
 #[derive(Debug)]
 pub struct Insert<'e, R: Reference = ChunkRef> {
     ops: &'e mut Vec<(Vec<u8>, Op<R>)>,
-    /// The recorded path and reference, taken by the drop that logs them.
     pending: Option<(Vec<u8>, R)>,
-    /// Metadata to attach; empty clears whatever the path carried.
     metadata: BTreeMap<String, String>,
 }
 
 impl<R: Reference> Insert<'_, R> {
-    /// Attach `metadata` to the insert, replacing whatever the node carried.
-    ///
-    /// A bare insert carries no metadata, so it clears the node's; pass the map
-    /// here to keep or change it.
+    /// Attach `metadata`, replacing whatever the node carried.
     pub fn meta(&mut self, metadata: BTreeMap<String, String>) -> &mut Self {
         self.metadata = metadata;
         self
@@ -408,10 +390,8 @@ where
 
 /// Remove one metadata key from the node at `path`.
 ///
-/// Expressed in the two ops the wire already pins: what the node keeps is
-/// rebound with [`Node::add`], and a node left carrying nothing is cleared,
-/// which prunes it as a childless leaf. An absent node, or one that does not
-/// carry the key, dirties nothing.
+/// What the node keeps is rebound with [`Node::add`], and a node left carrying
+/// nothing is cleared, which prunes it as a childless leaf.
 async fn apply_metadata_clear<S, R>(
     trie: &mut Node<R>,
     path: &[u8],
@@ -436,9 +416,8 @@ where
 
 /// The binding the node at `path` carries, or `None` when no node is there.
 ///
-/// Every visited node is dirtied. A node left clean would keep its persisted
-/// reference and shadow the rebind at commit. Dirtying an unchanged node is
-/// safe, because it re-encodes to the same address.
+/// Every visited node is dirtied: a clean node would keep its persisted
+/// reference and shadow the rebind at commit.
 async fn binding_at<S, R>(
     trie: &mut Node<R>,
     path: &[u8],
@@ -1020,7 +999,7 @@ mod tests {
     }
 
     /// The map removal is exact-key: a key with children keeps them, a
-    /// childless leaf is pruned, and an absent key changes nothing at all.
+    /// childless leaf is pruned, and an absent key changes nothing.
     #[test]
     fn remove_is_exact_key_and_absence_is_a_noop() {
         let (root, loadsaver) = editor_replay(&[
@@ -1048,11 +1027,8 @@ mod tests {
     /// A removal that empties the fork a split created leaves a trie that reads
     /// exactly the surviving keys.
     ///
-    /// Removing `alpine` empties the fork the `alp` split created, and the edge
-    /// into `alpha` stays as the insert order cut it. The root is therefore not
-    /// the root a replay of `alpha` and `beta` writes: mantaray 0.2 puts a node
-    /// where the order first justified one and never moves it, so a removal is
-    /// order-dependent by design. Only the key set is contracted here.
+    /// The root is not the root a replay of the surviving keys writes: this
+    /// format is order-dependent by design. Only the key set is contracted.
     #[test]
     fn remove_leaves_a_trie_that_reads_the_surviving_keys() {
         let (root, loadsaver) = editor_replay(&[
@@ -1071,8 +1047,7 @@ mod tests {
     }
 
     /// The same past the 30-byte prefix bound, where the surviving key chains
-    /// through more than one edge: the chain the removal leaves is valid and
-    /// decodes the surviving key, whatever shape a replay would have written.
+    /// through more than one edge.
     #[test]
     fn remove_past_the_prefix_bound_reads_the_surviving_key() {
         const ONE: &str = "deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaone";
@@ -1089,8 +1064,7 @@ mod tests {
         assert!(run(reader.get(emptied, ONE.as_bytes())).unwrap().is_some());
     }
 
-    /// The legacy boundary remove keeps taking the whole subtree, so the
-    /// compatibility differential still has the behaviour it pins.
+    /// The legacy boundary remove keeps taking the whole subtree.
     #[test]
     fn remove_subtree_still_takes_the_whole_subtree() {
         let (root, loadsaver) = editor_replay(&[

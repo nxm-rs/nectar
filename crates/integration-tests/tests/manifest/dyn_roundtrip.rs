@@ -88,8 +88,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .collect();
     assert_eq!(nested_paths, vec![&b"img/logo.png"[..]]);
 
-    // The erased floor is the same ordered-map read on either format: the
-    // greatest bound path at or below the probe.
+    // The erased floor is the greatest bound path at or below the probe.
     let (path, entry) = manifest
         .dyn_floor(&root, &ManifestPath::from("index.zzz"))
         .await
@@ -145,9 +144,8 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         "a removed path names no data"
     );
 
-    // The manifest's own configuration is not a path, so it crosses the erased
-    // seam as a value: what is set reads back, and clearing it restores the root
-    // that declared nothing.
+    // The configuration crosses the erased seam as a value: what is set reads
+    // back, and clearing it restores the root that declared nothing.
     assert_eq!(
         manifest.dyn_site_config(base).await.unwrap(),
         SiteConfig::new(),
@@ -178,8 +176,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         "clearing the documents restores the content-only root"
     );
 
-    // The empty path is a listing prefix, not a key: nothing is bound there and
-    // nothing loads from it.
+    // The empty path is a listing prefix, not a key.
     let mut sink = MemSink::new();
     assert!(
         manifest
@@ -236,8 +233,7 @@ fn both_formats_round_trip_through_one_erased_handle() {
     });
 }
 
-/// The erased site config lands in each format's native root slot, so a reader
-/// of either format below the seam finds it where its own convention says.
+/// The erased site config lands in each format's native root slot.
 #[test]
 fn the_site_config_lands_in_each_format_native_slot() {
     run(async {
@@ -245,8 +241,8 @@ fn the_site_config_lands_in_each_format_native_slot() {
         let store = ContentGet::new(Arc::clone(&raw));
         let config = SiteConfig::new().with_index_document(ManifestPath::from("index.html"));
 
-        // The trie keeps the site documents on its root path node, which binds
-        // no entry: the reference client's zero address is the empty slot.
+        // The trie keeps the site documents on its root path node, which
+        // binds no entry.
         let (nodes, trie_root) = mantaray(&raw).await;
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes.clone(), store.clone());
         let root = trie

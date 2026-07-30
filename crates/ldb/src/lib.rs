@@ -53,14 +53,10 @@
 //! [`Entry`] names a plain or an encrypted chunk whatever the structure's own
 //! width.
 //!
-//! The developer surface is the map vocabulary over a root-bound handle:
-//! [`Database::at`] gives a [`View`] to read one root (`get`, `contains_key`,
-//! `metadata`, `range`, `iter`, `floor`, `dir`), and [`Database::edit`] gives
-//! an [`Editor`] to stage `insert` and `remove` against one base, whose
-//! `commit` yields the new root. [`Database::insert`] and [`Database::remove`]
-//! are the one-shot sugar. The map is immutable, so a write never names a
-//! mutation: it names the root it produced. [`Reader`], [`Changeset`] and
-//! [`apply`] stay as the layer the handle is built on.
+//! The developer surface is a root-bound handle: [`Database::at`] gives a
+//! [`View`] to read one root, and [`Database::edit`] gives an [`Editor`] whose
+//! `commit` yields the new root. [`Reader`], [`Changeset`] and [`apply`] stay
+//! as the layer the handle is built on.
 //!
 //! The folder view ([`View::dir`], [`View::serve`]) is a path
 //! interpretation over the flat KV core: the separator is [`Format::SEPARATOR`],

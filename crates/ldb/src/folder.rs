@@ -255,11 +255,11 @@ where
     /// An exact key wins; otherwise the path is read as a directory and its
     /// index document is tried, then the error document.
     ///
-    /// Keys are bare, so the empty path and a path already ending in the
-    /// separator name a directory directly; any other path gets a separator
-    /// before the index document. The index document is a filename joined below
-    /// each directory, so `"docs/"` resolves `"docs/index.html"`. The error
-    /// document is one whole key: `"404.html"`.
+    /// The empty path and a path ending in the separator name a directory
+    /// directly; any other path gets a separator before the index document.
+    /// The index document is a filename joined below each directory, so
+    /// `"docs/"` resolves `"docs/index.html"`. The error document is one whole
+    /// key: `"404.html"`.
     pub async fn serve(&self, root: &R, path: &Key) -> Result<Served<F>, ReaderError> {
         if let Some(entry) = self.get(root, path).await? {
             return Ok(Served::Exact {
@@ -286,9 +286,8 @@ where
 
 /// One directory level over `store`, listed from the database rooted at `root`.
 ///
-/// The free form the root-bound view needs: the returned [`Listing`] keeps the
-/// caller's store reference, so it outlives the handle it was opened through
-/// rather than borrowing a temporary reader.
+/// The returned [`Listing`] keeps the caller's store reference, so it outlives
+/// the handle it was opened through.
 pub(crate) async fn dir_at<'a, S, F, R>(
     store: &'a S,
     root: &R,

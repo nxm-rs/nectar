@@ -7,9 +7,8 @@
 //! and whose data lives behind another is therefore expressible, and the
 //! common case passes the same store twice.
 //!
-//! The handles are the trie's own: [`TrieView`] reads one root through the
-//! depth-guarded reader and the ordered cursor, and [`TrieWriter`] records the
-//! batch through the submission-order [`ManifestEditor`].
+//! [`TrieView`] reads one root through the depth-guarded reader and the ordered
+//! cursor; [`TrieWriter`] records the batch through [`ManifestEditor`].
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -79,8 +78,7 @@ impl ManifestError {
 /// The trie as a [`Manifest`]: a node adapter for the trie itself and a chunk
 /// store for entry data.
 ///
-/// Cheap to clone when both seams are; a handle clones them once per call,
-/// because the reader, the cursor and the editor each own their store.
+/// Cheap to clone when both seams are: a handle clones them once per call.
 #[derive(Clone, Copy, Debug)]
 pub struct MantarayManifest<L, S, const B: usize = DEFAULT_BODY_SIZE> {
     nodes: L,
@@ -165,11 +163,8 @@ where
     }
 }
 
-/// The seam's read view over one trie root.
-///
-/// Owns its two store handles rather than borrowing the manifest, because the
-/// reader and the cursor own theirs; a view is therefore as cheap as the two
-/// clones are.
+/// The seam's read view over one trie root. Owns its two store handles rather
+/// than borrowing the manifest.
 #[derive(Clone, Copy, Debug)]
 pub struct TrieView<L, S, R: Reference, const B: usize = DEFAULT_BODY_SIZE> {
     nodes: L,
@@ -182,10 +177,8 @@ where
     L: NodeLoader + Clone,
     R: Reference,
 {
-    /// The entry at `path`, which is the trie key verbatim.
-    ///
-    /// A path that names no content key is absent rather than mapped: the trie's
-    /// structural root and its site-config node are not entries in the map.
+    /// The entry at `path`, which is the trie key verbatim. The structural
+    /// root and the site-config node read as absent.
     async fn entry(&self, path: &ManifestPath) -> Result<Option<Entry>, ManifestError> {
         let Some(key) = content_key(path) else {
             return Ok(None);
@@ -325,8 +318,7 @@ where
 /// The seam's ordered walk over a trie.
 ///
 /// The trie has no ordered seek, so a bounded walk filters an ordered full
-/// walk: the paths arrive in order, so the bounds are exact, and the cost of a
-/// lower bound is the nodes before it.
+/// walk: the cost of a lower bound is the nodes before it.
 #[derive(Debug)]
 pub struct TrieCursor<L, R: Reference> {
     cursor: Cursor<L>,
@@ -356,8 +348,7 @@ where
                 if before_start(start, path) {
                     continue;
                 }
-                // The site-config node is not a content key, so a walk of the
-                // map steps over it.
+                // The site-config node is not a content key.
                 if is_site_config(path) {
                     continue;
                 }
@@ -372,22 +363,17 @@ where
 #[derive(Debug)]
 pub struct TrieWriter<L, R: Reference> {
     editor: ManifestEditor<L, R>,
-    /// The first reserved path the batch staged, which fails the commit.
-    ///
-    /// Staging is infallible, so the refusal is held here and reported once,
-    /// at the commit that would otherwise write the batch.
+    /// The first reserved path the batch staged. Staging is infallible, so the
+    /// refusal is held until the commit.
     reserved: Option<ReservedKey>,
 }
 
 impl<L, R: Reference> TrieWriter<L, R> {
     /// Record one site document on the trie's site-config node, or clear it.
     ///
-    /// A merge either way, so the two documents are independent. Clearing the
-    /// last one prunes the node, so the site config leaves no trace on the wire.
-    ///
-    /// The trie stores metadata values as text, so a path that is not valid
-    /// UTF-8 cannot be a site document. Staging cannot report an error, so its
-    /// invalid bytes are replaced.
+    /// A merge, so the two documents are independent. Clearing the last one
+    /// prunes the node. The trie stores metadata values as text, so invalid
+    /// UTF-8 in a path is replaced.
     fn document(&mut self, key: &str, path: Option<ManifestPath>) -> &mut Self {
         match path {
             Some(path) => {
@@ -411,12 +397,9 @@ where
 
     type Error = ManifestError;
 
-    /// An insert replaces the whole binding; existing metadata is cleared
-    /// unless `meta` carries some, because the op's metadata is the path's
-    /// metadata from then on.
-    ///
-    /// A reserved path is no key, so it stages no trie op and refuses the commit
-    /// instead. The site documents go through the setters below.
+    /// An insert replaces the whole binding, clearing existing metadata unless
+    /// `meta` carries some. A reserved path stages no trie op and refuses the
+    /// commit instead.
     fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
         if content_key(op.path()).is_none() {
             self.reserved
@@ -448,7 +431,6 @@ where
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
         let Self { editor, reserved } = self;
         async move {
-            // The whole batch is refused, so a reserved path writes nothing.
             if let Some(reserved) = reserved {
                 return Err(ManifestError::Reserved(reserved));
             }
@@ -488,8 +470,8 @@ fn past_end(end: &Bound<Vec<u8>>, path: &[u8]) -> bool {
 /// One trie entry as a seam entry: a reference of the caller's width, or an
 /// opaque value.
 ///
-/// A metadata-only node, or a reference of the other width, is bound but names
-/// no reference the caller can read on its own.
+/// A metadata-only node, or a reference of the other width, names no reference
+/// the caller can read on its own.
 fn mapped<R: Reference>(entry: &Entry) -> MapEntry<R> {
     match entry.reference().cloned().map(R::from_entry_ref) {
         Some(Ok(reference)) => MapEntry::Reference(reference),
@@ -499,10 +481,9 @@ fn mapped<R: Reference>(entry: &Entry) -> MapEntry<R> {
 
 /// The trie key `path` addresses, or `None` when it names no content key.
 ///
-/// A content key is the path bytes verbatim, which keeps the image
-/// byte-identical to the reference client's. The two reserved paths are the
-/// empty one, the trie's structural root, and [`metadata::ROOT_PATH`], the
-/// site-config node. Neither is read, written or walked as a key.
+/// A content key is the path bytes verbatim. The empty path and
+/// [`metadata::ROOT_PATH`] are reserved: neither is read, written or walked as
+/// a key.
 fn content_key(path: &ManifestPath) -> Option<&[u8]> {
     (!path.is_reserved()).then(|| path.as_bytes())
 }
@@ -512,8 +493,8 @@ fn is_site_config(key: &[u8]) -> bool {
     key == metadata::ROOT_PATH.as_bytes()
 }
 
-/// The seam reserves the lone separator, and the trie keys its site-config node
-/// there, so the two names cannot drift apart.
+/// The seam reserves the lone separator, where the trie keys its site-config
+/// node.
 const _: () = assert!(matches!(
     metadata::ROOT_PATH.as_bytes(),
     [ManifestPath::SEPARATOR]
@@ -543,8 +524,7 @@ fn collapse<R: Reference>(
     else {
         let path = ManifestPath::new(path.to_vec());
         return Some(match mapped::<R>(entry) {
-            // A width the caller did not ask for still names a path; it is
-            // listed as an opaque value rather than failing the listing.
+            // A width the caller did not ask for lists as an opaque value.
             MapEntry::Reference(reference) => ListEntry::File { path, reference },
             MapEntry::Opaque => ListEntry::Value { path },
         });

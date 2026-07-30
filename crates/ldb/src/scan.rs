@@ -400,10 +400,8 @@ where
         Cursor::seek(self.store(), root, &[], None).await
     }
 
-    /// Every `(key, value)` within `bounds`, in ascending key order.
-    ///
-    /// Keys order as byte strings, so every bound is exact: an excluded bound
-    /// is the included one with a zero byte appended.
+    /// Every `(key, value)` within `bounds`, in ascending key order. Keys
+    /// order as byte strings.
     pub async fn range(
         &self,
         root: &R,
@@ -602,11 +600,6 @@ fn join(base: &[u8], suffix: &[u8]) -> Vec<u8> {
 
 /// The half-open byte range `bounds` selects: the first key the walk may yield
 /// and the exclusive key it stops at.
-///
-/// Keys are byte strings, so the immediate successor of one is itself with a
-/// zero byte appended. That makes both exclusive forms exact rather than
-/// approximated: an excluded lower bound starts at `key || 0x00`, and an
-/// included upper bound stops at `key || 0x00`.
 pub(crate) fn half_open(bounds: &impl RangeBounds<Key>) -> (Vec<u8>, Option<Bytes>) {
     let start = match bounds.start_bound() {
         Bound::Unbounded => Vec::new(),

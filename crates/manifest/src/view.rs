@@ -1,8 +1,4 @@
 //! The read handle: one immutable root, the map verbs over it.
-//!
-//! A view is bound to a root at construction, so no read method carries a root
-//! argument. It holds a reference to the store and a clone of the root, which
-//! makes it cheap enough to build per lookup.
 
 use core::future::Future;
 use core::ops::RangeBounds;
@@ -15,22 +11,18 @@ use crate::path::ManifestPath;
 use crate::site::SiteConfig;
 use crate::{DataSink, SinkError};
 
-/// What a bound path resolves to.
-///
-/// A reference names a chunk the caller can read on its own. Everything else
-/// is opaque: the manifest carries the value itself, or names it at a
-/// reference width the caller did not ask for. Either way the bytes are
-/// reachable with [`MapView::load`].
+/// What a bound path resolves to. Opaque bytes stay reachable through
+/// [`MapView::load`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MapEntry<R: Reference = ChunkRef> {
-    /// The path resolves to this chunk reference.
+    /// A chunk reference of the requested width.
     Reference(R),
     /// The path is bound, but not to a reference of the requested width.
     Opaque,
 }
 
 impl<R: Reference> MapEntry<R> {
-    /// The bound reference, or `None` when the entry is opaque.
+    /// The bound reference.
     #[must_use]
     pub const fn reference(&self) -> Option<&R> {
         match self {
@@ -46,15 +38,13 @@ impl<R: Reference> MapEntry<R> {
     }
 }
 
-/// An ordered walk over a view, one `(path, entry)` at a time.
-///
-/// Pulled rather than streamed: a walk fetches the manifest nodes on its
-/// frontier, so peak retained state is a function of depth, not of key count.
+/// An ordered walk over a view. Peak retained state is a function of depth,
+/// not of key count.
 pub trait MapCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// Error type a walk fails with.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
-    /// The next `(path, entry)` in path order, or `None` at the end.
+    /// The next `(path, entry)` in path order.
     fn next(
         &mut self,
     ) -> impl Future<Output = Result<Option<(ManifestPath, MapEntry<R>)>, Self::Error>> + MaybeSend;
@@ -62,15 +52,8 @@ pub trait MapCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 
 /// The read view of a manifest, bound to one immutable root.
 ///
-/// The vocabulary is the standard map one: [`get`](Self::get),
-/// [`contains_key`](Self::contains_key), [`range`](Self::range),
-/// [`iter`](Self::iter) and the ordered-map [`floor`](Self::floor).
-/// [`dir`](Self::dir) and [`load`](Self::load) are the two manifest additions:
-/// a path is read as a directory of paths, and an entry's bytes are joined into
-/// a sink.
-///
-/// Every one of those reads is over content paths alone. The site-level
-/// documents are read through [`index_document`](Self::index_document) and
+/// Every read is over content paths alone. The site-level documents are read
+/// through [`index_document`](Self::index_document) and
 /// [`error_document`](Self::error_document), and no walk yields the slot they
 /// live in.
 pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
@@ -84,28 +67,17 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// back.
     type Cursor: MapCursor<R, Error = Self::Error>;
 
-    /// The entry bound to `path`, or `None` when the path is absent.
-    ///
-    /// A reserved path is absent by definition: it is a prefix or a root slot,
-    /// not a key. See [`ManifestPath::is_reserved`].
+    /// A reserved path reads as absent; see [`ManifestPath::is_reserved`].
     fn get(
         &self,
         path: &ManifestPath,
     ) -> impl Future<Output = Result<Option<MapEntry<R>>, Self::Error>> + MaybeSend;
 
-    /// The site-level documents the manifest declares, read from the format's
-    /// own root slot.
-    ///
-    /// One read answers both, so [`index_document`](Self::index_document) and
-    /// [`error_document`](Self::error_document) are written in terms of it.
+    /// The site-level documents, read from the format's own root slot.
     fn site_config(&self) -> impl Future<Output = Result<SiteConfig, Self::Error>> + MaybeSend;
 
-    /// The index document the manifest declares, or `None` when it declares
-    /// none.
-    ///
-    /// A gateway serves it for a directory path. It is a filename joined below
-    /// each directory rather than one whole path, as the reference client reads
-    /// it.
+    /// The index document, a filename joined below each directory rather than
+    /// one whole path.
     fn index_document(
         &self,
     ) -> impl Future<Output = Result<Option<ManifestPath>, Self::Error>> + MaybeSend {
@@ -113,11 +85,7 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
         async move { Ok(config.await?.into_parts().0) }
     }
 
-    /// The error document the manifest declares, or `None` when it declares
-    /// none.
-    ///
-    /// A gateway serves it for a path that resolves to nothing. It is one whole
-    /// content path.
+    /// The error document, one whole content path.
     fn error_document(
         &self,
     ) -> impl Future<Output = Result<Option<ManifestPath>, Self::Error>> + MaybeSend {
@@ -125,10 +93,8 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
         async move { Ok(config.await?.into_parts().1) }
     }
 
-    /// The metadata bound to `path`, in the format's own vocabulary.
-    ///
-    /// A path that carries none reads back as the format's empty metadata, and
-    /// so does an absent path: this is not a presence answer, so ask
+    /// The metadata bound to `path`. An absent path reads back as the empty
+    /// metadata, so this is no presence answer; ask
     /// [`contains_key`](Self::contains_key) for that.
     fn metadata(
         &self,
@@ -147,10 +113,10 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// The immediate children of the directory `dir` names, in path order.
     ///
     /// Deeper paths collapse into one [`ListEntry::Dir`] at the next
-    /// separator; the referenced chunks are never fetched. `dir` is matched as
-    /// a byte prefix, so end it in the separator to mean the directory: `img`
-    /// also lists `imgx.png`, where `img/` does not. The empty path is the
-    /// prefix every content path carries, so it lists the top level.
+    /// separator; the referenced chunks are never fetched. `dir` matches as a
+    /// byte prefix, so end it in the separator to mean the directory: `img`
+    /// also lists `imgx.png`, where `img/` does not. The empty path lists the
+    /// top level.
     ///
     /// [`ListEntry::Dir`]: crate::ListEntry::Dir
     fn dir(
@@ -158,12 +124,10 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
         dir: &ManifestPath,
     ) -> impl Future<Output = Result<Listing<R>, Self::Error>> + MaybeSend;
 
-    /// The greatest bound path `<= path`, with its entry, or `None` when every
-    /// bound path is greater.
+    /// The greatest bound path `<= path`, with its entry.
     ///
-    /// The default walks [`range`](Self::range) up to and including `path` and
-    /// keeps the last item, which every format can serve. A format with an
-    /// ordered seek overrides it and pays O(depth) instead.
+    /// The default walks [`range`](Self::range); a format with an ordered seek
+    /// overrides it and pays O(depth).
     fn floor(
         &self,
         path: &ManifestPath,
@@ -182,28 +146,19 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 
     /// Write the data bound to `path` into `sink`, starting at offset zero.
     ///
-    /// The sink's writes are idempotent overwrites, so a failed load is
-    /// recovered by running it again in full.
-    ///
-    /// Feature-gated: the bytes are joined through the file pipeline, so a
-    /// format's view carries `load` only with the `nectar-file` dependency its
-    /// `manifest` feature pulls in.
+    /// The writes are idempotent overwrites: rerun a failed load in full.
     fn load<K: DataSink<Error: SinkError> + MaybeSend>(
         &self,
         path: &ManifestPath,
         sink: &mut K,
     ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
 
-    /// Every bound content path, with its entry, in path order.
-    ///
-    /// Content only: the format's root slot is not a path, so a walk never
-    /// yields it or the empty path.
+    /// Every bound content path, with its entry, in path order. The format's
+    /// root slot never appears.
     fn iter(&self) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend;
 
-    /// Every `(path, entry)` within `bounds`, in path order.
-    ///
-    /// Paths order as byte strings, so every bound is exact: an excluded bound
-    /// is the included one with a zero byte appended.
+    /// Every `(path, entry)` within `bounds`, in path order. Paths order as
+    /// byte strings.
     fn range(
         &self,
         bounds: impl RangeBounds<ManifestPath> + MaybeSend,

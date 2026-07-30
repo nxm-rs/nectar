@@ -1,18 +1,12 @@
 //! The manifest's own configuration: the two site-level documents.
 //!
-//! Neither document is a content path, so neither is a key in the map. Each is
-//! read as an `Option` and written through the writer's chainable setters. Each
-//! format stores the pair in its own root slot: the trie as metadata on its
-//! `"/"` node, which is the layout the reference client writes; the key-value
-//! database in its root manifest metadata.
+//! Neither document is a key in the map. Each format stores the pair in its own
+//! root slot: the trie as metadata on its `"/"` node, the key-value database in
+//! its root manifest metadata.
 
 use crate::path::ManifestPath;
 
-/// The site-level documents a manifest declares, each absent as `None`.
-///
-/// The index document is served for a directory path and the error document for
-/// a path that resolves to nothing. A manifest that declares neither is
-/// [`is_empty`](Self::is_empty), which is the default.
+/// The site-level documents a manifest declares.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SiteConfig {
     index_document: Option<ManifestPath>,
@@ -41,21 +35,21 @@ impl SiteConfig {
         self.error_document.as_ref()
     }
 
-    /// This configuration with the index document set, or cleared by `None`.
+    /// Set the index document, or clear it with `None`.
     #[must_use]
     pub fn with_index_document(mut self, path: impl Into<Option<ManifestPath>>) -> Self {
         self.index_document = path.into();
         self
     }
 
-    /// This configuration with the error document set, or cleared by `None`.
+    /// Set the error document, or clear it with `None`.
     #[must_use]
     pub fn with_error_document(mut self, path: impl Into<Option<ManifestPath>>) -> Self {
         self.error_document = path.into();
         self
     }
 
-    /// Whether the manifest declares neither document.
+    /// Whether neither document is declared.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.index_document.is_none() && self.error_document.is_none()

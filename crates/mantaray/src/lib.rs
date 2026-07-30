@@ -43,8 +43,7 @@
 //! node when it carries nothing else.
 //!
 //! Content paths are stored bare and verbatim, so `index.html` is the trie key
-//! `index.html`. That is the reference client's v0.2 wire, and the workspace
-//! differential against the pinned legacy oracle holds it byte for byte.
+//! `index.html`. That is the reference client's v0.2 wire.
 //!
 //! # Metadata Constants
 //!
