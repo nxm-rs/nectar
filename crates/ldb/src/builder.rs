@@ -132,7 +132,7 @@ impl<R: NodeRef> Built<R> {
 /// Streaming manifest builder over key-value entries of format `F`.
 ///
 /// Keys accumulate in a sorted map, so [`build`](Self::build) is
-/// history-independent. The empty key carries the manifest's own value, distinct
+/// history-independent. The root key carries the manifest's own value, distinct
 /// from a fork.
 #[derive(Clone, Debug)]
 pub struct Builder<F: Format = V1> {
@@ -158,20 +158,18 @@ impl<F: Format> Builder<F> {
         Self::default()
     }
 
-    /// Bind `key` to `entry`, replacing any prior binding. The empty key sets
-    /// the manifest's own value; its metadata, if any, becomes the manifest
-    /// metadata.
+    /// Bind `key` to `entry`, replacing any prior binding. The root key sets the
+    /// manifest's own value, and its metadata becomes the manifest metadata: a
+    /// bare insert there clears what an earlier one set.
     pub fn insert(
         &mut self,
         key: Key,
         entry: Entry<F>,
         metadata: Option<Metadata<F>>,
     ) -> &mut Self {
-        if key.is_empty() {
+        if key.is_root::<F>() {
             self.root_entry = Some(entry);
-            if metadata.is_some() {
-                self.root_metadata = metadata;
-            }
+            self.root_metadata = metadata;
         } else {
             self.keys.insert(key.into_bytes(), (entry, metadata));
         }
@@ -198,6 +196,11 @@ impl<F: Format> Builder<F> {
         R: NodeRef,
         K: Seal<R>,
     {
+        // A fork indexes on a byte, so the empty key has no slot to land in: the
+        // root key, the separator alone, is the database's own slot instead.
+        if self.keys.keys().any(bytes::Bytes::is_empty) {
+            return Err(ForkPrefixEmpty.into());
+        }
         // Items borrow the sorted map: the descent indexes them without a
         // second owned copy of the key set.
         let items: Vec<Item<'_, F>> = self

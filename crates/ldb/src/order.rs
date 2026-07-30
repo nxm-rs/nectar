@@ -17,7 +17,7 @@ use nectar_primitives::{ChunkOps, ChunkRef};
 
 use crate::codec::{DecodeError, DecodedChunk, SegDesc, SegmentDir};
 use crate::fork::{Child, ForkTable};
-use crate::format::Format;
+use crate::format::{Format, root_key};
 use crate::node::{NodeRef, RootExtension};
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Cursor, successor};
@@ -120,7 +120,7 @@ enum OnPath<F: Format, R: NodeRef> {
     },
 }
 
-/// The empty-key value a decoded root carries: its root extension entry.
+/// The root-key value a decoded root carries: its root extension entry.
 fn root_entry<F: Format, R: NodeRef>(decoded: &DecodedChunk<F, R>) -> Option<Entry<F>> {
     match decoded {
         DecodedChunk::Node(node) => node.entry().cloned(),
@@ -190,7 +190,9 @@ where
         let mut is_root = true;
         loop {
             let decoded = decode_at::<S, F, R>(self.store(), &reference).await?;
-            if is_root && !target.is_empty() && root_entry(&decoded).is_some() {
+            // The root entry is bound to the root key, so it counts towards the
+            // rank of every key above those bytes and of none at or below them.
+            if is_root && target > root_key::<F>().as_ref() && root_entry(&decoded).is_some() {
                 acc = acc.saturating_add(1);
             }
             let Some(remaining) = target.get(consumed..).filter(|rest| !rest.is_empty()) else {
@@ -225,6 +227,10 @@ where
     /// Descends one referenced hop per level, skipping any subtree whose count
     /// the index clears and routing a spilled node's segments by `seg_count`, so
     /// the offset costs O(depth), never O(index).
+    ///
+    /// A root entry adds one [`rank`](Self::rank) of the root key, which reaches
+    /// no deeper than the root chunk's own forks: the root key is one byte, so
+    /// nothing below it crosses into a child.
     pub async fn select(
         &self,
         root: &R,
@@ -237,10 +243,15 @@ where
         loop {
             let decoded = decode_at::<S, F, R>(self.store(), &reference).await?;
             if is_root && let Some(entry) = root_entry(&decoded) {
-                if index == 0 {
-                    return Ok(Some((Key::new(Bytes::from(path)), entry)));
+                // The root key holds whatever position its bytes earn, so the
+                // keys before it are the ones the index has to clear first.
+                let before = self.rank(root, &Key::root::<F>()).await?;
+                if index == before {
+                    return Ok(Some((Key::root::<F>(), entry)));
                 }
-                index = index.saturating_sub(1);
+                if index > before {
+                    index = index.saturating_sub(1);
+                }
             }
             let Some(steps) = index_path(self.store(), &decoded, &mut index).await? else {
                 return Ok(None);
@@ -554,10 +565,10 @@ mod tests {
         let root = run(store.put_node(&Node::<V1>::new(root_ext, forks), &Plaintext)).unwrap();
         let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
 
-        // The empty key leads iteration at index 0; "k" follows at index 1.
+        // The root key leads iteration at index 0; "k" follows at index 1.
         assert_eq!(
             run(reader.select(&root, 0)).unwrap(),
-            Some((Key::empty(), entry(9)))
+            Some((Key::root::<V1>(), entry(9)))
         );
         assert_eq!(
             run(reader.select(&root, 1)).unwrap(),
@@ -565,8 +576,9 @@ mod tests {
         );
         assert_eq!(run(reader.select(&root, 2)).unwrap(), None);
 
-        // Nothing is strictly before the empty key; the root entry sits before
-        // every other key, so it lifts their ranks by one.
+        // Nothing here is strictly before the root key, so the root entry sits
+        // before "k" and lifts its rank by one.
+        assert_eq!(run(reader.rank(&root, &Key::root::<V1>())).unwrap(), 0);
         assert_eq!(run(reader.rank(&root, &Key::empty())).unwrap(), 0);
         assert_eq!(run(reader.rank(&root, &Key::from(&b"k"[..]))).unwrap(), 1);
         assert_eq!(run(reader.rank(&root, &Key::from(&b"z"[..]))).unwrap(), 2);

@@ -19,7 +19,7 @@ use bytes::Bytes;
 use nectar_file::{File, Policy};
 use nectar_manifest::{
     DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapCursor,
-    MapEntry, MapView, MapWriter, SinkError, WellKnownKey,
+    MapEntry, MapView, MapWriter, MetadataView, SinkError, WellKnownKey,
 };
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
@@ -158,25 +158,33 @@ where
         &self,
         view: &dyn ManifestMetadata,
     ) -> Result<Self::Metadata, Self::Error> {
-        let mut meta: Option<Metadata<V1>> = None;
-        for (key, id) in [
-            (WellKnownKey::ContentType, KeyId::ContentType),
-            (WellKnownKey::IndexDocument, KeyId::WebsiteIndexDocument),
-            (WellKnownKey::ErrorDocument, KeyId::WebsiteErrorDocument),
-        ] {
-            let Some(value) = view.get(&key) else {
-                continue;
-            };
-            let value = Bytes::copy_from_slice(value.as_bytes());
-            match meta.as_mut() {
-                Some(block) => {
-                    block.insert(id, value)?;
-                }
-                None => meta = Some(Metadata::new(id, value)?),
-            }
-        }
-        Ok(meta)
+        Ok(native_metadata(view)?)
     }
+}
+
+/// The typed metadata block the well-known keys of `view` register into.
+///
+/// The registered three are what the key-value format can name; a custom key is
+/// dropped here, which is the seam's one lossy step.
+fn native_metadata(view: &dyn ManifestMetadata) -> Result<Option<Metadata<V1>>, MetadataTooLong> {
+    let mut meta: Option<Metadata<V1>> = None;
+    for (key, id) in [
+        (WellKnownKey::ContentType, KeyId::ContentType),
+        (WellKnownKey::IndexDocument, KeyId::WebsiteIndexDocument),
+        (WellKnownKey::ErrorDocument, KeyId::WebsiteErrorDocument),
+    ] {
+        let Some(value) = view.get(&key) else {
+            continue;
+        };
+        let value = Bytes::copy_from_slice(value.as_bytes());
+        match meta.as_mut() {
+            Some(block) => {
+                block.insert(id, value)?;
+            }
+            None => meta = Some(Metadata::new(id, value)?),
+        }
+    }
+    Ok(meta)
 }
 
 /// The seam's read view: the database's own view, keyed by path.
@@ -348,6 +356,12 @@ where
     type Metadata = Option<Metadata<V1>>;
 
     type Error = ManifestError;
+
+    /// A value the format's metadata bound cannot hold drops the whole block,
+    /// exactly as the erased apply path drops what it cannot represent.
+    fn native(&self, view: &MetadataView) -> Self::Metadata {
+        native_metadata(view).unwrap_or_default()
+    }
 
     /// An insert replaces the whole binding; existing metadata is cleared
     /// unless `meta` carries some, because the op's metadata is the key's

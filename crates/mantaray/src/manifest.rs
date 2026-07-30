@@ -21,7 +21,7 @@ use core::ops::{Bound, RangeBounds};
 use nectar_file::{File, Policy};
 use nectar_manifest::{
     DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapCursor,
-    MapEntry, MapView, MapWriter, SinkError, WellKnownKey,
+    MapEntry, MapView, MapWriter, MetadataView, SinkError, WellKnownKey,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
@@ -140,24 +140,30 @@ where
         &self,
         view: &dyn ManifestMetadata,
     ) -> Result<Self::Metadata, Self::Error> {
-        let mut map = BTreeMap::new();
-        for (key, name) in [
-            (WellKnownKey::ContentType, metadata::CONTENT_TYPE),
-            (
-                WellKnownKey::IndexDocument,
-                metadata::WEBSITE_INDEX_DOCUMENT,
-            ),
-            (
-                WellKnownKey::ErrorDocument,
-                metadata::WEBSITE_ERROR_DOCUMENT,
-            ),
-        ] {
-            if let Some(value) = view.get(&key) {
-                map.insert(String::from(name), String::from(value));
-            }
-        }
-        Ok(map)
+        Ok(native_metadata(view))
     }
+}
+
+/// The trie's string map for the well-known keys of `view`, under the trie's own
+/// spelling of each name.
+fn native_metadata(view: &dyn ManifestMetadata) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for (key, name) in [
+        (WellKnownKey::ContentType, metadata::CONTENT_TYPE),
+        (
+            WellKnownKey::IndexDocument,
+            metadata::WEBSITE_INDEX_DOCUMENT,
+        ),
+        (
+            WellKnownKey::ErrorDocument,
+            metadata::WEBSITE_ERROR_DOCUMENT,
+        ),
+    ] {
+        if let Some(value) = view.get(&key) {
+            map.insert(String::from(name), String::from(value));
+        }
+    }
+    map
 }
 
 /// The seam's read view over one trie root.
@@ -177,11 +183,13 @@ where
     L: NodeLoader + Clone,
     R: Reference,
 {
-    /// The entry at `path`, mapped through the trie's own root-path slot.
+    /// The entry at `path`. Paths are absolute, so the path bytes are the trie
+    /// key verbatim, the root `"/"` included.
     async fn entry(&self, path: &ManifestPath) -> Result<Option<Entry>, ManifestError> {
         let reader = Reader::new(self.nodes.clone());
-        let key = edit_path(path);
-        Ok(reader.get(self.root.clone().into_entry_ref(), &key).await?)
+        Ok(reader
+            .get(self.root.clone().into_entry_ref(), path.as_bytes())
+            .await?)
     }
 
     /// An ordered walk of the whole trie, bounded to `bounds`.
@@ -342,6 +350,10 @@ where
 
     type Error = ManifestError;
 
+    fn native(&self, view: &MetadataView) -> Self::Metadata {
+        native_metadata(view)
+    }
+
     /// An insert replaces the whole binding; existing metadata is cleared
     /// unless `meta` carries some, because the op's metadata is the path's
     /// metadata from then on.
@@ -352,10 +364,10 @@ where
                 reference,
                 meta,
             } => {
-                self.editor.insert(edit_path(&path), reference).meta(meta);
+                self.editor.insert(path.as_bytes(), reference).meta(meta);
             }
             ManifestOp::Remove { path } => {
-                self.editor.remove(edit_path(&path));
+                self.editor.remove(path.as_bytes());
             }
         }
     }
@@ -408,20 +420,6 @@ fn mapped<R: Reference>(entry: &Entry) -> MapEntry<R> {
     }
 }
 
-/// The trie key a path addresses.
-///
-/// The manifest root has no metadata slot of its own on the wire; the trie
-/// keeps the site-level documents on the `/` node instead, so a root-scope op
-/// lands there. Reads apply the same mapping, or a root insert would never load
-/// back.
-fn edit_path(path: &ManifestPath) -> Vec<u8> {
-    if path.is_root() {
-        metadata::ROOT_PATH.as_bytes().to_vec()
-    } else {
-        path.as_bytes().to_vec()
-    }
-}
-
 /// Fold one listed entry into the directory level below `prefix`, collapsing
 /// deeper paths at the next separator.
 ///
@@ -435,9 +433,9 @@ fn collapse<R: Reference>(
 ) -> Option<ListEntry<R>> {
     let path = entry.path();
     let suffix = path.strip_prefix(prefix)?;
-    // The directory itself is not one of its own children, and the trie's
-    // root path node is its metadata slot rather than a directory.
-    if suffix.is_empty() || path == metadata::ROOT_PATH.as_bytes() {
+    // No path is a child of itself, which is the only reason the root is absent
+    // from `dir("/")`: it is an ordinary key everywhere else.
+    if suffix.is_empty() {
         return None;
     }
     let Some(cut) = suffix
