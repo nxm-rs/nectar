@@ -235,6 +235,9 @@ where
     }
 
     /// The metadata bound to `key`, or `None` when the key carries none.
+    ///
+    /// The empty key reads the database's own manifest metadata, whether or not
+    /// the root binds an entry.
     pub async fn metadata(&self, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
         self.reader().metadata(&self.root, key).await
     }
@@ -334,6 +337,9 @@ impl<S, K, F: Format, R: NodeRef> Editor<'_, S, K, F, R> {
     /// the statement, so an insert with no metadata needs nothing extra:
     /// `editor.insert(key, entry);` stages it, and
     /// `editor.insert(key, entry).meta(meta);` stages it with metadata.
+    ///
+    /// An insert replaces the whole binding; existing metadata is cleared
+    /// unless [`meta`](Insert::meta) is given.
     pub const fn insert(&mut self, key: Key, entry: Entry<F>) -> Insert<'_, F> {
         Insert {
             changeset: &mut self.changeset,
@@ -391,9 +397,10 @@ pub struct Insert<'e, F: Format = V1> {
 }
 
 impl<F: Format> Insert<'_, F> {
-    /// Attach `metadata` to the insert.
+    /// Attach `metadata` to the insert, replacing whatever the key carried.
     ///
-    /// On the empty key this is the database's own manifest metadata.
+    /// On the empty key this is the database's own manifest metadata. A bare
+    /// insert carries none, so it clears the key's metadata.
     pub fn meta(&mut self, metadata: Metadata<F>) -> &mut Self {
         self.meta = Some(metadata);
         self

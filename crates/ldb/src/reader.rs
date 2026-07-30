@@ -90,10 +90,16 @@ where
 
     /// The metadata bound to `key`, or `None` when the key carries none.
     ///
-    /// The empty key reads the database's own manifest metadata. An absent key
-    /// carries no metadata either, so a `None` is not a presence answer; ask
+    /// The empty key reads the database's own manifest metadata, whether or not
+    /// the root binds an entry: a website root carries the index and error
+    /// documents with no root value at all. An absent key carries no metadata
+    /// either, so a `None` is not a presence answer; ask
     /// [`contains_key`](Self::contains_key) for that.
     pub async fn metadata(&self, root: &R, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
+        if key.is_empty() {
+            let decoded = fetch_chunk::<S, F, R>(&self.store, root).await?;
+            return Ok(root_extension(&decoded).1);
+        }
         Ok(self.lookup(root, key).await?.and_then(|(_, meta)| meta))
     }
 
@@ -112,7 +118,10 @@ where
             // The empty key reads the root's own value; a spilled root carries
             // it in the segmented node's bytes just as a plain root does.
             if is_root && key.is_empty() {
-                return Ok(root_extension(&decoded));
+                // An absent root entry reads as absent, whatever metadata the
+                // root carries: presence is the entry's answer alone.
+                let (entry, meta) = root_extension(&decoded);
+                return Ok(entry.map(|entry| (entry, meta)));
             }
             let descent = match &decoded {
                 DecodedChunk::Node(node) => descend(node.forks(), key, pos),
@@ -300,18 +309,22 @@ fn subtree_step<F: Format, R: NodeRef>(
 
 /// The empty-key binding a decoded root carries: its root extension entry and
 /// the database's own manifest metadata.
+///
+/// The two halves are independent. A website root carries the index and error
+/// documents with no entry of its own, so the metadata stands alone, and a
+/// caller reading it must not have it gated on an entry that is absent by
+/// design.
 fn root_extension<F: Format, R: NodeRef>(
     decoded: &DecodedChunk<F, R>,
-) -> Option<(Entry<F>, Option<Metadata<F>>)> {
-    let (entry, meta) = match decoded {
+) -> (Option<Entry<F>>, Option<Metadata<F>>) {
+    match decoded {
         DecodedChunk::Node(node) => (node.entry().cloned(), node.metadata().cloned()),
         DecodedChunk::Segmented(root, _) => (
             root.as_ref().and_then(RootExtension::entry).cloned(),
             root.as_ref().and_then(RootExtension::metadata).cloned(),
         ),
         DecodedChunk::Leaf(_) | DecodedChunk::Directory(_) => (None, None),
-    };
-    entry.map(|entry| (entry, meta))
+    }
 }
 
 /// The descriptor covering `byte`: the one with the greatest first key not past
@@ -521,6 +534,29 @@ mod tests {
             run(reader.get(&root, &Key::empty())).unwrap(),
             Some(entry(9)),
         );
+    }
+
+    /// A website root carries the site documents with no root entry, so the
+    /// manifest metadata reads back while the empty key stays absent.
+    #[test]
+    fn the_empty_key_reads_root_metadata_without_a_root_entry() {
+        let store = ContentGet::new(MemoryStore::default());
+        let meta = Metadata::<V1>::new(
+            crate::meta::KeyId::WebsiteIndexDocument,
+            Bytes::from_static(b"index.html"),
+        )
+        .unwrap();
+        let root_ext = crate::node::RootExtension::new(None, Some(meta.clone()));
+        let root = run(store.put_node(&Node::new(root_ext, ForkTable::new()), &Plaintext)).unwrap();
+
+        let reader: Reader<_> = Reader::new(&store);
+        assert_eq!(
+            run(reader.metadata(&root, &Key::empty())).unwrap(),
+            Some(meta)
+        );
+        // Presence is the entry's answer alone, so the empty key stays absent.
+        assert_eq!(run(reader.get(&root, &Key::empty())).unwrap(), None);
+        assert!(!run(reader.contains_key(&root, &Key::empty())).unwrap());
     }
 
     #[test]

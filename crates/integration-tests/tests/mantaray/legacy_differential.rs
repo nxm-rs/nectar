@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use nectar_loadsave::NodeLoadSaver;
-use nectar_mantaray::ManifestEditor;
+use nectar_mantaray::{ManifestEditor, Reader};
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::store::MemoryStore;
@@ -326,6 +326,54 @@ fn clean_ancestor_hazard_regression() {
     assert_eq!(got, want, "the editor reproduced the clean-ancestor hazard");
 }
 
+/// A bare insert replaces the whole binding, so it clears the metadata the
+/// path carried; the pinned legacy keeps it. The divergence is the map contract
+/// and is pinned here, which is why the randomized generator holds the shape
+/// out.
+#[test]
+fn bare_insert_clears_metadata_unlike_legacy() {
+    let address = addr_bytes("logo");
+    let with_meta = ScriptOp::AddMeta(
+        "logo.png".to_string(),
+        address,
+        "Content-Type".to_string(),
+        "image/png".to_string(),
+    );
+    let bare = ScriptOp::Add("logo.png".to_string(), address);
+    let script = vec![with_meta.clone(), bare.clone()];
+
+    // The editor lands on the root the path would have had with no metadata at
+    // all, in one commit and across a commit boundary.
+    let cleared = editor_root(std::slice::from_ref(&bare));
+    assert_eq!(editor_root(&script), cleared, "a bare insert clears");
+    assert_eq!(editor_root_split(&script, 1), cleared, "across a commit");
+
+    // The pinned legacy keeps it: the bare add changed nothing there.
+    assert_eq!(legacy_root(&script), legacy_root(&[with_meta]));
+    assert_ne!(
+        editor_root(&script),
+        legacy_root(&script),
+        "the contract diverges from the pinned legacy on purpose",
+    );
+
+    // Read the cleared binding back: the entry stands, its metadata is gone.
+    let mut editor = Editor::new(LoadSaver::new(Store::new()));
+    let meta: BTreeMap<String, String> =
+        [("Content-Type".to_string(), "image/png".to_string())].into();
+    editor
+        .insert("logo.png", ChunkAddress::from(address))
+        .meta(meta);
+    let (root, store) = run(editor.commit()).unwrap();
+    let mut editor = Editor::open(root, store);
+    editor.insert("logo.png", ChunkAddress::from(address));
+    let (root, store) = run(editor.commit()).unwrap();
+    let entry = run(Reader::new(store).get(root, b"logo.png"))
+        .unwrap()
+        .expect("the entry survives the re-insert");
+    assert_eq!(entry.address(), Some(&ChunkAddress::from(address)));
+    assert!(entry.metadata().is_empty(), "the metadata is cleared");
+}
+
 /// Path pool for randomized scripts: split-prone stems, mid-edge splits,
 /// nested and deep folders, boundary-remove-prone parents, the root path,
 /// and long edges at and past the 30-byte prefix limit, including a pair
@@ -363,13 +411,26 @@ const PATHS: &[&str] = &[
 /// added paths so most sequences stay on the happy path, but a remove may
 /// still miss (a boundary remove drops whole subtrees); the outcome
 /// comparison covers those runs as error-parity cases.
+///
+/// One shape is held out on purpose: a bare add over a path that already
+/// carries metadata. The editor takes an insert as a whole-binding replace and
+/// clears the metadata, where the pinned legacy keeps it, so the two roots
+/// diverge by design. That divergence is pinned on its own by
+/// [`bare_insert_clears_metadata_unlike_legacy`], and the generator emits a
+/// metadata-carrying add there instead, which both sides treat alike.
 fn build_script(raw: &[(u8, u8, u8)]) -> Vec<ScriptOp> {
     let mut added: Vec<&str> = Vec::new();
+    // Paths that have carried metadata; a bare add over one of these is the
+    // held-out shape, so it is emitted with metadata instead.
+    let mut metaed: Vec<&str> = Vec::new();
     let mut script = Vec::new();
     for &(kind, path_idx, seed) in raw {
         let path = PATHS[usize::from(path_idx) % PATHS.len()];
+        // The site documents live on the root path node, so setting one leaves
+        // metadata behind on "/" exactly as an add with metadata does.
+        let with_metadata = metaed.contains(&path);
         match kind % 8 {
-            0..=3 => {
+            0..=3 if !with_metadata => {
                 let mut a = addr_bytes(path);
                 a[31] = seed;
                 script.push(ScriptOp::Add(path.to_string(), a));
@@ -386,7 +447,21 @@ fn build_script(raw: &[(u8, u8, u8)]) -> Vec<ScriptOp> {
                     script.push(rm(victim));
                 }
             }
-            5 => {
+            6 => {
+                script.push(ScriptOp::SetIndex(format!("index{seed}.html")));
+                if !metaed.contains(&"/") {
+                    metaed.push("/");
+                }
+            }
+            7 => {
+                script.push(ScriptOp::SetError(format!("error{seed}.html")));
+                if !metaed.contains(&"/") {
+                    metaed.push("/");
+                }
+            }
+            // Every remaining word, and any bare add held out above, lands as
+            // an add carrying metadata.
+            _ => {
                 let mut a = addr_bytes(path);
                 a[31] = seed;
                 script.push(ScriptOp::AddMeta(
@@ -398,9 +473,10 @@ fn build_script(raw: &[(u8, u8, u8)]) -> Vec<ScriptOp> {
                 if !added.contains(&path) {
                     added.push(path);
                 }
+                if !metaed.contains(&path) {
+                    metaed.push(path);
+                }
             }
-            6 => script.push(ScriptOp::SetIndex(format!("index{seed}.html"))),
-            _ => script.push(ScriptOp::SetError(format!("error{seed}.html"))),
         }
     }
     script

@@ -350,6 +350,21 @@ impl<R: Reference> Node<R> {
         self.node_type = self.node_type.union(NodeType::METADATA);
     }
 
+    /// Replace the node's metadata, keeping the flag in step with the map.
+    ///
+    /// An insert binds the whole value, metadata included, so an empty map
+    /// clears both the pairs and the flag: the flag is what the encoder writes
+    /// a metadata section from, and a set flag over an empty map would emit an
+    /// empty one.
+    pub(crate) fn set_metadata(&mut self, metadata: BTreeMap<String, String>) {
+        self.metadata = metadata;
+        if self.metadata.is_empty() {
+            self.node_type = self.node_type.difference(NodeType::METADATA);
+        } else {
+            self.make_with_metadata();
+        }
+    }
+
     fn update_is_with_path_separator(&mut self, path: &[u8]) {
         #[allow(clippy::indexing_slicing)] // PATH_SEPARATOR is a non-empty str constant
         let sep = PATH_SEPARATOR.as_bytes()[0];
@@ -412,7 +427,10 @@ impl<R: Reference> Node<R> {
         Ok(())
     }
 
-    /// Add an entry at the given path with optional metadata, loading from storage as needed.
+    /// Add an entry at the given path with its metadata, loading from storage as needed.
+    ///
+    /// The add binds the whole value: `metadata` replaces whatever the target
+    /// node carried, and an empty map clears it.
     ///
     /// Returns a boxed future so the `&mut self` recursion can name its own type.
     /// The `MaybeSend` bound keeps `!Send` wasm stores usable.
@@ -442,12 +460,7 @@ impl<R: Reference> Node<R> {
                 }
                 self.entry = entry;
                 self.make_value();
-
-                if !metadata.is_empty() {
-                    self.metadata = metadata;
-                    self.make_with_metadata();
-                }
-
+                self.set_metadata(metadata);
                 self.mark_dirty();
                 return Ok(());
             }
@@ -481,10 +494,7 @@ impl<R: Reference> Node<R> {
                 }
 
                 nn.entry = entry;
-                if !metadata.is_empty() {
-                    nn.metadata = metadata;
-                    nn.make_with_metadata();
-                }
+                nn.set_metadata(metadata);
                 nn.make_value();
                 nn.update_is_with_path_separator(path);
 

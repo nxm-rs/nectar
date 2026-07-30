@@ -62,10 +62,11 @@ pub trait MapCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 /// The read view of a manifest, bound to one immutable root.
 ///
 /// The vocabulary is the standard map one: [`get`](Self::get),
-/// [`contains_key`](Self::contains_key), [`range`](Self::range) and
-/// [`iter`](Self::iter). [`dir`](Self::dir) and [`load`](Self::load) are the
-/// two manifest additions: a path is read as a directory of paths, and an
-/// entry's bytes are joined into a sink.
+/// [`contains_key`](Self::contains_key), [`range`](Self::range),
+/// [`iter`](Self::iter) and the ordered-map [`floor`](Self::floor).
+/// [`dir`](Self::dir) and [`load`](Self::load) are the two manifest additions:
+/// a path is read as a directory of paths, and an entry's bytes are joined into
+/// a sink.
 pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
@@ -115,10 +116,36 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
         dir: &ManifestPath,
     ) -> impl Future<Output = Result<Listing<R>, Self::Error>> + MaybeSend;
 
+    /// The greatest bound path `<= path`, with its entry, or `None` when every
+    /// bound path is greater.
+    ///
+    /// The default walks [`range`](Self::range) up to and including `path` and
+    /// keeps the last item, which every format can serve. A format with an
+    /// ordered seek overrides it and pays O(depth) instead.
+    fn floor(
+        &self,
+        path: &ManifestPath,
+    ) -> impl Future<Output = Result<Option<(ManifestPath, MapEntry<R>)>, Self::Error>> + MaybeSend
+    {
+        let walk = self.range(..=path.clone());
+        async move {
+            let mut cursor = walk.await?;
+            let mut last = None;
+            while let Some(item) = cursor.next().await? {
+                last = Some(item);
+            }
+            Ok(last)
+        }
+    }
+
     /// Write the data bound to `path` into `sink`, starting at offset zero.
     ///
     /// The sink's writes are idempotent overwrites, so a failed load is
     /// recovered by running it again in full.
+    ///
+    /// Feature-gated: the bytes are joined through the file pipeline, so a
+    /// format's view carries `load` only with the `nectar-file` dependency its
+    /// `manifest` feature pulls in.
     fn load<K: DataSink<Error: SinkError> + MaybeSend>(
         &self,
         path: &ManifestPath,
