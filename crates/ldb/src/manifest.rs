@@ -220,6 +220,23 @@ where
         async move { Ok(self.view.contains_key(&key).await?) }
     }
 
+    /// The database seeks the floor natively, so the walk the default would
+    /// pay is replaced by one O(depth) descent.
+    fn floor(
+        &self,
+        path: &ManifestPath,
+    ) -> impl Future<Output = Result<Option<(ManifestPath, MapEntry<R>)>, Self::Error>> + MaybeSend
+    {
+        let key = Key::from(path.as_bytes());
+        async move {
+            Ok(self
+                .view
+                .floor(&key)
+                .await?
+                .map(|(key, entry)| (ManifestPath::new(key.as_bytes().to_vec()), mapped(entry))))
+        }
+    }
+
     fn dir(
         &self,
         dir: &ManifestPath,
@@ -332,6 +349,9 @@ where
 
     type Error = ManifestError;
 
+    /// An insert replaces the whole binding; existing metadata is cleared
+    /// unless `meta` carries some, because the op's metadata is the key's
+    /// metadata from then on.
     fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
         match op {
             ManifestOp::Insert {

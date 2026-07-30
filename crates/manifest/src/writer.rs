@@ -85,6 +85,11 @@ pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
     fn stage(&mut self, op: ManifestOp<R, Self::Metadata>);
 
     /// Stage `path` bound to `reference`, with metadata as a suffix.
+    ///
+    /// An insert replaces the whole binding; existing metadata is cleared
+    /// unless [`meta`](Insert::meta) is given. This is the map contract: a
+    /// bare insert is the value the path holds from then on, so a caller that
+    /// means to keep metadata restates it.
     fn insert(&mut self, path: ManifestPath, reference: R) -> Insert<'_, Self, R> {
         Insert::new(self, path, reference)
     }

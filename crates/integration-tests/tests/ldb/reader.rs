@@ -2,13 +2,16 @@
 //! node, so a lookup down a wide manifest fetches O(depth) nodes and never a
 //! whole level. A counting store witnesses the bound directly.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_ldb::{
-    Builder, Child, Entry, ForkTable, Key, Node, NodePut, Plaintext, Prefix, Reader, V1,
+    Builder, Child, Database, Entry, ForkTable, Key, KeyId, LdbManifest, Metadata, MetadataKey,
+    Node, NodePut, Plaintext, Prefix, Reader, V1,
 };
+use nectar_manifest::{Manifest, ManifestPath, MapView};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
@@ -214,4 +217,68 @@ fn an_absent_key_stops_at_the_first_unmatched_fork() -> Result<()> {
     ensure!(value.is_none(), "absent value");
     ensure!(store.gets() == 1, "only the root is fetched");
     Ok(())
+}
+
+/// A website root carries the site documents in its manifest metadata and binds
+/// no root entry, so every metadata read at the empty key has to answer with it.
+///
+/// The three surfaces are the streaming reader, the root-bound view, and the
+/// `Manifest` seam's view over the same root. Presence is a separate question:
+/// the root entry is absent, so `get` and `contains_key` stay absent.
+#[test]
+fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
+    let store = ContentGet::new(Arc::new(MemoryStore::default()));
+    let mut meta = Metadata::<V1>::new(
+        KeyId::WebsiteIndexDocument,
+        Bytes::from_static(b"index.html"),
+    )?;
+    meta.insert(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html"))?;
+
+    let mut builder: Builder<V1> = Builder::new();
+    builder.insert(Key::from(&b"index.html"[..]), entry(0x01), None);
+    builder.manifest_metadata(meta.clone());
+    let root = *run(builder.build(&store, &Plaintext))?.root();
+
+    run(async {
+        // The website view reads the conventions off the same root metadata.
+        let reader: Reader<_> = Reader::new(&store);
+        let site = reader.website(&root).await?;
+        ensure!(site.index() == Some(&b"index.html"[..]), "index document");
+        ensure!(site.error() == Some(&b"404.html"[..]), "error document");
+
+        // The reader, the view and the seam's view all report it.
+        let read = reader.metadata(&root, &Key::empty()).await?;
+        ensure!(
+            read.as_ref() == Some(&meta),
+            "the reader reads the metadata"
+        );
+
+        let db: Database<_> = Database::plain(&store);
+        let view = db.at(&root);
+        ensure!(
+            view.metadata(&Key::empty()).await? == read,
+            "the view agrees"
+        );
+        ensure!(
+            view.website().await?.index() == Some(&b"index.html"[..]),
+            "the view's website agrees",
+        );
+
+        let seam = LdbManifest::plain(store.clone());
+        let mapped = MapView::metadata(&seam.at(&root), &ManifestPath::root()).await?;
+        ensure!(mapped == read, "the seam's view agrees");
+        ensure!(
+            mapped
+                .as_ref()
+                .and_then(|meta| meta.get(&MetadataKey::from(KeyId::WebsiteIndexDocument)))
+                .map(Bytes::as_ref)
+                == Some(&b"index.html"[..]),
+            "the index document survives the seam",
+        );
+
+        // An absent root entry still reads as absent.
+        ensure!(view.get(&Key::empty()).await?.is_none(), "no root entry");
+        ensure!(!view.contains_key(&Key::empty()).await?, "no root binding");
+        Ok(())
+    })
 }

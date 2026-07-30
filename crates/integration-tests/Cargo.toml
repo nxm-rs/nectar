@@ -125,6 +125,10 @@ name = "ldb_scan"
 path = "tests/ldb/scan.rs"
 
 [[test]]
+name = "manifest_absence"
+path = "tests/manifest/absence.rs"
+
+[[test]]
 name = "manifest_dyn_roundtrip"
 path = "tests/manifest/dyn_roundtrip.rs"
 

@@ -37,12 +37,12 @@ use crate::{MantarayError, metadata};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Op<R: Reference = ChunkRef> {
-    /// Insert the entry at the path; a non-empty metadata map replaces the
-    /// node's metadata, an empty one leaves existing metadata in place.
+    /// Insert the entry at the path, replacing the whole binding: `metadata`
+    /// becomes the node's metadata, and an empty map clears it.
     Insert {
         /// Entry reference, or `None` for a metadata-only value node.
         reference: Option<R>,
-        /// Metadata to attach; empty means keep what is there.
+        /// Metadata to attach; empty clears whatever the path carried.
         metadata: BTreeMap<String, String>,
     },
     /// Remove the value at the path; an absent path fails the commit.
@@ -160,6 +160,10 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     /// `editor.insert(path, reference).meta(metadata);` records it with
     /// metadata.
     ///
+    /// An insert replaces the whole binding. Existing metadata at `path` is
+    /// cleared unless [`meta`](Insert::meta) is given, exactly as a map replaces
+    /// the value it holds under a key.
+    ///
     /// Format limitations, both rejected at commit: an all-zero reference is
     /// the wire's absent-entry sentinel, and metadata on the empty path (the
     /// trie root) has no wire slot.
@@ -217,13 +221,15 @@ pub struct Insert<'e, R: Reference = ChunkRef> {
     ops: &'e mut Vec<(Vec<u8>, Op<R>)>,
     /// The recorded path and reference, taken by the drop that logs them.
     pending: Option<(Vec<u8>, R)>,
-    /// Metadata to attach; empty means keep what is there.
+    /// Metadata to attach; empty clears whatever the path carried.
     metadata: BTreeMap<String, String>,
 }
 
 impl<R: Reference> Insert<'_, R> {
-    /// Attach `metadata` to the insert; a non-empty map replaces the node's
-    /// metadata, an empty one leaves what is there in place.
+    /// Attach `metadata` to the insert, replacing whatever the node carried.
+    ///
+    /// A bare insert carries no metadata, so it clears the node's; pass the map
+    /// here to keep or change it.
     pub fn meta(&mut self, metadata: BTreeMap<String, String>) -> &mut Self {
         self.metadata = metadata;
         self

@@ -342,6 +342,9 @@ where
 
     type Error = ManifestError;
 
+    /// An insert replaces the whole binding; existing metadata is cleared
+    /// unless `meta` carries some, because the op's metadata is the path's
+    /// metadata from then on.
     fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
         match op {
             ManifestOp::Insert {

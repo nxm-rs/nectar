@@ -94,6 +94,13 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         path: &'a ManifestPath,
     ) -> BoxFuture<'a, Result<bool, BoxedError>>;
 
+    /// The greatest bound path `<= path`, with its entry.
+    fn dyn_floor<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        path: &'a ManifestPath,
+    ) -> BoxFuture<'a, Result<Option<(ManifestPath, MapEntry)>, BoxedError>>;
+
     /// The immediate children of the directory `dir` names, in path order.
     fn dyn_dir<'a>(
         &'a self,
@@ -154,6 +161,14 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         path: &'a ManifestPath,
     ) -> BoxFuture<'a, Result<bool, BoxedError>> {
         Box::pin(async move { self.at(root).contains_key(path).await.map_err(erase) })
+    }
+
+    fn dyn_floor<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        path: &'a ManifestPath,
+    ) -> BoxFuture<'a, Result<Option<(ManifestPath, MapEntry)>, BoxedError>> {
+        Box::pin(async move { self.at(root).floor(path).await.map_err(erase) })
     }
 
     fn dyn_dir<'a>(

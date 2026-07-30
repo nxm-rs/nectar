@@ -30,12 +30,17 @@ Prefer them for new code, and align existing code when you touch it.
   A map speaks the `HashMap` vocabulary.
   The content-addressed pool is a map whose key is the hash of the value, so the chunk store keeps `get`, `put` and `has` over the store traits in `nectar-primitives::store`.
   It is `put`, not `insert`, because the caller supplies no key.
-  An arbitrary-key map (`nectar-ldb`, the manifest formats, the `Manifest` trait) uses `get`, `contains_key`, `insert`, `remove`, `range` and `iter`.
+  An arbitrary-key map (`nectar-ldb`, the manifest formats, the `Manifest` trait) uses `get`, `contains_key`, `insert`, `remove`, `range`, `floor` and `iter`.
+  An `insert` replaces the whole binding, so it clears the metadata the key carried unless the call attaches new metadata.
   These maps are immutable, so a write yields a new root: bind a root with `at` for reads, bind a base with `edit` for writes, and let `commit` hand back the new root.
   One-shot `insert` and `remove` on the store are the sugar over an edit of one op.
   Structured content is not a map.
-  Files, feeds and builders speak `save`, `publish`, `build` and `load`.
-  Do not lend those verbs to a map, and do not lend the map verbs to structured content.
+  Files, feeds and builders speak `save`, `publish` and `build`.
+  Segregate the write verbs.
+  A content-addressed map writes with `put`, an arbitrary-key map writes with `insert` and `remove`, and structured content writes with `save`, `publish` or `build`.
+  Do not lend a write verb across that line in either direction.
+  Reads cross the line by design: `load` is the sanctioned read bridge on a map view, because it pulls the bytes a reference points at.
+  It is feature-gated, because it needs `nectar-file`, so it lives on the manifest-featured view rather than on the bare map handle.
 - Follow the packaging plan.
   A no_std `nectar-primitives-core` carries the verify subset for the proving lane: BMT verify, keccak, SOC address, and ecrecover.
   The on-swarm KV database is `nectar-ldb`.

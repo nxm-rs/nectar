@@ -10,6 +10,9 @@
 //! and the mantaray trie. The two content surfaces are `nectar-file` and
 //! `nectar-feeds`. The chunk store keeps `put` on purpose: its key is the hash
 //! of the value, so a caller supplies no key to insert under.
+//!
+//! This file pins the verbs that must be present. The absence of the content
+//! verbs on a map surface is pinned next door, in `manifest/absence.rs`.
 
 use std::sync::Arc;
 
@@ -21,7 +24,9 @@ use nectar_ldb::{
     Builder, Database, Entry, Key, KeyId, LdbManifest, Metadata, Plaintext, Reader as LdbReader, V1,
 };
 use nectar_loadsave::NodeLoadSaver;
-use nectar_manifest::{Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter};
+use nectar_manifest::{
+    Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, MetadataView, WellKnownKey,
+};
 use nectar_mantaray::{ManifestEditor, MantarayManifest, Reader as MantarayReader};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{
@@ -93,6 +98,35 @@ async fn map_vocabulary<M: Manifest<ChunkRef>>(manifest: &M, base: &ChunkRef) ->
     }
     assert_eq!(ranged, vec![index.clone()]);
 
+    // floor: the greatest bound path at or below the probe, which every format
+    // answers, natively or by walking the range.
+    let indexed = Some((index.clone(), MapEntry::Reference(reference(1))));
+    assert_eq!(
+        view.floor(&ManifestPath::from("index.zzz")).await.unwrap(),
+        indexed,
+        "the floor of a path past the last one is the last one"
+    );
+    assert_eq!(
+        view.floor(&index).await.unwrap(),
+        indexed,
+        "a bound path is its own floor"
+    );
+    assert_eq!(
+        view.floor(&ManifestPath::from("img/logo.pnh"))
+            .await
+            .unwrap()
+            .map(|(path, _)| path),
+        Some(logo.clone()),
+        "the floor stops below the greater path"
+    );
+    assert!(
+        view.floor(&ManifestPath::from("aaa"))
+            .await
+            .unwrap()
+            .is_none(),
+        "no path is at or below the probe"
+    );
+
     // A load of a reference that names no stored chunk fails, which is the
     // verb reaching storage rather than a naming answer.
     let mut sink = MemSink::new();
@@ -110,6 +144,57 @@ async fn map_vocabulary<M: Manifest<ChunkRef>>(manifest: &M, base: &ChunkRef) ->
     pruned
 }
 
+/// A bare insert replaces the whole binding on either format: the metadata the
+/// path carried is cleared, exactly as a `HashMap` insert replaces the value it
+/// holds under a key.
+async fn insert_replaces_the_whole_binding<M>(manifest: &M, base: &ChunkRef)
+where
+    M: Manifest<ChunkRef>,
+    M::Metadata: Clone + PartialEq + std::fmt::Debug,
+{
+    let page = ManifestPath::from("page.html");
+    let meta = manifest
+        .metadata_from_view(&MetadataView::new().with(WellKnownKey::ContentType, "text/html"))
+        .unwrap();
+    assert_ne!(
+        meta,
+        M::Metadata::default(),
+        "the format carries a content type"
+    );
+
+    let carried = {
+        let mut writer = manifest.edit(base);
+        writer.insert(page.clone(), reference(1)).meta(meta.clone());
+        writer.commit().await.unwrap()
+    };
+    assert_eq!(manifest.at(&carried).metadata(&page).await.unwrap(), meta);
+
+    // The bare re-insert: a new reference, and no metadata to carry.
+    let bare = {
+        let mut writer = manifest.edit(&carried);
+        writer.insert(page.clone(), reference(2));
+        writer.commit().await.unwrap()
+    };
+    let view = manifest.at(&bare);
+    assert_eq!(
+        view.get(&page).await.unwrap(),
+        Some(MapEntry::Reference(reference(2))),
+        "the reference is replaced"
+    );
+    assert_eq!(
+        view.metadata(&page).await.unwrap(),
+        M::Metadata::default(),
+        "a bare insert clears the metadata the path carried"
+    );
+
+    // The one-shot is the same write, so it clears the same way.
+    let one_shot = manifest
+        .insert(&carried, page.clone(), reference(2))
+        .await
+        .unwrap();
+    assert_eq!(one_shot, bare, "the one-shot is an edit of one insert");
+}
+
 #[test]
 fn both_manifest_formats_speak_the_map_vocabulary() {
     run(async {
@@ -120,12 +205,15 @@ fn both_manifest_formats_speak_the_map_vocabulary() {
         let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
         let (empty, _) = editor.commit().await.unwrap();
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
-        let _ = map_vocabulary(&trie, &ChunkRef::new(empty)).await;
+        let trie_empty = ChunkRef::new(empty);
+        let _ = map_vocabulary(&trie, &trie_empty).await;
+        insert_replaces_the_whole_binding(&trie, &trie_empty).await;
 
         let builder: Builder<V1> = Builder::new();
         let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
         let kv = LdbManifest::plain(store.clone());
         let _ = map_vocabulary(&kv, &empty).await;
+        insert_replaces_the_whole_binding(&kv, &empty).await;
     });
 }
 

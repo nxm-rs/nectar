@@ -88,6 +88,24 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .collect();
     assert_eq!(nested_paths, vec![&b"img/logo.png"[..]]);
 
+    // The erased floor is the same ordered-map read on either format: the
+    // greatest bound path at or below the probe.
+    let (path, entry) = manifest
+        .dyn_floor(&root, &ManifestPath::from("index.zzz"))
+        .await
+        .unwrap()
+        .expect("a path at or below the probe");
+    assert_eq!(path.as_bytes(), b"index.html");
+    assert_eq!(entry.reference(), Some(file));
+    assert!(
+        manifest
+            .dyn_floor(&root, &ManifestPath::from("aaa"))
+            .await
+            .unwrap()
+            .is_none(),
+        "no path is at or below the probe"
+    );
+
     // A load joins the whole chunk tree the entry names into the sink.
     let mut sink = MemSink::new();
     manifest
