@@ -1048,6 +1048,45 @@ mod tests {
         assert_eq!(again, pruned, "a removal of nothing removes nothing");
     }
 
+    /// The map removal is history-independent: the root it lands on is the
+    /// root a replay of the surviving keys produces, so a manifest's address is
+    /// what it holds rather than how it came to hold it.
+    ///
+    /// Removing `alpine` empties the fork the `alp` split created, and the edge
+    /// it leaves has to fold back into `alpha` for the two roots to meet.
+    #[test]
+    fn remove_lands_on_the_root_a_replay_would() {
+        let (want, _) = editor_replay(&[Script::Add("alpha", "1"), Script::Add("beta", "3")]);
+
+        let (root, loadsaver) = editor_replay(&[
+            Script::Add("alpha", "1"),
+            Script::Add("alpine", "2"),
+            Script::Add("beta", "3"),
+        ]);
+        let mut editor = Editor::open(root, loadsaver);
+        editor.remove("alpine");
+        let (folded, _) = run(editor.commit()).unwrap();
+        assert_eq!(folded, want, "the removal folded the edge it emptied");
+    }
+
+    /// Two edges the prefix bound cannot join stay a chain, exactly as a replay
+    /// of the surviving key writes one: the 30-byte bound decides the shape,
+    /// and the removal leaves it alone.
+    #[test]
+    fn a_removal_never_joins_edges_past_the_prefix_bound() {
+        const ONE: &str = "deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaone";
+        const TWO: &str = "deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaatwo";
+        assert!(ONE.len() > Prefix::MAX_LEN, "the key outruns one edge");
+
+        let (want, _) = editor_replay(&[Script::Add(ONE, "1")]);
+
+        let (root, loadsaver) = editor_replay(&[Script::Add(ONE, "1"), Script::Add(TWO, "2")]);
+        let mut editor = Editor::open(root, loadsaver);
+        editor.remove(TWO);
+        let (folded, _) = run(editor.commit()).unwrap();
+        assert_eq!(folded, want, "the chain is what a replay writes too");
+    }
+
     /// The legacy boundary remove keeps taking the whole subtree, so the
     /// compatibility differential still has the behaviour it pins.
     #[test]

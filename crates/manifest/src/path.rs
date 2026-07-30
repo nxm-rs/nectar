@@ -87,6 +87,19 @@ impl ManifestPath {
         self.0.is_empty()
     }
 
+    /// Whether the path names a key the map reserves rather than content.
+    ///
+    /// Two byte strings are reserved on both formats: the empty one, which is
+    /// the structural root every path hangs below, and the lone separator,
+    /// which is the slot the site-level documents live in. A read at either is
+    /// absent and a write at either is [`ReservedKey`].
+    ///
+    /// [`ReservedKey`]: crate::ReservedKey
+    #[must_use]
+    pub fn is_reserved(&self) -> bool {
+        matches!(self.0.as_slice(), [] | [Self::SEPARATOR])
+    }
+
     /// Whether the path names a directory: the empty path, or a trailing
     /// separator.
     #[must_use]

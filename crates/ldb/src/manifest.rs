@@ -19,7 +19,7 @@ use bytes::Bytes;
 use nectar_file::{File, Policy};
 use nectar_manifest::{
     DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapCursor,
-    MapEntry, MapView, MapWriter, SinkError, SiteConfig, WellKnownKey,
+    MapEntry, MapView, MapWriter, ReservedKey, SinkError, SiteConfig, WellKnownKey,
 };
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
@@ -53,6 +53,10 @@ pub enum ManifestError {
     /// The entry is bound to inline bytes where a reference was required.
     #[error(transparent)]
     NotAReference(#[from] NotAReference),
+    /// The batch staged a write at a key the map reserves, so none of it
+    /// landed.
+    #[error("the batch named a reserved key")]
+    Reserved(#[from] ReservedKey),
     /// No entry is bound at the requested path.
     #[error("no entry at {path:?}")]
     NotFound {
@@ -151,6 +155,7 @@ where
     fn edit(&self, base: &R) -> Self::Writer<'_> {
         LdbWriter {
             editor: self.db.edit(base),
+            reserved: None,
         }
     }
 
@@ -247,15 +252,29 @@ where
     ) -> impl Future<Output = Result<Option<(ManifestPath, MapEntry<R>)>, Self::Error>> + MaybeSend
     {
         let key = Key::from(path.as_bytes());
+        let view = self.view.clone();
         async move {
-            Ok(self
-                .view
-                .floor(&key)
-                .await?
-                // The root slot is not a content key, so the floor of a path
-                // above every content key is nothing rather than the slot.
-                .filter(|(key, _)| !key.is_empty())
-                .map(|(key, entry)| (ManifestPath::new(key.as_bytes().to_vec()), mapped(entry))))
+            let found = view.floor(&key).await?;
+            match found {
+                None => Ok(None),
+                Some((found, entry)) if !is_reserved(&found) => {
+                    Ok(Some((floored(found), mapped(entry))))
+                }
+                // The seek landed on a reserved key, which is no content key
+                // at all, so the greatest content key below it is the answer.
+                // Only a database written past the seam holds one, so the walk
+                // this costs is one no seam write can provoke.
+                Some(_) => {
+                    let mut cursor = view.range((Bound::Unbounded, Bound::Included(key))).await?;
+                    let mut last = None;
+                    while let Some((found, entry)) = cursor.next().await? {
+                        if !is_reserved(&found) {
+                            last = Some((floored(found), mapped(entry)));
+                        }
+                    }
+                    Ok(last)
+                }
+            }
         }
     }
 
@@ -268,6 +287,13 @@ where
             let mut listing = self.view.dir(&key).await?;
             let mut entries = Vec::new();
             while let Some(item) = listing.next().await? {
+                // A reserved key is not content, so the top level never lists
+                // it, whatever put it in the database. A subdirectory keyed at
+                // the separator is not that key: it stands for the content
+                // below it, which the trie lists too.
+                if !item.is_dir() && is_reserved(item.key()) {
+                    continue;
+                }
                 entries.push(listed(item));
             }
             Ok(Listing::new(entries))
@@ -347,10 +373,10 @@ where
     {
         let cursor = &mut self.cursor;
         async move {
-            // The root slot leads the walk when the root binds a value, and it
-            // is not a content key, so the map steps over it.
+            // The root slot leads the walk when the root binds a value, and no
+            // reserved key is content, so the map steps over both.
             while let Some((key, entry)) = cursor.next().await? {
-                if key.is_empty() {
+                if is_reserved(&key) {
                     continue;
                 }
                 return Ok(Some((
@@ -367,6 +393,11 @@ where
 #[derive(Debug)]
 pub struct LdbWriter<'a, S, K, R: NodeRef> {
     editor: Editor<'a, S, K, V1, R>,
+    /// The first reserved path the batch staged, which fails the commit.
+    ///
+    /// Staging is infallible, so the refusal is held here and reported once,
+    /// at the commit that would otherwise write the batch.
+    reserved: Option<ReservedKey>,
 }
 
 impl<S, K, R: NodeRef> LdbWriter<'_, S, K, R> {
@@ -396,16 +427,22 @@ where
     /// An insert replaces the whole binding; existing metadata is cleared
     /// unless `meta` carries some, because the op's metadata is the key's
     /// metadata from then on.
+    ///
+    /// A reserved path stages no database op and refuses the commit instead,
+    /// because it is no key: the site documents are written through the
+    /// option-typed setters below.
     fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
+        let Some(key) = content_key(op.path()) else {
+            self.reserved
+                .get_or_insert_with(|| ReservedKey::new(op.path().clone()));
+            return;
+        };
         match op {
             ManifestOp::Insert {
-                path,
+                path: _,
                 reference,
                 meta,
             } => {
-                let Some(key) = content_key(&path) else {
-                    return;
-                };
                 let mut staged = self
                     .editor
                     .insert(key, Entry::from(reference.into_entry_ref()));
@@ -413,10 +450,8 @@ where
                     staged.meta(meta);
                 }
             }
-            ManifestOp::Remove { path } => {
-                if let Some(key) = content_key(&path) {
-                    self.editor.remove(key);
-                }
+            ManifestOp::Remove { path: _ } => {
+                self.editor.remove(key);
             }
         }
     }
@@ -430,18 +465,40 @@ where
     }
 
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
-        let editor = self.editor;
-        async move { Ok(editor.commit().await?) }
+        let Self { editor, reserved } = self;
+        async move {
+            // The whole batch is refused, so a reserved path writes nothing at
+            // all rather than landing the ops around it.
+            if let Some(reserved) = reserved {
+                return Err(ManifestError::Reserved(reserved));
+            }
+            Ok(editor.commit().await?)
+        }
     }
 }
 
 /// The database key `path` addresses, or `None` when it names no content key.
 ///
-/// The key bytes are the path bytes verbatim. The one byte string that is not a
-/// content key is the empty one, which is the database's own root slot: the
-/// manifest metadata the site-level documents live in.
+/// The key bytes are the path bytes verbatim. The reserved paths are the two
+/// the seam names on either format: the empty one, which is the database's own
+/// root slot holding the manifest metadata the site-level documents live in,
+/// and the lone separator, which is the slot the trie keys them at. Neither is
+/// read, written or walked as a key here, so the two formats answer alike.
 fn content_key(path: &ManifestPath) -> Option<Key> {
-    (!path.is_empty()).then(|| Key::from(path.as_bytes()))
+    (!path.is_reserved()).then(|| Key::from(path.as_bytes()))
+}
+
+/// One database key as the path a read answers with.
+fn floored(key: Key) -> ManifestPath {
+    ManifestPath::new(key.as_bytes().to_vec())
+}
+
+/// Whether `key` is one the map reserves rather than content.
+///
+/// The read-side twin of [`content_key`], over the database's own key type: a
+/// walk, a listing and a floor each step over what a lookup answers absent.
+fn is_reserved(key: &Key) -> bool {
+    matches!(key.as_bytes(), [] | [ManifestPath::SEPARATOR])
 }
 
 /// The key bounds a path range selects, in the database's own key type.

@@ -20,7 +20,9 @@
 //! `index_document` and `error_document` as options, and [`MapWriter`] sets
 //! them with the chainable `with_index_document` and `with_error_document`.
 //! Each lands in the format's own root slot, so no empty key and no magic path
-//! ever crosses the seam.
+//! ever crosses the seam. The two paths those slots are keyed at, the empty
+//! one and `"/"`, are reserved on both formats: a read at either is absent and
+//! a write at either is [`ReservedKey`].
 //!
 //! Each format keeps its own metadata type and its own batch type: the static
 //! path erases nothing. [`DynManifest`] is the object-safe wrapper for a
@@ -93,6 +95,7 @@ mod listing;
 mod meta;
 mod op;
 mod path;
+mod reserved;
 mod site;
 mod view;
 mod writer;
@@ -102,6 +105,7 @@ pub use listing::{ListEntry, Listing};
 pub use meta::{ManifestMetadata, MetadataView, WellKnownKey};
 pub use op::ManifestOp;
 pub use path::ManifestPath;
+pub use reserved::{ReservedKey, reserved_key};
 pub use site::SiteConfig;
 pub use view::{MapCursor, MapEntry, MapView};
 pub use writer::{Insert, MapWriter};
@@ -139,7 +143,8 @@ impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 /// it with [`MapView::index_document`] and [`MapView::error_document`], and
 /// write it with [`MapWriter::with_index_document`] and
 /// [`MapWriter::with_error_document`], each of which lands in the format's own
-/// root slot.
+/// root slot. The paths those slots are keyed at are reserved: see
+/// [`ManifestPath::is_reserved`].
 pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
