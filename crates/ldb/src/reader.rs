@@ -307,7 +307,7 @@ fn subtree_step<F: Format, R: NodeRef>(
     }
 }
 
-/// The empty-key binding a decoded root carries: its root extension entry and
+/// The root-key binding a decoded root carries: its root extension entry and
 /// the database's own manifest metadata.
 ///
 /// The two halves are independent. A website root carries the index and error

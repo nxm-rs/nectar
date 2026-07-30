@@ -12,7 +12,8 @@ use crate::format::{Format, V1};
 /// An arbitrary-byte map key, ordered bytewise.
 ///
 /// Unbounded: long keys chain through trie nodes on the wire, so no format
-/// bound applies to the key itself. The empty key is legal and ordinary.
+/// bound applies to the key itself. The empty key is the one key with no slot
+/// at all: a fork indexes on a byte, so both `apply` and `build` reject it.
 ///
 /// The root key, the separator alone, is the one key with a slot of its own:
 /// its value and its metadata live in the root extension, so it is the least
