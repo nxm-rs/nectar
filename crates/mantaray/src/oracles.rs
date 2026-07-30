@@ -319,16 +319,10 @@ fn record(ops: &[EditorOp]) -> ManifestEditor<OracleLoadSaver> {
                 editor.remove_subtree(path(raw));
             }
             EditorOp::SetIndex { name } => {
-                editor.set_root_metadata(
-                    crate::constants::metadata::WEBSITE_INDEX_DOCUMENT,
-                    document(*name),
-                );
+                editor.set_index_document(&document(*name));
             }
             EditorOp::SetError { name } => {
-                editor.set_root_metadata(
-                    crate::constants::metadata::WEBSITE_ERROR_DOCUMENT,
-                    document(*name),
-                );
+                editor.set_error_document(&document(*name));
             }
         }
     }

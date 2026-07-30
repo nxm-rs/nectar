@@ -5,19 +5,14 @@
 //! byte for byte. The legacy replay is a fresh single-session build with one
 //! save at the end, which is the sequence's well-defined root.
 //!
-//! # Scope: the merge algorithm, not the key space
+//! # Scope: the wire, byte for byte
 //!
-//! A manifest path is absolute now, so every key this crate writes is rooted at
-//! `/`. The pinned 0.3.0 oracle stores whatever key bytes it is handed, and the
-//! reference client wrote bare keys, so a 0.3.0 manifest and a 0.4 manifest of
-//! the same content are different byte images: 0.4 supersedes 0.3.0 on the
-//! wire, deliberately. That break is not what this gate measures.
-//!
-//! What it measures is the merge algorithm, so it feeds both sides the same
-//! `/`-rooted keys through [`rooted`] and compares the roots. Submission order,
-//! boundary removes, mid-edge splits, prefix-bound chains and the root-metadata
-//! interleavings are all still pinned against the reference implementation; only
-//! the key space they run over moved.
+//! Content keys are stored bare and verbatim, exactly as the reference client
+//! writes them, so a 0.3.0 manifest and a 0.4 manifest of the same content are
+//! the same byte image. This gate pins that: it feeds both sides the same bare
+//! keys and compares the roots, so any change to the content-key encoding fails
+//! it. Submission order, boundary removes, mid-edge splits, prefix-bound chains
+//! and the root-metadata interleavings are pinned with it.
 //!
 //! # The remove this drives
 //!
@@ -26,12 +21,12 @@
 //! editor's `remove` is exact-key and the boundary op lives on under
 //! `remove_subtree`. This differential drives `remove_subtree`, because that is
 //! the behaviour 0.3.0 pins. The exact-key contract is pinned across both
-//! formats in `manifest/root_key.rs` instead.
+//! formats in `manifest/root_config.rs` instead.
 
 use std::collections::BTreeMap;
 
 use nectar_loadsave::NodeLoadSaver;
-use nectar_mantaray::{ManifestEditor, Reader, metadata};
+use nectar_mantaray::{ManifestEditor, Reader};
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::store::MemoryStore;
@@ -53,18 +48,6 @@ enum ScriptOp {
     Rm(String),
     SetIndex(String),
     SetError(String),
-}
-
-/// `path` rooted at the separator, which is the canonical manifest key.
-///
-/// Both replays key through this, so the differential compares the merge
-/// algorithm over one key space rather than two.
-fn rooted(path: &str) -> String {
-    if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    }
 }
 
 /// Deterministic per-path entry address.
@@ -134,14 +117,11 @@ fn record(editor: &mut Editor, script: &[ScriptOp]) {
             ScriptOp::Rm(p) => {
                 editor.remove_subtree(p.as_str());
             }
-            // The typed `set_index_document` sugar is gone: the site documents
-            // are well-known metadata, and a root-scope merge is the op the
-            // legacy verb was always shorthand for.
             ScriptOp::SetIndex(v) => {
-                editor.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, v);
+                editor.set_index_document(v);
             }
             ScriptOp::SetError(v) => {
-                editor.set_root_metadata(metadata::WEBSITE_ERROR_DOCUMENT, v);
+                editor.set_error_document(v);
             }
         }
     }
@@ -214,25 +194,15 @@ fn editor_root_split(script: &[ScriptOp], split: usize) -> [u8; 32] {
 }
 
 fn add(p: &str) -> ScriptOp {
-    ScriptOp::Add(rooted(p), addr_bytes(p))
+    ScriptOp::Add(p.to_string(), addr_bytes(p))
 }
 
 fn add_seed(p: &str, seed: &str) -> ScriptOp {
-    ScriptOp::Add(rooted(p), addr_bytes(seed))
+    ScriptOp::Add(p.to_string(), addr_bytes(seed))
 }
 
 fn rm(p: &str) -> ScriptOp {
-    ScriptOp::Rm(rooted(p))
-}
-
-/// An add carrying one metadata pair, keyed the same way [`add`] is.
-fn add_meta(p: &str, seed: &str, key: &str, value: &str) -> ScriptOp {
-    ScriptOp::AddMeta(
-        rooted(p),
-        addr_bytes(seed),
-        key.to_string(),
-        value.to_string(),
-    )
+    ScriptOp::Rm(p.to_string())
 }
 
 /// Hostile deterministic corpora: prefix splits at and around values,
@@ -281,9 +251,19 @@ fn corpora() -> Vec<Vec<ScriptOp>> {
             rm("a/b/c/d/e/f/g/h/file00.dat"),
         ],
         vec![
-            add_meta("logo.png", "logo", "Content-Type", "image/png"),
+            ScriptOp::AddMeta(
+                "logo.png".to_string(),
+                addr_bytes("logo"),
+                "Content-Type".to_string(),
+                "image/png".to_string(),
+            ),
             add_seed("logo.png", "logo2"),
-            add_meta("logo.png", "logo3", "Filename", "logo.png"),
+            ScriptOp::AddMeta(
+                "logo.png".to_string(),
+                addr_bytes("logo3"),
+                "Filename".to_string(),
+                "logo.png".to_string(),
+            ),
         ],
     ]
 }
@@ -347,9 +327,7 @@ fn permutations_match_legacy() {
 #[test]
 fn clean_ancestor_hazard_regression() {
     let mut legacy = OldManifest::new(OldStore::new());
-    // The same absolute key the script below replays, so the stale root and the
-    // well-defined one are two roots over one key set.
-    run(legacy.add(&rooted("index.html"), addr_bytes("index.html"))).unwrap();
+    run(legacy.add("index.html", addr_bytes("index.html"))).unwrap();
     let stale = run(legacy.save()).unwrap();
     run(legacy.set_index_document("index.html")).unwrap();
     assert_eq!(
@@ -376,8 +354,13 @@ fn clean_ancestor_hazard_regression() {
 #[test]
 fn bare_insert_clears_metadata_unlike_legacy() {
     let address = addr_bytes("logo");
-    let with_meta = add_meta("logo.png", "logo", "Content-Type", "image/png");
-    let bare = ScriptOp::Add(rooted("logo.png"), address);
+    let with_meta = ScriptOp::AddMeta(
+        "logo.png".to_string(),
+        address,
+        "Content-Type".to_string(),
+        "image/png".to_string(),
+    );
+    let bare = ScriptOp::Add("logo.png".to_string(), address);
     let script = vec![with_meta.clone(), bare.clone()];
 
     // The editor lands on the root the path would have had with no metadata at
@@ -399,13 +382,13 @@ fn bare_insert_clears_metadata_unlike_legacy() {
     let meta: BTreeMap<String, String> =
         [("Content-Type".to_string(), "image/png".to_string())].into();
     editor
-        .insert("/logo.png", ChunkAddress::from(address))
+        .insert("logo.png", ChunkAddress::from(address))
         .meta(meta);
     let (root, store) = run(editor.commit()).unwrap();
     let mut editor = Editor::open(root, store);
-    editor.insert("/logo.png", ChunkAddress::from(address));
+    editor.insert("logo.png", ChunkAddress::from(address));
     let (root, store) = run(editor.commit()).unwrap();
-    let entry = run(Reader::new(store).get(root, b"/logo.png"))
+    let entry = run(Reader::new(store).get(root, b"logo.png"))
         .unwrap()
         .expect("the entry survives the re-insert");
     assert_eq!(entry.address(), Some(&ChunkAddress::from(address)));
@@ -471,7 +454,7 @@ fn build_script(raw: &[(u8, u8, u8)]) -> Vec<ScriptOp> {
             0..=3 if !with_metadata => {
                 let mut a = addr_bytes(path);
                 a[31] = seed;
-                script.push(ScriptOp::Add(rooted(path), a));
+                script.push(ScriptOp::Add(path.to_string(), a));
                 if !added.contains(&path) {
                     added.push(path);
                 }
@@ -506,7 +489,7 @@ fn build_script(raw: &[(u8, u8, u8)]) -> Vec<ScriptOp> {
                 let mut a = addr_bytes(path);
                 a[31] = seed;
                 script.push(ScriptOp::AddMeta(
-                    rooted(path),
+                    path.to_string(),
                     a,
                     "Content-Type".to_string(),
                     format!("type/{seed}"),

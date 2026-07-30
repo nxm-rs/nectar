@@ -12,6 +12,7 @@ use nectar_primitives::chunk::{ChunkRef, Reference};
 
 use crate::listing::Listing;
 use crate::path::ManifestPath;
+use crate::site::SiteConfig;
 use crate::{DataSink, SinkError};
 
 /// What a bound path resolves to.
@@ -67,6 +68,12 @@ pub trait MapCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 /// [`dir`](Self::dir) and [`load`](Self::load) are the two manifest additions:
 /// a path is read as a directory of paths, and an entry's bytes are joined into
 /// a sink.
+///
+/// Every one of those reads is over content paths alone. The manifest's own
+/// configuration is read through [`index_document`](Self::index_document) and
+/// [`error_document`](Self::error_document), which answer `None` when the
+/// manifest declares nothing: no walk yields the slot they live in, and neither
+/// does the empty path, which is a listing prefix rather than a key.
 pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
@@ -79,10 +86,45 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     type Cursor: MapCursor<R, Error = Self::Error>;
 
     /// The entry bound to `path`, or `None` when the path is absent.
+    ///
+    /// The empty path is absent by definition: it is a prefix, not a key.
     fn get(
         &self,
         path: &ManifestPath,
     ) -> impl Future<Output = Result<Option<MapEntry<R>>, Self::Error>> + MaybeSend;
+
+    /// The site-level documents the manifest declares, read from the format's
+    /// own root slot.
+    ///
+    /// One read answers both, which is why it is the primitive
+    /// [`index_document`](Self::index_document) and
+    /// [`error_document`](Self::error_document) are written in terms of.
+    fn site_config(&self) -> impl Future<Output = Result<SiteConfig, Self::Error>> + MaybeSend;
+
+    /// The index document the manifest declares, or `None` when it declares
+    /// none.
+    ///
+    /// A gateway serves it for a directory path. It is a filename joined below
+    /// each directory rather than one whole path, which is the convention the
+    /// reference client reads.
+    fn index_document(
+        &self,
+    ) -> impl Future<Output = Result<Option<ManifestPath>, Self::Error>> + MaybeSend {
+        let config = self.site_config();
+        async move { Ok(config.await?.into_parts().0) }
+    }
+
+    /// The error document the manifest declares, or `None` when it declares
+    /// none.
+    ///
+    /// A gateway serves it for a path that resolves to nothing. It is one whole
+    /// content path.
+    fn error_document(
+        &self,
+    ) -> impl Future<Output = Result<Option<ManifestPath>, Self::Error>> + MaybeSend {
+        let config = self.site_config();
+        async move { Ok(config.await?.into_parts().1) }
+    }
 
     /// The metadata bound to `path`, in the format's own vocabulary.
     ///
@@ -107,13 +149,9 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     ///
     /// Deeper paths collapse into one [`ListEntry::Dir`] at the next
     /// separator; the referenced chunks are never fetched. `dir` is matched as
-    /// a byte prefix, so end it in the separator to mean the directory:
-    /// `/img` also lists `/imgx.png`, where `/img/` does not.
-    ///
-    /// No path is a child of itself, so the directory never lists itself. That
-    /// is the whole reason `dir("/")` lists the top level without `"/"`; the
-    /// root is otherwise an ordinary key that [`iter`](Self::iter) and
-    /// [`range`](Self::range) yield.
+    /// a byte prefix, so end it in the separator to mean the directory: `img`
+    /// also lists `imgx.png`, where `img/` does not. The empty path is the
+    /// prefix every content path carries, so it lists the top level.
     ///
     /// [`ListEntry::Dir`]: crate::ListEntry::Dir
     fn dir(
@@ -157,7 +195,10 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
         sink: &mut K,
     ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
 
-    /// Every `(path, entry)` in path order.
+    /// Every bound content path, with its entry, in path order.
+    ///
+    /// Content only: the format's root slot is not a path, so a walk never
+    /// yields it or the empty path.
     fn iter(&self) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend;
 
     /// Every `(path, entry)` within `bounds`, in path order.

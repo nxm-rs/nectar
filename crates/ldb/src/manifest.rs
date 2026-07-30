@@ -19,7 +19,7 @@ use bytes::Bytes;
 use nectar_file::{File, Policy};
 use nectar_manifest::{
     DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapCursor,
-    MapEntry, MapView, MapWriter, MetadataView, SinkError, WellKnownKey,
+    MapEntry, MapView, MapWriter, SinkError, SiteConfig, WellKnownKey,
 };
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
@@ -158,33 +158,25 @@ where
         &self,
         view: &dyn ManifestMetadata,
     ) -> Result<Self::Metadata, Self::Error> {
-        Ok(native_metadata(view)?)
-    }
-}
-
-/// The typed metadata block the well-known keys of `view` register into.
-///
-/// The registered three are what the key-value format can name; a custom key is
-/// dropped here, which is the seam's one lossy step.
-fn native_metadata(view: &dyn ManifestMetadata) -> Result<Option<Metadata<V1>>, MetadataTooLong> {
-    let mut meta: Option<Metadata<V1>> = None;
-    for (key, id) in [
-        (WellKnownKey::ContentType, KeyId::ContentType),
-        (WellKnownKey::IndexDocument, KeyId::WebsiteIndexDocument),
-        (WellKnownKey::ErrorDocument, KeyId::WebsiteErrorDocument),
-    ] {
-        let Some(value) = view.get(&key) else {
-            continue;
-        };
-        let value = Bytes::copy_from_slice(value.as_bytes());
-        match meta.as_mut() {
-            Some(block) => {
-                block.insert(id, value)?;
+        let mut meta: Option<Metadata<V1>> = None;
+        for (key, id) in [
+            (WellKnownKey::ContentType, KeyId::ContentType),
+            (WellKnownKey::IndexDocument, KeyId::WebsiteIndexDocument),
+            (WellKnownKey::ErrorDocument, KeyId::WebsiteErrorDocument),
+        ] {
+            let Some(value) = view.get(&key) else {
+                continue;
+            };
+            let value = Bytes::copy_from_slice(value.as_bytes());
+            match meta.as_mut() {
+                Some(block) => {
+                    block.insert(id, value)?;
+                }
+                None => meta = Some(Metadata::new(id, value)?),
             }
-            None => meta = Some(Metadata::new(id, value)?),
         }
+        Ok(meta)
     }
-    Ok(meta)
 }
 
 /// The seam's read view: the database's own view, keyed by path.
@@ -208,24 +200,43 @@ where
         &self,
         path: &ManifestPath,
     ) -> impl Future<Output = Result<Option<MapEntry<R>>, Self::Error>> + MaybeSend {
-        let key = Key::from(path.as_bytes());
-        async move { Ok(self.view.get(&key).await?.map(mapped)) }
+        let key = content_key(path);
+        async move {
+            let Some(key) = key else { return Ok(None) };
+            Ok(self.view.get(&key).await?.map(mapped))
+        }
+    }
+
+    async fn site_config(&self) -> Result<SiteConfig, Self::Error> {
+        let site = self.view.website().await?;
+        let document = |bytes: Option<&[u8]>| bytes.map(ManifestPath::from);
+        Ok(SiteConfig::new()
+            .with_index_document(document(site.index()))
+            .with_error_document(document(site.error())))
     }
 
     fn metadata(
         &self,
         path: &ManifestPath,
     ) -> impl Future<Output = Result<Self::Metadata, Self::Error>> + MaybeSend {
-        let key = Key::from(path.as_bytes());
-        async move { Ok(self.view.metadata(&key).await?) }
+        let key = content_key(path);
+        async move {
+            let Some(key) = key else {
+                return Ok(None);
+            };
+            Ok(self.view.metadata(&key).await?)
+        }
     }
 
     fn contains_key(
         &self,
         path: &ManifestPath,
     ) -> impl Future<Output = Result<bool, Self::Error>> + MaybeSend {
-        let key = Key::from(path.as_bytes());
-        async move { Ok(self.view.contains_key(&key).await?) }
+        let key = content_key(path);
+        async move {
+            let Some(key) = key else { return Ok(false) };
+            Ok(self.view.contains_key(&key).await?)
+        }
     }
 
     /// The database seeks the floor natively, so the walk the default would
@@ -241,6 +252,9 @@ where
                 .view
                 .floor(&key)
                 .await?
+                // The root slot is not a content key, so the floor of a path
+                // above every content key is nothing rather than the slot.
+                .filter(|(key, _)| !key.is_empty())
                 .map(|(key, entry)| (ManifestPath::new(key.as_bytes().to_vec()), mapped(entry))))
         }
     }
@@ -268,11 +282,11 @@ where
         let path = path.clone();
         let store = self.view.store().clone();
         async move {
-            let entry = self
-                .view
-                .get(&Key::from(path.as_bytes()))
-                .await?
-                .ok_or_else(|| ManifestError::NotFound { path })?;
+            let entry = match content_key(&path) {
+                Some(key) => self.view.get(&key).await?,
+                None => None,
+            }
+            .ok_or_else(|| ManifestError::NotFound { path })?;
             match entry {
                 Entry::Inline(value) => sink
                     .write_at(0, value.as_bytes())
@@ -333,10 +347,18 @@ where
     {
         let cursor = &mut self.cursor;
         async move {
-            Ok(cursor
-                .next()
-                .await?
-                .map(|(key, entry)| (ManifestPath::new(key.as_bytes().to_vec()), mapped(entry))))
+            // The root slot leads the walk when the root binds a value, and it
+            // is not a content key, so the map steps over it.
+            while let Some((key, entry)) = cursor.next().await? {
+                if key.is_empty() {
+                    continue;
+                }
+                return Ok(Some((
+                    ManifestPath::new(key.as_bytes().to_vec()),
+                    mapped(entry),
+                )));
+            }
+            Ok(None)
         }
     }
 }
@@ -345,6 +367,20 @@ where
 #[derive(Debug)]
 pub struct LdbWriter<'a, S, K, R: NodeRef> {
     editor: Editor<'a, S, K, V1, R>,
+}
+
+impl<S, K, R: NodeRef> LdbWriter<'_, S, K, R> {
+    /// Stage one site document into the database's root manifest metadata, or
+    /// clear it.
+    ///
+    /// A merge either way, so the two documents are independent: setting one
+    /// leaves the other where it was, and clearing the last one leaves the
+    /// manifest carrying no metadata at all.
+    fn document(&mut self, id: KeyId, path: Option<ManifestPath>) -> &mut Self {
+        let value = path.map(|path| Bytes::copy_from_slice(path.as_bytes()));
+        self.editor.set_root_metadata(id, value);
+        self
+    }
 }
 
 impl<S, K, R> MapWriter<R> for LdbWriter<'_, S, K, R>
@@ -357,12 +393,6 @@ where
 
     type Error = ManifestError;
 
-    /// A value the format's metadata bound cannot hold drops the whole block,
-    /// exactly as the erased apply path drops what it cannot represent.
-    fn native(&self, view: &MetadataView) -> Self::Metadata {
-        native_metadata(view).unwrap_or_default()
-    }
-
     /// An insert replaces the whole binding; existing metadata is cleared
     /// unless `meta` carries some, because the op's metadata is the key's
     /// metadata from then on.
@@ -373,24 +403,45 @@ where
                 reference,
                 meta,
             } => {
-                let mut staged = self.editor.insert(
-                    Key::from(path.as_bytes()),
-                    Entry::from(reference.into_entry_ref()),
-                );
+                let Some(key) = content_key(&path) else {
+                    return;
+                };
+                let mut staged = self
+                    .editor
+                    .insert(key, Entry::from(reference.into_entry_ref()));
                 if let Some(meta) = meta {
                     staged.meta(meta);
                 }
             }
             ManifestOp::Remove { path } => {
-                self.editor.remove(Key::from(path.as_bytes()));
+                if let Some(key) = content_key(&path) {
+                    self.editor.remove(key);
+                }
             }
         }
+    }
+
+    fn with_index_document(&mut self, path: impl Into<Option<ManifestPath>>) -> &mut Self {
+        self.document(KeyId::WebsiteIndexDocument, path.into())
+    }
+
+    fn with_error_document(&mut self, path: impl Into<Option<ManifestPath>>) -> &mut Self {
+        self.document(KeyId::WebsiteErrorDocument, path.into())
     }
 
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
         let editor = self.editor;
         async move { Ok(editor.commit().await?) }
     }
+}
+
+/// The database key `path` addresses, or `None` when it names no content key.
+///
+/// The key bytes are the path bytes verbatim. The one byte string that is not a
+/// content key is the empty one, which is the database's own root slot: the
+/// manifest metadata the site-level documents live in.
+fn content_key(path: &ManifestPath) -> Option<Key> {
+    (!path.is_empty()).then(|| Key::from(path.as_bytes()))
 }
 
 /// The key bounds a path range selects, in the database's own key type.

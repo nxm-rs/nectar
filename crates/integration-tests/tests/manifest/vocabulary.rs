@@ -79,7 +79,7 @@ async fn map_vocabulary<M: Manifest<ChunkRef>>(manifest: &M, base: &ChunkRef) ->
         "the staged removal took the path out of the committed root"
     );
     let _ = view.metadata(&index).await.unwrap();
-    assert_eq!(view.dir(&ManifestPath::root()).await.unwrap().len(), 2);
+    assert_eq!(view.dir(&ManifestPath::default()).await.unwrap().len(), 2);
 
     let mut walked = Vec::new();
     let mut cursor = view.iter().await.unwrap();
@@ -195,106 +195,6 @@ where
     assert_eq!(one_shot, bare, "the one-shot is an edit of one insert");
 }
 
-/// The root path is an ordinary key on either format, and the site documents are
-/// well-known metadata on its entry.
-///
-/// Every clause here is a cross-format pin: the two formats store the root
-/// differently on the wire, so the only thing holding them together is that
-/// `"/"` reads, lists, orders and replaces like every other key.
-async fn the_root_is_an_ordinary_key<M>(manifest: &M, base: &ChunkRef)
-where
-    M: Manifest<ChunkRef>,
-    M::Metadata: Clone + PartialEq + std::fmt::Debug,
-{
-    let root_path = ManifestPath::root();
-    let index = ManifestPath::from("index.html");
-    // The index document is a per-directory filename, so it stays relative.
-    let want = manifest
-        .metadata_from_view(&MetadataView::new().with(WellKnownKey::IndexDocument, "index.html"))
-        .unwrap();
-    assert_ne!(
-        want,
-        M::Metadata::default(),
-        "the format carries an index document"
-    );
-
-    // The site documents ride the insert at the root, through the chainable
-    // typed builders rather than a verb of their own.
-    let root = {
-        let mut writer = manifest.edit(base);
-        writer.insert(index.clone(), reference(1));
-        writer
-            .insert(root_path.clone(), reference(9))
-            .with_index_document("index.html");
-        writer.commit().await.unwrap()
-    };
-
-    // get, contains_key and metadata answer at the root like anywhere else.
-    let view = manifest.at(&root);
-    assert_eq!(
-        view.get(&root_path).await.unwrap(),
-        Some(MapEntry::Reference(reference(9)))
-    );
-    assert!(view.contains_key(&root_path).await.unwrap());
-    assert_eq!(
-        view.metadata(&root_path).await.unwrap(),
-        want,
-        "metadata at the root reads the site documents back"
-    );
-
-    // iter and range surface it: it sorts first, and nothing filters it.
-    let mut walked = Vec::new();
-    let mut cursor = view.iter().await.unwrap();
-    while let Some((path, _)) = cursor.next().await.unwrap() {
-        walked.push(path);
-    }
-    assert_eq!(walked, vec![root_path.clone(), index.clone()]);
-
-    let mut ranged = Vec::new();
-    let mut cursor = view.range(..).await.unwrap();
-    while let Some((path, _)) = cursor.next().await.unwrap() {
-        ranged.push(path);
-    }
-    assert_eq!(ranged, walked);
-
-    // The ordered reads treat it as the least key, which is what its bytes are.
-    assert_eq!(
-        view.floor(&root_path).await.unwrap().map(|(path, _)| path),
-        Some(root_path.clone()),
-        "a bound path is its own floor, the root included"
-    );
-
-    // dir lists children, and no path is a child of itself: that alone is why
-    // the root is absent from its own listing.
-    let listed: Vec<ManifestPath> = view
-        .dir(&root_path)
-        .await
-        .unwrap()
-        .entries()
-        .iter()
-        .map(|entry| entry.path().clone())
-        .collect();
-    assert_eq!(listed, vec![index.clone()]);
-
-    // A bare insert at the root replaces the whole binding, so the site
-    // documents go with the reference they were attached to.
-    let bare = manifest
-        .insert(&root, root_path.clone(), reference(8))
-        .await
-        .unwrap();
-    let view = manifest.at(&bare);
-    assert_eq!(
-        view.get(&root_path).await.unwrap(),
-        Some(MapEntry::Reference(reference(8))),
-        "the root reference is replaced"
-    );
-    assert_eq!(
-        view.metadata(&root_path).await.unwrap(),
-        M::Metadata::default(),
-        "a bare insert at the root clears the site documents"
-    );
-}
-
 #[test]
 fn both_manifest_formats_speak_the_map_vocabulary() {
     run(async {
@@ -308,14 +208,12 @@ fn both_manifest_formats_speak_the_map_vocabulary() {
         let trie_empty = ChunkRef::new(empty);
         let _ = map_vocabulary(&trie, &trie_empty).await;
         insert_replaces_the_whole_binding(&trie, &trie_empty).await;
-        the_root_is_an_ordinary_key(&trie, &trie_empty).await;
 
         let builder: Builder<V1> = Builder::new();
         let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
         let kv = LdbManifest::plain(store.clone());
         let _ = map_vocabulary(&kv, &empty).await;
         insert_replaces_the_whole_binding(&kv, &empty).await;
-        the_root_is_an_ordinary_key(&kv, &empty).await;
     });
 }
 

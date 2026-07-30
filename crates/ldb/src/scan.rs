@@ -29,7 +29,7 @@ use nectar_primitives::ChunkRef;
 use nectar_primitives::store::MaybeSync;
 
 use crate::fork::{Child, ForkTable};
-use crate::format::{Format, V1, root_key};
+use crate::format::{Format, V1};
 use crate::frontier::{Completion, Frame, Plan, claim, fill};
 use crate::node::{Node, NodeRef};
 use crate::reader::{Reader, ReaderError};
@@ -546,27 +546,18 @@ where
     }
 }
 
-/// A chunk's contents flattened into ascending-key steps.
-///
-/// The root chunk's own value is bound to the root key, which is one byte of
-/// key space like any other, so it takes its place in the order rather than
-/// leading unconditionally: it leads a manifest, whose keys are absolute, and
-/// sorts among the forks of a database keyed more freely.
+/// A chunk's contents flattened into ascending-key steps. The root chunk's own
+/// value is the empty key, the least of all, so it leads the list.
 pub(crate) fn flatten<F: Format, R: NodeRef>(node: &Node<F, R>, is_root: bool) -> Vec<Step<F, R>> {
     let mut steps = Vec::new();
+    if is_root && let Some(entry) = node.entry() {
+        steps.push(Step::Value {
+            suffix: Bytes::new(),
+            entry: entry.clone(),
+        });
+    }
     let mut prefix = Vec::new();
     flatten_table(node.forks(), &mut prefix, &mut steps);
-    if is_root && let Some(entry) = node.entry() {
-        let root = root_key::<F>();
-        let at = steps.partition_point(|step| step.suffix() < root.as_ref());
-        steps.insert(
-            at,
-            Step::Value {
-                suffix: root,
-                entry: entry.clone(),
-            },
-        );
-    }
     steps
 }
 
@@ -735,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn the_root_value_is_the_root_key_and_leads_iteration() {
+    fn the_root_value_is_the_empty_key_and_leads_iteration() {
         let store = ContentGet::new(MemoryStore::default());
         let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
@@ -743,12 +734,7 @@ mod tests {
         let root = run(store.put_node(&Node::new(root_ext, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(run(reader.iter(&root)).unwrap());
-        // The root key is surfaced, not hidden: it is an ordinary key that
-        // happens to sort first.
-        assert_eq!(
-            got,
-            vec![(b"/".to_vec(), entry(9)), (b"k".to_vec(), entry(1))]
-        );
+        assert_eq!(got, vec![(Vec::new(), entry(9)), (b"k".to_vec(), entry(1))]);
     }
 
     #[test]

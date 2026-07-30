@@ -28,25 +28,24 @@
 //!
 //! # Website Manifests
 //!
-//! The site documents are well-known metadata on the root path entry, so they
-//! ride an insert at `"/"` and chain:
+//! Configure index and error documents for Swarm-hosted websites. They are
+//! metadata on the [`metadata::ROOT_PATH`] node, which is where the reference
+//! client writes and reads them, and they are set through a merge so the two
+//! documents stay independent of each other and of the content keys:
 //!
 //! ```no_run
 //! # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
-//! # use nectar_primitives::chunk::ChunkAddress;
 //! let mut editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
-//! editor
-//!     .insert("/", ChunkAddress::from([7u8; 32]))
-//!     .with_index_document("index.html")
-//!     .with_error_document("/404.html");
+//! editor.set_index_document("index.html");
+//! editor.set_error_document("404.html");
 //! ```
 //!
-//! The index document is a per-directory filename, so it stays relative; the
-//! error document is one key, so it is absolute like every other path.
+//! [`ManifestEditor::clear_root_metadata`] takes one back out, and prunes the
+//! node when it carries nothing else.
 //!
-//! An insert replaces the whole binding, so a root that binds no entry of its
-//! own merges the documents in with
-//! [`set_root_metadata`](ManifestEditor::set_root_metadata) instead.
+//! Content paths are stored bare and verbatim, so `index.html` is the trie key
+//! `index.html`. That is the reference client's v0.2 wire, and the workspace
+//! differential against the pinned 0.3.0 crate holds it byte for byte.
 //!
 //! # Metadata Constants
 //!

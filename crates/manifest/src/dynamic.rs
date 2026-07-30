@@ -22,6 +22,7 @@ use crate::listing::Listing;
 use crate::meta::ManifestMetadata;
 use crate::op::ManifestOp;
 use crate::path::ManifestPath;
+use crate::site::SiteConfig;
 use crate::view::{MapEntry, MapView};
 use crate::writer::MapWriter;
 use crate::{Manifest, SinkError};
@@ -116,6 +117,22 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         sink: &'a mut dyn DynSink,
     ) -> BoxFuture<'a, Result<(), BoxedError>>;
 
+    /// The site-level documents the manifest declares, each absent as `None`.
+    fn dyn_site_config<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+    ) -> BoxFuture<'a, Result<SiteConfig, BoxedError>>;
+
+    /// Replace the site-level documents, returning the new root.
+    ///
+    /// A replace, not a merge: a document `config` leaves as `None` is cleared,
+    /// so the manifest declares exactly what was passed.
+    fn dyn_set_site_config<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        config: SiteConfig,
+    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>>;
+
     /// Insert one path into the manifest rooted at `root`, returning the new
     /// root.
     fn dyn_insert<'a>(
@@ -188,6 +205,27 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         Box::pin(async move {
             let mut bridge = SinkBridge(sink);
             self.at(root).load(path, &mut bridge).await.map_err(erase)
+        })
+    }
+
+    fn dyn_site_config<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+    ) -> BoxFuture<'a, Result<SiteConfig, BoxedError>> {
+        Box::pin(async move { self.at(root).site_config().await.map_err(erase) })
+    }
+
+    fn dyn_set_site_config<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        config: SiteConfig,
+    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>> {
+        Box::pin(async move {
+            let (index, error) = config.into_parts();
+            let mut writer = self.edit(root);
+            writer.with_index_document(index);
+            writer.with_error_document(error);
+            writer.commit().await.map_err(erase)
         })
     }
 

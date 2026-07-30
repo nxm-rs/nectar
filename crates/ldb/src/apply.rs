@@ -38,10 +38,10 @@ use crate::builder::{
     BuildError, BuildStats, Item, PutSink, build_table_in, emit_node_in, put_window, resolve_in,
 };
 use crate::count::SubtreeCount;
-use crate::error::{ForkPrefixEmpty, PrefixTooLong};
+use crate::error::{ForkPrefixEmpty, MetadataTooLong, PrefixTooLong};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
-use crate::format::{Format, V1, is_root_key, root_key};
-use crate::meta::Metadata;
+use crate::format::{Format, V1};
+use crate::meta::{Metadata, MetadataKey};
 use crate::node::{Node, NodeRef, RootExtension};
 use crate::packing::cut_allowance;
 use crate::store::{NodeGet, Seal, StoreError};
@@ -64,17 +64,22 @@ enum Op<F: Format> {
 /// A batch of key updates to fold into a manifest in one pass.
 ///
 /// Keys accumulate in a sorted map, so an [`apply`] is history-independent: the
-/// order updates were staged in never reaches the produced root. The root key
-/// carries the manifest's own value.
+/// order updates were staged in never reaches the produced root. The empty key
+/// carries the manifest's own value, and the manifest's own metadata is staged
+/// separately with [`set_root_metadata`](Self::set_root_metadata), because it
+/// merges rather than replacing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Changeset<F: Format = V1> {
     ops: BTreeMap<Bytes, Op<F>>,
+    /// Merges into the manifest's own metadata: `None` clears the key.
+    root_meta: BTreeMap<MetadataKey<F>, Option<Bytes>>,
 }
 
 impl<F: Format> Default for Changeset<F> {
     fn default() -> Self {
         Self {
             ops: BTreeMap::new(),
+            root_meta: BTreeMap::new(),
         }
     }
 }
@@ -87,8 +92,8 @@ impl<F: Format> Changeset<F> {
     }
 
     /// Stage a binding of `key` to `entry`, replacing any staged update for it.
-    /// The root key sets the manifest's own value, and its metadata becomes the
-    /// manifest metadata: a bare insert there clears what the root carried.
+    /// The empty key sets the manifest's own value; its metadata, if any,
+    /// becomes the manifest metadata.
     pub fn insert(
         &mut self,
         key: Key,
@@ -116,16 +121,51 @@ impl<F: Format> Changeset<F> {
         self
     }
 
-    /// Number of staged updates.
+    /// Stage a merge of `key` into the manifest's own metadata, the root slot
+    /// the site-level document conventions live in.
+    ///
+    /// A merge, not a replace: only `key` moves, so the other conventions stay
+    /// exactly as the base root has them. A `None` value clears the key, and
+    /// clearing the last one leaves the manifest carrying no metadata at all.
+    pub fn set_root_metadata(
+        &mut self,
+        key: impl Into<MetadataKey<F>>,
+        value: Option<Bytes>,
+    ) -> &mut Self {
+        self.root_meta.insert(key.into(), value);
+        self
+    }
+
+    /// Number of staged updates: the keys, plus each metadata merge.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.ops.len()
+        self.ops.len().saturating_add(self.root_meta.len())
     }
 
     /// Returns `true` when nothing is staged.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.ops.is_empty()
+        self.ops.is_empty() && self.root_meta.is_empty()
+    }
+
+    /// `metadata` with every staged merge folded in, in key order.
+    fn merged_root_metadata(
+        &self,
+        mut metadata: Option<Metadata<F>>,
+    ) -> Result<Option<Metadata<F>>, MetadataTooLong> {
+        for (key, value) in &self.root_meta {
+            metadata = match value {
+                Some(value) => Some(match metadata {
+                    Some(mut block) => {
+                        block.insert(key.clone(), value.clone())?;
+                        block
+                    }
+                    None => Metadata::new(key.clone(), value.clone())?,
+                }),
+                None => metadata.and_then(|block| block.without(key)),
+            };
+        }
+        Ok(metadata)
     }
 }
 
@@ -145,6 +185,9 @@ pub enum ApplyError {
     /// A fork prefix consumed no byte to index under.
     #[error(transparent)]
     EmptyPrefix(#[from] ForkPrefixEmpty),
+    /// A merge into the manifest's own metadata exceeded the format's bound.
+    #[error(transparent)]
+    Metadata(#[from] MetadataTooLong),
     /// A merge invariant did not hold; an apply bug rather than bad input.
     #[error("apply invariant violated")]
     Internal,
@@ -177,48 +220,36 @@ where
     if changeset.is_empty() {
         return Ok(root.clone());
     }
-    // A fork indexes on a byte, so the empty key has no slot to bind in: the
-    // root key, the separator alone, is the database's own slot instead. A
-    // deletion there names no key, and removing what is not there is a no-op,
-    // so only a binding fails.
-    if changeset
-        .ops
-        .iter()
-        .any(|(key, op)| key.is_empty() && matches!(op, Op::Insert { .. }))
-    {
-        return Err(ForkPrefixEmpty.into());
-    }
     let node = store.get_node::<F, R>(root).await?;
 
-    // The root key is the root's own value; every other key descends the trie.
+    // The empty key is the root's own value; every other key descends the trie.
     let mut root_entry = node.entry().cloned();
     let mut root_meta = node.metadata().cloned();
-    match changeset.ops.get(&root_key::<F>()) {
+    match changeset.ops.get(&Bytes::new()) {
         Some(Op::Insert { entry, meta }) => {
-            // An insert replaces the whole binding, at the root key like
-            // everywhere else: a bare one clears the site documents the root
-            // carried, because the op's metadata is the key's metadata now.
             root_entry = Some(entry.clone());
-            root_meta = meta.clone();
+            if meta.is_some() {
+                root_meta = meta.clone();
+            }
         }
-        // A removal clears the whole binding, at the root key like everywhere
-        // else: the site documents are that key's metadata, so they go with the
-        // value. The keys below the root are its children, not its binding, and
-        // every one of them survives.
+        // A removal clears the whole binding, at the empty key like everywhere
+        // else: the manifest metadata is that key's metadata, so it goes with
+        // the value. The keys below are children rather than part of the
+        // binding, and every one of them survives.
         Some(Op::Delete) => {
             root_entry = None;
             root_meta = None;
         }
         None => {}
     }
-    let root_ext = RootExtension::new(root_entry, root_meta);
+    // The metadata merges land after the binding, so a batch that clears the
+    // root value and sets a site document ends with the document.
+    let root_ext = RootExtension::new(root_entry, changeset.merged_root_metadata(root_meta)?);
 
     let changes: Vec<Change<'_, F>> = changeset
         .ops
         .iter()
-        // The root key is handled above, and the empty key names no slot to
-        // descend to: a deletion of it is the no-op it has to be.
-        .filter(|(key, _)| !is_root_key::<F>(key) && !key.is_empty())
+        .filter(|(key, _)| !key.is_empty())
         .map(|(key, op)| Change {
             key: key.clone(),
             op,
@@ -1252,86 +1283,25 @@ mod tests {
     }
 
     #[test]
-    fn the_root_key_sets_and_clears_the_root_value() {
+    fn the_empty_key_sets_and_clears_the_root_value() {
         let store = ContentGet::new(MemoryStore::default());
-        let root = build(&store, &[(b"/a", 1)]);
+        let root = build(&store, &[(b"a", 1)]);
         let mut set = Changeset::<V1>::new();
-        set.insert(Key::root::<V1>(), entry(7), None);
+        set.insert(Key::empty(), entry(7), None);
         let with_root = run(apply(&store, &Plaintext, &root, &set)).unwrap();
 
         let mut expect = Builder::<V1>::new();
-        expect.insert(Key::root::<V1>(), entry(7), None);
-        expect.insert(Key::from(&b"/a"[..]), entry(1), None);
+        expect.insert(Key::empty(), entry(7), None);
+        expect.insert(Key::from(&b"a"[..]), entry(1), None);
         let rebuilt_root = *run(expect.build(&ContentGet::new(MemoryStore::default()), &Plaintext))
             .unwrap()
             .root();
         assert_eq!(with_root, rebuilt_root);
 
         let mut clear = Changeset::<V1>::new();
-        clear.remove(Key::root::<V1>());
+        clear.remove(Key::empty());
         let cleared = run(apply(&store, &Plaintext, &with_root, &clear)).unwrap();
-        assert_eq!(cleared, rebuilt(&[(b"/a", 1)]));
-    }
-
-    /// A fork indexes on a byte, so the empty key has no slot: the root key,
-    /// the separator alone, took the database's own slot.
-    #[test]
-    fn the_empty_key_has_no_slot() {
-        let store = ContentGet::new(MemoryStore::default());
-        let root = build(&store, &[(b"/a", 1)]);
-        let mut set = Changeset::<V1>::new();
-        set.insert(Key::empty(), entry(7), None);
-        assert!(matches!(
-            run(apply(&store, &Plaintext, &root, &set)),
-            Err(ApplyError::EmptyPrefix(_))
-        ));
-
-        let mut builder = Builder::<V1>::new();
-        builder.insert(Key::empty(), entry(7), None);
-        assert!(matches!(
-            run(builder.build(&store, &Plaintext)),
-            Err(BuildError::EmptyPrefix(_))
-        ));
-    }
-
-    /// A bare insert at the root key replaces the whole binding, so the site
-    /// documents it carried are cleared: the map contract, at the root like
-    /// everywhere else.
-    #[test]
-    fn a_bare_root_insert_clears_the_root_metadata() {
-        let store = ContentGet::new(MemoryStore::default());
-        let meta = Metadata::<V1>::new(
-            crate::meta::KeyId::WebsiteIndexDocument,
-            Bytes::from_static(b"/index.html"),
-        )
-        .unwrap();
-
-        let mut set = Changeset::<V1>::new();
-        set.insert(Key::root::<V1>(), entry(7), Some(meta.clone()));
-        let empty = *run(Builder::<V1>::new().build(&store, &Plaintext))
-            .unwrap()
-            .root();
-        let with_meta = run(apply(&store, &Plaintext, &empty, &set)).unwrap();
-        let reader: crate::reader::Reader<_> = crate::reader::Reader::new(&store);
-        assert_eq!(
-            run(reader.metadata(&with_meta, &Key::root::<V1>())).unwrap(),
-            Some(meta)
-        );
-
-        let mut bare = Changeset::<V1>::new();
-        bare.insert(Key::root::<V1>(), entry(8), None);
-        let cleared = run(apply(&store, &Plaintext, &with_meta, &bare)).unwrap();
-        assert_eq!(
-            run(reader.metadata(&cleared, &Key::root::<V1>())).unwrap(),
-            None,
-            "a bare insert clears the metadata the root carried"
-        );
-
-        // The same root a from-scratch build of the bare binding produces.
-        let mut expect = Builder::<V1>::new();
-        expect.insert(Key::root::<V1>(), entry(8), None);
-        let rebuilt_root = *run(expect.build(&store, &Plaintext)).unwrap().root();
-        assert_eq!(cleared, rebuilt_root);
+        assert_eq!(cleared, rebuilt(&[(b"a", 1)]));
     }
 
     #[test]

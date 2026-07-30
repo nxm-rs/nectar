@@ -62,6 +62,13 @@ pub enum Op<R: Reference = ChunkRef> {
         /// Metadata value to set under the key.
         value: String,
     },
+    /// Remove one metadata key from the node at the path, pruning a node the
+    /// removal leaves with neither a binding nor a child. An absent node, or a
+    /// node that does not carry the key, is a no-op.
+    ClearRootMetadata {
+        /// Metadata key to remove.
+        key: String,
+    },
 }
 
 /// Submission-order manifest editor.
@@ -77,10 +84,8 @@ pub enum Op<R: Reference = ChunkRef> {
 /// # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
 /// # use nectar_primitives::chunk::ChunkAddress;
 /// let mut editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
-/// editor.insert("/index.html", ChunkAddress::from([7u8; 32]));
-/// editor
-///     .insert("/", ChunkAddress::from([8u8; 32]))
-///     .with_index_document("index.html");
+/// editor.insert("index.html", ChunkAddress::from([7u8; 32]));
+/// editor.set_index_document("index.html");
 /// assert_eq!(editor.ops().len(), 2);
 /// ```
 #[derive(Debug)]
@@ -205,10 +210,11 @@ impl<S, R: Reference> ManifestEditor<S, R> {
 
     /// Record merging one metadata key into the manifest's root path node.
     ///
-    /// A merge, not a replace: it is how a site document is set on a root that
-    /// binds no entry of its own. An insert at the root path replaces the whole
-    /// binding instead, so build the site documents on it with
-    /// [`Insert::with_index_document`] and [`Insert::with_error_document`].
+    /// The root path node is [`metadata::ROOT_PATH`], the one-byte fork under
+    /// the structural root that the reference client keeps the site-level
+    /// documents on. A merge, not a replace: only the named key moves, and a
+    /// node that binds no entry of its own is created as the metadata-only value
+    /// the reference client writes there.
     pub fn set_root_metadata(
         &mut self,
         key: impl Into<String>,
@@ -221,6 +227,29 @@ impl<S, R: Reference> ManifestEditor<S, R> {
                 value: value.into(),
             },
         )
+    }
+
+    /// Record removing one metadata key from the manifest's root path node.
+    ///
+    /// The inverse of [`set_root_metadata`](Self::set_root_metadata): the other
+    /// keys stay, and a node the removal leaves carrying nothing is pruned, so
+    /// clearing the only key restores the root the manifest had before it was
+    /// set. A node that does not carry the key is a no-op.
+    pub fn clear_root_metadata(&mut self, key: impl Into<String>) -> &mut Self {
+        self.push(
+            metadata::ROOT_PATH,
+            Op::ClearRootMetadata { key: key.into() },
+        )
+    }
+
+    /// Record setting the website index document.
+    pub fn set_index_document(&mut self, filename: &str) -> &mut Self {
+        self.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, filename)
+    }
+
+    /// Record setting the website error document.
+    pub fn set_error_document(&mut self, path: &str) -> &mut Self {
+        self.set_root_metadata(metadata::WEBSITE_ERROR_DOCUMENT, path)
     }
 
     fn push(&mut self, path: impl AsRef<[u8]>, op: Op<R>) -> &mut Self {
@@ -251,31 +280,6 @@ impl<R: Reference> Insert<'_, R> {
     pub fn meta(&mut self, metadata: BTreeMap<String, String>) -> &mut Self {
         self.metadata = metadata;
         self
-    }
-
-    /// Set one metadata key on the insert, keeping the keys already set.
-    pub fn with(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
-        self.metadata.insert(key.into(), value.into());
-        self
-    }
-
-    /// Set the entry's content type.
-    pub fn with_content_type(&mut self, value: impl Into<String>) -> &mut Self {
-        self.with(metadata::CONTENT_TYPE, value)
-    }
-
-    /// Set the website index document, served for a directory path.
-    ///
-    /// Root-scope metadata: set it on the insert at [`metadata::ROOT_PATH`].
-    pub fn with_index_document(&mut self, value: impl Into<String>) -> &mut Self {
-        self.with(metadata::WEBSITE_INDEX_DOCUMENT, value)
-    }
-
-    /// Set the website error document, served for an unresolved path.
-    ///
-    /// Root-scope metadata: set it on the insert at [`metadata::ROOT_PATH`].
-    pub fn with_error_document(&mut self, value: impl Into<String>) -> &mut Self {
-        self.with(metadata::WEBSITE_ERROR_DOCUMENT, value)
     }
 }
 
@@ -316,6 +320,9 @@ impl<S: NodeLoader, R: Reference + MaybeSend> ManifestEditor<S, R> {
                 Op::SetRootMetadata { key, value } => {
                     apply_metadata_merge::<S, R>(&mut self.trie, &path, key, value, &self.store)
                         .await
+                }
+                Op::ClearRootMetadata { key } => {
+                    apply_metadata_clear::<S, R>(&mut self.trie, &path, &key, &self.store).await
                 }
             };
             result.map_err(|source| EditorError::Apply {
@@ -397,6 +404,75 @@ where
             meta.insert(key, value);
             trie.add(path, None, meta, store).await
         }
+    }
+}
+
+/// Remove one metadata key from the node at `path`.
+///
+/// Expressed in the two ops the wire already pins, so no new shape reaches it:
+/// what the node keeps is rebound with [`Node::add`], and a node the removal
+/// leaves carrying nothing at all is cleared, which prunes it exactly as a
+/// childless leaf is pruned. An absent node, or one that does not carry the key,
+/// dirties nothing.
+async fn apply_metadata_clear<S, R>(
+    trie: &mut Node<R>,
+    path: &[u8],
+    key: &str,
+    store: &S,
+) -> Result<(), MantarayError>
+where
+    S: NodeLoader,
+    R: Reference + MaybeSend,
+{
+    let Some((entry, mut metadata)) = binding_at(trie, path, store).await? else {
+        return Ok(());
+    };
+    if metadata.remove(key).is_none() {
+        return Ok(());
+    }
+    if metadata.is_empty() && entry.is_none() {
+        return trie.clear(path, store).await.map(|_| ());
+    }
+    trie.add(path, entry, metadata, store).await
+}
+
+/// The binding the node at `path` carries, or `None` when no node is there.
+///
+/// Every visited node is dirtied, exactly as the merge descent dirties one: the
+/// rebind that follows loads no node it has not already loaded, so a node left
+/// clean here would keep its persisted reference and shadow the rebind at commit.
+/// Dirtying an unchanged node is safe, because it re-encodes to the same address.
+async fn binding_at<S, R>(
+    trie: &mut Node<R>,
+    path: &[u8],
+    store: &S,
+) -> Result<Option<(Option<R>, BTreeMap<String, String>)>, MantarayError>
+where
+    S: NodeLoader,
+    R: Reference,
+{
+    let mut current = trie;
+    let mut rest = path;
+    loop {
+        if !current.is_loaded() {
+            current.load(store).await?;
+        }
+        current.mark_dirty();
+        let Some((first, _)) = rest.split_first() else {
+            return Ok(Some((
+                current.reference().cloned(),
+                current.metadata().clone(),
+            )));
+        };
+        let Some(fork) = current.forks.get_mut(first) else {
+            return Ok(None);
+        };
+        let prefix: &[u8] = &fork.prefix;
+        let Some(next) = rest.strip_prefix(prefix) else {
+            return Ok(None);
+        };
+        current = &mut fork.node;
+        rest = next;
     }
 }
 
@@ -759,10 +835,10 @@ mod tests {
                     editor.remove(p);
                 }
                 Script::SetIndex(v) => {
-                    editor.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, v);
+                    editor.set_index_document(v);
                 }
                 Script::SetError(v) => {
-                    editor.set_root_metadata(metadata::WEBSITE_ERROR_DOCUMENT, v);
+                    editor.set_error_document(v);
                 }
             }
         }
@@ -889,7 +965,7 @@ mod tests {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
         editor.insert("/c", make_addr("c"));
         editor.insert("//", make_addr("s"));
-        editor.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, "doc");
+        editor.set_index_document("doc");
         let (root, loadsaver) = run(editor.commit()).unwrap();
         let entry = run(crate::Reader::new(loadsaver).get(root, b"/"))
             .unwrap()
@@ -1006,7 +1082,7 @@ mod tests {
         let (root, loadsaver) = run(editor.commit()).unwrap();
         assert_ne!(root, want, "the metadata must change the root");
         let mut editor = Editor::open(root, loadsaver);
-        editor.set_root_metadata(metadata::WEBSITE_INDEX_DOCUMENT, "index.html");
+        editor.set_index_document("index.html");
         let (got, loadsaver) = run(editor.commit()).unwrap();
         assert_eq!(got, want);
 

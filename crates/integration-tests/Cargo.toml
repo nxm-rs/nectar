@@ -141,8 +141,8 @@ name = "manifest_listing"
 path = "tests/manifest/listing.rs"
 
 [[test]]
-name = "manifest_root_key"
-path = "tests/manifest/root_key.rs"
+name = "manifest_root_config"
+path = "tests/manifest/root_config.rs"
 
 [[test]]
 name = "manifest_vocabulary"
@@ -151,6 +151,10 @@ path = "tests/manifest/vocabulary.rs"
 [[test]]
 name = "mantaray_bmt_nodes"
 path = "tests/mantaray/bmt_nodes.rs"
+
+[[test]]
+name = "mantaray_bee_layout"
+path = "tests/mantaray/bee_layout.rs"
 
 [[test]]
 name = "mantaray_legacy_differential"

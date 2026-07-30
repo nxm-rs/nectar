@@ -12,12 +12,8 @@ use crate::format::{Format, V1};
 /// An arbitrary-byte map key, ordered bytewise.
 ///
 /// Unbounded: long keys chain through trie nodes on the wire, so no format
-/// bound applies to the key itself. The empty key is the one key with no slot
-/// at all: a fork indexes on a byte, so both `apply` and `build` reject it.
-///
-/// The root key, the separator alone, is the one key with a slot of its own:
-/// its value and its metadata live in the root extension, so it is the least
-/// key of every database and the one a manifest's site documents hang from.
+/// bound applies to the key itself. The empty key is legal; its value lives
+/// in the root extension.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key(Bytes);
 
@@ -26,18 +22,6 @@ impl Key {
     #[must_use]
     pub const fn empty() -> Self {
         Self(Bytes::new())
-    }
-
-    /// The root key of format `F`: the separator alone.
-    #[must_use]
-    pub fn root<F: Format>() -> Self {
-        Self(crate::format::root_key::<F>())
-    }
-
-    /// Whether this is the root key of format `F`.
-    #[must_use]
-    pub fn is_root<F: Format>(&self) -> bool {
-        crate::format::is_root_key::<F>(&self.0)
     }
 
     /// Wrap `bytes` as a key.
