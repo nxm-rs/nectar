@@ -288,10 +288,10 @@ where
             let mut entries = Vec::new();
             while let Some(item) = listing.next().await? {
                 // A reserved key is not content, so the top level never lists
-                // it, whatever put it in the database. A subdirectory keyed at
-                // the separator is not that key: it stands for the content
-                // below it, which the trie lists too.
-                if !item.is_dir() && is_reserved(item.key()) {
+                // it, whatever put it in the database. The folder view calls a
+                // bare separator a subdirectory, which would surface the key
+                // the guard exists to hide, so the kind does not excuse it.
+                if is_reserved(item.key()) {
                     continue;
                 }
                 entries.push(listed(item));
