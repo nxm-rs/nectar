@@ -58,7 +58,8 @@ use nectar_ldb::{
 };
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, reserved_key,
+    Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, MetadataView, WellKnownKey,
+    reserved_key,
 };
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -917,6 +918,73 @@ async fn both_top_levels(keys: &[&str]) -> (Vec<String>, Vec<String>) {
         listing(&trie.at(&trie_root), &top).await,
         listing(&kv.at(&kv_root), &top).await,
     )
+}
+
+/// An insert replaces the whole binding: a bare re-insert takes a new reference
+/// and clears the metadata the path carried, and the one-shot writes the same.
+async fn insert_replaces_the_whole_binding<M>(manifest: &M, base: &ChunkRef)
+where
+    M: Manifest<ChunkRef>,
+    M::Metadata: Clone + PartialEq + std::fmt::Debug,
+{
+    let page = ManifestPath::from("page.html");
+    let meta = manifest
+        .metadata_from_view(&MetadataView::new().with(WellKnownKey::ContentType, "text/html"))
+        .unwrap();
+    assert_ne!(
+        meta,
+        M::Metadata::default(),
+        "the format carries a content type"
+    );
+
+    let carried = {
+        let mut writer = manifest.edit(base);
+        writer.insert(page.clone(), reference(1)).meta(meta.clone());
+        writer.commit().await.unwrap()
+    };
+    assert_eq!(manifest.at(&carried).metadata(&page).await.unwrap(), meta);
+
+    let bare = {
+        let mut writer = manifest.edit(&carried);
+        writer.insert(page.clone(), reference(2));
+        writer.commit().await.unwrap()
+    };
+    let view = manifest.at(&bare);
+    assert_eq!(
+        view.get(&page).await.unwrap(),
+        Some(MapEntry::Reference(reference(2))),
+        "the reference is replaced"
+    );
+    assert_eq!(
+        view.metadata(&page).await.unwrap(),
+        M::Metadata::default(),
+        "a bare insert clears the metadata the path carried"
+    );
+
+    let one_shot = manifest
+        .insert(&carried, page.clone(), reference(2))
+        .await
+        .unwrap();
+    assert_eq!(one_shot, bare, "the one-shot is an edit of one insert");
+}
+
+#[test]
+fn an_insert_replaces_the_whole_binding_on_both_formats() {
+    run(async {
+        let raw: Raw = Arc::new(MemoryStore::new());
+        let store: Store = ContentGet::new(Arc::clone(&raw));
+
+        let nodes = NodeLoadSaver::new(Arc::clone(&raw));
+        let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
+        let (trie_empty, _) = editor.commit().await.unwrap();
+        let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
+        insert_replaces_the_whole_binding(&trie, &ChunkRef::new(trie_empty)).await;
+
+        let builder: Builder<V1> = Builder::new();
+        let kv_empty = *builder.build(&store, &Plaintext).await.unwrap().root();
+        let kv = LdbManifest::plain(store.clone());
+        insert_replaces_the_whole_binding(&kv, &kv_empty).await;
+    });
 }
 
 /// A reserved key planted past the seam is not listed, whatever kind the
