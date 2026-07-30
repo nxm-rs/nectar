@@ -36,13 +36,13 @@ impl NodeRef for EncryptedChunkRef {}
 /// trie root may carry one; the fetching party enforces that on fetch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RootExtension<F: Format = V1> {
-    /// The value at the root key.
+    /// The value at the empty key.
     Entry(Entry<F>),
     /// Manifest-level metadata.
     Metadata(Metadata<F>),
-    /// Both the root-key value and manifest-level metadata.
+    /// Both the empty-key value and manifest-level metadata.
     Both {
-        /// The value at the root key.
+        /// The value at the empty key.
         entry: Entry<F>,
         /// Manifest-level metadata.
         metadata: Metadata<F>,
@@ -61,7 +61,7 @@ impl<F: Format> RootExtension<F> {
         }
     }
 
-    /// The value at the root key.
+    /// The value at the empty key.
     #[must_use]
     pub const fn entry(&self) -> Option<&Entry<F>> {
         match self {
@@ -139,7 +139,7 @@ impl<F: Format, R: NodeRef> Node<F, R> {
         self.root = root;
     }
 
-    /// The value at the root key.
+    /// The value at the empty key.
     #[must_use]
     pub const fn entry(&self) -> Option<&Entry<F>> {
         match &self.root {

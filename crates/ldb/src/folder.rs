@@ -151,10 +151,7 @@ where
 /// The site-level document conventions read from a manifest's root metadata.
 ///
 /// Both are optional and root-scope: an index document is served for a
-/// directory path, an error document for an otherwise unresolved path. They
-/// resolve differently, so they are spelled differently: the index document is
-/// a filename joined below each directory, where the error document is one whole
-/// key and so is absolute like every other path.
+/// directory path, an error document for an otherwise unresolved path.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Website {
     index: Option<Bytes>,
@@ -236,12 +233,9 @@ where
     /// List the immediate children of the directory named by `dir` in key
     /// order, collapsing deeper keys at the next separator.
     ///
-    /// `dir` is used as a key prefix, so the empty prefix selects the whole key
-    /// space and a directory conventionally ends with the separator: over the
-    /// absolute keys a manifest stores, that makes the root directory the
-    /// separator alone. No path is a child of itself, so a directory never
-    /// lists itself. Only the trie nodes on the frontier are fetched; the value
-    /// chunks a listing names are not.
+    /// `dir` is used as a key prefix: the root is the empty key and a nested
+    /// directory conventionally ends with the separator. Only the trie nodes on
+    /// the frontier are fetched; the value chunks a listing names are not.
     pub async fn dir(&self, root: &R, dir: &Key) -> Result<Listing<'_, S, F, R>, ReaderError> {
         dir_at(self.store(), root, dir).await
     }
@@ -261,13 +255,12 @@ where
     /// An exact key wins; otherwise the path is read as a directory and its
     /// index document is tried, then the error document.
     ///
-    /// Keys are absolute, so a path already ending in the separator names a
-    /// directory directly and the root directory is the separator alone; any
-    /// other path is read as a directory by inserting a separator before the
-    /// index document. The index document is a filename joined below each
-    /// directory, so `"/"` resolves `"/index.html"` and `"/docs/"` resolves
-    /// `"/docs/index.html"`. The error document is one whole key, so it is
-    /// absolute like any other path: `"/404.html"`.
+    /// Keys are bare, so the empty path and a path already ending in the
+    /// separator name a directory directly; any other path is read as a
+    /// directory by inserting a separator before the index document. The index
+    /// document is a filename joined below each directory, so `""` resolves
+    /// `"index.html"` and `"docs/"` resolves `"docs/index.html"`. The error
+    /// document is one whole key: `"404.html"`.
     pub async fn serve(&self, root: &R, path: &Key) -> Result<Served<F>, ReaderError> {
         if let Some(entry) = self.get(root, path).await? {
             return Ok(Served::Exact {

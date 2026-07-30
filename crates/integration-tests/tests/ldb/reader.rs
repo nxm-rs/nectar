@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_ldb::{
-    Builder, Child, Database, Entry, ForkTable, Key, KeyId, LdbManifest, Metadata, MetadataKey,
-    Node, NodePut, Plaintext, Prefix, Reader, V1,
+    Builder, Child, Database, Entry, ForkTable, Key, KeyId, LdbManifest, Metadata, Node, NodePut,
+    Plaintext, Prefix, Reader, V1,
 };
 use nectar_manifest::{Manifest, ManifestPath, MapView};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
@@ -133,8 +133,8 @@ fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
     let inline = Entry::inline(Bytes::from_static(b"hello"))?;
     builder.insert(Key::from(&b"inline.txt"[..]), inline.clone(), None);
     expected.push(("inline.txt".to_owned(), inline));
-    // The root key sets the manifest's own value in the root extension.
-    builder.insert(Key::root::<V1>(), entry(0x99), None);
+    // The empty key sets the manifest's own value in the root extension.
+    builder.insert(Key::empty(), entry(0x99), None);
 
     let built = run(builder.build(&memory, &Plaintext))?;
     let root = *built.root();
@@ -151,10 +151,10 @@ fn every_builder_key_reads_back_through_referenced_hops() -> Result<()> {
     };
     let reader: Reader<_> = Reader::new(&store);
 
-    // The root extension answers the root key.
+    // The root extension answers the empty key.
     ensure!(
-        run(reader.get(&root, &Key::root::<V1>()))? == Some(entry(0x99)),
-        "the root key reads the root value",
+        run(reader.get(&root, &Key::empty()))? == Some(entry(0x99)),
+        "empty key reads the root value",
     );
 
     // Every key reads back its exact value, and no single lookup ever fetches a
@@ -220,11 +220,14 @@ fn an_absent_key_stops_at_the_first_unmatched_fork() -> Result<()> {
 }
 
 /// A website root carries the site documents in its manifest metadata and binds
-/// no root entry, so every metadata read at the root key has to answer with it.
+/// no root entry, so every read of that slot has to answer with it.
 ///
 /// The three surfaces are the streaming reader, the root-bound view, and the
-/// `Manifest` seam's view over the same root. Presence is a separate question:
-/// the root entry is absent, so `get` and `contains_key` stay absent.
+/// `Manifest` seam's view over the same root. The seam reaches the slot through
+/// its own option-typed accessors rather than through a key, because the slot is
+/// not a content key: the empty path is absent on every map verb. Presence is a
+/// separate question too: the root entry is absent, so `get` and `contains_key`
+/// stay absent.
 #[test]
 fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
     let store = ContentGet::new(Arc::new(MemoryStore::default()));
@@ -235,7 +238,7 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
     meta.insert(KeyId::WebsiteErrorDocument, Bytes::from_static(b"404.html"))?;
 
     let mut builder: Builder<V1> = Builder::new();
-    builder.insert(Key::from(&b"/index.html"[..]), entry(0x01), None);
+    builder.insert(Key::from(&b"index.html"[..]), entry(0x01), None);
     builder.manifest_metadata(meta.clone());
     let root = *run(builder.build(&store, &Plaintext))?.root();
 
@@ -247,7 +250,7 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
         ensure!(site.error() == Some(&b"404.html"[..]), "error document");
 
         // The reader, the view and the seam's view all report it.
-        let read = reader.metadata(&root, &Key::root::<V1>()).await?;
+        let read = reader.metadata(&root, &Key::empty()).await?;
         ensure!(
             read.as_ref() == Some(&meta),
             "the reader reads the metadata"
@@ -256,7 +259,7 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
         let db: Database<_> = Database::plain(&store);
         let view = db.at(&root);
         ensure!(
-            view.metadata(&Key::root::<V1>()).await? == read,
+            view.metadata(&Key::empty()).await? == read,
             "the view agrees"
         );
         ensure!(
@@ -265,26 +268,37 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
         );
 
         let seam = LdbManifest::plain(store.clone());
-        let mapped = MapView::metadata(&seam.at(&root), &ManifestPath::root()).await?;
-        ensure!(mapped == read, "the seam's view agrees");
+        let seam_view = seam.at(&root);
         ensure!(
-            mapped
+            MapView::index_document(&seam_view)
+                .await?
                 .as_ref()
-                .and_then(|meta| meta.get(&MetadataKey::from(KeyId::WebsiteIndexDocument)))
-                .map(Bytes::as_ref)
+                .map(ManifestPath::as_bytes)
                 == Some(&b"index.html"[..]),
             "the index document survives the seam",
         );
+        ensure!(
+            MapView::error_document(&seam_view)
+                .await?
+                .as_ref()
+                .map(ManifestPath::as_bytes)
+                == Some(&b"404.html"[..]),
+            "the error document survives the seam",
+        );
+        // The slot is not a content key, so no map verb reaches it.
+        let empty = ManifestPath::default();
+        ensure!(
+            MapView::metadata(&seam_view, &empty).await?.is_none(),
+            "the empty path carries no metadata",
+        );
+        ensure!(
+            MapView::get(&seam_view, &empty).await?.is_none(),
+            "the empty path binds nothing",
+        );
 
         // An absent root entry still reads as absent.
-        ensure!(
-            view.get(&Key::root::<V1>()).await?.is_none(),
-            "no root entry"
-        );
-        ensure!(
-            !view.contains_key(&Key::root::<V1>()).await?,
-            "no root binding"
-        );
+        ensure!(view.get(&Key::empty()).await?.is_none(), "no root entry");
+        ensure!(!view.contains_key(&Key::empty()).await?, "no root binding");
         Ok(())
     })
 }

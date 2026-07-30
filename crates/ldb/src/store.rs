@@ -668,7 +668,7 @@ mod tests {
     fn spilled_root(store: &ContentGet<MemoryStore>) -> ChunkRef {
         let mut builder = Builder::<V1>::new();
         for byte in 0u8..=255 {
-            builder.insert(Key::from(&[byte, 0][..]), entry(byte), None);
+            builder.insert(Key::from(&[byte][..]), entry(byte), None);
         }
         *run(builder.build(store, &Plaintext)).unwrap().root()
     }

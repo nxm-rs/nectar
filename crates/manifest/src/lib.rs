@@ -15,6 +15,13 @@
 //! because the map itself is immutable. [`Manifest::insert`] and
 //! [`Manifest::remove`] are the one-shot sugar over an edit of one op.
 //!
+//! The map is over content paths alone. A manifest's own configuration, the
+//! site index and error documents, is not a key in it: [`MapView`] answers
+//! `index_document` and `error_document` as options, and [`MapWriter`] sets
+//! them with the chainable `with_index_document` and `with_error_document`.
+//! Each lands in the format's own root slot, so no empty key and no magic path
+//! ever crosses the seam.
+//!
 //! Each format keeps its own metadata type and its own batch type: the static
 //! path erases nothing. [`DynManifest`] is the object-safe wrapper for a
 //! runtime-detected format, and unifies metadata behind
@@ -36,9 +43,26 @@
 //!         path: ManifestPath::from("stale.html"),
 //!     },
 //! ];
-//! // A path is absolute: the canonical key is rooted at the separator, in the
-//! // stored bytes of both formats.
-//! assert_eq!(ops[0].path().as_bytes(), b"/index.html");
+//! // A content path is stored bare and verbatim, which is what keeps the
+//! // mantaray image byte-identical to the reference client's.
+//! assert_eq!(ops[0].path().as_bytes(), b"index.html");
+//! ```
+//!
+//! The manifest's own configuration is a value rather than an op, because it is
+//! not a path:
+//!
+//! ```
+//! use nectar_manifest::{ManifestPath, SiteConfig};
+//!
+//! let config = SiteConfig::new()
+//!     .with_index_document(ManifestPath::from("index.html"))
+//!     .with_error_document(ManifestPath::from("404.html"));
+//! assert_eq!(
+//!     config.index_document().map(ManifestPath::as_bytes),
+//!     Some(&b"index.html"[..])
+//! );
+//! // The same setter clears, so nothing needs a second verb.
+//! assert!(config.with_index_document(None).with_error_document(None).is_empty());
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -69,6 +93,7 @@ mod listing;
 mod meta;
 mod op;
 mod path;
+mod site;
 mod view;
 mod writer;
 
@@ -77,6 +102,7 @@ pub use listing::{ListEntry, Listing};
 pub use meta::{ManifestMetadata, MetadataView, WellKnownKey};
 pub use op::ManifestOp;
 pub use path::ManifestPath;
+pub use site::SiteConfig;
 pub use view::{MapCursor, MapEntry, MapView};
 pub use writer::{Insert, MapWriter};
 
@@ -106,14 +132,14 @@ impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 /// borrows the store rather than cloning it. Use [`DynManifest`] where the
 /// format is a runtime choice.
 ///
-/// Paths are absolute, so [`ManifestPath::root`] is the ordinary key `"/"`:
-/// it is the least path, `get`, `contains_key`, `floor`, `iter` and `range`
-/// treat it like any other, and the site-level documents are well-known
-/// metadata on its entry. An insert there replaces the whole binding, site
-/// documents included, and a remove there clears that binding and leaves every
-/// child. The one thing that follows from the path rather than from a rule is
-/// [`MapView::dir`]: a directory lists its children, and no path is its own
-/// child, so `dir("/")` lists the top level without `"/"`.
+/// Content paths are stored bare and verbatim: `index.html` is the bytes
+/// `index.html` on both formats, byte-identical to what the reference client
+/// writes. The map is over content paths alone. The manifest's own
+/// configuration, the site index and error documents, is not a key in it: read
+/// it with [`MapView::index_document`] and [`MapView::error_document`], and
+/// write it with [`MapWriter::with_index_document`] and
+/// [`MapWriter::with_error_document`], each of which lands in the format's own
+/// root slot.
 pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;

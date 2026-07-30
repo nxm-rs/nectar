@@ -3,7 +3,6 @@
 use core::fmt::Debug;
 use core::hash::Hash;
 
-use bytes::Bytes;
 use nectar_primitives::DEFAULT_BODY_SIZE;
 
 use crate::count::MAX_WIRE_BYTES;
@@ -35,10 +34,9 @@ pub trait Format:
     /// The two payload bytes preceding the node body: `MAGIC || VERSION`.
     const PREAMBLE: [u8; 2] = [Self::MAGIC, Self::VERSION];
 
-    /// Path separator (ASCII `/`). The byte the folder and website views split
-    /// keys into path segments on, and the first byte of every key a manifest
-    /// stores, because a manifest path is absolute. The separator alone is the
-    /// root key, whose slot is the root extension.
+    /// Folder-view path separator (ASCII `/`). The byte the folder and website
+    /// views split keys into path segments on; a view-layer interpretation,
+    /// never stored in the trie.
     const SEPARATOR: u8 = b'/';
 
     /// Max node body bytes: the chunk body minus [`Self::PREAMBLE`].
@@ -94,21 +92,6 @@ pub trait Format:
     /// yields the same key, ciphertext and address, keeping canonical bytes
     /// and cross-build dedup intact for encrypted trees.
     const DERIVE_TAG: &'static [u8];
-}
-
-/// The key that addresses a database's own root slot: the separator alone.
-///
-/// Keys are absolute, so the separator alone sorts before every other key and
-/// names the database itself. Its value and its metadata live in the root
-/// extension, which is the slot's encoding and nothing more: the key reads,
-/// lists and writes like any other.
-pub(crate) fn root_key<F: Format>() -> Bytes {
-    Bytes::copy_from_slice(&[F::SEPARATOR])
-}
-
-/// Whether `key` is the root key of format `F`.
-pub(crate) fn is_root_key<F: Format>(key: &[u8]) -> bool {
-    key == [F::SEPARATOR]
 }
 
 /// The frozen `tag_version 0x01` parameter set.

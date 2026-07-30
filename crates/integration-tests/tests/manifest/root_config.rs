@@ -1,20 +1,24 @@
-//! The convergence gate: `"/"` is an ordinary key, and `remove` is exact-key,
-//! identically on both manifest formats.
+//! The convergence gate: content keys are bare, the manifest's own
+//! configuration is an option and not a key, and `remove` is exact-key.
+//! Identically on both manifest formats.
 //!
 //! Every scenario below is generic over the [`Manifest`] seam and is run twice,
 //! once per format. Two things therefore have to hold for it to pass: each
 //! format has to answer what the contract says, which the assertions inside the
 //! scenario check, and the two formats have to answer the same thing, which the
 //! [`Observed`] comparison in each test checks. Either failing names the exact
-//! verb and path that diverged, so a root-key edge surfaces here rather than at
-//! the gate.
+//! verb and path that diverged.
 //!
 //! # The contract under test
 //!
-//! `"/"` is a key like any other. `get`, `contains_key`, `metadata`, `floor`,
-//! `iter`, `range` and `load` treat it that way, an insert there replaces its
-//! whole binding, and `dir("/")` omits it only because no path is a child of
-//! itself.
+//! A content key is the path bytes verbatim, with nothing prepended. That is
+//! what keeps the trie image byte-identical to the reference client's, and
+//! `mantaray/legacy_differential.rs` pins the bytes themselves.
+//!
+//! The site index and error documents are read as `Option<ManifestPath>` and
+//! written through `with_index_document` and `with_error_document`. Each lands in
+//! the format's own root slot, which is never a key: no map verb reads it, no
+//! walk yields it, and the empty path reaches nothing at all.
 //!
 //! `remove` is exact-key on both formats, exactly as `HashMap::remove` is: the
 //! path's own value and metadata go, and no other path does. A path with
@@ -27,9 +31,7 @@ use std::sync::Arc;
 use nectar_file::MemSink;
 use nectar_ldb::{Builder, Key, LdbManifest, Plaintext, Reader as LdbReader, Served, V1};
 use nectar_loadsave::NodeLoadSaver;
-use nectar_manifest::{
-    Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, MetadataView, WellKnownKey,
-};
+use nectar_manifest::{Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter};
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
@@ -43,8 +45,8 @@ type Store = ContentGet<Raw>;
 /// The site index document: a filename joined below each directory, so it is
 /// relative on purpose.
 const INDEX: &str = "index.html";
-/// The site error document: one whole key, so it is absolute like any path.
-const ERROR: &str = "/404.html";
+/// The site error document: one whole content key, so it is bare like any path.
+const ERROR: &str = "404.html";
 
 /// A reference standing in for a file root; no chunk behind it is read.
 fn reference(byte: u8) -> ChunkRef {
@@ -64,22 +66,21 @@ struct Observed {
     keys: Vec<String>,
     /// Every path `range(..)` yields, in order.
     ranged: Vec<String>,
-    /// Every path a range excluding the root yields: the root is a bound like
-    /// any other, so excluding it drops exactly itself.
-    past_root: Vec<String>,
-    /// Every path a range up to and including the root yields: at most the root.
-    upto_root: Vec<String>,
-    /// Every path `dir("/")` lists, in order.
+    /// Every path `dir("")` lists, in order: the top level.
     listed: Vec<String>,
-    /// Every path `dir("/a")` lists: a prefix with no trailing separator, so it
+    /// Every path `dir("a")` lists: a prefix with no trailing separator, so it
     /// matches the paths starting with it rather than a directory.
     prefixed: Vec<String>,
+    /// The index document the manifest declares.
+    index_document: Option<String>,
+    /// The error document the manifest declares.
+    error_document: Option<String>,
     /// One row per probed path.
     probes: Vec<Probe>,
 }
 
-/// Every point read at one path, with the metadata answer reduced to the two
-/// facts that cross formats.
+/// Every point read at one path, with the metadata answer reduced to the one
+/// fact that crosses formats.
 #[derive(Debug, PartialEq, Eq)]
 struct Probe {
     path: String,
@@ -87,24 +88,11 @@ struct Probe {
     present: bool,
     /// Whether the path carries the format's empty metadata.
     bare: bool,
-    /// Whether the path carries exactly the site documents under test.
-    documents: bool,
     /// The greatest bound path at or below this one.
     floor: Option<String>,
     /// Whether a load of the path reached the sink; the references here name no
     /// stored chunk, so this is the verb reaching storage, not a naming answer.
     loaded: bool,
-}
-
-/// The site documents in the format's own metadata vocabulary.
-fn documents<M: Manifest<ChunkRef>>(manifest: &M) -> M::Metadata {
-    manifest
-        .metadata_from_view(
-            &MetadataView::new()
-                .with(WellKnownKey::IndexDocument, INDEX)
-                .with(WellKnownKey::ErrorDocument, ERROR),
-        )
-        .unwrap()
 }
 
 /// Read every verb over `root` at each of `paths`, in a format-independent
@@ -115,7 +103,6 @@ where
     M::Metadata: Clone + PartialEq + std::fmt::Debug,
 {
     let view = manifest.at(root);
-    let want = documents(manifest);
 
     let mut keys = Vec::new();
     let mut cursor = view.iter().await.unwrap();
@@ -123,21 +110,9 @@ where
         keys.push(text(&path));
     }
 
-    let root_path = ManifestPath::root();
     let ranged = drain(&view, (Bound::Unbounded, Bound::Unbounded)).await;
-    let past_root = drain(
-        &view,
-        (Bound::Excluded(root_path.clone()), Bound::Unbounded),
-    )
-    .await;
-    let upto_root = drain(
-        &view,
-        (Bound::Unbounded, Bound::Included(root_path.clone())),
-    )
-    .await;
-
-    let listed = listing(&view, &root_path).await;
-    let prefixed = listing(&view, &ManifestPath::from("/a")).await;
+    let listed = listing(&view, &ManifestPath::default()).await;
+    let prefixed = listing(&view, &ManifestPath::from("a")).await;
 
     let mut probes = Vec::new();
     for path in paths {
@@ -148,7 +123,6 @@ where
             entry: view.get(path).await.unwrap(),
             present: view.contains_key(path).await.unwrap(),
             bare: meta == M::Metadata::default(),
-            documents: meta == want,
             floor: view.floor(path).await.unwrap().map(|(path, _)| text(&path)),
             loaded: view.load(path, &mut sink).await.is_ok(),
         });
@@ -157,10 +131,10 @@ where
     Observed {
         keys,
         ranged,
-        past_root,
-        upto_root,
         listed,
         prefixed,
+        index_document: view.index_document().await.unwrap().map(|p| text(&p)),
+        error_document: view.error_document().await.unwrap().map(|p| text(&p)),
         probes,
     }
 }
@@ -189,214 +163,224 @@ async fn listing<V: MapView<ChunkRef>>(view: &V, dir: &ManifestPath) -> Vec<Stri
         .collect()
 }
 
-/// The paths every scenario probes: the root, a top-level file, a directory key
+/// The paths every scenario probes: the empty path and the separator alone,
+/// which name no content key on either format, a top-level file, a directory key
 /// and a file below it, an interior key with siblings past it, and one absent
 /// path.
 fn probed() -> Vec<ManifestPath> {
     [
+        "",
         "/",
-        // Sorts immediately after the root and before every named path, so its
-        // floor is the root itself when the root is bound and nothing when it is
-        // not.
-        "/!",
-        "/404.html",
-        "/a",
-        "/ab",
-        "/ac",
-        "/img/",
-        "/img/logo.png",
-        "/index.html",
-        "/zz",
+        "!",
+        "404.html",
+        "a",
+        "ab",
+        "ac",
+        "img/",
+        "img/logo.png",
+        "index.html",
+        "zz",
     ]
     .into_iter()
     .map(ManifestPath::from)
     .collect()
 }
 
-/// Every verb at `"/"`, from the site documents on its entry through to the
-/// listing that omits it.
-async fn every_verb_at_the_root<M>(manifest: &M, empty: &ChunkRef) -> Vec<Observed>
+/// The site documents through their option-typed API: set, read back, cleared,
+/// and never a key in the map.
+async fn the_site_config_is_an_option_and_not_a_key<M>(
+    manifest: &M,
+    empty: &ChunkRef,
+) -> Vec<Observed>
 where
     M: Manifest<ChunkRef>,
     M::Metadata: Clone + PartialEq + std::fmt::Debug,
 {
-    let root_path = ManifestPath::root();
-    let index = ManifestPath::from("/index.html");
-    let logo = ManifestPath::from("/img/logo.png");
-    let img = ManifestPath::from("/img/");
+    let index = ManifestPath::from("index.html");
+    let logo = ManifestPath::from("img/logo.png");
+    let empty_path = ManifestPath::default();
+    let separator = ManifestPath::from("/");
 
-    let bound = {
+    // Content only: nothing declares a document yet.
+    let content = {
         let mut writer = manifest.edit(empty);
         writer.insert(index.clone(), reference(1));
         writer.insert(logo.clone(), reference(2));
-        writer
-            .insert(root_path.clone(), reference(9))
-            .with_index_document(INDEX)
-            .with_error_document(ERROR);
         writer.commit().await.unwrap()
     };
-
-    let view = manifest.at(&bound);
-
-    // get, contains_key and metadata answer at the root like anywhere else.
+    let view = manifest.at(&content);
     assert_eq!(
-        view.get(&root_path).await.unwrap(),
-        Some(MapEntry::Reference(reference(9))),
-        "get answers at the root"
-    );
-    assert!(
-        view.contains_key(&root_path).await.unwrap(),
-        "the root is bound"
+        view.index_document().await.unwrap(),
+        None,
+        "an unset index document reads as None"
     );
     assert_eq!(
-        view.metadata(&root_path).await.unwrap(),
-        documents(manifest),
-        "metadata at the root reads the site documents back"
+        view.error_document().await.unwrap(),
+        None,
+        "an unset error document reads as None"
     );
 
-    // floor: the root is the least path, so it is its own floor and the floor of
-    // nothing else.
+    // Both documents, set through the chainable option-typed setters.
+    let configured = {
+        let mut writer = manifest.edit(&content);
+        writer
+            .with_index_document(ManifestPath::from(INDEX))
+            .with_error_document(ManifestPath::from(ERROR));
+        writer.commit().await.unwrap()
+    };
+    let view = manifest.at(&configured);
     assert_eq!(
-        view.floor(&root_path).await.unwrap().map(|(p, _)| text(&p)),
-        Some(String::from("/")),
-        "a bound path is its own floor, the root included"
+        view.index_document().await.unwrap().map(|p| text(&p)),
+        Some(String::from(INDEX)),
+        "the index document reads back"
+    );
+    assert_eq!(
+        view.error_document().await.unwrap().map(|p| text(&p)),
+        Some(String::from(ERROR)),
+        "the error document reads back"
+    );
+    assert_ne!(
+        configured, content,
+        "declaring a document moves the manifest root"
     );
 
-    // iter and range surface it, sorted first, with nothing filtered.
+    // The slot is not a key: no map verb reaches it, at the empty path or at the
+    // separator the trie keys its own slot with.
+    for path in [&empty_path, &separator] {
+        assert_eq!(
+            view.get(path).await.unwrap(),
+            None,
+            "{:?} binds nothing",
+            text(path)
+        );
+        assert!(
+            !view.contains_key(path).await.unwrap(),
+            "{:?} is unbound",
+            text(path)
+        );
+        assert_eq!(
+            view.metadata(path).await.unwrap(),
+            M::Metadata::default(),
+            "{:?} carries no metadata",
+            text(path)
+        );
+        assert!(
+            view.load(path, &mut MemSink::new()).await.is_err(),
+            "{:?} names no data",
+            text(path)
+        );
+    }
+
+    // No walk yields it either, and the listing is content alone.
     let mut walked = Vec::new();
     let mut cursor = view.iter().await.unwrap();
     while let Some((path, _)) = cursor.next().await.unwrap() {
         walked.push(text(&path));
     }
-    assert_eq!(walked, ["/", "/img/logo.png", "/index.html"], "iter");
-
-    let mut ranged = Vec::new();
-    let mut cursor = view.range(root_path.clone()..).await.unwrap();
-    while let Some((path, _)) = cursor.next().await.unwrap() {
-        ranged.push(text(&path));
-    }
-    assert_eq!(ranged, walked, "a range from the root yields every path");
-
-    // dir lists children, and no path is a child of itself: that alone is why
-    // the root is absent from its own listing.
-    let listed: Vec<String> = view
-        .dir(&root_path)
-        .await
-        .unwrap()
-        .entries()
-        .iter()
-        .map(|entry| text(entry.path()))
-        .collect();
-    assert_eq!(listed, ["/img/", "/index.html"], "dir(\"/\") omits itself");
-
-    // load reaches storage at the root, so it fails on a reference that names no
-    // stored chunk rather than answering from the manifest.
-    let mut sink = MemSink::new();
-    assert!(
-        view.load(&root_path, &mut sink).await.is_err(),
-        "a load at the root reaches storage"
+    assert_eq!(
+        walked,
+        ["img/logo.png", "index.html"],
+        "iter yields content keys, bare and in order"
+    );
+    assert_eq!(
+        listing(&view, &empty_path).await,
+        ["img/", "index.html"],
+        "the top level lists content alone"
     );
 
-    // A bare insert at the root replaces the whole binding, so the site
-    // documents go with the reference they were attached to.
-    let bare = manifest
-        .insert(&bound, root_path.clone(), reference(8))
+    // A write at the empty path reaches nothing: it is a prefix, not a key.
+    let ignored = manifest
+        .insert(&configured, empty_path.clone(), reference(9))
         .await
         .unwrap();
-    let view = manifest.at(&bare);
     assert_eq!(
-        view.get(&root_path).await.unwrap(),
-        Some(MapEntry::Reference(reference(8))),
-        "the root reference is replaced"
+        ignored, configured,
+        "an insert at the empty path changes nothing"
     );
     assert_eq!(
-        view.metadata(&root_path).await.unwrap(),
-        M::Metadata::default(),
-        "a bare insert at the root clears the site documents"
+        manifest
+            .remove(&configured, empty_path.clone())
+            .await
+            .unwrap(),
+        configured,
+        "a remove at the empty path changes nothing"
     );
 
-    // A remove at the root clears that binding and leaves every child, because
-    // the paths below it are its children rather than part of its value.
-    let cleared = manifest.remove(&bound, root_path.clone()).await.unwrap();
-    assert_ne!(cleared, bound, "clearing a bound root moves the root");
-    let view = manifest.at(&cleared);
+    // The two documents are independent: setting one leaves the other alone.
+    let index_only = {
+        let mut writer = manifest.edit(&content);
+        writer.with_index_document(ManifestPath::from(INDEX));
+        writer.commit().await.unwrap()
+    };
+    let view = manifest.at(&index_only);
     assert_eq!(
-        view.get(&root_path).await.unwrap(),
+        view.index_document().await.unwrap().map(|p| text(&p)),
+        Some(String::from(INDEX)),
+        "the index document is declared"
+    );
+    assert_eq!(
+        view.error_document().await.unwrap(),
         None,
-        "the root binding is gone"
-    );
-    assert!(
-        !view.contains_key(&root_path).await.unwrap(),
-        "the root is unbound"
-    );
-    assert_eq!(
-        view.metadata(&root_path).await.unwrap(),
-        M::Metadata::default(),
-        "a remove at the root clears the site documents with the value"
-    );
-    for child in [&index, &logo] {
-        assert_eq!(
-            view.get(child).await.unwrap(),
-            Some(MapEntry::Reference(if child == &index {
-                reference(1)
-            } else {
-                reference(2)
-            })),
-            "the child at {} survives the removal of the root",
-            text(child)
-        );
-    }
-    let listed: Vec<String> = view
-        .dir(&root_path)
-        .await
-        .unwrap()
-        .entries()
-        .iter()
-        .map(|entry| text(entry.path()))
-        .collect();
-    assert_eq!(
-        listed,
-        ["/img/", "/index.html"],
-        "the listing is untouched by the removal of the root"
-    );
-    assert!(
-        !view.contains_key(&img).await.unwrap(),
-        "a directory key nothing bound stays unbound"
+        "and the error document is not"
     );
 
-    // A second remove at the now-unbound root is a no-op, and so is one on a
-    // root that was never bound.
+    // Clearing is the same setter with `None`, one document at a time.
+    let error_cleared = {
+        let mut writer = manifest.edit(&configured);
+        writer.with_error_document(None);
+        writer.commit().await.unwrap()
+    };
     assert_eq!(
-        manifest.remove(&cleared, root_path.clone()).await.unwrap(),
-        cleared,
-        "removing an unbound root changes nothing"
-    );
-    assert_eq!(
-        manifest.remove(empty, root_path.clone()).await.unwrap(),
-        *empty,
-        "removing the root of an empty manifest changes nothing"
+        error_cleared, index_only,
+        "clearing the error document lands on the root that never declared one"
     );
 
-    // A child going does not touch the root's binding: the site documents are
-    // the root key's metadata, not a property of the tree below it.
-    let child_gone = manifest.remove(&bound, logo.clone()).await.unwrap();
+    // Clearing the last document lands back on the content-only root, so the
+    // configuration leaves no trace on the wire.
+    let stripped = {
+        let mut writer = manifest.edit(&configured);
+        writer.with_index_document(None).with_error_document(None);
+        writer.commit().await.unwrap()
+    };
+    assert_eq!(
+        stripped, content,
+        "clearing both documents restores the content-only root"
+    );
+    let view = manifest.at(&stripped);
+    assert_eq!(view.index_document().await.unwrap(), None, "index cleared");
+    assert_eq!(view.error_document().await.unwrap(), None, "error cleared");
+
+    // Clearing what was never declared is a no-op.
+    let noop = {
+        let mut writer = manifest.edit(&content);
+        writer.with_index_document(None).with_error_document(None);
+        writer.commit().await.unwrap()
+    };
+    assert_eq!(
+        noop, content,
+        "clearing an undeclared document changes nothing"
+    );
+
+    // Removing a content key does not touch the configuration: the documents are
+    // the manifest's own, not a property of the tree below it.
+    let child_gone = manifest.remove(&configured, logo.clone()).await.unwrap();
     let view = manifest.at(&child_gone);
     assert_eq!(
-        view.get(&root_path).await.unwrap(),
-        Some(MapEntry::Reference(reference(9))),
-        "the root binding outlives a child"
+        view.index_document().await.unwrap().map(|p| text(&p)),
+        Some(String::from(INDEX)),
+        "the index document outlives a content key"
     );
     assert_eq!(
-        view.metadata(&root_path).await.unwrap(),
-        documents(manifest),
-        "so do the site documents"
+        view.error_document().await.unwrap().map(|p| text(&p)),
+        Some(String::from(ERROR)),
+        "so does the error document"
     );
 
-    // Every root this scenario produced is observed, so a divergence in any
-    // state the root key can be in has to show up: bound with site documents,
-    // rebound bare, unbound with its children intact, and bound with a child
-    // taken out from under it.
-    observed(manifest, &[&bound, &bare, &cleared, &child_gone]).await
+    observed(
+        manifest,
+        &[&content, &configured, &index_only, &stripped, &child_gone],
+    )
+    .await
 }
 
 /// Every shape a removal can take, on the one manifest that holds all of them.
@@ -405,12 +389,12 @@ where
     M: Manifest<ChunkRef>,
     M::Metadata: Clone + PartialEq + std::fmt::Debug,
 {
-    let a = ManifestPath::from("/a");
-    let ab = ManifestPath::from("/ab");
-    let ac = ManifestPath::from("/ac");
-    let img = ManifestPath::from("/img/");
-    let logo = ManifestPath::from("/img/logo.png");
-    let index = ManifestPath::from("/index.html");
+    let a = ManifestPath::from("a");
+    let ab = ManifestPath::from("ab");
+    let ac = ManifestPath::from("ac");
+    let img = ManifestPath::from("img/");
+    let logo = ManifestPath::from("img/logo.png");
+    let index = ManifestPath::from("index.html");
 
     let base = {
         let mut writer = manifest.edit(empty);
@@ -423,7 +407,7 @@ where
     // An absent path: nothing to remove, so nothing changes.
     assert_eq!(
         manifest
-            .remove(&base, ManifestPath::from("/nowhere"))
+            .remove(&base, ManifestPath::from("nowhere"))
             .await
             .unwrap(),
         base,
@@ -483,17 +467,9 @@ where
         view.dir(&img).await.unwrap().entries().is_empty(),
         "the emptied directory lists nothing"
     );
-    let listed: Vec<String> = view
-        .dir(&ManifestPath::root())
-        .await
-        .unwrap()
-        .entries()
-        .iter()
-        .map(|entry| text(entry.path()))
-        .collect();
     assert_eq!(
-        listed,
-        ["/ac", "/index.html"],
+        listing(&view, &ManifestPath::default()).await,
+        ["ac", "index.html"],
         "the emptied directory is gone from the top level"
     );
 
@@ -501,22 +477,22 @@ where
     // other path with children does.
     let bound_dir = {
         let mut writer = manifest.edit(&emptied);
-        writer.insert(ManifestPath::from("/d/"), reference(6));
-        writer.insert(ManifestPath::from("/d/x"), reference(7));
+        writer.insert(ManifestPath::from("d/"), reference(6));
+        writer.insert(ManifestPath::from("d/x"), reference(7));
         writer.commit().await.unwrap()
     };
     let dir_cleared = manifest
-        .remove(&bound_dir, ManifestPath::from("/d/"))
+        .remove(&bound_dir, ManifestPath::from("d/"))
         .await
         .unwrap();
     let view = manifest.at(&dir_cleared);
     assert_eq!(
-        view.get(&ManifestPath::from("/d/")).await.unwrap(),
+        view.get(&ManifestPath::from("d/")).await.unwrap(),
         None,
         "the directory key's own binding is gone"
     );
     assert_eq!(
-        view.get(&ManifestPath::from("/d/x")).await.unwrap(),
+        view.get(&ManifestPath::from("d/x")).await.unwrap(),
         Some(MapEntry::Reference(reference(7))),
         "the path below it survives"
     );
@@ -524,7 +500,7 @@ where
     // Removing the last path leaves an empty manifest that still reads.
     let stripped = {
         let mut writer = manifest.edit(&dir_cleared);
-        for path in [&ac, &index, &ManifestPath::from("/d/x")] {
+        for path in [&ac, &index, &ManifestPath::from("d/x")] {
             writer.remove(path.clone());
         }
         writer.commit().await.unwrap()
@@ -535,7 +511,7 @@ where
         "the stripped manifest holds no path"
     );
     assert!(
-        view.dir(&ManifestPath::root())
+        view.dir(&ManifestPath::default())
             .await
             .unwrap()
             .entries()
@@ -603,18 +579,19 @@ macro_rules! differential {
 }
 
 differential!(
-    every_verb_at_the_root_agrees_across_formats,
-    every_verb_at_the_root
+    the_site_config_agrees_across_formats,
+    the_site_config_is_an_option_and_not_a_key
 );
 differential!(every_remove_shape_agrees_across_formats, every_remove_shape);
 
-/// The site documents resolve over rooted keys: the index document is a filename
+/// The site documents resolve over bare keys: the index document is a filename
 /// joined below each directory, and the error document is one whole key.
 ///
-/// The manifest is written through the seam's typed builders and read through the
-/// database's own website reader, so this pins the two halves against each other.
+/// The manifest is written through the seam's option-typed setters and read
+/// through the database's own website reader, so this pins the two halves against
+/// each other.
 #[test]
-fn website_documents_resolve_over_rooted_keys() {
+fn website_documents_resolve_over_bare_keys() {
     run(async {
         let raw: Raw = Arc::new(MemoryStore::new());
         let store: Store = ContentGet::new(raw);
@@ -624,14 +601,13 @@ fn website_documents_resolve_over_rooted_keys() {
 
         let root = {
             let mut writer = kv.edit(&empty);
-            writer.insert(ManifestPath::from("/index.html"), reference(1));
-            writer.insert(ManifestPath::from("/docs/index.html"), reference(2));
-            writer.insert(ManifestPath::from("/docs/guide.html"), reference(3));
-            writer.insert(ManifestPath::from("/404.html"), reference(4));
+            writer.insert(ManifestPath::from("index.html"), reference(1));
+            writer.insert(ManifestPath::from("docs/index.html"), reference(2));
+            writer.insert(ManifestPath::from("docs/guide.html"), reference(3));
+            writer.insert(ManifestPath::from("404.html"), reference(4));
             writer
-                .insert(ManifestPath::root(), reference(9))
-                .with_index_document(INDEX)
-                .with_error_document(ERROR);
+                .with_index_document(ManifestPath::from(INDEX))
+                .with_error_document(ManifestPath::from(ERROR));
             writer.commit().await.unwrap()
         };
 
@@ -645,7 +621,7 @@ fn website_documents_resolve_over_rooted_keys() {
         assert_eq!(
             site.error(),
             Some(ERROR.as_bytes()),
-            "the error document is the absolute key it was set to"
+            "the error document is the bare key it was set to"
         );
 
         /// The key a request path resolved to, and how.
@@ -664,15 +640,16 @@ fn website_documents_resolve_over_rooted_keys() {
         }
 
         for (request, want) in [
-            // An exact key wins, the root key included: it is bound here.
-            ("/", ("exact", "/")),
-            ("/index.html", ("exact", "/index.html")),
+            // An exact key wins.
+            ("index.html", ("exact", "index.html")),
+            // The top level is the empty path, which resolves its own index.
+            ("", ("index", "index.html")),
             // The index document joins below each directory, per directory.
-            ("/docs/", ("index", "/docs/index.html")),
-            ("/docs", ("index", "/docs/index.html")),
+            ("docs/", ("index", "docs/index.html")),
+            ("docs", ("index", "docs/index.html")),
             // Nothing resolves, so the error document does, as one whole key.
-            ("/missing.html", ("error", "/404.html")),
-            ("/docs/missing.html", ("error", "/404.html")),
+            ("missing.html", ("error", "404.html")),
+            ("docs/missing.html", ("error", "404.html")),
         ] {
             let served = reader
                 .serve(&root, &Key::from(request.as_bytes()))
@@ -686,18 +663,24 @@ fn website_documents_resolve_over_rooted_keys() {
             );
         }
 
-        // With the root unbound, the root request path falls back to its
-        // directory index rather than to an exact key.
-        let cleared = kv.remove(&root, ManifestPath::root()).await.unwrap();
+        // With the documents cleared, nothing falls back at all.
+        let cleared = {
+            let mut writer = kv.edit(&root);
+            writer.with_index_document(None).with_error_document(None);
+            writer.commit().await.unwrap()
+        };
         assert!(
             reader.website(&cleared).await.unwrap() == Default::default(),
-            "clearing the root binding clears the site documents with it"
+            "clearing the documents leaves no site conventions"
         );
-        let served = reader.serve(&cleared, &Key::from(&b"/"[..])).await.unwrap();
+        let served = reader
+            .serve(&cleared, &Key::from(&b"missing.html"[..]))
+            .await
+            .unwrap();
         assert_eq!(
             resolved(&served),
             ("missing", String::new()),
-            "no documents are declared, so nothing resolves for the root path"
+            "no documents are declared, so nothing resolves"
         );
     });
 }

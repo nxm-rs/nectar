@@ -56,7 +56,7 @@ async fn exercise<M: Manifest<EncryptedChunkRef>>(
             .await
             .unwrap()
     );
-    let listing = view.dir(&ManifestPath::root()).await.unwrap();
+    let listing = view.dir(&ManifestPath::default()).await.unwrap();
     assert_eq!(
         listing.entries(),
         [ListEntry::File {

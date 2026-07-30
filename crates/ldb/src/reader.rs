@@ -13,7 +13,7 @@ use nectar_primitives::{ChunkOps, ChunkRef};
 
 use crate::codec::{DecodedChunk, SegmentDir};
 use crate::fork::{Child, ForkTable};
-use crate::format::{Format, V1, is_root_key};
+use crate::format::{Format, V1};
 use crate::meta::Metadata;
 use crate::node::{NodeRef, RootExtension};
 use crate::store::{NodeGet, StoreError, open_chunk};
@@ -73,7 +73,7 @@ where
     /// The value bound to `key` under the database rooted at `root`, or `None`
     /// when the key is absent.
     ///
-    /// The root key reads the root extension's own value; every other key
+    /// The empty key reads the root extension's own value; every other key
     /// descends the trie, matching each compacted edge byte for byte and
     /// fetching one node per referenced hop.
     pub async fn get(&self, root: &R, key: &Key) -> Result<Option<Entry<F>>, ReaderError> {
@@ -90,13 +90,13 @@ where
 
     /// The metadata bound to `key`, or `None` when the key carries none.
     ///
-    /// The root key reads the database's own manifest metadata, whether or not
+    /// The empty key reads the database's own manifest metadata, whether or not
     /// the root binds an entry: a website root carries the index and error
     /// documents with no root value at all. An absent key carries no metadata
     /// either, so a `None` is not a presence answer; ask
     /// [`contains_key`](Self::contains_key) for that.
     pub async fn metadata(&self, root: &R, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
-        if key.is_root::<F>() {
+        if key.is_empty() {
             let decoded = fetch_chunk::<S, F, R>(&self.store, root).await?;
             return Ok(root_extension(&decoded).1);
         }
@@ -115,9 +115,9 @@ where
         let mut is_root = true;
         loop {
             let decoded = fetch_chunk::<S, F, R>(&self.store, &reference).await?;
-            // The root key reads the root's own value; a spilled root carries
+            // The empty key reads the root's own value; a spilled root carries
             // it in the segmented node's bytes just as a plain root does.
-            if is_root && is_root_key::<F>(key) {
+            if is_root && key.is_empty() {
                 // An absent root entry reads as absent, whatever metadata the
                 // root carries: presence is the entry's answer alone.
                 let (entry, meta) = root_extension(&decoded);
@@ -307,7 +307,7 @@ fn subtree_step<F: Format, R: NodeRef>(
     }
 }
 
-/// The root-key binding a decoded root carries: its root extension entry and
+/// The empty-key binding a decoded root carries: its root extension entry and
 /// the database's own manifest metadata.
 ///
 /// The two halves are independent. A website root carries the index and error
@@ -524,24 +524,22 @@ mod tests {
     }
 
     #[test]
-    fn the_root_key_reads_the_root_extension_value() {
+    fn the_empty_key_reads_the_root_extension_value() {
         let store = ContentGet::new(MemoryStore::default());
         let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
         let root = run(store.put_node(&Node::new(root_ext, ForkTable::new()), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
-            run(reader.get(&root, &Key::root::<V1>())).unwrap(),
+            run(reader.get(&root, &Key::empty())).unwrap(),
             Some(entry(9)),
         );
-        // The empty key is not the root key, and has no slot of its own.
-        assert_eq!(run(reader.get(&root, &Key::empty())).unwrap(), None);
     }
 
     /// A website root carries the site documents with no root entry, so the
-    /// manifest metadata reads back while the root key stays absent.
+    /// manifest metadata reads back while the empty key stays absent.
     #[test]
-    fn the_root_key_reads_root_metadata_without_a_root_entry() {
+    fn the_empty_key_reads_root_metadata_without_a_root_entry() {
         let store = ContentGet::new(MemoryStore::default());
         let meta = Metadata::<V1>::new(
             crate::meta::KeyId::WebsiteIndexDocument,
@@ -553,12 +551,12 @@ mod tests {
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
-            run(reader.metadata(&root, &Key::root::<V1>())).unwrap(),
+            run(reader.metadata(&root, &Key::empty())).unwrap(),
             Some(meta)
         );
-        // Presence is the entry's answer alone, so the root key stays absent.
-        assert_eq!(run(reader.get(&root, &Key::root::<V1>())).unwrap(), None);
-        assert!(!run(reader.contains_key(&root, &Key::root::<V1>())).unwrap());
+        // Presence is the entry's answer alone, so the empty key stays absent.
+        assert_eq!(run(reader.get(&root, &Key::empty())).unwrap(), None);
+        assert!(!run(reader.contains_key(&root, &Key::empty())).unwrap());
     }
 
     #[test]

@@ -14,13 +14,15 @@
 use core::marker::PhantomData;
 use core::ops::RangeBounds;
 
+use bytes::Bytes;
+
 use nectar_primitives::ChunkRef;
 use nectar_primitives::store::{ChunkPut, MaybeSync};
 
 use crate::apply::{ApplyError, Changeset, apply};
 use crate::folder::{Listing, Served, Website, dir_at};
 use crate::format::{Format, V1};
-use crate::meta::Metadata;
+use crate::meta::{Metadata, MetadataKey};
 use crate::node::NodeRef;
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Cursor, half_open};
@@ -226,7 +228,7 @@ where
 
     /// The value bound to `key`, or `None` when the key is absent.
     ///
-    /// The root key, the separator alone, reads the database's own value.
+    /// The empty key reads the database's own value.
     pub async fn get(&self, key: &Key) -> Result<Option<Entry<F>>, ReaderError> {
         self.reader().get(&self.root, key).await
     }
@@ -238,7 +240,7 @@ where
 
     /// The metadata bound to `key`, or `None` when the key carries none.
     ///
-    /// The root key reads the database's own manifest metadata, whether or not
+    /// The empty key reads the database's own manifest metadata, whether or not
     /// the root binds an entry.
     pub async fn metadata(&self, key: &Key) -> Result<Option<Metadata<F>>, ReaderError> {
         self.reader().metadata(&self.root, key).await
@@ -361,6 +363,21 @@ impl<S, K, F: Format, R: NodeRef> Editor<'_, S, K, F, R> {
         self
     }
 
+    /// Stage a merge of `key` into the database's own manifest metadata, the
+    /// root slot the site-level document conventions live in.
+    ///
+    /// A merge, not a replace: only `key` moves, and a `None` value clears it.
+    /// This is the only write that reaches that slot without binding a value at
+    /// the empty key.
+    pub fn set_root_metadata(
+        &mut self,
+        key: impl Into<MetadataKey<F>>,
+        value: Option<Bytes>,
+    ) -> &mut Self {
+        self.changeset.set_root_metadata(key, value);
+        self
+    }
+
     /// Number of staged updates.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -406,7 +423,7 @@ pub struct Insert<'e, F: Format = V1> {
 impl<F: Format> Insert<'_, F> {
     /// Attach `metadata` to the insert, replacing whatever the key carried.
     ///
-    /// On the root key this is the database's own manifest metadata. A bare
+    /// On the empty key this is the database's own manifest metadata. A bare
     /// insert carries none, so it clears the key's metadata.
     pub fn meta(&mut self, metadata: Metadata<F>) -> &mut Self {
         self.meta = Some(metadata);

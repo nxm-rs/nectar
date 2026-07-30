@@ -21,7 +21,7 @@ use core::ops::{Bound, RangeBounds};
 use nectar_file::{File, Policy};
 use nectar_manifest::{
     DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapCursor,
-    MapEntry, MapView, MapWriter, MetadataView, SinkError, WellKnownKey,
+    MapEntry, MapView, MapWriter, SinkError, SiteConfig, WellKnownKey,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
@@ -140,30 +140,24 @@ where
         &self,
         view: &dyn ManifestMetadata,
     ) -> Result<Self::Metadata, Self::Error> {
-        Ok(native_metadata(view))
-    }
-}
-
-/// The trie's string map for the well-known keys of `view`, under the trie's own
-/// spelling of each name.
-fn native_metadata(view: &dyn ManifestMetadata) -> BTreeMap<String, String> {
-    let mut map = BTreeMap::new();
-    for (key, name) in [
-        (WellKnownKey::ContentType, metadata::CONTENT_TYPE),
-        (
-            WellKnownKey::IndexDocument,
-            metadata::WEBSITE_INDEX_DOCUMENT,
-        ),
-        (
-            WellKnownKey::ErrorDocument,
-            metadata::WEBSITE_ERROR_DOCUMENT,
-        ),
-    ] {
-        if let Some(value) = view.get(&key) {
-            map.insert(String::from(name), String::from(value));
+        let mut map = BTreeMap::new();
+        for (key, name) in [
+            (WellKnownKey::ContentType, metadata::CONTENT_TYPE),
+            (
+                WellKnownKey::IndexDocument,
+                metadata::WEBSITE_INDEX_DOCUMENT,
+            ),
+            (
+                WellKnownKey::ErrorDocument,
+                metadata::WEBSITE_ERROR_DOCUMENT,
+            ),
+        ] {
+            if let Some(value) = view.get(&key) {
+                map.insert(String::from(name), String::from(value));
+            }
         }
+        Ok(map)
     }
-    map
 }
 
 /// The seam's read view over one trie root.
@@ -183,12 +177,26 @@ where
     L: NodeLoader + Clone,
     R: Reference,
 {
-    /// The entry at `path`. Paths are absolute, so the path bytes are the trie
-    /// key verbatim, the root `"/"` included.
+    /// The entry at `path`, which is the trie key verbatim.
+    ///
+    /// A path that names no content key is absent rather than mapped: the trie's
+    /// structural root and its site-config node are not entries in the map.
     async fn entry(&self, path: &ManifestPath) -> Result<Option<Entry>, ManifestError> {
+        let Some(key) = content_key(path) else {
+            return Ok(None);
+        };
+        let reader = Reader::new(self.nodes.clone());
+        Ok(reader.get(self.root.clone().into_entry_ref(), key).await?)
+    }
+
+    /// The trie's site-config node, which the reference client keys at `"/"`.
+    async fn root_node(&self) -> Result<Option<Entry>, ManifestError> {
         let reader = Reader::new(self.nodes.clone());
         Ok(reader
-            .get(self.root.clone().into_entry_ref(), path.as_bytes())
+            .get(
+                self.root.clone().into_entry_ref(),
+                metadata::ROOT_PATH.as_bytes(),
+            )
             .await?)
     }
 
@@ -220,6 +228,21 @@ where
     ) -> impl Future<Output = Result<Option<MapEntry<R>>, Self::Error>> + MaybeSend {
         let path = path.clone();
         async move { Ok(self.entry(&path).await?.map(|entry| mapped(&entry))) }
+    }
+
+    async fn site_config(&self) -> Result<SiteConfig, Self::Error> {
+        let Some(entry) = self.root_node().await? else {
+            return Ok(SiteConfig::new());
+        };
+        let document = |key: &str| {
+            entry
+                .metadata()
+                .get(key)
+                .map(|value| ManifestPath::from(value.as_str()))
+        };
+        Ok(SiteConfig::new()
+            .with_index_document(document(metadata::WEBSITE_INDEX_DOCUMENT))
+            .with_error_document(document(metadata::WEBSITE_ERROR_DOCUMENT)))
     }
 
     fn metadata(
@@ -328,6 +351,11 @@ where
                 if before_start(start, path) {
                     continue;
                 }
+                // The site-config node is not a content key, so a walk of the
+                // map steps over it.
+                if is_site_config(path) {
+                    continue;
+                }
                 return Ok(Some((ManifestPath::new(path.to_vec()), mapped(&entry))));
             }
             Ok(None)
@@ -341,6 +369,30 @@ pub struct TrieWriter<L, R: Reference> {
     editor: ManifestEditor<L, R>,
 }
 
+impl<L, R: Reference> TrieWriter<L, R> {
+    /// Record one site document on the trie's site-config node, or clear it.
+    ///
+    /// A merge either way, so the two documents are independent: setting one
+    /// leaves the other exactly as it was, and clearing the last one prunes the
+    /// node, which is how the site config leaves no trace on the wire.
+    ///
+    /// The trie stores metadata values as text, so a path that is not valid
+    /// UTF-8 cannot be a site document; its invalid bytes are replaced rather
+    /// than failing a staging call that cannot report an error.
+    fn document(&mut self, key: &str, path: Option<ManifestPath>) -> &mut Self {
+        match path {
+            Some(path) => {
+                let value = String::from_utf8_lossy(path.as_bytes()).into_owned();
+                self.editor.set_root_metadata(key, value);
+            }
+            None => {
+                self.editor.clear_root_metadata(key);
+            }
+        }
+        self
+    }
+}
+
 impl<L, R> MapWriter<R> for TrieWriter<L, R>
 where
     L: NodeLoader + NodeSaver<R> + MaybeSend,
@@ -349,10 +401,6 @@ where
     type Metadata = BTreeMap<String, String>;
 
     type Error = ManifestError;
-
-    fn native(&self, view: &MetadataView) -> Self::Metadata {
-        native_metadata(view)
-    }
 
     /// An insert replaces the whole binding; existing metadata is cleared
     /// unless `meta` carries some, because the op's metadata is the path's
@@ -364,12 +412,24 @@ where
                 reference,
                 meta,
             } => {
-                self.editor.insert(path.as_bytes(), reference).meta(meta);
+                if let Some(key) = content_key(&path) {
+                    self.editor.insert(key, reference).meta(meta);
+                }
             }
             ManifestOp::Remove { path } => {
-                self.editor.remove(path.as_bytes());
+                if let Some(key) = content_key(&path) {
+                    self.editor.remove(key);
+                }
             }
         }
+    }
+
+    fn with_index_document(&mut self, path: impl Into<Option<ManifestPath>>) -> &mut Self {
+        self.document(metadata::WEBSITE_INDEX_DOCUMENT, path.into())
+    }
+
+    fn with_error_document(&mut self, path: impl Into<Option<ManifestPath>>) -> &mut Self {
+        self.document(metadata::WEBSITE_ERROR_DOCUMENT, path.into())
     }
 
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
@@ -420,6 +480,26 @@ fn mapped<R: Reference>(entry: &Entry) -> MapEntry<R> {
     }
 }
 
+/// The trie key `path` addresses, or `None` when it names no content key.
+///
+/// A content key is the path bytes verbatim, which is what keeps the image
+/// byte-identical to the reference client's. Two byte strings are not content
+/// keys: the empty one, which is the trie's structural root, and
+/// [`metadata::ROOT_PATH`], which is the site-config node the site documents
+/// live on. Neither is read, written or walked as a key.
+fn content_key(path: &ManifestPath) -> Option<&[u8]> {
+    let bytes = path.as_bytes();
+    if bytes.is_empty() || is_site_config(bytes) {
+        return None;
+    }
+    Some(bytes)
+}
+
+/// Whether `key` is the trie's site-config node rather than content.
+fn is_site_config(key: &[u8]) -> bool {
+    key == metadata::ROOT_PATH.as_bytes()
+}
+
 /// Fold one listed entry into the directory level below `prefix`, collapsing
 /// deeper paths at the next separator.
 ///
@@ -433,9 +513,9 @@ fn collapse<R: Reference>(
 ) -> Option<ListEntry<R>> {
     let path = entry.path();
     let suffix = path.strip_prefix(prefix)?;
-    // No path is a child of itself, which is the only reason the root is absent
-    // from `dir("/")`: it is an ordinary key everywhere else.
-    if suffix.is_empty() {
+    // The directory itself is not one of its own children, and the trie's
+    // site-config node is not content, so neither is listed.
+    if suffix.is_empty() || is_site_config(path) {
         return None;
     }
     let Some(cut) = suffix

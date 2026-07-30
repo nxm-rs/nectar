@@ -798,7 +798,7 @@ mod tests {
         editor
             .insert("logo.png", make_addr("logo"))
             .meta(meta.clone());
-        editor.set_root_metadata(crate::metadata::WEBSITE_INDEX_DOCUMENT, "index.html");
+        editor.set_index_document("index.html");
         let (root, loadsaver) = run(editor.commit()).unwrap();
 
         let got = collect_entries(Cursor::new(loadsaver, root));
