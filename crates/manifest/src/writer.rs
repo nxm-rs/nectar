@@ -91,10 +91,13 @@ pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
     /// bare insert is the value the path holds from then on, so a caller that
     /// means to keep metadata restates it.
     ///
-    /// The path is a content path, so the empty one binds nothing: it is a
-    /// prefix rather than a key, and the format's root slot is reached through
+    /// The path is a content path, so a reserved one binds nothing: staging is
+    /// infallible, so the commit fails with [`ReservedKey`] and the whole batch
+    /// is refused. The format's root slot is reached through
     /// [`with_index_document`](Self::with_index_document) and
     /// [`with_error_document`](Self::with_error_document) alone.
+    ///
+    /// [`ReservedKey`]: crate::ReservedKey
     fn insert(&mut self, path: ManifestPath, reference: R) -> Insert<'_, Self, R> {
         Insert::new(self, path, reference)
     }
@@ -124,9 +127,12 @@ pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
     /// keeps every one of them, and a childless leaf is pruned.
     ///
     /// Removing an unbound or absent path is a no-op, not an error: the batch
-    /// commits and the root does not move, because nothing changed. The empty
-    /// path is one such case, because it binds nothing; the site documents are
-    /// cleared through their own setters instead.
+    /// commits and the root does not move, because nothing changed. A reserved
+    /// path is not one such case: it is no key at all, so the commit fails with
+    /// [`ReservedKey`] and the site documents are cleared through their own
+    /// setters instead.
+    ///
+    /// [`ReservedKey`]: crate::ReservedKey
     fn remove(&mut self, path: ManifestPath) -> &mut Self {
         self.stage(ManifestOp::Remove { path });
         self
@@ -147,6 +153,7 @@ pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
     ///
     /// The whole batch lands or none of it does: a caller never observes a
     /// half-applied root, because the root only exists once the batch is
-    /// written.
+    /// written. A batch that staged a reserved path fails here with
+    /// [`ReservedKey`](crate::ReservedKey) and writes nothing at all.
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend;
 }

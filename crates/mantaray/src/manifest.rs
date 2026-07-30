@@ -21,7 +21,7 @@ use core::ops::{Bound, RangeBounds};
 use nectar_file::{File, Policy};
 use nectar_manifest::{
     DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapCursor,
-    MapEntry, MapView, MapWriter, SinkError, SiteConfig, WellKnownKey,
+    MapEntry, MapView, MapWriter, ReservedKey, SinkError, SiteConfig, WellKnownKey,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
@@ -47,6 +47,10 @@ pub enum ManifestError {
     /// Applying the batch failed.
     #[error(transparent)]
     Edit(#[from] EditorError),
+    /// The batch staged a write at a key the map reserves, so none of it
+    /// landed.
+    #[error("the batch named a reserved key")]
+    Reserved(#[from] ReservedKey),
     /// No entry is bound at the requested path.
     #[error("no entry at {path:?}")]
     NotFound {
@@ -133,6 +137,7 @@ where
     fn edit(&self, base: &R) -> Self::Writer<'_> {
         TrieWriter {
             editor: ManifestEditor::open_reference(base.clone(), self.nodes.clone()),
+            reserved: None,
         }
     }
 
@@ -367,6 +372,11 @@ where
 #[derive(Debug)]
 pub struct TrieWriter<L, R: Reference> {
     editor: ManifestEditor<L, R>,
+    /// The first reserved path the batch staged, which fails the commit.
+    ///
+    /// Staging is infallible, so the refusal is held here and reported once,
+    /// at the commit that would otherwise write the batch.
+    reserved: Option<ReservedKey>,
 }
 
 impl<L, R: Reference> TrieWriter<L, R> {
@@ -405,21 +415,26 @@ where
     /// An insert replaces the whole binding; existing metadata is cleared
     /// unless `meta` carries some, because the op's metadata is the path's
     /// metadata from then on.
+    ///
+    /// A reserved path stages no trie op and refuses the commit instead,
+    /// because it is no key: the site documents are written through the
+    /// option-typed setters below.
     fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
+        if content_key(op.path()).is_none() {
+            self.reserved
+                .get_or_insert_with(|| ReservedKey::new(op.path().clone()));
+            return;
+        }
         match op {
             ManifestOp::Insert {
                 path,
                 reference,
                 meta,
             } => {
-                if let Some(key) = content_key(&path) {
-                    self.editor.insert(key, reference).meta(meta);
-                }
+                self.editor.insert(path.into_bytes(), reference).meta(meta);
             }
             ManifestOp::Remove { path } => {
-                if let Some(key) = content_key(&path) {
-                    self.editor.remove(key);
-                }
+                self.editor.remove(path.into_bytes());
             }
         }
     }
@@ -433,8 +448,13 @@ where
     }
 
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
-        let editor = self.editor;
+        let Self { editor, reserved } = self;
         async move {
+            // The whole batch is refused, so a reserved path writes nothing at
+            // all rather than landing the ops around it.
+            if let Some(reserved) = reserved {
+                return Err(ManifestError::Reserved(reserved));
+            }
             let (root, _) = editor.commit_reference().await?;
             Ok(root)
         }
@@ -483,22 +503,25 @@ fn mapped<R: Reference>(entry: &Entry) -> MapEntry<R> {
 /// The trie key `path` addresses, or `None` when it names no content key.
 ///
 /// A content key is the path bytes verbatim, which is what keeps the image
-/// byte-identical to the reference client's. Two byte strings are not content
-/// keys: the empty one, which is the trie's structural root, and
-/// [`metadata::ROOT_PATH`], which is the site-config node the site documents
-/// live on. Neither is read, written or walked as a key.
+/// byte-identical to the reference client's. The reserved paths are the two the
+/// seam names on either format: the empty one, which is the trie's structural
+/// root, and [`metadata::ROOT_PATH`], which is the site-config node the site
+/// documents live on. Neither is read, written or walked as a key.
 fn content_key(path: &ManifestPath) -> Option<&[u8]> {
-    let bytes = path.as_bytes();
-    if bytes.is_empty() || is_site_config(bytes) {
-        return None;
-    }
-    Some(bytes)
+    (!path.is_reserved()).then(|| path.as_bytes())
 }
 
 /// Whether `key` is the trie's site-config node rather than content.
 fn is_site_config(key: &[u8]) -> bool {
     key == metadata::ROOT_PATH.as_bytes()
 }
+
+/// The seam reserves the lone separator, and the trie keys its site-config node
+/// there, so the two names cannot drift apart.
+const _: () = assert!(matches!(
+    metadata::ROOT_PATH.as_bytes(),
+    [ManifestPath::SEPARATOR]
+));
 
 /// Fold one listed entry into the directory level below `prefix`, collapsing
 /// deeper paths at the next separator.

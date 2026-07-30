@@ -699,7 +699,9 @@ impl<R: Reference> Node<R> {
                 // Nothing below changed, so nothing here does either: an
                 // untouched ancestor keeps its reference and its address.
                 Cleared::Absent => return Ok(Cleared::Absent),
-                Cleared::Kept => {}
+                // The node below survives, but the clear may have left it a
+                // lone continuation of this edge, which no build produces.
+                Cleared::Kept => self.recanonicalise(*first),
                 Cleared::Prune => {
                     self.forks.remove(first);
                     if self.forks.is_empty() {
@@ -710,6 +712,49 @@ impl<R: Reference> Node<R> {
             self.mark_dirty();
             Ok(self.prunable())
         })
+    }
+
+    /// Fold the fork at `first` back into canonical shape after a clear below
+    /// it.
+    ///
+    /// A build only ever leaves an unbound node with one child where the two
+    /// edges cannot be one: an edge prefix is capped at
+    /// [`PREFIX_MAX_LEN`](crate::PREFIX_MAX_LEN), so a longer key chains
+    /// through full-length edges. A clear can leave one anywhere, by taking the
+    /// binding or the sibling that justified the node. Splicing the child onto
+    /// this edge restores the shape a build of the surviving keys would have
+    /// produced, which is what makes an exact-key remove history-independent.
+    ///
+    /// The spliced child's separator flag is recomputed from the joined prefix,
+    /// because the flag is a property of the edge that reaches it.
+    fn recanonicalise(&mut self, first: u8) {
+        let Some(fork) = self.forks.get_mut(&first) else {
+            return;
+        };
+        // A node that binds something of its own is a key, so it stays. So does
+        // one with a second child, which is the branch that justifies it.
+        if fork.node.is_bound() || fork.node.forks.len() != 1 {
+            return;
+        }
+        let Some((_, only)) = fork.node.forks.pop_first() else {
+            return;
+        };
+        let joined = fork.prefix.len().saturating_add(only.prefix.len());
+        if joined > Prefix::MAX_LEN {
+            // The edges cannot be one, so the chain is what a build writes too:
+            // put the child back exactly as it was.
+            #[allow(clippy::indexing_slicing)] // a prefix is 1..=30 bytes, so it has a first byte
+            let key = only.prefix[0];
+            fork.node.forks.insert(key, only);
+            return;
+        }
+        let mut prefix = alloc::vec::Vec::with_capacity(joined);
+        prefix.extend_from_slice(&fork.prefix);
+        prefix.extend_from_slice(&only.prefix);
+        let mut node = only.node;
+        node.update_is_with_path_separator(&prefix);
+        fork.prefix = Prefix::from_slice(&prefix);
+        fork.node = node;
     }
 
     /// Whether this node still holds anything after a clear below it.

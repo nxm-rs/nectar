@@ -18,12 +18,18 @@
 //! The site index and error documents are read as `Option<ManifestPath>` and
 //! written through `with_index_document` and `with_error_document`. Each lands in
 //! the format's own root slot, which is never a key: no map verb reads it, no
-//! walk yields it, and the empty path reaches nothing at all.
+//! walk yields it, and neither reserved path reaches anything at all. The two
+//! reserved paths are the empty one and `"/"`: a read at either is absent on
+//! both formats and a write at either is refused as `ReservedKey`, so the two
+//! formats keep the same key space rather than one of them storing a slot key
+//! as content.
 //!
 //! `remove` is exact-key on both formats, exactly as `HashMap::remove` is: the
 //! path's own value and metadata go, and no other path does. A path with
 //! children keeps every one of them, a childless leaf is pruned, and removing an
-//! unbound or absent path is a no-op that leaves the root where it was.
+//! unbound or absent path is a no-op that leaves the root where it was. It is
+//! history-independent too: the root a removal lands on is the root a build of
+//! the surviving keys produces.
 
 use std::ops::Bound;
 use std::sync::Arc;
@@ -31,7 +37,9 @@ use std::sync::Arc;
 use nectar_file::MemSink;
 use nectar_ldb::{Builder, Key, LdbManifest, Plaintext, Reader as LdbReader, Served, V1};
 use nectar_loadsave::NodeLoadSaver;
-use nectar_manifest::{Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter};
+use nectar_manifest::{
+    Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, reserved_key,
+};
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
@@ -56,6 +64,16 @@ fn reference(byte: u8) -> ChunkRef {
 /// A path as text, for an assertion message a human can read.
 fn text(path: &ManifestPath) -> String {
     String::from_utf8(path.as_bytes().to_vec()).unwrap()
+}
+
+/// The reserved path a refused write names, or `None` when the write was not
+/// refused for that reason.
+///
+/// One matcher over every format: the seam's own, walking the source chain of
+/// whatever error type the format reports.
+fn refused<T, E: std::error::Error + 'static>(result: &Result<T, E>) -> Option<ManifestPath> {
+    let error = result.as_ref().err()?;
+    reserved_key(error).map(|reserved| reserved.path().clone())
 }
 
 /// One format's answers to one scenario, in a shape that names no
@@ -288,22 +306,47 @@ where
         "the top level lists content alone"
     );
 
-    // A write at the empty path reaches nothing: it is a prefix, not a key.
-    let ignored = manifest
-        .insert(&configured, empty_path.clone(), reference(9))
-        .await
-        .unwrap();
+    // A write at a reserved path is refused, and named: it is a prefix or a
+    // root slot, never a key, so neither format takes it silently.
+    for path in [&empty_path, &separator] {
+        assert_eq!(
+            refused(
+                &manifest
+                    .insert(&configured, path.clone(), reference(9))
+                    .await
+            ),
+            Some(path.clone()),
+            "an insert at {:?} is refused as reserved",
+            text(path)
+        );
+        assert_eq!(
+            refused(&manifest.remove(&configured, path.clone()).await),
+            Some(path.clone()),
+            "a remove at {:?} is refused as reserved",
+            text(path)
+        );
+    }
+
+    // The refusal takes the whole batch with it: a reserved path anywhere in it
+    // means nothing lands, so no caller sees a half-applied root.
+    let mixed = {
+        let mut writer = manifest.edit(&configured);
+        writer.insert(ManifestPath::from("landed.html"), reference(9));
+        writer.insert(separator.clone(), reference(9));
+        writer.commit().await
+    };
     assert_eq!(
-        ignored, configured,
-        "an insert at the empty path changes nothing"
+        refused(&mixed),
+        Some(separator.clone()),
+        "the batch is refused for the reserved path in it"
     );
-    assert_eq!(
-        manifest
-            .remove(&configured, empty_path.clone())
+    assert!(
+        !manifest
+            .at(&configured)
+            .contains_key(&ManifestPath::from("landed.html"))
             .await
             .unwrap(),
-        configured,
-        "a remove at the empty path changes nothing"
+        "and the op beside it did not land"
     );
 
     // The two documents are independent: setting one leaves the other alone.
@@ -534,6 +577,111 @@ where
     .await
 }
 
+/// The key set the history-independence scenario builds, with the reference
+/// each key binds.
+///
+/// Chosen to reach every shape a removal can leave behind: a mid-edge split
+/// (`alpha`/`alpine`), a shared directory (`img/`), a top-level key sharing one
+/// byte with a directory (`index.html`), a lone leaf (`beta`), and two keys
+/// past the trie's 30-byte edge bound, whose chain no removal may collapse.
+fn history_keys() -> Vec<(ManifestPath, u8)> {
+    let deep = |tail: &str| ManifestPath::from(format!("deep/{}{tail}", "a".repeat(30)).as_str());
+    [
+        (ManifestPath::from("alpha"), 1u8),
+        (ManifestPath::from("alpine"), 2),
+        (ManifestPath::from("beta"), 3),
+        (ManifestPath::from("img/icon.png"), 4),
+        (ManifestPath::from("img/logo.png"), 5),
+        (ManifestPath::from("index.html"), 6),
+        (deep("one"), 7),
+        (deep("two"), 8),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// Build a manifest holding exactly `keys`, in the order given.
+async fn build<M: Manifest<ChunkRef>>(
+    manifest: &M,
+    empty: &ChunkRef,
+    keys: &[(ManifestPath, u8)],
+) -> ChunkRef {
+    let mut writer = manifest.edit(empty);
+    for (path, byte) in keys {
+        writer.insert(path.clone(), reference(*byte));
+    }
+    writer.commit().await.unwrap()
+}
+
+/// An exact-key remove is history-independent on both formats: the root a
+/// removal lands on is the root a build of the surviving keys produces.
+///
+/// What a manifest holds decides its root, and how it came to hold it does not.
+/// The key-value database gets this from its canonical packing; the trie has to
+/// fold the edge a removal leaves behind back into the shape a build writes.
+async fn a_remove_lands_where_a_build_would<M>(manifest: &M, empty: &ChunkRef) -> Vec<Observed>
+where
+    M: Manifest<ChunkRef>,
+    M::Metadata: Clone + PartialEq + std::fmt::Debug,
+{
+    let keys = history_keys();
+    let base = build(manifest, empty, &keys).await;
+
+    let mut roots = vec![base];
+    for (index, (path, _)) in keys.iter().enumerate() {
+        let removed = manifest.remove(&base, path.clone()).await.unwrap();
+        assert_ne!(removed, base, "removing {:?} moves the root", text(path));
+
+        let survivors: Vec<(ManifestPath, u8)> = keys
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != index)
+            .map(|(_, key)| key.clone())
+            .collect();
+        assert_eq!(
+            removed,
+            build(manifest, empty, &survivors).await,
+            "removing {:?} left a root a build of the surviving keys would not produce",
+            text(path)
+        );
+        roots.push(removed);
+    }
+
+    // Two removals compose the same way, so the property is not a one-step
+    // accident: the order the two keys go in does not reach the root either.
+    let (first, second) = (keys[0].0.clone(), keys[4].0.clone());
+    let forwards = manifest
+        .remove(
+            &manifest.remove(&base, first.clone()).await.unwrap(),
+            second.clone(),
+        )
+        .await
+        .unwrap();
+    let backwards = manifest
+        .remove(&manifest.remove(&base, second).await.unwrap(), first)
+        .await
+        .unwrap();
+    assert_eq!(forwards, backwards, "two removals commute");
+    roots.push(forwards);
+
+    // Removing every key lands back on the empty manifest, which is the build
+    // of no keys at all.
+    let stripped = {
+        let mut writer = manifest.edit(&base);
+        for (path, _) in &keys {
+            writer.remove(path.clone());
+        }
+        writer.commit().await.unwrap()
+    };
+    assert_eq!(
+        &stripped, empty,
+        "removing every key restores the empty manifest"
+    );
+    roots.push(stripped);
+
+    observed(manifest, &roots.iter().collect::<Vec<_>>()).await
+}
+
 /// Every root observed in turn, so one comparison covers every state the
 /// scenario passed through.
 async fn observed<M>(manifest: &M, roots: &[&ChunkRef]) -> Vec<Observed>
@@ -583,6 +731,10 @@ differential!(
     the_site_config_is_an_option_and_not_a_key
 );
 differential!(every_remove_shape_agrees_across_formats, every_remove_shape);
+differential!(
+    a_remove_is_history_independent_on_both_formats,
+    a_remove_lands_where_a_build_would
+);
 
 /// The site documents resolve over bare keys: the index document is a filename
 /// joined below each directory, and the error document is one whole key.

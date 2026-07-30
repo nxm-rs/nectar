@@ -72,8 +72,9 @@ pub trait MapCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 /// Every one of those reads is over content paths alone. The manifest's own
 /// configuration is read through [`index_document`](Self::index_document) and
 /// [`error_document`](Self::error_document), which answer `None` when the
-/// manifest declares nothing: no walk yields the slot they live in, and neither
-/// does the empty path, which is a listing prefix rather than a key.
+/// manifest declares nothing: no walk yields the slot they live in, and no read
+/// reaches a reserved path, which is a listing prefix or a root slot rather
+/// than a key.
 pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
@@ -87,7 +88,8 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 
     /// The entry bound to `path`, or `None` when the path is absent.
     ///
-    /// The empty path is absent by definition: it is a prefix, not a key.
+    /// A reserved path is absent by definition: it is a prefix or a root slot,
+    /// not a key. See [`ManifestPath::is_reserved`].
     fn get(
         &self,
         path: &ManifestPath,
