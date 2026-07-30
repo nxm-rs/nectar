@@ -662,6 +662,24 @@ impl<R: Reference> Node<R> {
     /// from its parent. An absent or unbound key changes nothing at all, so no
     /// node is dirtied and a commit hands the same root back.
     ///
+    /// # This format is order-dependent, by design
+    ///
+    /// The trie the clear leaves behind is valid and decodes exactly the
+    /// surviving keys, and that is the whole contract. The root it hashes to is
+    /// not the root a build of those same keys produces, because mantaray 0.2
+    /// puts a node wherever the insert order first justified one and never
+    /// moves it: an edge prefix is capped at
+    /// [`PREFIX_MAX_LEN`](crate::PREFIX_MAX_LEN), so past that bound even a
+    /// plain `add` of the same keys in two orders lands on two roots. The
+    /// 0.3.0 reference client agrees, which is what
+    /// `mantaray/legacy_differential.rs` pins.
+    ///
+    /// History-independence is therefore not offered here, and no fold or
+    /// re-cut of the surviving edges can offer it. It is a mantaray-1.0
+    /// guarantee, met by the key-value database in `nectar-ldb`, whose
+    /// canonical packing derives the whole shape from the key set alone
+    /// (whitepaper capability matrix, row 20).
+    ///
     /// The prefix [`remove`](Self::remove) above is the legacy 0.3.0 boundary
     /// op and stays that way; nothing on the seam reaches it.
     ///
@@ -699,9 +717,10 @@ impl<R: Reference> Node<R> {
                 // Nothing below changed, so nothing here does either: an
                 // untouched ancestor keeps its reference and its address.
                 Cleared::Absent => return Ok(Cleared::Absent),
-                // The node below survives, but the clear may have left it a
-                // lone continuation of this edge, which no build produces.
-                Cleared::Kept => self.recanonicalise(*first, loader).await?,
+                // The node below survives, so the edge that reaches it stands
+                // as it is. The shape a clear leaves behind is not rewritten:
+                // see the note on the ordering of this format above.
+                Cleared::Kept => {}
                 Cleared::Prune => {
                     self.forks.remove(first);
                     if self.forks.is_empty() {
@@ -712,107 +731,6 @@ impl<R: Reference> Node<R> {
             self.mark_dirty();
             Ok(self.prunable())
         })
-    }
-
-    /// Fold the fork at `first` back into canonical shape after a clear below
-    /// it.
-    ///
-    /// A build only ever leaves an unbound node with one child where the two
-    /// edges cannot be one: an edge prefix is capped at
-    /// [`PREFIX_MAX_LEN`](crate::PREFIX_MAX_LEN), so a longer key chains
-    /// through full-length edges. A clear can leave one anywhere, by taking the
-    /// binding or the sibling that justified the node. Splicing the child onto
-    /// this edge restores the shape a build of the surviving keys would have
-    /// produced, which is what makes an exact-key remove history-independent.
-    ///
-    /// A joined edge past the bound is re-split at exactly
-    /// [`PREFIX_MAX_LEN`](crate::PREFIX_MAX_LEN), and every node the chain
-    /// passes through is joined in first, because a build measures its splits
-    /// from the last node a key or a branch justifies, not from wherever the
-    /// removed key happened to sit. The chain is walked as far as it goes, so
-    /// the whole run of lone continuations is re-cut in one step; the walk
-    /// loads what it steps through, since a lone child is usually still a stub.
-    ///
-    /// Each rebuilt node's separator flag is recomputed from the edge that
-    /// reaches it, because the flag is a property of that edge.
-    async fn recanonicalise<L: NodeLoader>(&mut self, first: u8, loader: &L) -> Result<()>
-    where
-        R: MaybeSend,
-    {
-        let obfuscation_key = self.obfuscation_key;
-        let Some(fork) = self.forks.get_mut(&first) else {
-            return Ok(());
-        };
-        // A node that binds something of its own is a key, so it stays. So does
-        // one with a second child, which is the branch that justifies it.
-        if fork.node.is_bound() || fork.node.forks.len() != 1 {
-            return Ok(());
-        }
-
-        // Walk first and rebuild after, so a load error leaves the trie as it
-        // was: a load only fills a stub in, and nothing here is unlinked yet.
-        let Fork { prefix, node } = fork;
-        let mut joined = alloc::vec::Vec::new();
-        joined.extend_from_slice(prefix);
-        let mut depth = 0usize;
-        let mut cursor = node;
-        loop {
-            let Some(only) = cursor.forks.values_mut().next() else {
-                break;
-            };
-            joined.extend_from_slice(&only.prefix);
-            depth = depth.saturating_add(1);
-            if only.node.is_bound() {
-                break;
-            }
-            only.node.ensure_loaded(loader).await?;
-            if only.node.forks.len() != 1 {
-                break;
-            }
-            cursor = &mut only.node;
-        }
-
-        // Re-cut the joined edge the way a build writes it: full-length edges
-        // while the remainder does not fit one, then the rest. Cut before the
-        // chain is unlinked, so the trie is never left holding half of it.
-        let chunks: alloc::vec::Vec<&[u8]> = joined.chunks(Prefix::MAX_LEN).collect();
-        let Some(head) = chunks.first() else {
-            return Ok(());
-        };
-
-        // Unlink the chain, keeping the node that ended it: its own content is
-        // untouched, so it keeps its reference and only its edge is rewritten.
-        let mut terminal = core::mem::take(&mut fork.node);
-        for _ in 0..depth {
-            let Some((_, only)) = terminal.forks.pop_first() else {
-                break;
-            };
-            terminal = only.node;
-        }
-
-        let mut node = terminal;
-        for chunk in chunks.iter().skip(1).rev() {
-            node.update_is_with_path_separator(chunk);
-            let mut above = Self {
-                obfuscation_key,
-                ..Default::default()
-            };
-            #[allow(clippy::indexing_slicing)] // `chunks` yields no empty chunk
-            let key = chunk[0];
-            above.forks.insert(
-                key,
-                Fork {
-                    prefix: Prefix::from_slice(chunk),
-                    node,
-                },
-            );
-            above.make_edge();
-            node = above;
-        }
-        node.update_is_with_path_separator(head);
-        fork.prefix = Prefix::from_slice(head);
-        fork.node = node;
-        Ok(())
     }
 
     /// Whether this node still holds anything after a clear below it.

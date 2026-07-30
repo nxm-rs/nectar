@@ -287,11 +287,17 @@ where
             let mut listing = self.view.dir(&key).await?;
             let mut entries = Vec::new();
             while let Some(item) = listing.next().await? {
-                // A reserved key is not content, so the top level never lists
-                // it, whatever put it in the database. The folder view calls a
-                // bare separator a subdirectory, which would surface the key
-                // the guard exists to hide, so the kind does not excuse it.
-                if is_reserved(item.key()) {
+                // A reserved key is not content, so the listing never surfaces
+                // it, whatever put it in the database. The folder view gives
+                // one name to two different things when the key is exactly the
+                // separator: the reserved key itself, and the directory that
+                // stands for the content below it. Only what is bound strictly
+                // under it tells them apart, so the bare slot is hidden and a
+                // directory of content is listed like any other, which is what
+                // the trie lists too.
+                let hidden = is_reserved(item.key())
+                    && !(item.is_dir() && bound_below(&self.view, item.key()).await?);
+                if hidden {
                     continue;
                 }
                 entries.push(listed(item));
@@ -499,6 +505,26 @@ fn floored(key: Key) -> ManifestPath {
 /// walk, a listing and a floor each step over what a lookup answers absent.
 fn is_reserved(key: &Key) -> bool {
     matches!(key.as_bytes(), [] | [ManifestPath::SEPARATOR])
+}
+
+/// Whether the database binds anything strictly below `key`.
+///
+/// What tells a listed reserved key apart from the directory of content the
+/// folder view gives the same name to. The probe stops at the first key past
+/// `key` itself, and `key` sorts first in its own prefix range, so it costs one
+/// seek and at most two steps.
+async fn bound_below<S, R>(view: &View<'_, S, V1, R>, key: &Key) -> Result<bool, ManifestError>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
+    R: NodeRef,
+{
+    let mut cursor = view.prefix(key).await?;
+    while let Some((found, _)) = cursor.next().await? {
+        if found.as_bytes() != key.as_bytes() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The key bounds a path range selects, in the database's own key type.

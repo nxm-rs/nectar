@@ -27,9 +27,27 @@
 //! `remove` is exact-key on both formats, exactly as `HashMap::remove` is: the
 //! path's own value and metadata go, and no other path does. A path with
 //! children keeps every one of them, a childless leaf is pruned, and removing an
-//! unbound or absent path is a no-op that leaves the root where it was. It is
-//! history-independent too: the root a removal lands on is the root a build of
-//! the surviving keys produces.
+//! unbound or absent path is a no-op that leaves the root where it was.
+//!
+//! # History-independence is a key-value database guarantee only
+//!
+//! What crosses the formats after a removal is the key set: both hold exactly
+//! the survivors, and two removals commute on that set. The root does not cross
+//! them, and this file does not ask it to.
+//!
+//! The key-value database is history-independent by construction: its packing
+//! derives the whole shape from the key set, so the root a removal lands on is
+//! the root a build of the survivors produces. `a_remove_is_history_independent_on_ldb`
+//! pins that, on that format alone.
+//!
+//! The trie is not, by design. mantaray 0.2 puts a node where the insert order
+//! first justified one and never moves it, so past the 30-byte edge bound even a
+//! plain `add` of one key set in two orders lands on two roots; the 0.3.0
+//! reference client agrees, and `mantaray/legacy_differential.rs` pins those
+//! bytes. History-independence is a mantaray-1.0 guarantee (whitepaper
+//! capability matrix, row 20), which the key-value database is the
+//! implementation of. Asking 0.2 for it would mean rewriting the surviving
+//! edges, which would break the wire the differential pins.
 
 use std::ops::Bound;
 use std::sync::Arc;
@@ -579,21 +597,20 @@ where
     .await
 }
 
-/// The key set the history-independence scenario builds, with the reference
-/// each key binds.
+/// The key set the removal scenarios build, with the reference each key binds.
 ///
 /// Chosen to reach every shape a removal can leave behind: a mid-edge split
 /// (`alpha`/`alpine`), a shared directory (`img/`), a top-level key sharing one
-/// byte with a directory (`index.html`), a lone leaf (`beta`), and two keys
-/// past the trie's 30-byte edge bound, whose chain no removal may collapse.
+/// byte with a directory (`index.html`), a lone leaf (`beta`), and pairs that
+/// run past the trie's 30-byte edge bound, where a removal leaves a chain no
+/// build would have written.
 ///
-/// The last two pairs are the edge bound itself. Each is a short key with one
-/// long key below it, so the trie splits the long key at the short one and the
-/// join a removal of the short one leaves runs past 30 bytes. The join cannot
-/// be one edge, so it has to be re-cut the way a build cuts it, and the second
-/// pair runs long enough that the re-cut has to reach through a whole chain of
-/// lone continuations rather than the first one only.
-fn history_keys() -> Vec<(ManifestPath, u8)> {
+/// The last two pairs are the edge bound itself: a short key with one long key
+/// below it, so the trie splits the long key at the short one and what a
+/// removal of the short one leaves behind runs past 30 bytes. Those are exactly
+/// the shapes where the two formats' roots part company, and where the key set
+/// still has to agree.
+fn removal_keys() -> Vec<(ManifestPath, u8)> {
     let deep = |tail: &str| ManifestPath::from(format!("deep/{}{tail}", "a".repeat(30)).as_str());
     let under =
         |dir: &str, len: usize| ManifestPath::from(format!("{dir}{}", "e".repeat(len)).as_str());
@@ -606,11 +623,13 @@ fn history_keys() -> Vec<(ManifestPath, u8)> {
         (ManifestPath::from("index.html"), 6),
         (deep("one"), 7),
         (deep("two"), 8),
-        // 5 + 28 bytes: the join is 33, so it is re-cut at 30 and the rest.
+        // 5 + 28 bytes: what a removal of "abcde" leaves joins to 33, which is
+        // past the bound and so is no edge a build writes.
         (ManifestPath::from("abcde"), 9),
         (under("abcde", 28), 10),
         // 5 + 31 bytes under a directory: the long key already chains through a
-        // full-length edge, so the join runs through two nodes before it ends.
+        // full-length edge, so the leftover runs through two nodes before it
+        // ends.
         (ManifestPath::from("wiki/"), 11),
         (under("wiki/", 31), 12),
     ]
@@ -631,18 +650,34 @@ async fn build<M: Manifest<ChunkRef>>(
     writer.commit().await.unwrap()
 }
 
-/// An exact-key remove is history-independent on both formats: the root a
-/// removal lands on is the root a build of the surviving keys produces.
+/// Every path a manifest holds, in walk order.
 ///
-/// What a manifest holds decides its root, and how it came to hold it does not.
-/// The key-value database gets this from its canonical packing; the trie has to
-/// fold the edge a removal leaves behind back into the shape a build writes.
-async fn a_remove_lands_where_a_build_would<M>(manifest: &M, empty: &ChunkRef) -> Vec<Observed>
+/// The key set is what a removal contracts for on both formats, and what the
+/// two formats have to agree on. The root is a per-format matter; see the
+/// module note.
+async fn key_set<M: Manifest<ChunkRef>>(manifest: &M, root: &ChunkRef) -> Vec<String> {
+    let view = manifest.at(root);
+    let mut out = Vec::new();
+    let mut cursor = view.iter().await.unwrap();
+    while let Some((path, _)) = cursor.next().await.unwrap() {
+        out.push(text(&path));
+    }
+    out
+}
+
+/// An exact-key remove leaves the surviving key set on both formats, and two
+/// removals commute on it.
+///
+/// What a manifest holds after a removal is decided by what it held and what
+/// went, on either format and in whatever order. The root a removal lands on is
+/// not asserted here: only the key-value database derives it from the key set,
+/// and `a_remove_is_history_independent_on_ldb` pins that on that format alone.
+async fn a_remove_leaves_the_surviving_keys<M>(manifest: &M, empty: &ChunkRef) -> Vec<Observed>
 where
     M: Manifest<ChunkRef>,
     M::Metadata: Clone + PartialEq + std::fmt::Debug,
 {
-    let keys = history_keys();
+    let keys = removal_keys();
     let base = build(manifest, empty, &keys).await;
 
     let mut roots = vec![base];
@@ -656,17 +691,18 @@ where
             .filter(|(other, _)| *other != index)
             .map(|(_, key)| key.clone())
             .collect();
+        let built = build(manifest, empty, &survivors).await;
         assert_eq!(
-            removed,
-            build(manifest, empty, &survivors).await,
-            "removing {:?} left a root a build of the surviving keys would not produce",
+            key_set(manifest, &removed).await,
+            key_set(manifest, &built).await,
+            "removing {:?} left a key set a build of the surviving keys does not hold",
             text(path)
         );
         roots.push(removed);
     }
 
     // Two removals compose the same way, so the property is not a one-step
-    // accident: the order the two keys go in does not reach the root either.
+    // accident: the order the two keys go in does not reach the key set.
     let (first, second) = (keys[0].0.clone(), keys[4].0.clone());
     let forwards = manifest
         .remove(
@@ -679,11 +715,17 @@ where
         .remove(&manifest.remove(&base, second).await.unwrap(), first)
         .await
         .unwrap();
-    assert_eq!(forwards, backwards, "two removals commute");
+    assert_eq!(
+        key_set(manifest, &forwards).await,
+        key_set(manifest, &backwards).await,
+        "two removals commute on the key set"
+    );
     roots.push(forwards);
+    roots.push(backwards);
 
     // Removing every key lands back on the empty manifest, which is the build
-    // of no keys at all.
+    // of no keys at all. An empty manifest has one shape on either format, so
+    // the root is the assertion here.
     let stripped = {
         let mut writer = manifest.edit(&base);
         for (path, _) in &keys {
@@ -750,18 +792,142 @@ differential!(
 );
 differential!(every_remove_shape_agrees_across_formats, every_remove_shape);
 differential!(
-    a_remove_is_history_independent_on_both_formats,
-    a_remove_lands_where_a_build_would
+    a_remove_leaves_the_surviving_keys_on_both_formats,
+    a_remove_leaves_the_surviving_keys
 );
+
+/// The key-value database's removal is history-independent: the root a removal
+/// lands on is the root a build of the surviving keys produces, so a manifest's
+/// address is what it holds rather than how it came to hold it.
+///
+/// One format only, on purpose. The packing derives the whole shape from the
+/// key set, so the database gets this for free; the trie cannot have it, because
+/// mantaray 0.2 leaves a node where the insert order put it and rewriting the
+/// surviving edges would break the wire `mantaray/legacy_differential.rs` pins.
+/// It is a mantaray-1.0 guarantee (whitepaper capability matrix, row 20), and
+/// the database is what meets it. See the module note.
+#[test]
+fn a_remove_is_history_independent_on_ldb() {
+    run(async {
+        let raw: Raw = Arc::new(MemoryStore::new());
+        let store: Store = ContentGet::new(raw);
+        let builder: Builder<V1> = Builder::new();
+        let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
+        let kv = LdbManifest::plain(store.clone());
+
+        let keys = removal_keys();
+        let base = build(&kv, &empty, &keys).await;
+
+        for (index, (path, _)) in keys.iter().enumerate() {
+            let removed = kv.remove(&base, path.clone()).await.unwrap();
+            assert_ne!(removed, base, "removing {:?} moves the root", text(path));
+
+            let survivors: Vec<(ManifestPath, u8)> = keys
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .map(|(_, key)| key.clone())
+                .collect();
+            assert_eq!(
+                removed,
+                build(&kv, &empty, &survivors).await,
+                "removing {:?} left a root a build of the surviving keys would not produce",
+                text(path)
+            );
+        }
+
+        // Two removals compose the same way, so the property is not a one-step
+        // accident: the order the two keys go in does not reach the root either.
+        let (first, second) = (keys[0].0.clone(), keys[4].0.clone());
+        let forwards = kv
+            .remove(
+                &kv.remove(&base, first.clone()).await.unwrap(),
+                second.clone(),
+            )
+            .await
+            .unwrap();
+        let backwards = kv
+            .remove(&kv.remove(&base, second).await.unwrap(), first)
+            .await
+            .unwrap();
+        assert_eq!(forwards, backwards, "two removals commute on the root");
+    });
+}
+
+/// Content keys that start with the separator list as the directory they are
+/// under, identically on both formats.
+///
+/// `"/"` is reserved as a *key*, and it is not reserved as a *prefix*: a key
+/// like `"/a.txt"` is ordinary content that happens to sit one level down, and
+/// the top level names it by the directory it is in, which is `"/"`. Both
+/// formats collapse it that way, so a listing must not confuse the directory
+/// standing for that content with the reserved slot itself, which
+/// [`a_planted_separator_key_is_not_listed`] pins from the other side.
+#[test]
+fn separator_prefixed_content_lists_alike_on_both_formats() {
+    run(async {
+        // Each case is a key set written through the seam and the top level it
+        // has to list: the directory of separator-prefixed content, a mix of
+        // that and a plain top-level key, and a doubled separator, which is one
+        // more level down and so still lists as the same directory.
+        let cases: [(&[&str], &[&str]); 3] = [
+            (&["/a.txt"], &["/"]),
+            (&["/a.txt", "/b.txt", "top.txt"], &["/", "top.txt"]),
+            (&["//a"], &["/"]),
+        ];
+        for (keys, want) in cases {
+            let (from_trie, from_kv) = both_top_levels(keys).await;
+            assert_eq!(from_trie, want, "the trie listed {keys:?} wrong");
+            assert_eq!(from_kv, want, "the database listed {keys:?} wrong");
+        }
+    });
+}
+
+/// One key set through both formats' `dir("")`, written through the seam.
+async fn both_top_levels(keys: &[&str]) -> (Vec<String>, Vec<String>) {
+    let raw: Raw = Arc::new(MemoryStore::new());
+    let store: Store = ContentGet::new(Arc::clone(&raw));
+    let bound = |index: usize| reference(u8::try_from(index).unwrap().saturating_add(1));
+
+    let nodes = NodeLoadSaver::new(Arc::clone(&raw));
+    let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
+    let (trie_empty, _) = editor.commit().await.unwrap();
+    let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
+    let trie_root = {
+        let mut writer = trie.edit(&ChunkRef::new(trie_empty));
+        for (index, key) in keys.iter().enumerate() {
+            writer.insert(ManifestPath::from(*key), bound(index));
+        }
+        writer.commit().await.unwrap()
+    };
+
+    let builder: Builder<V1> = Builder::new();
+    let kv_empty = *builder.build(&store, &Plaintext).await.unwrap().root();
+    let kv = LdbManifest::plain(store.clone());
+    let kv_root = {
+        let mut writer = kv.edit(&kv_empty);
+        for (index, key) in keys.iter().enumerate() {
+            writer.insert(ManifestPath::from(*key), bound(index));
+        }
+        writer.commit().await.unwrap()
+    };
+
+    let top = ManifestPath::default();
+    (
+        listing(&trie.at(&trie_root), &top).await,
+        listing(&kv.at(&kv_root), &top).await,
+    )
+}
 
 /// A reserved key planted past the seam is not listed, whatever kind the
 /// listing calls it.
 ///
 /// The seam refuses a write at `"/"`, so only a database written through the
 /// raw layer holds one. The folder view collapses it into a subdirectory entry,
-/// because it ends in the separator, and a subdirectory of nothing is still the
-/// reserved key itself. The listing steps over it either way, so the two
-/// formats list the same content.
+/// because it ends in the separator, and a subdirectory with nothing under it
+/// is that key and nothing else, so the listing steps over it. A subdirectory
+/// with content under it is not, which
+/// [`separator_prefixed_content_lists_alike_on_both_formats`] pins.
 #[test]
 fn a_planted_separator_key_is_not_listed() {
     run(async {
@@ -817,6 +983,27 @@ fn a_planted_separator_key_is_not_listed() {
             listing(&trie.at(&root), &ManifestPath::default()).await,
             listing(&view, &ManifestPath::default()).await,
             "both formats list the same top level"
+        );
+
+        // The planted key next to content one level under it: the entry the
+        // listing yields is the directory of that content, so it stays, and the
+        // planted key is still no key of its own.
+        let with_content = {
+            let mut editor = db.edit(&empty);
+            editor.insert(Key::from(&b"/"[..]), Entry::from(reference(1)));
+            editor.insert(Key::from(&b"/a.txt"[..]), Entry::from(reference(2)));
+            editor.commit().await.unwrap()
+        };
+        let view = kv.at(&with_content);
+        assert_eq!(
+            listing(&view, &ManifestPath::default()).await,
+            ["/"],
+            "the directory of the content below the separator is listed"
+        );
+        assert_eq!(
+            view.get(&separator).await.unwrap(),
+            None,
+            "and the planted key itself still reads absent"
         );
     });
 }
