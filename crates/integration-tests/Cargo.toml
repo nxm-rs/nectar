@@ -30,8 +30,9 @@ alloy-primitives = { workspace = true, features = ["getrandom"] }
 alloy-signer-local.workspace = true
 bytes.workspace = true
 futures.workspace = true
-# Registry-pinned legacy oracle for the submission-order differential gate:
-# identical op sequences must produce byte-identical roots.
+# A prior nectar-mantaray crate release, pinned as a wire-regression oracle for
+# the submission-order differential gate: identical op sequences must produce
+# byte-identical roots. The pin is a crate version, not a mantaray format version.
 mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
 nectar-feeds = { workspace = true, features = ["std"] }
 nectar-file = { workspace = true, features = ["std"] }

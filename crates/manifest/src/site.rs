@@ -1,11 +1,10 @@
 //! The manifest's own configuration: the two site-level documents.
 //!
 //! Neither document is a content path, so neither is a key in the map. Each is
-//! read as an `Option` and written through the writer's chainable setters, and
-//! each format stores the pair in its own root slot: the trie keeps them as
-//! metadata on its `"/"` node, beside an entry the wire reads as the zero
-//! address, which is the layout the reference client writes and reads; the
-//! key-value database keeps them in its root manifest metadata.
+//! read as an `Option` and written through the writer's chainable setters. Each
+//! format stores the pair in its own root slot: the trie as metadata on its
+//! `"/"` node, which is the layout the reference client writes; the key-value
+//! database in its root manifest metadata.
 
 use crate::path::ManifestPath;
 

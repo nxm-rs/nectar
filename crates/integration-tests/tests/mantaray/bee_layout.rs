@@ -1,8 +1,8 @@
 //! The mantaray v0.2 layout, asserted against what the reference client writes.
 //!
 //! The differential in `legacy_differential.rs` pins the bytes: identical op
-//! sequences produce byte-identical roots against the registry-pinned 0.3.0
-//! oracle. This file pins the shape those bytes carry, which is what a reader of
+//! sequences produce byte-identical roots against the pinned legacy oracle.
+//! This file pins the shape those bytes carry, which is what a reader of
 //! either client has to find:
 //!
 //! - A content path is stored bare and verbatim. `index.html` is the trie key

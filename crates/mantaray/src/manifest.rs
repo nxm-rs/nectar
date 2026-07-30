@@ -382,13 +382,12 @@ pub struct TrieWriter<L, R: Reference> {
 impl<L, R: Reference> TrieWriter<L, R> {
     /// Record one site document on the trie's site-config node, or clear it.
     ///
-    /// A merge either way, so the two documents are independent: setting one
-    /// leaves the other exactly as it was, and clearing the last one prunes the
-    /// node, which is how the site config leaves no trace on the wire.
+    /// A merge either way, so the two documents are independent. Clearing the
+    /// last one prunes the node, so the site config leaves no trace on the wire.
     ///
     /// The trie stores metadata values as text, so a path that is not valid
-    /// UTF-8 cannot be a site document; its invalid bytes are replaced rather
-    /// than failing a staging call that cannot report an error.
+    /// UTF-8 cannot be a site document. Staging cannot report an error, so its
+    /// invalid bytes are replaced.
     fn document(&mut self, key: &str, path: Option<ManifestPath>) -> &mut Self {
         match path {
             Some(path) => {
@@ -416,9 +415,8 @@ where
     /// unless `meta` carries some, because the op's metadata is the path's
     /// metadata from then on.
     ///
-    /// A reserved path stages no trie op and refuses the commit instead,
-    /// because it is no key: the site documents are written through the
-    /// option-typed setters below.
+    /// A reserved path is no key, so it stages no trie op and refuses the commit
+    /// instead. The site documents go through the setters below.
     fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
         if content_key(op.path()).is_none() {
             self.reserved
@@ -450,8 +448,7 @@ where
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
         let Self { editor, reserved } = self;
         async move {
-            // The whole batch is refused, so a reserved path writes nothing at
-            // all rather than landing the ops around it.
+            // The whole batch is refused, so a reserved path writes nothing.
             if let Some(reserved) = reserved {
                 return Err(ManifestError::Reserved(reserved));
             }
@@ -502,11 +499,10 @@ fn mapped<R: Reference>(entry: &Entry) -> MapEntry<R> {
 
 /// The trie key `path` addresses, or `None` when it names no content key.
 ///
-/// A content key is the path bytes verbatim, which is what keeps the image
-/// byte-identical to the reference client's. The reserved paths are the two the
-/// seam names on either format: the empty one, which is the trie's structural
-/// root, and [`metadata::ROOT_PATH`], which is the site-config node the site
-/// documents live on. Neither is read, written or walked as a key.
+/// A content key is the path bytes verbatim, which keeps the image
+/// byte-identical to the reference client's. The two reserved paths are the
+/// empty one, the trie's structural root, and [`metadata::ROOT_PATH`], the
+/// site-config node. Neither is read, written or walked as a key.
 fn content_key(path: &ManifestPath) -> Option<&[u8]> {
     (!path.is_reserved()).then(|| path.as_bytes())
 }

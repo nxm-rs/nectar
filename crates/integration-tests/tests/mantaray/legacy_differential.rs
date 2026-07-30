@@ -1,26 +1,30 @@
-//! Differential merge gate against the registry-pinned legacy manifest.
+//! Differential merge gate against the legacy oracle.
 //!
-//! Identical submission-order op sequences are replayed on the pinned
-//! `mantaray-old` crate and on the editor; the resulting roots must match
-//! byte for byte. The legacy replay is a fresh single-session build with one
-//! save at the end, which is the sequence's well-defined root.
+//! `mantaray-old` is a prior `nectar-mantaray` release, pinned from the registry
+//! as a wire-regression oracle. It is not a format version: the wire here is
+//! mantaray v0.2, and bee is the reference client.
+//!
+//! Identical submission-order op sequences are replayed on the oracle and on the
+//! editor; the resulting roots must match byte for byte. The legacy replay is a
+//! fresh single-session build with one save at the end, which is the sequence's
+//! well-defined root.
 //!
 //! # Scope: the wire, byte for byte
 //!
 //! Content keys are stored bare and verbatim, exactly as the reference client
-//! writes them, so a 0.3.0 manifest and a 0.4 manifest of the same content are
-//! the same byte image. This gate pins that: it feeds both sides the same bare
-//! keys and compares the roots, so any change to the content-key encoding fails
-//! it. Submission order, boundary removes, mid-edge splits, prefix-bound chains
-//! and the root-metadata interleavings are pinned with it.
+//! writes them, so both sides give the same content the same byte image. This
+//! gate feeds both the same bare keys and compares the roots, so any change to
+//! the content-key encoding fails it. Submission order, boundary removes,
+//! mid-edge splits, prefix-bound chains and the root-metadata interleavings are
+//! pinned with it.
 //!
 //! # The remove this drives
 //!
-//! 0.3.0's `remove` prunes the fork whose boundary the path names, so it takes
-//! every key under it. The map vocabulary means the exact key instead, so the
-//! editor's `remove` is exact-key and the boundary op lives on under
+//! The oracle's `remove` prunes the fork whose boundary the path names, so it
+//! takes every key under it. The map vocabulary means the exact key instead, so
+//! the editor's `remove` is exact-key and the boundary op lives on under
 //! `remove_subtree`. This differential drives `remove_subtree`, because that is
-//! the behaviour 0.3.0 pins. The exact-key contract is pinned across both
+//! the behaviour the oracle pins. The exact-key contract is pinned across both
 //! formats in `manifest/root_config.rs` instead.
 
 use std::collections::BTreeMap;
@@ -111,8 +115,8 @@ fn record(editor: &mut Editor, script: &[ScriptOp]) {
                 let meta: BTreeMap<String, String> = [(k.clone(), v.clone())].into();
                 editor.insert(p.as_str(), ChunkAddress::from(*a)).meta(meta);
             }
-            // The legacy boundary remove, which is what 0.3.0's `remove` is and
-            // the only op this differential may drive: the seam's `remove` is
+            // The legacy boundary remove, which is what the oracle's `remove` is
+            // and the only op this differential may drive: the seam's `remove` is
             // exact-key now, so it would answer a different question.
             ScriptOp::Rm(p) => {
                 editor.remove_subtree(p.as_str());

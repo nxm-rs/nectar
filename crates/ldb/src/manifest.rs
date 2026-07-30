@@ -260,10 +260,9 @@ where
                 Some((found, entry)) if !is_reserved(&found) => {
                     Ok(Some((floored(found), mapped(entry))))
                 }
-                // The seek landed on a reserved key, which is no content key
-                // at all, so the greatest content key below it is the answer.
-                // Only a database written past the seam holds one, so the walk
-                // this costs is one no seam write can provoke.
+                // The seek landed on a reserved key, so the greatest content
+                // key below it is the answer. Only a database written past the
+                // seam holds one, so no seam write provokes this walk.
                 Some(_) => {
                     let mut cursor = view.range((Bound::Unbounded, Bound::Included(key))).await?;
                     let mut last = None;
@@ -288,13 +287,10 @@ where
             let mut entries = Vec::new();
             while let Some(item) = listing.next().await? {
                 // A reserved key is not content, so the listing never surfaces
-                // it, whatever put it in the database. The folder view gives
-                // one name to two different things when the key is exactly the
-                // separator: the reserved key itself, and the directory that
-                // stands for the content below it. Only what is bound strictly
-                // under it tells them apart, so the bare slot is hidden and a
-                // directory of content is listed like any other, which is what
-                // the trie lists too.
+                // it. At the bare separator the folder view names two things:
+                // the reserved key, and the directory of content below it. What
+                // is bound strictly under it tells them apart, so the bare slot
+                // is hidden and the directory is listed, as the trie lists it.
                 let hidden = is_reserved(item.key())
                     && !(item.is_dir() && bound_below(&self.view, item.key()).await?);
                 if hidden {
@@ -410,9 +406,8 @@ impl<S, K, R: NodeRef> LdbWriter<'_, S, K, R> {
     /// Stage one site document into the database's root manifest metadata, or
     /// clear it.
     ///
-    /// A merge either way, so the two documents are independent: setting one
-    /// leaves the other where it was, and clearing the last one leaves the
-    /// manifest carrying no metadata at all.
+    /// A merge either way, so the two documents are independent. Clearing the
+    /// last one leaves the manifest carrying no metadata at all.
     fn document(&mut self, id: KeyId, path: Option<ManifestPath>) -> &mut Self {
         let value = path.map(|path| Bytes::copy_from_slice(path.as_bytes()));
         self.editor.set_root_metadata(id, value);
@@ -434,9 +429,8 @@ where
     /// unless `meta` carries some, because the op's metadata is the key's
     /// metadata from then on.
     ///
-    /// A reserved path stages no database op and refuses the commit instead,
-    /// because it is no key: the site documents are written through the
-    /// option-typed setters below.
+    /// A reserved path is no key, so it stages no database op and refuses the
+    /// commit instead. The site documents go through the setters below.
     fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
         let Some(key) = content_key(op.path()) else {
             self.reserved
@@ -473,8 +467,7 @@ where
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
         let Self { editor, reserved } = self;
         async move {
-            // The whole batch is refused, so a reserved path writes nothing at
-            // all rather than landing the ops around it.
+            // The whole batch is refused, so a reserved path writes nothing.
             if let Some(reserved) = reserved {
                 return Err(ManifestError::Reserved(reserved));
             }
@@ -485,11 +478,10 @@ where
 
 /// The database key `path` addresses, or `None` when it names no content key.
 ///
-/// The key bytes are the path bytes verbatim. The reserved paths are the two
-/// the seam names on either format: the empty one, which is the database's own
-/// root slot holding the manifest metadata the site-level documents live in,
-/// and the lone separator, which is the slot the trie keys them at. Neither is
-/// read, written or walked as a key here, so the two formats answer alike.
+/// The key bytes are the path bytes verbatim. The two reserved paths are the
+/// empty one, the database's own root slot for the site-level documents, and
+/// the lone separator, the slot the trie keys them at. Neither is read, written
+/// or walked as a key here, so the two formats answer alike.
 fn content_key(path: &ManifestPath) -> Option<Key> {
     (!path.is_reserved()).then(|| Key::from(path.as_bytes()))
 }
@@ -501,8 +493,7 @@ fn floored(key: Key) -> ManifestPath {
 
 /// Whether `key` is one the map reserves rather than content.
 ///
-/// The read-side twin of [`content_key`], over the database's own key type: a
-/// walk, a listing and a floor each step over what a lookup answers absent.
+/// The read-side twin of [`content_key`], over the database's own key type.
 fn is_reserved(key: &Key) -> bool {
     matches!(key.as_bytes(), [] | [ManifestPath::SEPARATOR])
 }
@@ -510,9 +501,8 @@ fn is_reserved(key: &Key) -> bool {
 /// Whether the database binds anything strictly below `key`.
 ///
 /// What tells a listed reserved key apart from the directory of content the
-/// folder view gives the same name to. The probe stops at the first key past
-/// `key` itself, and `key` sorts first in its own prefix range, so it costs one
-/// seek and at most two steps.
+/// folder view gives the same name to. `key` sorts first in its own prefix
+/// range, so the probe costs one seek and at most two steps.
 async fn bound_below<S, R>(view: &View<'_, S, V1, R>, key: &Key) -> Result<bool, ManifestError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,

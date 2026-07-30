@@ -256,10 +256,9 @@ where
     /// index document is tried, then the error document.
     ///
     /// Keys are bare, so the empty path and a path already ending in the
-    /// separator name a directory directly; any other path is read as a
-    /// directory by inserting a separator before the index document. The index
-    /// document is a filename joined below each directory, so `""` resolves
-    /// `"index.html"` and `"docs/"` resolves `"docs/index.html"`. The error
+    /// separator name a directory directly; any other path gets a separator
+    /// before the index document. The index document is a filename joined below
+    /// each directory, so `"docs/"` resolves `"docs/index.html"`. The error
     /// document is one whole key: `"404.html"`.
     pub async fn serve(&self, root: &R, path: &Key) -> Result<Served<F>, ReaderError> {
         if let Some(entry) = self.get(root, path).await? {

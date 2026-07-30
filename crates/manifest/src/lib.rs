@@ -138,13 +138,12 @@ impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 ///
 /// Content paths are stored bare and verbatim: `index.html` is the bytes
 /// `index.html` on both formats, byte-identical to what the reference client
-/// writes. The map is over content paths alone. The manifest's own
-/// configuration, the site index and error documents, is not a key in it: read
-/// it with [`MapView::index_document`] and [`MapView::error_document`], and
-/// write it with [`MapWriter::with_index_document`] and
-/// [`MapWriter::with_error_document`], each of which lands in the format's own
-/// root slot. The paths those slots are keyed at are reserved: see
-/// [`ManifestPath::is_reserved`].
+/// writes. The map holds content paths alone. The site index and error
+/// documents are not keys: read them with [`MapView::index_document`] and
+/// [`MapView::error_document`], and write them with
+/// [`MapWriter::with_index_document`] and [`MapWriter::with_error_document`].
+/// Each lands in the format's own root slot, at a path
+/// [`ManifestPath::is_reserved`] names.
 pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;

@@ -67,9 +67,7 @@ impl<W: MapWriter<R>, R: Reference + MaybeSend> Drop for Insert<'_, W, R> {
 /// The write handle of a manifest, bound to one base root.
 ///
 /// Staging touches no storage: the ops accumulate, and
-/// [`commit`](Self::commit) writes them in one pass. What a repeated path
-/// stages is the format's own business, so the batch is built the way the
-/// caller means it to land.
+/// [`commit`](Self::commit) writes them in one pass.
 pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
@@ -86,15 +84,13 @@ pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
 
     /// Stage `path` bound to `reference`, with metadata as a suffix.
     ///
-    /// An insert replaces the whole binding; existing metadata is cleared
-    /// unless [`meta`](Insert::meta) is given. This is the map contract: a
-    /// bare insert is the value the path holds from then on, so a caller that
-    /// means to keep metadata restates it.
+    /// An insert replaces the whole binding, so it clears existing metadata
+    /// unless [`meta`](Insert::meta) is given. A caller that means to keep
+    /// metadata restates it.
     ///
-    /// The path is a content path, so a reserved one binds nothing: staging is
-    /// infallible, so the commit fails with [`ReservedKey`] and the whole batch
-    /// is refused. The format's root slot is reached through
-    /// [`with_index_document`](Self::with_index_document) and
+    /// A reserved path binds nothing: staging is infallible, so the commit fails
+    /// with [`ReservedKey`] and refuses the whole batch. The format's root slot
+    /// is reached through [`with_index_document`](Self::with_index_document) and
     /// [`with_error_document`](Self::with_error_document) alone.
     ///
     /// [`ReservedKey`]: crate::ReservedKey
@@ -104,10 +100,8 @@ pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
 
     /// Set the site index document, or clear it with `None`.
     ///
-    /// Chainable, and it lands in the format's own root slot rather than under
-    /// a path: the trie writes the `"/"` node's metadata beside the entry the
-    /// wire reads as the zero address, and the key-value database writes its
-    /// root manifest metadata. Neither is a key the map surfaces.
+    /// Chainable, and it lands in the format's own root slot rather than under a
+    /// path, so the map surfaces no key for it.
     ///
     /// The value is a filename joined below each directory, so it stays
     /// relative: `index.html`, not `/index.html`.
@@ -122,15 +116,13 @@ pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
 
     /// Stage the removal of `path`.
     ///
-    /// Exact-key, on either format, exactly as `HashMap::remove` is: the path's
-    /// own value and metadata go, and no other path does. A path with children
-    /// keeps every one of them, and a childless leaf is pruned.
+    /// Exact-key on either format, as `HashMap::remove` is: the path's own value
+    /// and metadata go, and no other path does. A path with children keeps every
+    /// one of them, and a childless leaf is pruned.
     ///
-    /// Removing an unbound or absent path is a no-op, not an error: the batch
-    /// commits and the root does not move, because nothing changed. A reserved
-    /// path is not one such case: it is no key at all, so the commit fails with
-    /// [`ReservedKey`] and the site documents are cleared through their own
-    /// setters instead.
+    /// Removing an unbound or absent path is a no-op, so the commit hands the
+    /// base root back. A reserved path is no key at all, so the commit fails
+    /// with [`ReservedKey`]; clear the site documents through their own setters.
     ///
     /// [`ReservedKey`]: crate::ReservedKey
     fn remove(&mut self, path: ManifestPath) -> &mut Self {
@@ -151,9 +143,8 @@ pub trait MapWriter<R: Reference + MaybeSend = ChunkRef>: MaybeSend + Sized {
 
     /// Write the batch, returning the root it produced.
     ///
-    /// The whole batch lands or none of it does: a caller never observes a
-    /// half-applied root, because the root only exists once the batch is
-    /// written. A batch that staged a reserved path fails here with
+    /// The whole batch lands or none of it does, so a caller never observes a
+    /// half-applied root. A batch that staged a reserved path fails here with
     /// [`ReservedKey`](crate::ReservedKey) and writes nothing at all.
     fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend;
 }
