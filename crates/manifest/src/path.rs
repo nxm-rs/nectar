@@ -8,7 +8,11 @@ use core::fmt;
 /// The bytes are the format's own key, stored bare and verbatim: nothing is
 /// prepended and nothing is normalized, so a trailing separator survives a round
 /// trip. A path names content alone; the site-level documents are not paths.
-#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::AsRef, derive_more::From,
+)]
+#[as_ref([u8])]
+#[from(Vec<u8>, &[u8], &str)]
 pub struct ManifestPath(Vec<u8>);
 
 impl ManifestPath {
@@ -97,30 +101,6 @@ impl ManifestPath {
             bytes.push(Self::SEPARATOR);
         }
         bytes.extend_from_slice(segment);
-        Self(bytes)
-    }
-}
-
-impl AsRef<[u8]> for ManifestPath {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl From<&[u8]> for ManifestPath {
-    fn from(bytes: &[u8]) -> Self {
-        Self(bytes.to_vec())
-    }
-}
-
-impl From<&str> for ManifestPath {
-    fn from(path: &str) -> Self {
-        Self(path.as_bytes().to_vec())
-    }
-}
-
-impl From<Vec<u8>> for ManifestPath {
-    fn from(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
 }

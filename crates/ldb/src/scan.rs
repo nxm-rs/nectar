@@ -616,7 +616,7 @@ pub(crate) fn half_open(bounds: &impl RangeBounds<Key>) -> (Vec<u8>, Option<Byte
 
 /// The least byte string strictly greater than `key`.
 fn next_key(key: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(key.len().saturating_add(size_of::<u8>()));
+    let mut bytes = Vec::with_capacity(key.len().saturating_add(1));
     bytes.extend_from_slice(key);
     bytes.push(0);
     bytes

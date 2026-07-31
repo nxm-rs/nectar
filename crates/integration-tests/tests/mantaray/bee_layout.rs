@@ -31,6 +31,11 @@ fn reference(byte: u8) -> ChunkRef {
     ChunkRef::new(ChunkAddress::new([byte; 32]))
 }
 
+/// A path as text, for a readable assertion message.
+fn text(path: &ManifestPath) -> String {
+    String::from_utf8(path.as_bytes().to_vec()).unwrap()
+}
+
 /// A website manifest written through the seam stores content bare and the site
 /// documents as metadata on the `"/"` node, with no entry bound there.
 #[test]
@@ -120,7 +125,7 @@ fn a_website_manifest_matches_the_reference_layout() {
         let mut walked = Vec::new();
         let mut cursor = view.iter().await.unwrap();
         while let Some((path, _)) = cursor.next().await.unwrap() {
-            walked.push(String::from_utf8(path.as_bytes().to_vec()).unwrap());
+            walked.push(text(&path));
         }
         assert_eq!(
             walked,
@@ -128,18 +133,12 @@ fn a_website_manifest_matches_the_reference_layout() {
             "the seam walks content keys alone"
         );
         assert_eq!(
-            view.index_document()
-                .await
-                .unwrap()
-                .map(|path| String::from_utf8(path.as_bytes().to_vec()).unwrap()),
+            view.index_document().await.unwrap().as_ref().map(text),
             Some(String::from("index.html")),
             "the seam reads the index document as an option"
         );
         assert_eq!(
-            view.error_document()
-                .await
-                .unwrap()
-                .map(|path| String::from_utf8(path.as_bytes().to_vec()).unwrap()),
+            view.error_document().await.unwrap().as_ref().map(text),
             Some(String::from("404.html")),
             "and the error document too"
         );
