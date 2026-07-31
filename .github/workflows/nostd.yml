@@ -65,8 +65,8 @@ jobs:
                   cargo check --locked -p nectar-file \
                     --no-default-features --features primitives \
                     --target ${{ matrix.target }}
-            # The manifest seam's shared load lane pins nectar-file/primitives,
-            # which unification would leak into the bare pass above.
+            # The manifest seam pins nectar-primitives, which unification
+            # would leak into the bare pass above.
             - name: Check nectar-manifest without std
               run: |
                   cargo check --locked -p nectar-manifest \

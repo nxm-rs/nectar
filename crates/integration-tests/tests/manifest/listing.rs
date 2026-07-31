@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    Batch, DynManifest, Manifest, ManifestOp, ManifestPath, MapCursor, MapView, MetadataSource,
+    Batch, ErasedManifest, Manifest, ManifestCursor, ManifestOp, ManifestPath, ManifestView,
+    MetadataSource,
 };
 use nectar_mantaray::{MantarayManifest, NodeLoader, NodeSaver};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, EntryRef};
@@ -87,7 +88,7 @@ fn inserts(keys: &[&str], file: &ChunkRef) -> Vec<ManifestOp<ChunkRef, Box<dyn M
 }
 
 /// The listed paths, as text for a readable failure.
-async fn listed(manifest: &dyn DynManifest, root: &ChunkRef, dir: &str) -> Vec<String> {
+async fn listed(manifest: &dyn ErasedManifest, root: &ChunkRef, dir: &str) -> Vec<String> {
     manifest
         .dyn_dir(root, &ManifestPath::from(dir))
         .await
@@ -183,7 +184,7 @@ fn listing_one_level_costs_that_subtree_alone() {
         let root = trie.empty().await.unwrap();
         let root = trie.apply(root, batch).await.unwrap();
 
-        let view = trie.at(&root);
+        let view = trie.at(root);
         nodes.take();
         let listing = view.dir(&ManifestPath::from("zzz/")).await.unwrap();
         let level = nodes.take();

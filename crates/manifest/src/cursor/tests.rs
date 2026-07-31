@@ -36,7 +36,7 @@ fn walk(script: &[&[u8]], bounds: (Bound<&str>, Bound<&str>)) -> (Vec<Vec<u8>>, 
     );
     let got = run(async {
         let mut out = Vec::new();
-        while let Some((path, _)) = MapCursor::next(&mut cursor).await.unwrap() {
+        while let Some((path, _)) = ManifestCursor::<ChunkRef>::next(&mut cursor).await.unwrap() {
             out.push(path.into_bytes());
         }
         out

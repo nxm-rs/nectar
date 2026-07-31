@@ -9,10 +9,11 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
-use nectar_file::sink::DataSink;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::ChunkRef;
+use nectar_primitives::sink::DataSink;
 use nectar_primitives::store::BoxedError;
 use nectar_tasks::BoxFuture;
 
@@ -23,7 +24,7 @@ use crate::meta::{ManifestMeta, MetadataSource};
 use crate::op::ManifestOp;
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
-use crate::view::{MapEntry, MapView};
+use crate::view::{ManifestCursor, ManifestView, MapEntry};
 use crate::{Manifest, SinkError};
 
 /// A sink write that failed behind the erased seam; the concrete error
@@ -66,11 +67,25 @@ fn erase<F: core::error::Error + MaybeSend + MaybeSync + 'static>(
     error.map_format(|format| ErasedFormat(Box::new(format)))
 }
 
+/// Object-safe visitor for [`ErasedManifest::dyn_for_each`]:
+/// blanket-implemented for closures, so a caller passes
+/// `&mut |path, entry| ...` directly.
+pub trait DynVisit: MaybeSend {
+    /// Fold one `(path, entry)`; [`ControlFlow::Break`] stops the walk.
+    fn visit(&mut self, path: ManifestPath, entry: MapEntry) -> ControlFlow<()>;
+}
+
+impl<F: FnMut(ManifestPath, MapEntry) -> ControlFlow<()> + MaybeSend> DynVisit for F {
+    fn visit(&mut self, path: ManifestPath, entry: MapEntry) -> ControlFlow<()> {
+        self(path, entry)
+    }
+}
+
 /// Object-safe [`Manifest`]: a manifest whose format is decided at runtime.
 ///
 /// Blanket-implemented for every `Manifest<ChunkRef>`, so a format implements
-/// the static trait once and is held as `Box<dyn DynManifest>` for free.
-pub trait DynManifest: MaybeSend + MaybeSync {
+/// the static trait once and is held as `Box<dyn ErasedManifest>` for free.
+pub trait ErasedManifest: MaybeSend + MaybeSync {
     /// The root of the empty manifest, freshly persisted.
     fn dyn_empty(&self) -> BoxFuture<'_, Result<ChunkRef, ErasedManifestError>>;
 
@@ -101,6 +116,15 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         root: &'a ChunkRef,
         dir: &'a ManifestPath,
     ) -> BoxFuture<'a, Result<Listing, ErasedManifestError>>;
+
+    /// Fold every bound `(path, entry)` in path order into `visit`, stopping
+    /// early on [`ControlFlow::Break`]. Internal iteration: an object-safe
+    /// cursor would box every step, so the erased walk inverts control.
+    fn dyn_for_each<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        visit: &'a mut dyn DynVisit,
+    ) -> BoxFuture<'a, Result<(), ErasedManifestError>>;
 
     /// Write the data bound to `path` into `sink`, starting at offset zero.
     fn dyn_load<'a>(
@@ -158,7 +182,7 @@ pub trait DynManifest: MaybeSend + MaybeSync {
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>>;
 }
 
-impl<T: Manifest<ChunkRef>> DynManifest for T
+impl<T: Manifest<ChunkRef>> ErasedManifest for T
 where
     T::Metadata: 'static,
 {
@@ -171,7 +195,7 @@ where
         root: &'a ChunkRef,
         path: &'a ManifestPath,
     ) -> BoxFuture<'a, Result<Option<MapEntry>, ErasedManifestError>> {
-        Box::pin(async move { self.at(root).get(path).await.map_err(erase) })
+        Box::pin(async move { self.at(*root).get(path).await.map_err(erase) })
     }
 
     fn dyn_contains_key<'a>(
@@ -179,7 +203,7 @@ where
         root: &'a ChunkRef,
         path: &'a ManifestPath,
     ) -> BoxFuture<'a, Result<bool, ErasedManifestError>> {
-        Box::pin(async move { self.at(root).contains_key(path).await.map_err(erase) })
+        Box::pin(async move { self.at(*root).contains_key(path).await.map_err(erase) })
     }
 
     fn dyn_floor<'a>(
@@ -187,7 +211,7 @@ where
         root: &'a ChunkRef,
         path: &'a ManifestPath,
     ) -> BoxFuture<'a, Result<Option<(ManifestPath, MapEntry)>, ErasedManifestError>> {
-        Box::pin(async move { self.at(root).floor(path).await.map_err(erase) })
+        Box::pin(async move { self.at(*root).floor(path).await.map_err(erase) })
     }
 
     fn dyn_dir<'a>(
@@ -195,7 +219,23 @@ where
         root: &'a ChunkRef,
         dir: &'a ManifestPath,
     ) -> BoxFuture<'a, Result<Listing, ErasedManifestError>> {
-        Box::pin(async move { self.at(root).dir(dir).await.map_err(erase) })
+        Box::pin(async move { self.at(*root).dir(dir).await.map_err(erase) })
+    }
+
+    fn dyn_for_each<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        visit: &'a mut dyn DynVisit,
+    ) -> BoxFuture<'a, Result<(), ErasedManifestError>> {
+        Box::pin(async move {
+            let mut cursor = self.at(*root).iter().await.map_err(erase)?;
+            while let Some((path, entry)) = cursor.next().await.map_err(erase)? {
+                if visit.visit(path, entry).is_break() {
+                    return Ok(());
+                }
+            }
+            Ok(())
+        })
     }
 
     fn dyn_load<'a>(
@@ -206,7 +246,7 @@ where
     ) -> BoxFuture<'a, Result<(), ErasedManifestError>> {
         Box::pin(async move {
             let mut bridge = SinkBridge(sink);
-            self.at(root).load(path, &mut bridge).await.map_err(erase)
+            self.at(*root).load(path, &mut bridge).await.map_err(erase)
         })
     }
 
@@ -214,7 +254,7 @@ where
         &'a self,
         root: &'a ChunkRef,
     ) -> BoxFuture<'a, Result<SiteConfig, ErasedManifestError>> {
-        Box::pin(async move { self.at(root).site_config().await.map_err(erase) })
+        Box::pin(async move { self.at(*root).site_config().await.map_err(erase) })
     }
 
     fn dyn_set_site_config<'a>(
@@ -236,7 +276,7 @@ where
         path: &'a ManifestPath,
     ) -> BoxFuture<'a, Result<Box<dyn MetadataSource>, ErasedManifestError>> {
         Box::pin(async move {
-            let meta = self.at(root).metadata(path).await.map_err(erase)?;
+            let meta = self.at(*root).metadata(path).await.map_err(erase)?;
             let boxed: Box<dyn MetadataSource> = Box::new(meta);
             Ok(boxed)
         })
@@ -261,7 +301,7 @@ where
         root: &'a ChunkRef,
         path: ManifestPath,
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
-        Box::pin(async move { self.remove(root, path).await.map_err(erase) })
+        Box::pin(async move { self.remove(*root, path).await.map_err(erase) })
     }
 
     fn dyn_apply<'a>(

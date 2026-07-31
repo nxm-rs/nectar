@@ -12,7 +12,7 @@ use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{Database, Encrypted as EncryptedSeal, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    Batch, ListEntry, Manifest, ManifestMeta, ManifestPath, MapEntry, MapView, MetadataView,
+    Batch, ListEntry, Manifest, ManifestMeta, ManifestPath, ManifestView, MapEntry, MetadataView,
     WellKnownKey,
 };
 use nectar_mantaray::MantarayManifest;
@@ -41,7 +41,7 @@ async fn exercise<M: Manifest<EncryptedChunkRef>>(
         manifest.apply(base.clone(), batch).await.unwrap()
     };
 
-    let view = manifest.at(&root);
+    let view = manifest.at(root.clone());
     assert_eq!(
         view.get(&ManifestPath::from("data.bin")).await.unwrap(),
         Some(MapEntry::Reference(file.clone())),
@@ -68,12 +68,12 @@ async fn exercise<M: Manifest<EncryptedChunkRef>>(
 
     // The one-shot removal leaves the entry unreachable under its new root.
     let pruned = manifest
-        .remove(&root, ManifestPath::from("data.bin"))
+        .remove(root, ManifestPath::from("data.bin"))
         .await
         .unwrap();
     assert!(
         !manifest
-            .at(&pruned)
+            .at(pruned)
             .contains_key(&ManifestPath::from("data.bin"))
             .await
             .unwrap()

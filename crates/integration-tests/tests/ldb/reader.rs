@@ -11,7 +11,7 @@ use nectar_ldb::{
     Builder, Child, Database, Entry, ForkTable, Key, KeyId, Metadata, Node, NodePut, Plaintext,
     Prefix, Reader, V1,
 };
-use nectar_manifest::{Batch, Manifest, ManifestPath, MapView};
+use nectar_manifest::{Batch, Manifest, ManifestPath, ManifestView};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
@@ -263,9 +263,9 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
         );
 
         let seam = Database::<_>::plain(store.clone());
-        let seam_view = Manifest::at(&seam, &root);
+        let seam_view = Manifest::at(&seam, root);
         ensure!(
-            MapView::index_document(&seam_view)
+            ManifestView::index_document(&seam_view)
                 .await?
                 .as_ref()
                 .map(ManifestPath::as_bytes)
@@ -273,7 +273,7 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
             "the index document survives the seam",
         );
         ensure!(
-            MapView::error_document(&seam_view)
+            ManifestView::error_document(&seam_view)
                 .await?
                 .as_ref()
                 .map(ManifestPath::as_bytes)
@@ -283,11 +283,11 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
         // The slot is not a content key.
         let empty = ManifestPath::default();
         ensure!(
-            MapView::metadata(&seam_view, &empty).await?.is_none(),
+            ManifestView::metadata(&seam_view, &empty).await?.is_none(),
             "the empty path carries no metadata",
         );
         ensure!(
-            MapView::get(&seam_view, &empty).await?.is_none(),
+            ManifestView::get(&seam_view, &empty).await?.is_none(),
             "the empty path binds nothing",
         );
 
@@ -346,13 +346,13 @@ fn one_database_serves_the_native_and_the_seam_contract() -> Result<()> {
 
         // The trait's `at` answers the seam contract over paths, with the
         // reserved slots filtered.
-        let view = Manifest::at(&db, &seam_root);
+        let view = Manifest::at(&db, seam_root);
         ensure!(
-            MapView::get(&view, &path).await?.is_some(),
+            ManifestView::get(&view, &path).await?.is_some(),
             "the seam view answers over paths"
         );
         ensure!(
-            MapView::get(&view, &ManifestPath::default())
+            ManifestView::get(&view, &ManifestPath::default())
                 .await?
                 .is_none(),
             "the seam view keeps the root slot filtered"

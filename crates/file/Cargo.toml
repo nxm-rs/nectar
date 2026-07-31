@@ -23,6 +23,7 @@ bytes = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 nectar-clock = { workspace = true, optional = true }
 nectar-governor = { workspace = true }
+nectar-manifest = { workspace = true, optional = true }
 nectar-marker = { workspace = true }
 nectar-primitives = { workspace = true, optional = true }
 nectar-tasks = { workspace = true, optional = true }
@@ -55,6 +56,10 @@ primitives = [
 	"nectar-governor/chunk",
 ]
 
+# The manifest seam's shared data-load lane: one `load_reference` every
+# format adapter calls.
+manifest = [ "dep:nectar-manifest", "primitives" ]
+
 # Standard library interop; the filesystem and io adapters land with the
 # write engine. Carries the adaptive window controller and its clock.
 std = [
@@ -62,6 +67,7 @@ std = [
 	"dep:nectar-clock",
 	"futures-util?/std",
 	"nectar-clock/std",
+	"nectar-manifest?/std",
 	"nectar-primitives?/std",
 	"nectar-tasks?/std",
 	"primitives",
@@ -90,6 +96,7 @@ encryption = [ "dep:zeroize", "nectar-primitives?/encryption" ]
 unsync = [
 	"nectar-clock?/unsync",
 	"nectar-governor/unsync",
+	"nectar-manifest?/unsync",
 	"nectar-marker/unsync",
 	"nectar-primitives?/unsync",
 	"nectar-tasks?/unsync",
@@ -98,5 +105,5 @@ unsync = [
 # `rayon` and `unsync` are mutually exclusive, so the doc build lists
 # features explicitly rather than enabling all at once.
 [package.metadata.docs.rs]
-features = ["std", "tokio", "rayon", "encryption", "arbitrary"]
+features = ["std", "tokio", "rayon", "encryption", "arbitrary", "manifest"]
 rustdoc-args = ["--cfg", "docsrs"]

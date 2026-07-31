@@ -11,6 +11,7 @@ use core::mem::size_of;
 use crate::chunk::ChunkAddress;
 use crate::entry_ref::EntryRef;
 use crate::error::WrongLength;
+use crate::marker::{MaybeSend, MaybeSync};
 use crate::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 
 pub(crate) mod sealed {
@@ -57,7 +58,12 @@ impl RefKind {
 /// [`EncryptedChunkRef`](crate::chunk::encryption::EncryptedChunkRef). The width
 /// fact is stated once, on [`Self::KIND`]; wire serialization derives from it,
 /// so no caller restates 32 or 64.
-pub trait Reference: sealed::Sealed + Sized + Clone + Eq + core::fmt::Debug + 'static {
+///
+/// Carries [`MaybeSend`] and [`MaybeSync`]: both impls are plain value types,
+/// so no generic caller restates the bounds.
+pub trait Reference:
+    sealed::Sealed + Sized + Clone + Eq + core::fmt::Debug + MaybeSend + MaybeSync + 'static
+{
     /// Which width this reference carries.
     const KIND: RefKind;
 

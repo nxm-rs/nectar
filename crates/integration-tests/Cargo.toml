@@ -138,8 +138,16 @@ name = "manifest_metadata"
 path = "tests/manifest/metadata.rs"
 
 [[test]]
+name = "manifest_policy"
+path = "tests/manifest/policy.rs"
+
+[[test]]
 name = "manifest_root_config"
 path = "tests/manifest/root_config.rs"
+
+[[test]]
+name = "manifest_serve"
+path = "tests/manifest/serve.rs"
 
 [[test]]
 name = "mantaray_bmt_nodes"

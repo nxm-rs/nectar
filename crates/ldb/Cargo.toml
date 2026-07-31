@@ -24,6 +24,8 @@ bytes.workspace = true
 # The walk substrate: the in-flight set the hand-rolled loops admit into and
 # the `Stream` trait they poll it through.
 futures-util = { workspace = true }
+# The manifest seam's shared data-load lane.
+nectar-file = { workspace = true, optional = true, features = ["manifest"] }
 nectar-governor = { workspace = true }
 nectar-manifest = { workspace = true, optional = true }
 nectar-primitives = { workspace = true }
@@ -45,6 +47,7 @@ default = [ "std" ]
 arbitrary = [
 	"alloy-primitives/arbitrary",
 	"dep:arbitrary",
+	"nectar-file?/arbitrary",
 	"nectar-primitives/arbitrary",
 	"std",
 ]
@@ -57,12 +60,14 @@ arbitrary = [
 # the surface opt-in.
 encryption = []
 # The shared `Manifest` seam: the folder view as one implementation of it,
-# with entry data joined through the seam's shared load lane. Implies `std`.
-manifest = [ "dep:nectar-manifest", "std" ]
+# with entry data joined through the file crate's shared load lane. Implies
+# `std`.
+manifest = [ "dep:nectar-file", "dep:nectar-manifest", "std" ]
 std = [
 	"alloy-primitives/std",
 	"bytes/std",
 	"futures-util/std",
+	"nectar-file?/std",
 	"nectar-manifest?/std",
 	"nectar-primitives/std",
 	"thiserror/std",
@@ -70,6 +75,7 @@ std = [
 # Single-thread send escape: relaxes the boxed fetch futures off `Send` in
 # lockstep with the store traits.
 unsync = [
+	"nectar-file?/unsync",
 	"nectar-governor/unsync",
 	"nectar-manifest?/unsync",
 	"nectar-primitives/unsync",
