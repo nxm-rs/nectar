@@ -304,18 +304,24 @@ impl<S, K, F: Format, R: NodeRef> Editor<'_, S, K, F, R> {
         &self.changeset
     }
 
-    /// Stage `key` bound to `entry`, with metadata as a suffix.
+    /// Stage `key` bound to `entry` with no metadata.
     ///
-    /// The op lands when the returned guard drops:
-    /// `editor.insert(key, entry).meta(meta);`. An insert replaces the whole
-    /// binding, clearing existing metadata unless [`meta`](Insert::meta) is
-    /// given.
-    pub const fn insert(&mut self, key: Key, entry: Entry<F>) -> Insert<'_, F> {
-        Insert {
-            changeset: &mut self.changeset,
-            pending: Some((key, entry)),
-            meta: None,
-        }
+    /// An insert replaces the whole binding, clearing existing metadata unless
+    /// [`insert_with`](Self::insert_with) carries some.
+    pub fn insert(&mut self, key: Key, entry: Entry<F>) -> &mut Self {
+        self.insert_with(key, entry, None)
+    }
+
+    /// Stage `key` bound to `entry`, carrying `metadata`. On the empty key the
+    /// metadata is the database's own manifest metadata.
+    pub fn insert_with(
+        &mut self,
+        key: Key,
+        entry: Entry<F>,
+        metadata: impl Into<Option<Metadata<F>>>,
+    ) -> &mut Self {
+        self.changeset.insert(key, entry, metadata.into());
+        self
     }
 
     /// Stage the removal of `key`.
@@ -366,31 +372,5 @@ where
     /// base root.
     pub async fn commit(self) -> Result<R, ApplyError> {
         apply(self.store, self.seal, &self.base, &self.changeset).await
-    }
-}
-
-/// A staged insert, awaiting the metadata it may carry. The op is staged when
-/// the guard drops.
-#[derive(Debug)]
-pub struct Insert<'e, F: Format = V1> {
-    changeset: &'e mut Changeset<F>,
-    pending: Option<(Key, Entry<F>)>,
-    meta: Option<Metadata<F>>,
-}
-
-impl<F: Format> Insert<'_, F> {
-    /// Attach `metadata`, replacing whatever the key carried. On the empty key
-    /// this is the database's own manifest metadata.
-    pub fn meta(&mut self, metadata: Metadata<F>) -> &mut Self {
-        self.meta = Some(metadata);
-        self
-    }
-}
-
-impl<F: Format> Drop for Insert<'_, F> {
-    fn drop(&mut self) {
-        if let Some((key, entry)) = self.pending.take() {
-            self.changeset.insert(key, entry, self.meta.take());
-        }
     }
 }

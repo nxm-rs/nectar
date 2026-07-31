@@ -8,7 +8,8 @@ use crate::path::ManifestPath;
 
 /// A write named a key the map reserves, so the whole batch was refused.
 ///
-/// Reported by [`MapWriter::commit`](crate::MapWriter::commit).
+/// Reported by [`Manifest::apply`](crate::Manifest::apply), which refuses the
+/// whole batch.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{path:?} is reserved and binds no content")]
 pub struct ReservedKey {

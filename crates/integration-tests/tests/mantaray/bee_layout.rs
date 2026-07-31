@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use nectar_loadsave::NodeLoadSaver;
-use nectar_manifest::{Manifest, ManifestPath, MapCursor, MapView, MapWriter};
+use nectar_manifest::{Batch, Manifest, ManifestPath, MapCursor, MapView};
 use nectar_mantaray::{ManifestEditor, MantarayManifest, Reader, metadata};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
@@ -50,13 +50,13 @@ fn a_website_manifest_matches_the_reference_layout() {
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes.clone(), data);
 
         let root = {
-            let mut writer = trie.edit(&ChunkRef::new(empty));
-            writer.insert(ManifestPath::from("index.html"), reference(1));
-            writer.insert(ManifestPath::from("css/style.css"), reference(2));
-            writer
-                .with_index_document(ManifestPath::from("index.html"))
-                .with_error_document(ManifestPath::from("404.html"));
-            writer.commit().await.unwrap()
+            let mut batch = Batch::new();
+            batch.insert(ManifestPath::from("index.html"), reference(1));
+            batch.insert(ManifestPath::from("css/style.css"), reference(2));
+            batch
+                .set_index_document(ManifestPath::from("index.html"))
+                .set_error_document(ManifestPath::from("404.html"));
+            trie.apply(ChunkRef::new(empty), batch).await.unwrap()
         };
 
         // The trie is read below the seam, so this asserts the stored image.
@@ -165,12 +165,12 @@ fn the_editor_verbs_write_the_same_site_config_node() {
         let (empty, _) = editor.commit().await.unwrap();
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, data);
         let above = {
-            let mut writer = trie.edit(&ChunkRef::new(empty));
-            writer.insert(ManifestPath::from("index.html"), reference(1));
-            writer
-                .with_index_document(ManifestPath::from("index.html"))
-                .with_error_document(ManifestPath::from("404.html"));
-            writer.commit().await.unwrap()
+            let mut batch = Batch::new();
+            batch.insert(ManifestPath::from("index.html"), reference(1));
+            batch
+                .set_index_document(ManifestPath::from("index.html"))
+                .set_error_document(ManifestPath::from("404.html"));
+            trie.apply(ChunkRef::new(empty), batch).await.unwrap()
         };
 
         assert_eq!(

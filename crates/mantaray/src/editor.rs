@@ -172,22 +172,32 @@ impl<S, R: Reference> ManifestEditor<S, R> {
         &self.ops
     }
 
-    /// Record inserting the entry at `path`, with metadata as a suffix.
+    /// Record inserting the entry at `path` with empty metadata.
     ///
-    /// The op is recorded when the returned guard drops:
-    /// `editor.insert(path, reference).meta(metadata);`. An insert replaces the
-    /// whole binding, clearing existing metadata unless
-    /// [`meta`](Insert::meta) is given.
+    /// An insert replaces the whole binding, clearing existing metadata unless
+    /// [`insert_with`](Self::insert_with) carries some.
     ///
     /// Format limitations, both rejected at commit: an all-zero reference is
     /// the wire's absent-entry sentinel, and metadata on the empty path (the
     /// trie root) has no wire slot.
-    pub fn insert(&mut self, path: impl AsRef<[u8]>, reference: impl Into<R>) -> Insert<'_, R> {
-        Insert {
-            ops: &mut self.ops,
-            pending: Some((path.as_ref().to_vec(), reference.into())),
-            metadata: BTreeMap::new(),
-        }
+    pub fn insert(&mut self, path: impl AsRef<[u8]>, reference: impl Into<R>) -> &mut Self {
+        self.insert_with(path, reference, BTreeMap::new())
+    }
+
+    /// Record inserting the entry at `path`, carrying `metadata`.
+    pub fn insert_with(
+        &mut self,
+        path: impl AsRef<[u8]>,
+        reference: impl Into<R>,
+        metadata: BTreeMap<String, String>,
+    ) -> &mut Self {
+        self.push(
+            path,
+            Op::Insert {
+                reference: Some(reference.into()),
+                metadata,
+            },
+        )
     }
 
     /// Record clearing the binding at exactly `path`.
@@ -250,37 +260,6 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     fn push(&mut self, path: impl AsRef<[u8]>, op: Op<R>) -> &mut Self {
         self.ops.push((path.as_ref().to_vec(), op));
         self
-    }
-}
-
-/// A recorded insert, awaiting the metadata it may carry. The op joins the
-/// submission-order log when the guard drops.
-#[derive(Debug)]
-pub struct Insert<'e, R: Reference = ChunkRef> {
-    ops: &'e mut Vec<(Vec<u8>, Op<R>)>,
-    pending: Option<(Vec<u8>, R)>,
-    metadata: BTreeMap<String, String>,
-}
-
-impl<R: Reference> Insert<'_, R> {
-    /// Attach `metadata`, replacing whatever the node carried.
-    pub fn meta(&mut self, metadata: BTreeMap<String, String>) -> &mut Self {
-        self.metadata = metadata;
-        self
-    }
-}
-
-impl<R: Reference> Drop for Insert<'_, R> {
-    fn drop(&mut self) {
-        if let Some((path, reference)) = self.pending.take() {
-            self.ops.push((
-                path,
-                Op::Insert {
-                    reference: Some(reference),
-                    metadata: core::mem::take(&mut self.metadata),
-                },
-            ));
-        }
     }
 }
 
@@ -811,7 +790,7 @@ mod tests {
                 }
                 Script::AddMeta(p, seed, k, v) => {
                     let meta = [(k.to_string(), v.to_string())].into();
-                    editor.insert(p, make_addr(seed)).meta(meta);
+                    editor.insert_with(p, make_addr(seed), meta);
                 }
                 Script::Rm(p) => {
                     editor.remove(p);
@@ -968,7 +947,7 @@ mod tests {
     fn root_metadata_put_fails_commit() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
         let meta = [("k".to_string(), "v".to_string())].into();
-        editor.insert("", make_addr("r")).meta(meta);
+        editor.insert_with("", make_addr("r"), meta);
         let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
             err,
@@ -1113,6 +1092,28 @@ mod tests {
             entry.metadata().get("website-index-document").cloned(),
             Some("index.html".to_string())
         );
+    }
+
+    /// A no-op removal loads the node it walks without dirtying it, so an add
+    /// over that node must dirty it itself or the commit splices the old
+    /// reference back and drops the write.
+    #[test]
+    fn an_add_over_a_clean_loaded_node_is_not_dropped() {
+        let (want, _) = editor_replay(&[Script::Add("a", "1"), Script::Add("b/c", "2")]);
+
+        let (root, loadsaver) = editor_replay(&[Script::Add("a", "1")]);
+        let mut editor = Editor::open(root, loadsaver);
+        // Absent at the root and absent below an existing edge: neither op
+        // changes the trie, and both leave the node they walked loaded.
+        editor.remove("zzz");
+        editor.remove("ax");
+        editor.insert("b/c", make_addr("2"));
+        let (got, loadsaver) = run(editor.commit()).unwrap();
+        assert_eq!(got, want, "the add after a no-op removal was dropped");
+
+        let reader = crate::Reader::new(loadsaver);
+        assert!(run(reader.get(got, b"b/c")).unwrap().is_some());
+        assert!(run(reader.get(got, b"a")).unwrap().is_some());
     }
 
     #[test]

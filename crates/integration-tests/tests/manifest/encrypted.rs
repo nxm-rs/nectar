@@ -12,7 +12,7 @@ use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{Encrypted as EncryptedSeal, LdbManifest, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    ListEntry, Manifest, ManifestPath, MapEntry, MapView, MapWriter, MetadataView, WellKnownKey,
+    Batch, ListEntry, Manifest, ManifestPath, MapEntry, MapView, MetadataView, WellKnownKey,
 };
 use nectar_mantaray::MantarayManifest;
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -38,11 +38,9 @@ async fn exercise<M: Manifest<EncryptedChunkRef>>(
         .metadata_from_view(&MetadataView::new().with(WellKnownKey::ContentType, "text/plain"))
         .unwrap();
     let root = {
-        let mut writer = manifest.edit(base);
-        writer
-            .insert(ManifestPath::from("data.bin"), file.clone())
-            .meta(meta);
-        writer.commit().await.unwrap()
+        let mut batch = Batch::new();
+        batch.insert_with(ManifestPath::from("data.bin"), file.clone(), meta);
+        manifest.apply(base.clone(), batch).await.unwrap()
     };
 
     let view = manifest.at(&root);

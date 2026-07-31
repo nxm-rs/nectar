@@ -38,12 +38,14 @@ Prefer them for new code, and align existing code when you touch it.
   A manifest content key is bare and verbatim: the canonical `ManifestPath` stores the bytes it was given, so `index.html` is the key `index.html` on the wire of both formats.
   mantaray therefore stays byte-identical to the reference client's v0.2 wire, and the pinned 0.3.0 differential guards that byte for byte.
   Never root a stored key at the separator, and never model the manifest's own configuration as a key.
-  The site index and error documents are an explicit Option-typed API: `index_document()` and `error_document()` on the read view answer `None` when unset, and the chainable `with_index_document` and `with_error_document` on the writer set them.
+  The site index and error documents are an explicit Option-typed API: `index_document()` and `error_document()` on the read view answer `None` when unset, and the chainable `set_index_document` and `set_error_document` on the batch set them.
   Each lands in the format's native root slot: mantaray writes the `"/"` node's metadata beside a zero-address entry, which is the layout the reference client reads, and `nectar-ldb` writes its root manifest-metadata.
   The content map never surfaces that slot, and never surfaces an empty key: `get`, `insert`, `remove`, `contains_key`, `iter`, `range`, `floor`, `dir` and `load` are over content keys alone.
   The empty path is a listing prefix and not a key, so `dir` lists the top level with it while every other verb answers absent.
-  These maps are immutable, so a write yields a new root: bind a root with `at` for reads, bind a base with `edit` for writes, and let `commit` hand back the new root.
-  One-shot `insert` and `remove` on the store are the sugar over an edit of one op.
+  These maps are immutable, so a write yields a new root: bind a root with `at` for reads, and hand a base plus a staged batch to a write that returns the new root.
+  The `Manifest` seam spells that write `apply(base, batch)` over a seam-owned `Batch`; a native database keeps its own handle, `edit(base)` plus `commit`.
+  Ops fold in submission order, so the last verb staged at one key is the one that lands.
+  One-shot `insert` and `remove` are the sugar over a batch of one op.
   Structured content is not a map.
   Files, feeds and builders speak `save`, `publish` and `build`.
   Segregate the write verbs.
