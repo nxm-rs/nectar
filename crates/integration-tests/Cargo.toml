@@ -41,6 +41,7 @@ nectar-postage-usage.workspace = true
 nectar-primitives = { workspace = true, features = ["std"] }
 nectar-testing = { workspace = true, features = ["alloc", "fixtures"] }
 proptest.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 
 [features]
 # Each feature mirrors the underlying crate feature so the `cfg(feature)`

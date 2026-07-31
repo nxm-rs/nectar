@@ -9,12 +9,12 @@
 use std::sync::Arc;
 
 use nectar_file::{File, MemSink, Policy};
-use nectar_ldb::{Builder, Encrypted as EncryptedSeal, LdbManifest, V1};
+use nectar_ldb::{Encrypted as EncryptedSeal, LdbManifest, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     ListEntry, Manifest, ManifestPath, MapEntry, MapView, MapWriter, MetadataView, WellKnownKey,
 };
-use nectar_mantaray::{ManifestEditor, MantarayManifest};
+use nectar_mantaray::MantarayManifest;
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{DEFAULT_BODY_SIZE, EncryptedChunkRef, StandardChunkSet};
 use nectar_testing::run;
@@ -99,18 +99,16 @@ fn both_formats_drive_an_encrypted_manifest() {
             .await
             .unwrap();
 
+        // The seam bootstrap works at the encrypted width too.
         let nodes = NodeLoadSaver::new(Arc::clone(&raw));
-        let editor: ManifestEditor<_, EncryptedChunkRef> =
-            ManifestEditor::new_encrypted(nodes.clone());
-        let (trie_root, _) = editor.commit().await.unwrap();
         let trie: MantarayManifest<_, Store, DEFAULT_BODY_SIZE> =
             MantarayManifest::new(nodes, store.clone());
+        let trie_root: EncryptedChunkRef = trie.empty().await.unwrap();
         exercise(&trie, &trie_root, &file, &data).await;
 
         let seal: EncryptedSeal<'_, V1> = EncryptedSeal::new(SECRET);
-        let builder: Builder<V1> = Builder::new();
-        let kv_root = builder.build(&store, &seal).await.unwrap().root().clone();
         let kv = LdbManifest::new(store.clone(), seal);
+        let kv_root: EncryptedChunkRef = kv.empty().await.unwrap();
         exercise(&kv, &kv_root, &file, &data).await;
     });
 }
