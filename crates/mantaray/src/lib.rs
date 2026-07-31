@@ -28,7 +28,9 @@
 //!
 //! # Website Manifests
 //!
-//! Configure index and error documents for Swarm-hosted websites:
+//! Configure index and error documents for Swarm-hosted websites. They are
+//! metadata on the [`metadata::ROOT_PATH`] node, where the reference client
+//! writes them. Each is set through a merge, so the two stay independent:
 //!
 //! ```no_run
 //! # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
@@ -36,6 +38,12 @@
 //! editor.set_index_document("index.html");
 //! editor.set_error_document("404.html");
 //! ```
+//!
+//! [`ManifestEditor::clear_root_metadata`] takes one back out, and prunes the
+//! node when it carries nothing else.
+//!
+//! Content paths are stored bare and verbatim, so `index.html` is the trie key
+//! `index.html`. That is the reference client's v0.2 wire.
 //!
 //! # Metadata Constants
 //!
@@ -157,7 +165,7 @@ pub(crate) use constants::*;
 #[cfg(feature = "std")]
 pub use cursor::{AddressStream, Cursor, Window};
 #[cfg(feature = "std")]
-pub use editor::{ManifestEditor, Op};
+pub use editor::{Insert, ManifestEditor, Op};
 #[cfg(feature = "std")]
 pub use entry::Entry;
 #[cfg(feature = "std")]
@@ -165,7 +173,7 @@ pub use error::{
     CursorError, DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result,
 };
 #[cfg(feature = "manifest")]
-pub use manifest::{ManifestError, MantarayManifest};
+pub use manifest::{ManifestError, MantarayManifest, TrieCursor, TrieView, TrieWriter};
 #[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;

@@ -273,6 +273,20 @@ impl<F: Format> Metadata<F> {
         self.pairs.get(key)
     }
 
+    /// This block with `key` removed. A block is non-empty by construction,
+    /// so removing its only pair yields `None`.
+    #[must_use]
+    pub fn without(mut self, key: &MetadataKey<F>) -> Option<Self> {
+        let Some(value) = self.pairs.remove(key) else {
+            return Some(self);
+        };
+        if self.pairs.is_empty() {
+            return None;
+        }
+        self.len = MetadataLen::new(self.len.get().saturating_sub(pair_len(key, &value))).ok()?;
+        Some(self)
+    }
+
     /// The pairs in wire order.
     pub fn iter(&self) -> impl Iterator<Item = (&MetadataKey<F>, &Bytes)> {
         self.pairs.iter()

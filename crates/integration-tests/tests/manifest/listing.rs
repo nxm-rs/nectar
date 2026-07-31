@@ -77,10 +77,10 @@ fn model(keys: &[&str], dir: &str) -> Vec<Vec<u8>> {
     out
 }
 
-/// One put per key, with no metadata.
-fn puts(keys: &[&str], file: &ChunkRef) -> Vec<ManifestOp<ChunkRef, Box<dyn ManifestMetadata>>> {
+/// One insert per key, with no metadata.
+fn inserts(keys: &[&str], file: &ChunkRef) -> Vec<ManifestOp<ChunkRef, Box<dyn ManifestMetadata>>> {
     keys.iter()
-        .map(|key| ManifestOp::Put {
+        .map(|key| ManifestOp::Insert {
             path: ManifestPath::from(*key),
             reference: *file,
             meta: Box::new(()) as Box<dyn ManifestMetadata>,
@@ -91,7 +91,7 @@ fn puts(keys: &[&str], file: &ChunkRef) -> Vec<ManifestOp<ChunkRef, Box<dyn Mani
 /// The listed paths, as text for a readable failure.
 async fn listed(manifest: &dyn DynManifest, root: &ChunkRef, dir: &str) -> Vec<String> {
     manifest
-        .dyn_list(root, &ManifestPath::from(dir))
+        .dyn_dir(root, &ManifestPath::from(dir))
         .await
         .unwrap()
         .entries()
@@ -114,7 +114,8 @@ fn both_formats_list_a_level_the_way_the_model_does() {
             let raw: Raw = Arc::new(MemoryStore::new());
             let store: Store = ContentGet::new(Arc::clone(&raw));
             let file = ChunkRef::new(
-                File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT).save(&b"payload"[..])
+                File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
+                    .save(&b"payload"[..])
                     .await
                     .unwrap(),
             );
@@ -124,14 +125,14 @@ fn both_formats_list_a_level_the_way_the_model_does() {
             let (empty, _) = editor.commit().await.unwrap();
             let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
             let trie_root = trie
-                .dyn_apply(&ChunkRef::new(empty), puts(keys, &file))
+                .dyn_apply(&ChunkRef::new(empty), inserts(keys, &file))
                 .await
                 .unwrap();
 
             let builder: Builder<V1> = Builder::new();
             let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
             let kv = LdbManifest::plain(store.clone());
-            let kv_root = kv.dyn_apply(&empty, puts(keys, &file)).await.unwrap();
+            let kv_root = kv.dyn_apply(&empty, inserts(keys, &file)).await.unwrap();
 
             for dir in DIRS {
                 let want = expected(keys, dir);

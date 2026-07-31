@@ -245,7 +245,7 @@ mod tests {
         let mut editor: ManifestEditor<LoadSaver> =
             ManifestEditor::new(LoadSaver::new(Store::new()));
         for &p in paths {
-            editor.put(p, make_addr(p));
+            editor.insert(p, make_addr(p));
         }
         editor.commit().await.unwrap()
     }
@@ -293,7 +293,7 @@ mod tests {
             let mut editor: ManifestEditor<LoadSaver, EncryptedChunkRef> =
                 ManifestEditor::new_encrypted(LoadSaver::new(Store::new()));
             for p in paths {
-                editor.put(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
+                editor.insert(p, EncryptedChunkRef::new(make_addr(p), key.clone()));
             }
             let (root, loadsaver) = editor.commit().await.unwrap();
 
@@ -322,10 +322,12 @@ mod tests {
     fn metadata_and_the_root_document_read_back() {
         let mut editor: ManifestEditor<LoadSaver> =
             ManifestEditor::new(LoadSaver::new(Store::new()));
-        editor.put("plain.txt", make_addr("plain"));
+        editor.insert("plain.txt", make_addr("plain"));
         let meta: BTreeMap<String, String> =
             [("Content-Type".to_string(), "image/png".to_string())].into();
-        editor.put_with_metadata("logo.png", make_addr("logo"), meta.clone());
+        editor
+            .insert("logo.png", make_addr("logo"))
+            .meta(meta.clone());
         editor.set_index_document("index.html");
         let (root, loadsaver) = run(editor.commit()).unwrap();
 

@@ -9,7 +9,7 @@ use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{Builder, LdbManifest, Plaintext, Reader as LdbReader, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    DynManifest, ManifestMetadata, ManifestOp, ManifestPath, MetadataView, WellKnownKey,
+    DynManifest, ManifestMetadata, ManifestOp, ManifestPath, MetadataView, SiteConfig, WellKnownKey,
 };
 use nectar_mantaray::{ManifestEditor, MantarayManifest, Reader as MantarayReader, metadata};
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -25,7 +25,9 @@ type Nodes = NodeLoadSaver<Raw>;
 
 /// The file bytes every manifest entry in this test points at.
 fn payload() -> Vec<u8> {
-    (0..20_000u32).map(|i| u8::try_from(i % 251).unwrap()).collect()
+    (0..20_000u32)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect()
 }
 
 /// Content type written through the erased metadata view.
@@ -40,18 +42,21 @@ fn content_type() -> Box<dyn ManifestMetadata> {
 /// root and a subdirectory, load an entry's data, then remove it.
 async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, data: &[u8]) {
     let root = manifest
-        .dyn_apply(base, vec![
-            ManifestOp::Put {
-                path: ManifestPath::from("index.html"),
-                reference: *file,
-                meta: content_type(),
-            },
-            ManifestOp::Put {
-                path: ManifestPath::from("img/logo.png"),
-                reference: *file,
-                meta: Box::new(()),
-            },
-        ])
+        .dyn_apply(
+            base,
+            vec![
+                ManifestOp::Insert {
+                    path: ManifestPath::from("index.html"),
+                    reference: *file,
+                    meta: content_type(),
+                },
+                ManifestOp::Insert {
+                    path: ManifestPath::from("img/logo.png"),
+                    reference: *file,
+                    meta: Box::new(()),
+                },
+            ],
+        )
         .await
         .unwrap();
     assert_ne!(&root, base, "the batch produced a new root");
@@ -59,7 +64,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
     // One level: the deeper path collapses into a directory entry, in path
     // order, and neither format fetches the referenced data to list it.
     let listing = manifest
-        .dyn_list(&root, &ManifestPath::root())
+        .dyn_dir(&root, &ManifestPath::default())
         .await
         .unwrap();
     let paths: Vec<&[u8]> = listing
@@ -73,7 +78,7 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
 
     // The subdirectory lists its one file under its full path.
     let nested = manifest
-        .dyn_list(&root, &ManifestPath::from("img/"))
+        .dyn_dir(&root, &ManifestPath::from("img/"))
         .await
         .unwrap();
     let nested_paths: Vec<&[u8]> = nested
@@ -83,6 +88,23 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .collect();
     assert_eq!(nested_paths, vec![&b"img/logo.png"[..]]);
 
+    // The erased floor is the greatest bound path at or below the probe.
+    let (path, entry) = manifest
+        .dyn_floor(&root, &ManifestPath::from("index.zzz"))
+        .await
+        .unwrap()
+        .expect("a path at or below the probe");
+    assert_eq!(path.as_bytes(), b"index.html");
+    assert_eq!(entry.reference(), Some(file));
+    assert!(
+        manifest
+            .dyn_floor(&root, &ManifestPath::from("aaa"))
+            .await
+            .unwrap()
+            .is_none(),
+        "no path is at or below the probe"
+    );
+
     // A load joins the whole chunk tree the entry names into the sink.
     let mut sink = MemSink::new();
     manifest
@@ -91,16 +113,19 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .unwrap();
     assert_eq!(sink.as_ref(), data);
 
-    // A removal is the same batch vocabulary, and the removed path stops
+    // A removal is the same map vocabulary, and the removed path stops
     // resolving.
     let pruned = manifest
-        .dyn_apply(&root, vec![ManifestOp::Remove {
-            path: ManifestPath::from("index.html"),
-        }])
+        .dyn_apply(
+            &root,
+            vec![ManifestOp::Remove {
+                path: ManifestPath::from("index.html"),
+            }],
+        )
         .await
         .unwrap();
     let listing = manifest
-        .dyn_list(&pruned, &ManifestPath::root())
+        .dyn_dir(&pruned, &ManifestPath::default())
         .await
         .unwrap();
     let paths: Vec<&[u8]> = listing
@@ -119,29 +144,53 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         "a removed path names no data"
     );
 
-    // The root path addresses the manifest's own entry, and every operation
-    // maps it to the same slot: what a put binds there, a load reads back.
-    let rooted = manifest
-        .dyn_apply(base, vec![ManifestOp::Put {
-            path: ManifestPath::root(),
-            reference: *file,
-            meta: content_type(),
-        }])
+    // The configuration crosses the erased seam as a value: what is set reads
+    // back, and clearing it restores the root that declared nothing.
+    assert_eq!(
+        manifest.dyn_site_config(base).await.unwrap(),
+        SiteConfig::new(),
+        "an unconfigured manifest declares neither document"
+    );
+    let configured = manifest
+        .dyn_set_site_config(
+            &root,
+            SiteConfig::new()
+                .with_index_document(ManifestPath::from("index.html"))
+                .with_error_document(ManifestPath::from("404.html")),
+        )
         .await
         .unwrap();
+    assert_eq!(
+        manifest.dyn_site_config(&configured).await.unwrap(),
+        SiteConfig::new()
+            .with_index_document(ManifestPath::from("index.html"))
+            .with_error_document(ManifestPath::from("404.html")),
+        "the documents read back through the erased seam"
+    );
+    assert_eq!(
+        manifest
+            .dyn_set_site_config(&configured, SiteConfig::new())
+            .await
+            .unwrap(),
+        root,
+        "clearing the documents restores the content-only root"
+    );
+
+    // The empty path is a listing prefix, not a key.
     let mut sink = MemSink::new();
-    manifest
-        .dyn_load(&rooted, &ManifestPath::root(), &mut sink)
-        .await
-        .expect("a root put loads back");
-    assert_eq!(sink.as_ref(), data);
     assert!(
         manifest
-            .dyn_list(&rooted, &ManifestPath::root())
+            .dyn_load(&configured, &ManifestPath::default(), &mut sink)
             .await
-            .unwrap()
-            .is_empty(),
-        "the manifest's own entry is not one of its children"
+            .is_err(),
+        "the empty path names no data"
+    );
+    assert!(
+        !manifest
+            .dyn_contains_key(&configured, &ManifestPath::default())
+            .await
+            .unwrap(),
+        "the empty path binds nothing"
     );
 }
 
@@ -166,17 +215,16 @@ fn both_formats_round_trip_through_one_erased_handle() {
         let store = ContentGet::new(Arc::clone(&raw));
         let data = payload();
         let file = ChunkRef::new(
-            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT).save(&data[..])
+            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
+                .save(&data[..])
                 .await
                 .unwrap(),
         );
 
         let (nodes, trie_root) = mantaray(&raw).await;
-        let trie: Box<dyn DynManifest> =
-            Box::new(MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(
-                nodes,
-                store.clone(),
-            ));
+        let trie: Box<dyn DynManifest> = Box::new(
+            MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone()),
+        );
         let kv_root = ldb(&store).await;
         let kv: Box<dyn DynManifest> = Box::new(LdbManifest::plain(store.clone()));
 
@@ -185,29 +233,20 @@ fn both_formats_round_trip_through_one_erased_handle() {
     });
 }
 
+/// The erased site config lands in each format's native root slot.
 #[test]
-fn root_scope_metadata_lands_in_each_format_native_slot() {
+fn the_site_config_lands_in_each_format_native_slot() {
     run(async {
         let raw: Raw = Arc::new(MemoryStore::new());
         let store = ContentGet::new(Arc::clone(&raw));
-        let data = payload();
-        let file = ChunkRef::new(
-            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT).save(&data[..])
-                .await
-                .unwrap(),
-        );
-        let index: Box<dyn ManifestMetadata> =
-            Box::new(MetadataView::new().with(WellKnownKey::IndexDocument, "index.html"));
+        let config = SiteConfig::new().with_index_document(ManifestPath::from("index.html"));
 
-        // The trie keeps the site documents on its root path node.
+        // The trie keeps the site documents on its root path node, which
+        // binds no entry.
         let (nodes, trie_root) = mantaray(&raw).await;
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes.clone(), store.clone());
         let root = trie
-            .dyn_apply(&trie_root, vec![ManifestOp::Put {
-                path: ManifestPath::root(),
-                reference: file,
-                meta: index,
-            }])
+            .dyn_set_site_config(&trie_root, config.clone())
             .await
             .unwrap();
         let entry = MantarayReader::new(nodes)
@@ -215,33 +254,28 @@ fn root_scope_metadata_lands_in_each_format_native_slot() {
             .await
             .unwrap()
             .expect("the root path node carries the site documents");
+        assert!(
+            entry.reference().is_none(),
+            "the site-config node binds no entry"
+        );
         assert_eq!(
             entry.metadata().get(metadata::WEBSITE_INDEX_DOCUMENT),
             Some(&"index.html".to_owned())
         );
-        // That slot is the trie's own, not a directory: a root listing must
+        // That slot is the trie's own, not a directory: a top-level listing must
         // not surface it as a child.
-        let listing = trie.dyn_list(&root, &ManifestPath::root()).await.unwrap();
+        let listing = trie.dyn_dir(&root, &ManifestPath::default()).await.unwrap();
         assert!(
             listing.is_empty(),
-            "the root metadata slot listed as {:?}",
+            "the site-config node listed as {:?}",
             listing.entries()
         );
 
         // The key-value database keeps them in the root's typed metadata,
         // which its website view reads.
-        let index: Box<dyn ManifestMetadata> =
-            Box::new(MetadataView::new().with(WellKnownKey::IndexDocument, "index.html"));
         let kv_root = ldb(&store).await;
         let kv = LdbManifest::plain(store.clone());
-        let root = kv
-            .dyn_apply(&kv_root, vec![ManifestOp::Put {
-                path: ManifestPath::root(),
-                reference: file,
-                meta: index,
-            }])
-            .await
-            .unwrap();
+        let root = kv.dyn_set_site_config(&kv_root, config).await.unwrap();
         let reader: LdbReader<_> = LdbReader::new(&store);
         let website = reader.website(&root).await.unwrap();
         assert_eq!(website.index(), Some(&b"index.html"[..]));

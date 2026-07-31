@@ -30,9 +30,7 @@ alloy-primitives = { workspace = true, features = ["getrandom"] }
 alloy-signer-local.workspace = true
 bytes.workspace = true
 futures.workspace = true
-# Registry-pinned legacy oracle for the submission-order differential gate:
-# identical op sequences must produce byte-identical roots.
-mantaray-old = { package = "nectar-mantaray", version = "=0.3.0" }
+nectar-feeds = { workspace = true, features = ["std"] }
 nectar-file = { workspace = true, features = ["std"] }
 nectar-ldb = { workspace = true, features = ["arbitrary", "manifest"] }
 nectar-loadsave.workspace = true
@@ -136,12 +134,20 @@ name = "manifest_listing"
 path = "tests/manifest/listing.rs"
 
 [[test]]
+name = "manifest_root_config"
+path = "tests/manifest/root_config.rs"
+
+[[test]]
 name = "mantaray_bmt_nodes"
 path = "tests/mantaray/bmt_nodes.rs"
 
 [[test]]
-name = "mantaray_legacy_differential"
-path = "tests/mantaray/legacy_differential.rs"
+name = "mantaray_bee_layout"
+path = "tests/mantaray/bee_layout.rs"
+
+[[test]]
+name = "mantaray_bee_vectors"
+path = "tests/mantaray/bee_vectors.rs"
 
 [[test]]
 name = "postage_issuer_non_mainnet"

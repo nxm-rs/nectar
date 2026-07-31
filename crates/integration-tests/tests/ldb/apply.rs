@@ -132,7 +132,7 @@ fn assert_apply_equals_rebuild(
         match op {
             Some((inline, fill, blob, meta)) => {
                 let val = value(*inline, *fill, blob, *meta)?;
-                changeset.put(Key::from(key.clone()), val.0.clone(), val.1.clone());
+                changeset.insert(Key::from(key.clone()), val.0.clone(), val.1.clone());
                 updates.push((key.clone(), Some(val)));
             }
             None => {

@@ -7,6 +7,17 @@
 //! [`MaybeSend`], and generic over the sealed [`Reference`] width, so an
 //! encrypted manifest is the same code path as a plain one.
 //!
+//! [`Manifest::at`] binds a root and hands back a [`MapView`];
+//! [`Manifest::edit`] binds a base root and hands back a [`MapWriter`] whose
+//! `commit` yields the new root.
+//!
+//! The map holds content paths alone. The site index and error documents are
+//! not keys: [`MapView`] reads them as options, and [`MapWriter`] sets them
+//! with `with_index_document` and `with_error_document`. Each lands in the
+//! format's own root slot. The two paths those slots are keyed at, the empty
+//! one and `"/"`, are reserved on both formats: a read at either is absent and
+//! a write at either is [`ReservedKey`].
+//!
 //! Each format keeps its own metadata type and its own batch type: the static
 //! path erases nothing. [`DynManifest`] is the object-safe wrapper for a
 //! runtime-detected format, and unifies metadata behind
@@ -19,7 +30,7 @@
 //! // The write vocabulary is shared: a caller builds ops without naming a
 //! // format, and each format folds them into its own batch.
 //! let ops: [ManifestOp<ChunkRef, MetadataView>; 2] = [
-//!     ManifestOp::Put {
+//!     ManifestOp::Insert {
 //!         path: ManifestPath::from("index.html"),
 //!         reference: ChunkRef::new(ChunkAddress::new([7; 32])),
 //!         meta: MetadataView::new().with(WellKnownKey::ContentType, "text/html"),
@@ -28,7 +39,24 @@
 //!         path: ManifestPath::from("stale.html"),
 //!     },
 //! ];
+//! // A content path is stored bare and verbatim.
 //! assert_eq!(ops[0].path().as_bytes(), b"index.html");
+//! ```
+//!
+//! The site configuration is a value, not an op:
+//!
+//! ```
+//! use nectar_manifest::{ManifestPath, SiteConfig};
+//!
+//! let config = SiteConfig::new()
+//!     .with_index_document(ManifestPath::from("index.html"))
+//!     .with_error_document(ManifestPath::from("404.html"));
+//! assert_eq!(
+//!     config.index_document().map(ManifestPath::as_bytes),
+//!     Some(&b"index.html"[..])
+//! );
+//! // The same setter clears.
+//! assert!(config.with_index_document(None).with_error_document(None).is_empty());
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -59,12 +87,20 @@ mod listing;
 mod meta;
 mod op;
 mod path;
+mod reserved;
+mod site;
+mod view;
+mod writer;
 
 pub use dynamic::{DynManifest, DynSink, DynSinkError};
 pub use listing::{ListEntry, Listing};
 pub use meta::{ManifestMetadata, MetadataView, WellKnownKey};
 pub use op::ManifestOp;
 pub use path::ManifestPath;
+pub use reserved::{ReservedKey, reserved_key};
+pub use site::SiteConfig;
+pub use view::{MapCursor, MapEntry, MapView};
+pub use writer::{Insert, MapWriter};
 
 // The positional sink a load writes into is the file crate's, re-exported so
 // a manifest consumer needs no second dependency to name it.
@@ -83,45 +119,81 @@ pub trait SinkError: core::error::Error + MaybeSend + MaybeSync + 'static {}
 
 impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 
-/// A path-to-reference manifest, read and written whole-batch.
+/// A path-to-reference map, read through a root-bound view and written through
+/// a base-bound writer.
 ///
 /// Static dispatch only, exactly like the L1 store traits: the futures are
 /// RPITIT and the reference width is a type parameter, so nothing here costs
 /// an allocation. Use [`DynManifest`] where the format is a runtime choice.
 ///
-/// [`ManifestPath::root`] addresses the manifest's own entry, the slot the
-/// site-level documents live in, and every operation maps it to the same
-/// place: what a put binds there, a load reads back. It is not a child of
-/// itself, so it never appears in a listing.
+/// Content paths are stored bare and verbatim, byte-identical to what the
+/// reference client writes. The map holds content paths alone. The site index
+/// and error documents are not keys: read them with
+/// [`MapView::index_document`] and [`MapView::error_document`], and write them
+/// with [`MapWriter::with_index_document`] and
+/// [`MapWriter::with_error_document`]. Each lands in the format's own root
+/// slot, at a path [`ManifestPath::is_reserved`] names.
 pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
-    type Metadata: MaybeSend;
+    type Metadata: MaybeSend + Default;
 
     /// Error type for every operation on the manifest.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
-    /// The immediate children of the directory `dir` names, in path order.
-    ///
-    /// Deeper paths collapse into one [`ListEntry::Dir`] at the next
-    /// separator; the referenced chunks are never fetched. `dir` is matched as
-    /// a byte prefix, so end it in the separator to mean the directory: `img`
-    /// also lists `imgx.png`, where `img/` does not.
-    fn list(
-        &self,
-        root: &R,
-        dir: &ManifestPath,
-    ) -> impl Future<Output = Result<Listing<R>, Self::Error>> + MaybeSend;
+    /// The read handle [`at`](Self::at) hands back.
+    type View<'a>: MapView<R, Metadata = Self::Metadata, Error = Self::Error>
+    where
+        Self: 'a;
 
-    /// Write the data bound to `path` into `sink`, starting at offset zero.
+    /// The write handle [`edit`](Self::edit) hands back.
+    type Writer<'a>: MapWriter<R, Metadata = Self::Metadata, Error = Self::Error>
+    where
+        Self: 'a;
+
+    /// The read view of the manifest rooted at `root`. Reaches storage only
+    /// when a read is awaited.
+    fn at(&self, root: &R) -> Self::View<'_>;
+
+    /// A writer staging a batch against the manifest rooted at `base`.
     ///
-    /// The sink's writes are idempotent overwrites, so a failed load is
-    /// recovered by running it again in full.
-    fn load<K: DataSink<Error: SinkError> + MaybeSend>(
+    /// Staging touches no storage; [`MapWriter::commit`] writes the batch.
+    fn edit(&self, base: &R) -> Self::Writer<'_>;
+
+    /// Native metadata rebuilt from the erased view, reading the registered
+    /// keys and any custom key the format can carry.
+    ///
+    /// The seam's only lossy step, and the reason it is a method: the format
+    /// decides what it can represent.
+    fn metadata_from_view(
+        &self,
+        view: &dyn ManifestMetadata,
+    ) -> Result<Self::Metadata, Self::Error>;
+
+    /// Insert one path, clearing any metadata bound at it.
+    ///
+    /// To keep or set metadata, go through [`edit`](Self::edit).
+    fn insert(
         &self,
         root: &R,
-        path: &ManifestPath,
-        sink: &mut K,
-    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
+        path: ManifestPath,
+        reference: R,
+    ) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
+        let mut writer = self.edit(root);
+        writer.insert(path, reference);
+        writer.commit()
+    }
+
+    /// Remove one path. Exact-key: nothing below `path` goes with it, and an
+    /// absent `path` returns `root` unchanged.
+    fn remove(
+        &self,
+        root: &R,
+        path: ManifestPath,
+    ) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
+        let mut writer = self.edit(root);
+        writer.remove(path);
+        writer.commit()
+    }
 
     /// Fold `ops` into the manifest rooted at `base`, returning the new root.
     ///
@@ -132,27 +204,9 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
         &self,
         base: &R,
         ops: impl IntoIterator<Item = ManifestOp<R, Self::Metadata>> + MaybeSend,
-    ) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend;
-
-    /// Native metadata rebuilt from the erased view, reading the registered
-    /// keys and any custom key the format can carry.
-    ///
-    /// The seam's only lossy step, and the reason it is a method: the format
-    /// decides what it can represent.
-    fn metadata_from_view(&self, view: &dyn ManifestMetadata) -> Result<Self::Metadata, Self::Error>;
-
-    /// Bind one path, sugar over a one-op [`apply`](Self::apply).
-    fn save(
-        &self,
-        base: &R,
-        path: ManifestPath,
-        reference: R,
-        meta: Self::Metadata,
     ) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
-        self.apply(base, [ManifestOp::Put {
-            path,
-            reference,
-            meta,
-        }])
+        let mut writer = self.edit(base);
+        writer.extend(ops);
+        writer.commit()
     }
 }

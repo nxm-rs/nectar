@@ -20,9 +20,12 @@ use nectar_marker::{MaybeSend, MaybeSync};
 pub enum WellKnownKey<'a> {
     /// MIME type of the entry's content.
     ContentType,
-    /// Site index document path, root scope.
+    /// Site index document, root scope. Not an entry's metadata: set it
+    /// through [`MapWriter::with_index_document`].
+    ///
+    /// [`MapWriter::with_index_document`]: crate::MapWriter::with_index_document
     IndexDocument,
-    /// Site error document path, root scope.
+    /// Site error document, root scope.
     ErrorDocument,
     /// Any other key, by name.
     Custom(&'a str),
@@ -102,7 +105,7 @@ impl ManifestMetadata for MetadataView {
     }
 }
 
-/// An entry with no metadata at all, for a put that carries none.
+/// An entry with no metadata at all, for an insert that carries none.
 impl ManifestMetadata for () {
     fn get(&self, _key: &WellKnownKey<'_>) -> Option<&str> {
         None

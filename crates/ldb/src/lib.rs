@@ -53,7 +53,12 @@
 //! [`Entry`] names a plain or an encrypted chunk whatever the structure's own
 //! width.
 //!
-//! The folder view ([`Reader::list`], [`Reader::serve`]) is a path
+//! The developer surface is a root-bound handle: [`Database::at`] gives a
+//! [`View`] to read one root, and [`Database::edit`] gives an [`Editor`] whose
+//! `commit` yields the new root. [`Reader`], [`Changeset`] and [`apply`] stay
+//! as the layer the handle is built on.
+//!
+//! The folder view ([`View::dir`], [`View::serve`]) is a path
 //! interpretation over the flat KV core: the separator is [`Format::SEPARATOR`],
 //! derived from the key bytes at read time and never stored, and the website
 //! index- and error-document conventions ride in the root's typed metadata, not
@@ -100,6 +105,7 @@ mod bounded;
 mod builder;
 mod codec;
 mod count;
+mod db;
 #[cfg(feature = "encryption")]
 mod encryption;
 mod error;
@@ -133,6 +139,7 @@ pub use bounded::{MetadataLen, Prefix, SegmentWeight};
 pub use builder::{BuildError, BuildStats, Builder, Built};
 pub use codec::{DecodeError, EncodeError, recanonicalize};
 pub use count::{CountError, SubtreeCount};
+pub use db::{Database, Editor, Insert, View};
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use encryption::{Encrypted, derive_key};
@@ -141,10 +148,10 @@ pub use error::{
     WeightOverBudget,
 };
 pub use folder::{DirEntry, Listing, Served, Website};
-#[cfg(feature = "manifest")]
-pub use manifest::{LdbManifest, ManifestError};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
+#[cfg(feature = "manifest")]
+pub use manifest::{LdbCursor, LdbManifest, LdbView, LdbWriter, ManifestError};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, NodeRef, RootExtension};
 pub use packing::{Directory, SegmentKind, cut, embed, h64, segment, spill};

@@ -26,14 +26,31 @@ Prefer them for new code, and align existing code when you touch it.
   Every fan-out consumer runs on `futures_util::stream::FuturesUnordered` plus a thin bounded-admission governor.
   Delete reinvented machinery.
   Do not extend it.
-- Keep layer discipline.
-  Layer 1 is the single chunk.
-  Layer 1 has `get`, `put`, and `has` only, over the store traits in `nectar-primitives::store`.
-  `get` and `put` exist nowhere else.
-  Layer 2 is files, feeds, and manifests.
-  Layer 2 never uses `get` or `put`.
-  The read handle is uniformly `Reader`.
-  The write verb is domain-specific: `save`, `publish`, or `build`.
+- Name a surface after what it is: a map, or structured content.
+  A map speaks the `HashMap` vocabulary.
+  The content-addressed pool is a map whose key is the hash of the value, so the chunk store keeps `get`, `put` and `has` over the store traits in `nectar-primitives::store`.
+  It is `put`, not `insert`, because the caller supplies no key.
+  An arbitrary-key map (`nectar-ldb`, the manifest formats, the `Manifest` trait) uses `get`, `contains_key`, `insert`, `remove`, `range`, `floor` and `iter`.
+  An `insert` replaces the whole binding, so it clears the metadata the key carried unless the call attaches new metadata.
+  A `remove` is exact-key, so it clears that key's value and metadata and no other key's: a key with children keeps every one of them, a childless leaf is pruned, and removing an unbound or absent key is a no-op that leaves the root where it was.
+  Never let a map `remove` take a subtree or a prefix.
+  mantaray's legacy boundary remove is `remove_subtree`, and it exists for the pinned 0.3.0 differential alone.
+  A manifest content key is bare and verbatim: the canonical `ManifestPath` stores the bytes it was given, so `index.html` is the key `index.html` on the wire of both formats.
+  mantaray therefore stays byte-identical to the reference client's v0.2 wire, and the pinned 0.3.0 differential guards that byte for byte.
+  Never root a stored key at the separator, and never model the manifest's own configuration as a key.
+  The site index and error documents are an explicit Option-typed API: `index_document()` and `error_document()` on the read view answer `None` when unset, and the chainable `with_index_document` and `with_error_document` on the writer set them.
+  Each lands in the format's native root slot: mantaray writes the `"/"` node's metadata beside a zero-address entry, which is the layout the reference client reads, and `nectar-ldb` writes its root manifest-metadata.
+  The content map never surfaces that slot, and never surfaces an empty key: `get`, `insert`, `remove`, `contains_key`, `iter`, `range`, `floor`, `dir` and `load` are over content keys alone.
+  The empty path is a listing prefix and not a key, so `dir` lists the top level with it while every other verb answers absent.
+  These maps are immutable, so a write yields a new root: bind a root with `at` for reads, bind a base with `edit` for writes, and let `commit` hand back the new root.
+  One-shot `insert` and `remove` on the store are the sugar over an edit of one op.
+  Structured content is not a map.
+  Files, feeds and builders speak `save`, `publish` and `build`.
+  Segregate the write verbs.
+  A content-addressed map writes with `put`, an arbitrary-key map writes with `insert` and `remove`, and structured content writes with `save`, `publish` or `build`.
+  Do not lend a write verb across that line in either direction.
+  Reads cross the line by design: `load` is the sanctioned read bridge on a map view, because it pulls the bytes a reference points at.
+  It is feature-gated, because it needs `nectar-file`, so it lives on the manifest-featured view rather than on the bare map handle.
 - Follow the packaging plan.
   A no_std `nectar-primitives-core` carries the verify subset for the proving lane: BMT verify, keccak, SOC address, and ecrecover.
   The on-swarm KV database is `nectar-ldb`.

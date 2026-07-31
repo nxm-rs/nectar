@@ -298,7 +298,7 @@ fn apply_over_a_spilled_node_matches_a_from_scratch_build() -> Result<()> {
     let mut changeset = Changeset::<V1>::new();
     for first in 150u16..256 {
         let byte = u8::try_from(first)?;
-        changeset.put(Key::from(vec![byte]), entry(byte), Some(heavy()?));
+        changeset.insert(Key::from(vec![byte]), entry(byte), Some(heavy()?));
     }
     let applied = run(apply(
         &ContentGet::new(&base_store),
@@ -389,7 +389,7 @@ proptest! {
         };
         let mut changeset = Changeset::<V1>::new();
         for (key, fill, _) in &delta {
-            changeset.put(Key::from(key.clone()), entry(*fill), None);
+            changeset.insert(Key::from(key.clone()), entry(*fill), None);
         }
         match run(apply(&ContentGet::new(&store), &Plaintext, built.root(), &changeset)) {
             Ok(_) => {
