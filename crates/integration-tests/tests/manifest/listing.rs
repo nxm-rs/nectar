@@ -13,7 +13,7 @@ use std::sync::Arc;
 use nectar_file::{File, Policy};
 use nectar_ldb::{Builder, LdbManifest, Plaintext, V1};
 use nectar_loadsave::NodeLoadSaver;
-use nectar_manifest::{DynManifest, ManifestMetadata, ManifestOp, ManifestPath};
+use nectar_manifest::{DynManifest, ManifestOp, ManifestPath, MetadataSource};
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
@@ -78,12 +78,12 @@ fn model(keys: &[&str], dir: &str) -> Vec<Vec<u8>> {
 }
 
 /// One insert per key, with no metadata.
-fn inserts(keys: &[&str], file: &ChunkRef) -> Vec<ManifestOp<ChunkRef, Box<dyn ManifestMetadata>>> {
+fn inserts(keys: &[&str], file: &ChunkRef) -> Vec<ManifestOp<ChunkRef, Box<dyn MetadataSource>>> {
     keys.iter()
         .map(|key| ManifestOp::Insert {
             path: ManifestPath::from(*key),
             reference: *file,
-            meta: Box::new(()) as Box<dyn ManifestMetadata>,
+            meta: Box::new(()) as Box<dyn MetadataSource>,
         })
         .collect()
 }

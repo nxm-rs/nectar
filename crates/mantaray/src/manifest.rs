@@ -19,8 +19,8 @@ use core::ops::{Bound, RangeBounds};
 
 use nectar_file::{File, LoadError, Policy};
 use nectar_manifest::{
-    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestMetadata, ManifestOp,
-    ManifestPath, MapCursor, MapEntry, MapView, SinkError, SiteConfig, WellKnownKey,
+    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath,
+    MapCursor, MapEntry, MapView, SinkError, SiteConfig,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
@@ -153,29 +153,6 @@ where
             let (root, _) = editor.commit_reference().await?;
             Ok(root)
         }
-    }
-
-    fn metadata_from_view(
-        &self,
-        view: &dyn ManifestMetadata,
-    ) -> Result<Self::Metadata, ManifestError<TrieFormatError>> {
-        let mut map = BTreeMap::new();
-        for (key, name) in [
-            (WellKnownKey::ContentType, metadata::CONTENT_TYPE),
-            (
-                WellKnownKey::IndexDocument,
-                metadata::WEBSITE_INDEX_DOCUMENT,
-            ),
-            (
-                WellKnownKey::ErrorDocument,
-                metadata::WEBSITE_ERROR_DOCUMENT,
-            ),
-        ] {
-            if let Some(value) = view.get(&key) {
-                map.insert(String::from(name), String::from(value));
-            }
-        }
-        Ok(map)
     }
 }
 
