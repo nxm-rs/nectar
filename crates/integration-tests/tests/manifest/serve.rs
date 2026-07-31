@@ -51,11 +51,8 @@ async fn built<M: Manifest<ChunkRef>>(
 }
 
 async fn served<M: Manifest<ChunkRef>>(manifest: &M, root: ChunkRef, path: &str) -> Served {
-    manifest
-        .at(root)
-        .serve(&ManifestPath::from(path))
-        .await
-        .unwrap()
+    let view = manifest.at(root);
+    view.serve(&ManifestPath::from(path)).await.unwrap()
 }
 
 /// Run the whole request matrix over one format.
@@ -92,11 +89,8 @@ async fn conforms<M: Manifest<ChunkRef>>(manifest: &M, empty: ChunkRef, format: 
         (3, "", hit!(Error, "404.html", 3)),
     ];
     for (site, path, want) in cases {
-        assert_eq!(
-            &served(manifest, sites[*site], path).await,
-            want,
-            "{format} site {site} {path:?}"
-        );
+        let got = served(manifest, sites[*site], path).await;
+        assert_eq!(&got, want, "{format} site {site} {path:?}");
     }
 }
 
@@ -125,23 +119,16 @@ fn a_natively_bound_reserved_slot_never_serves() {
         let mut editor = kv.edit(&site);
         editor.insert(Key::empty(), Entry::from(reference(9)));
         editor.insert(Key::from(&b"/"[..]), Entry::from(reference(10)));
-        editor.set_root_metadata(
-            KeyId::WebsiteIndexDocument,
-            Some(Bytes::from_static(b"index.html")),
-        );
+        let doc = Some(Bytes::from_static(b"index.html"));
+        editor.set_root_metadata(KeyId::WebsiteIndexDocument, doc);
         let bound = editor.commit().await.unwrap();
 
         // The exact probe skips both slots: the empty path still serves the
         // index document, and the separator has nothing to fall back to.
-        assert_eq!(
-            served(&kv, bound, "").await,
-            hit!(Index, "index.html", 1),
-            "empty slot must not serve exactly"
-        );
-        assert!(
-            served(&kv, bound, "/").await.is_missing(),
-            "separator slot must not serve exactly"
-        );
+        let got = served(&kv, bound, "").await;
+        assert_eq!(got, hit!(Index, "index.html", 1), "empty slot answered");
+        let got = served(&kv, bound, "/").await;
+        assert!(got.is_missing(), "separator slot must not serve exactly");
 
         // An error document pointed at a reserved path names no content, so
         // the bound slot must not answer the fallback either.
@@ -149,9 +136,7 @@ fn a_natively_bound_reserved_slot_never_serves() {
         editor.set_root_metadata(KeyId::WebsiteIndexDocument, None);
         editor.set_root_metadata(KeyId::WebsiteErrorDocument, Some(Bytes::from_static(b"/")));
         let reserved_error = editor.commit().await.unwrap();
-        assert!(
-            served(&kv, reserved_error, "nope").await.is_missing(),
-            "a reserved error document must not serve"
-        );
+        let got = served(&kv, reserved_error, "nope").await;
+        assert!(got.is_missing(), "a reserved error document must not serve");
     });
 }

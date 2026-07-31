@@ -140,22 +140,14 @@ fn both_adapters_thread_a_caller_policy() {
             let (gate, gated_store) = gated(&store);
             let trie: Trie = MantarayManifest::new(nodes.clone(), gated_store).with_policy(policy);
             let peak = peak_gets(trie, trie_root, &gate, &data);
-            assert_eq!(
-                peak == 1,
-                want_serial,
-                "trie {format} window: peak {peak} concurrent gets"
-            );
+            assert_eq!(peak == 1, want_serial, "trie {format}: peak {peak}");
 
             // The database reads its nodes from the same store, so only the
             // windowed file load can overlap gets here too.
             let (gate, gated_store) = gated(&store);
             let kv = Database::<_>::plain(gated_store).with_policy(policy);
             let peak = peak_gets(kv, kv_root, &gate, &data);
-            assert_eq!(
-                peak == 1,
-                want_serial,
-                "kv {format} window: peak {peak} concurrent gets"
-            );
+            assert_eq!(peak == 1, want_serial, "kv {format}: peak {peak}");
         }
     });
 }
