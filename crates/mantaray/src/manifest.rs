@@ -109,6 +109,10 @@ where
 {
     /// Both seams over one chunk store: nodes persist through the file
     /// pipeline and entry data is joined from the same store.
+    ///
+    /// The store is cloned once, so pass a handle whose clones share state
+    /// (an `Arc`, say). A store that clones its contents leaves the two
+    /// seams over separate copies, and every data load then misses.
     pub fn over(store: S) -> Self {
         Self::new(NodeLoadSaver::new(store.clone()), ContentGet::new(store))
     }

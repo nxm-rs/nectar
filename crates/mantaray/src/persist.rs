@@ -80,12 +80,9 @@ impl NodeLoader for NullLoader {
     }
 }
 
-/// Production node persistence over the file pipeline: the file joiner
-/// reads, the file splitter writes.
-///
-/// A node larger than one chunk spans several and is addressed by its file
-/// root, matching the reference client; a node of one chunk keeps the
-/// content-chunk address, so existing roots are unchanged.
+// Private: it scopes the `std` and `nectar-file` imports the production
+// adapter needs behind one `manifest` gate. Its items surface through the
+// re-export above, so the rendered docs live on the definitions.
 #[cfg(feature = "manifest")]
 mod pipeline {
     use std::collections::BTreeSet;
@@ -100,6 +97,10 @@ mod pipeline {
 
     /// Node loadsaver over a chunk store: the file joiner reads, the file
     /// splitter writes.
+    ///
+    /// A node larger than one chunk spans several and is addressed by its
+    /// file root, matching the reference client; a node of one chunk keeps
+    /// the content-chunk address, so existing roots are unchanged.
     ///
     /// Loads are capped at [`MAX_NODE_BYTES`], the largest image any valid
     /// node can occupy. The put window bounds the splitter's in-flight puts.
