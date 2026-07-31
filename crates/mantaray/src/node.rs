@@ -648,14 +648,9 @@ impl<R: Reference> Node<R> {
     /// A key with children keeps every one of them, and a childless leaf is
     /// pruned from its parent. An absent key changes nothing.
     ///
-    /// # This format is order-dependent, by design
-    ///
-    /// The trie the clear leaves behind decodes exactly the surviving keys,
-    /// which is the whole contract. The root it hashes to is not the root a
-    /// build of those same keys produces: mantaray 0.2 puts a node where the
-    /// insert order first justified one and never moves it. History
-    /// independence is a mantaray-1.0 guarantee, met by the key-value database
-    /// in `nectar-ldb`.
+    /// The result decodes exactly the surviving keys, but the root stays
+    /// order-dependent: mantaray 0.2 keeps a node where the insert order first
+    /// justified one. History independence is `nectar-ldb`'s guarantee.
     pub(crate) fn clear<'a, L: NodeLoader>(
         &'a mut self,
         path: &'a [u8],

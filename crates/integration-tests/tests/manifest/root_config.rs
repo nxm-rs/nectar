@@ -115,12 +115,7 @@ where
 {
     let view = manifest.at(root);
 
-    let mut keys = Vec::new();
-    let mut cursor = view.iter().await.unwrap();
-    while let Some((path, _)) = cursor.next().await.unwrap() {
-        keys.push(text(&path));
-    }
-
+    let keys = key_set(manifest, root).await;
     let ranged = drain(&view, (Bound::Unbounded, Bound::Unbounded)).await;
     let listed = listing(&view, &ManifestPath::default()).await;
     let prefixed = listing(&view, &ManifestPath::from("a")).await;
@@ -280,13 +275,8 @@ where
     }
 
     // No walk yields it either.
-    let mut walked = Vec::new();
-    let mut cursor = view.iter().await.unwrap();
-    while let Some((path, _)) = cursor.next().await.unwrap() {
-        walked.push(text(&path));
-    }
     assert_eq!(
-        walked,
+        key_set(manifest, &configured).await,
         ["img/logo.png", "index.html"],
         "iter yields content keys, bare and in order"
     );
@@ -591,6 +581,15 @@ fn removal_keys() -> Vec<(ManifestPath, u8)> {
     .collect()
 }
 
+/// `keys` with the key at `index` removed: what an exact-key remove leaves.
+fn survivors(keys: &[(ManifestPath, u8)], index: usize) -> Vec<(ManifestPath, u8)> {
+    keys.iter()
+        .enumerate()
+        .filter(|(other, _)| *other != index)
+        .map(|(_, key)| key.clone())
+        .collect()
+}
+
 /// Build a manifest holding exactly `keys`, in the order given.
 async fn build<M: Manifest<ChunkRef>>(
     manifest: &M,
@@ -630,13 +629,7 @@ where
         let removed = manifest.remove(&base, path.clone()).await.unwrap();
         assert_ne!(removed, base, "removing {:?} moves the root", text(path));
 
-        let survivors: Vec<(ManifestPath, u8)> = keys
-            .iter()
-            .enumerate()
-            .filter(|(other, _)| *other != index)
-            .map(|(_, key)| key.clone())
-            .collect();
-        let built = build(manifest, empty, &survivors).await;
+        let built = build(manifest, empty, &survivors(&keys, index)).await;
         assert_eq!(
             key_set(manifest, &removed).await,
             key_set(manifest, &built).await,
@@ -758,15 +751,9 @@ fn a_remove_is_history_independent_on_ldb() {
             let removed = kv.remove(&base, path.clone()).await.unwrap();
             assert_ne!(removed, base, "removing {:?} moves the root", text(path));
 
-            let survivors: Vec<(ManifestPath, u8)> = keys
-                .iter()
-                .enumerate()
-                .filter(|(other, _)| *other != index)
-                .map(|(_, key)| key.clone())
-                .collect();
             assert_eq!(
                 removed,
-                build(&kv, &empty, &survivors).await,
+                build(&kv, &empty, &survivors(&keys, index)).await,
                 "removing {:?} left a root a build of the surviving keys would not produce",
                 text(path)
             );
