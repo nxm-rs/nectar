@@ -16,14 +16,11 @@ use nectar_manifest::{
     WellKnownKey,
 };
 use nectar_mantaray::MantarayManifest;
-use nectar_primitives::store::{ContentGet, MemoryStore};
-use nectar_primitives::{DEFAULT_BODY_SIZE, EncryptedChunkRef, StandardChunkSet};
+use nectar_primitives::{DEFAULT_BODY_SIZE, EncryptedChunkRef};
 use nectar_testing::run;
 
-/// The chunk store, shared: `MemoryStore` clones its contents, so every handle
-/// in one test has to reach the same map.
-type Raw = Arc<MemoryStore<StandardChunkSet>>;
-type Store = ContentGet<Raw>;
+mod common;
+use common::{Store, stores};
 
 /// The secret an encrypted key-value database derives its keys from.
 const SECRET: &[u8] = b"an encrypted database secret";
@@ -86,8 +83,7 @@ async fn exercise<M: Manifest<EncryptedChunkRef>>(
 #[test]
 fn both_formats_drive_an_encrypted_manifest() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store = ContentGet::new(Arc::clone(&raw));
+        let (raw, store) = stores();
         let data: Vec<u8> = (0..9_000u32)
             .map(|i| u8::try_from(i % 241).unwrap())
             .collect();

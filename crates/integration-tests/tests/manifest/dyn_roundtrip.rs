@@ -5,23 +5,19 @@
 //! calls drive both, and the metadata a caller writes through the erased view
 //! lands in each format's own native slot.
 
-use nectar_file::{File, MemSink, Policy};
+use nectar_file::MemSink;
 use nectar_ldb::{Database, Reader as LdbReader};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     DynManifest, ManifestOp, ManifestPath, MetadataSource, MetadataView, SiteConfig, WellKnownKey,
 };
 use nectar_mantaray::{MantarayManifest, Reader as MantarayReader, metadata};
-use nectar_primitives::store::{ContentGet, MemoryStore};
-use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
+use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE};
 use nectar_testing::run;
 use std::sync::Arc;
 
-/// The chunk store, shared: `MemoryStore` clones its contents, so every
-/// handle in one test has to reach the same map.
-type Raw = Arc<MemoryStore<StandardChunkSet>>;
-type Store = ContentGet<Raw>;
-type Nodes = NodeLoadSaver<Raw>;
+mod common;
+use common::{Nodes, save_file, stores};
 
 /// The file bytes every manifest entry in this test points at.
 fn payload() -> Vec<u8> {
@@ -233,15 +229,9 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
 #[test]
 fn both_formats_round_trip_through_one_erased_handle() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let (raw, store) = stores();
         let data = payload();
-        let file = ChunkRef::new(
-            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
-                .save(&data[..])
-                .await
-                .unwrap(),
-        );
+        let file = save_file(&raw, &data).await;
 
         let nodes: Nodes = NodeLoadSaver::new(Arc::clone(&raw));
         let trie: Box<dyn DynManifest> = Box::new(
@@ -260,8 +250,7 @@ fn both_formats_round_trip_through_one_erased_handle() {
 #[test]
 fn the_site_config_lands_in_each_format_native_slot() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let (raw, store) = stores();
         let config = SiteConfig::new().with_index_document(ManifestPath::from("index.html"));
 
         // The trie keeps the site documents on its root path node, which

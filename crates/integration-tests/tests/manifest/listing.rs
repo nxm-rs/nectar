@@ -3,26 +3,24 @@
 //!
 //! A listing is where the two formats are furthest apart internally: the
 //! key-value database seeks past each named subtree, while the trie walks the
-//! whole subtree under the prefix and collapses it in the adapter. The seam is
+//! whole subtree under the prefix and collapses it in the seam. The seam is
 //! only worth holding if those two arrive at the same answer, so the answer is
 //! pinned against a model rather than against either implementation.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use nectar_file::{File, Policy};
-use nectar_ldb::{Builder, Database, Plaintext, V1};
 use nectar_loadsave::NodeLoadSaver;
-use nectar_manifest::{DynManifest, ManifestOp, ManifestPath, MetadataSource};
-use nectar_mantaray::{ManifestEditor, MantarayManifest};
-use nectar_primitives::store::{ContentGet, MemoryStore};
-use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
+use nectar_manifest::{
+    Batch, DynManifest, Manifest, ManifestOp, ManifestPath, MapCursor, MapView, MetadataSource,
+};
+use nectar_mantaray::{MantarayManifest, NodeLoader, NodeSaver};
+use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, EntryRef};
 use nectar_testing::run;
 
-/// The chunk store, shared: `MemoryStore` clones its contents, so every handle
-/// in one test has to reach the same map.
-type Raw = Arc<MemoryStore<StandardChunkSet>>;
-type Store = ContentGet<Raw>;
+mod common;
+use common::{Nodes, both_formats, reference, save_file, stores};
 
 /// Key sets that put a byte either side of the separator next to it, name a
 /// directory that is also a file, and nest deeper than one level.
@@ -111,28 +109,14 @@ fn expected(keys: &[&str], dir: &str) -> Vec<String> {
 fn both_formats_list_a_level_the_way_the_model_does() {
     run(async {
         for keys in SETS {
-            let raw: Raw = Arc::new(MemoryStore::new());
-            let store: Store = ContentGet::new(Arc::clone(&raw));
-            let file = ChunkRef::new(
-                File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
-                    .save(&b"payload"[..])
-                    .await
-                    .unwrap(),
-            );
-
-            let nodes = NodeLoadSaver::new(Arc::clone(&raw));
-            let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
-            let (empty, _) = editor.commit().await.unwrap();
-            let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
+            let (raw, store) = stores();
+            let file = save_file(&raw, b"payload").await;
+            let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
             let trie_root = trie
-                .dyn_apply(&ChunkRef::new(empty), inserts(keys, &file))
+                .dyn_apply(&trie_empty, inserts(keys, &file))
                 .await
                 .unwrap();
-
-            let builder: Builder<V1> = Builder::new();
-            let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
-            let kv = Database::<_>::plain(store.clone());
-            let kv_root = kv.dyn_apply(&empty, inserts(keys, &file)).await.unwrap();
+            let kv_root = kv.dyn_apply(&kv_empty, inserts(keys, &file)).await.unwrap();
 
             for dir in DIRS {
                 let want = expected(keys, dir);
@@ -140,5 +124,84 @@ fn both_formats_list_a_level_the_way_the_model_does() {
                 assert_eq!(listed(&kv, &kv_root, dir).await, want, "kv {dir:?}");
             }
         }
+    });
+}
+
+/// The trie's node seam, counting every load a walk touches.
+#[derive(Clone)]
+struct Counting {
+    inner: Nodes,
+    loads: Arc<AtomicUsize>,
+}
+
+impl Counting {
+    /// The loads since the last take.
+    fn take(&self) -> usize {
+        self.loads.swap(0, Ordering::SeqCst)
+    }
+}
+
+impl NodeLoader for Counting {
+    type Error = <Nodes as NodeLoader>::Error;
+
+    async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+        self.loads.fetch_add(1, Ordering::SeqCst);
+        self.inner.load(reference).await
+    }
+}
+
+impl NodeSaver<ChunkRef> for Counting {
+    type Error = <Nodes as NodeSaver<ChunkRef>>::Error;
+
+    async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
+        <Nodes as NodeSaver<ChunkRef>>::save(&self.inner, data).await
+    }
+}
+
+/// Listing one directory level costs its own subtree, not the whole map: the
+/// trie seeks to the listed prefix instead of the seam's walking default.
+#[test]
+fn listing_one_level_costs_that_subtree_alone() {
+    run(async {
+        let (raw, store) = stores();
+        let nodes = Counting {
+            inner: NodeLoadSaver::new(Arc::clone(&raw)),
+            loads: Arc::default(),
+        };
+        let trie: MantarayManifest<_, _, DEFAULT_BODY_SIZE> =
+            MantarayManifest::new(nodes.clone(), store);
+
+        // Twenty-six top-level folders, so a walk that starts at the trie
+        // root pays every folder before the listed one.
+        let mut batch: Batch<ChunkRef, _> = Batch::new();
+        for letter in b'a'..=b'z' {
+            for index in 0..8u32 {
+                let path = format!("{0}{0}{0}/{index}.bin", char::from(letter));
+                batch.insert(ManifestPath::from(path.as_str()), reference(letter));
+            }
+        }
+        let root = trie.empty().await.unwrap();
+        let root = trie.apply(root, batch).await.unwrap();
+
+        let view = trie.at(&root);
+        nodes.take();
+        let listing = view.dir(&ManifestPath::from("zzz/")).await.unwrap();
+        let level = nodes.take();
+        assert_eq!(listing.entries().len(), 8);
+
+        let mut cursor = view.iter().await.unwrap();
+        let mut keys = 0;
+        while cursor.next().await.unwrap().is_some() {
+            keys += 1;
+        }
+        let whole = nodes.take();
+        assert_eq!(keys, 26 * 8);
+
+        // The last folder is a twenty-sixth of the map, so a pruned seek is
+        // an order below the full walk. A filtering walk would tie.
+        assert!(
+            level * 4 < whole,
+            "listing loaded {level} nodes, the whole trie {whole}"
+        );
     });
 }
