@@ -20,6 +20,10 @@
 //! at either refuses the whole batch as [`ReservedKey`], in the seam, before
 //! the format runs.
 //!
+//! The shared read machinery is seam-owned too: [`PathCursor`] lifts a
+//! format's [`RawCursor`] into the ordered path walk, [`MapView::dir`]
+//! defaults to [`collapse_dir`], and [`load_reference`] is the one data lane.
+//!
 //! Each format keeps its own metadata type: the static path erases nothing.
 //! [`DynManifest`] is the object-safe wrapper for a runtime-detected format,
 //! and unifies metadata behind the enumerable [`MetadataSource`]: a
@@ -80,6 +84,7 @@
 extern crate alloc;
 
 mod batch;
+mod cursor;
 mod dynamic;
 mod error;
 mod listing;
@@ -91,15 +96,16 @@ mod site;
 mod view;
 
 pub use batch::{Batch, CheckedBatch};
+pub use cursor::{PathCursor, RawCursor, RawItem};
 pub use dynamic::{DynManifest, DynSink, DynSinkError};
 pub use error::{ErasedFormat, ErasedManifestError, ManifestError};
-pub use listing::{ListEntry, Listing};
+pub use listing::{ListEntry, Listing, collapse_dir};
 pub use meta::{ManifestMeta, MetadataBlock, MetadataSource, MetadataView, WellKnownKey};
 pub use op::ManifestOp;
 pub use path::ManifestPath;
 pub use reserved::{ReservedKey, reserved_key};
 pub use site::SiteConfig;
-pub use view::{MapCursor, MapEntry, MapView};
+pub use view::{MapCursor, MapEntry, MapView, load_reference};
 
 // The positional sink a load writes into is the file crate's, re-exported so
 // a manifest consumer needs no second dependency to name it.

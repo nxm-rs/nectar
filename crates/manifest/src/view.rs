@@ -1,37 +1,57 @@
 //! The read handle: one immutable root, the map verbs over it.
 
 use core::future::Future;
-use core::ops::RangeBounds;
+use core::ops::Bound;
 
+use nectar_file::{File, LoadError, Policy};
 use nectar_marker::{MaybeSend, MaybeSync};
-use nectar_primitives::chunk::{ChunkRef, Reference};
+use nectar_primitives::EntryRef;
+use nectar_primitives::chunk::{ChunkRef, ContentOnlyChunkSet, Reference};
+use nectar_primitives::store::TrustedGet;
 
-use crate::listing::Listing;
+use crate::error::ManifestError;
+use crate::listing::{Listing, collapse_dir};
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
 use crate::{DataSink, SinkError};
 
-/// What a bound path resolves to. Opaque bytes stay reachable through
-/// [`MapView::load`].
+/// What a bound path resolves to. [`load`](MapView::load) success is
+/// predictable from it: exactly a loadable entry loads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MapEntry<R: Reference = ChunkRef> {
-    /// A chunk reference of the requested width.
+    /// A chunk reference of the requested width; a load joins it from the store.
     Reference(R),
-    /// The path is bound, but not to a reference of the requested width.
+    /// The manifest itself carries the bytes; a load serves them, no store read.
+    Value,
+    /// The path is bound, but to nothing this caller can read; a load fails
+    /// as [`NoData`](crate::ManifestError::NoData).
     Opaque,
 }
 
 impl<R: Reference> MapEntry<R> {
+    /// The entry a raw reference resolves to at width `R`: the reference when
+    /// the width fits, opaque otherwise.
+    #[must_use]
+    pub fn from_entry_ref(entry: EntryRef) -> Self {
+        R::from_entry_ref(entry).map_or(Self::Opaque, Self::Reference)
+    }
+
     /// The bound reference.
     #[must_use]
     pub const fn reference(&self) -> Option<&R> {
         match self {
             Self::Reference(reference) => Some(reference),
-            Self::Opaque => None,
+            Self::Value | Self::Opaque => None,
         }
     }
 
-    /// Whether the entry names no reference of the requested width.
+    /// Whether [`load`](MapView::load) serves this entry.
+    #[must_use]
+    pub const fn is_loadable(&self) -> bool {
+        matches!(self, Self::Reference(_) | Self::Value)
+    }
+
+    /// Whether the entry names nothing this caller can read.
     #[must_use]
     pub const fn is_opaque(&self) -> bool {
         matches!(self, Self::Opaque)
@@ -118,11 +138,18 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// also lists `imgx.png`, where `img/` does not. The empty path lists the
     /// top level.
     ///
+    /// The default runs [`collapse_dir`] over [`range`](Self::range); a
+    /// format with a native folder view or a prefix-pruned walk overrides it.
+    ///
     /// [`ListEntry::Dir`]: crate::ListEntry::Dir
     fn dir(
         &self,
         dir: &ManifestPath,
-    ) -> impl Future<Output = Result<Listing<R>, Self::Error>> + MaybeSend;
+    ) -> impl Future<Output = Result<Listing<R>, Self::Error>> + MaybeSend {
+        let prefix = dir.clone();
+        let walk = self.range((Bound::Included(dir.clone()), Bound::Unbounded));
+        async move { collapse_dir(prefix, walk.await?).await }
+    }
 
     /// The greatest bound path `<= path`, with its entry.
     ///
@@ -133,7 +160,7 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
         path: &ManifestPath,
     ) -> impl Future<Output = Result<Option<(ManifestPath, MapEntry<R>)>, Self::Error>> + MaybeSend
     {
-        let walk = self.range(..=path.clone());
+        let walk = self.range((Bound::Unbounded, Bound::Included(path.clone())));
         async move {
             let mut cursor = walk.await?;
             let mut last = None;
@@ -146,7 +173,9 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 
     /// Write the data bound to `path` into `sink`, starting at offset zero.
     ///
-    /// The writes are idempotent overwrites: rerun a failed load in full.
+    /// Serves exactly what [`get`](Self::get) reports loadable; an opaque
+    /// entry fails as [`NoData`](crate::ManifestError::NoData). The writes
+    /// are idempotent overwrites: rerun a failed load in full.
     fn load<K: DataSink<Error: SinkError> + MaybeSend>(
         &self,
         path: &ManifestPath,
@@ -161,6 +190,57 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     /// byte strings.
     fn range(
         &self,
-        bounds: impl RangeBounds<ManifestPath> + MaybeSend,
+        bounds: (Bound<ManifestPath>, Bound<ManifestPath>),
     ) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend;
+}
+
+/// Drain the file at `reference` into `sink`: the one data-load lane every
+/// format shares, reporting through the seam's taxonomy.
+pub async fn load_reference<S, K, F, const B: usize>(
+    store: S,
+    reference: EntryRef,
+    sink: &mut K,
+) -> Result<(), ManifestError<F>>
+where
+    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
+    K: DataSink<Error: SinkError> + MaybeSend,
+{
+    File::<S, B>::new(store, Policy::DEFAULT)
+        .load(reference, sink)
+        .await
+        .map(drop)
+        .map_err(|error| match error {
+            LoadError::Sink { source, .. } => ManifestError::sink(source),
+            data => ManifestError::data(data),
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use nectar_primitives::chunk::ChunkAddress;
+    use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
+
+    use super::*;
+
+    #[test]
+    fn from_entry_ref_keeps_the_width_and_exactly_reference_and_value_load() {
+        let plain = EntryRef::Plain(ChunkRef::new(ChunkAddress::new([1; 32])));
+        let wide = EntryRef::Encrypted(EncryptedChunkRef::new(
+            ChunkAddress::new([2; 32]),
+            EncryptionKey::from([3; 32]),
+        ));
+        let narrow = MapEntry::<ChunkRef>::from_entry_ref(plain.clone());
+        assert!(narrow.reference().is_some());
+        assert!(narrow.is_loadable() && !narrow.is_opaque());
+        assert!(MapEntry::<ChunkRef>::from_entry_ref(wide.clone()).is_opaque());
+        assert!(matches!(
+            MapEntry::<EncryptedChunkRef>::from_entry_ref(wide),
+            MapEntry::Reference(_)
+        ));
+        assert!(MapEntry::<EncryptedChunkRef>::from_entry_ref(plain).is_opaque());
+        assert!(MapEntry::<ChunkRef>::Value.is_loadable());
+        assert!(MapEntry::<ChunkRef>::Value.reference().is_none());
+        assert!(!MapEntry::<ChunkRef>::Opaque.is_loadable());
+        assert!(MapEntry::<ChunkRef>::Opaque.is_opaque());
+    }
 }

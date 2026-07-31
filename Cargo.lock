@@ -2703,7 +2703,6 @@ dependencies = [
  "arbitrary",
  "bytes",
  "futures-util",
- "nectar-file",
  "nectar-governor",
  "nectar-ldb",
  "nectar-manifest",
@@ -2748,6 +2747,7 @@ dependencies = [
  "nectar-marker",
  "nectar-primitives",
  "nectar-tasks",
+ "nectar-testing",
  "thiserror",
 ]
 
@@ -2760,7 +2760,6 @@ dependencies = [
  "bitflags",
  "bytes",
  "futures-util",
- "nectar-file",
  "nectar-governor",
  "nectar-manifest",
  "nectar-primitives",
