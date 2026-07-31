@@ -23,12 +23,12 @@ use nectar_manifest::{
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
-use nectar_primitives::store::{MaybeSend, MaybeSync, TrustedGet};
+use nectar_primitives::store::{ContentGet, MaybeSend, MaybeSync, TrustedGet};
 
 use crate::cursor::Cursor;
 use crate::editor::ManifestEditor;
 use crate::error::{CursorError, EditorError, ReaderError};
-use crate::persist::{NodeLoader, NodeSaver};
+use crate::persist::{NodeLoadSaver, NodeLoader, NodeSaver};
 use crate::reader::Reader;
 use crate::{constants::metadata, entry::Entry};
 
@@ -92,6 +92,17 @@ impl<L, S, const B: usize> MantarayManifest<L, S, B> {
     #[must_use]
     pub const fn policy(&self) -> Policy {
         self.policy
+    }
+}
+
+impl<S, const B: usize> MantarayManifest<NodeLoadSaver<S, B>, ContentGet<S>, B>
+where
+    S: Clone,
+{
+    /// Both seams over one chunk store: nodes persist through the file
+    /// pipeline and entry data is joined from the same store.
+    pub fn over(store: S) -> Self {
+        Self::new(NodeLoadSaver::new(store.clone()), ContentGet::new(store))
     }
 }
 

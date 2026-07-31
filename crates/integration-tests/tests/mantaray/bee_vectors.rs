@@ -13,9 +13,8 @@
 use std::sync::Arc;
 
 use alloy_primitives::b256;
-use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{Batch, Manifest, ManifestPath};
-use nectar_mantaray::{ManifestEditor, MantarayManifest};
+use nectar_mantaray::{ManifestEditor, MantarayManifest, NodeLoadSaver};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
 use nectar_testing::run;
@@ -55,7 +54,9 @@ fn one_bare_content_key_matches_bee() {
         let root = root(&[(ManifestPath::from("index.html"), reference(7))], None).await;
         assert_eq!(
             *root.address(),
-            ChunkAddress::from(b256!("135e08fe3256ffb32a2abeadc66d335568372ee4ebed35cdf9b40fdcbb31263a")),
+            ChunkAddress::from(b256!(
+                "135e08fe3256ffb32a2abeadc66d335568372ee4ebed35cdf9b40fdcbb31263a"
+            )),
         );
     });
 }
@@ -70,7 +71,9 @@ fn a_website_index_document_matches_bee() {
         .await;
         assert_eq!(
             *root.address(),
-            ChunkAddress::from(b256!("71679aa2e389c9ae87aac980f73b34c15843db48824e7b2957f7e11f6dc18c44")),
+            ChunkAddress::from(b256!(
+                "71679aa2e389c9ae87aac980f73b34c15843db48824e7b2957f7e11f6dc18c44"
+            )),
         );
     });
 }
@@ -91,7 +94,9 @@ fn a_multi_chunk_root_node_matches_bee() {
         let root = root(&entries, None).await;
         assert_eq!(
             *root.address(),
-            ChunkAddress::from(b256!("73351dd770c0d3205d46f2954f99502112f77b91db56fed72f245f4331724010")),
+            ChunkAddress::from(b256!(
+                "73351dd770c0d3205d46f2954f99502112f77b91db56fed72f245f4331724010"
+            )),
         );
     });
 }

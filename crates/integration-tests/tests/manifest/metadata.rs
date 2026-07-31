@@ -8,12 +8,11 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use nectar_ldb::{CustomKey, Format, KeyId, Metadata, MetadataKey, V1};
-use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::WellKnownKey::{ContentType, Custom, ErrorDocument, Filename, IndexDocument};
 use nectar_manifest::{
     ErasedManifest, ManifestMeta, ManifestPath, MetadataSource, MetadataView, WellKnownKey,
 };
-use nectar_mantaray::{MantarayManifest, Reader as MantarayReader, metadata};
+use nectar_mantaray::{MantarayManifest, NodeLoadSaver, Reader as MantarayReader, metadata};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE};
 use nectar_testing::run;
 

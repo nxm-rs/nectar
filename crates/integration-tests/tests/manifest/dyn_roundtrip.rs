@@ -4,12 +4,11 @@
 
 use nectar_file::MemSink;
 use nectar_ldb::{Database, Reader as LdbReader};
-use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     ErasedManifest, Listing, ManifestOp, ManifestPath, MapEntry, MetadataSource, MetadataView,
     SiteConfig, WellKnownKey,
 };
-use nectar_mantaray::{MantarayManifest, Reader as MantarayReader, metadata};
+use nectar_mantaray::{MantarayManifest, NodeLoadSaver, Reader as MantarayReader, metadata};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE};
 use nectar_testing::run;
 use std::sync::Arc;

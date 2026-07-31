@@ -11,12 +11,11 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     Batch, ErasedManifest, Manifest, ManifestCursor, ManifestOp, ManifestPath, ManifestView,
     MetadataSource,
 };
-use nectar_mantaray::{MantarayManifest, NodeLoader, NodeSaver};
+use nectar_mantaray::{MantarayManifest, NodeLoadSaver, NodeLoader, NodeSaver};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, EntryRef};
 use nectar_testing::run;
 
