@@ -1,395 +1,112 @@
-//! The convergence gate: content keys are bare, the manifest's own
-//! configuration is an option and not a key, and `remove` is exact-key.
-//! Identically on both manifest formats.
-//!
-//! Every scenario is generic over the [`Manifest`] seam and runs twice, once
-//! per format. The assertions inside a scenario check the contract, and the
-//! [`Observed`] comparison in each test checks that the two formats answer
-//! alike.
-//!
-//! # The contract under test
-//!
-//! A content key is the path bytes verbatim, with nothing prepended.
-//!
-//! The site index and error documents are read as `Option<ManifestPath>` and
-//! written through `Batch::set_index_document` and `Batch::set_error_document`.
-//! Each lands in the format's own root slot, which is never a key. The two
-//! reserved paths are the empty one and `"/"`: a read at either is absent and
-//! a write at either refuses the whole batch as `ReservedKey`, in the seam,
-//! before the format runs.
-//!
-//! `remove` is exact-key on both formats: the path's own value and metadata go,
-//! and no other path does. A path with children keeps every one of them, a
-//! childless leaf is pruned, and removing an absent path is a no-op.
-//!
-//! # History-independence is a key-value database guarantee only
-//!
-//! What crosses the formats after a removal is the key set, not the root.
-//! `a_remove_is_history_independent_on_ldb` pins the root on the key-value
-//! database alone, whose packing derives the whole shape from the key set.
-//! mantaray 0.2 puts a node where the insert order first justified one and
-//! never moves it, so it cannot have that without breaking the wire
-//! `mantaray/legacy_differential.rs` pins.
+//! The convergence gate: content keys are bare, the site configuration is an
+//! option and not a key, and `remove` is exact-key, identically on both
+//! formats. Each `differential!` test runs one scenario on both formats and
+//! compares the [`Observed`] answers. Root history-independence is pinned on
+//! the key-value database alone: mantaray 0.2 keeps insert-order node
+//! placement, which the wire `mantaray/legacy_differential.rs` pins.
 
 use std::ops::Bound;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use nectar_file::{DataSink, File, MemSink, Policy};
 use nectar_ldb::{Builder, Database, Entry, Key, Plaintext, Reader as LdbReader, Served, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     Batch, ListEntry, Manifest, ManifestCursor, ManifestError, ManifestMeta, ManifestOp,
-    ManifestPath, ManifestView, MapEntry, MetadataView, WellKnownKey,
+    ManifestPath, ManifestView, MapEntry, MemSink, MetadataView, WellKnownKey,
 };
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, EncryptedChunkRef, EncryptionKey};
 use nectar_testing::run;
 
 mod common;
-use common::{both_formats, reference, text};
-
-/// `keys` written through the seam in one batch, each bound to a distinct
-/// reference.
-async fn write_keys<M: Manifest<ChunkRef>>(
-    manifest: &M,
-    empty: &ChunkRef,
-    keys: &[&str],
-) -> ChunkRef {
-    let mut batch = Batch::new();
-    for (index, key) in keys.iter().enumerate() {
-        let bound = reference(u8::try_from(index).unwrap().saturating_add(1));
-        batch.insert(ManifestPath::from(*key), bound);
-    }
-    manifest.apply(*empty, batch).await.unwrap()
-}
+use common::{
+    Observed, Refused, RefusingSink, applied, both_formats, build, doc_delta, docs, drain, key_set,
+    listing, observed, p, reference, refs, refused, removal_keys, removed, survivors, text,
+    write_keys,
+};
 
 /// A filename joined below each directory, so relative on purpose.
 const INDEX: &str = "index.html";
 /// One whole content key.
 const ERROR: &str = "404.html";
 
-/// The reserved path a refused write names, structurally over every format.
-fn refused<T, F>(result: &Result<T, ManifestError<F>>) -> Option<ManifestPath> {
-    result
-        .as_ref()
-        .err()?
-        .as_reserved()
-        .map(|reserved| reserved.path().clone())
-}
-
-/// One format's answers to one scenario, in a format-independent shape.
-#[derive(Debug, PartialEq, Eq)]
-struct Observed {
-    /// Every path `iter` yields, in order.
-    keys: Vec<String>,
-    /// Every path `range(..)` yields, in order.
-    ranged: Vec<String>,
-    /// The top level: every path `dir("")` lists, in order.
-    listed: Vec<String>,
-    /// Every path `dir("a")` lists: a prefix with no trailing separator.
-    prefixed: Vec<String>,
-    /// The index document the manifest declares.
-    index_document: Option<String>,
-    /// The error document the manifest declares.
-    error_document: Option<String>,
-    /// One row per probed path.
-    probes: Vec<Probe>,
-}
-
-/// Every point read at one path.
-#[derive(Debug, PartialEq, Eq)]
-struct Probe {
-    path: String,
-    entry: Option<MapEntry<ChunkRef>>,
-    present: bool,
-    /// Whether the path carries the format's empty metadata.
-    bare: bool,
-    /// The greatest bound path at or below this one.
-    floor: Option<String>,
-    /// Whether a load of the path reached the sink.
-    loaded: bool,
-}
-
-/// Read every verb over `root` at each of `paths`, in a format-independent
-/// shape.
-async fn observe<M>(manifest: &M, root: &ChunkRef, paths: &[ManifestPath]) -> Observed
-where
-    M: Manifest<ChunkRef>,
-    M::Metadata: Clone + PartialEq + std::fmt::Debug,
-{
-    let view = manifest.at(*root);
-
-    let keys = key_set(manifest, root).await;
-    let ranged = drain(&view, (Bound::Unbounded, Bound::Unbounded)).await;
-    let listed = listing(&view, &ManifestPath::default()).await;
-    let prefixed = listing(&view, &ManifestPath::from("a")).await;
-
-    let mut probes = Vec::new();
-    for path in paths {
-        let meta = view.metadata(path).await.unwrap();
-        let mut sink = MemSink::new();
-        probes.push(Probe {
-            path: text(path),
-            entry: view.get(path).await.unwrap(),
-            present: view.contains_key(path).await.unwrap(),
-            bare: meta == M::Metadata::default(),
-            floor: view.floor(path).await.unwrap().map(|(path, _)| text(&path)),
-            loaded: view.load(path, &mut sink).await.is_ok(),
-        });
-    }
-
-    Observed {
-        keys,
-        ranged,
-        listed,
-        prefixed,
-        index_document: view.index_document().await.unwrap().map(|p| text(&p)),
-        error_document: view.error_document().await.unwrap().map(|p| text(&p)),
-        probes,
-    }
-}
-
-/// Every path a bounded walk yields, in order.
-async fn drain<V: ManifestView<ChunkRef>>(
-    view: &V,
-    bounds: (Bound<ManifestPath>, Bound<ManifestPath>),
-) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cursor = view.range(bounds).await.unwrap();
-    while let Some((path, _)) = cursor.next().await.unwrap() {
-        out.push(text(&path));
-    }
-    out
-}
-
-/// Every path one directory level lists, in order.
-async fn listing<V: ManifestView<ChunkRef>>(view: &V, dir: &ManifestPath) -> Vec<String> {
-    view.dir(dir)
-        .await
-        .unwrap()
-        .entries()
-        .iter()
-        .map(|entry| text(entry.path()))
-        .collect()
-}
-
-/// The paths every scenario probes: the two reserved ones, a top-level file, a
-/// directory key and a file below it, an interior key with siblings past it,
-/// and one absent path.
-fn probed() -> Vec<ManifestPath> {
-    [
-        "",
-        "/",
-        "!",
-        "404.html",
-        "a",
-        "ab",
-        "ac",
-        "img/",
-        "img/logo.png",
-        "index.html",
-        "zz",
-    ]
-    .into_iter()
-    .map(ManifestPath::from)
-    .collect()
-}
-
 /// The site documents: set, read back, cleared, and never a key in the map.
-async fn the_site_config_is_an_option_and_not_a_key<M>(
-    manifest: &M,
-    empty: &ChunkRef,
-) -> Vec<Observed>
+async fn site_config_scenario<M>(manifest: &M, empty: &ChunkRef) -> Vec<Observed>
 where
     M: Manifest<ChunkRef>,
     M::Metadata: Clone + PartialEq + std::fmt::Debug,
 {
-    let index = ManifestPath::from("index.html");
-    let logo = ManifestPath::from("img/logo.png");
     let empty_path = ManifestPath::default();
-    let separator = ManifestPath::from("/");
+    let separator = p("/");
 
     // Content only: nothing declares a document yet.
-    let mut batch = Batch::new();
-    batch.insert(index.clone(), reference(1));
-    batch.insert(logo.clone(), reference(2));
-    let content = manifest.apply(*empty, batch).await.unwrap();
-    let view = manifest.at(content);
-    assert_eq!(
-        view.index_document().await.unwrap(),
-        None,
-        "an unset index document reads as None"
-    );
-    assert_eq!(
-        view.error_document().await.unwrap(),
-        None,
-        "an unset error document reads as None"
-    );
+    let content = applied(manifest, empty, |batch| {
+        batch.insert(p(INDEX), reference(1));
+        batch.insert(p("img/logo.png"), reference(2));
+    })
+    .await;
+    docs(manifest, &content, None, None, "unset").await;
 
-    // Both documents.
-    let mut batch = Batch::new();
-    batch.set_index_document(ManifestPath::from(INDEX));
-    batch.set_error_document(ManifestPath::from(ERROR));
-    let configured = manifest.apply(content, batch).await.unwrap();
+    // Both documents read back, and declaring them moves the root.
+    let configured = doc_delta(manifest, &content, Some(Some(INDEX)), Some(Some(ERROR))).await;
+    docs(manifest, &configured, Some(INDEX), Some(ERROR), "cfg").await;
+    assert_ne!(configured, content, "declaring a document moves the root");
+
+    // The slot is not a key: no map verb reaches a reserved path, and a write
+    // at one is refused, and named.
     let view = manifest.at(configured);
-    assert_eq!(
-        view.index_document().await.unwrap().map(|p| text(&p)),
-        Some(String::from(INDEX)),
-        "the index document reads back"
-    );
-    assert_eq!(
-        view.error_document().await.unwrap().map(|p| text(&p)),
-        Some(String::from(ERROR)),
-        "the error document reads back"
-    );
-    assert_ne!(
-        configured, content,
-        "declaring a document moves the manifest root"
-    );
-
-    // The slot is not a key: no map verb reaches it.
+    let nine = reference(9);
     for path in [&empty_path, &separator] {
-        assert_eq!(
-            view.get(path).await.unwrap(),
-            None,
-            "{:?} binds nothing",
-            text(path)
-        );
-        assert!(
-            !view.contains_key(path).await.unwrap(),
-            "{:?} is unbound",
-            text(path)
-        );
-        assert_eq!(
-            view.metadata(path).await.unwrap(),
-            M::Metadata::default(),
-            "{:?} carries no metadata",
-            text(path)
-        );
-        assert!(
-            view.load(path, &mut MemSink::new()).await.is_err(),
-            "{:?} names no data",
-            text(path)
-        );
+        let hint = text(path);
+        let got = view.get(path).await.unwrap();
+        assert_eq!(got, None, "{hint:?} binds nothing");
+        let bound = view.contains_key(path).await.unwrap();
+        assert!(!bound, "{hint:?} is unbound");
+        let meta = view.metadata(path).await.unwrap();
+        assert_eq!(meta, M::Metadata::default(), "{hint:?} carries metadata");
+        let load = view.load(path, &mut MemSink::new()).await;
+        assert!(load.is_err(), "{hint:?} names no data");
+        let insert = manifest.insert(configured, path.clone(), nine).await;
+        assert_eq!(refused(&insert), Some(path.clone()), "insert at {hint:?}");
+        let remove = manifest.remove(configured, path.clone()).await;
+        assert_eq!(refused(&remove), Some(path.clone()), "remove at {hint:?}");
     }
 
-    // No walk yields it either.
-    assert_eq!(
-        key_set(manifest, &configured).await,
-        ["img/logo.png", "index.html"],
-        "iter yields content keys, bare and in order"
-    );
-    assert_eq!(
-        listing(&view, &empty_path).await,
-        ["img/", "index.html"],
-        "the top level lists content alone"
-    );
-
-    // A write at a reserved path is refused, and named.
-    for path in [&empty_path, &separator] {
-        assert_eq!(
-            refused(
-                &manifest
-                    .insert(configured, path.clone(), reference(9))
-                    .await
-            ),
-            Some(path.clone()),
-            "an insert at {:?} is refused as reserved",
-            text(path)
-        );
-        assert_eq!(
-            refused(&manifest.remove(configured, path.clone()).await),
-            Some(path.clone()),
-            "a remove at {:?} is refused as reserved",
-            text(path)
-        );
-    }
+    // No walk yields the slot either.
+    let keys = key_set(manifest, &configured).await;
+    assert_eq!(keys, ["img/logo.png", "index.html"], "bare keys in order");
+    let top = listing(&view, &empty_path).await;
+    assert_eq!(top, ["img/", "index.html"], "the top level lists content");
 
     // The refusal takes the whole batch with it.
     let mut batch = Batch::new();
-    batch.insert(ManifestPath::from("landed.html"), reference(9));
+    batch.insert(p("landed.html"), reference(9));
     batch.insert(separator.clone(), reference(9));
     let mixed = manifest.apply(configured, batch).await;
-    assert_eq!(
-        refused(&mixed),
-        Some(separator.clone()),
-        "the batch is refused for the reserved path in it"
-    );
-    assert!(
-        !manifest
-            .at(configured)
-            .contains_key(&ManifestPath::from("landed.html"))
-            .await
-            .unwrap(),
-        "and the op beside it did not land"
-    );
+    assert_eq!(refused(&mixed), Some(separator), "refused whole");
+    let landed = view.contains_key(&p("landed.html")).await.unwrap();
+    assert!(!landed, "the op beside the refusal landed");
 
-    // The two documents are independent.
-    let mut batch = Batch::new();
-    batch.set_index_document(ManifestPath::from(INDEX));
-    let index_only = manifest.apply(content, batch).await.unwrap();
-    let view = manifest.at(index_only);
-    assert_eq!(
-        view.index_document().await.unwrap().map(|p| text(&p)),
-        Some(String::from(INDEX)),
-        "the index document is declared"
-    );
-    assert_eq!(
-        view.error_document().await.unwrap(),
-        None,
-        "and the error document is not"
-    );
-
-    // Clearing is the same setter with `None`.
-    let mut batch = Batch::new();
-    batch.set_error_document(None);
-    let error_cleared = manifest.apply(configured, batch).await.unwrap();
-    assert_eq!(
-        error_cleared, index_only,
-        "clearing the error document lands on the root that never declared one"
-    );
-
-    // Clearing the last document lands back on the content-only root.
-    let mut batch = Batch::new();
-    batch.set_index_document(None).set_error_document(None);
-    let stripped = manifest.apply(configured, batch).await.unwrap();
-    assert_eq!(
-        stripped, content,
-        "clearing both documents restores the content-only root"
-    );
-    let view = manifest.at(stripped);
-    assert_eq!(view.index_document().await.unwrap(), None, "index cleared");
-    assert_eq!(view.error_document().await.unwrap(), None, "error cleared");
-
-    // Clearing what was never declared is a no-op.
-    let mut batch = Batch::new();
-    batch.set_index_document(None).set_error_document(None);
-    let noop = manifest.apply(content, batch).await.unwrap();
-    assert_eq!(
-        noop, content,
-        "clearing an undeclared document changes nothing"
-    );
+    // The two documents are independent; clearing is the same setter with
+    // `None`, lands on the root that never declared, restores the content-only
+    // root once both go, and is a no-op on an undeclared document.
+    let index_only = doc_delta(manifest, &content, Some(Some(INDEX)), None).await;
+    docs(manifest, &index_only, Some(INDEX), None, "index only").await;
+    let error_cleared = doc_delta(manifest, &configured, None, Some(None)).await;
+    assert_eq!(error_cleared, index_only, "clears onto the undeclared root");
+    let stripped = doc_delta(manifest, &configured, Some(None), Some(None)).await;
+    assert_eq!(stripped, content, "clearing both restores the content root");
+    docs(manifest, &stripped, None, None, "stripped").await;
+    let noop = doc_delta(manifest, &content, Some(None), Some(None)).await;
+    assert_eq!(noop, content, "clearing an undeclared doc is a no-op");
 
     // Removing a content key does not touch the configuration.
-    let child_gone = manifest.remove(configured, logo.clone()).await.unwrap();
-    let view = manifest.at(child_gone);
-    assert_eq!(
-        view.index_document().await.unwrap().map(|p| text(&p)),
-        Some(String::from(INDEX)),
-        "the index document outlives a content key"
-    );
-    assert_eq!(
-        view.error_document().await.unwrap().map(|p| text(&p)),
-        Some(String::from(ERROR)),
-        "so does the error document"
-    );
+    let child_gone = removed(manifest, configured, "img/logo.png").await;
+    docs(manifest, &child_gone, Some(INDEX), Some(ERROR), "outlive").await;
 
-    observed(
-        manifest,
-        &[&content, &configured, &index_only, &stripped, &child_gone],
-    )
-    .await
+    let roots = [content, configured, index_only, stripped, child_gone];
+    observed(manifest, &roots.iter().collect::<Vec<_>>()).await
 }
 
 /// Every shape a removal can take, on the one manifest that holds all of them.
@@ -398,208 +115,66 @@ where
     M: Manifest<ChunkRef>,
     M::Metadata: Clone + PartialEq + std::fmt::Debug,
 {
-    let a = ManifestPath::from("a");
-    let ab = ManifestPath::from("ab");
-    let ac = ManifestPath::from("ac");
-    let img = ManifestPath::from("img/");
-    let logo = ManifestPath::from("img/logo.png");
-    let index = ManifestPath::from("index.html");
+    let img = p("img/");
+    let keys = ["a", "ab", "ac", "img/logo.png", "index.html"];
+    let base = write_keys(manifest, empty, &keys).await;
 
-    let mut batch = Batch::new();
-    for (path, byte) in [(&a, 1u8), (&ab, 2), (&ac, 3), (&logo, 4), (&index, 5)] {
-        batch.insert(path.clone(), reference(byte));
-    }
-    let base = manifest.apply(*empty, batch).await.unwrap();
-
-    // An absent path: nothing to remove, so nothing changes.
-    assert_eq!(
-        manifest
-            .remove(base, ManifestPath::from("nowhere"))
-            .await
-            .unwrap(),
-        base,
-        "removing an absent path changes nothing"
-    );
-
-    // An unbound directory key, with a path below it: still nothing to remove.
-    assert!(
-        !manifest.at(base).contains_key(&img).await.unwrap(),
-        "the directory key is unbound"
-    );
-    assert_eq!(
-        manifest.remove(base, img.clone()).await.unwrap(),
-        base,
-        "removing an unbound directory key changes nothing"
-    );
+    // Nothing to remove: an absent path, then an unbound directory key with a
+    // path below it. Neither changes the root.
+    let same = removed(manifest, base, "nowhere").await;
+    assert_eq!(same, base, "an absent path is a no-op");
+    let bound = manifest.at(base).contains_key(&img).await.unwrap();
+    assert!(!bound, "img/ is unbound");
+    let same = removed(manifest, base, "img/").await;
+    assert_eq!(same, base, "an unbound directory key is a no-op");
 
     // An interior path with paths past it: only its own binding goes.
-    let interior = manifest.remove(base, a.clone()).await.unwrap();
-    assert_ne!(
-        interior, base,
-        "clearing a bound interior path moves the root"
-    );
-    let view = manifest.at(interior);
-    assert_eq!(
-        view.get(&a).await.unwrap(),
-        None,
-        "the interior path is gone"
-    );
-    assert_eq!(
-        view.get(&ab).await.unwrap(),
-        Some(MapEntry::Reference(reference(2))),
-        "the path past it survives"
-    );
-    assert_eq!(
-        view.get(&ac).await.unwrap(),
-        Some(MapEntry::Reference(reference(3))),
-        "so does its sibling"
-    );
+    let interior = removed(manifest, base, "a").await;
+    assert_ne!(interior, base, "a bound interior path moves the root");
+    let cases = [("a", None), ("ab", Some(2)), ("ac", Some(3))];
+    refs(manifest, &interior, &cases, "the paths past it survive").await;
 
-    // A childless leaf: pruned outright, and the paths around it untouched.
-    let leaf = manifest.remove(interior, ab.clone()).await.unwrap();
-    let view = manifest.at(leaf);
-    assert_eq!(view.get(&ab).await.unwrap(), None, "the leaf is pruned");
-    assert_eq!(
-        view.get(&ac).await.unwrap(),
-        Some(MapEntry::Reference(reference(3))),
-        "its sibling is untouched"
-    );
+    // A childless leaf: pruned outright, and the sibling untouched.
+    let leaf = removed(manifest, interior, "ab").await;
+    refs(manifest, &leaf, &[("ab", None), ("ac", Some(3))], "pruned").await;
 
     // Removing every leaf below a directory leaves the listing empty.
-    let emptied = manifest.remove(leaf, logo.clone()).await.unwrap();
+    let emptied = removed(manifest, leaf, "img/logo.png").await;
     let view = manifest.at(emptied);
-    assert!(
-        view.dir(&img).await.unwrap().entries().is_empty(),
-        "the emptied directory lists nothing"
-    );
-    assert_eq!(
-        listing(&view, &ManifestPath::default()).await,
-        ["ac", "index.html"],
-        "the emptied directory is gone from the top level"
-    );
+    let entries = view.dir(&img).await.unwrap();
+    assert!(entries.entries().is_empty(), "the emptied dir lists none");
+    let top = listing(&view, &ManifestPath::default()).await;
+    assert_eq!(top, ["ac", "index.html"], "the emptied dir leaves the top");
 
     // A directory key that is bound keeps the paths below it.
-    let mut batch = Batch::new();
-    batch.insert(ManifestPath::from("d/"), reference(6));
-    batch.insert(ManifestPath::from("d/x"), reference(7));
-    let bound_dir = manifest.apply(emptied, batch).await.unwrap();
-    let dir_cleared = manifest
-        .remove(bound_dir, ManifestPath::from("d/"))
-        .await
-        .unwrap();
-    let view = manifest.at(dir_cleared);
-    assert_eq!(
-        view.get(&ManifestPath::from("d/")).await.unwrap(),
-        None,
-        "the directory key's own binding is gone"
-    );
-    assert_eq!(
-        view.get(&ManifestPath::from("d/x")).await.unwrap(),
-        Some(MapEntry::Reference(reference(7))),
-        "the path below it survives"
-    );
+    let bound = applied(manifest, &emptied, |batch| {
+        batch.insert(p("d/"), reference(6));
+        batch.insert(p("d/x"), reference(7));
+    })
+    .await;
+    let cleared = removed(manifest, bound, "d/").await;
+    let cases = [("d/", None), ("d/x", Some(7))];
+    refs(manifest, &cleared, &cases, "d/x survives").await;
 
     // Removing the last path leaves an empty manifest that still reads.
-    let mut batch = Batch::new();
-    for path in [&ac, &index, &ManifestPath::from("d/x")] {
-        batch.remove(path.clone());
-    }
-    let stripped = manifest.apply(dir_cleared, batch).await.unwrap();
+    let stripped = applied(manifest, &cleared, |batch| {
+        for path in ["ac", "index.html", "d/x"] {
+            batch.remove(p(path));
+        }
+    })
+    .await;
     let view = manifest.at(stripped);
-    assert!(
-        view.iter().await.unwrap().next().await.unwrap().is_none(),
-        "the stripped manifest holds no path"
-    );
-    assert!(
-        view.dir(&ManifestPath::default())
-            .await
-            .unwrap()
-            .entries()
-            .is_empty(),
-        "and lists none"
-    );
+    let first = view.iter().await.unwrap().next().await.unwrap();
+    assert!(first.is_none(), "the stripped manifest holds no path");
+    let top = view.dir(&ManifestPath::default()).await.unwrap();
+    assert!(top.entries().is_empty(), "and lists none");
 
-    observed(
-        manifest,
-        &[
-            &base,
-            &interior,
-            &leaf,
-            &emptied,
-            &bound_dir,
-            &dir_cleared,
-            &stripped,
-        ],
-    )
-    .await
-}
-
-/// The key set the removal scenarios build.
-///
-/// It reaches every shape a removal can leave behind: a mid-edge split
-/// (`alpha`/`alpine`), a shared directory (`img/`), a top-level key sharing one
-/// byte with a directory (`index.html`), a lone leaf (`beta`), and pairs that
-/// run past the trie's 30-byte edge bound.
-fn removal_keys() -> Vec<(ManifestPath, u8)> {
-    let deep = |tail: &str| ManifestPath::from(format!("deep/{}{tail}", "a".repeat(30)).as_str());
-    let under =
-        |dir: &str, len: usize| ManifestPath::from(format!("{dir}{}", "e".repeat(len)).as_str());
-    [
-        (ManifestPath::from("alpha"), 1u8),
-        (ManifestPath::from("alpine"), 2),
-        (ManifestPath::from("beta"), 3),
-        (ManifestPath::from("img/icon.png"), 4),
-        (ManifestPath::from("img/logo.png"), 5),
-        (ManifestPath::from("index.html"), 6),
-        (deep("one"), 7),
-        (deep("two"), 8),
-        // 5 + 28 bytes: what a removal of "abcde" leaves joins to 33, past the
-        // bound.
-        (ManifestPath::from("abcde"), 9),
-        (under("abcde", 28), 10),
-        // 5 + 31 bytes under a directory: the leftover runs through two nodes.
-        (ManifestPath::from("wiki/"), 11),
-        (under("wiki/", 31), 12),
-    ]
-    .into_iter()
-    .collect()
-}
-
-/// `keys` with the key at `index` removed: what an exact-key remove leaves.
-fn survivors(keys: &[(ManifestPath, u8)], index: usize) -> Vec<(ManifestPath, u8)> {
-    keys.iter()
-        .enumerate()
-        .filter(|(other, _)| *other != index)
-        .map(|(_, key)| key.clone())
-        .collect()
-}
-
-/// Build a manifest holding exactly `keys`, in the order given.
-async fn build<M: Manifest<ChunkRef>>(
-    manifest: &M,
-    empty: &ChunkRef,
-    keys: &[(ManifestPath, u8)],
-) -> ChunkRef {
-    let mut batch = Batch::new();
-    for (path, byte) in keys {
-        batch.insert(path.clone(), reference(*byte));
-    }
-    manifest.apply(*empty, batch).await.unwrap()
-}
-
-/// Every path a manifest holds, in walk order.
-async fn key_set<M: Manifest<ChunkRef>>(manifest: &M, root: &ChunkRef) -> Vec<String> {
-    let view = manifest.at(*root);
-    let mut out = Vec::new();
-    let mut cursor = view.iter().await.unwrap();
-    while let Some((path, _)) = cursor.next().await.unwrap() {
-        out.push(text(&path));
-    }
-    out
+    let roots = [base, interior, leaf, emptied, bound, cleared, stripped];
+    observed(manifest, &roots.iter().collect::<Vec<_>>()).await
 }
 
 /// An exact-key remove leaves the surviving key set on both formats, and two
-/// removals commute on it. The root is not asserted here; see the module note.
+/// removals commute on it. The root is not asserted here; see the module doc.
 async fn a_remove_leaves_the_surviving_keys<M>(manifest: &M, empty: &ChunkRef) -> Vec<Observed>
 where
     M: Manifest<ChunkRef>,
@@ -614,64 +189,36 @@ where
         assert_ne!(removed, base, "removing {:?} moves the root", text(path));
 
         let built = build(manifest, empty, &survivors(&keys, index)).await;
-        assert_eq!(
-            key_set(manifest, &removed).await,
-            key_set(manifest, &built).await,
-            "removing {:?} left a key set a build of the surviving keys does not hold",
-            text(path)
-        );
+        let got = key_set(manifest, &removed).await;
+        let want = key_set(manifest, &built).await;
+        assert_eq!(got, want, "removing {:?} left the wrong keys", text(path));
         roots.push(removed);
     }
 
     // The order the two keys go in does not reach the key set.
     let (first, second) = (keys[0].0.clone(), keys[4].0.clone());
-    let forwards = manifest
-        .remove(
-            manifest.remove(base, first.clone()).await.unwrap(),
-            second.clone(),
-        )
-        .await
-        .unwrap();
-    let backwards = manifest
-        .remove(manifest.remove(base, second).await.unwrap(), first)
-        .await
-        .unwrap();
-    assert_eq!(
-        key_set(manifest, &forwards).await,
-        key_set(manifest, &backwards).await,
-        "two removals commute on the key set"
-    );
+    let forwards = manifest.remove(base, first.clone()).await.unwrap();
+    let forwards = manifest.remove(forwards, second.clone()).await.unwrap();
+    let backwards = manifest.remove(base, second).await.unwrap();
+    let backwards = manifest.remove(backwards, first).await.unwrap();
+    let got = key_set(manifest, &forwards).await;
+    let want = key_set(manifest, &backwards).await;
+    assert_eq!(got, want, "two removals commute on the key set");
     roots.push(forwards);
     roots.push(backwards);
 
     // An empty manifest has one shape on either format, so the root is the
     // assertion here.
-    let mut batch = Batch::new();
-    for (path, _) in &keys {
-        batch.remove(path.clone());
-    }
-    let stripped = manifest.apply(base, batch).await.unwrap();
-    assert_eq!(
-        &stripped, empty,
-        "removing every key restores the empty manifest"
-    );
+    let stripped = applied(manifest, &base, |batch| {
+        for (path, _) in &keys {
+            batch.remove(path.clone());
+        }
+    })
+    .await;
+    assert_eq!(&stripped, empty, "removing every key restores empty");
     roots.push(stripped);
 
     observed(manifest, &roots.iter().collect::<Vec<_>>()).await
-}
-
-/// Every root observed in turn.
-async fn observed<M>(manifest: &M, roots: &[&ChunkRef]) -> Vec<Observed>
-where
-    M: Manifest<ChunkRef>,
-    M::Metadata: Clone + PartialEq + std::fmt::Debug,
-{
-    let paths = probed();
-    let mut out = Vec::with_capacity(roots.len());
-    for root in roots {
-        out.push(observe(manifest, root, &paths).await);
-    }
-    out
 }
 
 /// Both formats through one scenario, with the answers compared.
@@ -685,19 +232,13 @@ macro_rules! differential {
                 let from_trie = $scenario(&trie, &trie_empty).await;
                 let from_kv = $scenario(&kv, &kv_empty).await;
 
-                assert_eq!(
-                    from_trie, from_kv,
-                    "the trie and the key-value database answered differently"
-                );
+                assert_eq!(from_trie, from_kv, "the formats answered differently");
             });
         }
     };
 }
 
-differential!(
-    the_site_config_agrees_across_formats,
-    the_site_config_is_an_option_and_not_a_key
-);
+differential!(the_site_config_agrees_across_formats, site_config_scenario);
 differential!(every_remove_shape_agrees_across_formats, every_remove_shape);
 differential!(
     a_remove_leaves_the_surviving_keys_on_both_formats,
@@ -705,48 +246,32 @@ differential!(
 );
 
 /// The key-value database's removal is history-independent: the root a removal
-/// lands on is the root a build of the surviving keys produces.
-///
-/// One format only, on purpose; see the module note.
+/// lands on is the root a build of the surviving keys produces. One format
+/// only, on purpose; see the module doc.
 #[test]
 fn a_remove_is_history_independent_on_ldb() {
     run(async {
         let (_raw, store) = common::stores();
-        let builder: Builder<V1> = Builder::new();
-        let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
         let kv = Database::<_>::plain(store.clone());
+        let empty: ChunkRef = kv.empty().await.unwrap();
+        let rm = |root, path: &ManifestPath| Manifest::remove(&kv, root, path.clone());
 
         let keys = removal_keys();
         let base = build(&kv, &empty, &keys).await;
 
         for (index, (path, _)) in keys.iter().enumerate() {
-            let removed = Manifest::remove(&kv, base, path.clone()).await.unwrap();
+            let removed = rm(base, path).await.unwrap();
             assert_ne!(removed, base, "removing {:?} moves the root", text(path));
 
-            assert_eq!(
-                removed,
-                build(&kv, &empty, &survivors(&keys, index)).await,
-                "removing {:?} left a root a build of the surviving keys would not produce",
-                text(path)
-            );
+            let rebuilt = build(&kv, &empty, &survivors(&keys, index)).await;
+            assert_eq!(removed, rebuilt, "{:?} is history-dependent", text(path));
         }
 
         // The order the two keys go in does not reach the root either.
-        let (first, second) = (keys[0].0.clone(), keys[4].0.clone());
-        let forwards = Manifest::remove(
-            &kv,
-            Manifest::remove(&kv, base, first.clone()).await.unwrap(),
-            second.clone(),
-        )
-        .await
-        .unwrap();
-        let backwards = Manifest::remove(
-            &kv,
-            Manifest::remove(&kv, base, second).await.unwrap(),
-            first,
-        )
-        .await
-        .unwrap();
+        let forwards = rm(base, &keys[0].0).await.unwrap();
+        let forwards = rm(forwards, &keys[4].0).await.unwrap();
+        let backwards = rm(base, &keys[4].0).await.unwrap();
+        let backwards = rm(backwards, &keys[0].0).await.unwrap();
         assert_eq!(forwards, backwards, "two removals commute on the root");
     });
 }
@@ -758,11 +283,9 @@ where
     M: Manifest<ChunkRef>,
     M::Metadata: Clone + PartialEq + std::fmt::Debug,
 {
-    let page = ManifestPath::from("a.txt");
-    let one = manifest
-        .insert(*empty, page.clone(), reference(1))
-        .await
-        .unwrap();
+    let page = p("a.txt");
+    let one = manifest.insert(*empty, page.clone(), reference(1)).await;
+    let one = one.unwrap();
     let ins = |byte: u8| ManifestOp::Insert {
         path: page.clone(),
         reference: reference(byte),
@@ -803,7 +326,7 @@ fn the_reserved_refusal_precedes_the_format() {
         let ((trie, _), (kv, _)) = both_formats(&raw, &store).await;
         // No chunk lives behind this root.
         let garbage = reference(0xEE);
-        let sep = ManifestPath::from("/");
+        let sep = p("/");
 
         let mut batch = Batch::new();
         batch.insert(sep.clone(), reference(1));
@@ -826,14 +349,14 @@ fn a_batch_stages_ops_and_documents_and_records_the_first_refusal() {
     let mut batch: Batch = Batch::new();
     assert!(batch.is_empty());
     batch
-        .insert(ManifestPath::from("b"), reference(1))
-        .remove(ManifestPath::from("a"))
+        .insert(p("b"), reference(1))
+        .remove(p("a"))
         .extend([ManifestOp::Insert {
-            path: ManifestPath::from("c"),
+            path: p("c"),
             reference: reference(2),
             meta: (),
         }])
-        .insert_with(ManifestPath::from("b"), reference(3), ());
+        .insert_with(p("b"), reference(3), ());
     assert!(!batch.is_empty());
     let checked = batch.into_checked().unwrap();
     let paths: Vec<&[u8]> = checked.ops.iter().map(|op| op.path().as_bytes()).collect();
@@ -845,23 +368,21 @@ fn a_batch_stages_ops_and_documents_and_records_the_first_refusal() {
     // The site documents are a delta, not ops, and a doc-only batch stages
     // no op: set is `Some(Some)`, clear is `Some(None)`.
     let mut batch: Batch = Batch::new();
-    batch.set_index_document(ManifestPath::from("index.html"));
+    batch.set_index_document(p(INDEX));
     batch.set_error_document(None);
     let checked = batch.into_checked().unwrap();
     assert!(checked.ops.is_empty());
-    let set = Some(Some(ManifestPath::from("index.html")));
-    assert_eq!(checked.index_document, set);
+    assert_eq!(checked.index_document, Some(Some(p(INDEX))));
     assert_eq!(checked.error_document, Some(None));
 
     // A reserved path stages no op and refuses the whole batch with the
     // first one, through any verb; the refusal counts against `is_empty`.
     let mut batch: Batch = Batch::new();
-    batch.insert(ManifestPath::from("landed.html"), reference(1));
-    batch.remove(ManifestPath::from("/"));
+    batch.insert(p("landed.html"), reference(1));
+    batch.remove(p("/"));
     batch.insert(ManifestPath::default(), reference(2));
     assert!(!batch.is_empty());
-    let refusal = batch.into_checked().unwrap_err();
-    assert_eq!(refusal.path(), &ManifestPath::from("/"));
+    assert_eq!(batch.into_checked().unwrap_err().path(), &p("/"));
 
     let mut batch: Batch = Batch::new();
     batch.extend([ManifestOp::Remove {
@@ -873,11 +394,8 @@ fn a_batch_stages_ops_and_documents_and_records_the_first_refusal() {
 }
 
 /// Content keys that start with the separator list as the directory they are
-/// under, identically on both formats.
-///
-/// `"/"` is reserved as a key, not as a prefix: `"/a.txt"` is ordinary content
-/// one level down, listed under the directory `"/"`.
-/// [`a_planted_separator_key_is_not_listed`] pins the other side.
+/// under, identically on both formats: `"/"` is reserved as a key, not as a
+/// prefix. [`a_planted_separator_key_is_not_listed`] pins the other side.
 #[test]
 fn separator_prefixed_content_lists_alike_on_both_formats() {
     run(async {
@@ -889,25 +407,17 @@ fn separator_prefixed_content_lists_alike_on_both_formats() {
             (&["//a"], &["/"]),
         ];
         for (keys, want) in cases {
-            let (from_trie, from_kv) = both_top_levels(keys).await;
-            assert_eq!(from_trie, want, "the trie listed {keys:?} wrong");
-            assert_eq!(from_kv, want, "the database listed {keys:?} wrong");
+            let (raw, store) = common::stores();
+            let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
+            let trie_root = write_keys(&trie, &trie_empty, keys).await;
+            let kv_root = write_keys(&kv, &kv_empty, keys).await;
+            let top = ManifestPath::default();
+            let from_trie = listing(&trie.at(trie_root), &top).await;
+            assert_eq!(from_trie, want, "trie {keys:?}");
+            let from_kv = listing(&kv.at(&kv_root), &top).await;
+            assert_eq!(from_kv, want, "database {keys:?}");
         }
     });
-}
-
-/// One key set through both formats' `dir("")`, written through the seam.
-async fn both_top_levels(keys: &[&str]) -> (Vec<String>, Vec<String>) {
-    let (raw, store) = common::stores();
-    let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
-    let trie_root = write_keys(&trie, &trie_empty, keys).await;
-    let kv_root = write_keys(&kv, &kv_empty, keys).await;
-
-    let top = ManifestPath::default();
-    (
-        listing(&trie.at(trie_root), &top).await,
-        listing(&kv.at(&kv_root), &top).await,
-    )
 }
 
 /// An insert replaces the whole binding: a bare re-insert takes a new reference
@@ -917,43 +427,28 @@ where
     M: Manifest<ChunkRef>,
     M::Metadata: Clone + PartialEq + std::fmt::Debug,
 {
-    let page = ManifestPath::from("page.html");
+    let page = p("page.html");
     let meta =
         M::Metadata::from_source(&MetadataView::new().with(WellKnownKey::ContentType, "text/html"));
-    assert_ne!(
-        meta,
-        M::Metadata::default(),
-        "the format carries a content type"
-    );
+    assert_ne!(meta, M::Metadata::default(), "a content type is carried");
 
-    let carried = {
-        let mut batch = Batch::new();
+    let carried = applied(manifest, base, |batch| {
         batch.insert_with(page.clone(), reference(1), meta.clone());
-        manifest.apply(*base, batch).await.unwrap()
-    };
+    })
+    .await;
     assert_eq!(manifest.at(carried).metadata(&page).await.unwrap(), meta);
 
-    let bare = {
-        let mut batch = Batch::new();
+    let bare = applied(manifest, &carried, |batch| {
         batch.insert(page.clone(), reference(2));
-        manifest.apply(carried, batch).await.unwrap()
-    };
+    })
+    .await;
     let view = manifest.at(bare);
-    assert_eq!(
-        view.get(&page).await.unwrap(),
-        Some(MapEntry::Reference(reference(2))),
-        "the reference is replaced"
-    );
-    assert_eq!(
-        view.metadata(&page).await.unwrap(),
-        M::Metadata::default(),
-        "a bare insert clears the metadata the path carried"
-    );
+    let entry = view.get(&page).await.unwrap();
+    assert_eq!(entry, Some(MapEntry::Reference(reference(2))), "replaced");
+    let meta_after = view.metadata(&page).await.unwrap();
+    assert_eq!(meta_after, M::Metadata::default(), "metadata cleared");
 
-    let one_shot = manifest
-        .insert(carried, page.clone(), reference(2))
-        .await
-        .unwrap();
+    let one_shot = manifest.insert(carried, page, reference(2)).await.unwrap();
     assert_eq!(one_shot, bare, "the one-shot is a one-op batch");
 }
 
@@ -975,10 +470,8 @@ async fn assert_empty_bootstrap<M: Manifest<ChunkRef>>(manifest: &M, native: Chu
     let view = manifest.at(empty);
     let first = view.iter().await.unwrap().next().await.unwrap();
     assert!(first.is_none(), "{f}: the empty manifest holds no path");
-    let missing = view
-        .load(&ManifestPath::from("missing.html"), &mut MemSink::new())
-        .await
-        .err();
+    let mut sink = MemSink::new();
+    let missing = view.load(&p("missing.html"), &mut sink).await.err();
     assert!(missing.is_some_and(|e| e.is_not_found()), "{f}: NotFound");
 }
 
@@ -1004,14 +497,11 @@ fn the_seam_bootstrap_matches_each_format() {
 /// Insert `file`, load it through a refusing sink, and check the seam
 /// classified the refusal as `Sink` with the refusal kept as the source.
 async fn assert_sink_refusal<M: Manifest<ChunkRef>>(manifest: &M, file: ChunkRef, f: &str) {
-    let path = ManifestPath::from(INDEX);
+    let path = p(INDEX);
     let empty = manifest.empty().await.unwrap();
     let root = manifest.insert(empty, path.clone(), file).await.unwrap();
-    let error = manifest
-        .at(root)
-        .load(&path, &mut RefusingSink)
-        .await
-        .unwrap_err();
+    let view = manifest.at(root);
+    let error = view.load(&path, &mut RefusingSink).await.unwrap_err();
     let sink = matches!(error, ManifestError::Sink(_));
     assert!(sink, "{f}: wrong variant: {error:?}");
     let source = std::error::Error::source(&error);
@@ -1025,8 +515,7 @@ fn a_refused_sink_write_is_sink_on_both_formats() {
     run(async {
         let (raw, store) = common::stores();
         let data = vec![7u8; 20_000];
-        let saver = File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT);
-        let file = ChunkRef::new(saver.save(&data[..]).await.unwrap());
+        let file = common::save_file(&raw, &data).await;
 
         let ((trie, _), (kv, _)) = both_formats(&raw, &store).await;
         assert_sink_refusal(&trie, file, "trie").await;
@@ -1034,146 +523,88 @@ fn a_refused_sink_write_is_sink_on_both_formats() {
     });
 }
 
-/// A sink that refuses every write.
-#[derive(Debug)]
-struct RefusingSink;
-
-/// The refusal [`RefusingSink`] reports; the seam has to keep it reachable.
-#[derive(Debug, thiserror::Error)]
-#[error("the sink refused the write")]
-struct Refused;
-
-impl DataSink for RefusingSink {
-    type Error = Refused;
-
-    fn write_at(&mut self, _offset: u64, _data: &[u8]) -> Result<(), Self::Error> {
-        Err(Refused)
+/// Raw entries planted below the seam, which knows no reserved key.
+async fn plant(kv: &common::Kv, empty: &ChunkRef, keys: &[(&[u8], u8)]) -> ChunkRef {
+    let mut editor = kv.edit(empty);
+    for (key, byte) in keys {
+        editor.insert(Key::from(*key), Entry::from(reference(*byte)));
     }
+    editor.commit().await.unwrap()
 }
 
 /// A reserved key planted past the seam is not listed, whatever kind the
-/// listing calls it.
-///
-/// The seam refuses a write at `"/"`, so only a database written through the
-/// raw layer holds one. The folder view collapses it into a subdirectory entry,
-/// and a subdirectory with nothing under it is that key alone. A subdirectory
-/// with content under it is not, which
-/// [`separator_prefixed_content_lists_alike_on_both_formats`] pins.
+/// listing calls it: only a database written through the raw layer holds one,
+/// the folder view collapses it into a subdirectory entry, and a subdirectory
+/// with nothing under it is that key alone.
+/// [`separator_prefixed_content_lists_alike_on_both_formats`] pins the other
+/// side.
 #[test]
 fn a_planted_separator_key_is_not_listed() {
     run(async {
         let (raw, store) = common::stores();
-        let separator = ManifestPath::from("/");
-        let content = ManifestPath::from("a.txt");
-
-        // The raw layer knows no reserved key, so it plants what the seam
-        // refuses.
-        let builder: Builder<V1> = Builder::new();
-        let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
-        let db: Database<_> = Database::plain(&store);
-        let planted = {
-            let mut editor = db.edit(&empty);
-            editor.insert(Key::from(&b"/"[..]), Entry::from(reference(1)));
-            editor.insert(Key::from(&b"a.txt"[..]), Entry::from(reference(2)));
-            editor.commit().await.unwrap()
-        };
-        assert!(
-            db.at(&planted)
-                .get(&Key::from(&b"/"[..]))
-                .await
-                .unwrap()
-                .is_some(),
-            "the raw layer holds the planted key"
-        );
-
+        let separator = p("/");
         let kv = Database::<_>::plain(store.clone());
-        let view = kv.at(&planted);
-        assert_eq!(
-            listing(&view, &ManifestPath::default()).await,
-            ["a.txt"],
-            "the top level lists content alone, and never the planted key"
-        );
-        assert_eq!(
-            ManifestView::get(&view, &separator).await.unwrap(),
-            None,
-            "and no read reaches it either"
-        );
+        let empty: ChunkRef = kv.empty().await.unwrap();
+
+        let planted = plant(&kv, &empty, &[(b"/", 1), (b"a.txt", 2)]).await;
+        let raw_read = kv.at(&planted).get(&Key::from(&b"/"[..])).await.unwrap();
+        assert!(raw_read.is_some(), "the raw layer holds the planted key");
+
+        let view = Manifest::<ChunkRef>::at(&kv, planted);
+        let top = listing(&view, &ManifestPath::default()).await;
+        assert_eq!(top, ["a.txt"], "content alone, never the planted key");
+        let read = ManifestView::get(&view, &separator).await.unwrap();
+        assert_eq!(read, None, "and no read reaches it either");
 
         // The trie holds the same content and lists the same level.
         let nodes = NodeLoadSaver::new(Arc::clone(&raw));
         let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
         let (trie_empty, _) = editor.commit().await.unwrap();
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
-        let root = {
-            let mut batch = Batch::new();
-            batch.insert(content.clone(), reference(2));
-            trie.apply(ChunkRef::new(trie_empty), batch).await.unwrap()
-        };
-        assert_eq!(
-            listing(&trie.at(root), &ManifestPath::default()).await,
-            listing(&view, &ManifestPath::default()).await,
-            "both formats list the same top level"
-        );
+        let root = applied(&trie, &ChunkRef::new(trie_empty), |batch| {
+            batch.insert(p("a.txt"), reference(2));
+        })
+        .await;
+        let from_trie = listing(&trie.at(root), &ManifestPath::default()).await;
+        assert_eq!(from_trie, top, "both formats list the same top level");
 
         // Next to content one level under it, the listed entry is the
         // directory of that content, and the planted key still no key.
-        let with_content = {
-            let mut editor = db.edit(&empty);
-            editor.insert(Key::from(&b"/"[..]), Entry::from(reference(1)));
-            editor.insert(Key::from(&b"/a.txt"[..]), Entry::from(reference(2)));
-            editor.commit().await.unwrap()
-        };
-        let view = kv.at(&with_content);
-        assert_eq!(
-            listing(&view, &ManifestPath::default()).await,
-            ["/"],
-            "the directory of the content below the separator is listed"
-        );
-        assert_eq!(
-            ManifestView::get(&view, &separator).await.unwrap(),
-            None,
-            "and the planted key itself still reads absent"
-        );
+        let with_content = plant(&kv, &empty, &[(b"/", 1), (b"/a.txt", 2)]).await;
+        let view = Manifest::<ChunkRef>::at(&kv, with_content);
+        let top = listing(&view, &ManifestPath::default()).await;
+        assert_eq!(top, ["/"], "the content's directory is listed");
+        let read = ManifestView::get(&view, &separator).await.unwrap();
+        assert_eq!(read, None, "the planted key itself still reads absent");
     });
 }
 
 /// The site documents resolve over bare keys: the index document is a filename
 /// joined below each directory, and the error document is one whole key.
-///
 /// Written through the seam's setters, read through the database's own website
 /// reader.
 #[test]
 fn website_documents_resolve_over_bare_keys() {
     run(async {
         let (_raw, store) = common::stores();
-        let builder: Builder<V1> = Builder::new();
-        let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
         let kv = Database::<_>::plain(store.clone());
+        let empty: ChunkRef = kv.empty().await.unwrap();
 
-        let root = {
-            let mut batch = Batch::new();
-            batch.insert(ManifestPath::from("index.html"), reference(1));
-            batch.insert(ManifestPath::from("docs/index.html"), reference(2));
-            batch.insert(ManifestPath::from("docs/guide.html"), reference(3));
-            batch.insert(ManifestPath::from("404.html"), reference(4));
+        let root = applied(&kv, &empty, |batch| {
             batch
-                .set_index_document(ManifestPath::from(INDEX))
-                .set_error_document(ManifestPath::from(ERROR));
-            kv.apply(empty, batch).await.unwrap()
-        };
+                .insert(p("index.html"), reference(1))
+                .insert(p("docs/index.html"), reference(2))
+                .insert(p("docs/guide.html"), reference(3))
+                .insert(p("404.html"), reference(4))
+                .set_index_document(p(INDEX))
+                .set_error_document(p(ERROR));
+        })
+        .await;
 
         let reader: LdbReader<_> = LdbReader::new(&store);
         let site = reader.website(&root).await.unwrap();
-        assert_eq!(
-            site.index(),
-            Some(INDEX.as_bytes()),
-            "the index document is the relative filename it was set to"
-        );
-        assert_eq!(
-            site.error(),
-            Some(ERROR.as_bytes()),
-            "the error document is the bare key it was set to"
-        );
+        assert_eq!(site.index(), Some(INDEX.as_bytes()), "index reads back");
+        assert_eq!(site.error(), Some(ERROR.as_bytes()), "error reads back");
 
         /// The key a request path resolved to, and how.
         fn resolved(served: &Served<V1>) -> (&'static str, String) {
@@ -1202,37 +633,19 @@ fn website_documents_resolve_over_bare_keys() {
             ("missing.html", ("error", "404.html")),
             ("docs/missing.html", ("error", "404.html")),
         ] {
-            let served = reader
-                .serve(&root, &Key::from(request.as_bytes()))
-                .await
-                .unwrap();
+            let key = Key::from(request.as_bytes());
+            let served = reader.serve(&root, &key).await.unwrap();
             let (how, key) = resolved(&served);
-            assert_eq!(
-                (how, key.as_str()),
-                want,
-                "serving {request:?} resolved the wrong way"
-            );
+            assert_eq!((how, key.as_str()), want, "serving {request:?}");
         }
 
         // With the documents cleared, nothing falls back at all.
-        let cleared = {
-            let mut batch = Batch::new();
-            batch.set_index_document(None).set_error_document(None);
-            kv.apply(root, batch).await.unwrap()
-        };
-        assert!(
-            reader.website(&cleared).await.unwrap() == Default::default(),
-            "clearing the documents leaves no site conventions"
-        );
-        let served = reader
-            .serve(&cleared, &Key::from(&b"missing.html"[..]))
-            .await
-            .unwrap();
-        assert_eq!(
-            resolved(&served),
-            ("missing", String::new()),
-            "no documents are declared, so nothing resolves"
-        );
+        let cleared = doc_delta(&kv, &root, Some(None), Some(None)).await;
+        let site = reader.website(&cleared).await.unwrap();
+        assert!(site == Default::default(), "no conventions survive");
+        let key = Key::from(&b"missing.html"[..]);
+        let served = reader.serve(&cleared, &key).await.unwrap();
+        assert_eq!(resolved(&served), ("missing", String::new()));
     });
 }
 
@@ -1240,21 +653,8 @@ fn website_documents_resolve_over_bare_keys() {
 const INLINE: &[u8] = b"carried by the manifest itself";
 /// The bytes a plain reference stores behind the manifest.
 const FILE_DATA: &[u8] = b"stored behind a reference";
-
-/// `get` on one path, through the seam.
-async fn got<V: ManifestView<ChunkRef>>(view: &V, path: &str) -> MapEntry<ChunkRef> {
-    view.get(&ManifestPath::from(path)).await.unwrap().unwrap()
-}
-
-/// `load` on one path, through the seam: the outcome and what reached the sink.
-async fn loaded_bytes<V: ManifestView<ChunkRef>>(
-    view: &V,
-    path: &str,
-) -> (Result<(), V::Error>, Vec<u8>) {
-    let mut sink = MemSink::new();
-    let result = view.load(&ManifestPath::from(path), &mut sink).await;
-    (result, sink.as_ref().to_vec())
-}
+/// The three probed keys, in path order.
+const KINDS: [&str; 3] = ["docs/inline.txt", "docs/plain.bin", "docs/wide.bin"];
 
 /// `MapEntry::Value` conformance on the key-value format: `get` answers
 /// `Reference`, `Value` or `Opaque`, `load` serves exactly the loadable two,
@@ -1269,95 +669,73 @@ fn an_inline_entry_is_a_loadable_value_and_opaque_is_not() {
         let wide = EncryptedChunkRef::new(*file.address(), EncryptionKey::from([0x5a; 32]));
         let db = Database::plain(store.clone());
         let empty: ChunkRef = db.empty().await.unwrap();
+        let inline = Entry::inline(Bytes::from_static(INLINE)).unwrap();
         let mut editor = db.edit(&empty);
-        editor
-            .insert(
-                Key::from(&b"docs/inline.txt"[..]),
-                Entry::inline(Bytes::from_static(INLINE)).unwrap(),
-            )
-            .insert(Key::from(&b"docs/plain.bin"[..]), Entry::from(file))
-            .insert(Key::from(&b"docs/wide.bin"[..]), Entry::from(wide));
+        editor.insert(Key::from(KINDS[0].as_bytes()), inline);
+        editor.insert(Key::from(KINDS[1].as_bytes()), Entry::from(file));
+        editor.insert(Key::from(KINDS[2].as_bytes()), Entry::from(wide));
         let root = editor.commit().await.unwrap();
         let view = Manifest::<ChunkRef>::at(&db, root);
 
-        // `get` discriminates the three entry kinds.
-        let inline = got(&view, "docs/inline.txt").await;
-        assert_eq!(inline, MapEntry::Value);
-        assert!(inline.is_loadable());
-        let opaque = got(&view, "docs/wide.bin").await;
-        assert_eq!(opaque, MapEntry::Opaque);
-        assert!(!opaque.is_loadable());
-        assert!(matches!(
-            got(&view, "docs/plain.bin").await,
-            MapEntry::Reference(_)
-        ));
+        // `get` discriminates the three entry kinds, `is_loadable` follows the
+        // kind, and `load` serves exactly the loadable two: the opaque one
+        // fails as `NoData`, before any store fetch, with nothing sunk.
+        for (path, want, loads) in [
+            (KINDS[0], MapEntry::Value, Some(INLINE)),
+            (KINDS[1], MapEntry::Reference(file), Some(FILE_DATA)),
+            (KINDS[2], MapEntry::Opaque, None),
+        ] {
+            let probe = p(path);
+            let entry = ManifestView::get(&view, &probe).await.unwrap().unwrap();
+            assert_eq!(entry, want, "{path}");
+            assert_eq!(entry.is_loadable(), loads.is_some(), "{path}: is_loadable");
+            let mut sink = MemSink::new();
+            let outcome = ManifestView::load(&view, &probe, &mut sink).await;
+            if let Some(bytes) = loads {
+                outcome.unwrap();
+                assert_eq!(sink.as_ref(), bytes, "{path}: the wrong bytes loaded");
+            } else {
+                let error = outcome.unwrap_err();
+                let no_data =
+                    matches!(&error, ManifestError::NoData(p) if p.as_bytes() == path.as_bytes());
+                assert!(no_data, "{path}: wrong error: {error:?}");
+                assert!(sink.as_ref().is_empty(), "{path}: bytes reached the sink");
+            }
+        }
 
-        // `load` serves exactly the loadable entries.
-        let (result, bytes) = loaded_bytes(&view, "docs/inline.txt").await;
-        result.unwrap();
-        assert_eq!(bytes, INLINE);
-        let (result, bytes) = loaded_bytes(&view, "docs/plain.bin").await;
-        result.unwrap();
-        assert_eq!(bytes, FILE_DATA);
-        let (result, bytes) = loaded_bytes(&view, "docs/wide.bin").await;
-        let err = result.unwrap_err();
-        assert!(matches!(err, ManifestError::NoData(path) if path.as_bytes() == b"docs/wide.bin"));
-        assert!(bytes.is_empty());
-
-        // The full walk yields the three kinds in path order.
-        let expect = |pairs: &[(&str, bool)]| -> Vec<(String, bool)> {
-            pairs.iter().map(|(p, k)| ((*p).to_owned(), *k)).collect()
+        // The full walk yields the three kinds in path order, and a bounded
+        // walk keeps the discrimination.
+        let expect = |loadable: [bool; 3]| -> Vec<(String, bool)> {
+            KINDS
+                .iter()
+                .zip(loadable)
+                .map(|(k, l)| ((*k).to_owned(), l))
+                .collect()
         };
         let mut kinds = Vec::new();
         let mut cursor = ManifestView::<ChunkRef>::iter(&view).await.unwrap();
         while let Some((path, entry)) = cursor.next().await.unwrap() {
             kinds.push((text(&path), entry.is_loadable()));
         }
-        assert_eq!(
-            kinds,
-            expect(&[
-                ("docs/inline.txt", true),
-                ("docs/plain.bin", true),
-                ("docs/wide.bin", false),
-            ])
-        );
-
-        // A bounded walk keeps the kind discrimination.
-        let bounds = (
-            Bound::Included(ManifestPath::from("docs/inline.txt")),
-            Bound::Excluded(ManifestPath::from("docs/wide.bin")),
-        );
-        assert_eq!(
-            drain(&view, bounds).await,
-            ["docs/inline.txt", "docs/plain.bin"]
-        );
+        assert_eq!(kinds, expect([true, true, false]));
+        let bounds = (Bound::Included(p(KINDS[0])), Bound::Excluded(p(KINDS[2])));
+        assert_eq!(drain(&view, bounds).await, [KINDS[0], KINDS[1]]);
 
         // The folder view lists an inline value and an opaque reference both
         // as values, never fetching either.
-        let listing = ManifestView::<ChunkRef>::dir(&view, &ManifestPath::from("docs/"))
-            .await
-            .unwrap();
-        let listed: Vec<(String, bool)> = listing
+        let dir = ManifestView::<ChunkRef>::dir(&view, &p("docs/")).await;
+        let listed: Vec<(String, bool)> = dir
+            .unwrap()
             .entries()
             .iter()
             .map(|entry| (text(entry.path()), matches!(entry, ListEntry::Value { .. })))
             .collect();
-        assert_eq!(
-            listed,
-            expect(&[
-                ("docs/inline.txt", true),
-                ("docs/plain.bin", false),
-                ("docs/wide.bin", true),
-            ])
-        );
+        assert_eq!(listed, expect([true, false, true]));
 
         // The ordered seek answers with the entry kind too.
-        let floored =
-            ManifestView::<ChunkRef>::floor(&view, &ManifestPath::from("docs/inline.zzz"))
-                .await
-                .unwrap()
-                .unwrap();
-        assert_eq!(floored.0.as_bytes(), b"docs/inline.txt");
+        let probe = p("docs/inline.zzz");
+        let floored = ManifestView::floor(&view, &probe).await.unwrap().unwrap();
+        assert_eq!(floored.0.as_bytes(), KINDS[0].as_bytes());
         assert_eq!(floored.1, MapEntry::Value);
     });
 }

@@ -51,11 +51,11 @@ const DIRS: &[&str] = &[
 
 /// The immediate children of `dir` over the key set, `dir` taken as a byte
 /// prefix and deeper keys collapsed at the next separator.
-fn model(keys: &[&str], dir: &str) -> Vec<Vec<u8>> {
+fn model(keys: &[&str], dir: &str) -> Vec<String> {
     let mut sorted: Vec<&&str> = keys.iter().collect();
     sorted.sort_unstable();
     let mut seen: BTreeSet<Vec<u8>> = BTreeSet::new();
-    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     for key in sorted {
         let bytes = key.as_bytes();
         let Some(suffix) = bytes.strip_prefix(dir.as_bytes()) else {
@@ -70,7 +70,7 @@ fn model(keys: &[&str], dir: &str) -> Vec<Vec<u8>> {
             None => bytes.to_vec(),
         };
         if seen.insert(entry.clone()) {
-            out.push(entry);
+            out.push(String::from_utf8_lossy(&entry).into_owned());
         }
     }
     out
@@ -89,20 +89,12 @@ fn inserts(keys: &[&str], file: &ChunkRef) -> Vec<ManifestOp<ChunkRef, Box<dyn M
 
 /// The listed paths, as text for a readable failure.
 async fn listed(manifest: &dyn ErasedManifest, root: &ChunkRef, dir: &str) -> Vec<String> {
-    manifest
-        .dyn_dir(root, &ManifestPath::from(dir))
-        .await
-        .unwrap()
+    let dir = ManifestPath::from(dir);
+    let listing = manifest.dyn_dir(root, &dir).await.unwrap();
+    listing
         .entries()
         .iter()
         .map(|entry| String::from_utf8_lossy(entry.path().as_bytes()).into_owned())
-        .collect()
-}
-
-fn expected(keys: &[&str], dir: &str) -> Vec<String> {
-    model(keys, dir)
-        .iter()
-        .map(|path| String::from_utf8_lossy(path).into_owned())
         .collect()
 }
 
@@ -113,14 +105,13 @@ fn both_formats_list_a_level_the_way_the_model_does() {
             let (raw, store) = stores();
             let file = save_file(&raw, b"payload").await;
             let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
-            let trie_root = trie
-                .dyn_apply(&trie_empty, inserts(keys, &file))
-                .await
-                .unwrap();
-            let kv_root = kv.dyn_apply(&kv_empty, inserts(keys, &file)).await.unwrap();
+            let ops = inserts(keys, &file);
+            let trie_root = trie.dyn_apply(&trie_empty, ops).await.unwrap();
+            let ops = inserts(keys, &file);
+            let kv_root = kv.dyn_apply(&kv_empty, ops).await.unwrap();
 
             for dir in DIRS {
-                let want = expected(keys, dir);
+                let want = model(keys, dir);
                 assert_eq!(listed(&trie, &trie_root, dir).await, want, "trie {dir:?}");
                 assert_eq!(listed(&kv, &kv_root, dir).await, want, "kv {dir:?}");
             }
