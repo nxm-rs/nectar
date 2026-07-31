@@ -21,9 +21,7 @@ pub enum WellKnownKey<'a> {
     /// MIME type of the entry's content.
     ContentType,
     /// Site index document, root scope. Not an entry's metadata: set it
-    /// through [`MapWriter::with_index_document`].
-    ///
-    /// [`MapWriter::with_index_document`]: crate::MapWriter::with_index_document
+    /// through [`Batch::set_index_document`](crate::Batch::set_index_document).
     IndexDocument,
     /// Site error document, root scope.
     ErrorDocument,

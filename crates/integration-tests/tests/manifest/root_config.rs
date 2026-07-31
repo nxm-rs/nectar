@@ -12,10 +12,11 @@
 //! A content key is the path bytes verbatim, with nothing prepended.
 //!
 //! The site index and error documents are read as `Option<ManifestPath>` and
-//! written through `with_index_document` and `with_error_document`. Each lands
-//! in the format's own root slot, which is never a key. The two reserved paths
-//! are the empty one and `"/"`: a read at either is absent and a write at
-//! either is refused as `ReservedKey`.
+//! written through `Batch::set_index_document` and `Batch::set_error_document`.
+//! Each lands in the format's own root slot, which is never a key. The two
+//! reserved paths are the empty one and `"/"`: a read at either is absent and
+//! a write at either refuses the whole batch as `ReservedKey`, in the seam,
+//! before the format runs.
 //!
 //! `remove` is exact-key on both formats: the path's own value and metadata go,
 //! and no other path does. A path with children keeps every one of them, a
@@ -39,8 +40,8 @@ use nectar_ldb::{
 };
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    Manifest, ManifestError, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, MetadataView,
-    WellKnownKey,
+    Batch, Manifest, ManifestError, ManifestOp, ManifestPath, MapCursor, MapEntry, MapView,
+    MetadataView, WellKnownKey,
 };
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -70,12 +71,12 @@ async fn write_keys<M: Manifest<ChunkRef>>(
     empty: &ChunkRef,
     keys: &[&str],
 ) -> ChunkRef {
-    let mut writer = manifest.edit(empty);
+    let mut batch = Batch::new();
     for (index, key) in keys.iter().enumerate() {
         let bound = reference(u8::try_from(index).unwrap().saturating_add(1));
-        writer.insert(ManifestPath::from(*key), bound);
+        batch.insert(ManifestPath::from(*key), bound);
     }
-    writer.commit().await.unwrap()
+    manifest.apply(*empty, batch).await.unwrap()
 }
 
 /// A filename joined below each directory, so relative on purpose.
@@ -235,12 +236,10 @@ where
     let separator = ManifestPath::from("/");
 
     // Content only: nothing declares a document yet.
-    let content = {
-        let mut writer = manifest.edit(empty);
-        writer.insert(index.clone(), reference(1));
-        writer.insert(logo.clone(), reference(2));
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    batch.insert(index.clone(), reference(1));
+    batch.insert(logo.clone(), reference(2));
+    let content = manifest.apply(*empty, batch).await.unwrap();
     let view = manifest.at(&content);
     assert_eq!(
         view.index_document().await.unwrap(),
@@ -254,13 +253,10 @@ where
     );
 
     // Both documents.
-    let configured = {
-        let mut writer = manifest.edit(&content);
-        writer
-            .with_index_document(ManifestPath::from(INDEX))
-            .with_error_document(ManifestPath::from(ERROR));
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    batch.set_index_document(ManifestPath::from(INDEX));
+    batch.set_error_document(ManifestPath::from(ERROR));
+    let configured = manifest.apply(content, batch).await.unwrap();
     let view = manifest.at(&configured);
     assert_eq!(
         view.index_document().await.unwrap().map(|p| text(&p)),
@@ -336,12 +332,10 @@ where
     }
 
     // The refusal takes the whole batch with it.
-    let mixed = {
-        let mut writer = manifest.edit(&configured);
-        writer.insert(ManifestPath::from("landed.html"), reference(9));
-        writer.insert(separator.clone(), reference(9));
-        writer.commit().await
-    };
+    let mut batch = Batch::new();
+    batch.insert(ManifestPath::from("landed.html"), reference(9));
+    batch.insert(separator.clone(), reference(9));
+    let mixed = manifest.apply(configured, batch).await;
     assert_eq!(
         refused(&mixed),
         Some(separator.clone()),
@@ -357,11 +351,9 @@ where
     );
 
     // The two documents are independent.
-    let index_only = {
-        let mut writer = manifest.edit(&content);
-        writer.with_index_document(ManifestPath::from(INDEX));
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    batch.set_index_document(ManifestPath::from(INDEX));
+    let index_only = manifest.apply(content, batch).await.unwrap();
     let view = manifest.at(&index_only);
     assert_eq!(
         view.index_document().await.unwrap().map(|p| text(&p)),
@@ -375,22 +367,18 @@ where
     );
 
     // Clearing is the same setter with `None`.
-    let error_cleared = {
-        let mut writer = manifest.edit(&configured);
-        writer.with_error_document(None);
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    batch.set_error_document(None);
+    let error_cleared = manifest.apply(configured, batch).await.unwrap();
     assert_eq!(
         error_cleared, index_only,
         "clearing the error document lands on the root that never declared one"
     );
 
     // Clearing the last document lands back on the content-only root.
-    let stripped = {
-        let mut writer = manifest.edit(&configured);
-        writer.with_index_document(None).with_error_document(None);
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    batch.set_index_document(None).set_error_document(None);
+    let stripped = manifest.apply(configured, batch).await.unwrap();
     assert_eq!(
         stripped, content,
         "clearing both documents restores the content-only root"
@@ -400,11 +388,9 @@ where
     assert_eq!(view.error_document().await.unwrap(), None, "error cleared");
 
     // Clearing what was never declared is a no-op.
-    let noop = {
-        let mut writer = manifest.edit(&content);
-        writer.with_index_document(None).with_error_document(None);
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    batch.set_index_document(None).set_error_document(None);
+    let noop = manifest.apply(content, batch).await.unwrap();
     assert_eq!(
         noop, content,
         "clearing an undeclared document changes nothing"
@@ -444,13 +430,11 @@ where
     let logo = ManifestPath::from("img/logo.png");
     let index = ManifestPath::from("index.html");
 
-    let base = {
-        let mut writer = manifest.edit(empty);
-        for (path, byte) in [(&a, 1u8), (&ab, 2), (&ac, 3), (&logo, 4), (&index, 5)] {
-            writer.insert(path.clone(), reference(byte));
-        }
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    for (path, byte) in [(&a, 1u8), (&ab, 2), (&ac, 3), (&logo, 4), (&index, 5)] {
+        batch.insert(path.clone(), reference(byte));
+    }
+    let base = manifest.apply(*empty, batch).await.unwrap();
 
     // An absent path: nothing to remove, so nothing changes.
     assert_eq!(
@@ -520,12 +504,10 @@ where
     );
 
     // A directory key that is bound keeps the paths below it.
-    let bound_dir = {
-        let mut writer = manifest.edit(&emptied);
-        writer.insert(ManifestPath::from("d/"), reference(6));
-        writer.insert(ManifestPath::from("d/x"), reference(7));
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    batch.insert(ManifestPath::from("d/"), reference(6));
+    batch.insert(ManifestPath::from("d/x"), reference(7));
+    let bound_dir = manifest.apply(emptied, batch).await.unwrap();
     let dir_cleared = manifest
         .remove(&bound_dir, ManifestPath::from("d/"))
         .await
@@ -543,13 +525,11 @@ where
     );
 
     // Removing the last path leaves an empty manifest that still reads.
-    let stripped = {
-        let mut writer = manifest.edit(&dir_cleared);
-        for path in [&ac, &index, &ManifestPath::from("d/x")] {
-            writer.remove(path.clone());
-        }
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    for path in [&ac, &index, &ManifestPath::from("d/x")] {
+        batch.remove(path.clone());
+    }
+    let stripped = manifest.apply(dir_cleared, batch).await.unwrap();
     let view = manifest.at(&stripped);
     assert!(
         view.iter().await.unwrap().next().await.unwrap().is_none(),
@@ -625,11 +605,11 @@ async fn build<M: Manifest<ChunkRef>>(
     empty: &ChunkRef,
     keys: &[(ManifestPath, u8)],
 ) -> ChunkRef {
-    let mut writer = manifest.edit(empty);
+    let mut batch = Batch::new();
     for (path, byte) in keys {
-        writer.insert(path.clone(), reference(*byte));
+        batch.insert(path.clone(), reference(*byte));
     }
-    writer.commit().await.unwrap()
+    manifest.apply(*empty, batch).await.unwrap()
 }
 
 /// Every path a manifest holds, in walk order.
@@ -691,13 +671,11 @@ where
 
     // An empty manifest has one shape on either format, so the root is the
     // assertion here.
-    let stripped = {
-        let mut writer = manifest.edit(&base);
-        for (path, _) in &keys {
-            writer.remove(path.clone());
-        }
-        writer.commit().await.unwrap()
-    };
+    let mut batch = Batch::new();
+    for (path, _) in &keys {
+        batch.remove(path.clone());
+    }
+    let stripped = manifest.apply(base, batch).await.unwrap();
     assert_eq!(
         &stripped, empty,
         "removing every key restores the empty manifest"
@@ -797,6 +775,129 @@ fn a_remove_is_history_independent_on_ldb() {
     });
 }
 
+/// One batch folds in submission order, and an empty batch is the identity:
+/// the last verb staged at one key is the one that lands.
+async fn a_batch_folds_in_submission_order<M>(manifest: &M, empty: &ChunkRef)
+where
+    M: Manifest<ChunkRef>,
+    M::Metadata: Clone + PartialEq + std::fmt::Debug,
+{
+    let page = ManifestPath::from("a.txt");
+    let one = manifest
+        .insert(empty, page.clone(), reference(1))
+        .await
+        .unwrap();
+    let ins = |byte: u8| ManifestOp::Insert {
+        path: page.clone(),
+        reference: reference(byte),
+        meta: M::Metadata::default(),
+    };
+    let rm = || ManifestOp::Remove { path: page.clone() };
+
+    for (ops, want, hint) in [
+        (vec![], empty, "the empty batch moved the root"),
+        (vec![ins(1), rm()], empty, "the staged remove lost"),
+        (vec![rm(), ins(1)], &one, "absent remove not a no-op"),
+        (vec![ins(2), ins(1)], &one, "the first insert won"),
+    ] {
+        let mut batch = Batch::new();
+        batch.extend(ops);
+        let got = manifest.apply(*empty, batch).await.unwrap();
+        assert_eq!(&got, want, "{hint}");
+    }
+}
+
+#[test]
+fn a_batch_folds_in_submission_order_on_both_formats() {
+    run(async {
+        let raw: Raw = Arc::new(MemoryStore::new());
+        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
+        a_batch_folds_in_submission_order(&trie, &trie_empty).await;
+        a_batch_folds_in_submission_order(&kv, &kv_empty).await;
+    });
+}
+
+/// The reserved refusal is settled in the seam, before the format runs: the
+/// base root here resolves to nothing in the store, so any format work would
+/// fail as `Format`, yet `apply` answers `Reserved` without reading it.
+#[test]
+fn the_reserved_refusal_precedes_the_format() {
+    run(async {
+        let raw: Raw = Arc::new(MemoryStore::new());
+        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let ((trie, _), (kv, _)) = both_formats(&raw, &store).await;
+        // No chunk lives behind this root.
+        let garbage = reference(0xEE);
+        let sep = ManifestPath::from("/");
+
+        let mut batch = Batch::new();
+        batch.insert(sep.clone(), reference(1));
+        let got = refused(&trie.apply(garbage, batch).await);
+        assert_eq!(got, Some(sep.clone()), "the trie ran before the refusal");
+
+        // The refusal names the first reserved path staged.
+        let mut batch = Batch::new();
+        batch.remove(ManifestPath::default()).remove(sep);
+        let got = refused(&kv.apply(garbage, batch).await);
+        assert_eq!(got, Some(ManifestPath::default()), "not the first staged");
+    });
+}
+
+/// The pure staging pins on `Batch`: submission order across every verb,
+/// untouched documents as `None`, the delta shapes, `is_empty` until staged
+/// into, and the reserved refusal naming the first reserved path staged.
+#[test]
+fn a_batch_stages_ops_and_documents_and_records_the_first_refusal() {
+    let mut batch: Batch = Batch::new();
+    assert!(batch.is_empty());
+    batch
+        .insert(ManifestPath::from("b"), reference(1))
+        .remove(ManifestPath::from("a"))
+        .extend([ManifestOp::Insert {
+            path: ManifestPath::from("c"),
+            reference: reference(2),
+            meta: (),
+        }])
+        .insert_with(ManifestPath::from("b"), reference(3), ());
+    assert!(!batch.is_empty());
+    let checked = batch.into_checked().unwrap();
+    let paths: Vec<&[u8]> = checked.ops.iter().map(|op| op.path().as_bytes()).collect();
+    assert_eq!(paths, [&b"b"[..], b"a", b"c", b"b"]);
+    assert!(checked.ops[1].is_remove());
+    assert_eq!(checked.index_document, None);
+    assert_eq!(checked.error_document, None);
+
+    // The site documents are a delta, not ops, and a doc-only batch stages
+    // no op: set is `Some(Some)`, clear is `Some(None)`.
+    let mut batch: Batch = Batch::new();
+    batch.set_index_document(ManifestPath::from("index.html"));
+    batch.set_error_document(None);
+    let checked = batch.into_checked().unwrap();
+    assert!(checked.ops.is_empty());
+    let set = Some(Some(ManifestPath::from("index.html")));
+    assert_eq!(checked.index_document, set);
+    assert_eq!(checked.error_document, Some(None));
+
+    // A reserved path stages no op and refuses the whole batch with the
+    // first one, through any verb; the refusal counts against `is_empty`.
+    let mut batch: Batch = Batch::new();
+    batch.insert(ManifestPath::from("landed.html"), reference(1));
+    batch.remove(ManifestPath::from("/"));
+    batch.insert(ManifestPath::default(), reference(2));
+    assert!(!batch.is_empty());
+    let refusal = batch.into_checked().unwrap_err();
+    assert_eq!(refusal.path(), &ManifestPath::from("/"));
+
+    let mut batch: Batch = Batch::new();
+    batch.extend([ManifestOp::Remove {
+        path: ManifestPath::default(),
+    }]);
+    assert!(!batch.is_empty());
+    let refusal = batch.into_checked().unwrap_err();
+    assert_eq!(refusal.path(), &ManifestPath::default());
+}
+
 /// Content keys that start with the separator list as the directory they are
 /// under, identically on both formats.
 ///
@@ -854,16 +955,16 @@ where
     );
 
     let carried = {
-        let mut writer = manifest.edit(base);
-        writer.insert(page.clone(), reference(1)).meta(meta.clone());
-        writer.commit().await.unwrap()
+        let mut batch = Batch::new();
+        batch.insert_with(page.clone(), reference(1), meta.clone());
+        manifest.apply(*base, batch).await.unwrap()
     };
     assert_eq!(manifest.at(&carried).metadata(&page).await.unwrap(), meta);
 
     let bare = {
-        let mut writer = manifest.edit(&carried);
-        writer.insert(page.clone(), reference(2));
-        writer.commit().await.unwrap()
+        let mut batch = Batch::new();
+        batch.insert(page.clone(), reference(2));
+        manifest.apply(carried, batch).await.unwrap()
     };
     let view = manifest.at(&bare);
     assert_eq!(
@@ -881,7 +982,7 @@ where
         .insert(&carried, page.clone(), reference(2))
         .await
         .unwrap();
-    assert_eq!(one_shot, bare, "the one-shot is an edit of one insert");
+    assert_eq!(one_shot, bare, "the one-shot is a one-op batch");
 }
 
 #[test]
@@ -1036,9 +1137,9 @@ fn a_planted_separator_key_is_not_listed() {
         let (trie_empty, _) = editor.commit().await.unwrap();
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
         let root = {
-            let mut writer = trie.edit(&ChunkRef::new(trie_empty));
-            writer.insert(content.clone(), reference(2));
-            writer.commit().await.unwrap()
+            let mut batch = Batch::new();
+            batch.insert(content.clone(), reference(2));
+            trie.apply(ChunkRef::new(trie_empty), batch).await.unwrap()
         };
         assert_eq!(
             listing(&trie.at(&root), &ManifestPath::default()).await,
@@ -1083,15 +1184,15 @@ fn website_documents_resolve_over_bare_keys() {
         let kv = LdbManifest::plain(store.clone());
 
         let root = {
-            let mut writer = kv.edit(&empty);
-            writer.insert(ManifestPath::from("index.html"), reference(1));
-            writer.insert(ManifestPath::from("docs/index.html"), reference(2));
-            writer.insert(ManifestPath::from("docs/guide.html"), reference(3));
-            writer.insert(ManifestPath::from("404.html"), reference(4));
-            writer
-                .with_index_document(ManifestPath::from(INDEX))
-                .with_error_document(ManifestPath::from(ERROR));
-            writer.commit().await.unwrap()
+            let mut batch = Batch::new();
+            batch.insert(ManifestPath::from("index.html"), reference(1));
+            batch.insert(ManifestPath::from("docs/index.html"), reference(2));
+            batch.insert(ManifestPath::from("docs/guide.html"), reference(3));
+            batch.insert(ManifestPath::from("404.html"), reference(4));
+            batch
+                .set_index_document(ManifestPath::from(INDEX))
+                .set_error_document(ManifestPath::from(ERROR));
+            kv.apply(empty, batch).await.unwrap()
         };
 
         let reader: LdbReader<_> = LdbReader::new(&store);
@@ -1148,9 +1249,9 @@ fn website_documents_resolve_over_bare_keys() {
 
         // With the documents cleared, nothing falls back at all.
         let cleared = {
-            let mut writer = kv.edit(&root);
-            writer.with_index_document(None).with_error_document(None);
-            writer.commit().await.unwrap()
+            let mut batch = Batch::new();
+            batch.set_index_document(None).set_error_document(None);
+            kv.apply(root, batch).await.unwrap()
         };
         assert!(
             reader.website(&cleared).await.unwrap() == Default::default(),

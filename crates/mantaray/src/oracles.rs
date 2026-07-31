@@ -309,9 +309,7 @@ fn record(ops: &[EditorOp]) -> ManifestEditor<OracleLoadSaver> {
                 key,
                 value,
             } => {
-                editor
-                    .insert(path(raw), address(*fill))
-                    .meta(metadata(*key, *value));
+                editor.insert_with(path(raw), address(*fill), metadata(*key, *value));
             }
             EditorOp::Remove { path: raw } => {
                 // The legacy boundary remove, which the committed corpus was

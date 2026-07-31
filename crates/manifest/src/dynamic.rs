@@ -16,6 +16,7 @@ use nectar_primitives::chunk::ChunkRef;
 use nectar_primitives::store::BoxedError;
 use nectar_tasks::BoxFuture;
 
+use crate::batch::Batch;
 use crate::error::{ErasedFormat, ErasedManifestError, ManifestError};
 use crate::listing::Listing;
 use crate::meta::ManifestMetadata;
@@ -23,7 +24,6 @@ use crate::op::ManifestOp;
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
 use crate::view::{MapEntry, MapView};
-use crate::writer::MapWriter;
 use crate::{Manifest, SinkError};
 
 /// A sink write that failed behind the erased seam; the concrete error
@@ -216,10 +216,9 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move {
             let (index, error) = config.into_parts();
-            let mut writer = self.edit(root);
-            writer.with_index_document(index);
-            writer.with_error_document(error);
-            writer.commit().await.map_err(erase)
+            let mut batch = Batch::new();
+            batch.set_index_document(index).set_error_document(error);
+            self.apply(*root, batch).await.map_err(erase)
         })
     }
 
@@ -232,9 +231,9 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move {
             let meta = self.metadata_from_view(&*meta).map_err(erase)?;
-            let mut writer = self.edit(root);
-            writer.insert(path, reference).meta(meta);
-            writer.commit().await.map_err(erase)
+            let mut batch = Batch::new();
+            batch.insert_with(path, reference, meta);
+            self.apply(*root, batch).await.map_err(erase)
         })
     }
 
@@ -252,22 +251,21 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         ops: Vec<ManifestOp<ChunkRef, Box<dyn ManifestMetadata>>>,
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move {
-            let mut native = Vec::with_capacity(ops.len());
+            let mut batch = Batch::new();
             for op in ops {
-                native.push(match op {
+                match op {
                     ManifestOp::Insert {
                         path,
                         reference,
                         meta,
-                    } => ManifestOp::Insert {
-                        path,
-                        reference,
-                        meta: self.metadata_from_view(&*meta).map_err(erase)?,
-                    },
-                    ManifestOp::Remove { path } => ManifestOp::Remove { path },
-                });
+                    } => {
+                        let meta = self.metadata_from_view(&*meta).map_err(erase)?;
+                        batch.insert_with(path, reference, meta)
+                    }
+                    ManifestOp::Remove { path } => batch.remove(path),
+                };
             }
-            self.apply(base, native).await.map_err(erase)
+            self.apply(*base, batch).await.map_err(erase)
         })
     }
 }
