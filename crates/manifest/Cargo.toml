@@ -20,11 +20,9 @@ workspace = true
 [dependencies]
 auto_impl = { workspace = true }
 derive_more = { workspace = true }
-# The shared load lane and the positional sink it writes into: the alloc-only
-# engine core plus the sink module.
-nectar-file = { workspace = true, features = ["primitives"] }
 nectar-marker = { workspace = true }
-# Reference, ChunkRef and the boxed-error alias the erased seam reports through.
+# Reference, ChunkRef, the positional sink vocabulary and the boxed-error
+# alias the erased seam reports through.
 nectar-primitives = { workspace = true }
 nectar-tasks = { workspace = true }
 thiserror = { workspace = true }
@@ -34,11 +32,10 @@ nectar-testing.workspace = true
 
 [features]
 default = [ "std" ]
-std = [ "nectar-file/std", "nectar-primitives/std", "nectar-tasks/std", "thiserror/std" ]
+std = [ "nectar-primitives/std", "nectar-tasks/std", "thiserror/std" ]
 # Single-thread send escape: relaxes the boxed manifest futures off `Send` in
 # lockstep with the store traits.
 unsync = [
-	"nectar-file/unsync",
 	"nectar-marker/unsync",
 	"nectar-primitives/unsync",
 	"nectar-tasks/unsync",

@@ -62,6 +62,10 @@ use crate::value::{Entry, Key};
 pub struct Database<S, K = Plaintext, F: Format = V1> {
     store: S,
     seal: K,
+    /// The retrieval budgets the `Manifest` seam's entry-data loads run
+    /// under; the native reads never touch it.
+    #[cfg(feature = "manifest")]
+    policy: nectar_file::Policy,
     _format: PhantomData<F>,
 }
 
@@ -72,8 +76,28 @@ impl<S, K, F: Format> Database<S, K, F> {
         Self {
             store,
             seal,
+            #[cfg(feature = "manifest")]
+            policy: nectar_file::Policy::DEFAULT,
             _format: PhantomData,
         }
+    }
+
+    /// The same database with the seam's entry-data loads running under
+    /// `policy`.
+    #[cfg(feature = "manifest")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
+    #[must_use]
+    pub const fn with_policy(mut self, policy: nectar_file::Policy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// The retrieval budgets the seam's entry-data loads run under.
+    #[cfg(feature = "manifest")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
+    #[must_use]
+    pub const fn policy(&self) -> nectar_file::Policy {
+        self.policy
     }
 
     /// The backing store.
@@ -97,7 +121,13 @@ impl<S, K, F: Format> Database<S, K, F> {
     /// The read view of the database rooted at `root`.
     #[must_use]
     pub fn at<R: NodeRef>(&self, root: &R) -> View<'_, S, F, R> {
-        View::new(&self.store, root.clone())
+        View {
+            store: &self.store,
+            root: root.clone(),
+            #[cfg(feature = "manifest")]
+            policy: self.policy,
+            _format: PhantomData,
+        }
     }
 
     /// A writer staging a batch against the database rooted at `base`.
@@ -159,6 +189,10 @@ where
 pub struct View<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,
     root: R,
+    /// The seam's load policy, carried from the database; see
+    /// [`Database::with_policy`].
+    #[cfg(feature = "manifest")]
+    pub(crate) policy: nectar_file::Policy,
     _format: PhantomData<F>,
 }
 
@@ -167,20 +201,14 @@ impl<S, F: Format, R: NodeRef> Clone for View<'_, S, F, R> {
         Self {
             store: self.store,
             root: self.root.clone(),
+            #[cfg(feature = "manifest")]
+            policy: self.policy,
             _format: PhantomData,
         }
     }
 }
 
 impl<'a, S, F: Format, R: NodeRef> View<'a, S, F, R> {
-    const fn new(store: &'a S, root: R) -> Self {
-        Self {
-            store,
-            root,
-            _format: PhantomData,
-        }
-    }
-
     /// The root the view reads from.
     #[must_use]
     pub const fn root(&self) -> &R {

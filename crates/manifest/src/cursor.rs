@@ -10,7 +10,7 @@ use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::chunk::{ChunkRef, Reference};
 
 use crate::path::ManifestPath;
-use crate::view::{MapCursor, MapEntry};
+use crate::view::{ManifestCursor, MapEntry};
 
 #[cfg(test)]
 mod tests;
@@ -20,7 +20,7 @@ pub type RawItem<R> = (Vec<u8>, MapEntry<R>);
 
 /// A format's raw ordered walk: byte keys with their entries, reserved keys
 /// included; [`PathCursor`] applies the shared key law on top.
-pub trait RawCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
+pub trait RawCursor<R: Reference = ChunkRef>: MaybeSend {
     /// Error type a walk fails with.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
@@ -29,7 +29,7 @@ pub trait RawCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     -> impl Future<Output = Result<Option<RawItem<R>>, Self::Error>> + MaybeSend;
 }
 
-/// The seam's [`MapCursor`] over any [`RawCursor`]: skips reserved keys,
+/// The seam's [`ManifestCursor`] over any [`RawCursor`]: skips reserved keys,
 /// filters to bounds, and yields owned paths. A format with a native seek
 /// hands [`new`](Self::new) a pre-bounded raw walk; one without hands
 /// [`bounded`](Self::bounded) a full walk.
@@ -61,10 +61,10 @@ impl<C> PathCursor<C> {
     }
 }
 
-impl<C, R> MapCursor<R> for PathCursor<C>
+impl<C, R> ManifestCursor<R> for PathCursor<C>
 where
     C: RawCursor<R>,
-    R: Reference + MaybeSend,
+    R: Reference,
 {
     type Error = C::Error;
 

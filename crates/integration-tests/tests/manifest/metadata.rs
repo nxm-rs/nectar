@@ -10,7 +10,7 @@ use nectar_ldb::{CustomKey, Format, KeyId, Metadata, MetadataKey, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::WellKnownKey::{ContentType, Custom, ErrorDocument, Filename, IndexDocument};
 use nectar_manifest::{
-    DynManifest, ManifestMeta, ManifestPath, MetadataSource, MetadataView, WellKnownKey,
+    ErasedManifest, ManifestMeta, ManifestPath, MetadataSource, MetadataView, WellKnownKey,
 };
 use nectar_mantaray::{MantarayManifest, Reader as MantarayReader, metadata};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE};
@@ -117,10 +117,8 @@ fn a_string_map_is_a_source_and_rebuilds_canonically() {
         .with(ContentType, "text/html")
         .with(Custom("x-note"), "hi");
     let html = owned(&[("Content-Type", "text/html"), ("x-note", "hi")]);
-    assert_eq!(
-        map(&view),
-        html.clone().into_iter().collect::<BTreeMap<_, _>>()
-    );
+    let want: BTreeMap<_, _> = html.clone().into_iter().collect();
+    assert_eq!(map(&view), want);
 
     // Case folding collapses two spellings of one name: the copy keeps one
     // pair, and this pins which - the last enumerated spelling wins.
@@ -143,10 +141,8 @@ fn metadata_crosses_formats_without_naming_them() {
     // custom key, and the custom pair survives byte-for-byte.
     let kv_meta = kv(&trie_meta);
     let block = kv_meta.as_ref().expect("two pairs crossed");
-    assert_eq!(
-        stored(&kv_meta, KeyId::ContentType),
-        Some("text/html".as_bytes())
-    );
+    let got = stored(&kv_meta, KeyId::ContentType);
+    assert_eq!(got, Some("text/html".as_bytes()));
     let custom: MetadataKey<V1> = CustomKey::try_from(&b"x-note"[..]).unwrap().into();
     assert_eq!(block.get(&custom), Some(&Bytes::from_static(b"hi")));
     assert_eq!(block.pair_count(), 2);
@@ -229,21 +225,14 @@ fn an_erased_write_lands_the_reference_client_spelling_in_the_trie() {
         let path = ManifestPath::from("index.html");
         let meta = MetadataView::new().with(ContentType, "text/html");
         let file = ChunkRef::new(ChunkAddress::new([7; 32]));
-        let root = trie
-            .dyn_insert(&base, path.clone(), file, &meta)
-            .await
-            .unwrap();
+        let root = trie.dyn_insert(&base, path.clone(), file, &meta).await;
+        let root = root.unwrap();
 
-        let entry = MantarayReader::new(nodes)
-            .get(root, b"index.html")
-            .await
-            .unwrap()
-            .expect("the erased insert landed");
-        assert_eq!(
-            entry.metadata().get(metadata::CONTENT_TYPE),
-            Some(&"text/html".to_owned()),
-            "the native record carries the reference-client spelling"
-        );
+        let reader = MantarayReader::new(nodes);
+        let entry = reader.get(root, b"index.html").await.unwrap();
+        let entry = entry.expect("the erased insert landed");
+        let got = entry.metadata().get(metadata::CONTENT_TYPE);
+        assert_eq!(got, Some(&"text/html".to_owned()), "native spelling");
 
         let read = trie.dyn_metadata(&root, &path).await.unwrap();
         assert_eq!(text(&*read, &ContentType), Some("text/html"));
