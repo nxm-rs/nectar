@@ -65,6 +65,11 @@
 //! magic keys. A listing collapses deeper keys at the next separator and seeks
 //! past each named subtree, so it stays O(depth) and fetches no value chunk.
 //!
+//! The `manifest` feature puts the shared `Manifest` seam on [`Database`]
+//! itself, keyed by path over the same handle. The inherent methods win on a
+//! concrete database, so a seam call names the trait: `Manifest::at(&db,
+//! root)`, or a generic bound.
+//!
 //! PRIVACY: an encrypted reference IS a read capability for its whole
 //! subtree. Confidentiality rests solely on the outermost reference being
 //! distributed privately. See the `encryption` module.
@@ -151,7 +156,7 @@ pub use folder::{DirEntry, Listing, Served, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
 #[cfg(feature = "manifest")]
-pub use manifest::{LdbCursor, LdbFormatError, LdbManifest, LdbView};
+pub use manifest::LdbFormatError;
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, NodeRef, RootExtension};
 pub use packing::{Directory, SegmentKind, cut, embed, h64, segment, spill};

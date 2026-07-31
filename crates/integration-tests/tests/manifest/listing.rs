@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use nectar_file::{File, Policy};
-use nectar_ldb::{Builder, LdbManifest, Plaintext, V1};
+use nectar_ldb::{Builder, Database, Plaintext, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{DynManifest, ManifestOp, ManifestPath, MetadataSource};
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
@@ -131,7 +131,7 @@ fn both_formats_list_a_level_the_way_the_model_does() {
 
             let builder: Builder<V1> = Builder::new();
             let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
-            let kv = LdbManifest::plain(store.clone());
+            let kv = Database::<_>::plain(store.clone());
             let kv_root = kv.dyn_apply(&empty, inserts(keys, &file)).await.unwrap();
 
             for dir in DIRS {
