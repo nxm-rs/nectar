@@ -40,8 +40,8 @@ use nectar_ldb::{
 };
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    Batch, Manifest, ManifestError, ManifestOp, ManifestPath, MapCursor, MapEntry, MapView,
-    MetadataView, WellKnownKey,
+    Batch, Manifest, ManifestError, ManifestMeta, ManifestOp, ManifestPath, MapCursor, MapEntry,
+    MapView, MetadataView, WellKnownKey,
 };
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -945,9 +945,8 @@ where
     M::Metadata: Clone + PartialEq + std::fmt::Debug,
 {
     let page = ManifestPath::from("page.html");
-    let meta = manifest
-        .metadata_from_view(&MetadataView::new().with(WellKnownKey::ContentType, "text/html"))
-        .unwrap();
+    let meta =
+        M::Metadata::from_source(&MetadataView::new().with(WellKnownKey::ContentType, "text/html"));
     assert_ne!(
         meta,
         M::Metadata::default(),

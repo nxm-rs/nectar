@@ -18,6 +18,7 @@ categories = ["data-structures", "no-std", "asynchronous"]
 workspace = true
 
 [dependencies]
+auto_impl = { workspace = true }
 derive_more = { workspace = true }
 # The positional sink a load writes into; the bare dependency carries the
 # sink module alone, no engine and no primitives.
