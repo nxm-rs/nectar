@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use alloy_primitives::b256;
 use nectar_loadsave::NodeLoadSaver;
-use nectar_manifest::{Manifest, ManifestPath, MapWriter};
+use nectar_manifest::{Batch, Manifest, ManifestPath};
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
@@ -39,14 +39,14 @@ async fn root(entries: &[(ManifestPath, ChunkRef)], index_document: Option<&str>
     let (empty, _) = editor.commit().await.unwrap();
     let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, data);
 
-    let mut writer = trie.edit(&ChunkRef::new(empty));
+    let mut batch = Batch::new();
     for (path, reference) in entries {
-        writer.insert(path.clone(), *reference);
+        batch.insert(path.clone(), *reference);
     }
     if let Some(document) = index_document {
-        writer.with_index_document(ManifestPath::from(document));
+        batch.set_index_document(ManifestPath::from(document));
     }
-    writer.commit().await.unwrap()
+    trie.apply(ChunkRef::new(empty), batch).await.unwrap()
 }
 
 #[test]

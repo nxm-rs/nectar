@@ -5,8 +5,8 @@
 //! reference. A key bound to inline bytes carries its own data, so a load of
 //! it never reaches the file pipeline.
 //!
-//! [`LdbView`] wraps [`Database::at`] and [`LdbWriter`] wraps
-//! [`Database::edit`], with paths in place of keys.
+//! [`LdbView`] wraps [`Database::at`], and [`Manifest::apply`] folds the
+//! checked batch through [`Database::edit`], with paths in place of keys.
 
 use alloc::vec::Vec;
 use core::future::Future;
@@ -15,9 +15,8 @@ use core::ops::{Bound, RangeBounds};
 use bytes::Bytes;
 use nectar_file::{File, LoadError, Policy};
 use nectar_manifest::{
-    DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestMetadata, ManifestOp,
-    ManifestPath, MapCursor, MapEntry, MapView, MapWriter, ReservedKey, SinkError, SiteConfig,
-    WellKnownKey,
+    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestMetadata, ManifestOp,
+    ManifestPath, MapCursor, MapEntry, MapView, SinkError, SiteConfig, WellKnownKey,
 };
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
@@ -25,7 +24,7 @@ use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 
 use crate::apply::ApplyError;
 use crate::builder::Builder;
-use crate::db::{Database, Editor, View};
+use crate::db::{Database, View};
 use crate::error::MetadataTooLong;
 use crate::folder::DirEntry;
 use crate::format::{Format, V1};
@@ -110,11 +109,6 @@ where
     where
         Self: 'a;
 
-    type Writer<'a>
-        = LdbWriter<'a, S, K, R>
-    where
-        Self: 'a;
-
     /// The empty database persisted through the native builder.
     async fn empty(&self) -> Result<R, ManifestError<LdbFormatError>> {
         let built = Builder::<V1>::new()
@@ -130,11 +124,41 @@ where
         }
     }
 
-    fn edit(&self, base: &R) -> Self::Writer<'_> {
-        LdbWriter {
-            editor: self.db.edit(base),
-            reserved: None,
+    /// The checked batch folded through the database's own editor: order never
+    /// reaches the produced root, so the replay is one changeset.
+    async fn apply(
+        &self,
+        base: R,
+        batch: Batch<R, Self::Metadata>,
+    ) -> Result<R, ManifestError<LdbFormatError>> {
+        let checked = batch.into_checked().map_err(ManifestError::Reserved)?;
+        let mut editor = self.db.edit(&base);
+        for op in checked.ops {
+            match op {
+                ManifestOp::Insert {
+                    path,
+                    reference,
+                    meta,
+                } => editor.insert_with(
+                    Key::from(path.as_bytes()),
+                    Entry::from(reference.into_entry_ref()),
+                    meta,
+                ),
+                ManifestOp::Remove { path } => editor.remove(Key::from(path.as_bytes())),
+            };
         }
+        // The site documents are a merge into the root manifest metadata:
+        // untouched stages nothing, `Some(None)` clears the key.
+        for (id, delta) in [
+            (KeyId::WebsiteIndexDocument, checked.index_document),
+            (KeyId::WebsiteErrorDocument, checked.error_document),
+        ] {
+            if let Some(path) = delta {
+                let value = path.map(|path| Bytes::copy_from_slice(path.as_bytes()));
+                editor.set_root_metadata(id, value);
+            }
+        }
+        Ok(editor.commit().await?)
     }
 
     fn metadata_from_view(
@@ -366,82 +390,6 @@ where
                 )));
             }
             Ok(None)
-        }
-    }
-}
-
-/// The seam's write handle: the database's own editor, keyed by path.
-#[derive(Debug)]
-pub struct LdbWriter<'a, S, K, R: NodeRef> {
-    editor: Editor<'a, S, K, V1, R>,
-    /// The first reserved path the batch staged. Staging is infallible, so the
-    /// refusal is held until the commit.
-    reserved: Option<ReservedKey>,
-}
-
-impl<S, K, R: NodeRef> LdbWriter<'_, S, K, R> {
-    /// Stage one site document into the database's root manifest metadata, or
-    /// clear it. A merge, so the two documents are independent.
-    fn document(&mut self, id: KeyId, path: Option<ManifestPath>) -> &mut Self {
-        let value = path.map(|path| Bytes::copy_from_slice(path.as_bytes()));
-        self.editor.set_root_metadata(id, value);
-        self
-    }
-}
-
-impl<S, K, R> MapWriter<R> for LdbWriter<'_, S, K, R>
-where
-    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSend + MaybeSync,
-    K: Seal<R> + MaybeSend + MaybeSync,
-    R: NodeRef,
-{
-    type Metadata = Option<Metadata<V1>>;
-
-    type Error = ManifestError<LdbFormatError>;
-
-    /// An insert replaces the whole binding, clearing existing metadata unless
-    /// `meta` carries some. A reserved path stages no database op and refuses
-    /// the commit instead.
-    fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
-        let Some(key) = content_key(op.path()) else {
-            self.reserved
-                .get_or_insert_with(|| ReservedKey::new(op.path().clone()));
-            return;
-        };
-        match op {
-            ManifestOp::Insert {
-                path: _,
-                reference,
-                meta,
-            } => {
-                let mut staged = self
-                    .editor
-                    .insert(key, Entry::from(reference.into_entry_ref()));
-                if let Some(meta) = meta {
-                    staged.meta(meta);
-                }
-            }
-            ManifestOp::Remove { path: _ } => {
-                self.editor.remove(key);
-            }
-        }
-    }
-
-    fn with_index_document(&mut self, path: impl Into<Option<ManifestPath>>) -> &mut Self {
-        self.document(KeyId::WebsiteIndexDocument, path.into())
-    }
-
-    fn with_error_document(&mut self, path: impl Into<Option<ManifestPath>>) -> &mut Self {
-        self.document(KeyId::WebsiteErrorDocument, path.into())
-    }
-
-    fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
-        let Self { editor, reserved } = self;
-        async move {
-            if let Some(reserved) = reserved {
-                return Err(ManifestError::Reserved(reserved));
-            }
-            Ok(editor.commit().await?)
         }
     }
 }

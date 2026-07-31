@@ -325,9 +325,7 @@ mod tests {
         editor.insert("plain.txt", make_addr("plain"));
         let meta: BTreeMap<String, String> =
             [("Content-Type".to_string(), "image/png".to_string())].into();
-        editor
-            .insert("logo.png", make_addr("logo"))
-            .meta(meta.clone());
+        editor.insert_with("logo.png", make_addr("logo"), meta.clone());
         editor.set_index_document("index.html");
         let (root, loadsaver) = run(editor.commit()).unwrap();
 

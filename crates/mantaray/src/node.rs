@@ -486,11 +486,11 @@ impl<R: Reference> Node<R> {
                 return Ok(());
             }
 
-            // load forks if needed
-            if !self.is_loaded() {
-                self.load(loader).await?;
-                self.mark_dirty();
-            }
+            self.ensure_loaded(loader).await?;
+            // Every branch past here rewrites this node's fork table, and a
+            // clean node is spliced in by its old reference at commit, so an
+            // add over a node an earlier op already loaded must dirty it here.
+            self.mark_dirty();
 
             if !self.forks.contains_key(&path[0]) {
                 // no existing fork for this byte; create a new one
