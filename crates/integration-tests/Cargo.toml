@@ -33,7 +33,6 @@ futures.workspace = true
 nectar-feeds = { workspace = true, features = ["std"] }
 nectar-file = { workspace = true, features = ["std"] }
 nectar-ldb = { workspace = true, features = ["arbitrary", "manifest"] }
-nectar-loadsave.workspace = true
 nectar-manifest.workspace = true
 nectar-mantaray = { workspace = true, features = ["manifest"] }
 nectar-postage = { workspace = true, features = ["std"] }
@@ -49,7 +48,6 @@ proptest.workspace = true
 encryption = [
 	"nectar-file/encryption",
 	"nectar-ldb/encryption",
-	"nectar-loadsave/encryption",
 	"nectar-mantaray/encryption",
 	"nectar-primitives/encryption",
 ]

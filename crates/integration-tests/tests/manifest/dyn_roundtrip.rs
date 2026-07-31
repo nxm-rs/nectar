@@ -7,11 +7,13 @@
 
 use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{Builder, LdbManifest, Plaintext, Reader as LdbReader, V1};
-use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    DynManifest, ManifestMetadata, ManifestOp, ManifestPath, MetadataView, SiteConfig, WellKnownKey,
+    DynManifest, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapView, MetadataView,
+    SiteConfig, WellKnownKey,
 };
-use nectar_mantaray::{ManifestEditor, MantarayManifest, Reader as MantarayReader, metadata};
+use nectar_mantaray::{
+    ManifestEditor, MantarayManifest, NodeLoadSaver, Reader as MantarayReader, metadata,
+};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
 use nectar_testing::run;
@@ -230,6 +232,44 @@ fn both_formats_round_trip_through_one_erased_handle() {
 
         exercise(trie.as_ref(), &trie_root, &file, &data).await;
         exercise(kv.as_ref(), &kv_root, &file, &data).await;
+    });
+}
+
+/// `MantarayManifest::over` wires both seams to one store: what the write
+/// seam persists, the read seam finds and the data seam joins.
+#[test]
+fn over_reads_and_writes_through_one_store() {
+    run(async {
+        let raw: Raw = Arc::new(MemoryStore::new());
+        let data = payload();
+        let file = ChunkRef::new(
+            File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
+                .save(&data[..])
+                .await
+                .unwrap(),
+        );
+
+        let (_, base) = mantaray(&raw).await;
+        let manifest = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::over(Arc::clone(&raw));
+        let root = manifest
+            .apply(
+                &base,
+                vec![ManifestOp::Insert {
+                    path: ManifestPath::from("index.html"),
+                    reference: file,
+                    meta: Default::default(),
+                }],
+            )
+            .await
+            .unwrap();
+
+        let mut sink = MemSink::new();
+        manifest
+            .at(&root)
+            .load(&ManifestPath::from("index.html"), &mut sink)
+            .await
+            .unwrap();
+        assert_eq!(sink.as_ref(), data);
     });
 }
 

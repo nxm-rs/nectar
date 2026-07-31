@@ -31,8 +31,7 @@ bytes.workspace = true
 criterion.workspace = true
 digest.workspace = true
 nectar-file = { workspace = true, features = ["rayon"] }
-nectar-loadsave.workspace = true
-nectar-mantaray = { workspace = true, features = ["hazmat"] }
+nectar-mantaray = { workspace = true, features = ["hazmat", "manifest"] }
 nectar-postage = { workspace = true, features = ["parallel"] }
 nectar-postage-issuer = { workspace = true, features = ["parallel"] }
 nectar-primitives = { workspace = true, features = ["encryption", "std"] }

@@ -10,11 +10,10 @@ use std::sync::Arc;
 
 use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{Builder, Encrypted as EncryptedSeal, LdbManifest, V1};
-use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     ListEntry, Manifest, ManifestPath, MapEntry, MapView, MapWriter, MetadataView, WellKnownKey,
 };
-use nectar_mantaray::{ManifestEditor, MantarayManifest};
+use nectar_mantaray::{ManifestEditor, MantarayManifest, NodeLoadSaver};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{DEFAULT_BODY_SIZE, EncryptedChunkRef, StandardChunkSet};
 use nectar_testing::run;

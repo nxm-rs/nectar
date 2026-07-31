@@ -12,9 +12,8 @@
 
 use std::sync::Arc;
 
-use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{Manifest, ManifestPath, MapWriter};
-use nectar_mantaray::{ManifestEditor, MantarayManifest};
+use nectar_mantaray::{ManifestEditor, MantarayManifest, NodeLoadSaver};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
 use nectar_testing::run;

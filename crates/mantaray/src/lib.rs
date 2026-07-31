@@ -22,9 +22,10 @@
 //!
 //! All four are generic over the [`persist`] seam ([`NodeLoader`],
 //! [`NodeSaver`]): the trie never touches chunk stores directly, so the
-//! storage layout is the adapter's. The workspace `nectar-loadsave` crate
-//! adapts a chunk store through the file pipeline, storing a node larger
-//! than one chunk across several, as the reference client does.
+//! storage layout is the adapter's. The production `NodeLoadSaver` adapter
+//! (behind the `manifest` feature) adapts a chunk store through the file
+//! pipeline, storing a node larger than one chunk across several, as the
+//! reference client does.
 //!
 //! # Website Manifests
 //!
@@ -177,6 +178,8 @@ pub use manifest::{ManifestError, MantarayManifest, TrieCursor, TrieView, TrieWr
 #[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
+#[cfg(feature = "manifest")]
+pub use persist::{LoadError, NodeLoadSaver};
 #[cfg(feature = "std")]
 pub use persist::{MAX_NODE_BYTES, NodeLoader, NodeSaver};
 #[cfg(feature = "std")]

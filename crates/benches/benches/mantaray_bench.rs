@@ -1,6 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nectar_loadsave::NodeLoadSaver;
-use nectar_mantaray::{Cursor, ManifestEditor, MemoryStore, Reader, hazmat};
+use nectar_mantaray::{Cursor, ManifestEditor, MemoryStore, NodeLoadSaver, Reader, hazmat};
 use nectar_primitives::StandardChunkSet;
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps};
 use nectar_primitives::store::ChunkGet;
