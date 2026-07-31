@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_ldb::{
-    Builder, Child, Database, Entry, ForkTable, Key, KeyId, LdbManifest, Metadata, Node, NodePut,
-    Plaintext, Prefix, Reader, V1,
+    Builder, Child, Database, Entry, ForkTable, Key, KeyId, Metadata, Node, NodePut, Plaintext,
+    Prefix, Reader, V1,
 };
-use nectar_manifest::{Manifest, ManifestPath, MapView};
+use nectar_manifest::{Batch, Manifest, ManifestPath, MapView};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
 use nectar_primitives::{Chunk, ChunkAddress, ChunkRef, ContentOnlyChunkSet, Verified};
 use nectar_testing::run;
@@ -262,8 +262,8 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
             "the view's website agrees",
         );
 
-        let seam = LdbManifest::plain(store.clone());
-        let seam_view = seam.at(&root);
+        let seam = Database::<_>::plain(store.clone());
+        let seam_view = Manifest::at(&seam, &root);
         ensure!(
             MapView::index_document(&seam_view)
                 .await?
@@ -294,6 +294,69 @@ fn root_metadata_reads_back_without_a_root_entry() -> Result<()> {
         // An absent root entry still reads as absent.
         ensure!(view.get(&Key::empty()).await?.is_none(), "no root entry");
         ensure!(!view.contains_key(&Key::empty()).await?, "no root binding");
+        Ok(())
+    })
+}
+
+/// One `Database` value serves both contracts: the inherent methods keep the
+/// native surface, and the `Manifest` bound reaches the seam.
+///
+/// The seam's `apply` folds the whole batch through one native changeset, so
+/// its root is byte-identical to the one the native editor lands on. A
+/// delegation shell would not compile here, and a drift in the fold moves the
+/// root.
+#[test]
+fn one_database_serves_the_native_and_the_seam_contract() -> Result<()> {
+    let store = ContentGet::new(Arc::new(MemoryStore::default()));
+    run(async {
+        let db: Database<_> = Database::plain(store.clone());
+        let empty: ChunkRef = Manifest::empty(&db).await?;
+
+        let key = Key::from(&b"index.html"[..]);
+        let path = ManifestPath::from("index.html");
+        let reference = ChunkRef::new(ChunkAddress::new([0x11; 32]));
+        let meta = Metadata::<V1>::new(KeyId::ContentType, Bytes::from_static(b"text/html"))?;
+
+        // The seam's write: one batch with an entry, its metadata, and a site
+        // document.
+        let mut batch = Batch::new();
+        batch
+            .insert_with(path.clone(), reference, Some(meta.clone()))
+            .set_index_document(path.clone());
+        let seam_root = Manifest::apply(&db, empty, batch).await?;
+
+        // The native write of the same ops, on the same value.
+        let mut editor = db.edit(&empty);
+        editor.insert_with(key.clone(), Entry::from(reference), meta);
+        editor.set_root_metadata(
+            KeyId::WebsiteIndexDocument,
+            Some(Bytes::from_static(b"index.html")),
+        );
+        let native_root: ChunkRef = editor.commit().await?;
+        ensure!(
+            seam_root == native_root,
+            "the seam's apply and the native editor land on one root"
+        );
+
+        // The inherent `at` still answers the native contract over keys.
+        ensure!(
+            db.at(&seam_root).get(&key).await?.is_some(),
+            "the native view answers over keys"
+        );
+
+        // The trait's `at` answers the seam contract over paths, with the
+        // reserved slots filtered.
+        let view = Manifest::at(&db, &seam_root);
+        ensure!(
+            MapView::get(&view, &path).await?.is_some(),
+            "the seam view answers over paths"
+        );
+        ensure!(
+            MapView::get(&view, &ManifestPath::default())
+                .await?
+                .is_none(),
+            "the seam view keeps the root slot filtered"
+        );
         Ok(())
     })
 }

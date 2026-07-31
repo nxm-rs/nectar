@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use nectar_file::{File, MemSink, Policy};
-use nectar_ldb::{Encrypted as EncryptedSeal, LdbManifest, V1};
+use nectar_ldb::{Database, Encrypted as EncryptedSeal, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     Batch, ListEntry, Manifest, ManifestMeta, ManifestPath, MapEntry, MapView, MetadataView,
@@ -106,7 +106,7 @@ fn both_formats_drive_an_encrypted_manifest() {
         exercise(&trie, &trie_root, &file, &data).await;
 
         let seal: EncryptedSeal<'_, V1> = EncryptedSeal::new(SECRET);
-        let kv = LdbManifest::new(store.clone(), seal);
+        let kv: Database<_, _> = Database::new(store.clone(), seal);
         let kv_root: EncryptedChunkRef = kv.empty().await.unwrap();
         exercise(&kv, &kv_root, &file, &data).await;
     });

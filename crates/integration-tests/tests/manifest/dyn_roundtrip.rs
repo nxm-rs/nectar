@@ -6,7 +6,7 @@
 //! lands in each format's own native slot.
 
 use nectar_file::{File, MemSink, Policy};
-use nectar_ldb::{LdbManifest, Reader as LdbReader};
+use nectar_ldb::{Database, Reader as LdbReader};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     DynManifest, ManifestOp, ManifestPath, MetadataSource, MetadataView, SiteConfig, WellKnownKey,
@@ -248,7 +248,7 @@ fn both_formats_round_trip_through_one_erased_handle() {
             MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone()),
         );
         let trie_root = trie.dyn_empty().await.unwrap();
-        let kv: Box<dyn DynManifest> = Box::new(LdbManifest::plain(store.clone()));
+        let kv: Box<dyn DynManifest> = Box::new(Database::<_>::plain(store.clone()));
         let kv_root = kv.dyn_empty().await.unwrap();
 
         exercise(trie.as_ref(), &trie_root, &file, &data).await;
@@ -297,7 +297,7 @@ fn the_site_config_lands_in_each_format_native_slot() {
 
         // The key-value database keeps them in the root's typed metadata,
         // which its website view reads.
-        let kv = LdbManifest::plain(store.clone());
+        let kv = Database::<_>::plain(store.clone());
         let kv_root = kv.dyn_empty().await.unwrap();
         let root = kv.dyn_set_site_config(&kv_root, config).await.unwrap();
         let reader: LdbReader<_> = LdbReader::new(&store);

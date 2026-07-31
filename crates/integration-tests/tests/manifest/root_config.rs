@@ -35,9 +35,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use nectar_file::{DataSink, File, MemSink, Policy};
-use nectar_ldb::{
-    Builder, Database, Entry, Key, LdbManifest, Plaintext, Reader as LdbReader, Served, V1,
-};
+use nectar_ldb::{Builder, Database, Entry, Key, Plaintext, Reader as LdbReader, Served, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     Batch, Manifest, ManifestError, ManifestMeta, ManifestOp, ManifestPath, MapCursor, MapEntry,
@@ -53,13 +51,13 @@ use nectar_testing::run;
 type Raw = Arc<MemoryStore<StandardChunkSet>>;
 type Store = ContentGet<Raw>;
 type Trie = MantarayManifest<NodeLoadSaver<Raw>, Store, DEFAULT_BODY_SIZE>;
-type Kv = LdbManifest<Store>;
+type Kv = Database<Store>;
 
 /// Both formats over one raw store, each at its freshly persisted empty root.
 async fn both_formats(raw: &Raw, store: &Store) -> ((Trie, ChunkRef), (Kv, ChunkRef)) {
     let trie: Trie = MantarayManifest::new(NodeLoadSaver::new(Arc::clone(raw)), store.clone());
     let trie_empty = trie.empty().await.unwrap();
-    let kv = LdbManifest::plain(store.clone());
+    let kv = Database::<_>::plain(store.clone());
     let kv_empty = kv.empty().await.unwrap();
     ((trie, trie_empty), (kv, kv_empty))
 }
@@ -741,13 +739,13 @@ fn a_remove_is_history_independent_on_ldb() {
         let store: Store = ContentGet::new(raw);
         let builder: Builder<V1> = Builder::new();
         let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
-        let kv = LdbManifest::plain(store.clone());
+        let kv = Database::<_>::plain(store.clone());
 
         let keys = removal_keys();
         let base = build(&kv, &empty, &keys).await;
 
         for (index, (path, _)) in keys.iter().enumerate() {
-            let removed = kv.remove(&base, path.clone()).await.unwrap();
+            let removed = Manifest::remove(&kv, &base, path.clone()).await.unwrap();
             assert_ne!(removed, base, "removing {:?} moves the root", text(path));
 
             assert_eq!(
@@ -760,17 +758,20 @@ fn a_remove_is_history_independent_on_ldb() {
 
         // The order the two keys go in does not reach the root either.
         let (first, second) = (keys[0].0.clone(), keys[4].0.clone());
-        let forwards = kv
-            .remove(
-                &kv.remove(&base, first.clone()).await.unwrap(),
-                second.clone(),
-            )
-            .await
-            .unwrap();
-        let backwards = kv
-            .remove(&kv.remove(&base, second).await.unwrap(), first)
-            .await
-            .unwrap();
+        let forwards = Manifest::remove(
+            &kv,
+            &Manifest::remove(&kv, &base, first.clone()).await.unwrap(),
+            second.clone(),
+        )
+        .await
+        .unwrap();
+        let backwards = Manifest::remove(
+            &kv,
+            &Manifest::remove(&kv, &base, second).await.unwrap(),
+            first,
+        )
+        .await
+        .unwrap();
         assert_eq!(forwards, backwards, "two removals commute on the root");
     });
 }
@@ -1026,7 +1027,7 @@ fn the_seam_bootstrap_matches_each_format() {
 
         let builder: Builder<V1> = Builder::new();
         let native = *builder.build(&store, &Plaintext).await.unwrap().root();
-        assert_empty_bootstrap(&LdbManifest::plain(store.clone()), native, "database").await;
+        assert_empty_bootstrap(&Database::<_>::plain(store.clone()), native, "database").await;
     });
 }
 
@@ -1117,7 +1118,7 @@ fn a_planted_separator_key_is_not_listed() {
             "the raw layer holds the planted key"
         );
 
-        let kv = LdbManifest::plain(store.clone());
+        let kv = Database::<_>::plain(store.clone());
         let view = kv.at(&planted);
         assert_eq!(
             listing(&view, &ManifestPath::default()).await,
@@ -1125,7 +1126,7 @@ fn a_planted_separator_key_is_not_listed() {
             "the top level lists content alone, and never the planted key"
         );
         assert_eq!(
-            view.get(&separator).await.unwrap(),
+            MapView::get(&view, &separator).await.unwrap(),
             None,
             "and no read reaches it either"
         );
@@ -1161,7 +1162,7 @@ fn a_planted_separator_key_is_not_listed() {
             "the directory of the content below the separator is listed"
         );
         assert_eq!(
-            view.get(&separator).await.unwrap(),
+            MapView::get(&view, &separator).await.unwrap(),
             None,
             "and the planted key itself still reads absent"
         );
@@ -1180,7 +1181,7 @@ fn website_documents_resolve_over_bare_keys() {
         let store: Store = ContentGet::new(raw);
         let builder: Builder<V1> = Builder::new();
         let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
-        let kv = LdbManifest::plain(store.clone());
+        let kv = Database::<_>::plain(store.clone());
 
         let root = {
             let mut batch = Batch::new();

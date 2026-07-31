@@ -314,6 +314,66 @@ const fn pair_len<F: Format>(key: &MetadataKey<F>, value: &Bytes) -> usize {
         .saturating_add(value.len())
 }
 
+/// The typed key `key` names: a registered name promotes to its [`KeyId`],
+/// any other travels as a custom key when it fits.
+#[cfg(feature = "manifest")]
+fn meta_key(key: &nectar_manifest::WellKnownKey<'_>) -> Option<MetadataKey<V1>> {
+    let key = key.resolve();
+    let name = key.name();
+    KeyId::from_name(name.to_ascii_lowercase().as_bytes()).map_or_else(
+        || {
+            CustomKey::try_from(name.as_bytes())
+                .ok()
+                .map(MetadataKey::from)
+        },
+        |id| Some(id.into()),
+    )
+}
+
+/// The erased read of the typed registry; values cross as their stored bytes.
+#[cfg(feature = "manifest")]
+impl nectar_manifest::MetadataSource for Metadata<V1> {
+    fn get(&self, key: &nectar_manifest::WellKnownKey<'_>) -> Option<&[u8]> {
+        let key = meta_key(key)?;
+        Self::get(self, &key).map(Bytes::as_ref)
+    }
+
+    /// A registered id crosses under its registry name; a non-UTF-8 custom
+    /// key names no string and stays behind the static path.
+    fn for_each(&self, f: &mut dyn FnMut(&str, &[u8])) {
+        for (key, value) in self.iter() {
+            let name = match key {
+                MetadataKey::Known(id) => Some(id.name()),
+                MetadataKey::Custom(custom) => core::str::from_utf8(custom.as_bytes()).ok(),
+            };
+            if let Some(name) = name {
+                f(name, value.as_ref());
+            }
+        }
+    }
+}
+
+/// The rebuild keeps registered ids and custom keys alike; a pair past the
+/// format's encoded bound is dropped.
+#[cfg(feature = "manifest")]
+impl nectar_manifest::MetadataBlock for Metadata<V1> {
+    fn from_source(source: &dyn nectar_manifest::MetadataSource) -> Option<Self> {
+        let mut meta: Option<Self> = None;
+        source.for_each(&mut |name, value| {
+            let Some(key) = meta_key(&nectar_manifest::WellKnownKey::Custom(name)) else {
+                return;
+            };
+            let value = Bytes::copy_from_slice(value);
+            match meta.as_mut() {
+                // An over-budget insert leaves the block unchanged.
+                Some(block) => drop(block.insert(key, value)),
+                None => meta = Self::new(key, value).ok(),
+            }
+        });
+        meta
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::vec;
