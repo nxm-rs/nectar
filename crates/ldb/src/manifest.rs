@@ -4,13 +4,13 @@
 //! concrete types, so a seam call names the trait: `Manifest::at(&db, root)`.
 
 use alloc::vec::Vec;
-use core::ops::{Bound, RangeBounds};
+use core::ops::Bound;
 
 use bytes::Bytes;
-use nectar_file::{File, LoadError, Policy};
 use nectar_manifest::{
     Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath,
-    MapCursor, MapEntry, MapView, SinkError, SiteConfig,
+    MapCursor, MapEntry, MapView, PathCursor, RawCursor, RawItem, SinkError, SiteConfig,
+    load_reference,
 };
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
@@ -119,13 +119,13 @@ where
 
     type Error = ManifestError<LdbFormatError>;
 
-    type Cursor = Cursor<'a, S, V1, R>;
+    type Cursor = PathCursor<Cursor<'a, S, V1, R>>;
 
     async fn get(&self, path: &ManifestPath) -> Result<Option<MapEntry<R>>, Self::Error> {
-        let Some(key) = content_key(path) else {
+        let Some(key) = path.content_key().map(Key::from) else {
             return Ok(None);
         };
-        Ok(self.get(&key).await?.map(mapped))
+        Ok(self.get(&key).await?.map(seam_entry))
     }
 
     async fn site_config(&self) -> Result<SiteConfig, Self::Error> {
@@ -137,7 +137,7 @@ where
     }
 
     async fn metadata(&self, path: &ManifestPath) -> Result<Self::Metadata, Self::Error> {
-        let Some(key) = content_key(path) else {
+        let Some(key) = path.content_key().map(Key::from) else {
             return Ok(None);
         };
         Ok(self.metadata(&key).await?)
@@ -151,13 +151,14 @@ where
         let key = Key::from(path.as_bytes());
         match self.floor(&key).await? {
             None => Ok(None),
-            Some((found, entry)) if !is_reserved(&found) => {
-                Ok(Some((path_of(&found), mapped(entry))))
+            Some((found, entry)) if !ManifestPath::is_reserved_bytes(found.as_bytes()) => {
+                Ok(Some((path_of(&found), seam_entry(entry))))
             }
             // The seek landed on a reserved key: the greatest content key
             // below it answers.
             Some(_) => {
-                let mut cursor = self.range((Bound::Unbounded, Bound::Included(key))).await?;
+                let mut cursor =
+                    PathCursor::new(self.range((Bound::Unbounded, Bound::Included(key))).await?);
                 let mut last = None;
                 while let Some(pair) = MapCursor::next(&mut cursor).await? {
                     last = Some(pair);
@@ -174,7 +175,7 @@ where
             // At the bare separator the folder view names both the reserved
             // key and the directory of content below it: hide the slot, list
             // the directory.
-            if is_reserved(item.key()) {
+            if ManifestPath::is_reserved_bytes(item.key().as_bytes()) {
                 let mut probe = self.prefix(item.key()).await?;
                 let mut below = false;
                 while let Some((found, _)) = probe.next().await? {
@@ -197,7 +198,7 @@ where
         path: &ManifestPath,
         sink: &mut T,
     ) -> Result<(), Self::Error> {
-        let entry = match content_key(path) {
+        let entry = match path.content_key().map(Key::from) {
             Some(key) => self.get(&key).await?,
             None => None,
         }
@@ -212,52 +213,44 @@ where
             Entry::Ref32(reference) => EntryRef::Plain(reference),
             Entry::Ref64(reference) => EntryRef::Encrypted(reference),
         };
-        File::new(self.store().clone(), Policy::DEFAULT)
-            .load(reference, sink)
-            .await
-            .map(drop)
-            .map_err(|error| match error {
-                LoadError::Sink { source, .. } => ManifestError::sink(source),
-                data => ManifestError::data(data),
-            })
+        // Load success tracks `get`: a reference the caller's width cannot
+        // hold reads as opaque and loads as no data.
+        let reference =
+            R::from_entry_ref(reference).map_err(|_| ManifestError::NoData(path.clone()))?;
+        load_reference(self.store().clone(), reference.into_entry_ref(), sink).await
     }
 
     async fn iter(&self) -> Result<Self::Cursor, Self::Error> {
-        Ok(self.iter().await?)
+        Ok(PathCursor::new(self.iter().await?))
     }
 
     async fn range(
         &self,
-        bounds: impl RangeBounds<ManifestPath> + MaybeSend,
+        bounds: (Bound<ManifestPath>, Bound<ManifestPath>),
     ) -> Result<Self::Cursor, Self::Error> {
-        let key = |edge: Bound<&ManifestPath>| edge.map(|path| Key::from(path.as_bytes()));
-        Ok(self
-            .range((key(bounds.start_bound()), key(bounds.end_bound())))
-            .await?)
+        let key = |path: ManifestPath| Key::from(path.into_bytes());
+        // The native walk seeks to the bounds, so the seam wrapper only skips
+        // the reserved keys.
+        Ok(PathCursor::new(
+            self.range((bounds.0.map(key), bounds.1.map(key))).await?,
+        ))
     }
 }
 
-/// The native cursor as the seam's ordered walk; reserved keys step over.
-impl<S, R> MapCursor<R> for Cursor<'_, S, V1, R>
+/// The database's raw ordered walk: every stored key, the reserved slots
+/// included.
+impl<S, R> RawCursor<R> for Cursor<'_, S, V1, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSend + MaybeSync,
     R: NodeRef,
 {
     type Error = ManifestError<LdbFormatError>;
 
-    async fn next(&mut self) -> Result<Option<(ManifestPath, MapEntry<R>)>, Self::Error> {
-        while let Some((key, entry)) = Cursor::next(self).await? {
-            if !is_reserved(&key) {
-                return Ok(Some((path_of(&key), mapped(entry))));
-            }
-        }
-        Ok(None)
+    async fn next(&mut self) -> Result<Option<RawItem<R>>, Self::Error> {
+        Ok(Cursor::next(self)
+            .await?
+            .map(|(key, entry)| (key.as_bytes().to_vec(), seam_entry(entry))))
     }
-}
-
-/// The database key `path` addresses verbatim, or `None` on a reserved path.
-fn content_key(path: &ManifestPath) -> Option<Key> {
-    (!path.is_reserved()).then(|| Key::from(path.as_bytes()))
 }
 
 /// One database key as the path a read answers with.
@@ -265,17 +258,10 @@ fn path_of(key: &Key) -> ManifestPath {
     ManifestPath::from(key.as_bytes())
 }
 
-/// Whether `key` is one the map reserves rather than content.
-fn is_reserved(key: &Key) -> bool {
-    matches!(key.as_bytes(), [] | [ManifestPath::SEPARATOR])
-}
-
-/// One bound value as a seam entry; a load still reaches an opaque value.
-fn mapped<R: NodeRef>(entry: Entry<V1>) -> MapEntry<R> {
-    match EntryRef::try_from(entry).map(R::from_entry_ref) {
-        Ok(Ok(reference)) => MapEntry::Reference(reference),
-        Ok(Err(_)) | Err(_) => MapEntry::Opaque,
-    }
+/// One bound value as a seam entry: a reference at the caller's width, the
+/// manifest-carried inline value, or opaque when the width does not fit.
+fn seam_entry<R: NodeRef>(entry: Entry<V1>) -> MapEntry<R> {
+    EntryRef::try_from(entry).map_or(MapEntry::Value, MapEntry::from_entry_ref)
 }
 
 /// One folder-view child as a seam listing entry; an inline or other-width
@@ -287,9 +273,9 @@ fn listed<R: NodeRef>(entry: DirEntry<V1>) -> ListEntry<R> {
         },
         DirEntry::File { key, entry } => {
             let path = path_of(&key);
-            match mapped::<R>(entry) {
+            match seam_entry::<R>(entry) {
                 MapEntry::Reference(reference) => ListEntry::File { path, reference },
-                MapEntry::Opaque => ListEntry::Value { path },
+                MapEntry::Value | MapEntry::Opaque => ListEntry::Value { path },
             }
         }
     }

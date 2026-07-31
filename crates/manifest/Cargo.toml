@@ -20,14 +20,17 @@ workspace = true
 [dependencies]
 auto_impl = { workspace = true }
 derive_more = { workspace = true }
-# The positional sink a load writes into; the bare dependency carries the
-# sink module alone, no engine and no primitives.
-nectar-file = { workspace = true }
+# The shared load lane and the positional sink it writes into: the alloc-only
+# engine core plus the sink module.
+nectar-file = { workspace = true, features = ["primitives"] }
 nectar-marker = { workspace = true }
 # Reference, ChunkRef and the boxed-error alias the erased seam reports through.
 nectar-primitives = { workspace = true }
 nectar-tasks = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+nectar-testing.workspace = true
 
 [features]
 default = [ "std" ]
