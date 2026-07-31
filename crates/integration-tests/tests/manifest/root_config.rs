@@ -37,12 +37,11 @@ use nectar_file::MemSink;
 use nectar_ldb::{
     Builder, Database, Entry, Key, LdbManifest, Plaintext, Reader as LdbReader, Served, V1,
 };
-use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, MetadataView, WellKnownKey,
     reserved_key,
 };
-use nectar_mantaray::{ManifestEditor, MantarayManifest};
+use nectar_mantaray::{ManifestEditor, MantarayManifest, NodeLoadSaver};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
 use nectar_testing::run;

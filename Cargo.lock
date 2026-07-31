@@ -2489,7 +2489,6 @@ dependencies = [
  "codspeed-criterion-compat",
  "digest 0.11.3",
  "nectar-file",
- "nectar-loadsave",
  "nectar-mantaray",
  "nectar-postage",
  "nectar-postage-issuer",
@@ -2610,7 +2609,6 @@ dependencies = [
  "nectar-feeds",
  "nectar-file",
  "nectar-ldb",
- "nectar-loadsave",
  "nectar-manifest",
  "nectar-mantaray",
  "nectar-postage",
@@ -2651,17 +2649,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
-]
-
-[[package]]
-name = "nectar-loadsave"
-version = "0.4.0"
-dependencies = [
- "bytes",
- "nectar-file",
- "nectar-mantaray",
- "nectar-primitives",
- "nectar-testing",
 ]
 
 [[package]]
