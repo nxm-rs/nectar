@@ -22,8 +22,8 @@
 //!
 //! Each format keeps its own metadata type: the static path erases nothing.
 //! [`DynManifest`] is the object-safe wrapper for a runtime-detected format,
-//! and unifies metadata behind [`ManifestMetadata`] - the one lossy point in
-//! the design.
+//! and unifies metadata behind the enumerable [`MetadataSource`]: a
+//! cross-format copy is `M2::Metadata::from_source(&m1_meta)`.
 //!
 //! ```
 //! use nectar_manifest::{Batch, ManifestPath, MetadataView, WellKnownKey};
@@ -93,7 +93,7 @@ pub use batch::{Batch, CheckedBatch};
 pub use dynamic::{DynManifest, DynSink, DynSinkError};
 pub use error::{ErasedFormat, ErasedManifestError, ManifestError};
 pub use listing::{ListEntry, Listing};
-pub use meta::{ManifestMetadata, MetadataView, WellKnownKey};
+pub use meta::{ManifestMeta, MetadataBlock, MetadataSource, MetadataView, WellKnownKey};
 pub use op::ManifestOp;
 pub use path::ManifestPath;
 pub use reserved::{ReservedKey, reserved_key};
@@ -132,8 +132,8 @@ impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 /// lands in the format's own root slot, at a path
 /// [`ManifestPath::is_reserved`] names.
 pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
-    /// The format's own metadata for one entry.
-    type Metadata: MaybeSend + Default;
+    /// The format's own metadata for one entry, enumerable and buildable.
+    type Metadata: ManifestMeta;
 
     /// The format's own failure union, carried in [`ManifestError::Format`].
     type FormatError: core::error::Error + MaybeSend + MaybeSync + 'static;
@@ -163,16 +163,6 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
         base: R,
         batch: Batch<R, Self::Metadata>,
     ) -> impl Future<Output = Result<R, ManifestError<Self::FormatError>>> + MaybeSend;
-
-    /// Native metadata rebuilt from the erased view, reading the registered
-    /// keys and any custom key the format can carry.
-    ///
-    /// The seam's only lossy step, and the reason it is a method: the format
-    /// decides what it can represent.
-    fn metadata_from_view(
-        &self,
-        view: &dyn ManifestMetadata,
-    ) -> Result<Self::Metadata, ManifestError<Self::FormatError>>;
 
     /// Insert one path, clearing any metadata bound at it; a one-op [`Batch`]
     /// through [`apply`](Self::apply).

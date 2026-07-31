@@ -135,6 +135,10 @@ name = "manifest_listing"
 path = "tests/manifest/listing.rs"
 
 [[test]]
+name = "manifest_metadata"
+path = "tests/manifest/metadata.rs"
+
+[[test]]
 name = "manifest_root_config"
 path = "tests/manifest/root_config.rs"
 

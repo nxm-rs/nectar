@@ -9,7 +9,7 @@ use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{LdbManifest, Reader as LdbReader};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    DynManifest, ManifestMetadata, ManifestOp, ManifestPath, MetadataView, SiteConfig, WellKnownKey,
+    DynManifest, ManifestOp, ManifestPath, MetadataSource, MetadataView, SiteConfig, WellKnownKey,
 };
 use nectar_mantaray::{MantarayManifest, Reader as MantarayReader, metadata};
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -34,7 +34,7 @@ fn payload() -> Vec<u8> {
 const CONTENT_TYPE: &str = "text/html";
 
 /// Erased metadata carrying one content type.
-fn content_type() -> Box<dyn ManifestMetadata> {
+fn content_type() -> Box<dyn MetadataSource> {
     Box::new(MetadataView::new().with(WellKnownKey::ContentType, CONTENT_TYPE))
 }
 
@@ -61,6 +61,25 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
         .await
         .unwrap();
     assert_ne!(&root, base, "the batch produced a new root");
+
+    // The metadata written through the erased seam reads back through it, by
+    // key and enumerably; a bare entry reads back empty.
+    let index = ManifestPath::from("index.html");
+    let meta = manifest.dyn_metadata(&root, &index).await.unwrap();
+    assert_eq!(
+        meta.get(&WellKnownKey::ContentType),
+        Some(CONTENT_TYPE.as_bytes())
+    );
+    let mut enumerated = false;
+    meta.for_each(&mut |key, value| {
+        enumerated |= WellKnownKey::registered(key) == Some(WellKnownKey::ContentType)
+            && value == CONTENT_TYPE.as_bytes();
+    });
+    assert!(enumerated, "the content type enumerates");
+    let logo = ManifestPath::from("img/logo.png");
+    let bare = manifest.dyn_metadata(&root, &logo).await.unwrap();
+    assert_eq!(bare.get(&WellKnownKey::ContentType), None);
+    bare.for_each(&mut |key, _| panic!("a bare entry enumerated {key}"));
 
     // One level: the deeper path collapses into a directory entry, in path
     // order, and neither format fetches the referenced data to list it.
@@ -196,8 +215,9 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
 
     // The taxonomy survives erasure: the seam variants still match structurally.
     let separator = ManifestPath::from("/");
+    let meta = content_type();
     let reserved = manifest
-        .dyn_insert(&root, separator.clone(), *file, content_type())
+        .dyn_insert(&root, separator.clone(), *file, meta.as_ref())
         .await
         .err()
         .and_then(|e| e.as_reserved().map(|r| r.path().clone()));
