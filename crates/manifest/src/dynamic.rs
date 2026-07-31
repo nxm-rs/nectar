@@ -4,11 +4,11 @@
 //! Erasure costs four things and states each: the futures box, the reference
 //! width is fixed to [`ChunkRef`], metadata crosses as [`ManifestMetadata`]
 //! rather than the format's own type, and an ordered walk stays on the static
-//! path. Every erased call takes the root it reads or writes against.
+//! path. Every erased call takes the root it reads or writes against, and a
+//! failure crosses as [`ErasedManifestError`] with the seam variants intact.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::fmt;
 
 use nectar_file::sink::DataSink;
 use nectar_marker::{MaybeSend, MaybeSync};
@@ -16,6 +16,7 @@ use nectar_primitives::chunk::ChunkRef;
 use nectar_primitives::store::BoxedError;
 use nectar_tasks::BoxFuture;
 
+use crate::error::{ErasedFormat, ErasedManifestError, ManifestError};
 use crate::listing::Listing;
 use crate::meta::ManifestMetadata;
 use crate::op::ManifestOp;
@@ -27,20 +28,9 @@ use crate::{Manifest, SinkError};
 
 /// A sink write that failed behind the erased seam; the concrete error
 /// survives as the source.
-#[derive(Debug)]
-pub struct DynSinkError(BoxedError);
-
-impl fmt::Display for DynSinkError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("erased sink write failed")
-    }
-}
-
-impl core::error::Error for DynSinkError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        Some(&*self.0)
-    }
-}
+#[derive(Debug, thiserror::Error)]
+#[error("erased sink write failed")]
+pub struct DynSinkError(#[source] BoxedError);
 
 /// Object-safe [`DataSink`]: the same positional, idempotent write with the
 /// error boxed.
@@ -69,9 +59,11 @@ impl DataSink for SinkBridge<'_> {
     }
 }
 
-/// Box a typed error behind the erased seam.
-fn erase<E: core::error::Error + MaybeSend + MaybeSync + 'static>(error: E) -> BoxedError {
-    Box::new(error)
+/// A typed seam failure with its format union boxed.
+fn erase<F: core::error::Error + MaybeSend + MaybeSync + 'static>(
+    error: ManifestError<F>,
+) -> ErasedManifestError {
+    error.map_format(|format| ErasedFormat(Box::new(format)))
 }
 
 /// Object-safe [`Manifest`]: a manifest whose format is decided at runtime.
@@ -79,33 +71,36 @@ fn erase<E: core::error::Error + MaybeSend + MaybeSync + 'static>(error: E) -> B
 /// Blanket-implemented for every `Manifest<ChunkRef>`, so a format implements
 /// the static trait once and is held as `Box<dyn DynManifest>` for free.
 pub trait DynManifest: MaybeSend + MaybeSync {
+    /// The root of the empty manifest, freshly persisted.
+    fn dyn_empty(&self) -> BoxFuture<'_, Result<ChunkRef, ErasedManifestError>>;
+
     /// The entry bound to `path`, or `None` when the path is absent.
     fn dyn_get<'a>(
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-    ) -> BoxFuture<'a, Result<Option<MapEntry>, BoxedError>>;
+    ) -> BoxFuture<'a, Result<Option<MapEntry>, ErasedManifestError>>;
 
     /// Whether `path` is bound.
     fn dyn_contains_key<'a>(
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-    ) -> BoxFuture<'a, Result<bool, BoxedError>>;
+    ) -> BoxFuture<'a, Result<bool, ErasedManifestError>>;
 
     /// The greatest bound path `<= path`, with its entry.
     fn dyn_floor<'a>(
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-    ) -> BoxFuture<'a, Result<Option<(ManifestPath, MapEntry)>, BoxedError>>;
+    ) -> BoxFuture<'a, Result<Option<(ManifestPath, MapEntry)>, ErasedManifestError>>;
 
     /// The immediate children of the directory `dir` names, in path order.
     fn dyn_dir<'a>(
         &'a self,
         root: &'a ChunkRef,
         dir: &'a ManifestPath,
-    ) -> BoxFuture<'a, Result<Listing, BoxedError>>;
+    ) -> BoxFuture<'a, Result<Listing, ErasedManifestError>>;
 
     /// Write the data bound to `path` into `sink`, starting at offset zero.
     fn dyn_load<'a>(
@@ -113,13 +108,13 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         root: &'a ChunkRef,
         path: &'a ManifestPath,
         sink: &'a mut dyn DynSink,
-    ) -> BoxFuture<'a, Result<(), BoxedError>>;
+    ) -> BoxFuture<'a, Result<(), ErasedManifestError>>;
 
     /// The site-level documents the manifest declares, each absent as `None`.
     fn dyn_site_config<'a>(
         &'a self,
         root: &'a ChunkRef,
-    ) -> BoxFuture<'a, Result<SiteConfig, BoxedError>>;
+    ) -> BoxFuture<'a, Result<SiteConfig, ErasedManifestError>>;
 
     /// Replace the site-level documents, returning the new root.
     ///
@@ -128,7 +123,7 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         &'a self,
         root: &'a ChunkRef,
         config: SiteConfig,
-    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>>;
+    ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>>;
 
     /// Insert one path, returning the new root.
     fn dyn_insert<'a>(
@@ -137,14 +132,14 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         path: ManifestPath,
         reference: ChunkRef,
         meta: Box<dyn ManifestMetadata>,
-    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>>;
+    ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>>;
 
     /// Remove one path, returning the new root.
     fn dyn_remove<'a>(
         &'a self,
         root: &'a ChunkRef,
         path: ManifestPath,
-    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>>;
+    ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>>;
 
     /// Fold `ops` into the manifest rooted at `base`, returning the new root.
     ///
@@ -155,15 +150,19 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         &'a self,
         base: &'a ChunkRef,
         ops: Vec<ManifestOp<ChunkRef, Box<dyn ManifestMetadata>>>,
-    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>>;
+    ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>>;
 }
 
 impl<T: Manifest<ChunkRef>> DynManifest for T {
+    fn dyn_empty(&self) -> BoxFuture<'_, Result<ChunkRef, ErasedManifestError>> {
+        Box::pin(async move { self.empty().await.map_err(erase) })
+    }
+
     fn dyn_get<'a>(
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-    ) -> BoxFuture<'a, Result<Option<MapEntry>, BoxedError>> {
+    ) -> BoxFuture<'a, Result<Option<MapEntry>, ErasedManifestError>> {
         Box::pin(async move { self.at(root).get(path).await.map_err(erase) })
     }
 
@@ -171,7 +170,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-    ) -> BoxFuture<'a, Result<bool, BoxedError>> {
+    ) -> BoxFuture<'a, Result<bool, ErasedManifestError>> {
         Box::pin(async move { self.at(root).contains_key(path).await.map_err(erase) })
     }
 
@@ -179,7 +178,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         &'a self,
         root: &'a ChunkRef,
         path: &'a ManifestPath,
-    ) -> BoxFuture<'a, Result<Option<(ManifestPath, MapEntry)>, BoxedError>> {
+    ) -> BoxFuture<'a, Result<Option<(ManifestPath, MapEntry)>, ErasedManifestError>> {
         Box::pin(async move { self.at(root).floor(path).await.map_err(erase) })
     }
 
@@ -187,7 +186,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         &'a self,
         root: &'a ChunkRef,
         dir: &'a ManifestPath,
-    ) -> BoxFuture<'a, Result<Listing, BoxedError>> {
+    ) -> BoxFuture<'a, Result<Listing, ErasedManifestError>> {
         Box::pin(async move { self.at(root).dir(dir).await.map_err(erase) })
     }
 
@@ -196,7 +195,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         root: &'a ChunkRef,
         path: &'a ManifestPath,
         sink: &'a mut dyn DynSink,
-    ) -> BoxFuture<'a, Result<(), BoxedError>> {
+    ) -> BoxFuture<'a, Result<(), ErasedManifestError>> {
         Box::pin(async move {
             let mut bridge = SinkBridge(sink);
             self.at(root).load(path, &mut bridge).await.map_err(erase)
@@ -206,7 +205,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
     fn dyn_site_config<'a>(
         &'a self,
         root: &'a ChunkRef,
-    ) -> BoxFuture<'a, Result<SiteConfig, BoxedError>> {
+    ) -> BoxFuture<'a, Result<SiteConfig, ErasedManifestError>> {
         Box::pin(async move { self.at(root).site_config().await.map_err(erase) })
     }
 
@@ -214,7 +213,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         &'a self,
         root: &'a ChunkRef,
         config: SiteConfig,
-    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>> {
+    ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move {
             let (index, error) = config.into_parts();
             let mut writer = self.edit(root);
@@ -230,7 +229,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         path: ManifestPath,
         reference: ChunkRef,
         meta: Box<dyn ManifestMetadata>,
-    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>> {
+    ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move {
             let meta = self.metadata_from_view(&*meta).map_err(erase)?;
             let mut writer = self.edit(root);
@@ -243,7 +242,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         &'a self,
         root: &'a ChunkRef,
         path: ManifestPath,
-    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>> {
+    ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move { self.remove(root, path).await.map_err(erase) })
     }
 
@@ -251,7 +250,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         &'a self,
         base: &'a ChunkRef,
         ops: Vec<ManifestOp<ChunkRef, Box<dyn ManifestMetadata>>>,
-    ) -> BoxFuture<'a, Result<ChunkRef, BoxedError>> {
+    ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move {
             let mut native = Vec::with_capacity(ops.len());
             for op in ops {

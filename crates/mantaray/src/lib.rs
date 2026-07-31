@@ -173,7 +173,7 @@ pub use error::{
     CursorError, DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result,
 };
 #[cfg(feature = "manifest")]
-pub use manifest::{ManifestError, MantarayManifest, TrieCursor, TrieView, TrieWriter};
+pub use manifest::{MantarayManifest, TrieCursor, TrieFormatError, TrieView, TrieWriter};
 #[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;

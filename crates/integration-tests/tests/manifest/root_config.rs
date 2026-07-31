@@ -33,14 +33,14 @@
 use std::ops::Bound;
 use std::sync::Arc;
 
-use nectar_file::MemSink;
+use nectar_file::{DataSink, File, MemSink, Policy};
 use nectar_ldb::{
     Builder, Database, Entry, Key, LdbManifest, Plaintext, Reader as LdbReader, Served, V1,
 };
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    Manifest, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, MetadataView, WellKnownKey,
-    reserved_key,
+    Manifest, ManifestError, ManifestPath, MapCursor, MapEntry, MapView, MapWriter, MetadataView,
+    WellKnownKey,
 };
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
 use nectar_primitives::store::{ContentGet, MemoryStore};
@@ -51,6 +51,32 @@ use nectar_testing::run;
 /// to reach the same map.
 type Raw = Arc<MemoryStore<StandardChunkSet>>;
 type Store = ContentGet<Raw>;
+type Trie = MantarayManifest<NodeLoadSaver<Raw>, Store, DEFAULT_BODY_SIZE>;
+type Kv = LdbManifest<Store>;
+
+/// Both formats over one raw store, each at its freshly persisted empty root.
+async fn both_formats(raw: &Raw, store: &Store) -> ((Trie, ChunkRef), (Kv, ChunkRef)) {
+    let trie: Trie = MantarayManifest::new(NodeLoadSaver::new(Arc::clone(raw)), store.clone());
+    let trie_empty = trie.empty().await.unwrap();
+    let kv = LdbManifest::plain(store.clone());
+    let kv_empty = kv.empty().await.unwrap();
+    ((trie, trie_empty), (kv, kv_empty))
+}
+
+/// `keys` written through the seam in one batch, each bound to a distinct
+/// reference.
+async fn write_keys<M: Manifest<ChunkRef>>(
+    manifest: &M,
+    empty: &ChunkRef,
+    keys: &[&str],
+) -> ChunkRef {
+    let mut writer = manifest.edit(empty);
+    for (index, key) in keys.iter().enumerate() {
+        let bound = reference(u8::try_from(index).unwrap().saturating_add(1));
+        writer.insert(ManifestPath::from(*key), bound);
+    }
+    writer.commit().await.unwrap()
+}
 
 /// A filename joined below each directory, so relative on purpose.
 const INDEX: &str = "index.html";
@@ -67,10 +93,13 @@ fn text(path: &ManifestPath) -> String {
     String::from_utf8(path.as_bytes().to_vec()).unwrap()
 }
 
-/// The reserved path a refused write names. One matcher over every format.
-fn refused<T, E: std::error::Error + 'static>(result: &Result<T, E>) -> Option<ManifestPath> {
-    let error = result.as_ref().err()?;
-    reserved_key(error).map(|reserved| reserved.path().clone())
+/// The reserved path a refused write names, structurally over every format.
+fn refused<T, F>(result: &Result<T, ManifestError<F>>) -> Option<ManifestPath> {
+    result
+        .as_ref()
+        .err()?
+        .as_reserved()
+        .map(|reserved| reserved.path().clone())
 }
 
 /// One format's answers to one scenario, in a format-independent shape.
@@ -700,17 +729,9 @@ macro_rules! differential {
             run(async {
                 let raw: Raw = Arc::new(MemoryStore::new());
                 let store: Store = ContentGet::new(Arc::clone(&raw));
-
-                let nodes = NodeLoadSaver::new(Arc::clone(&raw));
-                let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
-                let (empty, _) = editor.commit().await.unwrap();
-                let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
-                let from_trie = $scenario(&trie, &ChunkRef::new(empty)).await;
-
-                let builder: Builder<V1> = Builder::new();
-                let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
-                let kv = LdbManifest::plain(store.clone());
-                let from_kv = $scenario(&kv, &empty).await;
+                let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
+                let from_trie = $scenario(&trie, &trie_empty).await;
+                let from_kv = $scenario(&kv, &kv_empty).await;
 
                 assert_eq!(
                     from_trie, from_kv,
@@ -804,30 +825,9 @@ fn separator_prefixed_content_lists_alike_on_both_formats() {
 async fn both_top_levels(keys: &[&str]) -> (Vec<String>, Vec<String>) {
     let raw: Raw = Arc::new(MemoryStore::new());
     let store: Store = ContentGet::new(Arc::clone(&raw));
-    let bound = |index: usize| reference(u8::try_from(index).unwrap().saturating_add(1));
-
-    let nodes = NodeLoadSaver::new(Arc::clone(&raw));
-    let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
-    let (trie_empty, _) = editor.commit().await.unwrap();
-    let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
-    let trie_root = {
-        let mut writer = trie.edit(&ChunkRef::new(trie_empty));
-        for (index, key) in keys.iter().enumerate() {
-            writer.insert(ManifestPath::from(*key), bound(index));
-        }
-        writer.commit().await.unwrap()
-    };
-
-    let builder: Builder<V1> = Builder::new();
-    let kv_empty = *builder.build(&store, &Plaintext).await.unwrap().root();
-    let kv = LdbManifest::plain(store.clone());
-    let kv_root = {
-        let mut writer = kv.edit(&kv_empty);
-        for (index, key) in keys.iter().enumerate() {
-            writer.insert(ManifestPath::from(*key), bound(index));
-        }
-        writer.commit().await.unwrap()
-    };
+    let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
+    let trie_root = write_keys(&trie, &trie_empty, keys).await;
+    let kv_root = write_keys(&kv, &kv_empty, keys).await;
 
     let top = ManifestPath::default();
     (
@@ -889,18 +889,96 @@ fn an_insert_replaces_the_whole_binding_on_both_formats() {
     run(async {
         let raw: Raw = Arc::new(MemoryStore::new());
         let store: Store = ContentGet::new(Arc::clone(&raw));
+        let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
+        insert_replaces_the_whole_binding(&trie, &trie_empty).await;
+        insert_replaces_the_whole_binding(&kv, &kv_empty).await;
+    });
+}
+
+/// `empty` equals `native`, holds no path, and reads an absent path as
+/// `ManifestError::NotFound`, structurally.
+async fn assert_empty_bootstrap<M: Manifest<ChunkRef>>(manifest: &M, native: ChunkRef, f: &str) {
+    let empty: ChunkRef = manifest.empty().await.unwrap();
+    assert_eq!(empty, native, "{f}: bootstrap off the native empty root");
+    let view = manifest.at(&empty);
+    let first = view.iter().await.unwrap().next().await.unwrap();
+    assert!(first.is_none(), "{f}: the empty manifest holds no path");
+    let missing = view
+        .load(&ManifestPath::from("missing.html"), &mut MemSink::new())
+        .await
+        .err();
+    assert!(missing.is_some_and(|e| e.is_not_found()), "{f}: NotFound");
+}
+
+/// The seam bootstrap is the format's own: `empty` returns the root the
+/// native builder produces.
+#[test]
+fn the_seam_bootstrap_matches_each_format() {
+    run(async {
+        let raw: Raw = Arc::new(MemoryStore::new());
+        let store: Store = ContentGet::new(Arc::clone(&raw));
 
         let nodes = NodeLoadSaver::new(Arc::clone(&raw));
         let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
-        let (trie_empty, _) = editor.commit().await.unwrap();
+        let (native, _) = editor.commit().await.unwrap();
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone());
-        insert_replaces_the_whole_binding(&trie, &ChunkRef::new(trie_empty)).await;
+        assert_empty_bootstrap(&trie, ChunkRef::new(native), "trie").await;
 
         let builder: Builder<V1> = Builder::new();
-        let kv_empty = *builder.build(&store, &Plaintext).await.unwrap().root();
-        let kv = LdbManifest::plain(store.clone());
-        insert_replaces_the_whole_binding(&kv, &kv_empty).await;
+        let native = *builder.build(&store, &Plaintext).await.unwrap().root();
+        assert_empty_bootstrap(&LdbManifest::plain(store.clone()), native, "database").await;
     });
+}
+
+/// Insert `file`, load it through a refusing sink, and check the seam
+/// classified the refusal as `Sink` with the refusal kept as the source.
+async fn assert_sink_refusal<M: Manifest<ChunkRef>>(manifest: &M, file: ChunkRef, f: &str) {
+    let path = ManifestPath::from(INDEX);
+    let empty = manifest.empty().await.unwrap();
+    let root = manifest.insert(&empty, path.clone(), file).await.unwrap();
+    let error = manifest
+        .at(&root)
+        .load(&path, &mut RefusingSink)
+        .await
+        .unwrap_err();
+    let sink = matches!(error, ManifestError::Sink(_));
+    assert!(sink, "{f}: wrong variant: {error:?}");
+    let source = std::error::Error::source(&error);
+    let kept = source.is_some_and(|s| s.downcast_ref::<Refused>().is_some());
+    assert!(kept, "{f}: the sink's own error left the chain");
+}
+
+/// A sink refusal is the seam's own `Sink`, never `Data`, on both formats.
+#[test]
+fn a_refused_sink_write_is_sink_on_both_formats() {
+    run(async {
+        let raw: Raw = Arc::new(MemoryStore::new());
+        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let data = vec![7u8; 20_000];
+        let saver = File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT);
+        let file = ChunkRef::new(saver.save(&data[..]).await.unwrap());
+
+        let ((trie, _), (kv, _)) = both_formats(&raw, &store).await;
+        assert_sink_refusal(&trie, file, "trie").await;
+        assert_sink_refusal(&kv, file, "database").await;
+    });
+}
+
+/// A sink that refuses every write.
+#[derive(Debug)]
+struct RefusingSink;
+
+/// The refusal [`RefusingSink`] reports; the seam has to keep it reachable.
+#[derive(Debug, thiserror::Error)]
+#[error("the sink refused the write")]
+struct Refused;
+
+impl DataSink for RefusingSink {
+    type Error = Refused;
+
+    fn write_at(&mut self, _offset: u64, _data: &[u8]) -> Result<(), Self::Error> {
+        Err(Refused)
+    }
 }
 
 /// A reserved key planted past the seam is not listed, whatever kind the

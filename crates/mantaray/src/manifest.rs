@@ -10,21 +10,21 @@
 //! [`TrieView`] reads one root through the depth-guarded reader and the ordered
 //! cursor; [`TrieWriter`] records the batch through [`ManifestEditor`].
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::ops::{Bound, RangeBounds};
 
-use nectar_file::{File, Policy};
+use nectar_file::{File, LoadError, Policy};
 use nectar_manifest::{
-    DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapCursor,
-    MapEntry, MapView, MapWriter, ReservedKey, SinkError, SiteConfig, WellKnownKey,
+    DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestMetadata, ManifestOp,
+    ManifestPath, MapCursor, MapEntry, MapView, MapWriter, ReservedKey, SinkError, SiteConfig,
+    WellKnownKey,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
-use nectar_primitives::store::{BoxedError, MaybeSend, MaybeSync, TrustedGet};
+use nectar_primitives::store::{MaybeSend, MaybeSync, TrustedGet};
 
 use crate::cursor::Cursor;
 use crate::editor::ManifestEditor;
@@ -33,10 +33,10 @@ use crate::persist::{NodeLoader, NodeSaver};
 use crate::reader::Reader;
 use crate::{constants::metadata, entry::Entry};
 
-/// A failure crossing the manifest seam.
+/// The trie's own failures behind [`ManifestError::Format`].
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
-pub enum ManifestError {
+pub enum TrieFormatError {
     /// A path lookup failed.
     #[error(transparent)]
     Read(#[from] ReaderError),
@@ -46,34 +46,9 @@ pub enum ManifestError {
     /// Applying the batch failed.
     #[error(transparent)]
     Edit(#[from] EditorError),
-    /// The batch staged a write at a key the map reserves, so none of it
-    /// landed.
-    #[error("the batch named a reserved key")]
-    Reserved(#[from] ReservedKey),
-    /// No entry is bound at the requested path.
-    #[error("no entry at {path:?}")]
-    NotFound {
-        /// The path that resolved to nothing.
-        path: ManifestPath,
-    },
-    /// The entry at the path carries metadata but no reference, so it names
-    /// no data.
-    #[error("the entry at {path:?} carries no reference")]
-    NoReference {
-        /// The path whose entry names no data.
-        path: ManifestPath,
-    },
-    /// Reading the entry's data through the file pipeline failed.
-    #[error("load entry data")]
-    Data(#[source] BoxedError),
 }
 
-impl ManifestError {
-    /// Box a data-side failure behind the seam.
-    fn data<E: core::error::Error + MaybeSend + MaybeSync + 'static>(error: E) -> Self {
-        Self::Data(Box::new(error))
-    }
-}
+nectar_manifest::format_error_from!(TrieFormatError: ReaderError, CursorError, EditorError);
 
 /// The trie as a [`Manifest`]: a node adapter for the trie itself and a chunk
 /// store for entry data.
@@ -112,7 +87,7 @@ where
     /// The trie's metadata: a string map, stored verbatim on the fork record.
     type Metadata = BTreeMap<String, String>;
 
-    type Error = ManifestError;
+    type FormatError = TrieFormatError;
 
     type View<'a>
         = TrieView<L, S, R, B>
@@ -123,6 +98,15 @@ where
         = TrieWriter<L, R>
     where
         Self: 'a;
+
+    /// The empty trie persisted at width `R` with a zero obfuscation key.
+    fn empty(&self) -> impl Future<Output = Result<R, ManifestError<TrieFormatError>>> + MaybeSend {
+        let editor = ManifestEditor::empty_reference(self.nodes.clone());
+        async move {
+            let (root, _) = editor.commit_reference().await?;
+            Ok(root)
+        }
+    }
 
     fn at(&self, root: &R) -> Self::View<'_> {
         TrieView {
@@ -142,7 +126,7 @@ where
     fn metadata_from_view(
         &self,
         view: &dyn ManifestMetadata,
-    ) -> Result<Self::Metadata, Self::Error> {
+    ) -> Result<Self::Metadata, ManifestError<TrieFormatError>> {
         let mut map = BTreeMap::new();
         for (key, name) in [
             (WellKnownKey::ContentType, metadata::CONTENT_TYPE),
@@ -179,7 +163,10 @@ where
 {
     /// The entry at `path`, which is the trie key verbatim. The structural
     /// root and the site-config node read as absent.
-    async fn entry(&self, path: &ManifestPath) -> Result<Option<Entry>, ManifestError> {
+    async fn entry(
+        &self,
+        path: &ManifestPath,
+    ) -> Result<Option<Entry>, ManifestError<TrieFormatError>> {
         let Some(key) = content_key(path) else {
             return Ok(None);
         };
@@ -188,7 +175,7 @@ where
     }
 
     /// The trie's site-config node, which the reference client keys at `"/"`.
-    async fn root_node(&self) -> Result<Option<Entry>, ManifestError> {
+    async fn root_node(&self) -> Result<Option<Entry>, ManifestError<TrieFormatError>> {
         let reader = Reader::new(self.nodes.clone());
         Ok(reader
             .get(
@@ -216,7 +203,7 @@ where
 {
     type Metadata = BTreeMap<String, String>;
 
-    type Error = ManifestError;
+    type Error = ManifestError<TrieFormatError>;
 
     type Cursor = TrieCursor<L, R>;
 
@@ -288,15 +275,18 @@ where
             let entry = self
                 .entry(&path)
                 .await?
-                .ok_or_else(|| ManifestError::NotFound { path: path.clone() })?;
+                .ok_or_else(|| ManifestError::NotFound(path.clone()))?;
             let reference = entry
                 .reference()
                 .cloned()
-                .ok_or(ManifestError::NoReference { path })?;
+                .ok_or(ManifestError::NoData(path))?;
             File::<S, B>::new(store, Policy::DEFAULT)
                 .load(reference, sink)
                 .await
-                .map_err(ManifestError::data)?;
+                .map_err(|error| match error {
+                    LoadError::Sink { source, .. } => ManifestError::sink(source),
+                    data => ManifestError::data(data),
+                })?;
             Ok(())
         }
     }
@@ -331,7 +321,7 @@ where
     L: NodeLoader + Clone + MaybeSend + 'static,
     R: Reference + MaybeSend + MaybeSync,
 {
-    type Error = ManifestError;
+    type Error = ManifestError<TrieFormatError>;
 
     fn next(
         &mut self,
@@ -395,7 +385,7 @@ where
 {
     type Metadata = BTreeMap<String, String>;
 
-    type Error = ManifestError;
+    type Error = ManifestError<TrieFormatError>;
 
     /// An insert replaces the whole binding, clearing existing metadata unless
     /// `meta` carries some. A reserved path stages no trie op and refuses the
