@@ -6,12 +6,12 @@
 //! lands in each format's own native slot.
 
 use nectar_file::{File, MemSink, Policy};
-use nectar_ldb::{Builder, LdbManifest, Plaintext, Reader as LdbReader, V1};
+use nectar_ldb::{LdbManifest, Reader as LdbReader};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     DynManifest, ManifestMetadata, ManifestOp, ManifestPath, MetadataView, SiteConfig, WellKnownKey,
 };
-use nectar_mantaray::{ManifestEditor, MantarayManifest, Reader as MantarayReader, metadata};
+use nectar_mantaray::{MantarayManifest, Reader as MantarayReader, metadata};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
 use nectar_testing::run;
@@ -38,8 +38,9 @@ fn content_type() -> Box<dyn ManifestMetadata> {
     Box::new(MetadataView::new().with(WellKnownKey::ContentType, CONTENT_TYPE))
 }
 
-/// Drive one erased manifest through the whole seam: apply a batch, list the
-/// root and a subdirectory, load an entry's data, then remove it.
+/// Drive one erased manifest through the whole seam: bootstrap the empty
+/// root, apply a batch, list the root and a subdirectory, load an entry's
+/// data, then remove it.
 async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, data: &[u8]) {
     let root = manifest
         .dyn_apply(
@@ -192,27 +193,28 @@ async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, 
             .unwrap(),
         "the empty path binds nothing"
     );
-}
 
-/// An empty trie manifest, and the seams it is read and written through.
-async fn mantaray(raw: &Raw) -> (Nodes, ChunkRef) {
-    let nodes = NodeLoadSaver::new(Arc::clone(raw));
-    let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
-    let (root, _) = editor.commit().await.unwrap();
-    (nodes, ChunkRef::new(root))
-}
-
-/// An empty key-value manifest.
-async fn ldb(store: &Store) -> ChunkRef {
-    let builder: Builder<V1> = Builder::new();
-    *builder.build(store, &Plaintext).await.unwrap().root()
+    // The taxonomy survives erasure: the seam variants still match structurally.
+    let separator = ManifestPath::from("/");
+    let reserved = manifest
+        .dyn_insert(&root, separator.clone(), *file, content_type())
+        .await
+        .err()
+        .and_then(|e| e.as_reserved().map(|r| r.path().clone()));
+    assert_eq!(reserved, Some(separator), "erased Reserved");
+    let mut sink = MemSink::new();
+    let missing = manifest
+        .dyn_load(&root, &ManifestPath::from("absent.html"), &mut sink)
+        .await
+        .err();
+    assert!(missing.is_some_and(|e| e.is_not_found()), "erased NotFound");
 }
 
 #[test]
 fn both_formats_round_trip_through_one_erased_handle() {
     run(async {
         let raw: Raw = Arc::new(MemoryStore::new());
-        let store = ContentGet::new(Arc::clone(&raw));
+        let store: Store = ContentGet::new(Arc::clone(&raw));
         let data = payload();
         let file = ChunkRef::new(
             File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
@@ -221,12 +223,13 @@ fn both_formats_round_trip_through_one_erased_handle() {
                 .unwrap(),
         );
 
-        let (nodes, trie_root) = mantaray(&raw).await;
+        let nodes: Nodes = NodeLoadSaver::new(Arc::clone(&raw));
         let trie: Box<dyn DynManifest> = Box::new(
             MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone()),
         );
-        let kv_root = ldb(&store).await;
+        let trie_root = trie.dyn_empty().await.unwrap();
         let kv: Box<dyn DynManifest> = Box::new(LdbManifest::plain(store.clone()));
+        let kv_root = kv.dyn_empty().await.unwrap();
 
         exercise(trie.as_ref(), &trie_root, &file, &data).await;
         exercise(kv.as_ref(), &kv_root, &file, &data).await;
@@ -238,13 +241,14 @@ fn both_formats_round_trip_through_one_erased_handle() {
 fn the_site_config_lands_in_each_format_native_slot() {
     run(async {
         let raw: Raw = Arc::new(MemoryStore::new());
-        let store = ContentGet::new(Arc::clone(&raw));
+        let store: Store = ContentGet::new(Arc::clone(&raw));
         let config = SiteConfig::new().with_index_document(ManifestPath::from("index.html"));
 
         // The trie keeps the site documents on its root path node, which
         // binds no entry.
-        let (nodes, trie_root) = mantaray(&raw).await;
+        let nodes: Nodes = NodeLoadSaver::new(Arc::clone(&raw));
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes.clone(), store.clone());
+        let trie_root = trie.dyn_empty().await.unwrap();
         let root = trie
             .dyn_set_site_config(&trie_root, config.clone())
             .await
@@ -273,8 +277,8 @@ fn the_site_config_lands_in_each_format_native_slot() {
 
         // The key-value database keeps them in the root's typed metadata,
         // which its website view reads.
-        let kv_root = ldb(&store).await;
         let kv = LdbManifest::plain(store.clone());
+        let kv_root = kv.dyn_empty().await.unwrap();
         let root = kv.dyn_set_site_config(&kv_root, config).await.unwrap();
         let reader: LdbReader<_> = LdbReader::new(&store);
         let website = reader.website(&root).await.unwrap();

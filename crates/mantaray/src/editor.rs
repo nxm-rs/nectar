@@ -137,6 +137,12 @@ impl<S, R: Reference> ManifestEditor<S, R> {
         Self::with_root(Node::from_reference(root), store)
     }
 
+    /// Editor over an empty manifest at whatever width `R` carries.
+    #[cfg(feature = "manifest")]
+    pub(crate) fn empty_reference(store: S) -> Self {
+        Self::with_root(Node::default(), store)
+    }
+
     const fn with_root(trie: Node<R>, store: S) -> Self {
         Self {
             trie,

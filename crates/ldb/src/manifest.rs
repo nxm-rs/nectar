@@ -8,24 +8,25 @@
 //! [`LdbView`] wraps [`Database::at`] and [`LdbWriter`] wraps
 //! [`Database::edit`], with paths in place of keys.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::ops::{Bound, RangeBounds};
 
 use bytes::Bytes;
-use nectar_file::{File, Policy};
+use nectar_file::{File, LoadError, Policy};
 use nectar_manifest::{
-    DataSink, ListEntry, Listing, Manifest, ManifestMetadata, ManifestOp, ManifestPath, MapCursor,
-    MapEntry, MapView, MapWriter, ReservedKey, SinkError, SiteConfig, WellKnownKey,
+    DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestMetadata, ManifestOp,
+    ManifestPath, MapCursor, MapEntry, MapView, MapWriter, ReservedKey, SinkError, SiteConfig,
+    WellKnownKey,
 };
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
-use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
+use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 
 use crate::apply::ApplyError;
+use crate::builder::Builder;
 use crate::db::{Database, Editor, View};
-use crate::error::{MetadataTooLong, NotAReference};
+use crate::error::MetadataTooLong;
 use crate::folder::DirEntry;
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, Metadata};
@@ -35,10 +36,10 @@ use crate::scan::Cursor;
 use crate::store::{Plaintext, Seal};
 use crate::value::{Entry, Key};
 
-/// A failure crossing the manifest seam.
+/// The database's own failures behind [`ManifestError::Format`].
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
-pub enum ManifestError {
+pub enum LdbFormatError {
     /// A lookup or a listing walk failed.
     #[error(transparent)]
     Read(#[from] ReaderError),
@@ -48,38 +49,9 @@ pub enum ManifestError {
     /// The rebuilt metadata block exceeded the format's bound.
     #[error(transparent)]
     Metadata(#[from] MetadataTooLong),
-    /// The entry is bound to inline bytes where a reference was required.
-    #[error(transparent)]
-    NotAReference(#[from] NotAReference),
-    /// The batch staged a write at a key the map reserves, so none of it
-    /// landed.
-    #[error("the batch named a reserved key")]
-    Reserved(#[from] ReservedKey),
-    /// No entry is bound at the requested path.
-    #[error("no entry at {path:?}")]
-    NotFound {
-        /// The path that resolved to nothing.
-        path: ManifestPath,
-    },
-    /// Reading the entry's data through the file pipeline failed.
-    #[error("load entry data")]
-    Data(#[source] BoxedError),
-    /// Writing into the sink failed.
-    #[error("write into the sink")]
-    Sink(#[source] BoxedError),
 }
 
-impl ManifestError {
-    /// Box a data-side failure behind the seam.
-    fn data<E: core::error::Error + MaybeSend + MaybeSync + 'static>(error: E) -> Self {
-        Self::Data(Box::new(error))
-    }
-
-    /// Box a sink failure behind the seam.
-    fn sink<E: core::error::Error + MaybeSend + MaybeSync + 'static>(error: E) -> Self {
-        Self::Sink(Box::new(error))
-    }
-}
+nectar_manifest::format_error_from!(LdbFormatError: ReaderError, ApplyError, MetadataTooLong);
 
 /// The key-value database as a [`Manifest`], keyed by path.
 ///
@@ -131,7 +103,7 @@ where
     /// The database's metadata: the typed key registry, absent as `None`.
     type Metadata = Option<Metadata<V1>>;
 
-    type Error = ManifestError;
+    type FormatError = LdbFormatError;
 
     type View<'a>
         = LdbView<'a, S, R>
@@ -142,6 +114,15 @@ where
         = LdbWriter<'a, S, K, R>
     where
         Self: 'a;
+
+    /// The empty database persisted through the native builder.
+    async fn empty(&self) -> Result<R, ManifestError<LdbFormatError>> {
+        let built = Builder::<V1>::new()
+            .build(self.db.store(), self.db.seal())
+            .await
+            .map_err(ApplyError::from)?;
+        Ok(built.root().clone())
+    }
 
     fn at(&self, root: &R) -> Self::View<'_> {
         LdbView {
@@ -159,7 +140,7 @@ where
     fn metadata_from_view(
         &self,
         view: &dyn ManifestMetadata,
-    ) -> Result<Self::Metadata, Self::Error> {
+    ) -> Result<Self::Metadata, ManifestError<LdbFormatError>> {
         let mut meta: Option<Metadata<V1>> = None;
         for (key, id) in [
             (WellKnownKey::ContentType, KeyId::ContentType),
@@ -194,7 +175,7 @@ where
 {
     type Metadata = Option<Metadata<V1>>;
 
-    type Error = ManifestError;
+    type Error = ManifestError<LdbFormatError>;
 
     type Cursor = LdbCursor<'a, S, R>;
 
@@ -308,19 +289,25 @@ where
                 Some(key) => self.view.get(&key).await?,
                 None => None,
             }
-            .ok_or_else(|| ManifestError::NotFound { path })?;
-            match entry {
-                Entry::Inline(value) => sink
-                    .write_at(0, value.as_bytes())
-                    .map_err(ManifestError::sink)?,
-                bound => {
-                    let reference = EntryRef::try_from(bound)?;
-                    File::new(store, Policy::DEFAULT)
-                        .load(reference, sink)
-                        .await
-                        .map_err(ManifestError::data)?;
+            .ok_or(ManifestError::NotFound(path))?;
+            // An inline value is the data, so it needs no file walk; both
+            // reference widths do.
+            let reference = match entry {
+                Entry::Inline(value) => {
+                    return sink
+                        .write_at(0, value.as_bytes())
+                        .map_err(ManifestError::sink);
                 }
-            }
+                Entry::Ref32(reference) => EntryRef::Plain(reference),
+                Entry::Ref64(reference) => EntryRef::Encrypted(reference),
+            };
+            File::new(store, Policy::DEFAULT)
+                .load(reference, sink)
+                .await
+                .map_err(|error| match error {
+                    LoadError::Sink { source, .. } => ManifestError::sink(source),
+                    data => ManifestError::data(data),
+                })?;
             Ok(())
         }
     }
@@ -360,7 +347,7 @@ where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSend + MaybeSync,
     R: NodeRef,
 {
-    type Error = ManifestError;
+    type Error = ManifestError<LdbFormatError>;
 
     fn next(
         &mut self,
@@ -410,7 +397,7 @@ where
 {
     type Metadata = Option<Metadata<V1>>;
 
-    type Error = ManifestError;
+    type Error = ManifestError<LdbFormatError>;
 
     /// An insert replaces the whole binding, clearing existing metadata unless
     /// `meta` carries some. A reserved path stages no database op and refuses
@@ -481,7 +468,10 @@ fn is_reserved(key: &Key) -> bool {
 ///
 /// `key` sorts first in its own prefix range, so the probe costs one seek and
 /// at most two steps.
-async fn bound_below<S, R>(view: &View<'_, S, V1, R>, key: &Key) -> Result<bool, ManifestError>
+async fn bound_below<S, R>(
+    view: &View<'_, S, V1, R>,
+    key: &Key,
+) -> Result<bool, ManifestError<LdbFormatError>>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     R: NodeRef,
