@@ -1,4 +1,4 @@
-//! Both manifest formats behind one `Box<dyn DynManifest>`.
+//! Both manifest formats behind one `Box<dyn ErasedManifest>`.
 //!
 //! The point of the seam is that a consumer holding an erased handle cannot
 //! tell the trie from the key-value database: the same list, load and apply
@@ -9,7 +9,8 @@ use nectar_file::MemSink;
 use nectar_ldb::{Database, Reader as LdbReader};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    DynManifest, ManifestOp, ManifestPath, MetadataSource, MetadataView, SiteConfig, WellKnownKey,
+    ErasedManifest, ManifestOp, ManifestPath, MapEntry, MetadataSource, MetadataView, SiteConfig,
+    WellKnownKey,
 };
 use nectar_mantaray::{MantarayManifest, Reader as MantarayReader, metadata};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE};
@@ -37,7 +38,7 @@ fn content_type() -> Box<dyn MetadataSource> {
 /// Drive one erased manifest through the whole seam: bootstrap the empty
 /// root, apply a batch, list the root and a subdirectory, load an entry's
 /// data, then remove it.
-async fn exercise(manifest: &dyn DynManifest, base: &ChunkRef, file: &ChunkRef, data: &[u8]) {
+async fn exercise(manifest: &dyn ErasedManifest, base: &ChunkRef, file: &ChunkRef, data: &[u8]) {
     let root = manifest
         .dyn_apply(
             base,
@@ -234,11 +235,11 @@ fn both_formats_round_trip_through_one_erased_handle() {
         let file = save_file(&raw, &data).await;
 
         let nodes: Nodes = NodeLoadSaver::new(Arc::clone(&raw));
-        let trie: Box<dyn DynManifest> = Box::new(
+        let trie: Box<dyn ErasedManifest> = Box::new(
             MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone()),
         );
         let trie_root = trie.dyn_empty().await.unwrap();
-        let kv: Box<dyn DynManifest> = Box::new(Database::<_>::plain(store.clone()));
+        let kv: Box<dyn ErasedManifest> = Box::new(Database::<_>::plain(store.clone()));
         let kv_root = kv.dyn_empty().await.unwrap();
 
         exercise(trie.as_ref(), &trie_root, &file, &data).await;
@@ -292,5 +293,63 @@ fn the_site_config_lands_in_each_format_native_slot() {
         let reader: LdbReader<_> = LdbReader::new(&store);
         let website = reader.website(&root).await.unwrap();
         assert_eq!(website.index(), Some(&b"index.html"[..]));
+    });
+}
+
+/// The erased walk visits every content path in order and stops on `Break`.
+#[test]
+fn the_erased_walk_visits_in_order_and_breaks_early() {
+    use std::ops::ControlFlow;
+
+    run(async {
+        let (raw, store) = stores();
+        let file = save_file(&raw, &payload()).await;
+        let ops = |paths: &[&str]| -> Vec<ManifestOp<ChunkRef, Box<dyn MetadataSource>>> {
+            paths
+                .iter()
+                .map(|path| ManifestOp::Insert {
+                    path: ManifestPath::from(*path),
+                    reference: file,
+                    meta: Box::new(()) as Box<dyn MetadataSource>,
+                })
+                .collect()
+        };
+
+        let nodes: Nodes = NodeLoadSaver::new(Arc::clone(&raw));
+        let trie: Box<dyn ErasedManifest> = Box::new(
+            MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes, store.clone()),
+        );
+        let kv: Box<dyn ErasedManifest> = Box::new(Database::<_>::plain(store.clone()));
+
+        for (manifest, format) in [(&trie, "trie"), (&kv, "kv")] {
+            let base = manifest.dyn_empty().await.unwrap();
+            let root = manifest
+                .dyn_apply(&base, ops(&["b/c", "a", "d"]))
+                .await
+                .unwrap();
+
+            // The full walk arrives in path order, entries intact.
+            let mut seen = Vec::new();
+            manifest
+                .dyn_for_each(&root, &mut |path: ManifestPath, entry: MapEntry| {
+                    assert!(entry.is_loadable(), "{format}: {path:?}");
+                    seen.push(String::from_utf8_lossy(path.as_bytes()).into_owned());
+                    ControlFlow::Continue(())
+                })
+                .await
+                .unwrap();
+            assert_eq!(seen, ["a", "b/c", "d"], "{format}");
+
+            // A break stops the walk after the first entry.
+            let mut first = Vec::new();
+            manifest
+                .dyn_for_each(&root, &mut |path: ManifestPath, _| {
+                    first.push(String::from_utf8_lossy(path.as_bytes()).into_owned());
+                    ControlFlow::Break(())
+                })
+                .await
+                .unwrap();
+            assert_eq!(first, ["a"], "{format} breaks early");
+        }
     });
 }

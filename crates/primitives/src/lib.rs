@@ -79,6 +79,7 @@ pub mod network_id;
 pub mod overlay;
 pub mod proximity_order;
 pub mod signing;
+pub mod sink;
 pub mod spec;
 pub mod store;
 pub mod timestamp;

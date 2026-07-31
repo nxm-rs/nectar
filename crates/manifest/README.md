@@ -1,7 +1,7 @@
 # nectar-manifest
 
-The manifest seam for Ethereum Swarm: one `Manifest` trait, one shared operation vocabulary, and an object-safe `DynManifest` wrapper over both manifest formats (the mantaray trie and the `nectar-ldb` key-value website view).
-A manifest is a map, so it reads through a root-bound handle: `at(root)` gives a `MapView` with `get`, `contains_key`, `range`, `iter`, `dir` and `load`.
+The manifest seam for Ethereum Swarm: one `Manifest` trait, one shared operation vocabulary, and an object-safe `ErasedManifest` wrapper over both manifest formats (the mantaray trie and the `nectar-ldb` key-value website view).
+A manifest is a map, so it reads through a root-bound handle: `at(root)` gives a `ManifestView` with `get`, `contains_key`, `range`, `iter`, `dir`, `serve` and `load`.
 It writes through one seam-owned value: stage a `Batch` with `insert`, `insert_with`, `remove`, `extend` and the two site-document setters, then `apply(base, batch)` folds it in atomically and returns the new root.
 The static trait keeps each format's native metadata and reference width, so nothing is erased on the zero-cost path; the erased path unifies metadata behind a well-known-key view.
 

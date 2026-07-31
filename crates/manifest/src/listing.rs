@@ -3,11 +3,10 @@
 
 use alloc::vec::Vec;
 
-use nectar_marker::MaybeSend;
 use nectar_primitives::chunk::{ChunkRef, Reference};
 
 use crate::path::ManifestPath;
-use crate::view::{MapCursor, MapEntry};
+use crate::view::{ManifestCursor, MapEntry};
 
 /// One immediate child of a listed directory.
 ///
@@ -128,8 +127,8 @@ impl<R: Reference> FromIterator<ListEntry<R>> for Listing<R> {
 /// directory level below `prefix`; the first path outside the prefix ends it.
 pub async fn collapse_dir<R, C>(prefix: ManifestPath, mut cursor: C) -> Result<Listing<R>, C::Error>
 where
-    R: Reference + MaybeSend,
-    C: MapCursor<R>,
+    R: Reference,
+    C: ManifestCursor<R>,
 {
     let mut entries = Vec::new();
     let mut last_dir = None;

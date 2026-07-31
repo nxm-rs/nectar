@@ -25,7 +25,6 @@ use core::task::{Context, Poll};
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::{Admission, BoxFuture, Window};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
-use nectar_primitives::store::MaybeSend;
 use nectar_primitives::{EncryptedChunkRef, EntryRef};
 
 use crate::error::EditorError;
@@ -263,7 +262,7 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     }
 }
 
-impl<S: NodeLoader, R: Reference + MaybeSend> ManifestEditor<S, R> {
+impl<S: NodeLoader, R: Reference> ManifestEditor<S, R> {
     /// Apply the recorded ops to the trie, one at a time, in submission order.
     async fn apply_ops(&mut self) -> Result<(), EditorError> {
         let ops = core::mem::take(&mut self.ops);
@@ -301,7 +300,7 @@ impl<S: NodeLoader, R: Reference + MaybeSend> ManifestEditor<S, R> {
     }
 }
 
-impl<S: NodeLoader + NodeSaver<R>, R: Reference + MaybeSend> ManifestEditor<S, R> {
+impl<S: NodeLoader + NodeSaver<R>, R: Reference> ManifestEditor<S, R> {
     /// Apply the log and persist the trie, returning the root's full-width
     /// reference and the loadsaver.
     ///
@@ -361,7 +360,7 @@ async fn apply_metadata_merge<S, R>(
 ) -> Result<(), MantarayError>
 where
     S: NodeLoader,
-    R: Reference + MaybeSend,
+    R: Reference,
 {
     match merge_descent(trie, path, &key, &value, store).await? {
         MergeOutcome::Applied => Ok(()),
@@ -385,7 +384,7 @@ async fn apply_metadata_clear<S, R>(
 ) -> Result<(), MantarayError>
 where
     S: NodeLoader,
-    R: Reference + MaybeSend,
+    R: Reference,
 {
     let Some((entry, mut metadata)) = binding_at(trie, path, store).await? else {
         return Ok(());
@@ -491,7 +490,7 @@ async fn commit_trie<S, R>(
 ) -> Result<Node<R>, MantarayError>
 where
     S: NodeSaver<R>,
-    R: Reference + MaybeSend,
+    R: Reference,
 {
     if root.reference().is_some() {
         return Ok(root);
@@ -581,7 +580,7 @@ struct CommitWalk<'s, S, R: Reference> {
 impl<'s, S, R> CommitWalk<'s, S, R>
 where
     S: NodeSaver<R>,
-    R: Reference + MaybeSend,
+    R: Reference,
 {
     fn new(saver: &'s S, window: Window, root: Node<R>) -> Self {
         Self {

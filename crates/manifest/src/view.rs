@@ -3,19 +3,16 @@
 use core::future::Future;
 use core::ops::Bound;
 
-use nectar_file::{File, LoadError, Policy};
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::EntryRef;
-use nectar_primitives::chunk::{ChunkRef, ContentOnlyChunkSet, Reference};
-use nectar_primitives::store::TrustedGet;
+use nectar_primitives::chunk::{ChunkRef, Reference};
 
-use crate::error::ManifestError;
 use crate::listing::{Listing, collapse_dir};
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
 use crate::{DataSink, SinkError};
 
-/// What a bound path resolves to. [`load`](MapView::load) success is
+/// What a bound path resolves to. [`load`](ManifestView::load) success is
 /// predictable from it: exactly a loadable entry loads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MapEntry<R: Reference = ChunkRef> {
@@ -45,7 +42,7 @@ impl<R: Reference> MapEntry<R> {
         }
     }
 
-    /// Whether [`load`](MapView::load) serves this entry.
+    /// Whether [`load`](ManifestView::load) serves this entry.
     #[must_use]
     pub const fn is_loadable(&self) -> bool {
         matches!(self, Self::Reference(_) | Self::Value)
@@ -60,7 +57,7 @@ impl<R: Reference> MapEntry<R> {
 
 /// An ordered walk over a view. Peak retained state is a function of depth,
 /// not of key count.
-pub trait MapCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
+pub trait ManifestCursor<R: Reference = ChunkRef>: MaybeSend {
     /// Error type a walk fails with.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
@@ -76,7 +73,7 @@ pub trait MapCursor<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 /// through [`index_document`](Self::index_document) and
 /// [`error_document`](Self::error_document), and no walk yields the slot they
 /// live in.
-pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
+pub trait ManifestView<R: Reference = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
 
@@ -85,7 +82,7 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
 
     /// The ordered walk [`iter`](Self::iter) and [`range`](Self::range) hand
     /// back.
-    type Cursor: MapCursor<R, Error = Self::Error>;
+    type Cursor: ManifestCursor<R, Error = Self::Error>;
 
     /// A reserved path reads as absent; see [`ManifestPath::is_reserved`].
     fn get(
@@ -171,6 +168,28 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
         }
     }
 
+    /// Resolve a request path to the entry a website server would return:
+    /// exact content path first, then the index document joined below the
+    /// request path, then the whole error document. Every probe is
+    /// [`get`](Self::get), so a reserved path never answers.
+    ///
+    /// A format with a native resolver overrides this and keeps the order.
+    fn serve(
+        &self,
+        path: &ManifestPath,
+    ) -> impl Future<Output = Result<Served<R>, Self::Error>> + MaybeSend
+    where
+        Self: Sized,
+    {
+        let path = path.clone();
+        async move {
+            if let Some(entry) = self.get(&path).await? {
+                return Ok(Served::Exact { path, entry });
+            }
+            serve_fallback(self, &path).await
+        }
+    }
+
     /// Write the data bound to `path` into `sink`, starting at offset zero.
     ///
     /// Serves exactly what [`get`](Self::get) reports loadable; an opaque
@@ -194,25 +213,95 @@ pub trait MapView<R: Reference + MaybeSend = ChunkRef>: MaybeSend {
     ) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend;
 }
 
-/// Drain the file at `reference` into `sink`: the one data-load lane every
-/// format shares, reporting through the seam's taxonomy.
-pub async fn load_reference<S, K, F, const B: usize>(
-    store: S,
-    reference: EntryRef,
-    sink: &mut K,
-) -> Result<(), ManifestError<F>>
+/// What serving a request path resolves to; the path is the one whose entry
+/// answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Served<R: Reference = ChunkRef> {
+    /// The request path matched a content path exactly.
+    Exact {
+        /// The matched path.
+        path: ManifestPath,
+        /// The bound entry.
+        entry: MapEntry<R>,
+    },
+    /// No exact path matched; the index document joined below the request
+    /// path did.
+    Index {
+        /// The joined index-document path that matched.
+        path: ManifestPath,
+        /// The bound entry.
+        entry: MapEntry<R>,
+    },
+    /// Neither the path nor its index document matched; the error document
+    /// did.
+    Error {
+        /// The error-document path that matched.
+        path: ManifestPath,
+        /// The bound entry.
+        entry: MapEntry<R>,
+    },
+    /// No path, index document, or error document matched.
+    Missing,
+}
+
+impl<R: Reference> Served<R> {
+    /// The resolved entry, or `None` when nothing matched.
+    #[must_use]
+    pub const fn entry(&self) -> Option<&MapEntry<R>> {
+        match self {
+            Self::Exact { entry, .. } | Self::Index { entry, .. } | Self::Error { entry, .. } => {
+                Some(entry)
+            }
+            Self::Missing => None,
+        }
+    }
+
+    /// The resolved path, or `None` when nothing matched.
+    #[must_use]
+    pub const fn path(&self) -> Option<&ManifestPath> {
+        match self {
+            Self::Exact { path, .. } | Self::Index { path, .. } | Self::Error { path, .. } => {
+                Some(path)
+            }
+            Self::Missing => None,
+        }
+    }
+
+    /// Whether nothing matched.
+    #[must_use]
+    pub const fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+
+/// Resolve `path` under the site fallbacks alone: the index-document join,
+/// then the error document. The exact probe is the caller's, so a format
+/// overriding [`ManifestView::serve`] keeps the fallback law here.
+pub async fn serve_fallback<R, V>(view: &V, path: &ManifestPath) -> Result<Served<R>, V::Error>
 where
-    S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
-    K: DataSink<Error: SinkError> + MaybeSend,
+    R: Reference,
+    V: ManifestView<R>,
 {
-    File::<S, B>::new(store, Policy::DEFAULT)
-        .load(reference, sink)
-        .await
-        .map(drop)
-        .map_err(|error| match error {
-            LoadError::Sink { source, .. } => ManifestError::sink(source),
-            data => ManifestError::data(data),
-        })
+    let (index, error) = view.site_config().await?.into_parts();
+    if let Some(index) = index {
+        // The index document is a filename joined below the directory the
+        // request path names.
+        let joined = path.join(index.as_bytes());
+        if let Some(entry) = view.get(&joined).await? {
+            return Ok(Served::Index {
+                path: joined,
+                entry,
+            });
+        }
+    }
+    if let Some(error) = error {
+        // One whole content path; a reserved one reads as absent like any
+        // other get.
+        if let Some(entry) = view.get(&error).await? {
+            return Ok(Served::Error { path: error, entry });
+        }
+    }
+    Ok(Served::Missing)
 }
 
 #[cfg(test)]
@@ -221,6 +310,22 @@ mod tests {
     use nectar_primitives::{EncryptedChunkRef, EncryptionKey};
 
     use super::*;
+
+    #[test]
+    fn exactly_the_matched_kinds_carry_a_path_and_entry() {
+        let entry = MapEntry::Reference(ChunkRef::new(ChunkAddress::new([1; 32])));
+        let exact = Served::Exact {
+            path: ManifestPath::from("a.html"),
+            entry: entry.clone(),
+        };
+        assert_eq!(exact.path(), Some(&ManifestPath::from("a.html")));
+        assert_eq!(exact.entry(), Some(&entry));
+        assert!(!exact.is_missing());
+        let missing = Served::<ChunkRef>::Missing;
+        assert!(missing.is_missing());
+        assert_eq!(missing.path(), None);
+        assert_eq!(missing.entry(), None);
+    }
 
     #[test]
     fn from_entry_ref_keeps_the_width_and_exactly_reference_and_value_load() {

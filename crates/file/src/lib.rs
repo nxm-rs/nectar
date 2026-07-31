@@ -36,6 +36,9 @@
     )
 )]
 
+// Only the engine surfaces behind `primitives` allocate; the config and
+// geometry vocabulary is alloc-free.
+#[cfg(feature = "primitives")]
 extern crate alloc;
 #[cfg(any(test, feature = "std"))]
 extern crate std;
@@ -59,6 +62,8 @@ pub mod geometry;
 // module is crate visibility, and only the handle seam is re-exported.
 #[cfg(feature = "primitives")]
 mod handle;
+#[cfg(feature = "manifest")]
+mod manifest;
 #[cfg(feature = "primitives")]
 mod num;
 /// Shared fuzz and test oracle for the malformed-intermediate walk.
@@ -68,14 +73,22 @@ mod num;
 #[doc(hidden)]
 pub mod oracles;
 #[cfg(feature = "primitives")]
-#[allow(unreachable_pub, reason = "crate-private module: `pub` is crate visibility")]
+#[allow(
+    unreachable_pub,
+    reason = "crate-private module: `pub` is crate visibility"
+)]
 pub(crate) mod read;
+#[cfg(feature = "primitives")]
+#[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
 pub mod sink;
 #[cfg(feature = "primitives")]
 #[cfg_attr(docsrs, doc(cfg(feature = "primitives")))]
 pub mod source;
 #[cfg(feature = "primitives")]
-#[allow(unreachable_pub, reason = "crate-private module: `pub` is crate visibility")]
+#[allow(
+    unreachable_pub,
+    reason = "crate-private module: `pub` is crate visibility"
+)]
 pub(crate) mod split;
 pub mod sync;
 #[cfg(all(test, feature = "primitives"))]
@@ -84,7 +97,10 @@ mod testutil;
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub mod tokio;
 #[cfg(feature = "primitives")]
-#[allow(unreachable_pub, reason = "crate-private module: `pub` is crate visibility")]
+#[allow(
+    unreachable_pub,
+    reason = "crate-private module: `pub` is crate visibility"
+)]
 pub(crate) mod walk;
 
 #[cfg(feature = "tokio")]
@@ -93,6 +109,9 @@ pub use config::{BranchBudget, HashWindow, PutWindow, Window};
 pub use geometry::{DEFAULT_BODY_SIZE, Mode, branches, max_depth};
 #[cfg(feature = "primitives")]
 pub use handle::{File, Policy, Reader, Segments};
+#[cfg(feature = "manifest")]
+#[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
+pub use manifest::load_reference;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use read::AdaptiveWindow;
@@ -100,15 +119,16 @@ pub use read::AdaptiveWindow;
 pub use read::{CollectError, LoadError, OpenError, Progress, ProgressFn, SeekPastEnd};
 #[cfg(feature = "std")]
 pub use sink::FsSink;
+#[cfg(feature = "primitives")]
 pub use sink::{DataSink, MemSink, MemSinkError};
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+pub use source::AsyncReadSource;
 #[cfg(feature = "primitives")]
 pub use source::Source;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use source::{ReadAt, ReadAtError, ReadAtSource};
-#[cfg(feature = "tokio")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
-pub use source::AsyncReadSource;
 #[cfg(all(feature = "primitives", feature = "encryption"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use split::{KeyError, KeySource, RandomKeys};

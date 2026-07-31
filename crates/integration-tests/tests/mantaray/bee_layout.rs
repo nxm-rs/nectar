@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use nectar_loadsave::NodeLoadSaver;
-use nectar_manifest::{Batch, Manifest, ManifestPath, MapCursor, MapView};
+use nectar_manifest::{Batch, Manifest, ManifestCursor, ManifestPath, ManifestView};
 use nectar_mantaray::{ManifestEditor, MantarayManifest, Reader, metadata};
 use nectar_primitives::store::{ContentGet, MemoryStore};
 use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
@@ -121,7 +121,7 @@ fn a_website_manifest_matches_the_reference_layout() {
         assert!(structural.is_none(), "the empty path binds nothing at all");
 
         // Read back through the seam: content plus two options.
-        let view = trie.at(&root);
+        let view = trie.at(root);
         let mut walked = Vec::new();
         let mut cursor = view.iter().await.unwrap();
         while let Some((path, _)) = cursor.next().await.unwrap() {
