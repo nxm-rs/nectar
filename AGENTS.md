@@ -34,9 +34,9 @@ Prefer them for new code, and align existing code when you touch it.
   An `insert` replaces the whole binding, so it clears the metadata the key carried unless the call attaches new metadata.
   A `remove` is exact-key, so it clears that key's value and metadata and no other key's: a key with children keeps every one of them, a childless leaf is pruned, and removing an unbound or absent key is a no-op that leaves the root where it was.
   Never let a map `remove` take a subtree or a prefix.
-  mantaray's legacy boundary remove is `remove_subtree`, and it exists for the pinned 0.3.0 differential alone.
+  mantaray keeps a boundary remove, `remove_subtree`, outside the map vocabulary; its consumer is the editor oracle in `crates/mantaray/src/oracles.rs`, which the committed fuzz corpus exercises, so do not delete it as unused.
   A manifest content key is bare and verbatim: the canonical `ManifestPath` stores the bytes it was given, so `index.html` is the key `index.html` on the wire of both formats.
-  mantaray therefore stays byte-identical to the reference client's v0.2 wire, and the pinned 0.3.0 differential guards that byte for byte.
+  mantaray therefore stays byte-identical to the reference client's v0.2 wire, and `crates/integration-tests/tests/mantaray/bee_vectors.rs` guards that byte for byte against three roots the reference client produced, with `bee_layout.rs` pinning the shape those bytes carry.
   Never root a stored key at the separator, and never model the manifest's own configuration as a key.
   The site index and error documents are an explicit Option-typed API: `index_document()` and `error_document()` on the read view answer `None` when unset, and the chainable `with_index_document` and `with_error_document` on the writer set them.
   Each lands in the format's native root slot: mantaray writes the `"/"` node's metadata beside a zero-address entry, which is the layout the reference client reads, and `nectar-ldb` writes its root manifest-metadata.

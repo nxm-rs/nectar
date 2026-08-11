@@ -28,7 +28,7 @@
 //! database alone, whose packing derives the whole shape from the key set.
 //! mantaray 0.2 puts a node where the insert order first justified one and
 //! never moves it, so it cannot have that without breaking the wire
-//! `mantaray/legacy_differential.rs` pins.
+//! `mantaray/bee_vectors.rs` pins.
 
 use std::ops::Bound;
 use std::sync::Arc;

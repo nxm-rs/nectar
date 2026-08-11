@@ -1,6 +1,6 @@
 //! The mantaray v0.2 layout, asserted against what the reference client writes.
 //!
-//! `legacy_differential.rs` pins the bytes; this file pins the shape they
+//! `bee_vectors.rs` pins the bytes; this file pins the shape they
 //! carry:
 //!
 //! - A content path is stored bare and verbatim. Nothing is prepended.
