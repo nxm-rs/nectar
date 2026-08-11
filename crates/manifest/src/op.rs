@@ -11,8 +11,8 @@ use crate::path::ManifestPath;
 /// list generically and the format decides how the batch reaches storage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManifestOp<R: Reference = ChunkRef, M = ()> {
-    /// Bind `path` to `reference`, carrying `meta`.
-    Put {
+    /// Insert `path` bound to `reference`, carrying `meta`.
+    Insert {
         /// The path to bind.
         path: ManifestPath,
         /// The reference the path resolves to.
@@ -20,9 +20,9 @@ pub enum ManifestOp<R: Reference = ChunkRef, M = ()> {
         /// Metadata to attach, in the format's own vocabulary.
         meta: M,
     },
-    /// Unbind `path`.
+    /// Remove `path`.
     Remove {
-        /// The path to unbind.
+        /// The path to remove.
         path: ManifestPath,
     },
 }
@@ -32,7 +32,7 @@ impl<R: Reference, M> ManifestOp<R, M> {
     #[must_use]
     pub const fn path(&self) -> &ManifestPath {
         match self {
-            Self::Put { path, .. } | Self::Remove { path } => path,
+            Self::Insert { path, .. } | Self::Remove { path } => path,
         }
     }
 

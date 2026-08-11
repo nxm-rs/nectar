@@ -37,16 +37,22 @@ use crate::{MantarayError, metadata};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Op<R: Reference = ChunkRef> {
-    /// Set the entry at the path; a non-empty metadata map replaces the
-    /// node's metadata, an empty one leaves existing metadata in place.
-    Put {
+    /// Insert the entry at the path, replacing the whole binding. An empty
+    /// `metadata` clears the node's.
+    Insert {
         /// Entry reference, or `None` for a metadata-only value node.
         reference: Option<R>,
-        /// Metadata to attach; empty means keep what is there.
+        /// Metadata to attach; empty clears the node's.
         metadata: BTreeMap<String, String>,
     },
-    /// Remove the value at the path; an absent path fails the commit.
+    /// Clear the binding at exactly the path: its value and its metadata, and
+    /// nothing below it. An absent path is a no-op.
     Remove,
+    /// Prune the fork whose boundary the path names, taking every key under it.
+    /// An absent path fails the commit.
+    ///
+    /// The legacy boundary op; [`Remove`](Self::Remove) is the map verb.
+    RemoveSubtree,
     /// Merge one metadata key into the node at the path, creating the node
     /// when absent.
     SetRootMetadata {
@@ -54,6 +60,13 @@ pub enum Op<R: Reference = ChunkRef> {
         key: String,
         /// Metadata value to set under the key.
         value: String,
+    },
+    /// Remove one metadata key from the node at the path, pruning a node the
+    /// removal leaves with neither a binding nor a child. An absent key is a
+    /// no-op.
+    ClearRootMetadata {
+        /// Metadata key to remove.
+        key: String,
     },
 }
 
@@ -70,7 +83,7 @@ pub enum Op<R: Reference = ChunkRef> {
 /// # use nectar_mantaray::{ManifestEditor, DefaultMemoryStore};
 /// # use nectar_primitives::chunk::ChunkAddress;
 /// let mut editor: ManifestEditor<_> = ManifestEditor::new(DefaultMemoryStore::new());
-/// editor.put("index.html", ChunkAddress::from([7u8; 32]));
+/// editor.insert("index.html", ChunkAddress::from([7u8; 32]));
 /// editor.set_index_document("index.html");
 /// assert_eq!(editor.ops().len(), 2);
 /// ```
@@ -153,43 +166,46 @@ impl<S, R: Reference> ManifestEditor<S, R> {
         &self.ops
     }
 
-    /// Record setting the entry at `path`.
+    /// Record inserting the entry at `path`, with metadata as a suffix.
+    ///
+    /// The op is recorded when the returned guard drops:
+    /// `editor.insert(path, reference).meta(metadata);`. An insert replaces the
+    /// whole binding, clearing existing metadata unless
+    /// [`meta`](Insert::meta) is given.
     ///
     /// Format limitations, both rejected at commit: an all-zero reference is
     /// the wire's absent-entry sentinel, and metadata on the empty path (the
     /// trie root) has no wire slot.
-    pub fn put(&mut self, path: impl AsRef<[u8]>, reference: impl Into<R>) -> &mut Self {
-        self.push(
-            path,
-            Op::Put {
-                reference: Some(reference.into()),
-                metadata: BTreeMap::new(),
-            },
-        )
+    pub fn insert(&mut self, path: impl AsRef<[u8]>, reference: impl Into<R>) -> Insert<'_, R> {
+        Insert {
+            ops: &mut self.ops,
+            pending: Some((path.as_ref().to_vec(), reference.into())),
+            metadata: BTreeMap::new(),
+        }
     }
 
-    /// Record setting the entry at `path` with metadata.
-    pub fn put_with_metadata(
-        &mut self,
-        path: impl AsRef<[u8]>,
-        reference: impl Into<R>,
-        metadata: BTreeMap<String, String>,
-    ) -> &mut Self {
-        self.push(
-            path,
-            Op::Put {
-                reference: Some(reference.into()),
-                metadata,
-            },
-        )
-    }
-
-    /// Record removing the value at `path`.
+    /// Record clearing the binding at exactly `path`.
+    ///
+    /// Exact-key: the path's own value and metadata go, and the paths below it
+    /// stay. A childless leaf is pruned. An absent path is a no-op.
     pub fn remove(&mut self, path: impl AsRef<[u8]>) -> &mut Self {
         self.push(path, Op::Remove)
     }
 
+    /// Record pruning the whole subtree the fork at `path` reaches.
+    ///
+    /// The legacy boundary remove: it takes keys the caller never named. Use
+    /// [`remove`](Self::remove) for the map verb. An absent path fails the
+    /// commit.
+    pub fn remove_subtree(&mut self, path: impl AsRef<[u8]>) -> &mut Self {
+        self.push(path, Op::RemoveSubtree)
+    }
+
     /// Record merging one metadata key into the manifest's root path node.
+    ///
+    /// The root path node is [`metadata::ROOT_PATH`], where the reference
+    /// client keeps the site-level documents. A merge, not a replace: only the
+    /// named key moves.
     pub fn set_root_metadata(
         &mut self,
         key: impl Into<String>,
@@ -201,6 +217,17 @@ impl<S, R: Reference> ManifestEditor<S, R> {
                 key: key.into(),
                 value: value.into(),
             },
+        )
+    }
+
+    /// Record removing one metadata key from the manifest's root path node.
+    ///
+    /// The other keys stay, and a node left carrying nothing is pruned. An
+    /// absent key is a no-op.
+    pub fn clear_root_metadata(&mut self, key: impl Into<String>) -> &mut Self {
+        self.push(
+            metadata::ROOT_PATH,
+            Op::ClearRootMetadata { key: key.into() },
         )
     }
 
@@ -220,13 +247,44 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     }
 }
 
+/// A recorded insert, awaiting the metadata it may carry. The op joins the
+/// submission-order log when the guard drops.
+#[derive(Debug)]
+pub struct Insert<'e, R: Reference = ChunkRef> {
+    ops: &'e mut Vec<(Vec<u8>, Op<R>)>,
+    pending: Option<(Vec<u8>, R)>,
+    metadata: BTreeMap<String, String>,
+}
+
+impl<R: Reference> Insert<'_, R> {
+    /// Attach `metadata`, replacing whatever the node carried.
+    pub fn meta(&mut self, metadata: BTreeMap<String, String>) -> &mut Self {
+        self.metadata = metadata;
+        self
+    }
+}
+
+impl<R: Reference> Drop for Insert<'_, R> {
+    fn drop(&mut self) {
+        if let Some((path, reference)) = self.pending.take() {
+            self.ops.push((
+                path,
+                Op::Insert {
+                    reference: Some(reference),
+                    metadata: core::mem::take(&mut self.metadata),
+                },
+            ));
+        }
+    }
+}
+
 impl<S: NodeLoader, R: Reference + MaybeSend> ManifestEditor<S, R> {
     /// Apply the recorded ops to the trie, one at a time, in submission order.
     async fn apply_ops(&mut self) -> Result<(), EditorError> {
         let ops = core::mem::take(&mut self.ops);
         for (index, (path, op)) in ops.into_iter().enumerate() {
             let result = match op {
-                Op::Put {
+                Op::Insert {
                     reference,
                     metadata,
                 } => {
@@ -238,10 +296,14 @@ impl<S: NodeLoader, R: Reference + MaybeSend> ManifestEditor<S, R> {
                         self.trie.add(&path, reference, metadata, &self.store).await
                     }
                 }
-                Op::Remove => self.trie.remove(&path, &self.store).await,
+                Op::Remove => self.trie.clear(&path, &self.store).await.map(|_| ()),
+                Op::RemoveSubtree => self.trie.remove(&path, &self.store).await,
                 Op::SetRootMetadata { key, value } => {
                     apply_metadata_merge::<S, R>(&mut self.trie, &path, key, value, &self.store)
                         .await
+                }
+                Op::ClearRootMetadata { key } => {
+                    apply_metadata_clear::<S, R>(&mut self.trie, &path, &key, &self.store).await
                 }
             };
             result.map_err(|source| EditorError::Apply {
@@ -323,6 +385,70 @@ where
             meta.insert(key, value);
             trie.add(path, None, meta, store).await
         }
+    }
+}
+
+/// Remove one metadata key from the node at `path`.
+///
+/// What the node keeps is rebound with [`Node::add`], and a node left carrying
+/// nothing is cleared, which prunes it as a childless leaf.
+async fn apply_metadata_clear<S, R>(
+    trie: &mut Node<R>,
+    path: &[u8],
+    key: &str,
+    store: &S,
+) -> Result<(), MantarayError>
+where
+    S: NodeLoader,
+    R: Reference + MaybeSend,
+{
+    let Some((entry, mut metadata)) = binding_at(trie, path, store).await? else {
+        return Ok(());
+    };
+    if metadata.remove(key).is_none() {
+        return Ok(());
+    }
+    if metadata.is_empty() && entry.is_none() {
+        return trie.clear(path, store).await.map(|_| ());
+    }
+    trie.add(path, entry, metadata, store).await
+}
+
+/// The binding the node at `path` carries, or `None` when no node is there.
+///
+/// Every visited node is dirtied: a clean node would keep its persisted
+/// reference and shadow the rebind at commit.
+async fn binding_at<S, R>(
+    trie: &mut Node<R>,
+    path: &[u8],
+    store: &S,
+) -> Result<Option<(Option<R>, BTreeMap<String, String>)>, MantarayError>
+where
+    S: NodeLoader,
+    R: Reference,
+{
+    let mut current = trie;
+    let mut rest = path;
+    loop {
+        if !current.is_loaded() {
+            current.load(store).await?;
+        }
+        current.mark_dirty();
+        let Some((first, _)) = rest.split_first() else {
+            return Ok(Some((
+                current.reference().cloned(),
+                current.metadata().clone(),
+            )));
+        };
+        let Some(fork) = current.forks.get_mut(first) else {
+            return Ok(None);
+        };
+        let prefix: &[u8] = &fork.prefix;
+        let Some(next) = rest.strip_prefix(prefix) else {
+            return Ok(None);
+        };
+        current = &mut fork.node;
+        rest = next;
     }
 }
 
@@ -575,7 +701,8 @@ where
         node.forks.clear();
         match (parent, slot) {
             (Some(parent), Some((key, prefix))) => {
-                let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent) else {
+                let Some(parent_frame) = self.stack.iter_mut().rev().find(|f| f.id == parent)
+                else {
                     return Err(MantarayError::MissingReference);
                 };
                 parent_frame.done.insert(key, Fork { prefix, node });
@@ -674,11 +801,11 @@ mod tests {
         for op in script {
             match *op {
                 Script::Add(p, seed) => {
-                    editor.put(p, make_addr(seed));
+                    editor.insert(p, make_addr(seed));
                 }
                 Script::AddMeta(p, seed, k, v) => {
                     let meta = [(k.to_string(), v.to_string())].into();
-                    editor.put_with_metadata(p, make_addr(seed), meta);
+                    editor.insert(p, make_addr(seed)).meta(meta);
                 }
                 Script::Rm(p) => {
                     editor.remove(p);
@@ -812,8 +939,8 @@ mod tests {
     #[test]
     fn root_documents_readable_on_an_edge_node() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
-        editor.put("/c", make_addr("c"));
-        editor.put("//", make_addr("s"));
+        editor.insert("/c", make_addr("c"));
+        editor.insert("//", make_addr("s"));
         editor.set_index_document("doc");
         let (root, loadsaver) = run(editor.commit()).unwrap();
         let entry = run(crate::Reader::new(loadsaver).get(root, b"/"))
@@ -835,7 +962,7 @@ mod tests {
     fn root_metadata_put_fails_commit() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
         let meta = [("k".to_string(), "v".to_string())].into();
-        editor.put_with_metadata("", make_addr("r"), meta);
+        editor.insert("", make_addr("r")).meta(meta);
         let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
             err,
@@ -846,7 +973,7 @@ mod tests {
     #[test]
     fn zero_reference_put_fails_commit() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
-        editor.put("a", ChunkAddress::from([0u8; 32]));
+        editor.insert("a", ChunkAddress::from([0u8; 32]));
         let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
             err,
@@ -861,13 +988,97 @@ mod tests {
     #[test]
     fn apply_error_names_op_index_and_path() {
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
-        editor.put("present", make_addr("p"));
-        editor.remove("absent");
+        editor.insert("present", make_addr("p"));
+        // The legacy boundary remove is the one that fails on an absent path.
+        editor.remove_subtree("absent");
         let err = run(editor.commit()).unwrap_err();
         assert!(matches!(
             err,
             EditorError::Apply { index: 1, ref path, .. } if path == b"absent"
         ));
+    }
+
+    /// The map removal is exact-key: a key with children keeps them, a
+    /// childless leaf is pruned, and an absent key changes nothing.
+    #[test]
+    fn remove_is_exact_key_and_absence_is_a_noop() {
+        let (root, loadsaver) = editor_replay(&[
+            Script::Add("a", "1"),
+            Script::Add("ab", "2"),
+            Script::Add("ac", "3"),
+        ]);
+
+        let mut editor = Editor::open(root, loadsaver);
+        editor.remove("a");
+        let (pruned, loadsaver) = run(editor.commit()).unwrap();
+        let reader = crate::Reader::new(loadsaver);
+        assert!(run(reader.get(pruned, b"a")).unwrap().is_none());
+        assert!(run(reader.get(pruned, b"ab")).unwrap().is_some());
+        assert!(run(reader.get(pruned, b"ac")).unwrap().is_some());
+
+        // Absent, and unbound: neither moves the root.
+        let mut editor = Editor::open(pruned, reader.into_store());
+        editor.remove("zzz");
+        editor.remove("a");
+        let (again, _) = run(editor.commit()).unwrap();
+        assert_eq!(again, pruned, "a removal of nothing removes nothing");
+    }
+
+    /// A removal that empties the fork a split created leaves a trie that reads
+    /// exactly the surviving keys.
+    ///
+    /// The root is not the root a replay of the surviving keys writes: this
+    /// format is order-dependent by design. Only the key set is contracted.
+    #[test]
+    fn remove_leaves_a_trie_that_reads_the_surviving_keys() {
+        let (root, loadsaver) = editor_replay(&[
+            Script::Add("alpha", "1"),
+            Script::Add("alpine", "2"),
+            Script::Add("beta", "3"),
+        ]);
+        let mut editor = Editor::open(root, loadsaver);
+        editor.remove("alpine");
+        let (emptied, loadsaver) = run(editor.commit()).unwrap();
+
+        let reader = crate::Reader::new(loadsaver);
+        assert!(run(reader.get(emptied, b"alpine")).unwrap().is_none());
+        assert!(run(reader.get(emptied, b"alpha")).unwrap().is_some());
+        assert!(run(reader.get(emptied, b"beta")).unwrap().is_some());
+    }
+
+    /// The same past the 30-byte prefix bound, where the surviving key chains
+    /// through more than one edge.
+    #[test]
+    fn remove_past_the_prefix_bound_reads_the_surviving_key() {
+        const ONE: &str = "deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaone";
+        const TWO: &str = "deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaatwo";
+        assert!(ONE.len() > Prefix::MAX_LEN, "the key outruns one edge");
+
+        let (root, loadsaver) = editor_replay(&[Script::Add(ONE, "1"), Script::Add(TWO, "2")]);
+        let mut editor = Editor::open(root, loadsaver);
+        editor.remove(TWO);
+        let (emptied, loadsaver) = run(editor.commit()).unwrap();
+
+        let reader = crate::Reader::new(loadsaver);
+        assert!(run(reader.get(emptied, TWO.as_bytes())).unwrap().is_none());
+        assert!(run(reader.get(emptied, ONE.as_bytes())).unwrap().is_some());
+    }
+
+    /// The legacy boundary remove keeps taking the whole subtree.
+    #[test]
+    fn remove_subtree_still_takes_the_whole_subtree() {
+        let (root, loadsaver) = editor_replay(&[
+            Script::Add("a", "1"),
+            Script::Add("ab", "2"),
+            Script::Add("ac", "3"),
+        ]);
+        let mut editor = Editor::open(root, loadsaver);
+        editor.remove_subtree("a");
+        let (pruned, loadsaver) = run(editor.commit()).unwrap();
+        let reader = crate::Reader::new(loadsaver);
+        for path in [&b"a"[..], &b"ab"[..], &b"ac"[..]] {
+            assert!(run(reader.get(pruned, path)).unwrap().is_none());
+        }
     }
 
     /// The clean-ancestor hazard: root metadata set after a persist boundary
@@ -882,7 +1093,7 @@ mod tests {
 
         // The editor commits the metadata across a reopen boundary.
         let mut editor = Editor::new(LoadSaver::new(Store::new()));
-        editor.put("index.html", make_addr("i"));
+        editor.insert("index.html", make_addr("i"));
         let (root, loadsaver) = run(editor.commit()).unwrap();
         assert_ne!(root, want, "the metadata must change the root");
         let mut editor = Editor::open(root, loadsaver);
@@ -920,16 +1131,16 @@ mod tests {
         // Single-session replay from the seed.
         let mut single: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(seed_ref.clone(), store);
-        single.put("secret/a.txt", enc("a"));
-        single.put("secret/b.txt", enc("b"));
+        single.insert("secret/a.txt", enc("a"));
+        single.insert("secret/b.txt", enc("b"));
         single.remove("secret/a.txt");
         let (want, store) = run(single.commit()).unwrap();
 
         // The same ops across a commit boundary land on the same root.
         let mut editor: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(seed_ref, store);
-        editor.put("secret/a.txt", enc("a"));
-        editor.put("secret/b.txt", enc("b"));
+        editor.insert("secret/a.txt", enc("a"));
+        editor.insert("secret/b.txt", enc("b"));
         let (mid, store) = run(editor.commit()).unwrap();
         let mut editor: ManifestEditor<_, EncryptedChunkRef> =
             ManifestEditor::open_encrypted(mid, store);
@@ -1029,7 +1240,7 @@ mod tests {
         let control = FailingSaver::new(LoadSaver::new(Store::new()), usize::MAX);
         let mut editor = ManifestEditor::new(control.clone());
         for p in ["a", "b", "c"] {
-            editor.put(p, make_addr(p));
+            editor.insert(p, make_addr(p));
         }
         run(editor.commit()).unwrap();
         assert_eq!(control.dispatched.load(Ordering::SeqCst), 4, "dirty nodes");
@@ -1038,7 +1249,7 @@ mod tests {
             let saver = FailingSaver::new(LoadSaver::new(Store::new()), fail_at);
             let mut editor = ManifestEditor::new(saver);
             for p in ["a", "b", "c"] {
-                editor.put(p, make_addr(p));
+                editor.insert(p, make_addr(p));
             }
             let err = run(editor.commit()).unwrap_err();
             assert!(
@@ -1152,7 +1363,7 @@ mod tests {
         let mut editor = ManifestEditor::new(WindowSaver::new(LoadSaver::new(Store::new())));
         for g in 0..groups {
             for l in 0..leaves {
-                editor.put([g, l], make_addr(&format!("{g}-{l}")));
+                editor.insert([g, l], make_addr(&format!("{g}-{l}")));
             }
         }
         editor

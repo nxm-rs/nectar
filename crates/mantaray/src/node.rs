@@ -17,14 +17,26 @@ use nectar_primitives::chunk::{ChunkRef, Reference};
 use nectar_primitives::store::MaybeSend;
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
 
-/// Boxed recursion future: `Send` on multi-threaded targets, unbounded on
-/// wasm32 and under the `unsync` feature, so `!Send` stores stay usable.
-/// `MaybeSend` cannot appear in a `dyn` bound directly (it is not an auto
-/// trait), so the auto trait is cfg-gated here.
+/// Boxed recursion future over what the descent yields: `Send` on
+/// multi-threaded targets, unbounded on wasm32 and under the `unsync` feature,
+/// so `!Send` stores stay usable. `MaybeSend` cannot appear in a `dyn` bound
+/// directly (it is not an auto trait), so the auto trait is cfg-gated here.
 #[cfg(multi_thread)]
-type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+type RecurseFuture<'a, T = ()> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 #[cfg(not(multi_thread))]
-type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+type RecurseFuture<'a, T = ()> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
+
+/// What an exact-key clear did to the node the path names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cleared {
+    /// The path named no binding, so the trie is untouched.
+    Absent,
+    /// The binding is gone and the node stays: it still has children.
+    Kept,
+    /// The binding is gone and the node holds nothing else, so its parent
+    /// prunes the fork.
+    Prune,
+}
 
 /// Inline-only byte buffer for fork prefixes (max 30 bytes).
 ///
@@ -335,6 +347,21 @@ impl<R: Reference> Node<R> {
         self.node_type = self.node_type.union(NodeType::EDGE);
     }
 
+    /// Whether the node binds anything of its own: a value, or metadata. A
+    /// metadata-only node binds too.
+    pub(crate) const fn is_bound(&self) -> bool {
+        self.node_type
+            .intersects(NodeType::VALUE.union(NodeType::METADATA))
+    }
+
+    /// Drop the node's own binding: its entry, its value flag and its
+    /// metadata. The forks below survive.
+    fn unbind(&mut self) {
+        self.entry = None;
+        self.node_type = self.node_type.difference(NodeType::VALUE);
+        self.set_metadata(BTreeMap::new());
+    }
+
     /// Check if the path contains a separator.
     pub const fn is_with_path_separator(&self) -> bool {
         self.node_type.contains(NodeType::PATH_SEPARATOR)
@@ -348,6 +375,17 @@ impl<R: Reference> Node<R> {
     /// Set the metadata flag.
     pub(crate) const fn make_with_metadata(&mut self) {
         self.node_type = self.node_type.union(NodeType::METADATA);
+    }
+
+    /// Replace the node's metadata, keeping the flag in step. An empty map
+    /// clears both the pairs and the flag.
+    pub(crate) fn set_metadata(&mut self, metadata: BTreeMap<String, String>) {
+        self.metadata = metadata;
+        if self.metadata.is_empty() {
+            self.node_type = self.node_type.difference(NodeType::METADATA);
+        } else {
+            self.make_with_metadata();
+        }
     }
 
     fn update_is_with_path_separator(&mut self, path: &[u8]) {
@@ -412,7 +450,8 @@ impl<R: Reference> Node<R> {
         Ok(())
     }
 
-    /// Add an entry at the given path with optional metadata, loading from storage as needed.
+    /// Add an entry at the given path with its metadata, loading from storage
+    /// as needed. `metadata` replaces whatever the target node carried.
     ///
     /// Returns a boxed future so the `&mut self` recursion can name its own type.
     /// The `MaybeSend` bound keeps `!Send` wasm stores usable.
@@ -442,12 +481,7 @@ impl<R: Reference> Node<R> {
                 }
                 self.entry = entry;
                 self.make_value();
-
-                if !metadata.is_empty() {
-                    self.metadata = metadata;
-                    self.make_with_metadata();
-                }
-
+                self.set_metadata(metadata);
                 self.mark_dirty();
                 return Ok(());
             }
@@ -481,10 +515,7 @@ impl<R: Reference> Node<R> {
                 }
 
                 nn.entry = entry;
-                if !metadata.is_empty() {
-                    nn.metadata = metadata;
-                    nn.make_with_metadata();
-                }
+                nn.set_metadata(metadata);
                 nn.make_value();
                 nn.update_is_with_path_separator(path);
 
@@ -603,6 +634,70 @@ impl<R: Reference> Node<R> {
             self.mark_dirty();
             result
         })
+    }
+
+    /// Clear the binding at exactly `path`, loading from storage as needed.
+    ///
+    /// Exact-key: the key's own value and metadata go, and nothing else does.
+    /// A key with children keeps every one of them, and a childless leaf is
+    /// pruned from its parent. An absent key changes nothing.
+    ///
+    /// The result decodes exactly the surviving keys, but the root stays
+    /// order-dependent: mantaray 0.2 keeps a node where the insert order first
+    /// justified one. History independence is `nectar-ldb`'s guarantee.
+    pub(crate) fn clear<'a, L: NodeLoader>(
+        &'a mut self,
+        path: &'a [u8],
+        loader: &'a L,
+    ) -> RecurseFuture<'a, Cleared>
+    where
+        R: MaybeSend,
+    {
+        Box::pin(async move {
+            self.ensure_loaded(loader).await?;
+
+            // An empty path names this node.
+            let Some((first, _)) = path.split_first() else {
+                if !self.is_bound() {
+                    return Ok(Cleared::Absent);
+                }
+                self.unbind();
+                self.mark_dirty();
+                return Ok(self.prunable());
+            };
+
+            let Some(fork) = self.forks.get_mut(first) else {
+                return Ok(Cleared::Absent);
+            };
+            let edge: &[u8] = &fork.prefix;
+            // A path that diverges inside the edge names no node at all.
+            let Some(rest) = path.strip_prefix(edge) else {
+                return Ok(Cleared::Absent);
+            };
+            match fork.node.clear(rest, loader).await? {
+                // Nothing below changed, so nothing here does either.
+                Cleared::Absent => return Ok(Cleared::Absent),
+                // The node below survives, so its edge stands as it is.
+                Cleared::Kept => {}
+                Cleared::Prune => {
+                    self.forks.remove(first);
+                    if self.forks.is_empty() {
+                        self.node_type = self.node_type.difference(NodeType::EDGE);
+                    }
+                }
+            }
+            self.mark_dirty();
+            Ok(self.prunable())
+        })
+    }
+
+    /// Whether this node still holds anything after a clear below it.
+    fn prunable(&self) -> Cleared {
+        if self.is_bound() || !self.forks.is_empty() {
+            Cleared::Kept
+        } else {
+            Cleared::Prune
+        }
     }
 }
 

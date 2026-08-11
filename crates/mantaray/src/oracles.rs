@@ -200,15 +200,15 @@ const MAX_PATH: usize = 12;
 /// bytes.
 #[derive(Debug)]
 pub enum EditorOp {
-    /// Set the entry at the path to a reference filled with one byte.
-    Put {
+    /// Insert the entry at the path as a reference filled with one byte.
+    Insert {
         /// Raw path bytes, mapped onto the dense four-symbol alphabet.
         path: Vec<u8>,
         /// Reference fill byte.
         fill: u8,
     },
-    /// Set the entry with one metadata pair.
-    PutMeta {
+    /// Insert the entry with one metadata pair.
+    InsertMeta {
         /// Raw path bytes, mapped onto the dense four-symbol alphabet.
         path: Vec<u8>,
         /// Reference fill byte.
@@ -218,7 +218,7 @@ pub enum EditorOp {
         /// Metadata value seed.
         value: u8,
     },
-    /// Remove the value at the path.
+    /// Prune the subtree at the path, through the legacy boundary remove.
     Remove {
         /// Raw path bytes, mapped onto the dense four-symbol alphabet.
         path: Vec<u8>,
@@ -241,11 +241,11 @@ impl<'a> arbitrary::Arbitrary<'a> for EditorOp {
         // the committed corpus was recorded under; changing it re-interprets
         // every committed seed.
         Ok(match u64::from(u32::arbitrary(u)?).wrapping_mul(5) >> 32 {
-            0 => Self::Put {
+            0 => Self::Insert {
                 path: u.arbitrary()?,
                 fill: u.arbitrary()?,
             },
-            1 => Self::PutMeta {
+            1 => Self::InsertMeta {
                 path: u.arbitrary()?,
                 fill: u.arbitrary()?,
                 key: u.arbitrary()?,
@@ -300,19 +300,23 @@ fn record(ops: &[EditorOp]) -> ManifestEditor<OracleLoadSaver> {
     let mut editor = ManifestEditor::new(OracleLoadSaver::new(DefaultMemoryStore::new()));
     for op in ops {
         match op {
-            EditorOp::Put { path: raw, fill } => {
-                editor.put(path(raw), address(*fill));
+            EditorOp::Insert { path: raw, fill } => {
+                editor.insert(path(raw), address(*fill));
             }
-            EditorOp::PutMeta {
+            EditorOp::InsertMeta {
                 path: raw,
                 fill,
                 key,
                 value,
             } => {
-                editor.put_with_metadata(path(raw), address(*fill), metadata(*key, *value));
+                editor
+                    .insert(path(raw), address(*fill))
+                    .meta(metadata(*key, *value));
             }
             EditorOp::Remove { path: raw } => {
-                editor.remove(path(raw));
+                // The legacy boundary remove, which the committed corpus was
+                // recorded against.
+                editor.remove_subtree(path(raw));
             }
             EditorOp::SetIndex { name } => {
                 editor.set_index_document(&document(*name));
@@ -341,8 +345,8 @@ fn model(ops: &[EditorOp]) -> Model {
     let mut error_document = None;
     for op in ops {
         match op {
-            EditorOp::Put { path: raw, fill }
-            | EditorOp::PutMeta {
+            EditorOp::Insert { path: raw, fill }
+            | EditorOp::InsertMeta {
                 path: raw, fill, ..
             } => {
                 entries.insert(path(raw), address(*fill));
@@ -433,8 +437,8 @@ pub async fn editor_differential(ops: &[EditorOp]) -> Result<(), Violation> {
     // the "/" path itself may rewrite that node, so the check stands only
     // when no op touched it.
     let slash_touched = ops.iter().any(|op| match op {
-        EditorOp::Put { path: raw, .. }
-        | EditorOp::PutMeta { path: raw, .. }
+        EditorOp::Insert { path: raw, .. }
+        | EditorOp::InsertMeta { path: raw, .. }
         | EditorOp::Remove { path: raw } => path(raw) == "/",
         EditorOp::SetIndex { .. } | EditorOp::SetError { .. } => false,
     });

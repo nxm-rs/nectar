@@ -18,6 +18,7 @@
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::future::poll_fn;
+use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
@@ -399,15 +400,15 @@ where
         Cursor::seek(self.store(), root, &[], None).await
     }
 
-    /// Every `(key, value)` with `lo <= key < hi`, in ascending key order.
+    /// Every `(key, value)` within `bounds`, in ascending key order. Keys
+    /// order as byte strings.
     pub async fn range(
         &self,
         root: &R,
-        lo: &Key,
-        hi: &Key,
+        bounds: impl RangeBounds<Key>,
     ) -> Result<Cursor<'_, S, F, R>, ReaderError> {
-        let end = Bytes::copy_from_slice(hi.as_bytes());
-        Cursor::seek(self.store(), root, lo.as_bytes(), Some(end)).await
+        let (start, end) = half_open(&bounds);
+        Cursor::seek(self.store(), root, &start, end).await
     }
 
     /// Every `(key, value)` whose key starts with `prefix`, in ascending order.
@@ -597,6 +598,22 @@ fn join(base: &[u8], suffix: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The half-open byte range `bounds` selects: the first key the walk may yield
+/// and the exclusive key it stops at.
+pub(crate) fn half_open(bounds: &impl RangeBounds<Key>) -> (Vec<u8>, Option<Bytes>) {
+    let start = match bounds.start_bound() {
+        Bound::Unbounded => Vec::new(),
+        Bound::Included(key) => key.as_bytes().to_vec(),
+        Bound::Excluded(key) => join(key.as_bytes(), &[0]),
+    };
+    let end = match bounds.end_bound() {
+        Bound::Unbounded => None,
+        Bound::Excluded(key) => Some(Bytes::copy_from_slice(key.as_bytes())),
+        Bound::Included(key) => Some(Bytes::from(join(key.as_bytes(), &[0]))),
+    };
+    (start, end)
+}
+
 /// The least byte string strictly greater than every string starting with
 /// `prefix`: increment the last byte below `0xFF` after dropping the trailing
 /// `0xFF` run. `None` when the prefix is empty or all `0xFF`, i.e. unbounded.
@@ -711,7 +728,7 @@ mod tests {
         let root = sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(
-            run(reader.range(&root, &Key::from(&b"aa"[..]), &Key::from(&b"ba"[..]))).unwrap(),
+            run(reader.range(&root, &Key::from(&b"aa"[..])..&Key::from(&b"ba"[..]))).unwrap(),
         );
         // "aa" is included, "ba" is the excluded upper bound.
         assert_eq!(
@@ -726,7 +743,7 @@ mod tests {
         let root = sample(&store);
         let reader: Reader<_> = Reader::new(&store);
         let got =
-            drain(run(reader.range(&root, &Key::from(&b"ac"[..]), &Key::from(&b"z"[..]))).unwrap());
+            drain(run(reader.range(&root, &Key::from(&b"ac"[..])..&Key::from(&b"z"[..]))).unwrap());
         assert_eq!(got, vec![(b"ba".to_vec(), entry(0xBA))]);
     }
 
@@ -808,7 +825,7 @@ mod tests {
 
         // A half-open range and a floor lookup follow the same encrypted hops.
         let mut cursor =
-            run(reader.range(&root, &Key::from(&b"aa"[..]), &Key::from(&b"ba"[..]))).unwrap();
+            run(reader.range(&root, &Key::from(&b"aa"[..])..&Key::from(&b"ba"[..]))).unwrap();
         let mut ranged = Vec::new();
         while let Some((key, _)) = run(cursor.next()).unwrap() {
             ranged.push(key.as_bytes().to_vec());

@@ -5,22 +5,21 @@ use core::fmt;
 
 /// A path into a manifest.
 ///
-/// The bytes are the format's own key: nothing is normalized, so a trailing
-/// separator marks a directory and survives a round trip.
-#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// The bytes are the format's own key, stored bare and verbatim: nothing is
+/// prepended and nothing is normalized, so a trailing separator survives a round
+/// trip. A path names content alone; the site-level documents are not paths.
+#[derive(
+    Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::AsRef, derive_more::From,
+)]
+#[as_ref([u8])]
+#[from(Vec<u8>, &[u8], &str)]
 pub struct ManifestPath(Vec<u8>);
 
 impl ManifestPath {
     /// The separator both formats read a directory boundary at.
     pub const SEPARATOR: u8 = b'/';
 
-    /// The manifest root: the empty path.
-    #[must_use]
-    pub const fn root() -> Self {
-        Self(Vec::new())
-    }
-
-    /// Wrap `bytes` as a path.
+    /// Wrap `bytes` as a path, verbatim.
     #[must_use]
     pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
         Self(bytes.into())
@@ -66,58 +65,42 @@ impl ManifestPath {
         self.0
     }
 
-    /// Whether this is the manifest root.
+    /// Whether the path names nothing at all. The empty path is a prefix and
+    /// a bound, not a key.
     #[must_use]
-    pub const fn is_root(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// Whether the path names a directory: the root, or a trailing separator.
+    /// Whether the path names a key the map reserves rather than content.
+    ///
+    /// The empty path and the lone separator are reserved on both formats: a
+    /// read at either is absent and a write at either is
+    /// [`ReservedKey`](crate::ReservedKey).
+    #[must_use]
+    pub fn is_reserved(&self) -> bool {
+        matches!(self.0.as_slice(), [] | [Self::SEPARATOR])
+    }
+
+    /// Whether the path names a directory: the empty path, or a trailing
+    /// separator.
     #[must_use]
     pub fn is_dir(&self) -> bool {
         self.0.last().is_none_or(|&byte| byte == Self::SEPARATOR)
     }
 
     /// This path with `segment` appended below it, separated unless the path
-    /// already ends in a separator or is the root.
+    /// already ends in a separator or is empty.
     #[must_use]
     pub fn join(&self, segment: impl AsRef<[u8]>) -> Self {
         let segment = segment.as_ref();
-        let mut bytes = Vec::with_capacity(
-            self.0
-                .len()
-                .saturating_add(segment.len())
-                .saturating_add(1),
-        );
+        let mut bytes =
+            Vec::with_capacity(self.0.len().saturating_add(segment.len()).saturating_add(1));
         bytes.extend_from_slice(&self.0);
         if !self.is_dir() {
             bytes.push(Self::SEPARATOR);
         }
         bytes.extend_from_slice(segment);
-        Self(bytes)
-    }
-}
-
-impl AsRef<[u8]> for ManifestPath {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl From<&[u8]> for ManifestPath {
-    fn from(bytes: &[u8]) -> Self {
-        Self(bytes.to_vec())
-    }
-}
-
-impl From<&str> for ManifestPath {
-    fn from(path: &str) -> Self {
-        Self(path.as_bytes().to_vec())
-    }
-}
-
-impl From<Vec<u8>> for ManifestPath {
-    fn from(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
 }
@@ -138,23 +121,35 @@ mod tests {
     use alloc::vec;
 
     #[test]
+    fn a_path_is_stored_bare_and_verbatim() {
+        assert_eq!(ManifestPath::from("index.html").as_bytes(), b"index.html");
+        assert_eq!(
+            ManifestPath::from("css/style.css").as_bytes(),
+            b"css/style.css"
+        );
+        assert_eq!(ManifestPath::from("/rooted").as_bytes(), b"/rooted");
+        assert!(ManifestPath::default().is_empty());
+    }
+
+    #[test]
     fn segments_drop_empty_runs() {
         let path = ManifestPath::from("img//logo.png");
-        assert_eq!(path.segments().collect::<Vec<_>>(), vec![
-            &b"img"[..],
-            &b"logo.png"[..]
-        ]);
+        assert_eq!(
+            path.segments().collect::<Vec<_>>(),
+            vec![&b"img"[..], &b"logo.png"[..]]
+        );
     }
 
     #[test]
     fn from_segments_never_doubles_the_separator() {
         let path = ManifestPath::from_segments(["img", "", "logo.png"]);
         assert_eq!(path.as_bytes(), b"img/logo.png");
+        assert!(ManifestPath::from_segments::<[&str; 0], _>([]).is_empty());
     }
 
     #[test]
     fn join_separates_only_below_a_file_path() {
-        assert_eq!(ManifestPath::root().join("a").as_bytes(), b"a");
+        assert_eq!(ManifestPath::default().join("a").as_bytes(), b"a");
         assert_eq!(ManifestPath::from("img/").join("a").as_bytes(), b"img/a");
         assert_eq!(ManifestPath::from("img").join("a").as_bytes(), b"img/a");
     }

@@ -48,7 +48,7 @@ fn large_paths(count: usize) -> Vec<(String, ChunkAddress)> {
 fn build_spa() -> (ChunkAddress, LoadSaver) {
     let mut editor = Editor::new(LoadSaver::new(Store::new()));
     for &p in SPA_PATHS {
-        editor.put(p, make_addr(p.as_bytes()));
+        editor.insert(p, make_addr(p.as_bytes()));
     }
     run(editor.commit()).unwrap()
 }
@@ -57,7 +57,7 @@ fn build_spa() -> (ChunkAddress, LoadSaver) {
 fn build_large(count: usize) -> (ChunkAddress, LoadSaver) {
     let mut editor = Editor::new(LoadSaver::new(Store::new()));
     for (path, addr) in large_paths(count) {
-        editor.put(path, addr);
+        editor.insert(path, addr);
     }
     run(editor.commit()).unwrap()
 }
@@ -75,7 +75,7 @@ fn bench_commit(c: &mut Criterion) {
             b.iter(|| {
                 let mut editor = Editor::new(LoadSaver::new(Store::new()));
                 for (path, addr) in entries {
-                    editor.put(path, *addr);
+                    editor.insert(path, *addr);
                 }
                 run(editor.commit()).unwrap()
             });

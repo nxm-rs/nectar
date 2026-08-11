@@ -38,10 +38,10 @@ use crate::builder::{
     BuildError, BuildStats, Item, PutSink, build_table_in, emit_node_in, put_window, resolve_in,
 };
 use crate::count::SubtreeCount;
-use crate::error::{ForkPrefixEmpty, PrefixTooLong};
+use crate::error::{ForkPrefixEmpty, MetadataTooLong, PrefixTooLong};
 use crate::fork::{Child, ForkPayload, ForkRecord, ForkTable};
 use crate::format::{Format, V1};
-use crate::meta::Metadata;
+use crate::meta::{Metadata, MetadataKey};
 use crate::node::{Node, NodeRef, RootExtension};
 use crate::packing::cut_allowance;
 use crate::store::{NodeGet, Seal, StoreError};
@@ -51,7 +51,7 @@ use crate::value::{Entry, Key};
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Op<F: Format> {
     /// Bind the key to a value, with optional metadata.
-    Put {
+    Insert {
         /// The value to bind.
         entry: Entry<F>,
         /// The value's metadata, if any.
@@ -65,16 +65,20 @@ enum Op<F: Format> {
 ///
 /// Keys accumulate in a sorted map, so an [`apply`] is history-independent: the
 /// order updates were staged in never reaches the produced root. The empty key
-/// carries the manifest's own value.
+/// carries the manifest's own value. Its metadata is staged separately with
+/// [`set_root_metadata`](Self::set_root_metadata), which merges.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Changeset<F: Format = V1> {
     ops: BTreeMap<Bytes, Op<F>>,
+    /// Merges into the manifest's own metadata: `None` clears the key.
+    root_meta: BTreeMap<MetadataKey<F>, Option<Bytes>>,
 }
 
 impl<F: Format> Default for Changeset<F> {
     fn default() -> Self {
         Self {
             ops: BTreeMap::new(),
+            root_meta: BTreeMap::new(),
         }
     }
 }
@@ -89,10 +93,15 @@ impl<F: Format> Changeset<F> {
     /// Stage a binding of `key` to `entry`, replacing any staged update for it.
     /// The empty key sets the manifest's own value; its metadata, if any,
     /// becomes the manifest metadata.
-    pub fn put(&mut self, key: Key, entry: Entry<F>, metadata: Option<Metadata<F>>) -> &mut Self {
+    pub fn insert(
+        &mut self,
+        key: Key,
+        entry: Entry<F>,
+        metadata: Option<Metadata<F>>,
+    ) -> &mut Self {
         self.ops.insert(
             key.into_bytes(),
-            Op::Put {
+            Op::Insert {
                 entry,
                 meta: metadata,
             },
@@ -101,21 +110,57 @@ impl<F: Format> Changeset<F> {
     }
 
     /// Stage the removal of `key`, replacing any staged update for it.
+    ///
+    /// Exact-key: the key's own value and metadata go, and no other key does.
+    /// At the root key that clears the manifest's own value and its site
+    /// documents. An absent key is a no-op.
     pub fn remove(&mut self, key: Key) -> &mut Self {
         self.ops.insert(key.into_bytes(), Op::Delete);
         self
     }
 
-    /// Number of staged updates.
+    /// Stage a merge of `key` into the manifest's own metadata.
+    ///
+    /// A merge, not a replace: only `key` moves, and a `None` value clears it.
+    pub fn set_root_metadata(
+        &mut self,
+        key: impl Into<MetadataKey<F>>,
+        value: Option<Bytes>,
+    ) -> &mut Self {
+        self.root_meta.insert(key.into(), value);
+        self
+    }
+
+    /// Number of staged updates: the keys, plus each metadata merge.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.ops.len()
+        self.ops.len().saturating_add(self.root_meta.len())
     }
 
     /// Returns `true` when nothing is staged.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.ops.is_empty()
+        self.ops.is_empty() && self.root_meta.is_empty()
+    }
+
+    /// `metadata` with every staged merge folded in, in key order.
+    fn merged_root_metadata(
+        &self,
+        mut metadata: Option<Metadata<F>>,
+    ) -> Result<Option<Metadata<F>>, MetadataTooLong> {
+        for (key, value) in &self.root_meta {
+            metadata = match value {
+                Some(value) => Some(match metadata {
+                    Some(mut block) => {
+                        block.insert(key.clone(), value.clone())?;
+                        block
+                    }
+                    None => Metadata::new(key.clone(), value.clone())?,
+                }),
+                None => metadata.and_then(|block| block.without(key)),
+            };
+        }
+        Ok(metadata)
     }
 }
 
@@ -135,6 +180,9 @@ pub enum ApplyError {
     /// A fork prefix consumed no byte to index under.
     #[error(transparent)]
     EmptyPrefix(#[from] ForkPrefixEmpty),
+    /// A merge into the manifest's own metadata exceeded the format's bound.
+    #[error(transparent)]
+    Metadata(#[from] MetadataTooLong),
     /// A merge invariant did not hold; an apply bug rather than bad input.
     #[error("apply invariant violated")]
     Internal,
@@ -173,16 +221,20 @@ where
     let mut root_entry = node.entry().cloned();
     let mut root_meta = node.metadata().cloned();
     match changeset.ops.get(&Bytes::new()) {
-        Some(Op::Put { entry, meta }) => {
+        // A bare insert replaces the whole binding, clearing the key's metadata.
+        Some(Op::Insert { entry, meta }) => {
             root_entry = Some(entry.clone());
-            if meta.is_some() {
-                root_meta = meta.clone();
-            }
+            root_meta = meta.clone();
         }
-        Some(Op::Delete) => root_entry = None,
+        // A removal clears the whole binding, metadata included.
+        Some(Op::Delete) => {
+            root_entry = None;
+            root_meta = None;
+        }
         None => {}
     }
-    let root_ext = RootExtension::new(root_entry, root_meta);
+    // Metadata merges land after the binding.
+    let root_ext = RootExtension::new(root_entry, changeset.merged_root_metadata(root_meta)?);
 
     let changes: Vec<Change<'_, F>> = changeset
         .ops
@@ -322,7 +374,7 @@ fn descent_child<F: Format, R: NodeRef>(
     edge.extend_from_slice(existing.tail().as_bytes());
     let plen = consumed.saturating_add(edge.len());
     for change in group {
-        if let Op::Put { .. } = change.op {
+        if let Op::Insert { .. } = change.op {
             let suffix = change.key.get(consumed..).unwrap_or_default();
             if common_prefix(suffix, &edge) < edge.len() {
                 // An insertion diverges within the edge: a split, not a descent.
@@ -379,7 +431,7 @@ where
     // no existing key and never move it.
     let mut cut = edge.len();
     for change in group {
-        if let Op::Put { .. } = change.op {
+        if let Op::Insert { .. } = change.op {
             let suffix = change.key.get(consumed..).unwrap_or_default();
             cut = cut.min(common_prefix(suffix, &edge));
         }
@@ -425,7 +477,7 @@ where
         }
         if change.key.len() == plen {
             match change.op {
-                Op::Put { entry, meta } => {
+                Op::Insert { entry, meta } => {
                     new_entry = Some(entry.clone());
                     new_meta = meta.clone();
                 }
@@ -607,7 +659,7 @@ where
             continue;
         }
         if change.key.len() == boundary {
-            if let Op::Put { entry, meta } = change.op {
+            if let Op::Insert { entry, meta } = change.op {
                 split_entry = Some(entry.clone());
                 split_meta = meta.clone();
             }
@@ -862,7 +914,7 @@ fn inserts_to_items<'a, F: Format>(changes: &'a [Change<'_, F>]) -> Vec<Item<'a,
     changes
         .iter()
         .filter_map(|change| match change.op {
-            Op::Put { entry, meta } => Some(Item {
+            Op::Insert { entry, meta } => Some(Item {
                 key: &change.key,
                 entry,
                 meta,
@@ -1029,7 +1081,7 @@ mod tests {
 
         let mut cs = Changeset::<V1>::new();
         for x in 40u8..64 {
-            cs.put(Key::from(&[b'a', x][..]), entry(x), None);
+            cs.insert(Key::from(&[b'a', x][..]), entry(x), None);
         }
         let applied = run(apply(&store, &Plaintext, &base_root, &cs)).unwrap();
 
@@ -1077,7 +1129,7 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1), (b"c", 3)]);
         let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"b"[..]), entry(2), None);
+        cs.insert(Key::from(&b"b"[..]), entry(2), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"a", 1), (b"b", 2), (b"c", 3)]));
     }
@@ -1088,8 +1140,8 @@ mod tests {
         let root = build(&store, &[(b"road", 1), (b"roam", 2)]);
         // Two inserts under the shared "ro" ancestor, rewritten in one pass.
         let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"rock"[..]), entry(3), None);
-        cs.put(Key::from(&b"rose"[..]), entry(4), None);
+        cs.insert(Key::from(&b"rock"[..]), entry(3), None);
+        cs.insert(Key::from(&b"rose"[..]), entry(4), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(
             out,
@@ -1102,7 +1154,7 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1), (b"b", 2)]);
         let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"a"[..]), entry(9), None);
+        cs.insert(Key::from(&b"a"[..]), entry(9), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"a", 9), (b"b", 2)]));
     }
@@ -1136,7 +1188,7 @@ mod tests {
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&b"absent"[..]));
         cs.remove(Key::from(&b"a"[..]));
-        cs.put(Key::from(&b"a"[..]), entry(1), None);
+        cs.insert(Key::from(&b"a"[..]), entry(1), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"a", 1), (b"ab", 2)]));
     }
@@ -1148,7 +1200,7 @@ mod tests {
         // inside that edge.
         let root = build(&store, &[(b"abcdef", 1)]);
         let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"abz"[..]), entry(2), None);
+        cs.insert(Key::from(&b"abz"[..]), entry(2), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(b"abcdef", 1), (b"abz", 2)]));
     }
@@ -1165,7 +1217,7 @@ mod tests {
         let root = build(&store, &[(&base[..], 1)]);
         let mut cs = Changeset::<V1>::new();
         let branched = [2u8, 2, 1];
-        cs.put(Key::from(&branched[..]), entry(2), None);
+        cs.insert(Key::from(&branched[..]), entry(2), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&base[..], 1), (&branched[..], 2)]));
     }
@@ -1182,7 +1234,7 @@ mod tests {
         let prefix = [0xffu8];
         let root = build(&store, &[(&long[..], 1)]);
         let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&prefix[..]), entry(2), None);
+        cs.insert(Key::from(&prefix[..]), entry(2), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 1), (&prefix[..], 2)]));
     }
@@ -1197,7 +1249,7 @@ mod tests {
         let prefix = [0xffu8];
         let root = build(&store, &[(&long[..], 1)]);
         let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&prefix[..]), entry(2), None);
+        cs.insert(Key::from(&prefix[..]), entry(2), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 1), (&prefix[..], 2)]));
     }
@@ -1215,7 +1267,7 @@ mod tests {
         long.extend(std::iter::repeat_n(0u8, 255));
         let mut cs = Changeset::<V1>::new();
         cs.remove(Key::from(&[0u8, 0][..]));
-        cs.put(Key::from(&long[..]), entry(2), None);
+        cs.insert(Key::from(&long[..]), entry(2), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 2)]));
     }
@@ -1225,7 +1277,7 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let root = build(&store, &[(b"a", 1)]);
         let mut set = Changeset::<V1>::new();
-        set.put(Key::empty(), entry(7), None);
+        set.insert(Key::empty(), entry(7), None);
         let with_root = run(apply(&store, &Plaintext, &root, &set)).unwrap();
 
         let mut expect = Builder::<V1>::new();
@@ -1240,6 +1292,32 @@ mod tests {
         clear.remove(Key::empty());
         let cleared = run(apply(&store, &Plaintext, &with_root, &clear)).unwrap();
         assert_eq!(cleared, rebuilt(&[(b"a", 1)]));
+    }
+
+    #[test]
+    fn a_bare_insert_at_the_empty_key_clears_the_root_metadata() {
+        let store = ContentGet::new(MemoryStore::default());
+        let root = build(&store, &[(b"a", 1)]);
+
+        let mut set = Changeset::<V1>::new();
+        set.set_root_metadata(
+            KeyId::WebsiteIndexDocument,
+            Some(Bytes::from_static(b"index.html")),
+        );
+        let with_meta = run(apply(&store, &Plaintext, &root, &set)).unwrap();
+
+        // A bare insert at the empty key replaces the whole binding.
+        let mut bare = Changeset::<V1>::new();
+        bare.insert(Key::empty(), entry(7), None);
+        let after = run(apply(&store, &Plaintext, &with_meta, &bare)).unwrap();
+
+        let mut expect = Builder::<V1>::new();
+        expect.insert(Key::empty(), entry(7), None);
+        expect.insert(Key::from(&b"a"[..]), entry(1), None);
+        let rebuilt_root = *run(expect.build(&ContentGet::new(MemoryStore::default()), &Plaintext))
+            .unwrap()
+            .root();
+        assert_eq!(after, rebuilt_root);
     }
 
     #[test]
@@ -1267,7 +1345,7 @@ mod tests {
         let long = vec![0x07u8; 1708];
         let root = build(&store, &[(&long[..], 1)]);
         let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&[0x07u8][..]), entry(2), None);
+        cs.insert(Key::from(&[0x07u8][..]), entry(2), None);
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
         assert_eq!(out, rebuilt(&[(&long[..], 1), (&[0x07u8][..], 2)]));
     }
@@ -1385,7 +1463,7 @@ mod tests {
         // referenced children at the root at once.
         let mut cs = Changeset::<V1>::new();
         for p in 0u8..4 {
-            cs.put(Key::from(&[p, 0, 9][..]), entry(99), None);
+            cs.insert(Key::from(&[p, 0, 9][..]), entry(99), None);
         }
         let applied = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
 
@@ -1442,7 +1520,7 @@ mod tests {
         // once, so the whole group rides one prefetch.
         let mut cs = Changeset::<V1>::new();
         for p in 0u8..24 {
-            cs.put(Key::from(&[p, 0, 9][..]), entry(99), None);
+            cs.insert(Key::from(&[p, 0, 9][..]), entry(99), None);
         }
         run(apply(&store, &Plaintext, &root, &cs)).unwrap();
 
@@ -1553,7 +1631,7 @@ mod tests {
         // children at once, so all four ride one prefetch.
         let mut cs = Changeset::<V1>::new();
         for p in 0u8..4 {
-            cs.put(Key::from(&[p, 0, 9][..]), entry(99), None);
+            cs.insert(Key::from(&[p, 0, 9][..]), entry(99), None);
         }
         let applied = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
 
@@ -1593,7 +1671,7 @@ mod tests {
         let meta = Metadata::new(KeyId::ContentType, Bytes::from_static(b"text/html")).unwrap();
         let root = build(&store, &[(b"a", 1)]);
         let mut cs = Changeset::<V1>::new();
-        cs.put(Key::from(&b"index.html"[..]), entry(2), Some(meta.clone()));
+        cs.insert(Key::from(&b"index.html"[..]), entry(2), Some(meta.clone()));
         let out = run(apply(&store, &Plaintext, &root, &cs)).unwrap();
 
         let mut expect = Builder::<V1>::new();
