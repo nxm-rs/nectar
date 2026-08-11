@@ -151,7 +151,7 @@ pub use folder::{DirEntry, Listing, Served, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
 #[cfg(feature = "manifest")]
-pub use manifest::{LdbCursor, LdbManifest, LdbView, LdbWriter, ManifestError};
+pub use manifest::{LdbCursor, LdbFormatError, LdbManifest, LdbView, LdbWriter};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, NodeRef, RootExtension};
 pub use packing::{Directory, SegmentKind, cut, embed, h64, segment, spill};

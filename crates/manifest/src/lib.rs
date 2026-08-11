@@ -9,7 +9,8 @@
 //!
 //! [`Manifest::at`] binds a root and hands back a [`MapView`];
 //! [`Manifest::edit`] binds a base root and hands back a [`MapWriter`] whose
-//! `commit` yields the new root.
+//! `commit` yields the new root. [`Manifest::empty`] bootstraps the empty
+//! manifest, and every operation fails with the seam-owned [`ManifestError`].
 //!
 //! The map holds content paths alone. The site index and error documents are
 //! not keys: [`MapView`] reads them as options, and [`MapWriter`] sets them
@@ -83,6 +84,7 @@
 extern crate alloc;
 
 mod dynamic;
+mod error;
 mod listing;
 mod meta;
 mod op;
@@ -93,6 +95,7 @@ mod view;
 mod writer;
 
 pub use dynamic::{DynManifest, DynSink, DynSinkError};
+pub use error::{ErasedFormat, ErasedManifestError, ManifestError};
 pub use listing::{ListEntry, Listing};
 pub use meta::{ManifestMetadata, MetadataView, WellKnownKey};
 pub use op::ManifestOp;
@@ -137,18 +140,23 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry.
     type Metadata: MaybeSend + Default;
 
-    /// Error type for every operation on the manifest.
-    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
+    /// The format's own failure union, carried in [`ManifestError::Format`].
+    type FormatError: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// The read handle [`at`](Self::at) hands back.
-    type View<'a>: MapView<R, Metadata = Self::Metadata, Error = Self::Error>
+    type View<'a>: MapView<R, Metadata = Self::Metadata, Error = ManifestError<Self::FormatError>>
     where
         Self: 'a;
 
     /// The write handle [`edit`](Self::edit) hands back.
-    type Writer<'a>: MapWriter<R, Metadata = Self::Metadata, Error = Self::Error>
+    type Writer<'a>: MapWriter<R, Metadata = Self::Metadata, Error = ManifestError<Self::FormatError>>
     where
         Self: 'a;
+
+    /// The root of the empty manifest, freshly persisted.
+    fn empty(
+        &self,
+    ) -> impl Future<Output = Result<R, ManifestError<Self::FormatError>>> + MaybeSend;
 
     /// The read view of the manifest rooted at `root`. Reaches storage only
     /// when a read is awaited.
@@ -167,7 +175,7 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     fn metadata_from_view(
         &self,
         view: &dyn ManifestMetadata,
-    ) -> Result<Self::Metadata, Self::Error>;
+    ) -> Result<Self::Metadata, ManifestError<Self::FormatError>>;
 
     /// Insert one path, clearing any metadata bound at it.
     ///
@@ -177,7 +185,7 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
         root: &R,
         path: ManifestPath,
         reference: R,
-    ) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
+    ) -> impl Future<Output = Result<R, ManifestError<Self::FormatError>>> + MaybeSend {
         let mut writer = self.edit(root);
         writer.insert(path, reference);
         writer.commit()
@@ -189,7 +197,7 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
         &self,
         root: &R,
         path: ManifestPath,
-    ) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
+    ) -> impl Future<Output = Result<R, ManifestError<Self::FormatError>>> + MaybeSend {
         let mut writer = self.edit(root);
         writer.remove(path);
         writer.commit()
@@ -204,7 +212,7 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
         &self,
         base: &R,
         ops: impl IntoIterator<Item = ManifestOp<R, Self::Metadata>> + MaybeSend,
-    ) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
+    ) -> impl Future<Output = Result<R, ManifestError<Self::FormatError>>> + MaybeSend {
         let mut writer = self.edit(base);
         writer.extend(ops);
         writer.commit()

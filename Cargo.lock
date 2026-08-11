@@ -2692,6 +2692,7 @@ dependencies = [
  "nectar-primitives",
  "nectar-testing",
  "proptest",
+ "thiserror",
 ]
 
 [[package]]
