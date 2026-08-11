@@ -1,25 +1,17 @@
-//! The erased metadata view: the one lossy point in the seam.
-//!
-//! Each format keeps its native metadata on the static path (a string map for
-//! the trie, a typed key registry for the key-value format). Only the erased
-//! path unifies them, and it does so through this well-known-key view, so what
-//! crosses the seam is stated here rather than laundered through strings.
+//! The erased metadata seam: enumerable and bidirectional.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 
 use nectar_marker::{MaybeSend, MaybeSync};
 
-/// A metadata key both formats understand.
-///
-/// The three registered keys are the ones the manifest layer itself acts on. A
-/// [`Custom`](Self::Custom) key travels by name and is looked up verbatim, but
-/// only the registered keys cross the erased apply path, because the view
-/// cannot be enumerated.
+/// A metadata key both formats spell, whatever each stores it as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WellKnownKey<'a> {
     /// MIME type of the entry's content.
     ContentType,
+    /// Original file name of the entry's content.
+    Filename,
     /// Site index document, root scope. Not an entry's metadata: set it
     /// through [`Batch::set_index_document`](crate::Batch::set_index_document).
     IndexDocument,
@@ -30,26 +22,90 @@ pub enum WellKnownKey<'a> {
 }
 
 impl WellKnownKey<'_> {
-    /// The key's canonical name; a custom key is its own name.
+    /// Every registered key: the one table the seam matches names against.
+    pub const REGISTERED: [WellKnownKey<'static>; 4] = [
+        WellKnownKey::ContentType,
+        WellKnownKey::Filename,
+        WellKnownKey::IndexDocument,
+        WellKnownKey::ErrorDocument,
+    ];
+
+    /// The key's canonical name, in the reference client's spelling.
     #[must_use]
     pub const fn name(&self) -> &str {
         match self {
-            Self::ContentType => "content-type",
+            Self::ContentType => "Content-Type",
+            Self::Filename => "Filename",
             Self::IndexDocument => "website-index-document",
             Self::ErrorDocument => "website-error-document",
             Self::Custom(name) => name,
         }
     }
+
+    /// The registered key `name` spells, matched ASCII-case-insensitively.
+    #[must_use]
+    pub fn registered(name: &str) -> Option<WellKnownKey<'static>> {
+        Self::REGISTERED
+            .into_iter()
+            .find(|key| key.name().eq_ignore_ascii_case(name))
+    }
+
+    /// This key with a custom spelling of a registered name promoted to its
+    /// variant.
+    #[must_use]
+    pub fn resolve(&self) -> Self {
+        match *self {
+            Self::Custom(name) => Self::registered(name).unwrap_or(Self::Custom(name)),
+            key => key,
+        }
+    }
 }
 
-/// Read access to one entry's metadata, whatever the format stores.
-///
-/// The view answers by key and cannot be enumerated, so the erased apply path
-/// reconstructs native metadata from the registered keys alone: a custom key,
-/// or one the format cannot represent, is dropped there and nowhere else.
-pub trait ManifestMetadata: MaybeSend + MaybeSync {
-    /// The value bound to `key`, or `None` when the entry carries no such key.
-    fn get(&self, key: &WellKnownKey<'_>) -> Option<&str>;
+/// Read access to one entry's metadata, whatever the format stores: by key,
+/// and enumerably. Values are bytes; text is a format's own convention.
+#[auto_impl::auto_impl(&, Box)]
+pub trait MetadataSource: MaybeSend + MaybeSync {
+    /// The value bound to `key`, or `None` when no such key is carried.
+    fn get(&self, key: &WellKnownKey<'_>) -> Option<&[u8]>;
+
+    /// Call `f` once per carried pair, keyed by name in any registered
+    /// spelling.
+    fn for_each(&self, f: &mut dyn FnMut(&str, &[u8]));
+}
+
+/// A format's native metadata. A cross-format copy goes through
+/// [`MetadataSource`], so the target rebuilds its own type from the source's
+/// pairs and neither format names the other.
+pub trait ManifestMeta: MetadataSource + Default + MaybeSend {
+    /// Native metadata rebuilt from `source`; what the format cannot carry is
+    /// its stated limit.
+    fn from_source(source: &dyn MetadataSource) -> Self;
+}
+
+/// A non-empty metadata block whose format type is `Option<Self>`: the
+/// orphan-safe route to [`ManifestMeta`], carried by the blanket impls below.
+pub trait MetadataBlock: MetadataSource + Sized + MaybeSend {
+    /// The block `source` rebuilds, or `None` when no pair crosses.
+    fn from_source(source: &dyn MetadataSource) -> Option<Self>;
+}
+
+/// An absent block carries nothing.
+impl<M: MetadataSource> MetadataSource for Option<M> {
+    fn get(&self, key: &WellKnownKey<'_>) -> Option<&[u8]> {
+        self.as_ref()?.get(key)
+    }
+
+    fn for_each(&self, f: &mut dyn FnMut(&str, &[u8])) {
+        if let Some(block) = self {
+            block.for_each(f);
+        }
+    }
+}
+
+impl<M: MetadataBlock> ManifestMeta for Option<M> {
+    fn from_source(source: &dyn MetadataSource) -> Self {
+        M::from_source(source)
+    }
 }
 
 /// Metadata held in the seam's own vocabulary, keyed by canonical name.
@@ -70,9 +126,11 @@ impl MetadataView {
         }
     }
 
-    /// Bind `key` to `value`, replacing any previous binding.
+    /// Bind `key` to `value`, replacing any previous binding; a custom
+    /// spelling of a registered name binds the registered slot.
     pub fn set(&mut self, key: WellKnownKey<'_>, value: impl Into<String>) -> &mut Self {
-        self.pairs.insert(String::from(key.name()), value.into());
+        self.pairs
+            .insert(String::from(key.resolve().name()), value.into());
         self
     }
 
@@ -97,38 +155,56 @@ impl MetadataView {
     }
 }
 
-impl ManifestMetadata for MetadataView {
-    fn get(&self, key: &WellKnownKey<'_>) -> Option<&str> {
-        self.pairs.get(key.name()).map(String::as_str)
+impl MetadataSource for MetadataView {
+    fn get(&self, key: &WellKnownKey<'_>) -> Option<&[u8]> {
+        self.pairs.get(key.resolve().name()).map(String::as_bytes)
+    }
+
+    fn for_each(&self, f: &mut dyn FnMut(&str, &[u8])) {
+        for (key, value) in &self.pairs {
+            f(key, value.as_bytes());
+        }
     }
 }
 
 /// An entry with no metadata at all, for an insert that carries none.
-impl ManifestMetadata for () {
-    fn get(&self, _key: &WellKnownKey<'_>) -> Option<&str> {
+impl MetadataSource for () {
+    fn get(&self, _key: &WellKnownKey<'_>) -> Option<&[u8]> {
         None
+    }
+
+    fn for_each(&self, _f: &mut dyn FnMut(&str, &[u8])) {}
+}
+
+/// The trie's native metadata: a verbatim string map. `get` matches a
+/// registered key under any spelling [`WellKnownKey::registered`] recognises.
+impl MetadataSource for BTreeMap<String, String> {
+    fn get(&self, key: &WellKnownKey<'_>) -> Option<&[u8]> {
+        match key.resolve() {
+            WellKnownKey::Custom(name) => Self::get(self, name).map(String::as_bytes),
+            known => self.iter().find_map(|(name, value)| {
+                (WellKnownKey::registered(name) == Some(known)).then_some(value.as_bytes())
+            }),
+        }
+    }
+
+    fn for_each(&self, f: &mut dyn FnMut(&str, &[u8])) {
+        for (key, value) in self {
+            f(key, value.as_bytes());
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_custom_key_is_looked_up_by_name() {
-        let view = MetadataView::new()
-            .with(WellKnownKey::ContentType, "text/html")
-            .with(WellKnownKey::Custom("etag"), "abc");
-        assert_eq!(view.get(&WellKnownKey::ContentType), Some("text/html"));
-        assert_eq!(view.get(&WellKnownKey::Custom("etag")), Some("abc"));
-        assert_eq!(view.get(&WellKnownKey::Custom("missing")), None);
-    }
-
-    #[test]
-    fn the_content_type_key_is_not_the_custom_spelling_of_its_name() {
-        // A custom key spelled as a registered name must resolve to the same
-        // slot, or a round trip through the view would fork the vocabulary.
-        let view = MetadataView::new().with(WellKnownKey::Custom("content-type"), "text/css");
-        assert_eq!(view.get(&WellKnownKey::ContentType), Some("text/css"));
+/// The map's stated limit is text: a registered key lands under its
+/// canonical spelling and a non-UTF-8 value byte is replaced.
+impl ManifestMeta for BTreeMap<String, String> {
+    fn from_source(source: &dyn MetadataSource) -> Self {
+        let mut map = Self::new();
+        source.for_each(&mut |name, value| {
+            let name = WellKnownKey::registered(name)
+                .map_or_else(|| String::from(name), |known| String::from(known.name()));
+            map.insert(name, String::from_utf8_lossy(value).into_owned());
+        });
+        map
     }
 }

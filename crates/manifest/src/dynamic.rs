@@ -2,7 +2,7 @@
 //! runtime.
 //!
 //! Erasure costs four things and states each: the futures box, the reference
-//! width is fixed to [`ChunkRef`], metadata crosses as [`ManifestMetadata`]
+//! width is fixed to [`ChunkRef`], metadata crosses as a [`MetadataSource`]
 //! rather than the format's own type, and an ordered walk stays on the static
 //! path. Every erased call takes the root it reads or writes against, and a
 //! failure crosses as [`ErasedManifestError`] with the seam variants intact.
@@ -19,7 +19,7 @@ use nectar_tasks::BoxFuture;
 use crate::batch::Batch;
 use crate::error::{ErasedFormat, ErasedManifestError, ManifestError};
 use crate::listing::Listing;
-use crate::meta::ManifestMetadata;
+use crate::meta::{ManifestMeta, MetadataSource};
 use crate::op::ManifestOp;
 use crate::path::ManifestPath;
 use crate::site::SiteConfig;
@@ -125,13 +125,21 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         config: SiteConfig,
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>>;
 
-    /// Insert one path, returning the new root.
+    /// The metadata bound to `path`; an absent path reads back empty.
+    fn dyn_metadata<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        path: &'a ManifestPath,
+    ) -> BoxFuture<'a, Result<Box<dyn MetadataSource>, ErasedManifestError>>;
+
+    /// Insert one path, returning the new root. The format rebuilds `meta`
+    /// into its native type; what it cannot carry is its stated limit.
     fn dyn_insert<'a>(
         &'a self,
         root: &'a ChunkRef,
         path: ManifestPath,
         reference: ChunkRef,
-        meta: Box<dyn ManifestMetadata>,
+        meta: &'a dyn MetadataSource,
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>>;
 
     /// Remove one path, returning the new root.
@@ -141,19 +149,19 @@ pub trait DynManifest: MaybeSend + MaybeSync {
         path: ManifestPath,
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>>;
 
-    /// Fold `ops` into the manifest rooted at `base`, returning the new root.
-    ///
-    /// Each op's metadata is rebuilt into the format's native type from the
-    /// registered keys of the well-known-key view, so a custom key, or one the
-    /// format cannot carry, is dropped here.
+    /// Fold `ops` into the manifest rooted at `base`, returning the new root;
+    /// each op's metadata crosses through [`ManifestMeta::from_source`].
     fn dyn_apply<'a>(
         &'a self,
         base: &'a ChunkRef,
-        ops: Vec<ManifestOp<ChunkRef, Box<dyn ManifestMetadata>>>,
+        ops: Vec<ManifestOp<ChunkRef, Box<dyn MetadataSource>>>,
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>>;
 }
 
-impl<T: Manifest<ChunkRef>> DynManifest for T {
+impl<T: Manifest<ChunkRef>> DynManifest for T
+where
+    T::Metadata: 'static,
+{
     fn dyn_empty(&self) -> BoxFuture<'_, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move { self.empty().await.map_err(erase) })
     }
@@ -222,17 +230,28 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
         })
     }
 
+    fn dyn_metadata<'a>(
+        &'a self,
+        root: &'a ChunkRef,
+        path: &'a ManifestPath,
+    ) -> BoxFuture<'a, Result<Box<dyn MetadataSource>, ErasedManifestError>> {
+        Box::pin(async move {
+            let meta = self.at(root).metadata(path).await.map_err(erase)?;
+            let boxed: Box<dyn MetadataSource> = Box::new(meta);
+            Ok(boxed)
+        })
+    }
+
     fn dyn_insert<'a>(
         &'a self,
         root: &'a ChunkRef,
         path: ManifestPath,
         reference: ChunkRef,
-        meta: Box<dyn ManifestMetadata>,
+        meta: &'a dyn MetadataSource,
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move {
-            let meta = self.metadata_from_view(&*meta).map_err(erase)?;
             let mut batch = Batch::new();
-            batch.insert_with(path, reference, meta);
+            batch.insert_with(path, reference, T::Metadata::from_source(meta));
             self.apply(*root, batch).await.map_err(erase)
         })
     }
@@ -248,7 +267,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
     fn dyn_apply<'a>(
         &'a self,
         base: &'a ChunkRef,
-        ops: Vec<ManifestOp<ChunkRef, Box<dyn ManifestMetadata>>>,
+        ops: Vec<ManifestOp<ChunkRef, Box<dyn MetadataSource>>>,
     ) -> BoxFuture<'a, Result<ChunkRef, ErasedManifestError>> {
         Box::pin(async move {
             let mut batch = Batch::new();
@@ -258,10 +277,7 @@ impl<T: Manifest<ChunkRef>> DynManifest for T {
                         path,
                         reference,
                         meta,
-                    } => {
-                        let meta = self.metadata_from_view(&*meta).map_err(erase)?;
-                        batch.insert_with(path, reference, meta)
-                    }
+                    } => batch.insert_with(path, reference, T::Metadata::from_source(&*meta)),
                     ManifestOp::Remove { path } => batch.remove(path),
                 };
             }

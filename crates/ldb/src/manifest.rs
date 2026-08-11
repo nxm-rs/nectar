@@ -15,8 +15,9 @@ use core::ops::{Bound, RangeBounds};
 use bytes::Bytes;
 use nectar_file::{File, LoadError, Policy};
 use nectar_manifest::{
-    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestMetadata, ManifestOp,
-    ManifestPath, MapCursor, MapEntry, MapView, SinkError, SiteConfig, WellKnownKey,
+    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath,
+    MapCursor, MapEntry, MapView, MetadataBlock, MetadataSource, SinkError, SiteConfig,
+    WellKnownKey,
 };
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
@@ -25,10 +26,9 @@ use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use crate::apply::ApplyError;
 use crate::builder::Builder;
 use crate::db::{Database, View};
-use crate::error::MetadataTooLong;
 use crate::folder::DirEntry;
 use crate::format::{Format, V1};
-use crate::meta::{KeyId, Metadata};
+use crate::meta::{CustomKey, KeyId, Metadata, MetadataKey};
 use crate::node::NodeRef;
 use crate::reader::ReaderError;
 use crate::scan::Cursor;
@@ -45,12 +45,9 @@ pub enum LdbFormatError {
     /// Folding the batch into a new root failed.
     #[error(transparent)]
     Apply(#[from] ApplyError),
-    /// The rebuilt metadata block exceeded the format's bound.
-    #[error(transparent)]
-    Metadata(#[from] MetadataTooLong),
 }
 
-nectar_manifest::format_error_from!(LdbFormatError: ReaderError, ApplyError, MetadataTooLong);
+nectar_manifest::format_error_from!(LdbFormatError: ReaderError, ApplyError);
 
 /// The key-value database as a [`Manifest`], keyed by path.
 ///
@@ -160,29 +157,63 @@ where
         }
         Ok(editor.commit().await?)
     }
+}
 
-    fn metadata_from_view(
-        &self,
-        view: &dyn ManifestMetadata,
-    ) -> Result<Self::Metadata, ManifestError<LdbFormatError>> {
-        let mut meta: Option<Metadata<V1>> = None;
-        for (key, id) in [
-            (WellKnownKey::ContentType, KeyId::ContentType),
-            (WellKnownKey::IndexDocument, KeyId::WebsiteIndexDocument),
-            (WellKnownKey::ErrorDocument, KeyId::WebsiteErrorDocument),
-        ] {
-            let Some(value) = view.get(&key) else {
-                continue;
-            };
-            let value = Bytes::copy_from_slice(value.as_bytes());
-            match meta.as_mut() {
-                Some(block) => {
-                    block.insert(id, value)?;
+/// The typed key `key` names here: any spelling of a registered name promotes
+/// to its [`KeyId`], any other name travels as a custom key when it fits.
+fn meta_key(key: &WellKnownKey<'_>) -> Option<MetadataKey<V1>> {
+    let key = key.resolve();
+    let name = key.name();
+    KeyId::from_name(name.to_ascii_lowercase().as_bytes()).map_or_else(
+        || {
+            CustomKey::try_from(name.as_bytes())
+                .ok()
+                .map(MetadataKey::from)
+        },
+        |id| Some(id.into()),
+    )
+}
+
+/// The erased read of the typed registry; values cross as their stored bytes.
+impl MetadataSource for Metadata<V1> {
+    fn get(&self, key: &WellKnownKey<'_>) -> Option<&[u8]> {
+        let key = meta_key(key)?;
+        Self::get(self, &key).map(Bytes::as_ref)
+    }
+
+    /// A registered id crosses under its registry name; a non-UTF-8 custom
+    /// key names no string, so it stays behind the static path.
+    fn for_each(&self, f: &mut dyn FnMut(&str, &[u8])) {
+        for (key, value) in self.iter() {
+            match key {
+                MetadataKey::Known(id) => f(id.name(), value.as_ref()),
+                MetadataKey::Custom(custom) => {
+                    if let Ok(name) = core::str::from_utf8(custom.as_bytes()) {
+                        f(name, value.as_ref());
+                    }
                 }
-                None => meta = Some(Metadata::new(id, value)?),
             }
         }
-        Ok(meta)
+    }
+}
+
+/// The rebuild keeps registered ids and custom keys alike; a pair past the
+/// format's encoded bound is dropped.
+impl MetadataBlock for Metadata<V1> {
+    fn from_source(source: &dyn MetadataSource) -> Option<Self> {
+        let mut meta: Option<Self> = None;
+        source.for_each(&mut |name, value| {
+            let Some(key) = meta_key(&WellKnownKey::Custom(name)) else {
+                return;
+            };
+            let value = Bytes::copy_from_slice(value);
+            match meta.as_mut() {
+                // An over-budget insert leaves the block unchanged.
+                Some(block) => drop(block.insert(key, value)),
+                None => meta = Self::new(key, value).ok(),
+            }
+        });
+        meta
     }
 }
 
