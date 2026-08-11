@@ -1,6 +1,7 @@
 //! The bidirectional metadata seam: the seam's own view and key table, and
-//! the cross-format copy `M2::Metadata::from_source(&m1_meta)`, where no
-//! format names the other and what a copy drops is the target's stated limit.
+//! the cross-format copy, where the target rebuilds its own metadata type
+//! from the source's `MetadataSource` pairs. No format names the other, and
+//! what a copy drops is the target's stated limit.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

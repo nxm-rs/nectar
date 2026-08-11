@@ -73,8 +73,9 @@ pub trait MetadataSource: MaybeSend + MaybeSync {
     fn for_each(&self, f: &mut dyn FnMut(&str, &[u8]));
 }
 
-/// A format's native metadata, so a cross-format copy is
-/// `M2::Metadata::from_source(&m1_meta)`.
+/// A format's native metadata. A cross-format copy goes through
+/// [`MetadataSource`], so the target rebuilds its own type from the source's
+/// pairs and neither format names the other.
 pub trait ManifestMeta: MetadataSource + Default + MaybeSend {
     /// Native metadata rebuilt from `source`; what the format cannot carry is
     /// its stated limit.

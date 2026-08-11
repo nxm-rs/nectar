@@ -23,7 +23,8 @@
 //! Each format keeps its own metadata type: the static path erases nothing.
 //! [`DynManifest`] is the object-safe wrapper for a runtime-detected format,
 //! and unifies metadata behind the enumerable [`MetadataSource`]: a
-//! cross-format copy is `M2::Metadata::from_source(&m1_meta)`.
+//! cross-format copy calls [`ManifestMeta::from_source`] on the target's
+//! metadata type with the source's metadata as the argument.
 //!
 //! ```
 //! use nectar_manifest::{Batch, ManifestPath, MetadataView, WellKnownKey};
