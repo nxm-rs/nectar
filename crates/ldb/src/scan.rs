@@ -604,22 +604,14 @@ pub(crate) fn half_open(bounds: &impl RangeBounds<Key>) -> (Vec<u8>, Option<Byte
     let start = match bounds.start_bound() {
         Bound::Unbounded => Vec::new(),
         Bound::Included(key) => key.as_bytes().to_vec(),
-        Bound::Excluded(key) => next_key(key.as_bytes()),
+        Bound::Excluded(key) => join(key.as_bytes(), &[0]),
     };
     let end = match bounds.end_bound() {
         Bound::Unbounded => None,
         Bound::Excluded(key) => Some(Bytes::copy_from_slice(key.as_bytes())),
-        Bound::Included(key) => Some(Bytes::from(next_key(key.as_bytes()))),
+        Bound::Included(key) => Some(Bytes::from(join(key.as_bytes(), &[0]))),
     };
     (start, end)
-}
-
-/// The least byte string strictly greater than `key`.
-fn next_key(key: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(key.len().saturating_add(1));
-    bytes.extend_from_slice(key);
-    bytes.push(0);
-    bytes
 }
 
 /// The least byte string strictly greater than every string starting with

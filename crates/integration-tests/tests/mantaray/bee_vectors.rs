@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use alloy_primitives::b256;
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{Manifest, ManifestPath, MapWriter};
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
@@ -26,15 +27,6 @@ fn reference(i: u8) -> ChunkRef {
     let mut bytes = [0u8; 32];
     bytes[0] = i;
     ChunkRef::new(ChunkAddress::new(bytes))
-}
-
-/// A root address parsed from its 64-hex-char vector.
-fn address(hex: &str) -> ChunkAddress {
-    let mut out = [0u8; 32];
-    for (i, pair) in hex.as_bytes().chunks(2).enumerate() {
-        out[i] = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
-    }
-    ChunkAddress::new(out)
 }
 
 /// Store `entries` as a plain manifest, with an optional index document, and
@@ -63,7 +55,7 @@ fn one_bare_content_key_matches_bee() {
         let root = root(&[(ManifestPath::from("index.html"), reference(7))], None).await;
         assert_eq!(
             *root.address(),
-            address("135e08fe3256ffb32a2abeadc66d335568372ee4ebed35cdf9b40fdcbb31263a"),
+            ChunkAddress::from(b256!("135e08fe3256ffb32a2abeadc66d335568372ee4ebed35cdf9b40fdcbb31263a")),
         );
     });
 }
@@ -78,7 +70,7 @@ fn a_website_index_document_matches_bee() {
         .await;
         assert_eq!(
             *root.address(),
-            address("71679aa2e389c9ae87aac980f73b34c15843db48824e7b2957f7e11f6dc18c44"),
+            ChunkAddress::from(b256!("71679aa2e389c9ae87aac980f73b34c15843db48824e7b2957f7e11f6dc18c44")),
         );
     });
 }
@@ -99,7 +91,7 @@ fn a_multi_chunk_root_node_matches_bee() {
         let root = root(&entries, None).await;
         assert_eq!(
             *root.address(),
-            address("73351dd770c0d3205d46f2954f99502112f77b91db56fed72f245f4331724010"),
+            ChunkAddress::from(b256!("73351dd770c0d3205d46f2954f99502112f77b91db56fed72f245f4331724010")),
         );
     });
 }

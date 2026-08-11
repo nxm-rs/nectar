@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use nectar_file::MemSink;
 use nectar_ldb::{
-    Builder, Database, Entry, Key, LdbManifest, Plaintext, Reader as LdbReader, Served, V1,
+    Builder, Database, Entry, Key, LdbManifest, Plaintext, Reader as LdbReader, Served, V1, Website,
 };
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
@@ -1074,8 +1074,9 @@ fn website_documents_resolve_over_bare_keys() {
             writer.with_index_document(None).with_error_document(None);
             writer.commit().await.unwrap()
         };
-        assert!(
-            reader.website(&cleared).await.unwrap() == Default::default(),
+        assert_eq!(
+            reader.website(&cleared).await.unwrap(),
+            Website::default(),
             "clearing the documents leaves no site conventions"
         );
         let served = reader

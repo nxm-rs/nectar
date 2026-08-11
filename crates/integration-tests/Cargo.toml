@@ -30,7 +30,6 @@ alloy-primitives = { workspace = true, features = ["getrandom"] }
 alloy-signer-local.workspace = true
 bytes.workspace = true
 futures.workspace = true
-nectar-feeds = { workspace = true, features = ["std"] }
 nectar-file = { workspace = true, features = ["std"] }
 nectar-ldb = { workspace = true, features = ["arbitrary", "manifest"] }
 nectar-loadsave.workspace = true

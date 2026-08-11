@@ -17,20 +17,14 @@ use nectar_primitives::chunk::{ChunkRef, Reference};
 use nectar_primitives::store::MaybeSend;
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
 
-/// Boxed recursion future: `Send` on multi-threaded targets, unbounded on
-/// wasm32 and under the `unsync` feature, so `!Send` stores stay usable.
-/// `MaybeSend` cannot appear in a `dyn` bound directly (it is not an auto
-/// trait), so the auto trait is cfg-gated here.
+/// Boxed recursion future over what the descent yields: `Send` on
+/// multi-threaded targets, unbounded on wasm32 and under the `unsync` feature,
+/// so `!Send` stores stay usable. `MaybeSend` cannot appear in a `dyn` bound
+/// directly (it is not an auto trait), so the auto trait is cfg-gated here.
 #[cfg(multi_thread)]
-type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+type RecurseFuture<'a, T = ()> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 #[cfg(not(multi_thread))]
-type RecurseFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
-
-/// Boxed recursion future of an exact-key clear, cfg-gated the same way.
-#[cfg(multi_thread)]
-type ClearFuture<'a> = Pin<Box<dyn Future<Output = Result<Cleared>> + Send + 'a>>;
-#[cfg(not(multi_thread))]
-type ClearFuture<'a> = Pin<Box<dyn Future<Output = Result<Cleared>> + 'a>>;
+type RecurseFuture<'a, T = ()> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
 
 /// What an exact-key clear did to the node the path names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -655,7 +649,7 @@ impl<R: Reference> Node<R> {
         &'a mut self,
         path: &'a [u8],
         loader: &'a L,
-    ) -> ClearFuture<'a>
+    ) -> RecurseFuture<'a, Cleared>
     where
         R: MaybeSend,
     {
