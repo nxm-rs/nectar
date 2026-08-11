@@ -139,7 +139,7 @@ pub use bounded::{MetadataLen, Prefix, SegmentWeight};
 pub use builder::{BuildError, BuildStats, Builder, Built};
 pub use codec::{DecodeError, EncodeError, recanonicalize};
 pub use count::{CountError, SubtreeCount};
-pub use db::{Database, Editor, Insert, View};
+pub use db::{Database, Editor, View};
 #[cfg(feature = "encryption")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
 pub use encryption::{Encrypted, derive_key};
@@ -151,7 +151,7 @@ pub use folder::{DirEntry, Listing, Served, Website};
 pub use fork::{Child, ForkPayload, ForkRecord, ForkTable};
 pub use format::{Format, V1, V1Read};
 #[cfg(feature = "manifest")]
-pub use manifest::{LdbCursor, LdbFormatError, LdbManifest, LdbView, LdbWriter};
+pub use manifest::{LdbCursor, LdbFormatError, LdbManifest, LdbView};
 pub use meta::{CustomKey, KeyId, Metadata, MetadataKey};
 pub use node::{Node, NodeRef, RootExtension};
 pub use packing::{Directory, SegmentKind, cut, embed, h64, segment, spill};

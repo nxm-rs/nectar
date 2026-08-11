@@ -7,8 +7,9 @@
 //! and whose data lives behind another is therefore expressible, and the
 //! common case passes the same store twice.
 //!
-//! [`TrieView`] reads one root through the depth-guarded reader and the ordered
-//! cursor; [`TrieWriter`] records the batch through [`ManifestEditor`].
+//! [`TrieView`] reads one root through the depth-guarded reader and the
+//! ordered cursor; [`Manifest::apply`] replays the checked batch through
+//! [`ManifestEditor`].
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -18,9 +19,8 @@ use core::ops::{Bound, RangeBounds};
 
 use nectar_file::{File, LoadError, Policy};
 use nectar_manifest::{
-    DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestMetadata, ManifestOp,
-    ManifestPath, MapCursor, MapEntry, MapView, MapWriter, ReservedKey, SinkError, SiteConfig,
-    WellKnownKey,
+    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestMetadata, ManifestOp,
+    ManifestPath, MapCursor, MapEntry, MapView, SinkError, SiteConfig, WellKnownKey,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
@@ -94,11 +94,6 @@ where
     where
         Self: 'a;
 
-    type Writer<'a>
-        = TrieWriter<L, R>
-    where
-        Self: 'a;
-
     /// The empty trie persisted at width `R` with a zero obfuscation key.
     fn empty(&self) -> impl Future<Output = Result<R, ManifestError<TrieFormatError>>> + MaybeSend {
         let editor = ManifestEditor::empty_reference(self.nodes.clone());
@@ -116,10 +111,47 @@ where
         }
     }
 
-    fn edit(&self, base: &R) -> Self::Writer<'_> {
-        TrieWriter {
-            editor: ManifestEditor::open_reference(base.clone(), self.nodes.clone()),
-            reserved: None,
+    /// The checked batch replayed through the submission-order editor: ops in
+    /// order, then the site-document delta, one commit.
+    fn apply(
+        &self,
+        base: R,
+        batch: Batch<R, Self::Metadata>,
+    ) -> impl Future<Output = Result<R, ManifestError<TrieFormatError>>> + MaybeSend {
+        let nodes = self.nodes.clone();
+        async move {
+            let checked = batch.into_checked().map_err(ManifestError::Reserved)?;
+            let mut editor = ManifestEditor::open_reference(base, nodes);
+            for op in checked.ops {
+                match op {
+                    ManifestOp::Insert {
+                        path,
+                        reference,
+                        meta,
+                    } => editor.insert_with(path.into_bytes(), reference, meta),
+                    ManifestOp::Remove { path } => editor.remove(path.into_bytes()),
+                };
+            }
+            // The site documents are a merge: untouched records nothing, and
+            // `Some(None)` clears the key. The trie stores metadata values as
+            // text, so invalid UTF-8 in a path is replaced.
+            for (key, delta) in [
+                (metadata::WEBSITE_INDEX_DOCUMENT, checked.index_document),
+                (metadata::WEBSITE_ERROR_DOCUMENT, checked.error_document),
+            ] {
+                match delta {
+                    Some(Some(path)) => {
+                        let value = String::from_utf8_lossy(path.as_bytes()).into_owned();
+                        editor.set_root_metadata(key, value);
+                    }
+                    Some(None) => {
+                        editor.clear_root_metadata(key);
+                    }
+                    None => {}
+                }
+            }
+            let (root, _) = editor.commit_reference().await?;
+            Ok(root)
         }
     }
 
@@ -345,87 +377,6 @@ where
                 return Ok(Some((ManifestPath::new(path.to_vec()), mapped(&entry))));
             }
             Ok(None)
-        }
-    }
-}
-
-/// The seam's write handle over one base root.
-#[derive(Debug)]
-pub struct TrieWriter<L, R: Reference> {
-    editor: ManifestEditor<L, R>,
-    /// The first reserved path the batch staged. Staging is infallible, so the
-    /// refusal is held until the commit.
-    reserved: Option<ReservedKey>,
-}
-
-impl<L, R: Reference> TrieWriter<L, R> {
-    /// Record one site document on the trie's site-config node, or clear it.
-    ///
-    /// A merge, so the two documents are independent. Clearing the last one
-    /// prunes the node. The trie stores metadata values as text, so invalid
-    /// UTF-8 in a path is replaced.
-    fn document(&mut self, key: &str, path: Option<ManifestPath>) -> &mut Self {
-        match path {
-            Some(path) => {
-                let value = String::from_utf8_lossy(path.as_bytes()).into_owned();
-                self.editor.set_root_metadata(key, value);
-            }
-            None => {
-                self.editor.clear_root_metadata(key);
-            }
-        }
-        self
-    }
-}
-
-impl<L, R> MapWriter<R> for TrieWriter<L, R>
-where
-    L: NodeLoader + NodeSaver<R> + MaybeSend,
-    R: Reference + MaybeSend + MaybeSync,
-{
-    type Metadata = BTreeMap<String, String>;
-
-    type Error = ManifestError<TrieFormatError>;
-
-    /// An insert replaces the whole binding, clearing existing metadata unless
-    /// `meta` carries some. A reserved path stages no trie op and refuses the
-    /// commit instead.
-    fn stage(&mut self, op: ManifestOp<R, Self::Metadata>) {
-        if content_key(op.path()).is_none() {
-            self.reserved
-                .get_or_insert_with(|| ReservedKey::new(op.path().clone()));
-            return;
-        }
-        match op {
-            ManifestOp::Insert {
-                path,
-                reference,
-                meta,
-            } => {
-                self.editor.insert(path.into_bytes(), reference).meta(meta);
-            }
-            ManifestOp::Remove { path } => {
-                self.editor.remove(path.into_bytes());
-            }
-        }
-    }
-
-    fn with_index_document(&mut self, path: impl Into<Option<ManifestPath>>) -> &mut Self {
-        self.document(metadata::WEBSITE_INDEX_DOCUMENT, path.into())
-    }
-
-    fn with_error_document(&mut self, path: impl Into<Option<ManifestPath>>) -> &mut Self {
-        self.document(metadata::WEBSITE_ERROR_DOCUMENT, path.into())
-    }
-
-    fn commit(self) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend {
-        let Self { editor, reserved } = self;
-        async move {
-            if let Some(reserved) = reserved {
-                return Err(ManifestError::Reserved(reserved));
-            }
-            let (root, _) = editor.commit_reference().await?;
-            Ok(root)
         }
     }
 }
