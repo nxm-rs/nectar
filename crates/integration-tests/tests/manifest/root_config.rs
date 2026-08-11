@@ -34,33 +34,20 @@
 use std::ops::Bound;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use nectar_file::{DataSink, File, MemSink, Policy};
 use nectar_ldb::{Builder, Database, Entry, Key, Plaintext, Reader as LdbReader, Served, V1, Website};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    Batch, Manifest, ManifestError, ManifestMeta, ManifestOp, ManifestPath, MapCursor, MapEntry,
-    MapView, MetadataView, WellKnownKey,
+    Batch, ListEntry, Manifest, ManifestError, ManifestMeta, ManifestOp, ManifestPath, MapCursor,
+    MapEntry, MapView, MetadataView, WellKnownKey,
 };
 use nectar_mantaray::{ManifestEditor, MantarayManifest};
-use nectar_primitives::store::{ContentGet, MemoryStore};
-use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
+use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, EncryptedChunkRef, EncryptionKey};
 use nectar_testing::run;
 
-/// Shared: `MemoryStore` clones its contents, so every handle in one test has
-/// to reach the same map.
-type Raw = Arc<MemoryStore<StandardChunkSet>>;
-type Store = ContentGet<Raw>;
-type Trie = MantarayManifest<NodeLoadSaver<Raw>, Store, DEFAULT_BODY_SIZE>;
-type Kv = Database<Store>;
-
-/// Both formats over one raw store, each at its freshly persisted empty root.
-async fn both_formats(raw: &Raw, store: &Store) -> ((Trie, ChunkRef), (Kv, ChunkRef)) {
-    let trie: Trie = MantarayManifest::new(NodeLoadSaver::new(Arc::clone(raw)), store.clone());
-    let trie_empty = trie.empty().await.unwrap();
-    let kv = Database::<_>::plain(store.clone());
-    let kv_empty = kv.empty().await.unwrap();
-    ((trie, trie_empty), (kv, kv_empty))
-}
+mod common;
+use common::{both_formats, reference, text};
 
 /// `keys` written through the seam in one batch, each bound to a distinct
 /// reference.
@@ -81,16 +68,6 @@ async fn write_keys<M: Manifest<ChunkRef>>(
 const INDEX: &str = "index.html";
 /// One whole content key.
 const ERROR: &str = "404.html";
-
-/// A reference standing in for a file root; no chunk behind it is read.
-fn reference(byte: u8) -> ChunkRef {
-    ChunkRef::new(ChunkAddress::new([byte; 32]))
-}
-
-/// A path as text, for a readable assertion message.
-fn text(path: &ManifestPath) -> String {
-    String::from_utf8(path.as_bytes().to_vec()).unwrap()
-}
 
 /// The reserved path a refused write names, structurally over every format.
 fn refused<T, F>(result: &Result<T, ManifestError<F>>) -> Option<ManifestPath> {
@@ -703,8 +680,7 @@ macro_rules! differential {
         #[test]
         fn $name() {
             run(async {
-                let raw: Raw = Arc::new(MemoryStore::new());
-                let store: Store = ContentGet::new(Arc::clone(&raw));
+                let (raw, store) = common::stores();
                 let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
                 let from_trie = $scenario(&trie, &trie_empty).await;
                 let from_kv = $scenario(&kv, &kv_empty).await;
@@ -735,8 +711,7 @@ differential!(
 #[test]
 fn a_remove_is_history_independent_on_ldb() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(raw);
+        let (_raw, store) = common::stores();
         let builder: Builder<V1> = Builder::new();
         let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
         let kv = Database::<_>::plain(store.clone());
@@ -811,8 +786,7 @@ where
 #[test]
 fn a_batch_folds_in_submission_order_on_both_formats() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let (raw, store) = common::stores();
         let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
         a_batch_folds_in_submission_order(&trie, &trie_empty).await;
         a_batch_folds_in_submission_order(&kv, &kv_empty).await;
@@ -825,8 +799,7 @@ fn a_batch_folds_in_submission_order_on_both_formats() {
 #[test]
 fn the_reserved_refusal_precedes_the_format() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let (raw, store) = common::stores();
         let ((trie, _), (kv, _)) = both_formats(&raw, &store).await;
         // No chunk lives behind this root.
         let garbage = reference(0xEE);
@@ -925,8 +898,7 @@ fn separator_prefixed_content_lists_alike_on_both_formats() {
 
 /// One key set through both formats' `dir("")`, written through the seam.
 async fn both_top_levels(keys: &[&str]) -> (Vec<String>, Vec<String>) {
-    let raw: Raw = Arc::new(MemoryStore::new());
-    let store: Store = ContentGet::new(Arc::clone(&raw));
+    let (raw, store) = common::stores();
     let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
     let trie_root = write_keys(&trie, &trie_empty, keys).await;
     let kv_root = write_keys(&kv, &kv_empty, keys).await;
@@ -988,8 +960,7 @@ where
 #[test]
 fn an_insert_replaces_the_whole_binding_on_both_formats() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let (raw, store) = common::stores();
         let ((trie, trie_empty), (kv, kv_empty)) = both_formats(&raw, &store).await;
         insert_replaces_the_whole_binding(&trie, &trie_empty).await;
         insert_replaces_the_whole_binding(&kv, &kv_empty).await;
@@ -1016,8 +987,7 @@ async fn assert_empty_bootstrap<M: Manifest<ChunkRef>>(manifest: &M, native: Chu
 #[test]
 fn the_seam_bootstrap_matches_each_format() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let (raw, store) = common::stores();
 
         let nodes = NodeLoadSaver::new(Arc::clone(&raw));
         let editor: ManifestEditor<_> = ManifestEditor::new(nodes.clone());
@@ -1053,8 +1023,7 @@ async fn assert_sink_refusal<M: Manifest<ChunkRef>>(manifest: &M, file: ChunkRef
 #[test]
 fn a_refused_sink_write_is_sink_on_both_formats() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let (raw, store) = common::stores();
         let data = vec![7u8; 20_000];
         let saver = File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT);
         let file = ChunkRef::new(saver.save(&data[..]).await.unwrap());
@@ -1093,8 +1062,7 @@ impl DataSink for RefusingSink {
 #[test]
 fn a_planted_separator_key_is_not_listed() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(Arc::clone(&raw));
+        let (raw, store) = common::stores();
         let separator = ManifestPath::from("/");
         let content = ManifestPath::from("a.txt");
 
@@ -1177,8 +1145,7 @@ fn a_planted_separator_key_is_not_listed() {
 #[test]
 fn website_documents_resolve_over_bare_keys() {
     run(async {
-        let raw: Raw = Arc::new(MemoryStore::new());
-        let store: Store = ContentGet::new(raw);
+        let (_raw, store) = common::stores();
         let builder: Builder<V1> = Builder::new();
         let empty = *builder.build(&store, &Plaintext).await.unwrap().root();
         let kv = Database::<_>::plain(store.clone());
@@ -1267,5 +1234,130 @@ fn website_documents_resolve_over_bare_keys() {
             ("missing", String::new()),
             "no documents are declared, so nothing resolves"
         );
+    });
+}
+
+/// The bytes an inline entry carries in the manifest itself.
+const INLINE: &[u8] = b"carried by the manifest itself";
+/// The bytes a plain reference stores behind the manifest.
+const FILE_DATA: &[u8] = b"stored behind a reference";
+
+/// `get` on one path, through the seam.
+async fn got<V: MapView<ChunkRef>>(view: &V, path: &str) -> MapEntry<ChunkRef> {
+    view.get(&ManifestPath::from(path)).await.unwrap().unwrap()
+}
+
+/// `load` on one path, through the seam: the outcome and what reached the sink.
+async fn loaded_bytes<V: MapView<ChunkRef>>(
+    view: &V,
+    path: &str,
+) -> (Result<(), V::Error>, Vec<u8>) {
+    let mut sink = MemSink::new();
+    let result = view.load(&ManifestPath::from(path), &mut sink).await;
+    (result, sink.as_ref().to_vec())
+}
+
+/// `MapEntry::Value` conformance on the key-value format: `get` answers
+/// `Reference`, `Value` or `Opaque`, `load` serves exactly the loadable two,
+/// and every walk carries the kind. An inline value loads from the manifest
+/// itself; a reference the caller's width cannot hold reads as `Opaque` and
+/// loads as `NoData`, before any store fetch.
+#[test]
+fn an_inline_entry_is_a_loadable_value_and_opaque_is_not() {
+    run(async {
+        let (raw, store) = common::stores();
+        let file = common::save_file(&raw, FILE_DATA).await;
+        let wide = EncryptedChunkRef::new(*file.address(), EncryptionKey::from([0x5a; 32]));
+        let db = Database::plain(store.clone());
+        let empty: ChunkRef = db.empty().await.unwrap();
+        let mut editor = db.edit(&empty);
+        editor
+            .insert(
+                Key::from(&b"docs/inline.txt"[..]),
+                Entry::inline(Bytes::from_static(INLINE)).unwrap(),
+            )
+            .insert(Key::from(&b"docs/plain.bin"[..]), Entry::from(file))
+            .insert(Key::from(&b"docs/wide.bin"[..]), Entry::from(wide));
+        let root = editor.commit().await.unwrap();
+        let view = Manifest::<ChunkRef>::at(&db, &root);
+
+        // `get` discriminates the three entry kinds.
+        let inline = got(&view, "docs/inline.txt").await;
+        assert_eq!(inline, MapEntry::Value);
+        assert!(inline.is_loadable());
+        let opaque = got(&view, "docs/wide.bin").await;
+        assert_eq!(opaque, MapEntry::Opaque);
+        assert!(!opaque.is_loadable());
+        assert!(matches!(
+            got(&view, "docs/plain.bin").await,
+            MapEntry::Reference(_)
+        ));
+
+        // `load` serves exactly the loadable entries.
+        let (result, bytes) = loaded_bytes(&view, "docs/inline.txt").await;
+        result.unwrap();
+        assert_eq!(bytes, INLINE);
+        let (result, bytes) = loaded_bytes(&view, "docs/plain.bin").await;
+        result.unwrap();
+        assert_eq!(bytes, FILE_DATA);
+        let (result, bytes) = loaded_bytes(&view, "docs/wide.bin").await;
+        let err = result.unwrap_err();
+        assert!(matches!(err, ManifestError::NoData(path) if path.as_bytes() == b"docs/wide.bin"));
+        assert!(bytes.is_empty());
+
+        // The full walk yields the three kinds in path order.
+        let expect = |pairs: &[(&str, bool)]| -> Vec<(String, bool)> {
+            pairs.iter().map(|(p, k)| ((*p).to_owned(), *k)).collect()
+        };
+        let mut kinds = Vec::new();
+        let mut cursor = MapView::<ChunkRef>::iter(&view).await.unwrap();
+        while let Some((path, entry)) = cursor.next().await.unwrap() {
+            kinds.push((text(&path), entry.is_loadable()));
+        }
+        assert_eq!(
+            kinds,
+            expect(&[
+                ("docs/inline.txt", true),
+                ("docs/plain.bin", true),
+                ("docs/wide.bin", false),
+            ])
+        );
+
+        // A bounded walk keeps the kind discrimination.
+        let bounds = (
+            Bound::Included(ManifestPath::from("docs/inline.txt")),
+            Bound::Excluded(ManifestPath::from("docs/wide.bin")),
+        );
+        assert_eq!(
+            drain(&view, bounds).await,
+            ["docs/inline.txt", "docs/plain.bin"]
+        );
+
+        // The folder view lists an inline value and an opaque reference both
+        // as values, never fetching either.
+        let listing = MapView::<ChunkRef>::dir(&view, &ManifestPath::from("docs/"))
+            .await
+            .unwrap();
+        let listed: Vec<(String, bool)> = listing
+            .entries()
+            .iter()
+            .map(|entry| (text(entry.path()), matches!(entry, ListEntry::Value { .. })))
+            .collect();
+        assert_eq!(
+            listed,
+            expect(&[
+                ("docs/inline.txt", true),
+                ("docs/plain.bin", false),
+                ("docs/wide.bin", true),
+            ])
+        );
+
+        // The ordered seek answers with the entry kind too.
+        let floored = MapView::<ChunkRef>::floor(&view, &ManifestPath::from("docs/inline.zzz"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(floored.0.as_bytes(), b"docs/inline.txt");
+        assert_eq!(floored.1, MapEntry::Value);
     });
 }

@@ -1,5 +1,5 @@
 //! The [`Manifest`] seam over the trie: paths to references, batched writes,
-//! and data loads through the file pipeline.
+//! and data loads through the seam's shared load lane.
 //!
 //! Two seams meet here and stay separate: nodes persist through the trie's own
 //! [`NodeLoader`]/[`NodeSaver`] adapter, while an entry's data is joined
@@ -7,20 +7,18 @@
 //! and whose data lives behind another is therefore expressible, and the
 //! common case passes the same store twice.
 //!
-//! [`TrieView`] reads one root through the depth-guarded reader and the
-//! ordered cursor; [`Manifest::apply`] replays the checked batch through
-//! [`ManifestEditor`].
+//! [`TrieView`] reads one root through the depth-guarded reader; the walks are
+//! the raw [`TrieCursor`] under the seam's [`PathCursor`]. [`Manifest::apply`]
+//! replays the checked batch through [`ManifestEditor`].
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::future::Future;
-use core::ops::{Bound, RangeBounds};
+use core::ops::Bound;
 
-use nectar_file::{File, LoadError, Policy};
 use nectar_manifest::{
-    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath,
-    MapCursor, MapEntry, MapView, SinkError, SiteConfig,
+    Batch, DataSink, Listing, Manifest, ManifestError, ManifestOp, ManifestPath, MapEntry, MapView,
+    PathCursor, RawCursor, RawItem, SinkError, SiteConfig, collapse_dir, load_reference,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
@@ -176,7 +174,7 @@ where
         &self,
         path: &ManifestPath,
     ) -> Result<Option<Entry>, ManifestError<TrieFormatError>> {
-        let Some(key) = content_key(path) else {
+        let Some(key) = path.content_key() else {
             return Ok(None);
         };
         let reader = Reader::new(self.nodes.clone());
@@ -194,11 +192,12 @@ where
             .await?)
     }
 
-    /// An ordered walk of the whole trie, bounded to `bounds`.
-    fn walk(&self, bounds: (Bound<Vec<u8>>, Bound<Vec<u8>>)) -> TrieCursor<L, R> {
+    /// The raw ordered walk of the keys under `prefix`, which the trie prunes
+    /// to. An empty prefix walks the whole trie.
+    fn walk(&self, prefix: &[u8]) -> TrieCursor<L, R> {
         TrieCursor {
-            cursor: Cursor::new(self.nodes.clone(), self.root.clone().into_entry_ref()),
-            bounds,
+            cursor: Cursor::new(self.nodes.clone(), self.root.clone().into_entry_ref())
+                .with_prefix(prefix),
             _reference: core::marker::PhantomData,
         }
     }
@@ -214,14 +213,14 @@ where
 
     type Error = ManifestError<TrieFormatError>;
 
-    type Cursor = TrieCursor<L, R>;
+    type Cursor = PathCursor<TrieCursor<L, R>>;
 
     fn get(
         &self,
         path: &ManifestPath,
     ) -> impl Future<Output = Result<Option<MapEntry<R>>, Self::Error>> + MaybeSend {
         let path = path.clone();
-        async move { Ok(self.entry(&path).await?.map(|entry| mapped(&entry))) }
+        async move { Ok(self.entry(&path).await?.map(|entry| seam_entry(&entry))) }
     }
 
     async fn site_config(&self) -> Result<SiteConfig, Self::Error> {
@@ -253,24 +252,13 @@ where
         }
     }
 
+    /// The trie prunes to the listed prefix, so a level costs its own subtree
+    /// rather than every key before it.
     fn dir(
         &self,
         dir: &ManifestPath,
     ) -> impl Future<Output = Result<Listing<R>, Self::Error>> + MaybeSend {
-        let mut cursor = Cursor::new(self.nodes.clone(), self.root.clone().into_entry_ref())
-            .with_prefix(dir.as_bytes());
-        let prefix = dir.as_bytes().to_vec();
-        async move {
-            let mut entries = Vec::new();
-            let mut last_dir: Option<Vec<u8>> = None;
-            while let Some(entry) = cursor.next().await.transpose()? {
-                let Some(listed) = collapse(&prefix, &entry, &mut last_dir) else {
-                    continue;
-                };
-                entries.push(listed);
-            }
-            Ok(Listing::new(entries))
-        }
+        collapse_dir(dir.clone(), PathCursor::new(self.walk(dir.as_bytes())))
     }
 
     fn load<K: DataSink<Error: SinkError> + MaybeSend>(
@@ -285,47 +273,41 @@ where
                 .entry(&path)
                 .await?
                 .ok_or_else(|| ManifestError::NotFound(path.clone()))?;
+            // Load success tracks `get`: only a reference of the caller's
+            // width names data here.
             let reference = entry
                 .reference()
                 .cloned()
+                .and_then(|reference| R::from_entry_ref(reference).ok())
                 .ok_or(ManifestError::NoData(path))?;
-            File::<S, B>::new(store, Policy::DEFAULT)
-                .load(reference, sink)
-                .await
-                .map_err(|error| match error {
-                    LoadError::Sink { source, .. } => ManifestError::sink(source),
-                    data => ManifestError::data(data),
-                })?;
-            Ok(())
+            load_reference::<_, _, _, B>(store, reference.into_entry_ref(), sink).await
         }
     }
 
     fn iter(&self) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend {
-        let cursor = self.walk((Bound::Unbounded, Bound::Unbounded));
+        let cursor = PathCursor::new(self.walk(&[]));
         async move { Ok(cursor) }
     }
 
     fn range(
         &self,
-        bounds: impl RangeBounds<ManifestPath> + MaybeSend,
+        bounds: (Bound<ManifestPath>, Bound<ManifestPath>),
     ) -> impl Future<Output = Result<Self::Cursor, Self::Error>> + MaybeSend {
-        let cursor = self.walk((owned(bounds.start_bound()), owned(bounds.end_bound())));
+        let cursor = PathCursor::bounded(self.walk(&[]), bounds);
         async move { Ok(cursor) }
     }
 }
 
-/// The seam's ordered walk over a trie.
-///
-/// The trie has no ordered seek, so a bounded walk filters an ordered full
-/// walk: the cost of a lower bound is the nodes before it.
+/// The trie's raw ordered walk: every stored key under the walk's prefix,
+/// the site-config node included. The trie has no ordered seek, so a bounded
+/// walk is the seam's filter over a full one.
 #[derive(Debug)]
 pub struct TrieCursor<L, R: Reference> {
     cursor: Cursor<L>,
-    bounds: (Bound<Vec<u8>>, Bound<Vec<u8>>),
     _reference: core::marker::PhantomData<R>,
 }
 
-impl<L, R> MapCursor<R> for TrieCursor<L, R>
+impl<L, R> RawCursor<R> for TrieCursor<L, R>
 where
     L: NodeLoader + Clone + MaybeSend + 'static,
     R: Reference + MaybeSend + MaybeSync,
@@ -334,126 +316,30 @@ where
 
     fn next(
         &mut self,
-    ) -> impl Future<Output = Result<Option<(ManifestPath, MapEntry<R>)>, Self::Error>> + MaybeSend
-    {
-        let (start, end) = (&self.bounds.0, &self.bounds.1);
+    ) -> impl Future<Output = Result<Option<RawItem<R>>, Self::Error>> + MaybeSend {
         let cursor = &mut self.cursor;
         async move {
-            while let Some(entry) = cursor.next().await.transpose()? {
-                let path = entry.path();
-                if past_end(end, path) {
-                    return Ok(None);
-                }
-                if before_start(start, path) {
-                    continue;
-                }
-                // The site-config node is not a content key.
-                if is_site_config(path) {
-                    continue;
-                }
-                return Ok(Some((ManifestPath::new(path.to_vec()), mapped(&entry))));
-            }
-            Ok(None)
+            Ok(cursor
+                .next()
+                .await
+                .transpose()?
+                .map(|entry| (entry.path().to_vec(), seam_entry(&entry))))
         }
     }
 }
 
-/// One path bound, owned for the walk that filters on it.
-fn owned(edge: Bound<&ManifestPath>) -> Bound<Vec<u8>> {
-    match edge {
-        Bound::Unbounded => Bound::Unbounded,
-        Bound::Included(path) => Bound::Included(path.as_bytes().to_vec()),
-        Bound::Excluded(path) => Bound::Excluded(path.as_bytes().to_vec()),
-    }
-}
-
-/// Whether `path` falls short of the walk's lower bound.
-fn before_start(start: &Bound<Vec<u8>>, path: &[u8]) -> bool {
-    match start {
-        Bound::Unbounded => false,
-        Bound::Included(bound) => path < bound.as_slice(),
-        Bound::Excluded(bound) => path <= bound.as_slice(),
-    }
-}
-
-/// Whether `path` reaches the walk's upper bound, which ends it.
-fn past_end(end: &Bound<Vec<u8>>, path: &[u8]) -> bool {
-    match end {
-        Bound::Unbounded => false,
-        Bound::Included(bound) => path > bound.as_slice(),
-        Bound::Excluded(bound) => path >= bound.as_slice(),
-    }
-}
-
-/// One trie entry as a seam entry: a reference of the caller's width, or an
-/// opaque value.
-///
-/// A metadata-only node, or a reference of the other width, names no reference
-/// the caller can read on its own.
-fn mapped<R: Reference>(entry: &Entry) -> MapEntry<R> {
-    match entry.reference().cloned().map(R::from_entry_ref) {
-        Some(Ok(reference)) => MapEntry::Reference(reference),
-        Some(Err(_)) | None => MapEntry::Opaque,
-    }
-}
-
-/// The trie key `path` addresses, or `None` when it names no content key.
-///
-/// A content key is the path bytes verbatim. The empty path and
-/// [`metadata::ROOT_PATH`] are reserved: neither is read, written or walked as
-/// a key.
-fn content_key(path: &ManifestPath) -> Option<&[u8]> {
-    (!path.is_reserved()).then(|| path.as_bytes())
-}
-
-/// Whether `key` is the trie's site-config node rather than content.
-fn is_site_config(key: &[u8]) -> bool {
-    key == metadata::ROOT_PATH.as_bytes()
+/// One trie entry at the caller's width: a metadata-only node, or a reference
+/// of the other width, is opaque.
+fn seam_entry<R: Reference>(entry: &Entry) -> MapEntry<R> {
+    entry
+        .reference()
+        .cloned()
+        .map_or(MapEntry::Opaque, MapEntry::from_entry_ref)
 }
 
 /// The seam reserves the lone separator, where the trie keys its site-config
-/// node.
+/// node, so the shared reserved skip hides it from every walk.
 const _: () = assert!(matches!(
     metadata::ROOT_PATH.as_bytes(),
     [ManifestPath::SEPARATOR]
 ));
-
-/// Fold one listed entry into the directory level below `prefix`, collapsing
-/// deeper paths at the next separator.
-///
-/// `last_dir` carries the previously collapsed subdirectory: the walk is in
-/// path order, so every path under one subdirectory arrives consecutively and
-/// a single comparison deduplicates it.
-fn collapse<R: Reference>(
-    prefix: &[u8],
-    entry: &Entry,
-    last_dir: &mut Option<Vec<u8>>,
-) -> Option<ListEntry<R>> {
-    let path = entry.path();
-    let suffix = path.strip_prefix(prefix)?;
-    // The directory itself is not one of its own children, and the trie's
-    // site-config node is not content, so neither is listed.
-    if suffix.is_empty() || is_site_config(path) {
-        return None;
-    }
-    let Some(cut) = suffix
-        .iter()
-        .position(|&byte| byte == ManifestPath::SEPARATOR)
-    else {
-        let path = ManifestPath::new(path.to_vec());
-        return Some(match mapped::<R>(entry) {
-            // A width the caller did not ask for lists as an opaque value.
-            MapEntry::Reference(reference) => ListEntry::File { path, reference },
-            MapEntry::Opaque => ListEntry::Value { path },
-        });
-    };
-    let through = prefix.len().saturating_add(cut).saturating_add(1);
-    let dir = path.get(..through).unwrap_or(path).to_vec();
-    if last_dir.as_deref() == Some(dir.as_slice()) {
-        return None;
-    }
-    *last_dir = Some(dir.clone());
-    Some(ListEntry::Dir {
-        path: ManifestPath::new(dir),
-    })
-}

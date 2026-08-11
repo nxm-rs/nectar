@@ -78,8 +78,22 @@ impl ManifestPath {
     /// read at either is absent and a write at either is
     /// [`ReservedKey`](crate::ReservedKey).
     #[must_use]
-    pub fn is_reserved(&self) -> bool {
-        matches!(self.0.as_slice(), [] | [Self::SEPARATOR])
+    pub const fn is_reserved(&self) -> bool {
+        Self::is_reserved_bytes(self.0.as_slice())
+    }
+
+    /// [`is_reserved`](Self::is_reserved) over raw key bytes, for walks that
+    /// have not wrapped them yet.
+    #[must_use]
+    pub const fn is_reserved_bytes(bytes: &[u8]) -> bool {
+        matches!(bytes, [] | [Self::SEPARATOR])
+    }
+
+    /// The content key the path addresses, byte-verbatim, or `None` when the
+    /// path is reserved.
+    #[must_use]
+    pub fn content_key(&self) -> Option<&[u8]> {
+        (!self.is_reserved()).then_some(self.0.as_slice())
     }
 
     /// Whether the path names a directory: the empty path, or a trailing
@@ -152,6 +166,19 @@ mod tests {
         assert_eq!(ManifestPath::default().join("a").as_bytes(), b"a");
         assert_eq!(ManifestPath::from("img/").join("a").as_bytes(), b"img/a");
         assert_eq!(ManifestPath::from("img").join("a").as_bytes(), b"img/a");
+    }
+
+    #[test]
+    fn only_the_two_reserved_paths_name_no_content_key() {
+        for reserved in ["", "/"] {
+            let path = ManifestPath::from(reserved);
+            assert!(path.is_reserved());
+            assert!(ManifestPath::is_reserved_bytes(path.as_bytes()));
+            assert_eq!(path.content_key(), None);
+        }
+        let path = ManifestPath::from("a/");
+        assert!(!path.is_reserved());
+        assert_eq!(path.content_key(), Some(&b"a/"[..]));
     }
 
     #[test]

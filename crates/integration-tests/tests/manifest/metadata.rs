@@ -14,9 +14,11 @@ use nectar_manifest::{
     DynManifest, ManifestMeta, ManifestPath, MetadataSource, MetadataView, WellKnownKey,
 };
 use nectar_mantaray::{MantarayManifest, Reader as MantarayReader, metadata};
-use nectar_primitives::store::{ContentGet, MemoryStore};
-use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE, StandardChunkSet};
+use nectar_primitives::{ChunkAddress, ChunkRef, DEFAULT_BODY_SIZE};
 use nectar_testing::run;
+
+mod common;
+use common::stores;
 
 /// The registry rebuilt from `source`.
 fn kv(source: &dyn MetadataSource) -> Option<Metadata<V1>> {
@@ -221,9 +223,8 @@ fn registry_values_cross_as_bytes() {
 #[test]
 fn an_erased_write_lands_the_reference_client_spelling_in_the_trie() {
     run(async {
-        let raw = Arc::new(MemoryStore::<StandardChunkSet>::new());
+        let (raw, store) = stores();
         let nodes = NodeLoadSaver::new(Arc::clone(&raw));
-        let store = ContentGet::new(Arc::clone(&raw));
         let trie = MantarayManifest::<_, _, DEFAULT_BODY_SIZE>::new(nodes.clone(), store);
         let base = trie.dyn_empty().await.unwrap();
         let path = ManifestPath::from("index.html");
