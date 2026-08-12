@@ -74,6 +74,13 @@
 //! read scalar geometry, so a `dyn Dilutable` registry can hold issuers for
 //! different networks.
 //!
+//! # Parallel stamping
+//!
+//! [`ShardedFor`] splits the bucket space across shards, each holding one
+//! sequential issuer behind its own lock. The inner issuer sets the issuance
+//! mode, so [`ShardedIssuerFor`] and [`ShardedRingIssuerFor`] are aliases over
+//! it and the ring keeps its reservation type parameter.
+//!
 //! # Features
 //!
 //! - `std` (default) - Standard library support. Without it the crate is the
@@ -141,8 +148,6 @@ mod prepared;
 mod ring;
 #[cfg(feature = "std")]
 mod sharded;
-#[cfg(feature = "std")]
-mod sharded_ring;
 mod stamper;
 
 // Re-export core types from nectar-postage (includes BatchEvent, BatchEventHandler)
@@ -163,8 +168,6 @@ pub use dilute_handler::{Dilutable, IssuerRegistry};
 
 // Issuing
 pub use issuer::{MemoryIssuer, MemoryIssuerFor, StampIssuer};
-#[cfg(feature = "std")]
-pub use sharded::{ShardedIssuer, ShardedIssuerFor};
 pub use stamper::{BatchStamper, Stamper};
 
 // The streaming stamp pipeline; its sign window is the governor window.
@@ -177,8 +180,12 @@ pub use pipeline::{IssuedBound, StampedPut, StampedPutError};
 
 // Mutable (ring) issuing with a type-state reservation guard
 pub use ring::{Reservation, Reserved, RingIssuer, RingIssuerFor, Unreserved};
+
+// Parallel issuance: one sequential issuer per shard of the bucket space.
 #[cfg(feature = "std")]
-pub use sharded_ring::{ShardedRingIssuer, ShardedRingIssuerFor};
+pub use sharded::{
+    Sharded, ShardedFor, ShardedIssuer, ShardedIssuerFor, ShardedRingIssuer, ShardedRingIssuerFor,
+};
 
 // Factory (std only)
 #[cfg(feature = "std")]

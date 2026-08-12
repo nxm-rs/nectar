@@ -231,7 +231,7 @@ impl<S: SwarmSpec, R: Reservation> RingIssuerFor<S, R> {
     }
 
     /// Builds a ring directly from geometry and a reservation policy.
-    fn with_reservation(
+    pub(crate) fn with_reservation(
         batch_id: BatchId,
         depth: u8,
         bucket_depth: BucketDepth<S>,
