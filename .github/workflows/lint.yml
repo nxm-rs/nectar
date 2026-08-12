@@ -25,59 +25,70 @@ jobs:
             - uses: ./.github/actions/rust-setup
               with:
                   components: clippy
+            # Every invocation below ends in `-- -D warnings`, which promotes
+            # the `warn`-level entries of `[workspace.lints.rust]`
+            # (`missing-docs`, `missing-debug-implementations`,
+            # `unreachable-pub`) to build failures. The flag is passed per
+            # invocation rather than through a job-level `RUSTFLAGS`: arguments
+            # after `--` reach the selected workspace members only and leave
+            # the dependency graph on warnings, and
+            # `.github/actions/rust-setup/action.yml` needs `RUSTFLAGS`
+            # byte-identical across jobs because a per-job delta re-fingerprints
+            # every sccache key.
+            #
             # Lints every target (libs, bins, tests, benches, examples) with
             # default features; the `deny`-level restriction lints in
             # `[workspace.lints.clippy]` fail on panicking/overflowing
             # operations, with test code exempted per crate.
             - name: cargo clippy
-              run: cargo clippy --workspace --all-targets --locked
+              run: cargo clippy --workspace --all-targets --locked -- -D warnings
             # The async io adapters sit behind the tokio feature, outside the
             # default-features pass above.
             - name: cargo clippy (tokio adapters)
-              run: cargo clippy --locked --all-targets -p nectar-file --features tokio
+              run: cargo clippy --locked --all-targets -p nectar-file --features tokio -- -D warnings
             # The tokio spawner sits behind the tasks crate's tokio feature,
             # likewise outside the default-features pass.
             - name: cargo clippy (tokio spawner)
-              run: cargo clippy --locked --all-targets -p nectar-tasks --features tokio
+              run: cargo clippy --locked --all-targets -p nectar-tasks --features tokio -- -D warnings
             # The batch ingest sits behind the rayon feature, likewise
             # outside the default-features pass.
             - name: cargo clippy (rayon ingest)
-              run: cargo clippy --locked --all-targets -p nectar-file --features rayon
+              run: cargo clippy --locked --all-targets -p nectar-file --features rayon -- -D warnings
             # The encrypted split mode sits behind the encryption feature,
             # likewise outside the default-features pass.
             - name: cargo clippy (encrypted split)
-              run: cargo clippy --locked --all-targets -p nectar-file --features encryption
+              run: cargo clippy --locked --all-targets -p nectar-file --features encryption -- -D warnings
             # The feature-gated integration suites are invisible to the
             # default pass; compile them all in so the disallowed-methods
             # gate sees them.
             - name: cargo clippy (integration-test shapes)
-              run: cargo clippy --locked --all-targets -p nectar-integration-tests --features rayon,encryption,seal,issuer
+              run: cargo clippy --locked --all-targets -p nectar-integration-tests --features rayon,encryption,seal,issuer -- -D warnings
             # The postage-usage tokio surfaces are feature-gated, so their tests
             # are invisible to the passes above; compile them in so the
             # disallowed-methods gate sees them.
             - name: cargo clippy (postage-usage surfaces)
-              run: cargo clippy --workspace --all-targets --locked --features nectar-postage-usage/client,nectar-postage-usage/issuer
+              run: cargo clippy --workspace --all-targets --locked --features nectar-postage-usage/client,nectar-postage-usage/issuer -- -D warnings
             # The postage serde impls are off the default build, so the passes
             # above never see them.
             - name: cargo clippy (postage serde)
-              run: cargo clippy --locked --all-targets -p nectar-postage --features serde
+              run: cargo clippy --locked --all-targets -p nectar-postage --features serde -- -D warnings
             # The pipeline's parallel engine sits behind the parallel
             # feature, likewise outside the default-features pass.
             - name: cargo clippy (postage-issuer parallel)
-              run: cargo clippy --locked --all-targets -p nectar-postage-issuer --features parallel
+              run: cargo clippy --locked --all-targets -p nectar-postage-issuer --features parallel -- -D warnings
             # The encrypted node walk sits behind the encryption feature,
             # likewise outside the default-features pass.
             - name: cargo clippy (ldb encryption)
-              run: cargo clippy --locked --all-targets -p nectar-ldb --features encryption
+              run: cargo clippy --locked --all-targets -p nectar-ldb --features encryption -- -D warnings
             # The modern envelope sits behind the primitives envelope
             # feature, likewise outside the default-features pass.
             - name: cargo clippy (envelope)
-              run: cargo clippy --locked --all-targets -p nectar-primitives --features envelope,encryption
+              run: cargo clippy --locked --all-targets -p nectar-primitives --features envelope,encryption -- -D warnings
             # The pipeline's inline engine only compiles with the parallel
             # feature off; the workspace pass unifies parallel in via the
             # bench crate, so lint the inline shape explicitly.
             - name: cargo clippy (postage-issuer inline engine)
-              run: cargo clippy --locked --all-targets -p nectar-postage-issuer
+              run: cargo clippy --locked --all-targets -p nectar-postage-issuer -- -D warnings
             # `unused_crate_dependencies` is enforced per-library via `cargo
             # rustc` (not `[workspace.lints]`) so the flag applies only to each
             # crate's own lib target — never to benches/examples/tests (which
@@ -111,3 +122,18 @@ jobs:
                   tool: cargo-machete
             - name: cargo machete
               run: cargo machete
+
+    # The single check-run that represents this whole workflow. Every job added
+    # here appends its id to `needs`, so the required-context list never has to
+    # name a leaf job.
+    lint-success:
+        name: lint success
+        runs-on: ubuntu-latest
+        if: always()
+        needs: [clippy, unused-deps]
+        timeout-minutes: 30
+        steps:
+            - name: Decide whether the needed jobs succeeded or failed
+              uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe  # release/v1
+              with:
+                  jobs: ${{ toJSON(needs) }}
