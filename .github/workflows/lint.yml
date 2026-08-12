@@ -1,6 +1,6 @@
 # Clippy (runtime-safety restriction lints), unused-dependency checks, the
-# cargo-deny supply-chain gate (advisories, bans, sources, licences), and the
-# MSRV compile on the declared `rust-version`.
+# cargo-deny supply-chain gate (advisories, bans, sources, licences), the
+# MSRV compile on the declared `rust-version`, and the format/content sweep.
 name: lint
 
 on:
@@ -185,13 +185,45 @@ jobs:
                   esac
                   cargo check --workspace --all-targets --locked
 
+    # Backstop for the agent hooks: `.claude/hooks/rustfmt-on-edit.sh` exits 0
+    # without formatting whenever `rustfmt` is off `PATH`, so drift lands silently
+    # from outside the dev shell.
+    format:
+        name: format
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            # Compiles nothing, so `rustfmt` is the only component.
+            - uses: ./.github/actions/rust-setup
+              with:
+                  components: rustfmt
+            - name: cargo fmt
+              run: cargo fmt --all --check
+            # Wider than the hook's `.rs`/`.md` scope on purpose, and never widened to
+            # `*.yml`: the pattern sits in this file and would match itself forever.
+            # `git grep`, not `rg`: ripgrep is absent from the runner image.
+            - name: no em dashes
+              run: |
+                  # A scan error is indistinguishable from a clean tree, so plant a match.
+                  mkdir em-probe
+                  printf '—\n' > em-probe/probe.md
+                  if ! git grep --no-index -qF -e '—' -- em-probe; then
+                      echo "::error::the scan misses a planted U+2014; it is not scanning"
+                      exit 1
+                  fi
+                  if git grep -nIF -e '—' -- '*.rs' '*.md' '*.toml'; then
+                      echo "::error::U+2014 found; house style bans it"
+                      exit 1
+                  fi
+
     # The one required context for this workflow: later jobs append to `needs`
     # rather than to the branch ruleset.
     lint-success:
         name: lint success
         runs-on: ubuntu-latest
         if: always()
-        needs: [clippy, unused-deps, deny, msrv]
+        needs: [clippy, unused-deps, deny, msrv, format]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed
