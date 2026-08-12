@@ -25,16 +25,15 @@ jobs:
             - uses: ./.github/actions/rust-setup
               with:
                   components: clippy
-            # Every invocation below ends in `-- -D warnings`, which promotes
-            # the `warn`-level entries of `[workspace.lints.rust]`
+            # Every invocation below ends in `-- -D warnings`, which fails the
+            # job on any warn-level lint: the `[workspace.lints]` warn entries
             # (`missing-docs`, `missing-debug-implementations`,
-            # `unreachable-pub`) to build failures. The flag is passed per
-            # invocation rather than through a job-level `RUSTFLAGS`: arguments
+            # `unreachable-pub`, `clippy::all` and the warn-level clippy
+            # entries) and rustc's own warn-by-default set. Pass it per
+            # invocation, never through a job-level `RUSTFLAGS`: arguments
             # after `--` reach the selected workspace members only and leave
-            # the dependency graph on warnings, and
-            # `.github/actions/rust-setup/action.yml` needs `RUSTFLAGS`
-            # byte-identical across jobs because a per-job delta re-fingerprints
-            # every sccache key.
+            # the dependency graph on warnings, and `rust-setup` needs
+            # `RUSTFLAGS` byte-identical across jobs (see that action).
             #
             # Lints every target (libs, bins, tests, benches, examples) with
             # default features; the `deny`-level restriction lints in
@@ -115,6 +114,9 @@ jobs:
     unused-deps:
         name: unused-deps (machete)
         runs-on: ubuntu-latest
+        # Capped like every other leaf: `lint success` needs it, so an uncapped
+        # hang would hold the aggregator for the 6h runner default.
+        timeout-minutes: 30
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
             - uses: taiki-e/install-action@1b57bc699ba2af96a06eb2a2a0d32b43a7d8e8b8  # install-action
