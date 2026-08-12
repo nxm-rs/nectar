@@ -168,7 +168,7 @@ jobs:
             # Not `rust-setup`: rustup resolves `rust-toolchain.toml` at cargo
             # time, so the file's channel wins over any `toolchain:` input.
             # `RUSTUP_TOOLCHAIN` on the check step does override the file.
-            - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master 2026-03-27
+            - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master 2026-06-30
               with:
                   toolchain: ${{ steps.declared.outputs.version }}
             # Default features and `--locked`, so this covers the committed graph
