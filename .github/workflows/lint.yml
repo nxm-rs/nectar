@@ -123,14 +123,22 @@ jobs:
         timeout-minutes: 30
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-            # No `rust-setup`: this job compiles nothing.
+            # Not `rust-setup`: this job compiles nothing, so warming the shared
+            # registry cache with an empty ~/.cargo would cost the compiling jobs.
+            - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master 2026-06-30
+              with:
+                  toolchain: "1.94"
             - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853  # v2.83.2
               with:
                   tool: cargo-deny
             # `--all-features` so the graph reaches feature-gated dependencies.
             # `bans` cannot fail while deny.toml keeps its warn-level settings;
             # it is wired up so a future ban needs no CI change.
+            # `RUSTUP_TOOLCHAIN` beats `rust-toolchain.toml`, whose `components`
+            # would otherwise pull rustfmt and clippy in for `cargo metadata`.
             - name: cargo deny
+              env:
+                  RUSTUP_TOOLCHAIN: "1.94"
               run: cargo deny --all-features --locked check advisories bans sources licenses
 
     # The one required context for this workflow: later jobs append to `needs`
