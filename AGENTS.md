@@ -83,6 +83,38 @@ Prefer them for new code, and align existing code when you touch it.
 - Run async tests through `nectar_testing::run`, or through `#[tokio::test]` in a tokio adapter module.
   `clippy.toml` bans every other `block_on` entry point.
 
+## Errors
+
+The error layer is where duplication now lives, so these six rules are the standard the rest of the workspace is held to.
+
+1. Every public error type is `#[non_exhaustive]`.
+   Adding a variant is then not a breaking change.
+2. Every wrapping variant carries a `#[source]` or a `#[from]`.
+   Never interpolate an inner error into the message text: that loses the chain and makes the inner error impossible to downcast.
+3. Errors carry structured fields, not strings.
+   A string field survives only where the payload genuinely is text.
+4. A cross-crate boundary erases to a boxed error, not to a string literal.
+   Use the `BoxedError` alias so the choice is uniform.
+5. One error condition has one home.
+   A variant with the same shape in two crates gets one owner and a conversion, rather than being declared twice.
+6. Every public error exposes a retryability predicate.
+   Classify with `const fn` predicates, and guard the classification with an exhaustive test so a new variant cannot be added without being classified.
+
+### Conformance checklist
+
+Each rule below names a file and line that already conforms, so a reviewer can check the claim rather than take it.
+
+- Rule 1: `crates/feeds/src/error.rs:13`, `#[non_exhaustive]` on `FeedError`.
+- Rule 2: `crates/primitives/src/envelope/mod.rs:580`, a `#[from]` wrapping variant.
+- Rule 3: `crates/feeds/src/error.rs:17`, `AddressMismatch` carrying typed `expected` and `actual` fields rather than a formatted string.
+- Rule 4: `crates/primitives-core/src/error.rs:163`, the `BoxedError` alias.
+- Rule 5: no conforming example exists yet.
+  `RingExhausted` is declared in more than one crate with the same shape and no conversion between them, which is the violation this rule exists to stop; #688 gives it one owner.
+- Rule 6: `crates/postage-usage/src/error.rs:271` and `:330`, `UsageError::is_corruption` and `is_recoverable`, with the exhaustive classification test at `:387` that fails to compile when a variant is added without being classified.
+
+Applying rule 3 across the workspace is #319, rule 1 is #690, and rules 2 and 5 for the postage family are #688.
+This section is the standard; those issues are the migration.
+
 ## Workflow
 
 - Run `cargo fmt`.
