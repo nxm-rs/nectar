@@ -1,5 +1,6 @@
-# Clippy (runtime-safety restriction lints), unused-dependency checks, and the
-# cargo-deny supply-chain gate (advisories, bans, sources, licences).
+# Clippy (runtime-safety restriction lints), unused-dependency checks, the
+# cargo-deny supply-chain gate (advisories, bans, sources, licences), and the
+# MSRV compile on the declared `rust-version`.
 name: lint
 
 on:
@@ -141,13 +142,64 @@ jobs:
                   RUSTUP_TOOLCHAIN: "1.94"
               run: cargo deny --all-features --locked check advisories bans sources licenses
 
+    # Compiles the workspace on the `rust-version` it declares, so the published
+    # metadata of every crate is a claim CI has tested. The toolchain comes from
+    # that field, never from a literal here: declaration and pin both sit at 1.94
+    # today, so a hardcoded job would stop testing the declaration at the exact
+    # moment the two part, which is the drift this job exists to catch.
+    msrv:
+        name: msrv
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            # Fails here, rather than at the next MSRV bump, if an edit swaps the
+            # derivation for a literal.
+            - name: test the derivation
+              run: .github/scripts/declared-msrv-test.sh
+            - name: read the declared rust-version
+              id: declared
+              # Assigned first, never inlined into the echo: a substitution that
+              # fails inside `echo` leaves the step green and the toolchain input
+              # empty, which resolves to the pinned channel.
+              run: |
+                  msrv="$(.github/scripts/declared-msrv.sh)"
+                  echo "version=$msrv" >> "$GITHUB_OUTPUT"
+            # Not `rust-setup`: rustup resolves `rust-toolchain.toml` at cargo
+            # time, so the file's channel wins over any `toolchain:` input.
+            # `RUSTUP_TOOLCHAIN` on the check step does override the file.
+            - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master 2026-03-27
+              with:
+                  toolchain: ${{ steps.declared.outputs.version }}
+            # Default features and `--locked`, so this covers the committed graph
+            # alone. A consumer who enables an optional feature, or who resolves
+            # afresh, may pull a dependency that wants a newer compiler; the job
+            # makes no claim about either case.
+            - name: cargo check
+              env:
+                  RUSTUP_TOOLCHAIN: ${{ steps.declared.outputs.version }}
+                  MSRV: ${{ steps.declared.outputs.version }}
+              run: |
+                  # Guards the override: were the toolchain file to win, the job
+                  # would check on the pinned channel and report green for a
+                  # declaration it never compiled.
+                  actual="$(rustc --version | cut -d' ' -f2)"
+                  case "$actual" in
+                      "$MSRV" | "$MSRV".*) ;;
+                      *)
+                          echo "::error::checking on $actual, not the declared $MSRV"
+                          exit 1
+                          ;;
+                  esac
+                  cargo check --workspace --all-targets --locked
+
     # The one required context for this workflow: later jobs append to `needs`
     # rather than to the branch ruleset.
     lint-success:
         name: lint success
         runs-on: ubuntu-latest
         if: always()
-        needs: [clippy, unused-deps, deny]
+        needs: [clippy, unused-deps, deny, msrv]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed
