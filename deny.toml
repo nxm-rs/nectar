@@ -1,26 +1,24 @@
 # cargo-deny configuration
 # https://embarkstudios.github.io/cargo-deny/
 #
-# Scope: advisory hygiene ahead of a crates.io publish. The ignore list mirrors
-# .cargo/audit.toml so `cargo audit` and `cargo deny check advisories` agree.
+# The ignore list below deliberately does not mirror .cargo/audit.toml: deny
+# resolves the feature graph, audit reads every Cargo.lock entry. An advisory
+# matching only a lockfile entry belongs in audit.toml alone.
 
 [advisories]
-# Fail on any advisory that is not explicitly ignored below.
 yanked = "deny"
 ignore = [
-    # All three entries are build-time-only, transitive dependencies pulled in
-    # through the alloy stack. None are direct nectar dependencies, none are
-    # reachable at runtime or in the shipped wasm artifact, and none have a
-    # released upstream version that drops them yet. Revisit on each alloy bump.
-
-    # derivative unmaintained. Optional ark-ff dep of ruint, not enabled by the
-    # feature set alloy-primitives requests, so not in the resolved build graph.
-    # Tracking: nxm-rs/nectar#19.
-    "RUSTSEC-2024-0388",
+    # Both entries are build-time-only, transitive dependencies pulled in
+    # through the alloy stack. Neither is reachable at runtime or in the shipped
+    # wasm artifact. Revisit on each alloy bump.
+    #
+    # RUSTSEC-2024-0388 (derivative) is absent on purpose: ruint 1.20.0 dropped
+    # it from the resolved graph, but it remains in both lockfiles, so
+    # .cargo/audit.toml still carries it.
 
     # paste unmaintained (archived). Compile-time proc-macro dep of
     # alloy-sol-macro-input / syn-solidity. Latest released alloy-core (1.6.0)
-    # still depends on it. Tracking: nxm-rs/nectar#20.
+    # still depends on it.
     "RUSTSEC-2024-0436",
 
     # proc-macro-error2 unmaintained. Compile-time proc-macro dep of
@@ -35,3 +33,28 @@ ignore = [
 # scope for advisory hygiene.
 multiple-versions = "warn"
 wildcards = "allow"
+
+[licenses]
+# Reviewed allow list, not a blanket `allow-osi-fsf-free`. Every entry is
+# load-bearing. A licence offered as one arm of an SPDX `OR` needs no entry once
+# another arm is allowed, which is why LLVM-exception, BSD-2-Clause, LGPL-2.1,
+# Unlicense, CC0-1.0 and MIT-0 are absent despite appearing in the graph.
+allow = [
+    "AGPL-3.0-or-later",
+    "MIT",
+    "Apache-2.0",
+    # Sole licence of subtle, keccak-asm and sha3-asm.
+    "BSD-3-Clause",
+    # unicode-ident is `(MIT OR Apache-2.0) AND Unicode-3.0`; the `AND` makes
+    # this mandatory.
+    "Unicode-3.0",
+    # Sole licence of foldhash.
+    "Zlib",
+]
+
+[sources]
+# A vendored git dependency is what this section exists to catch; the defaults
+# are spelled out so relaxing one is a visible diff.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
