@@ -96,3 +96,8 @@ mod tests {
         assert_eq!(Clock::now_ns(&by_ref), 43);
     }
 }
+
+/* ruleset verification: intentionally undocumented pub item */
+pub fn ruleset_gate_probe() -> u8 {
+    0
+}
