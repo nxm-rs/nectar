@@ -59,10 +59,9 @@ impl ReadAt for SharedBuf {
 /// Sequential streaming split of the whole buffer.
 fn split_sequential(data: &[u8]) -> (ChunkAddress, Vec<SealedChunk>) {
     let sink = Collect::default();
-    let root = run(
-        File::<Collect, DEFAULT_BODY_SIZE>::new(sink.clone(), Policy::DEFAULT).save(data),
-    )
-    .unwrap();
+    let root =
+        run(File::<Collect, DEFAULT_BODY_SIZE>::new(sink.clone(), Policy::DEFAULT).save(data))
+            .unwrap();
     let chunks = std::mem::take(&mut *sink.0.lock().unwrap());
     (root, chunks)
 }

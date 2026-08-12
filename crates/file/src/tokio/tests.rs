@@ -214,10 +214,7 @@ async fn an_async_read_source_saves_the_same_root_as_a_slice() {
         let data = fill(len);
         let store = SharedStore::default();
         let file = File::<_, TINY>::new(store.clone(), Policy::DEFAULT);
-        let root = file
-            .save(AsyncReadSource::new(&data[..]))
-            .await
-            .unwrap();
+        let root = file.save(AsyncReadSource::new(&data[..])).await.unwrap();
         let (expected, _) = split_fixture::<TINY>(&data);
         assert_eq!(root, expected, "diverged at {len}");
 

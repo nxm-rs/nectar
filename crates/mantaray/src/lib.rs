@@ -178,10 +178,10 @@ pub use manifest::{MantarayManifest, TrieCursor, TrieFormatError, TrieView};
 #[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
-#[cfg(feature = "manifest")]
-pub use persist::{NodeCollectError, NodeLoadSaver};
 #[cfg(feature = "std")]
 pub use persist::{MAX_NODE_BYTES, NodeLoader, NodeSaver};
+#[cfg(feature = "manifest")]
+pub use persist::{NodeCollectError, NodeLoadSaver};
 #[cfg(feature = "std")]
 pub use reader::{DEFAULT_MAX_DEPTH, Reader};
 #[cfg(feature = "std")]

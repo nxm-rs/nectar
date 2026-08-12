@@ -343,7 +343,10 @@ fn a_read_failure_is_typed_with_its_offset() {
         PutWindow::DEFAULT,
     ))
     .unwrap_err();
-    let SaveError::Source { source: ReadAtError::Read { offset, .. } } = error else {
+    let SaveError::Source {
+        source: ReadAtError::Read { offset, .. },
+    } = error
+    else {
         panic!("expected a read error, got {error:?}");
     };
     assert_eq!(offset, u64::try_from(TINY).unwrap());
@@ -378,7 +381,10 @@ fn a_source_ending_early_is_a_short_read() {
         PutWindow::DEFAULT,
     ))
     .unwrap_err();
-    let SaveError::Source { source: ReadAtError::ShortRead { offset, remaining } } = error else {
+    let SaveError::Source {
+        source: ReadAtError::ShortRead { offset, remaining },
+    } = error
+    else {
         panic!("expected a short read, got {error:?}");
     };
     assert_eq!(offset, u64::try_from(TINY + 100).unwrap());
@@ -437,7 +443,12 @@ fn a_sizing_failure_is_typed() {
     ))
     .unwrap_err();
     assert!(
-        matches!(error, SaveError::Source { source: ReadAtError::Length { .. } }),
+        matches!(
+            error,
+            SaveError::Source {
+                source: ReadAtError::Length { .. }
+            }
+        ),
         "got {error:?}"
     );
 }
@@ -484,10 +495,12 @@ impl crate::source::Source for OverReportingSource {
 #[test]
 fn an_over_reporting_source_is_clamped_to_the_buffer() {
     let store = TestStore::<TINY>::new(0);
-    let root = run(File::<_, TINY>::new(store, Policy::DEFAULT).save(OverReportingSource {
-        byte: 0x5a,
-        sent: false,
-    }))
+    let root = run(
+        File::<_, TINY>::new(store, Policy::DEFAULT).save(OverReportingSource {
+            byte: 0x5a,
+            sent: false,
+        }),
+    )
     .unwrap();
     // Clamped, so the tree is exactly one body of the reported byte; an
     // unclamped driver would see an empty round and save nothing.
@@ -536,11 +549,10 @@ fn a_constructed_key_source_seals_every_chunk() {
     let mode = Encrypted::new(SeededKeys {
         next: std::sync::atomic::AtomicU64::new(SEED),
     });
-    let (root, stats) = run(
-        File::<_, TINY>::new(store.clone(), Policy::DEFAULT)
-            .save_with_mode(mode, data.as_slice()),
-    )
-    .unwrap();
+    let (root, stats) =
+        run(File::<_, TINY>::new(store.clone(), Policy::DEFAULT)
+            .save_with_mode(mode, data.as_slice()))
+        .unwrap();
 
     // The root is the last seal, so its key is the last draw of the stream.
     let mut last = [0u8; 8];

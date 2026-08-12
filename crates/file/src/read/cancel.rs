@@ -20,7 +20,7 @@ use nectar_testing::{run, split_fixture, yield_now};
 #[cfg(feature = "encryption")]
 use crate::testutil::split_encrypted_fixture;
 
-use super::{Opened, FileReader, FileStream};
+use super::{FileReader, FileStream, Opened};
 use crate::config::Window;
 #[cfg(feature = "encryption")]
 use crate::walk::Encrypted;

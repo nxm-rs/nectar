@@ -453,8 +453,7 @@ fn collect_refuses_an_oversized_range_before_any_fetch() {
 
     // One byte under the length: a typed refusal before the walk fetches.
     let store = built.fresh(0);
-    let error =
-        run(reader_at(store.clone(), 4).collect(root.into(), size as u64 - 1)).unwrap_err();
+    let error = run(reader_at(store.clone(), 4).collect(root.into(), size as u64 - 1)).unwrap_err();
     match error {
         CollectError::TooLarge { len, max } => {
             assert_eq!((len, max), (size as u64, size as u64 - 1));
@@ -583,7 +582,9 @@ mod encrypted {
     use core::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    use nectar_file::{Encrypted, File, KeyError, KeySource, Policy, PutWindow, SplitStats, Window};
+    use nectar_file::{
+        Encrypted, File, KeyError, KeySource, Policy, PutWindow, SplitStats, Window,
+    };
     use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
     use nectar_primitives::store::ContentGet;
     use nectar_testing::run;

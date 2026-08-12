@@ -114,12 +114,7 @@ fn split_peak(total: usize) -> u64 {
     );
     let ((), info) = measure_allocations(|| {
         run(async {
-            file.save(Splitmix {
-                produced: 0,
-                total,
-            })
-            .await
-            .unwrap();
+            file.save(Splitmix { produced: 0, total }).await.unwrap();
         })
     });
     info.bytes_max

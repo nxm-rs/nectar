@@ -36,9 +36,8 @@ fn probe(leaves: usize) -> AllocationInfo {
     let store: Store = Arc::new(store);
 
     let file: File<Store, BODY> = File::new(store, Policy::DEFAULT);
-    let (out, info) = measure_allocations(|| {
-        run(async { file.collect(root.into(), u64::MAX).await.unwrap() })
-    });
+    let (out, info) =
+        measure_allocations(|| run(async { file.collect(root.into(), u64::MAX).await.unwrap() }));
 
     assert_eq!(out, data, "plaintext diverged at {leaves} leaves");
     info

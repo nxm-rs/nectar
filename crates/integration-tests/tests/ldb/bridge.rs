@@ -22,10 +22,9 @@ async fn build_files(
 ) -> Result<Built> {
     let mut builder: Builder = Builder::new();
     for (key, data) in files {
-        let root =
-            File::<_, DEFAULT_BODY_SIZE>::new(store, Policy::DEFAULT)
-                .save(&data[..])
-                .await?;
+        let root = File::<_, DEFAULT_BODY_SIZE>::new(store, Policy::DEFAULT)
+            .save(&data[..])
+            .await?;
         builder.insert(key, Entry::from(ChunkRef::new(root)), None);
     }
     Ok(builder.build(store, &Plaintext).await?)

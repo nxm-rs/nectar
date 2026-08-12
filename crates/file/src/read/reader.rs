@@ -348,7 +348,6 @@ where
             walk: self.walk,
         }
     }
-
 }
 
 impl<S, M, const B: usize> fmt::Debug for FileReader<S, M, B>

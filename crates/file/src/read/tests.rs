@@ -21,7 +21,7 @@ use nectar_testing::{run, split_fixture};
 #[cfg(feature = "encryption")]
 use crate::testutil::split_encrypted_fixture;
 
-use super::{AnyOpened, CollectError, Opened, FileReader, OpenError, SeekPastEnd};
+use super::{AnyOpened, CollectError, FileReader, OpenError, Opened, SeekPastEnd};
 use crate::config::Window;
 use crate::geometry::Mode;
 use crate::walk::{DecodeError, Encrypted, Plain, WalkError, WalkMode};
@@ -179,7 +179,10 @@ fn encrypted_range_reads_match_the_source_slices() {
     let len = 33 * TINY + 17;
     let data = fill(len);
     let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
-    let file = run(Opened::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+    let file = run(Opened::<_, Encrypted, TINY>::open_encrypted(
+        store, root_ref,
+    ))
+    .unwrap();
 
     for range in ranges(len as u64) {
         let expect =
@@ -360,7 +363,10 @@ fn stream_tiles_the_range_and_carries_reader_leftovers() {
 fn next_segment_is_gapless_and_zero_copy_sized() {
     let data = fill(6 * TINY + 30);
     let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
-    let file = run(Opened::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+    let file = run(Opened::<_, Encrypted, TINY>::open_encrypted(
+        store, root_ref,
+    ))
+    .unwrap();
     let mut reader = file.read().build();
     let collected = run(async {
         let mut out = Vec::new();
@@ -460,7 +466,10 @@ fn debug_never_leaks_the_decryption_key() {
         assert!(!rendered.contains("key"), "{rendered}");
     };
     let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
-    let file = run(Opened::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+    let file = run(Opened::<_, Encrypted, TINY>::open_encrypted(
+        store, root_ref,
+    ))
+    .unwrap();
     key_free(std::format!("{file:?}"));
     key_free(std::format!("{:?}", file.read()));
     key_free(std::format!("{:?}", file.read().build()));
@@ -551,7 +560,10 @@ fn encrypted_download_overwrites_a_prefilled_sink() {
 
     let data = fill(11 * TINY + 63);
     let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
-    let enc_file = run(Opened::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+    let enc_file = run(Opened::<_, Encrypted, TINY>::open_encrypted(
+        store, root_ref,
+    ))
+    .unwrap();
 
     let mut sink = MemSink::new();
     sink.write_at(0, &vec![0xa5; data.len()]).unwrap();
@@ -620,7 +632,10 @@ fn collect_assembles_the_clipped_range() {
 fn encrypted_collect_assembles_the_file() {
     let data = fill(9 * TINY + 21);
     let (root_ref, store) = split_encrypted_fixture::<TINY>(&data);
-    let enc_file = run(Opened::<_, Encrypted, TINY>::open_encrypted(store, root_ref)).unwrap();
+    let enc_file = run(Opened::<_, Encrypted, TINY>::open_encrypted(
+        store, root_ref,
+    ))
+    .unwrap();
     assert_eq!(run(enc_file.collect(u64::MAX)).unwrap(), data);
 }
 
