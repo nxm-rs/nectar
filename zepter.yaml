@@ -16,6 +16,8 @@ workflows:
         # (transcrypt, keccak, the ref types), so the feature deliberately
         # enables no primitives feature.
         "--ignore-missing-propagate=nectar-ldb/encryption:nectar-primitives/encryption",
+        # Same shape for the seam's optional file lane.
+        "--ignore-missing-propagate=nectar-ldb/encryption:nectar-file/encryption",
         "--workspace",
         "--show-path",
         "--quiet",

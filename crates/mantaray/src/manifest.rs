@@ -1,5 +1,5 @@
 //! The [`Manifest`] seam over the trie: paths to references, batched writes,
-//! and data loads through the seam's shared load lane.
+//! and data loads through the file pipeline under the adapter's own policy.
 //!
 //! Two seams meet here and stay separate: nodes persist through the trie's own
 //! [`NodeLoader`]/[`NodeSaver`] adapter, while an entry's data is joined
@@ -16,9 +16,10 @@ use alloc::string::String;
 use core::future::Future;
 use core::ops::Bound;
 
+use nectar_file::{Policy, load_reference};
 use nectar_manifest::{
-    Batch, DataSink, Listing, Manifest, ManifestError, ManifestOp, ManifestPath, MapEntry, MapView,
-    PathCursor, RawCursor, RawItem, SinkError, SiteConfig, collapse_dir, load_reference,
+    Batch, DataSink, Listing, Manifest, ManifestError, ManifestOp, ManifestPath, ManifestView,
+    MapEntry, PathCursor, RawCursor, RawItem, SinkError, SiteConfig, collapse_dir,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
@@ -56,13 +57,25 @@ nectar_manifest::format_error_from!(TrieFormatError: ReaderError, CursorError, E
 pub struct MantarayManifest<L, S, const B: usize = DEFAULT_BODY_SIZE> {
     nodes: L,
     data: S,
+    policy: Policy,
 }
 
 impl<L, S, const B: usize> MantarayManifest<L, S, B> {
     /// A manifest whose nodes persist through `nodes` and whose entry data is
-    /// joined from `data`.
+    /// joined from `data`, under [`Policy::DEFAULT`].
     pub const fn new(nodes: L, data: S) -> Self {
-        Self { nodes, data }
+        Self {
+            nodes,
+            data,
+            policy: Policy::DEFAULT,
+        }
+    }
+
+    /// The same manifest with entry-data loads running under `policy`.
+    #[must_use]
+    pub const fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// The node persistence adapter.
@@ -74,13 +87,19 @@ impl<L, S, const B: usize> MantarayManifest<L, S, B> {
     pub const fn data(&self) -> &S {
         &self.data
     }
+
+    /// The retrieval budgets entry-data loads run under.
+    #[must_use]
+    pub const fn policy(&self) -> Policy {
+        self.policy
+    }
 }
 
 impl<L, S, R, const B: usize> Manifest<R> for MantarayManifest<L, S, B>
 where
     L: NodeLoader + NodeSaver<R> + Clone + 'static,
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
-    R: Reference + MaybeSend + MaybeSync,
+    R: Reference,
 {
     /// The trie's metadata: a string map, stored verbatim on the fork record.
     type Metadata = BTreeMap<String, String>;
@@ -101,11 +120,12 @@ where
         }
     }
 
-    fn at(&self, root: &R) -> Self::View<'_> {
+    fn at(&self, root: R) -> Self::View<'_> {
         TrieView {
             nodes: self.nodes.clone(),
             data: self.data.clone(),
-            root: root.clone(),
+            policy: self.policy,
+            root,
         }
     }
 
@@ -160,6 +180,7 @@ where
 pub struct TrieView<L, S, R: Reference, const B: usize = DEFAULT_BODY_SIZE> {
     nodes: L,
     data: S,
+    policy: Policy,
     root: R,
 }
 
@@ -203,11 +224,11 @@ where
     }
 }
 
-impl<L, S, R, const B: usize> MapView<R> for TrieView<L, S, R, B>
+impl<L, S, R, const B: usize> ManifestView<R> for TrieView<L, S, R, B>
 where
     L: NodeLoader + Clone + 'static,
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
-    R: Reference + MaybeSend + MaybeSync,
+    R: Reference,
 {
     type Metadata = BTreeMap<String, String>;
 
@@ -268,6 +289,7 @@ where
     ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
         let path = path.clone();
         let store = self.data.clone();
+        let policy = self.policy;
         async move {
             let entry = self
                 .entry(&path)
@@ -280,7 +302,7 @@ where
                 .cloned()
                 .and_then(|reference| R::from_entry_ref(reference).ok())
                 .ok_or(ManifestError::NoData(path))?;
-            load_reference::<_, _, _, B>(store, reference.into_entry_ref(), sink).await
+            load_reference::<_, _, _, B>(store, policy, reference.into_entry_ref(), sink).await
         }
     }
 
@@ -310,7 +332,7 @@ pub struct TrieCursor<L, R: Reference> {
 impl<L, R> RawCursor<R> for TrieCursor<L, R>
 where
     L: NodeLoader + Clone + MaybeSend + 'static,
-    R: Reference + MaybeSend + MaybeSync,
+    R: Reference,
 {
     type Error = ManifestError<TrieFormatError>;
 

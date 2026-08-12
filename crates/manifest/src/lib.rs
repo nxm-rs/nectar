@@ -7,13 +7,13 @@
 //! [`MaybeSend`], and generic over the sealed [`Reference`] width, so an
 //! encrypted manifest is the same code path as a plain one.
 //!
-//! [`Manifest::at`] binds a root and hands back a [`MapView`];
+//! [`Manifest::at`] binds a root and hands back a [`ManifestView`];
 //! [`Manifest::apply`] folds one [`Batch`] into a base root and yields the new
 //! one. [`Manifest::empty`] bootstraps the empty manifest, and every operation
 //! fails with the seam-owned [`ManifestError`].
 //!
 //! The map holds content paths alone. The site index and error documents are
-//! not keys: [`MapView`] reads them as options, and [`Batch`] sets them with
+//! not keys: [`ManifestView`] reads them as options, and [`Batch`] sets them with
 //! `set_index_document` and `set_error_document`. Each lands in the format's
 //! own root slot. The two paths those slots are keyed at, the empty one and
 //! `"/"`, are reserved on both formats: a read at either is absent and a write
@@ -21,11 +21,12 @@
 //! the format runs.
 //!
 //! The shared read machinery is seam-owned too: [`PathCursor`] lifts a
-//! format's [`RawCursor`] into the ordered path walk, [`MapView::dir`]
-//! defaults to [`collapse_dir`], and [`load_reference`] is the one data lane.
+//! format's [`RawCursor`] into the ordered path walk, [`ManifestView::dir`]
+//! defaults to [`collapse_dir`], and [`ManifestView::serve`] resolves a
+//! request path under the site conventions into a [`Served`].
 //!
 //! Each format keeps its own metadata type: the static path erases nothing.
-//! [`DynManifest`] is the object-safe wrapper for a runtime-detected format,
+//! [`ErasedManifest`] is the object-safe wrapper for a runtime-detected format,
 //! and unifies metadata behind the enumerable [`MetadataSource`]: a
 //! cross-format copy calls [`ManifestMeta::from_source`] on the target's
 //! metadata type with the source's metadata as the argument.
@@ -97,7 +98,7 @@ mod view;
 
 pub use batch::{Batch, CheckedBatch};
 pub use cursor::{PathCursor, RawCursor, RawItem};
-pub use dynamic::{DynManifest, DynSink, DynSinkError};
+pub use dynamic::{DynSink, DynSinkError, DynVisit, ErasedManifest};
 pub use error::{ErasedFormat, ErasedManifestError, ManifestError};
 pub use listing::{ListEntry, Listing, collapse_dir};
 pub use meta::{ManifestMeta, MetadataBlock, MetadataSource, MetadataView, WellKnownKey};
@@ -105,11 +106,11 @@ pub use op::ManifestOp;
 pub use path::ManifestPath;
 pub use reserved::{ReservedKey, reserved_key};
 pub use site::SiteConfig;
-pub use view::{MapCursor, MapEntry, MapView, load_reference};
+pub use view::{ManifestCursor, ManifestView, MapEntry, Served, serve_fallback};
 
-// The positional sink a load writes into is the file crate's, re-exported so
-// a manifest consumer needs no second dependency to name it.
-pub use nectar_file::sink::{DataSink, MemSink};
+// The positional sink a load writes into is the primitives crate's,
+// re-exported so a manifest consumer needs no second dependency to name it.
+pub use nectar_primitives::sink::{DataSink, MemSink};
 
 use core::future::Future;
 
@@ -129,16 +130,16 @@ impl<T: core::error::Error + MaybeSend + MaybeSync + 'static> SinkError for T {}
 ///
 /// Static dispatch only, exactly like the L1 store traits: the futures are
 /// RPITIT and the reference width is a type parameter, so nothing here costs
-/// an allocation. Use [`DynManifest`] where the format is a runtime choice.
+/// an allocation. Use [`ErasedManifest`] where the format is a runtime choice.
 ///
 /// Content paths are stored bare and verbatim, byte-identical to what the
 /// reference client writes. The map holds content paths alone. The site index
 /// and error documents are not keys: read them with
-/// [`MapView::index_document`] and [`MapView::error_document`], and write them
+/// [`ManifestView::index_document`] and [`ManifestView::error_document`], and write them
 /// with [`Batch::set_index_document`] and [`Batch::set_error_document`]. Each
 /// lands in the format's own root slot, at a path
 /// [`ManifestPath::is_reserved`] names.
-pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
+pub trait Manifest<R: Reference = ChunkRef>: MaybeSend + MaybeSync {
     /// The format's own metadata for one entry, enumerable and buildable.
     type Metadata: ManifestMeta;
 
@@ -146,7 +147,7 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     type FormatError: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// The read handle [`at`](Self::at) hands back.
-    type View<'a>: MapView<R, Metadata = Self::Metadata, Error = ManifestError<Self::FormatError>>
+    type View<'a>: ManifestView<R, Metadata = Self::Metadata, Error = ManifestError<Self::FormatError>>
     where
         Self: 'a;
 
@@ -156,8 +157,9 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     ) -> impl Future<Output = Result<R, ManifestError<Self::FormatError>>> + MaybeSend;
 
     /// The read view of the manifest rooted at `root`. Reaches storage only
-    /// when a read is awaited.
-    fn at(&self, root: &R) -> Self::View<'_>;
+    /// when a read is awaited. Roots are small values, so they pass by value;
+    /// a caller clones only to keep one.
+    fn at(&self, root: R) -> Self::View<'_>;
 
     /// Fold `batch` into the manifest rooted at `base`, returning the new
     /// root. The whole batch lands or none of it does.
@@ -175,24 +177,24 @@ pub trait Manifest<R: Reference + MaybeSend = ChunkRef>: MaybeSend + MaybeSync {
     /// through [`apply`](Self::apply).
     fn insert(
         &self,
-        root: &R,
+        root: R,
         path: ManifestPath,
         reference: R,
     ) -> impl Future<Output = Result<R, ManifestError<Self::FormatError>>> + MaybeSend {
         let mut batch = Batch::new();
         batch.insert(path, reference);
-        self.apply(root.clone(), batch)
+        self.apply(root, batch)
     }
 
     /// Remove one path. Exact-key: nothing below `path` goes with it, and an
     /// absent `path` returns `root` unchanged.
     fn remove(
         &self,
-        root: &R,
+        root: R,
         path: ManifestPath,
     ) -> impl Future<Output = Result<R, ManifestError<Self::FormatError>>> + MaybeSend {
         let mut batch = Batch::new();
         batch.remove(path);
-        self.apply(root.clone(), batch)
+        self.apply(root, batch)
     }
 }

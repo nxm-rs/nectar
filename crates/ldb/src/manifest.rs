@@ -7,10 +7,11 @@ use alloc::vec::Vec;
 use core::ops::Bound;
 
 use bytes::Bytes;
+use nectar_file::load_reference;
 use nectar_manifest::{
-    Batch, DataSink, ListEntry, Listing, Manifest, ManifestError, ManifestOp, ManifestPath,
-    MapCursor, MapEntry, MapView, PathCursor, RawCursor, RawItem, SinkError, SiteConfig,
-    load_reference,
+    Batch, DataSink, ListEntry, Listing, Manifest, ManifestCursor, ManifestError, ManifestOp,
+    ManifestPath, ManifestView, MapEntry, PathCursor, RawCursor, RawItem, Served, SinkError,
+    SiteConfig, serve_fallback,
 };
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ContentOnlyChunkSet;
@@ -19,7 +20,7 @@ use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use crate::apply::ApplyError;
 use crate::builder::Builder;
 use crate::db::{Database, View};
-use crate::folder::DirEntry;
+use crate::folder::{DirEntry, Served as NativeServed};
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, Metadata};
 use crate::node::NodeRef;
@@ -68,9 +69,9 @@ where
         Ok(built.root().clone())
     }
 
-    fn at(&self, root: &R) -> Self::View<'_> {
+    fn at(&self, root: R) -> Self::View<'_> {
         // Inherent resolution wins, so this is the native `Database::at`.
-        Self::at(self, root)
+        Self::at(self, &root)
     }
 
     /// The checked batch folded through one changeset: order never reaches
@@ -110,7 +111,7 @@ where
 
 /// The native view as the seam's read handle, keyed by path. Each body's
 /// key-typed call resolves to the inherent method.
-impl<'a, S, R> MapView<R> for View<'a, S, V1, R>
+impl<'a, S, R> ManifestView<R> for View<'a, S, V1, R>
 where
     S: TrustedGet<ContentOnlyChunkSet> + Clone + MaybeSend + MaybeSync + 'static,
     R: NodeRef,
@@ -160,7 +161,7 @@ where
                 let mut cursor =
                     PathCursor::new(self.range((Bound::Unbounded, Bound::Included(key))).await?);
                 let mut last = None;
-                while let Some(pair) = MapCursor::next(&mut cursor).await? {
+                while let Some(pair) = ManifestCursor::next(&mut cursor).await? {
                     last = Some(pair);
                 }
                 Ok(last)
@@ -193,6 +194,37 @@ where
         Ok(Listing::new(entries))
     }
 
+    /// One native resolution in place of the default's three seam probes.
+    async fn serve(&self, path: &ManifestPath) -> Result<Served<R>, Self::Error> {
+        // The seam serves content paths alone: a reserved request path must
+        // not answer from the root slot the native exact probe reads.
+        if path.is_reserved() {
+            return serve_fallback(self, path).await;
+        }
+        let served = match self.serve(&Key::from(path.as_bytes())).await? {
+            NativeServed::Exact { key, entry } => Served::Exact {
+                path: path_of(&key),
+                entry: seam_entry(entry),
+            },
+            NativeServed::Index { key, entry } => Served::Index {
+                path: path_of(&key),
+                entry: seam_entry(entry),
+            },
+            // An error document set to a reserved path names no content,
+            // exactly as the seam's own probe would read it.
+            NativeServed::Error { key, entry }
+                if !ManifestPath::is_reserved_bytes(key.as_bytes()) =>
+            {
+                Served::Error {
+                    path: path_of(&key),
+                    entry: seam_entry(entry),
+                }
+            }
+            NativeServed::Error { .. } | NativeServed::Missing => Served::Missing,
+        };
+        Ok(served)
+    }
+
     async fn load<T: DataSink<Error: SinkError> + MaybeSend>(
         &self,
         path: &ManifestPath,
@@ -217,7 +249,13 @@ where
         // hold reads as opaque and loads as no data.
         let reference =
             R::from_entry_ref(reference).map_err(|_| ManifestError::NoData(path.clone()))?;
-        load_reference(self.store().clone(), reference.into_entry_ref(), sink).await
+        load_reference(
+            self.store().clone(),
+            self.policy,
+            reference.into_entry_ref(),
+            sink,
+        )
+        .await
     }
 
     async fn iter(&self) -> Result<Self::Cursor, Self::Error> {

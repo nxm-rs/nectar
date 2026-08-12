@@ -12,7 +12,7 @@ use nectar_file::{File, MemSink, Policy};
 use nectar_ldb::{Database, Encrypted as EncryptedSeal, V1};
 use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
-    Batch, ListEntry, Manifest, ManifestMeta, ManifestPath, MapEntry, MapView, MetadataView,
+    Batch, ListEntry, Manifest, ManifestMeta, ManifestPath, ManifestView, MapEntry, MetadataView,
     WellKnownKey,
 };
 use nectar_mantaray::MantarayManifest;
@@ -20,7 +20,7 @@ use nectar_primitives::{DEFAULT_BODY_SIZE, EncryptedChunkRef};
 use nectar_testing::run;
 
 mod common;
-use common::{Store, stores};
+use common::{Store, p, stores};
 
 /// The secret an encrypted key-value database derives its keys from.
 const SECRET: &[u8] = b"an encrypted database secret";
@@ -35,64 +35,43 @@ async fn exercise<M: Manifest<EncryptedChunkRef>>(
     let meta = M::Metadata::from_source(
         &MetadataView::new().with(WellKnownKey::ContentType, "text/plain"),
     );
+    let bin = p("data.bin");
     let root = {
         let mut batch = Batch::new();
-        batch.insert_with(ManifestPath::from("data.bin"), file.clone(), meta);
+        batch.insert_with(bin.clone(), file.clone(), meta);
         manifest.apply(base.clone(), batch).await.unwrap()
     };
 
-    let view = manifest.at(&root);
-    assert_eq!(
-        view.get(&ManifestPath::from("data.bin")).await.unwrap(),
-        Some(MapEntry::Reference(file.clone())),
-    );
-    assert!(
-        view.contains_key(&ManifestPath::from("data.bin"))
-            .await
-            .unwrap()
-    );
+    let view = manifest.at(root.clone());
+    let got = view.get(&bin).await.unwrap();
+    assert_eq!(got, Some(MapEntry::Reference(file.clone())));
+    assert!(view.contains_key(&bin).await.unwrap());
     let listing = view.dir(&ManifestPath::default()).await.unwrap();
-    assert_eq!(
-        listing.entries(),
-        [ListEntry::File {
-            path: ManifestPath::from("data.bin"),
-            reference: file.clone(),
-        }]
-    );
+    let want = [ListEntry::File {
+        path: bin.clone(),
+        reference: file.clone(),
+    }];
+    assert_eq!(listing.entries(), want);
 
     let mut sink = MemSink::new();
-    view.load(&ManifestPath::from("data.bin"), &mut sink)
-        .await
-        .unwrap();
+    view.load(&bin, &mut sink).await.unwrap();
     assert_eq!(sink.as_ref(), data);
 
     // The one-shot removal leaves the entry unreachable under its new root.
-    let pruned = manifest
-        .remove(&root, ManifestPath::from("data.bin"))
-        .await
-        .unwrap();
-    assert!(
-        !manifest
-            .at(&pruned)
-            .contains_key(&ManifestPath::from("data.bin"))
-            .await
-            .unwrap()
-    );
+    let pruned = manifest.remove(root, bin.clone()).await.unwrap();
+    let still = manifest.at(pruned).contains_key(&bin).await.unwrap();
+    assert!(!still);
 }
 
 #[test]
 fn both_formats_drive_an_encrypted_manifest() {
     run(async {
         let (raw, store) = stores();
-        let data: Vec<u8> = (0..9_000u32)
-            .map(|i| u8::try_from(i % 241).unwrap())
-            .collect();
+        let data: Vec<u8> = (0..9_000u32).map(|i| (i % 241) as u8).collect();
         // The entry's own data is an encrypted chunk tree, so its reference
         // carries the key that opens it.
-        let file = File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT)
-            .save_encrypted(&data[..])
-            .await
-            .unwrap();
+        let saver = File::<_, DEFAULT_BODY_SIZE>::new(&raw, Policy::DEFAULT);
+        let file = saver.save_encrypted(&data[..]).await.unwrap();
 
         // The seam bootstrap works at the encrypted width too.
         let nodes = NodeLoadSaver::new(Arc::clone(&raw));
