@@ -1,4 +1,5 @@
-# Clippy (runtime-safety restriction lints) + unused-dependency checks.
+# Clippy (runtime-safety restriction lints), unused-dependency checks, and the
+# cargo-deny supply-chain gate (advisories, bans, sources, licences).
 name: lint
 
 on:
@@ -116,13 +117,38 @@ jobs:
             - name: cargo machete
               run: cargo machete
 
+    deny:
+        name: deny
+        runs-on: ubuntu-latest
+        # Capped like every other leaf: `lint success` needs it.
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            # Prebuilt binary, same pattern as `audit.yml`. No `rust-setup`: this
+            # job compiles nothing, so it needs neither sccache nor a components
+            # install. cargo-deny does shell out to `cargo metadata`, which the
+            # runner's preinstalled rustup resolves against `rust-toolchain.toml`.
+            - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853  # v2.83.2
+              with:
+                  tool: cargo-deny
+            # `--all-features` so the graph covers the feature-gated dependencies
+            # the default build never pulls in, and `--locked` so a manifest that
+            # has outgrown `Cargo.lock` fails here rather than being resolved
+            # afresh and silently passing.
+            #
+            # `advisories` overlaps the daily `audit` workflow, but that one only
+            # runs on lockfile-touching pull requests. New here: `bans`,
+            # `sources`, `licenses`, and `yanked = "deny"` on every pull request.
+            - name: cargo deny
+              run: cargo deny --all-features --locked check advisories bans sources licenses
+
     # The one required context for this workflow: later jobs append to `needs`
     # rather than to the branch ruleset.
     lint-success:
         name: lint success
         runs-on: ubuntu-latest
         if: always()
-        needs: [clippy, unused-deps]
+        needs: [clippy, unused-deps, deny]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed

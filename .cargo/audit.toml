@@ -13,7 +13,11 @@ ignore = [
     # (via `ark-ff`) that is never enabled by the feature set alloy-primitives
     # requests, so it is not in the resolved build graph at all; it only
     # appears in Cargo.lock. cargo-audit scans the whole lockfile, which is
-    # why it surfaces here. Tracking: nxm-rs/nectar#19.
+    # why it surfaces here. deny.toml deliberately does not carry this entry:
+    # cargo deny walks the resolved graph, so the advisory never matches there
+    # and listing it would earn an `advisory-not-detected` warning. Removing it
+    # from this file would turn the `audit` job red, because derivative is still
+    # an entry in both Cargo.lock and fuzz/Cargo.lock. Tracking: nxm-rs/nectar#19.
     "RUSTSEC-2024-0388", # derivative unmaintained - optional ark-ff dep of ruint, not in build graph
 
     # paste is unmaintained (archived by its author). It is a compile-time
