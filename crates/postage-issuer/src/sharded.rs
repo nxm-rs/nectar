@@ -1,26 +1,13 @@
 //! Sharded parallel issuance over a sequential issuer.
 //!
-//! The bucket space is cut into contiguous ranges, one per shard, and each shard
-//! holds its own sequential issuer behind its own lock. Threads stamping into
-//! different shards do not contend, and every bucket is owned by exactly one
-//! shard, so its cursor keeps a single writer.
-//!
-//! ```text
-//! buckets [0 .. 2^bucket_depth)
-//!   shard 0: [0 .. n)        lock A
-//!   shard 1: [n .. 2n)       lock B
-//!   ...
-//! ```
-//!
-//! The inner issuer decides the issuance mode, so the fill and ring variants are
-//! aliases rather than separate implementations.
+//! A shard owns a contiguous bucket range and one sequential issuer behind its
+//! own lock, so every bucket keeps a single writer. The inner issuer sets the
+//! issuance mode.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use nectar_postage::{
-    Batch, BatchId, BucketDepth, StampDigest, StampError, calculate_bucket,
-};
+use nectar_postage::{Batch, BatchId, BucketDepth, StampDigest, StampError, calculate_bucket};
 use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
 use crate::error::IssuerError;
@@ -30,8 +17,7 @@ use crate::ring::{Reservation, Reserved, RingIssuerFor, Unreserved};
 /// Shards per issuer. A power of two, so a bucket's shard is a shift and a mask.
 const DEFAULT_SHARD_COUNT: usize = 16;
 
-// Lock poisoning means another stamping thread already panicked; propagating the
-// panic is the intended behaviour.
+// Poisoning means another stamping thread panicked; propagating it is intended.
 #[allow(clippy::expect_used)]
 fn lock<T>(shard: &Mutex<T>) -> MutexGuard<'_, T> {
     shard.lock().expect("shard lock poisoned")
@@ -39,11 +25,9 @@ fn lock<T>(shard: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// A sharded issuer: one sequential issuer per contiguous bucket range.
 ///
-/// Allocation takes `&self`, so several threads may stamp through one issuer,
-/// each holding its own shared handle. The inner issuer `I` sets the issuance
-/// mode; see [`ShardedIssuerFor`] for fill-only and [`ShardedRingIssuerFor`] for
-/// overwrite-aware issuance.
-#[derive(Debug)]
+/// Allocation takes `&self`, so several threads may stamp through one issuer.
+/// The inner issuer `I` sets the issuance mode: [`ShardedIssuerFor`] is
+/// fill-only, [`ShardedRingIssuerFor`] is overwrite-aware.
 pub struct ShardedFor<S: SwarmSpec, I> {
     batch_id: BatchId,
     depth: u8,
@@ -54,6 +38,20 @@ pub struct ShardedFor<S: SwarmSpec, I> {
     shard_shift: u32,
     max_utilization: AtomicU32,
     stamps_issued: AtomicU64,
+}
+
+// Geometry only: deriving would dump every shard's whole counter table.
+impl<S: SwarmSpec, I> core::fmt::Debug for ShardedFor<S, I> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ShardedFor")
+            .field("batch_id", &self.batch_id)
+            .field("depth", &self.depth)
+            .field("bucket_depth", &self.bucket_depth.get())
+            .field("bucket_capacity", &self.bucket_capacity)
+            .field("shard_count", &self.shards.len())
+            .field("stamps_issued", &self.stamps_issued)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The [`ShardedFor`] of the mainnet spec.
@@ -68,8 +66,8 @@ pub type ShardedIssuer = ShardedIssuerFor<Mainnet>;
 /// A sharded mutable (ring) issuer: the parallel counterpart of
 /// [`RingIssuerFor`].
 ///
-/// The reservation policy rides on the inner ring, so a self-hosting context
-/// that demands a reserved ring cannot be handed a reserved-blind one:
+/// The reservation policy rides on the inner ring, so a sink that demands a
+/// reserved ring cannot be handed a reserved-blind one:
 ///
 /// ```compile_fail
 /// use nectar_postage_issuer::{
@@ -91,9 +89,8 @@ pub type ShardedRingIssuer<R = Unreserved> = ShardedRingIssuerFor<Mainnet, R>;
 impl<S: SwarmSpec, I: StampIssuer> ShardedFor<S, I> {
     /// Builds `shard_count` shards, each from `make_shard` applied to the
     /// `[base, end)` bucket range it owns.
-    // Validated shard geometry: `shard_count` is a nonzero power of two clamped
-    // to `2^bucket_depth`, and `depth >= bucket_depth` for every batch, so no
-    // division by zero, underflow or overflow is reachable.
+    // `shard_count` is a nonzero power of two clamped to `2^bucket_depth`, and
+    // `depth >= bucket_depth` for every batch.
     #[allow(clippy::arithmetic_side_effects)]
     fn with_shards(
         batch_id: BatchId,
@@ -108,8 +105,9 @@ impl<S: SwarmSpec, I: StampIssuer> ShardedFor<S, I> {
         );
 
         let total_buckets = 1u32 << bucket_depth.get();
-        let shard_count = shard_count.min(usize::try_from(total_buckets).unwrap_or(usize::MAX));
-        let shard_count = u32::try_from(shard_count).unwrap_or(u32::MAX);
+        let shard_count = u32::try_from(shard_count)
+            .unwrap_or(total_buckets)
+            .min(total_buckets);
         let buckets_per_shard = total_buckets / shard_count;
 
         let shards = (0..shard_count)
@@ -133,9 +131,8 @@ impl<S: SwarmSpec, I: StampIssuer> ShardedFor<S, I> {
     }
 
     /// The shard owning `bucket`.
-    // Shard ranges are contiguous and equal, so the owner is the bucket's top
-    // `log2(shard_count)` bits; the mask is `shards.len() - 1`, so the index is
-    // in range even for a bucket outside the bucket space.
+    // Ranges are contiguous and equal, so the owner is the bucket's top
+    // `log2(shard_count)` bits; the mask keeps the index in range for any `u32`.
     #[allow(clippy::indexing_slicing, clippy::as_conversions)]
     #[inline]
     fn shard(&self, bucket: u32) -> &Mutex<I> {
@@ -146,8 +143,7 @@ impl<S: SwarmSpec, I: StampIssuer> ShardedFor<S, I> {
     ///
     /// # Errors
     ///
-    /// Returns [`StampError::BucketFull`] when the owning shard refuses the
-    /// bucket.
+    /// [`StampError::BucketFull`] when the owning shard refuses the bucket.
     ///
     /// # Panics
     ///
@@ -231,6 +227,9 @@ impl<S: SwarmSpec> ShardedFor<S, MemoryIssuerFor<S>> {
     /// Creates a fill-only sharded issuer with a given shard count, clamped to
     /// the bucket count.
     ///
+    /// Every shard carries a full-width counter table, so the count trades
+    /// address space against lock contention.
+    ///
     /// # Panics
     ///
     /// Panics if `shard_count` is not a power of two.
@@ -249,9 +248,8 @@ impl<S: SwarmSpec> ShardedFor<S, MemoryIssuerFor<S>> {
     ///
     /// # Errors
     ///
-    /// Returns [`IssuerError::MutableNotSupported`] for a mutable batch, as
-    /// [`MemoryIssuerFor::from_batch`] does, so overwrite-aware issuance must be
-    /// requested by name through [`ShardedRingIssuer::external`] or
+    /// [`IssuerError::MutableNotSupported`] for a mutable batch: overwrite-aware
+    /// issuance is requested by name through [`ShardedRingIssuer::external`] or
     /// [`ShardedRingIssuer::reserved`].
     pub fn from_batch(batch: &Batch<S>) -> Result<Self, IssuerError> {
         if batch.immutable() {
@@ -266,8 +264,7 @@ impl<S: SwarmSpec> ShardedFor<S, MemoryIssuerFor<S>> {
     ///
     /// # Errors
     ///
-    /// Returns [`IssuerError::DepthDecrease`] if `new_depth` is below the current
-    /// depth.
+    /// [`IssuerError::DepthDecrease`] if `new_depth` is below the current depth.
     ///
     /// # Panics
     ///
@@ -283,8 +280,7 @@ impl<S: SwarmSpec> ShardedFor<S, MemoryIssuerFor<S>> {
             lock(shard).dilute(new_depth)?;
         }
         self.depth = new_depth;
-        // `new_depth >= depth >= bucket_depth` by the check above and the batch
-        // geometry invariant.
+        // `new_depth >= depth >= bucket_depth` by the check above.
         #[allow(clippy::arithmetic_side_effects)]
         {
             self.bucket_capacity = 1u32 << (new_depth - self.bucket_depth.get());
@@ -298,7 +294,7 @@ impl<S: SwarmSpec> ShardedFor<S, RingIssuerFor<S, Unreserved>> {
     ///
     /// # Errors
     ///
-    /// Returns [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
+    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
     pub fn external(batch: &Batch<S>) -> Result<Self, IssuerError> {
         Self::for_mutable_batch(batch, |_, _| Unreserved)
     }
@@ -310,7 +306,7 @@ impl<S: SwarmSpec> ShardedFor<S, RingIssuerFor<S, Reserved>> {
     ///
     /// # Errors
     ///
-    /// Returns [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
+    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
     pub fn reserved(
         batch: &Batch<S>,
         slots: impl IntoIterator<Item = (u32, u32)>,
@@ -359,8 +355,8 @@ impl<S: SwarmSpec, I: StampIssuer> StampIssuer for ShardedFor<S, I> {
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        // Every body here names the inherent method, which shadows the trait
-        // method of the same name.
+        // Every body here names the inherent method; the trait method of the
+        // same name would recurse.
         Self::prepare_stamp(self, address, timestamp)
     }
 
@@ -393,8 +389,7 @@ impl<S: SwarmSpec, I: StampIssuer> StampIssuer for ShardedFor<S, I> {
     }
 }
 
-/// Shared-handle issuance: allocation needs only `&self`, so several pipelines
-/// may admit concurrently from one issuer.
+/// Shared-handle issuance: several pipelines may admit from one issuer.
 impl<S: SwarmSpec, I: StampIssuer> StampIssuer for &ShardedFor<S, I> {
     fn prepare_stamp(
         &mut self,
@@ -441,13 +436,7 @@ mod tests {
 
     fn test_address(leading: u16) -> ChunkAddress {
         let mut bytes = [0u8; 32];
-        // Big-endian split of a u16: `leading >> 8` is <= 0xFF and the low-byte
-        // truncation is the intended extraction; both casts are lossless.
-        #[allow(clippy::as_conversions)]
-        {
-            bytes[0] = (leading >> 8) as u8;
-            bytes[1] = leading as u8;
-        }
+        bytes[..2].copy_from_slice(&leading.to_be_bytes());
         ChunkAddress::new(bytes)
     }
 
@@ -481,8 +470,6 @@ mod tests {
 
     #[test]
     fn from_batch_refuses_a_mutable_batch() {
-        // A reserved-blind ring would silently overwrite a self-hosted
-        // snapshot's own chunks, so the fill constructor refuses one.
         assert!(matches!(
             ShardedIssuer::from_batch(&batch(20, false)),
             Err(IssuerError::MutableNotSupported)
@@ -523,7 +510,6 @@ mod tests {
         let issuer =
             ShardedIssuer::with_shard_count(BatchId::ZERO, 20, BucketDepth::new(16).unwrap(), 4);
         assert_eq!(issuer.shard_count(), 4);
-        // Every bucket still routes to a shard that owns it.
         for lead in [0x0000u16, 0x3FFF, 0x4000, 0xBFFF, 0xC000, 0xFFFF] {
             let digest = issuer.prepare_stamp(&test_address(lead), 1).unwrap();
             assert_eq!(digest.index.index(), 0);
@@ -561,12 +547,10 @@ mod tests {
 
     #[test]
     fn dilution_reaches_every_shard() {
-        // One address per shard: a dilution that stopped at the first shard
-        // would leave the others refusing at the old capacity.
+        // depth=17, bucket_depth=16 gives 2 slots per bucket; one address per shard.
         let mut issuer = ShardedIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
-        #[allow(clippy::as_conversions)] // shard index shifted into the top bits
         let addresses: Vec<_> = (0..DEFAULT_SHARD_COUNT)
-            .map(|shard| test_address((shard as u16) << 12))
+            .map(|shard| test_address(u16::try_from(shard).unwrap() << 12))
             .collect();
 
         for address in &addresses {
@@ -605,10 +589,43 @@ mod tests {
     }
 
     #[test]
+    fn one_bucket_under_contention_hands_out_each_slot_once() {
+        use std::sync::Mutex as StdMutex;
+        use std::thread;
+
+        // depth=24, bucket_depth=16 gives 256 slots, which 8 threads fill exactly.
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+        let address = test_address(0x9BCD);
+        let slots = StdMutex::new(Vec::new());
+
+        thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for ts in 0..32u64 {
+                        let digest = issuer.prepare_stamp(&address, ts).unwrap();
+                        slots.lock().unwrap().push(digest.index.index());
+                    }
+                });
+            }
+        });
+
+        let mut slots = slots.into_inner().unwrap();
+        slots.sort_unstable();
+        assert_eq!(slots, (0..256).collect::<Vec<_>>());
+        assert!(issuer.prepare_stamp(&address, 0).is_err());
+    }
+
+    #[test]
+    fn a_bucket_outside_the_bucket_space_reads_as_empty() {
+        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+
+        assert_eq!(issuer.bucket_utilization(0x1_0000), 0);
+        assert!(!issuer.bucket_has_capacity(0x1_0000));
+    }
+
+    #[test]
     fn every_trait_method_reaches_the_inherent_one() {
-        // Each `StampIssuer` body delegates to an inherent method of the same
-        // name, so a body that resolved back into the trait would recurse until
-        // the stack died.
+        // A body that resolved back into the trait would recurse until the stack died.
         let mut issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let address = test_address(0x1234);
         let bucket = calculate_bucket(&address, 16);
@@ -665,8 +682,8 @@ mod tests {
 
     #[test]
     fn a_reserved_sharded_ring_never_emits_a_protected_slot() {
-        // depth=18, bucket_depth=16 gives 4 slots per bucket. Protect slots 1
-        // and 3, so the ring may only ever emit 0 and 2.
+        // depth=18, bucket_depth=16 gives 4 slots per bucket; protecting 1 and 3
+        // leaves only 0 and 2.
         let mutable = batch(18, false);
         let address = test_address(0x00AA);
         let bucket = calculate_bucket(&address, 16);
@@ -683,8 +700,7 @@ mod tests {
 
     #[test]
     fn a_reserved_sharded_ring_routes_slots_to_the_owning_shard() {
-        // Two buckets in distinct shards protect different slots; each shard
-        // must apply only its own bucket's protection.
+        // 0x0001 and 0xF001 sit in distinct shards and protect different slots.
         let mutable = batch(17, false);
         let bucket_lo = 0x0001u32;
         let bucket_hi = 0xF001u32;
@@ -742,7 +758,7 @@ mod tests {
             #![proptest_config(ProptestConfig::with_cases(64))]
 
             /// A sharded fill issuer allocates exactly what its sequential
-            /// counterpart does, and reports the same geometry and totals.
+            /// counterpart does.
             #[test]
             fn sharded_fill_matches_the_sequential_issuer(
                 excess in 0u8..=2,
@@ -782,7 +798,8 @@ mod tests {
             }
 
             /// A sharded ring allocates exactly what its sequential counterpart
-            /// does, protected slots included.
+            /// does, protected slots included. This is what pins the routing
+            /// function, which fill parity alone cannot.
             #[test]
             fn sharded_ring_matches_the_sequential_ring(
                 excess in 1u8..=3,

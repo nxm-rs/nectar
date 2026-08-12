@@ -78,8 +78,7 @@
 //!
 //! [`ShardedFor`] splits the bucket space across shards, each holding one
 //! sequential issuer behind its own lock. The inner issuer sets the issuance
-//! mode, so [`ShardedIssuerFor`] and [`ShardedRingIssuerFor`] are aliases over
-//! it and the ring keeps its reservation type parameter.
+//! mode, so [`ShardedIssuerFor`] and [`ShardedRingIssuerFor`] are aliases.
 //!
 //! # Features
 //!
