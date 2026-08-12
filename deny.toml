@@ -14,11 +14,11 @@ ignore = [
     #
     # RUSTSEC-2024-0388 (derivative) is absent on purpose: ruint 1.20.0 dropped
     # it from the resolved graph, but it remains in both lockfiles, so
-    # .cargo/audit.toml still carries it. Tracking: nxm-rs/nectar#19.
+    # .cargo/audit.toml still carries it.
 
     # paste unmaintained (archived). Compile-time proc-macro dep of
     # alloy-sol-macro-input / syn-solidity. Latest released alloy-core (1.6.0)
-    # still depends on it. Tracking: nxm-rs/nectar#20.
+    # still depends on it.
     "RUSTSEC-2024-0436",
 
     # proc-macro-error2 unmaintained. Compile-time proc-macro dep of
