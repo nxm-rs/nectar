@@ -30,8 +30,9 @@ use core::task::Poll;
 
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
-use nectar_governor::{Admission, BoxFuture, Window};
+use nectar_governor::{Admission, Window};
 use nectar_primitives::store::{ChunkPut, MaybeSync};
+use nectar_tasks::BoxFuture;
 
 use crate::bounded::Prefix;
 use crate::builder::{

@@ -1,14 +1,13 @@
 //! The shared bounded put window: a [`FuturesUnordered`] set capped by
-//! [`Admission`], generic over each put's completion.
+//! [`Admission`], generic over the put future.
 
 use core::fmt;
-use core::future::poll_fn;
+use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use futures_util::stream::{FuturesUnordered, Stream};
 
-use crate::BoxFuture;
 use crate::admission::Admission;
 use crate::window::Window;
 
@@ -19,12 +18,12 @@ use crate::window::Window;
 /// synchronously ready put settles inline and never occupies a slot; a parked
 /// put is driven only by [`poll_step`](Self::poll_step) and the wrappers over
 /// it under the caller's waker.
-pub struct PutSink<'a, C> {
-    in_flight: FuturesUnordered<BoxFuture<'a, C>>,
+pub struct PutSink<F: Future> {
+    in_flight: FuturesUnordered<F>,
     admission: Admission,
 }
 
-impl<'a, C> PutSink<'a, C> {
+impl<F: Future + Unpin> PutSink<F> {
     /// A put window `window` slots wide.
     pub fn new(window: Window) -> Self {
         Self {
@@ -59,9 +58,9 @@ impl<'a, C> PutSink<'a, C> {
     ///
     /// Secure a slot with [`admit`](Self::admit) first; this does not bound
     /// the window.
-    pub fn push(&mut self, put: BoxFuture<'a, C>) -> Option<C> {
+    pub fn push(&mut self, put: F) -> Option<F::Output> {
         let mut put = put;
-        match put.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+        match Pin::new(&mut put).poll(&mut Context::from_waker(Waker::noop())) {
             Poll::Ready(completion) => Some(completion),
             Poll::Pending => {
                 self.in_flight.push(put);
@@ -72,14 +71,14 @@ impl<'a, C> PutSink<'a, C> {
 
     /// Poll one settled put out of the window. `Ready(None)` once empty;
     /// `Pending` leaves the window untouched.
-    pub fn poll_step(&mut self, cx: &mut Context<'_>) -> Poll<Option<C>> {
+    pub fn poll_step(&mut self, cx: &mut Context<'_>) -> Poll<Option<F::Output>> {
         Pin::new(&mut self.in_flight).poll_next(cx)
     }
 
     /// Secure a slot. `Ready(None)` when a slot is free to [`push`](Self::push)
     /// into; `Ready(Some(completion))` after settling one to make room;
     /// `Pending` when full and none ready, consuming nothing.
-    pub fn poll_admit(&mut self, cx: &mut Context<'_>) -> Poll<Option<C>> {
+    pub fn poll_admit(&mut self, cx: &mut Context<'_>) -> Poll<Option<F::Output>> {
         if self.admits() {
             return Poll::Ready(None);
         }
@@ -88,18 +87,21 @@ impl<'a, C> PutSink<'a, C> {
     }
 
     /// Await one completion; `None` when the window is empty.
-    pub async fn settle_one(&mut self) -> Option<C> {
+    pub async fn settle_one(&mut self) -> Option<F::Output> {
         poll_fn(|cx| self.poll_step(cx)).await
     }
 
     /// Secure a slot, parking until one is free. Returns the completion that
     /// freed it, or `None` when a slot was already free.
-    pub async fn admit(&mut self) -> Option<C> {
+    pub async fn admit(&mut self) -> Option<F::Output> {
         poll_fn(|cx| self.poll_admit(cx)).await
     }
 
     /// Fold every outstanding completion, stopping on the first `fold` error.
-    pub async fn settle<E>(&mut self, mut fold: impl FnMut(C) -> Result<(), E>) -> Result<(), E> {
+    pub async fn settle<E>(
+        &mut self,
+        mut fold: impl FnMut(F::Output) -> Result<(), E>,
+    ) -> Result<(), E> {
         while let Some(completion) = self.settle_one().await {
             fold(completion)?;
         }
@@ -109,7 +111,10 @@ impl<'a, C> PutSink<'a, C> {
     /// Fold the completions ready now without parking, stopping on the first
     /// `fold` error: newly admitted puts start under the caller's waker before
     /// more work enters.
-    pub async fn sweep<E>(&mut self, mut fold: impl FnMut(C) -> Result<(), E>) -> Result<(), E> {
+    pub async fn sweep<E>(
+        &mut self,
+        mut fold: impl FnMut(F::Output) -> Result<(), E>,
+    ) -> Result<(), E> {
         poll_fn(move |cx| {
             loop {
                 match self.poll_step(cx) {
@@ -126,7 +131,7 @@ impl<'a, C> PutSink<'a, C> {
     }
 }
 
-impl<C> fmt::Debug for PutSink<'_, C> {
+impl<F: Future> fmt::Debug for PutSink<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PutSink")
             .field("in_flight", &self.in_flight.len())
@@ -137,7 +142,6 @@ impl<C> fmt::Debug for PutSink<'_, C> {
 
 #[cfg(test)]
 mod tests {
-    use core::future::Future;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use std::boxed::Box;
@@ -146,6 +150,9 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+
+    /// Erased put, boxed by the caller: the window never boxes for itself.
+    type BoxedPut = Pin<Box<dyn Future<Output = usize>>>;
 
     /// A completion that stays pending for `left` polls, waking itself each
     /// time, before yielding `id`: a latency injector for genuine overlap.
@@ -167,8 +174,8 @@ mod tests {
         }
     }
 
-    fn delayed(id: usize, left: u32) -> BoxFuture<'static, usize> {
-        Box::pin(Delay { left, id })
+    const fn delayed(id: usize, left: u32) -> Delay {
+        Delay { left, id }
     }
 
     fn window(slots: u16) -> Window {
@@ -177,16 +184,24 @@ mod tests {
 
     #[test]
     fn synchronous_put_settles_inline_without_a_slot() {
-        let mut sink: PutSink<'static, usize> = PutSink::new(window(4));
+        let mut sink: PutSink<Delay> = PutSink::new(window(4));
         assert_eq!(sink.push(delayed(7, 0)), Some(7));
         assert_eq!(sink.len(), 0);
         assert!(sink.is_empty());
     }
 
     #[test]
+    fn an_erased_boxed_put_rides_the_same_window() {
+        let mut sink: PutSink<BoxedPut> = PutSink::new(window(4));
+        assert_eq!(sink.push(Box::pin(delayed(7, 0))), Some(7));
+        assert!(sink.push(Box::pin(delayed(9, 1))).is_none());
+        assert_eq!(sink.len(), 1);
+    }
+
+    #[test]
     fn peak_stays_within_the_window_and_overlaps() {
         nectar_testing::run(async {
-            let mut sink: PutSink<'static, usize> = PutSink::new(window(4));
+            let mut sink: PutSink<Delay> = PutSink::new(window(4));
             let mut peak = 0;
             let mut done = Vec::new();
             for id in 0..20 {
@@ -219,7 +234,7 @@ mod tests {
     #[test]
     fn completions_are_order_free() {
         nectar_testing::run(async {
-            let mut sink: PutSink<'static, usize> = PutSink::new(window(8));
+            let mut sink: PutSink<Delay> = PutSink::new(window(8));
             // Later ids finish first: submission order is not completion order.
             for id in 0..6 {
                 let latency = u32::try_from(6 - id).unwrap();
@@ -242,7 +257,7 @@ mod tests {
     #[test]
     fn settle_stops_on_the_first_fold_error() {
         nectar_testing::run(async {
-            let mut sink: PutSink<'static, usize> = PutSink::new(window(4));
+            let mut sink: PutSink<Delay> = PutSink::new(window(4));
             for id in 0..4 {
                 assert!(sink.push(delayed(id, 1)).is_none());
             }
@@ -261,7 +276,7 @@ mod tests {
     #[test]
     fn sweep_folds_ready_puts_without_parking() {
         nectar_testing::run(async {
-            let mut sink: PutSink<'static, usize> = PutSink::new(window(4));
+            let mut sink: PutSink<Delay> = PutSink::new(window(4));
             // One ready-after-a-poll and one long-lived put.
             assert!(sink.push(delayed(1, 1)).is_none());
             assert!(sink.push(delayed(2, 1000)).is_none());
@@ -284,7 +299,7 @@ mod tests {
     #[test]
     fn dropping_mid_flight_aborts_every_put() {
         let alive = Arc::new(AtomicUsize::new(0));
-        let mut sink: PutSink<'static, usize> = PutSink::new(window(8));
+        let mut sink: PutSink<BoxedPut> = PutSink::new(window(8));
         for id in 0..3 {
             let alive = Arc::clone(&alive);
             alive.fetch_add(1, Ordering::SeqCst);

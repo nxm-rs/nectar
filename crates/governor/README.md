@@ -1,6 +1,6 @@
 # nectar-governor
 
-Bounded-admission governor beneath the streaming walkers: the read-ahead `Window`, the head-slot `Admission` predicate, the `AdmitPolicy` adaptive-window seam, the write-side `PutSink`, and the `BoxFuture` alias whose `Send` bound relaxes on single-threaded targets.
+Bounded-admission governor beneath the streaming walkers: the read-ahead `Window`, the head-slot `Admission` predicate, the `AdmitPolicy` adaptive-window seam, and the write-side `PutSink`.
 
 Admission only. `futures_util` is the walk substrate: each walker owns its own loop over a `FuturesUnordered` set, and this crate says nothing but when one more fetch may start.
 
@@ -13,7 +13,7 @@ Part of the [nectar](https://github.com/nxm-rs/nectar) workspace, a collection o
 nectar-governor = "0.4"
 ```
 
-This crate is `no_std` (alloc only). The `chunk` feature adds a chunk-typed fetch helper over the primitives store surface.
+This crate is `no_std` (alloc only) and depends only on `nectar-marker` and `futures-util`.
 
 ## License
 

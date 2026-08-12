@@ -18,11 +18,11 @@ use core::task::{Context, Poll, Waker};
 use futures_util::FutureExt;
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_clock::Clock;
-use nectar_governor::{Admission, BoxFuture};
+use nectar_governor::Admission;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;
-use nectar_tasks::{Spawn, submit_on};
+use nectar_tasks::{BoxFuture, Spawn, submit_on};
 
 use super::task::sign_task;
 use super::{SignPrehash, StampPipeline, StampResult};

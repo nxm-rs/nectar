@@ -53,7 +53,7 @@ primitives = [
 	"dep:bytes",
 	"dep:futures-util",
 	"dep:nectar-primitives",
-	"nectar-governor/chunk",
+	"dep:nectar-tasks",
 ]
 
 # The manifest seam's shared data-load lane: one `load_reference` every

@@ -71,13 +71,6 @@ jobs:
               run: |
                   cargo check --locked -p nectar-manifest \
                     --no-default-features --target ${{ matrix.target }}
-            # The governor's chunk-typed fetch helper pins the primitives core,
-            # which unification would leak into the bare pass above.
-            - name: Check nectar-governor with the chunk helper
-              run: |
-                  cargo check --locked -p nectar-governor \
-                    --no-default-features --features chunk \
-                    --target ${{ matrix.target }}
             # The key-value database core, primitives-only. Separate from the shared
             # list above to keep its bare-metal edge pinned in its own pass.
             - name: Check nectar-ldb without std

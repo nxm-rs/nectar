@@ -16,9 +16,10 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use bytes::Bytes;
-use nectar_governor::{BoxFuture, Window};
+use nectar_governor::Window;
 use nectar_primitives::ChunkRef;
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync};
+use nectar_tasks::BoxFuture;
 
 use crate::bounded::{Prefix, SegmentWeight};
 use crate::codec::{
@@ -233,7 +234,7 @@ pub(crate) fn put_window<F: Format>() -> Window {
 pub(crate) struct PutSink<'s, S: ChunkPut + MaybeSync, R: NodeRef, K: Seal<R>> {
     store: &'s S,
     seal: &'s K,
-    sink: nectar_governor::PutSink<'s, Result<(), BuildError>>,
+    sink: nectar_governor::PutSink<BoxFuture<'s, Result<(), BuildError>>>,
     _reference: PhantomData<R>,
 }
 

@@ -30,6 +30,7 @@
 
 mod engine;
 mod error;
+mod fetch;
 mod mode;
 #[cfg(test)]
 mod tests;

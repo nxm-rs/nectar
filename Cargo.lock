@@ -2665,8 +2665,6 @@ version = "0.4.0"
 dependencies = [
  "futures-util",
  "nectar-marker",
- "nectar-primitives",
- "nectar-tasks",
  "nectar-testing",
  "proptest",
 ]
@@ -2707,6 +2705,7 @@ dependencies = [
  "nectar-ldb",
  "nectar-manifest",
  "nectar-primitives",
+ "nectar-tasks",
  "nectar-testing",
  "proptest",
  "thiserror",
@@ -2752,6 +2751,7 @@ dependencies = [
  "nectar-governor",
  "nectar-manifest",
  "nectar-primitives",
+ "nectar-tasks",
  "nectar-testing",
  "proptest",
  "proptest-arbitrary-interop",

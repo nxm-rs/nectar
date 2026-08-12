@@ -40,9 +40,8 @@ jobs:
             # dir rather than in a separate job that rebuilds the workspace.
             - name: Run doctests
               run: cargo test --doc --workspace --locked
-            # The governor's boxed-future alias must stay `Send` on the default
-            # build; workspace unification could mask a relaxation, so the
-            # bound is asserted with the crate resolved alone.
+            # Resolved alone, so no workspace unification can switch the
+            # `unsync` marker escape on beneath the admission types.
             - name: Run governor default-build tests
               run: |
                   cargo nextest run \

@@ -26,6 +26,7 @@ nectar-file = { workspace = true, optional = true, features = ["manifest"] }
 nectar-governor = { workspace = true, optional = true }
 nectar-manifest = { workspace = true, optional = true }
 nectar-primitives = { workspace = true, optional = true }
+nectar-tasks = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 arbitrary = { workspace = true, optional = true }
@@ -55,12 +56,14 @@ std = [
 	"dep:futures-util",
 	"dep:nectar-governor",
 	"dep:nectar-primitives",
+	"dep:nectar-tasks",
 	"dep:serde_json",
 	"dep:thiserror",
 	"futures-util?/std",
 	"nectar-file?/std",
 	"nectar-manifest?/std",
 	"nectar-primitives?/std",
+	"nectar-tasks?/std",
 	"serde_json?/std",
 	"thiserror?/std",
 ]
@@ -89,6 +92,7 @@ unsync = [
 	"nectar-governor?/unsync",
 	"nectar-manifest?/unsync",
 	"nectar-primitives?/unsync",
+	"nectar-tasks?/unsync",
 ]
 
 [package.metadata.docs.rs]
