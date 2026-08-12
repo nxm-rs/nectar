@@ -434,7 +434,7 @@ impl<R: Reference> Node<R> {
 
         let address = *reference.address();
         let bytes = loader
-            .load(&reference.clone().into_entry_ref())
+            .collect(&reference.clone().into_entry_ref())
             .await
             .map_err(|e| MantarayError::StoreGet {
                 source: alloc::sync::Arc::new(e),

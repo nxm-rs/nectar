@@ -107,6 +107,14 @@ jobs:
                     --no-tests=warn --no-fail-fast
             - name: Run ldb encryption doctests
               run: cargo test --doc -p nectar-ldb --features encryption --locked
+            # The trie's production node adapter rides the manifest feature and
+            # its encrypted saver rides encryption on top; the workspace pass
+            # unifies the pair in nowhere, so cover the adapter's suite here.
+            - name: Run mantaray persistence tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-mantaray --features manifest,encryption --locked \
+                    --no-tests=warn --no-fail-fast
             # The modern envelope (KAT, differential and forgery batteries)
             # sits behind the primitives envelope feature; cover its tests
             # and the no-downgrade compile-fail doctest here.

@@ -1178,8 +1178,8 @@ mod tests {
     impl NodeLoader for CountingSaver {
         type Error = SingleChunkError;
 
-        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
-            self.inner.load(reference).await
+        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            self.inner.collect(reference).await
         }
     }
 
@@ -1214,8 +1214,8 @@ mod tests {
     impl NodeLoader for FailingSaver {
         type Error = SingleChunkError;
 
-        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
-            self.inner.load(reference).await
+        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            self.inner.collect(reference).await
         }
     }
 
@@ -1319,8 +1319,8 @@ mod tests {
     impl NodeLoader for WindowSaver {
         type Error = SingleChunkError;
 
-        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
-            self.inner.load(reference).await
+        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            self.inner.collect(reference).await
         }
     }
 

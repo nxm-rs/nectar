@@ -186,7 +186,7 @@ where
             let reference = pending.reference.clone();
             let fetch: BoxFuture<'static, Fetched> =
                 Box::pin(async move {
-                    let fetched = store.load_with_addresses(&reference).await.map_err(|e| {
+                    let fetched = store.collect_with_addresses(&reference).await.map_err(|e| {
                         CursorError::Store {
                             address: *reference.address(),
                             source: Arc::new(e),
@@ -731,7 +731,7 @@ mod tests {
     impl NodeLoader for RecordingStore {
         type Error = SingleChunkError;
 
-        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
             let address = *reference.address();
             self.inner.fetched.lock().unwrap().push(address);
             let level = self.inner.inflight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -742,10 +742,10 @@ mod tests {
             let result = if self.inner.fail == Some(address) {
                 self.inner
                     .store
-                    .load(&EntryRef::from(make_addr("absent-sentinel")))
+                    .collect(&EntryRef::from(make_addr("absent-sentinel")))
                     .await
             } else {
-                self.inner.store.load(reference).await
+                self.inner.store.collect(reference).await
             };
             self.inner.inflight.fetch_sub(1, Ordering::SeqCst);
             result

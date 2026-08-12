@@ -11,12 +11,11 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use nectar_loadsave::NodeLoadSaver;
 use nectar_manifest::{
     Batch, ErasedManifest, Manifest, ManifestCursor, ManifestOp, ManifestPath, ManifestView,
     MetadataSource,
 };
-use nectar_mantaray::{MantarayManifest, NodeLoader, NodeSaver};
+use nectar_mantaray::{MantarayManifest, NodeLoadSaver, NodeLoader, NodeSaver};
 use nectar_primitives::{ChunkRef, DEFAULT_BODY_SIZE, EntryRef};
 use nectar_testing::run;
 
@@ -136,9 +135,9 @@ impl Counting {
 impl NodeLoader for Counting {
     type Error = <Nodes as NodeLoader>::Error;
 
-    async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+    async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);
-        self.inner.load(reference).await
+        self.inner.collect(reference).await
     }
 }
 
