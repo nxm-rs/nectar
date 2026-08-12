@@ -34,8 +34,7 @@ use crate::num::{fan_out, u64_from_u32, u64_from_usize};
 /// error context.
 pub(super) type PutDone<E> = (ChunkAddress, Result<(), E>);
 
-/// Boxed put future; the alias relaxes `Send` off the multi-threaded
-/// targets.
+/// Boxed put future; the alias drops `Send` off multi-threaded targets.
 type BoxPut<'a, E> = BoxFuture<'a, PutDone<E>>;
 
 /// Pool leaf seal reply: its span rides back alongside the sealed chunk so

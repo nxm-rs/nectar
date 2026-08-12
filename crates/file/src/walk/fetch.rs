@@ -3,9 +3,8 @@
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
 use nectar_primitives::store::TrustedGet;
 
-/// Fetch one chunk from a trusted store, carrying `payload` back with the
-/// outcome: the payload-in-future routing a drained `FuturesUnordered`
-/// completion relies on.
+/// Fetch one chunk, carrying `payload` back with the outcome: how a drained
+/// completion routes itself without a side table.
 pub(super) async fn get_verified<S, R, P>(
     store: S,
     address: ChunkAddress,

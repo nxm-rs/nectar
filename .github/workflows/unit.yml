@@ -40,8 +40,6 @@ jobs:
             # dir rather than in a separate job that rebuilds the workspace.
             - name: Run doctests
               run: cargo test --doc --workspace --locked
-            # Resolved alone, so no workspace unification can switch the
-            # `unsync` marker escape on beneath the admission types.
             - name: Run governor default-build tests
               run: |
                   cargo nextest run \

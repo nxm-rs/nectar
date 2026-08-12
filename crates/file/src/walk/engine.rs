@@ -44,8 +44,7 @@ impl<M: WalkMode> Node<M> {
 /// of sequence routing.
 type Fetched<M, E, const B: usize> = (Node<M>, Result<Chunk<Verified, ContentOnlyChunkSet<B>>, E>);
 
-/// Boxed fetch future; the alias relaxes `Send` off the multi-threaded
-/// targets.
+/// Boxed fetch future; the alias drops `Send` off multi-threaded targets.
 type BoxFetch<M, E, const B: usize> = BoxFuture<'static, Fetched<M, E, B>>;
 
 /// Which frame a drain takes from the ready set.
