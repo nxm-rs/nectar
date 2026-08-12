@@ -1,14 +1,17 @@
 # Phase 0 governor: home and API
 
-Design note for the cruft-cut roadmap Phase 0 (issues #610, #611).
+Historical.
+Both issues it covers (#610, #611) are closed and `nectar-kernel` appears nowhere in the tree, so this file records how the decision was reached rather than work outstanding.
+The plan it was written against never merged; `docs/PRODUCTION-PLAN.md` supersedes it.
+
+Design note for Phase 0 (issues #610, #611).
 It fixes the one decision that gates every consumer rewire: where the bounded-admission governor lives once the `nectar-kernel` name goes away, and what its surface is.
-Read it against `docs/CRUFT-CUT-ROADMAP.md` §Phase 0.
 
 ## 1. What Phase 0 actually deletes
 
 `nectar-kernel` is not a reinvented executor.
 It holds no `RawWaker`, no manual poll loop, and no hand-rolled future set: it already re-exports `futures_util::stream::FuturesUnordered` and `futures_core::future::BoxFuture`.
-It is five pieces, and the roadmap standards keep most of them.
+It is five pieces, and the standards of the time keep most of them.
 
 | Module | Item | Verdict |
 |---|---|---|
@@ -41,7 +44,7 @@ Two viable homes once `nectar-kernel` (a name that reads as an executor) retires
 - The `Window`/`Admission` proptest liveness suite stays put under (A); (B) forces it to move.
 - `BoxFuture` still centralises in `nectar-tasks` under (A). That is #611, and it is independent of the home choice.
 
-Distributing the governor into each consumer (no shared crate) is rejected: it re-scatters the exact per-walker hand-rolling the shared `Admission` predicate removed, and it contradicts the roadmap's one-bounded-concurrency-substrate standard.
+Distributing the governor into each consumer (no shared crate) is rejected: it re-scatters the exact per-walker hand-rolling the shared `Admission` predicate removed, and it contradicts the one-bounded-concurrency-substrate standard.
 
 ## 3. Consumer rewire surface
 
@@ -60,7 +63,7 @@ Only the `Driver`/`WalkPolicy` users carry real work; the rest is a one-line imp
 - `PutSink` users: `file/src/split/{engine,relay}.rs`
 - `Admission` / `Window` users: `postage-issuer/src/pipeline/*`, `ldb/src/{builder,frontier}.rs`, `file/src/{store,config}.rs`
 
-`file/src/inflight.rs` does not exist; the roadmap's step 0.2 wording is stale.
+`file/src/inflight.rs` does not exist; the step 0.2 wording of the time was stale.
 The file fan-out already sits in `walk/engine.rs` (`StaticDriver`) and `split/{engine,relay}.rs` (`PutSink`).
 Only `walk/engine.rs` needs the loop rebuilt; the split engines keep `PutSink`.
 
