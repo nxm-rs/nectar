@@ -46,8 +46,7 @@
 #[cfg(test)]
 extern crate std;
 
-// The marker predicate is what the build script's `multi_thread` alias
-// mirrors; no marker item is named directly.
+// Held for the `unsync` propagation seam; no marker item is named.
 use nectar_marker as _;
 
 mod admission;

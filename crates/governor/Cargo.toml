@@ -21,8 +21,6 @@ workspace = true
 nectar-marker = { workspace = true }
 futures-util = { workspace = true, features = ["alloc"] }
 
-[build-dependencies]
-
 [dev-dependencies]
 nectar-testing.workspace = true
 proptest.workspace = true

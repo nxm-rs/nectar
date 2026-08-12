@@ -18,12 +18,12 @@ use crate::window::Window;
 /// synchronously ready put settles inline and never occupies a slot; a parked
 /// put is driven only by [`poll_step`](Self::poll_step) and the wrappers over
 /// it under the caller's waker.
-pub struct PutSink<F: Future> {
+pub struct PutSink<F> {
     in_flight: FuturesUnordered<F>,
     admission: Admission,
 }
 
-impl<F: Future + Unpin> PutSink<F> {
+impl<F: Future> PutSink<F> {
     /// A put window `window` slots wide.
     pub fn new(window: Window) -> Self {
         Self {
@@ -50,23 +50,6 @@ impl<F: Future + Unpin> PutSink<F> {
     /// Whether the window admits another put now.
     pub fn admits(&self) -> bool {
         self.admission.admits(self.in_flight.len(), true)
-    }
-
-    /// Admit `put`, driving its opening poll on a noop waker: a ready put
-    /// settles inline as `Some(completion)` and never occupies a slot, a
-    /// pending one parks in the window as `None`.
-    ///
-    /// Secure a slot with [`admit`](Self::admit) first; this does not bound
-    /// the window.
-    pub fn push(&mut self, put: F) -> Option<F::Output> {
-        let mut put = put;
-        match Pin::new(&mut put).poll(&mut Context::from_waker(Waker::noop())) {
-            Poll::Ready(completion) => Some(completion),
-            Poll::Pending => {
-                self.in_flight.push(put);
-                None
-            }
-        }
     }
 
     /// Poll one settled put out of the window. `Ready(None)` once empty;
@@ -131,7 +114,26 @@ impl<F: Future + Unpin> PutSink<F> {
     }
 }
 
-impl<F: Future> fmt::Debug for PutSink<F> {
+impl<F: Future + Unpin> PutSink<F> {
+    /// Admit `put`, driving its opening poll on a noop waker: a ready put
+    /// settles inline as `Some(completion)` and never occupies a slot, a
+    /// pending one parks in the window as `None`.
+    ///
+    /// Secure a slot with [`admit`](Self::admit) first; this does not bound
+    /// the window.
+    pub fn push(&mut self, put: F) -> Option<F::Output> {
+        let mut put = put;
+        match Pin::new(&mut put).poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(completion) => Some(completion),
+            Poll::Pending => {
+                self.in_flight.push(put);
+                None
+            }
+        }
+    }
+}
+
+impl<F> fmt::Debug for PutSink<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PutSink")
             .field("in_flight", &self.in_flight.len())
@@ -151,7 +153,6 @@ mod tests {
 
     use super::*;
 
-    /// Erased put, boxed by the caller: the window never boxes for itself.
     type BoxedPut = Pin<Box<dyn Future<Output = usize>>>;
 
     /// A completion that stays pending for `left` polls, waking itself each
@@ -196,6 +197,16 @@ mod tests {
         assert_eq!(sink.push(Box::pin(delayed(7, 0))), Some(7));
         assert!(sink.push(Box::pin(delayed(9, 1))).is_none());
         assert_eq!(sink.len(), 1);
+    }
+
+    #[test]
+    fn a_non_unpin_put_drains() {
+        nectar_testing::run(async {
+            let mut sink = PutSink::new(window(4));
+            // An async block is `!Unpin`; only `push` carries that bound.
+            sink.in_flight.push(async { 7usize });
+            assert_eq!(sink.settle_one().await, Some(7));
+        });
     }
 
     #[test]
