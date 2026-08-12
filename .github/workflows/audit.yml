@@ -9,10 +9,10 @@ on:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+  # No paths filter: a required status check that a pull request never produces
+  # waits at Expected forever.
   pull_request:
-    paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
+  merge_group:
   workflow_dispatch:
 
 permissions:
