@@ -140,7 +140,10 @@ where
     ///
     /// Frames land in completion order, each written once at its
     /// range-relative offset; any error is terminal for this run.
-    pub async fn run<K: DataSink>(self, sink: &mut K) -> Result<u64, LoadError<S::Error, K::Error>> {
+    pub async fn run<K: DataSink>(
+        self,
+        sink: &mut K,
+    ) -> Result<u64, LoadError<S::Error, K::Error>> {
         let mut walk = Walk::new(
             self.store,
             self.root,

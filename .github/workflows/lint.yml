@@ -1,6 +1,6 @@
 # Clippy (runtime-safety restriction lints), unused-dependency checks, the
-# cargo-deny supply-chain gate (advisories, bans, sources, licences), and the
-# MSRV compile on the declared `rust-version`.
+# cargo-deny supply-chain gate (advisories, bans, sources, licences), the
+# MSRV compile on the declared `rust-version`, and the format/content sweep.
 name: lint
 
 on:
@@ -185,13 +185,50 @@ jobs:
                   esac
                   cargo check --workspace --all-targets --locked
 
+    # Backstop for `.claude/hooks/rustfmt-on-edit.sh`, which exits 0 without
+    # formatting whenever `rustfmt` is off `PATH`.
+    format:
+        name: format
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            # Not `rust-setup`: this job compiles nothing, so it would beat the
+            # compiling jobs to the shared registry cache key with an empty ~/.cargo.
+            - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master 2026-06-30
+              with:
+                  toolchain: "1.94"
+                  components: rustfmt
+            - name: cargo fmt
+              run: cargo fmt --all --check
+            # `fuzz/` carries its own `[workspace]` table, so the sweep above misses it.
+            - name: cargo fmt (fuzz)
+              run: cargo fmt --manifest-path fuzz/Cargo.toml --all --check
+            # Wider than the hook's `.rs`/`.md` scope on purpose. Never widen to
+            # `*.yml`: the pattern sits in this file and would match itself forever.
+            - name: no em dashes
+              run: |
+                  # git grep exits 1 for a clean tree and >1 for a scan that broke.
+                  git grep -nIF -e '—' -- '*.rs' '*.md' '*.toml' && found=0 || found=$?
+                  case "$found" in
+                      0)
+                          echo "::error::U+2014 found; house style bans it"
+                          exit 1
+                          ;;
+                      1) ;;
+                      *)
+                          echo "::error::the U+2014 scan failed with status $found"
+                          exit 1
+                          ;;
+                  esac
+
     # The one required context for this workflow: later jobs append to `needs`
     # rather than to the branch ruleset.
     lint-success:
         name: lint success
         runs-on: ubuntu-latest
         if: always()
-        needs: [clippy, unused-deps, deny, msrv]
+        needs: [clippy, unused-deps, deny, msrv, format]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed

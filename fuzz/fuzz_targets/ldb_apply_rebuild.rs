@@ -58,7 +58,12 @@ fuzz_target!(
             }
         }
 
-        let applied = run(apply(&ContentGet::new(&store), &Plaintext, &root, &changeset));
+        let applied = run(apply(
+            &ContentGet::new(&store),
+            &Plaintext,
+            &root,
+            &changeset,
+        ));
         let rebuilt = build(&merged).map(|(_, root)| root);
 
         if let (Ok(applied), Some(rebuilt)) = (applied, rebuilt) {

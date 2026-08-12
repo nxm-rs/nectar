@@ -24,7 +24,7 @@
 // Gated behind the `wasm-threads` feature (default-off). The mere PRESENCE of
 // this re-export in the linked artifact makes wasm-bindgen run its threads
 // transform and require a SharedArrayBuffer memory (hence COOP/COEP on the
-// host) — independent of whether JS ever calls it. Without `wasm-threads`, the
+// host), independent of whether JS ever calls it. Without `wasm-threads`, the
 // wasm needs no shared memory; the plain `rayon` code paths run inline.
 #[cfg(feature = "wasm-threads")]
 pub use wasm_bindgen_rayon::init_thread_pool;

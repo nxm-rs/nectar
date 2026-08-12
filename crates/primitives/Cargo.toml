@@ -115,7 +115,7 @@ std = [
 	"nectar-primitives-core/std",
 ]
 # WASM thread pool via wasm-bindgen-rayon. OFF by default so the default wasm
-# build needs no SharedArrayBuffer / cross-origin isolation — letting it run on
+# build needs no SharedArrayBuffer / cross-origin isolation, letting it run on
 # hosts that can't set COOP/COEP (e.g. the eth.limo ENS gateway). Enable it
 # (`--features wasm-threads`) only to export `initThreadPool` for a consumer
 # that drives rayon itself: this crate's own parallel BMT path is gated to

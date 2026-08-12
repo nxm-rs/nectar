@@ -344,7 +344,11 @@ where
     }
 
     /// One read builder wired to this handle's policy.
-    fn reads<M: WalkMode>(&self, file: &Opened<S, M, B>, range: Range<u64>) -> ReadBuilder<S, M, B> {
+    fn reads<M: WalkMode>(
+        &self,
+        file: &Opened<S, M, B>,
+        range: Range<u64>,
+    ) -> ReadBuilder<S, M, B> {
         let builder = file.read().window(self.policy.window).range(range);
         #[cfg(feature = "std")]
         if let Some(adaptive) = self.policy.adaptive {
@@ -412,7 +416,10 @@ where
     }
 
     /// Split `src` under an explicit reference grammar.
-    pub async fn save_as<M, Src>(&self, src: Src) -> Result<M::Root, SaveError<S::Error, Src::Error>>
+    pub async fn save_as<M, Src>(
+        &self,
+        src: Src,
+    ) -> Result<M::Root, SaveError<S::Error, Src::Error>>
     where
         M: SplitMode + Default,
         Src: Source,
@@ -485,14 +492,22 @@ where
 macro_rules! dispatch {
     ($self:expr, $reader:ident => $body:expr) => {
         match &$self.inner {
-            ReaderInner::Plain { reader: $reader, .. } => $body,
-            ReaderInner::Encrypted { reader: $reader, .. } => $body,
+            ReaderInner::Plain {
+                reader: $reader, ..
+            } => $body,
+            ReaderInner::Encrypted {
+                reader: $reader, ..
+            } => $body,
         }
     };
     (mut $self:expr, $reader:ident => $body:expr) => {
         match &mut $self.inner {
-            ReaderInner::Plain { reader: $reader, .. } => $body,
-            ReaderInner::Encrypted { reader: $reader, .. } => $body,
+            ReaderInner::Plain {
+                reader: $reader, ..
+            } => $body,
+            ReaderInner::Encrypted {
+                reader: $reader, ..
+            } => $body,
         }
     };
 }

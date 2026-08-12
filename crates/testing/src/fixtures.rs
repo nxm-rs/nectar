@@ -28,9 +28,10 @@ where
     M: SplitMode + Default,
 {
     let store = Arc::new(MemoryStore::new());
-    let root = File::<Arc<MemoryStore<AnyChunkSet<B>>>, B>::new(Arc::clone(&store), Policy::DEFAULT)
-        .save_as::<M, _>(data)
-        .await?;
+    let root =
+        File::<Arc<MemoryStore<AnyChunkSet<B>>>, B>::new(Arc::clone(&store), Policy::DEFAULT)
+            .save_as::<M, _>(data)
+            .await?;
     let store = Arc::into_inner(store).ok_or("split still holds the store")?;
     let chunks = store
         .into_chunks()

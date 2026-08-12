@@ -184,16 +184,15 @@ where
             };
             let store = self.store.clone();
             let reference = pending.reference.clone();
-            let fetch: BoxFuture<'static, Fetched> =
-                Box::pin(async move {
-                    let fetched = store.collect_with_addresses(&reference).await.map_err(|e| {
-                        CursorError::Store {
-                            address: *reference.address(),
-                            source: Arc::new(e),
-                        }
-                    });
-                    (id, pending, fetched)
+            let fetch: BoxFuture<'static, Fetched> = Box::pin(async move {
+                let fetched = store.collect_with_addresses(&reference).await.map_err(|e| {
+                    CursorError::Store {
+                        address: *reference.address(),
+                        source: Arc::new(e),
+                    }
                 });
+                (id, pending, fetched)
+            });
             self.in_flight.push(fetch);
             occupancy = occupancy.saturating_add(1);
             if index == 0 {

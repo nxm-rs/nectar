@@ -8,9 +8,8 @@ use alloy_primitives::{b256, keccak256};
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use nectar_ldb::{
-    Child, CustomKeyError, DecodeError, Entry, ForkPayload, ForkTable, Format, KeyId,
-    Metadata, Node, Prefix, RootExtension, SegmentKind, SegmentWeight, V1, cut, embed, h64,
-    segment,
+    Child, CustomKeyError, DecodeError, Entry, ForkPayload, ForkTable, Format, KeyId, Metadata,
+    Node, Prefix, RootExtension, SegmentKind, SegmentWeight, V1, cut, embed, h64, segment,
 };
 use nectar_primitives::{ChunkAddress, ChunkRef, EncryptedChunkRef, EncryptionKey};
 
@@ -273,10 +272,7 @@ fn child_embedding_gates_on_inline_max() -> Result<()> {
         embed::<V1>(123),
         "the worked child within INLINE_MAX embeds",
     );
-    ensure!(
-        embed::<V1>(V1::INLINE_MAX),
-        "a body at INLINE_MAX embeds",
-    );
+    ensure!(embed::<V1>(V1::INLINE_MAX), "a body at INLINE_MAX embeds",);
     ensure!(
         !embed::<V1>(V1::INLINE_MAX + 1),
         "a body over INLINE_MAX spills",

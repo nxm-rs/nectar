@@ -47,7 +47,8 @@ impl Source for &[u8] {
         buf: &mut [u8],
     ) -> Poll<Result<usize, Infallible>> {
         let take = <[u8]>::len(self).min(buf.len());
-        let (Some(head), Some((dst, _))) = (self.get(..take), buf.split_at_mut_checked(take)) else {
+        let (Some(head), Some((dst, _))) = (self.get(..take), buf.split_at_mut_checked(take))
+        else {
             return Poll::Ready(Ok(0));
         };
         dst.copy_from_slice(head);

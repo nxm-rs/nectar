@@ -31,8 +31,8 @@ fn fill(len: usize) -> Vec<u8> {
 /// Stream `data` through a plain save into a fresh memory store.
 fn split_plain(data: &[u8]) -> (ChunkAddress, Store) {
     let store: Store = Arc::new(MemoryStore::new());
-    let root = run(File::<Store, BODY>::new(Arc::clone(&store), Policy::DEFAULT).save(data))
-        .unwrap();
+    let root =
+        run(File::<Store, BODY>::new(Arc::clone(&store), Policy::DEFAULT).save(data)).unwrap();
     (root, store)
 }
 

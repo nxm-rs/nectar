@@ -1210,10 +1210,11 @@ fn huge_stream_root_matches_the_batch_ingest() {
         }
     }
 
-    let batch_root = run(
-        File::<Discard, B>::new(Discard, Policy::DEFAULT.with_put_window(PutWindow::new(16).unwrap()))
-            .save_as::<Plain, _>(ReadAtSource::new(Pattern { len: size })),
+    let batch_root = run(File::<Discard, B>::new(
+        Discard,
+        Policy::DEFAULT.with_put_window(PutWindow::new(16).unwrap()),
     )
+    .save_as::<Plain, _>(ReadAtSource::new(Pattern { len: size })))
     .unwrap();
 
     let mut split: Split<'_, Discard, Plain, B> = Split::new(Discard, PutWindow::new(16).unwrap());

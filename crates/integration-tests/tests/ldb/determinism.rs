@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, ensure};
 use arbitrary::Unstructured;
 use nectar_ldb::{
-    Builder, Entry, ForkTable, Format, Key, Node, Plaintext, Prefix, SegmentKind,
-    SegmentWeight, V1, cut, generators, h64, segment, spill,
+    Builder, Entry, ForkTable, Format, Key, Node, Plaintext, Prefix, SegmentKind, SegmentWeight,
+    V1, cut, generators, h64, segment, spill,
 };
 use nectar_primitives::store::MemoryStore;
 use nectar_primitives::{ChunkAddress, ChunkOps, ChunkRef};
