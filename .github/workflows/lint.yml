@@ -25,16 +25,9 @@ jobs:
             - uses: ./.github/actions/rust-setup
               with:
                   components: clippy
-            # Every invocation below ends in `-- -D warnings`, which fails the
-            # job on any warn-level lint: the `[workspace.lints]` warn entries
-            # (`missing-docs`, `missing-debug-implementations`,
-            # `unreachable-pub`, `clippy::all` and the warn-level clippy
-            # entries) and rustc's own warn-by-default set. Pass it per
-            # invocation, never through a job-level `RUSTFLAGS`: arguments
-            # after `--` reach the selected workspace members only and leave
-            # the dependency graph on warnings, and `rust-setup` needs
-            # `RUSTFLAGS` byte-identical across jobs (see that action).
-            #
+            # `-D warnings` goes after `--` per invocation, never in a job-level
+            # `RUSTFLAGS`: that would lint the dependency graph too, and
+            # `rust-setup` needs `RUSTFLAGS` byte-identical across jobs.
             # Lints every target (libs, bins, tests, benches, examples) with
             # default features; the `deny`-level restriction lints in
             # `[workspace.lints.clippy]` fail on panicking/overflowing
@@ -114,8 +107,6 @@ jobs:
     unused-deps:
         name: unused-deps (machete)
         runs-on: ubuntu-latest
-        # Capped like every other leaf: `lint success` needs it, so an uncapped
-        # hang would hold the aggregator for the 6h runner default.
         timeout-minutes: 30
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -125,9 +116,8 @@ jobs:
             - name: cargo machete
               run: cargo machete
 
-    # The single check-run that represents this whole workflow. Every job added
-    # here appends its id to `needs`, so the required-context list never has to
-    # name a leaf job.
+    # The one required context for this workflow: later jobs append to `needs`
+    # rather than to the branch ruleset.
     lint-success:
         name: lint success
         runs-on: ubuntu-latest
