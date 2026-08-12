@@ -115,3 +115,25 @@ Use short sentences, the active voice, and one idea per sentence.
 In markdown files, put each sentence on its own line and do not wrap within a sentence; GitHub reflows the file when it displays it.
 This keeps a diff to one changed line per changed sentence.
 In PR and issue bodies, keep one line per paragraph, because GitHub renders single newlines in a comment as line breaks.
+
+### How much to write
+
+The default is no comment.
+A comment earns its place only when it says something the code cannot: a non-obvious invariant, a wire or specification constraint, why the obvious approach is wrong, or a footgun.
+One line is the target and three is the ceiling.
+A paragraph belongs in the issue or the pull request body.
+Never restate the signature, narrate the next statement, explain the language, or record rationale.
+Rationale goes in the pull request body, where review can see it and history keeps it.
+Do not add a worked example unless the API is genuinely unobvious.
+The same limit applies to comments in TOML, YAML and shell.
+Apply this test before you keep a comment: if a reviewer learns nothing from it that the identifier and the body already tell them, delete it.
+`crates/tasks/src/lib.rs:143` conforms: one line, and it states the drop behaviour that the signature does not show.
+
+### No project management in source
+
+Source carries no issue numbers, no `owner/repo#NNN` references, no tracker links, no `Tracking:` lines and no `TODO(#N)` markers.
+This applies to every comment, in Rust, TOML, YAML and shell.
+A comment states what is true of the code; where the work is tracked is not, and the reference rots as soon as the issue closes or moves.
+Remove such a reference from any file you edit, not only from the lines you add.
+Three things are not project management and stay: the `repository` field in `Cargo.toml`, links in README files, and identifiers such as RUSTSEC advisory and CVE numbers.
+`deny.toml` conforms: it explains why its ignore list diverges from `.cargo/audit.toml` without naming an issue.

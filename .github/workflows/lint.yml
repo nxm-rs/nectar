@@ -85,7 +85,7 @@ jobs:
               run: cargo clippy --locked --all-targets -p nectar-postage-issuer -- -D warnings
             # `unused_crate_dependencies` is enforced per-library via `cargo
             # rustc` (not `[workspace.lints]`) so the flag applies only to each
-            # crate's own lib target — never to benches/examples/tests (which
+            # crate's own lib target, never to benches/examples/tests (which
             # inherit the package's full dependency set and would false-positive)
             # or to third-party crates. cargo-machete (below) is the broader gate
             # that also covers non-lib targets.
@@ -204,23 +204,10 @@ jobs:
             # `fuzz/` carries its own `[workspace]` table, so the sweep above misses it.
             - name: cargo fmt (fuzz)
               run: cargo fmt --manifest-path fuzz/Cargo.toml --all --check
-            # Wider than the hook's `.rs`/`.md` scope on purpose. Never widen to
-            # `*.yml`: the pattern sits in this file and would match itself forever.
+            # Wider than the hook's `.rs`/`.md` scope on purpose. The pattern
+            # lives in the script so this file can be scanned too.
             - name: no em dashes
-              run: |
-                  # git grep exits 1 for a clean tree and >1 for a scan that broke.
-                  git grep -nIF -e '—' -- '*.rs' '*.md' '*.toml' && found=0 || found=$?
-                  case "$found" in
-                      0)
-                          echo "::error::U+2014 found; house style bans it"
-                          exit 1
-                          ;;
-                      1) ;;
-                      *)
-                          echo "::error::the U+2014 scan failed with status $found"
-                          exit 1
-                          ;;
-                  esac
+              run: .github/scripts/no-em-dash.sh
 
     # The one required context for this workflow: later jobs append to `needs`
     # rather than to the branch ruleset.

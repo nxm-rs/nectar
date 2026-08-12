@@ -242,3 +242,18 @@ jobs:
                           --title "chore(fuzz): refresh the committed minimized corpus" \
                           --body "$(printf 'Nightly-minimized fuzz corpus, committed so accumulated coverage survives actions/cache eviction. Hash-named files sit next to the curated seeds and replay through the existing stable seed-replay tests.\n\n%s' "$summary")"
                   fi
+
+    # The one required context for this workflow: requiring the matrix legs
+    # directly would pin every target name into the branch ruleset. Skipped on a
+    # schedule run, where `smoke` does not run at all.
+    fuzz-success:
+        name: fuzz success
+        if: always() && github.event_name != 'schedule'
+        needs: [build, smoke]
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - name: Decide whether the needed jobs succeeded or failed
+              uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe  # release/v1
+              with:
+                  jobs: ${{ toJSON(needs) }}

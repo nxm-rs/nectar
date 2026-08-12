@@ -4,8 +4,9 @@
 name: zepter
 
 on:
+    # No paths filter: a required status check that a pull request never
+    # produces waits at Expected forever.
     pull_request:
-        paths: ['**/Cargo.toml', 'zepter.yaml']
     merge_group:
     push:
         branches: [main]
