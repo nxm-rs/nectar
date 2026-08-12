@@ -137,8 +137,11 @@ jobs:
             # afresh and silently passing.
             #
             # `advisories` overlaps the daily `audit` workflow, but that one only
-            # runs on lockfile-touching pull requests. New here: `bans`,
-            # `sources`, `licenses`, and `yanked = "deny"` on every pull request.
+            # runs on lockfile-touching pull requests. New here: `sources`,
+            # `licenses`, and `yanked = "deny"` on every pull request. `bans` is
+            # checked too but cannot fail the job while `deny.toml` keeps
+            # `multiple-versions = "warn"`, `wildcards = "allow"` and an empty
+            # deny list; it is wired up so a future ban lands with no CI change.
             - name: cargo deny
               run: cargo deny --all-features --locked check advisories bans sources licenses
 
