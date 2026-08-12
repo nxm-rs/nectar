@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Checks that `declared-msrv.sh` tracks the declaration rather than a literal.
-#
-# A job that hardcoded its toolchain would pass this repository's manifest and
-# fail the raised-declaration case below, which is the drift the `lint / msrv`
-# job exists to catch.
+# Pins `declared-msrv.sh` to the declaration, not to whatever this repository
+# happens to declare today. It does not police how the workflow uses the script;
+# the rustc-version guard in the msrv job does that.
 set -eu
 
 here="$(cd "$(dirname "$0")" && pwd)"

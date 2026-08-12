@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Prints the minimum supported Rust version the workspace declares.
+# Prints the workspace's declared minimum supported Rust version.
 #
-# Only `[workspace.package]` counts: every member inherits the field through
-# `rust-version.workspace = true`, so the root manifest is the whole declaration.
-# An absent field is an error, because a caller that took it as empty would fall
-# back to the pinned channel and report green for an untested declaration.
+# Only `[workspace.package]` counts; members inherit it. An absent field is an
+# error, not an empty string, which a caller would resolve to the pinned channel.
 set -eu
 
 manifest="${1:-Cargo.toml}"

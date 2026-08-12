@@ -142,47 +142,39 @@ jobs:
                   RUSTUP_TOOLCHAIN: "1.94"
               run: cargo deny --all-features --locked check advisories bans sources licenses
 
-    # Compiles the workspace on the `rust-version` it declares, so the published
-    # metadata of every crate is a claim CI has tested. The toolchain comes from
-    # that field, never from a literal here: declaration and pin both sit at 1.94
-    # today, so a hardcoded job would stop testing the declaration at the exact
-    # moment the two part, which is the drift this job exists to catch.
+    # Compiles on the declared `rust-version`, read from the manifest rather than
+    # written here: declaration and pin both sit at 1.94, so a literal would stop
+    # testing the declaration the moment they part.
     msrv:
         name: msrv
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-            # Fails here, rather than at the next MSRV bump, if an edit swaps the
-            # derivation for a literal.
             - name: test the derivation
               run: .github/scripts/declared-msrv-test.sh
             - name: read the declared rust-version
               id: declared
-              # Assigned first, never inlined into the echo: a substitution that
-              # fails inside `echo` leaves the step green and the toolchain input
-              # empty, which resolves to the pinned channel.
+              # Assigned, not inlined: a failed substitution inside `echo` leaves
+              # the step green and the toolchain input empty.
               run: |
                   msrv="$(.github/scripts/declared-msrv.sh)"
                   echo "version=$msrv" >> "$GITHUB_OUTPUT"
             # Not `rust-setup`: rustup resolves `rust-toolchain.toml` at cargo
-            # time, so the file's channel wins over any `toolchain:` input.
-            # `RUSTUP_TOOLCHAIN` on the check step does override the file.
+            # time, so the file beats any `toolchain:` input. `RUSTUP_TOOLCHAIN`
+            # on the check step does override it.
             - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master 2026-06-30
               with:
                   toolchain: ${{ steps.declared.outputs.version }}
-            # Default features and `--locked`, so this covers the committed graph
-            # alone. A consumer who enables an optional feature, or who resolves
-            # afresh, may pull a dependency that wants a newer compiler; the job
-            # makes no claim about either case.
+            # Default features and `--locked`: the committed graph only, no claim
+            # about a fresh resolve or an optional feature.
             - name: cargo check
               env:
                   RUSTUP_TOOLCHAIN: ${{ steps.declared.outputs.version }}
                   MSRV: ${{ steps.declared.outputs.version }}
               run: |
-                  # Guards the override: were the toolchain file to win, the job
-                  # would check on the pinned channel and report green for a
-                  # declaration it never compiled.
+                  # Catches the toolchain file winning, which would check on the
+                  # pinned channel and report green.
                   actual="$(rustc --version | cut -d' ' -f2)"
                   case "$actual" in
                       "$MSRV" | "$MSRV".*) ;;
