@@ -1,8 +1,8 @@
 <p align="center">
-  <img src=".github/banner.svg" alt="Nexum · nectar — low-level Swarm primitives in Rust" width="100%" />
+  <img src=".github/banner.svg" alt="Nexum · nectar: low-level Swarm primitives in Rust" width="100%" />
 </p>
 
-**Low-level Ethereum Swarm primitives in Rust** — the tedious bits that make the magic happen. Content addressing, chunk management, postage stamps, manifest tries, contract bindings.
+**Low-level Ethereum Swarm primitives in Rust**: the tedious bits that make the magic happen. Content addressing, chunk management, postage stamps, manifest tries, contract bindings.
 
 Used by [`nxm-rs/vertex`](https://github.com/nxm-rs/vertex) (the Rust Swarm node) and available for anyone building Swarm-powered Rust applications who'd rather import a vetted primitives crate than re-implement the wire format.
 
@@ -54,7 +54,7 @@ nectar-primitives = { git = "https://github.com/nxm-rs/nectar", rev = "..." }
 
 ## Contributing
 
-Open an issue before non-trivial PRs. Conventional Commits, `cargo fmt`, `cargo clippy -- -D warnings`. Tests for protocol-touching changes are non-optional — wire-format regressions are expensive to debug after the fact. The wire-format decoders are also fuzzed continuously; see [`fuzz/README.md`](./fuzz/README.md) for the cargo-fuzz harness. CLA in [`CLA.md`](./CLA.md).
+Open an issue before non-trivial PRs. Conventional Commits, `cargo fmt`, `cargo clippy -- -D warnings`. Tests for protocol-touching changes are non-optional; wire-format regressions are expensive to debug after the fact. The wire-format decoders are also fuzzed continuously; see [`fuzz/README.md`](./fuzz/README.md) for the cargo-fuzz harness. CLA in [`CLA.md`](./CLA.md).
 
 ## Security
 

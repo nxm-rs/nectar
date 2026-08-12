@@ -1,7 +1,7 @@
 # Fuzzing nectar
 
 [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html) (libFuzzer)
-harness for nectar's wire-format decoders — the code that parses untrusted
+harness for nectar's wire-format decoders: the code that parses untrusted
 bytes off the Swarm network. This directory is an **independent cargo
 workspace** (it carries its own `[workspace]` table), so the stable toolchain
 building the parent workspace never touches the nightly-only fuzz crate.
@@ -24,7 +24,7 @@ cargo fuzz coverage stamp_decode                            # llvm-cov profdata
 New corpus entries are written to the **first** directory passed to
 `cargo fuzz run`; further directories (the seeds) are read-only inputs.
 `cargo fuzz coverage` finds `llvm-profdata`/`llvm-cov` through the rustc
-sysroot — the fuzz shell's nightly ships the `llvm-tools` component.
+sysroot; the fuzz shell's nightly ships the `llvm-tools` component.
 
 Release-profile `overflow-checks` and `debug-assertions` are enabled in
 `Cargo.toml`, so arithmetic overflow and `debug_assert!` violations are fuzz
@@ -32,8 +32,8 @@ oracles, not silent wraps.
 
 ## Target catalogue
 
-Decode targets take raw `&[u8]` — the decoder itself is the structure
-recoverer — and a returned `Err` is success; the invariant is *no panic, no
+Decode targets take raw `&[u8]`, because the decoder itself is the structure
+recoverer, and a returned `Err` is success; the invariant is *no panic, no
 OOM, no hang*:
 
 | Target | Entry point | Invariant |
@@ -48,7 +48,7 @@ OOM, no hang*:
 Round-trip targets take a structured value via valid-by-construction
 generators and `arbitrary::Arbitrary` impls (behind each crate's `arbitrary`
 feature), so the
-invariant is stronger — encode must decode back to an equal value, and where
+invariant is stronger: encode must decode back to an equal value, and where
 the encoding is canonical, re-encoding must be byte-identical. The one
 exception is `mantaray_record_roundtrip`, which takes raw `&[u8]` and is seeded
 from the `mantaray_node_decode` corpus: the encoder emits v0.2 only, so it
@@ -135,11 +135,11 @@ the replay tests (bridged from the `Arbitrary` layer via
 
 `.github/workflows/fuzz.yml` (existing `unit.yml`/`audit.yml` are untouched):
 
-- **Every PR / push to main** — `fuzz build` compiles all targets (the
+- **Every PR / push to main**: `fuzz build` compiles all targets (the
   harness can't rot), and `fuzz smoke` runs each target for 60 s
   (`-rss_limit_mb=2048`) on a per-target cached corpus with the committed
   seeds merged in. Crash artifacts are uploaded on failure.
-- **Nightly cron** — 10 minutes per target on the same corpus caches,
+- **Nightly cron**: 10 minutes per target on the same corpus caches,
   followed by a merge-minimize over corpus plus seeds; the minimized set is
   then committed back into `fuzz/seeds/` by an automated PR.
 
@@ -148,7 +148,7 @@ the replay tests (bridged from the `Arbitrary` layer via
 - Use `nix develop .#fuzz`. `libfuzzer-sys` compiles the libFuzzer C++
   runtime through the `cc` crate, which is why the shell carries `clang`;
   outside the shell the build fails at that step.
-- Don't force `lld`/`mold` via `RUSTFLAGS` for fuzz builds — the sanitizer
+- Don't force `lld`/`mold` via `RUSTFLAGS` for fuzz builds; the sanitizer
   runtimes are linked by rustc's defaults and alternative-linker flags are a
   recurring source of broken ASan link steps. Plain defaults work.
 - If an ASan-instrumented run dies immediately with an endlessly repeating
