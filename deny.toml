@@ -1,34 +1,20 @@
 # cargo-deny configuration
 # https://embarkstudios.github.io/cargo-deny/
 #
-# Scope: advisory, ban, source and licence hygiene ahead of a crates.io publish.
-# Run by the `deny` job of .github/workflows/lint.yml as
-# `cargo deny --all-features --locked check advisories bans sources licenses`.
-#
-# The ignore list below does not mirror .cargo/audit.toml, and cannot. cargo
-# deny resolves the feature graph and only sees crates that are actually built;
-# cargo audit reads every entry in Cargo.lock whether or not it is reachable. An
-# advisory that only matches a lockfile entry therefore belongs in
-# .cargo/audit.toml alone, because listing it here earns an
-# `advisory-not-detected` warning. An advisory that matches a built crate
-# belongs in both files, or the two gates disagree and one of them is noise.
+# The ignore list below deliberately does not mirror .cargo/audit.toml: deny
+# resolves the feature graph, audit reads every Cargo.lock entry. An advisory
+# matching only a lockfile entry belongs in audit.toml alone.
 
 [advisories]
-# Fail on any advisory that is not explicitly ignored below. `yanked = "deny"`
-# also fails on a dependency yanked from crates.io, which cargo audit does not
-# report.
 yanked = "deny"
 ignore = [
     # Both entries are build-time-only, transitive dependencies pulled in
-    # through the alloy stack. Neither is a direct nectar dependency, neither is
-    # reachable at runtime or in the shipped wasm artifact, and neither has a
-    # released upstream version that drops it yet. Revisit on each alloy bump.
+    # through the alloy stack. Neither is reachable at runtime or in the shipped
+    # wasm artifact. Revisit on each alloy bump.
     #
-    # RUSTSEC-2024-0388 (derivative unmaintained) is deliberately absent here
-    # while .cargo/audit.toml still carries it. ruint 1.20.0 dropped the
-    # optional ark-ff path that pulled derivative in, so it left the resolved
-    # graph, but it is still an entry in Cargo.lock and fuzz/Cargo.lock, which
-    # is what cargo audit scans. Tracking: nxm-rs/nectar#19.
+    # RUSTSEC-2024-0388 (derivative) is absent on purpose: ruint 1.20.0 dropped
+    # it from the resolved graph, but it remains in both lockfiles, so
+    # .cargo/audit.toml still carries it. Tracking: nxm-rs/nectar#19.
 
     # paste unmaintained (archived). Compile-time proc-macro dep of
     # alloy-sol-macro-input / syn-solidity. Latest released alloy-core (1.6.0)
@@ -49,38 +35,26 @@ multiple-versions = "warn"
 wildcards = "allow"
 
 [licenses]
-# Reviewed allow list, not a blanket `allow-osi-fsf-free`. The workspace is
-# AGPL-3.0-or-later and publishes seven crates, so an unreviewed dependency
-# licence is a release risk rather than a style question.
-#
-# Every entry was measured with `cargo deny --all-features list` and is
-# load-bearing: dropping any one of them fails `check licenses`. cargo-deny
-# evaluates the full SPDX expression, so a licence that a crate offers only as
-# one arm of an `OR` needs no entry once the other arm is allowed. That is why
-# `Apache-2.0 WITH LLVM-exception` (rustix, wasi), `BSD-2-Clause` (zerocopy),
-# `LGPL-2.1-or-later` (r-efi), `Unlicense` (memchr), `CC0-1.0` and `MIT-0`
-# (dunce) are all absent despite appearing in the graph.
+# Reviewed allow list, not a blanket `allow-osi-fsf-free`. Every entry is
+# load-bearing. A licence offered as one arm of an SPDX `OR` needs no entry once
+# another arm is allowed, which is why LLVM-exception, BSD-2-Clause, LGPL-2.1,
+# Unlicense, CC0-1.0 and MIT-0 are absent despite appearing in the graph.
 allow = [
-    # The workspace's own crates, plus keccak-batch and the wasm demo.
     "AGPL-3.0-or-later",
-    # The bulk of the graph, most of it dual `MIT OR Apache-2.0`. These two also
-    # satisfy every permissive `OR` arm listed above.
     "MIT",
     "Apache-2.0",
-    # Sole licence of subtle, keccak-asm and sha3-asm. num_enum reaches it
-    # through an `OR` that MIT already covers.
+    # Sole licence of subtle, keccak-asm and sha3-asm.
     "BSD-3-Clause",
-    # unicode-ident is `(MIT OR Apache-2.0) AND Unicode-3.0`. The `AND` is what
-    # makes this mandatory: no permissive allow above satisfies it.
+    # unicode-ident is `(MIT OR Apache-2.0) AND Unicode-3.0`; the `AND` makes
+    # this mandatory.
     "Unicode-3.0",
-    # Sole licence of foldhash, hashbrown's default hasher.
+    # Sole licence of foldhash.
     "Zlib",
 ]
 
 [sources]
-# Every dependency must resolve to crates.io. Both defaults are `deny`, but they
-# are written out because a vendored git dependency is the change this section
-# exists to catch, and a silent default is easy to relax by accident.
+# A vendored git dependency is what this section exists to catch; the defaults
+# are spelled out so relaxing one is a visible diff.
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
