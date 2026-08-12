@@ -67,3 +67,5 @@ AGPL-3.0-or-later. See [LICENSE](./LICENSE).
 ```
 ●  AGPL-3.0  ·  pre-release  ·  substrate under vertex
 ```
+
+<!-- ruleset verification probe -->
