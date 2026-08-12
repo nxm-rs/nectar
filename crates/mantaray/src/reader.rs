@@ -167,7 +167,7 @@ impl<L: NodeLoader> Reader<L> {
         let address = *reference.address();
         let bytes = self
             .store
-            .load(reference)
+            .collect(reference)
             .await
             .map_err(|e| ReaderError::Store {
                 address,
@@ -370,9 +370,9 @@ mod tests {
     impl NodeLoader for CountingStore {
         type Error = SingleChunkError;
 
-        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
             self.gets.fetch_add(1, Ordering::SeqCst);
-            self.inner.load(reference).await
+            self.inner.collect(reference).await
         }
     }
 

@@ -1,12 +1,9 @@
 //! Node persistence seam: abstract loader and saver over full-width
 //! references.
 //!
-//! The trie never touches chunk stores directly: a [`NodeLoader`] turns a
-//! full-width reference into node bytes and a [`NodeSaver`] persists node
-//! bytes under a new reference. Adapters decide the storage layout; the
-//! production adapter `NodeLoadSaver` (behind the `manifest` feature) stores
-//! nodes through the file pipeline, so a node larger than one chunk spans
-//! several, matching the reference client.
+//! The trie never touches chunk stores; the adapter decides the layout.
+//! `NodeLoadSaver` (feature `manifest`) stores through the file pipeline, so a
+//! node over one chunk spans several, matching the reference client.
 
 use alloc::vec::Vec;
 use core::future::Future;
@@ -18,7 +15,7 @@ use nectar_primitives::{EncryptedChunkRef, EntryRef};
 use crate::format::{FORK_INDEX_SIZE, ForkHeader, NodeHeader};
 
 #[cfg(feature = "manifest")]
-pub use pipeline::{LoadError, NodeLoadSaver};
+pub use pipeline::{NodeCollectError, NodeLoadSaver};
 
 /// Widest fork record: type byte, length-prefixed 30-byte prefix, encrypted
 /// reference, metadata length field, maximal metadata payload.
@@ -35,27 +32,30 @@ const FORK_RECORD_MAX: usize = ForkHeader::PRE_REFERENCE_SIZE
 pub const MAX_NODE_BYTES: u64 =
     (NodeHeader::SIZE + EncryptedChunkRef::SIZE + FORK_INDEX_SIZE + 256 * FORK_RECORD_MAX) as u64;
 
-/// Read seam: node bytes behind a full-width reference.
+/// Read seam: a node's whole image, in memory.
+///
+/// `collect` as in `nectar-file`: materialized, not streamed. The codec reads
+/// the fork index before the records it offsets, so it needs the whole image;
+/// [`MAX_NODE_BYTES`] bounds the cost.
 pub trait NodeLoader: MaybeSend + MaybeSync {
     /// Loader failure, wrapped by the trie into its store errors.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
-    /// The node bytes behind `reference`.
-    fn load(
+    /// The node image behind `reference`.
+    fn collect(
         &self,
         reference: &EntryRef,
     ) -> impl Future<Output = Result<Vec<u8>, Self::Error>> + MaybeSend;
 
-    /// The node bytes plus every chunk address its stored image occupies,
-    /// root first, for pinning and garbage collection.
+    /// The image plus the chunk addresses it occupies, root first.
     ///
     /// Default: the bytes and the root address, the single-chunk shape.
-    fn load_with_addresses(
+    fn collect_with_addresses(
         &self,
         reference: &EntryRef,
     ) -> impl Future<Output = Result<(Vec<u8>, Vec<ChunkAddress>), Self::Error>> + MaybeSend {
         async move {
-            let bytes = self.load(reference).await?;
+            let bytes = self.collect(reference).await?;
             Ok((bytes, alloc::vec![*reference.address()]))
         }
     }
@@ -70,12 +70,12 @@ pub trait NodeSaver<R: Reference>: MaybeSend + MaybeSync {
     fn save(&self, data: Vec<u8>) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend;
 }
 
-/// The null loader satisfies the seam for purely in-memory tries: every load
-/// is a typed not-found.
+/// Satisfies the seam for purely in-memory tries: every collect is a typed
+/// not-found.
 impl NodeLoader for NullLoader {
     type Error = ChunkStoreError;
 
-    async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+    async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
         Err(ChunkStoreError::not_found(reference.address()))
     }
 }
@@ -98,12 +98,8 @@ mod pipeline {
     /// Node loadsaver over a chunk store: the file joiner reads, the file
     /// splitter writes.
     ///
-    /// A node larger than one chunk spans several and is addressed by its
-    /// file root, matching the reference client; a node of one chunk keeps
-    /// the content-chunk address, so existing roots are unchanged.
-    ///
-    /// Loads are capped at [`MAX_NODE_BYTES`], the largest image any valid
-    /// node can occupy. The put window bounds the splitter's in-flight puts.
+    /// A node over one chunk is addressed by its file root; a single-chunk
+    /// node keeps the content-chunk address, so existing roots are unchanged.
     ///
     /// ```
     /// use nectar_mantaray::{ManifestEditor, NodeLoadSaver, Reader};
@@ -168,23 +164,22 @@ mod pipeline {
         }
     }
 
-    /// Failure loading one node through the file joiner: the open, the join,
-    /// or the [`MAX_NODE_BYTES`] bound.
+    /// Failure collecting one node: the open, the join, or the size bound.
     #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
-    pub type LoadError<E> = CollectError<ContentGetError<E>>;
+    pub type NodeCollectError<E> = CollectError<ContentGetError<E>>;
 
     impl<S, const B: usize> NodeLoader for NodeLoadSaver<S, B>
     where
         S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
     {
-        type Error = LoadError<S::Error>;
+        type Error = NodeCollectError<S::Error>;
 
-        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
             let file = File::<_, B>::new(ContentGet::new(self.store.clone()), Policy::DEFAULT);
             file.collect(reference.clone(), MAX_NODE_BYTES).await
         }
 
-        async fn load_with_addresses(
+        async fn collect_with_addresses(
             &self,
             reference: &EntryRef,
         ) -> Result<(Vec<u8>, Vec<ChunkAddress>), Self::Error> {
@@ -339,7 +334,7 @@ pub mod single_chunk {
     {
         type Error = SingleChunkError;
 
-        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
             let chunk = self
                 .0
                 .get(reference.address())
@@ -405,7 +400,7 @@ mod tests {
     #[test]
     fn null_loader_load_is_not_found() {
         let reference = EntryRef::from(ChunkAddress::from([7u8; 32]));
-        let err = run(NullLoader.load(&reference)).unwrap_err();
+        let err = run(NullLoader.collect(&reference)).unwrap_err();
         assert!(matches!(err, ChunkStoreError::NotFound(a) if a == *reference.address()));
     }
 
@@ -414,12 +409,12 @@ mod tests {
         struct Fixed;
         impl NodeLoader for Fixed {
             type Error = ChunkStoreError;
-            async fn load(&self, _: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            async fn collect(&self, _: &EntryRef) -> Result<Vec<u8>, Self::Error> {
                 Ok(vec![1, 2, 3])
             }
         }
         let reference = EntryRef::from(ChunkAddress::from([9u8; 32]));
-        let (bytes, addresses) = run(Fixed.load_with_addresses(&reference)).unwrap();
+        let (bytes, addresses) = run(Fixed.collect_with_addresses(&reference)).unwrap();
         assert_eq!(bytes, vec![1, 2, 3]);
         assert_eq!(addresses, vec![*reference.address()]);
     }
@@ -453,8 +448,8 @@ mod pipeline_tests {
         assert_eq!(*root.address(), want);
 
         let reference = EntryRef::from(root);
-        assert_eq!(run(loadsaver.load(&reference)).unwrap(), data);
-        let (bytes, addresses) = run(loadsaver.load_with_addresses(&reference)).unwrap();
+        assert_eq!(run(loadsaver.collect(&reference)).unwrap(), data);
+        let (bytes, addresses) = run(loadsaver.collect_with_addresses(&reference)).unwrap();
         assert_eq!(bytes, data);
         assert_eq!(addresses, vec![*reference.address()]);
     }
@@ -466,7 +461,7 @@ mod pipeline_tests {
         let root = save_plain(&loadsaver, data.clone());
 
         let reference = EntryRef::from(root);
-        let (bytes, addresses) = run(loadsaver.load_with_addresses(&reference)).unwrap();
+        let (bytes, addresses) = run(loadsaver.collect_with_addresses(&reference)).unwrap();
         assert_eq!(bytes, data);
         // 20000 bytes span five leaves plus the root: six stored chunks.
         let mut stored: Vec<ChunkAddress> = loadsaver
@@ -494,8 +489,8 @@ mod pipeline_tests {
         ))
         .unwrap();
         let reference = EntryRef::from(root);
-        assert_eq!(run(loadsaver.load(&reference)).unwrap(), data);
-        let (bytes, addresses) = run(loadsaver.load_with_addresses(&reference)).unwrap();
+        assert_eq!(run(loadsaver.collect(&reference)).unwrap(), data);
+        let (bytes, addresses) = run(loadsaver.collect_with_addresses(&reference)).unwrap();
         assert_eq!(bytes, data);
         assert!(addresses.len() > 1);
     }

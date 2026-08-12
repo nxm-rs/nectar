@@ -135,9 +135,9 @@ impl Counting {
 impl NodeLoader for Counting {
     type Error = <Nodes as NodeLoader>::Error;
 
-    async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+    async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);
-        self.inner.load(reference).await
+        self.inner.collect(reference).await
     }
 }
 

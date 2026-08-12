@@ -179,7 +179,7 @@ pub use manifest::{MantarayManifest, TrieCursor, TrieFormatError, TrieView};
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
 #[cfg(feature = "manifest")]
-pub use persist::{LoadError, NodeLoadSaver};
+pub use persist::{NodeCollectError, NodeLoadSaver};
 #[cfg(feature = "std")]
 pub use persist::{MAX_NODE_BYTES, NodeLoader, NodeSaver};
 #[cfg(feature = "std")]
