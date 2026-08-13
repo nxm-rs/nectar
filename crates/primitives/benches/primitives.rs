@@ -1,9 +1,18 @@
+#![allow(
+    missing_docs,
+    clippy::as_conversions,
+    clippy::indexing_slicing,
+    clippy::missing_panics_doc,
+    clippy::unwrap_used
+)]
+
 use alloy_primitives::keccak256;
 use bytes::BytesMut;
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use digest::Digest;
 use nectar_primitives::DefaultHasher;
 use rand::prelude::*;
+use std::hint::black_box;
 
 pub fn primitives(c: &mut Criterion) {
     let mut group = c.benchmark_group("primitives");

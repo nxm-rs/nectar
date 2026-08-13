@@ -6,15 +6,23 @@
 //! 3. Stamping each chunk with postage
 //!
 //! This provides realistic throughput estimates for upload operations.
+#![allow(
+    missing_docs,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing,
+    clippy::unwrap_used
+)]
 
 use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{B256, Signature, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nectar_testing::run;
 use rand::{Rng, rng};
+use std::hint::black_box;
 
 use nectar_file::{File, HashWindow, Policy, PutWindow, ReadAt, ReadAtSource};
 use nectar_postage_issuer::{

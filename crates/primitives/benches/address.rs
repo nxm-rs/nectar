@@ -1,7 +1,14 @@
+#![allow(
+    missing_docs,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing
+)]
+
 use alloy_primitives::{B256, b256};
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nectar_primitives::{Mainnet, OverlayAddress, XorMetric};
 use rand::prelude::*;
+use std::hint::black_box;
 
 pub fn address_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("address");

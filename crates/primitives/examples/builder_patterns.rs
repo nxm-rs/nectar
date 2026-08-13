@@ -2,6 +2,7 @@
 //!
 //! This example demonstrates usage of the chunk creation APIs,
 //! since our API doesn't use the builder pattern extensively.
+#![allow(clippy::indexing_slicing, clippy::panic_in_result_fn)]
 
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;

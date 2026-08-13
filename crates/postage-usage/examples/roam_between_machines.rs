@@ -11,7 +11,7 @@
 //! Run it with:
 //!
 //! ```text
-//! cargo run -p nectar-examples --example roam_between_machines
+//! cargo run -p nectar-postage-usage --features client --example roam_between_machines
 //! ```
 //!
 //! It uses no real network: "machine A" and "machine B" are two scopes in the
@@ -24,6 +24,7 @@
 //! direct access to the [`PersistPlan`](nectar_postage_usage::PersistPlan) can
 //! drop to the low-level `Snapshot` / `revalidate` / `seal_plan` path the facade
 //! is built on; it stays public and unchanged.
+#![allow(clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_used)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

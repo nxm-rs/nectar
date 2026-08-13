@@ -2,15 +2,18 @@
 //!
 //! This benchmark file focuses on stamp issuing and signing operations,
 //! suitable for CLI tools (like dipper) that create stamps.
+#![allow(missing_docs, clippy::unwrap_used)]
+
 use alloy_primitives::{B256, Signature, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use nectar_postage_issuer::{
     BatchId, BatchStamper, BucketDepth, MemoryIssuer, ShardedIssuer, StampPipeline, Stamper,
 };
 use nectar_primitives::ChunkAddress;
 use rand::RngExt;
+use std::hint::black_box;
 
 /// Generate a random ChunkAddress for benchmarking.
 fn random_address() -> ChunkAddress {

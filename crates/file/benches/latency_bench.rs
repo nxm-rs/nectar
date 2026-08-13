@@ -7,6 +7,12 @@
 //! group narrows the body so intermediate levels dominate, exercising the
 //! derived branch budget alongside the leaf window.
 
+#![allow(
+    missing_docs,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::unwrap_used
+)]
 // The latency model is wall clock under a real tokio runtime, so the runtime's
 // own `block_on` is the entry point here.
 #![allow(clippy::disallowed_methods)]
@@ -17,13 +23,14 @@ use std::sync::{Arc, Mutex};
 
 use criterion::measurement::WallTime;
 use criterion::{
-    BatchSize, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, black_box,
-    criterion_group, criterion_main,
+    BatchSize, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group,
+    criterion_main,
 };
 use nectar_file::{File, Policy, PutWindow, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkPut, ChunkStoreError, ContentGet};
+use std::hint::black_box;
 use tokio::runtime::Runtime;
 
 /// Narrow body for the deep group: fan-out 8, so a hundred leaves already

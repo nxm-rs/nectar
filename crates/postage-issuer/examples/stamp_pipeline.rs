@@ -2,6 +2,7 @@
 //!
 //! Results yield as signatures complete, tagged by address; the retry set is
 //! the set of addresses with no Ok result.
+#![allow(clippy::arithmetic_side_effects)]
 
 use alloy_primitives::B256;
 use alloy_signer_local::PrivateKeySigner;

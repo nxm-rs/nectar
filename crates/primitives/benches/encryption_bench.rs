@@ -1,5 +1,8 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+#![allow(missing_docs, clippy::unwrap_used)]
+
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rand::{Rng, rng};
+use std::hint::black_box;
 
 use nectar_primitives::chunk::encryption::{
     ChunkEncrypt, EncryptionKey, transcrypt, transcrypt_in_place,

@@ -1,3 +1,11 @@
+#![allow(
+    missing_docs,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing,
+    clippy::unwrap_used
+)]
+
 use alloy_primitives::B256;
 use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;

@@ -2,6 +2,12 @@
 //!
 //! This example demonstrates the creation and verification of
 //! both content-addressed and single-owner chunks.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing,
+    clippy::panic_in_result_fn
+)]
 
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;

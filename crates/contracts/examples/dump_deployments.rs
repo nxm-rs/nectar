@@ -4,7 +4,7 @@
 //! never drift from the crate. Consumed by `tools/upstream-check` to compare
 //! against ethersphere's go-storage-incentives-abi without parsing source.
 //!
-//! Run: `cargo run -p nectar-examples --example dump_deployments`
+//! Run: `cargo run -p nectar-contracts --example dump_deployments`
 
 use nectar_contracts::{mainnet, testnet};
 

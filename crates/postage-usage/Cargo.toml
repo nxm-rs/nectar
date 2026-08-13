@@ -79,6 +79,10 @@ seal = [ "dep:alloy-signer", "std" ]
 # every persist) and `std` (the seal timestamp defaults to the system clock).
 client = [ "dep:auto_impl", "dep:nectar-clock", "seal", "std" ]
 
+[[example]]
+name = "roam_between_machines"
+required-features = ["client"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

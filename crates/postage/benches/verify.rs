@@ -2,16 +2,19 @@
 //!
 //! This benchmark file focuses on verification-only operations, suitable for
 //! node/vertex use cases that primarily verify stamps rather than create them.
+#![allow(missing_docs, clippy::indexing_slicing, clippy::unwrap_used)]
+
 use alloy_primitives::{Address, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use nectar_postage::{
     Batch, BatchId, BucketDepth, Stamp, StampBytes, StampDigest, StampIndex,
     parallel::{verify_stamps_parallel, verify_stamps_parallel_with_pubkey},
 };
 use nectar_primitives::ChunkAddress;
 use rand::RngExt;
+use std::hint::black_box;
 
 /// Generate a random stamp for benchmarking.
 fn random_stamp() -> Stamp {

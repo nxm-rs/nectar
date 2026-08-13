@@ -37,6 +37,7 @@ zeroize = { workspace = true, optional = true }
 # The seed replay decodes committed fuzz inputs through the same grammar the
 # fuzzer uses.
 arbitrary.workspace = true
+criterion.workspace = true
 proptest.workspace = true
 # The oracle stores and chunk fixtures ride the primitives store surface,
 # including the encrypted reference width.
@@ -101,6 +102,10 @@ unsync = [
 	"nectar-primitives?/unsync",
 	"nectar-tasks?/unsync",
 ]
+
+[[bench]]
+name = "latency_bench"
+harness = false
 
 # `rayon` and `unsync` are mutually exclusive, so the doc build lists
 # features explicitly rather than enabling all at once.
