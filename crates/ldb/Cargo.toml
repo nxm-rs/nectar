@@ -38,8 +38,7 @@ anyhow.workspace = true
 arbitrary.workspace = true
 bytes.workspace = true
 nectar-file = { workspace = true, features = ["std"] }
-# Self dev-dependency: exposes the `generators` module and the manifest seam to
-# the integration tests.
+# Self dev-dependency: exposes `generators` and the manifest seam to tests/.
 nectar-ldb = { workspace = true, features = ["arbitrary", "manifest"] }
 nectar-manifest.workspace = true
 nectar-primitives = { workspace = true, features = ["arbitrary"] }

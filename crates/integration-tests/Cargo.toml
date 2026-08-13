@@ -41,7 +41,6 @@ proptest.workspace = true
 # gates in the test files keep their meaning; CI selects the shapes.
 encryption = [
 	"nectar-file/encryption",
-	"nectar-ldb/encryption",
 	"nectar-mantaray/encryption",
 	"nectar-primitives/encryption",
 ]
