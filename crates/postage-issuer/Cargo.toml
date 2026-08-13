@@ -32,6 +32,7 @@ alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 nectar-tasks = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -57,6 +58,7 @@ std = [
 	"dep:alloy-signer",
 	"dep:futures-util",
 	"dep:nectar-tasks",
+	"dep:parking_lot",
 	"nectar-clock/std",
 	"nectar-postage/std",
 	"nectar-primitives/std",
