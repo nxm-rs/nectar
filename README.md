@@ -23,9 +23,12 @@ Looking for the org overview? See **[github.com/nxm-rs](https://github.com/nxm-r
 | **[`nectar-postage`](./crates/postage)** | Postage stamp handling + verification | [![crates.io](https://img.shields.io/crates/v/nectar-postage.svg)](https://crates.io/crates/nectar-postage) | [![docs.rs](https://docs.rs/nectar-postage/badge.svg)](https://docs.rs/nectar-postage) |
 | **[`nectar-postage-issuer`](./crates/postage-issuer)** | High-performance stamp issuance with parallel signing | [![crates.io](https://img.shields.io/crates/v/nectar-postage-issuer.svg)](https://crates.io/crates/nectar-postage-issuer) | [![docs.rs](https://docs.rs/nectar-postage-issuer/badge.svg)](https://docs.rs/nectar-postage-issuer) |
 | **[`nectar-contracts`](./crates/contracts)** | Contract bindings for on-chain Swarm interactions | [![crates.io](https://img.shields.io/crates/v/nectar-contracts.svg)](https://crates.io/crates/nectar-contracts) | [![docs.rs](https://docs.rs/nectar-contracts/badge.svg)](https://docs.rs/nectar-contracts) |
-| **[`nectar-swarms`](./crates/swarms)** | Network identifiers (mainnet, testnet, etc.) | [![crates.io](https://img.shields.io/crates/v/nectar-swarms.svg)](https://crates.io/crates/nectar-swarms) | [![docs.rs](https://docs.rs/nectar-swarms/badge.svg)](https://docs.rs/nectar-swarms) |
 | **[`nectar-clock`](./crates/clock)** | Injectable `no_std` time source | [![crates.io](https://img.shields.io/crates/v/nectar-clock.svg)](https://crates.io/crates/nectar-clock) | [![docs.rs](https://docs.rs/nectar-clock/badge.svg)](https://docs.rs/nectar-clock) |
 | **[`nectar-tasks`](./crates/tasks)** | Object-safe spawn seam for library tasks | [![crates.io](https://img.shields.io/crates/v/nectar-tasks.svg)](https://crates.io/crates/nectar-tasks) | [![docs.rs](https://docs.rs/nectar-tasks/badge.svg)](https://docs.rs/nectar-tasks) |
+
+> **Deprecated: [`nectar-swarms`](https://crates.io/crates/nectar-swarms).**
+> Its `Swarm` and `NamedSwarm` identifiers now live in `nectar-primitives`, beside the type-level `SwarmSpec`.
+> The crates.io name stays at `0.4.0` and nothing further ships from it.
 
 ---
 

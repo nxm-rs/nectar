@@ -2744,6 +2744,7 @@ dependencies = [
 name = "nectar-primitives"
 version = "0.4.0"
 dependencies = [
+ "alloy-chains",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
@@ -2768,12 +2769,14 @@ dependencies = [
  "nectar-marker",
  "nectar-primitives-core",
  "nectar-testing",
+ "num_enum",
  "parking_lot",
  "proptest",
  "proptest-arbitrary-interop",
  "rand 0.10.1",
  "serde",
  "sha2 0.10.9",
+ "strum 0.28.0",
  "subtle",
  "thiserror",
  "wasm-bindgen",
@@ -2806,17 +2809,6 @@ dependencies = [
  "rayon",
  "serde",
  "thiserror",
-]
-
-[[package]]
-name = "nectar-swarms"
-version = "0.4.0"
-dependencies = [
- "alloy-chains",
- "num_enum",
- "proptest",
- "serde",
- "strum 0.28.0",
 ]
 
 [[package]]

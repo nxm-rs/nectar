@@ -105,7 +105,7 @@ pub use network_id::NetworkId;
 pub use nonce::Nonce;
 pub use overlay::compute_overlay;
 pub use proximity_order::{ProximityOrder, ProximityOrderError};
-pub use spec::{Mainnet, SwarmSpec, Testnet};
+pub use spec::{Mainnet, NamedSwarm, Swarm, SwarmKind, SwarmSpec, Testnet};
 pub use timestamp::{Timestamp, TimestampError};
 pub use xor_metric::{MAX_PO, XorMetric};
 
