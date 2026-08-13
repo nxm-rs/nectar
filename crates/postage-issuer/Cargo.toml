@@ -36,12 +36,11 @@ parking_lot = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Referenced by the `arbitrary` feature; the decorator regression splits
-# through the streaming engine.
-nectar-file = { workspace = true, features = ["std"] }
+criterion = { workspace = true }
+# The decorator regression and the upload pipeline bench split through the
+# streaming engine; the bench also drives the rayon batch ingest.
+nectar-file = { workspace = true, features = ["rayon"] }
 nectar-testing = { workspace = true }
-# The upload pipeline bench splits through the streaming engine and the
-# rayon batch ingest.
 proptest = { workspace = true }
 rand = { workspace = true }
 alloy-signer-local = { workspace = true }
@@ -95,6 +94,14 @@ arbitrary = [
 	"nectar-primitives/arbitrary",
 	"std",
 ]
+
+[[bench]]
+name = "sign"
+harness = false
+
+[[bench]]
+name = "upload_pipeline"
+harness = false
 
 # `parallel` and `unsync` are mutually exclusive, so the doc build lists
 # features explicitly rather than enabling all at once.

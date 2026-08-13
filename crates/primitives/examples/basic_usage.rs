@@ -3,6 +3,20 @@
 //! This example demonstrates the creation and verification of
 //! both content-addressed and single-owner chunks.
 
+// Not a shipping target: the runtime-safety restriction set does not apply.
+#![allow(
+    missing_docs,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::missing_panics_doc,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::string_slice,
+    clippy::unwrap_used
+)]
+
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
 use bytes::Bytes;

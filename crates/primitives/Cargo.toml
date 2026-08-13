@@ -91,6 +91,8 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 
 arbitrary = { workspace = true }
+criterion.workspace = true
+digest.workspace = true
 futures.workspace = true
 # The core's `Arbitrary` impls and generators ride its own feature: this
 # crate's `cfg(test)` does not reach them.
@@ -148,6 +150,27 @@ envelope = [ "dep:chacha20poly1305", "dep:hkdf", "dep:sha2" ]
 # any target. An explicit feature rather than a target cfg so CI can exercise
 # the relaxed shape off-wasm.
 unsync = [ "nectar-marker/unsync", "nectar-primitives-core/unsync" ]
+
+[[bench]]
+name = "address"
+harness = false
+
+[[bench]]
+name = "bmt_bench"
+harness = false
+
+[[bench]]
+name = "encryption_bench"
+harness = false
+required-features = ["encryption"]
+
+[[bench]]
+name = "primitives"
+harness = false
+
+[[bench]]
+name = "proofs"
+harness = false
 
 [package.metadata.docs.rs]
 all-features = true

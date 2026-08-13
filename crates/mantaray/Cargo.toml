@@ -35,6 +35,7 @@ rand = { workspace = true, optional = true }
 [dev-dependencies]
 arbitrary = { workspace = true }
 bytes.workspace = true
+criterion.workspace = true
 # Registry-pinned legacy oracle for the submission-order differential gate:
 # identical op sequences must produce byte-identical roots.
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
@@ -94,6 +95,11 @@ unsync = [
 	"nectar-primitives?/unsync",
 	"nectar-tasks?/unsync",
 ]
+
+[[bench]]
+name = "mantaray_bench"
+harness = false
+required-features = ["hazmat", "manifest"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -4,7 +4,21 @@
 //! never drift from the crate. Consumed by `tools/upstream-check` to compare
 //! against ethersphere's go-storage-incentives-abi without parsing source.
 //!
-//! Run: `cargo run -p nectar-examples --example dump_deployments`
+//! Run: `cargo run -p nectar-contracts --example dump_deployments`
+
+// Not a shipping target: the runtime-safety restriction set does not apply.
+#![allow(
+    missing_docs,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::missing_panics_doc,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::string_slice,
+    clippy::unwrap_used
+)]
 
 use nectar_contracts::{mainnet, testnet};
 

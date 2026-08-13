@@ -66,6 +66,14 @@ jobs:
             # above never see them.
             - name: cargo clippy (postage serde)
               run: cargo clippy --locked --all-targets -p nectar-postage --features serde -- -D warnings
+            # The parallel verifier and the bench that drives it sit behind the
+            # parallel feature, likewise outside the default-features pass.
+            - name: cargo clippy (postage parallel)
+              run: cargo clippy --locked --all-targets -p nectar-postage --features parallel -- -D warnings
+            # The raw node internals and the manifest seam are off the default
+            # build, so the trie bench is invisible to the passes above.
+            - name: cargo clippy (mantaray hazmat)
+              run: cargo clippy --locked --all-targets -p nectar-mantaray --features hazmat,manifest -- -D warnings
             # The pipeline's parallel engine sits behind the parallel
             # feature, likewise outside the default-features pass.
             - name: cargo clippy (postage-issuer parallel)
@@ -79,8 +87,7 @@ jobs:
             - name: cargo clippy (envelope)
               run: cargo clippy --locked --all-targets -p nectar-primitives --features envelope,encryption -- -D warnings
             # The pipeline's inline engine only compiles with the parallel
-            # feature off; the workspace pass unifies parallel in via the
-            # bench crate, so lint the inline shape explicitly.
+            # feature off, so lint the inline shape on its own.
             - name: cargo clippy (postage-issuer inline engine)
               run: cargo clippy --locked --all-targets -p nectar-postage-issuer -- -D warnings
             # `unused_crate_dependencies` is enforced per-library via `cargo

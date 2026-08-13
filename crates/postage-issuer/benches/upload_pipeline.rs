@@ -7,14 +7,29 @@
 //!
 //! This provides realistic throughput estimates for upload operations.
 
+// Not a shipping target: the runtime-safety restriction set does not apply.
+#![allow(
+    missing_docs,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::missing_panics_doc,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::string_slice,
+    clippy::unwrap_used
+)]
+
 use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{B256, Signature, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nectar_testing::run;
 use rand::{Rng, rng};
+use std::hint::black_box;
 
 use nectar_file::{File, HashWindow, Policy, PutWindow, ReadAt, ReadAtSource};
 use nectar_postage_issuer::{

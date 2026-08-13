@@ -1,5 +1,20 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+// Not a shipping target: the runtime-safety restriction set does not apply.
+#![allow(
+    missing_docs,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::missing_panics_doc,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::string_slice,
+    clippy::unwrap_used
+)]
+
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rand::{Rng, rng};
+use std::hint::black_box;
 
 use nectar_primitives::chunk::encryption::{
     ChunkEncrypt, EncryptionKey, transcrypt, transcrypt_in_place,

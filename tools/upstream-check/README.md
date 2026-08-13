@@ -21,7 +21,7 @@ is printed but not compared.
 Run locally:
 
 ```sh
-cargo run -p nectar-examples --example dump_deployments --quiet > nectar.json
+cargo run -p nectar-contracts --example dump_deployments --quiet > nectar.json
 cd tools/upstream-check && go run . -nectar ../../nectar.json
 ```
 
