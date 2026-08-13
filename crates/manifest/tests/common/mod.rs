@@ -59,7 +59,11 @@ pub(crate) fn p(path: &str) -> ManifestPath {
 }
 
 /// One-shot `remove`, unwrapped.
-pub(crate) async fn removed<M: Manifest<ChunkRef>>(manifest: &M, root: ChunkRef, path: &str) -> ChunkRef {
+pub(crate) async fn removed<M: Manifest<ChunkRef>>(
+    manifest: &M,
+    root: ChunkRef,
+    path: &str,
+) -> ChunkRef {
     manifest.remove(root, p(path)).await.unwrap()
 }
 
@@ -151,7 +155,10 @@ pub(crate) async fn drain<V: ManifestView<ChunkRef>>(
 }
 
 /// Every path one directory level lists, in order.
-pub(crate) async fn listing<V: ManifestView<ChunkRef>>(view: &V, dir: &ManifestPath) -> Vec<String> {
+pub(crate) async fn listing<V: ManifestView<ChunkRef>>(
+    view: &V,
+    dir: &ManifestPath,
+) -> Vec<String> {
     view.dir(dir)
         .await
         .unwrap()

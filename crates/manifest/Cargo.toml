@@ -31,9 +31,8 @@ thiserror = { workspace = true }
 bytes.workspace = true
 nectar-primitives = { workspace = true, features = ["std"] }
 nectar-testing.workspace = true
-# The two seam implementations and the data lane the conformance suites drive.
-# Path-only, and so stripped from the published manifest: each depends on this
-# crate, so a versioned dev-dependency would have no publish order.
+# Path-only: each depends on this crate, so a versioned dev-dependency would
+# have no publish order.
 nectar-file = { path = "../file", default-features = false, features = ["std"] }
 nectar-ldb = { path = "../ldb", features = ["manifest"] }
 nectar-mantaray = { path = "../mantaray", features = ["manifest"] }
@@ -41,9 +40,8 @@ nectar-mantaray = { path = "../mantaray", features = ["manifest"] }
 [features]
 default = [ "std" ]
 std = [ "nectar-primitives/std", "nectar-tasks/std", "thiserror/std" ]
-# A test shape, not a capability: the seam holds no crypto, so this only puts
-# the dev formats at the encrypted reference width. Named apart from
-# `encryption` so it never propagates as one.
+# A dev shape, not a capability: the seam holds no crypto, so this is not
+# `encryption` and must never be named as one.
 test-encryption = [
 	"nectar-file/encryption",
 	"nectar-ldb/encryption",
@@ -53,6 +51,9 @@ test-encryption = [
 # Single-thread send escape: relaxes the boxed manifest futures off `Send` in
 # lockstep with the store traits.
 unsync = [
+	"nectar-file/unsync",
+	"nectar-ldb/unsync",
+	"nectar-mantaray/unsync",
 	"nectar-marker/unsync",
 	"nectar-primitives/unsync",
 	"nectar-tasks/unsync",
