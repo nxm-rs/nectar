@@ -1,10 +1,8 @@
 //! Drive the two-arm manifest comparison across every `(corpus, scale)` and
-//! write one JSON result document: the trie and the key-value database
-//! measured through the same seam calls over their own counting stores.
+//! write one JSON result document.
 //!
 //! Run: `cargo run -p nectar-manifest --example manifest-perf`
 #![allow(
-    missing_docs,
     unreachable_pub,
     clippy::arithmetic_side_effects,
     clippy::as_conversions,

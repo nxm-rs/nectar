@@ -47,9 +47,8 @@ proptest.workspace = true
 serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 sha2 = { workspace = true, features = ["std"] }
-# Paused virtual clock: models one RTT per node fetch so the bounded-concurrency
-# ordered cursor's parallel rounds are read off tokio's auto-advancing test
-# clock, never guessed. `test-util` supplies `start_paused`.
+# `test-util` supplies `start_paused`: the harness reads the cursor's parallel
+# rounds off the paused clock rather than guessing them.
 tokio = { workspace = true, features = ["time", "test-util"] }
 
 [features]
@@ -100,8 +99,7 @@ unsync = [
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-# The range-query and pagination measurement harness. An example, not a bench:
-# it is run for its JSON document, and a bench target is not runnable.
+# An example, not a bench: a bench target cannot be run for its JSON document.
 [[example]]
 name = "ldb-perf"
 path = "examples/ldb-perf/main.rs"

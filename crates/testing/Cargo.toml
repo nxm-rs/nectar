@@ -25,6 +25,9 @@ nectar-primitives = { workspace = true, optional = true, features = ["std"] }
 serde = { workspace = true, optional = true, features = ["std", "derive"] }
 
 [dev-dependencies]
+# Self dev-dependency: without it the harness-core unit tests run only when
+# another member's dev-dependency turns the feature on.
+nectar-testing = { workspace = true, features = ["bench"] }
 serde_json = { workspace = true, features = ["std"] }
 
 [features]
@@ -32,8 +35,7 @@ serde_json = { workspace = true, features = ["std"] }
 # in the enabling crate, so enable it per probe crate, never by default.
 alloc = [ "dep:allocation-counter" ]
 
-# The measurement-harness core: the instrumented store and the run header the
-# perf examples share.
+# The instrumented store and the run header the perf examples share.
 bench = [
 	"dep:nectar-primitives",
 	"dep:serde",

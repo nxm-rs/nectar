@@ -1,9 +1,7 @@
-//! Harness core: the instrumented chunk store every measurement harness reads
-//! its work counts from, and the provenance header every result document opens
-//! with.
+//! Harness core: the instrumented chunk store a measurement harness reads its
+//! work counts from, and the provenance header a result document opens with.
 //!
-//! Counters are atomic so an instrumented store stays `Sync`, and a caller
-//! snapshots around one operation to read that operation's cost by difference.
+//! Counters are atomic so an instrumented store stays `Sync`.
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
@@ -16,77 +14,61 @@ use serde::Serialize;
 /// A point-in-time read of every counter plus the resident chunk count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// `get` calls; the delta around one operation is that operation's hop
-    /// count.
+    /// The delta around one operation is that operation's hop count.
     pub gets: u64,
-    /// `put` calls, rewrites of a resident address included.
+    /// Rewrites of a resident address included.
     pub puts: u64,
-    /// Payload bytes summed over every `put`.
     pub put_bytes: u64,
     /// Payload bytes resident; grows only on a not-yet-present address.
     pub live_bytes: u64,
-    /// Peak of `live_bytes` so far.
-    pub peak_live_bytes: u64,
     /// Puts of an address that was not already resident.
     pub distinct_puts: u64,
     /// Distinct resident addresses.
     pub total_chunks: u64,
-    /// Presence probes issued.
     pub has_calls: u64,
     /// Presence probes answered absent.
     pub absent: u64,
 }
 
 /// The atomic counter bank an instrumented store records into.
-///
-/// Separate from the store so a probe answering from its own table, rather
-/// than from a backing store, still reports the same shape.
 #[derive(Debug, Default)]
 pub struct Counters {
     gets: AtomicU64,
     puts: AtomicU64,
     put_bytes: AtomicU64,
     live_bytes: AtomicU64,
-    peak_live_bytes: AtomicU64,
     distinct_puts: AtomicU64,
     has_calls: AtomicU64,
     absent: AtomicU64,
 }
 
 impl Counters {
-    /// A zeroed bank.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Record one retrieval.
     pub fn record_get(&self) {
         self.gets.fetch_add(1, SeqCst);
     }
 
-    /// Record one put of `bytes`; `resident` says the address was already
-    /// stored, so residency does not grow.
+    /// `resident` says the address was already stored, so residency does not
+    /// grow.
     pub fn record_put(&self, bytes: u64, resident: bool) {
         self.puts.fetch_add(1, SeqCst);
         self.put_bytes.fetch_add(bytes, SeqCst);
         if !resident {
             self.distinct_puts.fetch_add(1, SeqCst);
-            let live = self.live_bytes.fetch_add(bytes, SeqCst) + bytes;
-            self.peak_live_bytes.fetch_max(live, SeqCst);
+            self.live_bytes.fetch_add(bytes, SeqCst);
         }
     }
 
-    /// Record one presence probe as issued.
-    ///
-    /// Split from [`record_absent`](Self::record_absent) so a store that
-    /// awaits between issuing a probe and answering it still counts the work
-    /// a cancelled probe asked for.
+    /// Split from [`record_absent`](Self::record_absent) so a store that awaits
+    /// between issuing a probe and answering it still counts a cancelled probe.
     pub fn record_has(&self) {
         self.has_calls.fetch_add(1, SeqCst);
     }
 
-    /// Record one probe answered absent.
     pub fn record_absent(&self) {
         self.absent.fetch_add(1, SeqCst);
     }
@@ -99,7 +81,6 @@ impl Counters {
             puts: self.puts.load(SeqCst),
             put_bytes: self.put_bytes.load(SeqCst),
             live_bytes: self.live_bytes.load(SeqCst),
-            peak_live_bytes: self.peak_live_bytes.load(SeqCst),
             distinct_puts: self.distinct_puts.load(SeqCst),
             total_chunks,
             has_calls: self.has_calls.load(SeqCst),
@@ -107,49 +88,31 @@ impl Counters {
         }
     }
 
-    /// Zero the flow counters, keeping the residency figures.
-    pub fn reset_flow(&self) {
-        self.gets.store(0, SeqCst);
-        self.puts.store(0, SeqCst);
-        self.put_bytes.store(0, SeqCst);
-        self.has_calls.store(0, SeqCst);
-        self.absent.store(0, SeqCst);
-    }
-
-    /// Retrievals so far.
     #[must_use]
     pub fn gets(&self) -> u64 {
         self.gets.load(SeqCst)
     }
 
-    /// Puts so far.
     #[must_use]
     pub fn puts(&self) -> u64 {
         self.puts.load(SeqCst)
     }
-
-    /// Presence probes so far.
-    #[must_use]
-    pub fn has_calls(&self) -> u64 {
-        self.has_calls.load(SeqCst)
-    }
-
-    /// Presence probes answered absent so far.
-    #[must_use]
-    pub fn absent(&self) -> u64 {
-        self.absent.load(SeqCst)
-    }
 }
 
 /// In-memory chunk store that counts gets, puts, probes and byte residency.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CountingStore<R: ChunkRegistry = StandardChunkSet> {
     inner: MemoryStore<R>,
     counters: Counters,
 }
 
+impl<R: ChunkRegistry> Default for CountingStore<R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<R: ChunkRegistry> CountingStore<R> {
-    /// An empty counting store.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -158,36 +121,21 @@ impl<R: ChunkRegistry> CountingStore<R> {
         }
     }
 
-    /// The counter bank.
     #[must_use]
     pub const fn counters(&self) -> &Counters {
         &self.counters
     }
 
-    /// Read every counter and the resident chunk count.
     #[must_use]
     pub fn snapshot(&self) -> Counts {
         self.counters.snapshot(self.inner.len() as u64)
     }
 
-    /// Zero the flow counters, keeping the stored chunks and residency.
-    pub fn reset_flow(&self) {
-        self.counters.reset_flow();
-    }
-
-    /// Distinct resident addresses.
-    #[must_use]
-    pub fn total_chunks(&self) -> usize {
-        self.inner.len()
-    }
-
-    /// Retrievals so far.
     #[must_use]
     pub fn gets(&self) -> u64 {
         self.counters.gets()
     }
 
-    /// Puts so far.
     #[must_use]
     pub fn puts(&self) -> u64 {
         self.counters.puts()
@@ -230,8 +178,7 @@ impl<R: ChunkRegistry> ChunkHas for CountingStore<R> {
 /// The provenance header a result document opens with.
 #[derive(Clone, Debug, Serialize)]
 pub struct RunMeta {
-    /// Run timestamp; `SOURCE_DATE_EPOCH` pins it so two runs are
-    /// byte-identical.
+    /// `SOURCE_DATE_EPOCH` pins it, so two runs are byte-identical.
     pub generated: String,
     pub git_branch: String,
     pub git_commit: String,
@@ -240,8 +187,6 @@ pub struct RunMeta {
 }
 
 impl RunMeta {
-    /// The header of the run in progress: the timestamp off `SOURCE_DATE_EPOCH`
-    /// when it is set, the branch and commit off `git`.
     #[must_use]
     pub fn current(harness_version: &str) -> Self {
         let pinned = std::env::var("SOURCE_DATE_EPOCH")
@@ -268,8 +213,7 @@ fn git(args: &[&str]) -> String {
 
 /// RFC 3339 UTC seconds for `epoch_secs`, or the current wall clock when
 /// `None`.
-#[must_use]
-pub fn generated_iso(epoch_secs: Option<u64>) -> String {
+fn generated_iso(epoch_secs: Option<u64>) -> String {
     let secs = epoch_secs.unwrap_or_else(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -305,9 +249,8 @@ mod tests {
         assert_eq!(generated_iso(Some(86_399)), "1970-01-01T23:59:59Z");
     }
 
-    /// Residency grows on a first put alone, and the flow reset keeps it.
     #[test]
-    fn counters_separate_flow_from_residency() {
+    fn residency_grows_on_a_first_put_alone() {
         let counters = Counters::new();
         counters.record_put(100, false);
         counters.record_put(100, true);
@@ -319,17 +262,9 @@ mod tests {
         let counts = counters.snapshot(1);
         assert_eq!((counts.puts, counts.distinct_puts), (2, 1));
         assert_eq!((counts.put_bytes, counts.live_bytes), (200, 100));
-        assert_eq!(counts.peak_live_bytes, 100);
         assert_eq!((counts.has_calls, counts.absent, counts.gets), (2, 1, 1));
-
-        counters.reset_flow();
-        let counts = counters.snapshot(1);
-        assert_eq!((counts.gets, counts.puts, counts.has_calls), (0, 0, 0));
-        assert_eq!((counts.live_bytes, counts.distinct_puts), (100, 1));
     }
 
-    /// The header serializes its four fields in the order every result
-    /// document flattens them at.
     #[test]
     fn run_meta_keeps_its_field_order() {
         let json = serde_json::to_string(&RunMeta::current("7")).unwrap();

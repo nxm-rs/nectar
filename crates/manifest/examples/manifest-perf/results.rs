@@ -1,9 +1,6 @@
-//! Serializable schema for the two-arm manifest run.
-//!
-//! The document has two sections and they never mix. `deterministic` holds
-//! store-counter figures that are identical between two runs of one commit.
-//! `wall_time` holds the cold-build clock, which varies by machine and by run
-//! and is never the currency of a comparison.
+//! Serializable schema for the two-arm manifest run. The two sections never
+//! mix: `deterministic` repeats between runs of one commit, `wall_time` does
+//! not.
 
 use nectar_testing::bench::RunMeta;
 use serde::Serialize;
@@ -20,7 +17,7 @@ pub struct Document {
     pub wall_time: Vec<BuildTimeCell>,
 }
 
-/// Run-level metadata. The shared header flattens in first.
+/// The shared header flattens in first, so it opens the document.
 #[derive(Debug, Serialize)]
 pub struct Meta {
     #[serde(flatten)]
@@ -92,8 +89,6 @@ mod tests {
     use super::{Deterministic, Document, Meta};
     use nectar_testing::bench::RunMeta;
 
-    /// The flattened header keeps the four provenance keys ahead of the
-    /// harness fields, and the wall-clock lane stays a section of its own.
     #[test]
     fn the_document_opens_with_the_shared_header() {
         let doc = Document {

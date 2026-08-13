@@ -5,12 +5,10 @@
 //!
 //! Run: `cargo run -p nectar-feeds --example feeds-perf`
 #![allow(
-    missing_docs,
     unreachable_pub,
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::unwrap_used
 )]
 

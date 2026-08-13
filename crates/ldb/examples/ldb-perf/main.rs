@@ -5,11 +5,9 @@
 //!
 //! Run: `cargo run -p nectar-ldb --example ldb-perf`
 #![allow(
-    missing_docs,
     unreachable_pub,
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
-    clippy::expect_used,
     clippy::indexing_slicing,
     clippy::missing_const_for_fn,
     clippy::option_if_let_else,

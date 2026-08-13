@@ -1,9 +1,6 @@
 //! Deterministic key corpora: one hierarchical site tree with heavy prefix
-//! sharing, one uniform hex control with none.
-//!
-//! Keys are generated from a splitmix64 stream over the master seed, then
-//! deduplicated and sorted, so a corpus is fully determined by its name and
-//! its size.
+//! sharing, one uniform hex control with none. A corpus is fully determined
+//! by its name and its size.
 
 use std::collections::BTreeSet;
 
@@ -14,7 +11,6 @@ use nectar_primitives::chunk::ChunkAddress;
 /// Master seed of every corpus stream.
 pub const MASTER_SEED: u64 = 0x6d61_6e69_6665_7374;
 
-/// The two corpora.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Corpus {
     /// `sec/sub/page.html` paths: deep prefix sharing.
@@ -33,7 +29,6 @@ impl Corpus {
         }
     }
 
-    /// Both corpora.
     #[must_use]
     pub const fn all() -> [Self; 2] {
         [Self::Site, Self::Uniform]
@@ -97,8 +92,6 @@ pub fn reference(key: &ManifestPath, salt: u64) -> ChunkRef {
 mod tests {
     use super::{Corpus, generate};
 
-    /// Every corpus is seed-reproducible and yields exactly `n` sorted,
-    /// distinct keys: the anti-fabrication guarantee the results rest on.
     #[test]
     fn corpora_are_reproducible_sorted_and_distinct() {
         for corpus in Corpus::all() {

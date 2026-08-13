@@ -40,9 +40,8 @@ proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
-# Paused virtual clock: one tick per presence probe, so the windowed finder's
-# concurrent rounds are read off tokio's auto-advancing test clock, never
-# guessed. `test-util` supplies `start_paused`.
+# `test-util` supplies `start_paused`: the harness reads the finder's concurrent
+# rounds off the paused clock rather than guessing them.
 tokio = { workspace = true, features = ["time", "test-util"] }
 
 [features]
@@ -68,8 +67,7 @@ std = [
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-# The lookup-cost measurement harness. An example, not a bench: it is run for
-# its JSON document, and a bench target is not runnable.
+# An example, not a bench: a bench target cannot be run for its JSON document.
 [[example]]
 name = "feeds-perf"
 path = "examples/feeds-perf/main.rs"

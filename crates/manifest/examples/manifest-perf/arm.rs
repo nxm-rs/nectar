@@ -1,10 +1,6 @@
 //! One arm per manifest format, measured over the seam rather than over each
-//! format's own API, so the two columns are the same call sequence.
-//!
-//! Every arm owns its counting store, so a cost is a counter delta and never a
-//! shared figure. A verb the format leaves to the seam default is labelled
-//! [`Capability::Emulated`] at the point of measurement, and the label rides
-//! into the result document beside the cost it explains.
+//! format's own API, so the two columns are the same call sequence. Every arm
+//! owns its counting store, so a cost is a counter delta.
 
 use std::error::Error;
 use std::ops::Bound;
@@ -25,14 +21,12 @@ use crate::corpus::reference;
 
 pub type Err = Box<dyn Error>;
 
-/// The instrumented store an arm builds into.
 pub type Counting = Arc<CountingStore<StandardChunkSet>>;
 
 /// The uncounted store the wall-clock lane builds into: no atomic sits in the
 /// timed path.
 pub type Plain = Arc<MemoryStore<StandardChunkSet>>;
 
-/// The verbs under measurement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     Get,
@@ -101,11 +95,9 @@ pub trait Arm {
     fn capability(&self, op: Op) -> Capability;
     /// Build every key into a fresh counting store and keep the root.
     fn build(&mut self, keys: &[ManifestPath]) -> Result<Storage, Err>;
-    /// Point lookup.
     fn get(&self, key: &ManifestPath) -> Result<OpCost, Err>;
     /// Greatest key at or below `key`.
     fn floor(&self, key: &ManifestPath) -> Result<OpCost, Err>;
-    /// One directory level.
     fn dir(&self, prefix: &ManifestPath) -> Result<OpCost, Err>;
     /// Ascending drain of `[lo, hi)`.
     fn range(&self, lo: &ManifestPath, hi: &ManifestPath) -> Result<OpCost, Err>;
@@ -352,8 +344,6 @@ mod tests {
     use super::{Arm, Op, ldb_arm, mantaray_arm};
     use crate::corpus::{Corpus, generate};
 
-    /// Both arms hold exactly the corpus after a build, so every cost below is
-    /// measured over the same key set rather than assumed to be.
     #[test]
     fn both_arms_hold_the_same_keys() {
         let keys = generate(Corpus::Site, 200);
@@ -363,9 +353,6 @@ mod tests {
         }
     }
 
-    /// The floor labels are measured, not asserted: the trie's seam floor is a
-    /// walk whose cost tracks the corpus, and the database's floor is a
-    /// descent whose cost does not.
     #[test]
     fn the_floor_capability_labels_match_the_measured_law() {
         let probe = |arm: &mut dyn Arm, n: usize| -> u64 {

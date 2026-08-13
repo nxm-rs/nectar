@@ -2816,6 +2816,7 @@ dependencies = [
  "nectar-file",
  "nectar-postage",
  "nectar-primitives",
+ "nectar-testing",
  "serde",
  "serde_json",
  "wasm-bindgen-test",

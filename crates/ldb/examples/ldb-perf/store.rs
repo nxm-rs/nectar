@@ -1,5 +1,4 @@
-//! The simulator's own RTT model over an already-populated store. The
-//! instrumented store it reads work counts from is `nectar_testing::bench`.
+//! The simulator's own RTT model over an already-populated store.
 
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::time::Duration;

@@ -26,8 +26,7 @@ pub struct Document {
     pub subtree_serve: Vec<SubtreeServeCell>,
 }
 
-/// Run-level metadata. The shared header flattens in first, so the document
-/// keeps the key order the checked-in results were written at.
+/// The shared header flattens in first, so it opens the document.
 #[derive(Debug, Serialize)]
 pub struct Meta {
     #[serde(flatten)]
@@ -149,9 +148,6 @@ mod tests {
     use super::{Document, Meta};
     use nectar_testing::bench::RunMeta;
 
-    /// The flattened header keeps the four provenance keys ahead of the
-    /// harness fields, so a rerun under one `SOURCE_DATE_EPOCH` stays
-    /// byte-identical to the documents already published.
     #[test]
     fn the_document_opens_with_the_shared_header() {
         let doc = Document {

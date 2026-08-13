@@ -68,8 +68,6 @@ pub fn measure(
     arm: &mut dyn Arm,
 ) -> Result<(StorageCell, Vec<OpCell>), Err> {
     let storage = arm.build(keys)?;
-    // The same-corpus gate: an arm that did not land exactly this key set
-    // never publishes a number.
     if arm.keys()? != keys {
         return Err(format!("{}: built root does not hold the corpus", arm.label()).into());
     }
@@ -159,8 +157,6 @@ mod tests {
         assert_eq!(sample(3, 8), vec![0, 1, 2]);
     }
 
-    /// Two passes of the deterministic lane serialize identically: the
-    /// counters carry no clock and no allocation address.
     #[test]
     fn the_deterministic_lane_repeats_byte_for_byte() {
         let pass = || {
