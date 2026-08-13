@@ -4,6 +4,8 @@ use alloy_chains::{Chain, NamedChain};
 use core::{cmp::Ordering, fmt};
 use num_enum::TryFromPrimitiveError;
 
+use crate::NetworkId;
+
 /// A named Swarm network.
 #[derive(
     Clone,
@@ -64,6 +66,13 @@ impl_into_numeric!(u64 i64 u128 i128);
 #[cfg(target_pointer_width = "64")]
 impl_into_numeric!(usize isize);
 
+impl From<NamedSwarm> for NetworkId {
+    #[inline]
+    fn from(swarm: NamedSwarm) -> Self {
+        Self::new(swarm.id())
+    }
+}
+
 macro_rules! impl_try_from_numeric {
     ($($native:ty)+) => {
         $(
@@ -81,10 +90,8 @@ macro_rules! impl_try_from_numeric {
 
 impl_try_from_numeric!(u8 u16 u32);
 
-// Signed and pointer-sized inputs have no lossless `u64::from`. The `as u64`
-// cast sign-extends negative values (and zero-extends `usize`), so any value
-// outside the valid discriminant set {1, 10, 1337} keeps failing the
-// `try_into` discriminant check exactly as before.
+// Signed and pointer-sized inputs have no lossless `u64::from`; sign- or
+// zero-extension cannot reach the discriminant set {1, 10, 1337}.
 macro_rules! impl_try_from_numeric_lossy {
     ($($native:ty)+) => {
         $(

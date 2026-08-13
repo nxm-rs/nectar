@@ -3,6 +3,8 @@
 use super::NamedSwarm;
 use core::{cmp::Ordering, fmt, str::FromStr};
 
+use crate::NetworkId;
+
 /// Either a known [`NamedSwarm`] or a custom swarm network ID.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Swarm(SwarmKind);
@@ -41,6 +43,13 @@ impl From<u64> for Swarm {
     #[inline]
     fn from(id: u64) -> Self {
         Self::from_id(id)
+    }
+}
+
+impl From<Swarm> for NetworkId {
+    #[inline]
+    fn from(swarm: Swarm) -> Self {
+        Self::new(swarm.id())
     }
 }
 

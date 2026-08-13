@@ -5,8 +5,7 @@
 //! compile time rather than at a validation call. Derived accessors are
 //! methods, callable on a spec value.
 //!
-//! [`Swarm`] and [`NamedSwarm`] carry the same network identity as a runtime
-//! value, for the cases a type parameter cannot reach.
+//! [`Swarm`] and [`NamedSwarm`] carry the same identity as a runtime value.
 
 mod named;
 mod swarm;
