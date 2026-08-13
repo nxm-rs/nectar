@@ -2,20 +2,7 @@
 //!
 //! This benchmark file focuses on verification-only operations, suitable for
 //! node/vertex use cases that primarily verify stamps rather than create them.
-
-// Not a shipping target: the runtime-safety restriction set does not apply.
-#![allow(
-    missing_docs,
-    clippy::arithmetic_side_effects,
-    clippy::as_conversions,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::missing_panics_doc,
-    clippy::panic,
-    clippy::panic_in_result_fn,
-    clippy::string_slice,
-    clippy::unwrap_used
-)]
+#![allow(missing_docs, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use alloy_primitives::{Address, Signature};
 use alloy_signer::SignerSync;

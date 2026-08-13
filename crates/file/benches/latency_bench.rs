@@ -7,17 +7,10 @@
 //! group narrows the body so intermediate levels dominate, exercising the
 //! derived branch budget alongside the leaf window.
 
-// Not a shipping target: the runtime-safety restriction set does not apply.
 #![allow(
     missing_docs,
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::missing_panics_doc,
-    clippy::panic,
-    clippy::panic_in_result_fn,
-    clippy::string_slice,
     clippy::unwrap_used
 )]
 // The latency model is wall clock under a real tokio runtime, so the runtime's

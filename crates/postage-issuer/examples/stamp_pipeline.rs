@@ -2,20 +2,7 @@
 //!
 //! Results yield as signatures complete, tagged by address; the retry set is
 //! the set of addresses with no Ok result.
-
-// Not a shipping target: the runtime-safety restriction set does not apply.
-#![allow(
-    missing_docs,
-    clippy::arithmetic_side_effects,
-    clippy::as_conversions,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::missing_panics_doc,
-    clippy::panic,
-    clippy::panic_in_result_fn,
-    clippy::string_slice,
-    clippy::unwrap_used
-)]
+#![allow(clippy::arithmetic_side_effects)]
 
 use alloy_primitives::B256;
 use alloy_signer_local::PrivateKeySigner;

@@ -1,15 +1,9 @@
-// Not a shipping target: the runtime-safety restriction set does not apply.
 #![allow(
     missing_docs,
-    clippy::arithmetic_side_effects,
     clippy::as_conversions,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::missing_panics_doc,
-    clippy::panic,
-    clippy::panic_in_result_fn,
-    clippy::string_slice,
-    clippy::unwrap_used
+    clippy::missing_panics_doc
 )]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};

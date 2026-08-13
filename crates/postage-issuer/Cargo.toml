@@ -37,8 +37,8 @@ rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-# The decorator regression and the upload pipeline bench split through the
-# streaming engine; the bench also drives the rayon batch ingest.
+# The upload pipeline bench measures the pooled batch ingest, so `rayon` here
+# is load-bearing: without it the split falls back to the sequential path.
 nectar-file = { workspace = true, features = ["rayon"] }
 nectar-testing = { workspace = true }
 proptest = { workspace = true }

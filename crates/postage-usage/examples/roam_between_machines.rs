@@ -24,20 +24,7 @@
 //! direct access to the [`PersistPlan`](nectar_postage_usage::PersistPlan) can
 //! drop to the low-level `Snapshot` / `revalidate` / `seal_plan` path the facade
 //! is built on; it stays public and unchanged.
-
-// Not a shipping target: the runtime-safety restriction set does not apply.
-#![allow(
-    missing_docs,
-    clippy::arithmetic_side_effects,
-    clippy::as_conversions,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::missing_panics_doc,
-    clippy::panic,
-    clippy::panic_in_result_fn,
-    clippy::string_slice,
-    clippy::unwrap_used
-)]
+#![allow(clippy::panic, clippy::panic_in_result_fn, clippy::unwrap_used)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

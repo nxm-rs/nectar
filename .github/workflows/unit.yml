@@ -158,8 +158,7 @@ jobs:
                     -p nectar-postage-issuer --features parallel --locked \
                     --no-tests=warn --no-fail-fast
             # The pipeline's inline engine only compiles with the parallel
-            # feature off; the workspace pass unifies parallel in via the
-            # bench crate, so cover the inline shape explicitly.
+            # feature off, so cover the inline shape on its own.
             - name: Run postage-issuer inline-engine tests
               run: |
                   cargo nextest run \
