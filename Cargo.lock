@@ -2800,6 +2800,7 @@ dependencies = [
  "nectar-primitives",
  "nectar-tasks",
  "nectar-testing",
+ "parking_lot",
  "proptest",
  "rand 0.10.1",
  "rayon",

@@ -5,7 +5,8 @@
 //! issuance mode.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+
+use parking_lot::Mutex;
 
 use nectar_postage::{Batch, BatchId, BucketDepth, StampDigest, StampError, calculate_bucket};
 use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
@@ -16,12 +17,6 @@ use crate::ring::{Reservation, Reserved, RingIssuerFor, Unreserved};
 
 /// Shards per issuer. A power of two, so a bucket's shard is a shift and a mask.
 const DEFAULT_SHARD_COUNT: usize = 16;
-
-// Poisoning means another stamping thread panicked; propagating it is intended.
-#[allow(clippy::expect_used)]
-fn lock<T>(shard: &Mutex<T>) -> MutexGuard<'_, T> {
-    shard.lock().expect("shard lock poisoned")
-}
 
 /// A sharded issuer: one sequential issuer per contiguous bucket range.
 ///
@@ -144,10 +139,6 @@ impl<S: SwarmSpec, I: StampIssuer> ShardedFor<S, I> {
     /// # Errors
     ///
     /// [`StampError::BucketFull`] when the owning shard refuses the bucket.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a shard lock is poisoned.
     pub fn prepare_stamp(
         &self,
         address: &ChunkAddress,
@@ -155,7 +146,7 @@ impl<S: SwarmSpec, I: StampIssuer> ShardedFor<S, I> {
     ) -> Result<StampDigest, StampError> {
         let bucket = calculate_bucket(address, self.bucket_depth.get());
         let (digest, fill) = {
-            let mut issuer = lock(self.shard(bucket));
+            let mut issuer = self.shard(bucket).lock();
             let digest = issuer.prepare_stamp(address, timestamp)?;
             (digest, issuer.bucket_utilization(bucket))
         };
@@ -195,21 +186,13 @@ impl<S: SwarmSpec, I: StampIssuer> ShardedFor<S, I> {
     }
 
     /// Current utilization of `bucket`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a shard lock is poisoned.
     pub fn bucket_utilization(&self, bucket: u32) -> u32 {
-        lock(self.shard(bucket)).bucket_utilization(bucket)
+        self.shard(bucket).lock().bucket_utilization(bucket)
     }
 
     /// Whether `bucket` has a fresh, never-written slot left.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a shard lock is poisoned.
     pub fn bucket_has_capacity(&self, bucket: u32) -> bool {
-        lock(self.shard(bucket)).bucket_has_capacity(bucket)
+        self.shard(bucket).lock().bucket_has_capacity(bucket)
     }
 
     /// Total stamps issued.
@@ -265,10 +248,6 @@ impl<S: SwarmSpec> ShardedFor<S, MemoryIssuerFor<S>> {
     /// # Errors
     ///
     /// [`IssuerError::DepthDecrease`] if `new_depth` is below the current depth.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a shard lock is poisoned.
     pub fn dilute(&mut self, new_depth: u8) -> Result<(), IssuerError> {
         if new_depth < self.depth {
             return Err(IssuerError::DepthDecrease {
@@ -277,7 +256,7 @@ impl<S: SwarmSpec> ShardedFor<S, MemoryIssuerFor<S>> {
             });
         }
         for shard in &self.shards {
-            lock(shard).dilute(new_depth)?;
+            shard.lock().dilute(new_depth)?;
         }
         self.depth = new_depth;
         // `new_depth >= depth >= bucket_depth` by the check above.
