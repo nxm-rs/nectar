@@ -25,6 +25,9 @@ nectar-marker.workspace = true
 # It carries the BMT and chunk deps this crate no longer names.
 nectar-primitives-core.workspace = true
 
+# The settlement chain a named swarm runs on.
+alloy-chains = { workspace = true }
+
 ## alloy crypto
 # Base set: signature recovery (k256) stays in the bare-metal core; the
 # asm-keccak and getrandom extras ride the target tables below.
@@ -38,6 +41,8 @@ sha2 = { workspace = true, optional = true }
 
 # derive macros
 derive_more.workspace = true
+num_enum.workspace = true
+strum.workspace = true
 
 # Core dependencies
 bytes.workspace = true
@@ -108,6 +113,7 @@ rand.workspace = true
 [features]
 default = [ "std" ]
 std = [
+	"alloy-chains/std",
 	"dep:parking_lot",
 	"dep:web-time",
 	"futures-core/std",
@@ -115,6 +121,7 @@ std = [
 	"k256/std",
 	"nectar-clock/std",
 	"nectar-primitives-core/std",
+	"strum/std",
 ]
 # WASM thread pool via wasm-bindgen-rayon. OFF by default so the default wasm
 # build needs no SharedArrayBuffer / cross-origin isolation, letting it run on
@@ -134,8 +141,9 @@ wasm-threads = [ "dep:wasm-bindgen-rayon" ]
 # express intent; use `wasm-threads` directly only to toggle the wasm thread pool
 # on its own.
 parallel = [ "wasm-threads" ]
-serde = [ "dep:serde", "nectar-primitives-core/serde" ]
+serde = [ "alloy-chains/serde", "dep:serde", "nectar-primitives-core/serde" ]
 arbitrary = [
+	"alloy-chains/arbitrary",
 	"alloy-primitives/arbitrary",
 	"dep:arbitrary",
 	"dep:rand",

@@ -44,7 +44,7 @@ jobs:
                   # carriers and single-owner recovery, and rides both
                   # targets bare.
                   cargo check --locked \
-                    -p nectar-swarms -p nectar-contracts -p nectar-file \
+                    -p nectar-contracts -p nectar-file \
                     -p nectar-marker -p nectar-clock -p nectar-governor \
                     -p nectar-postage -p nectar-postage-issuer \
                     -p nectar-primitives-core \

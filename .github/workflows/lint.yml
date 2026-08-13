@@ -105,7 +105,7 @@ jobs:
                   for crate in nectar-primitives nectar-primitives-core \
                                nectar-postage \
                                nectar-postage-issuer nectar-postage-usage \
-                               nectar-swarms nectar-contracts nectar-file \
+                               nectar-contracts nectar-file \
                                nectar-marker nectar-clock nectar-governor \
                                nectar-tasks; do
                       cargo rustc --locked -p "$crate" --lib -- -D unused_crate_dependencies

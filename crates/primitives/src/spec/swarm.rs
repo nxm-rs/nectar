@@ -1,6 +1,6 @@
 //! Generic Swarm network type.
 
-use crate::NamedSwarm;
+use super::NamedSwarm;
 use core::{cmp::Ordering, fmt, str::FromStr};
 
 /// Either a known [`NamedSwarm`] or a custom swarm network ID.

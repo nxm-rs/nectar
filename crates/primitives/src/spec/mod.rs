@@ -4,6 +4,15 @@
 //! [`Testnet`]) and a spec-parameterized value rejects an out-of-range one at
 //! compile time rather than at a validation call. Derived accessors are
 //! methods, callable on a spec value.
+//!
+//! [`Swarm`] and [`NamedSwarm`] carry the same network identity as a runtime
+//! value, for the cases a type parameter cannot reach.
+
+mod named;
+mod swarm;
+
+pub use named::NamedSwarm;
+pub use swarm::{Swarm, SwarmKind};
 
 use core::{num::NonZeroU8, time::Duration};
 
