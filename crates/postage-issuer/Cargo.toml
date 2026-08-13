@@ -40,7 +40,7 @@ criterion = { workspace = true }
 # The upload pipeline bench measures the pooled batch ingest, so `rayon` here
 # is load-bearing: without it the split falls back to the sequential path.
 nectar-file = { workspace = true, features = ["rayon"] }
-nectar-testing = { workspace = true }
+nectar-testing = { workspace = true, features = ["fixtures"] }
 proptest = { workspace = true }
 rand = { workspace = true }
 alloy-signer-local = { workspace = true }

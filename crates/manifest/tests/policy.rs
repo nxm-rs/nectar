@@ -4,6 +4,12 @@
 //! a store that parks every get on a gate: a single-slot window admits one
 //! get at a time, where the default window overlaps them.
 
+#![allow(
+    clippy::as_conversions,
+    clippy::missing_const_for_fn,
+    clippy::unwrap_used
+)]
+
 use std::sync::Arc;
 use std::task::Poll;
 

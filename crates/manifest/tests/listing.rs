@@ -7,6 +7,14 @@
 //! only worth holding if those two arrive at the same answer, so the answer is
 //! pinned against a model rather than against either implementation.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing,
+    clippy::option_if_let_else,
+    clippy::unwrap_used
+)]
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

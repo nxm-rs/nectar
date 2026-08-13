@@ -1,6 +1,8 @@
 //! Tests for sealing a persist plan into signed chunks and stamps.
 
 #![cfg(feature = "seal")]
+#![allow(clippy::indexing_slicing, clippy::unwrap_used)]
+
 use alloy_primitives::Address;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_usage::{

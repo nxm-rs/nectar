@@ -8,8 +8,8 @@
 //! root comparison and the assemble round-trip. Pinning the root pins the
 //! entire snapshot.
 
-// Bench, example, and integration-test code: unwraps, direct indexing,
-// casts, and assertions are setup and illustration, not shipped surface.
+#![allow(clippy::indexing_slicing, clippy::unwrap_used)]
+
 use alloy_primitives::hex;
 use nectar_postage::{BucketDepth, calculate_bucket};
 use nectar_postage_usage::{

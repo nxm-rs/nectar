@@ -2,6 +2,8 @@
 //! owner-aware issuance path bound to a `Snapshot`'s shared table.
 
 #![cfg(feature = "issuer")]
+#![allow(clippy::indexing_slicing, clippy::unwrap_used)]
+
 use nectar_postage::{BatchId, StampIndex, calculate_bucket};
 use nectar_postage_issuer::StampIssuer;
 use nectar_postage_usage::{Mutability, PublishedSequence, Snapshot, SnapshotIssuer, UsageTable};

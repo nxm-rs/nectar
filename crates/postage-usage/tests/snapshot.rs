@@ -1,6 +1,15 @@
 //! End-to-end tests for the snapshot format: persist planning, encoding,
 //! decoding, dilution, and corruption rejection.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
+
 use nectar_postage::calculate_bucket;
 use nectar_postage_usage::{
     Batch, MAGIC, Mutability, PersistPlan, PublishedSequence, RootInfo, RootInfoFor, Snapshot,
