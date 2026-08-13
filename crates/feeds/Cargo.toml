@@ -35,9 +35,14 @@ arbitrary.workspace = true
 # Self dev-dependency: exposes the `arbitrary` module to integration tests.
 nectar-feeds = { workspace = true, features = ["arbitrary"] }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
-nectar-testing.workspace = true
+nectar-testing = { workspace = true, features = ["bench"] }
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
+serde = { workspace = true, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+# `test-util` supplies `start_paused`: the harness reads the finder's concurrent
+# rounds off the paused clock rather than guessing them.
+tokio = { workspace = true, features = ["time", "test-util"] }
 
 [features]
 default = [ "std" ]
@@ -61,3 +66,9 @@ std = [
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+# An example, not a bench: a bench target cannot be run for its JSON document.
+[[example]]
+name = "feeds-perf"
+path = "examples/feeds-perf/main.rs"
+test = true

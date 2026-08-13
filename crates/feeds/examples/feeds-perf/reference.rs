@@ -186,7 +186,7 @@ pub fn measure(corpus: &Corpus, n: u64) -> Result<Cell, Err> {
             n,
             width: LEVELS,
             rounds,
-            total_probes: counts.probes,
+            total_probes: counts.has_calls,
             wasted_probes: counts.absent,
             verified_gets: counts.gets,
             committed,

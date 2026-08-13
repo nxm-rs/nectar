@@ -99,7 +99,7 @@ pub fn measure(
             n,
             width: width.get(),
             rounds,
-            total_probes: counts.probes,
+            total_probes: counts.has_calls,
             wasted_probes: counts.absent,
             verified_gets: counts.gets,
             committed: latest.update.map(|update| update.index().get()),

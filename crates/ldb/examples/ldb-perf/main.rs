@@ -2,20 +2,38 @@
 //! `(corpus, scale)` and write one JSON result document. Every number is
 //! measured; the only modelled figure is `rounds * rtt`, and `rounds` itself is
 //! read off the real bounded-concurrency cursor under a paused virtual clock.
+//!
+//! Run: `cargo run -p nectar-ldb --example ldb-perf`
+#![allow(
+    unreachable_pub,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::option_if_let_else,
+    clippy::string_slice,
+    clippy::unwrap_used
+)]
+
+mod corpus;
+mod perf;
+mod results;
+mod store;
 
 use std::error::Error;
 use std::path::PathBuf;
-use std::process::Command;
 
-use nectar_ldb::V1;
-use nectar_ldb_sim::corpus::{self, Corpus};
-use nectar_ldb_sim::perf;
-use nectar_ldb_sim::results::{self, Document, Meta};
+use nectar_ldb::{Format, V1};
 use nectar_primitives::DEFAULT_BODY_SIZE;
+use nectar_testing::bench::RunMeta;
 
-use nectar_ldb::Format;
+use crate::corpus::Corpus;
+use crate::results::{Document, Meta};
 
 const DEFAULT_OUT: &str = "ldb-perf-results.json";
+
+/// Schema and harness version; bump it when a measured field changes meaning.
+const HARNESS_VERSION: &str = "4";
 
 struct Args {
     out: PathBuf,
@@ -42,16 +60,6 @@ fn parse_args() -> Args {
         }
     }
     Args { out, scales }
-}
-
-fn git(args: &[&str]) -> String {
-    Command::new("git")
-        .args(args)
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
 }
 
 fn caveats() -> Vec<String> {
@@ -99,14 +107,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let meta = Meta {
-        generated: results::generated_iso(
-            std::env::var("SOURCE_DATE_EPOCH")
-                .ok()
-                .and_then(|v| v.parse().ok()),
-        ),
-        git_branch: git(&["rev-parse", "--abbrev-ref", "HEAD"]),
-        git_commit: git(&["rev-parse", "HEAD"]),
-        harness_version: "4".to_string(),
+        run: RunMeta::current(HARNESS_VERSION),
         seed_master: format!("0x{:016x}", corpus::MASTER_SEED),
         rtt_ms_set: perf::RTT_SET.to_vec(),
         read_ahead: V1::READ_AHEAD as u32,

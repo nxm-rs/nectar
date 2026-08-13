@@ -42,8 +42,14 @@ nectar-file = { workspace = true, features = ["std"] }
 nectar-ldb = { workspace = true, features = ["arbitrary", "manifest"] }
 nectar-manifest.workspace = true
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
-nectar-testing = { workspace = true, features = ["fixtures"] }
+nectar-testing = { workspace = true, features = ["bench", "fixtures"] }
 proptest.workspace = true
+serde = { workspace = true, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+sha2 = { workspace = true, features = ["std"] }
+# `test-util` supplies `start_paused`: the harness reads the cursor's parallel
+# rounds off the paused clock rather than guessing them.
+tokio = { workspace = true, features = ["time", "test-util"] }
 
 [features]
 default = [ "std" ]
@@ -92,3 +98,9 @@ unsync = [
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+# An example, not a bench: a bench target cannot be run for its JSON document.
+[[example]]
+name = "ldb-perf"
+path = "examples/ldb-perf/main.rs"
+test = true

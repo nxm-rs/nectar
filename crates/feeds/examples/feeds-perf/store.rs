@@ -3,12 +3,12 @@
 //! the one certified retrieval.
 
 use std::error::Error;
-use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::time::Duration;
 
 use nectar_feeds::{Publisher, Sequence};
 use nectar_primitives::chunk::{Chunk, ChunkAddress, SingleOwnerOnlyChunkSet, Verified};
 use nectar_primitives::store::{ChunkGet, ChunkHas, MemoryStore};
+use nectar_testing::bench::{Counters, Counts};
 
 use crate::corpus::Corpus;
 
@@ -17,26 +17,13 @@ use crate::corpus::Corpus;
 /// reads back the round count.
 pub const ROUND_TICK: Duration = Duration::from_millis(1);
 
-/// Probe and retrieval counters at one point in time.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Counts {
-    /// Presence probes issued, speculation included.
-    pub probes: u64,
-    /// Probes answered absent: every slot at or past the first free index.
-    pub absent: u64,
-    /// Certified retrievals served.
-    pub gets: u64,
-}
-
 /// Presence-probe store over a corpus prefix of `n` present slots.
 #[derive(Debug)]
 pub struct ProbeStore<'a> {
     corpus: &'a Corpus,
     n: u64,
     inner: MemoryStore<SingleOwnerOnlyChunkSet>,
-    probes: AtomicU64,
-    absent: AtomicU64,
-    gets: AtomicU64,
+    counters: Counters,
 }
 
 impl<'a> ProbeStore<'a> {
@@ -57,31 +44,25 @@ impl<'a> ProbeStore<'a> {
             corpus,
             n,
             inner,
-            probes: AtomicU64::new(0),
-            absent: AtomicU64::new(0),
-            gets: AtomicU64::new(0),
+            counters: Counters::new(),
         })
     }
 
     /// Read every counter.
     #[must_use]
     pub fn counts(&self) -> Counts {
-        Counts {
-            probes: self.probes.load(SeqCst),
-            absent: self.absent.load(SeqCst),
-            gets: self.gets.load(SeqCst),
-        }
+        self.counters.snapshot(self.inner.len() as u64)
     }
 }
 
 impl ChunkHas for ProbeStore<'_> {
     async fn has(&self, address: &ChunkAddress) -> bool {
-        self.probes.fetch_add(1, SeqCst);
+        self.counters.record_has();
         tokio::time::sleep(ROUND_TICK).await;
         // Off-table addresses are slots past the corpus ceiling: absent.
         let present = self.corpus.slot(address).is_some_and(|slot| slot < self.n);
         if !present {
-            self.absent.fetch_add(1, SeqCst);
+            self.counters.record_absent();
         }
         present
     }
@@ -95,7 +76,7 @@ impl ChunkGet<SingleOwnerOnlyChunkSet> for ProbeStore<'_> {
         &self,
         address: &ChunkAddress,
     ) -> Result<Chunk<Verified, SingleOwnerOnlyChunkSet>, Self::Error> {
-        self.gets.fetch_add(1, SeqCst);
+        self.counters.record_get();
         // Only the boundary update is resident: a get anywhere else fails the
         // measurement loudly instead of skewing it.
         ChunkGet::get(&self.inner, address).await
