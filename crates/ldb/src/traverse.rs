@@ -16,9 +16,9 @@ use core::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
-use nectar_governor::BoxFuture;
 use nectar_primitives::store::MaybeSync;
 use nectar_primitives::{ChunkAddress, ChunkRef};
+use nectar_tasks::BoxFuture;
 
 use crate::format::{Format, V1};
 use crate::frontier::{Completion, Frame, Plan, claim, fill};

@@ -13,7 +13,8 @@ use core::future::Future;
 
 use bytes::Bytes;
 use futures_util::stream::FuturesUnordered;
-use nectar_governor::{Admission, BoxFuture, Window};
+use nectar_governor::{Admission, Window};
+use nectar_tasks::BoxFuture;
 
 use crate::format::Format;
 use crate::node::NodeRef;

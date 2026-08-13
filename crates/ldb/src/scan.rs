@@ -24,9 +24,9 @@ use core::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
-use nectar_governor::BoxFuture;
 use nectar_primitives::ChunkRef;
 use nectar_primitives::store::MaybeSync;
+use nectar_tasks::BoxFuture;
 
 use crate::fork::{Child, ForkTable};
 use crate::format::{Format, V1};

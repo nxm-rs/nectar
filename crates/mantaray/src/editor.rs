@@ -23,9 +23,10 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use futures_util::stream::{FuturesUnordered, Stream};
-use nectar_governor::{Admission, BoxFuture, Window};
+use nectar_governor::{Admission, Window};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::{EncryptedChunkRef, EntryRef};
+use nectar_tasks::BoxFuture;
 
 use crate::error::EditorError;
 use crate::node::{Fork, Node, NodeState, Prefix};

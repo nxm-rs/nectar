@@ -3,10 +3,9 @@
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
 use nectar_primitives::store::TrustedGet;
 
-/// Fetch one chunk from a trusted store, carrying `payload` back with the
-/// outcome: the payload-in-future routing a drained
-/// [`FuturesUnordered`](crate::FuturesUnordered) completion relies on.
-pub async fn get_verified<S, R, P>(
+/// Fetch one chunk, carrying `payload` back with the outcome: how a drained
+/// completion routes itself without a side table.
+pub(super) async fn get_verified<S, R, P>(
     store: S,
     address: ChunkAddress,
     payload: P,
@@ -22,10 +21,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nectar_primitives::bytes::Bytes;
+    use bytes::Bytes;
     use nectar_primitives::chunk::{ChunkOps, ContentChunk, ContentOnlyChunkSet};
     use nectar_primitives::store::{ChunkPut, ContentGet, MemoryStore};
-    use nectar_primitives::{Chunk, DEFAULT_BODY_SIZE, StandardChunkSet};
+    use nectar_primitives::{DEFAULT_BODY_SIZE, StandardChunkSet};
     use nectar_testing::run;
 
     #[test]

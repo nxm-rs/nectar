@@ -1,7 +1,6 @@
 //! Bounded-admission governor beneath the streaming walkers: the read-ahead
 //! [`Window`], the head-slot [`Admission`] predicate, the [`AdmitPolicy`]
-//! adaptive-window seam, the write-side [`PutSink`], and the [`BoxFuture`]
-//! alias the in-flight sets hold.
+//! adaptive-window seam, and the write-side [`PutSink`].
 //!
 //! Admission only: `futures_util` is the walk substrate, and each walker
 //! owns its own loop over a `FuturesUnordered` set, with its frontier,
@@ -9,11 +8,15 @@
 //! nothing but when one more fetch may start.
 //!
 //! A consumer therefore takes the in-flight set from `futures_util`
-//! directly: this crate does not re-export it, so the following does not
-//! compile.
+//! directly, and the boxed-future alias from `nectar-tasks`, which owns it:
+//! neither is re-exported here, so neither of the following compiles.
 //!
 //! ```compile_fail
 //! use nectar_governor::FuturesUnordered;
+//! ```
+//!
+//! ```compile_fail
+//! use nectar_governor::BoxFuture;
 //! ```
 //!
 //! The shared walk loop, and the per-walker trait it once ran over, are
@@ -43,22 +46,15 @@
 #[cfg(test)]
 extern crate std;
 
-// The marker predicate is what the build script's `multi_thread` alias
-// mirrors; no marker item is named directly.
+// Held for the `unsync` propagation seam; no marker item is named.
 use nectar_marker as _;
 
 mod admission;
-#[cfg(feature = "chunk")]
-mod chunk;
 mod policy;
 mod put_sink;
 mod window;
 
 pub use admission::Admission;
-#[cfg(feature = "chunk")]
-#[cfg_attr(docsrs, doc(cfg(feature = "chunk")))]
-pub use chunk::get_verified;
-pub use nectar_tasks::BoxFuture;
 pub use policy::{AdmitPolicy, Fixed, FromFn, Observations, from_fn};
 pub use put_sink::PutSink;
 pub use window::Window;

@@ -29,6 +29,7 @@ nectar-file = { workspace = true, optional = true, features = ["manifest"] }
 nectar-governor = { workspace = true }
 nectar-manifest = { workspace = true, optional = true }
 nectar-primitives = { workspace = true }
+nectar-tasks = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -70,6 +71,7 @@ std = [
 	"nectar-file?/std",
 	"nectar-manifest?/std",
 	"nectar-primitives/std",
+	"nectar-tasks/std",
 	"thiserror/std",
 ]
 # Single-thread send escape: relaxes the boxed fetch futures off `Send` in
@@ -79,6 +81,7 @@ unsync = [
 	"nectar-governor/unsync",
 	"nectar-manifest?/unsync",
 	"nectar-primitives/unsync",
+	"nectar-tasks/unsync",
 ]
 
 [package.metadata.docs.rs]

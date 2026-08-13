@@ -17,10 +17,11 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use futures_util::stream::{FuturesUnordered, Stream};
+use nectar_governor::Admission;
 pub use nectar_governor::Window;
-use nectar_governor::{Admission, BoxFuture};
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ChunkAddress;
+use nectar_tasks::BoxFuture;
 
 use crate::entry::Entry;
 use crate::error::CursorError;

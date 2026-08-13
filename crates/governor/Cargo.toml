@@ -19,29 +19,15 @@ workspace = true
 
 [dependencies]
 nectar-marker = { workspace = true }
-nectar-tasks = { workspace = true }
 futures-util = { workspace = true, features = ["alloc"] }
 
-# optional
-nectar-primitives = { workspace = true, optional = true }
-
-[build-dependencies]
-
 [dev-dependencies]
-nectar-primitives = { workspace = true, features = ["std"] }
 nectar-testing.workspace = true
 proptest.workspace = true
 
 [features]
-# Chunk-typed fetch helper over the primitives store surface.
-chunk = [ "dep:nectar-primitives" ]
-# Single-thread send escape: relaxes the boxed future off `Send` in lockstep
-# with the marker traits.
-unsync = [
-	"nectar-marker/unsync",
-	"nectar-primitives?/unsync",
-	"nectar-tasks/unsync",
-]
+# Single-thread send escape, in lockstep with the marker traits.
+unsync = [ "nectar-marker/unsync" ]
 
 [package.metadata.docs.rs]
 all-features = true

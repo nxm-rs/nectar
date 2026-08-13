@@ -8,14 +8,14 @@ use core::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use nectar_governor::{
-    Admission, AdmitPolicy, BoxFuture, FromFn, Observations, from_fn, get_verified,
-};
+use nectar_governor::{Admission, AdmitPolicy, FromFn, Observations, from_fn};
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{Chunk, ChunkAddress, ChunkOps, ContentOnlyChunkSet, Verified};
 use nectar_primitives::store::TrustedGet;
+use nectar_tasks::BoxFuture;
 
 use super::error::{ShapeError, WalkError};
+use super::fetch::get_verified;
 use super::mode::WalkMode;
 use super::{Frame, WalkStats, WindowPolicyFn};
 use crate::config::{BranchBudget, Window};
@@ -44,8 +44,7 @@ impl<M: WalkMode> Node<M> {
 /// of sequence routing.
 type Fetched<M, E, const B: usize> = (Node<M>, Result<Chunk<Verified, ContentOnlyChunkSet<B>>, E>);
 
-/// Boxed fetch future; the governor alias relaxes `Send` off the
-/// multi-threaded targets.
+/// Boxed fetch future; the alias drops `Send` off multi-threaded targets.
 type BoxFetch<M, E, const B: usize> = BoxFuture<'static, Fetched<M, E, B>>;
 
 /// Which frame a drain takes from the ready set.

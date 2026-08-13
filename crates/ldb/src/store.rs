@@ -25,12 +25,13 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use futures_util::stream::{FuturesUnordered, Stream};
-use nectar_governor::{Admission, BoxFuture, Window};
+use nectar_governor::{Admission, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk, ContentOnlyChunkSet, EncryptionKey,
     EntryRef, Verified, transcrypt_in_place,
 };
+use nectar_tasks::BoxFuture;
 
 use crate::codec::{DecodeError, DecodedChunk, EncodeError, SegmentDir};
 use crate::fork::ForkTable;
