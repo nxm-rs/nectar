@@ -64,10 +64,4 @@ impl Corpus {
     pub const fn len(&self) -> u64 {
         self.len
     }
-
-    /// Whether the table is empty.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
 }

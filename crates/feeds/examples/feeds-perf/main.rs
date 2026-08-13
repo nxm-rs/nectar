@@ -2,18 +2,38 @@
 //! `(finder, length, width)` and write one JSON result document. Every
 //! number is a measured work count; rounds are read off the real windowed
 //! finder under a paused virtual clock, one tick per presence probe.
+//!
+//! Run: `cargo run -p nectar-feeds --example feeds-perf`
+#![allow(
+    missing_docs,
+    unreachable_pub,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::unwrap_used
+)]
+
+mod corpus;
+mod measure;
+mod reference;
+mod results;
+mod store;
 
 use core::num::NonZeroUsize;
 use std::error::Error;
 use std::path::PathBuf;
-use std::process::Command;
 
-use nectar_feeds_bench::corpus::{Corpus, TOPIC_LABEL};
-use nectar_feeds_bench::measure::{self, FinderKind, LENGTHS, LINEAR_BUDGET, WIDTHS};
-use nectar_feeds_bench::reference;
-use nectar_feeds_bench::results::{self, Document, FinderCell, Meta};
+use nectar_testing::bench::RunMeta;
+
+use crate::corpus::{Corpus, TOPIC_LABEL};
+use crate::measure::{FinderKind, LENGTHS, LINEAR_BUDGET, WIDTHS};
+use crate::results::{Document, FinderCell, Meta};
 
 const DEFAULT_OUT: &str = "feeds-perf-results.json";
+
+/// Schema and harness version; bump it when a measured field changes meaning.
+const HARNESS_VERSION: &str = "2";
 
 struct Args {
     out: PathBuf,
@@ -40,16 +60,6 @@ fn parse_args() -> Args {
         }
     }
     Args { out, lengths }
-}
-
-fn git(args: &[&str]) -> String {
-    Command::new("git")
-        .args(args)
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
 }
 
 fn caveats() -> Vec<String> {
@@ -159,14 +169,7 @@ the replay recomputes its frontier from the floor each round"
     }
 
     let meta = Meta {
-        generated: results::generated_iso(
-            std::env::var("SOURCE_DATE_EPOCH")
-                .ok()
-                .and_then(|v| v.parse().ok()),
-        ),
-        git_branch: git(&["rev-parse", "--abbrev-ref", "HEAD"]),
-        git_commit: git(&["rev-parse", "HEAD"]),
-        harness_version: "2".to_string(),
+        run: RunMeta::current(HARNESS_VERSION),
         topic_label: TOPIC_LABEL.to_string(),
         owner: corpus.feed().owner().to_string(),
         widths: WIDTHS.to_vec(),

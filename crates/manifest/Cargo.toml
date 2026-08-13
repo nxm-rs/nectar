@@ -30,7 +30,9 @@ thiserror = { workspace = true }
 [dev-dependencies]
 bytes.workspace = true
 nectar-primitives = { workspace = true, features = ["std"] }
-nectar-testing.workspace = true
+nectar-testing = { workspace = true, features = ["bench"] }
+serde = { workspace = true, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
 # Path-only: each depends on this crate, so a versioned dev-dependency would
 # have no publish order.
 nectar-file = { path = "../file", default-features = false, features = ["std"] }
@@ -62,3 +64,10 @@ unsync = [
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+# The two-arm format comparison. An example, not a bench: it is run for its
+# JSON document, and a bench target is not runnable.
+[[example]]
+name = "manifest-perf"
+path = "examples/manifest-perf/main.rs"
+test = true

@@ -40,7 +40,11 @@
 //!    `arbitrary` derive, for its target-local input grammars.
 //!
 //! Behind `fixtures`: the shared split fixtures and spec doubles. Behind
-//! `alloc`: the allocation witness.
+//! `alloc`: the allocation witness. Behind `bench`: the measurement-harness
+//! core, the instrumented store and the run header.
+
+#[cfg(feature = "bench")]
+pub mod bench;
 
 mod seeds;
 

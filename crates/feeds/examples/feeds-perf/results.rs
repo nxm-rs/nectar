@@ -4,6 +4,7 @@
 //! a `null` is only ever a capability gap left with a reason, never
 //! back-filled by estimate.
 
+use nectar_testing::bench::RunMeta;
 use serde::Serialize;
 
 use crate::measure::Cell;
@@ -23,16 +24,12 @@ pub struct Document {
     pub reference_comparison: Vec<String>,
 }
 
-/// Run-level metadata.
+/// Run-level metadata. The shared header flattens in first, so the document
+/// keeps the key order the checked-in results were written at.
 #[derive(Debug, Serialize)]
 pub struct Meta {
-    /// Run timestamp; `SOURCE_DATE_EPOCH` pins it so two runs are
-    /// byte-identical.
-    pub generated: String,
-    pub git_branch: String,
-    pub git_commit: String,
-    /// The single version authority for the harness and its schema.
-    pub harness_version: String,
+    #[serde(flatten)]
+    pub run: RunMeta,
     pub topic_label: String,
     pub owner: String,
     pub widths: Vec<usize>,
@@ -95,42 +92,48 @@ impl FinderCell {
     }
 }
 
-/// RFC 3339 UTC seconds for `epoch_secs`, or the current wall clock when
-/// `None`; the bin passes `SOURCE_DATE_EPOCH` here.
-#[must_use]
-pub fn generated_iso(epoch_secs: Option<u64>) -> String {
-    let secs = epoch_secs.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
-    });
-    iso_utc(secs)
-}
-
-/// Proleptic-Gregorian UTC render of a Unix timestamp, seconds precision.
-fn iso_utc(secs: u64) -> String {
-    let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
-    let z = (secs / 86_400) as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(mo <= 2);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{generated_iso, iso_utc};
+    use super::{Document, Meta};
+    use nectar_testing::bench::RunMeta;
 
+    /// The flattened header keeps the four provenance keys ahead of the
+    /// harness fields, so a rerun under one `SOURCE_DATE_EPOCH` stays
+    /// byte-identical to the documents already published.
     #[test]
-    fn iso_render_is_correct_at_known_instants() {
-        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
-        assert_eq!(iso_utc(951_868_800), "2000-03-01T00:00:00Z");
-        assert_eq!(iso_utc(1_767_225_600), "2026-01-01T00:00:00Z");
-        assert_eq!(generated_iso(Some(86_399)), "1970-01-01T23:59:59Z");
+    fn the_document_opens_with_the_shared_header() {
+        let doc = Document {
+            meta: Meta {
+                run: RunMeta {
+                    generated: "1970-01-01T00:00:00Z".to_string(),
+                    git_branch: "main".to_string(),
+                    git_commit: "abc".to_string(),
+                    harness_version: "2".to_string(),
+                },
+                topic_label: "finder-cost".to_string(),
+                owner: "0x0".to_string(),
+                widths: Vec::new(),
+                lengths: Vec::new(),
+                linear_budget: 7,
+                caveats: Vec::new(),
+            },
+            latest: Vec::new(),
+            linear: Vec::new(),
+            reference: Vec::new(),
+            reference_comparison: Vec::new(),
+        };
+        let want = [
+            "{",
+            r#"  "meta": {"#,
+            r#"    "generated": "1970-01-01T00:00:00Z","#,
+            r#"    "git_branch": "main","#,
+            r#"    "git_commit": "abc","#,
+            r#"    "harness_version": "2","#,
+            r#"    "topic_label": "finder-cost","#,
+            r#"    "owner": "0x0","#,
+        ]
+        .join("\n");
+        let json = serde_json::to_string_pretty(&doc).unwrap();
+        assert!(json.starts_with(&want), "{json}");
     }
 }

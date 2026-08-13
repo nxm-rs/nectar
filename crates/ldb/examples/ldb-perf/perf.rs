@@ -13,6 +13,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use bytes::Bytes;
+use nectar_testing::bench::CountingStore;
 use nectar_testing::run;
 
 use nectar_ldb::{
@@ -26,7 +27,7 @@ use crate::results::{
     CursorLatency, PaginateCell, ParallelCursorCell, ReadProfileCell, ReadProfileSide,
     SubtreeServeCell,
 };
-use crate::store::{CountingStore, LatencyStore};
+use crate::store::LatencyStore;
 
 type Err = Box<dyn Error>;
 

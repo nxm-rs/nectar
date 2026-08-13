@@ -19,3 +19,4 @@ cspell.json
 # Measurement harness output (generated on demand, never committed)
 feeds-perf-results.json
 ldb-perf-results.json
+manifest-perf-results.json
