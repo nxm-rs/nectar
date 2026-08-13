@@ -1,6 +1,6 @@
 //! Shared helpers for the postage-usage integration tests.
 
-#![allow(dead_code)]
+#![allow(dead_code, clippy::unwrap_used)]
 
 use alloy_primitives::Address;
 use nectar_postage_usage::{BatchId, BucketDepth};

@@ -2583,22 +2583,16 @@ name = "nectar-integration-tests"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
- "alloy-signer-local",
  "anyhow",
  "arbitrary",
  "bytes",
- "futures",
  "nectar-file",
  "nectar-ldb",
  "nectar-manifest",
  "nectar-mantaray",
- "nectar-postage",
- "nectar-postage-issuer",
- "nectar-postage-usage",
  "nectar-primitives",
  "nectar-testing",
  "proptest",
- "thiserror",
 ]
 
 [[package]]
@@ -2606,6 +2600,7 @@ name = "nectar-ldb"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
+ "anyhow",
  "arbitrary",
  "bytes",
  "futures-util",
@@ -2639,7 +2634,11 @@ name = "nectar-manifest"
 version = "0.4.0"
 dependencies = [
  "auto_impl",
+ "bytes",
  "derive_more",
+ "nectar-file",
+ "nectar-ldb",
+ "nectar-mantaray",
  "nectar-marker",
  "nectar-primitives",
  "nectar-tasks",

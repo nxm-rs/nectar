@@ -7,6 +7,11 @@
 //! because each reference carries the key that opens the chunk it names.
 
 #![cfg(feature = "encryption")]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn
+)]
 
 use anyhow::{Result, ensure};
 use nectar_ldb::{Builder, Changeset, Encrypted, Entry, Key, Node, Plaintext, Reader, V1, apply};

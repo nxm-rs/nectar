@@ -3,6 +3,8 @@
 //! The trie rides the seam's provided default; the key-value database
 //! overrides `serve` with its native resolver, so every case runs on both.
 
+#![allow(clippy::indexing_slicing, clippy::unwrap_used)]
+
 use bytes::Bytes;
 use nectar_ldb::{Entry, Key, KeyId};
 use nectar_manifest::{Batch, Manifest, ManifestPath, ManifestView, MapEntry, Served};

@@ -2,6 +2,14 @@
 //! load and apply calls drive both, and the metadata a caller writes through
 //! the erased view lands in each format's own native slot.
 
+#![allow(
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
+
 use nectar_file::MemSink;
 use nectar_ldb::{Database, Reader as LdbReader};
 use nectar_manifest::{

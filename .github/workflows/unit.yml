@@ -104,6 +104,13 @@ jobs:
                     --no-tests=warn --no-fail-fast
             - name: Run ldb encryption doctests
               run: cargo test --doc -p nectar-ldb --features encryption --locked
+            # The seam conformance suites drive both formats at the encrypted
+            # reference width, which no default-features pass reaches.
+            - name: Run manifest encryption tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-manifest --features test-encryption --locked \
+                    --no-tests=warn --no-fail-fast
             # The trie's production node adapter rides the manifest feature and
             # its encrypted saver rides encryption on top; the workspace pass
             # unifies the pair in nowhere, so cover the adapter's suite here.
@@ -129,19 +136,12 @@ jobs:
                   cargo nextest run \
                     -p nectar-integration-tests --features encryption --locked \
                     --no-tests=warn --no-fail-fast
-            # The issuer integration surface is feature-gated off the default
-            # build; cover its tests here.
-            - name: Run issuer tests
+            # The issuer adapter and the sealing lane are feature-gated off the
+            # default build; cover their tests here.
+            - name: Run issuer and seal tests
               run: |
                   cargo nextest run \
-                    -p nectar-postage-usage --features issuer --locked \
-                    --no-tests=warn --no-fail-fast
-            # The seal and issuer integration suites ride the dev crate's
-            # forwarding features.
-            - name: Run seal and issuer integration tests
-              run: |
-                  cargo nextest run \
-                    -p nectar-integration-tests --features seal,issuer --locked \
+                    -p nectar-postage-usage --features issuer,seal --locked \
                     --no-tests=warn --no-fail-fast
             # The serde impls (and the bounded-newtype guards on their decode
             # path) are off the default build; cover their tests here.

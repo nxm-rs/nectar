@@ -5,9 +5,8 @@
 //! accepts, and an issuer built for it stamps, fills, dilutes, and reserves at
 //! that geometry.
 
-// The crate-level `cfg_attr(test, ..)` exemption does not reach a separate test
-// binary, and a fixture that unwraps a known-good depth is setup, not shipped
-// surface. Nothing else in this file needs an exemption.
+#![allow(clippy::unwrap_used)]
+
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_issuer::{
     Batch, BatchId, BatchStamper, BucketDepth, IssuerError, Mainnet, MemoryIssuerFor, Reserved,

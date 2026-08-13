@@ -4,7 +4,8 @@
 //! drives an encrypted manifest: the ops carry 64-byte references, the roots
 //! come back encrypted, and a load joins an encrypted chunk tree.
 
-#![cfg(feature = "encryption")]
+#![cfg(feature = "test-encryption")]
+#![allow(clippy::as_conversions, clippy::unwrap_used)]
 
 use std::sync::Arc;
 

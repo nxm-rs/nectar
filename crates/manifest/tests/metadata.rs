@@ -3,6 +3,13 @@
 //! from the source's `MetadataSource` pairs. No format names the other, and
 //! what a copy drops is the target's stated limit.
 
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

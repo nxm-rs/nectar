@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Public-API integration tests for the nectar workspace"
+description = "Allocator-swap probes and reference-client vectors for the nectar workspace"
 publish = false
 
 # Non-shipping targets: the runtime-safety restriction set does not apply,
@@ -27,20 +27,14 @@ disallowed_methods = "deny"
 anyhow.workspace = true
 arbitrary.workspace = true
 alloy-primitives = { workspace = true, features = ["getrandom"] }
-alloy-signer-local.workspace = true
 bytes.workspace = true
-futures.workspace = true
 nectar-file = { workspace = true, features = ["std"] }
-nectar-ldb = { workspace = true, features = ["arbitrary", "manifest"] }
+nectar-ldb = { workspace = true, features = ["arbitrary"] }
 nectar-manifest.workspace = true
 nectar-mantaray = { workspace = true, features = ["manifest"] }
-nectar-postage = { workspace = true, features = ["std"] }
-nectar-postage-issuer.workspace = true
-nectar-postage-usage.workspace = true
 nectar-primitives = { workspace = true, features = ["std"] }
 nectar-testing = { workspace = true, features = ["alloc", "fixtures"] }
 proptest.workspace = true
-thiserror = { workspace = true, features = ["std"] }
 
 [features]
 # Each feature mirrors the underlying crate feature so the `cfg(feature)`
@@ -51,9 +45,7 @@ encryption = [
 	"nectar-mantaray/encryption",
 	"nectar-primitives/encryption",
 ]
-issuer = [ "nectar-postage-usage/issuer" ]
 rayon = [ "nectar-file/rayon" ]
-seal = [ "nectar-postage-usage/seal" ]
 
 [[test]]
 name = "file_alloc_probe"
@@ -72,80 +64,8 @@ name = "file_split_membound"
 path = "tests/file/split_membound.rs"
 
 [[test]]
-name = "ldb_apply"
-path = "tests/ldb/apply.rs"
-
-[[test]]
-name = "ldb_bridge"
-path = "tests/ldb/bridge.rs"
-
-[[test]]
-name = "ldb_builder"
-path = "tests/ldb/builder.rs"
-
-[[test]]
-name = "ldb_conformance"
-path = "tests/ldb/conformance.rs"
-
-[[test]]
-name = "ldb_counted"
-path = "tests/ldb/counted.rs"
-
-[[test]]
-name = "ldb_encrypted"
-path = "tests/ldb/encrypted.rs"
-
-[[test]]
-name = "ldb_determinism"
-path = "tests/ldb/determinism.rs"
-
-[[test]]
 name = "ldb_membound"
 path = "tests/ldb/membound.rs"
-
-[[test]]
-name = "ldb_order"
-path = "tests/ldb/order.rs"
-
-[[test]]
-name = "ldb_reader"
-path = "tests/ldb/reader.rs"
-
-[[test]]
-name = "ldb_read_profile"
-path = "tests/ldb/read_profile.rs"
-
-[[test]]
-name = "ldb_scan"
-path = "tests/ldb/scan.rs"
-
-[[test]]
-name = "manifest_dyn_roundtrip"
-path = "tests/manifest/dyn_roundtrip.rs"
-
-[[test]]
-name = "manifest_encrypted"
-path = "tests/manifest/encrypted.rs"
-
-[[test]]
-name = "manifest_listing"
-path = "tests/manifest/listing.rs"
-
-[[test]]
-name = "manifest_metadata"
-path = "tests/manifest/metadata.rs"
-
-[[test]]
-name = "manifest_policy"
-path = "tests/manifest/policy.rs"
-
-[[test]]
-name = "manifest_root_config"
-path = "tests/manifest/root_config.rs"
-
-[[test]]
-name = "manifest_serve"
-path = "tests/manifest/serve.rs"
 
 [[test]]
 name = "mantaray_bmt_nodes"
@@ -158,23 +78,3 @@ path = "tests/mantaray/bee_layout.rs"
 [[test]]
 name = "mantaray_bee_vectors"
 path = "tests/mantaray/bee_vectors.rs"
-
-[[test]]
-name = "postage_issuer_non_mainnet"
-path = "tests/postage_issuer/non_mainnet.rs"
-
-[[test]]
-name = "postage_usage_issuer"
-path = "tests/postage_usage/issuer.rs"
-
-[[test]]
-name = "postage_usage_seal"
-path = "tests/postage_usage/seal.rs"
-
-[[test]]
-name = "postage_usage_snapshot"
-path = "tests/postage_usage/snapshot.rs"
-
-[[test]]
-name = "postage_usage_vector"
-path = "tests/postage_usage/vector.rs"
