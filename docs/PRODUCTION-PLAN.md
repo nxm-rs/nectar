@@ -45,8 +45,9 @@ Apply these to any issue filed later, not only to the ones listed here.
 
 ### Stage 0: decide and clear the dead work
 
-In progress.
-Land this document, write the error section in `AGENTS.md` (#686), and clear the tracker of work that no longer applies.
+Complete.
+This document landed as #734 and the `AGENTS.md` error section as #735 (#706 and #686).
+#474 and draft pull request #609 are closed, so no citation of the unmerged roadmap survives.
 
 Closed as part of this stage: #522 (drained, every roll-up child landed), #646 (superseded by the manifest KV decision, which deliberately kept map vocabulary), #558 (folded into #645), and pull request #649 (depends on the dissolved `nectar-loadsave`, re-cut as #680).
 
@@ -71,17 +72,33 @@ Verified rather than assumed: a pull request carrying a deliberate lint failure 
 
 ### Stage 2: delete
 
-#681 and #678 run in parallel, because `governor` and `postage-issuer` share no file.
-#618, then #679 execution, then #680 run in series, because all three edit the workspace member list and the two CI crate lists.
+Complete.
+#681, #678, #618, #739, #679 and #680 landed as pull requests #737, #736, #740, #741, #742 and #743.
 
-#678 alone removes over two thousand lines carrying six `calculate_bucket` call sites, the hand-written `RingExhausted` producer and two shard cursors that three later issues would otherwise refactor first.
+#681 and #678 ran in parallel, because `governor` and `postage-issuer` share no file.
+#618, then #739, then #679, then #680 ran in series, because each edits the workspace member list and the two CI crate lists.
 
-Gate: `cargo metadata` reports the final member count and it is written down.
+#678 alone removed over two thousand lines carrying six `calculate_bucket` call sites, the hand-written `RingExhausted` producer and two shard cursors that three later issues would otherwise have refactored first.
+
+**The workspace is 18 members, down from 23.**
+The count is the number of directories under `crates/` plus one, because `Cargo.toml` declares `members = ["crates/*", "crates/primitives/examples/wasm-demo"]`.
+A directory count alone is off by one, and it produced a wrong figure once during this stage.
+The 17 remaining crates are `clock`, `contracts`, `feeds`, `file`, `governor`, `integration-tests`, `ldb`, `manifest`, `mantaray`, `marker`, `postage`, `postage-issuer`, `postage-usage`, `primitives`, `primitives-core`, `tasks` and `testing`.
+
+What went: `benches` and `examples` (#618); `swarms` (#679, folded into `nectar-primitives`); `feeds-bench` and `ldb-sim` (#680, folded into their host crates as `[[example]]` targets so their drivers stay runnable).
+`nectar-postage-issuer` lost 1131 lines to a generic `Sharded<I>`, and `nectar-governor` is now bounded admission alone, holding only `nectar-marker` and `futures-util`.
+
+Three decisions were taken during this stage and should not be reopened.
+`nectar-swarms` folded into `nectar-primitives` rather than being kept as a consumer-only crate, which is breaking for vertex and is tracked on #719.
+`Corpus` was deliberately not deduplicated between the two perf harnesses, because it is a struct in one and an enum in the other, so unifying them would invent an abstraction to fit two callers.
+The perf drivers fold as `[[example]]` rather than `[[bench]]` targets, because a bench target is not runnable and their JSON output is a gate.
 
 ### Stage 3: the breaking trains
 
 #685, #687, #689 and #688 in that order, in parallel with #683 then #682, in parallel with #708.
 The three tracks share no file.
+
+Before this stage opens, the #683 hazard below must already be handled; it was struck on 2026-08-12.
 
 The design question in #689 is settled: `StampIndex` gains the spec parameter and carries a `Bucket<S>` rather than a bare integer.
 The generic is viral, so `Stamp` and its codec impls are expected to gain it too.
@@ -100,7 +117,8 @@ Gate: every wire format nectar ships has at least one vector whose expected byte
 
 ### Stage 5: the quiet window
 
-Workspace-wide sweeps, with nothing else in flight: #319, #690, #691, #699 follow-ups and #701.
+Workspace-wide sweeps, with nothing else in flight: #319, #690, #691, #701, #730 follow-ups and #738.
+#738 narrows the rv64 no_std leg to the surface a zkVM guest would actually run, and lands after #679, which it does.
 
 Gate: no public error variant carries a bare `String`, and every public error enum is `non_exhaustive`.
 
