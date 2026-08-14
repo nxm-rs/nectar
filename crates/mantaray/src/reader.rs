@@ -8,12 +8,12 @@
 
 use alloc::sync::Arc;
 
+use nectar_manifest::NodeLoader;
 use nectar_primitives::EntryRef;
 
 use crate::entry::Entry;
 use crate::error::ReaderError;
 use crate::node::NodeType;
-use crate::persist::NodeLoader;
 use crate::view::NodeView;
 
 /// Default per-lookup node-fetch budget.
@@ -64,7 +64,7 @@ impl<L> Reader<L> {
     }
 }
 
-impl<L: NodeLoader> Reader<L> {
+impl<L: NodeLoader<Vec<u8>>> Reader<L> {
     /// The entry at `path` under the trie rooted at `root`, or `None` when
     /// the path is absent or names a bare edge. A metadata-carrying edge
     /// (the root documents node) reads back as an entry with no reference.
@@ -167,7 +167,7 @@ impl<L: NodeLoader> Reader<L> {
         let address = *reference.address();
         let bytes = self
             .store
-            .collect(reference)
+            .load(reference)
             .await
             .map_err(|e| ReaderError::Store {
                 address,
@@ -367,12 +367,12 @@ mod tests {
         }
     }
 
-    impl NodeLoader for CountingStore {
+    impl NodeLoader<Vec<u8>> for CountingStore {
         type Error = SingleChunkError;
 
-        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
             self.gets.fetch_add(1, Ordering::SeqCst);
-            self.inner.collect(reference).await
+            self.inner.load(reference).await
         }
     }
 

@@ -44,7 +44,7 @@ async fn assert_node_parity(loadsaver: &LoadSaver, root: EntryRef) {
     let mut stack = vec![root];
     let mut visited = 0usize;
     while let Some(reference) = stack.pop() {
-        let bytes = loadsaver.collect(&reference).await.unwrap();
+        let bytes = loadsaver.load(&reference).await.unwrap();
         if bytes.len() <= BODY {
             let chunk = ContentChunk::<BODY>::new(Bytes::from(bytes.clone())).unwrap();
             assert_eq!(
@@ -97,7 +97,7 @@ fn multi_chunk_root_commits_and_reads_back() {
     let (root, loadsaver) = build_wide();
     run(async {
         // The root node image genuinely spans chunks.
-        let bytes = loadsaver.collect(&EntryRef::from(root)).await.unwrap();
+        let bytes = loadsaver.load(&EntryRef::from(root)).await.unwrap();
         assert!(bytes.len() > BODY, "root image is {} bytes", bytes.len());
 
         // Every entry reads back through the adapter.

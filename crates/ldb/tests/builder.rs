@@ -12,7 +12,7 @@ use bytes::Bytes;
 use nectar_file::{File, Policy};
 use nectar_ldb::{
     BuildStats, Builder, Built, Child, Entry, ForkPayload, ForkTable, Key, KeyId, Metadata, Node,
-    NodeGet, Plaintext, Prefix, RootExtension, V1,
+    Plaintext, Prefix, RootExtension, V1, load_node,
 };
 use nectar_primitives::store::ChunkPut;
 use nectar_primitives::{
@@ -115,7 +115,7 @@ fn builds_the_worked_example_byte_for_byte() -> Result<()> {
         "root payload",
     );
 
-    let decoded: Node = run(ContentGet::new(&store).get_node(built.root()))?;
+    let decoded: Node = run(load_node(&ContentGet::new(&store), built.root()))?;
     ensure!(decoded == worked_example_node()?, "decoded root");
     Ok(())
 }
@@ -278,7 +278,7 @@ fn the_empty_builder_publishes_the_empty_root() -> Result<()> {
     ensure!(built.stats().peak_open_nodes() == 1, "one open node");
     ensure!(built.stats().nodes_written() == 1, "one node written");
 
-    let node: Node = run(ContentGet::new(&store).get_node(built.root()))?;
+    let node: Node = run(load_node(&ContentGet::new(&store), built.root()))?;
     ensure!(node.is_empty(), "root is the empty map");
     Ok(())
 }
@@ -294,7 +294,7 @@ fn build_files_splits_through_bmt_and_references_the_stored_roots() -> Result<()
     ];
 
     let built = run(build_files(&store, files))?;
-    let node: Node = run(ContentGet::new(&store).get_node(built.root()))?;
+    let node: Node = run(load_node(&ContentGet::new(&store), built.root()))?;
 
     // Each file's manifest entry is its independent BMT root, and every file
     // chunk is present in the same store.
@@ -328,7 +328,7 @@ fn a_key_that_prefixes_another_shares_a_fork() -> Result<()> {
         .insert(Key::from(&b"ab"[..]), Entry::from(ref32(2)), None);
     let built = run(builder.build(&store, &Plaintext))?;
 
-    let node: Node = run(ContentGet::new(&store).get_node(built.root()))?;
+    let node: Node = run(load_node(&ContentGet::new(&store), built.root()))?;
     let record = node.forks().get(b'a').context("missing fork a")?;
     ensure!(record.tail().is_empty(), "single-byte edge");
     // "a" terminates here and the trie continues to "ab".

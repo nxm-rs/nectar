@@ -16,8 +16,8 @@ use core::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
-use nectar_primitives::store::MaybeSync;
-use nectar_primitives::{ChunkAddress, ChunkRef};
+use nectar_primitives::store::{MaybeSync, TrustedGet};
+use nectar_primitives::{ChunkAddress, ChunkRef, ContentOnlyChunkSet};
 use nectar_tasks::BoxFuture;
 
 use crate::format::{Format, V1};
@@ -25,7 +25,7 @@ use crate::frontier::{Completion, Frame, Plan, claim, fill};
 use crate::node::NodeRef;
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Step, flatten};
-use crate::store::{NodeGet, materialize_traced};
+use crate::store::materialize_traced;
 
 /// A visited node's completion payload: its steps and the segment chunk
 /// addresses its reassembly visited.
@@ -97,7 +97,7 @@ pub struct AddressStream<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
 
 impl<'a, S, F, R> AddressStream<'a, S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -256,7 +256,7 @@ where
 
 impl<S, F, R> Reader<S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -287,7 +287,7 @@ mod tests {
     use crate::fork::{Child, ForkTable};
     use crate::format::V1;
     use crate::node::{Node, RootExtension};
-    use crate::store::{NodePut, Plaintext};
+    use crate::store::{Plaintext, save_node};
     use crate::value::{Entry, Key};
 
     use super::*;
@@ -306,7 +306,7 @@ mod tests {
 
     fn drain<S>(mut stream: AddressStream<'_, S>) -> Vec<ChunkAddress>
     where
-        S: NodeGet + MaybeSync,
+        S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     {
         run(async {
             let mut out = Vec::new();
@@ -322,7 +322,7 @@ mod tests {
     fn sample(store: &ContentGet<MemoryStore>) -> (ChunkRef, ChunkRef) {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
-        let leaf_addr = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
+        let leaf_addr = run(save_node(store, &Node::new(None, leaf), &Plaintext)).unwrap();
 
         let mut embedded = ForkTable::new();
         embedded
@@ -338,7 +338,7 @@ mod tests {
         forks
             .insert(prefix(b"b"), Child::Ref(leaf_addr).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(store, &Node::new(None, forks), &Plaintext)).unwrap();
         (root, leaf_addr)
     }
 
@@ -366,7 +366,7 @@ mod tests {
         let root_ext = RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
-        let root = run(store.put_node(&Node::new(root_ext, forks), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::new(root_ext, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
             drain(reader.addresses(&root)),
@@ -385,7 +385,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(drain(reader.addresses(&root)), vec![*root.address()]);
     }
@@ -405,7 +405,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
             drain(reader.addresses(&root)),
@@ -418,14 +418,14 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"x"), entry(0x33).into(), None).unwrap();
-        let leaf_addr = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
+        let leaf_addr = run(save_node(&store, &Node::new(None, leaf), &Plaintext)).unwrap();
         let mut forks = ForkTable::new();
         for first in [b"a", b"b"] {
             forks
                 .insert(prefix(first), Child::Ref(leaf_addr).into(), None)
                 .unwrap();
         }
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
             drain(reader.addresses(&root)),
@@ -690,7 +690,7 @@ mod tests {
             mut stream: AddressStream<'_, S, V1, EncryptedChunkRef>,
         ) -> Vec<ChunkAddress>
         where
-            S: NodeGet + MaybeSync,
+            S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
         {
             run(async {
                 let mut out = Vec::new();
@@ -712,7 +712,7 @@ mod tests {
                 .forks_mut()
                 .insert(prefix(b"x"), entry(0x11).into(), None)
                 .unwrap();
-            let child_ref = run(store.put_node(&child, &seal())).unwrap();
+            let child_ref = run(save_node(&store, &child, &seal())).unwrap();
 
             let root_ext = RootExtension::new(Some(entry(9)), None);
             let mut forks = ForkTable::new();
@@ -723,7 +723,7 @@ mod tests {
                 .insert(prefix(b"b"), entry(0x22).into(), None)
                 .unwrap();
             let root = Node::new(root_ext, forks);
-            let root_ref = run(store.put_node(&root, &seal())).unwrap();
+            let root_ref = run(save_node(&store, &root, &seal())).unwrap();
 
             let reader = Reader::<&ContentGet<MemoryStore>, V1, EncryptedChunkRef>::new(&store);
             assert_eq!(

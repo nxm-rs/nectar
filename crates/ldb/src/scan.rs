@@ -24,8 +24,8 @@ use core::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
-use nectar_primitives::ChunkRef;
-use nectar_primitives::store::MaybeSync;
+use nectar_primitives::store::{MaybeSync, TrustedGet};
+use nectar_primitives::{ChunkRef, ContentOnlyChunkSet};
 use nectar_tasks::BoxFuture;
 
 use crate::fork::{Child, ForkTable};
@@ -33,7 +33,7 @@ use crate::format::{Format, V1};
 use crate::frontier::{Completion, Frame, Plan, claim, fill};
 use crate::node::{Node, NodeRef};
 use crate::reader::{Reader, ReaderError};
-use crate::store::NodeGet;
+use crate::store::load_node;
 use crate::value::{Entry, Key};
 
 /// One resolved position in a chunk's ordered contents.
@@ -131,7 +131,7 @@ enum Advance<F: Format> {
 
 impl<'a, S, F, R> Cursor<'a, S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -162,8 +162,7 @@ where
                     Step::Ref { reference, .. } => {
                         let reference = reference.clone();
                         Plan::Fetch(async move {
-                            store
-                                .get_node::<F, R>(&reference)
+                            load_node::<_, F, R>(store, &reference)
                                 .await
                                 .map(|node| flatten(&node, false))
                                 .map_err(ReaderError::from)
@@ -276,7 +275,7 @@ where
         let mut reference = root.clone();
         let mut is_root = true;
         loop {
-            let node = store.get_node::<F, R>(&reference).await?;
+            let node = load_node::<_, F, R>(store, &reference).await?;
             let steps = flatten(&node, is_root);
             let remaining = start.get(base.len()..).unwrap_or(&[]);
             if remaining.is_empty() {
@@ -391,7 +390,7 @@ where
 
 impl<S, F, R> Reader<S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -436,7 +435,7 @@ where
         // level; a deeper left branch always outranks it, so one slot suffices.
         let mut fallback: Option<(Bytes, Step<F, R>)> = None;
         loop {
-            let node = store.get_node::<F, R>(&reference).await?;
+            let node = load_node::<_, F, R>(store, &reference).await?;
             let steps = flatten(&node, is_root);
             let remaining = target.get(base.len()..).unwrap_or(&[]);
             let mut left: Option<Step<F, R>> = None;
@@ -495,7 +494,7 @@ async fn max_key<S, F, R>(
     step: Step<F, R>,
 ) -> Result<Option<(Key, Entry<F>)>, ReaderError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -520,12 +519,12 @@ async fn rightmost<S, F, R>(
     mut reference: R,
 ) -> Result<Option<(Key, Entry<F>)>, ReaderError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
     loop {
-        let node = store.get_node::<F, R>(&reference).await?;
+        let node = load_node::<_, F, R>(store, &reference).await?;
         let steps = flatten(&node, false);
         match steps.last() {
             None => return Ok(None),
@@ -649,7 +648,7 @@ mod tests {
     use crate::bounded::Prefix;
     use crate::fork::{Child, ForkTable};
     use crate::node::Node;
-    use crate::store::NodePut;
+    use crate::store::save_node;
     use crate::value::{Entry, Key};
 
     use super::*;
@@ -675,7 +674,7 @@ mod tests {
     fn sample(store: &ContentGet<MemoryStore>) -> ChunkRef {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
-        let leaf_ref = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
+        let leaf_ref = run(save_node(store, &Node::new(None, leaf), &Plaintext)).unwrap();
 
         let mut embedded = ForkTable::new();
         embedded
@@ -691,7 +690,7 @@ mod tests {
         forks
             .insert(prefix(b"b"), Child::Ref(leaf_ref).into(), None)
             .unwrap();
-        run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap()
+        run(save_node(store, &Node::new(None, forks), &Plaintext)).unwrap()
     }
 
     #[test]
@@ -716,7 +715,7 @@ mod tests {
         let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
-        let root = run(store.put_node(&Node::new(root_ext, forks), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::new(root_ext, forks), &Plaintext)).unwrap();
         let reader: Reader<_> = Reader::new(&store);
         let got = drain(run(reader.iter(&root)).unwrap());
         assert_eq!(got, vec![(Vec::new(), entry(9)), (b"k".to_vec(), entry(1))]);
@@ -841,7 +840,7 @@ mod tests {
     fn with_ref(store: &ContentGet<MemoryStore>) -> (ChunkRef, ChunkRef) {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"a"), entry(0xBA).into(), None).unwrap();
-        let leaf_addr = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
+        let leaf_addr = run(save_node(store, &Node::new(None, leaf), &Plaintext)).unwrap();
         let mut forks = ForkTable::new();
         forks
             .insert(prefix(b"a"), entry(0xA1).into(), None)
@@ -849,7 +848,7 @@ mod tests {
         forks
             .insert(prefix(b"b"), Child::Ref(leaf_addr).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(store, &Node::new(None, forks), &Plaintext)).unwrap();
         (root, leaf_addr)
     }
 

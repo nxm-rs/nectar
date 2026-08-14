@@ -113,7 +113,7 @@ mod tests {
     use crate::fork::Child;
     use crate::meta::{KeyId, Metadata};
     use crate::node::{Node, RootExtension};
-    use crate::store::{NodeGet, NodePut};
+    use crate::store::{load_node, save_node};
     use crate::value::Entry;
 
     use super::*;
@@ -203,8 +203,8 @@ mod tests {
     fn round_trips_through_a_memory_store() {
         let store = ContentGet::new(MemoryStore::default());
         let node = sample();
-        let reference = run(store.put_node(&node, &seal())).unwrap();
-        let opened: Node<V1, EncryptedChunkRef> = run(store.get_node(&reference)).unwrap();
+        let reference = run(save_node(&store, &node, &seal())).unwrap();
+        let opened: Node<V1, EncryptedChunkRef> = run(load_node(&store, &reference)).unwrap();
         assert_eq!(opened, node);
     }
 
@@ -215,7 +215,7 @@ mod tests {
         // records the reference carries that key in its own bytes.
         let store = ContentGet::new(MemoryStore::default());
         let child = sample();
-        let reference = run(store.put_node(&child, &seal())).unwrap();
+        let reference = run(save_node(&store, &child, &seal())).unwrap();
         assert_eq!(
             reference.key(),
             &derive_key::<V1>(SECRET, &child.encode().unwrap())

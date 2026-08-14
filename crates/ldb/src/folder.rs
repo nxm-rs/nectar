@@ -14,15 +14,15 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 
 use bytes::Bytes;
-use nectar_primitives::ChunkRef;
-use nectar_primitives::store::MaybeSync;
+use nectar_primitives::store::{MaybeSync, TrustedGet};
+use nectar_primitives::{ChunkRef, ContentOnlyChunkSet};
 
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, MetadataKey};
 use crate::node::{Node, NodeRef};
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Cursor, successor};
-use crate::store::NodeGet;
+use crate::store::load_node;
 use crate::value::{Entry, Key};
 
 /// One immediate child of a listed directory.
@@ -87,7 +87,7 @@ pub struct Listing<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
 
 impl<S, F, R> Listing<'_, S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -226,7 +226,7 @@ impl<F: Format> Served<F> {
 
 impl<S, F, R> Reader<S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -243,7 +243,7 @@ where
     /// The manifest's site-level document conventions, read from the root's
     /// typed metadata.
     pub async fn website(&self, root: &R) -> Result<Website, ReaderError> {
-        let node = self.store().get_node::<F, R>(root).await?;
+        let node = load_node::<_, F, R>(self.store(), root).await?;
         Ok(Website {
             index: document(&node, KeyId::WebsiteIndexDocument),
             error: document(&node, KeyId::WebsiteErrorDocument),
@@ -294,7 +294,7 @@ pub(crate) async fn dir_at<'a, S, F, R>(
     dir: &Key,
 ) -> Result<Listing<'a, S, F, R>, ReaderError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -507,7 +507,7 @@ mod tests {
         use crate::bounded::Prefix;
         use crate::fork::{Child, ForkTable};
         use crate::node::Node;
-        use crate::store::NodePut;
+        use crate::store::save_node;
 
         let store = ContentGet::new(MemoryStore::default());
         // A referenced "mg/" subtree holding a nested subdirectory and a file,
@@ -541,7 +541,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let leaf_ref = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
+        let leaf_ref = run(save_node(&store, &Node::new(None, leaf), &Plaintext)).unwrap();
 
         let mut forks: ForkTable = ForkTable::new();
         forks
@@ -551,7 +551,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         let got = entries(run(reader.dir(&root, &Key::from(&b"mg/"[..]))).unwrap());

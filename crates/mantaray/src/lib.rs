@@ -20,8 +20,8 @@
 //! - [`ManifestEditor`]: records puts and removes, then commits them in
 //!   submission order.
 //!
-//! All four are generic over the [`persist`] seam ([`NodeLoader`],
-//! [`NodeSaver`]): the trie never touches chunk stores directly, so the
+//! All four are generic over the seam-owned [`NodeLoader`] and [`NodeSaver`],
+//! at a whole node image: the trie never touches chunk stores directly, so the
 //! storage layout is the adapter's. The production `NodeLoadSaver` adapter
 //! (behind the `manifest` feature) adapts a chunk store through the file
 //! pipeline, storing a node larger than one chunk across several, as the
@@ -176,10 +176,12 @@ pub use error::{
 #[cfg(feature = "manifest")]
 pub use manifest::{MantarayManifest, TrieCursor, TrieFormatError, TrieView};
 #[cfg(feature = "std")]
+pub use nectar_manifest::{NodeLoader, NodeSaver};
+#[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
 #[cfg(feature = "std")]
-pub use persist::{MAX_NODE_BYTES, NodeLoader, NodeSaver};
+pub use persist::MAX_NODE_BYTES;
 #[cfg(feature = "manifest")]
 pub use persist::{NodeCollectError, NodeLoadSaver};
 #[cfg(feature = "std")]

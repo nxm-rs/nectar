@@ -24,13 +24,13 @@ use core::task::{Context, Poll};
 
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::{Admission, Window};
+use nectar_manifest::{NodeLoader, NodeSaver};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::{EncryptedChunkRef, EntryRef};
 use nectar_tasks::BoxFuture;
 
 use crate::error::EditorError;
 use crate::node::{Fork, Node, NodeState, Prefix};
-use crate::persist::{NodeLoader, NodeSaver};
 use crate::{MantarayError, metadata};
 
 /// One recorded manifest mutation.
@@ -263,7 +263,7 @@ impl<S, R: Reference> ManifestEditor<S, R> {
     }
 }
 
-impl<S: NodeLoader, R: Reference> ManifestEditor<S, R> {
+impl<S: NodeLoader<Vec<u8>>, R: Reference> ManifestEditor<S, R> {
     /// Apply the recorded ops to the trie, one at a time, in submission order.
     async fn apply_ops(&mut self) -> Result<(), EditorError> {
         let ops = core::mem::take(&mut self.ops);
@@ -301,7 +301,7 @@ impl<S: NodeLoader, R: Reference> ManifestEditor<S, R> {
     }
 }
 
-impl<S: NodeLoader + NodeSaver<R>, R: Reference> ManifestEditor<S, R> {
+impl<S: NodeLoader<Vec<u8>> + NodeSaver<[u8], R>, R: Reference> ManifestEditor<S, R> {
     /// Apply the log and persist the trie, returning the root's full-width
     /// reference and the loadsaver.
     ///
@@ -321,7 +321,7 @@ impl<S: NodeLoader + NodeSaver<R>, R: Reference> ManifestEditor<S, R> {
     }
 }
 
-impl<S: NodeLoader + NodeSaver<ChunkRef>> ManifestEditor<S, ChunkRef> {
+impl<S: NodeLoader<Vec<u8>> + NodeSaver<[u8], ChunkRef>> ManifestEditor<S, ChunkRef> {
     /// Apply the log and persist the trie, returning the root chunk address
     /// and the loadsaver.
     pub async fn commit(self) -> Result<(ChunkAddress, S), EditorError> {
@@ -330,7 +330,9 @@ impl<S: NodeLoader + NodeSaver<ChunkRef>> ManifestEditor<S, ChunkRef> {
     }
 }
 
-impl<S: NodeLoader + NodeSaver<EncryptedChunkRef>> ManifestEditor<S, EncryptedChunkRef> {
+impl<S: NodeLoader<Vec<u8>> + NodeSaver<[u8], EncryptedChunkRef>>
+    ManifestEditor<S, EncryptedChunkRef>
+{
     /// Apply the log and persist the trie, returning the root's full-width
     /// reference (address plus decryption key) and the loadsaver.
     pub async fn commit(self) -> Result<(EncryptedChunkRef, S), EditorError> {
@@ -360,7 +362,7 @@ async fn apply_metadata_merge<S, R>(
     store: &S,
 ) -> Result<(), MantarayError>
 where
-    S: NodeLoader,
+    S: NodeLoader<Vec<u8>>,
     R: Reference,
 {
     match merge_descent(trie, path, &key, &value, store).await? {
@@ -384,7 +386,7 @@ async fn apply_metadata_clear<S, R>(
     store: &S,
 ) -> Result<(), MantarayError>
 where
-    S: NodeLoader,
+    S: NodeLoader<Vec<u8>>,
     R: Reference,
 {
     let Some((entry, mut metadata)) = binding_at(trie, path, store).await? else {
@@ -409,7 +411,7 @@ async fn binding_at<S, R>(
     store: &S,
 ) -> Result<Option<(Option<R>, BTreeMap<String, String>)>, MantarayError>
 where
-    S: NodeLoader,
+    S: NodeLoader<Vec<u8>>,
     R: Reference,
 {
     let mut current = trie;
@@ -446,7 +448,7 @@ async fn merge_descent<S, R>(
     store: &S,
 ) -> Result<MergeOutcome, MantarayError>
 where
-    S: NodeLoader,
+    S: NodeLoader<Vec<u8>>,
     R: Reference,
 {
     let mut current = trie;
@@ -490,7 +492,7 @@ async fn commit_trie<S, R>(
     window: Window,
 ) -> Result<Node<R>, MantarayError>
 where
-    S: NodeSaver<R>,
+    S: NodeSaver<[u8], R>,
     R: Reference,
 {
     if root.reference().is_some() {
@@ -580,7 +582,7 @@ struct CommitWalk<'s, S, R: Reference> {
 
 impl<'s, S, R> CommitWalk<'s, S, R>
 where
-    S: NodeSaver<R>,
+    S: NodeSaver<[u8], R>,
     R: Reference,
 {
     fn new(saver: &'s S, window: Window, root: Node<R>) -> Self {
@@ -712,9 +714,12 @@ where
         let id = frame.id;
         let saver = self.saver;
         let future: BoxFuture<'s, SaveDone<R>> = Box::pin(async move {
-            let outcome = saver.save(data).await.map_err(|e| MantarayError::StorePut {
-                source: Arc::new(e),
-            });
+            let outcome = saver
+                .save(&data)
+                .await
+                .map_err(|e| MantarayError::StorePut {
+                    source: Arc::new(e),
+                });
             (id, outcome)
         });
         if let Some(parent) = frame.parent {
@@ -1176,20 +1181,20 @@ mod tests {
         }
     }
 
-    impl NodeLoader for CountingSaver {
+    impl NodeLoader<Vec<u8>> for CountingSaver {
         type Error = SingleChunkError;
 
-        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
-            self.inner.collect(reference).await
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            self.inner.load(reference).await
         }
     }
 
-    impl NodeSaver<ChunkRef> for CountingSaver {
+    impl NodeSaver<[u8], ChunkRef> for CountingSaver {
         type Error = SingleChunkError;
 
-        async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
+        async fn save(&self, data: &[u8]) -> Result<ChunkRef, Self::Error> {
             self.saves.fetch_add(1, Ordering::SeqCst);
-            NodeSaver::<ChunkRef>::save(&self.inner, data).await
+            NodeSaver::<[u8], ChunkRef>::save(&self.inner, data).await
         }
     }
 
@@ -1212,26 +1217,28 @@ mod tests {
         }
     }
 
-    impl NodeLoader for FailingSaver {
+    impl NodeLoader<Vec<u8>> for FailingSaver {
         type Error = SingleChunkError;
 
-        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
-            self.inner.collect(reference).await
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            self.inner.load(reference).await
         }
     }
 
-    impl NodeSaver<ChunkRef> for FailingSaver {
+    impl NodeSaver<[u8], ChunkRef> for FailingSaver {
         type Error = SingleChunkError;
 
-        async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
+        async fn save(&self, data: &[u8]) -> Result<ChunkRef, Self::Error> {
             let seen = self.dispatched.fetch_add(1, Ordering::SeqCst);
+            let oversized;
             // An image far past one chunk is the loadsaver's own failure.
             let data = if seen == self.fail_at {
-                alloc::vec![0u8; 1 << 20]
+                oversized = alloc::vec![0u8; 1 << 20];
+                oversized.as_slice()
             } else {
                 data
             };
-            NodeSaver::<ChunkRef>::save(&self.inner, data).await
+            NodeSaver::<[u8], ChunkRef>::save(&self.inner, data).await
         }
     }
 
@@ -1317,18 +1324,18 @@ mod tests {
         }
     }
 
-    impl NodeLoader for WindowSaver {
+    impl NodeLoader<Vec<u8>> for WindowSaver {
         type Error = SingleChunkError;
 
-        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
-            self.inner.collect(reference).await
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+            self.inner.load(reference).await
         }
     }
 
-    impl NodeSaver<ChunkRef> for WindowSaver {
+    impl NodeSaver<[u8], ChunkRef> for WindowSaver {
         type Error = SingleChunkError;
 
-        async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
+        async fn save(&self, data: &[u8]) -> Result<ChunkRef, Self::Error> {
             let bytes = data.len();
             self.probe.saves.fetch_add(1, Ordering::SeqCst);
             self.probe.total.fetch_add(bytes, Ordering::SeqCst);
@@ -1339,7 +1346,7 @@ mod tests {
             // Park once so queued siblings ramp their in-flight count before
             // any single save resolves.
             yield_once().await;
-            let result = NodeSaver::<ChunkRef>::save(&self.inner, data).await;
+            let result = NodeSaver::<[u8], ChunkRef>::save(&self.inner, data).await;
             self.probe.resident.fetch_sub(bytes, Ordering::SeqCst);
             self.probe.in_flight.fetch_sub(1, Ordering::SeqCst);
             result

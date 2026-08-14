@@ -8,15 +8,15 @@
 
 use core::marker::PhantomData;
 
-use nectar_primitives::store::MaybeSync;
-use nectar_primitives::{ChunkOps, ChunkRef};
+use nectar_primitives::store::{MaybeSync, TrustedGet};
+use nectar_primitives::{ChunkOps, ChunkRef, ContentOnlyChunkSet};
 
 use crate::codec::{DecodedChunk, SegmentDir};
 use crate::fork::{Child, ForkTable};
 use crate::format::{Format, V1};
 use crate::meta::Metadata;
 use crate::node::{NodeRef, RootExtension};
-use crate::store::{NodeGet, StoreError, open_chunk};
+use crate::store::{StoreError, load_node, open_chunk};
 use crate::value::{Entry, Key};
 
 /// A lookup failure.
@@ -68,7 +68,7 @@ impl<S, F: Format, R: NodeRef> Reader<S, F, R> {
 
 impl<S, F: Format, R: NodeRef> Reader<S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
 {
     /// The value bound to `key` under the database rooted at `root`, or `None`
     /// when the key is absent.
@@ -175,7 +175,7 @@ where
         let mut reference = root.clone();
         let mut base = 0usize;
         loop {
-            let node = self.store.get_node::<F, R>(&reference).await?;
+            let node = load_node::<_, F, R>(&self.store, &reference).await?;
             match subtree_step(node.forks(), prefix, base) {
                 SubtreeStep::Absent => return Ok(None),
                 SubtreeStep::Boundary(found, base) => {
@@ -203,7 +203,7 @@ const fn segment_context() -> ReaderError {
 /// Fetch and decode one chunk, opening it with the key `reference` carries.
 async fn fetch_chunk<S, F, R>(store: &S, reference: &R) -> Result<DecodedChunk<F, R>, ReaderError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -340,7 +340,7 @@ async fn covering_leaf<S, F, R>(
     pos: usize,
 ) -> Result<Option<ForkTable<F, R>>, ReaderError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -436,7 +436,7 @@ mod tests {
     use crate::bounded::Prefix;
     use crate::fork::{Child, ForkPayload, ForkTable};
     use crate::node::Node;
-    use crate::store::NodePut;
+    use crate::store::save_node;
     use crate::value::{Entry, Key};
 
     use super::*;
@@ -457,7 +457,7 @@ mod tests {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"logo.png"), entry(0xBB).into(), None)
             .unwrap();
-        let leaf_ref = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
+        let leaf_ref = run(save_node(&store, &Node::new(None, leaf), &Plaintext)).unwrap();
 
         // The root: "index.html" behind an embedded child, "mg/" behind the
         // referenced leaf.
@@ -472,7 +472,7 @@ mod tests {
         forks
             .insert(prefix(b"mg/"), Child::Ref(leaf_ref).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -504,7 +504,7 @@ mod tests {
         forks
             .insert(prefix(b"a"), Child::Embedded(child).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         // "ab" terminates, "a" is only a branch.
@@ -519,7 +519,12 @@ mod tests {
     fn the_empty_key_reads_the_root_extension_value() {
         let store = ContentGet::new(MemoryStore::default());
         let root_ext = crate::node::RootExtension::new(Some(entry(9)), None);
-        let root = run(store.put_node(&Node::new(root_ext, ForkTable::new()), &Plaintext)).unwrap();
+        let root = run(save_node(
+            &store,
+            &Node::new(root_ext, ForkTable::new()),
+            &Plaintext,
+        ))
+        .unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -537,7 +542,12 @@ mod tests {
         )
         .unwrap();
         let root_ext = crate::node::RootExtension::new(None, Some(meta.clone()));
-        let root = run(store.put_node(&Node::new(root_ext, ForkTable::new()), &Plaintext)).unwrap();
+        let root = run(save_node(
+            &store,
+            &Node::new(root_ext, ForkTable::new()),
+            &Plaintext,
+        ))
+        .unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -556,7 +566,7 @@ mod tests {
         forks
             .insert(prefix(b"k"), ForkPayload::Entry(value.clone()), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::new(None, forks), &Plaintext)).unwrap();
 
         let reader: Reader<_> = Reader::new(&store);
         assert_eq!(
@@ -571,7 +581,7 @@ mod tests {
         let mut leaf = ForkTable::new();
         leaf.insert(prefix(b"logo.png"), entry(0xBB).into(), None)
             .unwrap();
-        let leaf_ref = run(store.put_node(&Node::new(None, leaf), &Plaintext)).unwrap();
+        let leaf_ref = run(save_node(store, &Node::new(None, leaf), &Plaintext)).unwrap();
 
         let mut embedded = ForkTable::new();
         embedded
@@ -584,7 +594,7 @@ mod tests {
         forks
             .insert(prefix(b"mg/"), Child::Ref(leaf_ref).into(), None)
             .unwrap();
-        let root = run(store.put_node(&Node::new(None, forks), &Plaintext)).unwrap();
+        let root = run(save_node(store, &Node::new(None, forks), &Plaintext)).unwrap();
         (root, leaf_ref)
     }
 

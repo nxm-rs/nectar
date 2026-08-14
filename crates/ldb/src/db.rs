@@ -9,8 +9,8 @@ use core::ops::RangeBounds;
 
 use bytes::Bytes;
 
-use nectar_primitives::ChunkRef;
-use nectar_primitives::store::{ChunkPut, MaybeSync};
+use nectar_primitives::store::{ChunkPut, MaybeSync, TrustedGet};
+use nectar_primitives::{ChunkRef, ContentOnlyChunkSet};
 
 use crate::apply::{ApplyError, Changeset, apply};
 use crate::folder::{Listing, Served, Website, dir_at};
@@ -19,7 +19,7 @@ use crate::meta::{Metadata, MetadataKey};
 use crate::node::NodeRef;
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Cursor, half_open};
-use crate::store::{NodeGet, Plaintext, Seal};
+use crate::store::{Plaintext, Seal};
 use crate::value::{Entry, Key};
 
 /// A key-value database over one store, at whatever root a caller names.
@@ -152,7 +152,7 @@ impl<S, F: Format> Database<S, Plaintext, F> {
 
 impl<S, K, F> Database<S, K, F>
 where
-    S: NodeGet + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
     F: Format,
 {
     /// Insert one key, clearing any metadata bound at it.
@@ -224,7 +224,7 @@ impl<'a, S, F: Format, R: NodeRef> View<'a, S, F, R> {
 
 impl<S, F, R> View<'_, S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -273,7 +273,7 @@ where
 
 impl<'a, S, F, R> View<'a, S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -389,7 +389,7 @@ impl<S, K, F: Format, R: NodeRef> Editor<'_, S, K, F, R> {
 
 impl<S, K, F, R> Editor<'_, S, K, F, R>
 where
-    S: NodeGet + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
     K: Seal<R>,
     F: Format,
     R: NodeRef,

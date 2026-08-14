@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, ensure};
 use bytes::Bytes;
 use nectar_ldb::{
-    Builder, Child, Database, Entry, ForkTable, Key, KeyId, Metadata, Node, NodePut, Plaintext,
-    Prefix, Reader, V1,
+    Builder, Child, Database, Entry, ForkTable, Key, KeyId, Metadata, Node, Plaintext, Prefix,
+    Reader, V1, save_node,
 };
 use nectar_manifest::{Batch, Manifest, ManifestPath, ManifestView};
 use nectar_primitives::store::{ChunkGet, ContentGet, MemoryStore};
@@ -56,14 +56,14 @@ async fn wide_manifest(store: &MemoryStore, width: u16) -> Result<ChunkRef> {
         let first = u8::try_from(first)?;
         let mut leaf = ForkTable::new();
         leaf.insert(Prefix::try_from(&[0xFFu8][..])?, entry(first).into(), None)?;
-        let leaf_ref = store.put_node(&Node::new(None, leaf), &Plaintext).await?;
+        let leaf_ref = save_node(store, &Node::new(None, leaf), &Plaintext).await?;
         forks.insert(
             Prefix::try_from(&[first][..])?,
             Child::Ref(leaf_ref).into(),
             None,
         )?;
     }
-    Ok(store.put_node(&Node::new(None, forks), &Plaintext).await?)
+    Ok(save_node(store, &Node::new(None, forks), &Plaintext).await?)
 }
 
 #[test]

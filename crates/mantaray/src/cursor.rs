@@ -19,6 +19,7 @@ use core::task::{Context, Poll};
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::Admission;
 pub use nectar_governor::Window;
+use nectar_manifest::NodeLoader;
 use nectar_primitives::EntryRef;
 use nectar_primitives::chunk::ChunkAddress;
 use nectar_tasks::BoxFuture;
@@ -26,7 +27,6 @@ use nectar_tasks::BoxFuture;
 use crate::entry::Entry;
 use crate::error::CursorError;
 use crate::node::NodeType;
-use crate::persist::NodeLoader;
 use crate::view::{ForkView, NodeView};
 
 /// One queued subtree root: the child's full-width reference plus the
@@ -96,7 +96,7 @@ struct TrieWalk<L> {
 
 impl<L> TrieWalk<L>
 where
-    L: NodeLoader + Clone + 'static,
+    L: NodeLoader<Vec<u8>> + Clone + 'static,
 {
     fn new(
         store: L,
@@ -186,12 +186,13 @@ where
             let store = self.store.clone();
             let reference = pending.reference.clone();
             let fetch: BoxFuture<'static, Fetched> = Box::pin(async move {
-                let fetched = store.collect_with_addresses(&reference).await.map_err(|e| {
-                    CursorError::Store {
+                let fetched = store
+                    .load_traced(&reference)
+                    .await
+                    .map_err(|e| CursorError::Store {
                         address: *reference.address(),
                         source: Arc::new(e),
-                    }
-                });
+                    });
                 (id, pending, fetched)
             });
             self.in_flight.push(fetch);
@@ -359,7 +360,7 @@ impl<L> Cursor<L> {
 
 impl<L> Cursor<L>
 where
-    L: NodeLoader + Clone + 'static,
+    L: NodeLoader<Vec<u8>> + Clone + 'static,
 {
     /// Deliver the next entry in path order.
     ///
@@ -411,7 +412,7 @@ where
 
 impl<L> Stream for Cursor<L>
 where
-    L: NodeLoader + Clone + Unpin + 'static,
+    L: NodeLoader<Vec<u8>> + Clone + Unpin + 'static,
 {
     type Item = Result<Entry, CursorError>;
 
@@ -475,7 +476,7 @@ impl<L> AddressStream<L> {
 
 impl<L> AddressStream<L>
 where
-    L: NodeLoader + Clone + 'static,
+    L: NodeLoader<Vec<u8>> + Clone + 'static,
 {
     /// Deliver the next address in depth-first order.
     ///
@@ -522,7 +523,7 @@ where
 
 impl<L> Stream for AddressStream<L>
 where
-    L: NodeLoader + Clone + Unpin + 'static,
+    L: NodeLoader<Vec<u8>> + Clone + Unpin + 'static,
 {
     type Item = Result<ChunkAddress, CursorError>;
 
@@ -617,7 +618,7 @@ mod tests {
 
     fn collect_entries<L>(mut cursor: Cursor<L>) -> Vec<Entry>
     where
-        L: NodeLoader + Clone + 'static,
+        L: NodeLoader<Vec<u8>> + Clone + 'static,
     {
         run(async {
             let mut out = Vec::new();
@@ -630,7 +631,7 @@ mod tests {
 
     fn collect_until_err<L>(mut cursor: Cursor<L>) -> (Vec<Entry>, Option<CursorError>)
     where
-        L: NodeLoader + Clone + 'static,
+        L: NodeLoader<Vec<u8>> + Clone + 'static,
     {
         run(async {
             let mut out = Vec::new();
@@ -646,7 +647,7 @@ mod tests {
 
     fn collect_addresses<L>(mut stream: AddressStream<L>) -> Vec<ChunkAddress>
     where
-        L: NodeLoader + Clone + 'static,
+        L: NodeLoader<Vec<u8>> + Clone + 'static,
     {
         run(async {
             let mut out = Vec::new();
@@ -728,10 +729,10 @@ mod tests {
         .await;
     }
 
-    impl NodeLoader for RecordingStore {
+    impl NodeLoader<Vec<u8>> for RecordingStore {
         type Error = SingleChunkError;
 
-        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
             let address = *reference.address();
             self.inner.fetched.lock().unwrap().push(address);
             let level = self.inner.inflight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -742,10 +743,10 @@ mod tests {
             let result = if self.inner.fail == Some(address) {
                 self.inner
                     .store
-                    .collect(&EntryRef::from(make_addr("absent-sentinel")))
+                    .load(&EntryRef::from(make_addr("absent-sentinel")))
                     .await
             } else {
-                self.inner.store.collect(reference).await
+                self.inner.store.load(reference).await
             };
             self.inner.inflight.fetch_sub(1, Ordering::SeqCst);
             result

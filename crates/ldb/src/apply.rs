@@ -31,7 +31,8 @@ use core::task::Poll;
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::{Admission, Window};
-use nectar_primitives::store::{ChunkPut, MaybeSync};
+use nectar_primitives::ContentOnlyChunkSet;
+use nectar_primitives::store::{ChunkPut, MaybeSync, TrustedGet};
 use nectar_tasks::BoxFuture;
 
 use crate::bounded::Prefix;
@@ -45,7 +46,7 @@ use crate::format::{Format, V1};
 use crate::meta::{Metadata, MetadataKey};
 use crate::node::{Node, NodeRef, RootExtension};
 use crate::packing::cut_allowance;
-use crate::store::{NodeGet, Seal, StoreError};
+use crate::store::{Seal, StoreError, load_node};
 use crate::value::{Entry, Key};
 
 /// One key's update within a changeset.
@@ -208,7 +209,7 @@ pub async fn apply<S, F, R, K>(
     changeset: &Changeset<F>,
 ) -> Result<R, ApplyError>
 where
-    S: NodeGet + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -216,7 +217,7 @@ where
     if changeset.is_empty() {
         return Ok(root.clone());
     }
-    let node = store.get_node::<F, R>(root).await?;
+    let node = load_node::<_, F, R>(store, root).await?;
 
     // The empty key is the root's own value; every other key descends the trie.
     let mut root_entry = node.entry().cloned();
@@ -296,7 +297,7 @@ async fn apply_forks<'c, S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<ForkTable<F, R>, ApplyError>
 where
-    S: NodeGet + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -404,7 +405,7 @@ async fn reconcile<'c, S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: NodeGet + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -460,7 +461,7 @@ async fn descend<'c, S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: NodeGet + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -547,7 +548,7 @@ where
             // the read runs here.
             let node = match child {
                 Some(node) => node,
-                None => sink.store().get_node::<F, R>(reference).await?,
+                None => load_node::<_, F, R>(sink.store(), reference).await?,
             };
             Box::pin(apply_forks(
                 sink,
@@ -642,7 +643,7 @@ async fn split<'c, S, F, R, K>(
     stats: &mut BuildStats,
 ) -> Result<Option<ForkRecord<F, R>>, ApplyError>
 where
-    S: NodeGet + ChunkPut + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + ChunkPut + MaybeSync,
     F: Format,
     R: NodeRef,
     K: Seal<R>,
@@ -809,7 +810,7 @@ async fn absorb<S, F, R>(
     child: Option<&Child<F, R>>,
 ) -> Result<Option<(Vec<u8>, ForkRecord<F, R>)>, ApplyError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -822,7 +823,7 @@ where
         Some(Child::Ref(reference)) => reference,
         Some(Child::Embedded(_)) | None => return Ok(None),
     };
-    let node = store.get_node::<F, R>(reference).await?;
+    let node = load_node::<_, F, R>(store, reference).await?;
     // A branch below is a boundary a build keeps; only a lone continuation runs
     // on into the edge.
     if node.forks().len() != 1 {
@@ -960,7 +961,7 @@ async fn prefetch_children<S, F, R>(
     slots: usize,
 ) -> Vec<Option<Result<Node<F, R>, StoreError>>>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -979,7 +980,7 @@ where
                     break;
                 };
                 in_flight.push(Box::pin(async move {
-                    (slot, store.get_node::<F, R>(&reference).await)
+                    (slot, load_node::<_, F, R>(store, &reference).await)
                 }));
             }
             match Pin::new(&mut in_flight).poll_next(cx) {
@@ -1033,7 +1034,9 @@ mod tests {
                     None => 0,
                     Some(Child::Embedded(inner)) => walk_counts(store, inner).await,
                     Some(Child::Ref(reference)) => {
-                        let node = store.get_node::<V1, ChunkRef>(reference).await.unwrap();
+                        let node = load_node::<_, V1, ChunkRef>(store, reference)
+                            .await
+                            .unwrap();
                         let actual = walk_counts(store, node.forks()).await;
                         assert_eq!(
                             record.child_count(),
@@ -1064,7 +1067,7 @@ mod tests {
             }
         }
         let root = *run(builder.build(&store, &Plaintext)).unwrap().root();
-        let node = run(store.get_node::<V1, ChunkRef>(&root)).unwrap();
+        let node = run(load_node::<_, V1, ChunkRef>(&store, &root)).unwrap();
         let total = u64::from(node.entry().is_some()) + run(walk_counts(&store, node.forks()));
         assert_eq!(total, expected);
     }
@@ -1097,7 +1100,7 @@ mod tests {
         assert_eq!(applied, scratch_root, "apply must match a counted rebuild");
 
         // The applied tree's stored counts still equal the walked subtree sizes.
-        let node = run(store.get_node::<V1, ChunkRef>(&applied)).unwrap();
+        let node = run(load_node::<_, V1, ChunkRef>(&store, &applied)).unwrap();
         let total = u64::from(node.entry().is_some()) + run(walk_counts(&store, node.forks()));
         assert_eq!(total, 64);
     }
@@ -1500,7 +1503,7 @@ mod tests {
             }
         }
         let root = *run(builder.build(&inner, &Plaintext)).unwrap().root();
-        let node: Node<V1> = run(inner.get_node(&root)).unwrap();
+        let node: Node<V1> = run(load_node(&inner, &root)).unwrap();
         let children = node
             .forks()
             .iter()
@@ -1594,7 +1597,7 @@ mod tests {
             }
         }
         let root = *run(builder.build(&inner, &Plaintext)).unwrap().root();
-        let node: Node<V1> = run(inner.get_node(&root)).unwrap();
+        let node: Node<V1> = run(load_node(&inner, &root)).unwrap();
         let children: Vec<ChunkAddress> = node
             .forks()
             .iter()
