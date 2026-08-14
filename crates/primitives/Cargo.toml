@@ -168,5 +168,5 @@ name = "proofs"
 harness = false
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["arbitrary", "encryption", "parallel", "serde", "std"]
 rustdoc-args = ["--cfg", "docsrs"]
