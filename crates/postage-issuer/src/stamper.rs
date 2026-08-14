@@ -238,7 +238,6 @@ where
         let permit = self.issuer.reserve(address, timestamp)?;
         let prehash = permit.digest().to_prehash();
 
-        // The permit burns with the slot if signing fails.
         let sig = self.signer.sign_message_sync(prehash.as_slice())?;
 
         Ok(permit.stamp(sig))

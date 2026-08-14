@@ -31,7 +31,6 @@ mod word {
             self.0.load(ORDER)
         }
 
-        /// Takes a slot while occupancy is under `limit`.
         pub(super) fn take(&self, limit: usize) -> bool {
             let mut held = self.0.load(ORDER);
             loop {
@@ -67,7 +66,6 @@ mod word {
             self.0.get()
         }
 
-        /// Takes a slot while occupancy is under `limit`.
         pub(super) fn take(&self, limit: usize) -> bool {
             let held = self.0.get();
             if held >= limit {
@@ -91,8 +89,7 @@ struct Slots {
     held: Occupancy,
 }
 
-/// A clone-shared admission window: the backpressure a permit holds a token
-/// against.
+/// Clone-shared admission window: one token holds one slot.
 #[derive(Debug, Clone)]
 pub struct AdmissionWindow(Shared<Slots>);
 
@@ -141,9 +138,8 @@ impl Drop for WindowToken {
 
 /// A claimed slot: constructing this consumed it.
 ///
-/// Dropping burns the slot and returns the admission-window token, so a
-/// cancelled or failed attempt recovers backpressure but never capacity: the
-/// per-bucket watermark is monotone and cannot express a hole.
+/// Dropping returns the window token but never the slot: the per-bucket
+/// watermark is monotone and cannot express a hole.
 pub struct Prepared<S: SwarmSpec = Mainnet> {
     address: ChunkAddress,
     batch: BatchId,

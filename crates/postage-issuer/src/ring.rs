@@ -139,9 +139,8 @@ impl Reservation for Reserved {
 pub struct RingIssuer<R = Unreserved, S: SwarmSpec = Mainnet> {
     /// The batch ID.
     batch_id: BatchId,
-    /// The cursor state. A wrap scan reads more than one word, so it cannot
-    /// compare-and-swap the way a fill watermark does; the cell serializes it
-    /// and leaves the ring `!Sync`.
+    /// A wrap scan reads more than one word, so it cannot compare-and-swap the
+    /// way a fill watermark does; the cell serializes it and leaves it `!Sync`.
     state: RefCell<RingState<S>>,
     /// The reservation policy.
     reservation: R,
@@ -390,8 +389,8 @@ impl<R: Reservation, S: SwarmSpec> StampIssuer for RingIssuer<R, S> {
                     capacity: self.bucket_capacity(),
                 },
                 IssuerError::Geometry(geometry) => geometry,
-                // Invariant: `reserve_slot` yields nothing else; its slot source
-                // maps every counter error to RingExhausted.
+                // `reserve_slot` yields nothing else: its slot source maps every
+                // counter error to RingExhausted.
                 #[allow(clippy::unreachable)]
                 _ => unreachable!("ring issuance only fails with RingExhausted"),
             })
