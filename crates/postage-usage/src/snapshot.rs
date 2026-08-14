@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use alloy_primitives::Address;
 use bytes::Bytes;
-use nectar_postage::{Batch, BatchId, StampIndex, calculate_bucket};
+use nectar_postage::{Batch, BatchId, Bucket, StampIndex, calculate_bucket};
 use nectar_primitives::{ChunkAddress, Mainnet, SocId, SwarmSpec};
 
 use crate::codec::{self, Encoded, RootInfo};
@@ -533,7 +533,7 @@ impl<S: SwarmSpec> Snapshot<S> {
                 #[allow(clippy::as_conversions)]
                 let index = index as u16;
                 let address = usage_chunk_address(&batch_id, owner, index);
-                StampIndex::new(calculate_bucket(&address, bucket_depth), slot)
+                StampIndex::new(calculate_bucket(&address, bucket_depth).value(), slot)
             })
             .collect()
     }
@@ -571,16 +571,17 @@ impl<S: SwarmSpec> Snapshot<S> {
     /// if every slot is reserved, which the geometry forbids).
     pub(crate) fn record_bucket(
         &mut self,
-        bucket: u32,
+        bucket: Bucket<S>,
         reserved: &BTreeSet<(u32, u32)>,
     ) -> Result<u32> {
         // Both branches (fill watermark and reserved-aware ring) live in the
         // shared counter table now. The reserved set is mapped into the table's
         // per-slot protection predicate so a ring never re-emits a slot held by
         // the snapshot's own chunks.
+        let value = bucket.value();
         self.table
             .counters_mut()
-            .record(bucket, |slot| reserved.contains(&(bucket, slot)))
+            .record(bucket, |slot| reserved.contains(&(value, slot)))
             .map_err(crate::table::map_counter_error)
     }
 
@@ -851,7 +852,7 @@ impl<S: SwarmSpec> Validated<'_, S> {
                 index,
                 id,
                 address,
-                stamp_index: StampIndex::new(bucket, slots[usize::from(index)]),
+                stamp_index: StampIndex::new(bucket.value(), slots[usize::from(index)]),
                 payload: payload.clone(),
                 newly_allocated: usize::from(index) >= previously_allocated,
             });
@@ -921,9 +922,9 @@ impl<S: SwarmSpec> Issuer<'_, S> {
     ) -> Result<(StampIndex, bool)> {
         let bucket = calculate_bucket(address, self.snapshot.table.bucket_depth());
         // Decide before the write: afterwards the cursor has already advanced.
-        let wrapped = self.will_wrap(bucket)?;
+        let wrapped = self.will_wrap(bucket.value())?;
         let index = self.snapshot.record_bucket(bucket, &self.reserved)?;
-        Ok((StampIndex::new(bucket, index), wrapped))
+        Ok((StampIndex::new(bucket.value(), index), wrapped))
     }
 
     /// Returns whether the next content write into `bucket` would wrap a mutable

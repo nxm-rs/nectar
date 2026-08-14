@@ -493,7 +493,7 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0,
         ]);
 
-        assert_eq!(batch.bucket_for_address(&address), 0xCBE5);
+        assert_eq!(batch.bucket_for_address(&address).value(), 0xCBE5);
     }
 
     #[test]

@@ -231,14 +231,14 @@ impl<S: SwarmSpec> StampIssuer for MemoryIssuer<S> {
             self.counters
                 .record(bucket, |_| false)
                 .map_err(|err| StampError::BucketFull {
-                    bucket,
+                    bucket: bucket.value(),
                     capacity: match err {
                         crate::counter::CounterError::BucketFull { capacity, .. } => capacity,
                         _ => self.counters.bucket_capacity(),
                     },
                 })?;
 
-        let index = StampIndex::new(bucket, position);
+        let index = StampIndex::new(bucket.value(), position);
 
         Ok(StampDigest::new(*address, self.batch_id, index, timestamp))
     }

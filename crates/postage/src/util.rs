@@ -1,30 +1,4 @@
-//! Utility functions for postage operations.
-
-use nectar_primitives::{ChunkAddress, SwarmSpec};
-
-use crate::BucketDepth;
-
-/// Returns the collision bucket of `address`: its leading `bucket_depth` bits
-/// read big-endian.
-///
-/// # Example
-///
-/// ```
-/// use nectar_postage::{BucketDepth, calculate_bucket};
-/// use nectar_primitives::{ChunkAddress, Mainnet};
-///
-/// let address = ChunkAddress::new([0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-/// let bucket_depth = BucketDepth::<Mainnet>::new(16).unwrap();
-/// assert_eq!(calculate_bucket(&address, bucket_depth), 0xCBE5);
-/// ```
-#[inline]
-pub fn calculate_bucket<S: SwarmSpec>(address: &ChunkAddress, bucket_depth: BucketDepth<S>) -> u32 {
-    let &[a, b, c, d, ..] = address.as_array();
-    // Depth is 1..=32, so the shift is 0..=31 and never wraps.
-    u32::from_be_bytes([a, b, c, d]).wrapping_shr(u32::from(
-        BucketDepth::<S>::MAX.saturating_sub(bucket_depth.get()),
-    ))
-}
+//! Chain state shared by the postage validation paths.
 
 /// Context for postage validation.
 ///
@@ -80,43 +54,7 @@ impl PostageContext {
 
 #[cfg(test)]
 mod tests {
-    use nectar_primitives::Mainnet;
-    use nectar_testing::LowFloor;
-
     use super::*;
-
-    // `nectar_testing::low_floor` returns the `BucketDepth` of the
-    // `nectar-postage` instance it links, which is not this one.
-    fn low_floor(depth: u8) -> BucketDepth<LowFloor> {
-        BucketDepth::new(depth).unwrap()
-    }
-
-    fn address_cbe5() -> ChunkAddress {
-        ChunkAddress::new([
-            0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0,
-        ])
-    }
-
-    #[test]
-    fn test_calculate_bucket() {
-        let address = address_cbe5();
-
-        assert_eq!(
-            calculate_bucket(&address, BucketDepth::<Mainnet>::new(16).unwrap()),
-            0xCBE5
-        );
-        assert_eq!(calculate_bucket(&address, low_floor(8)), 0xCB);
-        assert_eq!(calculate_bucket(&address, low_floor(4)), 0xC);
-    }
-
-    #[test]
-    fn calculate_bucket_spans_the_whole_depth_range() {
-        let address = address_cbe5();
-
-        assert_eq!(calculate_bucket(&address, low_floor(1)), 1);
-        assert_eq!(calculate_bucket(&address, low_floor(32)), 0xCBE5_0000);
-    }
 
     #[test]
     fn test_chain_state() {
