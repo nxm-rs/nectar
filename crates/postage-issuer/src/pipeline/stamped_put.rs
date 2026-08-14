@@ -585,6 +585,10 @@ mod tests {
         MemoryIssuer::new(BatchId::ZERO, depth, BucketDepth::new(16).unwrap())
     }
 
+    fn bucket_depth() -> BucketDepth {
+        BucketDepth::new(16).unwrap()
+    }
+
     fn sealed(payload: &'static [u8]) -> TestChunk {
         let content = ContentChunk::new(payload).unwrap();
         Chunk::from_envelope(content.into()).unwrap()
@@ -713,7 +717,9 @@ mod tests {
             // Exactly one allocation per touched bucket.
             let mut buckets: BTreeMap<u32, u32> = BTreeMap::new();
             for address in per_address.keys() {
-                *buckets.entry(calculate_bucket(address, 16)).or_insert(0) += 1;
+                *buckets
+                    .entry(calculate_bucket(address, bucket_depth()))
+                    .or_insert(0) += 1;
             }
             let fullest = buckets.values().copied().max().unwrap();
             assert_eq!(store.remaining_capacity(), 16 - fullest);

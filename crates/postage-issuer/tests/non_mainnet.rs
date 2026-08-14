@@ -106,7 +106,7 @@ fn a_deep_issuer_dilutes_and_a_deep_sharded_issuer_stamps() {
     let sharded = ShardedIssuerFor::from_batch(&deep_batch(22, true)).unwrap();
     assert_eq!(sharded.bucket_depth(), 20);
     let digest = sharded.prepare_stamp(&address, 5).unwrap();
-    assert_eq!(digest.index.bucket(), calculate_bucket(&address, 20));
+    assert_eq!(digest.index.bucket(), calculate_bucket(&address, deep()));
     assert_eq!(sharded.stamps_issued(), 1);
 }
 
@@ -115,7 +115,7 @@ fn a_deep_reserved_ring_never_emits_a_reserved_slot() {
     // depth 22 over bucket depth 20 gives 4 slots per bucket; reserve two.
     let batch = deep_batch(22, false);
     let address = address_in(0x0FEDC);
-    let bucket = calculate_bucket(&address, 20);
+    let bucket = calculate_bucket(&address, deep());
     let mut ring: RingIssuerFor<HighFloor, Reserved> =
         RingIssuerFor::reserved(&batch, [(bucket, 1), (bucket, 3)]).unwrap();
 

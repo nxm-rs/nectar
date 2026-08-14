@@ -1048,11 +1048,7 @@ mod tests {
     fn parse_rejects_zero_bucket_depth_as_corruption() {
         // A handcrafted root that is valid in every other respect: depth 5,
         // bucket depth 0 (one zero-width bucket), width 0, sequence 1, one
-        // allocated slot, no exceptions, no leaves. Before bucket depth 0 was
-        // rejected by `validate_geometry`, this payload parsed `Ok` and the
-        // recovered snapshot panicked downstream in `calculate_bucket`
-        // (`leading >> (32 - 0)` is a shift overflow) on the persist and
-        // issue paths.
+        // allocated slot, no exceptions, no leaves.
         let mut root = vec![0u8; ROOT_HEADER_SIZE + 4];
         root[..4].copy_from_slice(&MAGIC);
         root[4..36].copy_from_slice(B256::repeat_byte(0x42).as_slice());

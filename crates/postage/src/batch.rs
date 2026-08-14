@@ -627,7 +627,7 @@ impl<S: SwarmSpec> Batch<S> {
     /// chunk address, interpreted as a big-endian unsigned integer.
     #[inline]
     pub fn bucket_for_address(&self, address: &ChunkAddress) -> u32 {
-        calculate_bucket(address, self.bucket_depth.get())
+        calculate_bucket(address, self.bucket_depth)
     }
 
     /// Checks if a chunk address matches the expected bucket for a stamp index.

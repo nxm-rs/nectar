@@ -314,7 +314,7 @@ impl<S: SwarmSpec, R: Reservation> RingIssuerFor<S, R> {
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, IssuerError> {
-        let bucket = calculate_bucket(address, self.counters.bucket_depth().get());
+        let bucket = calculate_bucket(address, self.counters.bucket_depth());
         let position = self.next_slot(bucket)?;
 
         // Monotone u64 issuance counter; one increment per stamp cannot
@@ -456,6 +456,10 @@ mod tests {
         )
     }
 
+    fn bucket_depth() -> BucketDepth {
+        BucketDepth::new(16).unwrap()
+    }
+
     #[test]
     fn external_ring_wraps_and_reuses_slots() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
@@ -499,7 +503,7 @@ mod tests {
         // depth=18, bucket_depth=16 gives 4 slots per bucket. Protect slots 1
         // and 3 in the target bucket; the ring may only ever emit 0 and 2.
         let batch = mutable_batch(18, 16);
-        let bucket = calculate_bucket(&test_address(0x00AA), 16);
+        let bucket = calculate_bucket(&test_address(0x00AA), bucket_depth());
         let mut issuer = RingIssuer::reserved(&batch, [(bucket, 1), (bucket, 3)]).unwrap();
 
         let address = test_address(0x00AA);
@@ -521,7 +525,7 @@ mod tests {
         // depth=17, bucket_depth=16 gives 2 slots per bucket. Protect both, so
         // the bucket has no issuable slot.
         let batch = mutable_batch(17, 16);
-        let bucket = calculate_bucket(&test_address(0x0001), 16);
+        let bucket = calculate_bucket(&test_address(0x0001), bucket_depth());
         let mut issuer = RingIssuer::reserved(&batch, [(bucket, 0), (bucket, 1)]).unwrap();
 
         let address = test_address(0x0001);
@@ -556,7 +560,7 @@ mod tests {
         let mut issuer = RingIssuer::external(&batch).unwrap();
 
         let address = test_address(0x0001);
-        let bucket = calculate_bucket(&address, 16);
+        let bucket = calculate_bucket(&address, bucket_depth());
 
         assert!(issuer.bucket_has_capacity(bucket));
         issuer.prepare_ring_stamp(&address, 1).unwrap();
@@ -604,7 +608,7 @@ mod tests {
     #[test]
     fn ring_stamp_issuer_surfaces_exhaustion_as_bucket_full() {
         let batch = mutable_batch(17, 16);
-        let bucket = calculate_bucket(&test_address(0x0001), 16);
+        let bucket = calculate_bucket(&test_address(0x0001), bucket_depth());
         let mut issuer = RingIssuer::reserved(&batch, [(bucket, 0), (bucket, 1)]).unwrap();
 
         let address = test_address(0x0001);

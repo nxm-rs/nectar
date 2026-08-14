@@ -529,7 +529,7 @@ impl<S: SwarmSpec> SnapshotFor<S> {
     /// any write.
     pub fn reserved_stamp_indices(&self, owner: &Address) -> Vec<StampIndex> {
         let batch_id = self.table.batch_id();
-        let bucket_depth = self.table.bucket_depth().get();
+        let bucket_depth = self.table.bucket_depth();
         self.slots
             .iter()
             .enumerate()
@@ -755,7 +755,7 @@ impl<S: SwarmSpec> ValidatedFor<'_, S> {
         }
 
         let batch_id = self.snapshot.table.batch_id();
-        let bucket_depth = self.snapshot.table.bucket_depth().get();
+        let bucket_depth = self.snapshot.table.bucket_depth();
         let previously_allocated = self.snapshot.slots.len();
         let previous_sequence = self.snapshot.sequence;
 
@@ -931,7 +931,7 @@ impl<S: SwarmSpec> IssuerFor<'_, S> {
         &mut self,
         address: &ChunkAddress,
     ) -> Result<(StampIndex, bool)> {
-        let bucket = calculate_bucket(address, self.snapshot.table.bucket_depth().get());
+        let bucket = calculate_bucket(address, self.snapshot.table.bucket_depth());
         // Decide before the write: afterwards the cursor has already advanced.
         let wrapped = self.will_wrap(bucket)?;
         let index = self.snapshot.record_bucket(bucket, &self.reserved)?;
