@@ -93,8 +93,7 @@ impl<S> StampIndifferent<S> {
     }
 }
 
-impl<V: ValidationState, const BODY_SIZE: usize, S> PutStamped<V, BODY_SIZE>
-    for StampIndifferent<S>
+impl<V: ValidationState, const BODY_SIZE: usize, S> PutStamped<V, BODY_SIZE> for StampIndifferent<S>
 where
     S: ChunkPut<AnyChunkSet<BODY_SIZE>>,
 {
@@ -200,9 +199,12 @@ mod tests {
     type Store = MemoryStore<AnyChunkSet<DEFAULT_BODY_SIZE>>;
 
     fn signed(payload: &'static [u8]) -> (Batch, StampedChunk<Verified, Unvalidated>) {
-        let chunk: Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>> =
-            Chunk::from_envelope(ContentChunk::new(payload).expect("valid content chunk").into())
-                .expect("locally built chunk certifies");
+        let chunk: Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>> = Chunk::from_envelope(
+            ContentChunk::new(payload)
+                .expect("valid content chunk")
+                .into(),
+        )
+        .expect("locally built chunk certifies");
         let mut u = Unstructured::new(&[7u8; 128]);
         let (batch, stamp) =
             generators::batch_and_stamp(&mut u, chunk.address()).expect("coherent stamp");

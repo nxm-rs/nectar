@@ -488,8 +488,7 @@ mod tests {
         let data = Bytes::from(chunk);
         let stamp = test_stamp();
 
-        let rebuilt =
-            Signed::reconstruct(address, data.clone(), stamp.clone()).expect("rebuild");
+        let rebuilt = Signed::reconstruct(address, data.clone(), stamp.clone()).expect("rebuild");
         assert!(rebuilt.chunk().envelope().is_content());
         assert_eq!(*rebuilt.address(), address);
         assert_eq!(rebuilt.stamp(), &stamp);
