@@ -10,11 +10,23 @@ use alloy_primitives::Keccak256;
 
 pub use k256::{PublicKey, SecretKey};
 
-use crate::chunk::encryption::{EncryptionKey, transcrypt_in_place};
-use crate::error::WrongLength;
+use nectar_primitives::chunk::encryption::{EncryptionKey, transcrypt_in_place};
+use nectar_primitives::error::WrongLength;
+use thiserror::Error;
 
-// Defined in the core crate because `PrimitivesError` wraps it.
-pub use nectar_primitives_core::error::EciesError;
+/// Errors from ECIES operations.
+#[non_exhaustive]
+#[derive(Debug, Error)]
+pub enum EciesError {
+    /// Plaintext exceeds the requested padded length.
+    #[error("plaintext too long: {len} bytes, padded length {padded}")]
+    PlaintextTooLong {
+        /// Plaintext length.
+        len: usize,
+        /// Requested padded length.
+        padded: usize,
+    },
+}
 
 /// KDF salt for the shared-key derivation.
 ///
@@ -187,7 +199,7 @@ pub fn encrypt_with(
 
     if pad_len > 0 {
         use rand::RngExt;
-        let mut padding = vec![0u8; pad_len];
+        let mut padding = alloc::vec![0u8; pad_len];
         rand::rng().fill(padding.as_mut_slice());
         ciphertext.extend_from_slice(&padding);
     }

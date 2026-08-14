@@ -6,8 +6,7 @@
 //! The chunk-verification subset (the binary merkle tree, the chunk carriers
 //! and their acceptance rules, and the types those need) lives in
 //! [`nectar_primitives_core`] and is re-exported here at its original paths;
-//! storage, encryption, envelopes, ECIES and the routing metrics are this
-//! crate's own.
+//! storage, encryption and the routing metrics are this crate's own.
 //!
 //! ## Key Components
 //!
@@ -69,10 +68,7 @@ pub mod address;
 pub mod bin;
 pub mod bmt;
 pub mod chunk;
-pub mod ecies;
 pub mod entry_ref;
-#[cfg(feature = "envelope-unstable")]
-pub mod envelope;
 pub mod marker;
 pub mod neighborhood_depth;
 pub mod network_id;

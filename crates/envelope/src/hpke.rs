@@ -1,4 +1,4 @@
-//! The envelope suite: RFC 9180 base mode over the draft secp256k1 KEM.
+//! The HPKE suite: RFC 9180 base mode over the draft secp256k1 KEM.
 //!
 //! The KEM is composed directly from k256 and HKDF-SHA256 per
 //! draft-wahby-cfrg-hpke-kem-secp256k1 (codepoint 0x0016): x-only ECDH is
@@ -17,7 +17,9 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use super::{Hpke, LABEL, OpenError, Opened, Recipient, Record, SealedRecord, Topic, hint_matches};
+use super::{Envelope, Hpke, LABEL, OpenError, Opened, Topic, hint_matches};
+#[cfg(any(test, feature = "encryption"))]
+use super::{Recipient, SealedEnvelope};
 
 /// `"KEM"` plus the registered codepoint 0x0016.
 const KEM_SUITE_ID: &[u8] = b"KEM\x00\x16";
@@ -25,7 +27,7 @@ const KEM_SUITE_ID: &[u8] = b"KEM\x00\x16";
 const HPKE_SUITE_ID: &[u8] = b"HPKE\x00\x16\x00\x01\x00\x03";
 /// mode_base.
 const MODE_BASE: u8 = 0x00;
-/// Exporter context of the envelope hint.
+/// Exporter context of the HPKE hint.
 const HINT_CONTEXT: &[u8] = b"nectar/env/v1 hint";
 
 /// Poly1305 tag length.
@@ -66,7 +68,7 @@ pub struct ExportError;
 #[error("keypair derivation exhausted its candidate space")]
 pub struct DeriveKeyPairError;
 
-/// Errors from an envelope seal.
+/// Errors from an HPKE seal.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum HpkeSealError {
@@ -191,7 +193,7 @@ struct Schedule {
 }
 
 impl Schedule {
-    /// The envelope hint: `export("nectar/env/v1 hint", 8)`.
+    /// The HPKE hint: `export("nectar/env/v1 hint", 8)`.
     fn hint(&self) -> Result<[u8; 8], ExportError> {
         let mut hint = [0u8; 8];
         self.exporter.export(HINT_CONTEXT, &mut hint)?;
@@ -242,13 +244,13 @@ fn key_schedule(shared: &[u8; 32], topic: &Topic) -> Result<Schedule, ExportErro
     })
 }
 
-/// Decap once per record; `Ok(None)` when `enc_x` is off-curve or the ECDH
+/// Decap once per envelope; `Ok(None)` when `enc_x` is off-curve or the ECDH
 /// output is rejected.
 pub(super) fn decap(
     secret: &SecretKey,
-    record: &Record<'_>,
+    envelope: &Envelope<'_>,
 ) -> Result<Option<Zeroizing<[u8; 32]>>, OpenError> {
-    let Some(enc) = super::reconstruct(record.enc_x(), record.parity()) else {
+    let Some(enc) = super::reconstruct(envelope.enc_x(), envelope.parity()) else {
         return Ok(None);
     };
     let dh = k256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), enc.as_affine());
@@ -264,14 +266,14 @@ pub(super) fn decap(
 pub(super) fn open_with_shared(
     shared: &Zeroizing<[u8; 32]>,
     topic: &Topic,
-    record: &Record<'_>,
+    envelope: &Envelope<'_>,
 ) -> Result<Option<Opened<Hpke>>, OpenError> {
     let schedule = key_schedule(shared, topic).map_err(|_| OpenError::Internal)?;
     let hint = schedule.hint().map_err(|_| OpenError::Internal)?;
-    if !hint_matches(&hint, record.hint()) {
+    if !hint_matches(&hint, envelope.hint()) {
         return Ok(None);
     }
-    let Some((body, tag)) = record.ciphertext().split_last_chunk::<TAG_SIZE>() else {
+    let Some((body, tag)) = envelope.ciphertext().split_last_chunk::<TAG_SIZE>() else {
         return Ok(None);
     };
     let cipher = ChaCha20Poly1305::new_from_slice(schedule.key.as_slice())
@@ -298,21 +300,21 @@ pub(super) fn open_with_shared(
 pub(super) fn open(
     secret: &SecretKey,
     ctx: Info<'_>,
-    record: &Record<'_>,
+    envelope: &Envelope<'_>,
 ) -> Result<Option<Opened<Hpke>>, OpenError> {
-    let Some(shared) = decap(secret, record)? else {
+    let Some(shared) = decap(secret, envelope)? else {
         return Ok(None);
     };
-    open_with_shared(&shared, ctx.topic(), record)
+    open_with_shared(&shared, ctx.topic(), envelope)
 }
 
-#[cfg(feature = "encryption")]
+#[cfg(any(test, feature = "encryption"))]
 pub(super) fn seal(
     recipient: &Recipient<Hpke>,
     ctx: Info<'_>,
     plaintext: &[u8],
     ct_len: usize,
-) -> Result<SealedRecord<Hpke>, HpkeSealError> {
+) -> Result<SealedEnvelope<Hpke>, HpkeSealError> {
     seal_with_ephemeral(
         &crate::ecies::generate_secret(),
         recipient.key(),
@@ -324,14 +326,14 @@ pub(super) fn seal(
 
 /// Deterministic apart from the ephemeral; reached from [`seal`] and, for
 /// the pinned vectors, from the KAT tests only.
-#[cfg(feature = "encryption")]
+#[cfg(any(test, feature = "encryption"))]
 fn seal_with_ephemeral(
     ephemeral: &SecretKey,
     recipient: &PublicKey,
     topic: &Topic,
     plaintext: &[u8],
     ct_len: usize,
-) -> Result<SealedRecord<Hpke>, HpkeSealError> {
+) -> Result<SealedEnvelope<Hpke>, HpkeSealError> {
     let capacity = ct_len
         .checked_sub(MIN_CT_LEN)
         .ok_or(HpkeSealError::RegionTooSmall { ct_len })?;
@@ -375,7 +377,7 @@ fn seal_with_ephemeral(
     buf.extend_from_slice(&tag);
 
     let (enc_x, parity) = super::x_and_parity(&enc);
-    Ok(SealedRecord::from_parts(
+    Ok(SealedEnvelope::from_parts(
         hint,
         parity,
         enc_x,
@@ -423,8 +425,8 @@ mod tests {
         SecretKey::from_slice(keccak256(b"nectar envelope kat ephemeral").as_slice()).unwrap()
     }
 
-    fn record_from(bytes: &[u8]) -> Record<'_> {
-        Record::parse(bytes).unwrap()
+    fn envelope_from(bytes: &[u8]) -> Envelope<'_> {
+        Envelope::parse(bytes).unwrap()
     }
 
     #[test]
@@ -436,14 +438,14 @@ mod tests {
 
         let enc = ephemeral_key().public_key().to_encoded_point(false);
         let bytes = sealed.to_bytes();
-        let record = record_from(&bytes);
+        let envelope = envelope_from(&bytes);
         let inner = reference()
             .open(
                 enc.as_bytes(),
                 &recipient_sk.to_bytes().to_vec().into(),
                 &info_bytes(&topic),
                 b"",
-                record.ciphertext(),
+                envelope.ciphertext(),
                 None,
                 None,
                 None,
@@ -513,8 +515,8 @@ mod tests {
             )
             .unwrap();
         let bytes = sealed.to_bytes();
-        let record = record_from(&bytes);
-        assert_eq!(&theirs[..], record.hint());
+        let envelope = envelope_from(&bytes);
+        assert_eq!(&theirs[..], envelope.hint());
 
         let mut ours = [0u8; 8];
         sealed.extra().export(HINT_CONTEXT, &mut ours).unwrap();
@@ -564,10 +566,10 @@ mod tests {
             x[31] = x[31].wrapping_add(1);
         }
         bytes[40..72].copy_from_slice(&x);
-        let record = record_from(&bytes);
-        assert!(decap(&recipient_sk, &record).unwrap().is_none());
+        let envelope = envelope_from(&bytes);
+        assert!(decap(&recipient_sk, &envelope).unwrap().is_none());
         assert!(
-            open(&recipient_sk, Info::from(&topic()), &record)
+            open(&recipient_sk, Info::from(&topic()), &envelope)
                 .unwrap()
                 .is_none()
         );
@@ -633,8 +635,8 @@ mod tests {
         let sealed = seal_with_ephemeral(&eph, &recipient_pk, &topic, MSG, 64).unwrap();
         assert_eq!(sealed.to_bytes(), FRAME);
 
-        let record = record_from(&FRAME);
-        let opened = open(&recipient_sk, Info::from(&topic), &record)
+        let envelope = envelope_from(&FRAME);
+        let opened = open(&recipient_sk, Info::from(&topic), &envelope)
             .unwrap()
             .unwrap();
         assert_eq!(opened.plaintext, MSG);
