@@ -10,7 +10,7 @@ use crate::{Batch, BatchId};
 use crate::StampIndex;
 
 #[cfg(feature = "std")]
-use crate::{BatchStore, BatchStoreExt};
+use crate::{BatchStore, BatchStoreExt, StampedAddress};
 
 /// A trait for validating postage stamps.
 ///
@@ -162,8 +162,7 @@ impl<S: BatchStore> StoreValidator<S> {
     /// `Ok(())` if the stamp is valid, or a [`StampError`] describing the failure.
     pub fn validate(&self, stamp: &Stamp, address: &ChunkAddress) -> Result<(), StampError> {
         let batch = self.get_batch_for_stamp(stamp)?;
-        self.validate_structure_with_batch(stamp, address, &batch)?;
-        stamp.verify(address, batch.owner())?;
+        StampedAddress::new(*address, stamp.clone()).validate(&batch)?;
 
         Ok(())
     }

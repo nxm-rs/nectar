@@ -14,6 +14,8 @@
 //! - [`Stamp`]: A postage stamp proving payment for chunk storage
 //! - [`StampIndex`]: The bucket and position index within a stamp
 //! - [`StampDigest`]: The data to be signed when creating a stamp
+//! - [`StampedAddress`]: A stamp bound to the address it was validated
+//!   against, and the single validation authority
 //! - [`PostageContext`]: Context for batch expiry calculations
 //! - [`BatchEvent`]: Events emitted by the postage stamp contract (requires `std`)
 //!
@@ -70,6 +72,7 @@ pub mod oracles;
 mod sink;
 mod stamp;
 mod stamped;
+mod stamped_address;
 mod util;
 mod validation;
 
@@ -91,6 +94,7 @@ pub use error::StampError;
 pub use sink::{PutStamped, StampIndifferent, Tee, TeeError};
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
+pub use stamped_address::{StampedAddress, Unvalidated, Validated, ValidationState};
 pub use util::{PostageContext, calculate_bucket};
 pub use validation::StampValidator;
 #[cfg(feature = "std")]
