@@ -2694,6 +2694,7 @@ dependencies = [
  "rand 0.10.1",
  "rayon",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

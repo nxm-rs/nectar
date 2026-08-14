@@ -471,7 +471,9 @@ mod tests {
         );
     }
 
-    /// Test verifying a stamp from a reference implementation test vector.
+    /// The all-fields-zero boundary stamp, signed by the reference client's
+    /// standard test key and re-derived by `tools/stamp-vectors` as
+    /// `boundary/all-fields-zero`.
     #[test]
     fn test_verify_go_created_stamp() {
         use alloy_primitives::{Address, hex};
