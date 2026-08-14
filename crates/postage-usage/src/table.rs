@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use nectar_postage::{Batch, BatchId, BucketDepth};
-use nectar_postage_issuer::{CounterError, CounterMode, CounterTableFor};
+use nectar_postage_issuer::{CounterError, CounterMode, CounterTable};
 use nectar_primitives::{Mainnet, SwarmSpec};
 
 use crate::{MAX_BUCKET_DEPTH, MAX_COUNTER_BITS, Result, UsageError};
@@ -163,23 +163,20 @@ impl Mutability {
 /// table.record_address(&ChunkAddress::from(B256::repeat_byte(0x99))).unwrap();
 /// ```
 #[derive(Debug)]
-pub struct UsageTableFor<S: SwarmSpec = Mainnet> {
+pub struct UsageTable<S: SwarmSpec = Mainnet> {
     pub(crate) batch_id: BatchId,
     /// The shared per-bucket counter table. It holds the counters, the issued
     /// sum, the geometry, and the fill-or-ring mode, in the same `[0, capacity]`
     /// representation the wire format serializes. The snapshot wraps this table
     /// rather than carrying its own copy of the counter logic.
-    pub(crate) counters: CounterTableFor<S>,
+    pub(crate) counters: CounterTable<S>,
 }
-
-/// The [`UsageTableFor`] of the mainnet spec.
-pub type UsageTable = UsageTableFor<Mainnet>;
 
 // The spec is a type-level tag, so the impls below carry no bound on `S` beyond
 // `SwarmSpec`; deriving would demand `S: Clone` and `S: Eq` of a marker type
 // that holds no data.
 
-impl<S: SwarmSpec> Clone for UsageTableFor<S> {
+impl<S: SwarmSpec> Clone for UsageTable<S> {
     fn clone(&self) -> Self {
         Self {
             batch_id: self.batch_id,
@@ -188,15 +185,15 @@ impl<S: SwarmSpec> Clone for UsageTableFor<S> {
     }
 }
 
-impl<S: SwarmSpec> PartialEq for UsageTableFor<S> {
+impl<S: SwarmSpec> PartialEq for UsageTable<S> {
     fn eq(&self, other: &Self) -> bool {
         self.batch_id == other.batch_id && self.counters == other.counters
     }
 }
 
-impl<S: SwarmSpec> Eq for UsageTableFor<S> {}
+impl<S: SwarmSpec> Eq for UsageTable<S> {}
 
-impl<S: SwarmSpec> UsageTableFor<S> {
+impl<S: SwarmSpec> UsageTable<S> {
     /// Creates an empty table for a batch with the given geometry and
     /// [`Mutability`].
     ///
@@ -214,7 +211,7 @@ impl<S: SwarmSpec> UsageTableFor<S> {
         validate_geometry(depth, bucket_depth.get())?;
         Ok(Self {
             batch_id,
-            counters: CounterTableFor::new(depth, bucket_depth, mutability.mode()),
+            counters: CounterTable::new(depth, bucket_depth, mutability.mode()),
         })
     }
 
@@ -247,7 +244,7 @@ impl<S: SwarmSpec> UsageTableFor<S> {
         mutability: Mutability,
     ) -> Result<Self> {
         validate_geometry(depth, bucket_depth.get())?;
-        let counters = CounterTableFor::from_counts(depth, bucket_depth, mutability.mode(), counts)
+        let counters = CounterTable::from_counts(depth, bucket_depth, mutability.mode(), counts)
             .map_err(map_counter_error)?;
         Ok(Self { batch_id, counters })
     }
@@ -327,13 +324,13 @@ impl<S: SwarmSpec> UsageTableFor<S> {
 
     /// Returns the shared counter table backing this usage table, for the
     /// snapshot's counter-advance and merge paths.
-    pub(crate) const fn counters(&self) -> &CounterTableFor<S> {
+    pub(crate) const fn counters(&self) -> &CounterTable<S> {
         &self.counters
     }
 
     /// Returns a mutable reference to the shared counter table, the snapshot's
     /// single counter-advance handle.
-    pub(crate) const fn counters_mut(&mut self) -> &mut CounterTableFor<S> {
+    pub(crate) const fn counters_mut(&mut self) -> &mut CounterTable<S> {
         &mut self.counters
     }
 
@@ -397,24 +394,21 @@ impl<S: SwarmSpec> UsageTableFor<S> {
 ///
 /// The view borrows the table, so it cannot outlive the snapshot it came from.
 #[derive(Debug)]
-pub struct TableViewFor<'a, S: SwarmSpec = Mainnet> {
-    table: &'a UsageTableFor<S>,
+pub struct TableView<'a, S: SwarmSpec = Mainnet> {
+    table: &'a UsageTable<S>,
 }
 
-/// The [`TableViewFor`] of the mainnet spec.
-pub type TableView<'a> = TableViewFor<'a, Mainnet>;
-
 // A view is a shared borrow, so it copies whatever the spec marker does.
-impl<S: SwarmSpec> Clone for TableViewFor<'_, S> {
+impl<S: SwarmSpec> Clone for TableView<'_, S> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<S: SwarmSpec> Copy for TableViewFor<'_, S> {}
+impl<S: SwarmSpec> Copy for TableView<'_, S> {}
 
-impl<'a, S: SwarmSpec> TableViewFor<'a, S> {
-    pub(crate) const fn new(table: &'a UsageTableFor<S>) -> Self {
+impl<'a, S: SwarmSpec> TableView<'a, S> {
+    pub(crate) const fn new(table: &'a UsageTable<S>) -> Self {
         Self { table }
     }
 
@@ -498,7 +492,7 @@ mod arbitrary_impls {
     use nectar_postage::{BatchId, BucketDepth};
     use nectar_primitives::SwarmSpec;
 
-    use super::{Mutability, UsageTableFor};
+    use super::{Mutability, UsageTable};
     use crate::{MAX_BUCKET_DEPTH, MAX_COUNTER_BITS};
 
     impl<'a> Arbitrary<'a> for Mutability {
@@ -511,7 +505,7 @@ mod arbitrary_impls {
         }
     }
 
-    impl<'a, S: SwarmSpec> Arbitrary<'a> for UsageTableFor<S> {
+    impl<'a, S: SwarmSpec> Arbitrary<'a> for UsageTable<S> {
         fn arbitrary(u: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
             let batch_id = BatchId::new(u.arbitrary::<[u8; 32]>()?);
             // The window is the format's cap intersected with the network
@@ -598,7 +592,15 @@ mod tests {
         assert!(UsageTable::new(batch_id(), 48, mainnet(), imm).is_err());
         assert!(UsageTable::new(batch_id(), 15, mainnet(), imm).is_err());
         // A bucket depth the network accepts but the format does not.
-        assert!(UsageTable::new(batch_id(), 20, BucketDepth::new(17).unwrap(), imm).is_err());
+        assert!(
+            UsageTable::new(
+                batch_id(),
+                20,
+                BucketDepth::<Mainnet>::new(17).unwrap(),
+                imm
+            )
+            .is_err()
+        );
     }
 
     #[test]

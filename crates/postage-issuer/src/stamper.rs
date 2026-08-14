@@ -280,7 +280,8 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_basic() {
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         let address = ChunkAddress::new([0xAB; 32]);
@@ -293,7 +294,8 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_increments_index() {
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         // Use same address to hit same bucket
@@ -316,7 +318,8 @@ mod tests {
     fn test_batch_stamper_injected_clock() {
         use nectar_clock::ManualClock;
 
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let clock = ManualClock::new(1_234_567_890);
         let mut stamper = BatchStamper::with_clock(issuer, MockSigner, &clock);
 
@@ -340,7 +343,8 @@ mod tests {
 
         // Create an issuer with very small bucket capacity: depth=17, bucket_depth=16
         // This gives 2^(17-16) = 2 slots per bucket
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         let address = ChunkAddress::new([0xAB; 32]);
@@ -359,7 +363,8 @@ mod tests {
 
     #[test]
     fn test_batch_stamper_max_utilization() {
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         assert_eq!(stamper.max_bucket_utilization(), 0);
@@ -374,7 +379,8 @@ mod tests {
 
     #[test]
     fn test_into_parts_keeps_issuer_state() {
-        let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let mut stamper = BatchStamper::new(issuer, MockSigner);
 
         let address = ChunkAddress::new([0xAB; 32]);

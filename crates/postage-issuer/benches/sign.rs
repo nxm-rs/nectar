@@ -47,7 +47,8 @@ fn bench_stamper_mock(c: &mut Criterion) {
 
     group.bench_function("single", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
             let mut stamper = BatchStamper::new(issuer, MockSigner);
             let address = random_address();
             black_box(stamper.stamp(black_box(&address)))
@@ -59,7 +60,8 @@ fn bench_stamper_mock(c: &mut Criterion) {
 
     group.bench_function("throughput_1000", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut stamper = BatchStamper::new(issuer, MockSigner);
             for addr in &addresses {
                 black_box(stamper.stamp(addr).unwrap());
@@ -80,7 +82,8 @@ fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
 
     group.bench_function("single", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
             let mut stamper = BatchStamper::new(issuer, &signer);
             let address = random_address();
             black_box(stamper.stamp(black_box(&address)))
@@ -91,7 +94,8 @@ fn bench_ecdsa_sign_sequential(c: &mut Criterion) {
 
     group.bench_function("throughput_100", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut stamper = BatchStamper::new(issuer, &signer);
             for addr in &addresses {
                 black_box(stamper.stamp(addr).unwrap());
@@ -114,7 +118,8 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     group.throughput(Throughput::Elements(100));
     group.bench_function("throughput_100", |b| {
         b.iter(|| {
-            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: ShardedIssuer =
+                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let results: Vec<_> = pipeline
                 .stamp(&mut handle, addresses_100.iter().copied())
@@ -126,7 +131,8 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1000));
     group.bench_function("throughput_1000", |b| {
         b.iter(|| {
-            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: ShardedIssuer =
+                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let results: Vec<_> = pipeline
                 .stamp(&mut handle, addresses_1000.iter().copied())
@@ -151,7 +157,8 @@ fn bench_sign_comparison(c: &mut Criterion) {
     // Sequential
     group.bench_function("sequential", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut stamper = BatchStamper::new(issuer, &signer);
             for addr in &addresses {
                 black_box(stamper.stamp(addr).unwrap());
@@ -162,7 +169,8 @@ fn bench_sign_comparison(c: &mut Criterion) {
     // Streaming pipeline over the sharded issuer
     group.bench_function("pipeline", |b| {
         b.iter(|| {
-            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: ShardedIssuer =
+                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let results: Vec<_> = pipeline
                 .stamp(&mut handle, addresses.iter().copied())

@@ -10,7 +10,7 @@ use alloy_primitives::Address;
 use nectar_primitives::SwarmSpec;
 use nectar_primitives::oracles::Violation;
 
-use crate::{PublishedSequence, RootInfoFor, SnapshotFor};
+use crate::{PublishedSequence, RootInfo, Snapshot};
 
 /// One full persist round trip: revalidate at the `NONE` floor, plan a
 /// persist for a fixed owner, parse the planned root, assemble the planned
@@ -18,7 +18,7 @@ use crate::{PublishedSequence, RootInfoFor, SnapshotFor};
 /// legitimately refuse a snapshot slot (a full immutable bucket, an
 /// exhausted capacity-1 ring); that skip is `Ok(false)`.
 pub fn snapshot_persist_round_trip<S: SwarmSpec>(
-    mut snapshot: SnapshotFor<S>,
+    mut snapshot: Snapshot<S>,
 ) -> Result<bool, Violation> {
     let owner = Address::repeat_byte(0x11);
 
@@ -33,7 +33,7 @@ pub fn snapshot_persist_round_trip<S: SwarmSpec>(
     let Some((root_chunk, leaf_chunks)) = plan.chunks.split_first() else {
         return Err(Violation::new("a plan carries at least the root chunk"));
     };
-    let Ok(root) = RootInfoFor::<S>::parse(&root_chunk.payload) else {
+    let Ok(root) = RootInfo::<S>::parse(&root_chunk.payload) else {
         return Err(Violation::new("planned root must parse"));
     };
     let leaves: Vec<&[u8]> = leaf_chunks.iter().map(|c| c.payload.as_ref()).collect();

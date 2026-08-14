@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signer = PrivateKeySigner::random();
     let owner: Address = signer.address();
     let batch_id = BatchId::new([0x42; 32]);
-    let batch = Batch::new(
+    let batch: Batch = Batch::new(
         batch_id,
         0,
         0,

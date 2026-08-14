@@ -12,8 +12,8 @@
 
 use nectar_postage::calculate_bucket;
 use nectar_postage_usage::{
-    Batch, MAGIC, Mutability, PersistPlan, PublishedSequence, RootInfo, RootInfoFor, Snapshot,
-    SnapshotFor, SwarmSpec, UsageError, UsageTable, UsageTableFor, usage_chunk_address,
+    Batch, MAGIC, Mainnet, Mutability, PersistPlan, PublishedSequence, RootInfo, Snapshot,
+    SnapshotParts, SwarmSpec, TableView, UsageError, UsageTable, usage_chunk_address,
     usage_chunk_id,
 };
 
@@ -38,15 +38,15 @@ fn synthetic_counts(buckets: usize, base: u32, spread: u32) -> Vec<u32> {
 }
 
 fn roundtrip(plan: &PersistPlan) -> Snapshot {
-    let root = RootInfo::parse(&plan.chunks[0].payload).unwrap();
+    let root: RootInfo = RootInfo::parse(&plan.chunks[0].payload).unwrap();
     let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| &c.payload).collect();
     assert_eq!(usize::from(root.leaf_count()), leaves.len());
     root.assemble(&leaves).unwrap()
 }
 
 /// [`roundtrip`] for a snapshot of another network.
-fn roundtrip_for<S: SwarmSpec>(plan: &PersistPlan) -> SnapshotFor<S> {
-    let root = RootInfoFor::<S>::parse(&plan.chunks[0].payload).unwrap();
+fn roundtrip_for<S: SwarmSpec>(plan: &PersistPlan) -> Snapshot<S> {
+    let root = RootInfo::<S>::parse(&plan.chunks[0].payload).unwrap();
     let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| &c.payload).collect();
     assert_eq!(usize::from(root.leaf_count()), leaves.len());
     root.assemble(&leaves).unwrap()
@@ -275,9 +275,9 @@ fn small_bucket_depth_inlines_in_the_root() {
     let counts = synthetic_counts(256, 1000, 4000);
     // Bucket depth 8 is below mainnet's floor, so this runs at `LowFloor`.
     let table =
-        UsageTableFor::from_counts(batch_id(), 21, low_floor(8), counts, Mutability::Immutable)
+        UsageTable::from_counts(batch_id(), 21, low_floor(8), counts, Mutability::Immutable)
             .unwrap();
-    let mut snapshot = SnapshotFor::new(table);
+    let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
         .unwrap()
@@ -348,19 +348,19 @@ fn corruption_is_rejected() {
     // Bad magic.
     let mut bad = root_payload.clone();
     bad[0] ^= 0xff;
-    assert_eq!(RootInfo::parse(&bad), Err(UsageError::BadMagic));
+    assert_eq!(RootInfo::<Mainnet>::parse(&bad), Err(UsageError::BadMagic));
     assert_eq!(MAGIC, *b"SBU1");
 
     // Truncation.
     assert!(matches!(
-        RootInfo::parse(&root_payload[..root_payload.len() - 1]),
+        RootInfo::<Mainnet>::parse(&root_payload[..root_payload.len() - 1]),
         Err(UsageError::PayloadLength { .. })
     ));
 
     // Tampered issued total (bytes 48..56).
     let mut bad = root_payload.clone();
     bad[55] ^= 0x01;
-    let root = RootInfo::parse(&bad).unwrap();
+    let root: RootInfo = RootInfo::parse(&bad).unwrap();
     assert!(matches!(
         root.assemble(&leaves),
         Err(UsageError::IssuedMismatch { .. })
@@ -369,14 +369,14 @@ fn corruption_is_rejected() {
     // Tampered leaf payload.
     let mut bad_leaves = leaves.clone();
     bad_leaves[0][0] ^= 0xff;
-    let root = RootInfo::parse(&root_payload).unwrap();
+    let root: RootInfo = RootInfo::parse(&root_payload).unwrap();
     assert!(matches!(
         root.assemble(&bad_leaves),
         Err(UsageError::LeafDigestMismatch { index: 0 })
     ));
 
     // Wrong leaf count.
-    let root = RootInfo::parse(&root_payload).unwrap();
+    let root: RootInfo = RootInfo::parse(&root_payload).unwrap();
     assert!(matches!(
         root.assemble(&leaves[1..]),
         Err(UsageError::LeafCount { .. })
@@ -437,7 +437,7 @@ fn mutable_round_trips_and_decodes_as_mutable() {
         .unwrap();
 
     // The flags byte marks the snapshot mutable.
-    let root = RootInfo::parse(&plan.chunks[0].payload).unwrap();
+    let root: RootInfo = RootInfo::parse(&plan.chunks[0].payload).unwrap();
     assert!(root.is_mutable());
 
     let leaves: Vec<_> = plan.chunks[1..].iter().map(|c| &c.payload).collect();
@@ -946,7 +946,7 @@ fn failed_allocation_rolls_back_the_snapshot() {
 fn a_non_mainnet_snapshot_issues_reserves_and_recovers() {
     // Depth 11 over bucket depth 8 gives 8 slots per bucket, on a mutable ring
     // so issuance wraps rather than filling.
-    let table = UsageTableFor::from_counts(
+    let table = UsageTable::from_counts(
         batch_id(),
         11,
         low_floor(8),
@@ -954,7 +954,7 @@ fn a_non_mainnet_snapshot_issues_reserves_and_recovers() {
         Mutability::Mutable,
     )
     .unwrap();
-    let mut snapshot = SnapshotFor::new(table);
+    let mut snapshot = Snapshot::new(table);
 
     // The first persist allocates the snapshot's own chunk, which is reserved
     // from then on.
@@ -985,7 +985,7 @@ fn a_non_mainnet_snapshot_issues_reserves_and_recovers() {
     // The next persist recovers byte-for-byte through the same spec.
     let plan = snapshot
         .revalidate(PublishedSequence::from(
-            &RootInfoFor::<LowFloor>::parse(&first.chunks[0].payload).unwrap(),
+            &RootInfo::<LowFloor>::parse(&first.chunks[0].payload).unwrap(),
         ))
         .unwrap()
         .plan_persist(&owner())
@@ -996,7 +996,7 @@ fn a_non_mainnet_snapshot_issues_reserves_and_recovers() {
 
     // Mainnet refuses the very same payload: its floor is 16.
     assert_eq!(
-        RootInfo::parse(&plan.chunks[0].payload),
+        RootInfo::<Mainnet>::parse(&plan.chunks[0].payload),
         Err(UsageError::CorruptGeometry {
             depth: 11,
             bucket_depth: 8,
@@ -1127,7 +1127,7 @@ fn published_sequence_reads_from_a_parsed_root() {
         .unwrap()
         .plan_persist(&owner())
         .unwrap();
-    let root = RootInfo::parse(&plan.chunks[0].payload).unwrap();
+    let root: RootInfo = RootInfo::parse(&plan.chunks[0].payload).unwrap();
     assert_eq!(root.sequence(), 2);
     let floor = PublishedSequence::from(&root);
     assert_eq!(floor.get(), 2);
@@ -1141,3 +1141,11 @@ fn published_sequence_reads_from_a_parsed_root() {
         .unwrap();
     assert_eq!(plan.sequence, 3);
 }
+
+// The spec parameter defaults to `Mainnet`. Each identity fails to compile if
+// a default is dropped or a bare name stops meaning mainnet.
+const _: fn(Snapshot) -> Snapshot<Mainnet> = |x| x;
+const _: fn(SnapshotParts) -> SnapshotParts<Mainnet> = |x| x;
+const _: fn(UsageTable) -> UsageTable<Mainnet> = |x| x;
+const _: fn(RootInfo) -> RootInfo<Mainnet> = |x| x;
+const _: for<'a> fn(TableView<'a>) -> TableView<'a, Mainnet> = |x| x;
