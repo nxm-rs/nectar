@@ -37,8 +37,6 @@ The snapshot in memory is the only durable record of counter advances since the 
 - **Persist after a batch of issuance, and always before dropping the snapshot.** Batch the writes, then `revalidate` -> `plan_persist` -> `seal_plan` -> upload. The cadence is yours to tune (every N stamps, every T seconds), but a snapshot must never be dropped while `Snapshot::is_dirty` is true without a final persist.
 - **Read the published-sequence floor live every time.** The floor handed to `Snapshot::revalidate` must come from a fresh network read of the live root chunk (parse it with `RootInfo::parse` and take `PublishedSequence::from(&root)`), never from a cache and never from the snapshot being persisted. A stale floor is exactly the value the floor exists to defeat; caching it reopens the downgrade window it closes.
 
-A snapshot taken while issuance runs is a monotone under-approximation rather than a byte-exact instant, which is safe on an immutable batch and is why the cadence above is a tuning choice rather than a correctness one. Use `StampSink::pause` when an exact checkpoint is genuinely wanted. Section 11 of the specification gives the argument.
-
 ## Recovery
 
 `Snapshot::new` is for a genuinely fresh, never-persisted table only: it starts the history at sequence 0 with no slots, so handing it a recovered table would downgrade the version at the snapshot's own chunk addresses and re-allocate colliding slots. Rebuild recovered or extracted state only through `Snapshot::from_parts`, which keeps the table, the sequence and the slots bound together. `RootInfo::assemble` does this for you when decoding from the network, and `Snapshot::into_parts` returns the same indivisible `SnapshotParts` value when you extract state from a live snapshot.

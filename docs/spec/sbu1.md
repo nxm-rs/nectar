@@ -223,9 +223,11 @@ A persist stamps the chunks of the snapshot itself.
 Each such stamp advances a counter, which can change the chosen width, which can change `L`.
 The planner runs this to a fixed point:
 
-1. Allocate a slot for each snapshot chunk that has no slot yet, and fold the advance into the table.
+1. Allocate a slot for the next snapshot chunk that has none, and fold the advance into the table.
 2. Encode.
 3. Repeat while the slot count does not exceed the leaf count.
+
+The allocation is one slot per round: allocating the whole shortfall at once reaches a fixed point with a different `A`, and so a different root from the vectors of section 12.
 
 The loop terminates for three reasons.
 Allocation is monotone, because a slot is never released.
@@ -236,7 +238,7 @@ A slot is reused for every later persist, so a steady-state persist allocates no
 A leaf that reappears then reuses its original slot instead of burning a new one.
 
 The worst case cost is 65 slots, which is one root and 64 leaves.
-The shallowest batch at `u = 16` holds `2^17` slots, so the worst case is under 0.05 percent of the batch.
+Reaching 64 leaves forces `u = 16`, so the batch holds at least `2^16` slots and the worst case is under 0.1 percent of it.
 
 ## 10. Protocol assumption on the reserve
 
@@ -259,42 +261,36 @@ An implementation that targets a reserve with different replacement rules must r
 
 The format is single-writer.
 Two writers that issue the same index cannot be reconciled after the fact, and multi-writer coordination is out of scope for version 1.
-One writer may nevertheless allocate from many threads.
 
-A fill watermark is allocated lock-free.
-An allocation compare-and-swaps one counter and takes no lock over the table, so a read of the whole table while issuance runs observes no single instant.
-An encoder may snapshot such a table without stopping issuance.
-The result is a monotone under-approximation of the table at the end of the read, and it is never an over-approximation, because a fill watermark only rises.
-
-This is deliberate and it is safe.
-Every slot below a restored watermark was already burned by the issuance that the snapshot did not observe, so restoring an older count re-burns nothing.
-A restored count can reissue an index whose chunk is still live.
-That is the same data-loss window that the persistence cadence covers, and it costs the batch no further capacity.
-
-The encoder must still write the counter sum of the exact counter values that it encodes.
-An incrementally maintained total that ran ahead of the encoded counters fails the sum check of section 7 at the decoder.
-
-A ring cursor must not be read this way.
-A cursor falls on wrap, so it is not monotone and an inconsistent read of a mutable table has no under-approximation argument.
-A mutable table must be read under the lock that serializes its cursor advances.
-
-An exact checkpoint is available when a caller wants one.
-The `StampSink::pause` hook parks admission, and a drain of the sink after the pause reaches a quiescent point.
-A snapshot taken there is byte-exact for both modes.
+An encoder must encode one instant of the counter table, and must write the counter sum of the exact counters it encodes.
+A total maintained incrementally alongside the counters fails the sum check of section 7 as soon as a concurrent advance puts it ahead of them.
 
 ## 12. Test vectors
 
 `crates/postage-usage/tests/vector.rs` pins the vectors.
 A failure there means the wire format changed.
 
-- A single-chunk snapshot with a 142-byte root.
-  The geometry is `d = 12` and `u = 8`, the counts are `3 + (b mod 4)` with bucket 200 full at 16, and the encoder takes `base = 3` and `w = 2`.
-  The layout is the 66-byte header, one 8-byte exception, one 4-byte slot and 64 packed bytes.
-- A 14-chunk snapshot with a 554-byte root.
-  The geometry is `d = 29` and `u = 16`, the counts are `100 + (b mod 50)` with bucket 0x1234 at 5000 and bucket 0xcbe5 full at 8192, and the encoder takes `base = 100` and `w = 6`.
-  The layout is the 66-byte header, two 8-byte exceptions, fourteen 4-byte slots and thirteen 32-byte digests.
-  The leaves are twelve full 4096-byte payloads and one 3-byte payload that holds the last four buckets.
-- A mutable vector with the geometry and the counters of the first vector, which differs from it in the flags byte alone.
+Every vector is persisted at sequence 1 by owner `0x11` repeated, for batch id `0x42` repeated.
+
+A single-chunk snapshot with a 142-byte root.
+The geometry is `d = 12` and `u = 8`, the counts are `3 + (b mod 4)` with bucket 200 full at 16, and the encoder takes `base = 3` and `w = 2`.
+The layout is the 66-byte header, one 8-byte exception, one 4-byte slot and 64 packed bytes.
+
+```
+5342553142424242424242424242424242424242424242424242424242424242424242420c0800020000000000000001000000000000048e00000003000100000001000000c800000010000000041b1b1b1b1b1b1b1b1b1b2b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1bdb1b1b1b1b1b1b1b1b1b1b1b1b1b
+```
+
+A 14-chunk snapshot with a 554-byte root.
+The geometry is `d = 29` and `u = 16`, the counts are `100 + (b mod 50)` with bucket 0x1234 at 5000 and bucket 0xcbe5 full at 8192, and the encoder takes `base = 100` and `w = 6`.
+The layout is the 66-byte header, two 8-byte exceptions, fourteen 4-byte slots and thirteen 32-byte digests.
+The leaves are twelve full 4096-byte payloads and one 3-byte payload that holds the last four buckets.
+
+```
+5342553142424242424242424242424242424242424242424242424242424242424242421d100006000000000000000100000000007cb19900000064000e000d000200001234000013880000cbe500002000000000690000007d00000091000000880000007a000000760000006e00000079000000810000006c0000007d000000910000007a0000006b9c8de349a3c4b573d45db35c3585fcbe2e2c20d999ee2a5ead8c1600b5a5428a645b990e3f426220eda38496a262f6968b8a4d42f7becb602c51576f19112fe9fb1f9017218e72abf21947cb3290726dd5129c47e50562a22dfcaa64340dd76d5bb4cba42453e6cb20f8c1c0892bf2bf4873bd3b4850787f171952b662346708660c94f587fa4516af6eb9b083513f245d9bd9fc0559f48356021e51892201fb197b58a495d1305292904a61906b02e37e68101e3657b4e2ff9661d705a004c36ebbe152c039d8887c067cc8fa86636c62afc5f21cd8ca1afc4f546e77882de86c3e8248ce84ffd4c440f28c638007df05e9ea75a713a308e7ba48e6066903c88e6e5e60e48477ca6202b2333d5c06968f67baae3c03105bbb4a7a8491b04ce6f5c8fc3151cdfbc3136e8f0adac485df7ae4d866e1cce1cd1aa0d1cbbf33f19bf28b0420c19fcadaf197e1eaff36f8151ec107d59ad4e6d3a4cf1492a77828991d9c30151c90772df348891a627fa9a5046919dba774e2a388819e9e11aba2c68724aa66f7e98c8ec09b71685da6a49cf173a390ac1662a9e120712062d20fb8
+```
+
+A mutable snapshot with the geometry and the counters of the first vector.
+Its root is the first root with the flags byte at offset 38 set to `0x01`, and no other byte differs.
 
 The bucket depth of the first vector is below the mainnet floor of 16.
 The format supports the bucket depths 1 to 16, and the floor of the network decides which of them a batch may declare, so that vector is pinned for a deployment with a lower floor.

@@ -1,7 +1,4 @@
 //! Pins `docs/spec/sbu1.md` against the codec.
-//!
-//! The specification is normative, so a drift between its root-header table
-//! and the bytes the encoder emits is a defect in one of the two.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -14,15 +11,16 @@
 use std::fs;
 use std::path::PathBuf;
 
+use alloy_primitives::hex;
 use nectar_postage_usage::{
     MAGIC, MAX_BUCKET_DEPTH, MAX_COUNTER_BITS, MAX_EXCEPTIONS, MAX_PAYLOAD_SIZE, Mutability,
-    PublishedSequence, ROOT_HEADER_SIZE, Snapshot, USAGE_DOMAIN, UsageTable,
+    PublishedSequence, ROOT_HEADER_SIZE, Snapshot, SwarmSpec, USAGE_DOMAIN, UsageTable,
 };
 use nectar_testing::{LowFloor, low_floor};
 
 mod common;
 
-use common::{batch_id, owner};
+use common::{batch_id, bucket_depth, owner};
 
 const SPEC: &str = "docs/spec/sbu1.md";
 const README: &str = "crates/postage-usage/README.md";
@@ -35,8 +33,8 @@ fn read(path: &str) -> String {
     fs::read_to_string(repo_root().join(path)).unwrap()
 }
 
-/// A row of the root-header table: offset, size, and the field text with its
-/// markdown decoration removed.
+/// Offset, size and field text of each root-header row, stripped of its
+/// markdown decoration.
 fn header_rows(doc: &str) -> Vec<(usize, usize, String)> {
     let mut rows = Vec::new();
     let mut inside = false;
@@ -62,17 +60,45 @@ fn header_rows(doc: &str) -> Vec<(usize, usize, String)> {
             field.split_whitespace().collect::<Vec<_>>().join(" "),
         ));
     }
-    assert!(!rows.is_empty(), "the specification has no root-header table");
+    assert!(
+        !rows.is_empty(),
+        "the specification has no root-header table"
+    );
     rows
 }
 
-/// The first specified vector, encoded: depth 12, bucket depth 8, one
-/// exception, one allocated slot, inline deltas.
-fn pinned_root(mutability: Mutability) -> (Vec<u8>, Snapshot<LowFloor>) {
+fn field(rows: &[(usize, usize, String)], name: &str) -> (usize, usize) {
+    rows.iter()
+        .find(|(_, _, field)| field == name)
+        .map(|&(offset, size, _)| (offset, size))
+        .unwrap_or_else(|| panic!("the specification names no field {name}"))
+}
+
+/// The first specified vector: `d = 12`, `u = 8`, one exception, inline deltas.
+fn small_root(mutability: Mutability) -> (Vec<u8>, Snapshot<LowFloor>) {
     let mut counts: Vec<u32> = (0..256u32).map(|b| 3 + (b & 3)).collect();
     counts[200] = 16;
-    let table =
-        UsageTable::from_counts(batch_id(), 12, low_floor(8), counts, mutability).unwrap();
+    let table = UsageTable::from_counts(batch_id(), 12, low_floor(8), counts, mutability).unwrap();
+    persist(table)
+}
+
+/// The second specified vector: `d = 29`, `u = 16`, two exceptions, 13 leaves.
+fn large_root() -> Vec<u8> {
+    let mut counts: Vec<u32> = (0..65536u32).map(|b| 100 + (b % 50)).collect();
+    counts[0x1234] = 5000;
+    counts[0xcbe5] = 8192;
+    let table = UsageTable::from_counts(
+        batch_id(),
+        29,
+        bucket_depth(),
+        counts,
+        Mutability::Immutable,
+    )
+    .unwrap();
+    persist(table).0
+}
+
+fn persist<S: SwarmSpec>(table: UsageTable<S>) -> (Vec<u8>, Snapshot<S>) {
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -85,32 +111,29 @@ fn pinned_root(mutability: Mutability) -> (Vec<u8>, Snapshot<LowFloor>) {
 #[test]
 fn the_root_header_table_matches_the_encoder() {
     let rows = header_rows(&read(SPEC));
-    let (root, snapshot) = pinned_root(Mutability::Immutable);
+    let (root, snapshot) = small_root(Mutability::Immutable);
     let view = snapshot.table();
 
     let mut next = 0usize;
-    for (offset, size, field) in &rows {
-        assert_eq!(*offset, next, "field {field} does not follow the last one");
+    for (offset, size, name) in &rows {
+        assert_eq!(*offset, next, "field {name} does not follow the last one");
         next += size;
     }
-    assert_eq!(next, ROOT_HEADER_SIZE, "the header table is the wrong width");
+    assert_eq!(
+        next, ROOT_HEADER_SIZE,
+        "the header table is the wrong width"
+    );
 
-    let at = |name: &str| -> (usize, usize) {
-        rows.iter()
-            .find(|(_, _, field)| field == name)
-            .map(|&(offset, size, _)| (offset, size))
-            .unwrap_or_else(|| panic!("the specification names no field {name}"))
-    };
     let be = |name: &str| -> u64 {
-        let (offset, size) = at(name);
+        let (offset, size) = field(&rows, name);
         root[offset..offset + size]
             .iter()
             .fold(0u64, |value, &byte| (value << 8) | u64::from(byte))
     };
 
-    let (offset, size) = at("magic SBU1");
+    let (offset, size) = field(&rows, "magic SBU1");
     assert_eq!(&root[offset..offset + size], &MAGIC);
-    let (offset, size) = at("batch id");
+    let (offset, size) = field(&rows, "batch id");
     assert_eq!(
         &root[offset..offset + size],
         &<[u8; 32]>::from(batch_id())[..]
@@ -126,7 +149,7 @@ fn the_root_header_table_matches_the_encoder() {
     assert_eq!(allocated, snapshot.allocated_slots().len() as u64);
 
     // The documented offsets must explain the payload length exactly, which
-    // catches a wrong offset the value checks above cannot see.
+    // catches a wrong offset the value checks cannot see.
     let width = be("delta width w") as usize;
     let leaves = be("leaf count L") as usize;
     let exceptions = be("exception count E") as usize;
@@ -143,18 +166,27 @@ fn the_root_header_table_matches_the_encoder() {
 }
 
 #[test]
-fn the_documented_flags_bit_selects_the_mutable_reading() {
-    let rows = header_rows(&read(SPEC));
-    let (offset, size) = rows
-        .iter()
-        .find(|(_, _, field)| field == "flags")
-        .map(|&(offset, size, _)| (offset, size))
-        .unwrap();
-    assert_eq!(size, 1);
-    let (immutable, _) = pinned_root(Mutability::Immutable);
-    let (mutable, _) = pinned_root(Mutability::Mutable);
-    assert_eq!(immutable[offset] & 1, 0);
-    assert_eq!(mutable[offset] & 1, 1);
+fn the_documented_vectors_match_the_encoder() {
+    let spec = read(SPEC);
+    let (flags, _) = field(&header_rows(&spec), "flags");
+    let (immutable, _) = small_root(Mutability::Immutable);
+    let (mutable, _) = small_root(Mutability::Mutable);
+
+    assert!(
+        spec.contains(&hex::encode(&immutable)),
+        "the single-chunk vector drifted from the encoder"
+    );
+    assert!(
+        spec.contains(&hex::encode(large_root())),
+        "the multi-leaf vector drifted from the encoder"
+    );
+
+    let mut expected = immutable;
+    expected[flags] = 0x01;
+    assert_eq!(
+        mutable, expected,
+        "the mutable vector differs by more than the flags byte"
+    );
 }
 
 #[test]
@@ -162,7 +194,7 @@ fn every_repository_path_the_documents_cite_exists() {
     let mut cited = 0usize;
     for doc in [SPEC, README] {
         let text = read(doc);
-        for token in text.split(['`', '(', ')', ' ', '\n', ',', ';']) {
+        for token in text.split(['`', '(', ')', '[', ']', ' ', '\n', ',', ';']) {
             let token = token.trim_end_matches('.');
             if token.starts_with("http")
                 || !token.contains('/')
@@ -177,7 +209,10 @@ fn every_repository_path_the_documents_cite_exists() {
             cited += 1;
         }
     }
-    assert!(cited > 0, "the path scan matched nothing, so it guards nothing");
+    assert!(
+        cited > 0,
+        "the path scan matched nothing, so it guards nothing"
+    );
 }
 
 #[test]
