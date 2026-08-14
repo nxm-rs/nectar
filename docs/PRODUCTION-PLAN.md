@@ -80,10 +80,11 @@ Complete.
 
 #678 alone removed over two thousand lines carrying six `calculate_bucket` call sites, the hand-written `RingExhausted` producer and two shard cursors that three later issues would otherwise have refactored first.
 
-**The workspace is 18 members, down from 23.**
+**The workspace is 19 members.**
+Stage 2 settled at 18, down from 23, and `nectar-envelope` is the only crate added since.
 The count is the number of directories under `crates/` plus one, because `Cargo.toml` declares `members = ["crates/*", "crates/primitives/examples/wasm-demo"]`.
 A directory count alone is off by one, and it produced a wrong figure once during this stage.
-The 17 remaining crates are `clock`, `contracts`, `feeds`, `file`, `governor`, `integration-tests`, `ldb`, `manifest`, `mantaray`, `marker`, `postage`, `postage-issuer`, `postage-usage`, `primitives`, `primitives-core`, `tasks` and `testing`.
+The 18 crates are `clock`, `contracts`, `envelope`, `feeds`, `file`, `governor`, `integration-tests`, `ldb`, `manifest`, `mantaray`, `marker`, `postage`, `postage-issuer`, `postage-usage`, `primitives`, `primitives-core`, `tasks` and `testing`.
 
 What went: `benches` and `examples` (#618); `swarms` (#679, folded into `nectar-primitives`); `feeds-bench` and `ldb-sim` (#680, folded into their host crates as `[[example]]` targets so their drivers stay runnable).
 `nectar-postage-issuer` lost 1131 lines to a generic `Sharded<I>`, and `nectar-governor` is now bounded admission alone, holding only `nectar-marker` and `futures-util`.

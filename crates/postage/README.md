@@ -20,7 +20,6 @@ The reference client calls a detached postage stamp an envelope.
 The response carries the issuer address, the packed bucket and index, the timestamp and the signature.
 There is no Go type of that name; it is a route and a response name.
 `Stamp` in this crate is the stamp behind that response, field for field: batch, index, timestamp and signature.
-The `envelope` module in `nectar-primitives` is unrelated: it is the HPKE encryption envelope.
 
 ## License
 

@@ -119,16 +119,15 @@ jobs:
                   cargo nextest run \
                     -p nectar-mantaray --features manifest,encryption --locked \
                     --no-tests=warn --no-fail-fast
-            # The modern envelope (KAT, differential and forgery batteries)
-            # sits behind the primitives envelope-unstable feature; cover its
-            # tests and the no-downgrade compile-fail doctest here.
+            # The envelope sealing lane sits behind the encryption feature;
+            # cover it and the no-downgrade compile-fail doctest here.
             - name: Run envelope tests
               run: |
                   cargo nextest run \
-                    -p nectar-primitives --features envelope-unstable,encryption --locked \
+                    -p nectar-envelope --features encryption --locked \
                     --no-tests=warn --no-fail-fast
             - name: Run envelope doctests
-              run: cargo test --doc -p nectar-primitives --features envelope-unstable,encryption --locked
+              run: cargo test --doc -p nectar-envelope --features encryption --locked
             # The encrypted allocation probes must see encryption without
             # rayon, matching the encrypted split shape above.
             - name: Run encrypted split integration tests

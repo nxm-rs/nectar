@@ -1,8 +1,8 @@
-//! Envelope-capability attestation.
+//! Recipient-key attestation.
 //!
-//! A peer pins its envelope capability by signing its encryption key with
-//! its long-term secp256k1 identity key (EIP-191 personal sign, matching
-//! the handshake). Verification is the only mint of [`Recipient<Hpke>`];
+//! A peer pins its HPKE capability by signing its recipient key with its
+//! long-term secp256k1 identity key (EIP-191 personal sign, matching the
+//! handshake). Verification is the only mint of [`Recipient<Hpke>`];
 //! provenance, the pinned-peer registry and fail-closed enforcement live
 //! with the node, which must treat a missing token for a pinned peer as an
 //! attack, never as licence to fall back to compat.
@@ -13,7 +13,7 @@ use k256::PublicKey;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use thiserror::Error;
 
-use crate::error::WrongLength;
+use nectar_primitives::error::WrongLength;
 
 use super::{Hpke, Recipient};
 
@@ -59,21 +59,21 @@ pub enum AttestationError {
     },
 }
 
-/// Signed statement that an identity receives under the envelope key.
+/// Signed statement that an identity receives under the recipient key.
 #[derive(Debug, Clone)]
-pub struct EnvelopeAttestation {
+pub struct RecipientAttestation {
     key: PublicKey,
     signature: Signature,
 }
 
-impl EnvelopeAttestation {
+impl RecipientAttestation {
     /// Assemble a token from its parts; [`Self::verify`] does the checking.
     #[must_use]
     pub const fn new(key: PublicKey, signature: Signature) -> Self {
         Self { key, signature }
     }
 
-    /// The attested envelope key.
+    /// The attested recipient key.
     #[must_use]
     pub const fn key(&self) -> &PublicKey {
         &self.key
@@ -110,7 +110,7 @@ impl EnvelopeAttestation {
     }
 }
 
-impl TryFrom<&[u8]> for EnvelopeAttestation {
+impl TryFrom<&[u8]> for RecipientAttestation {
     type Error = AttestationError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
@@ -137,13 +137,13 @@ mod tests {
 
     use crate::ecies::generate_secret;
 
-    fn attested() -> (LocalSigner<k256::ecdsa::SigningKey>, EnvelopeAttestation) {
+    fn attested() -> (LocalSigner<k256::ecdsa::SigningKey>, RecipientAttestation) {
         let identity = LocalSigner::random();
-        let envelope_key = generate_secret().public_key();
+        let recipient_key = generate_secret().public_key();
         let signature = identity
-            .sign_message_sync(&sign_data(&envelope_key))
+            .sign_message_sync(&sign_data(&recipient_key))
             .unwrap();
-        let attestation = EnvelopeAttestation::new(envelope_key, signature);
+        let attestation = RecipientAttestation::new(recipient_key, signature);
         (identity, attestation)
     }
 
@@ -170,7 +170,7 @@ mod tests {
     fn swapped_key_breaks_the_signature() {
         let (identity, attestation) = attested();
         let forged =
-            EnvelopeAttestation::new(generate_secret().public_key(), *attestation.signature());
+            RecipientAttestation::new(generate_secret().public_key(), *attestation.signature());
         assert!(forged.verify(identity.address()).is_err());
     }
 
@@ -179,7 +179,7 @@ mod tests {
         let (identity, attestation) = attested();
         let bytes = attestation.to_bytes();
         assert_eq!(bytes.len(), SIZE);
-        let decoded = EnvelopeAttestation::try_from(bytes.as_slice()).unwrap();
+        let decoded = RecipientAttestation::try_from(bytes.as_slice()).unwrap();
         assert_eq!(decoded.key(), attestation.key());
         let recipient = decoded.verify(identity.address()).unwrap();
         assert_eq!(recipient.key(), attestation.key());
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn short_token_is_rejected() {
-        let err = EnvelopeAttestation::try_from([0u8; 10].as_slice()).unwrap_err();
+        let err = RecipientAttestation::try_from([0u8; 10].as_slice()).unwrap_err();
         assert!(matches!(err, AttestationError::Length(_)));
     }
 

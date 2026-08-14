@@ -2515,6 +2515,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-envelope"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "chacha20poly1305",
+ "hkdf 0.12.4",
+ "hpke-rs",
+ "hpke-rs-crypto",
+ "hpke-rs-rust-crypto",
+ "k256",
+ "nectar-primitives",
+ "rand 0.10.1",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "nectar-feeds"
 version = "0.4.0"
 dependencies = [
@@ -2732,7 +2753,6 @@ dependencies = [
  "alloy-signer-local",
  "arbitrary",
  "bytes",
- "chacha20poly1305",
  "criterion",
  "derive_more",
  "digest 0.11.3",
@@ -2741,12 +2761,7 @@ dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "getrandom 0.4.2",
- "hkdf 0.12.4",
- "hpke-rs",
- "hpke-rs-crypto",
- "hpke-rs-rust-crypto",
  "js-sys",
- "k256",
  "nectar-clock",
  "nectar-marker",
  "nectar-primitives-core",
@@ -2757,7 +2772,6 @@ dependencies = [
  "proptest-arbitrary-interop",
  "rand 0.10.1",
  "serde",
- "sha2 0.10.9",
  "strum 0.28.0",
  "subtle",
  "thiserror",

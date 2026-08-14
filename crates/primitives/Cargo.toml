@@ -33,12 +33,6 @@ alloy-chains = { workspace = true }
 # asm-keccak and getrandom extras ride the target tables below.
 alloy-primitives = { workspace = true, features = ["k256"] }
 
-## rust crypto
-chacha20poly1305 = { workspace = true, optional = true }
-hkdf = { workspace = true, optional = true }
-k256 = { workspace = true, features = ["ecdh"] }
-sha2 = { workspace = true, optional = true }
-
 # derive macros
 derive_more.workspace = true
 num_enum.workspace = true
@@ -102,9 +96,6 @@ futures.workspace = true
 # The core's `Arbitrary` impls and generators ride its own feature: this
 # crate's `cfg(test)` does not reach them.
 nectar-primitives-core = { workspace = true, features = ["arbitrary"] }
-hpke-rs.workspace = true
-hpke-rs-crypto.workspace = true
-hpke-rs-rust-crypto.workspace = true
 nectar-testing.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
@@ -117,8 +108,6 @@ std = [
 	"dep:parking_lot",
 	"dep:web-time",
 	"futures-core/std",
-	"k256/precomputed-tables",
-	"k256/std",
 	"nectar-clock/std",
 	"nectar-primitives-core/std",
 	"strum/std",
@@ -151,8 +140,6 @@ arbitrary = [
 	"std",
 ]
 encryption = [ "dep:rand" ]
-# Modern envelope: RFC 9180 HPKE over the frozen ecies compat baseline.
-envelope-unstable = [ "dep:chacha20poly1305", "dep:hkdf", "dep:sha2" ]
 # Single-thread send escape for non-wasm targets (e.g. zkVM guests): applies
 # the wasm32 relaxation of MaybeSend/MaybeSync and the boxed error aliases on
 # any target. An explicit feature rather than a target cfg so CI can exercise
@@ -181,5 +168,5 @@ name = "proofs"
 harness = false
 
 [package.metadata.docs.rs]
-features = ["arbitrary", "encryption", "parallel", "serde", "std"]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

@@ -86,10 +86,10 @@ jobs:
             # likewise outside the default-features pass.
             - name: cargo clippy (ldb encryption)
               run: cargo clippy --locked --all-targets -p nectar-ldb --features encryption -- -D warnings
-            # The modern envelope sits behind the primitives envelope-unstable
-            # feature, likewise outside the default-features pass.
+            # The envelope sealing lane sits behind the encryption feature,
+            # likewise outside the default-features pass.
             - name: cargo clippy (envelope)
-              run: cargo clippy --locked --all-targets -p nectar-primitives --features envelope-unstable,encryption -- -D warnings
+              run: cargo clippy --locked --all-targets -p nectar-envelope --features encryption -- -D warnings
             # The pipeline's inline engine only compiles with the parallel
             # feature off, so lint the inline shape on its own.
             - name: cargo clippy (postage-issuer inline engine)
@@ -103,7 +103,7 @@ jobs:
             - name: unused lib dependencies
               run: |
                   for crate in nectar-primitives nectar-primitives-core \
-                               nectar-postage \
+                               nectar-envelope nectar-postage \
                                nectar-postage-issuer nectar-postage-usage \
                                nectar-contracts nectar-file \
                                nectar-marker nectar-clock nectar-governor \

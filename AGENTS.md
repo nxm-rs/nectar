@@ -105,9 +105,9 @@ The error layer is where duplication now lives, so these six rules are the stand
 Each rule below names a file and line that already conforms, so a reviewer can check the claim rather than take it.
 
 - Rule 1: `crates/feeds/src/error.rs:13`, `#[non_exhaustive]` on `FeedError`.
-- Rule 2: `crates/primitives/src/envelope/mod.rs:580`, a `#[from]` wrapping variant.
+- Rule 2: `crates/envelope/src/lib.rs:598`, a `#[from]` wrapping variant.
 - Rule 3: `crates/feeds/src/error.rs:17`, `AddressMismatch` carrying typed `expected` and `actual` fields rather than a formatted string.
-- Rule 4: `crates/primitives-core/src/error.rs:163`, the `BoxedError` alias.
+- Rule 4: `crates/primitives-core/src/error.rs:142`, the `BoxedError` alias.
 - Rule 5: no conforming example exists yet.
   `RingExhausted` is declared in more than one crate with the same shape and no conversion between them, which is the violation this rule exists to stop; #688 gives it one owner.
 - Rule 6: `crates/postage-usage/src/error.rs:271` and `:330`, `UsageError::is_corruption` and `is_recoverable`, with the exhaustive classification test at `:387` that fails to compile when a variant is added without being classified.

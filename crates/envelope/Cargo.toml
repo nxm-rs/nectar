@@ -1,0 +1,66 @@
+[package]
+name = "nectar-envelope"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+description = "Sealed messaging envelopes for Ethereum Swarm: RFC 9180 HPKE over the frozen ECIES baseline"
+documentation = "https://docs.rs/nectar-envelope"
+readme = "README.md"
+keywords = ["swarm", "ethereum", "hpke", "ecies", "encryption"]
+categories = ["cryptography"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# nectar
+nectar-primitives.workspace = true
+
+# `k256` for the attestation's EIP-191 address recovery.
+alloy-primitives = { workspace = true, features = ["k256"] }
+k256 = { workspace = true, features = ["ecdh"] }
+
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+
+subtle.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+rand = { workspace = true, optional = true }
+
+[dev-dependencies]
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+# The differential oracle for the draft KEM, which publishes no test vectors.
+hpke-rs.workspace = true
+hpke-rs-crypto.workspace = true
+hpke-rs-rust-crypto.workspace = true
+rand.workspace = true
+
+[features]
+default = [ "std" ]
+std = [
+	"alloy-primitives/std",
+	"chacha20poly1305/std",
+	"hkdf/std",
+	"k256/precomputed-tables",
+	"k256/std",
+	"nectar-primitives/std",
+	"sha2/std",
+	"subtle/std",
+	"thiserror/std",
+	"zeroize/std",
+]
+# Sealing only: it needs an RNG. Opening and decap stay bare-metal clean.
+encryption = [ "dep:rand", "nectar-primitives/encryption" ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

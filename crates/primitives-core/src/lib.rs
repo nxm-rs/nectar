@@ -5,9 +5,9 @@
 //! and single-owner carriers with their acceptance rules, single-owner owner
 //! recovery, and the address, error and wire types those need.
 //!
-//! Storage, encryption, envelopes, ECIES, the thread-safety markers and the
-//! routing metrics live in `nectar-primitives`, which depends on this crate
-//! and re-exports every item at its original path.
+//! Storage, encryption, the thread-safety markers and the routing metrics
+//! live in `nectar-primitives`, which depends on this crate and re-exports
+//! every item at its original path.
 //!
 //! ## Usage Examples
 //!

@@ -11,7 +11,7 @@
 //! - Component-specific errors: More detailed errors from specific subsystems
 //!   (like `BmtError` and `ChunkError`)
 //!
-//! [`EncryptionError`], [`EciesError`] and [`ChunkStoreError`] name failures of
+//! [`EncryptionError`] and [`ChunkStoreError`] name failures of
 //! `nectar-primitives` subsystems that live outside this crate. They are
 //! defined here because [`PrimitivesError`] wraps them, and are re-exported at
 //! their own module paths there.
@@ -86,10 +86,6 @@ pub enum PrimitivesError {
     #[error(transparent)]
     Encryption(#[from] EncryptionError),
 
-    /// Errors from ECIES operations
-    #[error(transparent)]
-    Ecies(#[from] EciesError),
-
     /// Input/output errors
     #[cfg(feature = "std")]
     #[error("I/O error: {0}")]
@@ -136,23 +132,6 @@ pub enum EncryptionError {
         len: usize,
         /// Required buffer length.
         required: usize,
-    },
-}
-
-/// Errors from ECIES operations.
-///
-/// The scheme itself lives in `nectar_primitives::ecies`; the type is here
-/// because [`PrimitivesError`] wraps it.
-#[non_exhaustive]
-#[derive(Debug, Error)]
-pub enum EciesError {
-    /// Plaintext exceeds the requested padded length.
-    #[error("plaintext too long: {len} bytes, padded length {padded}")]
-    PlaintextTooLong {
-        /// Plaintext length.
-        len: usize,
-        /// Requested padded length.
-        padded: usize,
     },
 }
 
