@@ -4,7 +4,7 @@
 //! so issuance walks each bucket as a ring cursor and wraps back to the first
 //! slot once every slot has been written. This is the overwrite behaviour an
 //! immutable batch must never have, which is why the fill-only [`MemoryIssuer`]
-//! and [`ShardedIssuer`] refuse a mutable batch outright.
+//! refuses a mutable batch outright.
 //!
 //! A reserved-blind ring is dangerous in a self-hosting context: when the owner
 //! keeps its own chunks in the same batch, an unconstrained ring would wrap
@@ -23,7 +23,6 @@
 //! reserved-blind ring by mistake.
 //!
 //! [`MemoryIssuer`]: crate::MemoryIssuer
-//! [`ShardedIssuer`]: crate::ShardedIssuer
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
