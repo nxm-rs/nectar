@@ -53,9 +53,14 @@ mod word {
             self.0.load(ORDER)
         }
 
+        /// The depth every completed dilution has published.
+        pub(super) fn reload(&self) -> u8 {
+            self.0.load(Ordering::Acquire)
+        }
+
         /// Raises the depth, returning the depth before the call.
         pub(super) fn raise(&self, value: u8) -> u8 {
-            self.0.fetch_max(value, ORDER)
+            self.0.fetch_max(value, Ordering::AcqRel)
         }
     }
 
@@ -111,6 +116,11 @@ mod word {
         }
 
         pub(super) fn get(&self) -> u8 {
+            self.0.get()
+        }
+
+        /// The depth every completed dilution has published.
+        pub(super) fn reload(&self) -> u8 {
             self.0.get()
         }
 
@@ -195,10 +205,19 @@ impl<S: SwarmSpec> Watermarks<S> {
     }
 
     /// Slots per bucket, `2^(depth - bucket_depth)`.
+    pub(crate) fn bucket_capacity(&self) -> u32 {
+        self.capacity_at(self.depth.get())
+    }
+
+    /// The capacity of every dilution that has already returned.
+    fn confirmed_capacity(&self) -> u32 {
+        self.capacity_at(self.depth.reload())
+    }
+
     // An unvalidated geometry saturates rather than panicking; the `Batch`
     // constructors keep the shift in range.
-    pub(crate) fn bucket_capacity(&self) -> u32 {
-        let slot_bits = self.depth.get().saturating_sub(self.bucket_depth.get());
+    fn capacity_at(&self, depth: u8) -> u32 {
+        let slot_bits = depth.saturating_sub(self.bucket_depth.get());
         1u32.checked_shl(u32::from(slot_bits)).unwrap_or(u32::MAX)
     }
 
@@ -232,12 +251,22 @@ impl<S: SwarmSpec> Watermarks<S> {
         let bucket = bucket.value();
         let counter = self.counter(bucket)?;
         let mut count = counter.get();
+        let mut reloaded = false;
         loop {
             // Re-read the capacity every attempt: a dilution landing mid-loop
             // reopens the bucket, and a stale read only refuses early.
-            let capacity = self.bucket_capacity();
+            let mut capacity = self.bucket_capacity();
             if count >= capacity {
-                return Err(CounterError::BucketFull { bucket, capacity });
+                if reloaded {
+                    return Err(CounterError::BucketFull { bucket, capacity });
+                }
+                // One confirmed re-read turns a dilution window's stale
+                // refusal into a claim.
+                reloaded = true;
+                capacity = self.confirmed_capacity();
+                if count >= capacity {
+                    return Err(CounterError::BucketFull { bucket, capacity });
+                }
             }
             match counter.claim(count, count.saturating_add(1)) {
                 Ok(()) => {
