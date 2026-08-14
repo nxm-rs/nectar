@@ -301,6 +301,8 @@ impl<I: StampIssuer + ?Sized> StampIssuer for &I {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permit::AdmissionWindow;
+    use nectar_governor::Window;
 
     fn test_address(leading: u16) -> ChunkAddress {
         let mut bytes = [0u8; 32];
@@ -400,6 +402,32 @@ mod tests {
         assert_eq!(issuer.bucket_utilization(0x1234), 2);
         assert_eq!(issuer.bucket_utilization(0x5678), 1);
         assert_eq!(issuer.bucket_utilization(0x9999), 0);
+    }
+
+    #[test]
+    fn a_permit_dropped_mid_flight_returns_its_token_and_burns_its_slot() {
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let admission = AdmissionWindow::new(Window::new(1).unwrap());
+        let address = test_address(0xCBE5);
+
+        let permit = issuer
+            .reserve(&address, 1)
+            .unwrap()
+            .with_token(admission.try_acquire().unwrap());
+        assert_eq!(permit.index().index(), 0);
+        assert!(admission.try_acquire().is_none());
+
+        drop(permit);
+
+        assert_eq!(admission.in_flight(), 0);
+        assert_eq!(admission.room(), 1);
+        // The slot burns: the watermark stays past it, so the next claim takes
+        // the following index rather than reusing the abandoned one.
+        assert_eq!(issuer.bucket_utilization(0xCBE5), 1);
+        assert_eq!(issuer.stamps_issued(), Some(1));
+        assert_eq!(issuer.reserve(&address, 2).unwrap().index().index(), 1);
+        assert_eq!(issuer.max_bucket_utilization(), 2);
     }
 
     #[test]

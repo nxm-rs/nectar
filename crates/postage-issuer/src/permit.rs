@@ -6,6 +6,7 @@ use core::fmt;
 use nectar_governor::Window;
 use nectar_postage::{
     BatchDepth, BatchId, Bucket, Stamp, StampDigest, StampError, StampIndex, StampedChunk,
+    Unvalidated,
 };
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, Mainnet, SwarmSpec, Verified};
 
@@ -254,7 +255,7 @@ impl<S: SwarmSpec> Prepared<S> {
         self,
         chunk: Chunk<Verified, AnyChunkSet<BODY_SIZE>>,
         signature: Signature,
-    ) -> Result<StampedChunk<BODY_SIZE>, StampError> {
+    ) -> Result<StampedChunk<Verified, Unvalidated, BODY_SIZE>, StampError> {
         if chunk.address() != &self.address {
             return Err(StampError::AddressMismatch {
                 expected: self.address,
