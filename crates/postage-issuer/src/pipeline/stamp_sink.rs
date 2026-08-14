@@ -157,8 +157,8 @@ where
             }
             match self.harvest(cx) {
                 Poll::Ready(Some(result)) => self.ready.push_back(result),
-                // Every token drops as its job leaves the set, so a drained
-                // set always has room. Refuse rather than spin if it does not.
+                // A drained set holds no token, so this cannot happen; refuse
+                // rather than spin if it ever does.
                 Poll::Ready(None) => {
                     debug_assert!(self.admits(), "an admission token outlived its job");
                     self.ready.push_back(StampResult {
@@ -231,8 +231,8 @@ where
         let signer = Arc::clone(&self.pipeline.signer);
         let address = *permit.address();
         let digest = permit.digest();
-        // The token outlives the permit, so the slot stays occupied until the
-        // result yields rather than until the signature lands.
+        // Held past the permit, so the slot frees when the result yields, not
+        // when the signature lands.
         let token: Option<WindowToken> = permit.take_token();
         let handoff = submit_on(
             &self.spawner,

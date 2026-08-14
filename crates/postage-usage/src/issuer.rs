@@ -56,7 +56,8 @@ impl<S: SwarmSpec> SnapshotIssuer<S> {
         }
     }
 
-    /// Borrows the wrapped snapshot.
+    /// Borrows the wrapped snapshot. A [`reserve`](StampIssuer::reserve) while
+    /// the borrow lives panics.
     pub fn snapshot(&self) -> Ref<'_, Snapshot<S>> {
         self.snapshot.borrow()
     }

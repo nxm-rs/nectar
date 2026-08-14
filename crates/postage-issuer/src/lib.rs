@@ -174,7 +174,7 @@ pub use counter::{CounterError, CounterMode, CounterTable};
 #[cfg(feature = "std")]
 pub use dilute_handler::{Dilutable, IssuerRegistry};
 
-// Issuing: the permit seam, then the issuers that mint permits.
+// Issuing
 pub use issuer::{MemoryIssuer, StampIssuer};
 pub use permit::{AdmissionWindow, Prepared, WindowToken};
 pub use stamper::{BatchStamper, Stamper};

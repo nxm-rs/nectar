@@ -8,9 +8,6 @@ use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
 /// Slot allocation within a batch: the reserve half of the three phases, with
 /// signing and commit outside it.
-///
-/// Allocation takes `&self`, so an issuer is shared rather than borrowed
-/// exclusively for the length of a pipeline, and a signer never holds it.
 pub trait StampIssuer {
     /// The network the batch was bought on.
     type Spec: SwarmSpec;
@@ -186,8 +183,8 @@ impl<S: SwarmSpec> MemoryIssuer<S> {
                     _ => self.watermarks.bucket_capacity(),
                 },
             })?;
-        // Read after the claim: depth only ever rises, so the recorded depth is
-        // never narrower than the bound the claim was checked against.
+        // Read after the claim: depth only rises, so it is never narrower than
+        // the bound the claim was checked against.
         let depth = BatchDepth::new(self.watermarks.depth(), bucket_depth)?;
 
         Ok(Prepared::new(
