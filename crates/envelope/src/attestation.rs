@@ -27,9 +27,8 @@ pub const ATTESTATION_PREFIX: &[u8] = b"nectar/env/v2 attest";
 /// Byte length of a serialized signature.
 const SIGNATURE_SIZE: usize = 65;
 
-/// A scheme that may be advertised in an attested set.
-///
-/// Compat has no code here by construction, so it cannot be attested.
+/// A scheme an attested set may advertise; compat has no code here by
+/// construction, so it cannot be attested.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AttestedScheme {
@@ -38,7 +37,7 @@ pub enum AttestedScheme {
 }
 
 impl AttestedScheme {
-    /// Sender preference, strongest first; crate-owned, not caller-supplied.
+    /// Sender preference, strongest first.
     const STRENGTH: &'static [Self] = &[Self::Hpke];
 
     /// Wire code of this scheme.
@@ -59,8 +58,7 @@ impl AttestedScheme {
     }
 }
 
-/// Proof that a [`Recipient`] came from a verified attestation; not
-/// constructible outside this crate.
+/// Proof that a [`Recipient`] came from a verified attestation.
 #[derive(Clone)]
 pub struct Attested {
     scheme: AttestedScheme,
@@ -152,8 +150,8 @@ pub enum AttestationError {
     /// The serialized token is malformed.
     #[error("attestation encoding is malformed")]
     Encoding,
-    /// The entry list is empty or not strictly ascending.
-    #[error("entries are empty or not strictly ascending")]
+    /// The entry list is empty, too long, or not strictly ascending by code.
+    #[error("entry list is empty, too long, or not strictly ascending by code")]
     Order,
     /// A key for a known scheme is not a valid curve point.
     #[error("attested key is not a valid curve point")]
@@ -234,7 +232,7 @@ impl RecipientAttestation {
 
     /// Verify against the pinned identity.
     pub fn verify(&self, identity: Address) -> Result<VerifiedAttestation, AttestationError> {
-        if !strictly_ascending(&self.entries) {
+        if !canonical(&self.entries) {
             return Err(AttestationError::Order);
         }
         let recovered = self
@@ -267,12 +265,12 @@ impl RecipientAttestation {
     }
 }
 
-fn strictly_ascending(entries: &[SchemeEntry]) -> bool {
+/// Codes must be unique and ascending: a repeated code makes selection
+/// ambiguous, and past `u16::MAX` entries the signed count clamps silently.
+fn canonical(entries: &[SchemeEntry]) -> bool {
     !entries.is_empty()
-        && entries.windows(2).all(|pair| match pair {
-            [left, right] => left < right,
-            _ => false,
-        })
+        && entries.len() <= usize::from(u16::MAX)
+        && entries.is_sorted_by(|left, right| left.code < right.code)
 }
 
 impl TryFrom<&[u8]> for RecipientAttestation {
@@ -286,7 +284,9 @@ impl TryFrom<&[u8]> for RecipientAttestation {
             .split_first_chunk::<2>()
             .ok_or(AttestationError::Encoding)?;
         let count = usize::from(u16::from_be_bytes(*count));
-        let mut entries = Vec::with_capacity(count);
+        // An entry is at least four bytes, so cap the claimed count against
+        // the input: a short token must not force a large allocation.
+        let mut entries = Vec::with_capacity(count.min(rest.len() / 4));
         for _ in 0..count {
             let (code, tail) = rest
                 .split_first_chunk::<2>()
@@ -465,14 +465,19 @@ mod tests {
         assert_eq!(recipient.key(), &key);
     }
 
+    /// Two keys under one code would make selection depend on key ordering.
     #[test]
-    fn unsorted_or_duplicate_entries_are_rejected() {
+    fn unsorted_or_repeated_codes_are_rejected() {
         let identity = LocalSigner::random();
         let key = generate_secret().public_key();
         let entry = SchemeEntry::new(AttestedScheme::Hpke, &key);
+        let other = SchemeEntry::new(AttestedScheme::Hpke, &generate_secret().public_key());
+        let mut repeated = alloc::vec![entry.clone(), other];
+        repeated.sort();
         for entries in [
             alloc::vec![unknown(), entry.clone()],
             alloc::vec![entry.clone(), entry],
+            repeated,
             Vec::new(),
         ] {
             let attestation = sign(&identity, 0, entries);
@@ -481,6 +486,17 @@ mod tests {
                 AttestationError::Order
             ));
         }
+    }
+
+    /// A short token must not be able to name a large entry count.
+    #[test]
+    fn an_overstated_entry_count_is_rejected() {
+        let mut bytes = 0u64.to_be_bytes().to_vec();
+        bytes.extend_from_slice(&u16::MAX.to_be_bytes());
+        assert!(matches!(
+            RecipientAttestation::try_from(bytes.as_slice()).unwrap_err(),
+            AttestationError::Encoding
+        ));
     }
 
     #[test]

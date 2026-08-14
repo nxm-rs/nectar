@@ -74,7 +74,7 @@ use nectar_primitives::chunk::encryption::EncryptionKey;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
-use crate::ecies::{EciesError, Salt};
+use crate::ecies::Salt;
 
 mod attestation;
 mod compat;
@@ -86,6 +86,7 @@ pub use attestation::{
     ATTESTATION_PREFIX, AttestationError, Attested, AttestedRecipient, AttestedScheme,
     RecipientAttestation, SchemeEntry, VerifiedAttestation, sign_data,
 };
+pub use compat::CompatSealError;
 pub use hpke::{
     DeriveKeyPairError, ExportError, Exporter, HpkeSealError, Info, Shared, derive_key_pair,
 };
@@ -194,11 +195,11 @@ macro_rules! schemes {
                 &self,
                 topic: &Topic,
                 plaintext: &[u8],
-                ct_len: usize,
+                tail_len: usize,
             ) -> Result<AnySealed, AnySealError> {
                 match self {
                     $(Self::$scheme(recipient) => Ok(AnySealed::$scheme(
-                        $scheme::seal(recipient, topic.into(), plaintext, ct_len)?,
+                        $scheme::seal(recipient, topic.into(), plaintext, tail_len)?,
                     )),)+
                 }
             }
@@ -208,7 +209,7 @@ macro_rules! schemes {
 
 schemes! {
     Hpke => HpkeSealError,
-    Compat => EciesError,
+    Compat => CompatSealError,
 }
 
 /// 32-byte topic an envelope is addressed under.
@@ -269,14 +270,14 @@ pub trait Scheme: sealed::Sealed + Sized {
     /// Bits of `nonce[0]` the scheme owns; a miner keeps them fixed.
     const NONCE_KEEP: u8;
 
-    /// Seal `plaintext` toward `recipient`; the tail is the encapsulation
-    /// followed by a `ct_len`-byte ciphertext region.
+    /// Seal `plaintext` into a `tail_len`-byte tail, which carries at most
+    /// `tail_len - OVERHEAD` message bytes.
     #[cfg(any(test, feature = "encryption"))]
     fn seal(
         recipient: &Recipient<Self>,
         ctx: Self::Context<'_>,
         plaintext: &[u8],
-        ct_len: usize,
+        tail_len: usize,
     ) -> Result<SealedEnvelope<Self>, Self::SealError>;
 
     /// Decapsulate once per envelope. `Ok(None)` rejects the tail outright.
@@ -341,11 +342,10 @@ impl InteropReason {
 /// direction.
 ///
 /// ```compile_fail
-/// use nectar_envelope::{Compat, Hpke, Recipient, Scheme, Topic};
+/// use nectar_envelope::{Compat, Hpke, Recipient};
 ///
-/// fn downgrade(recipient: &Recipient<Hpke>, topic: &Topic) {
-///     // compat seal toward an hpke recipient must not typecheck
-///     let _ = Compat::seal(recipient, topic.into(), b"msg", 64);
+/// fn downgrade(recipient: Recipient<Hpke>) -> Recipient<Compat> {
+///     recipient
 /// }
 /// ```
 #[derive(Clone)]
@@ -602,16 +602,10 @@ impl<S: Scheme, Rest: Policy> Try<S, Rest> {
     pub const fn with(secret: S::SecretKey, rest: Rest) -> Self {
         Self { secret, rest }
     }
-
-    /// The secret this cell opens with.
-    #[must_use]
-    pub const fn secret(&self) -> &S::SecretKey {
-        &self.secret
-    }
 }
 
 impl Try<Hpke> {
-    /// Append the compat cell; compat opens under its own secret.
+    /// Append the compat cell.
     #[must_use]
     pub fn then_compat(self, secret: SecretKey) -> HpkeThenCompat {
         Try::with(self.secret, Try::new(secret))
@@ -730,7 +724,7 @@ impl Scheme for Compat {
     type Decap = ecies::SharedX;
     type Extra = EncryptionKey;
     type Provenance = InteropReason;
-    type SealError = EciesError;
+    type SealError = CompatSealError;
 
     const ID: SchemeId = SchemeId::Compat;
     const OVERHEAD: usize = ecdh::ENC_X_SIZE;
@@ -741,9 +735,9 @@ impl Scheme for Compat {
         recipient: &Recipient<Self>,
         ctx: Self::Context<'_>,
         plaintext: &[u8],
-        ct_len: usize,
+        tail_len: usize,
     ) -> Result<SealedEnvelope<Self>, Self::SealError> {
-        compat::seal(recipient, ctx, plaintext, ct_len)
+        compat::seal(recipient, ctx, plaintext, tail_len)
     }
 
     fn decap(
@@ -776,7 +770,7 @@ impl Scheme for Hpke {
     type SealError = HpkeSealError;
 
     const ID: SchemeId = SchemeId::Hpke;
-    const OVERHEAD: usize = ecdh::ENC_X_SIZE + hpke::MIN_CT_LEN;
+    const OVERHEAD: usize = hpke::OVERHEAD;
     const NONCE_KEEP: u8 = ecdh::PARITY;
 
     #[cfg(any(test, feature = "encryption"))]
@@ -784,9 +778,9 @@ impl Scheme for Hpke {
         recipient: &Recipient<Self>,
         ctx: Self::Context<'_>,
         plaintext: &[u8],
-        ct_len: usize,
+        tail_len: usize,
     ) -> Result<SealedEnvelope<Self>, Self::SealError> {
-        hpke::seal(recipient, ctx, plaintext, ct_len)
+        hpke::seal(recipient, ctx, plaintext, tail_len)
     }
 
     fn decap(
@@ -835,19 +829,14 @@ mod tests {
         Recipient::assume_reference(key, InteropReason::new("seam test"))
     }
 
-    /// Total frame length for a scheme tail carrying `ct_len` ciphertext.
-    fn framed(ct_len: usize) -> usize {
-        HEADER_SIZE + ecdh::ENC_X_SIZE + ct_len
-    }
-
     #[test]
     fn hpke_roundtrip_via_seam() {
         let (secret, public) = keys(b"nectar envelope seam recipient");
         let topic = topic();
         let msg = b"seam roundtrip";
-        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), msg, 4024).unwrap();
+        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), msg, 4056).unwrap();
         let bytes = sealed.to_bytes();
-        assert_eq!(bytes.len(), framed(4024));
+        assert_eq!(bytes.len(), HEADER_SIZE + 4056);
 
         let envelope = Envelope::parse(&bytes).unwrap();
         let opened = Hpke::open(&secret, (&topic).into(), &envelope)
@@ -855,7 +844,6 @@ mod tests {
             .unwrap();
         assert_eq!(opened.plaintext, msg);
 
-        // Both sides export identical bytes for the same context.
         let mut sender = [0u8; 16];
         sealed.extra().export(b"reply", &mut sender).unwrap();
         let mut receiver = [0u8; 16];
@@ -863,10 +851,66 @@ mod tests {
         assert_eq!(sender, receiver);
     }
 
+    /// `OVERHEAD` is the whole capacity handle: a tail carries exactly
+    /// `tail_len - OVERHEAD` message bytes, one more is refused.
+    #[test]
+    fn overhead_bounds_the_tail_capacity() {
+        let (_, public) = keys(b"nectar envelope seam recipient");
+        let topic = topic();
+        for tail_len in [96usize, 512, 4056] {
+            let capacity = tail_len - Hpke::OVERHEAD;
+            let sealed = Hpke::seal(
+                &hpke_recipient(public),
+                (&topic).into(),
+                &vec![7u8; capacity],
+                tail_len,
+            )
+            .unwrap();
+            assert_eq!(sealed.to_bytes().len(), HEADER_SIZE + tail_len);
+            assert!(
+                Hpke::seal(
+                    &hpke_recipient(public),
+                    (&topic).into(),
+                    &vec![7u8; capacity + 1],
+                    tail_len
+                )
+                .is_err()
+            );
+
+            let capacity = tail_len - Compat::OVERHEAD;
+            let sealed = Compat::seal(
+                &compat_recipient(public),
+                (&topic).into(),
+                &vec![7u8; capacity],
+                tail_len,
+            )
+            .unwrap();
+            assert_eq!(sealed.to_bytes().len(), HEADER_SIZE + tail_len);
+            assert!(
+                Compat::seal(
+                    &compat_recipient(public),
+                    (&topic).into(),
+                    &vec![7u8; capacity + 1],
+                    tail_len
+                )
+                .is_err()
+            );
+        }
+    }
+
+    /// A tail below the scheme overhead is refused, never truncated.
+    #[test]
+    fn a_tail_below_the_overhead_is_refused() {
+        let (_, public) = keys(b"nectar envelope seam recipient");
+        let topic = topic();
+        assert!(Hpke::seal(&hpke_recipient(public), (&topic).into(), b"", 49).is_err());
+        assert!(Compat::seal(&compat_recipient(public), (&topic).into(), b"", 31).is_err());
+    }
+
     #[test]
     fn hpke_wrong_topic_is_undeliverable() {
         let (secret, public) = keys(b"nectar envelope seam recipient");
-        let sealed = Hpke::seal(&hpke_recipient(public), (&topic()).into(), b"m", 64).unwrap();
+        let sealed = Hpke::seal(&hpke_recipient(public), (&topic()).into(), b"m", 96).unwrap();
         let bytes = sealed.to_bytes();
         let envelope = Envelope::parse(&bytes).unwrap();
         let other = Topic::new(keccak256(b"other topic").0);
@@ -882,16 +926,16 @@ mod tests {
         let (secret, public) = keys(b"nectar envelope seam recipient");
         let topic = topic();
         let msg = b"compat roundtrip";
-        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), msg, 100).unwrap();
+        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), msg, 132).unwrap();
         let bytes = sealed.to_bytes();
-        assert_eq!(bytes.len(), framed(100));
+        assert_eq!(bytes.len(), HEADER_SIZE + 132);
 
         let envelope = Envelope::parse(&bytes).unwrap();
         let opened = Compat::open(&secret, (&topic).into(), &envelope)
             .unwrap()
             .unwrap();
         assert_eq!(&opened.plaintext[..msg.len()], msg);
-        assert_eq!(opened.plaintext.len(), 100);
+        assert_eq!(opened.plaintext.len(), 132 - Compat::OVERHEAD);
 
         // The adapter is byte-for-byte the frozen construction.
         let (ephemeral, ct) = ecdh::split(&envelope).unwrap();
@@ -909,7 +953,7 @@ mod tests {
         let (secret, public) = keys(b"nectar envelope seam recipient");
         let topic = topic();
 
-        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"e", 64).unwrap();
+        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"e", 96).unwrap();
         let bytes = sealed.to_bytes();
         let envelope = Envelope::parse(&bytes).unwrap();
         assert!(
@@ -918,7 +962,7 @@ mod tests {
                 .is_none()
         );
 
-        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), b"c", 64).unwrap();
+        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), b"c", 96).unwrap();
         let bytes = sealed.to_bytes();
         let envelope = Envelope::parse(&bytes).unwrap();
         assert!(
@@ -932,14 +976,13 @@ mod tests {
     fn hpke_only_inbox_rejects_compat_forgeries() {
         let (secret, public) = keys(b"nectar envelope seam recipient");
         let topic = topic();
-        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), b"f", 64).unwrap();
+        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), b"f", 96).unwrap();
         let bytes = sealed.to_bytes();
         let envelope = Envelope::parse(&bytes).unwrap();
 
         let inbox = Inbox::<HpkeOnly>::new(secret.clone());
         assert!(inbox.open(&[topic], &envelope).unwrap().is_none());
 
-        // The transitional inbox still delivers it, reported as compat.
         let inbox = Inbox::<HpkeThenCompat>::transitional(secret.clone(), secret);
         let (delivered_topic, opened) = inbox.open(&[topic], &envelope).unwrap().unwrap();
         assert_eq!(delivered_topic, topic);
@@ -951,7 +994,7 @@ mod tests {
         let (secret, public) = keys(b"nectar envelope seam recipient");
         let topic = topic();
         let decoy = Topic::new(keccak256(b"decoy topic").0);
-        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"m", 64).unwrap();
+        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"m", 96).unwrap();
         let bytes = sealed.to_bytes();
         let envelope = Envelope::parse(&bytes).unwrap();
 
@@ -973,7 +1016,7 @@ mod tests {
         let mut topics: Vec<Topic> = (0u8..7).map(|i| Topic::new(keccak256([i]).0)).collect();
         topics.push(topic);
 
-        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), b"c", 64).unwrap();
+        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), b"c", 96).unwrap();
         let bytes = sealed.to_bytes();
         let envelope = Envelope::parse(&bytes).unwrap();
         let inbox = Inbox::<HpkeThenCompat>::transitional(secret.clone(), secret);
@@ -983,7 +1026,7 @@ mod tests {
         assert_eq!(opened.scheme(), SchemeId::Compat);
         assert_eq!(decaps::take(), (1, 1));
 
-        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"h", 64).unwrap();
+        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"h", 96).unwrap();
         let bytes = sealed.to_bytes();
         let envelope = Envelope::parse(&bytes).unwrap();
         let _ = decaps::take();
@@ -995,7 +1038,7 @@ mod tests {
     fn remining_the_nonce_keeps_the_envelope_open() {
         let (secret, public) = keys(b"nectar envelope seam recipient");
         let topic = topic();
-        let mut sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"m", 64).unwrap();
+        let mut sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"m", 96).unwrap();
         let parity_before = {
             let bytes = sealed.to_bytes();
             bytes[8] & 1
@@ -1019,7 +1062,7 @@ mod tests {
         let (secret, public) = keys(b"nectar envelope seam recipient");
         let topic = topic();
 
-        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"m", 64).unwrap();
+        let sealed = Hpke::seal(&hpke_recipient(public), (&topic).into(), b"m", 96).unwrap();
         let mut bytes = sealed.to_bytes();
         bytes[8] ^= 1;
         let envelope = Envelope::parse(&bytes).unwrap();
@@ -1030,7 +1073,7 @@ mod tests {
         );
 
         // Compat ECDH ignores parity: the flipped envelope still opens.
-        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), b"m", 64).unwrap();
+        let sealed = Compat::seal(&compat_recipient(public), (&topic).into(), b"m", 96).unwrap();
         let mut bytes = sealed.to_bytes();
         bytes[8] ^= 1;
         let envelope = Envelope::parse(&bytes).unwrap();
@@ -1069,7 +1112,7 @@ mod tests {
         let topic = topic();
 
         let any = AnyRecipient::Hpke(hpke_recipient(public));
-        let sealed = any.seal(&topic, b"m", 64).unwrap();
+        let sealed = any.seal(&topic, b"m", 96).unwrap();
         assert_eq!(sealed.scheme(), SchemeId::Hpke);
         let bytes = sealed.to_bytes();
         let envelope = Envelope::parse(&bytes).unwrap();
@@ -1080,7 +1123,7 @@ mod tests {
         );
 
         let any = AnyRecipient::Compat(compat_recipient(public));
-        let sealed = any.seal(&topic, b"m", 64).unwrap();
+        let sealed = any.seal(&topic, b"m", 96).unwrap();
         assert_eq!(sealed.scheme(), SchemeId::Compat);
         let bytes = sealed.to_bytes();
         let envelope = Envelope::parse(&bytes).unwrap();

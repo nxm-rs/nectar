@@ -11,14 +11,12 @@ use alloc::vec::Vec;
 /// Byte length of the x-only ephemeral slot at the head of the tail.
 pub(crate) const ENC_X_SIZE: usize = 32;
 
-/// Nonce bits these schemes own: the parity bit alone.
 pub(crate) const PARITY: u8 = 0x01;
 
 pub(crate) fn ciphertext<'a>(envelope: &Envelope<'a>) -> &'a [u8] {
     envelope.tail().get(ENC_X_SIZE..).unwrap_or(&[])
 }
 
-/// Reconstruct a public key from an x-only slot and a parity bit.
 pub(crate) fn reconstruct(enc_x: &[u8; ENC_X_SIZE], parity: bool) -> Option<PublicKey> {
     let mut sec1 = [0u8; 33];
     let [tag, x @ ..] = &mut sec1;
