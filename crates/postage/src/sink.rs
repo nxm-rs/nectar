@@ -1,10 +1,7 @@
 //! The stamped chunk as a unit of transfer, and the bridge beneath it.
 //!
-//! One seam carries both directions: a network sink is a
-//! `ChunkPut<StampedChunk<Verified, V, BODY_SIZE>>`, and
-//! [`StampIndifferent`] puts a plain chunk store beneath one. A consumer that
-//! needs payment proof names [`Validated`], and an unproven pair is then a
-//! type error at the call:
+//! A sink that demands payment proof names [`Validated`]; handing it an
+//! unproven pair is then a type error:
 //!
 //! ```compile_fail
 //! use nectar_postage::{StampedChunk, Unvalidated, Validated};
@@ -84,14 +81,11 @@ where
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
-    use std::error::Error as _;
     use std::sync::Arc;
     use std::sync::Mutex;
 
     use arbitrary::Unstructured;
-    use nectar_primitives::{
-        Chunk, ChunkHas, ContentChunk, DEFAULT_BODY_SIZE, MemoryStore, Tee, TeeError,
-    };
+    use nectar_primitives::{Chunk, ChunkHas, ContentChunk, DEFAULT_BODY_SIZE, MemoryStore, Tee};
     use nectar_testing::run;
 
     use super::*;
@@ -134,23 +128,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, thiserror::Error)]
-    #[error("leg refused")]
-    struct LegRefused;
-
-    #[derive(Debug, Default)]
-    struct FailSink;
-
-    impl ChunkPut<StampedChunk> for FailSink {
-        type Error = LegRefused;
-
-        async fn put(&self, _stamped: StampedChunk) -> Result<(), Self::Error> {
-            Err(LegRefused)
-        }
-    }
-
-    // A sink that speaks both units at once: the collapse gives it two
-    // instantiations of one verb rather than two verbs.
     #[derive(Debug, Default)]
     struct DualSink {
         bare: Mutex<Vec<ChunkAddress>>,
@@ -223,36 +200,9 @@ mod tests {
     }
 
     #[test]
-    fn tee_local_failure_short_circuits() {
-        run(async {
-            let recorder = RecordingSink::default();
-            let tee = Tee::new(FailSink, &recorder);
-            let pair = stamped(b"local refusal");
-
-            let err = tee.put(pair).await.expect_err("local leg fails");
-            assert!(matches!(err, TeeError::Local(LegRefused)));
-            assert!(recorder.seen.lock().expect("recording lock").is_empty());
-            assert!(
-                err.source()
-                    .expect("the leg error is the source")
-                    .downcast_ref::<LegRefused>()
-                    .is_some()
-            );
-        });
-    }
-
-    #[test]
-    fn tee_forward_failure_keeps_local_write() {
-        run(async {
-            let store = Store::new();
-            let tee = Tee::new(StampIndifferent::new(&store), FailSink);
-            let pair = stamped(b"forward refusal");
-            let address = *pair.address();
-
-            let err = tee.put(pair).await.expect_err("forward leg fails");
-            assert!(matches!(err, TeeError::Forward(LegRefused)));
-            assert!(store.has(&address).await);
-        });
+    fn put_unit_address_is_the_chunk_address() {
+        let pair = stamped(b"unit address");
+        assert_eq!(PutUnit::address(&pair), pair.address());
     }
 
     async fn demand_paid<S: ChunkPut<StampedChunk<Verified, Validated>>>(

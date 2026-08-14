@@ -235,8 +235,7 @@ enum Step {
 /// Stamping decorator over a stamped-pair sink.
 ///
 /// Takes bare chunks and puts pairs: the stamp is minted here, not checked,
-/// so the pair carries no validation proof. One generic impl over
-/// `AnyChunkSet<B>` serves every wrapped call site.
+/// so the pair carries no validation proof.
 ///
 /// # Contracts
 ///
