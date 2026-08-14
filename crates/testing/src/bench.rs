@@ -142,7 +142,7 @@ impl<R: ChunkRegistry> CountingStore<R> {
     }
 }
 
-impl<R: ChunkRegistry> ChunkPut<R> for CountingStore<R> {
+impl<R: ChunkRegistry> ChunkPut<Chunk<Verified, R>> for CountingStore<R> {
     type Error = std::convert::Infallible;
 
     async fn put(&self, chunk: Chunk<Verified, R>) -> Result<(), Self::Error> {

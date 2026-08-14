@@ -62,7 +62,7 @@ impl<S, Sig, const BODY_SIZE: usize> Publisher<S, Sig, BODY_SIZE> {
 
 impl<S, Sig, const BODY_SIZE: usize> Publisher<S, Sig, BODY_SIZE>
 where
-    S: ChunkPut<SingleOwnerOnlyChunkSet<BODY_SIZE>>,
+    S: ChunkPut<Chunk<Verified, SingleOwnerOnlyChunkSet<BODY_SIZE>>>,
     Sig: SignerSync,
 {
     /// Sign and publish `payload` at the next sequence position, advancing

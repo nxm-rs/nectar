@@ -3,7 +3,7 @@
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Unverified, Verified};
 use crate::error::PrimitivesError;
 
-use super::typed::{ChunkGet, ChunkHas, ChunkPut};
+use super::typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit};
 
 /// Lifts an untrusted medium to `Trust = Verified`: every get runs the
 /// member's full acceptance rule against the requested address, so a
@@ -68,11 +68,11 @@ impl<R: ChunkRegistry, S: ChunkGet<R, Trust = Unverified>> ChunkGet<R> for Verif
 }
 
 // Writes carry sealed chunks already, so they pass through untouched.
-impl<R: ChunkRegistry, S: ChunkPut<R>> ChunkPut<R> for VerifyingStore<S> {
+impl<U: PutUnit, S: ChunkPut<U>> ChunkPut<U> for VerifyingStore<S> {
     type Error = S::Error;
 
-    async fn put(&self, chunk: Chunk<Verified, R>) -> Result<(), Self::Error> {
-        self.0.put(chunk).await
+    async fn put(&self, unit: U) -> Result<(), Self::Error> {
+        self.0.put(unit).await
     }
 }
 

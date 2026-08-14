@@ -24,8 +24,9 @@
 //! # Traits
 //!
 //! - [`StampValidator`]: Validate stamps against batches
-//! - [`PutStamped`]: Downward-facing sink for a [`StampedChunk`], with
-//!   [`StampIndifferent`] and [`Tee`] bridging plain chunk stores into it
+//! - [`ChunkPut`](nectar_primitives::ChunkPut) over a [`StampedChunk`]: the
+//!   sink for a paid chunk, with [`StampIndifferent`] bridging a plain chunk
+//!   store into it
 //! - [`BatchStore`]: Persist and retrieve batches (requires `std`). The trait is
 //!   synchronous and, having an associated `Error` and no generic methods, is
 //!   naturally object-safe; drive it from an async edge (a gRPC service, an FFI
@@ -93,7 +94,7 @@ pub mod parallel;
 // Core types
 pub use batch::{Batch, BatchId, BatchParams, BucketDepth};
 pub use error::StampError;
-pub use sink::{PutStamped, StampIndifferent, Tee, TeeError};
+pub use sink::StampIndifferent;
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
 pub use stamped_address::{StampedAddress, Unvalidated, Validated, ValidationState};

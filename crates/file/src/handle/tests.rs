@@ -26,7 +26,7 @@ async fn split_read_at<R, S, M, const B: usize>(
 ) -> Result<M::Root, SaveError<S::Error, ReadAtError>>
 where
     R: ReadAt,
-    S: ChunkPut<AnyChunkSet<B>>,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     M: SplitMode + Default,
 {
     File::<S, B>::new(store, Policy::DEFAULT.with_put_window(window))
@@ -42,7 +42,7 @@ async fn split_slice<S, M, const B: usize>(
     window: PutWindow,
 ) -> Result<M::Root, SaveError<S::Error, core::convert::Infallible>>
 where
-    S: ChunkPut<AnyChunkSet<B>>,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     M: SplitMode + Default,
 {
     File::<S, B>::new(store, Policy::DEFAULT.with_put_window(window))
@@ -105,7 +105,7 @@ impl<const B: usize> TestStore<B> {
     }
 }
 
-impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
+impl<const B: usize> ChunkPut<Chunk<Verified, AnyChunkSet<B>>> for TestStore<B> {
     type Error = ChunkStoreError;
 
     async fn put(&self, chunk: Chunk<Verified, AnyChunkSet<B>>) -> Result<(), ChunkStoreError> {

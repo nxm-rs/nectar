@@ -9,6 +9,7 @@ mod memory;
 #[cfg(feature = "std")]
 mod retry;
 mod single_owner;
+mod tee;
 mod typed;
 mod verify;
 
@@ -18,7 +19,8 @@ pub use memory::MemoryStore;
 #[cfg(feature = "std")]
 pub use retry::{RetryConfig, RetryingChunkGet, Sleeper};
 pub use single_owner::{SingleOwnerGet, SingleOwnerGetError};
-pub use typed::{ChunkGet, ChunkHas, ChunkPut, TrustedGet};
+pub use tee::{Tee, TeeError};
+pub use typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit, TrustedGet};
 pub use verify::{VerifyError, VerifyingStore};
 
 use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};

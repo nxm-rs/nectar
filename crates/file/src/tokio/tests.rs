@@ -177,7 +177,7 @@ async fn walk_failures_surface_as_io_errors() {
 #[derive(Clone, Default)]
 struct SharedStore(Arc<MemoryStore<AnyChunkSet<TINY>>>);
 
-impl ChunkPut<AnyChunkSet<TINY>> for SharedStore {
+impl ChunkPut<Chunk<Verified, AnyChunkSet<TINY>>> for SharedStore {
     type Error = std::convert::Infallible;
 
     async fn put(

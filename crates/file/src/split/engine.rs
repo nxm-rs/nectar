@@ -108,7 +108,7 @@ enum Phase {
 /// admission invariants.
 pub struct Split<'a, S, M, const B: usize = DEFAULT_BODY_SIZE>
 where
-    S: ChunkPut<AnyChunkSet<B>>,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     M: SplitMode,
 {
     store: S,
@@ -134,7 +134,7 @@ where
 
 impl<'a, S, M, const B: usize> Split<'a, S, M, B>
 where
-    S: ChunkPut<AnyChunkSet<B>> + Clone + 'a,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>> + Clone + 'a,
     M: SplitMode,
 {
     /// Compile-time profile guard for the split's span arithmetic.
@@ -660,7 +660,7 @@ where
 
 impl<S, M, const B: usize> fmt::Debug for Split<'_, S, M, B>
 where
-    S: ChunkPut<AnyChunkSet<B>>,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     M: SplitMode,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

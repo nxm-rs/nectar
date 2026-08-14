@@ -98,7 +98,7 @@ impl<R: ChunkRegistry> MemoryStore<R> {
     }
 }
 
-impl<R: ChunkRegistry> ChunkPut<R> for MemoryStore<R> {
+impl<R: ChunkRegistry> ChunkPut<Chunk<Verified, R>> for MemoryStore<R> {
     type Error = core::convert::Infallible;
 
     async fn put(&self, chunk: Chunk<Verified, R>) -> Result<(), Self::Error> {
