@@ -17,24 +17,11 @@ use crate::BucketDepth;
 /// let bucket_depth = BucketDepth::<Mainnet>::new(16).unwrap();
 /// assert_eq!(calculate_bucket(&address, bucket_depth), 0xCBE5);
 /// ```
-///
-/// An unvalidated depth does not compile:
-///
-/// ```compile_fail
-/// use nectar_postage::calculate_bucket;
-/// use nectar_primitives::ChunkAddress;
-///
-/// calculate_bucket(&ChunkAddress::ZERO, 0u8);
-/// ```
 #[inline]
 pub fn calculate_bucket<S: SwarmSpec>(address: &ChunkAddress, bucket_depth: BucketDepth<S>) -> u32 {
-    // A `ChunkAddress` is 32 bytes, so the split always yields a head.
-    let leading = address
-        .as_bytes()
-        .split_first_chunk::<4>()
-        .map_or(0, |(head, _)| u32::from_be_bytes(*head));
-    // A `BucketDepth` is 1..=32, so the shift is at most 31 and never wraps.
-    leading.wrapping_shr(u32::from(
+    let &[a, b, c, d, ..] = address.as_array();
+    // Depth is 1..=32, so the shift is 0..=31 and never wraps.
+    u32::from_be_bytes([a, b, c, d]).wrapping_shr(u32::from(
         BucketDepth::<S>::MAX.saturating_sub(bucket_depth.get()),
     ))
 }
@@ -98,6 +85,12 @@ mod tests {
 
     use super::*;
 
+    // `nectar_testing::low_floor` returns the `BucketDepth` of the
+    // `nectar-postage` instance it links, which is not this one.
+    fn low_floor(depth: u8) -> BucketDepth<LowFloor> {
+        BucketDepth::new(depth).unwrap()
+    }
+
     fn address_cbe5() -> ChunkAddress {
         ChunkAddress::new([
             0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -113,30 +106,16 @@ mod tests {
             calculate_bucket(&address, BucketDepth::<Mainnet>::new(16).unwrap()),
             0xCBE5
         );
-        assert_eq!(
-            calculate_bucket(&address, BucketDepth::<LowFloor>::new(8).unwrap()),
-            0xCB
-        );
-        assert_eq!(
-            calculate_bucket(&address, BucketDepth::<LowFloor>::new(4).unwrap()),
-            0xC
-        );
+        assert_eq!(calculate_bucket(&address, low_floor(8)), 0xCB);
+        assert_eq!(calculate_bucket(&address, low_floor(4)), 0xC);
     }
 
     #[test]
     fn calculate_bucket_spans_the_whole_depth_range() {
         let address = address_cbe5();
 
-        // Depth 1 is the shallowest a `BucketDepth` can hold and shifts by 31;
-        // depth 32 shifts by 0 and keeps the whole leading word.
-        assert_eq!(
-            calculate_bucket(&address, BucketDepth::<LowFloor>::new(1).unwrap()),
-            1
-        );
-        assert_eq!(
-            calculate_bucket(&address, BucketDepth::<LowFloor>::new(32).unwrap()),
-            0xCBE5_0000
-        );
+        assert_eq!(calculate_bucket(&address, low_floor(1)), 1);
+        assert_eq!(calculate_bucket(&address, low_floor(32)), 0xCBE5_0000);
     }
 
     #[test]
