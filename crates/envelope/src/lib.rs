@@ -32,6 +32,12 @@
 //! curve-membership-detectable against uniform bytes: the anonymity set is
 //! trojan chunks, at exact parity with the deployed compat path.
 //!
+//! The reference client places that bit elsewhere: it mines `nonce[28]` and
+//! reads it back as `chunkData[36]`. Neither side breaks, because compat ECDH
+//! is x-only, and its reader forces odd regardless (`chunkData[36] | 0x1 != 0`
+//! is a bitwise or, so always true). It matters only to a future scheme that
+//! makes parity load-bearing on the compat frame.
+//!
 //! Trial order: decap once per envelope (after chunk validity and
 //! proof-of-work checks; that per-valid-chunk cost is inherent), one hint
 //! probe per candidate topic, AEAD open only on a hint match. HKDF-SHA256
