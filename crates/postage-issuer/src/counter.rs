@@ -291,9 +291,8 @@ impl<S: SwarmSpec> CounterTable<S> {
     /// Advances the counter of `bucket`, skipping any slot for which
     /// `is_protected` returns `true`, and returns the assigned slot.
     ///
-    /// The bucket carries the depth it was cut at, so a bucket cut at a shallower
-    /// depth is refused rather than landing in the wrong counter: it is inside
-    /// this table's bucket range, so a range check alone would not catch it.
+    /// A bucket cut at another depth is refused: it is inside this table's
+    /// bucket range, so a range check alone would not catch it.
     ///
     /// Fill mode returns the watermark and bumps it, failing with
     /// [`CounterError::BucketFull`] at capacity; the predicate is unused because a
@@ -432,7 +431,6 @@ mod tests {
         BucketDepth::new(16).unwrap()
     }
 
-    /// A bucket cut at the fixture depth.
     fn at(bucket: u32) -> Bucket {
         Bucket::checked(bucket, bucket_depth()).unwrap()
     }
@@ -493,8 +491,8 @@ mod tests {
 
     #[test]
     fn a_bucket_cut_at_another_depth_never_lands_in_a_counter() {
-        // Bucket 5 is in range for a depth-20 table, so only the depth it was
-        // cut at distinguishes it from the depth-20 bucket 5.
+        // Bucket 5 is in range for a depth-20 table, so only the cut depth
+        // tells it apart from the depth-20 bucket 5.
         let mut table: CounterTable =
             CounterTable::new(24, BucketDepth::new(20).unwrap(), CounterMode::Fill);
         let shallow = Bucket::checked(5, bucket_depth()).unwrap();

@@ -370,13 +370,10 @@ impl<S: SwarmSpec> Batch<S> {
     // Validation methods
     // =========================================================================
 
-    /// Validates the depth decoded from chain against the bucket depth, and
-    /// yields the geometry every allocation path is cut against.
+    /// Validates the chain-decoded depth against the bucket depth.
     ///
-    /// Chain decode keeps [`depth`](Self::depth) a raw byte, so this is the one
-    /// place the validated geometry is born. [`set_depth`](Self::set_depth)
-    /// takes a bare depth for a dilution, so a diluted batch has to be asked
-    /// again.
+    /// [`set_depth`](Self::set_depth) takes a bare depth, so a diluted batch
+    /// has to be asked again.
     ///
     /// # Errors
     ///
