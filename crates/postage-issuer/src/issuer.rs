@@ -537,8 +537,7 @@ mod tests {
         );
 
         let from_batch = MemoryIssuer::from_batch(&immutable).unwrap();
-        let from_new: MemoryIssuer =
-            MemoryIssuer::new(batch_id, 17, BucketDepth::new(16).unwrap());
+        let from_new: MemoryIssuer = MemoryIssuer::new(batch_id, 17, BucketDepth::new(16).unwrap());
 
         for ts in 0..2u64 {
             for leading in [0xCBE5u16, 0x0001, 0xABCD] {
