@@ -12,8 +12,8 @@
 use alloc::vec::Vec;
 
 use bytes::Bytes;
-use nectar_primitives::store::MaybeSync;
-use nectar_primitives::{ChunkOps, ChunkRef};
+use nectar_primitives::store::{MaybeSync, TrustedGet};
+use nectar_primitives::{ChunkOps, ChunkRef, ContentOnlyChunkSet};
 
 use crate::codec::{DecodeError, DecodedChunk, SegDesc, SegmentDir};
 use crate::fork::{Child, ForkTable};
@@ -21,7 +21,7 @@ use crate::format::Format;
 use crate::node::{NodeRef, RootExtension};
 use crate::reader::{Reader, ReaderError};
 use crate::scan::{Cursor, successor};
-use crate::store::{NodeGet, StoreError, open_chunk};
+use crate::store::{StoreError, open_chunk};
 use crate::value::{Entry, Key};
 
 /// One flattened position of a chunk's fork table, in ascending key order, with
@@ -164,7 +164,7 @@ fn covering_index<R: NodeRef>(dir: &SegmentDir<R>, index: u64) -> Option<(u64, &
 
 impl<S, F, R> Reader<S, F, R>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -320,7 +320,7 @@ where
 /// spilled node's segments: the descent routes them itself by `seg_count`.
 async fn decode_at<S, F, R>(store: &S, reference: &R) -> Result<DecodedChunk<F, R>, ReaderError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -341,7 +341,7 @@ async fn on_path<S, F, R>(
     remaining: &[u8],
 ) -> Result<OnPath<F, R>, ReaderError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -364,7 +364,7 @@ async fn route_key<S, F, R>(
     remaining: &[u8],
 ) -> Result<OnPath<F, R>, ReaderError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -409,7 +409,7 @@ async fn index_path<S, F, R>(
     index: &mut u64,
 ) -> Result<Option<Vec<Ranked<F, R>>>, ReaderError>
 where
-    S: NodeGet + MaybeSync,
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
     R: NodeRef,
 {
@@ -532,7 +532,7 @@ mod tests {
     use crate::fork::ForkTable;
     use crate::format::V1;
     use crate::node::RootExtension;
-    use crate::store::NodePut;
+    use crate::store::save_node;
     use crate::value::{Entry, Key};
 
     use super::*;
@@ -551,7 +551,12 @@ mod tests {
         let root_ext = RootExtension::new(Some(entry(9)), None);
         let mut forks = ForkTable::new();
         forks.insert(prefix(b"k"), entry(1).into(), None).unwrap();
-        let root = run(store.put_node(&Node::<V1>::new(root_ext, forks), &Plaintext)).unwrap();
+        let root = run(save_node(
+            &store,
+            &Node::<V1>::new(root_ext, forks),
+            &Plaintext,
+        ))
+        .unwrap();
         let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
 
         // The empty key leads iteration at index 0; "k" follows at index 1.
@@ -620,7 +625,7 @@ mod tests {
     #[test]
     fn an_empty_manifest_has_no_keys() {
         let store = ContentGet::new(MemoryStore::default());
-        let root = run(store.put_node(&Node::<V1>::empty(), &Plaintext)).unwrap();
+        let root = run(save_node(&store, &Node::<V1>::empty(), &Plaintext)).unwrap();
         let reader = Reader::<&ContentGet<MemoryStore>, V1>::new(&store);
         assert_eq!(run(reader.rank(&root, &Key::from(&b"x"[..]))).unwrap(), 0);
         assert_eq!(run(reader.select(&root, 0)).unwrap(), None);

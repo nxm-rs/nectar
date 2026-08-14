@@ -28,7 +28,9 @@ use nectar_primitives::store::{ContentGet, MaybeSend, MaybeSync, TrustedGet};
 use crate::cursor::Cursor;
 use crate::editor::ManifestEditor;
 use crate::error::{CursorError, EditorError, ReaderError};
-use crate::persist::{NodeLoadSaver, NodeLoader, NodeSaver};
+use nectar_manifest::{NodeLoader, NodeSaver};
+
+use crate::persist::NodeLoadSaver;
 use crate::reader::Reader;
 use crate::{constants::metadata, entry::Entry};
 
@@ -112,7 +114,7 @@ where
 
 impl<L, S, R, const B: usize> Manifest<R> for MantarayManifest<L, S, B>
 where
-    L: NodeLoader + NodeSaver<R> + Clone + 'static,
+    L: NodeLoader<Vec<u8>> + NodeSaver<[u8], R> + Clone + 'static,
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
     R: Reference,
 {
@@ -201,7 +203,7 @@ pub struct TrieView<L, S, R: Reference, const B: usize = DEFAULT_BODY_SIZE> {
 
 impl<L, S, R, const B: usize> TrieView<L, S, R, B>
 where
-    L: NodeLoader + Clone,
+    L: NodeLoader<Vec<u8>> + Clone,
     R: Reference,
 {
     /// The entry at `path`, which is the trie key verbatim. The structural
@@ -241,7 +243,7 @@ where
 
 impl<L, S, R, const B: usize> ManifestView<R> for TrieView<L, S, R, B>
 where
-    L: NodeLoader + Clone + 'static,
+    L: NodeLoader<Vec<u8>> + Clone + 'static,
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + MaybeSend + MaybeSync + 'static,
     R: Reference,
 {
@@ -346,7 +348,7 @@ pub struct TrieCursor<L, R: Reference> {
 
 impl<L, R> RawCursor<R> for TrieCursor<L, R>
 where
-    L: NodeLoader + Clone + MaybeSend + 'static,
+    L: NodeLoader<Vec<u8>> + Clone + MaybeSend + 'static,
     R: Reference,
 {
     type Error = ManifestError<TrieFormatError>;

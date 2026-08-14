@@ -162,6 +162,6 @@ pub use node::{Node, NodeRef, RootExtension};
 pub use packing::{Directory, SegmentKind, cut, embed, h64, segment, spill};
 pub use reader::{Reader, ReaderError};
 pub use scan::Cursor;
-pub use store::{NodeChunk, NodeGet, NodePut, Plaintext, Seal, StoreError};
+pub use store::{NodeChunk, Plaintext, Seal, StoreError, load_node, save_node};
 pub use traverse::AddressStream;
 pub use value::{Entry, InlineValue, Key};

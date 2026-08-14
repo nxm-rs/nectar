@@ -140,20 +140,20 @@ impl Counting {
     }
 }
 
-impl NodeLoader for Counting {
-    type Error = <Nodes as NodeLoader>::Error;
+impl NodeLoader<Vec<u8>> for Counting {
+    type Error = <Nodes as NodeLoader<Vec<u8>>>::Error;
 
-    async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+    async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);
-        self.inner.collect(reference).await
+        self.inner.load(reference).await
     }
 }
 
-impl NodeSaver<ChunkRef> for Counting {
-    type Error = <Nodes as NodeSaver<ChunkRef>>::Error;
+impl NodeSaver<[u8], ChunkRef> for Counting {
+    type Error = <Nodes as NodeSaver<[u8], ChunkRef>>::Error;
 
-    async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
-        <Nodes as NodeSaver<ChunkRef>>::save(&self.inner, data).await
+    async fn save(&self, data: &[u8]) -> Result<ChunkRef, Self::Error> {
+        <Nodes as NodeSaver<[u8], ChunkRef>>::save(&self.inner, data).await
     }
 }
 

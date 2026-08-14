@@ -25,6 +25,10 @@
 //! defaults to [`collapse_dir`], and [`ManifestView::serve`] resolves a
 //! request path under the site conventions into a [`Served`].
 //!
+//! Node persistence is seam-owned as well: [`NodeLoader`] and [`NodeSaver`]
+//! fix the verbs, and each format instantiates them at its own unit of
+//! transfer.
+//!
 //! Each format keeps its own metadata type: the static path erases nothing.
 //! [`ErasedManifest`] is the object-safe wrapper for a runtime-detected format,
 //! and unifies metadata behind the enumerable [`MetadataSource`]: a
@@ -90,6 +94,7 @@ mod dynamic;
 mod error;
 mod listing;
 mod meta;
+mod node;
 mod op;
 mod path;
 mod reserved;
@@ -102,6 +107,7 @@ pub use dynamic::{DynSink, DynSinkError, DynVisit, ErasedManifest};
 pub use error::{ErasedFormat, ErasedManifestError, ManifestError};
 pub use listing::{ListEntry, Listing, collapse_dir};
 pub use meta::{ManifestMeta, MetadataBlock, MetadataSource, MetadataView, WellKnownKey};
+pub use node::{NodeLoader, NodeSaver};
 pub use op::ManifestOp;
 pub use path::ManifestPath;
 pub use reserved::{ReservedKey, reserved_key};

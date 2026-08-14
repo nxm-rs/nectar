@@ -6,9 +6,10 @@
 //! path never re-hashes. The write path seals a freshly built payload into a
 //! [`Verified`] content chunk, deriving the address rather than trusting one.
 //!
-//! [`NodeGet`] and [`NodePut`] reuse the primitives store traits; the read
-//! seam binds the content-only registry, so a non-content chunk is rejected
-//! at decode rather than decoded as a node.
+//! [`load_node`] and [`save_node`] are free functions over the layer-1 store
+//! traits, not verbs hung off a store; the read side binds the content-only
+//! registry, so a non-content chunk is rejected at decode rather than decoded
+//! as a node.
 //!
 //! Both seams are generic over the structural reference width `R`. Reading
 //! needs nothing but the reference: an encrypted one carries its own key, so
@@ -29,7 +30,7 @@ use nectar_governor::{Admission, Window};
 use nectar_primitives::store::{BoxedError, ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 use nectar_primitives::{
     Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk, ContentOnlyChunkSet, EncryptionKey,
-    EntryRef, Verified, transcrypt_in_place,
+    EntryRef, Verified, WrongRefKind, transcrypt_in_place,
 };
 use nectar_tasks::BoxFuture;
 
@@ -62,6 +63,9 @@ pub enum StoreError {
     /// The backing store failed.
     #[error("store")]
     Store(#[source] BoxedError),
+    /// A runtime reference was of the wrong width for the typed read.
+    #[error(transparent)]
+    Width(#[from] WrongRefKind),
 }
 
 impl StoreError {
@@ -161,38 +165,17 @@ impl<F: Format> Node<F> {
     }
 }
 
-/// Async node retrieval over a trusted store.
-///
-/// Blanket-implemented for every [`TrustedGet`]; the `Trust = Verified`
-/// bound is what lets [`get_node`](Self::get_node) skip re-hashing.
-pub trait NodeGet: TrustedGet<ContentOnlyChunkSet> {
-    /// Load and decode the node `reference` reaches, materializing a spilled
-    /// node's forks from its segments so the caller always sees one logical
-    /// node.
-    ///
-    /// Reassembling a segmented node fetches its segment chunks under a
-    /// bounded window and reassembles one node's forks, so peak retained
-    /// state stays bounded by the fork count and that window.
-    fn get_node<F: Format, R: NodeRef>(
-        &self,
-        reference: &R,
-    ) -> impl Future<Output = Result<Node<F, R>, StoreError>> + MaybeSend
-    where
-        Self: Sized + MaybeSync,
-    {
-        materialize_node::<Self, F, R>(self, reference)
-    }
-}
-
-impl<T: TrustedGet<ContentOnlyChunkSet>> NodeGet for T {}
-
 /// The greatest legal segment-directory depth (spec 5.4); a deeper nesting is a
 /// malformed image, not a tree this format ever produces.
 const MAX_DIR_DEPTH: usize = 2;
 
-/// Load the node `reference` reaches, reassembling a segmented node's forks in
-/// place.
-async fn materialize_node<S, F, R>(store: &S, reference: &R) -> Result<Node<F, R>, StoreError>
+/// Load and decode the node `reference` reaches, reassembling a spilled node's
+/// forks from its segments so the caller always sees one logical node.
+///
+/// The store's `Trust = Verified` bound is what lets the decode skip
+/// re-hashing. Reassembly fetches segment chunks under a bounded window, so
+/// peak retained state stays bounded by the fork count and that window.
+pub async fn load_node<S, F, R>(store: &S, reference: &R) -> Result<Node<F, R>, StoreError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
     F: Format,
@@ -533,31 +516,29 @@ where
     Ok(table)
 }
 
-/// Async node storage over a chunk putter.
+/// Seal `node` with `seal`, store its chunk, and return the reference that
+/// reaches it.
 ///
-/// Blanket-implemented for every [`ChunkPut`]; sealing happens before the
-/// first await, so the returned future never holds the source node.
-pub trait NodePut: ChunkPut {
-    /// Seal `node` with `seal`, store its chunk, and return the reference that
-    /// reaches it.
-    fn put_node<F: Format, R: NodeRef, K: Seal<R>>(
-        &self,
-        node: &Node<F, R>,
-        seal: &K,
-    ) -> impl Future<Output = Result<R, StoreError>> + MaybeSend
-    where
-        Self: Sized + MaybeSync,
-    {
-        let sealed = node.to_sealed(seal);
-        async move {
-            let (chunk, reference) = sealed?;
-            self.put(chunk).await.map_err(StoreError::store)?;
-            Ok(reference)
-        }
+/// Sealing happens before the first await, so the returned future never holds
+/// the source node.
+pub fn save_node<'a, S, F, R, K>(
+    store: &'a S,
+    node: &Node<F, R>,
+    seal: &K,
+) -> impl Future<Output = Result<R, StoreError>> + MaybeSend + 'a
+where
+    S: ChunkPut + MaybeSync,
+    F: Format,
+    R: NodeRef,
+    K: Seal<R>,
+{
+    let sealed = node.to_sealed(seal);
+    async move {
+        let (chunk, reference) = sealed?;
+        store.put(chunk).await.map_err(StoreError::store)?;
+        Ok(reference)
     }
 }
-
-impl<T: ChunkPut> NodePut for T {}
 
 #[cfg(test)]
 mod tests {
@@ -610,8 +591,8 @@ mod tests {
         let store = ContentGet::new(MemoryStore::default());
         let node = sample();
 
-        let address = run(store.put_node(&node, &Plaintext)).unwrap();
-        let loaded: Node = run(store.get_node(&address)).unwrap();
+        let address = run(save_node(&store, &node, &Plaintext)).unwrap();
+        let loaded: Node = run(load_node(&store, &address)).unwrap();
 
         assert_eq!(loaded, node);
     }
@@ -637,9 +618,11 @@ mod tests {
     #[test]
     fn missing_address_is_a_store_error() {
         let store = ContentGet::new(MemoryStore::default());
-        let err =
-            run(store.get_node::<crate::V1, ChunkRef>(&ChunkRef::new(ChunkAddress::new([0; 32]))))
-                .unwrap_err();
+        let err = run(load_node::<_, crate::V1, ChunkRef>(
+            &store,
+            &ChunkRef::new(ChunkAddress::new([0; 32])),
+        ))
+        .unwrap_err();
         assert!(matches!(err, StoreError::Store(_)));
     }
 
@@ -769,7 +752,7 @@ mod tests {
             peak: AtomicUsize::new(0),
         };
 
-        let node: Node = run(store.get_node(&root)).unwrap();
+        let node: Node = run(load_node(&store, &root)).unwrap();
         assert_eq!(node.forks().len(), 256);
 
         let peak = store.peak.load(Ordering::Relaxed);

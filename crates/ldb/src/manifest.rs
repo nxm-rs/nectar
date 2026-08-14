@@ -4,17 +4,18 @@
 //! concrete types, so a seam call names the trait: `Manifest::at(&db, root)`.
 
 use alloc::vec::Vec;
+use core::future::Future;
 use core::ops::Bound;
 
 use bytes::Bytes;
 use nectar_file::load_reference;
 use nectar_manifest::{
     Batch, DataSink, ListEntry, Listing, Manifest, ManifestCursor, ManifestError, ManifestOp,
-    ManifestPath, ManifestView, MapEntry, PathCursor, RawCursor, RawItem, Served, SinkError,
-    SiteConfig, serve_fallback,
+    ManifestPath, ManifestView, MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem,
+    Served, SinkError, SiteConfig, serve_fallback,
 };
 use nectar_primitives::EntryRef;
-use nectar_primitives::chunk::ContentOnlyChunkSet;
+use nectar_primitives::chunk::{ChunkAddress, ContentOnlyChunkSet};
 use nectar_primitives::store::{ChunkPut, MaybeSend, MaybeSync, TrustedGet};
 
 use crate::apply::ApplyError;
@@ -23,10 +24,10 @@ use crate::db::{Database, View};
 use crate::folder::{DirEntry, Served as NativeServed};
 use crate::format::{Format, V1};
 use crate::meta::{KeyId, Metadata};
-use crate::node::NodeRef;
+use crate::node::{Node, NodeRef};
 use crate::reader::ReaderError;
 use crate::scan::Cursor;
-use crate::store::Seal;
+use crate::store::{Seal, StoreError, load_node, materialize_traced, save_node};
 use crate::value::{Entry, Key};
 
 /// The database's own failures behind [`ManifestError::Format`].
@@ -106,6 +107,51 @@ where
             }
         }
         Ok(editor.commit().await?)
+    }
+}
+
+/// The database as the seam's node store, at the decoded node: a spilled node
+/// has no single stored image, so bytes are not a unit this format can offer.
+impl<S, K, F, R> NodeLoader<Node<F, R>> for Database<S, K, F>
+where
+    S: TrustedGet<ContentOnlyChunkSet> + MaybeSend + MaybeSync,
+    K: MaybeSend + MaybeSync,
+    F: Format,
+    R: NodeRef,
+{
+    type Error = StoreError;
+
+    async fn load(&self, reference: &EntryRef) -> Result<Node<F, R>, StoreError> {
+        let reference = R::from_entry_ref(reference.clone())?;
+        load_node(self.store(), &reference).await
+    }
+
+    async fn load_traced(
+        &self,
+        reference: &EntryRef,
+    ) -> Result<(Node<F, R>, Vec<ChunkAddress>), StoreError> {
+        let reference = R::from_entry_ref(reference.clone())?;
+        let (node, segments) = materialize_traced::<S, F, R>(self.store(), &reference).await?;
+        let mut addresses = Vec::with_capacity(segments.len().saturating_add(1));
+        addresses.push(*reference.address());
+        addresses.extend(segments);
+        Ok((node, addresses))
+    }
+}
+
+/// The database as the seam's node saver, sealing through its own write-side
+/// secret.
+impl<S, K, F, R> NodeSaver<Node<F, R>, R> for Database<S, K, F>
+where
+    S: ChunkPut + MaybeSend + MaybeSync,
+    K: Seal<R> + MaybeSend + MaybeSync,
+    F: Format,
+    R: NodeRef,
+{
+    type Error = StoreError;
+
+    fn save(&self, node: &Node<F, R>) -> impl Future<Output = Result<R, StoreError>> + MaybeSend {
+        save_node(self.store(), node, self.seal())
     }
 }
 

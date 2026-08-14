@@ -1,15 +1,14 @@
-//! Node persistence seam: abstract loader and saver over full-width
-//! references.
+//! Node persistence: the trie's instantiation of the seam-owned
+//! [`NodeLoader`] and [`NodeSaver`], at a whole node image.
 //!
 //! The trie never touches chunk stores; the adapter decides the layout.
 //! `NodeLoadSaver` (feature `manifest`) stores through the file pipeline, so a
 //! node over one chunk spans several, matching the reference client.
 
 use alloc::vec::Vec;
-use core::future::Future;
 
-use nectar_primitives::chunk::{ChunkAddress, Reference};
-use nectar_primitives::store::{ChunkStoreError, MaybeSend, MaybeSync, NullLoader};
+use nectar_manifest::{NodeLoader, NodeSaver};
+use nectar_primitives::chunk::ChunkAddress;
 use nectar_primitives::{EncryptedChunkRef, EntryRef};
 
 use crate::format::{FORK_INDEX_SIZE, ForkHeader, NodeHeader};
@@ -31,54 +30,6 @@ const FORK_RECORD_MAX: usize = ForkHeader::PRE_REFERENCE_SIZE
 #[allow(clippy::as_conversions)] // usize -> u64 widening; `u64::try_from` is not const-callable
 pub const MAX_NODE_BYTES: u64 =
     (NodeHeader::SIZE + EncryptedChunkRef::SIZE + FORK_INDEX_SIZE + 256 * FORK_RECORD_MAX) as u64;
-
-/// Read seam: a node's whole image, in memory.
-///
-/// `collect` as in `nectar-file`: materialized, not streamed. The codec reads
-/// the fork index before the records it offsets, so it needs the whole image;
-/// [`MAX_NODE_BYTES`] bounds the cost.
-pub trait NodeLoader: MaybeSend + MaybeSync {
-    /// Loader failure, wrapped by the trie into its store errors.
-    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
-
-    /// The node image behind `reference`.
-    fn collect(
-        &self,
-        reference: &EntryRef,
-    ) -> impl Future<Output = Result<Vec<u8>, Self::Error>> + MaybeSend;
-
-    /// The image plus the chunk addresses it occupies, root first.
-    ///
-    /// Default: the bytes and the root address, the single-chunk shape.
-    fn collect_with_addresses(
-        &self,
-        reference: &EntryRef,
-    ) -> impl Future<Output = Result<(Vec<u8>, Vec<ChunkAddress>), Self::Error>> + MaybeSend {
-        async move {
-            let bytes = self.collect(reference).await?;
-            Ok((bytes, alloc::vec![*reference.address()]))
-        }
-    }
-}
-
-/// Write seam: persist node bytes under a new reference of width `R`.
-pub trait NodeSaver<R: Reference>: MaybeSend + MaybeSync {
-    /// Saver failure, wrapped by the trie into its store errors.
-    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
-
-    /// Persist one node image and return its full-width reference.
-    fn save(&self, data: Vec<u8>) -> impl Future<Output = Result<R, Self::Error>> + MaybeSend;
-}
-
-/// Satisfies the seam for purely in-memory tries: every collect is a typed
-/// not-found.
-impl NodeLoader for NullLoader {
-    type Error = ChunkStoreError;
-
-    async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
-        Err(ChunkStoreError::not_found(reference.address()))
-    }
-}
 
 // Private: it scopes the `std` and `nectar-file` imports the production
 // adapter needs behind one `manifest` gate. Its items surface through the
@@ -168,18 +119,18 @@ mod pipeline {
     #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
     pub type NodeCollectError<E> = CollectError<ContentGetError<E>>;
 
-    impl<S, const B: usize> NodeLoader for NodeLoadSaver<S, B>
+    impl<S, const B: usize> NodeLoader<Vec<u8>> for NodeLoadSaver<S, B>
     where
         S: TrustedGet<AnyChunkSet<B>> + Clone + 'static,
     {
         type Error = NodeCollectError<S::Error>;
 
-        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
             let file = File::<_, B>::new(ContentGet::new(self.store.clone()), Policy::DEFAULT);
             file.collect(reference.clone(), MAX_NODE_BYTES).await
         }
 
-        async fn collect_with_addresses(
+        async fn load_traced(
             &self,
             reference: &EntryRef,
         ) -> Result<(Vec<u8>, Vec<ChunkAddress>), Self::Error> {
@@ -190,18 +141,14 @@ mod pipeline {
         }
     }
 
-    impl<S, const B: usize> NodeSaver<ChunkRef> for NodeLoadSaver<S, B>
+    impl<S, const B: usize> NodeSaver<[u8], ChunkRef> for NodeLoadSaver<S, B>
     where
         S: ChunkPut<AnyChunkSet<B>>,
     {
         type Error = SplitError<S::Error>;
 
-        async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
-            let root = self
-                .file()
-                .save(data.as_slice())
-                .await
-                .map_err(unwrap_save)?;
+        async fn save(&self, data: &[u8]) -> Result<ChunkRef, Self::Error> {
+            let root = self.file().save(data).await.map_err(unwrap_save)?;
             Ok(ChunkRef::new(root))
         }
     }
@@ -210,17 +157,14 @@ mod pipeline {
     /// and the returned reference carries the root's decryption key.
     #[cfg(feature = "encryption")]
     #[cfg_attr(docsrs, doc(cfg(all(feature = "manifest", feature = "encryption"))))]
-    impl<S, const B: usize> NodeSaver<EncryptedChunkRef> for NodeLoadSaver<S, B>
+    impl<S, const B: usize> NodeSaver<[u8], EncryptedChunkRef> for NodeLoadSaver<S, B>
     where
         S: ChunkPut<AnyChunkSet<B>>,
     {
         type Error = SplitError<S::Error>;
 
-        async fn save(&self, data: Vec<u8>) -> Result<EncryptedChunkRef, Self::Error> {
-            self.file()
-                .save_encrypted(data.as_slice())
-                .await
-                .map_err(unwrap_save)
+        async fn save(&self, data: &[u8]) -> Result<EncryptedChunkRef, Self::Error> {
+            self.file().save_encrypted(data).await.map_err(unwrap_save)
         }
     }
 
@@ -328,13 +272,13 @@ pub mod single_chunk {
         Chunk(#[from] PrimitivesError),
     }
 
-    impl<S, const BS: usize> NodeLoader for SingleChunkLoadSaver<S, BS>
+    impl<S, const BS: usize> NodeLoader<Vec<u8>> for SingleChunkLoadSaver<S, BS>
     where
         S: TrustedGet<AnyChunkSet<BS>>,
     {
         type Error = SingleChunkError;
 
-        async fn collect(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
+        async fn load(&self, reference: &EntryRef) -> Result<Vec<u8>, Self::Error> {
             let chunk = self
                 .0
                 .get(reference.address())
@@ -348,8 +292,8 @@ pub mod single_chunk {
     where
         S: ChunkPut<AnyChunkSet<BS>>,
     {
-        async fn put_node(&self, data: Vec<u8>) -> Result<ChunkAddress, SingleChunkError> {
-            let chunk = ContentChunk::<BS>::new(data)?;
+        async fn put_node(&self, data: &[u8]) -> Result<ChunkAddress, SingleChunkError> {
+            let chunk = ContentChunk::<BS>::new(data.to_vec())?;
             let address = *chunk.address();
             let sealed: Chunk<_, AnyChunkSet<BS>> = Chunk::from_envelope(chunk.into())?;
             self.0
@@ -360,24 +304,24 @@ pub mod single_chunk {
         }
     }
 
-    impl<S, const BS: usize> NodeSaver<ChunkRef> for SingleChunkLoadSaver<S, BS>
+    impl<S, const BS: usize> NodeSaver<[u8], ChunkRef> for SingleChunkLoadSaver<S, BS>
     where
         S: ChunkPut<AnyChunkSet<BS>>,
     {
         type Error = SingleChunkError;
 
-        async fn save(&self, data: Vec<u8>) -> Result<ChunkRef, Self::Error> {
+        async fn save(&self, data: &[u8]) -> Result<ChunkRef, Self::Error> {
             Ok(ChunkRef::new(self.put_node(data).await?))
         }
     }
 
-    impl<S, const BS: usize> NodeSaver<EncryptedChunkRef> for SingleChunkLoadSaver<S, BS>
+    impl<S, const BS: usize> NodeSaver<[u8], EncryptedChunkRef> for SingleChunkLoadSaver<S, BS>
     where
         S: ChunkPut<AnyChunkSet<BS>>,
     {
         type Error = SingleChunkError;
 
-        async fn save(&self, data: Vec<u8>) -> Result<EncryptedChunkRef, Self::Error> {
+        async fn save(&self, data: &[u8]) -> Result<EncryptedChunkRef, Self::Error> {
             Ok(EncryptedChunkRef::new(
                 self.put_node(data).await?,
                 EncryptionKey::from([0u8; EncryptionKey::SIZE]),
@@ -389,34 +333,11 @@ pub mod single_chunk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nectar_testing::run;
 
     #[test]
     fn max_node_bytes_matches_the_structural_layout() {
         // 64 header + 64 entry + 32 index + 256 * 65633 fork records.
         assert_eq!(MAX_NODE_BYTES, 16_802_208);
-    }
-
-    #[test]
-    fn null_loader_load_is_not_found() {
-        let reference = EntryRef::from(ChunkAddress::from([7u8; 32]));
-        let err = run(NullLoader.collect(&reference)).unwrap_err();
-        assert!(matches!(err, ChunkStoreError::NotFound(a) if a == *reference.address()));
-    }
-
-    #[test]
-    fn default_load_with_addresses_is_bytes_plus_root() {
-        struct Fixed;
-        impl NodeLoader for Fixed {
-            type Error = ChunkStoreError;
-            async fn collect(&self, _: &EntryRef) -> Result<Vec<u8>, Self::Error> {
-                Ok(vec![1, 2, 3])
-            }
-        }
-        let reference = EntryRef::from(ChunkAddress::from([9u8; 32]));
-        let (bytes, addresses) = run(Fixed.collect_with_addresses(&reference)).unwrap();
-        assert_eq!(bytes, vec![1, 2, 3]);
-        assert_eq!(addresses, vec![*reference.address()]);
     }
 }
 
@@ -433,8 +354,8 @@ mod pipeline_tests {
     type Store = MemoryStore<StandardChunkSet>;
     type LoadSaver = NodeLoadSaver<Store>;
 
-    fn save_plain(loadsaver: &LoadSaver, data: Vec<u8>) -> ChunkRef {
-        run(NodeSaver::<ChunkRef>::save(loadsaver, data)).unwrap()
+    fn save_plain(loadsaver: &LoadSaver, data: &[u8]) -> ChunkRef {
+        run(NodeSaver::<[u8], ChunkRef>::save(loadsaver, data)).unwrap()
     }
 
     #[test]
@@ -444,12 +365,12 @@ mod pipeline_tests {
         let want = *ContentChunk::<DEFAULT_BODY_SIZE>::new(Bytes::from(data.clone()))
             .unwrap()
             .address();
-        let root = save_plain(&loadsaver, data.clone());
+        let root = save_plain(&loadsaver, &data);
         assert_eq!(*root.address(), want);
 
         let reference = EntryRef::from(root);
-        assert_eq!(run(loadsaver.collect(&reference)).unwrap(), data);
-        let (bytes, addresses) = run(loadsaver.collect_with_addresses(&reference)).unwrap();
+        assert_eq!(run(loadsaver.load(&reference)).unwrap(), data);
+        let (bytes, addresses) = run(loadsaver.load_traced(&reference)).unwrap();
         assert_eq!(bytes, data);
         assert_eq!(addresses, vec![*reference.address()]);
     }
@@ -458,10 +379,10 @@ mod pipeline_tests {
     fn multi_chunk_save_round_trips_and_reports_every_address() {
         let loadsaver = LoadSaver::new(Store::new());
         let data: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
-        let root = save_plain(&loadsaver, data.clone());
+        let root = save_plain(&loadsaver, &data);
 
         let reference = EntryRef::from(root);
-        let (bytes, addresses) = run(loadsaver.collect_with_addresses(&reference)).unwrap();
+        let (bytes, addresses) = run(loadsaver.load_traced(&reference)).unwrap();
         assert_eq!(bytes, data);
         // 20000 bytes span five leaves plus the root: six stored chunks.
         let mut stored: Vec<ChunkAddress> = loadsaver
@@ -483,14 +404,13 @@ mod pipeline_tests {
     fn encrypted_save_round_trips() {
         let loadsaver = LoadSaver::new(Store::new());
         let data: Vec<u8> = (0..9_000u32).map(|i| (i % 241) as u8).collect();
-        let root = run(NodeSaver::<EncryptedChunkRef>::save(
-            &loadsaver,
-            data.clone(),
+        let root = run(NodeSaver::<[u8], EncryptedChunkRef>::save(
+            &loadsaver, &data,
         ))
         .unwrap();
         let reference = EntryRef::from(root);
-        assert_eq!(run(loadsaver.collect(&reference)).unwrap(), data);
-        let (bytes, addresses) = run(loadsaver.collect_with_addresses(&reference)).unwrap();
+        assert_eq!(run(loadsaver.load(&reference)).unwrap(), data);
+        let (bytes, addresses) = run(loadsaver.load_traced(&reference)).unwrap();
         assert_eq!(bytes, data);
         assert!(addresses.len() > 1);
     }

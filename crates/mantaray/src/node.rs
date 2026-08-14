@@ -11,8 +11,8 @@ use core::pin::Pin;
 
 use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
 use crate::obfuscation::ObfuscationKey;
-use crate::persist::NodeLoader;
 use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
+use nectar_manifest::NodeLoader;
 use nectar_primitives::chunk::{ChunkRef, Reference};
 use nectar_primitives::store::MaybeSend;
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
@@ -417,7 +417,7 @@ impl<R: Reference> Node<R> {
     }
 
     /// Load forks from storage if the node hasn't been loaded yet.
-    pub(crate) async fn ensure_loaded<L: NodeLoader>(&mut self, loader: &L) -> Result<()> {
+    pub(crate) async fn ensure_loaded<L: NodeLoader<Vec<u8>>>(&mut self, loader: &L) -> Result<()> {
         if !self.is_loaded() {
             self.load(loader).await?;
         }
@@ -425,7 +425,7 @@ impl<R: Reference> Node<R> {
     }
 
     /// Load this node through the loader by its full-width reference.
-    pub(crate) async fn load<L: NodeLoader>(&mut self, loader: &L) -> Result<()> {
+    pub(crate) async fn load<L: NodeLoader<Vec<u8>>>(&mut self, loader: &L) -> Result<()> {
         let reference = match &self.state {
             NodeState::Stub(reference) | NodeState::Clean(reference) => reference.clone(),
             // A dirty node holds its content in memory; nothing to fetch.
@@ -434,7 +434,7 @@ impl<R: Reference> Node<R> {
 
         let address = *reference.address();
         let bytes = loader
-            .collect(&reference.clone().into_entry_ref())
+            .load(&reference.clone().into_entry_ref())
             .await
             .map_err(|e| MantarayError::StoreGet {
                 source: alloc::sync::Arc::new(e),
@@ -460,7 +460,7 @@ impl<R: Reference> Node<R> {
     // <= min(prefix.len(), path.len()), bounding every split; the fork at
     // `path[0]` is checked present (`contains_key`) before each get/expect.
     #[allow(clippy::indexing_slicing, clippy::expect_used)]
-    pub(crate) fn add<'a, L: NodeLoader>(
+    pub(crate) fn add<'a, L: NodeLoader<Vec<u8>>>(
         &'a mut self,
         path: &'a [u8],
         entry: Option<R>,
@@ -588,7 +588,7 @@ impl<R: Reference> Node<R> {
     // `path.starts_with(&prefix)` guarantees `prefix.len() <= path.len()`;
     // the fork at `first` is checked present before the get_mut/expect.
     #[allow(clippy::indexing_slicing, clippy::expect_used)]
-    pub(crate) fn remove<'a, L: NodeLoader>(
+    pub(crate) fn remove<'a, L: NodeLoader<Vec<u8>>>(
         &'a mut self,
         path: &'a [u8],
         loader: &'a L,
@@ -645,7 +645,7 @@ impl<R: Reference> Node<R> {
     /// The result decodes exactly the surviving keys, but the root stays
     /// order-dependent: mantaray 0.2 keeps a node where the insert order first
     /// justified one. History independence is `nectar-ldb`'s guarantee.
-    pub(crate) fn clear<'a, L: NodeLoader>(
+    pub(crate) fn clear<'a, L: NodeLoader<Vec<u8>>>(
         &'a mut self,
         path: &'a [u8],
         loader: &'a L,
@@ -837,12 +837,12 @@ mod test_traversal {
 
     use super::{Fork, Node, NodeState, Prefix, common_prefix_len};
     use crate::error::{MantarayError, Result};
-    use crate::persist::{NodeLoader, NodeSaver};
+    use nectar_manifest::{NodeLoader, NodeSaver};
 
     impl<R: Reference> Node<R> {
         /// Look up the node at the given path, loading from storage as needed.
         #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-        pub(crate) async fn lookup_node<L: NodeLoader>(
+        pub(crate) async fn lookup_node<L: NodeLoader<Vec<u8>>>(
             &mut self,
             path: &[u8],
             loader: &L,
@@ -875,7 +875,7 @@ mod test_traversal {
         }
 
         /// Look up the entry at the given path, loading from storage as needed.
-        pub(crate) async fn lookup<L: NodeLoader>(
+        pub(crate) async fn lookup<L: NodeLoader<Vec<u8>>>(
             &mut self,
             path: &[u8],
             loader: &L,
@@ -891,7 +891,7 @@ mod test_traversal {
 
         /// Test whether a prefix exists in the trie, loading from storage as needed.
         #[allow(clippy::indexing_slicing)] // `rest` is checked non-empty before `rest[0]`; `c <= rest.len()` from common_prefix_len
-        pub(crate) async fn has_prefix<L: NodeLoader>(
+        pub(crate) async fn has_prefix<L: NodeLoader<Vec<u8>>>(
             &mut self,
             path: &[u8],
             loader: &L,
@@ -932,7 +932,7 @@ mod test_traversal {
         /// Each owned frame drains its node's fork map and reattaches saved
         /// children on pop; on failure the detached subtree is dropped and
         /// `self` is left empty.
-        pub(crate) async fn save<L: NodeSaver<R>>(&mut self, saver: &L) -> Result<()> {
+        pub(crate) async fn save<L: NodeSaver<[u8], R>>(&mut self, saver: &L) -> Result<()> {
             if self.reference().is_some() {
                 return Ok(());
             }
@@ -983,7 +983,7 @@ mod test_traversal {
                 finished.node.forks = core::mem::take(&mut finished.done);
                 let data = finished.node.encode()?;
                 let reference = saver
-                    .save(data)
+                    .save(&data)
                     .await
                     .map_err(|e| MantarayError::StorePut {
                         source: alloc::sync::Arc::new(e),
@@ -1013,7 +1013,11 @@ mod test_traversal {
         }
 
         /// Walk all nodes depth-first, calling `f` for each node with its path.
-        pub(crate) async fn walk<L: NodeLoader, F>(&mut self, loader: &L, f: &mut F) -> Result<()>
+        pub(crate) async fn walk<L: NodeLoader<Vec<u8>>, F>(
+            &mut self,
+            loader: &L,
+            f: &mut F,
+        ) -> Result<()>
         where
             F: FnMut(&[u8], &Self) -> Result<()>,
         {
@@ -1022,7 +1026,7 @@ mod test_traversal {
         }
 
         /// Walk the subtree at `root`, calling `f` for each node.
-        pub(crate) async fn walk_from<L: NodeLoader, F>(
+        pub(crate) async fn walk_from<L: NodeLoader<Vec<u8>>, F>(
             &mut self,
             root: &[u8],
             loader: &L,
@@ -1047,7 +1051,7 @@ mod test_traversal {
     /// `FnMut`. Each frame drains its node's fork map and reattaches walked
     /// children on pop, so the trie is intact (and loaded) on return; on
     /// failure the detached subtree is dropped and `node` is left empty.
-    async fn walk_inner<R: Reference, L: NodeLoader, F>(
+    async fn walk_inner<R: Reference, L: NodeLoader<Vec<u8>>, F>(
         path_buf: &mut Vec<u8>,
         node: &mut Node<R>,
         loader: &L,
