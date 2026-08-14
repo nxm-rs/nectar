@@ -94,7 +94,7 @@ jobs:
               if: matrix.target == 'riscv64imac-unknown-none-elf'
               run: |
                   cargo check --locked -p nectar-primitives \
-                    --no-default-features --features envelope \
+                    --no-default-features --features envelope-unstable \
                     --target ${{ matrix.target }}
             # The single-thread send escape (the unsync feature) and its
             # !Send-store compile proof, checked for the host inside the

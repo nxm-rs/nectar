@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 
 use super::{Hpke, LABEL, OpenError, Opened, Recipient, Record, SealedRecord, Topic, hint_matches};
 
-/// `"KEM"` plus the draft codepoint 0x0016.
+/// `"KEM"` plus the registered codepoint 0x0016.
 const KEM_SUITE_ID: &[u8] = b"KEM\x00\x16";
 /// `"HPKE"` plus kem 0x0016, kdf 0x0001, aead 0x0003.
 const HPKE_SUITE_ID: &[u8] = b"HPKE\x00\x16\x00\x01\x00\x03";

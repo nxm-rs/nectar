@@ -6,10 +6,15 @@
 //! with the single suite DHKEM(secp256k1, HKDF-SHA256) + HKDF-SHA256 +
 //! ChaCha20-Poly1305 under the domain label `nectar/env/v1`.
 //!
-//! The KEM is draft-wahby-cfrg-hpke-kem-secp256k1 (requested codepoint
-//! 0x0016): an expired individual CFRG draft, absent from the IANA HPKE
-//! registry. The codepoint is ecosystem convention only, so the conformance
-//! vectors carried by the test suite are nectar-owned and normative here.
+//! No nectar crate reads or writes this frame yet, so the module is unstable:
+//! the KEM, the frame and this API may change without a major version until a
+//! consumer pins them. It is gated behind the `envelope-unstable` feature.
+//!
+//! The KEM is registered with IANA as 0x0016, DHKEM(secp256k1, HKDF-SHA256),
+//! under Specification Required; its defining draft
+//! (draft-wahby-cfrg-hpke-kem-secp256k1) has expired and publishes no test
+//! vectors. The conformance vectors carried by the test suite are therefore
+//! nectar-owned, and validated differentially against `hpke-rs`.
 //!
 //! The version discriminant is cryptographic, not syntactic: compat keeps
 //! `keccak256(key || salt)[..8]` in the hint slot, the envelope hint is
@@ -441,8 +446,8 @@ impl Policy for EnvelopeOnly {
 }
 
 /// Strictly transitional delivery: envelope first, compat probes after.
-/// Forbidden for peers pinned envelope-capable; compat has no integrity or
-/// sender authentication.
+/// Forbidden for peers pinned envelope-capable: compat has no AEAD integrity.
+/// Base mode authenticates no sender, in either scheme.
 #[derive(Debug, Clone, Copy)]
 pub enum EnvelopeThenCompat {}
 
