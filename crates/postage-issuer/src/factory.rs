@@ -163,7 +163,7 @@ impl<S: SwarmSpec> BatchFactory for MemoryBatchFactoryFor<S> {
             params.owner(),
             params.depth(),
             params.bucket_depth(),
-            params.is_immutable(),
+            params.immutable(),
         );
 
         Ok(CreateResultFor {
@@ -225,7 +225,7 @@ mod tests {
         let factory = MemoryBatchFactory::new(0);
 
         let params = BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
-            .immutable(true);
+            .with_immutable(true);
         let result = factory.create(params).await.unwrap();
 
         assert!(result.batch.immutable());

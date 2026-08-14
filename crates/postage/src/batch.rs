@@ -334,7 +334,7 @@ impl<S: SwarmSpec> BatchParams<S> {
 
     /// Sets the immutable flag.
     #[must_use]
-    pub const fn immutable(mut self, immutable: bool) -> Self {
+    pub const fn with_immutable(mut self, immutable: bool) -> Self {
         self.immutable = immutable;
         self
     }
@@ -359,7 +359,7 @@ impl<S: SwarmSpec> BatchParams<S> {
 
     /// Returns whether the batch is immutable: no dilution, no overwrite.
     #[inline]
-    pub const fn is_immutable(&self) -> bool {
+    pub const fn immutable(&self) -> bool {
         self.immutable
     }
 
@@ -670,7 +670,7 @@ impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BatchParams<S> {
         let immutable = u.arbitrary()?;
         let amount = u.arbitrary()?;
 
-        Ok(Self::new(owner, depth, bucket_depth, amount).immutable(immutable))
+        Ok(Self::new(owner, depth, bucket_depth, amount).with_immutable(immutable))
     }
 }
 
@@ -955,13 +955,13 @@ mod tests {
     fn test_batch_params_builder() {
         let params: BatchParams =
             BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
-                .immutable(true);
+                .with_immutable(true);
 
         assert_eq!(params.owner(), Address::ZERO);
         assert_eq!(params.depth(), 20);
         assert_eq!(params.bucket_depth().get(), 16);
         assert_eq!(params.amount(), 1000);
-        assert!(params.is_immutable());
+        assert!(params.immutable());
     }
 
     #[test]
@@ -990,12 +990,12 @@ mod tests {
     fn test_batch_params_accessors_round_trip() {
         let params: BatchParams =
             BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
-                .immutable(true);
+                .with_immutable(true);
 
         assert_eq!(params.owner(), Address::ZERO);
         assert_eq!(params.depth(), 20);
         assert_eq!(params.bucket_depth(), BucketDepth::new(16).unwrap());
-        assert!(params.is_immutable());
+        assert!(params.immutable());
         assert_eq!(params.amount(), 1000);
     }
 }
