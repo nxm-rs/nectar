@@ -1,48 +1,29 @@
 //! Utility functions for postage operations.
 
-use nectar_primitives::ChunkAddress;
+use nectar_primitives::{ChunkAddress, SwarmSpec};
 
-/// Calculates which collision bucket a chunk belongs to based on its address.
-///
-/// The bucket is determined by taking the first `bucket_depth` bits of the
-/// chunk address, interpreted as a big-endian unsigned integer.
-///
-/// # Arguments
-///
-/// * `address` - The chunk's Swarm address
-/// * `bucket_depth` - The number of leading bits to use (from the batch configuration)
-///
-/// # Returns
-///
-/// The bucket number (0 to 2^bucket_depth - 1)
-///
-/// # Panics
-///
-/// `bucket_depth` must be in `1..=32`: the implementation shifts a `u32`
-/// right by `32 - bucket_depth`, so `bucket_depth == 0` overflows the shift
-/// (and values above 32 overflow the subtraction), which panics with
-/// overflow checks enabled and yields an unspecified value without them.
-/// Callers validate the batch geometry (e.g. `nectar-postage-usage` rejects
-/// `bucket_depth == 0` at decode) before reaching this function.
+use crate::BucketDepth;
+
+/// Returns the collision bucket of `address`: its leading `bucket_depth` bits
+/// read big-endian.
 ///
 /// # Example
 ///
 /// ```
-/// use nectar_postage::calculate_bucket;
-/// use nectar_primitives::ChunkAddress;
+/// use nectar_postage::{BucketDepth, calculate_bucket};
+/// use nectar_primitives::{ChunkAddress, Mainnet};
 ///
 /// let address = ChunkAddress::new([0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-/// let bucket = calculate_bucket(&address, 16);
-/// assert_eq!(bucket, 0xCBE5);
+/// let bucket_depth = BucketDepth::<Mainnet>::new(16).unwrap();
+/// assert_eq!(calculate_bucket(&address, bucket_depth), 0xCBE5);
 /// ```
 #[inline]
-#[allow(clippy::indexing_slicing, clippy::unwrap_used)] // ChunkAddress is a fixed 32-byte array: `[0..4]` and the 4-byte `try_into` are infallible
-#[allow(clippy::arithmetic_side_effects)] // `32 - bucket_depth` underflow is the documented `# Panics` contract (`bucket_depth` in 1..=32)
-pub fn calculate_bucket(address: &ChunkAddress, bucket_depth: u8) -> u32 {
-    // Take the first 4 bytes as a big-endian u32
-    let leading = u32::from_be_bytes(address.as_bytes()[0..4].try_into().unwrap());
-    // Shift right to get only the top `bucket_depth` bits
-    leading >> (32 - bucket_depth)
+pub fn calculate_bucket<S: SwarmSpec>(address: &ChunkAddress, bucket_depth: BucketDepth<S>) -> u32 {
+    let &[a, b, c, d, ..] = address.as_array();
+    // Depth is 1..=32, so the shift is 0..=31 and never wraps.
+    u32::from_be_bytes([a, b, c, d]).wrapping_shr(u32::from(
+        BucketDepth::<S>::MAX.saturating_sub(bucket_depth.get()),
+    ))
 }
 
 /// Context for postage validation.
@@ -99,24 +80,42 @@ impl PostageContext {
 
 #[cfg(test)]
 mod tests {
+    use nectar_primitives::Mainnet;
+    use nectar_testing::LowFloor;
+
     use super::*;
+
+    // `nectar_testing::low_floor` returns the `BucketDepth` of the
+    // `nectar-postage` instance it links, which is not this one.
+    fn low_floor(depth: u8) -> BucketDepth<LowFloor> {
+        BucketDepth::new(depth).unwrap()
+    }
+
+    fn address_cbe5() -> ChunkAddress {
+        ChunkAddress::new([
+            0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ])
+    }
 
     #[test]
     fn test_calculate_bucket() {
-        // Address starting with 0xCBE5...
-        let address = ChunkAddress::new([
-            0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0,
-        ]);
+        let address = address_cbe5();
 
-        // With bucket_depth=16, we should get 0xCBE5
-        assert_eq!(calculate_bucket(&address, 16), 0xCBE5);
+        assert_eq!(
+            calculate_bucket(&address, BucketDepth::<Mainnet>::new(16).unwrap()),
+            0xCBE5
+        );
+        assert_eq!(calculate_bucket(&address, low_floor(8)), 0xCB);
+        assert_eq!(calculate_bucket(&address, low_floor(4)), 0xC);
+    }
 
-        // With bucket_depth=8, we should get 0xCB
-        assert_eq!(calculate_bucket(&address, 8), 0xCB);
+    #[test]
+    fn calculate_bucket_spans_the_whole_depth_range() {
+        let address = address_cbe5();
 
-        // With bucket_depth=4, we should get 0xC
-        assert_eq!(calculate_bucket(&address, 4), 0xC);
+        assert_eq!(calculate_bucket(&address, low_floor(1)), 1);
+        assert_eq!(calculate_bucket(&address, low_floor(32)), 0xCBE5_0000);
     }
 
     #[test]

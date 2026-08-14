@@ -57,7 +57,7 @@ fn readme_worked_example_vector() {
 
     // The root chunk's own stamp lands in bucket 41 at index 4, as
     // narrated in the README.
-    assert_eq!(calculate_bucket(&plan.chunks[0].address, 8), 41);
+    assert_eq!(calculate_bucket(&plan.chunks[0].address, low_floor(8)), 41);
     assert_eq!(snapshot.allocated_slots(), &[4]);
     assert_eq!(snapshot.table().total_issued(), 1166);
 
@@ -86,14 +86,9 @@ fn readme_large_batch_multi_leaf_vector() {
     let mut counts: Vec<u32> = (0..65536u32).map(|b| 100 + (b % 50)).collect();
     counts[0x1234] = 5000;
     counts[0xCBE5] = 8192;
-    let table = UsageTable::from_counts(
-        batch_id,
-        29,
-        BucketDepth::new(16).unwrap(),
-        counts,
-        Mutability::Immutable,
-    )
-    .unwrap();
+    let bucket_depth = BucketDepth::new(16).unwrap();
+    let table =
+        UsageTable::from_counts(batch_id, 29, bucket_depth, counts, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
@@ -108,7 +103,10 @@ fn readme_large_batch_multi_leaf_vector() {
 
     // The root's own slot is the watermark of its bucket at allocation
     // time: bucket 0x296d held 100 + (0x296d mod 50) = 105 stamps.
-    assert_eq!(calculate_bucket(&plan.chunks[0].address, 16), 0x296d);
+    assert_eq!(
+        calculate_bucket(&plan.chunks[0].address, bucket_depth),
+        0x296d
+    );
     assert_eq!(snapshot.allocated_slots()[0], 105);
 
     // Width 6 packs floor(32768 / 6) = 5461 buckets per leaf: twelve full
@@ -157,7 +155,7 @@ fn mutable_vector_flags_byte_and_round_trip() {
         .unwrap();
 
     // Same self-allocation as the immutable vector: bucket 41, slot 4.
-    assert_eq!(calculate_bucket(&plan.chunks[0].address, 8), 41);
+    assert_eq!(calculate_bucket(&plan.chunks[0].address, low_floor(8)), 41);
     assert_eq!(snapshot.allocated_slots(), &[4]);
 
     // Exactly one byte differs from the immutable vector: the flags byte.

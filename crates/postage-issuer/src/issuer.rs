@@ -227,7 +227,7 @@ impl<S: SwarmSpec> StampIssuer for MemoryIssuerFor<S> {
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.counters.bucket_depth().get());
+        let bucket = calculate_bucket(address, self.counters.bucket_depth());
         // Fill mode ignores the predicate; a monotone watermark never lands on a
         // reserved slot.
         let position =

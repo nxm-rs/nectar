@@ -39,9 +39,7 @@ pub(crate) const fn map_counter_error(err: CounterError) -> UsageError {
 /// snapshot format: `1 <= bucket_depth <= 16` and `depth - bucket_depth <= 31`.
 ///
 /// A zero bucket depth is rejected: a batch with no collision buckets is
-/// meaningless, and `nectar_postage::calculate_bucket` shifts a `u32` right by
-/// `32 - bucket_depth`, so `bucket_depth == 0` would overflow the shift on the
-/// persist and issue paths.
+/// meaningless.
 // `depth - bucket_depth` is short-circuit guarded by the preceding
 // `depth < bucket_depth` disjunct, so it cannot underflow.
 #[allow(clippy::arithmetic_side_effects)]
@@ -605,9 +603,6 @@ mod tests {
 
     #[test]
     fn geometry_rejects_zero_bucket_depth() {
-        // A zero bucket depth would overflow `calculate_bucket`'s
-        // `32 - bucket_depth` shift on the persist and issue paths, so the
-        // geometry validator rejects it outright.
         for depth in [0u8, 1, 20, 31] {
             assert_eq!(
                 validate_geometry(depth, 0),

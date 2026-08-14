@@ -119,7 +119,7 @@ fn shared_table_mutable_skips_reserved_across_wraps() {
             .collect();
         for salt in 0..200u8 {
             let addr = content_address(bucket, salt);
-            assert_eq!(calculate_bucket(&addr, BUCKET_DEPTH), bucket);
+            assert_eq!(calculate_bucket(&addr, bucket_depth()), bucket);
             let index = snapshot.issuer(owner()).record_address(&addr).unwrap();
             assert!(
                 !reserved_here.contains(&index),
