@@ -71,7 +71,7 @@ pub mod bmt;
 pub mod chunk;
 pub mod ecies;
 pub mod entry_ref;
-#[cfg(feature = "envelope")]
+#[cfg(feature = "envelope-unstable")]
 pub mod envelope;
 pub mod marker;
 pub mod neighborhood_depth;
@@ -157,14 +157,10 @@ pub use chunk::{
     WrongRefKind,
 };
 
-/// Default BMT hasher.
-pub type DefaultHasher = Hasher<DEFAULT_BODY_SIZE>;
-/// Default content-addressed chunk.
-pub type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
-/// Default single-owner chunk.
-pub type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
-/// Default polymorphic chunk.
-pub type DefaultAnyChunk = AnyChunk<DEFAULT_BODY_SIZE>;
+pub use nectar_primitives_core::{
+    DefaultAnyChunk, DefaultContentChunk, DefaultHasher, DefaultSingleOwnerChunk,
+};
+
 /// Default in-memory chunk store.
 pub type DefaultMemoryStore = MemoryStore<StandardChunkSet>;
 

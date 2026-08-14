@@ -13,6 +13,15 @@ nectar-postage = "0.1"
 
 This crate is `no_std` compatible (default features enable `std`).
 
+## The reference client's "envelope"
+
+The reference client calls a detached postage stamp an envelope.
+`POST /envelope/{address}` stamps one chunk against the batch named in the `swarm-postage-batch-id` header.
+The response carries the issuer address, the packed bucket and index, the timestamp and the signature.
+There is no Go type of that name; it is a route and a response name.
+`Stamp` in this crate is the stamp behind that response, field for field: batch, index, timestamp and signature.
+The `envelope` module in `nectar-primitives` is unrelated: it is the HPKE encryption envelope.
+
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](https://github.com/nxm-rs/nectar/blob/main/LICENSE).

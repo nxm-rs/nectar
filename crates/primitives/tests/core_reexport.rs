@@ -42,6 +42,24 @@ fn core_items_keep_their_identity() {
         nectar_primitives_core::error::ChunkStoreError::not_found(&ChunkAddress::ZERO);
 }
 
+/// The `Default*` aliases are re-exported, not redeclared: a drifted width
+/// fails the coercion.
+#[test]
+fn default_aliases_keep_their_identity() {
+    fn same<T>(x: T) -> T {
+        x
+    }
+
+    let _: fn(nectar_primitives::DefaultHasher) -> nectar_primitives_core::DefaultHasher = same;
+    let _: fn(
+        nectar_primitives::DefaultContentChunk,
+    ) -> nectar_primitives_core::DefaultContentChunk = same;
+    let _: fn(
+        nectar_primitives::DefaultSingleOwnerChunk,
+    ) -> nectar_primitives_core::DefaultSingleOwnerChunk = same;
+    let _: fn(nectar_primitives::DefaultAnyChunk) -> nectar_primitives_core::DefaultAnyChunk = same;
+}
+
 /// The content-address path: the address is the BMT root of the body, reached
 /// through the re-exported carrier.
 #[test]
