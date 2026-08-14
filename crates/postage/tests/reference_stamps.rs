@@ -158,9 +158,12 @@ fn recovery_returns_the_reference_owner() {
 fn buckets_agree_with_the_reference_derivation() {
     let mut checked = 0;
     for v in vectors() {
-        let Some(geometry) = &v.geometry else { continue };
+        let Some(geometry) = &v.geometry else {
+            continue;
+        };
         let bucket_depth = BucketDepth::<Mainnet>::new(geometry.bucket_depth).expect("depth");
-        let batch_depth = BatchDepth::<Mainnet>::new(geometry.batch_depth, bucket_depth).expect("depth");
+        let batch_depth =
+            BatchDepth::<Mainnet>::new(geometry.batch_depth, bucket_depth).expect("depth");
 
         assert_eq!(
             calculate_bucket(&v.address(), bucket_depth).value(),
