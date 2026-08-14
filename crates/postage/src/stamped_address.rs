@@ -46,6 +46,17 @@ impl ValidationState for Unvalidated {
 ///
 /// Pairing exists only at [`Unvalidated`], so [`validate`](Self::validate) is
 /// the only route to [`Validated`].
+///
+/// The type carries no serde impls in any state, so no wire format can hand
+/// back a [`Validated`] value:
+///
+#[cfg_attr(feature = "serde", doc = "```compile_fail")]
+#[cfg_attr(not(feature = "serde"), doc = "```ignore")]
+/// use nectar_postage::{StampedAddress, Validated};
+///
+/// fn de<T: serde::de::DeserializeOwned>() {}
+/// de::<StampedAddress<Validated>>();
+/// ```
 pub struct StampedAddress<V: ValidationState = Validated> {
     address: ChunkAddress,
     stamp: Stamp,
