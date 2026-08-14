@@ -1,7 +1,9 @@
 # nectar-envelope
 
 Sealed messaging envelopes for Ethereum Swarm.
-Two schemes share one frozen frame inside a chunk payload: the byte-frozen ECIES construction of the reference client, and RFC 9180 HPKE under the domain label `nectar/env/v1`.
+Two schemes share one frozen header inside a chunk payload: the byte-frozen ECIES construction of the reference client, and RFC 9180 HPKE under the domain label `nectar/env/v1`.
+The header carries the hint and the mining nonce, which are the fields the network itself touches.
+Everything after it is scheme-owned opaque bytes, so one anonymity set holds every scheme.
 
 Part of the [nectar](https://github.com/nxm-rs/nectar) workspace, a collection of low-level Ethereum Swarm primitives in Rust.
 See the [workspace README](https://github.com/nxm-rs/nectar) for the full crate list and project context.

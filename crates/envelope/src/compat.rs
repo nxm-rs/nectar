@@ -5,9 +5,9 @@
 
 use k256::SecretKey;
 
-use crate::ecies::{self, Hint, Salt};
+use crate::ecies::{self, Hint, Salt, SharedX};
 
-use super::{Compat, Envelope, OpenError, Opened, hint_matches};
+use super::{Compat, Envelope, OpenError, Opened, ecdh, hint_matches};
 #[cfg(any(test, feature = "encryption"))]
 use super::{Recipient, SealedEnvelope};
 
@@ -20,31 +20,40 @@ pub(super) fn seal(
 ) -> Result<SealedEnvelope<Compat>, ecies::EciesError> {
     let encrypted = ecies::encrypt(recipient.key(), salt, plaintext, Some(ct_len))?;
     let hint = *Hint::derive(&encrypted.key, salt).as_bytes();
-    let (enc_x, parity) = super::x_and_parity(&encrypted.ephemeral);
+    let (tail, nonce_bits) = ecdh::tail(&encrypted.ephemeral, &encrypted.ciphertext);
     Ok(SealedEnvelope::from_parts(
         hint,
-        parity,
-        enc_x,
-        encrypted.ciphertext,
+        nonce_bits,
+        tail,
         encrypted.key,
     ))
 }
 
-pub(super) fn open(
+/// The ECDH is salt-independent, so one run serves every candidate topic.
+pub(super) fn decap(
     secret: &SecretKey,
+    envelope: &Envelope<'_>,
+) -> Result<Option<SharedX>, OpenError> {
+    // Compat ECDH only uses the shared x, so either parity reconstructs the
+    // same key; use the carried bit for symmetry with HPKE.
+    let Some((ephemeral, _)) = ecdh::split(envelope) else {
+        return Ok(None);
+    };
+    #[cfg(test)]
+    crate::decaps::note(super::SchemeId::Compat);
+    Ok(Some(ecies::shared_x(secret, &ephemeral)))
+}
+
+pub(super) fn probe(
+    shared: &SharedX,
     salt: Salt<'_>,
     envelope: &Envelope<'_>,
 ) -> Result<Option<Opened<Compat>>, OpenError> {
-    // Compat ECDH only uses the shared x, so either parity reconstructs the
-    // same key; use the carried bit for symmetry with HPKE.
-    let Some(ephemeral) = super::reconstruct(envelope.enc_x(), envelope.parity()) else {
-        return Ok(None);
-    };
-    let key = ecies::shared_key(secret, &ephemeral, salt);
+    let key = shared.derive(salt);
     if !hint_matches(Hint::derive(&key, salt).as_bytes(), envelope.hint()) {
         return Ok(None);
     }
-    let plaintext = ecies::decrypt(&key, envelope.ciphertext());
+    let plaintext = ecies::decrypt(&key, ecdh::ciphertext(envelope));
     Ok(Some(Opened {
         plaintext,
         extra: key,

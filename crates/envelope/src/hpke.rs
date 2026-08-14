@@ -17,7 +17,7 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use super::{Envelope, Hpke, LABEL, OpenError, Opened, Topic, hint_matches};
+use super::{Envelope, Hpke, LABEL, OpenError, Opened, Topic, ecdh, hint_matches};
 #[cfg(any(test, feature = "encryption"))]
 use super::{Recipient, SealedEnvelope};
 
@@ -35,7 +35,7 @@ const TAG_SIZE: usize = 16;
 /// Big-endian length prefix inside the sealed plaintext.
 const LEN_PREFIX: usize = 2;
 /// Smallest admissible ciphertext region.
-const MIN_CT_LEN: usize = TAG_SIZE + LEN_PREFIX;
+pub(super) const MIN_CT_LEN: usize = TAG_SIZE + LEN_PREFIX;
 
 /// Key-derivation context: the domain label followed by the topic.
 #[derive(Debug, Clone, Copy)]
@@ -244,36 +244,50 @@ fn key_schedule(shared: &[u8; 32], topic: &Topic) -> Result<Schedule, ExportErro
     })
 }
 
+/// The KEM shared secret: topic-independent, so one decapsulation serves
+/// every candidate topic.
+pub struct Shared(Zeroizing<[u8; 32]>);
+
+impl core::fmt::Debug for Shared {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Shared(..)")
+    }
+}
+
 /// Decap once per envelope; `Ok(None)` when `enc_x` is off-curve or the ECDH
 /// output is rejected.
 pub(super) fn decap(
     secret: &SecretKey,
     envelope: &Envelope<'_>,
-) -> Result<Option<Zeroizing<[u8; 32]>>, OpenError> {
-    let Some(enc) = super::reconstruct(envelope.enc_x(), envelope.parity()) else {
+) -> Result<Option<Shared>, OpenError> {
+    let Some((enc, _)) = ecdh::split(envelope) else {
         return Ok(None);
     };
+    #[cfg(test)]
+    crate::decaps::note(super::SchemeId::Hpke);
     let dh = k256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), enc.as_affine());
     let dh_bytes: &[u8] = dh.raw_secret_bytes().as_ref();
     let enc_point = enc.to_encoded_point(false);
     let pkr_point = secret.public_key().to_encoded_point(false);
-    extract_and_expand(dh_bytes, enc_point.as_bytes(), pkr_point.as_bytes())
-        .map_err(|_| OpenError::Internal)
+    let shared = extract_and_expand(dh_bytes, enc_point.as_bytes(), pkr_point.as_bytes())
+        .map_err(|_| OpenError::Internal)?;
+    Ok(shared.map(Shared))
 }
 
 /// Hint probe plus AEAD open for one topic over an established shared
 /// secret; a hint collision fails the tag and falls through as `Ok(None)`.
-pub(super) fn open_with_shared(
-    shared: &Zeroizing<[u8; 32]>,
-    topic: &Topic,
+pub(super) fn probe(
+    shared: &Shared,
+    ctx: Info<'_>,
     envelope: &Envelope<'_>,
 ) -> Result<Option<Opened<Hpke>>, OpenError> {
-    let schedule = key_schedule(shared, topic).map_err(|_| OpenError::Internal)?;
+    let topic = ctx.topic();
+    let schedule = key_schedule(&shared.0, topic).map_err(|_| OpenError::Internal)?;
     let hint = schedule.hint().map_err(|_| OpenError::Internal)?;
     if !hint_matches(&hint, envelope.hint()) {
         return Ok(None);
     }
-    let Some((body, tag)) = envelope.ciphertext().split_last_chunk::<TAG_SIZE>() else {
+    let Some((body, tag)) = ecdh::ciphertext(envelope).split_last_chunk::<TAG_SIZE>() else {
         return Ok(None);
     };
     let cipher = ChaCha20Poly1305::new_from_slice(schedule.key.as_slice())
@@ -295,17 +309,6 @@ pub(super) fn open_with_shared(
         plaintext: message.to_vec(),
         extra: schedule.exporter,
     }))
-}
-
-pub(super) fn open(
-    secret: &SecretKey,
-    ctx: Info<'_>,
-    envelope: &Envelope<'_>,
-) -> Result<Option<Opened<Hpke>>, OpenError> {
-    let Some(shared) = decap(secret, envelope)? else {
-        return Ok(None);
-    };
-    open_with_shared(&shared, ctx.topic(), envelope)
 }
 
 #[cfg(any(test, feature = "encryption"))]
@@ -376,12 +379,11 @@ fn seal_with_ephemeral(
         .map_err(|_| HpkeSealError::Internal)?;
     buf.extend_from_slice(&tag);
 
-    let (enc_x, parity) = super::x_and_parity(&enc);
+    let (tail, nonce_bits) = ecdh::tail(&enc, &buf);
     Ok(SealedEnvelope::from_parts(
         hint,
-        parity,
-        enc_x,
-        buf,
+        nonce_bits,
+        tail,
         schedule.exporter,
     ))
 }
@@ -429,6 +431,15 @@ mod tests {
         Envelope::parse(bytes).unwrap()
     }
 
+    /// Route through the trait's provided decap-then-probe.
+    fn open(
+        secret: &SecretKey,
+        ctx: Info<'_>,
+        envelope: &Envelope<'_>,
+    ) -> Result<Option<Opened<Hpke>>, OpenError> {
+        <Hpke as crate::Scheme>::open(secret, ctx, envelope)
+    }
+
     #[test]
     fn differential_our_seal_reference_open() {
         let (recipient_sk, recipient_pk) = recipient_keys();
@@ -445,7 +456,7 @@ mod tests {
                 &recipient_sk.to_bytes().to_vec().into(),
                 &info_bytes(&topic),
                 b"",
-                envelope.ciphertext(),
+                ecdh::ciphertext(&envelope),
                 None,
                 None,
                 None,
@@ -560,9 +571,7 @@ mod tests {
         let mut bytes = sealed.to_bytes();
         // Find an x that is off-curve for both parities, deterministically.
         let mut x = [0u8; 32];
-        while super::super::reconstruct(&x, false).is_some()
-            || super::super::reconstruct(&x, true).is_some()
-        {
+        while ecdh::reconstruct(&x, false).is_some() || ecdh::reconstruct(&x, true).is_some() {
             x[31] = x[31].wrapping_add(1);
         }
         bytes[40..72].copy_from_slice(&x);
