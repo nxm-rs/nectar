@@ -194,10 +194,9 @@ fn sole_issuance_path_cannot_evict_snapshot_slots() {
     }
 }
 
-/// A snapshot's immutable issuance and a standalone `MemoryIssuer` over the
-/// same geometry assign byte-identical slots for the same addresses, although
-/// the snapshot advances a sequential counter table and the issuer a lock-free
-/// one. The fill watermark is the contract both implement, and this pins it.
+/// The snapshot advances a sequential counter table and the issuer a lock-free
+/// one, so the identical fill sequence is a contract rather than a shared
+/// implementation.
 #[test]
 fn the_snapshot_and_the_lock_free_issuer_fill_identically() {
     use nectar_postage_issuer::MemoryIssuer;
