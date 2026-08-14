@@ -156,7 +156,7 @@ pub use nectar_postage::*;
 pub use nectar_primitives::{Mainnet, NetworkId, SwarmSpec, Testnet};
 
 // Errors (override nectar_postage::StampError with our own that includes signing)
-pub use error::{IssuerError, SigningError};
+pub use error::{IssuerError, RingExhausted, SigningError};
 
 // The shared per-bucket counter table behind every issuer and the snapshot.
 pub use counter::{CounterError, CounterMode, CounterTable, CounterTableFor};

@@ -53,11 +53,11 @@ pub enum StampedPutError<E> {
     #[error(transparent)]
     Stamp(#[from] StampError),
     /// Signing failed; the allocated index is burnt.
-    #[error(transparent)]
-    Sign(SigningError),
+    #[error("stamp signing failed")]
+    Sign(#[source] SigningError),
     /// The sink refused the pair; the signed stamp is retained for reuse.
-    #[error("stamped sink: {0}")]
-    Put(E),
+    #[error("stamped sink refused the pair")]
+    Put(#[source] E),
 }
 
 /// One address's stamping progress, shared across clones.
@@ -788,6 +788,11 @@ mod tests {
 
             let error = store.put(chunk.clone()).await.unwrap_err();
             assert!(matches!(error, StampedPutError::Put(SinkRefused)));
+            assert!(
+                core::error::Error::source(&error)
+                    .expect("the sink error is the source")
+                    .is::<SinkRefused>()
+            );
             store.put(chunk).await.unwrap();
 
             // Both attempts carried the same stamp: one allocation total.
@@ -809,6 +814,11 @@ mod tests {
             for _ in 0..2 {
                 let error = store.put(chunk.clone()).await.unwrap_err();
                 assert!(matches!(error, StampedPutError::Sign(_)));
+                let signing = core::error::Error::source(&error)
+                    .expect("the signing error is the source")
+                    .downcast_ref::<SigningError>()
+                    .expect("the source is the signing error");
+                assert!(signing.is_systemic());
             }
             // Each failure burnt an index rather than wedging on a dead
             // entry; the bucket is now full.

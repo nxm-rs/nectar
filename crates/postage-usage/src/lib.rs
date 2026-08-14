@@ -146,6 +146,7 @@ mod seal;
 
 pub use codec::{RootInfo, RootInfoFor};
 pub use error::UsageError;
+pub use nectar_postage_issuer::RingExhausted;
 pub use snapshot::{
     Issuer, IssuerFor, PersistPlan, PlannedChunk, PublishedSequence, Snapshot, SnapshotFor,
     SnapshotParts, SnapshotPartsFor, Validated, ValidatedFor,

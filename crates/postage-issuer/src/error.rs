@@ -31,15 +31,27 @@ pub enum IssuerError {
     },
 
     /// A ring bucket had no unprotected slot to issue.
-    ///
-    /// Every slot in the bucket is reserved, so the ring cannot advance without
-    /// re-emitting a protected slot. This is geometrically impossible at real
-    /// batch depths and signals a malformed reservation.
-    #[error("ring bucket {bucket} has no unprotected slot to issue")]
-    RingExhausted {
-        /// The bucket that had no unprotected slot.
-        bucket: u32,
-    },
+    #[error("ring issuance failed")]
+    RingExhausted(#[from] RingExhausted),
+}
+
+/// Every slot in a ring bucket is reserved, so the ring cannot advance without
+/// re-emitting a protected slot. Real batch depths make this geometrically
+/// impossible, so it signals a malformed reservation.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("ring bucket {bucket} has no unprotected slot to issue")]
+pub struct RingExhausted {
+    /// The exhausted bucket.
+    pub bucket: u32,
+}
+
+impl RingExhausted {
+    /// The condition for `bucket`.
+    #[must_use]
+    pub const fn new(bucket: u32) -> Self {
+        Self { bucket }
+    }
 }
 
 /// Errors that can occur when signing stamps.

@@ -18,7 +18,7 @@ pub(crate) const fn map_counter_error(err: CounterError) -> UsageError {
         CounterError::BucketFull { bucket, capacity } => {
             UsageError::BucketFull { bucket, capacity }
         }
-        CounterError::RingExhausted { bucket } => UsageError::RingExhausted { bucket },
+        CounterError::RingExhausted(exhausted) => UsageError::RingExhausted(exhausted),
         CounterError::CounterLength { expected, got } => {
             UsageError::CounterLength { expected, got }
         }
