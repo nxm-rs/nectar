@@ -403,12 +403,10 @@ mod tests {
         let digest = StampDigest::new(address, batch_id, index, timestamp);
         let prehash = digest.to_prehash();
 
-        // Prehash should be deterministic
         let prehash2 = digest.to_prehash();
         assert_eq!(prehash, prehash2);
     }
 
-    /// Test EIP-191 signing interoperability.
     #[test]
     fn test_eip191_signing_interop() {
         use alloy_primitives::hex;
@@ -440,7 +438,6 @@ mod tests {
         );
     }
 
-    /// Test that signature recovery works correctly with EIP-191.
     #[test]
     fn test_eip191_recovery_interop() {
         use alloy_primitives::hex;
@@ -469,67 +466,5 @@ mod tests {
             signer.address(),
             "Recovered address should match signer address"
         );
-    }
-
-    /// The all-fields-zero boundary stamp, signed by the reference client's
-    /// standard test key and re-derived by `tools/stamp-vectors` as
-    /// `boundary/all-fields-zero`.
-    #[test]
-    fn test_verify_go_created_stamp() {
-        use alloy_primitives::{Address, hex};
-
-        let chunk_addr_bytes =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
-                .unwrap();
-        let full_stamp_bytes = hex::decode(
-            "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
-        ).unwrap();
-        let expected_owner = "8d3766440f0d7b949a5e32995d09619a7f86e632";
-        let expected_digest =
-            hex::decode("f4fe8b1b61d3ac2155c07fbfe445599a4119fbd29b1125b5ac0d06964f76ec20")
-                .unwrap();
-
-        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
-
-        assert_eq!(stamp.bucket(), 0);
-        assert_eq!(stamp.index(), 0);
-        assert_eq!(stamp.timestamp(), 3);
-        // Check v value - Go uses v=28 (0x1c) for odd y parity
-        // as_bytes()[64] gives us the raw v byte which should be 28 (0x1c)
-        assert_eq!(
-            stamp.signature().as_bytes()[64],
-            0x1c,
-            "Go uses v=28 (0x1c) for odd y parity"
-        );
-
-        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
-        let digest = StampDigest::new(
-            chunk_address,
-            stamp.batch(),
-            stamp.stamp_index(),
-            stamp.timestamp(),
-        );
-        let prehash = digest.to_prehash();
-
-        assert_eq!(
-            prehash.as_slice(),
-            expected_digest.as_slice(),
-            "Digest mismatch - Rust computed different prehash than Go"
-        );
-
-        // stamp.signature() already returns &Signature
-        let recovered = stamp
-            .signature()
-            .recover_address_from_msg(prehash.as_slice())
-            .expect("Failed to recover address from Go signature");
-
-        assert_eq!(
-            hex::encode(recovered.as_slice()),
-            expected_owner,
-            "Recovered owner address mismatch"
-        );
-
-        let expected_owner_addr: Address = expected_owner.parse().unwrap();
-        assert_eq!(recovered, expected_owner_addr);
     }
 }

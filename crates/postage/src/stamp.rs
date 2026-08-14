@@ -682,10 +682,8 @@ mod tests {
         assert_eq!(stamp, back);
     }
 
-    /// The all-fields-zero boundary stamp, signed by the reference client's
-    /// standard test key. `tools/stamp-vectors` re-derives it as
-    /// `boundary/all-fields-zero` and the wider vectors live in
-    /// `tests/reference_stamps.rs`.
+    /// The all-fields-zero boundary stamp, re-derived by `tools/stamp-vectors`
+    /// as `boundary/all-fields-zero`.
     const REFERENCE_STAMP: &str = "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c";
     const REFERENCE_CHUNK: &str =
         "0000000000000000000000000000000000000000000000000000000000000002";
@@ -733,13 +731,11 @@ mod tests {
         assert!(stamp.verify_with_pubkey(&chunk_address, &pubkey).is_ok());
     }
 
-    /// Test that verify_with_pubkey fails with wrong pubkey.
     #[test]
     fn test_verify_with_wrong_pubkey() {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
 
-        // Create a stamp with one signer
         let signer = PrivateKeySigner::random();
         let chunk_address = ChunkAddress::new([0xAB; 32]);
         let batch_id = BatchId::ZERO;
@@ -749,25 +745,20 @@ mod tests {
         let digest = StampDigest::new(chunk_address, batch_id, index, timestamp);
         let prehash = digest.to_prehash();
 
-        // sign_message_sync returns alloy_primitives::Signature directly
         let sig = signer.sign_message_sync(prehash.as_slice()).unwrap();
         let stamp = Stamp::with_index(batch_id, index, timestamp, sig);
 
-        // Get the correct pubkey
         let correct_pubkey = stamp.recover_pubkey(&chunk_address).unwrap();
 
-        // Create a different signer for wrong pubkey
         let wrong_signer = PrivateKeySigner::random();
         let wrong_pubkey = wrong_signer.credential().verifying_key();
 
-        // Verify with correct pubkey should succeed
         assert!(
             stamp
                 .verify_with_pubkey(&chunk_address, &correct_pubkey)
                 .is_ok()
         );
 
-        // Verify with wrong pubkey should fail
         assert!(
             stamp
                 .verify_with_pubkey(&chunk_address, wrong_pubkey)

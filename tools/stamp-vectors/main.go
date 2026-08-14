@@ -1,26 +1,5 @@
-// Command stamp-vectors emits postage stamp test vectors whose bytes come from
-// the reference client rather than from nectar, so a nectar regression cannot
-// move the expectation with it.
-//
-// Three arms:
-//
-//   - corpus: the three stamps inside the reference client's committed
-//     inclusion-proof regression corpus. Signing is re-run here with the same
-//     inputs the corpus was made from, and the tool fails unless every
-//     signature reproduces the committed bytes. Those stamps sign a literal
-//     index, so their bucket is 0 and they carry no batch geometry.
-//   - boundary: the all-zero-field stamp nectar already carried, re-signed with
-//     the reference client's standard test key so it too is checkable.
-//   - stamper: stamps driven end to end through postage.NewStamper, so the
-//     bucket comes from the reference client's own address derivation and the
-//     index word from its own packing. This is the arm with a non-zero bucket.
-//
-// Every emitted vector is checked against the reference client before it is
-// written: owner recovery throughout, and Stamp.Valid for the stamper arm.
-//
-// The stamper arm takes its timestamp from the wall clock, exactly as the
-// reference client does, so regenerating produces different bytes. The vectors
-// are committed output, not a reproducible build artefact.
+// Command stamp-vectors emits postage stamp test vectors from the reference
+// client. See README.md.
 package main
 
 import (
@@ -55,8 +34,7 @@ const (
 	stamperKey   = "634fb5a872396d9693e5c9f9d7233cfa93f395c093371017ff44aa9ae6564cdd"
 	stamperLabel = "nectar reference stamp vectors"
 
-	// The signature of the stamp nectar already carried, re-derived rather than
-	// trusted; a mismatch means the arm below is signing different inputs.
+	// Re-derived, not trusted: a mismatch means the boundary arm signs different inputs.
 	inTreeBoundarySig = "0x496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
 
 	batchDepth  = 32
@@ -129,12 +107,10 @@ func main() {
 
 	doc := document{
 		Provenance: provenance{
-			Generator: "tools/stamp-vectors",
-			Command:   "go run . -out ../../crates/postage/tests/testdata/reference-stamps.json",
-			Reference: referenceModule,
-			Corpus:    corpusPath,
-			// RFC3339 rather than the wall-clock nanoseconds below: this only
-			// dates the file, it is not a stamp field.
+			Generator:   "tools/stamp-vectors",
+			Command:     "go run . -out ../../crates/postage/tests/testdata/reference-stamps.json",
+			Reference:   referenceModule,
+			Corpus:      corpusPath,
 			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 			Notes: []string{
 				"corpus vectors reproduce the committed upstream signatures byte for byte",
@@ -178,8 +154,6 @@ func generate() ([]vector, error) {
 	return append(append(corpus, boundary), stamper...), nil
 }
 
-// boundaryVector re-signs the all-zero-field stamp nectar already carried, so
-// the vector that was in the tree with no traceable origin gains one.
 func boundaryVector() (vector, error) {
 	raw, err := hex.DecodeString(stamperKey)
 	if err != nil {
@@ -299,8 +273,7 @@ func stamperVectors() ([]vector, error) {
 	geo := &geometry{BucketDepth: bucketDepth, BatchDepth: batchDepth}
 	vectors := make([]vector, 0, len(wanted))
 	for _, w := range wanted {
-		// A fresh issuer per vector: the wanted index is the number of stamps
-		// already taken from the bucket, and reuse would carry a count over.
+		// A fresh issuer per vector: the wanted index is the bucket's stamp count.
 		issuer := postage.NewStampIssuer(stamperLabel, "", batchID, big.NewInt(1), batchDepth, bucketDepth, 0, false)
 		st := postage.NewStamper(inmemstore.New(), issuer, signer)
 
@@ -336,8 +309,7 @@ func stamperVectors() ([]vector, error) {
 	return vectors, nil
 }
 
-// bucketAddress returns a distinct address whose leading 16 bits, the bucket key
-// at bucket depth 16, are bucket.
+// The leading 16 bits are the bucket key at bucket depth 16.
 func bucketAddress(bucket uint16, n uint32) (swarm.Address, error) {
 	h, err := crypto.LegacyKeccak256(fmt.Appendf(nil, "nectar stamp vector %d", n))
 	if err != nil {
