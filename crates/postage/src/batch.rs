@@ -357,9 +357,8 @@ impl<S: SwarmSpec> BatchParams<S> {
         self.bucket_depth
     }
 
-    /// Slot reassignment only: an immutable batch refuses to reissue a full
-    /// bucket, a mutable one reuses a slot on a later timestamp. Dilution is
-    /// orthogonal and open to both.
+    /// Governs slot reuse, not dilution: an immutable batch refuses a full
+    /// bucket, a mutable one wraps and reissues the slot on a later timestamp.
     #[inline]
     pub const fn immutable(&self) -> bool {
         self.immutable
@@ -425,9 +424,8 @@ pub struct Batch<S: SwarmSpec = Mainnet> {
     depth: u8,
     /// The bucket depth for collision bucket uniformity.
     bucket_depth: BucketDepth<S>,
-    /// Slot reassignment only: an immutable batch refuses to reissue a full
-    /// bucket, a mutable one reuses a slot on a later timestamp. Dilution is
-    /// orthogonal and open to both.
+    /// Governs slot reuse, not dilution: an immutable batch refuses a full
+    /// bucket, a mutable one wraps and reissues the slot on a later timestamp.
     immutable: bool,
 }
 
@@ -522,9 +520,8 @@ impl<S: SwarmSpec> Batch<S> {
         self.bucket_depth
     }
 
-    /// Slot reassignment only: an immutable batch refuses to reissue a full
-    /// bucket, a mutable one reuses a slot on a later timestamp. Dilution is
-    /// orthogonal and open to both.
+    /// Governs slot reuse, not dilution: an immutable batch refuses a full
+    /// bucket, a mutable one wraps and reissues the slot on a later timestamp.
     #[inline]
     pub const fn immutable(&self) -> bool {
         self.immutable
