@@ -168,16 +168,17 @@ where
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TeeError<L, F> {
     /// The local leg failed; the pair never reached the forward leg.
-    #[error("local leg: {0}")]
-    Local(L),
+    #[error("local leg refused the put")]
+    Local(#[source] L),
     /// The forward leg failed; the local write stands.
-    #[error("forward leg: {0}")]
-    Forward(F),
+    #[error("forward leg refused the put")]
+    Forward(#[source] F),
 }
 
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
+    use std::error::Error as _;
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -269,7 +270,12 @@ mod tests {
             let err = tee.put_stamped(pair).await.expect_err("local leg fails");
             assert!(matches!(err, TeeError::Local(LegRefused)));
             assert!(recorder.seen.lock().expect("recording lock").is_empty());
-            assert_eq!(err.to_string(), "local leg: leg refused");
+            assert!(
+                err.source()
+                    .expect("the leg error is the source")
+                    .downcast_ref::<LegRefused>()
+                    .is_some()
+            );
         });
     }
 
@@ -284,7 +290,12 @@ mod tests {
             let err = tee.put_stamped(pair).await.expect_err("forward leg fails");
             assert!(matches!(err, TeeError::Forward(LegRefused)));
             assert!(store.has(&address).await);
-            assert_eq!(err.to_string(), "forward leg: leg refused");
+            assert!(
+                err.source()
+                    .expect("the leg error is the source")
+                    .downcast_ref::<LegRefused>()
+                    .is_some()
+            );
         });
     }
 

@@ -35,7 +35,7 @@ use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
 use crate::StampIssuer;
 use crate::counter::{CounterError, CounterMode, CounterTableFor};
-use crate::error::IssuerError;
+use crate::error::{IssuerError, RingExhausted};
 
 mod sealed {
     /// Seals [`Reservation`](super::Reservation) so external crates cannot add
@@ -279,11 +279,10 @@ impl<S: SwarmSpec, R: Reservation> RingIssuerFor<S, R> {
             .counters
             .record(bucket, |slot| reservation.is_protected(bucket, slot))
             .map_err(|err| match err {
-                CounterError::RingExhausted { bucket } => IssuerError::RingExhausted { bucket },
-                CounterError::InvalidBucket { bucket } => IssuerError::RingExhausted { bucket },
+                CounterError::RingExhausted(exhausted) => IssuerError::RingExhausted(exhausted),
                 // Ring mode never reports BucketFull, and construction errors
                 // cannot arise from `record`.
-                _ => IssuerError::RingExhausted { bucket },
+                _ => IssuerError::RingExhausted(RingExhausted::new(bucket)),
             })?;
         // A cursor sitting at the capacity has just filled the bucket's last
         // fresh slot, so the bucket is saturated from here on.
@@ -358,8 +357,8 @@ impl<S: SwarmSpec, R: Reservation> StampIssuer for RingIssuerFor<S, R> {
         // Stamper contract without a new wire error.
         self.prepare_ring_stamp(address, timestamp)
             .map_err(|err| match err {
-                IssuerError::RingExhausted { bucket } => StampError::BucketFull {
-                    bucket,
+                IssuerError::RingExhausted(exhausted) => StampError::BucketFull {
+                    bucket: exhausted.bucket,
                     capacity: self.counters.bucket_capacity(),
                 },
                 // Invariant: `prepare_ring_stamp` only ever yields RingExhausted
@@ -525,10 +524,18 @@ mod tests {
         let mut issuer = RingIssuer::reserved(&batch, [(bucket, 0), (bucket, 1)]).unwrap();
 
         let address = test_address(0x0001);
+        let err = issuer
+            .prepare_ring_stamp(&address, 1)
+            .expect_err("every slot is protected");
         assert!(matches!(
-            issuer.prepare_ring_stamp(&address, 1),
-            Err(IssuerError::RingExhausted { bucket: b }) if b == bucket
+            err,
+            IssuerError::RingExhausted(RingExhausted { bucket: b }) if b == bucket
         ));
+        let cause = core::error::Error::source(&err)
+            .expect("the shared condition is the source")
+            .downcast_ref::<RingExhausted>()
+            .expect("the source is the shared condition");
+        assert_eq!(cause.bucket, bucket);
     }
 
     #[test]

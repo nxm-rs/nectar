@@ -1,5 +1,6 @@
 //! Error types for usage table operations and the snapshot codec.
 
+use nectar_postage_issuer::RingExhausted;
 use nectar_primitives::wire::Underrun;
 use thiserror::Error;
 
@@ -72,13 +73,9 @@ pub enum UsageError {
     MutableMerge,
 
     /// A mutable bucket has no free ring slot because every slot is reserved
-    /// by the snapshot's own chunks. The batch geometry forbids this, so it
-    /// signals an internal inconsistency rather than an expected condition.
-    #[error("mutable bucket {bucket} has no free ring slot")]
-    RingExhausted {
-        /// The exhausted bucket.
-        bucket: u32,
-    },
+    /// by the snapshot's own chunks.
+    #[error("mutable bucket record failed")]
+    RingExhausted(#[from] RingExhausted),
 
     /// A within-bucket slot index is outside the bucket capacity.
     #[error("slot {slot} exceeds bucket capacity {capacity}")]
@@ -295,7 +292,7 @@ impl UsageError {
             | Self::InvalidBucket { .. }
             | Self::InvalidSlot { .. }
             | Self::CounterOverflow { .. }
-            | Self::RingExhausted { .. } => false,
+            | Self::RingExhausted(_) => false,
         }
     }
 
@@ -357,14 +354,27 @@ impl UsageError {
             | Self::CorruptGeometry { .. } => false,
 
             // Internal invariant: a bug to report, not a recoverable condition.
-            Self::RingExhausted { .. } => false,
+            Self::RingExhausted(_) => false,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::UsageError;
+    use core::error::Error as _;
+
+    use super::{RingExhausted, UsageError};
+
+    #[test]
+    fn ring_exhaustion_reaches_the_top_of_the_chain() {
+        let err = UsageError::from(RingExhausted::new(7));
+        let cause = err
+            .source()
+            .expect("the shared condition is the source")
+            .downcast_ref::<RingExhausted>()
+            .expect("the source is the shared condition");
+        assert_eq!(cause.bucket, 7);
+    }
 
     #[test]
     fn classification_of_a_representative_from_each_group() {
@@ -379,7 +389,7 @@ mod tests {
         assert!(recoverable.is_recoverable());
 
         // Internal invariant: neither corruption nor recoverable.
-        let internal = UsageError::RingExhausted { bucket: 0 };
+        let internal = UsageError::RingExhausted(RingExhausted::new(0));
         assert!(!internal.is_corruption());
         assert!(!internal.is_recoverable());
     }
@@ -405,7 +415,7 @@ mod tests {
             // future unclassified variant cannot hide here silently.
             if !corruption && !recoverable {
                 assert!(
-                    matches!(err, UsageError::RingExhausted { .. }),
+                    matches!(err, UsageError::RingExhausted(_)),
                     "{err:?} is unclassified: neither corruption, recoverable, nor the known internal invariant"
                 );
             }
@@ -439,7 +449,7 @@ mod tests {
             },
             UsageError::BatchMismatch,
             UsageError::MutableMerge,
-            UsageError::RingExhausted { bucket: 0 },
+            UsageError::RingExhausted(RingExhausted::new(0)),
             UsageError::InvalidSlot {
                 slot: 0,
                 capacity: 0,
@@ -508,7 +518,7 @@ mod tests {
                 | UsageError::CounterOverflow { .. } => {
                     assert!(!err.is_corruption() && err.is_recoverable());
                 }
-                UsageError::RingExhausted { .. } => {
+                UsageError::RingExhausted(_) => {
                     assert!(!err.is_corruption() && !err.is_recoverable());
                 }
             }

@@ -33,6 +33,8 @@ use nectar_postage::BucketDepth;
 use nectar_primitives::{Mainnet, SwarmSpec};
 use thiserror::Error;
 
+use crate::error::RingExhausted;
+
 /// Whether a [`CounterTable`] fills each bucket once or wraps it as a ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CounterMode {
@@ -63,14 +65,9 @@ pub enum CounterError {
         capacity: u32,
     },
 
-    /// Every slot in a ring bucket is protected, so the ring cannot advance
-    /// without re-emitting a protected slot. The batch geometry forbids this at
-    /// real depths, so it signals a malformed reservation.
-    #[error("ring bucket {bucket} has no unprotected slot to issue")]
-    RingExhausted {
-        /// The exhausted bucket.
-        bucket: u32,
-    },
+    /// A ring bucket had no unprotected slot to issue.
+    #[error("counter advance failed")]
+    RingExhausted(#[from] RingExhausted),
 
     /// A counter vector does not match the bucket count.
     #[error("expected {expected} counters, got {got}")]
@@ -347,7 +344,7 @@ impl<S: SwarmSpec> CounterTableFor<S> {
             candidate = (candidate + 1) % capacity;
             steps += 1;
             if steps >= capacity {
-                return Err(CounterError::RingExhausted { bucket });
+                return Err(CounterError::RingExhausted(RingExhausted::new(bucket)));
             }
         }
         let index = candidate;
@@ -461,9 +458,14 @@ mod tests {
     #[test]
     fn ring_exhausts_when_every_slot_is_protected() {
         let mut table = CounterTable::new(17, bucket_depth(), CounterMode::Ring);
-        assert_eq!(
-            table.record(0, |_| true),
-            Err(CounterError::RingExhausted { bucket: 0 })
+        let err = table
+            .record(0, |_| true)
+            .expect_err("every slot is protected");
+        assert_eq!(err, CounterError::RingExhausted(RingExhausted::new(0)));
+        assert!(
+            core::error::Error::source(&err)
+                .expect("the shared condition is the source")
+                .is::<RingExhausted>()
         );
     }
 
@@ -564,7 +566,7 @@ mod tests {
                         None => {
                             prop_assert_eq!(
                                 table.record(bucket, protected),
-                                Err(CounterError::RingExhausted { bucket })
+                                Err(CounterError::RingExhausted(RingExhausted::new(bucket)))
                             );
                         }
                     }
