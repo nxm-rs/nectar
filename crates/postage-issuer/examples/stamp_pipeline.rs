@@ -12,7 +12,7 @@ use nectar_postage_issuer::{
 use nectar_primitives::ChunkAddress;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16)?);
+    let issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16)?);
     let pipeline = StampPipeline::from_signer(PrivateKeySigner::random())
         .with_window(Window::new(256).ok_or("window must be nonzero")?);
 
@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut stamped = 0usize;
     let mut retry: Vec<ChunkAddress> = Vec::new();
-    for StampResult { address, result } in pipeline.stamp(&mut issuer, addresses) {
+    for StampResult { address, result } in pipeline.stamp(&issuer, addresses) {
         match result {
             Ok(_) => stamped += 1,
             Err(error) => {

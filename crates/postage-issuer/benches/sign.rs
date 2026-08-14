@@ -120,9 +120,9 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
         b.iter(|| {
             let issuer: MemoryIssuer =
                 MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            let mut handle = &issuer;
+            let handle = &issuer;
             let results: Vec<_> = pipeline
-                .stamp(&mut handle, addresses_100.iter().copied())
+                .stamp(&handle, addresses_100.iter().copied())
                 .collect();
             black_box(results)
         })
@@ -133,9 +133,9 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
         b.iter(|| {
             let issuer: MemoryIssuer =
                 MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            let mut handle = &issuer;
+            let handle = &issuer;
             let results: Vec<_> = pipeline
-                .stamp(&mut handle, addresses_1000.iter().copied())
+                .stamp(&handle, addresses_1000.iter().copied())
                 .collect();
             black_box(results)
         })
@@ -171,10 +171,8 @@ fn bench_sign_comparison(c: &mut Criterion) {
         b.iter(|| {
             let issuer: MemoryIssuer =
                 MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            let mut handle = &issuer;
-            let results: Vec<_> = pipeline
-                .stamp(&mut handle, addresses.iter().copied())
-                .collect();
+            let handle = &issuer;
+            let results: Vec<_> = pipeline.stamp(&handle, addresses.iter().copied()).collect();
             black_box(results)
         })
     });

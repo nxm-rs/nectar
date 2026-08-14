@@ -88,13 +88,13 @@ fn a_deep_issuer_stamps_through_a_batch_stamper() {
 fn a_deep_issuer_dilutes_and_stamps_through_a_shared_handle() {
     let issuer = MemoryIssuer::<HighFloor>::new(BatchId::ZERO, 21, deep());
     let address = address_in(1);
-    assert_eq!(issuer.prepare_stamp(&address, 1).unwrap().index.index(), 0);
-    assert_eq!(issuer.prepare_stamp(&address, 2).unwrap().index.index(), 1);
-    assert!(issuer.prepare_stamp(&address, 3).is_err());
+    assert_eq!(issuer.reserve(&address, 1).unwrap().index().index(), 0);
+    assert_eq!(issuer.reserve(&address, 2).unwrap().index().index(), 1);
+    assert!(issuer.reserve(&address, 3).is_err());
 
     issuer.dilute(22).unwrap();
     assert_eq!(issuer.bucket_capacity(), 4);
-    assert_eq!(issuer.prepare_stamp(&address, 4).unwrap().index.index(), 2);
+    assert_eq!(issuer.reserve(&address, 4).unwrap().index().index(), 2);
     assert!(matches!(
         issuer.dilute(21),
         Err(IssuerError::DepthDecrease {
@@ -105,10 +105,10 @@ fn a_deep_issuer_dilutes_and_stamps_through_a_shared_handle() {
 
     let shared = MemoryIssuer::from_batch(&deep_batch(22, true)).unwrap();
     assert_eq!(shared.bucket_depth(), 20);
-    let mut handle = &shared;
-    let digest = StampIssuer::prepare_stamp(&mut handle, &address, 5).unwrap();
+    let handle = &shared;
+    let permit = StampIssuer::reserve(&handle, &address, 5).unwrap();
     assert_eq!(
-        digest.index.bucket(),
+        permit.index().bucket(),
         calculate_bucket(&address, deep()).value()
     );
     assert_eq!(StampIssuer::stamps_issued(&shared), Some(1));
@@ -120,14 +120,14 @@ fn a_deep_reserved_ring_never_emits_a_reserved_slot() {
     let batch = deep_batch(22, false);
     let address = address_in(0x0FEDC);
     let bucket = calculate_bucket(&address, deep()).value();
-    let mut ring: RingIssuer<Reserved, HighFloor> =
+    let ring: RingIssuer<Reserved, HighFloor> =
         RingIssuer::reserved(&batch, [(bucket, 1), (bucket, 3)]).unwrap();
 
     // Far past one wrap, so every wrap is exercised.
     for timestamp in 0..40u64 {
-        let digest = ring.prepare_stamp(&address, timestamp).unwrap();
-        assert_eq!(digest.index.bucket(), bucket);
-        let slot = digest.index.index();
+        let permit = ring.reserve(&address, timestamp).unwrap();
+        assert_eq!(permit.index().bucket(), bucket);
+        let slot = permit.index().index();
         assert!(slot == 0 || slot == 2, "ring emitted reserved slot {slot}");
     }
 }

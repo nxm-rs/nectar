@@ -33,16 +33,16 @@ fn snapshot_issuer_issues_sequential_indices() {
     // A fresh, never-persisted snapshot reserves no slots, so issuance fills the
     // bucket from index zero just as a bare table once did.
     let snapshot = Snapshot::new(table);
-    let mut issuer = SnapshotIssuer::new(snapshot, owner());
+    let issuer = SnapshotIssuer::new(snapshot, owner());
 
     let address = ChunkAddress::new([0xCB; 32]);
-    let first = issuer.prepare_stamp(&address, 1).unwrap();
-    let second = issuer.prepare_stamp(&address, 2).unwrap();
+    let first = issuer.reserve(&address, 1).unwrap();
+    let second = issuer.reserve(&address, 2).unwrap();
 
-    assert_eq!(first.batch_id, batch_id);
-    assert_eq!(first.index.bucket(), 0xCBCB);
-    assert_eq!(first.index.index(), 0);
-    assert_eq!(second.index.index(), 1);
+    assert_eq!(first.batch(), batch_id);
+    assert_eq!(first.index().bucket(), 0xCBCB);
+    assert_eq!(first.index().index(), 0);
+    assert_eq!(second.index().index(), 1);
 
     assert_eq!(StampIssuer::batch_id(&issuer), batch_id);
     assert_eq!(issuer.batch_depth(), 18);
@@ -54,10 +54,10 @@ fn snapshot_issuer_issues_sequential_indices() {
     assert!(issuer.bucket_has_capacity(0xCBCB));
 
     // Capacity is 4 at depth 18; exhaust the bucket.
-    issuer.prepare_stamp(&address, 3).unwrap();
-    issuer.prepare_stamp(&address, 4).unwrap();
+    issuer.reserve(&address, 3).unwrap();
+    issuer.reserve(&address, 4).unwrap();
     assert!(!issuer.bucket_has_capacity(0xCBCB));
-    assert!(issuer.prepare_stamp(&address, 5).is_err());
+    assert!(issuer.reserve(&address, 5).is_err());
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn sole_issuance_path_cannot_evict_snapshot_slots() {
         "persist must reserve at least the root"
     );
 
-    let mut issuer = SnapshotIssuer::new(snapshot, owner());
+    let issuer = SnapshotIssuer::new(snapshot, owner());
     for chunk in &plan.chunks {
         let bucket = chunk.stamp_index.bucket();
         let reserved_here: Vec<StampIndex> = reserved
@@ -178,9 +178,9 @@ fn sole_issuance_path_cannot_evict_snapshot_slots() {
         // Churn well past several wraps of the ring.
         for salt in 0..120u8 {
             let addr = content_address(bucket, salt);
-            let digest = issuer.prepare_stamp(&addr, u64::from(salt)).unwrap();
+            let permit = issuer.reserve(&addr, u64::from(salt)).unwrap();
             assert!(
-                !reserved_here.contains(&digest.index),
+                !reserved_here.contains(&permit.index()),
                 "the sole issuance path evicted a reserved snapshot slot"
             );
         }
@@ -212,7 +212,7 @@ fn the_snapshot_and_the_lock_free_issuer_fill_identically() {
         for salt in 0..3u8 {
             let addr = content_address(bucket, salt);
             let from_snapshot = snapshot.issuer(owner()).record_address(&addr).unwrap();
-            let from_memory = memory.prepare_stamp(&addr, 0).unwrap().index;
+            let from_memory = memory.reserve(&addr, 0).unwrap().index();
             assert_eq!(
                 from_snapshot, from_memory,
                 "snapshot and MemoryIssuer diverged on the fill sequence"

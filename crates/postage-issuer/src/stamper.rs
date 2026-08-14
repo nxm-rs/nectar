@@ -16,6 +16,7 @@ use alloy_signer::SignerSync;
 use crate::StampIssuer;
 #[cfg(feature = "std")]
 use crate::error::SigningError;
+use crate::permit::Prepared;
 use nectar_clock::Clock;
 #[cfg(feature = "std")]
 use nectar_clock::SystemClock;
@@ -208,16 +209,18 @@ impl<I, S, C> BatchStamper<I, S, C>
 where
     I: StampIssuer,
 {
-    /// Prepares a stamp for the given chunk address.
+    /// Claims a slot for `address` without signing it, for async signing
+    /// flows.
     ///
-    /// This allocates an index from the issuer and creates the digest,
-    /// but does not sign it. Use this for async signing flows.
-    pub fn prepare_stamp(
-        &mut self,
+    /// # Errors
+    ///
+    /// [`StampError::BucketFull`] once the bucket has no slot left.
+    pub fn reserve(
+        &self,
         address: &ChunkAddress,
         timestamp: u64,
-    ) -> Result<StampDigest, StampError> {
-        self.issuer.prepare_stamp(address, timestamp)
+    ) -> Result<Prepared<I::Spec>, StampError> {
+        self.issuer.reserve(address, timestamp)
     }
 }
 
@@ -232,12 +235,13 @@ where
 
     fn stamp(&mut self, address: &ChunkAddress) -> Result<Stamp, Self::Error> {
         let timestamp = stamp_timestamp(&self.clock);
-        let digest = self.issuer.prepare_stamp(address, timestamp)?;
-        let prehash = digest.to_prehash();
+        let permit = self.issuer.reserve(address, timestamp)?;
+        let prehash = permit.digest().to_prehash();
 
+        // The permit burns with the slot if signing fails.
         let sig = self.signer.sign_message_sync(prehash.as_slice())?;
 
-        Ok(Self::stamp_from_signature(&digest, sig))
+        Ok(permit.stamp(sig))
     }
 
     fn batch_id(&self) -> BatchId {
