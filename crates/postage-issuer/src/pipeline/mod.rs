@@ -217,7 +217,7 @@ where
     /// use nectar_postage_issuer::{BatchId, BucketDepth, MemoryIssuer, StampPipeline};
     /// use nectar_primitives::ChunkAddress;
     ///
-    /// let mut issuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16)?);
+    /// let mut issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16)?);
     /// let pipeline = StampPipeline::from_signer(PrivateKeySigner::random());
     ///
     /// let addresses = [ChunkAddress::new([0xAB; 32]), ChunkAddress::new([0xCD; 32])];
@@ -751,7 +751,8 @@ mod tests {
     #[test]
     fn duplicates_allocate_independently_mixed_ok_err() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+        let mut issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let pipeline = StampPipeline::from_signer(FixedSigner);
         let address = ChunkAddress::new([0xAB; 32]);
 
@@ -1034,7 +1035,8 @@ mod tests {
 
     #[test]
     fn sharded_issuer_stamps_by_value() {
-        let mut issuer = ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+        let mut issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
         let pipeline = StampPipeline::from_signer(FixedSigner);
 
         let results: Vec<_> = pipeline.stamp(&mut issuer, addresses(50)).collect();
@@ -1046,7 +1048,8 @@ mod tests {
 
     #[test]
     fn sharded_issuer_admits_concurrently_over_shared_handles() {
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+        let issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
         let pipeline = StampPipeline::from_signer(FixedSigner);
 
         std::thread::scope(|scope| {

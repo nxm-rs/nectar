@@ -36,7 +36,7 @@
 //!
 //! // Issue a stamp for an uploaded chunk through the snapshot's issuing handle,
 //! // then plan a persist.
-//! let table =
+//! let table: UsageTable =
 //!     UsageTable::new(batch_id, 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
 //! let mut snapshot = Snapshot::new(table);
 //! let address = ChunkAddress::from(B256::repeat_byte(0x99));
@@ -60,13 +60,12 @@
 //! # Networks
 //!
 //! A snapshot is parameterized by the [`SwarmSpec`] of the batch it describes,
-//! and carries it in the [`BucketDepth`] its table was built from. The generic
-//! type takes the `...For` name ([`UsageTableFor`], [`SnapshotFor`],
-//! [`RootInfoFor`] and friends) and the bare name is the mainnet alias, so
-//! ordinary call sites need no type annotation. The floor is load-bearing on
-//! the wire too: [`RootInfo::parse`] rebuilds the bucket depth for the network
-//! asked of it, so a root whose geometry that network would never issue is
-//! refused as corrupt.
+//! and carries it in the [`BucketDepth`] its table was built from. The spec
+//! parameter defaults to [`Mainnet`] in type position only; a default drives no
+//! inference, so a construction site still names the type it builds. The floor
+//! is load-bearing on the wire too: [`RootInfo::parse`] rebuilds the bucket
+//! depth for the network asked of it, so a root whose geometry that network
+//! would never issue is refused as corrupt.
 //!
 //! The snapshot format supports bucket depths 1 to 16 and mainnet's floor is
 //! 16, so a mainnet snapshot always has exactly 2^16 buckets; the smaller
@@ -96,11 +95,11 @@
 //!
 //! Two residual paths to a sequence-0 persist are protocol-level rather than
 //! in-memory representability concerns, so the type guards here do not close
-//! them; the [`PublishedSequence`] floor on [`Snapshot::revalidate`] does
-//! (nectar issue #70). First, the public table constructors ([`UsageTable::new`]
-//! and friends) must keep minting a fresh table for a genuinely new batch, so a
-//! forged fresh table persisted at sequence 0 is caught by the floor, not by the
-//! type system here. Second, the reserve overwrites a snapshot chunk by stamp
+//! them; the [`PublishedSequence`] floor on [`Snapshot::revalidate`] does.
+//! First, the public table constructors ([`UsageTable::new`] and friends) must
+//! keep minting a fresh table for a genuinely new batch, so a forged fresh
+//! table persisted at sequence 0 is caught by the floor, not by the type system
+//! here. Second, the reserve overwrites a snapshot chunk by stamp
 //! timestamp rather than by snapshot sequence, so full cross-version monotonicity
 //! against the *published* sequence needs a compare-and-swap against the live
 //! root chunk. The floor precondition implemented on [`Snapshot::revalidate`]
@@ -144,23 +143,22 @@ mod issuer;
 #[cfg(feature = "seal")]
 mod seal;
 
-pub use codec::{RootInfo, RootInfoFor};
+pub use codec::RootInfo;
 pub use error::UsageError;
 pub use nectar_postage_issuer::RingExhausted;
 pub use snapshot::{
-    Issuer, IssuerFor, PersistPlan, PlannedChunk, PublishedSequence, Snapshot, SnapshotFor,
-    SnapshotParts, SnapshotPartsFor, Validated, ValidatedFor,
+    Issuer, PersistPlan, PlannedChunk, PublishedSequence, Snapshot, SnapshotParts, Validated,
 };
-pub use table::{Mutability, TableView, TableViewFor, UsageTable, UsageTableFor};
+pub use table::{Mutability, TableView, UsageTable};
 
 #[cfg(feature = "issuer")]
-pub use issuer::{SnapshotIssuer, SnapshotIssuerFor};
+pub use issuer::SnapshotIssuer;
 
 #[cfg(feature = "seal")]
 pub use seal::{SealError, SealedChunk, seal_plan};
 
 #[cfg(feature = "client")]
-pub use client::{BatchStamper, BatchStamperFor, ClientError, SnapshotSink, SnapshotSource};
+pub use client::{BatchStamper, ClientError, SnapshotSink, SnapshotSource};
 
 pub use nectar_primitives::{ChunkAddress, Mainnet, NetworkId, SocId, SwarmSpec, Testnet};
 

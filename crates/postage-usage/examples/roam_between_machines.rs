@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signer = PrivateKeySigner::random();
     let owner: Address = signer.address();
     let batch_id = BatchId::new([0x42; 32]);
-    let batch = Batch::new(
+    let batch: Batch = Batch::new(
         batch_id,
         0,
         0,
@@ -213,7 +213,7 @@ fn stale_persist_is_rejected(
     println!("----------------------------------------------");
 
     // A snapshot sitting at sequence 1 (its next persist would emit 2).
-    let table = UsageTable::new(
+    let table: UsageTable = UsageTable::new(
         batch_id,
         DEPTH,
         BucketDepth::new(BUCKET_DEPTH)?,

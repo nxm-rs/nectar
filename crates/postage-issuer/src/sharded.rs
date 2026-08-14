@@ -12,8 +12,8 @@ use nectar_postage::{Batch, BatchId, BucketDepth, StampDigest, StampError, calcu
 use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
 use crate::error::IssuerError;
-use crate::issuer::{MemoryIssuerFor, StampIssuer};
-use crate::ring::{Reservation, Reserved, RingIssuerFor, Unreserved};
+use crate::issuer::{MemoryIssuer, StampIssuer};
+use crate::ring::{Reservation, Reserved, RingIssuer, Unreserved};
 
 /// Shards per issuer. A power of two, so a bucket's shard is a shift and a mask.
 const DEFAULT_SHARD_COUNT: usize = 16;
@@ -21,9 +21,9 @@ const DEFAULT_SHARD_COUNT: usize = 16;
 /// A sharded issuer: one sequential issuer per contiguous bucket range.
 ///
 /// Allocation takes `&self`, so several threads may stamp through one issuer.
-/// The inner issuer `I` sets the issuance mode: [`ShardedIssuerFor`] is
-/// fill-only, [`ShardedRingIssuerFor`] is overwrite-aware.
-pub struct ShardedFor<S: SwarmSpec, I> {
+/// The inner issuer `I` sets the issuance mode: [`ShardedIssuer`] is
+/// fill-only, [`ShardedRingIssuer`] is overwrite-aware.
+pub struct Sharded<I, S: SwarmSpec = Mainnet> {
     batch_id: BatchId,
     depth: u8,
     bucket_depth: BucketDepth<S>,
@@ -36,9 +36,9 @@ pub struct ShardedFor<S: SwarmSpec, I> {
 }
 
 // Geometry only: deriving would dump every shard's whole counter table.
-impl<S: SwarmSpec, I> core::fmt::Debug for ShardedFor<S, I> {
+impl<I, S: SwarmSpec> core::fmt::Debug for Sharded<I, S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ShardedFor")
+        f.debug_struct("Sharded")
             .field("batch_id", &self.batch_id)
             .field("depth", &self.depth)
             .field("bucket_depth", &self.bucket_depth.get())
@@ -49,17 +49,11 @@ impl<S: SwarmSpec, I> core::fmt::Debug for ShardedFor<S, I> {
     }
 }
 
-/// The [`ShardedFor`] of the mainnet spec.
-pub type Sharded<I> = ShardedFor<Mainnet, I>;
-
-/// A fill-only sharded issuer: the parallel counterpart of [`MemoryIssuerFor`].
-pub type ShardedIssuerFor<S = Mainnet> = ShardedFor<S, MemoryIssuerFor<S>>;
-
-/// The [`ShardedIssuerFor`] of the mainnet spec.
-pub type ShardedIssuer = ShardedIssuerFor<Mainnet>;
+/// A fill-only sharded issuer: the parallel counterpart of [`MemoryIssuer`].
+pub type ShardedIssuer<S = Mainnet> = Sharded<MemoryIssuer<S>, S>;
 
 /// A sharded mutable (ring) issuer: the parallel counterpart of
-/// [`RingIssuerFor`].
+/// [`RingIssuer`].
 ///
 /// The reservation policy rides on the inner ring, so a sink that demands a
 /// reserved ring cannot be handed a reserved-blind one:
@@ -72,16 +66,13 @@ pub type ShardedIssuer = ShardedIssuerFor<Mainnet>;
 /// fn self_hosting_sink(_ring: ShardedRingIssuer<Reserved>) {}
 ///
 /// let bucket_depth = BucketDepth::new(16).unwrap();
-/// let batch = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, bucket_depth, false);
+/// let batch: Batch = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, bucket_depth, false);
 /// let unreserved: ShardedRingIssuer<Unreserved> = ShardedRingIssuer::external(&batch).unwrap();
 /// self_hosting_sink(unreserved);
 /// ```
-pub type ShardedRingIssuerFor<S = Mainnet, R = Unreserved> = ShardedFor<S, RingIssuerFor<S, R>>;
+pub type ShardedRingIssuer<R = Unreserved, S = Mainnet> = Sharded<RingIssuer<R, S>, S>;
 
-/// The [`ShardedRingIssuerFor`] of the mainnet spec.
-pub type ShardedRingIssuer<R = Unreserved> = ShardedRingIssuerFor<Mainnet, R>;
-
-impl<S: SwarmSpec, I: StampIssuer> ShardedFor<S, I> {
+impl<I: StampIssuer, S: SwarmSpec> Sharded<I, S> {
     /// Builds `shard_count` shards, each from `make_shard` applied to the
     /// `[base, end)` bucket range it owns.
     // `shard_count` is a nonzero power of two clamped to `2^bucket_depth`, and
@@ -201,7 +192,7 @@ impl<S: SwarmSpec, I: StampIssuer> ShardedFor<S, I> {
     }
 }
 
-impl<S: SwarmSpec> ShardedFor<S, MemoryIssuerFor<S>> {
+impl<S: SwarmSpec> Sharded<MemoryIssuer<S>, S> {
     /// Creates a fill-only sharded issuer with the default shard count.
     pub fn new(batch_id: BatchId, depth: u8, bucket_depth: BucketDepth<S>) -> Self {
         Self::with_shard_count(batch_id, depth, bucket_depth, DEFAULT_SHARD_COUNT)
@@ -223,7 +214,7 @@ impl<S: SwarmSpec> ShardedFor<S, MemoryIssuerFor<S>> {
         shard_count: usize,
     ) -> Self {
         Self::with_shards(batch_id, depth, bucket_depth, shard_count, |_, _| {
-            MemoryIssuerFor::new(batch_id, depth, bucket_depth)
+            MemoryIssuer::new(batch_id, depth, bucket_depth)
         })
     }
 
@@ -268,7 +259,7 @@ impl<S: SwarmSpec> ShardedFor<S, MemoryIssuerFor<S>> {
     }
 }
 
-impl<S: SwarmSpec> ShardedFor<S, RingIssuerFor<S, Unreserved>> {
+impl<S: SwarmSpec> Sharded<RingIssuer<Unreserved, S>, S> {
     /// Builds an externally tracked sharded ring for a mutable batch.
     ///
     /// # Errors
@@ -279,7 +270,7 @@ impl<S: SwarmSpec> ShardedFor<S, RingIssuerFor<S, Unreserved>> {
     }
 }
 
-impl<S: SwarmSpec> ShardedFor<S, RingIssuerFor<S, Reserved>> {
+impl<S: SwarmSpec> Sharded<RingIssuer<Reserved, S>, S> {
     /// Builds a self-hosting sharded ring for a mutable batch, protecting
     /// `slots` from re-issuance.
     ///
@@ -303,7 +294,7 @@ impl<S: SwarmSpec> ShardedFor<S, RingIssuerFor<S, Reserved>> {
     }
 }
 
-impl<S: SwarmSpec, R: Reservation> ShardedFor<S, RingIssuerFor<S, R>> {
+impl<R: Reservation, S: SwarmSpec> Sharded<RingIssuer<R, S>, S> {
     fn for_mutable_batch(
         batch: &Batch<S>,
         make_reservation: impl Fn(u32, u32) -> R,
@@ -317,7 +308,7 @@ impl<S: SwarmSpec, R: Reservation> ShardedFor<S, RingIssuerFor<S, R>> {
             batch.bucket_depth(),
             DEFAULT_SHARD_COUNT,
             |base, end| {
-                RingIssuerFor::with_reservation(
+                RingIssuer::with_reservation(
                     batch.id(),
                     batch.depth(),
                     batch.bucket_depth(),
@@ -328,7 +319,7 @@ impl<S: SwarmSpec, R: Reservation> ShardedFor<S, RingIssuerFor<S, R>> {
     }
 }
 
-impl<S: SwarmSpec, I: StampIssuer> StampIssuer for ShardedFor<S, I> {
+impl<I: StampIssuer, S: SwarmSpec> StampIssuer for Sharded<I, S> {
     fn prepare_stamp(
         &mut self,
         address: &ChunkAddress,
@@ -369,41 +360,41 @@ impl<S: SwarmSpec, I: StampIssuer> StampIssuer for ShardedFor<S, I> {
 }
 
 /// Shared-handle issuance: several pipelines may admit from one issuer.
-impl<S: SwarmSpec, I: StampIssuer> StampIssuer for &ShardedFor<S, I> {
+impl<I: StampIssuer, S: SwarmSpec> StampIssuer for &Sharded<I, S> {
     fn prepare_stamp(
         &mut self,
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        ShardedFor::prepare_stamp(self, address, timestamp)
+        Sharded::prepare_stamp(self, address, timestamp)
     }
 
     fn batch_id(&self) -> BatchId {
-        ShardedFor::batch_id(self)
+        Sharded::batch_id(self)
     }
 
     fn batch_depth(&self) -> u8 {
-        ShardedFor::batch_depth(self)
+        Sharded::batch_depth(self)
     }
 
     fn bucket_depth(&self) -> u8 {
-        ShardedFor::bucket_depth(self)
+        Sharded::bucket_depth(self)
     }
 
     fn max_bucket_utilization(&self) -> u32 {
-        ShardedFor::max_bucket_utilization(self)
+        Sharded::max_bucket_utilization(self)
     }
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
-        ShardedFor::bucket_utilization(self, bucket)
+        Sharded::bucket_utilization(self, bucket)
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
-        ShardedFor::bucket_has_capacity(self, bucket)
+        Sharded::bucket_has_capacity(self, bucket)
     }
 
     fn stamps_issued(&self) -> Option<u64> {
-        Some(ShardedFor::stamps_issued(self))
+        Some(Sharded::stamps_issued(self))
     }
 }
 
@@ -466,7 +457,8 @@ mod tests {
 
     #[test]
     fn a_sharded_issuer_reports_its_geometry() {
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         assert_eq!(issuer.batch_id(), BatchId::ZERO);
         assert_eq!(issuer.batch_depth(), 20);
@@ -477,7 +469,8 @@ mod tests {
 
     #[test]
     fn a_sharded_issuer_stamps_and_counts() {
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let address = ChunkAddress::from(B256::random());
 
         let digest = issuer.prepare_stamp(&address, 12345).unwrap();
@@ -490,7 +483,7 @@ mod tests {
 
     #[test]
     fn a_smaller_shard_count_still_routes_every_bucket() {
-        let issuer =
+        let issuer: ShardedIssuer =
             ShardedIssuer::with_shard_count(BatchId::ZERO, 20, BucketDepth::new(16).unwrap(), 4);
         assert_eq!(issuer.shard_count(), 4);
         for lead in [0x0000u16, 0x3FFF, 0x4000, 0xBFFF, 0xC000, 0xFFFF] {
@@ -503,7 +496,8 @@ mod tests {
     #[test]
     fn dilution_grows_capacity_only() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer = ShardedIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+        let mut issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let address = test_address(0xABCD);
         let bucket = calculate_bucket(&address, bucket_depth());
 
@@ -531,7 +525,8 @@ mod tests {
     #[test]
     fn dilution_reaches_every_shard() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket; one address per shard.
-        let mut issuer = ShardedIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+        let mut issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let addresses: Vec<_> = (0..DEFAULT_SHARD_COUNT)
             .map(|shard| test_address(u16::try_from(shard).unwrap() << 12))
             .collect();
@@ -553,7 +548,8 @@ mod tests {
     fn stamping_is_concurrent_over_shared_handles() {
         use std::thread;
 
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+        let issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
         let threads = 8u64;
         let per_thread = 1000u64;
 
@@ -577,7 +573,8 @@ mod tests {
         use std::thread;
 
         // depth=24, bucket_depth=16 gives 256 slots, which 8 threads fill exactly.
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+        let issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
         let address = test_address(0x9BCD);
         let slots = StdMutex::new(Vec::new());
 
@@ -600,7 +597,8 @@ mod tests {
 
     #[test]
     fn a_bucket_outside_the_bucket_space_reads_as_empty() {
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         assert_eq!(issuer.bucket_utilization(0x1_0000), 0);
         assert!(!issuer.bucket_has_capacity(0x1_0000));
@@ -609,7 +607,8 @@ mod tests {
     #[test]
     fn every_trait_method_reaches_the_inherent_one() {
         // A body that resolved back into the trait would recurse until the stack died.
-        let mut issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let mut issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let address = test_address(0x1234);
         let bucket = calculate_bucket(&address, bucket_depth());
 
@@ -627,7 +626,8 @@ mod tests {
 
     #[test]
     fn a_shared_handle_implements_stamp_issuer() {
-        let issuer = ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+        let issuer: ShardedIssuer =
+            ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let mut handle = &issuer;
 
         let address = ChunkAddress::from(B256::random());
@@ -747,10 +747,10 @@ mod tests {
                 excess in 0u8..=2,
                 leads in leads(),
             ) {
-                let bucket_depth = BucketDepth::new(16).unwrap();
+                let bucket_depth: BucketDepth = BucketDepth::new(16).unwrap();
                 let depth = 16 + excess;
-                let sharded = ShardedIssuer::new(BatchId::ZERO, depth, bucket_depth);
-                let mut sequential = MemoryIssuer::new(BatchId::ZERO, depth, bucket_depth);
+                let sharded: ShardedIssuer = ShardedIssuer::new(BatchId::ZERO, depth, bucket_depth);
+                let mut sequential: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, depth, bucket_depth);
 
                 let mut ts = 0u64;
                 for &lead in &leads {

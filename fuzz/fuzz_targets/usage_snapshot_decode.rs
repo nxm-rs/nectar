@@ -15,8 +15,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nectar_postage_usage::RootInfo;
+use nectar_postage_usage::{Mainnet, RootInfo};
 
 fuzz_target!(|data: &[u8]| {
-    let _ = RootInfo::parse(data);
+    let _ = RootInfo::<Mainnet>::parse(data);
 });

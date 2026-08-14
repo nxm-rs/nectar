@@ -16,10 +16,10 @@
 //!
 //! # Floor safety
 //!
-//! The whole point of the published-sequence floor (nectar issue #70) is that a
-//! persist can never regress the version published at a snapshot's own chunk
-//! addresses. That guarantee survives only if a failed network read is never
-//! mistaken for "the chunk is absent". [`SnapshotSource::fetch`] therefore
+//! The whole point of the published-sequence floor is that a persist can never
+//! regress the version published at a snapshot's own chunk addresses. That
+//! guarantee survives only if a failed network read is never mistaken for
+//! "the chunk is absent". [`SnapshotSource::fetch`] therefore
 //! distinguishes `Ok(None)` (the network definitively agrees the chunk does not
 //! exist) from `Err` (the read could not be completed). [`BatchStamper::open`]
 //! and [`BatchStamper::flush`] both abort on `Err`: a transport failure never
@@ -37,9 +37,9 @@ use nectar_postage::{Batch, BatchId, StampIndex};
 use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 use thiserror::Error;
 
-use crate::codec::RootInfoFor;
+use crate::codec::RootInfo;
 use crate::seal::{SealError, SealedChunk, seal_plan};
-use crate::snapshot::{PublishedSequence, SnapshotFor};
+use crate::snapshot::{PublishedSequence, Snapshot};
 use crate::{UsageError, usage_chunk_address};
 
 /// Reads a chunk's payload from the network by its single-owner-chunk address.
@@ -51,8 +51,8 @@ use crate::{UsageError, usage_chunk_address};
 /// does not exist. `Err` means the read could not be completed and the caller
 /// must *not* treat the chunk as absent. This distinction is load-bearing:
 /// treating a transport failure as absence would read the published-sequence
-/// floor as [`PublishedSequence::NONE`] and reopen the downgrade that nectar
-/// issue #70 closes.
+/// floor as [`PublishedSequence::NONE`] and reopen the downgrade the floor
+/// closes.
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait SnapshotSource {
     /// The error a failed read reports. A value of this type means the read did
@@ -147,13 +147,13 @@ where
 /// system clock; [`open_with_clock`](Self::open_with_clock) injects a
 /// deterministic source.
 #[derive(Debug)]
-pub struct BatchStamperFor<Sg, Src, Snk, S: SwarmSpec = Mainnet, C = SystemClock> {
+pub struct BatchStamper<Sg, Src, Snk, S: SwarmSpec = Mainnet, C = SystemClock> {
     signer: Sg,
     owner: Address,
     batch_id: BatchId,
     source: Src,
     sink: Snk,
-    snapshot: SnapshotFor<S>,
+    snapshot: Snapshot<S>,
     /// The timestamp source for seals.
     clock: C,
     /// Whether a persist has been emitted in this session. A clean snapshot that
@@ -163,10 +163,7 @@ pub struct BatchStamperFor<Sg, Src, Snk, S: SwarmSpec = Mainnet, C = SystemClock
     persisted_this_session: bool,
 }
 
-/// The [`BatchStamperFor`] of the mainnet spec.
-pub type BatchStamper<Sg, Src, Snk, C = SystemClock> = BatchStamperFor<Sg, Src, Snk, Mainnet, C>;
-
-impl<Sg, Src, Snk, S> BatchStamperFor<Sg, Src, Snk, S>
+impl<Sg, Src, Snk, S> BatchStamper<Sg, Src, Snk, S>
 where
     Sg: SignerSync + alloy_signer::Signer,
     Src: SnapshotSource,
@@ -188,7 +185,7 @@ where
     }
 }
 
-impl<Sg, Src, Snk, S, C> BatchStamperFor<Sg, Src, Snk, S, C>
+impl<Sg, Src, Snk, S, C> BatchStamper<Sg, Src, Snk, S, C>
 where
     Sg: SignerSync + alloy_signer::Signer,
     Src: SnapshotSource,
@@ -233,7 +230,7 @@ where
                 // A published root exists: recover its sequence and slots. Every
                 // committed leaf must be present; a missing leaf is corruption,
                 // not a reason to start over.
-                let root = RootInfoFor::<S>::parse(&root_bytes)?;
+                let root = RootInfo::<S>::parse(&root_bytes)?;
                 let mut leaves: Vec<Bytes> = Vec::with_capacity(usize::from(root.leaf_count()));
                 for leaf in 0..root.leaf_count() {
                     // `leaf < leaf_count() <= u16::MAX`, so the increment
@@ -253,7 +250,7 @@ where
                 root.assemble(&leaves)?
             }
             // The network confirms no published root: a genuinely fresh batch.
-            None => SnapshotFor::from_batch(batch)?,
+            None => Snapshot::from_batch(batch)?,
         };
 
         Ok(Self {
@@ -311,7 +308,7 @@ where
             .await
             .map_err(ClientError::Source)?
         {
-            Some(root_bytes) => PublishedSequence::from(&RootInfoFor::<S>::parse(&root_bytes)?),
+            Some(root_bytes) => PublishedSequence::from(&RootInfo::<S>::parse(&root_bytes)?),
             // The network confirms no published root: the floor is NONE.
             None => PublishedSequence::NONE,
         };
@@ -342,7 +339,7 @@ where
     }
 
     /// Returns the wrapped snapshot.
-    pub const fn snapshot(&self) -> &SnapshotFor<S> {
+    pub const fn snapshot(&self) -> &Snapshot<S> {
         &self.snapshot
     }
 
@@ -668,7 +665,7 @@ mod tests {
         // A stale machine B sitting at sequence 1: open it, but rewind its
         // snapshot to a sequence-1 state, then issue and flush. The live floor (2)
         // rejects the next sequence (2).
-        let table = UsageTable::new(
+        let table: UsageTable = UsageTable::new(
             batch.id(),
             20,
             BucketDepth::new(16).unwrap(),

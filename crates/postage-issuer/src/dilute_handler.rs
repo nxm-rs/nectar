@@ -16,8 +16,8 @@
 use std::collections::HashMap;
 
 use crate::error::IssuerError;
-use crate::issuer::MemoryIssuerFor;
-use crate::sharded::ShardedIssuerFor;
+use crate::issuer::MemoryIssuer;
+use crate::sharded::ShardedIssuer;
 use nectar_postage::{BatchEvent, BatchEventHandler, BatchId};
 use nectar_primitives::SwarmSpec;
 
@@ -25,8 +25,8 @@ use nectar_primitives::SwarmSpec;
 ///
 /// This is the minimal surface the [`IssuerRegistry`] needs to drive a
 /// [`BatchEvent::DepthIncrease`] through to the right issuer. It is implemented
-/// for the fill-only issuers in this crate ([`MemoryIssuerFor`] and
-/// [`ShardedIssuerFor`]); a self-hosting ring issuer dilutes through its snapshot
+/// for the fill-only issuers in this crate ([`MemoryIssuer`] and
+/// [`ShardedIssuer`]); a self-hosting ring issuer dilutes through its snapshot
 /// in `nectar-postage-usage` and is not registered here.
 ///
 /// The trait is spec-agnostic: it only reads scalar geometry, so one registry
@@ -51,7 +51,7 @@ pub trait Dilutable {
     fn dilute(&mut self, new_depth: u8) -> Result<(), IssuerError>;
 }
 
-impl<S: SwarmSpec> Dilutable for MemoryIssuerFor<S> {
+impl<S: SwarmSpec> Dilutable for MemoryIssuer<S> {
     // The geometry accessors come from the StampIssuer trait, so they are named
     // explicitly to avoid resolving back into this Dilutable impl.
     fn batch_id(&self) -> BatchId {
@@ -71,7 +71,7 @@ impl<S: SwarmSpec> Dilutable for MemoryIssuerFor<S> {
     }
 }
 
-impl<S: SwarmSpec> Dilutable for ShardedIssuerFor<S> {
+impl<S: SwarmSpec> Dilutable for ShardedIssuer<S> {
     fn batch_id(&self) -> BatchId {
         Self::batch_id(self)
     }
@@ -176,6 +176,7 @@ mod tests {
     use super::*;
     use crate::{MemoryIssuer, ShardedIssuer};
     use nectar_postage::BucketDepth;
+    use nectar_primitives::Mainnet;
 
     fn batch_id(byte: u8) -> BatchId {
         BatchId::new([byte; 32])
@@ -186,7 +187,7 @@ mod tests {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
         let tracked = batch_id(0x11);
         let mut registry = IssuerRegistry::new();
-        registry.register(MemoryIssuer::new(
+        registry.register(MemoryIssuer::<Mainnet>::new(
             tracked,
             17,
             BucketDepth::new(16).unwrap(),
@@ -211,7 +212,7 @@ mod tests {
     fn depth_increase_grows_sharded_issuer_capacity() {
         let tracked = batch_id(0x22);
         let mut registry = IssuerRegistry::new();
-        registry.register(ShardedIssuer::new(
+        registry.register(ShardedIssuer::<Mainnet>::new(
             tracked,
             17,
             BucketDepth::new(16).unwrap(),
@@ -236,7 +237,7 @@ mod tests {
         let other = batch_id(0x44);
 
         let mut registry = IssuerRegistry::new();
-        registry.register(MemoryIssuer::new(
+        registry.register(MemoryIssuer::<Mainnet>::new(
             tracked,
             17,
             BucketDepth::new(16).unwrap(),
@@ -264,7 +265,7 @@ mod tests {
     fn non_depth_events_are_ignored() {
         let tracked = batch_id(0x55);
         let mut registry = IssuerRegistry::new();
-        registry.register(MemoryIssuer::new(
+        registry.register(MemoryIssuer::<Mainnet>::new(
             tracked,
             17,
             BucketDepth::new(16).unwrap(),
@@ -292,7 +293,7 @@ mod tests {
         // refuses it and the error propagates.
         let tracked = batch_id(0x66);
         let mut registry = IssuerRegistry::new();
-        registry.register(MemoryIssuer::new(
+        registry.register(MemoryIssuer::<Mainnet>::new(
             tracked,
             18,
             BucketDepth::new(16).unwrap(),

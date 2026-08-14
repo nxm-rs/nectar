@@ -9,9 +9,9 @@
 
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_issuer::{
-    Batch, BatchId, BatchStamper, BucketDepth, IssuerError, Mainnet, MemoryIssuerFor, Reserved,
-    RingIssuerFor, ShardedIssuerFor, SigningError, StampError, StampIssuer, Stamper,
-    calculate_bucket,
+    Batch, BatchId, BatchStamper, BucketDepth, CounterTable, IssuerError, Mainnet,
+    MemoryBatchFactory, MemoryIssuer, Reserved, RingIssuer, Sharded, ShardedIssuer,
+    ShardedRingIssuer, SigningError, StampError, StampIssuer, Stamper, calculate_bucket,
 };
 use nectar_primitives::ChunkAddress;
 use nectar_testing::HighFloor;
@@ -59,7 +59,7 @@ fn the_floor_is_the_deployments_own() {
 fn a_deep_issuer_stamps_through_a_batch_stamper() {
     // depth 22 over bucket depth 20 gives 4 slots per bucket.
     let batch = deep_batch(22, true);
-    let issuer = MemoryIssuerFor::from_batch(&batch).unwrap();
+    let issuer = MemoryIssuer::from_batch(&batch).unwrap();
     assert_eq!(issuer.bucket_depth(), 20);
     assert_eq!(issuer.bucket_count(), 1 << 20);
     assert_eq!(issuer.bucket_capacity(), 4);
@@ -86,7 +86,7 @@ fn a_deep_issuer_stamps_through_a_batch_stamper() {
 
 #[test]
 fn a_deep_issuer_dilutes_and_a_deep_sharded_issuer_stamps() {
-    let mut issuer = MemoryIssuerFor::<HighFloor>::new(BatchId::ZERO, 21, deep());
+    let mut issuer = MemoryIssuer::<HighFloor>::new(BatchId::ZERO, 21, deep());
     let address = address_in(1);
     assert_eq!(issuer.prepare_stamp(&address, 1).unwrap().index.index(), 0);
     assert_eq!(issuer.prepare_stamp(&address, 2).unwrap().index.index(), 1);
@@ -103,7 +103,7 @@ fn a_deep_issuer_dilutes_and_a_deep_sharded_issuer_stamps() {
         })
     ));
 
-    let sharded = ShardedIssuerFor::from_batch(&deep_batch(22, true)).unwrap();
+    let sharded = ShardedIssuer::from_batch(&deep_batch(22, true)).unwrap();
     assert_eq!(sharded.bucket_depth(), 20);
     let digest = sharded.prepare_stamp(&address, 5).unwrap();
     assert_eq!(digest.index.bucket(), calculate_bucket(&address, deep()));
@@ -116,8 +116,8 @@ fn a_deep_reserved_ring_never_emits_a_reserved_slot() {
     let batch = deep_batch(22, false);
     let address = address_in(0x0FEDC);
     let bucket = calculate_bucket(&address, deep());
-    let mut ring: RingIssuerFor<HighFloor, Reserved> =
-        RingIssuerFor::reserved(&batch, [(bucket, 1), (bucket, 3)]).unwrap();
+    let mut ring: RingIssuer<Reserved, HighFloor> =
+        RingIssuer::reserved(&batch, [(bucket, 1), (bucket, 3)]).unwrap();
 
     // Far past one wrap, so every wrap is exercised.
     for timestamp in 0..40u64 {
@@ -127,3 +127,13 @@ fn a_deep_reserved_ring_never_emits_a_reserved_slot() {
         assert!(slot == 0 || slot == 2, "ring emitted reserved slot {slot}");
     }
 }
+
+// Each identity fails to compile if a spec default is dropped, if a bare name
+// stops meaning mainnet, or if the parameters swap order.
+const _: fn(MemoryIssuer) -> MemoryIssuer<Mainnet> = |x| x;
+const _: fn(CounterTable) -> CounterTable<Mainnet> = |x| x;
+const _: fn(RingIssuer<Reserved>) -> RingIssuer<Reserved, Mainnet> = |x| x;
+const _: fn(MemoryBatchFactory) -> MemoryBatchFactory<Mainnet> = |x| x;
+const _: fn(ShardedIssuer<HighFloor>) -> Sharded<MemoryIssuer<HighFloor>, HighFloor> = |x| x;
+type DeepReservedRing = Sharded<RingIssuer<Reserved, HighFloor>, HighFloor>;
+const _: fn(ShardedRingIssuer<Reserved, HighFloor>) -> DeepReservedRing = |x| x;

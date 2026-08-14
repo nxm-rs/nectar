@@ -524,7 +524,8 @@ mod tests {
     #[test]
     fn duplicates_allocate_independently_mixed_ok_err() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+        let mut issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
         let address = ChunkAddress::new([0xAB; 32]);
 

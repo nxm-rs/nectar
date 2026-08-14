@@ -49,7 +49,8 @@ mod tests {
 
     #[test]
     fn test_prepare_stamps_allocates_in_input_order() {
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+        let mut issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
         let clock = ManualClock::new(1_234_567_890);
 
         let addresses: Vec<_> = (0..10)
@@ -71,7 +72,8 @@ mod tests {
     #[test]
     fn test_prepare_stamps_bucket_full_passes_through_in_order() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer = MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+        let mut issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let clock = ManualClock::new(0);
 
         let address = ChunkAddress::new([0xAB; 32]);
@@ -91,7 +93,7 @@ mod tests {
     fn test_prepare_stamps_ring_issuer() {
         // The micro-batch is issuer-generic: a mutable batch's ring issuer
         // works too.
-        let mutable = Batch::new(
+        let mutable: Batch = Batch::new(
             BatchId::ZERO,
             0,
             0,

@@ -7,21 +7,18 @@ use nectar_primitives::{Mainnet, SwarmSpec};
 
 /// The result of creating a batch on the network `S`.
 #[derive(Debug)]
-pub struct CreateResultFor<S: SwarmSpec = Mainnet> {
+pub struct CreateResult<S: SwarmSpec = Mainnet> {
     /// The created batch.
     pub batch: Batch<S>,
     /// The transaction hash (if created on-chain).
     pub tx_hash: Option<alloy_primitives::B256>,
 }
 
-/// The [`CreateResultFor`] of the mainnet spec.
-pub type CreateResult = CreateResultFor<Mainnet>;
-
 // The spec is a type-level tag, so the impls below carry no bound on `S` beyond
 // `SwarmSpec`; deriving would demand `S: Clone` and `S: Eq` of a marker type
 // that holds no data.
 
-impl<S: SwarmSpec> Clone for CreateResultFor<S> {
+impl<S: SwarmSpec> Clone for CreateResult<S> {
     fn clone(&self) -> Self {
         Self {
             batch: self.batch.clone(),
@@ -30,13 +27,13 @@ impl<S: SwarmSpec> Clone for CreateResultFor<S> {
     }
 }
 
-impl<S: SwarmSpec> PartialEq for CreateResultFor<S> {
+impl<S: SwarmSpec> PartialEq for CreateResult<S> {
     fn eq(&self, other: &Self) -> bool {
         self.batch == other.batch && self.tx_hash == other.tx_hash
     }
 }
 
-impl<S: SwarmSpec> Eq for CreateResultFor<S> {}
+impl<S: SwarmSpec> Eq for CreateResult<S> {}
 
 /// A trait for creating postage batches.
 ///
@@ -64,7 +61,7 @@ pub trait BatchFactory {
     fn create(
         &self,
         params: BatchParams<Self::Spec>,
-    ) -> impl std::future::Future<Output = Result<CreateResultFor<Self::Spec>, Self::Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<CreateResult<Self::Spec>, Self::Error>> + Send;
 
     /// Tops up a batch with additional funds.
     ///
@@ -102,11 +99,8 @@ pub trait BatchFactory {
 ///
 /// This implementation creates batches in memory without any blockchain
 /// interaction. Useful for unit tests and local development.
-///
-/// The network the batches are minted for is a type parameter;
-/// [`MemoryBatchFactory`] is the mainnet factory.
 #[derive(Debug)]
-pub struct MemoryBatchFactoryFor<S: SwarmSpec = Mainnet> {
+pub struct MemoryBatchFactory<S: SwarmSpec = Mainnet> {
     /// Counter for generating unique batch IDs.
     next_id: std::sync::atomic::AtomicU64,
     /// The current block number (for start block).
@@ -115,10 +109,7 @@ pub struct MemoryBatchFactoryFor<S: SwarmSpec = Mainnet> {
     spec: PhantomData<fn() -> S>,
 }
 
-/// The [`MemoryBatchFactoryFor`] of the mainnet spec.
-pub type MemoryBatchFactory = MemoryBatchFactoryFor<Mainnet>;
-
-impl<S: SwarmSpec> MemoryBatchFactoryFor<S> {
+impl<S: SwarmSpec> MemoryBatchFactory<S> {
     /// Creates a new memory batch factory.
     pub const fn new(current_block: u64) -> Self {
         Self {
@@ -143,17 +134,17 @@ impl<S: SwarmSpec> MemoryBatchFactoryFor<S> {
     }
 }
 
-impl<S: SwarmSpec> Default for MemoryBatchFactoryFor<S> {
+impl<S: SwarmSpec> Default for MemoryBatchFactory<S> {
     fn default() -> Self {
         Self::new(0)
     }
 }
 
-impl<S: SwarmSpec> BatchFactory for MemoryBatchFactoryFor<S> {
+impl<S: SwarmSpec> BatchFactory for MemoryBatchFactory<S> {
     type Error = std::convert::Infallible;
     type Spec = S;
 
-    async fn create(&self, params: BatchParams<S>) -> Result<CreateResultFor<S>, Self::Error> {
+    async fn create(&self, params: BatchParams<S>) -> Result<CreateResult<S>, Self::Error> {
         let batch_id = self.generate_batch_id();
 
         let batch = Batch::new(
@@ -166,7 +157,7 @@ impl<S: SwarmSpec> BatchFactory for MemoryBatchFactoryFor<S> {
             params.immutable(),
         );
 
-        Ok(CreateResultFor {
+        Ok(CreateResult {
             batch,
             tx_hash: None,
         })
@@ -193,7 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_factory_create() {
-        let factory = MemoryBatchFactory::new(100);
+        let factory: MemoryBatchFactory = MemoryBatchFactory::new(100);
 
         let params = BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000);
         let result = factory.create(params).await.unwrap();
@@ -208,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_factory_unique_ids() {
-        let factory = MemoryBatchFactory::new(0);
+        let factory: MemoryBatchFactory = MemoryBatchFactory::new(0);
 
         let params = BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000);
 
@@ -222,7 +213,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_factory_immutable() {
-        let factory = MemoryBatchFactory::new(0);
+        let factory: MemoryBatchFactory = MemoryBatchFactory::new(0);
 
         let params = BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
             .with_immutable(true);
