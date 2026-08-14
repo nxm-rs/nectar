@@ -665,7 +665,7 @@ mod tests {
         // A stale machine B sitting at sequence 1: open it, but rewind its
         // snapshot to a sequence-1 state, then issue and flush. The live floor (2)
         // rejects the next sequence (2).
-        let table = UsageTable::new(
+        let table: UsageTable = UsageTable::new(
             batch.id(),
             20,
             BucketDepth::new(16).unwrap(),
