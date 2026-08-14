@@ -36,7 +36,7 @@ impl Clone for SharedStore {
     }
 }
 
-impl ChunkPut<AnyChunkSet<BODY>> for SharedStore {
+impl ChunkPut<Chunk<Verified, AnyChunkSet<BODY>>> for SharedStore {
     type Error = ChunkStoreError;
 
     async fn put(&self, chunk: Chunk<Verified, AnyChunkSet<BODY>>) -> Result<(), Self::Error> {

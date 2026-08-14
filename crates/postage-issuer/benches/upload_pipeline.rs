@@ -38,7 +38,7 @@ type SealedChunk = Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>;
 #[derive(Clone, Default)]
 struct Collect(Arc<Mutex<Vec<SealedChunk>>>);
 
-impl ChunkPut<AnyChunkSet<DEFAULT_BODY_SIZE>> for Collect {
+impl ChunkPut<Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>> for Collect {
     type Error = std::convert::Infallible;
 
     async fn put(&self, chunk: SealedChunk) -> Result<(), Self::Error> {

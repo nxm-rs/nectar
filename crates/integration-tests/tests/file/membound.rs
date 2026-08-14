@@ -191,7 +191,7 @@ impl<const B: usize> ChunkGet<AnyChunkSet<B>> for GaugeStore<B> {
     }
 }
 
-impl<const B: usize> ChunkPut<AnyChunkSet<B>> for GaugeStore<B> {
+impl<const B: usize> ChunkPut<Chunk<Verified, AnyChunkSet<B>>> for GaugeStore<B> {
     type Error = ChunkStoreError;
 
     async fn put(&self, chunk: Chunk<Verified, AnyChunkSet<B>>) -> Result<(), ChunkStoreError> {
