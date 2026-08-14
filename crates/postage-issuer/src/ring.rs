@@ -185,7 +185,9 @@ impl<S: SwarmSpec> RingIssuer<Unreserved, S> {
     ///
     /// Returns [`IssuerError::ImmutableNotSupported`] if the batch is immutable;
     /// immutable batches are fill-only and use
-    /// [`MemoryIssuer`](crate::MemoryIssuer).
+    /// [`MemoryIssuer`](crate::MemoryIssuer). Returns
+    /// [`IssuerError::Geometry`] if the chain-decoded depth is one no counter
+    /// table can hold.
     pub fn external(batch: &Batch<S>) -> Result<Self, IssuerError> {
         Self::for_mutable_batch(batch, Unreserved)
     }
@@ -203,7 +205,9 @@ impl<S: SwarmSpec> RingIssuer<Reserved, S> {
     ///
     /// Returns [`IssuerError::ImmutableNotSupported`] if the batch is immutable;
     /// immutable batches are fill-only and use
-    /// [`MemoryIssuer`](crate::MemoryIssuer).
+    /// [`MemoryIssuer`](crate::MemoryIssuer). Returns
+    /// [`IssuerError::Geometry`] if the chain-decoded depth is one no counter
+    /// table can hold.
     pub fn reserved(
         batch: &Batch<S>,
         slots: impl IntoIterator<Item = (u32, u32)>,
@@ -218,6 +222,7 @@ impl<R: Reservation, S: SwarmSpec> RingIssuer<R, S> {
         if batch.immutable() {
             return Err(IssuerError::ImmutableNotSupported);
         }
+        batch.geometry()?;
         Ok(Self::with_reservation(
             batch.id(),
             batch.depth(),
@@ -478,6 +483,21 @@ mod tests {
         assert_eq!(d3.index.index(), 1);
 
         assert_eq!(issuer.stamps_issued(), Some(4));
+    }
+
+    #[test]
+    fn a_ring_refuses_a_depth_no_counter_table_can_hold() {
+        for depth in [8u8, 48, u8::MAX] {
+            let batch = mutable_batch(depth, 16);
+            assert!(matches!(
+                RingIssuer::external(&batch),
+                Err(IssuerError::Geometry(_))
+            ));
+            assert!(matches!(
+                RingIssuer::reserved(&batch, []),
+                Err(IssuerError::Geometry(_))
+            ));
+        }
     }
 
     #[test]
