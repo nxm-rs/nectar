@@ -18,9 +18,9 @@ use crate::{StampedChunk, Validated, ValidationState};
 /// The stamp travels in-band with the chunk it pays for. The contract is
 /// delivery only: per-address idempotence belongs to a decorator layered
 /// above the sink, never to this trait. Implementors use interior
-/// mutability, mirroring `ChunkPut`. `V` is the proof the sink demands of
-/// the stamp: a network sink takes [`Validated`], a producer-side sink takes
-/// the pair its own issuer just signed.
+/// mutability, mirroring `ChunkPut`. `V` is the proof the sink demands of the
+/// stamp: an ingest sink takes [`Validated`], a producer-side sink takes the
+/// [`Unvalidated`](crate::Unvalidated) pair its own issuer just signed.
 pub trait PutStamped<V: ValidationState = Validated, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>:
     MaybeSend + MaybeSync
 {
@@ -190,33 +190,22 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use alloy_signer_local::PrivateKeySigner;
     use arbitrary::Unstructured;
     use nectar_primitives::{Chunk, ChunkAddress, ChunkHas, ContentChunk, MemoryStore};
     use nectar_testing::run;
 
     use super::*;
-    use crate::{Batch, BatchId, BucketDepth, Unvalidated, generators};
+    use crate::{Batch, Unvalidated, generators};
 
     type Store = MemoryStore<AnyChunkSet<DEFAULT_BODY_SIZE>>;
 
     fn signed(payload: &'static [u8]) -> (Batch, StampedChunk<Verified, Unvalidated>) {
-        let signer = PrivateKeySigner::from_slice(&[7u8; 32]).expect("valid signer");
-        let batch = Batch::new(
-            BatchId::ZERO,
-            1_000,
-            100,
-            signer.address(),
-            18,
-            BucketDepth::new(16).expect("valid bucket depth"),
-            true,
-        );
         let chunk: Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>> =
             Chunk::from_envelope(ContentChunk::new(payload).expect("valid content chunk").into())
                 .expect("locally built chunk certifies");
-        let mut u = Unstructured::new(&[7u8; 32]);
-        let stamp = generators::signed_stamp(&mut u, &signer, &batch, chunk.address())
-            .expect("signed stamp");
+        let mut u = Unstructured::new(&[7u8; 128]);
+        let (batch, stamp) =
+            generators::batch_and_stamp(&mut u, chunk.address()).expect("coherent stamp");
         (batch, StampedChunk::new(chunk, stamp))
     }
 
@@ -270,7 +259,6 @@ mod tests {
         });
     }
 
-    /// The wrapper drops the stamp, so it demands no proof of it.
     #[test]
     fn stamp_indifferent_accepts_an_unvalidated_pair() {
         run(async {

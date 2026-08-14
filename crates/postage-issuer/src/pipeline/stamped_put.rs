@@ -234,8 +234,8 @@ enum Step {
 /// Stamping decorator over a [`PutStamped`] sink.
 ///
 /// Implements `ChunkPut` facing up and requires `P: PutStamped<Unvalidated>`
-/// facing down: the stamp is minted here rather than checked, so the pair
-/// carries no validation proof. One generic impl over `AnyChunkSet<B>` serves every
+/// facing down: the stamp is minted here, not checked, so the pair carries no
+/// validation proof. One generic impl over `AnyChunkSet<B>` serves every
 /// wrapped call site.
 ///
 /// # Contracts
@@ -256,8 +256,8 @@ enum Step {
 /// - Wrapping a purely local store burns indices for chunks that may never
 ///   reach the network; filter for presence upstream where that matters.
 /// - Put-only sites need `P: PutStamped<Unvalidated>`; commit and apply sites
-///   need `P: PutStamped<Unvalidated> + TrustedGet + ChunkHas`, so a pure network sender
-///   takes a local or teed inner there.
+///   need `P: PutStamped<Unvalidated> + TrustedGet + ChunkHas`, so a pure
+///   network sender takes a local or teed inner there.
 /// - A split's put slots double as sign-plus-put slots: widen the put
 ///   window toward [`StampPipeline`](super::StampPipeline)'s default
 ///   window when wrapping a slow signer, and prefer an owned clone
