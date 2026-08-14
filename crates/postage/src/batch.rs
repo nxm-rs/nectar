@@ -47,10 +47,6 @@ impl BatchId {
     }
 
     /// Copy an id out of a 32-byte slice.
-    ///
-    /// # Errors
-    ///
-    /// [`WrongLength`] when `slice` is not exactly 32 bytes.
     #[inline]
     pub fn from_slice(slice: &[u8]) -> Result<Self, WrongLength> {
         Self::try_from(slice)
@@ -284,19 +280,10 @@ impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BucketDepth<S> {
 #[cfg_attr(feature = "serde", serde(bound(serialize = "", deserialize = "")))]
 #[non_exhaustive]
 pub struct BatchParams<S: SwarmSpec = Mainnet> {
-    /// The owner's Ethereum address.
     owner: Address,
-    /// The depth of the batch (total capacity = 2^depth chunks).
     depth: u8,
-    /// The bucket depth for collision bucket uniformity.
     bucket_depth: BucketDepth<S>,
-    /// Whether the batch is immutable.
-    ///
-    /// Immutable batches cannot be diluted (depth increased) and chunks cannot
-    /// be overwritten. Mutable batches allow writing new chunks to the same
-    /// bucket index with a later timestamp, replacing the previous chunk.
     immutable: bool,
-    /// Initial amount to fund the batch.
     amount: u128,
 }
 
@@ -370,7 +357,7 @@ impl<S: SwarmSpec> BatchParams<S> {
         self.bucket_depth
     }
 
-    /// Returns whether the batch is immutable.
+    /// Returns whether the batch is immutable: no dilution, no overwrite.
     #[inline]
     pub const fn is_immutable(&self) -> bool {
         self.immutable
