@@ -10,8 +10,8 @@
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_issuer::{
     Batch, BatchId, BatchStamper, BucketDepth, CounterTable, IssuerError, Mainnet,
-    MemoryBatchFactory, MemoryIssuer, Reserved, RingIssuer, Sharded, ShardedIssuer,
-    ShardedRingIssuer, SigningError, StampError, StampIssuer, Stamper, calculate_bucket,
+    MemoryBatchFactory, MemoryIssuer, Reserved, RingIssuer, SigningError, StampError, StampIssuer,
+    Stamper, calculate_bucket,
 };
 use nectar_primitives::ChunkAddress;
 use nectar_testing::HighFloor;
@@ -85,8 +85,8 @@ fn a_deep_issuer_stamps_through_a_batch_stamper() {
 }
 
 #[test]
-fn a_deep_issuer_dilutes_and_a_deep_sharded_issuer_stamps() {
-    let mut issuer = MemoryIssuer::<HighFloor>::new(BatchId::ZERO, 21, deep());
+fn a_deep_issuer_dilutes_and_stamps_through_a_shared_handle() {
+    let issuer = MemoryIssuer::<HighFloor>::new(BatchId::ZERO, 21, deep());
     let address = address_in(1);
     assert_eq!(issuer.prepare_stamp(&address, 1).unwrap().index.index(), 0);
     assert_eq!(issuer.prepare_stamp(&address, 2).unwrap().index.index(), 1);
@@ -103,14 +103,15 @@ fn a_deep_issuer_dilutes_and_a_deep_sharded_issuer_stamps() {
         })
     ));
 
-    let sharded = ShardedIssuer::from_batch(&deep_batch(22, true)).unwrap();
-    assert_eq!(sharded.bucket_depth(), 20);
-    let digest = sharded.prepare_stamp(&address, 5).unwrap();
+    let shared = MemoryIssuer::from_batch(&deep_batch(22, true)).unwrap();
+    assert_eq!(shared.bucket_depth(), 20);
+    let mut handle = &shared;
+    let digest = StampIssuer::prepare_stamp(&mut handle, &address, 5).unwrap();
     assert_eq!(
         digest.index.bucket(),
         calculate_bucket(&address, deep()).value()
     );
-    assert_eq!(sharded.stamps_issued(), 1);
+    assert_eq!(StampIssuer::stamps_issued(&shared), Some(1));
 }
 
 #[test]
@@ -137,6 +138,3 @@ const _: fn(MemoryIssuer) -> MemoryIssuer<Mainnet> = |x| x;
 const _: fn(CounterTable) -> CounterTable<Mainnet> = |x| x;
 const _: fn(RingIssuer<Reserved>) -> RingIssuer<Reserved, Mainnet> = |x| x;
 const _: fn(MemoryBatchFactory) -> MemoryBatchFactory<Mainnet> = |x| x;
-const _: fn(ShardedIssuer<HighFloor>) -> Sharded<MemoryIssuer<HighFloor>, HighFloor> = |x| x;
-type DeepReservedRing = Sharded<RingIssuer<Reserved, HighFloor>, HighFloor>;
-const _: fn(ShardedRingIssuer<Reserved, HighFloor>) -> DeepReservedRing = |x| x;

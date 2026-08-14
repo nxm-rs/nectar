@@ -17,7 +17,6 @@ use std::collections::HashMap;
 
 use crate::error::IssuerError;
 use crate::issuer::MemoryIssuer;
-use crate::sharded::ShardedIssuer;
 use nectar_postage::{BatchEvent, BatchEventHandler, BatchId};
 use nectar_primitives::SwarmSpec;
 
@@ -25,9 +24,8 @@ use nectar_primitives::SwarmSpec;
 ///
 /// This is the minimal surface the [`IssuerRegistry`] needs to drive a
 /// [`BatchEvent::DepthIncrease`] through to the right issuer. It is implemented
-/// for the fill-only issuers in this crate ([`MemoryIssuer`] and
-/// [`ShardedIssuer`]); a self-hosting ring issuer dilutes through its snapshot
-/// in `nectar-postage-usage` and is not registered here.
+/// for the fill-only [`MemoryIssuer`]; a self-hosting ring issuer dilutes
+/// through its snapshot in `nectar-postage-usage` and is not registered here.
 ///
 /// The trait is spec-agnostic: it only reads scalar geometry, so one registry
 /// can hold issuers for different networks behind `dyn Dilutable`.
@@ -64,24 +62,6 @@ impl<S: SwarmSpec> Dilutable for MemoryIssuer<S> {
 
     fn bucket_capacity(&self) -> u32 {
         crate::StampIssuer::bucket_capacity(self)
-    }
-
-    fn dilute(&mut self, new_depth: u8) -> Result<(), IssuerError> {
-        Self::dilute(self, new_depth)
-    }
-}
-
-impl<S: SwarmSpec> Dilutable for ShardedIssuer<S> {
-    fn batch_id(&self) -> BatchId {
-        Self::batch_id(self)
-    }
-
-    fn batch_depth(&self) -> u8 {
-        Self::batch_depth(self)
-    }
-
-    fn bucket_capacity(&self) -> u32 {
-        Self::bucket_capacity(self)
     }
 
     fn dilute(&mut self, new_depth: u8) -> Result<(), IssuerError> {
@@ -174,7 +154,7 @@ impl BatchEventHandler for IssuerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MemoryIssuer, ShardedIssuer};
+    use crate::MemoryIssuer;
     use nectar_postage::BucketDepth;
     use nectar_primitives::Mainnet;
 
@@ -206,29 +186,6 @@ mod tests {
         let issuer = registry.get(&tracked).unwrap();
         assert_eq!(issuer.batch_depth(), 18);
         assert_eq!(issuer.bucket_capacity(), 4);
-    }
-
-    #[test]
-    fn depth_increase_grows_sharded_issuer_capacity() {
-        let tracked = batch_id(0x22);
-        let mut registry = IssuerRegistry::new();
-        registry.register(ShardedIssuer::<Mainnet>::new(
-            tracked,
-            17,
-            BucketDepth::new(16).unwrap(),
-        ));
-        assert_eq!(registry.get(&tracked).unwrap().bucket_capacity(), 2);
-
-        registry
-            .handle_event(BatchEvent::DepthIncrease {
-                batch_id: tracked,
-                new_depth: 20,
-            })
-            .unwrap();
-
-        let issuer = registry.get(&tracked).unwrap();
-        assert_eq!(issuer.batch_depth(), 20);
-        assert_eq!(issuer.bucket_capacity(), 16);
     }
 
     #[test]

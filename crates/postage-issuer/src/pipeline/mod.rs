@@ -547,7 +547,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BatchId, BucketDepth, MemoryIssuer, ShardedIssuer, StampError};
+    use crate::{BatchId, BucketDepth, MemoryIssuer, StampError};
     use alloy_primitives::{B256, Signature, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -1034,22 +1034,22 @@ mod tests {
     }
 
     #[test]
-    fn sharded_issuer_stamps_by_value() {
-        let mut issuer: ShardedIssuer =
-            ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+    fn a_lock_free_issuer_stamps_by_value() {
+        let mut issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
         let pipeline = StampPipeline::from_signer(FixedSigner);
 
         let results: Vec<_> = pipeline.stamp(&mut issuer, addresses(50)).collect();
 
         assert_eq!(results.len(), 50);
         assert!(results.iter().all(|r| r.result.is_ok()));
-        assert_eq!(issuer.stamps_issued(), 50);
+        assert_eq!(issuer.stamps_issued(), Some(50));
     }
 
     #[test]
-    fn sharded_issuer_admits_concurrently_over_shared_handles() {
-        let issuer: ShardedIssuer =
-            ShardedIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
+    fn a_lock_free_issuer_admits_concurrently_over_shared_handles() {
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
         let pipeline = StampPipeline::from_signer(FixedSigner);
 
         std::thread::scope(|scope| {
@@ -1063,6 +1063,6 @@ mod tests {
             }
         });
 
-        assert_eq!(issuer.stamps_issued(), 400);
+        assert_eq!(issuer.stamps_issued(), Some(400));
     }
 }
