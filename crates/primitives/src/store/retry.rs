@@ -15,8 +15,8 @@ use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
-use super::typed::{ChunkGet, ChunkHas, ChunkPut};
-use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, Verified};
+use super::typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit};
+use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry};
 use crate::marker::{MaybeSend, MaybeSync};
 
 /// Injected async delay so the decorator owns its timer: nectar takes no new
@@ -146,13 +146,11 @@ impl<R: ChunkRegistry, G: ChunkGet<R>, S: Sleeper> ChunkGet<R> for RetryingChunk
     }
 }
 
-impl<R: ChunkRegistry, G: ChunkPut<R>, S: MaybeSend + MaybeSync> ChunkPut<R>
-    for RetryingChunkGet<G, S>
-{
+impl<U: PutUnit, G: ChunkPut<U>, S: MaybeSend + MaybeSync> ChunkPut<U> for RetryingChunkGet<G, S> {
     type Error = G::Error;
 
-    async fn put(&self, chunk: Chunk<Verified, R>) -> Result<(), Self::Error> {
-        self.inner.put(chunk).await
+    async fn put(&self, unit: U) -> Result<(), Self::Error> {
+        self.inner.put(unit).await
     }
 }
 
@@ -172,7 +170,7 @@ mod tests {
     use nectar_testing::run;
 
     use crate::DefaultContentChunk;
-    use crate::chunk::StandardChunkSet;
+    use crate::chunk::{StandardChunkSet, Verified};
 
     /// A [`Sleeper`] that returns immediately, so tests never wait real time.
     struct NoSleep;
@@ -224,7 +222,7 @@ mod tests {
         }
     }
 
-    impl ChunkPut<StandardChunkSet> for FlakyStore {
+    impl ChunkPut<Chunk> for FlakyStore {
         type Error = Transient;
 
         async fn put(&self, _chunk: Chunk) -> Result<(), Self::Error> {

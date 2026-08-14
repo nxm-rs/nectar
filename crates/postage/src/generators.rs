@@ -16,7 +16,9 @@ use alloy_signer::SignerSync;
 use arbitrary::Unstructured;
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, Mainnet, SwarmSpec, Verified};
 
-use crate::{Batch, BatchId, BucketDepth, Stamp, StampDigest, StampIndex, StampedChunk};
+use crate::{
+    Batch, BatchId, BucketDepth, Stamp, StampDigest, StampIndex, StampedChunk, Unvalidated,
+};
 
 /// A batch with valid depth invariants and the given owner.
 ///
@@ -64,22 +66,28 @@ pub fn signed_stamp(
     Ok(Stamp::with_index(batch.id(), index, timestamp, signature))
 }
 
-/// A fully coherent stamped chunk: a valid chunk paired with a stamp that
-/// verifies against the returned batch's owner.
-///
-/// The signer is drawn from `u` (see `nectar_primitives::generators::signer`);
-/// its address is the batch owner, so
-/// `stamped.stamp().verify(stamped.address(), batch.owner())` passes.
-pub fn signed_stamped_chunk<const BODY_SIZE: usize>(
+/// A batch and a stamp that pays `address` from it, owned by a signer drawn
+/// from `u`.
+pub fn batch_and_stamp(
     u: &mut Unstructured<'_>,
-) -> arbitrary::Result<(StampedChunk<BODY_SIZE>, Batch)> {
+    address: &ChunkAddress,
+) -> arbitrary::Result<(Batch, Stamp)> {
     let signer = nectar_primitives::generators::signer(u)?;
     let batch = batch(u, signer.address())?;
+    let stamp = signed_stamp(u, &signer, &batch, address)?;
+    Ok((batch, stamp))
+}
+
+/// A fully coherent stamped chunk: a valid chunk paired with a stamp that
+/// verifies against the returned batch's owner.
+pub fn signed_stamped_chunk<const BODY_SIZE: usize>(
+    u: &mut Unstructured<'_>,
+) -> arbitrary::Result<(StampedChunk<Verified, Unvalidated, BODY_SIZE>, Batch)> {
     let chunk = Chunk::<Verified, AnyChunkSet<BODY_SIZE>>::from_envelope(
         nectar_primitives::generators::any_chunk::<BODY_SIZE>(u)?,
     )
     .map_err(|_| arbitrary::Error::IncorrectFormat)?;
-    let stamp = signed_stamp(u, &signer, &batch, chunk.address())?;
+    let (batch, stamp) = batch_and_stamp(u, chunk.address())?;
     Ok((StampedChunk::new(chunk, stamp), batch))
 }
 
@@ -94,7 +102,7 @@ mod tests {
             seed in proptest::collection::vec(any::<u8>(), 128..2048),
         ) {
             let mut u = Unstructured::new(&seed);
-            let (stamped, batch): (StampedChunk, Batch) =
+            let (stamped, batch): (StampedChunk<Verified, Unvalidated>, Batch) =
                 signed_stamped_chunk(&mut u).unwrap();
 
             let address = *stamped.address();
@@ -110,6 +118,8 @@ mod tests {
             // The stamp round-trips its fixed-size wire encoding.
             let decoded = Stamp::from_bytes(&stamp.to_bytes()).unwrap();
             prop_assert_eq!(stamp, &decoded);
+
+            prop_assert!(stamped.validate(&batch).is_ok());
         }
     }
 }

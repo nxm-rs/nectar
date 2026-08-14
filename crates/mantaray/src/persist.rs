@@ -41,7 +41,7 @@ mod pipeline {
     use nectar_primitives::EntryRef;
     use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Verified};
     use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, ContentGetError, TrustedGet};
-    use nectar_primitives::{AnyChunkSet, DEFAULT_BODY_SIZE};
+    use nectar_primitives::{AnyChunkSet, Chunk, DEFAULT_BODY_SIZE};
 
     use super::*;
 
@@ -142,7 +142,7 @@ mod pipeline {
 
     impl<S, const B: usize> NodeSaver<[u8], ChunkRef> for NodeLoadSaver<S, B>
     where
-        S: ChunkPut<AnyChunkSet<B>>,
+        S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     {
         type Error = SplitError<S::Error>;
 
@@ -158,7 +158,7 @@ mod pipeline {
     #[cfg_attr(docsrs, doc(cfg(all(feature = "manifest", feature = "encryption"))))]
     impl<S, const B: usize> NodeSaver<[u8], EncryptedChunkRef> for NodeLoadSaver<S, B>
     where
-        S: ChunkPut<AnyChunkSet<B>>,
+        S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     {
         type Error = SplitError<S::Error>;
 
@@ -238,7 +238,7 @@ pub mod single_chunk {
     use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ChunkRef, ContentChunk};
     use nectar_primitives::error::PrimitivesError;
     use nectar_primitives::store::{ChunkPut, SharedError, TrustedGet};
-    use nectar_primitives::{AnyChunkSet, Chunk, DEFAULT_BODY_SIZE, EncryptionKey};
+    use nectar_primitives::{AnyChunkSet, Chunk, DEFAULT_BODY_SIZE, EncryptionKey, Verified};
 
     use super::*;
 
@@ -292,7 +292,7 @@ pub mod single_chunk {
 
     impl<S, const BS: usize> SingleChunkLoadSaver<S, BS>
     where
-        S: ChunkPut<AnyChunkSet<BS>>,
+        S: ChunkPut<Chunk<Verified, AnyChunkSet<BS>>>,
     {
         async fn put_node(&self, data: &[u8]) -> Result<ChunkAddress, SingleChunkError> {
             let chunk = ContentChunk::<BS>::new(data.to_vec())?;
@@ -308,7 +308,7 @@ pub mod single_chunk {
 
     impl<S, const BS: usize> NodeSaver<[u8], ChunkRef> for SingleChunkLoadSaver<S, BS>
     where
-        S: ChunkPut<AnyChunkSet<BS>>,
+        S: ChunkPut<Chunk<Verified, AnyChunkSet<BS>>>,
     {
         type Error = SingleChunkError;
 
@@ -319,7 +319,7 @@ pub mod single_chunk {
 
     impl<S, const BS: usize> NodeSaver<[u8], EncryptedChunkRef> for SingleChunkLoadSaver<S, BS>
     where
-        S: ChunkPut<AnyChunkSet<BS>>,
+        S: ChunkPut<Chunk<Verified, AnyChunkSet<BS>>>,
     {
         type Error = SingleChunkError;
 

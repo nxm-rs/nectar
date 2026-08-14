@@ -36,7 +36,7 @@ impl<S: Clone, P: Clone, const B: usize> Clone for FaultStore<S, P, B> {
 
 impl<S, P, const B: usize> FaultStore<S, P, B>
 where
-    S: ChunkPut<AnyChunkSet<B>>,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     P: Fn(usize) -> Result<(), ChunkStoreError>,
 {
     /// Wrap `inner`, consulting `policy` against the running put index.
@@ -49,9 +49,9 @@ where
     }
 }
 
-impl<S, P, const B: usize> ChunkPut<AnyChunkSet<B>> for FaultStore<S, P, B>
+impl<S, P, const B: usize> ChunkPut<Chunk<Verified, AnyChunkSet<B>>> for FaultStore<S, P, B>
 where
-    S: ChunkPut<AnyChunkSet<B>>,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     P: Fn(usize) -> Result<(), ChunkStoreError> + MaybeSend + MaybeSync,
 {
     type Error = ChunkStoreError;
@@ -73,7 +73,7 @@ pub(crate) fn failing_at<S, const B: usize>(
     n: usize,
 ) -> FaultStore<S, impl Fn(usize) -> Result<(), ChunkStoreError> + Clone, B>
 where
-    S: ChunkPut<AnyChunkSet<B>>,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
 {
     FaultStore::new(inner, move |index| {
         if index >= n {
@@ -89,7 +89,7 @@ pub(crate) fn reject_all<S, const B: usize>(
     inner: S,
 ) -> FaultStore<S, impl Fn(usize) -> Result<(), ChunkStoreError> + Clone, B>
 where
-    S: ChunkPut<AnyChunkSet<B>>,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
 {
     failing_at(inner, 0)
 }

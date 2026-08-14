@@ -26,7 +26,7 @@ struct RcStore {
     peak: Rc<Cell<usize>>,
 }
 
-impl ChunkPut<AnyChunkSet<DEFAULT_BODY_SIZE>> for RcStore {
+impl ChunkPut<Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>> for RcStore {
     type Error = std::convert::Infallible;
 
     async fn put(&self, chunk: SealedChunk) -> Result<(), Self::Error> {

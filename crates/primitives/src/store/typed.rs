@@ -2,9 +2,8 @@
 //!
 //! `ChunkGet`, `ChunkPut`, and `ChunkHas` are async and carry `MaybeSend`/
 //! `MaybeSync` bounds (on the traits and their error types) so a store may be
-//! `!Send` on single-threaded targets. Writes are uniformly sealed ([`ChunkPut`] only accepts
-//! `Chunk<Verified, R>`); trust is a property of the read medium, declared
-//! once per backend through [`ChunkGet::Trust`].
+//! `!Send` on single-threaded targets. Trust is a property of the read medium,
+//! declared once per backend through [`ChunkGet::Trust`].
 
 use core::future::Future;
 
@@ -72,41 +71,44 @@ impl<T: ChunkHas + ?Sized> ChunkHas for alloc::sync::Arc<T> {
     }
 }
 
-/// Async chunk storage (primary API, `&self`).
-///
-/// Only accepts proof: there is no trust parameter to widen, so an
-/// uncertified chunk cannot enter any store. Implementors should use interior
-/// mutability (e.g. `Mutex`, `RwLock`).
-pub trait ChunkPut<R: ChunkRegistry = StandardChunkSet>: MaybeSend + MaybeSync {
-    /// Error type for put operations.
-    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
-
-    /// Store a sealed chunk.
-    fn put(
-        &self,
-        chunk: Chunk<Verified, R>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
+/// What a [`ChunkPut`] moves. Not sealed, so whether a unit wraps a verified
+/// chunk is a property of the chosen `U`, not of the trait.
+pub trait PutUnit: MaybeSend + 'static {
+    /// The address the unit is stored under.
+    fn address(&self) -> &ChunkAddress;
 }
 
-impl<R: ChunkRegistry, T: ChunkPut<R> + ?Sized> ChunkPut<R> for &T {
-    type Error = T::Error;
-
-    fn put(
-        &self,
-        chunk: Chunk<Verified, R>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
-        (**self).put(chunk)
+impl<R: ChunkRegistry> PutUnit for Chunk<Verified, R> {
+    #[inline]
+    fn address(&self) -> &ChunkAddress {
+        Self::address(self)
     }
 }
 
-impl<R: ChunkRegistry, T: ChunkPut<R> + ?Sized> ChunkPut<R> for alloc::sync::Arc<T> {
+/// Async chunk storage (primary API, `&self`).
+///
+/// Implementors should use interior mutability (e.g. `Mutex`, `RwLock`).
+pub trait ChunkPut<U: PutUnit = Chunk<Verified>>: MaybeSend + MaybeSync {
+    /// Error type for put operations.
+    type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
+
+    /// Store one unit.
+    fn put(&self, unit: U) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
+}
+
+impl<U: PutUnit, T: ChunkPut<U> + ?Sized> ChunkPut<U> for &T {
     type Error = T::Error;
 
-    fn put(
-        &self,
-        chunk: Chunk<Verified, R>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
-        (**self).put(chunk)
+    fn put(&self, unit: U) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
+        (**self).put(unit)
+    }
+}
+
+impl<U: PutUnit, T: ChunkPut<U> + ?Sized> ChunkPut<U> for alloc::sync::Arc<T> {
+    type Error = T::Error;
+
+    fn put(&self, unit: U) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
+        (**self).put(unit)
     }
 }
 

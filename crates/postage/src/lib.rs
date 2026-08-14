@@ -16,14 +16,19 @@
 //! - [`Stamp`]: A postage stamp proving payment for chunk storage
 //! - [`StampIndex`]: The bucket and position index within a stamp
 //! - [`StampDigest`]: The data to be signed when creating a stamp
+//! - [`StampedAddress`]: A stamp bound to an address, and the authority that
+//!   validates the pairing
+//! - [`StampedChunk`]: A chunk and its stamp, carrying the chunk's trust state
+//!   and the stamp's validation state
 //! - [`PostageContext`]: Context for batch expiry calculations
 //! - [`BatchEvent`]: Events emitted by the postage stamp contract (requires `std`)
 //!
 //! # Traits
 //!
 //! - [`StampValidator`]: Validate stamps against batches
-//! - [`PutStamped`]: Downward-facing sink for a [`StampedChunk`], with
-//!   [`StampIndifferent`] and [`Tee`] bridging plain chunk stores into it
+//! - [`ChunkPut`](nectar_primitives::ChunkPut) over a [`StampedChunk`]: the
+//!   sink for a paid chunk, with [`StampIndifferent`] bridging a plain chunk
+//!   store into it
 //! - [`BatchStore`]: Persist and retrieve batches (requires `std`). The trait is
 //!   synchronous and, having an associated `Error` and no generic methods, is
 //!   naturally object-safe; drive it from an async edge (a gRPC service, an FFI
@@ -73,6 +78,7 @@ pub mod oracles;
 mod sink;
 mod stamp;
 mod stamped;
+mod stamped_address;
 mod util;
 mod validation;
 
@@ -92,9 +98,10 @@ pub mod parallel;
 pub use batch::{Batch, BatchId, BatchParams};
 pub use error::StampError;
 pub use geometry::{BatchDepth, Bucket, BucketDepth, calculate_bucket};
-pub use sink::{PutStamped, StampIndifferent, Tee, TeeError};
+pub use sink::StampIndifferent;
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
+pub use stamped_address::{StampedAddress, Unvalidated, Validated, ValidationState};
 pub use util::PostageContext;
 pub use validation::StampValidator;
 #[cfg(feature = "std")]
