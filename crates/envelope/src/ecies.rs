@@ -13,6 +13,7 @@ pub use k256::{PublicKey, SecretKey};
 use nectar_primitives::chunk::encryption::{EncryptionKey, transcrypt_in_place};
 use nectar_primitives::error::WrongLength;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 /// Errors from ECIES operations.
 #[non_exhaustive]
@@ -57,25 +58,52 @@ impl<'a> From<&'a [u8; 32]> for Salt<'a> {
     }
 }
 
+/// The salt-independent product of one ECDH: the shared x coordinate.
+pub struct SharedX {
+    bytes: Zeroizing<[u8; 32]>,
+    start: usize,
+}
+
+impl SharedX {
+    fn as_slice(&self) -> &[u8] {
+        self.bytes.get(self.start..).unwrap_or(&[])
+    }
+
+    /// Derive the cipher key for one salt: `keccak256(x || salt)`.
+    #[must_use]
+    pub fn derive(&self, salt: Salt<'_>) -> EncryptionKey {
+        let mut hasher = Keccak256::new();
+        hasher.update(self.as_slice());
+        hasher.update(salt.as_bytes());
+        EncryptionKey::from(hasher.finalize())
+    }
+}
+
+impl core::fmt::Debug for SharedX {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SharedX(..)")
+    }
+}
+
+/// Run the ECDH; the salt enters only at [`SharedX::derive`].
+#[must_use]
+pub fn shared_x(secret: &SecretKey, public: &PublicKey) -> SharedX {
+    let shared = k256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+    let mut bytes = Zeroizing::new([0u8; 32]);
+    bytes.copy_from_slice(shared.raw_secret_bytes());
+    // The reference client serialises x as a big integer: leading zero
+    // bytes are dropped before hashing.
+    let start = bytes.iter().position(|byte| *byte != 0).unwrap_or(32);
+    SharedX { bytes, start }
+}
+
 /// Derive the shared cipher key: `keccak256(x || salt)`.
 ///
 /// Symmetric: the encryptor passes `(ephemeral_secret, recipient_public)`,
 /// the decryptor `(recipient_secret, ephemeral_public)`.
 #[must_use]
 pub fn shared_key(secret: &SecretKey, public: &PublicKey, salt: Salt<'_>) -> EncryptionKey {
-    let shared = k256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
-
-    // The reference client serialises x as a big integer: leading zero
-    // bytes are dropped before hashing.
-    let mut x: &[u8] = shared.raw_secret_bytes();
-    while let [0, rest @ ..] = x {
-        x = rest;
-    }
-
-    let mut hasher = Keccak256::new();
-    hasher.update(x);
-    hasher.update(salt.as_bytes());
-    EncryptionKey::from(hasher.finalize())
+    shared_x(secret, public).derive(salt)
 }
 
 /// Topic-match hint: `keccak256(key || salt)[..8]`.

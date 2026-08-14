@@ -17,7 +17,7 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use super::{Envelope, Hpke, LABEL, OpenError, Opened, Topic, hint_matches};
+use super::{Envelope, Hpke, LABEL, OpenError, Opened, Topic, ecdh, hint_matches};
 #[cfg(any(test, feature = "encryption"))]
 use super::{Recipient, SealedEnvelope};
 
@@ -34,8 +34,8 @@ const HINT_CONTEXT: &[u8] = b"nectar/env/v1 hint";
 const TAG_SIZE: usize = 16;
 /// Big-endian length prefix inside the sealed plaintext.
 const LEN_PREFIX: usize = 2;
-/// Smallest admissible ciphertext region.
-const MIN_CT_LEN: usize = TAG_SIZE + LEN_PREFIX;
+/// Tail bytes that carry no message: encapsulation, tag and length prefix.
+pub(super) const OVERHEAD: usize = ecdh::ENC_X_SIZE + TAG_SIZE + LEN_PREFIX;
 
 /// Key-derivation context: the domain label followed by the topic.
 #[derive(Debug, Clone, Copy)]
@@ -80,11 +80,11 @@ pub enum HpkeSealError {
         /// Region capacity after tag and length prefix.
         max: usize,
     },
-    /// The region cannot hold the tag and length prefix.
-    #[error("ciphertext region too small: {ct_len} bytes, minimum {MIN_CT_LEN}")]
-    RegionTooSmall {
-        /// Requested region length.
-        ct_len: usize,
+    /// The tail cannot hold the encapsulation, tag and length prefix.
+    #[error("tail too small: {tail_len} bytes, minimum {OVERHEAD}")]
+    TailTooSmall {
+        /// Requested tail length.
+        tail_len: usize,
     },
     /// A fixed-size derivation failed; unreachable for the pinned suite.
     #[error("suite derivation invariant violated")]
@@ -244,36 +244,50 @@ fn key_schedule(shared: &[u8; 32], topic: &Topic) -> Result<Schedule, ExportErro
     })
 }
 
+/// The KEM shared secret: topic-independent, so one decapsulation serves
+/// every candidate topic.
+pub struct Shared(Zeroizing<[u8; 32]>);
+
+impl core::fmt::Debug for Shared {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Shared(..)")
+    }
+}
+
 /// Decap once per envelope; `Ok(None)` when `enc_x` is off-curve or the ECDH
 /// output is rejected.
 pub(super) fn decap(
     secret: &SecretKey,
     envelope: &Envelope<'_>,
-) -> Result<Option<Zeroizing<[u8; 32]>>, OpenError> {
-    let Some(enc) = super::reconstruct(envelope.enc_x(), envelope.parity()) else {
+) -> Result<Option<Shared>, OpenError> {
+    let Some((enc, _)) = ecdh::split(envelope) else {
         return Ok(None);
     };
+    #[cfg(test)]
+    crate::decaps::note(super::SchemeId::Hpke);
     let dh = k256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), enc.as_affine());
     let dh_bytes: &[u8] = dh.raw_secret_bytes().as_ref();
     let enc_point = enc.to_encoded_point(false);
     let pkr_point = secret.public_key().to_encoded_point(false);
-    extract_and_expand(dh_bytes, enc_point.as_bytes(), pkr_point.as_bytes())
-        .map_err(|_| OpenError::Internal)
+    let shared = extract_and_expand(dh_bytes, enc_point.as_bytes(), pkr_point.as_bytes())
+        .map_err(|_| OpenError::Internal)?;
+    Ok(shared.map(Shared))
 }
 
 /// Hint probe plus AEAD open for one topic over an established shared
 /// secret; a hint collision fails the tag and falls through as `Ok(None)`.
-pub(super) fn open_with_shared(
-    shared: &Zeroizing<[u8; 32]>,
-    topic: &Topic,
+pub(super) fn probe(
+    shared: &Shared,
+    ctx: Info<'_>,
     envelope: &Envelope<'_>,
 ) -> Result<Option<Opened<Hpke>>, OpenError> {
-    let schedule = key_schedule(shared, topic).map_err(|_| OpenError::Internal)?;
+    let topic = ctx.topic();
+    let schedule = key_schedule(&shared.0, topic).map_err(|_| OpenError::Internal)?;
     let hint = schedule.hint().map_err(|_| OpenError::Internal)?;
     if !hint_matches(&hint, envelope.hint()) {
         return Ok(None);
     }
-    let Some((body, tag)) = envelope.ciphertext().split_last_chunk::<TAG_SIZE>() else {
+    let Some((body, tag)) = ecdh::ciphertext(envelope).split_last_chunk::<TAG_SIZE>() else {
         return Ok(None);
     };
     let cipher = ChaCha20Poly1305::new_from_slice(schedule.key.as_slice())
@@ -297,30 +311,19 @@ pub(super) fn open_with_shared(
     }))
 }
 
-pub(super) fn open(
-    secret: &SecretKey,
-    ctx: Info<'_>,
-    envelope: &Envelope<'_>,
-) -> Result<Option<Opened<Hpke>>, OpenError> {
-    let Some(shared) = decap(secret, envelope)? else {
-        return Ok(None);
-    };
-    open_with_shared(&shared, ctx.topic(), envelope)
-}
-
 #[cfg(any(test, feature = "encryption"))]
 pub(super) fn seal(
     recipient: &Recipient<Hpke>,
     ctx: Info<'_>,
     plaintext: &[u8],
-    ct_len: usize,
+    tail_len: usize,
 ) -> Result<SealedEnvelope<Hpke>, HpkeSealError> {
     seal_with_ephemeral(
         &crate::ecies::generate_secret(),
         recipient.key(),
         ctx.topic(),
         plaintext,
-        ct_len,
+        tail_len,
     )
 }
 
@@ -332,11 +335,11 @@ fn seal_with_ephemeral(
     recipient: &PublicKey,
     topic: &Topic,
     plaintext: &[u8],
-    ct_len: usize,
+    tail_len: usize,
 ) -> Result<SealedEnvelope<Hpke>, HpkeSealError> {
-    let capacity = ct_len
-        .checked_sub(MIN_CT_LEN)
-        .ok_or(HpkeSealError::RegionTooSmall { ct_len })?;
+    let capacity = tail_len
+        .checked_sub(OVERHEAD)
+        .ok_or(HpkeSealError::TailTooSmall { tail_len })?;
     let max = capacity.min(usize::from(u16::MAX));
     if plaintext.len() > max {
         return Err(HpkeSealError::MessageTooLong {
@@ -360,10 +363,10 @@ fn seal_with_ephemeral(
     let hint = schedule.hint().map_err(|_| HpkeSealError::Internal)?;
 
     // `len || msg || pad`, sealed to fill the region exactly.
-    let inner_len = ct_len
-        .checked_sub(TAG_SIZE)
+    let inner_len = capacity
+        .checked_add(LEN_PREFIX)
         .ok_or(HpkeSealError::Internal)?;
-    let mut buf = Vec::with_capacity(ct_len);
+    let mut buf = Vec::with_capacity(inner_len.saturating_add(TAG_SIZE));
     buf.extend_from_slice(&length.to_be_bytes());
     buf.extend_from_slice(plaintext);
     buf.resize(inner_len, 0);
@@ -376,12 +379,11 @@ fn seal_with_ephemeral(
         .map_err(|_| HpkeSealError::Internal)?;
     buf.extend_from_slice(&tag);
 
-    let (enc_x, parity) = super::x_and_parity(&enc);
+    let (tail, nonce_bits) = ecdh::tail(&enc, &buf);
     Ok(SealedEnvelope::from_parts(
         hint,
-        parity,
-        enc_x,
-        buf,
+        nonce_bits,
+        tail,
         schedule.exporter,
     ))
 }
@@ -429,12 +431,20 @@ mod tests {
         Envelope::parse(bytes).unwrap()
     }
 
+    fn open(
+        secret: &SecretKey,
+        ctx: Info<'_>,
+        envelope: &Envelope<'_>,
+    ) -> Result<Option<Opened<Hpke>>, OpenError> {
+        <Hpke as crate::Scheme>::open(secret, ctx, envelope)
+    }
+
     #[test]
     fn differential_our_seal_reference_open() {
         let (recipient_sk, recipient_pk) = recipient_keys();
         let topic = topic();
         let msg = b"differential message";
-        let sealed = seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic, msg, 64).unwrap();
+        let sealed = seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic, msg, 96).unwrap();
 
         let enc = ephemeral_key().public_key().to_encoded_point(false);
         let bytes = sealed.to_bytes();
@@ -445,7 +455,7 @@ mod tests {
                 &recipient_sk.to_bytes().to_vec().into(),
                 &info_bytes(&topic),
                 b"",
-                envelope.ciphertext(),
+                ecdh::ciphertext(&envelope),
                 None,
                 None,
                 None,
@@ -456,7 +466,7 @@ mod tests {
         let length = usize::from(u16::from_be_bytes(*length));
         assert_eq!(length, msg.len());
         assert_eq!(&rest[..length], msg);
-        assert_eq!(inner.len(), 64 - TAG_SIZE);
+        assert_eq!(inner.len(), 96 - ecdh::ENC_X_SIZE - TAG_SIZE);
     }
 
     #[test]
@@ -499,7 +509,7 @@ mod tests {
         let (recipient_sk, recipient_pk) = recipient_keys();
         let topic = topic();
         let sealed =
-            seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic, b"x", 64).unwrap();
+            seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic, b"x", 96).unwrap();
         let enc = ephemeral_key().public_key().to_encoded_point(false);
 
         let theirs = reference()
@@ -537,17 +547,17 @@ mod tests {
     }
 
     #[test]
-    fn region_too_small() {
+    fn tail_too_small() {
         let (_, recipient_pk) = recipient_keys();
         let err =
-            seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic(), b"", 17).unwrap_err();
-        assert_eq!(err, HpkeSealError::RegionTooSmall { ct_len: 17 });
+            seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic(), b"", 49).unwrap_err();
+        assert_eq!(err, HpkeSealError::TailTooSmall { tail_len: 49 });
     }
 
     #[test]
     fn message_too_long() {
         let (_, recipient_pk) = recipient_keys();
-        let err = seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic(), &[0u8; 47], 64)
+        let err = seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic(), &[0u8; 47], 96)
             .unwrap_err();
         assert_eq!(err, HpkeSealError::MessageTooLong { len: 47, max: 46 });
     }
@@ -556,13 +566,11 @@ mod tests {
     fn off_curve_enc_rejects_cheaply() {
         let (recipient_sk, recipient_pk) = recipient_keys();
         let sealed =
-            seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic(), b"msg", 64).unwrap();
+            seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic(), b"msg", 96).unwrap();
         let mut bytes = sealed.to_bytes();
         // Find an x that is off-curve for both parities, deterministically.
         let mut x = [0u8; 32];
-        while super::super::reconstruct(&x, false).is_some()
-            || super::super::reconstruct(&x, true).is_some()
-        {
+        while ecdh::reconstruct(&x, false).is_some() || ecdh::reconstruct(&x, true).is_some() {
             x[31] = x[31].wrapping_add(1);
         }
         bytes[40..72].copy_from_slice(&x);
@@ -579,7 +587,7 @@ mod tests {
     fn exporter_length_bound() {
         let (_, recipient_pk) = recipient_keys();
         let sealed =
-            seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic(), b"x", 64).unwrap();
+            seal_with_ephemeral(&ephemeral_key(), &recipient_pk, &topic(), b"x", 96).unwrap();
         let mut too_long = vec![0u8; 32 * 256];
         assert_eq!(
             sealed.extra().export(b"ctx", &mut too_long).unwrap_err(),
@@ -588,7 +596,7 @@ mod tests {
     }
 
     /// Nectar-owned conformance vector in the RFC 9180 appendix shape:
-    /// mode_base, kem 0x0016, kdf 0x0001, aead 0x0003, `ct_len` 64. The
+    /// mode_base, kem 0x0016, kdf 0x0001, aead 0x0003, a 96-byte tail. The
     /// draft KEM has no registry vectors; these pin the whole chain from
     /// scalars to the serialized frame.
     #[test]
@@ -632,7 +640,7 @@ mod tests {
         assert_eq!(schedule.base_nonce, BASE_NONCE);
         assert_eq!(schedule.hint().unwrap(), HINT);
 
-        let sealed = seal_with_ephemeral(&eph, &recipient_pk, &topic, MSG, 64).unwrap();
+        let sealed = seal_with_ephemeral(&eph, &recipient_pk, &topic, MSG, 96).unwrap();
         assert_eq!(sealed.to_bytes(), FRAME);
 
         let envelope = envelope_from(&FRAME);
