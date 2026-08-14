@@ -74,15 +74,13 @@
 //!
 //! # Parallel stamping
 //!
-//! [`MemoryIssuer`] allocates without a lock: its per-bucket watermarks are a
-//! flat atomic table claimed by compare-and-swap, and its depth is raised by a
-//! maximum, so `&MemoryIssuer` is itself a [`StampIssuer`] that any number of
-//! threads may stamp through. Ring issuance stays sequential, because skipping
-//! reserved slots reads more state than one word; share a [`RingIssuer`] behind
-//! a lock.
+//! [`MemoryIssuer`] allocates without a lock, so `&MemoryIssuer` is itself a
+//! [`StampIssuer`] that any number of threads may stamp through. Ring issuance
+//! stays sequential, because skipping reserved slots reads more state than one
+//! word; share a [`RingIssuer`] behind a lock.
 //!
-//! On targets with no threads (`unsync`, wasm32, bare metal) the same table is
-//! plain cells, so the single-threaded path pays nothing for the seam.
+//! Where there are no threads (`unsync`, wasm32, bare metal) the same table is
+//! plain cells, which leaves [`MemoryIssuer`] `!Sync` there.
 //!
 //! # Features
 //!

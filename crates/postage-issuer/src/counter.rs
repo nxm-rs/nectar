@@ -1,11 +1,9 @@
-//! The shared per-bucket slot counter table.
+//! The sequential per-bucket slot counter table.
 //!
-//! Every issuer in this crate, and the self-hosted snapshot in
-//! `nectar-postage-usage`, tracks the same per-bucket state: for each of the
-//! `2^bucket_depth` collision buckets, how far issuance has advanced into the
-//! bucket's `2^(depth - bucket_depth)` slots. [`CounterTable`] is that state and
-//! the single counter-advance primitive behind all of them, so the advance logic
-//! lives in exactly one place.
+//! For each of the `2^bucket_depth` collision buckets it holds how far issuance
+//! has advanced into the bucket's `2^(depth - bucket_depth)` slots. It backs the
+//! ring issuer here and the self-hosted snapshot in `nectar-postage-usage`;
+//! [`MemoryIssuer`](crate::MemoryIssuer) fills lock-free instead.
 //!
 //! # Representation
 //!
@@ -101,10 +99,10 @@ pub enum CounterError {
 
 /// Per-bucket slot counters in the `[0, capacity]` deferred-wrap representation.
 ///
-/// This is the shared engine behind every issuer in this crate and behind the
-/// self-hosted snapshot in `nectar-postage-usage`. It holds only the counters
-/// and the geometry needed to advance them; it is address-agnostic, so callers
-/// map a chunk address to a bucket and hand the bucket here.
+/// The sequential engine behind the ring issuer and the self-hosted snapshot in
+/// `nectar-postage-usage`. It holds only the counters and the geometry needed to
+/// advance them; it is address-agnostic, so callers map a chunk address to a
+/// bucket and hand the bucket here.
 ///
 /// The advance primitive is [`record`](Self::record). It takes a predicate that
 /// answers whether a `(bucket, slot)` is protected, so a ring never re-emits a

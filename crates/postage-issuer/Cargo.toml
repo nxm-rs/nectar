@@ -24,7 +24,6 @@ nectar-marker = { workspace = true }
 nectar-postage = { workspace = true }
 nectar-primitives = { workspace = true }
 alloy-primitives = { workspace = true }
-portable-atomic = { workspace = true }
 thiserror = { workspace = true }
 
 # optional

@@ -1,17 +1,14 @@
 //! Lock-free issuance under contention.
 //!
-//! Fill allocation is dense: the slots a bucket hands out are always the prefix
-//! `0..n`. Every test below asserts that prefix, which fails on a duplicate (two
-//! threads on one slot) and on a hole (a slot lost by an allocator that rolls
-//! back an overshoot).
+//! Fill allocation is dense: the slots a bucket hands out are the prefix `0..n`.
+//! Asserting that prefix fails on a duplicate and on a slot lost to a rolled
+//! back overshoot. Threads collect locally and meet at a barrier, so nothing in
+//! the harness serializes the allocation loop it is trying to contend.
 
-#![allow(
-    clippy::arithmetic_side_effects,
-    clippy::panic,
-    clippy::unwrap_used
-)]
+#![allow(clippy::arithmetic_side_effects, clippy::panic, clippy::unwrap_used)]
 
-use std::sync::Mutex;
+use std::collections::HashSet;
+use std::sync::Barrier;
 use std::thread;
 
 use alloy_primitives::B256;
@@ -37,29 +34,40 @@ fn address_in(bucket: u16) -> ChunkAddress {
 fn contend(
     issuer: &MemoryIssuer,
     address: &ChunkAddress,
-    threads: u64,
+    threads: usize,
     attempts: u64,
 ) -> (Vec<u32>, u64) {
-    let slots = Mutex::new(Vec::new());
-    let refused = Mutex::new(0u64);
+    let start = Barrier::new(threads);
+    let mut slots = Vec::new();
+    let mut refused = 0u64;
 
     thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| {
-                for timestamp in 0..attempts {
-                    match issuer.prepare_stamp(address, timestamp) {
-                        Ok(digest) => slots.lock().unwrap().push(digest.index.index()),
-                        Err(StampError::BucketFull { .. }) => *refused.lock().unwrap() += 1,
-                        Err(other) => panic!("unexpected issuance error: {other}"),
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    let mut refusals = 0u64;
+                    start.wait();
+                    for timestamp in 0..attempts {
+                        match issuer.prepare_stamp(address, timestamp) {
+                            Ok(digest) => mine.push(digest.index.index()),
+                            Err(StampError::BucketFull { .. }) => refusals += 1,
+                            Err(other) => panic!("unexpected issuance error: {other}"),
+                        }
                     }
-                }
-            });
+                    (mine, refusals)
+                })
+            })
+            .collect();
+        for worker in workers {
+            let (mine, refusals) = worker.join().unwrap();
+            slots.extend(mine);
+            refused += refusals;
         }
     });
 
-    let mut slots = slots.into_inner().unwrap();
     slots.sort_unstable();
-    (slots, refused.into_inner().unwrap())
+    (slots, refused)
 }
 
 #[test]
@@ -68,10 +76,10 @@ fn one_bucket_under_contention_hands_out_each_slot_exactly_once() {
     let issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 24, bucket_depth());
     let address = address_in(0x9BCD);
 
-    let (slots, refused) = contend(&issuer, &address, 8, 40);
+    let (slots, refused) = contend(&issuer, &address, 8, 256);
 
     assert_eq!(slots, (0..256).collect::<Vec<_>>());
-    assert_eq!(refused, 8 * 40 - 256);
+    assert_eq!(refused, 8 * 256 - 256);
     assert!(matches!(
         issuer.prepare_stamp(&address, 0),
         Err(StampError::BucketFull { capacity: 256, .. })
@@ -86,27 +94,36 @@ fn a_dilution_observed_mid_allocation_never_double_spends() {
     let issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 17, bucket_depth());
     let address = address_in(0x0042);
     let bucket = calculate_bucket(&address, bucket_depth()).value();
-    let slots = Mutex::new(Vec::new());
+    let start = Barrier::new(9);
+    let mut slots = Vec::new();
 
     thread::scope(|scope| {
         scope.spawn(|| {
+            start.wait();
             for depth in 18..=24u8 {
                 issuer.dilute(depth).unwrap();
                 thread::yield_now();
             }
         });
-        for _ in 0..8 {
-            scope.spawn(|| {
-                for timestamp in 0..64u64 {
-                    if let Ok(digest) = issuer.prepare_stamp(&address, timestamp) {
-                        slots.lock().unwrap().push(digest.index.index());
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    start.wait();
+                    for timestamp in 0..64u64 {
+                        if let Ok(digest) = issuer.prepare_stamp(&address, timestamp) {
+                            mine.push(digest.index.index());
+                        }
                     }
-                }
-            });
+                    mine
+                })
+            })
+            .collect();
+        for worker in workers {
+            slots.extend(worker.join().unwrap());
         }
     });
 
-    let mut slots = slots.into_inner().unwrap();
     slots.sort_unstable();
     let issued = u32::try_from(slots.len()).unwrap();
     assert_eq!(slots, (0..issued).collect::<Vec<_>>());
@@ -142,19 +159,32 @@ fn a_depth_decrease_racing_allocation_never_shrinks_the_batch() {
 #[test]
 fn the_whole_bucket_space_stamps_through_one_shared_handle() {
     let issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 24, bucket_depth());
+    let start = Barrier::new(8);
+    let mut indices = HashSet::new();
 
     thread::scope(|scope| {
-        for _ in 0..8 {
-            scope.spawn(|| {
-                for _ in 0..1000 {
-                    let address = ChunkAddress::from(B256::random());
-                    let mut handle = &issuer;
-                    StampIssuer::prepare_stamp(&mut handle, &address, 0).unwrap();
-                }
-            });
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    start.wait();
+                    for _ in 0..1000 {
+                        let address = ChunkAddress::from(B256::random());
+                        let mut handle = &issuer;
+                        let digest = StampIssuer::prepare_stamp(&mut handle, &address, 0).unwrap();
+                        mine.push(digest.index);
+                    }
+                    mine
+                })
+            })
+            .collect();
+        for worker in workers {
+            indices.extend(worker.join().unwrap());
         }
     });
 
+    // No (bucket, slot) pair is handed out twice across the whole table.
+    assert_eq!(indices.len(), 8000);
     assert_eq!(StampIssuer::stamps_issued(&issuer), Some(8000));
 }
 
@@ -165,22 +195,23 @@ proptest! {
     /// each slot exactly once and refuses every attempt past the capacity.
     #[test]
     fn contention_conserves_the_slots_of_a_bucket(
-        threads in 2u64..=8,
-        slot_bits in 1u8..=6,
+        threads in 2usize..=8,
+        slot_bits in 1u8..=9,
         overshoot in 1u64..=4,
     ) {
         let capacity = 1u64 << slot_bits;
         let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 16 + slot_bits, bucket_depth());
         let address = address_in(0xABCD);
-        // Enough attempts to fill the bucket and then some.
-        let attempts = capacity.div_ceil(threads) + overshoot;
+        // Every thread races the whole bucket, so the losers keep contending
+        // rather than finishing their share and leaving.
+        let attempts = capacity + overshoot;
 
         let (slots, refused) = contend(&issuer, &address, threads, attempts);
 
         prop_assert_eq!(u64::try_from(slots.len()).unwrap(), capacity);
         prop_assert_eq!(&slots, &(0..u32::try_from(capacity).unwrap()).collect::<Vec<_>>());
-        prop_assert_eq!(refused, threads * attempts - capacity);
+        prop_assert_eq!(refused, u64::try_from(threads).unwrap() * attempts - capacity);
         prop_assert_eq!(StampIssuer::stamps_issued(&issuer), Some(capacity));
     }
 }

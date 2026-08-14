@@ -146,17 +146,14 @@ pub trait StampIssuer {
 /// awareness that lives in `nectar-postage-usage`. See the crate-root
 /// documentation for the steer toward `Snapshot::issuer` / `SnapshotIssuer`.
 ///
-/// Allocation and dilution both take `&self` and take no lock, so one issuer
-/// serves every thread stamping into its batch.
+/// Allocation and dilution take `&self` and no lock, so one issuer serves every
+/// thread stamping into its batch.
 ///
 /// The network is a type parameter that reaches the issuer through its
 /// [`BucketDepth`].
 #[derive(Debug)]
 pub struct MemoryIssuer<S: SwarmSpec = Mainnet> {
-    /// The batch ID.
     batch_id: BatchId,
-    /// The per-bucket fill watermarks. `counts[b]` is the next unused slot,
-    /// monotone and never above the capacity.
     watermarks: Watermarks<S>,
 }
 
@@ -589,6 +586,17 @@ mod tests {
                 requested: 17
             })
         ));
+    }
+
+    #[test]
+    fn dilute_refuses_a_depth_no_counter_can_hold() {
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+
+        // 16 + 31 is the widest bucket a u32 slot count holds.
+        assert!(issuer.dilute(47).is_ok());
+        assert!(matches!(issuer.dilute(48), Err(IssuerError::Geometry(_))));
+        assert_eq!(issuer.batch_depth(), 47);
     }
 
     mod proptests {
