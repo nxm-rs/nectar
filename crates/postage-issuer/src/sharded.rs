@@ -224,9 +224,11 @@ impl<S: SwarmSpec> Sharded<MemoryIssuer<S>, S> {
     ///
     /// [`IssuerError::MutableNotSupported`] for a mutable batch: overwrite-aware
     /// issuance is requested by name through [`ShardedRingIssuer::external`] or
-    /// [`ShardedRingIssuer::reserved`].
+    /// [`ShardedRingIssuer::reserved`]. [`IssuerError::Geometry`] if the
+    /// chain-decoded depth is one no counter table can hold.
     pub fn from_batch(batch: &Batch<S>) -> Result<Self, IssuerError> {
         if batch.immutable() {
+            batch.geometry()?;
             Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))
         } else {
             Err(IssuerError::MutableNotSupported)
@@ -264,7 +266,9 @@ impl<S: SwarmSpec> Sharded<RingIssuer<Unreserved, S>, S> {
     ///
     /// # Errors
     ///
-    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
+    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable, or
+    /// [`IssuerError::Geometry`] if the chain-decoded depth is one no counter
+    /// table can hold.
     pub fn external(batch: &Batch<S>) -> Result<Self, IssuerError> {
         Self::for_mutable_batch(batch, |_, _| Unreserved)
     }
@@ -276,7 +280,9 @@ impl<S: SwarmSpec> Sharded<RingIssuer<Reserved, S>, S> {
     ///
     /// # Errors
     ///
-    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
+    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable, or
+    /// [`IssuerError::Geometry`] if the chain-decoded depth is one no counter
+    /// table can hold.
     pub fn reserved(
         batch: &Batch<S>,
         slots: impl IntoIterator<Item = (u32, u32)>,
@@ -302,6 +308,7 @@ impl<R: Reservation, S: SwarmSpec> Sharded<RingIssuer<R, S>, S> {
         if batch.immutable() {
             return Err(IssuerError::ImmutableNotSupported);
         }
+        batch.geometry()?;
         Ok(Self::with_shards(
             batch.id(),
             batch.depth(),

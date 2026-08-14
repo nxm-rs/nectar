@@ -33,6 +33,10 @@ pub enum IssuerError {
     /// A ring bucket had no unprotected slot to issue.
     #[error("ring issuance failed")]
     RingExhausted(#[from] RingExhausted),
+
+    /// The batch depth decoded from chain is not one a counter table can hold.
+    #[error("invalid batch geometry")]
+    Geometry(#[from] nectar_postage::StampError),
 }
 
 /// Every slot in a ring bucket is reserved, so the ring cannot advance without
