@@ -80,6 +80,14 @@
 //! permit returns its [`WindowToken`] to the [`AdmissionWindow`] and burns the
 //! slot, so a cancelled future recovers backpressure but never capacity.
 //!
+//! # Online dilution
+//!
+//! [`Dilutable::dilute`] takes `&self` and [`IssuerRegistry`] holds
+//! [`IssuerHandle`]s, so a chain event dilutes the very issuer a pipeline is
+//! signing through. The registry withholds the widened capacity until the
+//! dilution block carries its confirmations: a peer that has not ingested the
+//! event rejects a stamp minted into that range.
+//!
 //! # Parallel stamping
 //!
 //! [`MemoryIssuer`] allocates without a lock, so any number of threads may
@@ -172,7 +180,7 @@ pub use counter::{CounterError, CounterMode, CounterTable};
 
 // Wiring on-chain depth-increase events through to issuer dilution (std only).
 #[cfg(feature = "std")]
-pub use dilute_handler::{Dilutable, IssuerRegistry};
+pub use dilute_handler::{Dilutable, IssuerHandle, IssuerRegistry};
 
 // Issuing
 pub use issuer::{MemoryIssuer, StampIssuer};
