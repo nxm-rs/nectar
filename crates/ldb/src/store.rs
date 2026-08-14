@@ -170,14 +170,21 @@ const MAX_DIR_DEPTH: usize = 2;
 
 /// Load the node `reference` reaches, reassembling a spilled node's forks
 /// from its segments under a bounded fetch window.
-pub async fn load_node<S, F, R>(store: &S, reference: &R) -> Result<Node<F, R>, StoreError>
+// `async fn` cannot state the `MaybeSend` bound, and the callers box this future.
+#[allow(clippy::manual_async_fn)]
+pub fn load_node<'a, S, F, R>(
+    store: &'a S,
+    reference: &'a R,
+) -> impl Future<Output = Result<Node<F, R>, StoreError>> + MaybeSend + 'a
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
-    F: Format,
-    R: NodeRef,
+    F: Format + 'a,
+    R: NodeRef + 'a,
 {
-    let (node, _) = materialize_traced::<S, F, R>(store, reference).await?;
-    Ok(node)
+    async move {
+        let (node, _) = materialize_traced::<S, F, R>(store, reference).await?;
+        Ok(node)
+    }
 }
 
 /// Load the node `reference` reaches, decrypting with the key it carries, and
