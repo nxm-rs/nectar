@@ -31,8 +31,8 @@ pub enum BatchEvent {
         batch_id: BatchId,
         /// The new depth.
         new_depth: u8,
-        /// The block the dilution was mined in; the issuance gate counts
-        /// confirmations from it.
+        /// The block it was mined in, which the issuance gate counts
+        /// confirmations from.
         block: u64,
     },
 

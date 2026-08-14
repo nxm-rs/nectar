@@ -83,10 +83,12 @@
 //! # Online dilution
 //!
 //! [`Dilutable::dilute`] takes `&self` and [`IssuerRegistry`] holds
-//! [`IssuerHandle`]s, so a chain event dilutes the very issuer a pipeline is
-//! signing through. The registry withholds the widened capacity until the
-//! dilution block carries its confirmations: a peer that has not ingested the
-//! event rejects a stamp minted into that range.
+//! [`IssuerHandle`]s, so a chain event dilutes an issuer a pipeline is signing
+//! through. The registry withholds the widened capacity until the dilution
+//! block carries its confirmations, because a peer that has not ingested the
+//! event rejects a stamp minted into that range. A gated registry therefore
+//! needs [`IssuerRegistry::advance_to`]: without head progress the last
+//! dilution never applies.
 //!
 //! # Parallel stamping
 //!
