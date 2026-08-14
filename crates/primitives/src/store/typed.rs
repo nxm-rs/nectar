@@ -2,9 +2,8 @@
 //!
 //! `ChunkGet`, `ChunkPut`, and `ChunkHas` are async and carry `MaybeSend`/
 //! `MaybeSync` bounds (on the traits and their error types) so a store may be
-//! `!Send` on single-threaded targets. Writes are uniformly sealed (a
-//! [`PutUnit`] carries a certified address); trust is a property of the read
-//! medium, declared once per backend through [`ChunkGet::Trust`].
+//! `!Send` on single-threaded targets. Trust is a property of the read medium,
+//! declared once per backend through [`ChunkGet::Trust`].
 
 use core::future::Future;
 
@@ -72,10 +71,10 @@ impl<T: ChunkHas + ?Sized> ChunkHas for alloc::sync::Arc<T> {
     }
 }
 
-/// What a [`ChunkPut`] moves: a sealed chunk, or a richer unit some other
-/// crate defines over one.
+/// What a [`ChunkPut`] moves. Not sealed, so whether a unit wraps a verified
+/// chunk is a property of the chosen `U`, not of the trait.
 pub trait PutUnit: MaybeSend + 'static {
-    /// The certified address the unit is stored under.
+    /// The address the unit is stored under.
     fn address(&self) -> &ChunkAddress;
 }
 
@@ -88,11 +87,7 @@ impl<R: ChunkRegistry> PutUnit for Chunk<Verified, R> {
 
 /// Async chunk storage (primary API, `&self`).
 ///
-/// Only accepts proof: there is no trust parameter to widen, so an
-/// uncertified chunk cannot enter any store. `U` is the unit the sink
-/// demands, so a sink wanting more than a sealed chunk names a richer unit
-/// instead of gaining a second verb. Implementors should use interior
-/// mutability (e.g. `Mutex`, `RwLock`).
+/// Implementors should use interior mutability (e.g. `Mutex`, `RwLock`).
 pub trait ChunkPut<U: PutUnit = Chunk<Verified>>: MaybeSend + MaybeSync {
     /// Error type for put operations.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;

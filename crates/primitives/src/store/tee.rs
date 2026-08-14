@@ -76,6 +76,7 @@ mod tests {
     use alloc::sync::Arc;
     use alloc::vec::Vec;
     use core::convert::Infallible;
+    use core::error::Error as _;
 
     use nectar_testing::run;
 
@@ -150,6 +151,12 @@ mod tests {
                 .expect_err("local leg fails");
             assert!(matches!(err, TeeError::Local(LegRefused)));
             assert!(recorder.seen.lock().is_empty());
+            assert!(
+                err.source()
+                    .expect("the leg error is the source")
+                    .downcast_ref::<LegRefused>()
+                    .is_some()
+            );
         });
     }
 
