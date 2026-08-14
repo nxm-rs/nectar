@@ -35,8 +35,8 @@ pub(crate) const fn map_counter_error(err: CounterError) -> UsageError {
     }
 }
 
-// The format's counter width and the width a `u32` slot count holds are the
-// same bound; `checked_geometry` delegates that half of the check.
+// The format's counter width and the width a `u32` slot count holds are one
+// bound, so `checked_geometry` delegates that half of the check.
 const _: () = assert!(MAX_COUNTER_BITS == BatchDepth::<Mainnet>::MAX_SLOT_BITS);
 
 /// Validates a batch geometry against the snapshot format's extra ceiling on

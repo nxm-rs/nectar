@@ -10,16 +10,10 @@ use crate::{StampError, StampIndex};
 /// The number of leading chunk-address bits that select a collision bucket, as
 /// the network `S` accepts it.
 ///
-/// Two bounds hold at construction: [`SwarmSpec::MIN_BUCKET_DEPTH`], the floor
-/// the PostageStamp contract publishes as `minimumBucketDepth()`, and
-/// [`MAX`](Self::MAX), the width of the bucket key. Bucket selection shifts a
-/// `u32` right by `32 - depth`; holding both bounds in the type keeps that
-/// shift total wherever a depth reaches it.
-///
-/// The floor is a compile-time property: a `BucketDepth<Mainnet>` below 16 does
-/// not exist, and one network's depth does not type-check where another's is
-/// wanted. Every constructor funnels through [`new`](Self::new), including the
-/// serde and `Arbitrary` paths.
+/// Construction holds it between [`SwarmSpec::MIN_BUCKET_DEPTH`], the floor the
+/// PostageStamp contract publishes as `minimumBucketDepth()`, and
+/// [`MAX`](Self::MAX), the bucket-key width, so the `32 - depth` selection shift
+/// is total wherever a depth reaches it.
 ///
 /// A depth carries its network, so this does not compile:
 ///
@@ -192,11 +186,10 @@ impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BucketDepth<S> {
     }
 }
 
-/// A collision bucket together with the [`BucketDepth`] that derived it.
+/// A collision bucket together with the [`BucketDepth`] that cut it.
 ///
-/// The depth travels with the value because a bucket is only meaningful under
-/// the depth it was cut at: a bucket cut at depth 16 is inside the bucket range
-/// of a depth-20 table, so a bare `u32` lands in the wrong bucket undetected.
+/// A bucket cut at depth 16 is in range for a depth-20 table, so a bare `u32`
+/// lands in the wrong bucket undetected.
 pub struct Bucket<S: SwarmSpec = Mainnet> {
     value: u32,
     depth: BucketDepth<S>,
@@ -204,9 +197,6 @@ pub struct Bucket<S: SwarmSpec = Mainnet> {
 
 impl<S: SwarmSpec> Bucket<S> {
     /// Cuts the bucket of `address`: its leading `depth` bits, read big-endian.
-    ///
-    /// Infallible: the depth is the input, so the result is in range by
-    /// construction.
     #[inline]
     pub fn of(address: &ChunkAddress, depth: BucketDepth<S>) -> Self {
         let &[a, b, c, d, ..] = address.as_array();
@@ -291,9 +281,8 @@ impl<S: SwarmSpec> From<Bucket<S>> for u32 {
 
 /// A validated batch depth together with the [`BucketDepth`] beneath it.
 ///
-/// Construction settles both geometry bounds, so `depth - bucket_depth` is a
-/// subtraction that cannot underflow and `2^(depth - bucket_depth)` is a slot
-/// count that fits a `u32`.
+/// Construction settles both bounds, so `depth - bucket_depth` cannot underflow
+/// and `2^(depth - bucket_depth)` fits a `u32`.
 pub struct BatchDepth<S: SwarmSpec = Mainnet> {
     depth: u8,
     bucket_depth: BucketDepth<S>,
@@ -378,10 +367,8 @@ impl<S: SwarmSpec> BatchDepth<S> {
         self.bucket_depth.contains_bucket(index.bucket()) && index.index() < self.slots_per_bucket()
     }
 
-    /// Adopts an on-chain dilution.
-    ///
-    /// A depth at or below the current one yields the geometry unchanged, so a
-    /// redelivered or reordered dilution event is a no-op rather than a shrink.
+    /// Adopts an on-chain dilution; a depth at or below the current one is a
+    /// no-op, so a redelivered or reordered event cannot shrink the batch.
     ///
     /// # Errors
     ///
@@ -587,8 +574,6 @@ mod tests {
 
         assert_eq!(shallow.depth(), low_floor(8));
         assert_eq!(deep.depth(), low_floor(16));
-        // Same address, same numeric range, different geometry: the depth is
-        // what tells the two apart.
         assert_eq!(Bucket::of(&address, low_floor(16)), deep);
         assert_ne!(shallow, Bucket::checked(0xCB, low_floor(16)).unwrap());
     }
@@ -616,7 +601,6 @@ mod tests {
         assert_eq!(geometry.bucket_count(), 1 << 16);
         assert_eq!(geometry.total_slots(), 1 << 20);
 
-        // A batch as deep as its buckets holds one slot each.
         assert_eq!(
             BatchDepth::new(16, bucket_depth)
                 .unwrap()
@@ -658,7 +642,6 @@ mod tests {
         let geometry = BatchDepth::new(18, BucketDepth::<Mainnet>::new(16).unwrap()).unwrap();
 
         assert!(geometry.contains(&StampIndex::new(0xFFFF, 3)));
-        // One past the bucket range, and one past the slot range.
         assert!(!geometry.contains(&StampIndex::new(0x1_0000, 0)));
         assert!(!geometry.contains(&StampIndex::new(0, 4)));
     }
@@ -669,7 +652,6 @@ mod tests {
         let geometry = BatchDepth::new(18, bucket_depth).unwrap();
 
         assert_eq!(geometry.diluted(20).unwrap().get(), 20);
-        // A replayed or reordered event cannot shrink the batch.
         assert_eq!(geometry.diluted(17).unwrap(), geometry);
         assert_eq!(geometry.diluted(18).unwrap(), geometry);
         assert_eq!(geometry.diluted(0).unwrap(), geometry);
