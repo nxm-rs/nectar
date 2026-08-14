@@ -25,9 +25,8 @@
 //! defaults to [`collapse_dir`], and [`ManifestView::serve`] resolves a
 //! request path under the site conventions into a [`Served`].
 //!
-//! Node persistence is seam-owned as well: [`NodeLoader`] and [`NodeSaver`]
-//! fix the verbs, and each format instantiates them at its own unit of
-//! transfer.
+//! [`NodeLoader`] and [`NodeSaver`] fix the node persistence verbs; each
+//! format instantiates them at its own unit of transfer.
 //!
 //! Each format keeps its own metadata type: the static path erases nothing.
 //! [`ErasedManifest`] is the object-safe wrapper for a runtime-detected format,

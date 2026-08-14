@@ -1,9 +1,6 @@
-//! The node persistence seam over both formats.
-//!
-//! The unit of transfer differs (a whole image for the trie, a decoded node
-//! for the database), so the laws are stated once per adapter: a save round
-//! trips through a load at both reference widths, and a traced load agrees
-//! with a plain one over a non-empty root-first address list.
+//! The node persistence seam over both formats: a save round trips through a
+//! load at both reference widths, and a traced load agrees with a plain one
+//! over a non-empty root-first address list.
 
 #![allow(clippy::as_conversions, clippy::unwrap_used)]
 
@@ -12,11 +9,11 @@ use std::sync::Arc;
 use nectar_ldb::{Builder, Database, Entry, ForkTable, Key, Node, NodeRef, Prefix, Seal, V1};
 use nectar_manifest::{NodeLoader, NodeSaver};
 use nectar_mantaray::NodeLoadSaver;
-use nectar_primitives::{ChunkAddress, ChunkRef, EntryRef};
+use nectar_primitives::{ChunkRef, EntryRef};
 use nectar_testing::run;
 
 mod common;
-use common::{Store, stores};
+use common::{Store, reference, stores};
 
 /// A node image spanning several chunks, so the trie's traced load has more
 /// than a root to report.
@@ -24,13 +21,12 @@ fn image() -> Vec<u8> {
     (0..20_000u32).map(|i| (i % 251) as u8).collect()
 }
 
-/// A reference standing in for a bound value.
 fn entry(byte: u8) -> Entry {
-    Entry::from(ChunkRef::new(ChunkAddress::new([byte; 32])))
+    Entry::from(reference(byte))
 }
 
 /// A node small enough to seal into one chunk, which is all a per-node save
-/// can express; spilling is the builder's, not the seam's.
+/// can express.
 fn plain_node<R: NodeRef>() -> Node<V1, R> {
     let mut forks = ForkTable::new();
     for byte in 0u8..4 {
@@ -45,8 +41,7 @@ fn plain_node<R: NodeRef>() -> Node<V1, R> {
     Node::new(None, forks)
 }
 
-/// A 256-fork root built natively, so its stored shape spills across segment
-/// chunks and no single image exists for it.
+/// A 256-fork root, whose stored shape spills across segment chunks.
 async fn spilled_root<R: NodeRef, K: Seal<R>>(store: &Store, seal: &K) -> R {
     let mut builder = Builder::<V1>::new();
     for byte in 0u8..=255 {
@@ -154,9 +149,6 @@ fn the_database_traces_a_spilled_node_root_first() {
     });
 }
 
-/// The runtime read reference is the one thing the typed native path checks at
-/// compile time, so a width mismatch has to surface as an error rather than a
-/// mis-parse.
 #[cfg(feature = "test-encryption")]
 #[test]
 fn the_database_rejects_a_reference_of_the_wrong_width() {
@@ -180,8 +172,6 @@ fn the_database_rejects_a_reference_of_the_wrong_width() {
     });
 }
 
-/// The seal is the write-side secret, so an encrypted database mints encrypted
-/// references from the same seam call.
 #[cfg(feature = "test-encryption")]
 #[test]
 fn the_database_round_trips_at_the_encrypted_width() {
@@ -211,14 +201,12 @@ fn the_database_round_trips_at_the_encrypted_width() {
     });
 }
 
-/// A trie fork may reference a node of either width, so the read side takes
-/// the runtime union rather than a width parameter.
 #[test]
 fn the_null_loader_answers_not_found_at_any_unit() {
     use nectar_primitives::store::NullLoader;
 
     run(async {
-        let reference = EntryRef::from(ChunkRef::new(ChunkAddress::new([4; 32])));
+        let reference = EntryRef::from(reference(4));
         assert!(
             NodeLoader::<Vec<u8>>::load(&NullLoader, &reference)
                 .await

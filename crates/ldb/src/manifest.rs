@@ -110,8 +110,8 @@ where
     }
 }
 
-/// The database as the seam's node store, at the decoded node: a spilled node
-/// has no single stored image, so bytes are not a unit this format can offer.
+/// The seam at the decoded node: a spilled node has no single stored image,
+/// so bytes are not a unit this format can offer.
 impl<S, K, F, R> NodeLoader<Node<F, R>> for Database<S, K, F>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSend + MaybeSync,
@@ -139,8 +139,7 @@ where
     }
 }
 
-/// The database as the seam's node saver, sealing through its own write-side
-/// secret.
+/// The seam's write half, sealing through the database's own secret.
 impl<S, K, F, R> NodeSaver<Node<F, R>, R> for Database<S, K, F>
 where
     S: ChunkPut + MaybeSend + MaybeSync,

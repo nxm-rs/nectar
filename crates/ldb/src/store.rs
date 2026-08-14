@@ -7,9 +7,8 @@
 //! [`Verified`] content chunk, deriving the address rather than trusting one.
 //!
 //! [`load_node`] and [`save_node`] are free functions over the layer-1 store
-//! traits, not verbs hung off a store; the read side binds the content-only
-//! registry, so a non-content chunk is rejected at decode rather than decoded
-//! as a node.
+//! traits. The read side binds the content-only registry, so a non-content
+//! chunk is rejected at decode rather than decoded as a node.
 //!
 //! Both seams are generic over the structural reference width `R`. Reading
 //! needs nothing but the reference: an encrypted one carries its own key, so
@@ -169,12 +168,8 @@ impl<F: Format> Node<F> {
 /// malformed image, not a tree this format ever produces.
 const MAX_DIR_DEPTH: usize = 2;
 
-/// Load and decode the node `reference` reaches, reassembling a spilled node's
-/// forks from its segments so the caller always sees one logical node.
-///
-/// The store's `Trust = Verified` bound is what lets the decode skip
-/// re-hashing. Reassembly fetches segment chunks under a bounded window, so
-/// peak retained state stays bounded by the fork count and that window.
+/// Load the node `reference` reaches, reassembling a spilled node's forks
+/// from its segments under a bounded fetch window.
 pub async fn load_node<S, F, R>(store: &S, reference: &R) -> Result<Node<F, R>, StoreError>
 where
     S: TrustedGet<ContentOnlyChunkSet> + MaybeSync,
@@ -516,8 +511,7 @@ where
     Ok(table)
 }
 
-/// Seal `node` with `seal`, store its chunk, and return the reference that
-/// reaches it.
+/// Seal `node`, store its chunk, and return the reference reaching it.
 ///
 /// Sealing happens before the first await, so the returned future never holds
 /// the source node.

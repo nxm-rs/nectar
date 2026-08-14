@@ -1,10 +1,8 @@
 //! Node persistence seam: the read and write verbs every manifest format
 //! persists its nodes through.
 //!
-//! The unit of transfer `N` is a parameter, not a decision: a format whose
-//! node is one stored image instantiates at that image, and a format whose
-//! stored shape spans chunks instantiates at its decoded node, because no
-//! single image exists for it.
+//! `N` is the format's own unit: the whole node image, or the decoded node
+//! where the stored shape spans chunks and no single image exists.
 
 use alloc::vec::Vec;
 use core::future::Future;
@@ -16,11 +14,10 @@ use nectar_primitives::store::{ChunkStoreError, NullLoader};
 
 /// Read seam: the logical node of unit `N` behind a full-width reference.
 ///
-/// The reference is the runtime union, not a width parameter: a trie may mix
-/// widths across its own forks, and an encrypted reference carries its key in
-/// band.
+/// The reference is the runtime union: a trie may mix widths across its own
+/// forks, and an encrypted reference carries its key in band.
 pub trait NodeLoader<N: MaybeSend>: MaybeSend + MaybeSync {
-    /// Loader failure, wrapped by the format into its own errors.
+    /// Loader failure.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// The node `reference` reaches.
@@ -45,10 +42,10 @@ pub trait NodeLoader<N: MaybeSend>: MaybeSend + MaybeSync {
 /// Write seam: persist one logical node of unit `N` under a new reference of
 /// width `R`.
 ///
-/// The width is a trait parameter rather than an associated type, so one
-/// saver may mint both plain and encrypted references.
+/// `R` is a trait parameter, so one saver may mint both plain and encrypted
+/// references.
 pub trait NodeSaver<N: ?Sized + MaybeSync, R: Reference>: MaybeSend + MaybeSync {
-    /// Saver failure, wrapped by the format into its own errors.
+    /// Saver failure.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// Persist `node` and return the full-width reference reaching it.

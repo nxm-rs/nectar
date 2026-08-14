@@ -19,7 +19,8 @@ use core::ops::Bound;
 use nectar_file::{Policy, load_reference};
 use nectar_manifest::{
     Batch, DataSink, Listing, Manifest, ManifestError, ManifestOp, ManifestPath, ManifestView,
-    MapEntry, PathCursor, RawCursor, RawItem, SinkError, SiteConfig, collapse_dir,
+    MapEntry, NodeLoader, NodeSaver, PathCursor, RawCursor, RawItem, SinkError, SiteConfig,
+    collapse_dir,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ContentOnlyChunkSet, Reference};
@@ -28,8 +29,6 @@ use nectar_primitives::store::{ContentGet, MaybeSend, MaybeSync, TrustedGet};
 use crate::cursor::Cursor;
 use crate::editor::ManifestEditor;
 use crate::error::{CursorError, EditorError, ReaderError};
-use nectar_manifest::{NodeLoader, NodeSaver};
-
 use crate::persist::NodeLoadSaver;
 use crate::reader::Reader;
 use crate::{constants::metadata, entry::Entry};

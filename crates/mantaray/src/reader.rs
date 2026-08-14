@@ -8,13 +8,13 @@
 
 use alloc::sync::Arc;
 
+use nectar_manifest::NodeLoader;
 use nectar_primitives::EntryRef;
 
 use crate::entry::Entry;
 use crate::error::ReaderError;
 use crate::node::NodeType;
 use crate::view::NodeView;
-use nectar_manifest::NodeLoader;
 
 /// Default per-lookup node-fetch budget.
 ///

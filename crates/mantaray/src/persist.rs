@@ -1,15 +1,11 @@
-//! Node persistence: the trie's instantiation of the seam-owned
-//! [`NodeLoader`] and [`NodeSaver`], at a whole node image.
+//! Node persistence: the trie's instantiation of the shared node seam, at a
+//! whole node image.
 //!
 //! The trie never touches chunk stores; the adapter decides the layout.
 //! `NodeLoadSaver` (feature `manifest`) stores through the file pipeline, so a
 //! node over one chunk spans several, matching the reference client.
 
-use alloc::vec::Vec;
-
-use nectar_manifest::{NodeLoader, NodeSaver};
-use nectar_primitives::chunk::ChunkAddress;
-use nectar_primitives::{EncryptedChunkRef, EntryRef};
+use nectar_primitives::EncryptedChunkRef;
 
 use crate::format::{FORK_INDEX_SIZE, ForkHeader, NodeHeader};
 
@@ -36,11 +32,14 @@ pub const MAX_NODE_BYTES: u64 =
 // re-export above, so the rendered docs live on the definitions.
 #[cfg(feature = "manifest")]
 mod pipeline {
+    use alloc::vec::Vec;
     use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex, PoisonError};
 
     use nectar_file::{CollectError, File, Policy, PutWindow, SaveError, SplitError};
-    use nectar_primitives::chunk::{ChunkRef, Verified};
+    use nectar_manifest::{NodeLoader, NodeSaver};
+    use nectar_primitives::EntryRef;
+    use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Verified};
     use nectar_primitives::store::{ChunkGet, ChunkPut, ContentGet, ContentGetError, TrustedGet};
     use nectar_primitives::{AnyChunkSet, DEFAULT_BODY_SIZE};
 
@@ -232,8 +231,11 @@ mod pipeline {
 #[doc(hidden)]
 pub mod single_chunk {
     use alloc::sync::Arc;
+    use alloc::vec::Vec;
 
-    use nectar_primitives::chunk::{ChunkOps, ChunkRef, ContentChunk};
+    use nectar_manifest::{NodeLoader, NodeSaver};
+    use nectar_primitives::EntryRef;
+    use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ChunkRef, ContentChunk};
     use nectar_primitives::error::PrimitivesError;
     use nectar_primitives::store::{ChunkPut, SharedError, TrustedGet};
     use nectar_primitives::{AnyChunkSet, Chunk, DEFAULT_BODY_SIZE, EncryptionKey};
@@ -344,7 +346,9 @@ mod tests {
 #[cfg(all(test, feature = "manifest"))]
 mod pipeline_tests {
     use bytes::Bytes;
-    use nectar_primitives::chunk::{ChunkOps, ChunkRef, ContentChunk};
+    use nectar_manifest::{NodeLoader, NodeSaver};
+    use nectar_primitives::EntryRef;
+    use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ChunkRef, ContentChunk};
     use nectar_primitives::store::MemoryStore;
     use nectar_primitives::{DEFAULT_BODY_SIZE, StandardChunkSet};
     use nectar_testing::run;

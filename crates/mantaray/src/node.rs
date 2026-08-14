@@ -9,13 +9,14 @@ use alloc::collections::BTreeMap;
 use core::future::Future;
 use core::pin::Pin;
 
-use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
-use crate::obfuscation::ObfuscationKey;
-use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 use nectar_manifest::NodeLoader;
 use nectar_primitives::chunk::{ChunkRef, Reference};
 use nectar_primitives::store::MaybeSend;
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Writer};
+
+use crate::error::{DecodeError, DecodeResult, MantarayError, Result};
+use crate::obfuscation::ObfuscationKey;
+use crate::{PATH_SEPARATOR, PREFIX_MAX_LEN};
 
 /// Boxed recursion future over what the descent yields: `Send` on
 /// multi-threaded targets, unbounded on wasm32 and under the `unsync` feature,

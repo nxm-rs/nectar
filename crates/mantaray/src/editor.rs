@@ -24,6 +24,7 @@ use core::task::{Context, Poll};
 
 use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_governor::{Admission, Window};
+use nectar_manifest::{NodeLoader, NodeSaver};
 use nectar_primitives::chunk::{ChunkAddress, ChunkRef, Reference};
 use nectar_primitives::{EncryptedChunkRef, EntryRef};
 use nectar_tasks::BoxFuture;
@@ -31,7 +32,6 @@ use nectar_tasks::BoxFuture;
 use crate::error::EditorError;
 use crate::node::{Fork, Node, NodeState, Prefix};
 use crate::{MantarayError, metadata};
-use nectar_manifest::{NodeLoader, NodeSaver};
 
 /// One recorded manifest mutation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1230,9 +1230,10 @@ mod tests {
 
         async fn save(&self, data: &[u8]) -> Result<ChunkRef, Self::Error> {
             let seen = self.dispatched.fetch_add(1, Ordering::SeqCst);
+            let oversized;
             // An image far past one chunk is the loadsaver's own failure.
-            let oversized = alloc::vec![0u8; 1 << 20];
             let data = if seen == self.fail_at {
+                oversized = alloc::vec![0u8; 1 << 20];
                 oversized.as_slice()
             } else {
                 data
