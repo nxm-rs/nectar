@@ -2,7 +2,7 @@
 
 use crate::BatchId;
 use alloy_primitives::Address;
-use nectar_primitives::wire::Underrun;
+use nectar_primitives::{ChunkAddress, wire::Underrun};
 use thiserror::Error;
 
 /// Errors that can occur when working with stamps.
@@ -105,6 +105,16 @@ pub enum StampError {
     /// Signature verification failed.
     #[error("invalid signature")]
     InvalidSignature,
+
+    /// The chunk offered does not match the address the slot was allocated
+    /// for.
+    #[error("address mismatch: slot allocated for {expected}, offered {offered}")]
+    AddressMismatch {
+        /// The address the slot was allocated for.
+        expected: ChunkAddress,
+        /// The address of the chunk offered.
+        offered: ChunkAddress,
+    },
 
     /// The wire buffer ended before a field was fully read.
     #[error("buffer underrun: need {expected} bytes, have {available}")]

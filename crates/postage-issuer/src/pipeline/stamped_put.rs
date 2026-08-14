@@ -409,15 +409,15 @@ where
             Some(Issued::Pending(_) | Issued::Delivering(..)) => Step::Wait,
             None => {
                 let tracked = state.tracks();
-                match state
-                    .issuer
-                    .prepare_stamp(address, stamp_timestamp(&self.clock))
-                {
-                    Ok(digest) => {
+                match state.issuer.reserve(address, stamp_timestamp(&self.clock)) {
+                    Ok(permit) => {
                         if tracked {
                             state.issued.insert(*address, Issued::Pending(Vec::new()));
                         }
-                        Step::Own { digest, tracked }
+                        Step::Own {
+                            digest: permit.digest(),
+                            tracked,
+                        }
                     }
                     Err(error) => Step::Refused(error),
                 }

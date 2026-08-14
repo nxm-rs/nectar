@@ -1,9 +1,9 @@
 //! Streaming stamp pipeline: unordered completion over a bounded sign window.
 //!
-//! [`StampPipeline::stamp`] admits addresses into the window, allocating
-//! indices at admission with one clock read per admission batch, and yields a
-//! [`StampResult`] per input address instance as signatures complete, in
-//! arbitrary order.
+//! [`StampPipeline::stamp`] admits addresses into the window, claiming a slot
+//! per address at admission with one clock read per admission batch, and
+//! yields a [`StampResult`] per input address instance as signatures complete,
+//! in arbitrary order.
 //!
 //! # Contracts
 //!
@@ -42,14 +42,14 @@ use nectar_clock::SystemClock;
 use nectar_governor::Window;
 use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::Stamp;
-#[cfg(not(feature = "std"))]
-use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;
 
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
 #[cfg(not(feature = "std"))]
-use crate::prepared::prepare_stamps;
+use crate::permit::{AdmissionWindow, Prepared};
+#[cfg(not(feature = "std"))]
+use crate::stamper::stamp_timestamp;
 
 #[cfg(feature = "std")]
 mod bridge;
@@ -217,11 +217,11 @@ where
     /// use nectar_postage_issuer::{BatchId, BucketDepth, MemoryIssuer, StampPipeline};
     /// use nectar_primitives::ChunkAddress;
     ///
-    /// let mut issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16)?);
+    /// let issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16)?);
     /// let pipeline = StampPipeline::from_signer(PrivateKeySigner::random());
     ///
     /// let addresses = [ChunkAddress::new([0xAB; 32]), ChunkAddress::new([0xCD; 32])];
-    /// let results: Vec<_> = pipeline.stamp(&mut issuer, addresses).collect();
+    /// let results: Vec<_> = pipeline.stamp(&issuer, addresses).collect();
     ///
     /// assert_eq!(results.len(), 2);
     /// assert!(results.iter().all(|r| r.result.is_ok()));
@@ -229,7 +229,7 @@ where
     /// ```
     pub fn stamp<'p, I, A>(
         &'p self,
-        issuer: &'p mut I,
+        issuer: &'p I,
         addresses: A,
     ) -> Stamped<'p, Sg, C, I, A::IntoIter>
     where
@@ -273,9 +273,11 @@ pub struct Stamped<'p, Sg, C, I: ?Sized, A> {
 /// one per `next`.
 #[cfg(not(feature = "std"))]
 #[must_use = "iterators are lazy; nothing is admitted until polled"]
-pub struct Stamped<'p, Sg, C, I: ?Sized, A> {
+pub struct Stamped<'p, Sg, C, I: StampIssuer + ?Sized, A> {
     pipeline: &'p StampPipeline<Sg, C>,
-    issuer: &'p mut I,
+    issuer: &'p I,
+    /// Occupancy: one token per admitted permit, released as its result yields.
+    admission: AdmissionWindow,
     input: A,
     input_done: bool,
     failed: bool,
@@ -283,8 +285,8 @@ pub struct Stamped<'p, Sg, C, I: ?Sized, A> {
     ready: VecDeque<StampResult>,
     /// The fail-fast tail: addresses never admitted.
     not_admitted: VecDeque<ChunkAddress>,
-    /// Admitted digests awaiting the inline signing step.
-    prepared: VecDeque<StampDigest>,
+    /// Admitted permits awaiting the inline signing step.
+    prepared: VecDeque<Prepared<I::Spec>>,
 }
 
 #[cfg(feature = "std")]
@@ -299,7 +301,7 @@ impl<Sg, C, I: ?Sized, A> fmt::Debug for Stamped<'_, Sg, C, I, A> {
 }
 
 #[cfg(not(feature = "std"))]
-impl<Sg, C, I: ?Sized, A> fmt::Debug for Stamped<'_, Sg, C, I, A> {
+impl<Sg, C, I: StampIssuer + ?Sized, A> fmt::Debug for Stamped<'_, Sg, C, I, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Stamped")
             .field("in_window", &self.prepared.len())
@@ -319,7 +321,7 @@ where
     I: StampIssuer + ?Sized,
 {
     #[cfg(feature = "parallel")]
-    fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p mut I, input: A) -> Self {
+    fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p I, input: A) -> Self {
         Self {
             sink: pipeline.sink(issuer, bridge::BlockingSpawn),
             input,
@@ -329,7 +331,7 @@ where
     }
 
     #[cfg(not(feature = "parallel"))]
-    fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p mut I, input: A) -> Self {
+    fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p I, input: A) -> Self {
         let spawn = bridge::BlockingSpawn::default();
         let jobs = spawn.jobs();
         Self {
@@ -432,11 +434,12 @@ where
 }
 
 #[cfg(not(feature = "std"))]
-impl<'p, Sg, C, I: ?Sized, A> Stamped<'p, Sg, C, I, A> {
-    const fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p mut I, input: A) -> Self {
+impl<'p, Sg, C, I: StampIssuer + ?Sized, A> Stamped<'p, Sg, C, I, A> {
+    fn new(pipeline: &'p StampPipeline<Sg, C>, issuer: &'p I, input: A) -> Self {
         Self {
             pipeline,
             issuer,
+            admission: AdmissionWindow::new(pipeline.window),
             input,
             input_done: false,
             failed: false,
@@ -455,12 +458,12 @@ where
     I: StampIssuer + ?Sized,
     A: Iterator<Item = ChunkAddress>,
 {
-    /// Refills the window: allocates a micro-batch with one clock read.
+    /// Refills the window: claims a micro-batch of slots with one clock read.
     fn admit(&mut self) {
         if self.failed || self.input_done {
             return;
         }
-        let room = usize::from(self.pipeline.window.get()).saturating_sub(self.prepared.len());
+        let room = self.admission.room();
         if room == 0 {
             return;
         }
@@ -477,11 +480,21 @@ where
         if batch.is_empty() {
             return;
         }
-        for preparation in prepare_stamps(&mut *self.issuer, &batch, &self.pipeline.clock) {
-            match preparation.result {
-                Ok(digest) => self.prepared.push_back(digest),
+        let timestamp = stamp_timestamp(&self.pipeline.clock);
+        for address in batch {
+            // Backpressure before the claim, so a full window never burns a
+            // slot.
+            let Some(token) = self.admission.try_acquire() else {
+                self.ready.push_back(StampResult {
+                    address,
+                    result: Err(SigningError::NotAdmitted),
+                });
+                continue;
+            };
+            match self.issuer.reserve(&address, timestamp) {
+                Ok(permit) => self.prepared.push_back(permit.with_token(token)),
                 Err(error) => self.ready.push_back(StampResult {
-                    address: preparation.address,
+                    address,
                     result: Err(SigningError::Stamp(error)),
                 }),
             }
@@ -499,9 +512,9 @@ where
     /// Signs the next admitted digest inline, if any. There is no unwind
     /// boundary: a signer panic propagates.
     fn complete_one(&mut self) -> Option<StampResult> {
-        let digest = self.prepared.pop_front()?;
-        let address = digest.chunk_address;
-        let result = sign_digest(self.pipeline.signer.as_ref(), &digest);
+        let permit = self.prepared.pop_front()?;
+        let address = *permit.address();
+        let result = sign_digest(self.pipeline.signer.as_ref(), &permit.digest());
         Some(StampResult { address, result })
     }
 }
@@ -724,11 +737,11 @@ mod tests {
 
     #[test]
     fn multiset_one_to_one_unordered() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FixedSigner);
         let input = addresses(100);
 
-        let results: Vec<_> = pipeline.stamp(&mut issuer, input.iter().copied()).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, input.iter().copied()).collect();
 
         assert_eq!(results.len(), 100);
         assert!(results.iter().all(|r| r.result.is_ok()));
@@ -741,23 +754,23 @@ mod tests {
 
     #[test]
     fn empty_input_yields_nothing() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FixedSigner);
 
-        assert!(pipeline.stamp(&mut issuer, []).next().is_none());
+        assert!(pipeline.stamp(&issuer, []).next().is_none());
         assert_eq!(issuer.stamps_issued(), Some(0));
     }
 
     #[test]
     fn duplicates_allocate_independently_mixed_ok_err() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let pipeline = StampPipeline::from_signer(FixedSigner);
         let address = ChunkAddress::new([0xAB; 32]);
 
         let results: Vec<_> = pipeline
-            .stamp(&mut issuer, [address, address, address])
+            .stamp(&issuer, [address, address, address])
             .collect();
 
         assert_eq!(results.len(), 3);
@@ -790,14 +803,14 @@ mod tests {
 
     #[test]
     fn fail_fast_yields_admitted_then_not_admitted_tail() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FailingSigner).with_window(window(8));
         let input = addresses(100);
         let exhausted = AtomicBool::new(false);
 
         let results: Vec<_> = pipeline
             .stamp(
-                &mut issuer,
+                &issuer,
                 Tracked {
                     inner: input.iter().copied(),
                     exhausted: &exhausted,
@@ -829,12 +842,12 @@ mod tests {
 
     #[test]
     fn fail_fast_keeps_yielding_admitted_ok_completions() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline =
             StampPipeline::from_signer(FailOnce(AtomicUsize::new(0))).with_window(window(8));
         let input = addresses(32);
 
-        let results: Vec<_> = pipeline.stamp(&mut issuer, input.iter().copied()).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, input.iter().copied()).collect();
 
         assert_eq!(results.len(), 32);
         let ok = results.iter().filter(|r| r.result.is_ok()).count();
@@ -858,12 +871,12 @@ mod tests {
 
     #[test]
     fn fail_fast_off_yields_every_error() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FailingSigner)
             .with_window(window(8))
             .with_fail_fast(false);
 
-        let results: Vec<_> = pipeline.stamp(&mut issuer, addresses(40)).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, addresses(40)).collect();
 
         assert_eq!(results.len(), 40);
         assert!(
@@ -876,11 +889,11 @@ mod tests {
 
     #[test]
     fn panicking_signer_keeps_one_to_one_without_hanging() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(PanickingSigner).with_window(window(8));
         let input = addresses(20);
 
-        let results: Vec<_> = pipeline.stamp(&mut issuer, input.iter().copied()).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, input.iter().copied()).collect();
 
         assert_eq!(results.len(), 20);
         let dropped = results
@@ -902,14 +915,14 @@ mod tests {
 
     #[test]
     fn one_clock_read_per_admission() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let clock = CountingClock {
             now_ns: 1_234_567_890,
             reads: AtomicI64::new(0),
         };
         let pipeline = StampPipeline::with_parts(Eip191::new(FixedSigner), &clock, window(64));
 
-        let results: Vec<_> = pipeline.stamp(&mut issuer, addresses(10)).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, addresses(10)).collect();
 
         // One admission covers the whole input, so the clock was read once
         // and every timestamp matches it.
@@ -924,12 +937,12 @@ mod tests {
     #[cfg(not(feature = "parallel"))]
     #[test]
     fn next_signs_one_digest_per_call() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let calls = Arc::new(AtomicUsize::new(0));
         let pipeline =
             StampPipeline::from_signer(CountingSigner(Arc::clone(&calls))).with_window(window(8));
 
-        let mut stream = pipeline.stamp(&mut issuer, addresses(20));
+        let mut stream = pipeline.stamp(&issuer, addresses(20));
         for expected in 1..=5 {
             assert!(stream.next().is_some());
             assert_eq!(calls.load(Ordering::SeqCst), expected);
@@ -940,11 +953,11 @@ mod tests {
 
     #[test]
     fn manual_clock_sets_timestamps() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let clock = ManualClock::new(2_000_000_000);
         let pipeline = StampPipeline::from_signer(FixedSigner).with_clock(&clock);
 
-        let results: Vec<_> = pipeline.stamp(&mut issuer, addresses(16)).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, addresses(16)).collect();
 
         assert_eq!(results.len(), 16);
         for result in &results {
@@ -954,7 +967,7 @@ mod tests {
 
     #[test]
     fn window_bounds_concurrent_signing() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let max = Arc::new(AtomicUsize::new(0));
         let gauge = Gauge {
             current: Arc::new(AtomicUsize::new(0)),
@@ -962,7 +975,7 @@ mod tests {
         };
         let pipeline = StampPipeline::from_signer(gauge).with_window(window(4));
 
-        let results: Vec<_> = pipeline.stamp(&mut issuer, addresses(64)).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, addresses(64)).collect();
 
         assert_eq!(results.len(), 64);
         assert!(max.load(Ordering::SeqCst) <= 4);
@@ -979,11 +992,11 @@ mod tests {
 
     #[test]
     fn dropped_stream_abandons_at_most_one_window() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
 
         {
-            let mut stream = pipeline.stamp(&mut issuer, addresses(20));
+            let mut stream = pipeline.stamp(&issuer, addresses(20));
             for _ in 0..3 {
                 assert!(stream.next().is_some());
             }
@@ -994,7 +1007,7 @@ mod tests {
         assert!((3..=7).contains(&allocated), "allocated {allocated}");
 
         // The issuer stays coherent for a fresh run.
-        let results: Vec<_> = pipeline.stamp(&mut issuer, addresses(5)).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, addresses(5)).collect();
         assert_eq!(results.len(), 5);
         assert!(results.iter().all(|r| r.result.is_ok()));
         assert_eq!(issuer.stamps_issued(), Some(allocated + 5));
@@ -1004,13 +1017,13 @@ mod tests {
     fn eip191_signature_recovers_to_signer() {
         use nectar_postage::{StampDigest, StampIndex};
 
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let signer = PrivateKeySigner::random();
         let signer_address = signer.address();
         let pipeline = StampPipeline::from_signer(signer);
         let address = ChunkAddress::from(B256::random());
 
-        let results: Vec<_> = pipeline.stamp(&mut issuer, [address]).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, [address]).collect();
 
         let stamp = results[0].result.as_ref().unwrap();
         let digest = StampDigest::new(
@@ -1035,11 +1048,11 @@ mod tests {
 
     #[test]
     fn a_lock_free_issuer_stamps_by_value() {
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap());
         let pipeline = StampPipeline::from_signer(FixedSigner);
 
-        let results: Vec<_> = pipeline.stamp(&mut issuer, addresses(50)).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, addresses(50)).collect();
 
         assert_eq!(results.len(), 50);
         assert!(results.iter().all(|r| r.result.is_ok()));
@@ -1055,8 +1068,8 @@ mod tests {
         std::thread::scope(|scope| {
             for _ in 0..4 {
                 scope.spawn(|| {
-                    let mut handle = &issuer;
-                    let results: Vec<_> = pipeline.stamp(&mut handle, addresses(100)).collect();
+                    let handle = &issuer;
+                    let results: Vec<_> = pipeline.stamp(&handle, addresses(100)).collect();
                     assert_eq!(results.len(), 100);
                     assert!(results.iter().all(|r| r.result.is_ok()));
                 });

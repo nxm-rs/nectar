@@ -240,9 +240,9 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
                 // Stream the addresses through the stamp pipeline
                 let issuer: MemoryIssuer =
                     MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-                let mut handle = &issuer;
+                let handle = &issuer;
                 let stamps: Vec<_> = pipeline
-                    .stamp(&mut handle, chunks.iter().map(|c| *c.address()))
+                    .stamp(&handle, chunks.iter().map(|c| *c.address()))
                     .collect();
 
                 black_box((root, stamps))
@@ -310,9 +310,9 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
 
             let issuer: MemoryIssuer =
                 MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            let mut handle = &issuer;
+            let handle = &issuer;
             let stamps: Vec<_> = pipeline
-                .stamp(&mut handle, chunks.iter().map(|c| *c.address()))
+                .stamp(&handle, chunks.iter().map(|c| *c.address()))
                 .collect();
 
             black_box((root, stamps))
@@ -373,10 +373,8 @@ fn bench_pipeline_stages(c: &mut Criterion) {
         b.iter(|| {
             let issuer: MemoryIssuer =
                 MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
-            let mut handle = &issuer;
-            let stamps: Vec<_> = pipeline
-                .stamp(&mut handle, addresses.iter().copied())
-                .collect();
+            let handle = &issuer;
+            let stamps: Vec<_> = pipeline.stamp(&handle, addresses.iter().copied()).collect();
             black_box(stamps)
         });
     });

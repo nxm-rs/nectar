@@ -72,12 +72,20 @@
 //! read scalar geometry, so a `dyn Dilutable` registry can hold issuers for
 //! different networks.
 //!
+//! # The permit seam
+//!
+//! [`StampIssuer::reserve`] takes `&self` and returns a [`Prepared`] permit:
+//! constructing it consumed the slot. Signing happens outside every lock, then
+//! [`Prepared::stamp`] or [`Prepared::seal`] mints the result. Dropping a
+//! permit returns its [`WindowToken`] to the [`AdmissionWindow`] and burns the
+//! slot, so a cancelled future recovers backpressure but never capacity.
+//!
 //! # Parallel stamping
 //!
-//! [`MemoryIssuer`] allocates without a lock, so `&MemoryIssuer` is itself a
-//! [`StampIssuer`] that any number of threads may stamp through. Ring issuance
-//! stays sequential, because skipping reserved slots reads more state than one
-//! word; share a [`RingIssuer`] behind a lock.
+//! [`MemoryIssuer`] allocates without a lock, so any number of threads may
+//! stamp through one issuer. Ring issuance stays sequential, because skipping
+//! reserved slots reads more state than one word; a [`RingIssuer`] serializes
+//! itself in a cell and is `!Sync`, so move one between threads behind a lock.
 //!
 //! Where there are no threads (`unsync`, wasm32, bare metal) the same table is
 //! plain cells, which leaves [`MemoryIssuer`] `!Sync` there.
@@ -144,8 +152,8 @@ mod error;
 #[cfg(feature = "std")]
 mod factory;
 mod issuer;
+mod permit;
 mod pipeline;
-mod prepared;
 mod ring;
 mod stamper;
 mod watermarks;
@@ -166,8 +174,9 @@ pub use counter::{CounterError, CounterMode, CounterTable};
 #[cfg(feature = "std")]
 pub use dilute_handler::{Dilutable, IssuerRegistry};
 
-// Issuing
+// Issuing: the permit seam, then the issuers that mint permits.
 pub use issuer::{MemoryIssuer, StampIssuer};
+pub use permit::{AdmissionWindow, Prepared, WindowToken};
 pub use stamper::{BatchStamper, Stamper};
 
 // The streaming stamp pipeline; its sign window is the governor window.

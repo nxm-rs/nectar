@@ -1,69 +1,31 @@
 //! Stamp issuer trait for tracking bucket utilization.
 
 use crate::error::IssuerError;
+use crate::permit::Prepared;
 use crate::watermarks::Watermarks;
-use nectar_postage::{
-    Batch, BatchDepth, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
-};
+use nectar_postage::{Batch, BatchDepth, BatchId, BucketDepth, StampError, calculate_bucket};
 use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
-/// A trait for managing stamp issuance within a batch.
+/// Slot allocation within a batch: the reserve half of the three phases, with
+/// signing and commit outside it.
 ///
-/// The stamp issuer tracks which bucket indices have been used and allocates
-/// new indices for chunks as they are stamped. This is the stateful component
-/// that ensures each stamp uses a unique index within its bucket.
-///
-/// # Separation of Concerns
-///
-/// The `StampIssuer` is responsible only for tracking and allocating indices.
-/// Signing is handled separately by the `Stamper` trait, allowing the same
-/// issuer state to be used with different signing mechanisms.
-///
-/// # Example
-///
-/// ```ignore
-/// use nectar_postage_issuer::{StampIssuer, StampDigest, StampError};
-/// use nectar_primitives::ChunkAddress;
-///
-/// struct MyIssuer { /* ... */ }
-///
-/// impl StampIssuer for MyIssuer {
-///     fn prepare_stamp(&mut self, address: &ChunkAddress, timestamp: u64) -> Result<StampDigest, StampError> {
-///         // Allocate index and return digest
-///         todo!()
-///     }
-///
-///     fn batch_id(&self) -> BatchId {
-///         todo!()
-///     }
-///
-///     // ... other methods
-/// }
-/// ```
+/// Allocation takes `&self`, so an issuer is shared rather than borrowed
+/// exclusively for the length of a pipeline, and a signer never holds it.
 pub trait StampIssuer {
-    /// Prepares a stamp digest for the given chunk address.
-    ///
-    /// This method:
-    /// 1. Calculates which bucket the chunk belongs to
-    /// 2. Allocates the next available index within that bucket
-    /// 3. Returns the digest that needs to be signed
-    ///
-    /// The caller is then responsible for signing the digest and creating
-    /// the final stamp.
-    ///
-    /// # Arguments
-    ///
-    /// * `address` - The address of the chunk to stamp
-    /// * `timestamp` - The timestamp to include in the stamp
+    /// The network the batch was bought on.
+    type Spec: SwarmSpec;
+
+    /// Claims a slot in the bucket `address` falls into and returns the
+    /// permit for it.
     ///
     /// # Errors
     ///
-    /// Returns `StampError::BucketFull` if the bucket has no remaining capacity.
-    fn prepare_stamp(
-        &mut self,
+    /// [`StampError::BucketFull`] once the bucket has no slot left.
+    fn reserve(
+        &self,
         address: &ChunkAddress,
         timestamp: u64,
-    ) -> Result<StampDigest, StampError>;
+    ) -> Result<Prepared<Self::Spec>, StampError>;
 
     /// Returns the batch ID that stamps are issued for.
     fn batch_id(&self) -> BatchId;
@@ -202,17 +164,18 @@ impl<S: SwarmSpec> MemoryIssuer<S> {
         Ok(())
     }
 
-    /// Prepares a stamp digest for `address`, claiming a slot in its bucket.
+    /// Claims a slot in the bucket `address` falls into.
     ///
     /// # Errors
     ///
     /// [`StampError::BucketFull`] once the bucket has no slot left.
-    pub fn prepare_stamp(
+    pub fn reserve(
         &self,
         address: &ChunkAddress,
         timestamp: u64,
-    ) -> Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.watermarks.bucket_depth());
+    ) -> Result<Prepared<S>, StampError> {
+        let bucket_depth = self.watermarks.bucket_depth();
+        let bucket = calculate_bucket(address, bucket_depth);
         let position = self
             .watermarks
             .allocate(bucket)
@@ -223,10 +186,18 @@ impl<S: SwarmSpec> MemoryIssuer<S> {
                     _ => self.watermarks.bucket_capacity(),
                 },
             })?;
+        // Read after the claim: depth only ever rises, so the recorded depth is
+        // never narrower than the bound the claim was checked against.
+        let depth = BatchDepth::new(self.watermarks.depth(), bucket_depth)?;
 
-        let index = StampIndex::new(bucket.value(), position);
-
-        Ok(StampDigest::new(*address, self.batch_id, index, timestamp))
+        Ok(Prepared::new(
+            *address,
+            self.batch_id,
+            bucket,
+            depth,
+            position,
+            timestamp,
+        ))
     }
 
     /// Creates a memory issuer from a batch.
@@ -251,13 +222,11 @@ impl<S: SwarmSpec> MemoryIssuer<S> {
 }
 
 impl<S: SwarmSpec> StampIssuer for MemoryIssuer<S> {
-    fn prepare_stamp(
-        &mut self,
-        address: &ChunkAddress,
-        timestamp: u64,
-    ) -> Result<StampDigest, StampError> {
+    type Spec = S;
+
+    fn reserve(&self, address: &ChunkAddress, timestamp: u64) -> Result<Prepared<S>, StampError> {
         // The inherent method; the trait method of the same name would recurse.
-        Self::prepare_stamp(self, address, timestamp)
+        Self::reserve(self, address, timestamp)
     }
 
     fn batch_id(&self) -> BatchId {
@@ -292,41 +261,43 @@ impl<S: SwarmSpec> StampIssuer for MemoryIssuer<S> {
 }
 
 /// Shared-handle issuance: several pipelines may admit from one issuer.
-impl<S: SwarmSpec> StampIssuer for &MemoryIssuer<S> {
-    fn prepare_stamp(
-        &mut self,
+impl<I: StampIssuer + ?Sized> StampIssuer for &I {
+    type Spec = I::Spec;
+
+    fn reserve(
+        &self,
         address: &ChunkAddress,
         timestamp: u64,
-    ) -> Result<StampDigest, StampError> {
-        MemoryIssuer::prepare_stamp(self, address, timestamp)
+    ) -> Result<Prepared<Self::Spec>, StampError> {
+        (**self).reserve(address, timestamp)
     }
 
     fn batch_id(&self) -> BatchId {
-        StampIssuer::batch_id(&**self)
+        (**self).batch_id()
     }
 
     fn batch_depth(&self) -> u8 {
-        StampIssuer::batch_depth(&**self)
+        (**self).batch_depth()
     }
 
     fn bucket_depth(&self) -> u8 {
-        StampIssuer::bucket_depth(&**self)
+        (**self).bucket_depth()
     }
 
     fn max_bucket_utilization(&self) -> u32 {
-        StampIssuer::max_bucket_utilization(&**self)
+        (**self).max_bucket_utilization()
     }
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
-        StampIssuer::bucket_utilization(&**self, bucket)
+        (**self).bucket_utilization(bucket)
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
-        StampIssuer::bucket_has_capacity(&**self, bucket)
+        (**self).bucket_has_capacity(bucket)
     }
 
     fn stamps_issued(&self) -> Option<u64> {
-        StampIssuer::stamps_issued(&**self)
+        (**self).stamps_issued()
     }
 }
 
@@ -361,17 +332,18 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_issuer_prepare_stamp() {
+    fn test_memory_issuer_reserve() {
         let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         let address = test_address(0xCBE5);
-        let digest = issuer.prepare_stamp(&address, 12345).unwrap();
+        let permit = issuer.reserve(&address, 12345).unwrap();
 
-        assert_eq!(digest.batch_id, BatchId::ZERO);
-        assert_eq!(digest.index.bucket(), 0xCBE5);
-        assert_eq!(digest.index.index(), 0);
-        assert_eq!(digest.timestamp, 12345);
+        assert_eq!(permit.batch(), BatchId::ZERO);
+        assert_eq!(permit.bucket().value(), 0xCBE5);
+        assert_eq!(permit.index().index(), 0);
+        assert_eq!(permit.timestamp(), 12345);
+        assert_eq!(permit.depth().get(), 20);
         assert_eq!(issuer.stamps_issued(), Some(1));
         assert_eq!(issuer.max_bucket_utilization(), 1);
     }
@@ -383,13 +355,13 @@ mod tests {
 
         let address = test_address(0xCBE5);
 
-        let d1 = issuer.prepare_stamp(&address, 1).unwrap();
-        let d2 = issuer.prepare_stamp(&address, 2).unwrap();
-        let d3 = issuer.prepare_stamp(&address, 3).unwrap();
+        let d1 = issuer.reserve(&address, 1).unwrap();
+        let d2 = issuer.reserve(&address, 2).unwrap();
+        let d3 = issuer.reserve(&address, 3).unwrap();
 
-        assert_eq!(d1.index.index(), 0);
-        assert_eq!(d2.index.index(), 1);
-        assert_eq!(d3.index.index(), 2);
+        assert_eq!(d1.index().index(), 0);
+        assert_eq!(d2.index().index(), 1);
+        assert_eq!(d3.index().index(), 2);
         assert_eq!(issuer.stamps_issued(), Some(3));
     }
 
@@ -402,11 +374,11 @@ mod tests {
         let address = test_address(0xABCD);
 
         // First two should succeed
-        assert!(issuer.prepare_stamp(&address, 1).is_ok());
-        assert!(issuer.prepare_stamp(&address, 2).is_ok());
+        assert!(issuer.reserve(&address, 1).is_ok());
+        assert!(issuer.reserve(&address, 2).is_ok());
 
         // Third should fail
-        let result = issuer.prepare_stamp(&address, 3);
+        let result = issuer.reserve(&address, 3);
         assert!(matches!(
             result,
             Err(StampError::BucketFull {
@@ -424,9 +396,9 @@ mod tests {
         let addr1 = test_address(0x1234);
         let addr2 = test_address(0x5678);
 
-        issuer.prepare_stamp(&addr1, 1).unwrap();
-        issuer.prepare_stamp(&addr1, 2).unwrap();
-        issuer.prepare_stamp(&addr2, 3).unwrap();
+        issuer.reserve(&addr1, 1).unwrap();
+        issuer.reserve(&addr1, 2).unwrap();
+        issuer.reserve(&addr2, 3).unwrap();
 
         assert_eq!(issuer.bucket_utilization(0x1234), 2);
         assert_eq!(issuer.bucket_utilization(0x5678), 1);
@@ -443,10 +415,10 @@ mod tests {
 
         assert!(issuer.bucket_has_capacity(0x0001));
 
-        issuer.prepare_stamp(&address, 1).unwrap();
+        issuer.reserve(&address, 1).unwrap();
         assert!(issuer.bucket_has_capacity(0x0001));
 
-        issuer.prepare_stamp(&address, 2).unwrap();
+        issuer.reserve(&address, 2).unwrap();
         assert!(!issuer.bucket_has_capacity(0x0001));
     }
 
@@ -460,14 +432,14 @@ mod tests {
 
         assert!(!issuer.is_near_capacity(0.5));
 
-        issuer.prepare_stamp(&address, 1).unwrap();
-        issuer.prepare_stamp(&address, 2).unwrap();
+        issuer.reserve(&address, 1).unwrap();
+        issuer.reserve(&address, 2).unwrap();
 
         // 2/4 = 0.5
         assert!(issuer.is_near_capacity(0.5));
         assert!(!issuer.is_near_capacity(0.75));
 
-        issuer.prepare_stamp(&address, 3).unwrap();
+        issuer.reserve(&address, 3).unwrap();
 
         // 3/4 = 0.75
         assert!(issuer.is_near_capacity(0.75));
@@ -542,11 +514,11 @@ mod tests {
         for ts in 0..2u64 {
             for leading in [0xCBE5u16, 0x0001, 0xABCD] {
                 let address = test_address(leading);
-                let a = from_batch.prepare_stamp(&address, ts).unwrap();
-                let b = from_new.prepare_stamp(&address, ts).unwrap();
-                assert_eq!(a.index.bucket(), b.index.bucket());
-                assert_eq!(a.index.index(), b.index.index());
-                assert_eq!(a.to_prehash(), b.to_prehash());
+                let a = from_batch.reserve(&address, ts).unwrap();
+                let b = from_new.reserve(&address, ts).unwrap();
+                assert_eq!(a.bucket().value(), b.bucket().value());
+                assert_eq!(a.index().index(), b.index().index());
+                assert_eq!(a.digest().to_prehash(), b.digest().to_prehash());
             }
         }
 
@@ -566,15 +538,15 @@ mod tests {
 
         // Fill the bucket, then a dilution to depth 18 (4 slots) reopens it
         // without moving the existing watermark.
-        issuer.prepare_stamp(&address, 1).unwrap();
-        issuer.prepare_stamp(&address, 2).unwrap();
-        assert!(issuer.prepare_stamp(&address, 3).is_err());
+        issuer.reserve(&address, 1).unwrap();
+        issuer.reserve(&address, 2).unwrap();
+        assert!(issuer.reserve(&address, 3).is_err());
 
         issuer.dilute(18).unwrap();
         assert_eq!(issuer.bucket_capacity(), 4);
         // The watermark is unchanged, so the next slot is 2, not 0.
-        let d = issuer.prepare_stamp(&address, 4).unwrap();
-        assert_eq!(d.index.index(), 2);
+        let d = issuer.reserve(&address, 4).unwrap();
+        assert_eq!(d.index().index(), 2);
         assert_eq!(issuer.stamps_issued(), Some(3));
 
         // Dilution may never decrease the depth.
@@ -657,11 +629,11 @@ mod tests {
                             ts += 1;
                             let bucket = u32::from(lead) << (bucket_depth.get() - 16);
                             let mark = marks.entry(lead).or_insert(0);
-                            match issuer.prepare_stamp(&test_address(lead), ts) {
-                                Ok(digest) => {
+                            match issuer.reserve(&test_address(lead), ts) {
+                                Ok(permit) => {
                                     prop_assert!(*mark < capacity);
-                                    prop_assert_eq!(digest.index.bucket(), bucket);
-                                    prop_assert_eq!(digest.index.index(), *mark);
+                                    prop_assert_eq!(permit.bucket().value(), bucket);
+                                    prop_assert_eq!(permit.index().index(), *mark);
                                     *mark += 1;
                                     issued += 1;
                                 }
