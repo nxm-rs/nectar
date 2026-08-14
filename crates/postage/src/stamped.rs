@@ -1,9 +1,6 @@
 //! A chunk paired with the postage stamp that authorizes its storage.
 //!
-//! The two transitions commute and both orders are load-bearing: ingest
-//! validates before it verifies, so an unpaid body never pays for its own
-//! hashing, and the producer path is verified already and only needs
-//! validation.
+//! `verify` and `validate` commute, so either order reaches the same pair.
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -70,11 +67,8 @@ impl<T: TrustState, const BODY_SIZE: usize> StampedChunk<T, Unvalidated, BODY_SI
         }
     }
 
-    /// Certify the stamp against `batch` and the chunk's own address.
-    ///
-    /// At [`Unverified`] that address is the claim the wire carried, which is
-    /// what the owner signed over, so an unpaid body is refused before it is
-    /// hashed.
+    /// Certify the stamp against `batch` and the chunk's own address, which at
+    /// [`Unverified`] is the claim the wire carried.
     ///
     /// # Errors
     ///
@@ -177,8 +171,8 @@ impl<T: TrustState, V: ValidationState, const BODY_SIZE: usize> StampedChunk<T, 
 
     /// The stamp with the address it is bound to, without the body.
     ///
-    /// `V` transfers because the only route to [`Validated`] is
-    /// [`validate`](StampedChunk::validate), which used this same address.
+    /// `V` transfers: the only route to [`Validated`] is
+    /// [`validate`](StampedChunk::validate), over this same address.
     #[inline]
     #[must_use]
     pub fn detach(&self) -> StampedAddress<V> {
@@ -293,7 +287,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{BucketDepth, STAMP_SIZE, generators};
+    use crate::{STAMP_SIZE, generators};
 
     type Raw = StampedChunk<Unverified, Unvalidated>;
     type Signed = StampedChunk<Verified, Unvalidated>;
@@ -324,20 +318,10 @@ mod tests {
 
     /// A pair whose stamp really signs the chunk's address, with its batch.
     fn signed(chunk: impl Into<AnyChunk<DEFAULT_BODY_SIZE>>) -> (Batch, Signed) {
-        let signer = PrivateKeySigner::from_slice(&[7u8; 32]).expect("valid signer");
-        let batch = Batch::new(
-            BatchId::ZERO,
-            1_000,
-            100,
-            signer.address(),
-            18,
-            BucketDepth::new(16).expect("valid bucket depth"),
-            true,
-        );
         let chunk = verified(chunk);
-        let mut u = Unstructured::new(&[7u8; 32]);
-        let stamp = generators::signed_stamp(&mut u, &signer, &batch, chunk.address())
-            .expect("signed stamp");
+        let mut u = Unstructured::new(&[7u8; 128]);
+        let (batch, stamp) =
+            generators::batch_and_stamp(&mut u, chunk.address()).expect("coherent stamp");
         (batch, StampedChunk::new(chunk, stamp))
     }
 
@@ -404,7 +388,6 @@ mod tests {
         assert_eq!(decoded, stamped);
     }
 
-    /// Both orders reach the same sealed pair, and neither skips a check.
     #[test]
     fn the_two_transition_orders_agree() {
         let (batch, pair) = signed(content_chunk());
@@ -428,15 +411,13 @@ mod tests {
         assert_eq!(ingest.to_typed_bytes(), bytes);
     }
 
-    /// The producer path is verified already and only needs validation.
     #[test]
     fn a_verified_pair_validates_without_a_decode() {
         let (batch, pair) = signed(content_chunk());
         assert!(pair.validate(&batch).is_ok());
     }
 
-    /// Parse blesses neither half: a lying claim survives it and dies at
-    /// verify.
+    /// A lying claim survives parse and dies at verify.
     #[test]
     fn parse_certifies_nothing() {
         let stamped = Signed::new(verified(content_chunk()), test_stamp());
@@ -448,21 +429,24 @@ mod tests {
         assert!(matches!(raw.verify(), Err(StampError::Chunk(_))));
     }
 
-    /// The anti-denial-of-service order: an unpaid body is refused before it
-    /// is hashed.
+    /// The ingest order refuses an unpaid body before it is hashed.
     #[test]
     fn validate_refuses_an_unverified_pair_on_a_foreign_batch() {
         let (batch, pair) = signed(content_chunk());
         let address = *pair.address();
         let bytes = pair.to_typed_bytes();
+        // Same geometry and owner, so only the id can refuse it.
+        let mut id = [0u8; 32];
+        id.copy_from_slice(batch.id().as_slice());
+        id[0] ^= 0xFF;
         let elsewhere: Batch = Batch::new(
-            BatchId::from([1u8; 32]),
-            1_000,
-            100,
+            BatchId::new(id),
+            batch.value(),
+            batch.start(),
             batch.owner(),
-            18,
-            BucketDepth::new(16).expect("valid bucket depth"),
-            true,
+            batch.depth(),
+            batch.bucket_depth(),
+            batch.immutable(),
         );
 
         let raw = Raw::parse(&address, &bytes).expect("parse");
@@ -472,8 +456,6 @@ mod tests {
         ));
     }
 
-    /// Validation binds the stamp to the address, not to the body, so a
-    /// re-paired stamp cannot borrow another chunk's proof.
     #[test]
     fn validate_refuses_a_re_paired_stamp() {
         let (batch, pair) = signed(content_chunk());
@@ -483,17 +465,18 @@ mod tests {
         assert!(elsewhere.validate(&batch).is_err());
     }
 
+    /// The annotations are the assertion: `detach` carries `V` across.
     #[test]
     fn detach_projects_the_pair_in_either_state() {
         let (batch, pair) = signed(content_chunk());
         let address = *pair.address();
         let stamp = pair.stamp().clone();
 
-        let raw = pair.detach();
+        let raw: StampedAddress<Unvalidated> = pair.detach();
         assert_eq!(raw.address(), &address);
         assert_eq!(raw.stamp(), &stamp);
 
-        let sealed = pair.validate(&batch).expect("validates").detach();
+        let sealed: StampedAddress<Validated> = pair.validate(&batch).expect("validates").detach();
         assert_eq!(sealed.address(), &address);
         assert_eq!(sealed.stamp(), &stamp);
     }

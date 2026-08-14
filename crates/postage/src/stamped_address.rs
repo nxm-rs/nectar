@@ -63,19 +63,6 @@ pub struct StampedAddress<V: ValidationState = Validated> {
     _validation: PhantomData<V>,
 }
 
-impl<V: ValidationState> StampedAddress<V> {
-    /// Sound only where a transition over this same address justifies `V`.
-    #[inline]
-    #[must_use]
-    pub(crate) const fn from_parts(address: ChunkAddress, stamp: Stamp) -> Self {
-        Self {
-            address,
-            stamp,
-            _validation: PhantomData,
-        }
-    }
-}
-
 impl StampedAddress<Unvalidated> {
     /// Pair a stamp with the address it claims to pay for.
     #[inline]
@@ -117,6 +104,17 @@ impl StampedAddress<Unvalidated> {
 }
 
 impl<V: ValidationState> StampedAddress<V> {
+    /// Sound only where a transition over this same address justifies `V`.
+    #[inline]
+    #[must_use]
+    pub(crate) const fn from_parts(address: ChunkAddress, stamp: Stamp) -> Self {
+        Self {
+            address,
+            stamp,
+            _validation: PhantomData,
+        }
+    }
+
     /// The address the stamp is bound to.
     #[inline]
     #[must_use]
