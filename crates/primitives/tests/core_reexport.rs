@@ -42,8 +42,8 @@ fn core_items_keep_their_identity() {
         nectar_primitives_core::error::ChunkStoreError::not_found(&ChunkAddress::ZERO);
 }
 
-/// The `Default*` aliases are re-exported, not redeclared: the identity
-/// function only coerces when both crates name one type.
+/// The `Default*` aliases are re-exported, not redeclared: a drifted width
+/// fails the coercion.
 #[test]
 fn default_aliases_keep_their_identity() {
     fn same<T>(x: T) -> T {

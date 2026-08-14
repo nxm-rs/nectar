@@ -86,8 +86,8 @@ jobs:
             # likewise outside the default-features pass.
             - name: cargo clippy (ldb encryption)
               run: cargo clippy --locked --all-targets -p nectar-ldb --features encryption -- -D warnings
-            # The modern envelope sits behind the primitives
-            # envelope-unstable feature, outside the default-features pass.
+            # The modern envelope sits behind the primitives envelope-unstable
+            # feature, likewise outside the default-features pass.
             - name: cargo clippy (envelope)
               run: cargo clippy --locked --all-targets -p nectar-primitives --features envelope-unstable,encryption -- -D warnings
             # The pipeline's inline engine only compiles with the parallel
