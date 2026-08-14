@@ -99,9 +99,6 @@ pub trait BatchFactory {
 ///
 /// This implementation creates batches in memory without any blockchain
 /// interaction. Useful for unit tests and local development.
-///
-/// The network the batches are minted for is a type parameter defaulting to
-/// [`Mainnet`].
 #[derive(Debug)]
 pub struct MemoryBatchFactory<S: SwarmSpec = Mainnet> {
     /// Counter for generating unique batch IDs.

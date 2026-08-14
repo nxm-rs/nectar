@@ -104,7 +104,7 @@ pub enum CounterError {
 ///
 /// The network is a type parameter that reaches the table through its
 /// [`BucketDepth`], so the bucket depth a table was built with is one the
-/// network accepts. It defaults to [`Mainnet`].
+/// network accepts.
 #[derive(Debug)]
 pub struct CounterTable<S: SwarmSpec = Mainnet> {
     depth: u8,

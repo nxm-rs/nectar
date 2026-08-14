@@ -128,9 +128,8 @@ fn a_deep_reserved_ring_never_emits_a_reserved_slot() {
     }
 }
 
-// The spec parameter defaults to `Mainnet` and trails any type-state
-// parameter. Each identity fails to compile if a default is dropped, if a bare
-// name stops meaning mainnet, or if the parameters swap back.
+// Each identity fails to compile if a spec default is dropped, if a bare name
+// stops meaning mainnet, or if the parameters swap order.
 const _: fn(MemoryIssuer) -> MemoryIssuer<Mainnet> = |x| x;
 const _: fn(CounterTable) -> CounterTable<Mainnet> = |x| x;
 const _: fn(RingIssuer<Reserved>) -> RingIssuer<Reserved, Mainnet> = |x| x;

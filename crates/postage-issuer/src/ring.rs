@@ -133,8 +133,7 @@ impl Reservation for Reserved {
 /// with [`IssuerError::ImmutableNotSupported`]: immutable batches are fill-only
 /// and use [`MemoryIssuer`](crate::MemoryIssuer).
 ///
-/// The network reaches the ring through its [`BucketDepth`] and defaults to
-/// [`Mainnet`].
+/// The network reaches the ring through its [`BucketDepth`].
 #[derive(Debug)]
 pub struct RingIssuer<R = Unreserved, S: SwarmSpec = Mainnet> {
     /// The batch ID.

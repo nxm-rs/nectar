@@ -147,7 +147,7 @@ pub trait StampIssuer {
 /// documentation for the steer toward `Snapshot::issuer` / `SnapshotIssuer`.
 ///
 /// The network is a type parameter that reaches the issuer through its
-/// [`BucketDepth`] and defaults to [`Mainnet`].
+/// [`BucketDepth`].
 #[derive(Debug)]
 pub struct MemoryIssuer<S: SwarmSpec = Mainnet> {
     /// The batch ID.

@@ -50,7 +50,7 @@ enum LeafSection {
 ///
 /// The network is a type parameter: the geometry on the wire is a bare depth
 /// byte, and parsing it as a snapshot of `S` is what re-establishes the
-/// [`BucketDepth`] proof. It defaults to [`Mainnet`].
+/// [`BucketDepth`] proof.
 #[derive(Debug)]
 pub struct RootInfo<S: SwarmSpec = Mainnet> {
     batch_id: BatchId,

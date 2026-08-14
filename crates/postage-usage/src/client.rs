@@ -51,7 +51,7 @@ use crate::{UsageError, usage_chunk_address};
 /// does not exist. `Err` means the read could not be completed and the caller
 /// must *not* treat the chunk as absent. This distinction is load-bearing:
 /// treating a transport failure as absence would read the published-sequence
-/// floor as [`PublishedSequence::NONE`] and reopen the downgrade that floor
+/// floor as [`PublishedSequence::NONE`] and reopen the downgrade the floor
 /// closes.
 #[auto_impl::auto_impl(&, Arc, Box)]
 pub trait SnapshotSource {
