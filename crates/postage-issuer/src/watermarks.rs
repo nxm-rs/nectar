@@ -53,7 +53,7 @@ mod word {
             self.0.load(ORDER)
         }
 
-        /// The depth every completed dilution has published.
+        /// Acquire, so this is a second load and not the first one folded.
         pub(super) fn reload(&self) -> u8 {
             self.0.load(Ordering::Acquire)
         }
@@ -119,7 +119,6 @@ mod word {
             self.0.get()
         }
 
-        /// The depth every completed dilution has published.
         pub(super) fn reload(&self) -> u8 {
             self.0.get()
         }
@@ -209,8 +208,7 @@ impl<S: SwarmSpec> Watermarks<S> {
         self.capacity_at(self.depth.get())
     }
 
-    /// The capacity of every dilution that has already returned.
-    fn confirmed_capacity(&self) -> u32 {
+    fn reloaded_capacity(&self) -> u32 {
         self.capacity_at(self.depth.reload())
     }
 
@@ -253,17 +251,16 @@ impl<S: SwarmSpec> Watermarks<S> {
         let mut count = counter.get();
         let mut reloaded = false;
         loop {
-            // Re-read the capacity every attempt: a dilution landing mid-loop
-            // reopens the bucket, and a stale read only refuses early.
+            // A dilution landing mid-loop reopens the bucket, so a full bucket
+            // is confirmed by one fresh load before it is refused. Once per
+            // call: the retry is a courtesy on a path that was going to fail.
             let mut capacity = self.bucket_capacity();
             if count >= capacity {
                 if reloaded {
                     return Err(CounterError::BucketFull { bucket, capacity });
                 }
-                // One confirmed re-read turns a dilution window's stale
-                // refusal into a claim.
                 reloaded = true;
-                capacity = self.confirmed_capacity();
+                capacity = self.reloaded_capacity();
                 if count >= capacity {
                     return Err(CounterError::BucketFull { bucket, capacity });
                 }
