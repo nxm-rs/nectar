@@ -56,7 +56,10 @@ fn readme_worked_example_vector() {
 
     // The root chunk's own stamp lands in bucket 41 at index 4, as
     // narrated in the README.
-    assert_eq!(calculate_bucket(&plan.chunks[0].address, low_floor(8)), 41);
+    assert_eq!(
+        calculate_bucket(&plan.chunks[0].address, low_floor(8)).value(),
+        41
+    );
     assert_eq!(snapshot.allocated_slots(), &[4]);
     assert_eq!(snapshot.table().total_issued(), 1166);
 
@@ -103,7 +106,7 @@ fn readme_large_batch_multi_leaf_vector() {
     // The root's own slot is the watermark of its bucket at allocation
     // time: bucket 0x296d held 100 + (0x296d mod 50) = 105 stamps.
     assert_eq!(
-        calculate_bucket(&plan.chunks[0].address, bucket_depth),
+        calculate_bucket(&plan.chunks[0].address, bucket_depth).value(),
         0x296d
     );
     assert_eq!(snapshot.allocated_slots()[0], 105);
@@ -154,7 +157,10 @@ fn mutable_vector_flags_byte_and_round_trip() {
         .unwrap();
 
     // Same self-allocation as the immutable vector: bucket 41, slot 4.
-    assert_eq!(calculate_bucket(&plan.chunks[0].address, low_floor(8)), 41);
+    assert_eq!(
+        calculate_bucket(&plan.chunks[0].address, low_floor(8)).value(),
+        41
+    );
     assert_eq!(snapshot.allocated_slots(), &[4]);
 
     // Exactly one byte differs from the immutable vector: the flags byte.

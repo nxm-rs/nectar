@@ -11,6 +11,8 @@
 //! - [`Batch`]: A postage batch representing prepaid storage
 //! - [`BucketDepth`]: A collision-bucket depth a network accepts, checked
 //!   against the [`SwarmSpec`](nectar_primitives::SwarmSpec) it is built for
+//! - [`Bucket`]: A collision bucket carrying the depth that cut it
+//! - [`BatchDepth`]: A batch depth carrying the bucket depth beneath it
 //! - [`Stamp`]: A postage stamp proving payment for chunk storage
 //! - [`StampIndex`]: The bucket and position index within a stamp
 //! - [`StampDigest`]: The data to be signed when creating a stamp
@@ -67,6 +69,7 @@ mod batch;
 mod error;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod generators;
+mod geometry;
 #[cfg(any(test, feature = "arbitrary"))]
 pub mod oracles;
 mod sink;
@@ -89,13 +92,14 @@ mod store;
 pub mod parallel;
 
 // Core types
-pub use batch::{Batch, BatchId, BatchParams, BucketDepth};
+pub use batch::{Batch, BatchId, BatchParams};
 pub use error::StampError;
+pub use geometry::{BatchDepth, Bucket, BucketDepth, calculate_bucket};
 pub use sink::{PutStamped, StampIndifferent, Tee, TeeError};
 pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
 pub use stamped_address::{StampedAddress, Unvalidated, Validated, ValidationState};
-pub use util::{PostageContext, calculate_bucket};
+pub use util::PostageContext;
 pub use validation::StampValidator;
 #[cfg(feature = "std")]
 pub use validation::StoreValidator;

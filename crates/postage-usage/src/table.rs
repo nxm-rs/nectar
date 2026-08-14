@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use nectar_postage::{Batch, BatchId, BucketDepth};
+use nectar_postage::{Batch, BatchDepth, BatchId, BucketDepth};
 use nectar_postage_issuer::{CounterError, CounterMode, CounterTable};
 use nectar_primitives::{Mainnet, SwarmSpec};
 
@@ -35,26 +35,24 @@ pub(crate) const fn map_counter_error(err: CounterError) -> UsageError {
     }
 }
 
-/// Validates that a batch geometry is within the range supported by the
-/// snapshot format: `1 <= bucket_depth <= 16` and `depth - bucket_depth <= 31`.
-///
-/// A zero bucket depth is rejected: a batch with no collision buckets is
-/// meaningless.
-// `depth - bucket_depth` is short-circuit guarded by the preceding
-// `depth < bucket_depth` disjunct, so it cannot underflow.
-#[allow(clippy::arithmetic_side_effects)]
-pub(crate) const fn validate_geometry(depth: u8, bucket_depth: u8) -> Result<()> {
-    if bucket_depth == 0
-        || bucket_depth > MAX_BUCKET_DEPTH
-        || depth < bucket_depth
-        || depth - bucket_depth > MAX_COUNTER_BITS
-    {
-        return Err(UsageError::InvalidGeometry {
-            depth,
-            bucket_depth,
-        });
+// The format's counter width and the width a `u32` slot count holds are the
+// same bound; `checked_geometry` delegates that half of the check.
+const _: () = assert!(MAX_COUNTER_BITS == BatchDepth::<Mainnet>::MAX_SLOT_BITS);
+
+/// Validates a batch geometry against the snapshot format's extra ceiling on
+/// the bucket depth, and against the two bounds [`BatchDepth`] settles.
+pub(crate) fn checked_geometry<S: SwarmSpec>(
+    depth: u8,
+    bucket_depth: BucketDepth<S>,
+) -> Result<BatchDepth<S>> {
+    let invalid = || UsageError::InvalidGeometry {
+        depth,
+        bucket_depth: bucket_depth.get(),
+    };
+    if bucket_depth.get() > MAX_BUCKET_DEPTH {
+        return Err(invalid());
     }
-    Ok(())
+    BatchDepth::new(depth, bucket_depth).map_err(|_| invalid())
 }
 
 /// Validates a raw geometry against both the snapshot format and the network
@@ -67,11 +65,12 @@ pub(crate) fn checked_bucket_depth<S: SwarmSpec>(
     depth: u8,
     bucket_depth: u8,
 ) -> Result<BucketDepth<S>> {
-    validate_geometry(depth, bucket_depth)?;
-    BucketDepth::new(bucket_depth).map_err(|_| UsageError::InvalidGeometry {
+    let bucket_depth = BucketDepth::new(bucket_depth).map_err(|_| UsageError::InvalidGeometry {
         depth,
         bucket_depth,
-    })
+    })?;
+    checked_geometry(depth, bucket_depth)?;
+    Ok(bucket_depth)
 }
 
 /// Whether a usage table is an immutable fill watermark or a mutable ring.
@@ -208,7 +207,7 @@ impl<S: SwarmSpec> UsageTable<S> {
         bucket_depth: BucketDepth<S>,
         mutability: Mutability,
     ) -> Result<Self> {
-        validate_geometry(depth, bucket_depth.get())?;
+        checked_geometry(depth, bucket_depth)?;
         Ok(Self {
             batch_id,
             counters: CounterTable::new(depth, bucket_depth, mutability.mode()),
@@ -243,7 +242,7 @@ impl<S: SwarmSpec> UsageTable<S> {
         counts: Vec<u32>,
         mutability: Mutability,
     ) -> Result<Self> {
-        validate_geometry(depth, bucket_depth.get())?;
+        checked_geometry(depth, bucket_depth)?;
         let counters = CounterTable::from_counts(depth, bucket_depth, mutability.mode(), counts)
             .map_err(map_counter_error)?;
         Ok(Self { batch_id, counters })
@@ -347,7 +346,7 @@ impl<S: SwarmSpec> UsageTable<S> {
                 requested: new_depth,
             });
         }
-        validate_geometry(new_depth, self.counters.bucket_depth().get())?;
+        checked_geometry(new_depth, self.counters.bucket_depth())?;
         // The geometry is validated against the snapshot format above, so the
         // shared table only needs to adopt the new depth.
         self.counters.set_depth(new_depth);
@@ -373,7 +372,7 @@ impl<S: SwarmSpec> UsageTable<S> {
             return Err(UsageError::BatchMismatch);
         }
         let depth = self.depth().max(other.depth());
-        validate_geometry(depth, self.bucket_depth().get())?;
+        checked_geometry(depth, self.bucket_depth())?;
         self.counters.merge_counts_max(other.counters(), depth);
         Ok(())
     }
@@ -480,7 +479,7 @@ impl<'a, S: SwarmSpec> TableView<'a, S> {
 }
 
 /// `Arbitrary` implementations that generate *valid* tables: the geometry is
-/// within the format bounds ([`validate_geometry`]) and every counter is
+/// within the format bounds ([`checked_geometry`]) and every counter is
 /// within `[0, capacity]`, so a generated table always encodes, and a
 /// structured fuzz target can assert a full round trip instead of merely "no
 /// panic". Counters cluster around a base with a few outliers, matching the
@@ -605,17 +604,8 @@ mod tests {
 
     #[test]
     fn geometry_rejects_zero_bucket_depth() {
-        for depth in [0u8, 1, 20, 31] {
-            assert_eq!(
-                validate_geometry(depth, 0),
-                Err(UsageError::InvalidGeometry {
-                    depth,
-                    bucket_depth: 0,
-                })
-            );
-        }
-        // The constructors cannot even be reached with one: no network can
-        // declare a floor of zero, so the shallowest depth is 1.
+        // No network can declare a floor of zero, so the shallowest depth is 1
+        // and `checked_geometry` cannot be reached with a zero.
         assert!(BucketDepth::<LowFloor>::new(0).is_err());
         // The wire path rejoins the type here, so a decoded zero is refused.
         assert_eq!(
@@ -625,6 +615,22 @@ mod tests {
                 bucket_depth: 0,
             })
         );
+    }
+
+    #[test]
+    fn geometry_rejects_a_depth_the_counters_cannot_hold() {
+        let bucket_depth = BucketDepth::<LowFloor>::new(8).unwrap();
+        assert_eq!(checked_geometry(39, bucket_depth).unwrap().slot_bits(), 31);
+        // Below the bucket depth, and past the counter width.
+        for depth in [7u8, 40] {
+            assert_eq!(
+                checked_geometry(depth, bucket_depth),
+                Err(UsageError::InvalidGeometry {
+                    depth,
+                    bucket_depth: 8,
+                })
+            );
+        }
     }
 
     #[test]

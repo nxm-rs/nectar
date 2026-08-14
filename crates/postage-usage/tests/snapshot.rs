@@ -226,7 +226,7 @@ fn snapshot_accounts_for_its_own_chunks() {
     let allocated = plan.chunks.len() as u64;
     assert_eq!(snapshot.table().total_issued(), issued_before + allocated);
     for chunk in &plan.chunks {
-        let bucket = calculate_bucket(&chunk.address, bucket_depth());
+        let bucket = calculate_bucket(&chunk.address, bucket_depth()).value();
         assert_eq!(chunk.stamp_index.bucket(), bucket);
         // The recorded counter covers the assigned slot.
         assert!(snapshot.table().count(bucket).unwrap() > chunk.stamp_index.index());
@@ -542,7 +542,7 @@ fn recovered_mutable_issues_reserved_aware_through_the_handle() {
     // Find a content address that maps to the root's reserved bucket.
     let bucket = root_index.bucket();
     let content = address_in_bucket(bucket);
-    assert_eq!(calculate_bucket(&content, bucket_depth()), bucket);
+    assert_eq!(calculate_bucket(&content, bucket_depth()).value(), bucket);
     for _ in 0..32 {
         let index = issuing.issuer(owner()).record_address(&content).unwrap();
         assert_ne!(
@@ -805,7 +805,7 @@ fn mutable_ring_wrap_is_signalled() {
 
     // Pick a content bucket clear of the snapshot's reserved slots.
     let content = address_in_bucket(0x1234);
-    let bucket = calculate_bucket(&content, bucket_depth());
+    let bucket = calculate_bucket(&content, bucket_depth()).value();
 
     let mut issuer = snapshot.issuer(owner());
 
@@ -847,7 +847,7 @@ fn immutable_never_wraps() {
     let table = UsageTable::new(batch_id(), 17, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
     let content = address_in_bucket(0x1234);
-    let bucket = calculate_bucket(&content, bucket_depth());
+    let bucket = calculate_bucket(&content, bucket_depth()).value();
 
     let mut issuer = snapshot.issuer(owner());
     assert!(!issuer.will_wrap(bucket).unwrap());

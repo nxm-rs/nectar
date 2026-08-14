@@ -718,7 +718,7 @@ mod tests {
             let mut buckets: BTreeMap<u32, u32> = BTreeMap::new();
             for address in per_address.keys() {
                 *buckets
-                    .entry(calculate_bucket(address, bucket_depth()))
+                    .entry(calculate_bucket(address, bucket_depth()).value())
                     .or_insert(0) += 1;
             }
             let fullest = buckets.values().copied().max().unwrap();

@@ -60,6 +60,18 @@ pub enum StampError {
         actual: BatchId,
     },
 
+    /// The batch depth exceeds the bucket depth by more bits than a `u32` slot
+    /// count holds.
+    #[error("batch depth {depth} exceeds bucket depth {bucket_depth} by more than {max} bits")]
+    SlotsTooWide {
+        /// The rejected batch depth.
+        depth: u8,
+        /// The bucket depth beneath it.
+        bucket_depth: u8,
+        /// The widest difference a slot count holds.
+        max: u8,
+    },
+
     /// The batch was not found.
     #[error("batch not found: {0}")]
     BatchNotFound(BatchId),
