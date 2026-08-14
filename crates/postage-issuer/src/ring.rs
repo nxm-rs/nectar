@@ -280,8 +280,9 @@ impl<S: SwarmSpec, R: Reservation> RingIssuerFor<S, R> {
             .record(bucket, |slot| reservation.is_protected(bucket, slot))
             .map_err(|err| match err {
                 CounterError::RingExhausted(exhausted) => IssuerError::RingExhausted(exhausted),
-                // Ring mode never reports BucketFull, and construction errors
-                // cannot arise from `record`.
+                // `record` reports nothing else here: ring mode never fills, the
+                // bucket comes from the address so it is in range, and
+                // construction errors cannot arise from an advance.
                 _ => IssuerError::RingExhausted(RingExhausted::new(bucket)),
             })?;
         // A cursor sitting at the capacity has just filled the bucket's last
