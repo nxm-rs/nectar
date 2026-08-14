@@ -102,11 +102,11 @@ pub enum CounterError {
 /// reserved slot. Fill mode ignores the predicate; nothing protects a fill
 /// watermark because it only ever moves forward.
 ///
-/// The network is a type parameter and reaches the table through its
+/// The network is a type parameter that reaches the table through its
 /// [`BucketDepth`], so the bucket depth a table was built with is one the
-/// network accepts. [`CounterTable`] is the mainnet table.
+/// network accepts. It defaults to [`Mainnet`].
 #[derive(Debug)]
-pub struct CounterTableFor<S: SwarmSpec = Mainnet> {
+pub struct CounterTable<S: SwarmSpec = Mainnet> {
     depth: u8,
     bucket_depth: BucketDepth<S>,
     mode: CounterMode,
@@ -114,14 +114,11 @@ pub struct CounterTableFor<S: SwarmSpec = Mainnet> {
     issued: u64,
 }
 
-/// The [`CounterTableFor`] of the mainnet spec.
-pub type CounterTable = CounterTableFor<Mainnet>;
-
 // The spec is a type-level tag, so the impls below carry no bound on `S` beyond
 // `SwarmSpec`; deriving would demand `S: Clone` and `S: Eq` of a marker type
 // that holds no data.
 
-impl<S: SwarmSpec> Clone for CounterTableFor<S> {
+impl<S: SwarmSpec> Clone for CounterTable<S> {
     fn clone(&self) -> Self {
         Self {
             depth: self.depth,
@@ -133,7 +130,7 @@ impl<S: SwarmSpec> Clone for CounterTableFor<S> {
     }
 }
 
-impl<S: SwarmSpec> PartialEq for CounterTableFor<S> {
+impl<S: SwarmSpec> PartialEq for CounterTable<S> {
     fn eq(&self, other: &Self) -> bool {
         self.depth == other.depth
             && self.bucket_depth == other.bucket_depth
@@ -143,9 +140,9 @@ impl<S: SwarmSpec> PartialEq for CounterTableFor<S> {
     }
 }
 
-impl<S: SwarmSpec> Eq for CounterTableFor<S> {}
+impl<S: SwarmSpec> Eq for CounterTable<S> {}
 
-impl<S: SwarmSpec> CounterTableFor<S> {
+impl<S: SwarmSpec> CounterTable<S> {
     /// Creates an empty table for the given geometry and mode.
     pub fn new(depth: u8, bucket_depth: BucketDepth<S>, mode: CounterMode) -> Self {
         Self {
@@ -418,7 +415,7 @@ mod tests {
     #[test]
     fn fill_is_a_monotone_watermark_that_refuses_a_full_bucket() {
         // depth 17, bucket depth 16 gives 2 slots per bucket.
-        let mut table = CounterTable::new(17, bucket_depth(), CounterMode::Fill);
+        let mut table: CounterTable = CounterTable::new(17, bucket_depth(), CounterMode::Fill);
         assert_eq!(table.record(5, never).unwrap(), 0);
         assert_eq!(table.record(5, never).unwrap(), 1);
         assert_eq!(
@@ -434,7 +431,7 @@ mod tests {
 
     #[test]
     fn ring_wraps_and_keeps_the_cursor_in_range() {
-        let mut table = CounterTable::new(17, bucket_depth(), CounterMode::Ring);
+        let mut table: CounterTable = CounterTable::new(17, bucket_depth(), CounterMode::Ring);
         assert_eq!(table.record(5, never).unwrap(), 0);
         assert_eq!(table.record(5, never).unwrap(), 1);
         // The cursor sits at capacity, the deferred-wrap state.
@@ -447,7 +444,7 @@ mod tests {
     #[test]
     fn ring_skips_protected_slots() {
         // depth 18, bucket depth 16 gives 4 slots per bucket. Protect 1 and 3.
-        let mut table = CounterTable::new(18, bucket_depth(), CounterMode::Ring);
+        let mut table: CounterTable = CounterTable::new(18, bucket_depth(), CounterMode::Ring);
         let protected = |slot: u32| slot == 1 || slot == 3;
         for _ in 0..20 {
             let slot = table.record(0, protected).unwrap();
@@ -457,7 +454,7 @@ mod tests {
 
     #[test]
     fn ring_exhausts_when_every_slot_is_protected() {
-        let mut table = CounterTable::new(17, bucket_depth(), CounterMode::Ring);
+        let mut table: CounterTable = CounterTable::new(17, bucket_depth(), CounterMode::Ring);
         let err = table
             .record(0, |_| true)
             .expect_err("every slot is protected");
@@ -507,7 +504,7 @@ mod tests {
                 excess in 0u8..=6,
                 ops in proptest::collection::vec(0u32..8, 1..200),
             ) {
-                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let bucket_depth: BucketDepth = BucketDepth::new(bucket_depth).unwrap();
                 let mut table =
                     CounterTable::new(bucket_depth.get() + excess, bucket_depth, CounterMode::Fill);
                 let capacity = table.bucket_capacity();
@@ -545,7 +542,7 @@ mod tests {
                 masks in proptest::array::uniform4(proptest::num::u16::ANY),
                 ops in proptest::collection::vec(0usize..4, 1..200),
             ) {
-                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let bucket_depth: BucketDepth = BucketDepth::new(bucket_depth).unwrap();
                 let mut table =
                     CounterTable::new(bucket_depth.get() + excess, bucket_depth, CounterMode::Ring);
                 let capacity = table.bucket_capacity();
@@ -588,9 +585,9 @@ mod tests {
                 suffix in proptest::collection::vec(0u32..8, 0..120),
             ) {
                 let mode = if ring { CounterMode::Ring } else { CounterMode::Fill };
-                let bucket_depth = BucketDepth::new(bucket_depth).unwrap();
+                let bucket_depth: BucketDepth = BucketDepth::new(bucket_depth).unwrap();
                 let depth = bucket_depth.get() + excess;
-                let mut live = CounterTable::new(depth, bucket_depth, mode);
+                let mut live: CounterTable = CounterTable::new(depth, bucket_depth, mode);
                 for &bucket in &prefix {
                     let _ = live.record(bucket, never);
                 }

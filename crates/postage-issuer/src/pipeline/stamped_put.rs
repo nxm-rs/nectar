@@ -275,7 +275,7 @@ enum Step {
 /// };
 /// use nectar_primitives::{AnyChunkSet, MemoryStore};
 ///
-/// let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16)?);
+/// let issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16)?);
 /// let sink = StampIndifferent::new(MemoryStore::<AnyChunkSet<4096>>::new());
 /// let store = StampedPut::from_signer(issuer, PrivateKeySigner::random(), sink);
 /// assert_eq!(store.remaining_capacity(), 16);

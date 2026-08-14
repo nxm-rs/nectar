@@ -13,8 +13,8 @@
 use alloy_primitives::hex;
 use nectar_postage::{BucketDepth, calculate_bucket};
 use nectar_postage_usage::{
-    Mutability, PublishedSequence, RootInfo, RootInfoFor, Snapshot, SnapshotFor, UsageTable,
-    UsageTableFor, usage_chunk_address, usage_chunk_id,
+    Mutability, PublishedSequence, RootInfo, Snapshot, UsageTable, usage_chunk_address,
+    usage_chunk_id,
 };
 // The README's small worked example runs at bucket depth 8, which mainnet's
 // floor of 16 forbids, so those vectors are pinned for `LowFloor`.
@@ -39,9 +39,8 @@ fn readme_worked_example_vector() {
     let mut counts: Vec<u32> = (0..256u32).map(|b| 3 + (b & 3)).collect();
     counts[200] = 16;
     let table =
-        UsageTableFor::from_counts(batch_id, 12, low_floor(8), counts, Mutability::Immutable)
-            .unwrap();
-    let mut snapshot = SnapshotFor::new(table);
+        UsageTable::from_counts(batch_id, 12, low_floor(8), counts, Mutability::Immutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
         .unwrap()
@@ -66,7 +65,7 @@ fn readme_worked_example_vector() {
     assert_eq!(hex::encode(&plan.chunks[0].payload), ROOT_PAYLOAD_HEX);
 
     // And the vector decodes back to the same snapshot.
-    let root = RootInfoFor::<LowFloor>::parse(&hex::decode(ROOT_PAYLOAD_HEX).unwrap()).unwrap();
+    let root = RootInfo::<LowFloor>::parse(&hex::decode(ROOT_PAYLOAD_HEX).unwrap()).unwrap();
     let recovered = root.assemble::<&[u8]>(&[]).unwrap();
     assert_eq!(recovered, snapshot);
 }
@@ -86,7 +85,7 @@ fn readme_large_batch_multi_leaf_vector() {
     let mut counts: Vec<u32> = (0..65536u32).map(|b| 100 + (b % 50)).collect();
     counts[0x1234] = 5000;
     counts[0xCBE5] = 8192;
-    let bucket_depth = BucketDepth::new(16).unwrap();
+    let bucket_depth: BucketDepth = BucketDepth::new(16).unwrap();
     let table =
         UsageTable::from_counts(batch_id, 29, bucket_depth, counts, Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
@@ -145,9 +144,9 @@ fn mutable_vector_flags_byte_and_round_trip() {
     let owner = owner();
     let mut counts: Vec<u32> = (0..256u32).map(|b| 3 + (b & 3)).collect();
     counts[200] = 16;
-    let table = UsageTableFor::from_counts(batch_id, 12, low_floor(8), counts, Mutability::Mutable)
-        .unwrap();
-    let mut snapshot = SnapshotFor::new(table);
+    let table =
+        UsageTable::from_counts(batch_id, 12, low_floor(8), counts, Mutability::Mutable).unwrap();
+    let mut snapshot = Snapshot::new(table);
     let plan = snapshot
         .revalidate(PublishedSequence::NONE)
         .unwrap()
@@ -166,7 +165,7 @@ fn mutable_vector_flags_byte_and_round_trip() {
 
     // It decodes back as mutable to the same snapshot.
     let root =
-        RootInfoFor::<LowFloor>::parse(&hex::decode(MUTABLE_ROOT_PAYLOAD_HEX).unwrap()).unwrap();
+        RootInfo::<LowFloor>::parse(&hex::decode(MUTABLE_ROOT_PAYLOAD_HEX).unwrap()).unwrap();
     assert!(root.is_mutable());
     let recovered = root.assemble::<&[u8]>(&[]).unwrap();
     assert!(recovered.table().is_mutable());
