@@ -158,12 +158,12 @@ impl<S: SwarmSpec> BatchFactory for MemoryBatchFactoryFor<S> {
 
         let batch = Batch::new(
             batch_id,
-            params.amount,
+            params.amount(),
             self.current_block,
-            params.owner,
-            params.depth,
-            params.bucket_depth,
-            params.immutable,
+            params.owner(),
+            params.depth(),
+            params.bucket_depth(),
+            params.is_immutable(),
         );
 
         Ok(CreateResultFor {

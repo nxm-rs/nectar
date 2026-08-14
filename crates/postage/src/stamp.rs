@@ -628,7 +628,7 @@ mod tests {
         let bytes = hex::decode(TEST_STAMP).unwrap();
         let stamp = Stamp::try_from_slice(&bytes).unwrap();
 
-        let expected_batch = BatchId::from_slice(&hex::decode(TEST_BATCH_ID).unwrap());
+        let expected_batch = BatchId::from_slice(&hex::decode(TEST_BATCH_ID).unwrap()).unwrap();
         assert_eq!(stamp.batch(), expected_batch);
         assert_eq!(stamp.bucket(), 52197); // 0x0000cbe5
         assert_eq!(stamp.index(), 0);

@@ -5,7 +5,7 @@ use core::{fmt, marker::PhantomData};
 use alloy_primitives::{Address, B256};
 use derive_more::{AsRef, Display, From, Into};
 use nectar_primitives::{
-    ChunkAddress, Mainnet, SwarmSpec,
+    ChunkAddress, Mainnet, SwarmSpec, WrongLength,
     wire::{Cursor, FromCursor, ToWriter, Underrun, Writer},
 };
 
@@ -48,12 +48,25 @@ impl BatchId {
 
     /// Copy an id out of a 32-byte slice.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when `slice` is not exactly 32 bytes.
+    /// [`WrongLength`] when `slice` is not exactly 32 bytes.
     #[inline]
-    pub fn from_slice(slice: &[u8]) -> Self {
-        Self(B256::from_slice(slice))
+    pub fn from_slice(slice: &[u8]) -> Result<Self, WrongLength> {
+        Self::try_from(slice)
+    }
+}
+
+impl TryFrom<&[u8]> for BatchId {
+    type Error = WrongLength;
+
+    fn try_from(slice: &[u8]) -> Result<Self, WrongLength> {
+        <[u8; Self::SIZE]>::try_from(slice)
+            .map(Self::new)
+            .map_err(|_| WrongLength {
+                expected: Self::SIZE,
+                got: slice.len(),
+            })
     }
 }
 
@@ -269,21 +282,22 @@ impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BucketDepth<S> {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(bound(serialize = "", deserialize = "")))]
+#[non_exhaustive]
 pub struct BatchParams<S: SwarmSpec = Mainnet> {
     /// The owner's Ethereum address.
-    pub owner: Address,
+    owner: Address,
     /// The depth of the batch (total capacity = 2^depth chunks).
-    pub depth: u8,
+    depth: u8,
     /// The bucket depth for collision bucket uniformity.
-    pub bucket_depth: BucketDepth<S>,
+    bucket_depth: BucketDepth<S>,
     /// Whether the batch is immutable.
     ///
     /// Immutable batches cannot be diluted (depth increased) and chunks cannot
     /// be overwritten. Mutable batches allow writing new chunks to the same
     /// bucket index with a later timestamp, replacing the previous chunk.
-    pub immutable: bool,
+    immutable: bool,
     /// Initial amount to fund the batch.
-    pub amount: u128,
+    amount: u128,
 }
 
 // As for [`BucketDepth`] above: the spec is a type-level tag, so `Clone` and
@@ -336,6 +350,36 @@ impl<S: SwarmSpec> BatchParams<S> {
     pub const fn immutable(mut self, immutable: bool) -> Self {
         self.immutable = immutable;
         self
+    }
+
+    /// Returns the owner's Ethereum address.
+    #[inline]
+    pub const fn owner(&self) -> Address {
+        self.owner
+    }
+
+    /// Returns the batch depth.
+    #[inline]
+    pub const fn depth(&self) -> u8 {
+        self.depth
+    }
+
+    /// Returns the bucket depth.
+    #[inline]
+    pub const fn bucket_depth(&self) -> BucketDepth<S> {
+        self.bucket_depth
+    }
+
+    /// Returns whether the batch is immutable.
+    #[inline]
+    pub const fn is_immutable(&self) -> bool {
+        self.immutable
+    }
+
+    /// Returns the initial funding amount.
+    #[inline]
+    pub const fn amount(&self) -> u128 {
+        self.amount
     }
 
     /// Validates that the batch depth leaves room above the bucket depth.
@@ -635,13 +679,11 @@ impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BatchParams<S> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let (depth, bucket_depth) = arbitrary_geometry::<S>(u)?;
 
-        Ok(Self {
-            owner: Address::arbitrary(u)?,
-            depth,
-            bucket_depth,
-            immutable: u.arbitrary()?,
-            amount: u.arbitrary()?,
-        })
+        let owner = Address::arbitrary(u)?;
+        let immutable = u.arbitrary()?;
+        let amount = u.arbitrary()?;
+
+        Ok(Self::new(owner, depth, bucket_depth, amount).immutable(immutable))
     }
 }
 
@@ -928,10 +970,45 @@ mod tests {
             BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
                 .immutable(true);
 
-        assert_eq!(params.owner, Address::ZERO);
-        assert_eq!(params.depth, 20);
-        assert_eq!(params.bucket_depth.get(), 16);
-        assert_eq!(params.amount, 1000);
-        assert!(params.immutable);
+        assert_eq!(params.owner(), Address::ZERO);
+        assert_eq!(params.depth(), 20);
+        assert_eq!(params.bucket_depth().get(), 16);
+        assert_eq!(params.amount(), 1000);
+        assert!(params.is_immutable());
+    }
+
+    #[test]
+    fn test_batch_id_from_slice_length() {
+        let bytes = [7u8; 32];
+        assert_eq!(BatchId::from_slice(&bytes).unwrap(), BatchId::new(bytes));
+
+        assert_eq!(
+            BatchId::from_slice(&bytes[..31]).unwrap_err(),
+            WrongLength {
+                expected: 32,
+                got: 31
+            }
+        );
+        assert_eq!(
+            BatchId::from_slice(&[0u8; 33]).unwrap_err(),
+            WrongLength {
+                expected: 32,
+                got: 33
+            }
+        );
+        assert!(BatchId::from_slice(&[]).is_err());
+    }
+
+    #[test]
+    fn test_batch_params_accessors_round_trip() {
+        let params: BatchParams =
+            BatchParams::new(Address::ZERO, 20, BucketDepth::new(16).unwrap(), 1000)
+                .immutable(true);
+
+        assert_eq!(params.owner(), Address::ZERO);
+        assert_eq!(params.depth(), 20);
+        assert_eq!(params.bucket_depth(), BucketDepth::new(16).unwrap());
+        assert!(params.is_immutable());
+        assert_eq!(params.amount(), 1000);
     }
 }
