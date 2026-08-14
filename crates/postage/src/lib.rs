@@ -14,8 +14,8 @@
 //! - [`Stamp`]: A postage stamp proving payment for chunk storage
 //! - [`StampIndex`]: The bucket and position index within a stamp
 //! - [`StampDigest`]: The data to be signed when creating a stamp
-//! - [`StampedAddress`]: A stamp bound to the address it was validated
-//!   against, and the single validation authority
+//! - [`StampedAddress`]: A stamp bound to an address, and the authority that
+//!   validates the pairing
 //! - [`PostageContext`]: Context for batch expiry calculations
 //! - [`BatchEvent`]: Events emitted by the postage stamp contract (requires `std`)
 //!

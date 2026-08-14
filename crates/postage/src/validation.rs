@@ -386,6 +386,24 @@ mod tests {
         ));
     }
 
+    /// The structural checks all pass, so only the signature can refuse it.
+    #[test]
+    fn acceptance_refuses_a_foreign_signature() {
+        let (validator, _, address, _) = unconfirmed();
+        let other = PrivateKeySigner::from_slice(&[9u8; 32]).unwrap();
+        let stamp = stamp_for(
+            &other,
+            &batch_started_at(other.address(), START_BLOCK),
+            &address,
+        );
+
+        assert!(validator.validate_structure(&stamp, &address).is_ok());
+        assert!(matches!(
+            validator.validate(&stamp, &address),
+            Err(StampError::OwnerMismatch { .. })
+        ));
+    }
+
     #[test]
     fn acceptance_refuses_an_unknown_batch() {
         let (validator, _, address, _) = unconfirmed();

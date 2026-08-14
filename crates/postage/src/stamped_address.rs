@@ -1,10 +1,7 @@
 //! Typestate validation carrier for a stamp bound to an address.
 //!
-//! The signature covers `address | batchID | index | timestamp`, so validity
-//! is a fact about a stamp and an address, never about a chunk body. A marker
-//! on a bare [`Stamp`] would be unsound, because the address is not on the
-//! wire: the value would assert a fact about a subject it does not hold, and
-//! could be re-paired with another address while still reading as validated.
+//! The signature covers `address | batchID | index | timestamp`, and the
+//! address is not on the wire, so the address has to travel inside the value.
 
 use core::marker::PhantomData;
 
@@ -27,8 +24,8 @@ pub trait ValidationState: sealed::Sealed + Send + Sync + 'static {
 
 /// The stamp's geometry and the owner's signature over this address are facts.
 ///
-/// Timeless facts only. Batch usability and expiry decay, so every consumer
-/// still gates on them at the moment of use.
+/// Expiry and batch usability are not: they decay, so consumers still gate on
+/// them at the moment of use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Validated;
 
@@ -47,10 +44,8 @@ impl ValidationState for Unvalidated {
 /// A stamp together with the address it is bound to, carrying its validation
 /// state in the type.
 ///
-/// [`validate`](Self::validate) is the single validation authority: pure,
-/// synchronous, store-free and `no_std`, so aggregating validity over a set of
-/// addresses needs no chunk bodies. Pairing exists only at [`Unvalidated`], so
-/// a validated value cannot be fabricated.
+/// Pairing exists only at [`Unvalidated`], so [`validate`](Self::validate) is
+/// the only route to [`Validated`].
 pub struct StampedAddress<V: ValidationState = Validated> {
     address: ChunkAddress,
     stamp: Stamp,
@@ -73,9 +68,8 @@ impl StampedAddress<Unvalidated> {
     /// index and bucket fit the batch geometry, and the owner signed this
     /// address.
     ///
-    /// Deliberately silent on expiry and confirmations: those decay, so they
-    /// stay runtime gates at each consumer. Dilution only raises `depth`, so a
-    /// pairing that passes here passes at every later depth.
+    /// Silent on expiry and confirmations, which decay. Dilution only raises
+    /// `depth`, so a pass here holds at every later depth.
     ///
     /// # Errors
     ///
@@ -238,9 +232,7 @@ mod tests {
         assert_eq!(validated.batch(), batch.id());
     }
 
-    /// The digest binds the stamp's own batch id, so a stamp bought from one
-    /// batch must not spend another batch's geometry, even when the two share
-    /// an owner and a shape.
+    /// Same owner and same shape, so only the batch id can refuse it.
     #[test]
     fn validate_refuses_a_foreign_batch() {
         let signer = signer();
@@ -313,7 +305,7 @@ mod tests {
     }
 
     /// Dilution raises depth only, so it can never invalidate an allocated
-    /// index. This is the theorem the concurrency design rests on.
+    /// index.
     #[test]
     fn validation_survives_dilution() {
         let (mut batch, pairing) = coherent();
@@ -364,12 +356,12 @@ mod tests {
             prop_assert!(validated.is_ok());
         }
 
-        /// A stamp is bound to one address: re-pairing it with any other one
-        /// is refused, whatever the refusal.
+        /// The re-paired address keeps the leading 4 bytes, so it shares the
+        /// bucket at every bucket depth and only the signature can refuse it.
         #[test]
         fn a_re_paired_stamp_never_validates(
             seed in proptest::collection::vec(any::<u8>(), 128..2048),
-            other in any::<[u8; 32]>(),
+            tail in any::<[u8; 28]>(),
         ) {
             let mut u = Unstructured::new(&seed);
             let signer = nectar_primitives::generators::signer(&mut u).unwrap();
@@ -377,10 +369,18 @@ mod tests {
             let address = ChunkAddress::new(u.arbitrary::<[u8; 32]>().unwrap());
             let stamp = generators::signed_stamp(&mut u, &signer, &batch, &address).unwrap();
 
-            let other = ChunkAddress::new(other);
-            prop_assume!(other != address);
+            let mut bytes = *address.as_array();
+            prop_assume!(bytes[4..] != tail[..]);
+            bytes[4..].copy_from_slice(&tail);
 
-            prop_assert!(StampedAddress::new(other, stamp).validate(&batch).is_err());
+            let refused = StampedAddress::new(ChunkAddress::new(bytes), stamp).validate(&batch);
+            prop_assert!(
+                matches!(
+                    refused,
+                    Err(StampError::OwnerMismatch { .. } | StampError::InvalidSignature)
+                ),
+                "the signature must refuse a re-paired address"
+            );
         }
     }
 }
