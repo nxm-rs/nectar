@@ -197,30 +197,28 @@ impl<S: BatchStore> StoreValidator<S> {
     }
 
     fn usable_batch(&self, id: &BatchId, threshold: u64) -> Result<Batch, StampError> {
-        self.store
-            .get_usable(id, threshold)
-            .map_err(|e| match e {
-                crate::BatchStoreError::NotFound(id) => StampError::BatchNotFound(id),
-                crate::BatchStoreError::NotUsable {
-                    created,
-                    current,
-                    threshold,
-                    ..
-                } => StampError::BatchNotUsable {
-                    created,
-                    current,
-                    threshold,
-                },
-                crate::BatchStoreError::Expired {
-                    value,
-                    total_amount,
-                    ..
-                } => StampError::BatchExpired {
-                    value,
-                    total_amount,
-                },
-                crate::BatchStoreError::Store(_) => StampError::BatchNotFound(*id),
-            })
+        self.store.get_usable(id, threshold).map_err(|e| match e {
+            crate::BatchStoreError::NotFound(id) => StampError::BatchNotFound(id),
+            crate::BatchStoreError::NotUsable {
+                created,
+                current,
+                threshold,
+                ..
+            } => StampError::BatchNotUsable {
+                created,
+                current,
+                threshold,
+            },
+            crate::BatchStoreError::Expired {
+                value,
+                total_amount,
+                ..
+            } => StampError::BatchExpired {
+                value,
+                total_amount,
+            },
+            crate::BatchStoreError::Store(_) => StampError::BatchNotFound(*id),
+        })
     }
 
     /// Validates structure given an already-retrieved batch.
