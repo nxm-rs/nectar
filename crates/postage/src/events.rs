@@ -31,6 +31,9 @@ pub enum BatchEvent {
         batch_id: BatchId,
         /// The new depth.
         new_depth: u8,
+        /// The block the dilution was mined in; the issuance gate counts
+        /// confirmations from it.
+        block: u64,
     },
 
     /// A batch expired.
@@ -110,6 +113,7 @@ mod tests {
         let depth = BatchEvent::DepthIncrease {
             batch_id,
             new_depth: 21,
+            block: 120,
         };
         assert_eq!(depth.batch_id(), batch_id);
 
