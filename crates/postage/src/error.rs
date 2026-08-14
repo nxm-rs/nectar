@@ -52,10 +52,6 @@ pub enum StampError {
     },
 
     /// The stamp names a different batch from the one it was checked against.
-    ///
-    /// The digest binds the stamp's own batch id, so spending one batch's
-    /// stamp against another's geometry would otherwise pass whenever the two
-    /// share an owner.
     #[error("batch mismatch: expected {expected}, got {actual}")]
     BatchMismatch {
         /// The batch the stamp was checked against.
