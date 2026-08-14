@@ -394,7 +394,7 @@ impl<S: SwarmSpec> Snapshot<S> {
     /// ```compile_fail
     /// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, Snapshot, UsageTable};
     ///
-    /// let table = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
+    /// let table: UsageTable = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
     /// let snapshot = Snapshot::new(table);
     /// // `into_table` no longer exists; only `into_parts` can consume a snapshot.
     /// let table = snapshot.into_table();
@@ -409,7 +409,7 @@ impl<S: SwarmSpec> Snapshot<S> {
     /// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, Snapshot, UsageTable};
     ///
     /// let owner = Address::repeat_byte(0x11);
-    /// let table = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
+    /// let table: UsageTable = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
     /// let snapshot = Snapshot::new(table);
     /// let parts = snapshot.into_parts();
     /// // The move/clone guard is what fails here: `parts.table` is private and
@@ -429,7 +429,7 @@ impl<S: SwarmSpec> Snapshot<S> {
     /// ```compile_fail
     /// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, Snapshot, UsageTable};
     ///
-    /// let table = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
+    /// let table: UsageTable = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
     /// let snapshot = Snapshot::new(table);
     /// // `table()` returns a `TableView`; cloning it yields another view, not a
     /// // `UsageTable`, so this does not type-check.
@@ -718,7 +718,7 @@ impl<S: SwarmSpec> Validated<'_, S> {
     /// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, PublishedSequence, Snapshot, UsageTable};
     ///
     /// let owner = Address::repeat_byte(0x11);
-    /// let table = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
+    /// let table: UsageTable = UsageTable::new(BatchId::new([0x42; 32]), 20, BucketDepth::new(16).unwrap(), Mutability::Immutable).unwrap();
     /// let mut snapshot = Snapshot::new(table);
     /// // Ignoring the plan is a compile error: the persist would be silently lost.
     /// snapshot.revalidate(PublishedSequence::NONE).unwrap().plan_persist(&owner);

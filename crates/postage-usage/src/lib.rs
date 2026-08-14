@@ -61,10 +61,11 @@
 //!
 //! A snapshot is parameterized by the [`SwarmSpec`] of the batch it describes,
 //! and carries it in the [`BucketDepth`] its table was built from. The spec
-//! parameter defaults to [`Mainnet`], so ordinary call sites need no type
-//! annotation. The floor is load-bearing on the wire too: [`RootInfo::parse`]
-//! rebuilds the bucket depth for the network asked of it, so a root whose
-//! geometry that network would never issue is refused as corrupt.
+//! parameter defaults to [`Mainnet`] in type position only; a default drives no
+//! inference, so a construction site still names the type it builds. The floor
+//! is load-bearing on the wire too: [`RootInfo::parse`] rebuilds the bucket
+//! depth for the network asked of it, so a root whose geometry that network
+//! would never issue is refused as corrupt.
 //!
 //! The snapshot format supports bucket depths 1 to 16 and mainnet's floor is
 //! 16, so a mainnet snapshot always has exactly 2^16 buckets; the smaller

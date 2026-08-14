@@ -1142,8 +1142,8 @@ fn published_sequence_reads_from_a_parsed_root() {
     assert_eq!(plan.sequence, 3);
 }
 
-// The spec parameter defaults to `Mainnet`. Each identity fails to compile if
-// a default is dropped or a bare name stops meaning mainnet.
+// Each identity fails to compile if a spec default is dropped or a bare name
+// stops meaning mainnet.
 const _: fn(Snapshot) -> Snapshot<Mainnet> = |x| x;
 const _: fn(SnapshotParts) -> SnapshotParts<Mainnet> = |x| x;
 const _: fn(UsageTable) -> UsageTable<Mainnet> = |x| x;

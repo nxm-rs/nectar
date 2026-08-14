@@ -148,7 +148,7 @@ impl Mutability {
 /// use nectar_postage_usage::{BatchId, BucketDepth, Mutability, UsageTable};
 ///
 /// let bucket_depth = BucketDepth::new(16).unwrap();
-/// let mut table = UsageTable::new(BatchId::new([0x42; 32]), 18, bucket_depth, Mutability::Mutable).unwrap();
+/// let mut table: UsageTable = UsageTable::new(BatchId::new([0x42; 32]), 18, bucket_depth, Mutability::Mutable).unwrap();
 /// // `record` no longer exists on the inert table.
 /// table.record(7).unwrap();
 /// ```
@@ -158,7 +158,7 @@ impl Mutability {
 /// use nectar_postage_usage::{BatchId, BucketDepth, ChunkAddress, Mutability, UsageTable};
 ///
 /// let bucket_depth = BucketDepth::new(16).unwrap();
-/// let mut table = UsageTable::new(BatchId::new([0x42; 32]), 18, bucket_depth, Mutability::Mutable).unwrap();
+/// let mut table: UsageTable = UsageTable::new(BatchId::new([0x42; 32]), 18, bucket_depth, Mutability::Mutable).unwrap();
 /// // `record_address` no longer exists on the inert table.
 /// table.record_address(&ChunkAddress::from(B256::repeat_byte(0x99))).unwrap();
 /// ```

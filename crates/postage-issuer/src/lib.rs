@@ -58,7 +58,8 @@
 //! An issuer is parameterized by the [`SwarmSpec`] its batch was built for, and
 //! carries it in the [`BucketDepth`] it is constructed from, so a depth the
 //! network refuses never reaches an issuer. The spec parameter defaults to
-//! [`Mainnet`], so ordinary call sites need no type annotation:
+//! [`Mainnet`] in type position only; a default drives no inference, so a
+//! construction site still names the type it builds:
 //!
 //! ```
 //! use nectar_postage_issuer::{BatchId, BucketDepth, MemoryIssuer, Testnet};
