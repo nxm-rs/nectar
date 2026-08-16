@@ -53,20 +53,30 @@ use crate::stamper::stamp_timestamp;
 
 #[cfg(feature = "std")]
 mod bridge;
-mod signer;
-#[cfg(feature = "std")]
-mod stamp_sink;
-// The shared cell behind the decorator: a mutex under std, a cell wherever
+// The shared cell behind the decorators: a mutex under std, a cell wherever
 // the Send/Sync bounds relax. Hosted no-std builds without `unsync` have
 // neither, so the surface is absent there.
+#[cfg(any(feature = "std", not(multi_thread)))]
+mod shared;
+#[cfg(feature = "std")]
+mod sign_stage;
+mod signer;
+#[cfg(feature = "std")]
+mod staged_put;
+#[cfg(feature = "std")]
+mod stamp_sink;
 #[cfg(any(feature = "std", not(multi_thread)))]
 mod stamped_put;
 #[cfg(feature = "std")]
 mod task;
 
+#[cfg(feature = "std")]
+pub use sign_stage::{SealResult, SignStage};
 #[cfg(not(feature = "std"))]
 use signer::sign_digest;
 pub use signer::{Eip191, SignPrehash};
+#[cfg(feature = "std")]
+pub use staged_put::StagedPut;
 #[cfg(feature = "std")]
 pub use stamp_sink::StampSink;
 #[cfg(any(feature = "std", not(multi_thread)))]
