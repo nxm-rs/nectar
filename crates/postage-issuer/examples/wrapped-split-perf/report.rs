@@ -9,7 +9,6 @@ use nectar_testing::bench::RunMeta;
 
 use crate::arms::{BODY, Outcome, Refusal};
 
-/// One measured cell.
 #[derive(Debug, Clone, Copy)]
 pub struct Row {
     pub arm: &'static str,
@@ -21,9 +20,8 @@ pub struct Row {
     pub of_plain: f64,
 }
 
-/// The put-window width the inline decorator needs to sustain
-/// `bytes_per_second` when a signature takes `latency`, by Little's law over
-/// the measured rate.
+/// Little's law over the measured rate: the slots the inline decorator needs
+/// to sustain `bytes_per_second` at `latency` a signature.
 pub fn recommended_put_window(bytes_per_second: f64, latency: Duration) -> u16 {
     let rate = if bytes_per_second.is_finite() && bytes_per_second > 0.0 {
         bytes_per_second as u64
@@ -108,7 +106,6 @@ multipliers here are meaningful; small deltas are not.\n",
     )
 }
 
-/// The whole document.
 pub fn render(
     meta: &RunMeta,
     bytes: usize,
@@ -144,8 +141,6 @@ mod tests {
         }
     }
 
-    /// The emitted guidance is the number behind the widen-the-put-window
-    /// advice: it grows with signer latency and never reaches zero.
     #[test]
     fn the_recommended_width_grows_with_signer_latency() {
         let rate = 4.0 * 1024.0 * 1024.0;

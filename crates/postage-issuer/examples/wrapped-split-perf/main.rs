@@ -45,24 +45,40 @@ fn parse_args() -> Args {
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
-        let Some(value) = it.next() else { break };
         match flag.as_str() {
-            "--bytes" => args.bytes = value.trim().parse().unwrap_or(args.bytes),
-            "--latencies" => {
-                args.latencies = value
-                    .split(',')
-                    .filter_map(|ms| ms.trim().parse().ok())
-                    .map(Duration::from_millis)
-                    .collect();
+            "--bytes" => {
+                if let Some(value) = it.next() {
+                    args.bytes = value.trim().parse().unwrap_or(args.bytes);
+                }
             }
+            "--latencies" => {
+                if let Some(value) = it.next() {
+                    args.latencies = value
+                        .split(',')
+                        .filter_map(|ms| ms.trim().parse().ok())
+                        .map(Duration::from_millis)
+                        .collect();
+                }
+            }
+            // Zero is not a window, so a zero here would panic the arms.
             "--put-windows" => {
-                args.put_windows = value
-                    .split(',')
-                    .filter_map(|slots| slots.trim().parse().ok())
-                    .collect();
+                if let Some(value) = it.next() {
+                    args.put_windows = value
+                        .split(',')
+                        .filter_map(|slots| slots.trim().parse().ok())
+                        .filter(|&slots| slots > 0)
+                        .collect();
+                }
             }
             "--sign-window" => {
-                args.sign_window = value.trim().parse().unwrap_or(args.sign_window);
+                if let Some(value) = it.next() {
+                    args.sign_window = value
+                        .trim()
+                        .parse()
+                        .ok()
+                        .filter(|&slots| slots > 0)
+                        .unwrap_or(args.sign_window);
+                }
             }
             _ => {}
         }

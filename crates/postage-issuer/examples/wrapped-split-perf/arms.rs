@@ -16,7 +16,6 @@ use nectar_postage_issuer::{
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkPut, ContentChunk, DEFAULT_BODY_SIZE, Verified};
 use nectar_tasks::{BoxFuture, Spawn, TaskHandle};
 
-/// The body size every arm splits at.
 pub const BODY: usize = DEFAULT_BODY_SIZE;
 
 /// Depth 26 over bucket depth 16: 1024 slots per bucket, so no sweep cell
@@ -29,7 +28,6 @@ const FULL_DEPTH: u8 = 17;
 type Bare = Chunk<Verified, AnyChunkSet<BODY>>;
 type Pair = StampedChunk<Verified, Unvalidated, BODY>;
 
-/// One arm's run: wall time, and the counters that say where it went.
 #[derive(Debug, Clone, Copy)]
 pub struct Outcome {
     pub elapsed: Duration,
@@ -88,7 +86,6 @@ impl LatentSigner {
         }
     }
 
-    /// The highest number of signatures that were ever in flight together.
     pub fn peak(&self) -> usize {
         self.peak.load(Ordering::SeqCst)
     }
@@ -136,7 +133,6 @@ impl Spawn for ThreadSpawner {
     }
 }
 
-/// Counts bare chunks.
 #[derive(Debug, Clone, Default)]
 pub struct BareSink(Arc<AtomicUsize>);
 
@@ -155,7 +151,6 @@ impl ChunkPut<Bare> for BareSink {
     }
 }
 
-/// Counts sealed pairs.
 #[derive(Debug, Clone, Default)]
 pub struct PairSink(Arc<AtomicUsize>);
 
@@ -191,7 +186,7 @@ fn chunk(payload: &[u8]) -> Bare {
     Chunk::from_envelope(content.into()).unwrap()
 }
 
-/// The baseline: a split straight into a chunk sink, no stamping.
+/// The baseline: a split into a bare-chunk sink, no stamping.
 pub fn plain(data: &[u8], puts: u16) -> Outcome {
     let sink = BareSink::default();
     let start = Instant::now();
@@ -242,14 +237,14 @@ pub fn staged(data: &[u8], puts: u16, latency: Duration, signs: u16) -> Outcome 
 /// What a decorator does once one allocation is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Refusal {
-    /// Pairs the sink took: three when the address after the refusal still
-    /// gets through, two or fewer when it does not.
+    /// Pairs the sink took; three means the address after the refusal still
+    /// got through.
     pub delivered: usize,
     /// Whether every later call reports a failure.
     pub shut: bool,
 }
 
-/// Three puts of one address against two bucket slots, then a fresh address.
+/// A repeated address to exhaust two bucket slots, then a fresh address.
 fn probe_input() -> (Bare, Bare) {
     (chunk(b"repetitive"), chunk(b"a bucket of its own"))
 }
@@ -309,8 +304,6 @@ mod tests {
     const PUTS: u16 = 2;
     const SIGNS: u16 = 256;
 
-    /// The gate: with the sign stage in place, a slow signer costs about one
-    /// signature round trip over the whole split, not one per put window.
     #[test]
     fn a_slow_signer_no_longer_serializes_the_staged_split() {
         let data = corpus(BYTES);
@@ -324,7 +317,7 @@ mod tests {
             staged.peak_signs
         );
         // Serializing on the put window would cost delivered/PUTS round
-        // trips, which is eight times this bound at these settings.
+        // trips, well past this bound at these settings.
         assert!(
             staged.elapsed < plain.elapsed + 6 * LATENCY,
             "staged split took {:?} against a plain split of {:?}",
@@ -333,8 +326,6 @@ mod tests {
         );
     }
 
-    /// The contrast the sweep exists to show: the inline decorator still
-    /// pays signer latency inside its put slots.
     #[test]
     fn the_inline_decorator_still_pays_the_signer_in_its_put_slots() {
         let data = corpus(BYTES);
@@ -355,17 +346,15 @@ mod tests {
         );
     }
 
-    /// The put window is the whole overlap budget the rayon engine has, so
-    /// a widened window buys nothing past the pool it signs on.
     #[cfg(feature = "parallel")]
     #[test]
-    fn the_rayon_engine_overlaps_exactly_its_put_slots() {
+    fn the_rayon_engine_overlaps_its_put_slots_up_to_the_pool_width() {
         let data = corpus(BYTES);
-        assert_eq!(stamped(&data, PUTS, LATENCY).peak_signs, usize::from(PUTS));
+        // A single-threaded pool binds before the put window does.
+        let bound = usize::from(PUTS).min(rayon::current_num_threads());
+        assert_eq!(stamped(&data, PUTS, LATENCY).peak_signs, bound);
     }
 
-    /// The two decorators diverge on a refused allocation, so a reader must
-    /// never fold their numbers together.
     #[test]
     fn a_refusal_stops_the_staged_decorator_and_not_the_inline_one() {
         let inline = stamped_refusal();
