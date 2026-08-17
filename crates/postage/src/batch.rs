@@ -357,7 +357,8 @@ impl<S: SwarmSpec> BatchParams<S> {
         self.bucket_depth
     }
 
-    /// Returns whether the batch is immutable: no dilution, no overwrite.
+    /// Governs slot reuse, not dilution: an immutable batch refuses a full
+    /// bucket, a mutable one wraps and reissues the slot on a later timestamp.
     #[inline]
     pub const fn immutable(&self) -> bool {
         self.immutable
@@ -423,11 +424,8 @@ pub struct Batch<S: SwarmSpec = Mainnet> {
     depth: u8,
     /// The bucket depth for collision bucket uniformity.
     bucket_depth: BucketDepth<S>,
-    /// Whether the batch is immutable.
-    ///
-    /// Immutable batches cannot be diluted (depth increased) and chunks cannot
-    /// be overwritten. Mutable batches allow writing new chunks to the same
-    /// bucket index with a later timestamp, replacing the previous chunk.
+    /// Governs slot reuse, not dilution: an immutable batch refuses a full
+    /// bucket, a mutable one wraps and reissues the slot on a later timestamp.
     immutable: bool,
 }
 
@@ -522,11 +520,8 @@ impl<S: SwarmSpec> Batch<S> {
         self.bucket_depth
     }
 
-    /// Returns whether this batch is immutable.
-    ///
-    /// Immutable batches cannot be diluted (depth increased) and chunks cannot
-    /// be overwritten. Mutable batches allow writing new chunks to the same
-    /// bucket index with a later timestamp, replacing the previous chunk.
+    /// Governs slot reuse, not dilution: an immutable batch refuses a full
+    /// bucket, a mutable one wraps and reissues the slot on a later timestamp.
     #[inline]
     pub const fn immutable(&self) -> bool {
         self.immutable

@@ -4,10 +4,10 @@ use crate::{PostageContext, Stamp, StampError};
 use nectar_primitives::ChunkAddress;
 
 #[cfg(any(test, feature = "std"))]
-use crate::Batch;
+use crate::{Batch, BatchId};
 
 #[cfg(test)]
-use crate::{BatchId, StampIndex};
+use crate::StampIndex;
 
 #[cfg(feature = "std")]
 use crate::{BatchStore, BatchStoreExt};
@@ -67,7 +67,6 @@ pub trait StampValidator {
     /// cryptographic operations. It checks:
     ///
     /// - The batch exists
-    /// - The batch is usable (enough confirmations)
     /// - The batch is not expired
     /// - The stamp index is within valid bounds
     /// - The chunk address matches the expected bucket
@@ -84,20 +83,19 @@ pub trait StampValidator {
     }
 }
 
-// Note: BatchValidation methods (validate_index, bucket_for_address, validate_bucket)
-// are now implemented directly on the Batch type in batch.rs for better ergonomics.
-
 // Store-based Validator
 
 /// A validator that uses a [`BatchStore`] for validation.
 ///
 /// This validator performs comprehensive validation:
 /// 1. Retrieves the batch from the store
-/// 2. Checks the batch is usable (enough confirmations)
-/// 3. Checks the batch is not expired
-/// 4. Validates the stamp index is within bounds
-/// 5. Validates the bucket matches the chunk address
-/// 6. Verifies the stamp signature matches the batch owner
+/// 2. Checks the batch is not expired
+/// 3. Validates the stamp index is within bounds
+/// 4. Validates the bucket matches the chunk address
+/// 5. Verifies the stamp signature matches the batch owner
+///
+/// The confirmation threshold gates issuance, through
+/// [`batch_for_issuance`](Self::batch_for_issuance), and never acceptance.
 ///
 /// # Example
 ///
@@ -105,7 +103,7 @@ pub trait StampValidator {
 /// use nectar_postage::{StoreValidator, BatchStore};
 ///
 /// let store = MyBatchStore::new();
-/// let validator = StoreValidator::new(store, 50); // 50 block confirmations
+/// let validator = StoreValidator::new(store, 50); // 50 confirmations to issue
 ///
 /// let result = validator.validate(&stamp, &address);
 /// ```
@@ -113,22 +111,28 @@ pub trait StampValidator {
 #[cfg(feature = "std")]
 pub struct StoreValidator<S> {
     store: S,
-    confirmation_threshold: u64,
+    issuance_threshold: u64,
+    /// Non-zero refuses stamps the live network accepts.
+    acceptance_threshold: u64,
 }
 
 #[cfg(feature = "std")]
 impl<S> StoreValidator<S> {
-    /// Creates a new store validator.
-    ///
-    /// # Arguments
-    ///
-    /// * `store` - The batch store to use for lookups
-    /// * `confirmation_threshold` - Minimum block confirmations for a batch to be usable
-    pub const fn new(store: S, confirmation_threshold: u64) -> Self {
+    /// Demands `issuance_threshold` block confirmations to issue, and none to
+    /// accept.
+    pub const fn new(store: S, issuance_threshold: u64) -> Self {
         Self {
             store,
-            confirmation_threshold,
+            issuance_threshold,
+            acceptance_threshold: 0,
         }
+    }
+
+    /// Sets the confirmations demanded of an inbound stamp's batch.
+    #[must_use]
+    pub const fn with_acceptance_threshold(mut self, threshold: u64) -> Self {
+        self.acceptance_threshold = threshold;
+        self
     }
 
     /// Returns a reference to the underlying store.
@@ -136,9 +140,14 @@ impl<S> StoreValidator<S> {
         &self.store
     }
 
-    /// Returns the confirmation threshold.
-    pub const fn confirmation_threshold(&self) -> u64 {
-        self.confirmation_threshold
+    /// Returns the confirmations demanded of a batch to issue from.
+    pub const fn issuance_threshold(&self) -> u64 {
+        self.issuance_threshold
+    }
+
+    /// Returns the confirmations demanded of an inbound stamp's batch.
+    pub const fn acceptance_threshold(&self) -> u64 {
+        self.acceptance_threshold
     }
 }
 
@@ -152,13 +161,8 @@ impl<S: BatchStore> StoreValidator<S> {
     ///
     /// `Ok(())` if the stamp is valid, or a [`StampError`] describing the failure.
     pub fn validate(&self, stamp: &Stamp, address: &ChunkAddress) -> Result<(), StampError> {
-        // Get the batch and verify it's usable
         let batch = self.get_batch_for_stamp(stamp)?;
-
-        // Validate structure
         self.validate_structure_with_batch(stamp, address, &batch)?;
-
-        // Verify signature
         stamp.verify(address, batch.owner())?;
 
         Ok(())
@@ -177,32 +181,44 @@ impl<S: BatchStore> StoreValidator<S> {
         self.validate_structure_with_batch(stamp, address, &batch)
     }
 
-    /// Gets and validates the batch for a stamp.
+    /// Returns a batch fit to issue from: known, unexpired, and confirmed to
+    /// [`issuance_threshold`](Self::issuance_threshold).
+    ///
+    /// # Errors
+    ///
+    /// [`StampError::BatchNotFound`], [`StampError::BatchNotUsable`] or
+    /// [`StampError::BatchExpired`].
+    pub fn batch_for_issuance(&self, id: &BatchId) -> Result<Batch, StampError> {
+        self.usable_batch(id, self.issuance_threshold)
+    }
+
     fn get_batch_for_stamp(&self, stamp: &Stamp) -> Result<Batch, StampError> {
-        self.store
-            .get_usable(&stamp.batch(), self.confirmation_threshold)
-            .map_err(|e| match e {
-                crate::BatchStoreError::NotFound(id) => StampError::BatchNotFound(id),
-                crate::BatchStoreError::NotUsable {
-                    created,
-                    current,
-                    threshold,
-                    ..
-                } => StampError::BatchNotUsable {
-                    created,
-                    current,
-                    threshold,
-                },
-                crate::BatchStoreError::Expired {
-                    value,
-                    total_amount,
-                    ..
-                } => StampError::BatchExpired {
-                    value,
-                    total_amount,
-                },
-                crate::BatchStoreError::Store(_) => StampError::BatchNotFound(stamp.batch()),
-            })
+        self.usable_batch(&stamp.batch(), self.acceptance_threshold)
+    }
+
+    fn usable_batch(&self, id: &BatchId, threshold: u64) -> Result<Batch, StampError> {
+        self.store.get_usable(id, threshold).map_err(|e| match e {
+            crate::BatchStoreError::NotFound(id) => StampError::BatchNotFound(id),
+            crate::BatchStoreError::NotUsable {
+                created,
+                current,
+                threshold,
+                ..
+            } => StampError::BatchNotUsable {
+                created,
+                current,
+                threshold,
+            },
+            crate::BatchStoreError::Expired {
+                value,
+                total_amount,
+                ..
+            } => StampError::BatchExpired {
+                value,
+                total_amount,
+            },
+            crate::BatchStoreError::Store(_) => StampError::BatchNotFound(*id),
+        })
     }
 
     /// Validates structure given an already-retrieved batch.
@@ -212,10 +228,7 @@ impl<S: BatchStore> StoreValidator<S> {
         address: &ChunkAddress,
         batch: &Batch,
     ) -> Result<(), StampError> {
-        // Validate index bounds
         batch.validate_index(&stamp.stamp_index())?;
-
-        // Validate bucket matches address
         batch.validate_bucket(&stamp.stamp_index(), address)?;
 
         Ok(())
@@ -225,8 +238,186 @@ impl<S: BatchStore> StoreValidator<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BucketDepth;
+    use crate::{BucketDepth, generators};
     use alloy_primitives::Address;
+    use alloy_signer_local::PrivateKeySigner;
+    use arbitrary::Unstructured;
+
+    const START_BLOCK: u64 = 100;
+    const ISSUANCE_THRESHOLD: u64 = 50;
+
+    #[derive(Debug)]
+    struct OneBatchStore {
+        batch: Batch,
+        context: PostageContext,
+    }
+
+    impl BatchStore for OneBatchStore {
+        type Error = core::convert::Infallible;
+
+        fn get(&self, id: &BatchId) -> Result<Option<Batch>, Self::Error> {
+            Ok((*id == self.batch.id()).then(|| self.batch.clone()))
+        }
+
+        fn put(&self, _batch: Batch) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn remove(&self, _id: &BatchId) -> Result<bool, Self::Error> {
+            Ok(false)
+        }
+
+        fn contains(&self, id: &BatchId) -> Result<bool, Self::Error> {
+            Ok(*id == self.batch.id())
+        }
+
+        fn context(&self) -> Result<PostageContext, Self::Error> {
+            Ok(self.context)
+        }
+
+        fn set_context(&self, _state: PostageContext) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn batch_ids(&self) -> Result<Vec<BatchId>, Self::Error> {
+            Ok(vec![self.batch.id()])
+        }
+
+        fn count(&self) -> Result<usize, Self::Error> {
+            Ok(1)
+        }
+    }
+
+    fn signer() -> PrivateKeySigner {
+        PrivateKeySigner::from_slice(&[7u8; 32]).unwrap()
+    }
+
+    fn batch_started_at(owner: Address, start: u64) -> Batch {
+        Batch::new(
+            BatchId::ZERO,
+            1_000,
+            start,
+            owner,
+            18,
+            BucketDepth::new(16).unwrap(),
+            true,
+        )
+    }
+
+    fn address() -> ChunkAddress {
+        ChunkAddress::new([
+            0xCB, 0xE5, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ])
+    }
+
+    fn stamp_for(signer: &PrivateKeySigner, batch: &Batch, address: &ChunkAddress) -> Stamp {
+        let mut u = Unstructured::new(&[7u8; 32]);
+        generators::signed_stamp(&mut u, signer, batch, address).unwrap()
+    }
+
+    fn unconfirmed() -> (StoreValidator<OneBatchStore>, Stamp, ChunkAddress, BatchId) {
+        let signer = signer();
+        let batch = batch_started_at(signer.address(), START_BLOCK);
+        let address = address();
+        let stamp = stamp_for(&signer, &batch, &address);
+        let id = batch.id();
+        let store = OneBatchStore {
+            batch,
+            context: PostageContext::new(START_BLOCK + 5, 0),
+        };
+        (
+            StoreValidator::new(store, ISSUANCE_THRESHOLD),
+            stamp,
+            address,
+            id,
+        )
+    }
+
+    #[test]
+    fn acceptance_ignores_the_issuance_threshold() {
+        let (validator, stamp, address, _) = unconfirmed();
+
+        assert_eq!(validator.acceptance_threshold(), 0);
+        assert!(validator.validate(&stamp, &address).is_ok());
+        assert!(validator.validate_structure(&stamp, &address).is_ok());
+    }
+
+    #[test]
+    fn issuance_refuses_an_unconfirmed_batch() {
+        let (validator, _, _, id) = unconfirmed();
+
+        assert_eq!(validator.issuance_threshold(), ISSUANCE_THRESHOLD);
+        assert!(matches!(
+            validator.batch_for_issuance(&id),
+            Err(StampError::BatchNotUsable { .. })
+        ));
+    }
+
+    #[test]
+    fn issuance_accepts_a_confirmed_batch() {
+        let signer = signer();
+        let batch = batch_started_at(signer.address(), START_BLOCK);
+        let id = batch.id();
+        let store = OneBatchStore {
+            batch,
+            context: PostageContext::new(START_BLOCK + ISSUANCE_THRESHOLD, 0),
+        };
+        let validator = StoreValidator::new(store, ISSUANCE_THRESHOLD);
+
+        assert!(validator.batch_for_issuance(&id).is_ok());
+    }
+
+    #[test]
+    fn acceptance_still_refuses_an_expired_batch() {
+        let signer = signer();
+        let batch = batch_started_at(signer.address(), START_BLOCK);
+        let address = address();
+        let stamp = stamp_for(&signer, &batch, &address);
+        let total_amount = batch.value();
+        let store = OneBatchStore {
+            batch,
+            context: PostageContext::new(START_BLOCK + 5, total_amount),
+        };
+        let validator = StoreValidator::new(store, ISSUANCE_THRESHOLD);
+
+        assert!(matches!(
+            validator.validate(&stamp, &address),
+            Err(StampError::BatchExpired { .. })
+        ));
+    }
+
+    #[test]
+    fn acceptance_refuses_an_unknown_batch() {
+        let (validator, _, address, _) = unconfirmed();
+        let signer = signer();
+        let other = Batch::new(
+            BatchId::from([9u8; 32]),
+            1_000,
+            START_BLOCK,
+            signer.address(),
+            18,
+            BucketDepth::new(16).unwrap(),
+            true,
+        );
+        let stamp = stamp_for(&signer, &other, &address);
+
+        assert!(matches!(
+            validator.validate(&stamp, &address),
+            Err(StampError::BatchNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn an_opt_in_acceptance_threshold_still_gates() {
+        let (validator, stamp, address, _) = unconfirmed();
+        let validator = validator.with_acceptance_threshold(ISSUANCE_THRESHOLD);
+
+        assert!(matches!(
+            validator.validate(&stamp, &address),
+            Err(StampError::BatchNotUsable { .. })
+        ));
+    }
 
     #[test]
     fn test_validate_index_valid() {
