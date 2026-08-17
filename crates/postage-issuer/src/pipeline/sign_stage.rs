@@ -387,7 +387,10 @@ mod tests {
         let repeated = chunk(b"repetitive");
 
         let mut stage = pipeline.sign_stage(&issuer, InlineSpawner);
-        let results = drive(&mut stage, alloc::vec![repeated.clone(), repeated.clone(), repeated]);
+        let results = drive(
+            &mut stage,
+            alloc::vec![repeated.clone(), repeated.clone(), repeated],
+        );
 
         assert_eq!(results.len(), 3);
         assert_eq!(results.iter().filter(|r| r.result.is_ok()).count(), 2);
@@ -402,7 +405,9 @@ mod tests {
     fn fail_fast_yields_a_not_admitted_tail() {
         let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FailingSigner).with_window(window(4));
-        let input: Vec<TestChunk> = (0..10u32).map(|index| chunk(&index.to_be_bytes())).collect();
+        let input: Vec<TestChunk> = (0..10u32)
+            .map(|index| chunk(&index.to_be_bytes()))
+            .collect();
 
         let mut stage = pipeline.sign_stage(&issuer, InlineSpawner);
         let results = drive(&mut stage, input);

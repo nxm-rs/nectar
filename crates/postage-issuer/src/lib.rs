@@ -194,11 +194,11 @@ pub use stamper::{BatchStamper, Stamper};
 
 // The streaming stamp pipeline; its sign window is the governor window.
 pub use nectar_governor::Window;
-#[cfg(feature = "std")]
-pub use pipeline::{SealResult, SignStage, StagedPut, StampSink};
 pub use pipeline::{Eip191, SignPrehash, StampPipeline, StampResult, Stamped};
 #[cfg(any(feature = "std", not(multi_thread)))]
 pub use pipeline::{IssuedBound, StampedPut, StampedPutError};
+#[cfg(feature = "std")]
+pub use pipeline::{SealResult, SignStage, StagedPut, StampSink};
 
 // Mutable (ring) issuing with a type-state reservation guard
 pub use ring::{Reservation, Reserved, RingIssuer, Unreserved};

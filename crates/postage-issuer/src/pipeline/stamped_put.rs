@@ -17,6 +17,7 @@ use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_postage::{Stamp, StampDigest, StampError, StampedChunk, Unvalidated};
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, ChunkGet, ChunkHas, ChunkPut, Verified};
 
+use super::shared::{Shared, new_shared, park, wake_all, with_state};
 #[cfg(feature = "std")]
 use super::signer::Eip191;
 use super::signer::SignPrehash;
@@ -24,7 +25,6 @@ use super::signer::SignPrehash;
 use super::signer::sign_digest;
 #[cfg(feature = "std")]
 use super::task::sign_task;
-use super::shared::{Shared, new_shared, park, wake_all, with_state};
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
 use crate::stamper::stamp_timestamp;

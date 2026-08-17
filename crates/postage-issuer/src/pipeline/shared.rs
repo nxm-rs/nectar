@@ -68,8 +68,6 @@ impl<'a, T: Parked> Unpark<'a, T> {
 #[cfg(feature = "std")]
 impl<T: Parked> Drop for Unpark<'_, T> {
     fn drop(&mut self) {
-        wake_all(with_state(self.0, |state| {
-            core::mem::take(state.parked())
-        }));
+        wake_all(with_state(self.0, |state| core::mem::take(state.parked())));
     }
 }

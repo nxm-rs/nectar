@@ -334,10 +334,7 @@ where
 {
     type Error = StampedPutError<P::Error>;
 
-    async fn put(
-        &self,
-        chunk: Chunk<Verified, AnyChunkSet<BODY_SIZE>>,
-    ) -> Result<(), Self::Error> {
+    async fn put(&self, chunk: Chunk<Verified, AnyChunkSet<BODY_SIZE>>) -> Result<(), Self::Error> {
         let _unpark = Unpark::new(&self.shared);
         let mut slot = Some(chunk);
         poll_fn(|cx| self.poll_put(cx, &mut slot)).await
@@ -573,8 +570,8 @@ mod tests {
     fn sign_concurrency_is_not_bounded_by_the_put_window() {
         let issuer = issuer(24);
         let (release, blocked) = mpsc::channel();
-        let pipeline = StampPipeline::from_signer(BlockingSigner(Mutex::new(blocked)))
-            .with_window(window(16));
+        let pipeline =
+            StampPipeline::from_signer(BlockingSigner(Mutex::new(blocked))).with_window(window(16));
         let sink = CountingSink::default();
         let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(2));
 
