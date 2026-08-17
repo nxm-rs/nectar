@@ -156,6 +156,13 @@ jobs:
                   cargo nextest run \
                     -p nectar-postage-issuer --features parallel --locked \
                     --no-tests=warn --no-fail-fast
+            # The batched signer body pairs with the inline engine when
+            # `sign-parallel` rides alone, which neither pass above reaches.
+            - name: Run postage-issuer sign-parallel tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-postage-issuer --features sign-parallel --locked \
+                    --no-tests=warn --no-fail-fast
             # The pipeline's inline engine only compiles with the parallel
             # feature off, so cover the inline shape on its own.
             - name: Run postage-issuer inline-engine tests
