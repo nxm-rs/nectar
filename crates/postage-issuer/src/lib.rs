@@ -118,8 +118,8 @@
 //! - `local-signer` - Enables local key signing with `alloy-signer-local`
 //! - `parallel` - Enables the pipeline's parallel signing engine with rayon,
 //!   and implies `sign-parallel`
-//! - `sign-parallel` - Signs each admission batch across the rayon pool; the
-//!   signer seam otherwise runs its serial default
+//! - `sign-parallel` - Signs each admission batch across the rayon pool, so
+//!   the wrapped signer must be `Sync`
 //! - `unsync` - Relaxes the signer thread-safety bounds on single-threaded
 //!   targets; mutually exclusive with `parallel` and `sign-parallel`
 //!

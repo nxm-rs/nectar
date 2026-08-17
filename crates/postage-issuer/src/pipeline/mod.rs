@@ -26,11 +26,9 @@
 //! - The input iterator must never depend on consuming this pipeline's
 //!   output. `next` may block for one signer round-trip, so async callers
 //!   wrap iteration in a blocking task.
-//! - One sign job covers a whole admission batch, so a completion queues a
-//!   batch of results behind the yield. Dropping a [`Stamped`] abandons at
-//!   most one window of allocated, unsigned indices plus one window of
-//!   signed results still queued; issuer state is coherent at every yield
-//!   point.
+//! - Dropping a [`Stamped`] abandons at most one window of allocated,
+//!   unsigned indices plus one window of signed results still queued; issuer
+//!   state is coherent at every yield point.
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -1002,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn dropped_stream_abandons_at_most_one_window() {
+    fn dropped_stream_abandons_at_most_two_windows() {
         let issuer = issuer24();
         let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
 
@@ -1025,30 +1023,33 @@ mod tests {
         assert_eq!(issuer.stamps_issued(), Some(allocated + 5));
     }
 
+    /// Every stamp of a batch carries the signature over its own digest.
     #[test]
-    fn eip191_signature_recovers_to_signer() {
+    fn eip191_signatures_recover_to_signer_across_a_batch() {
         use nectar_postage::{StampDigest, StampIndex};
 
         let issuer = issuer24();
         let signer = PrivateKeySigner::random();
         let signer_address = signer.address();
-        let pipeline = StampPipeline::from_signer(signer);
-        let address = ChunkAddress::from(B256::random());
+        let pipeline = StampPipeline::from_signer(signer).with_window(window(8));
 
-        let results: Vec<_> = pipeline.stamp(&issuer, [address]).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, addresses(8)).collect();
 
-        let stamp = results[0].result.as_ref().unwrap();
-        let digest = StampDigest::new(
-            address,
-            stamp.batch(),
-            StampIndex::new(stamp.bucket(), stamp.index()),
-            stamp.timestamp(),
-        );
-        let recovered = stamp
-            .signature()
-            .recover_address_from_msg(digest.to_prehash().as_slice())
-            .unwrap();
-        assert_eq!(recovered, signer_address);
+        assert_eq!(results.len(), 8);
+        for result in &results {
+            let stamp = result.result.as_ref().unwrap();
+            let digest = StampDigest::new(
+                result.address,
+                stamp.batch(),
+                StampIndex::new(stamp.bucket(), stamp.index()),
+                stamp.timestamp(),
+            );
+            let recovered = stamp
+                .signature()
+                .recover_address_from_msg(digest.to_prehash().as_slice())
+                .unwrap();
+            assert_eq!(recovered, signer_address);
+        }
     }
 
     #[test]

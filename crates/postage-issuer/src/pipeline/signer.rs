@@ -84,14 +84,11 @@ impl<S: SignerSync + Signer> SignPrehash for Eip191<S> {
     }
 }
 
-// Rayon needs real `Send` and `Sync` from the wrapped signer, which the
-// serial impl does not ask for.
 #[cfg(feature = "sign-parallel")]
-impl<S: SignerSync + Signer + Send + Sync> SignPrehash for Eip191<S> {
+impl<S: SignerSync + Signer + Sync> SignPrehash for Eip191<S> {
     fn address(&self) -> Address {
         self.0.address()
     }
-
     fn sign_prehash(&self, prehash: &B256) -> Result<Signature, SigningError> {
         eip191_sign(&self.0, prehash)
     }
@@ -181,6 +178,9 @@ where
         });
     }
     Ok(())
+
+const fn seal(digest: &StampDigest, signature: Signature) -> Stamp {
+    Stamp::with_index(digest.batch_id, digest.index, digest.timestamp, signature)
 }
 
 /// Signs an allocated digest into a wire-valid stamp.
@@ -189,13 +189,7 @@ where
     Sg: SignPrehash + ?Sized,
 {
     let prehash = digest.to_prehash();
-    let signature = signer.sign_prehash(&prehash)?;
-    Ok(Stamp::with_index(
-        digest.batch_id,
-        digest.index,
-        digest.timestamp,
-        signature,
-    ))
+    Ok(seal(digest, signer.sign_prehash(&prehash)?))
 }
 
 /// Signs a whole admission batch, one result per digest in input order.
@@ -212,14 +206,9 @@ where
     digests
         .iter()
         .map(|digest| match signatures.next() {
-            Some(Ok(signature)) => Ok(Stamp::with_index(
-                digest.batch_id,
-                digest.index,
-                digest.timestamp,
-                signature,
-            )),
+            Some(Ok(signature)) => Ok(seal(digest, signature)),
             Some(Err(error)) => Err(error),
-            // A short reply loses a result rather than a digest.
+            // A short reply must still leave one result per digest.
             None => Err(SigningError::Dropped),
         })
         .collect()
@@ -313,23 +302,20 @@ mod tests {
         max.load(Ordering::SeqCst)
     }
 
-    /// A batch overlaps across the pool. Two proves genuine overlap without
-    /// demanding the whole batch on few-core CI.
+    /// Two proves overlap without demanding the whole batch on few-core CI.
     #[cfg(feature = "sign-parallel")]
     #[test]
     fn the_parallel_body_overlaps_a_batch() {
         assert!(peak_concurrency(64) >= 2, "the batch signed serially");
     }
 
-    /// The single-threaded path pays nothing: no pool, no overlap.
     #[cfg(not(feature = "sign-parallel"))]
     #[test]
     fn the_serial_default_signs_one_at_a_time() {
         assert_eq!(peak_concurrency(64), 1);
     }
 
-    /// The batched body must agree with the serial loop item for item: ECDSA
-    /// here is deterministic, so equality is exact.
+    /// ECDSA here is deterministic, so item-for-item equality is exact.
     #[test]
     fn the_batched_body_matches_the_serial_loop() {
         let signer = Eip191::new(PrivateKeySigner::random());
