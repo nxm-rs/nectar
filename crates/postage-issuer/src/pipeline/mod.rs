@@ -26,8 +26,11 @@
 //! - The input iterator must never depend on consuming this pipeline's
 //!   output. `next` may block for one signer round-trip, so async callers
 //!   wrap iteration in a blocking task.
-//! - Dropping a [`Stamped`] abandons at most one window of allocated,
-//!   unsigned indices; issuer state is coherent at every yield point.
+//! - One sign job covers a whole admission batch, so a completion queues a
+//!   batch of results behind the yield. Dropping a [`Stamped`] abandons at
+//!   most one window of allocated, unsigned indices plus one window of
+//!   signed results still queued; issuer state is coherent at every yield
+//!   point.
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -936,23 +939,27 @@ mod tests {
         }
     }
 
-    /// The inline engine signs lazily: admission allocates a window, but
-    /// each `next` performs exactly one signer round-trip.
+    /// One sign job per admission batch, not one per digest: a round-trip
+    /// covers the whole micro-batch, and the rest of it yields without one.
     #[cfg(not(feature = "parallel"))]
     #[test]
-    fn next_signs_one_digest_per_call() {
+    fn next_signs_one_admission_batch_per_call() {
         let issuer = issuer24();
         let calls = Arc::new(AtomicUsize::new(0));
         let pipeline =
             StampPipeline::new(CountingSigner(Arc::clone(&calls))).with_window(window(8));
 
         let mut stream = pipeline.stamp(&issuer, addresses(20));
-        for expected in 1..=5 {
+        assert!(stream.next().is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 8);
+
+        for _ in 0..7 {
             assert!(stream.next().is_some());
-            assert_eq!(calls.load(Ordering::SeqCst), expected);
         }
-        drop(stream);
-        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        assert_eq!(calls.load(Ordering::SeqCst), 8);
+
+        assert!(stream.next().is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 16);
     }
 
     #[test]
@@ -1006,9 +1013,10 @@ mod tests {
             }
         }
 
-        // At most the three yields plus one window were allocated.
+        // At most the three yields, one signed window buffered behind them and
+        // one window in flight.
         let allocated = issuer.stamps_issued().unwrap();
-        assert!((3..=7).contains(&allocated), "allocated {allocated}");
+        assert!((3..=11).contains(&allocated), "allocated {allocated}");
 
         // The issuer stays coherent for a fresh run.
         let results: Vec<_> = pipeline.stamp(&issuer, addresses(5)).collect();

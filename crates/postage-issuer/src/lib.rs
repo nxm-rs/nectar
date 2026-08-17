@@ -116,9 +116,12 @@
 //!   explicit clocks, and a signer panic propagates instead of being caught
 //!   into a result.
 //! - `local-signer` - Enables local key signing with `alloy-signer-local`
-//! - `parallel` - Enables the pipeline's parallel signing engine with rayon
+//! - `parallel` - Enables the pipeline's parallel signing engine with rayon,
+//!   and implies `sign-parallel`
+//! - `sign-parallel` - Signs each admission batch across the rayon pool; the
+//!   signer seam otherwise runs its serial default
 //! - `unsync` - Relaxes the signer thread-safety bounds on single-threaded
-//!   targets; mutually exclusive with `parallel`
+//!   targets; mutually exclusive with `parallel` and `sign-parallel`
 //!
 //! # Example
 //!
@@ -163,6 +166,9 @@ extern crate alloc;
 // the spawn site.
 #[cfg(all(feature = "parallel", feature = "unsync"))]
 compile_error!("features `parallel` and `unsync` are mutually exclusive");
+
+#[cfg(all(feature = "sign-parallel", feature = "unsync"))]
+compile_error!("features `sign-parallel` and `unsync` are mutually exclusive");
 
 mod counter;
 #[cfg(feature = "std")]
