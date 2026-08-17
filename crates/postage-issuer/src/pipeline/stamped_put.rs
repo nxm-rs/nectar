@@ -24,7 +24,7 @@ use super::signer::SignPrehash;
 use super::signer::sign_digest;
 #[cfg(feature = "std")]
 use super::task::sign_task;
-use super::shared::{Shared, new_shared, wake_all, with_state};
+use super::shared::{Shared, new_shared, park, wake_all, with_state};
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
 use crate::stamper::stamp_timestamp;
@@ -402,9 +402,7 @@ where
         poll_fn(|cx| {
             with_state(&self.shared, |state| match state.issued.get_mut(address) {
                 Some(Issued::Pending(wakers) | Issued::Delivering(_, wakers)) => {
-                    if !wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
-                        wakers.push(cx.waker().clone());
-                    }
+                    park(wakers, cx.waker());
                     Poll::Pending
                 }
                 _ => Poll::Ready(()),

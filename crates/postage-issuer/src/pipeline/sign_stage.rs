@@ -42,9 +42,6 @@ where
     /// The sign stage over `issuer`: offer chunks through
     /// [`SignStage::poll_admit`], collect sealed pairs through
     /// [`SignStage::poll_next`]. Sign jobs run on `spawner`.
-    ///
-    /// The stage occupies no put capacity, so a put stage draining it holds a
-    /// slot for store latency alone.
     pub fn sign_stage<'p, I, S, const BODY_SIZE: usize>(
         &'p self,
         issuer: &'p I,
@@ -72,8 +69,8 @@ where
 pub struct SignStage<'p, Sg, C, I: ?Sized, S, const BODY_SIZE: usize = DEFAULT_BODY_SIZE> {
     sink: StampSink<'p, Sg, C, I, S>,
     window: Window,
-    /// Chunks admitted for signing, in admission order per address. Instances
-    /// of one address are interchangeable, so any of them pairs with a result.
+    /// Admitted chunks in admission order per address; instances of one
+    /// address are interchangeable, so any of them pairs with a result.
     awaiting: BTreeMap<ChunkAddress, VecDeque<Chunk<Verified, AnyChunkSet<BODY_SIZE>>>>,
     /// Sealed pairs awaiting the drain, capped at one sign window.
     sealed: VecDeque<SealResult<BODY_SIZE>>,
@@ -124,7 +121,6 @@ impl<Sg, C, I: ?Sized, S, const BODY_SIZE: usize> SignStage<'_, Sg, C, I, S, BOD
         self.closed = true;
     }
 
-    /// Sealed-pair slots free to buffer into.
     fn room(&self) -> usize {
         usize::from(self.window.get()).saturating_sub(self.sealed.len())
     }
@@ -194,7 +190,6 @@ where
         }
     }
 
-    /// Pairs one stamp with the chunk it was allocated for.
     fn pair(&mut self, result: StampResult) -> SealResult<BODY_SIZE> {
         let address = result.address;
         let chunk = self.take_awaiting(&address);

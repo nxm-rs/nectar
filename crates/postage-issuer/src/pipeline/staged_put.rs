@@ -14,7 +14,7 @@ use nectar_postage::{StampedChunk, Unvalidated};
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, ChunkPut, Verified};
 use nectar_tasks::{BoxFuture, Spawn};
 
-use super::shared::{Shared, new_shared, park, wake_all, with_state};
+use super::shared::{Parked, Shared, Unpark, new_shared, park, with_state};
 use super::sign_stage::{SealResult, SignStage};
 use super::stamped_put::{IssuedBound, StampedPutError};
 use super::{SignPrehash, StampPipeline};
@@ -23,7 +23,6 @@ use crate::issuer::StampIssuer;
 
 type Delivery<E> = BoxFuture<'static, Result<(), E>>;
 
-/// The two stages and the state they share.
 struct Engine<'p, Sg, C, I, S, P, const BODY_SIZE: usize>
 where
     I: StampIssuer + ?Sized,
@@ -38,10 +37,19 @@ where
     /// The first failure, surfaced once and then reported as poisoned.
     failure: Option<StampedPutError<P::Error>>,
     poisoned: bool,
-    /// Pollers parked on a full pipeline. The stage wakes only its latest
-    /// registration, which is one caller's waker out of many, so a poll that
-    /// settles hands the wake on to the rest.
+    /// Pollers parked on a full pipeline. The machinery below wakes only its
+    /// latest registration, so a poller that leaves hands the wake on.
     parked: Vec<Waker>,
+}
+
+impl<Sg, C, I, S, P, const BODY_SIZE: usize> Parked for Engine<'_, Sg, C, I, S, P, BODY_SIZE>
+where
+    I: StampIssuer + ?Sized,
+    P: ChunkPut<StampedChunk<Verified, Unvalidated, BODY_SIZE>>,
+{
+    fn parked(&mut self) -> &mut Vec<Waker> {
+        &mut self.parked
+    }
 }
 
 impl<Sg, C, I, S, P, const BODY_SIZE: usize> Engine<'_, Sg, C, I, S, P, BODY_SIZE>
@@ -49,7 +57,6 @@ where
     I: StampIssuer + ?Sized,
     P: ChunkPut<StampedChunk<Verified, Unvalidated, BODY_SIZE>>,
 {
-    /// Whether a new address enters the seen set under the bound.
     fn tracks(&self) -> bool {
         match self.bound {
             IssuedBound::Off => false,
@@ -70,16 +77,6 @@ where
             Some(error) => Some(error),
             None => self.poisoned.then_some(StampedPutError::Poisoned),
         }
-    }
-
-    /// Parks `cx` on a pending poll, or claims the parked wakers on a settled
-    /// one, whose caller passes the wake on.
-    fn settle<T>(&mut self, cx: &Context<'_>, poll: &Poll<T>) -> Vec<Waker> {
-        if poll.is_pending() {
-            park(&mut self.parked, cx.waker());
-            return Vec::new();
-        }
-        core::mem::take(&mut self.parked)
     }
 }
 
@@ -131,16 +128,13 @@ where
 /// Two-stage stamping decorator over a stamped-pair sink.
 ///
 /// Takes bare chunks and puts pairs, with signing in a stage of its own, so a
-/// put slot is occupied for store latency alone and a slow signer no longer
-/// bounds put throughput. Backpressure chains: the put window fills, the sign
-/// stage buffers one window of pairs, admission parks, the caller stalls.
+/// put slot holds store latency alone.
 ///
 /// # Contracts
 ///
-/// - A put resolves at admission, not at delivery.
-///   [`flush`](Self::flush) drives every admitted chunk to the sink and is
-///   the only place the last deliveries can be observed, so a caller that
-///   trusts a root without flushing trusts an unwritten tree.
+/// - A put resolves at admission, not at delivery. [`flush`](Self::flush)
+///   drives every admitted chunk to the sink and is the only place the last
+///   deliveries can be observed; an unflushed root names an unwritten tree.
 /// - One failure poisons: a refused allocation, a failed signature or a
 ///   refused delivery surfaces once from the next put or flush, and every
 ///   later call reports [`StampedPutError::Poisoned`]. The failing chunk is
@@ -149,8 +143,7 @@ where
 ///   delivered twice. Cost is one address per unique chunk; see
 ///   [`IssuedBound`] for the bound and off switches.
 /// - The stage holds at most one sign window of chunks in flight and one of
-///   sealed pairs, so a caller sizes memory from the sign window, not from
-///   the input.
+///   sealed pairs, so memory sizes from the sign window, not from the input.
 /// - Wrapping a purely local store burns indices for chunks that may never
 ///   reach the network; filter for presence upstream where that matters.
 pub struct StagedPut<'p, Sg, C, I: StampIssuer + ?Sized, S, P, const BODY_SIZE: usize>
@@ -263,6 +256,7 @@ where
     /// The first stage failure, or [`StampedPutError::Poisoned`] once one has
     /// already surfaced.
     pub async fn flush(&self) -> Result<(), StampedPutError<P::Error>> {
+        let _unpark = Unpark::new(&self.shared);
         poll_fn(|cx| self.drive(cx, |engine, cx| Self::poll_flush(engine, cx))).await
     }
 
@@ -274,19 +268,19 @@ where
         self.drive(cx, |engine, cx| Self::poll_admit(engine, cx, slot))
     }
 
-    /// Runs one poll under the lock, then hands the wake on outside it.
+    /// Runs one poll under the lock, parking `cx` where it made no progress.
     fn drive<T>(
         &self,
         cx: &mut Context<'_>,
         poll: impl FnOnce(&mut Engine<'_, Sg, C, I, S, P, BODY_SIZE>, &mut Context<'_>) -> Poll<T>,
     ) -> Poll<T> {
-        let (polled, wakers) = with_state(&self.shared, |engine| {
+        with_state(&self.shared, |engine| {
             let polled = poll(engine, cx);
-            let wakers = engine.settle(cx, &polled);
-            (polled, wakers)
-        });
-        wake_all(wakers);
-        polled
+            if polled.is_pending() {
+                park(&mut engine.parked, cx.waker());
+            }
+            polled
+        })
     }
 
     fn poll_flush(
@@ -344,6 +338,7 @@ where
         &self,
         chunk: Chunk<Verified, AnyChunkSet<BODY_SIZE>>,
     ) -> Result<(), Self::Error> {
+        let _unpark = Unpark::new(&self.shared);
         let mut slot = Some(chunk);
         poll_fn(|cx| self.poll_put(cx, &mut slot)).await
     }
@@ -351,6 +346,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::shared::wake_all;
     use super::*;
     use crate::{BatchId, BucketDepth, MemoryIssuer, StampError};
     use alloc::sync::Arc;
@@ -358,12 +354,15 @@ mod tests {
     use alloy_primitives::{B256, Signature, U256};
     use alloy_signer::SignerSync;
     use core::convert::Infallible;
+    use core::future::Future;
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use futures_util::stream::{FuturesUnordered, StreamExt};
     use nectar_file::{File, Policy};
     use nectar_postage::Stamp;
     use nectar_primitives::{ContentChunk, DEFAULT_BODY_SIZE};
     use nectar_tasks::TaskHandle;
     use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
 
     type TestChunk = Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>;
 
@@ -423,6 +422,7 @@ mod tests {
     struct Gauge {
         current: Arc<AtomicUsize>,
         peak: Arc<AtomicUsize>,
+        delay: Duration,
     }
 
     impl SignerSync for Gauge {
@@ -433,9 +433,7 @@ mod tests {
         fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
             let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak.fetch_max(now, Ordering::SeqCst);
-            // Past the debug-build cost of hashing one leaf, so the split
-            // feeds the stage faster than a signature completes.
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(self.delay);
             self.current.fetch_sub(1, Ordering::SeqCst);
             Ok(fixed_signature())
         }
@@ -511,11 +509,20 @@ mod tests {
         }
     }
 
-    /// Parks every delivery until released, counting the parked ones.
+    /// Parks every delivery until released, counting the parked ones and
+    /// keeping their wakers so nothing is re-polled by accident.
     #[derive(Clone, Default)]
     struct ParkingSink {
         parked: Arc<AtomicUsize>,
+        waiting: Arc<Mutex<Vec<Waker>>>,
         released: Arc<AtomicBool>,
+    }
+
+    impl ParkingSink {
+        fn release(&self) {
+            self.released.store(true, Ordering::SeqCst);
+            wake_all(core::mem::take(&mut *self.waiting.lock().unwrap()));
+        }
     }
 
     impl ChunkPut<StampedChunk<Verified, Unvalidated>> for ParkingSink {
@@ -527,15 +534,36 @@ mod tests {
         ) -> Result<(), Self::Error> {
             self.parked.fetch_add(1, Ordering::SeqCst);
             let released = Arc::clone(&self.released);
+            let waiting = Arc::clone(&self.waiting);
             poll_fn(move |cx| {
                 if released.load(Ordering::SeqCst) {
                     return Poll::Ready(());
                 }
-                cx.waker().wake_by_ref();
+                waiting.lock().unwrap().push(cx.waker().clone());
                 Poll::Pending
             })
             .await;
             Ok(())
+        }
+    }
+
+    /// Counts the wakes one poller receives.
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+
+    impl WakeCount {
+        fn count(self: &Arc<Self>) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    impl std::task::Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -594,9 +622,92 @@ mod tests {
         assert_eq!(admitted, 6);
         assert_eq!(issuer.stamps_issued(), Some(6));
 
-        sink.released.store(true, Ordering::SeqCst);
+        sink.release();
         nectar_testing::run(staged.flush()).unwrap();
         assert_eq!(sink.parked.load(Ordering::SeqCst), 6);
+    }
+
+    type Held<'p> = StagedPut<
+        'p,
+        crate::Eip191<FixedSigner>,
+        nectar_clock::SystemClock,
+        MemoryIssuer,
+        InlineSpawner,
+        ParkingSink,
+        DEFAULT_BODY_SIZE,
+    >;
+
+    /// One delivery parked, one sealed pair waiting and the sign window full:
+    /// the next put parks, and only a drain moves the pipeline.
+    fn filled(staged: &Held<'_>, sink: &ParkingSink) {
+        let mut noop = Context::from_waker(core::task::Waker::noop());
+        for index in 0..2u32 {
+            let mut slot = Some(chunk(&index.to_be_bytes()));
+            assert!(staged.poll_put(&mut noop, &mut slot).is_ready());
+        }
+        assert_eq!(sink.parked.load(Ordering::SeqCst), 1);
+    }
+
+    /// A put dropped while parked may hold the pipeline's only live
+    /// registration, so its exit must hand the wake to its parked peers.
+    #[test]
+    fn a_cancelled_put_hands_its_wake_on() {
+        let issuer = issuer(24);
+        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(1));
+        let sink = ParkingSink::default();
+        let staged = pipeline.staged_put(&issuer, InlineSpawner, sink.clone(), window(1));
+        filled(&staged, &sink);
+
+        let peer = Arc::new(WakeCount::default());
+        let mut parked = Box::pin(staged.put(chunk(b"parked peer")));
+        assert!(
+            parked
+                .as_mut()
+                .poll(&mut Context::from_waker(&Waker::from(Arc::clone(&peer))))
+                .is_pending()
+        );
+
+        let mut noop = Context::from_waker(core::task::Waker::noop());
+        let mut cancelled = Box::pin(staged.put(chunk(b"cancelled")));
+        assert!(cancelled.as_mut().poll(&mut noop).is_pending());
+        assert_eq!(peer.count(), 0);
+
+        // The cancelled put registered last, so its peer waits on a waker
+        // nothing will fire again.
+        drop(cancelled);
+        assert!(peer.count() > 0, "a parked peer was left without a waker");
+    }
+
+    /// A put that settles takes the registration its peers were waiting on,
+    /// so it must hand the wake on before it leaves.
+    #[test]
+    fn a_settling_put_hands_its_wake_on() {
+        let issuer = issuer(24);
+        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(1));
+        let sink = ParkingSink::default();
+        let staged = pipeline.staged_put(&issuer, InlineSpawner, sink.clone(), window(1));
+        filled(&staged, &sink);
+
+        let peer = Arc::new(WakeCount::default());
+        let mut parked = Box::pin(staged.put(chunk(b"parked peer")));
+        assert!(
+            parked
+                .as_mut()
+                .poll(&mut Context::from_waker(&Waker::from(Arc::clone(&peer))))
+                .is_pending()
+        );
+
+        let driver = Arc::new(WakeCount::default());
+        let driver_waker = Waker::from(Arc::clone(&driver));
+        let mut settling = Box::pin(staged.put(chunk(b"settling")));
+        let mut driver_cx = Context::from_waker(&driver_waker);
+        assert!(settling.as_mut().poll(&mut driver_cx).is_pending());
+
+        // The delivery frees a put slot, waking whoever registered last.
+        sink.release();
+        assert!(driver.count() > 0);
+        assert!(settling.as_mut().poll(&mut driver_cx).is_ready());
+        assert!(peer.count() > 0, "a parked peer was left without a waker");
     }
 
     #[test]
@@ -662,6 +773,34 @@ mod tests {
         });
     }
 
+    /// Sibling put futures hold one registration each in the stage, so a
+    /// settling poll must hand the wake to the peers it displaced.
+    #[test]
+    fn concurrent_puts_never_wedge_on_a_displaced_wake() {
+        let issuer = issuer(24);
+        let gauge = Gauge {
+            current: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::from_millis(1),
+        };
+        let pipeline = StampPipeline::from_signer(gauge).with_window(window(4));
+        let sink = CountingSink::default();
+        let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(1));
+
+        nectar_testing::run(async {
+            let mut puts: FuturesUnordered<_> = (0..32u32)
+                .map(|index| staged.put(chunk(&index.to_be_bytes())))
+                .collect();
+            while let Some(result) = puts.next().await {
+                result.unwrap();
+            }
+            staged.flush().await.unwrap();
+        });
+
+        assert_eq!(sink.seen.lock().unwrap().len(), 32);
+        assert_eq!(issuer.stamps_issued(), Some(32));
+    }
+
     /// A split over the staged decorator stores every chunk exactly once,
     /// with the repeated leaves of a zero region stamped once each.
     #[test]
@@ -700,6 +839,9 @@ mod tests {
         let gauge = Gauge {
             current: Arc::new(AtomicUsize::new(0)),
             peak: Arc::clone(&peak),
+            // Past the debug-build cost of hashing one leaf, so the split
+            // feeds the stage faster than a signature completes.
+            delay: Duration::from_millis(50),
         };
         let pipeline = StampPipeline::from_signer(gauge).with_window(window(16));
         let sink = CountingSink::default();

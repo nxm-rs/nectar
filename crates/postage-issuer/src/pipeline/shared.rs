@@ -41,9 +41,35 @@ pub(super) fn wake_all(wakers: Vec<Waker>) {
     }
 }
 
-/// Registers `waker` unless an equivalent one is already parked.
 pub(super) fn park(wakers: &mut Vec<Waker>, waker: &Waker) {
     if !wakers.iter().any(|parked| parked.will_wake(waker)) {
         wakers.push(waker.clone());
+    }
+}
+
+/// State whose pollers share one registration in the machinery below it.
+#[cfg(feature = "std")]
+pub(super) trait Parked {
+    fn parked(&mut self) -> &mut Vec<Waker>;
+}
+
+/// Hands the parked wake on when a poller leaves, settled or cancelled: it may
+/// hold the sole live registration, whose wake dies with it.
+#[cfg(feature = "std")]
+pub(super) struct Unpark<'a, T: Parked>(&'a Shared<T>);
+
+#[cfg(feature = "std")]
+impl<'a, T: Parked> Unpark<'a, T> {
+    pub(super) const fn new(shared: &'a Shared<T>) -> Self {
+        Self(shared)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<T: Parked> Drop for Unpark<'_, T> {
+    fn drop(&mut self) {
+        wake_all(with_state(self.0, |state| {
+            core::mem::take(state.parked())
+        }));
     }
 }
