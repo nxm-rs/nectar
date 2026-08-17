@@ -82,8 +82,7 @@ jobs:
             # feature, likewise outside the default-features pass.
             - name: cargo clippy (postage-issuer parallel)
               run: cargo clippy --locked --all-targets -p nectar-postage-issuer --features parallel -- -D warnings
-            # The batched signer body pairs with the inline engine when
-            # `sign-parallel` rides alone.
+            # The batched signer body against the inline engine.
             - name: cargo clippy (postage-issuer sign-parallel)
               run: cargo clippy --locked --all-targets -p nectar-postage-issuer --features sign-parallel -- -D warnings
             # The encrypted node walk sits behind the encryption feature,

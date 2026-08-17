@@ -156,8 +156,8 @@ jobs:
                   cargo nextest run \
                     -p nectar-postage-issuer --features parallel --locked \
                     --no-tests=warn --no-fail-fast
-            # The batched signer body pairs with the inline engine when
-            # `sign-parallel` rides alone, which neither pass above reaches.
+            # The batched signer body against the inline engine, which
+            # neither pass above reaches.
             - name: Run postage-issuer sign-parallel tests
               run: |
                   cargo nextest run \

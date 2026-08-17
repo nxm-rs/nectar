@@ -68,7 +68,8 @@ pub struct StampSink<'p, Sg, C, I: ?Sized, S> {
     pipeline: &'p StampPipeline<Sg, C>,
     issuer: &'p I,
     spawner: S,
-    /// Occupancy: one token per admitted job, released as its result yields.
+    /// Occupancy: one token per admitted digest, released when its batch is
+    /// harvested.
     admission: AdmissionWindow,
     /// One entry per admission batch, each resolving to a result per digest.
     in_flight: FuturesUnordered<BoxFuture<'static, Vec<StampResult>>>,
@@ -94,8 +95,8 @@ impl<Sg, C, I: ?Sized, S> fmt::Debug for StampSink<'_, Sg, C, I, S> {
 }
 
 impl<Sg, C, I: ?Sized, S> StampSink<'_, Sg, C, I, S> {
-    /// Admitted jobs not yet harvested. Batching groups them into fewer
-    /// tasks, so this counts digests rather than tasks.
+    /// Admitted digests not yet harvested, which a batch groups into fewer
+    /// tasks than this count.
     pub fn in_flight(&self) -> usize {
         self.admission.in_flight()
     }
@@ -181,13 +182,15 @@ where
     /// `Ready(None)` reports the sink drained: nothing queued and nothing in
     /// flight. The sink stays usable; further admissions restart the stream.
     pub fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<StampResult>> {
-        if let Some(result) = self.ready.pop_front() {
-            return Poll::Ready(Some(result));
-        }
-        match self.harvest(cx) {
-            Poll::Ready(Some(())) => Poll::Ready(self.ready.pop_front()),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+        loop {
+            if let Some(result) = self.ready.pop_front() {
+                return Poll::Ready(Some(result));
+            }
+            match self.harvest(cx) {
+                Poll::Ready(Some(())) => {}
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 
@@ -243,8 +246,8 @@ where
     fn submit(&mut self, permits: Vec<Prepared<I::Spec>>) {
         let signer = Arc::clone(&self.pipeline.signer);
         let mut digests = Vec::with_capacity(permits.len());
-        // Held past the permits, so the slots free when the results yield, not
-        // when the signatures land.
+        // Held past the permits, so the slots free when the batch is
+        // harvested, not when each signature lands.
         let mut tokens: Vec<WindowToken> = Vec::with_capacity(permits.len());
         for mut permit in permits {
             digests.push(permit.digest());
@@ -277,7 +280,6 @@ where
             Poll::Ready(None) => return Poll::Ready(None),
             Poll::Pending => return Poll::Pending,
         };
-        debug_assert!(!batch.is_empty(), "an empty batch was submitted");
         for result in batch {
             if self.pipeline.fail_fast
                 && !self.failed
@@ -442,17 +444,17 @@ mod tests {
         }
     }
 
-    /// Fails the first call, succeeds afterwards.
-    struct FailOnce(AtomicUsize);
+    /// Fails the nth call, succeeds on every other.
+    struct FailsOnCall(usize, AtomicUsize);
 
-    impl SignerSync for FailOnce {
+    impl SignerSync for FailsOnCall {
         fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
             Ok(fixed_signature())
         }
 
         fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-                Err(alloy_signer::Error::message("first call fails"))
+            if self.1.fetch_add(1, Ordering::SeqCst) == self.0 {
+                Err(alloy_signer::Error::message("one call fails"))
             } else {
                 Ok(fixed_signature())
             }
@@ -953,8 +955,9 @@ mod tests {
     #[test]
     fn a_batch_mate_failure_stops_admission() {
         let issuer = issuer24();
+        // Mid-batch, so a fail-fast that only reads the head of a batch misses it.
         let pipeline =
-            StampPipeline::from_signer(FailOnce(AtomicUsize::new(0))).with_window(window(8));
+            StampPipeline::from_signer(FailsOnCall(3, AtomicUsize::new(0))).with_window(window(8));
 
         let mut sink = pipeline.sink(&issuer, InlineSpawner);
         sink.admit_batch(&addresses(8));
