@@ -66,13 +66,21 @@ std = [
 local-signer = [ "dep:alloy-signer-local", "std" ]
 
 # The pipeline's parallel signing engine using rayon. Rayon on wasm32 or
-# under `unsync` is a compile error, never a silent fallback.
+# under `unsync` is a compile error, never a silent fallback. It implies
+# `sign-parallel`, because a rayon spawner alone signs an admission batch
+# serially.
 parallel = [
 	"dep:rayon",
 	"nectar-postage/parallel",
 	"nectar-primitives/parallel",
+	"sign-parallel",
 	"std",
 ]
+
+# Signs an admission batch across the rayon pool. Without it the signer seam
+# runs the serial default, which is the only body wasm32, bare metal and
+# `unsync` compile.
+sign-parallel = [ "dep:rayon", "std" ]
 
 # Single-thread send escape: relaxes the signer bounds in lockstep with the
 # clock and primitives markers.

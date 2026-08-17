@@ -1,6 +1,6 @@
 //! Poll-native stamping: [`StampSink`] admits addresses one at a time and
-//! yields completions unordered, with sign jobs routed through a caller
-//! supplied [`Spawn`] executor.
+//! yields completions unordered, with one sign job per admission batch
+//! routed through a caller supplied [`Spawn`] executor.
 //!
 //! The [pipeline module](super) contracts hold unchanged, stated once
 //! there. Sink-shaped deltas: after fail-fast every further offered address
@@ -11,6 +11,7 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
@@ -23,7 +24,7 @@ use nectar_marker::{MaybeSend, MaybeSync};
 use nectar_primitives::ChunkAddress;
 use nectar_tasks::{BoxFuture, Spawn, submit_on};
 
-use super::task::sign_task;
+use super::task::sign_batch;
 use super::{SignPrehash, StampPipeline, StampResult};
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
@@ -61,15 +62,16 @@ where
 /// Poll-native stamping sink returned by [`StampPipeline::sink`].
 ///
 /// Dropping the sink aborts its in-flight jobs and abandons at most one
-/// window of allocated, unsigned indices; issuer state is coherent at every
-/// yield point.
+/// window of allocated, unsigned indices plus one window of signed results
+/// still queued; issuer state is coherent at every yield point.
 pub struct StampSink<'p, Sg, C, I: ?Sized, S> {
     pipeline: &'p StampPipeline<Sg, C>,
     issuer: &'p I,
     spawner: S,
     /// Occupancy: one token per admitted job, released as its result yields.
     admission: AdmissionWindow,
-    in_flight: FuturesUnordered<BoxFuture<'static, StampResult>>,
+    /// One entry per admission batch, each resolving to a result per digest.
+    in_flight: FuturesUnordered<BoxFuture<'static, Vec<StampResult>>>,
     /// Results complete at admission: allocation failures and `NotAdmitted`.
     ready: VecDeque<StampResult>,
     failed: bool,
@@ -82,7 +84,8 @@ pub struct StampSink<'p, Sg, C, I: ?Sized, S> {
 impl<Sg, C, I: ?Sized, S> fmt::Debug for StampSink<'_, Sg, C, I, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StampSink")
-            .field("in_flight", &self.in_flight.len())
+            .field("in_flight", &self.admission.in_flight())
+            .field("batches", &self.in_flight.len())
             .field("ready", &self.ready.len())
             .field("paused", &self.paused)
             .field("failed", &self.failed)
@@ -91,9 +94,10 @@ impl<Sg, C, I: ?Sized, S> fmt::Debug for StampSink<'_, Sg, C, I, S> {
 }
 
 impl<Sg, C, I: ?Sized, S> StampSink<'_, Sg, C, I, S> {
-    /// Admitted jobs not yet yielded.
+    /// Admitted jobs not yet harvested. Batching groups them into fewer
+    /// tasks, so this counts digests rather than tasks.
     pub fn in_flight(&self) -> usize {
-        self.in_flight.len()
+        self.admission.in_flight()
     }
 
     /// Whether admission is paused.
@@ -156,7 +160,7 @@ where
                 return Poll::Ready(());
             }
             match self.harvest(cx) {
-                Poll::Ready(Some(result)) => self.ready.push_back(result),
+                Poll::Ready(Some(())) => {}
                 // A drained set holds no token, so this cannot happen; refuse
                 // rather than spin if it ever does.
                 Poll::Ready(None) => {
@@ -180,7 +184,11 @@ where
         if let Some(result) = self.ready.pop_front() {
             return Poll::Ready(Some(result));
         }
-        self.harvest(cx)
+        match self.harvest(cx) {
+            Poll::Ready(Some(())) => Poll::Ready(self.ready.pop_front()),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     /// Whether the window admits one more job.
@@ -196,11 +204,12 @@ where
         self.admission.room()
     }
 
-    /// Claims a slot per address with one clock read and submits each for
-    /// signing; a refusal queues its result instead. The batch must not exceed
-    /// [`room`](Self::room).
+    /// Claims a slot per address with one clock read and submits the claimed
+    /// slots as one sign job; a refusal queues its result instead. The batch
+    /// must not exceed [`room`](Self::room).
     pub(super) fn admit_batch(&mut self, batch: &[ChunkAddress]) {
         let timestamp = stamp_timestamp(&self.pipeline.clock);
+        let mut admitted = Vec::with_capacity(batch.len());
         for &address in batch {
             // Backpressure before the claim, so a full window never burns a
             // slot.
@@ -212,52 +221,73 @@ where
                 continue;
             };
             match self.issuer.reserve(&address, timestamp) {
-                Ok(permit) => self.submit(permit.with_token(token)),
+                Ok(permit) => admitted.push(permit.with_token(token)),
                 Err(error) => self.ready.push_back(StampResult {
                     address,
                     result: Err(SigningError::Stamp(error)),
                 }),
             }
         }
+        if !admitted.is_empty() {
+            self.submit(admitted);
+        }
     }
 
-    /// Submits the sign job and tracks its completion in the in-flight set.
+    /// Submits one sign job for the whole batch and tracks its completion in
+    /// the in-flight set.
     ///
     /// The handoff owns the job's abort handle, so dropping it aborts the
     /// task; a cancelled handoff (the task dropped before replying) maps to a
-    /// systemic [`SigningError::Dropped`] for the admitted address, so a lost
-    /// job never wedges the sink.
-    fn submit(&mut self, mut permit: Prepared<I::Spec>) {
+    /// systemic [`SigningError::Dropped`] per admitted address, so a lost job
+    /// never wedges the sink.
+    fn submit(&mut self, permits: Vec<Prepared<I::Spec>>) {
         let signer = Arc::clone(&self.pipeline.signer);
-        let address = *permit.address();
-        let digest = permit.digest();
-        // Held past the permit, so the slot frees when the result yields, not
-        // when the signature lands.
-        let token: Option<WindowToken> = permit.take_token();
-        let handoff = submit_on(
-            &self.spawner,
-            async move { sign_task(signer.as_ref(), &digest) },
-        );
+        let mut digests = Vec::with_capacity(permits.len());
+        // Held past the permits, so the slots free when the results yield, not
+        // when the signatures land.
+        let mut tokens: Vec<WindowToken> = Vec::with_capacity(permits.len());
+        for mut permit in permits {
+            digests.push(permit.digest());
+            tokens.extend(permit.take_token());
+        }
+        let addresses: Vec<ChunkAddress> =
+            digests.iter().map(|digest| digest.chunk_address).collect();
+        let handoff = submit_on(&self.spawner, async move {
+            sign_batch(signer.as_ref(), &digests)
+        });
         self.in_flight.push(Box::pin(handoff.map(move |reply| {
-            drop(token);
-            reply.unwrap_or(StampResult {
-                address,
-                result: Err(SigningError::Dropped),
+            drop(tokens);
+            reply.unwrap_or_else(|| {
+                addresses
+                    .into_iter()
+                    .map(|address| StampResult {
+                        address,
+                        result: Err(SigningError::Dropped),
+                    })
+                    .collect()
             })
         })));
     }
 
-    /// Polls the in-flight set for one completion and applies fail-fast.
-    fn harvest(&mut self, cx: &mut Context<'_>) -> Poll<Option<StampResult>> {
-        let polled = Pin::new(&mut self.in_flight).poll_next(cx);
-        if let Poll::Ready(Some(result)) = &polled
-            && self.pipeline.fail_fast
-            && !self.failed
-            && matches!(&result.result, Err(error) if error.is_systemic())
-        {
-            self.failed = true;
+    /// Polls the in-flight set for one completed batch, queues its results and
+    /// applies fail-fast. `Ready(None)` reports the set drained.
+    fn harvest(&mut self, cx: &mut Context<'_>) -> Poll<Option<()>> {
+        let batch = match Pin::new(&mut self.in_flight).poll_next(cx) {
+            Poll::Ready(Some(batch)) => batch,
+            Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Pending => return Poll::Pending,
+        };
+        debug_assert!(!batch.is_empty(), "an empty batch was submitted");
+        for result in batch {
+            if self.pipeline.fail_fast
+                && !self.failed
+                && matches!(&result.result, Err(error) if error.is_systemic())
+            {
+                self.failed = true;
+            }
+            self.ready.push_back(result);
         }
-        polled
+        Poll::Ready(Some(()))
     }
 }
 
@@ -409,6 +439,39 @@ mod tests {
 
         fn chain_id_sync(&self) -> Option<u64> {
             None
+        }
+    }
+
+    /// Fails the first call, succeeds afterwards.
+    struct FailOnce(AtomicUsize);
+
+    impl SignerSync for FailOnce {
+        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
+            Ok(fixed_signature())
+        }
+
+        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(alloy_signer::Error::message("first call fails"))
+            } else {
+                Ok(fixed_signature())
+            }
+        }
+
+        fn chain_id_sync(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    /// Completes each job synchronously inside `spawn`, counting the spawns.
+    struct CountingSpawner(Arc<AtomicUsize>);
+
+    impl Spawn for CountingSpawner {
+        fn spawn(&self, mut task: nectar_tasks::BoxFuture<'static, ()>) -> TaskHandle {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            // Sign jobs are single-poll futures.
+            assert!(task.as_mut().poll(&mut noop_cx()).is_ready());
+            TaskHandle::new(|| {})
         }
     }
 
@@ -834,5 +897,78 @@ mod tests {
         // Drained is not terminated: admission restarts the stream.
         let second = drive(&mut sink, &addresses(1), 4);
         assert_eq!(second.len(), 1);
+    }
+
+    /// The batch is the unit of work: one spawn per admission batch, not one
+    /// per digest.
+    #[test]
+    fn an_admission_batch_costs_one_task() {
+        let issuer = issuer24();
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(16));
+
+        let mut sink = pipeline.sink(&issuer, CountingSpawner(Arc::clone(&spawns)));
+        sink.admit_batch(&addresses(16));
+
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+        let mut results = Vec::new();
+        while let Poll::Ready(Some(result)) = sink.poll_next(&mut noop_cx()) {
+            results.push(result);
+        }
+        assert_eq!(results.len(), 16);
+        assert!(results.iter().all(|r| r.result.is_ok()));
+        assert_eq!(issuer.stamps_issued(), Some(16));
+    }
+
+    /// A refusal inside a batch is complete at admission, so it never reaches
+    /// the sign job and never grows it.
+    #[test]
+    fn a_refused_address_leaves_the_batch() {
+        // depth=17, bucket_depth=16 gives 2 slots per bucket.
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(8));
+        let address = ChunkAddress::new([0xAB; 32]);
+
+        let mut sink = pipeline.sink(&issuer, CountingSpawner(Arc::clone(&spawns)));
+        sink.admit_batch(&[address, address, address]);
+
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+        let mut results = Vec::new();
+        while let Poll::Ready(Some(result)) = sink.poll_next(&mut noop_cx()) {
+            results.push(result);
+        }
+        assert_eq!(results.len(), 3);
+        assert_eq!(results.iter().filter(|r| r.result.is_ok()).count(), 2);
+        assert!(results.iter().any(|r| matches!(
+            r.result,
+            Err(SigningError::Stamp(StampError::BucketFull { .. }))
+        )));
+        assert_eq!(issuer.stamps_issued(), Some(2));
+    }
+
+    /// Fail-fast is per batch, not per set: a systemic failure among
+    /// batch-mates stops admission as soon as its batch lands.
+    #[test]
+    fn a_batch_mate_failure_stops_admission() {
+        let issuer = issuer24();
+        let pipeline =
+            StampPipeline::from_signer(FailOnce(AtomicUsize::new(0))).with_window(window(8));
+
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
+        sink.admit_batch(&addresses(8));
+        assert!(!sink.is_failed());
+
+        let mut results = Vec::new();
+        while let Poll::Ready(Some(result)) = sink.poll_next(&mut noop_cx()) {
+            results.push(result);
+        }
+
+        assert_eq!(results.len(), 8);
+        assert_eq!(results.iter().filter(|r| r.result.is_ok()).count(), 7);
+        // The whole batch still yielded, Ok siblings included.
+        assert!(sink.is_failed());
+        assert_eq!(issuer.stamps_issued(), Some(8));
     }
 }
