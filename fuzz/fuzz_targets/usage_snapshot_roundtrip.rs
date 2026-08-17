@@ -22,10 +22,10 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nectar_postage_usage::{SnapshotFor, oracles};
+use nectar_postage_usage::{Snapshot, oracles};
 use nectar_testing::LowFloor;
 
-fuzz_target!(|snapshot: SnapshotFor<LowFloor>| {
+fuzz_target!(|snapshot: Snapshot<LowFloor>| {
     let _ = oracles::snapshot_persist_round_trip(snapshot)
         .expect("persisted snapshots must parse and assemble back");
 });

@@ -132,7 +132,8 @@ fn bench_pipeline_mock_sequential(c: &mut Criterion) {
                 let (root, chunks) = split_sequential(data);
 
                 // Stamp each chunk
-                let issuer = MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+                let issuer: MemoryIssuer =
+                    MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
                 let mut stamper = BatchStamper::new(issuer, MockSigner);
 
                 let stamps: Vec<_> = chunks
@@ -164,7 +165,8 @@ fn bench_pipeline_mock_parallel_split(c: &mut Criterion) {
                 let (root, chunks) = split_parallel(source);
 
                 // Stamp each chunk (sequential)
-                let issuer = MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+                let issuer: MemoryIssuer =
+                    MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
                 let mut stamper = BatchStamper::new(issuer, MockSigner);
 
                 let stamps: Vec<_> = chunks
@@ -199,7 +201,8 @@ fn bench_pipeline_ecdsa_sequential(c: &mut Criterion) {
                 let (root, chunks) = split_sequential(data);
 
                 // Stamp each chunk with real signatures
-                let issuer = MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+                let issuer: MemoryIssuer =
+                    MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
                 let mut stamper = BatchStamper::new(issuer, &signer);
 
                 let stamps: Vec<_> = chunks
@@ -235,7 +238,8 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
                 let (root, chunks) = split_parallel(source);
 
                 // Stream the addresses through the stamp pipeline
-                let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+                let issuer: ShardedIssuer =
+                    ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
                 let mut handle = &issuer;
                 let stamps: Vec<_> = pipeline
                     .stamp(&mut handle, chunks.iter().map(|c| *c.address()))
@@ -268,7 +272,8 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
         b.iter(|| {
             let (root, chunks) = split_sequential(&data);
 
-            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut stamper = BatchStamper::new(issuer, &signer);
 
             let stamps: Vec<_> = chunks
@@ -285,7 +290,8 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
         b.iter(|| {
             let (root, chunks) = split_parallel(&source);
 
-            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut stamper = BatchStamper::new(issuer, &signer);
 
             let stamps: Vec<_> = chunks
@@ -302,7 +308,8 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
         b.iter(|| {
             let (root, chunks) = split_parallel(&source);
 
-            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: ShardedIssuer =
+                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let stamps: Vec<_> = pipeline
                 .stamp(&mut handle, chunks.iter().map(|c| *c.address()))
@@ -348,7 +355,8 @@ fn bench_pipeline_stages(c: &mut Criterion) {
     // Stage 2: Stamp only (sequential)
     group.bench_function("2_stamp_sequential", |b| {
         b.iter(|| {
-            let issuer = MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut stamper = BatchStamper::new(issuer, &signer);
             let stamps: Vec<_> = addresses
                 .iter()
@@ -363,7 +371,8 @@ fn bench_pipeline_stages(c: &mut Criterion) {
 
     group.bench_function("2_stamp_parallel", |b| {
         b.iter(|| {
-            let issuer = ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: ShardedIssuer =
+                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let stamps: Vec<_> = pipeline
                 .stamp(&mut handle, addresses.iter().copied())

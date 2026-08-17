@@ -11,8 +11,8 @@ use nectar_postage::{BatchId, BucketDepth};
 use nectar_primitives::wire::{Cursor, FromCursor, ToWriter, Underrun, Writer};
 use nectar_primitives::{Mainnet, SwarmSpec};
 
-use crate::snapshot::SnapshotFor;
-use crate::table::{Mutability, UsageTableFor, checked_bucket_depth};
+use crate::snapshot::Snapshot;
+use crate::table::{Mutability, UsageTable, checked_bucket_depth};
 use crate::{
     MAGIC, MAX_EXCEPTIONS, MAX_PAYLOAD_SIZE, MAX_WIDTH, ROOT_HEADER_SIZE, Result, UsageError,
 };
@@ -50,9 +50,9 @@ enum LeafSection {
 ///
 /// The network is a type parameter: the geometry on the wire is a bare depth
 /// byte, and parsing it as a snapshot of `S` is what re-establishes the
-/// [`BucketDepth`] proof. [`RootInfo`] is the mainnet root.
+/// [`BucketDepth`] proof.
 #[derive(Debug)]
-pub struct RootInfoFor<S: SwarmSpec = Mainnet> {
+pub struct RootInfo<S: SwarmSpec = Mainnet> {
     batch_id: BatchId,
     depth: u8,
     bucket_depth: BucketDepth<S>,
@@ -66,14 +66,11 @@ pub struct RootInfoFor<S: SwarmSpec = Mainnet> {
     leaves: LeafSection,
 }
 
-/// The [`RootInfoFor`] of the mainnet spec.
-pub type RootInfo = RootInfoFor<Mainnet>;
-
 // The spec is a type-level tag, so the impls below carry no bound on `S` beyond
 // `SwarmSpec`; deriving would demand `S: Clone` and `S: Eq` of a marker type
 // that holds no data.
 
-impl<S: SwarmSpec> Clone for RootInfoFor<S> {
+impl<S: SwarmSpec> Clone for RootInfo<S> {
     fn clone(&self) -> Self {
         Self {
             batch_id: self.batch_id,
@@ -91,7 +88,7 @@ impl<S: SwarmSpec> Clone for RootInfoFor<S> {
     }
 }
 
-impl<S: SwarmSpec> PartialEq for RootInfoFor<S> {
+impl<S: SwarmSpec> PartialEq for RootInfo<S> {
     fn eq(&self, other: &Self) -> bool {
         self.batch_id == other.batch_id
             && self.depth == other.depth
@@ -107,7 +104,7 @@ impl<S: SwarmSpec> PartialEq for RootInfoFor<S> {
     }
 }
 
-impl<S: SwarmSpec> Eq for RootInfoFor<S> {}
+impl<S: SwarmSpec> Eq for RootInfo<S> {}
 
 /// The fixed root header, stated once in wire order. Multi-byte fields are
 /// big-endian; `README.md` gives the full layout.
@@ -414,7 +411,7 @@ fn select_width(counts: &[u32], base: u32, buckets: usize, allocated: usize) -> 
 // chunk count), so every saturating operation below is exact.
 #[must_use = "the encoded payloads are the snapshot to publish; dropping them discards the encode"]
 pub(crate) fn encode<S: SwarmSpec>(
-    table: &UsageTableFor<S>,
+    table: &UsageTable<S>,
     sequence: u64,
     slots: &[u32],
 ) -> Result<Encoded> {
@@ -509,7 +506,7 @@ pub(crate) fn encode<S: SwarmSpec>(
     })
 }
 
-impl<S: SwarmSpec> RootInfoFor<S> {
+impl<S: SwarmSpec> RootInfo<S> {
     /// Parses and structurally validates a root payload.
     ///
     /// Untrusted input: every byte access goes through [`Cursor`], and the
@@ -727,7 +724,7 @@ impl<S: SwarmSpec> RootInfoFor<S> {
     // `buckets <= 2^16` and `width <= 32`.
     #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
     #[must_use = "the reassembled snapshot is the recovered state; dropping it discards the assemble"]
-    pub fn assemble<L: AsRef<[u8]>>(self, leaves: &[L]) -> Result<SnapshotFor<S>> {
+    pub fn assemble<L: AsRef<[u8]>>(self, leaves: &[L]) -> Result<Snapshot<S>> {
         let buckets = 1usize << self.bucket_depth.get();
         let capacity = 1u32 << (self.depth - self.bucket_depth.get());
         let width = self.width;
@@ -850,7 +847,7 @@ impl<S: SwarmSpec> RootInfoFor<S> {
         // their corruption counterparts: reached from the decode path, they mean
         // the fetched bytes are bad, not a caller input that can be adjusted. A
         // direct `Snapshot::from_parts` caller still gets the caller-input variant.
-        let table = UsageTableFor::from_counts(
+        let table = UsageTable::from_counts(
             self.batch_id,
             self.depth,
             self.bucket_depth,
@@ -858,9 +855,9 @@ impl<S: SwarmSpec> RootInfoFor<S> {
             mutability,
         )
         .map_err(UsageError::into_corruption)?;
-        let parts = SnapshotFor::recovered_parts(table, self.sequence, self.slots)
+        let parts = Snapshot::recovered_parts(table, self.sequence, self.slots)
             .map_err(UsageError::into_corruption)?;
-        SnapshotFor::from_parts(parts).map_err(UsageError::into_corruption)
+        Snapshot::from_parts(parts).map_err(UsageError::into_corruption)
     }
 }
 
@@ -950,7 +947,7 @@ mod tests {
         let mut root = encoded.root.to_vec();
         assert_eq!(root[38], 0x01, "mutable flag must be set");
 
-        let info = RootInfo::parse(&root).unwrap();
+        let info: RootInfo = RootInfo::parse(&root).unwrap();
         assert!(info.is_mutable());
 
         // Any reserved flag bit is rejected.
@@ -958,14 +955,14 @@ mod tests {
             let mut bad = root.clone();
             bad[38] = 1 << bit;
             assert_eq!(
-                RootInfo::parse(&bad),
+                RootInfo::<Mainnet>::parse(&bad),
                 Err(UsageError::Malformed("unsupported flags"))
             );
         }
 
         // Clearing bit 0 yields an immutable snapshot.
         root[38] = 0x00;
-        let info = RootInfo::parse(&root).unwrap();
+        let info: RootInfo = RootInfo::parse(&root).unwrap();
         assert!(!info.is_mutable());
     }
 
@@ -978,7 +975,7 @@ mod tests {
         // A single full bucket becomes the lone exception; the rest stay at the
         // base so the encoder packs nothing inline.
         counts[5] = 16;
-        let table = UsageTableFor::from_counts(
+        let table = UsageTable::from_counts(
             BatchId::new([0x42; 32]),
             12,
             low_floor(8),
@@ -1001,7 +998,7 @@ mod tests {
         let mut root = root_with_one_exception();
         // Push the exception bucket index past the 256-bucket range.
         root[ROOT_HEADER_SIZE..ROOT_HEADER_SIZE + 4].copy_from_slice(&300u32.to_be_bytes());
-        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
+        let err = RootInfo::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(err, UsageError::CorruptBucket { bucket: 300 });
         assert!(err.is_corruption());
         assert!(!err.is_recoverable());
@@ -1012,7 +1009,7 @@ mod tests {
         let mut root = root_with_one_exception();
         // Push the exception counter past the per-bucket capacity of 16.
         root[ROOT_HEADER_SIZE + 4..ROOT_HEADER_SIZE + 8].copy_from_slice(&17u32.to_be_bytes());
-        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
+        let err = RootInfo::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(
             err,
             UsageError::CorruptCounter {
@@ -1032,7 +1029,7 @@ mod tests {
         // bucket-depth byte (here past the supported maximum) is decode
         // corruption, not a caller-input error.
         root[37] = 17;
-        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
+        let err = RootInfo::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(
             err,
             UsageError::CorruptGeometry {
@@ -1058,7 +1055,7 @@ mod tests {
         root[60..62].copy_from_slice(&1u16.to_be_bytes()); // allocated = 1
         // exceptions = 0, leaves = 0, base = 0, slot 0 already zeroed.
 
-        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
+        let err = RootInfo::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(
             err,
             UsageError::CorruptGeometry {
@@ -1075,7 +1072,7 @@ mod tests {
         let mut root = root_with_one_exception();
         // Push the allocated slot to the capacity bound (valid slots are < 16).
         root[ROOT_HEADER_SIZE + 8..ROOT_HEADER_SIZE + 12].copy_from_slice(&16u32.to_be_bytes());
-        let err = RootInfoFor::<LowFloor>::parse(&root).unwrap_err();
+        let err = RootInfo::<LowFloor>::parse(&root).unwrap_err();
         assert_eq!(
             err,
             UsageError::CorruptSlot {
@@ -1092,7 +1089,7 @@ mod tests {
         // A table whose deltas span 0..16 packs inline at width 5 (no
         // exceptions): every count is within the capacity of 16.
         let counts: Vec<u32> = (0..256u32).map(|b| b % 17).collect();
-        let table = UsageTableFor::from_counts(
+        let table = UsageTable::from_counts(
             BatchId::new([0x42; 32]),
             12,
             low_floor(8),
@@ -1102,9 +1099,7 @@ mod tests {
         .unwrap();
         let mut corrupt = encode(&table, 1, &[4]).unwrap().root.to_vec();
         assert_eq!(
-            RootInfoFor::<LowFloor>::parse(&corrupt)
-                .unwrap()
-                .leaf_count(),
+            RootInfo::<LowFloor>::parse(&corrupt).unwrap().leaf_count(),
             0,
             "this geometry inlines the deltas"
         );
@@ -1115,7 +1110,7 @@ mod tests {
         let packed_start = ROOT_HEADER_SIZE + 4;
         corrupt[packed_start] |= 0b1111_1000;
 
-        let info = RootInfoFor::<LowFloor>::parse(&corrupt).unwrap();
+        let info = RootInfo::<LowFloor>::parse(&corrupt).unwrap();
         let err = info.assemble::<&[u8]>(&[]).unwrap_err();
         assert_eq!(
             err,
@@ -1136,7 +1131,7 @@ mod tests {
         // caller can fix the counts it passed.
         let mut counts = vec![0u32; 256];
         counts[5] = 17; // capacity is 16
-        let err = UsageTableFor::from_counts(
+        let err = UsageTable::from_counts(
             BatchId::new([0x42; 32]),
             12,
             low_floor(8),
@@ -1194,7 +1189,7 @@ mod tests {
             edge_inputs.push(header);
         }
         for data in &edge_inputs {
-            let _ = RootInfo::parse(data);
+            let _ = RootInfo::<Mainnet>::parse(data);
         }
     }
 
@@ -1210,7 +1205,7 @@ mod tests {
         /// ring) is a legitimate skip, bounded by proptest's reject limit.
         #[test]
         fn snapshot_persist_parse_assemble_round_trip(
-            snapshot in arb::<crate::SnapshotFor<LowFloor>>(),
+            snapshot in arb::<crate::Snapshot<LowFloor>>(),
         ) {
             let outcome = crate::oracles::snapshot_persist_round_trip(snapshot);
             prop_assume!(outcome != Ok(false));
@@ -1227,7 +1222,7 @@ mod tests {
     fn seed_replay_usage_snapshot_decode() {
         nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "usage_snapshot_decode")
             .on("valid-", |name, data| {
-                let result = RootInfo::parse(data);
+                let result = RootInfo::<Mainnet>::parse(data);
                 assert!(
                     result.is_ok(),
                     "seed {name} must parse successfully: {result:?}"
@@ -1235,7 +1230,7 @@ mod tests {
             })
             .on("invalid-", |name, data| {
                 assert!(
-                    RootInfo::parse(data).is_err(),
+                    RootInfo::<Mainnet>::parse(data).is_err(),
                     "seed {name} must remain an Err input"
                 );
             })

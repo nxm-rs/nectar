@@ -7,7 +7,7 @@ use nectar_postage::{Stamp, StampDigest};
 use nectar_primitives::{ChunkOps, SingleOwnerChunk, SwarmSpec};
 use thiserror::Error;
 
-use crate::snapshot::{PersistPlan, SnapshotFor};
+use crate::snapshot::{PersistPlan, Snapshot};
 
 /// Errors produced while sealing a persist plan.
 #[non_exhaustive]
@@ -67,7 +67,7 @@ pub struct SealedChunk {
 /// must have been planned from `snapshot`.
 #[must_use = "the sealed chunks are the snapshot to upload; dropping them discards the seal"]
 pub fn seal_plan<S: SwarmSpec>(
-    snapshot: &mut SnapshotFor<S>,
+    snapshot: &mut Snapshot<S>,
     plan: &PersistPlan,
     timestamp: u64,
     signer: &impl SignerSync,

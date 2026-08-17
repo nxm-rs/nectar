@@ -47,7 +47,7 @@
 //! fn self_hosting_sink(_ring: RingIssuer<Reserved>) {}
 //!
 //! let bucket_depth = BucketDepth::new(16).unwrap();
-//! let batch = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, bucket_depth, false);
+//! let batch: Batch = Batch::new(BatchId::ZERO, 0, 0, Default::default(), 20, bucket_depth, false);
 //! let unreserved: RingIssuer<Unreserved> = RingIssuer::external(&batch).unwrap();
 //! // A reserved-blind ring is not a Reserved ring, and there is no conversion.
 //! self_hosting_sink(unreserved);
@@ -57,16 +57,15 @@
 //!
 //! An issuer is parameterized by the [`SwarmSpec`] its batch was built for, and
 //! carries it in the [`BucketDepth`] it is constructed from, so a depth the
-//! network refuses never reaches an issuer. The generic type takes the `...For`
-//! name ([`MemoryIssuerFor`], [`RingIssuerFor`], [`ShardedIssuerFor`],
-//! [`ShardedRingIssuerFor`], [`CounterTableFor`]) and the bare name is the
-//! mainnet alias, so ordinary call sites need no type annotation:
+//! network refuses never reaches an issuer. The spec parameter defaults to
+//! [`Mainnet`] in type position only; a default drives no inference, so a
+//! construction site still names the type it builds:
 //!
 //! ```
-//! use nectar_postage_issuer::{BatchId, BucketDepth, MemoryIssuer, MemoryIssuerFor, Testnet};
+//! use nectar_postage_issuer::{BatchId, BucketDepth, MemoryIssuer, Testnet};
 //!
-//! let mainnet = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16)?);
-//! let testnet = MemoryIssuerFor::<Testnet>::new(BatchId::ZERO, 20, BucketDepth::new(16)?);
+//! let mainnet: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16)?);
+//! let testnet = MemoryIssuer::<Testnet>::new(BatchId::ZERO, 20, BucketDepth::new(16)?);
 //! # Ok::<(), nectar_postage_issuer::StampError>(())
 //! ```
 //!
@@ -76,9 +75,9 @@
 //!
 //! # Parallel stamping
 //!
-//! [`ShardedFor`] splits the bucket space across shards, each holding one
+//! [`Sharded`] splits the bucket space across shards, each holding one
 //! sequential issuer behind its own lock. The inner issuer sets the issuance
-//! mode, so [`ShardedIssuerFor`] and [`ShardedRingIssuerFor`] are aliases.
+//! mode, so [`ShardedIssuer`] and [`ShardedRingIssuer`] are aliases.
 //!
 //! # Features
 //!
@@ -99,7 +98,7 @@
 //! use alloy_signer_local::PrivateKeySigner;
 //!
 //! // Create an issuer for a batch
-//! let issuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
+//! let issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 //!
 //! // Combine with any SignerSync implementation to create a stamper
 //! let signer = PrivateKeySigner::random();
@@ -159,14 +158,14 @@ pub use nectar_primitives::{Mainnet, NetworkId, SwarmSpec, Testnet};
 pub use error::{IssuerError, RingExhausted, SigningError};
 
 // The shared per-bucket counter table behind every issuer and the snapshot.
-pub use counter::{CounterError, CounterMode, CounterTable, CounterTableFor};
+pub use counter::{CounterError, CounterMode, CounterTable};
 
 // Wiring on-chain depth-increase events through to issuer dilution (std only).
 #[cfg(feature = "std")]
 pub use dilute_handler::{Dilutable, IssuerRegistry};
 
 // Issuing
-pub use issuer::{MemoryIssuer, MemoryIssuerFor, StampIssuer};
+pub use issuer::{MemoryIssuer, StampIssuer};
 pub use stamper::{BatchStamper, Stamper};
 
 // The streaming stamp pipeline; its sign window is the governor window.
@@ -178,16 +177,12 @@ pub use pipeline::{Eip191, SignPrehash, StampPipeline, StampResult, Stamped};
 pub use pipeline::{IssuedBound, StampedPut, StampedPutError};
 
 // Mutable (ring) issuing with a type-state reservation guard
-pub use ring::{Reservation, Reserved, RingIssuer, RingIssuerFor, Unreserved};
+pub use ring::{Reservation, Reserved, RingIssuer, Unreserved};
 
 // Parallel issuance: one sequential issuer per shard of the bucket space.
 #[cfg(feature = "std")]
-pub use sharded::{
-    Sharded, ShardedFor, ShardedIssuer, ShardedIssuerFor, ShardedRingIssuer, ShardedRingIssuerFor,
-};
+pub use sharded::{Sharded, ShardedIssuer, ShardedRingIssuer};
 
 // Factory (std only)
 #[cfg(feature = "std")]
-pub use factory::{
-    BatchFactory, CreateResult, CreateResultFor, MemoryBatchFactory, MemoryBatchFactoryFor,
-};
+pub use factory::{BatchFactory, CreateResult, MemoryBatchFactory};
