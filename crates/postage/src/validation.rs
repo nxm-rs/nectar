@@ -10,7 +10,7 @@ use crate::{Batch, BatchId};
 use crate::StampIndex;
 
 #[cfg(feature = "std")]
-use crate::{BatchStore, BatchStoreExt};
+use crate::{BatchStore, BatchStoreExt, StampedAddress};
 
 /// A trait for validating postage stamps.
 ///
@@ -162,8 +162,7 @@ impl<S: BatchStore> StoreValidator<S> {
     /// `Ok(())` if the stamp is valid, or a [`StampError`] describing the failure.
     pub fn validate(&self, stamp: &Stamp, address: &ChunkAddress) -> Result<(), StampError> {
         let batch = self.get_batch_for_stamp(stamp)?;
-        self.validate_structure_with_batch(stamp, address, &batch)?;
-        stamp.verify(address, batch.owner())?;
+        StampedAddress::new(*address, stamp.clone()).validate(&batch)?;
 
         Ok(())
     }
@@ -384,6 +383,24 @@ mod tests {
         assert!(matches!(
             validator.validate(&stamp, &address),
             Err(StampError::BatchExpired { .. })
+        ));
+    }
+
+    /// The structural checks all pass, so only the signature can refuse it.
+    #[test]
+    fn acceptance_refuses_a_foreign_signature() {
+        let (validator, _, address, _) = unconfirmed();
+        let other = PrivateKeySigner::from_slice(&[9u8; 32]).unwrap();
+        let stamp = stamp_for(
+            &other,
+            &batch_started_at(other.address(), START_BLOCK),
+            &address,
+        );
+
+        assert!(validator.validate_structure(&stamp, &address).is_ok());
+        assert!(matches!(
+            validator.validate(&stamp, &address),
+            Err(StampError::OwnerMismatch { .. })
         ));
     }
 

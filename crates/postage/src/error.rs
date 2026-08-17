@@ -51,6 +51,15 @@ pub enum StampError {
         bucket_depth: u8,
     },
 
+    /// The stamp names a different batch from the one it was checked against.
+    #[error("batch mismatch: expected {expected}, got {actual}")]
+    BatchMismatch {
+        /// The batch the stamp was checked against.
+        expected: BatchId,
+        /// The batch the stamp names.
+        actual: BatchId,
+    },
+
     /// The batch was not found.
     #[error("batch not found: {0}")]
     BatchNotFound(BatchId),
