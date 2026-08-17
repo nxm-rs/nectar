@@ -242,7 +242,8 @@ enum Step {
 ///   commit and apply sites need `TrustedGet + ChunkHas` as well, so a pure
 ///   network sender takes a local or teed inner there.
 /// - A split's put slots double as sign-plus-put slots here, so signing
-///   never overlaps wider than the put window; take
+///   overlaps no wider than the put window, and under `parallel` no wider
+///   than the pool it signs on; widening past either buys nothing. Take
 ///   [`StagedPut`](super::StagedPut) for a slow signer, which signs in a
 ///   stage of its own. Prefer an owned clone (`Split::new` or `collect`)
 ///   over a borrowed relay, which serializes one signer round-trip per
