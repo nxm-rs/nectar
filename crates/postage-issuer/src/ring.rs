@@ -29,7 +29,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use nectar_postage::{
-    Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
+    Batch, BatchId, Bucket, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
 };
 use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
@@ -185,7 +185,9 @@ impl<S: SwarmSpec> RingIssuer<Unreserved, S> {
     ///
     /// Returns [`IssuerError::ImmutableNotSupported`] if the batch is immutable;
     /// immutable batches are fill-only and use
-    /// [`MemoryIssuer`](crate::MemoryIssuer).
+    /// [`MemoryIssuer`](crate::MemoryIssuer). Returns
+    /// [`IssuerError::Geometry`] if the chain-decoded depth is one no counter
+    /// table can hold.
     pub fn external(batch: &Batch<S>) -> Result<Self, IssuerError> {
         Self::for_mutable_batch(batch, Unreserved)
     }
@@ -203,7 +205,9 @@ impl<S: SwarmSpec> RingIssuer<Reserved, S> {
     ///
     /// Returns [`IssuerError::ImmutableNotSupported`] if the batch is immutable;
     /// immutable batches are fill-only and use
-    /// [`MemoryIssuer`](crate::MemoryIssuer).
+    /// [`MemoryIssuer`](crate::MemoryIssuer). Returns
+    /// [`IssuerError::Geometry`] if the chain-decoded depth is one no counter
+    /// table can hold.
     pub fn reserved(
         batch: &Batch<S>,
         slots: impl IntoIterator<Item = (u32, u32)>,
@@ -218,6 +222,7 @@ impl<R: Reservation, S: SwarmSpec> RingIssuer<R, S> {
         if batch.immutable() {
             return Err(IssuerError::ImmutableNotSupported);
         }
+        batch.geometry()?;
         Ok(Self::with_reservation(
             batch.id(),
             batch.depth(),
@@ -269,27 +274,28 @@ impl<R: Reservation, S: SwarmSpec> RingIssuer<R, S> {
     /// written the bucket's last fresh slot. If every slot is protected the table
     /// returns [`CounterError::RingExhausted`], mapped to
     /// [`IssuerError::RingExhausted`].
-    fn next_slot(&mut self, bucket: u32) -> Result<u32, IssuerError> {
+    fn next_slot(&mut self, bucket: Bucket<S>) -> Result<u32, IssuerError> {
         let reservation = &self.reservation;
+        let value = bucket.value();
         let position = self
             .counters
-            .record(bucket, |slot| reservation.is_protected(bucket, slot))
+            .record(bucket, |slot| reservation.is_protected(value, slot))
             .map_err(|err| match err {
                 CounterError::RingExhausted(exhausted) => IssuerError::RingExhausted(exhausted),
                 // `record` reports nothing else here: ring mode never fills, the
-                // bucket comes from the address so it is in range, and
-                // construction errors cannot arise from an advance.
-                _ => IssuerError::RingExhausted(RingExhausted::new(bucket)),
+                // bucket comes from the address at the table's own depth so it is
+                // in range, and construction errors cannot arise from an advance.
+                _ => IssuerError::RingExhausted(RingExhausted::new(value)),
             })?;
         // A cursor sitting at the capacity has just filled the bucket's last
         // fresh slot, so the bucket is saturated from here on.
-        if self.counters.count(bucket).unwrap_or(0) == self.counters.bucket_capacity() {
+        if self.counters.count(value).unwrap_or(0) == self.counters.bucket_capacity() {
             // `record` above succeeded, so `bucket` is within the bucket count and
             // `saturated` has that same length by construction; `u32` always fits
             // `usize` on the >=32-bit targets this crate supports.
             #[allow(clippy::indexing_slicing, clippy::as_conversions)]
             {
-                self.saturated[bucket as usize] = true;
+                self.saturated[value as usize] = true;
             }
         }
         Ok(position)
@@ -322,12 +328,12 @@ impl<R: Reservation, S: SwarmSpec> RingIssuer<R, S> {
 
         // `u32` always fits `usize` on the >=32-bit targets this crate supports.
         #[allow(clippy::as_conversions)]
-        let fill = self.bucket_fill(bucket as usize);
+        let fill = self.bucket_fill(bucket.value() as usize);
         if fill > self.max_utilization {
             self.max_utilization = fill;
         }
 
-        let index = StampIndex::new(bucket, position);
+        let index = StampIndex::new(bucket.value(), position);
         Ok(StampDigest::new(*address, self.batch_id, index, timestamp))
     }
 
@@ -480,6 +486,21 @@ mod tests {
     }
 
     #[test]
+    fn a_ring_refuses_a_depth_no_counter_table_can_hold() {
+        for depth in [8u8, 48, u8::MAX] {
+            let batch = mutable_batch(depth, 16);
+            assert!(matches!(
+                RingIssuer::external(&batch),
+                Err(IssuerError::Geometry(_))
+            ));
+            assert!(matches!(
+                RingIssuer::reserved(&batch, []),
+                Err(IssuerError::Geometry(_))
+            ));
+        }
+    }
+
+    #[test]
     fn external_ring_index_stays_within_capacity() {
         // depth=18, bucket_depth=16 gives 4 slots per bucket.
         let batch = mutable_batch(18, 16);
@@ -499,7 +520,7 @@ mod tests {
         // depth=18, bucket_depth=16 gives 4 slots per bucket. Protect slots 1
         // and 3 in the target bucket; the ring may only ever emit 0 and 2.
         let batch = mutable_batch(18, 16);
-        let bucket = calculate_bucket(&test_address(0x00AA), bucket_depth());
+        let bucket = calculate_bucket(&test_address(0x00AA), bucket_depth()).value();
         let mut issuer = RingIssuer::reserved(&batch, [(bucket, 1), (bucket, 3)]).unwrap();
 
         let address = test_address(0x00AA);
@@ -521,7 +542,7 @@ mod tests {
         // depth=17, bucket_depth=16 gives 2 slots per bucket. Protect both, so
         // the bucket has no issuable slot.
         let batch = mutable_batch(17, 16);
-        let bucket = calculate_bucket(&test_address(0x0001), bucket_depth());
+        let bucket = calculate_bucket(&test_address(0x0001), bucket_depth()).value();
         let mut issuer = RingIssuer::reserved(&batch, [(bucket, 0), (bucket, 1)]).unwrap();
 
         let address = test_address(0x0001);
@@ -564,7 +585,7 @@ mod tests {
         let mut issuer = RingIssuer::external(&batch).unwrap();
 
         let address = test_address(0x0001);
-        let bucket = calculate_bucket(&address, bucket_depth());
+        let bucket = calculate_bucket(&address, bucket_depth()).value();
 
         assert!(issuer.bucket_has_capacity(bucket));
         issuer.prepare_ring_stamp(&address, 1).unwrap();
@@ -612,7 +633,7 @@ mod tests {
     #[test]
     fn ring_stamp_issuer_surfaces_exhaustion_as_bucket_full() {
         let batch = mutable_batch(17, 16);
-        let bucket = calculate_bucket(&test_address(0x0001), bucket_depth());
+        let bucket = calculate_bucket(&test_address(0x0001), bucket_depth()).value();
         let mut issuer = RingIssuer::reserved(&batch, [(bucket, 0), (bucket, 1)]).unwrap();
 
         let address = test_address(0x0001);

@@ -135,7 +135,7 @@ impl<I: StampIssuer, S: SwarmSpec> Sharded<I, S> {
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.bucket_depth);
+        let bucket = calculate_bucket(address, self.bucket_depth).value();
         let (digest, fill) = {
             let mut issuer = self.shard(bucket).lock();
             let digest = issuer.prepare_stamp(address, timestamp)?;
@@ -224,9 +224,11 @@ impl<S: SwarmSpec> Sharded<MemoryIssuer<S>, S> {
     ///
     /// [`IssuerError::MutableNotSupported`] for a mutable batch: overwrite-aware
     /// issuance is requested by name through [`ShardedRingIssuer::external`] or
-    /// [`ShardedRingIssuer::reserved`].
+    /// [`ShardedRingIssuer::reserved`]. [`IssuerError::Geometry`] if the
+    /// chain-decoded depth is one no counter table can hold.
     pub fn from_batch(batch: &Batch<S>) -> Result<Self, IssuerError> {
         if batch.immutable() {
+            batch.geometry()?;
             Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))
         } else {
             Err(IssuerError::MutableNotSupported)
@@ -264,7 +266,9 @@ impl<S: SwarmSpec> Sharded<RingIssuer<Unreserved, S>, S> {
     ///
     /// # Errors
     ///
-    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
+    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable, or
+    /// [`IssuerError::Geometry`] if the chain-decoded depth is one no counter
+    /// table can hold.
     pub fn external(batch: &Batch<S>) -> Result<Self, IssuerError> {
         Self::for_mutable_batch(batch, |_, _| Unreserved)
     }
@@ -276,7 +280,9 @@ impl<S: SwarmSpec> Sharded<RingIssuer<Reserved, S>, S> {
     ///
     /// # Errors
     ///
-    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable.
+    /// [`IssuerError::ImmutableNotSupported`] if the batch is immutable, or
+    /// [`IssuerError::Geometry`] if the chain-decoded depth is one no counter
+    /// table can hold.
     pub fn reserved(
         batch: &Batch<S>,
         slots: impl IntoIterator<Item = (u32, u32)>,
@@ -302,6 +308,7 @@ impl<R: Reservation, S: SwarmSpec> Sharded<RingIssuer<R, S>, S> {
         if batch.immutable() {
             return Err(IssuerError::ImmutableNotSupported);
         }
+        batch.geometry()?;
         Ok(Self::with_shards(
             batch.id(),
             batch.depth(),
@@ -499,7 +506,7 @@ mod tests {
         let mut issuer: ShardedIssuer =
             ShardedIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let address = test_address(0xABCD);
-        let bucket = calculate_bucket(&address, bucket_depth());
+        let bucket = calculate_bucket(&address, bucket_depth()).value();
 
         issuer.prepare_stamp(&address, 1).unwrap();
         issuer.prepare_stamp(&address, 2).unwrap();
@@ -610,7 +617,7 @@ mod tests {
         let mut issuer: ShardedIssuer =
             ShardedIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
         let address = test_address(0x1234);
-        let bucket = calculate_bucket(&address, bucket_depth());
+        let bucket = calculate_bucket(&address, bucket_depth()).value();
 
         let digest = StampIssuer::prepare_stamp(&mut issuer, &address, 7).unwrap();
 
@@ -639,7 +646,7 @@ mod tests {
         assert_eq!(StampIssuer::stamps_issued(&handle), Some(1));
         assert!(StampIssuer::bucket_has_capacity(
             &handle,
-            calculate_bucket(&address, bucket_depth())
+            calculate_bucket(&address, bucket_depth()).value()
         ));
     }
 
@@ -669,7 +676,7 @@ mod tests {
         // leaves only 0 and 2.
         let mutable = batch(18, false);
         let address = test_address(0x00AA);
-        let bucket = calculate_bucket(&address, bucket_depth());
+        let bucket = calculate_bucket(&address, bucket_depth()).value();
         let issuer = ShardedRingIssuer::reserved(&mutable, [(bucket, 1), (bucket, 3)]).unwrap();
 
         for ts in 0..50u64 {
@@ -714,7 +721,7 @@ mod tests {
     fn a_fully_protected_bucket_surfaces_as_bucket_full() {
         let mutable = batch(17, false);
         let address = test_address(0x0001);
-        let bucket = calculate_bucket(&address, bucket_depth());
+        let bucket = calculate_bucket(&address, bucket_depth()).value();
         let issuer = ShardedRingIssuer::reserved(&mutable, [(bucket, 0), (bucket, 1)]).unwrap();
 
         assert!(matches!(
@@ -756,7 +763,7 @@ mod tests {
                 for &lead in &leads {
                     ts += 1;
                     let address = test_address(lead);
-                    let bucket = calculate_bucket(&address, bucket_depth);
+                    let bucket = calculate_bucket(&address, bucket_depth).value();
                     let mine = sharded.prepare_stamp(&address, ts);
                     let theirs = StampIssuer::prepare_stamp(&mut sequential, &address, ts);
                     prop_assert_eq!(mine, theirs);
@@ -802,7 +809,7 @@ mod tests {
                 for &lead in &leads {
                     ts += 1;
                     let address = test_address(lead);
-                    let bucket = calculate_bucket(&address, mutable.bucket_depth());
+                    let bucket = calculate_bucket(&address, mutable.bucket_depth()).value();
                     let mine = sharded.prepare_stamp(&address, ts);
                     let theirs = StampIssuer::prepare_stamp(&mut sequential, &address, ts);
                     prop_assert_eq!(mine, theirs);

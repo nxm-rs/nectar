@@ -211,6 +211,9 @@ impl<S: SwarmSpec> MemoryIssuer<S> {
     /// self-hosting, where the protected slots come from `nectar-postage-usage`.
     pub fn from_batch(batch: &Batch<S>) -> Result<Self, IssuerError> {
         if batch.immutable() {
+            // Chain decode leaves the depth a raw byte; an unheld geometry would
+            // otherwise overflow the counter table's capacity shift.
+            batch.geometry()?;
             Ok(Self::new(batch.id(), batch.depth(), batch.bucket_depth()))
         } else {
             Err(IssuerError::MutableNotSupported)
@@ -231,14 +234,14 @@ impl<S: SwarmSpec> StampIssuer for MemoryIssuer<S> {
             self.counters
                 .record(bucket, |_| false)
                 .map_err(|err| StampError::BucketFull {
-                    bucket,
+                    bucket: bucket.value(),
                     capacity: match err {
                         crate::counter::CounterError::BucketFull { capacity, .. } => capacity,
                         _ => self.counters.bucket_capacity(),
                     },
                 })?;
 
-        let index = StampIndex::new(bucket, position);
+        let index = StampIndex::new(bucket.value(), position);
 
         Ok(StampDigest::new(*address, self.batch_id, index, timestamp))
     }
@@ -439,6 +442,29 @@ mod tests {
             MemoryIssuer::from_batch(&mutable),
             Err(IssuerError::MutableNotSupported)
         ));
+    }
+
+    #[test]
+    fn from_batch_refuses_a_depth_no_counter_table_can_hold() {
+        use nectar_postage::Batch;
+
+        // Chain decode is total, so a depth this far above the bucket depth
+        // reaches here; building the table would overflow its capacity shift.
+        for depth in [8u8, 48, u8::MAX] {
+            let batch: Batch = Batch::new(
+                BatchId::ZERO,
+                0,
+                0,
+                Default::default(),
+                depth,
+                BucketDepth::new(16).unwrap(),
+                true,
+            );
+            assert!(matches!(
+                MemoryIssuer::from_batch(&batch),
+                Err(IssuerError::Geometry(_))
+            ));
+        }
     }
 
     #[test]

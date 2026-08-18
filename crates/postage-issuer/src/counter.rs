@@ -29,7 +29,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use nectar_postage::BucketDepth;
+use nectar_postage::{Bucket, BucketDepth};
 use nectar_primitives::{Mainnet, SwarmSpec};
 use thiserror::Error;
 
@@ -54,6 +54,15 @@ pub enum CounterError {
     InvalidBucket {
         /// The offending bucket index.
         bucket: u32,
+    },
+
+    /// A bucket was cut at a depth other than the table's.
+    #[error("bucket cut at depth {got}, table is at depth {expected}")]
+    BucketDepthMismatch {
+        /// The table's bucket depth.
+        expected: u8,
+        /// The depth the bucket was cut at.
+        got: u8,
     },
 
     /// A fill bucket has no remaining slot. Never produced in ring mode.
@@ -282,6 +291,9 @@ impl<S: SwarmSpec> CounterTable<S> {
     /// Advances the counter of `bucket`, skipping any slot for which
     /// `is_protected` returns `true`, and returns the assigned slot.
     ///
+    /// A bucket cut at another depth is refused: it is inside this table's
+    /// bucket range, so a range check alone would not catch it.
+    ///
     /// Fill mode returns the watermark and bumps it, failing with
     /// [`CounterError::BucketFull`] at capacity; the predicate is unused because a
     /// monotone watermark never lands on a reserved slot. Ring mode starts at the
@@ -291,9 +303,16 @@ impl<S: SwarmSpec> CounterTable<S> {
     /// [`CounterError::RingExhausted`]; the geometry forbids this at real depths.
     pub fn record(
         &mut self,
-        bucket: u32,
+        bucket: Bucket<S>,
         is_protected: impl Fn(u32) -> bool,
     ) -> Result<u32, CounterError> {
+        if bucket.depth() != self.bucket_depth {
+            return Err(CounterError::BucketDepthMismatch {
+                expected: self.bucket_depth.get(),
+                got: bucket.depth().get(),
+            });
+        }
+        let bucket = bucket.value();
         // `u32` always fits `usize` on the >=32-bit targets this crate supports.
         #[allow(clippy::as_conversions)]
         let bucket_idx = bucket as usize;
@@ -412,14 +431,18 @@ mod tests {
         BucketDepth::new(16).unwrap()
     }
 
+    fn at(bucket: u32) -> Bucket {
+        Bucket::checked(bucket, bucket_depth()).unwrap()
+    }
+
     #[test]
     fn fill_is_a_monotone_watermark_that_refuses_a_full_bucket() {
         // depth 17, bucket depth 16 gives 2 slots per bucket.
         let mut table: CounterTable = CounterTable::new(17, bucket_depth(), CounterMode::Fill);
-        assert_eq!(table.record(5, never).unwrap(), 0);
-        assert_eq!(table.record(5, never).unwrap(), 1);
+        assert_eq!(table.record(at(5), never).unwrap(), 0);
+        assert_eq!(table.record(at(5), never).unwrap(), 1);
         assert_eq!(
-            table.record(5, never),
+            table.record(at(5), never),
             Err(CounterError::BucketFull {
                 bucket: 5,
                 capacity: 2
@@ -432,12 +455,12 @@ mod tests {
     #[test]
     fn ring_wraps_and_keeps_the_cursor_in_range() {
         let mut table: CounterTable = CounterTable::new(17, bucket_depth(), CounterMode::Ring);
-        assert_eq!(table.record(5, never).unwrap(), 0);
-        assert_eq!(table.record(5, never).unwrap(), 1);
+        assert_eq!(table.record(at(5), never).unwrap(), 0);
+        assert_eq!(table.record(at(5), never).unwrap(), 1);
         // The cursor sits at capacity, the deferred-wrap state.
         assert_eq!(table.count(5).unwrap(), 2);
         // The next write wraps back to slot 0.
-        assert_eq!(table.record(5, never).unwrap(), 0);
+        assert_eq!(table.record(at(5), never).unwrap(), 0);
         assert_eq!(table.count(5).unwrap(), 1);
     }
 
@@ -447,7 +470,7 @@ mod tests {
         let mut table: CounterTable = CounterTable::new(18, bucket_depth(), CounterMode::Ring);
         let protected = |slot: u32| slot == 1 || slot == 3;
         for _ in 0..20 {
-            let slot = table.record(0, protected).unwrap();
+            let slot = table.record(at(0), protected).unwrap();
             assert!(slot == 0 || slot == 2, "ring emitted protected slot {slot}");
         }
     }
@@ -456,7 +479,7 @@ mod tests {
     fn ring_exhausts_when_every_slot_is_protected() {
         let mut table: CounterTable = CounterTable::new(17, bucket_depth(), CounterMode::Ring);
         let err = table
-            .record(0, |_| true)
+            .record(at(0), |_| true)
             .expect_err("every slot is protected");
         assert_eq!(err, CounterError::RingExhausted(RingExhausted::new(0)));
         assert!(
@@ -464,6 +487,24 @@ mod tests {
                 .expect("the shared condition is the source")
                 .is::<RingExhausted>()
         );
+    }
+
+    #[test]
+    fn a_bucket_cut_at_another_depth_never_lands_in_a_counter() {
+        // Bucket 5 is in range for a depth-20 table, so only the cut depth
+        // tells it apart from the depth-20 bucket 5.
+        let mut table: CounterTable =
+            CounterTable::new(24, BucketDepth::new(20).unwrap(), CounterMode::Fill);
+        let shallow = Bucket::checked(5, bucket_depth()).unwrap();
+        assert_eq!(
+            table.record(shallow, never),
+            Err(CounterError::BucketDepthMismatch {
+                expected: 20,
+                got: 16
+            })
+        );
+        assert_eq!(table.count(5), Ok(0));
+        assert_eq!(table.total_issued(), 0);
     }
 
     #[test]
@@ -512,7 +553,7 @@ mod tests {
                 let mut successes = 0u64;
                 for &bucket in &ops {
                     let mark = marks.entry(bucket).or_insert(0);
-                    match table.record(bucket, never) {
+                    match table.record(Bucket::checked(bucket, bucket_depth).unwrap(), never) {
                         Ok(slot) => {
                             prop_assert!(*mark < capacity);
                             prop_assert_eq!(slot, *mark);
@@ -557,12 +598,15 @@ mod tests {
                         .find(|&slot| !protected(slot));
                     match expected {
                         Some(want) => {
-                            prop_assert_eq!(table.record(bucket, protected), Ok(want));
+                            prop_assert_eq!(
+                                table.record(Bucket::checked(bucket, bucket_depth).unwrap(), protected),
+                                Ok(want)
+                            );
                             cursors[idx] = want + 1;
                         }
                         None => {
                             prop_assert_eq!(
-                                table.record(bucket, protected),
+                                table.record(Bucket::checked(bucket, bucket_depth).unwrap(), protected),
                                 Err(CounterError::RingExhausted(RingExhausted::new(bucket)))
                             );
                         }
@@ -589,13 +633,14 @@ mod tests {
                 let depth = bucket_depth.get() + excess;
                 let mut live: CounterTable = CounterTable::new(depth, bucket_depth, mode);
                 for &bucket in &prefix {
-                    let _ = live.record(bucket, never);
+                    let _ = live.record(Bucket::checked(bucket, bucket_depth).unwrap(), never);
                 }
                 let mut restored =
                     CounterTable::from_counts(depth, bucket_depth, mode, live.counts().to_vec())
                         .unwrap();
                 prop_assert_eq!(&restored, &live);
                 for &bucket in &suffix {
+                    let bucket = Bucket::checked(bucket, bucket_depth).unwrap();
                     prop_assert_eq!(restored.record(bucket, never), live.record(bucket, never));
                 }
                 prop_assert_eq!(&restored, &live);
@@ -625,13 +670,13 @@ mod tests {
                     fill.total_issued(),
                     u64::from(capacity - 1) + u64::from(capacity)
                 );
-                prop_assert_eq!(fill.record(0, never), Ok(capacity - 1));
+                prop_assert_eq!(fill.record(at(0), never), Ok(capacity - 1));
                 prop_assert_eq!(
-                    fill.record(0, never),
+                    fill.record(at(0), never),
                     Err(CounterError::BucketFull { bucket: 0, capacity })
                 );
                 prop_assert_eq!(
-                    fill.record(1, never),
+                    fill.record(at(1), never),
                     Err(CounterError::BucketFull { bucket: 1, capacity })
                 );
 
@@ -650,11 +695,11 @@ mod tests {
                     CounterTable::from_counts(depth, bucket_depth(), CounterMode::Ring, counts)
                         .unwrap();
                 prop_assert_eq!(ring.has_capacity(1), Ok(false));
-                prop_assert_eq!(ring.record(1, never), Ok(0));
+                prop_assert_eq!(ring.record(at(1), never), Ok(0));
                 prop_assert_eq!(ring.count(1), Ok(1));
-                prop_assert_eq!(ring.record(0, never), Ok(capacity - 1));
+                prop_assert_eq!(ring.record(at(0), never), Ok(capacity - 1));
                 prop_assert_eq!(ring.count(0), Ok(capacity));
-                prop_assert_eq!(ring.record(0, never), Ok(0));
+                prop_assert_eq!(ring.record(at(0), never), Ok(0));
                 prop_assert_eq!(ring.count(0), Ok(1));
                 prop_assert_eq!(ring.total_issued(), 2);
             }

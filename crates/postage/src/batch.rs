@@ -1,7 +1,5 @@
 //! Postage batch types.
 
-use core::{fmt, marker::PhantomData};
-
 use alloy_primitives::{Address, B256};
 use derive_more::{AsRef, Display, From, Into};
 use nectar_primitives::{
@@ -9,7 +7,7 @@ use nectar_primitives::{
     wire::{Cursor, FromCursor, ToWriter, Underrun, Writer},
 };
 
-use crate::{StampError, StampIndex, calculate_bucket};
+use crate::{BatchDepth, Bucket, BucketDepth, StampError, StampIndex, calculate_bucket};
 
 /// A 32-byte batch identifier.
 ///
@@ -89,191 +87,6 @@ impl<'a> arbitrary::Arbitrary<'a> for BatchId {
     }
 }
 
-/// The number of leading chunk-address bits that select a collision bucket, as
-/// the network `S` accepts it.
-///
-/// Two bounds hold at construction: [`SwarmSpec::MIN_BUCKET_DEPTH`], the floor
-/// the PostageStamp contract publishes as `minimumBucketDepth()`, and
-/// [`MAX`](Self::MAX), the width of the bucket key. Bucket selection shifts a
-/// `u32` right by `32 - depth`; holding both bounds in the type keeps that
-/// shift total wherever a depth reaches it.
-///
-/// The floor is a compile-time property: a `BucketDepth<Mainnet>` below 16 does
-/// not exist, and one network's depth does not type-check where another's is
-/// wanted. Every constructor funnels through [`new`](Self::new), including the
-/// serde and `Arbitrary` paths.
-///
-/// A depth carries its network, so this does not compile:
-///
-/// ```compile_fail
-/// use nectar_postage::{Batch, BatchId, BucketDepth};
-/// use nectar_primitives::Testnet;
-///
-/// let bucket_depth = BucketDepth::<Testnet>::new(16).unwrap();
-/// // `Batch` without a spec argument is a mainnet batch.
-/// let batch: Batch = Batch::new(
-///     BatchId::ZERO, 0, 0, Default::default(), 20, bucket_depth, false,
-/// );
-/// ```
-#[repr(transparent)]
-pub struct BucketDepth<S: SwarmSpec = Mainnet> {
-    depth: u8,
-    // `fn() -> S` rather than `S`: the tag carries no data, so the depth (and
-    // everything holding one) is `Send`/`Sync` whatever the spec marker is.
-    spec: PhantomData<fn() -> S>,
-}
-
-impl<S: SwarmSpec> BucketDepth<S> {
-    /// Largest representable depth, the bit width of the bucket key.
-    pub const MAX: u8 = 32;
-
-    /// Validates a raw depth against the spec floor and [`MAX`](Self::MAX).
-    ///
-    /// # Errors
-    ///
-    /// [`StampError::BucketDepthBelowMinimum`] when `depth` is under
-    /// [`SwarmSpec::MIN_BUCKET_DEPTH`], [`StampError::InvalidBucketDepth`] when
-    /// it is above [`MAX`](Self::MAX).
-    #[inline]
-    pub const fn new(depth: u8) -> Result<Self, StampError> {
-        if depth < S::MIN_BUCKET_DEPTH.get() {
-            return Err(StampError::BucketDepthBelowMinimum {
-                bucket_depth: depth,
-                minimum: S::MIN_BUCKET_DEPTH.get(),
-            });
-        }
-        if depth > Self::MAX {
-            return Err(StampError::InvalidBucketDepth {
-                bucket_depth: depth,
-            });
-        }
-        Ok(Self {
-            depth,
-            spec: PhantomData,
-        })
-    }
-
-    /// Returns the depth as a bit count.
-    #[inline]
-    pub const fn get(self) -> u8 {
-        self.depth
-    }
-
-    /// Returns the number of collision buckets, `2^depth`.
-    ///
-    /// Widened to `u64` because depth 32 overflows a `u32` count by one.
-    #[inline]
-    pub const fn bucket_count(self) -> u64 {
-        1u64 << self.depth
-    }
-
-    /// Returns whether a bucket index is one this depth addresses.
-    #[inline]
-    pub const fn contains_bucket(self, bucket: u32) -> bool {
-        // At the maximum depth every `u32` is a bucket, and the count no longer
-        // fits the `u32` shift used below.
-        self.depth == Self::MAX || bucket < (1u32 << self.depth)
-    }
-}
-
-// The spec is a type-level tag, so the manual impls below carry no bound on
-// `S` beyond `SwarmSpec`; deriving would demand `S: Clone`, `S: Eq` and the
-// rest of a marker type that holds no data.
-
-impl<S: SwarmSpec> Clone for BucketDepth<S> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<S: SwarmSpec> Copy for BucketDepth<S> {}
-
-impl<S: SwarmSpec> fmt::Debug for BucketDepth<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("BucketDepth").field(&self.depth).finish()
-    }
-}
-
-impl<S: SwarmSpec> fmt::Display for BucketDepth<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.depth, f)
-    }
-}
-
-impl<S: SwarmSpec> PartialEq for BucketDepth<S> {
-    fn eq(&self, other: &Self) -> bool {
-        self.depth == other.depth
-    }
-}
-
-impl<S: SwarmSpec> Eq for BucketDepth<S> {}
-
-impl<S: SwarmSpec> PartialOrd for BucketDepth<S> {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<S: SwarmSpec> Ord for BucketDepth<S> {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.depth.cmp(&other.depth)
-    }
-}
-
-impl<S: SwarmSpec> core::hash::Hash for BucketDepth<S> {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.depth.hash(state);
-    }
-}
-
-impl<S: SwarmSpec> From<BucketDepth<S>> for u8 {
-    #[inline]
-    fn from(depth: BucketDepth<S>) -> Self {
-        depth.depth
-    }
-}
-
-impl<S: SwarmSpec> TryFrom<u8> for BucketDepth<S> {
-    type Error = StampError;
-
-    #[inline]
-    fn try_from(depth: u8) -> Result<Self, StampError> {
-        Self::new(depth)
-    }
-}
-
-/// Serializes as the bare depth byte.
-#[cfg(feature = "serde")]
-impl<S: SwarmSpec> serde::Serialize for BucketDepth<S> {
-    fn serialize<Z: serde::Serializer>(&self, serializer: Z) -> Result<Z::Ok, Z::Error> {
-        serializer.serialize_u8(self.depth)
-    }
-}
-
-/// Deserializes through [`BucketDepth::new`], so a stored depth below the spec
-/// floor is refused rather than reconstructed.
-#[cfg(feature = "serde")]
-impl<'de, S: SwarmSpec> serde::Deserialize<'de> for BucketDepth<S> {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let depth = u8::deserialize(deserializer)?;
-        Self::new(depth).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Draws from the spec's accepted window, so every generated depth is one the
-/// network accepts.
-#[cfg(any(test, feature = "arbitrary"))]
-impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for BucketDepth<S> {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let low = S::MIN_BUCKET_DEPTH.get();
-        if low > Self::MAX {
-            // A spec whose floor is past the bucket-key width admits no depth.
-            return Err(arbitrary::Error::IncorrectFormat);
-        }
-        Self::new(u.int_in_range(low..=Self::MAX)?).map_err(|_| arbitrary::Error::IncorrectFormat)
-    }
-}
-
 /// Parameters for creating a new batch on the network `S`.
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -287,7 +100,7 @@ pub struct BatchParams<S: SwarmSpec = Mainnet> {
     amount: u128,
 }
 
-// As for [`BucketDepth`] above: the spec is a type-level tag, so `Clone` and
+// As for [`BucketDepth`]: the spec is a type-level tag, so `Clone` and
 // equality carry no bound on `S` beyond `SwarmSpec`. Only `Debug` is derived,
 // following the marker's own.
 
@@ -370,34 +183,15 @@ impl<S: SwarmSpec> BatchParams<S> {
         self.amount
     }
 
-    /// Validates that the batch depth leaves room above the bucket depth.
-    ///
-    /// The bucket depth clears the network floor by construction; this is the
-    /// one geometry bound left to check, because `depth` is a plain `u8` the
-    /// type system cannot relate to it.
+    /// Validates the raw depth against the bucket depth.
     ///
     /// # Errors
     ///
-    /// [`StampError::DepthBelowBucketDepth`] when `depth` is under the bucket
-    /// depth.
+    /// See [`BatchDepth::new`].
     #[inline]
-    pub const fn validate_depth(&self) -> Result<(), StampError> {
-        validate_depth(self.depth, self.bucket_depth)
+    pub const fn geometry(&self) -> Result<BatchDepth<S>, StampError> {
+        BatchDepth::new(self.depth, self.bucket_depth)
     }
-}
-
-/// Validates that a batch depth leaves room above its bucket depth.
-const fn validate_depth<S: SwarmSpec>(
-    depth: u8,
-    bucket_depth: BucketDepth<S>,
-) -> Result<(), StampError> {
-    if depth < bucket_depth.get() {
-        return Err(StampError::DepthBelowBucketDepth {
-            depth,
-            bucket_depth: bucket_depth.get(),
-        });
-    }
-    Ok(())
 }
 
 /// A postage batch represents a prepaid storage allocation in the Swarm network.
@@ -576,21 +370,17 @@ impl<S: SwarmSpec> Batch<S> {
     // Validation methods
     // =========================================================================
 
-    /// Validates that the batch depth leaves room above the bucket depth.
+    /// Validates the chain-decoded depth against the bucket depth.
     ///
-    /// The bucket depth clears the network floor by construction; this is the
-    /// one geometry bound left to check, because `depth` is a plain `u8` the
-    /// type system cannot relate to it. [`set_depth`](Self::set_depth) takes a
-    /// bare depth for a dilution, so a batch stays well-formed across one only
-    /// while the new depth clears the bucket depth.
+    /// [`set_depth`](Self::set_depth) takes a bare depth, so a diluted batch
+    /// has to be asked again.
     ///
     /// # Errors
     ///
-    /// [`StampError::DepthBelowBucketDepth`] when `depth` is under the bucket
-    /// depth.
+    /// See [`BatchDepth::new`].
     #[inline]
-    pub const fn validate_depth(&self) -> Result<(), StampError> {
-        validate_depth(self.depth, self.bucket_depth)
+    pub const fn geometry(&self) -> Result<BatchDepth<S>, StampError> {
+        BatchDepth::new(self.depth, self.bucket_depth)
     }
 
     /// Validates that an index is within the valid range for this batch.
@@ -616,12 +406,10 @@ impl<S: SwarmSpec> Batch<S> {
         Ok(())
     }
 
-    /// Calculates which bucket a chunk address belongs to.
-    ///
-    /// The bucket is determined by taking the first `bucket_depth` bits of the
-    /// chunk address, interpreted as a big-endian unsigned integer.
+    /// Cuts the collision bucket of a chunk address at this batch's bucket
+    /// depth.
     #[inline]
-    pub fn bucket_for_address(&self, address: &ChunkAddress) -> u32 {
+    pub fn bucket_for_address(&self, address: &ChunkAddress) -> Bucket<S> {
         calculate_bucket(address, self.bucket_depth)
     }
 
@@ -635,8 +423,7 @@ impl<S: SwarmSpec> Batch<S> {
         index: &StampIndex,
         address: &ChunkAddress,
     ) -> Result<(), StampError> {
-        let expected_bucket = self.bucket_for_address(address);
-        if index.bucket() != expected_bucket {
+        if index.bucket() != self.bucket_for_address(address).value() {
             return Err(StampError::BucketMismatch);
         }
         Ok(())
@@ -688,8 +475,6 @@ impl<'a, S: SwarmSpec> arbitrary::Arbitrary<'a> for Batch<S> {
 
 #[cfg(test)]
 mod tests {
-    use nectar_testing::{HighFloor, LowFloor};
-
     use super::*;
 
     #[test]
@@ -703,88 +488,29 @@ mod tests {
     }
 
     #[test]
-    fn bucket_depth_takes_its_floor_from_the_spec() {
-        // Below the mainnet floor, at it, and deeper than it.
-        assert!(matches!(
-            BucketDepth::<Mainnet>::new(15),
-            Err(StampError::BucketDepthBelowMinimum {
-                bucket_depth: 15,
-                minimum: 16
-            })
-        ));
-        assert_eq!(BucketDepth::<Mainnet>::new(16).unwrap().get(), 16);
-        assert_eq!(BucketDepth::<Mainnet>::new(20).unwrap().get(), 20);
-        assert_eq!(
-            BucketDepth::<Mainnet>::new(BucketDepth::<Mainnet>::MAX)
-                .unwrap()
-                .get(),
-            32
-        );
-    }
-
-    #[test]
-    fn bucket_depth_rejects_an_unrepresentable_depth() {
-        assert!(matches!(
-            BucketDepth::<Mainnet>::new(33),
-            Err(StampError::InvalidBucketDepth { bucket_depth: 33 })
-        ));
-        assert!(matches!(
-            BucketDepth::<Mainnet>::try_from(u8::MAX),
-            Err(StampError::InvalidBucketDepth {
-                bucket_depth: u8::MAX
-            })
-        ));
-    }
-
-    #[test]
-    fn the_lowest_floor_admits_a_one_bit_bucket() {
-        assert_eq!(BucketDepth::<LowFloor>::new(1).unwrap().get(), 1);
-        assert!(matches!(
-            BucketDepth::<LowFloor>::new(0),
-            Err(StampError::BucketDepthBelowMinimum {
-                bucket_depth: 0,
-                minimum: 1
-            })
-        ));
-    }
-
-    #[test]
-    fn a_raised_floor_refuses_a_depth_mainnet_accepts() {
-        assert!(BucketDepth::<Mainnet>::new(16).is_ok());
-        assert!(matches!(
-            BucketDepth::<HighFloor>::new(16),
-            Err(StampError::BucketDepthBelowMinimum {
-                bucket_depth: 16,
-                minimum: 20
-            })
-        ));
-        assert!(BucketDepth::<HighFloor>::new(20).is_ok());
-    }
-
-    #[test]
     fn depth_below_bucket_depth_is_rejected_through_batch_and_params() {
         let bucket_depth = BucketDepth::<Mainnet>::new(16).unwrap();
 
         let params = BatchParams::new(Address::ZERO, 20, bucket_depth, 1000);
-        assert!(params.validate_depth().is_ok());
+        assert_eq!(params.geometry().unwrap().slots_per_bucket(), 16);
 
         let batch = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 20, bucket_depth, false);
-        assert!(batch.validate_depth().is_ok());
+        assert_eq!(batch.geometry().unwrap().get(), 20);
 
         // A batch exactly as deep as its buckets holds one slot each.
         let flat = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 16, bucket_depth, false);
-        assert!(flat.validate_depth().is_ok());
+        assert_eq!(flat.geometry().unwrap().slots_per_bucket(), 1);
 
         let shallow = Batch::new(BatchId::ZERO, 0, 0, Address::ZERO, 8, bucket_depth, false);
         assert!(matches!(
-            shallow.validate_depth(),
+            shallow.geometry(),
             Err(StampError::DepthBelowBucketDepth {
                 depth: 8,
                 bucket_depth: 16
             })
         ));
         assert!(matches!(
-            BatchParams::new(Address::ZERO, 8, bucket_depth, 1000).validate_depth(),
+            BatchParams::new(Address::ZERO, 8, bucket_depth, 1000).geometry(),
             Err(StampError::DepthBelowBucketDepth {
                 depth: 8,
                 bucket_depth: 16
@@ -794,7 +520,32 @@ mod tests {
         // Dilution moves the depth, so the check survives a `set_depth`.
         let mut diluted = batch;
         diluted.set_depth(15);
-        assert!(diluted.validate_depth().is_err());
+        assert!(diluted.geometry().is_err());
+    }
+
+    #[test]
+    fn chain_decode_stays_total_where_the_geometry_is_unrepresentable() {
+        // A depth this far above the bucket depth has no `u32` slot count, yet
+        // decoding it must not fail: only `geometry` refuses it.
+        let batch: Batch = Batch::new(
+            BatchId::ZERO,
+            0,
+            0,
+            Address::ZERO,
+            u8::MAX,
+            BucketDepth::new(16).unwrap(),
+            false,
+        );
+        assert_eq!(batch.depth(), u8::MAX);
+        assert!(batch.validate_index(&StampIndex::new(0, 0)).is_ok());
+        assert!(matches!(
+            batch.geometry(),
+            Err(StampError::SlotsTooWide {
+                depth: 255,
+                bucket_depth: 16,
+                max: 31
+            })
+        ));
     }
 
     #[test]
@@ -810,7 +561,8 @@ mod tests {
         );
         assert_eq!(min.bucket_count(), 65536);
         assert_eq!(
-            min.bucket_for_address(&ChunkAddress::new([0xFF; 32])),
+            min.bucket_for_address(&ChunkAddress::new([0xFF; 32]))
+                .value(),
             65535
         );
 
@@ -825,7 +577,8 @@ mod tests {
         );
         assert_eq!(max.bucket_count(), 1 << 32);
         assert_eq!(
-            max.bucket_for_address(&ChunkAddress::new([0xFF; 32])),
+            max.bucket_for_address(&ChunkAddress::new([0xFF; 32]))
+                .value(),
             u32::MAX
         );
         // Every `u32` is a bucket at the maximum depth, and the per-bucket slot
@@ -846,29 +599,6 @@ mod tests {
             false,
         );
         assert_eq!(batch.bucket_upper_bound(), 1);
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn serde_decodes_a_depth_and_enforces_the_floor() {
-        use serde::{Deserialize, de::IntoDeserializer, de::value::Error};
-
-        fn decode<S: SwarmSpec>(raw: u8) -> Result<BucketDepth<S>, Error> {
-            BucketDepth::deserialize(IntoDeserializer::<Error>::into_deserializer(raw))
-        }
-
-        assert_eq!(
-            decode::<Mainnet>(16).unwrap(),
-            BucketDepth::<Mainnet>::new(16).unwrap()
-        );
-
-        // The floor and the representable bound both survive the wire.
-        assert!(decode::<Mainnet>(15).is_err());
-        assert!(decode::<Mainnet>(33).is_err());
-        // And the floor is the spec's, not a constant: 16 decodes on mainnet
-        // and is refused on a deployment that asks for 20.
-        assert!(decode::<HighFloor>(16).is_err());
-        assert!(decode::<HighFloor>(20).is_ok());
     }
 
     #[test]
