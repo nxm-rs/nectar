@@ -121,6 +121,16 @@ where
 
 impl<S: TrustState, R: ChunkRegistry> Eq for Chunk<S, R> where R::Envelope: Eq {}
 
+impl<S: TrustState, R: ChunkRegistry> Chunk<S, R> {
+    /// The address as `S` qualifies it: a fact under [`Verified`], a claim
+    /// under [`Unverified`]. For state-generic carriers only.
+    #[inline]
+    #[must_use]
+    pub const fn address_in_state(&self) -> &ChunkAddress {
+        &self.address
+    }
+}
+
 impl<R: ChunkRegistry> Chunk<Unverified, R> {
     /// Structurally parse the registry's typed (store) encoding under a
     /// claimed address.
@@ -389,6 +399,17 @@ mod tests {
         assert_eq!(verified.address(), &claimed);
         assert_eq!(verified.typed_bytes(), typed);
         assert_eq!(verified.owner(), None, "a content chunk binds no owner");
+    }
+
+    #[test]
+    fn address_in_state_reads_both_states() {
+        let content = DefaultContentChunk::new(&b"either state"[..]).unwrap();
+        let claimed = *content.address();
+        let typed = StandardChunkSet::encode_typed(&content.into());
+
+        let unverified = Chunk::<Unverified>::parse(claimed, &typed).unwrap();
+        assert_eq!(unverified.address_in_state(), &claimed);
+        assert_eq!(unverified.verify().unwrap().address_in_state(), &claimed);
     }
 
     #[test]

@@ -18,6 +18,8 @@
 //! - [`StampDigest`]: The data to be signed when creating a stamp
 //! - [`StampedAddress`]: A stamp bound to an address, and the authority that
 //!   validates the pairing
+//! - [`StampedChunk`]: A chunk and its stamp, carrying the chunk's trust state
+//!   and the stamp's validation state
 //! - [`PostageContext`]: Context for batch expiry calculations
 //! - [`BatchEvent`]: Events emitted by the postage stamp contract (requires `std`)
 //!

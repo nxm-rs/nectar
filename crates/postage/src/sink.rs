@@ -9,48 +9,52 @@
 use core::future::Future;
 
 use nectar_primitives::marker::{MaybeSend, MaybeSync};
-use nectar_primitives::{AnyChunkSet, ChunkPut, DEFAULT_BODY_SIZE};
+use nectar_primitives::{AnyChunkSet, ChunkPut, DEFAULT_BODY_SIZE, Verified};
 
-use crate::StampedChunk;
+use crate::{StampedChunk, Validated, ValidationState};
 
 /// Async stamped-chunk sink (`&self`).
 ///
 /// The stamp travels in-band with the chunk it pays for. The contract is
 /// delivery only: per-address idempotence belongs to a decorator layered
 /// above the sink, never to this trait. Implementors use interior
-/// mutability, mirroring `ChunkPut`. Ingest ordering: batch existence and
-/// authenticity gates run before chunk certification; the typed decode
-/// takes the stamp structurally before paying the chunk's acceptance rule.
-pub trait PutStamped<const BODY_SIZE: usize = DEFAULT_BODY_SIZE>: MaybeSend + MaybeSync {
+/// mutability, mirroring `ChunkPut`. `V` is the proof the sink demands of the
+/// stamp: an ingest sink takes [`Validated`], a producer-side sink takes the
+/// [`Unvalidated`](crate::Unvalidated) pair its own issuer just signed.
+pub trait PutStamped<V: ValidationState = Validated, const BODY_SIZE: usize = DEFAULT_BODY_SIZE>:
+    MaybeSend + MaybeSync
+{
     /// Error type for stamped put operations.
     type Error: core::error::Error + MaybeSend + MaybeSync + 'static;
 
     /// Sink a stamped chunk.
     fn put_stamped(
         &self,
-        stamped: StampedChunk<BODY_SIZE>,
+        stamped: StampedChunk<Verified, V, BODY_SIZE>,
     ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
 }
 
-impl<const BODY_SIZE: usize, T: PutStamped<BODY_SIZE> + ?Sized> PutStamped<BODY_SIZE> for &T {
-    type Error = T::Error;
-
-    fn put_stamped(
-        &self,
-        stamped: StampedChunk<BODY_SIZE>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
-        (**self).put_stamped(stamped)
-    }
-}
-
-impl<const BODY_SIZE: usize, T: PutStamped<BODY_SIZE> + ?Sized> PutStamped<BODY_SIZE>
-    for alloc::sync::Arc<T>
+impl<V: ValidationState, const BODY_SIZE: usize, T: PutStamped<V, BODY_SIZE> + ?Sized>
+    PutStamped<V, BODY_SIZE> for &T
 {
     type Error = T::Error;
 
     fn put_stamped(
         &self,
-        stamped: StampedChunk<BODY_SIZE>,
+        stamped: StampedChunk<Verified, V, BODY_SIZE>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
+        (**self).put_stamped(stamped)
+    }
+}
+
+impl<V: ValidationState, const BODY_SIZE: usize, T: PutStamped<V, BODY_SIZE> + ?Sized>
+    PutStamped<V, BODY_SIZE> for alloc::sync::Arc<T>
+{
+    type Error = T::Error;
+
+    fn put_stamped(
+        &self,
+        stamped: StampedChunk<Verified, V, BODY_SIZE>,
     ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
         (**self).put_stamped(stamped)
     }
@@ -89,7 +93,7 @@ impl<S> StampIndifferent<S> {
     }
 }
 
-impl<const BODY_SIZE: usize, S> PutStamped<BODY_SIZE> for StampIndifferent<S>
+impl<V: ValidationState, const BODY_SIZE: usize, S> PutStamped<V, BODY_SIZE> for StampIndifferent<S>
 where
     S: ChunkPut<AnyChunkSet<BODY_SIZE>>,
 {
@@ -97,7 +101,7 @@ where
 
     fn put_stamped(
         &self,
-        stamped: StampedChunk<BODY_SIZE>,
+        stamped: StampedChunk<Verified, V, BODY_SIZE>,
     ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
         let (chunk, _stamp) = stamped.into_parts();
         self.inner.put(chunk)
@@ -145,14 +149,17 @@ impl<L, F> Tee<L, F> {
     }
 }
 
-impl<const BODY_SIZE: usize, L, F> PutStamped<BODY_SIZE> for Tee<L, F>
+impl<V: ValidationState, const BODY_SIZE: usize, L, F> PutStamped<V, BODY_SIZE> for Tee<L, F>
 where
-    L: PutStamped<BODY_SIZE>,
-    F: PutStamped<BODY_SIZE>,
+    L: PutStamped<V, BODY_SIZE>,
+    F: PutStamped<V, BODY_SIZE>,
 {
     type Error = TeeError<L::Error, F::Error>;
 
-    async fn put_stamped(&self, stamped: StampedChunk<BODY_SIZE>) -> Result<(), Self::Error> {
+    async fn put_stamped(
+        &self,
+        stamped: StampedChunk<Verified, V, BODY_SIZE>,
+    ) -> Result<(), Self::Error> {
         self.local
             .put_stamped(stamped.clone())
             .await
@@ -182,22 +189,31 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use alloy_primitives::Signature;
-    use nectar_primitives::{Chunk, ChunkAddress, ChunkHas, ContentChunk, MemoryStore, Verified};
+    use arbitrary::Unstructured;
+    use nectar_primitives::{Chunk, ChunkAddress, ChunkHas, ContentChunk, MemoryStore};
     use nectar_testing::run;
 
     use super::*;
-    use crate::{BatchId, Stamp};
+    use crate::{Batch, Unvalidated, generators};
 
     type Store = MemoryStore<AnyChunkSet<DEFAULT_BODY_SIZE>>;
 
-    fn stamped(payload: &'static [u8]) -> StampedChunk<DEFAULT_BODY_SIZE> {
-        let chunk = ContentChunk::new(payload).expect("valid content chunk");
-        let chunk: Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>> =
-            Chunk::from_envelope(chunk.into()).expect("locally built chunk certifies");
-        let sig = Signature::from_raw(&[1u8; 65]).expect("valid signature");
-        let stamp = Stamp::new(BatchId::new([0xaa; 32]), 3, 7, 42, sig);
-        StampedChunk::new(chunk, stamp)
+    fn signed(payload: &'static [u8]) -> (Batch, StampedChunk<Verified, Unvalidated>) {
+        let chunk: Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>> = Chunk::from_envelope(
+            ContentChunk::new(payload)
+                .expect("valid content chunk")
+                .into(),
+        )
+        .expect("locally built chunk certifies");
+        let mut u = Unstructured::new(&[7u8; 128]);
+        let (batch, stamp) =
+            generators::batch_and_stamp(&mut u, chunk.address()).expect("coherent stamp");
+        (batch, StampedChunk::new(chunk, stamp))
+    }
+
+    fn stamped(payload: &'static [u8]) -> StampedChunk {
+        let (batch, pair) = signed(payload);
+        pair.validate(&batch).expect("coherent pairing")
     }
 
     #[derive(Debug, Default)]
@@ -238,6 +254,19 @@ mod tests {
             let store = Store::new();
             let sink = StampIndifferent::new(&store);
             let pair = stamped(b"local persist");
+            let address = *pair.address();
+
+            sink.put_stamped(pair).await.expect("infallible put");
+            assert!(store.has(&address).await);
+        });
+    }
+
+    #[test]
+    fn stamp_indifferent_accepts_an_unvalidated_pair() {
+        run(async {
+            let store = Store::new();
+            let sink = StampIndifferent::new(&store);
+            let (_, pair) = signed(b"unproven stamp");
             let address = *pair.address();
 
             sink.put_stamped(pair).await.expect("infallible put");

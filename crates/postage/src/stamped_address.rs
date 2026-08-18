@@ -68,11 +68,7 @@ impl StampedAddress<Unvalidated> {
     #[inline]
     #[must_use]
     pub const fn new(address: ChunkAddress, stamp: Stamp) -> Self {
-        Self {
-            address,
-            stamp,
-            _validation: PhantomData,
-        }
+        Self::from_parts(address, stamp)
     }
 
     /// Certify the pairing against `batch`: the stamp names this batch, its
@@ -103,15 +99,22 @@ impl StampedAddress<Unvalidated> {
         batch.validate_bucket(&index, &self.address)?;
         self.stamp.verify(&self.address, batch.owner())?;
 
-        Ok(StampedAddress {
-            address: self.address,
-            stamp: self.stamp,
-            _validation: PhantomData,
-        })
+        Ok(StampedAddress::from_parts(self.address, self.stamp))
     }
 }
 
 impl<V: ValidationState> StampedAddress<V> {
+    /// Sound only where a transition over this same address justifies `V`.
+    #[inline]
+    #[must_use]
+    pub(crate) const fn from_parts(address: ChunkAddress, stamp: Stamp) -> Self {
+        Self {
+            address,
+            stamp,
+            _validation: PhantomData,
+        }
+    }
+
     /// The address the stamp is bound to.
     #[inline]
     #[must_use]
