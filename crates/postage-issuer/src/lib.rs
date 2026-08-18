@@ -18,16 +18,15 @@
 //! # Immutable and mutable issuance
 //!
 //! Immutable batches are fill-only: every slot is written at most once and a
-//! full bucket is refused. Use [`MemoryIssuer`] (or [`ShardedIssuer`] for
-//! parallel stamping). Their `from_batch` constructors deliberately refuse a
-//! mutable batch with [`IssuerError::MutableNotSupported`], so a ring is never
-//! produced by accident from the generic constructor.
+//! full bucket is refused. Use [`MemoryIssuer`]. Its `from_batch` constructor
+//! deliberately refuses a mutable batch with
+//! [`IssuerError::MutableNotSupported`], so a ring is never produced by
+//! accident from the generic constructor.
 //!
 //! Mutable batches are overwrite-aware: a later chunk may reuse the slot held
-//! by an older one. This is the ring issuance in [`RingIssuer`] (and
-//! [`ShardedRingIssuer`] for parallel stamping), and it must be requested by
-//! name. A ring carries its reservation policy in a type parameter so a
-//! reserved-blind ring can never be used in a self-hosting context:
+//! by an older one. This is the ring issuance in [`RingIssuer`], and it must be
+//! requested by name. A ring carries its reservation policy in a type parameter
+//! so a reserved-blind ring can never be used in a self-hosting context:
 //!
 //! - [`RingIssuer::external`] builds a [`RingIssuer<Unreserved>`] for external
 //!   tracking: the caller keeps usage state outside the batch and nothing in
@@ -75,16 +74,20 @@
 //!
 //! # Parallel stamping
 //!
-//! [`Sharded`] splits the bucket space across shards, each holding one
-//! sequential issuer behind its own lock. The inner issuer sets the issuance
-//! mode, so [`ShardedIssuer`] and [`ShardedRingIssuer`] are aliases.
+//! [`MemoryIssuer`] allocates without a lock, so `&MemoryIssuer` is itself a
+//! [`StampIssuer`] that any number of threads may stamp through. Ring issuance
+//! stays sequential, because skipping reserved slots reads more state than one
+//! word; share a [`RingIssuer`] behind a lock.
+//!
+//! Where there are no threads (`unsync`, wasm32, bare metal) the same table is
+//! plain cells, which leaves [`MemoryIssuer`] `!Sync` there.
 //!
 //! # Features
 //!
-//! - `std` (default) - Standard library support. Without it the crate is the
-//!   sequential issuing core only: the concurrent issuers, the factory and
-//!   the dilution registry are gated out, construction takes explicit clocks,
-//!   and a signer panic propagates instead of being caught into a result.
+//! - `std` (default) - Standard library support. Without it the signer stack,
+//!   the factory and the dilution registry are gated out, construction takes
+//!   explicit clocks, and a signer panic propagates instead of being caught
+//!   into a result.
 //! - `local-signer` - Enables local key signing with `alloy-signer-local`
 //! - `parallel` - Enables the pipeline's parallel signing engine with rayon
 //! - `unsync` - Relaxes the signer thread-safety bounds on single-threaded
@@ -144,9 +147,8 @@ mod issuer;
 mod pipeline;
 mod prepared;
 mod ring;
-#[cfg(feature = "std")]
-mod sharded;
 mod stamper;
+mod watermarks;
 
 // Re-export core types from nectar-postage (includes BatchEvent, BatchEventHandler)
 pub use nectar_postage::*;
@@ -178,10 +180,6 @@ pub use pipeline::{IssuedBound, StampedPut, StampedPutError};
 
 // Mutable (ring) issuing with a type-state reservation guard
 pub use ring::{Reservation, Reserved, RingIssuer, Unreserved};
-
-// Parallel issuance: one sequential issuer per shard of the bucket space.
-#[cfg(feature = "std")]
-pub use sharded::{Sharded, ShardedIssuer, ShardedRingIssuer};
 
 // Factory (std only)
 #[cfg(feature = "std")]

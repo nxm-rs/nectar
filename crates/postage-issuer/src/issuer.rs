@@ -1,9 +1,9 @@
 //! Stamp issuer trait for tracking bucket utilization.
 
-use crate::counter::{CounterMode, CounterTable};
 use crate::error::IssuerError;
+use crate::watermarks::Watermarks;
 use nectar_postage::{
-    Batch, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
+    Batch, BatchDepth, BatchId, BucketDepth, StampDigest, StampError, StampIndex, calculate_bucket,
 };
 use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
@@ -146,15 +146,15 @@ pub trait StampIssuer {
 /// awareness that lives in `nectar-postage-usage`. See the crate-root
 /// documentation for the steer toward `Snapshot::issuer` / `SnapshotIssuer`.
 ///
+/// Allocation and dilution take `&self` and no lock, so one issuer serves every
+/// thread stamping into its batch.
+///
 /// The network is a type parameter that reaches the issuer through its
 /// [`BucketDepth`].
 #[derive(Debug)]
 pub struct MemoryIssuer<S: SwarmSpec = Mainnet> {
-    /// The batch ID.
     batch_id: BatchId,
-    /// The shared per-bucket fill watermarks. `counts[b]` is the next unused
-    /// slot, monotone and never above the capacity.
-    counters: CounterTable<S>,
+    watermarks: Watermarks<S>,
 }
 
 // The spec is a type-level tag, so this carries no bound on `S` beyond
@@ -164,7 +164,7 @@ impl<S: SwarmSpec> Clone for MemoryIssuer<S> {
     fn clone(&self) -> Self {
         Self {
             batch_id: self.batch_id,
-            counters: self.counters.clone(),
+            watermarks: self.watermarks.clone(),
         }
     }
 }
@@ -174,7 +174,7 @@ impl<S: SwarmSpec> MemoryIssuer<S> {
     pub fn new(batch_id: BatchId, depth: u8, bucket_depth: BucketDepth<S>) -> Self {
         Self {
             batch_id,
-            counters: CounterTable::new(depth, bucket_depth, CounterMode::Fill),
+            watermarks: Watermarks::new(depth, bucket_depth),
         }
     }
 
@@ -187,17 +187,46 @@ impl<S: SwarmSpec> MemoryIssuer<S> {
     /// # Errors
     ///
     /// Returns [`IssuerError::DepthDecrease`] if `new_depth` is below the current
-    /// depth.
-    pub const fn dilute(&mut self, new_depth: u8) -> Result<(), IssuerError> {
-        let current = self.counters.depth();
+    /// depth, or [`IssuerError::Geometry`] if it leaves more slots per bucket
+    /// than a counter holds.
+    pub fn dilute(&self, new_depth: u8) -> Result<(), IssuerError> {
+        let current = self.watermarks.depth();
         if new_depth < current {
             return Err(IssuerError::DepthDecrease {
                 current,
                 requested: new_depth,
             });
         }
-        self.counters.set_depth(new_depth);
+        BatchDepth::new(new_depth, self.watermarks.bucket_depth())?;
+        self.watermarks.raise_depth(new_depth);
         Ok(())
+    }
+
+    /// Prepares a stamp digest for `address`, claiming a slot in its bucket.
+    ///
+    /// # Errors
+    ///
+    /// [`StampError::BucketFull`] once the bucket has no slot left.
+    pub fn prepare_stamp(
+        &self,
+        address: &ChunkAddress,
+        timestamp: u64,
+    ) -> Result<StampDigest, StampError> {
+        let bucket = calculate_bucket(address, self.watermarks.bucket_depth());
+        let position = self
+            .watermarks
+            .allocate(bucket)
+            .map_err(|err| StampError::BucketFull {
+                bucket: bucket.value(),
+                capacity: match err {
+                    crate::counter::CounterError::BucketFull { capacity, .. } => capacity,
+                    _ => self.watermarks.bucket_capacity(),
+                },
+            })?;
+
+        let index = StampIndex::new(bucket.value(), position);
+
+        Ok(StampDigest::new(*address, self.batch_id, index, timestamp))
     }
 
     /// Creates a memory issuer from a batch.
@@ -227,23 +256,8 @@ impl<S: SwarmSpec> StampIssuer for MemoryIssuer<S> {
         address: &ChunkAddress,
         timestamp: u64,
     ) -> Result<StampDigest, StampError> {
-        let bucket = calculate_bucket(address, self.counters.bucket_depth());
-        // Fill mode ignores the predicate; a monotone watermark never lands on a
-        // reserved slot.
-        let position =
-            self.counters
-                .record(bucket, |_| false)
-                .map_err(|err| StampError::BucketFull {
-                    bucket: bucket.value(),
-                    capacity: match err {
-                        crate::counter::CounterError::BucketFull { capacity, .. } => capacity,
-                        _ => self.counters.bucket_capacity(),
-                    },
-                })?;
-
-        let index = StampIndex::new(bucket.value(), position);
-
-        Ok(StampDigest::new(*address, self.batch_id, index, timestamp))
+        // The inherent method; the trait method of the same name would recurse.
+        Self::prepare_stamp(self, address, timestamp)
     }
 
     fn batch_id(&self) -> BatchId {
@@ -251,30 +265,68 @@ impl<S: SwarmSpec> StampIssuer for MemoryIssuer<S> {
     }
 
     fn batch_depth(&self) -> u8 {
-        self.counters.depth()
+        self.watermarks.depth()
     }
 
     fn bucket_depth(&self) -> u8 {
-        self.counters.bucket_depth().get()
+        self.watermarks.bucket_depth().get()
     }
 
     fn max_bucket_utilization(&self) -> u32 {
         // Fill watermarks are monotone, so the current maximum is the historical
         // maximum.
-        self.counters.max_count()
+        self.watermarks.max_count()
     }
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
-        self.counters.count(bucket).unwrap_or(0)
+        self.watermarks.count(bucket).unwrap_or(0)
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
-        self.counters.has_capacity(bucket).unwrap_or(false)
+        self.watermarks.has_capacity(bucket).unwrap_or(false)
     }
 
     fn stamps_issued(&self) -> Option<u64> {
-        // Fill issuance is monotone, so the counter sum is the lifetime count.
-        Some(self.counters.total_issued())
+        Some(self.watermarks.total_issued())
+    }
+}
+
+/// Shared-handle issuance: several pipelines may admit from one issuer.
+impl<S: SwarmSpec> StampIssuer for &MemoryIssuer<S> {
+    fn prepare_stamp(
+        &mut self,
+        address: &ChunkAddress,
+        timestamp: u64,
+    ) -> Result<StampDigest, StampError> {
+        MemoryIssuer::prepare_stamp(self, address, timestamp)
+    }
+
+    fn batch_id(&self) -> BatchId {
+        StampIssuer::batch_id(&**self)
+    }
+
+    fn batch_depth(&self) -> u8 {
+        StampIssuer::batch_depth(&**self)
+    }
+
+    fn bucket_depth(&self) -> u8 {
+        StampIssuer::bucket_depth(&**self)
+    }
+
+    fn max_bucket_utilization(&self) -> u32 {
+        StampIssuer::max_bucket_utilization(&**self)
+    }
+
+    fn bucket_utilization(&self, bucket: u32) -> u32 {
+        StampIssuer::bucket_utilization(&**self, bucket)
+    }
+
+    fn bucket_has_capacity(&self, bucket: u32) -> bool {
+        StampIssuer::bucket_has_capacity(&**self, bucket)
+    }
+
+    fn stamps_issued(&self) -> Option<u64> {
+        StampIssuer::stamps_issued(&**self)
     }
 }
 
@@ -310,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_prepare_stamp() {
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         let address = test_address(0xCBE5);
@@ -326,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_increments_index() {
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         let address = test_address(0xCBE5);
@@ -344,7 +396,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_bucket_full() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
 
         let address = test_address(0xABCD);
@@ -366,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_memory_issuer_bucket_utilization() {
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16).unwrap());
 
         let addr1 = test_address(0x1234);
@@ -384,7 +436,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_capacity_check() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
 
         let address = test_address(0x0001);
@@ -401,7 +453,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_near_capacity() {
         // depth=18, bucket_depth=16 gives 4 slots per bucket
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 18, BucketDepth::new(16).unwrap());
 
         let address = test_address(0x0001);
@@ -484,9 +536,8 @@ mod tests {
             true,
         );
 
-        let mut from_batch = MemoryIssuer::from_batch(&immutable).unwrap();
-        let mut from_new: MemoryIssuer =
-            MemoryIssuer::new(batch_id, 17, BucketDepth::new(16).unwrap());
+        let from_batch = MemoryIssuer::from_batch(&immutable).unwrap();
+        let from_new: MemoryIssuer = MemoryIssuer::new(batch_id, 17, BucketDepth::new(16).unwrap());
 
         for ts in 0..2u64 {
             for leading in [0xCBE5u16, 0x0001, 0xABCD] {
@@ -509,7 +560,7 @@ mod tests {
     #[test]
     fn test_memory_issuer_dilute_grows_capacity_only() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let address = test_address(0xABCD);
 
@@ -534,6 +585,17 @@ mod tests {
                 requested: 17
             })
         ));
+    }
+
+    #[test]
+    fn dilute_refuses_a_depth_no_counter_can_hold() {
+        let issuer: MemoryIssuer =
+            MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
+
+        // 16 + 31 is the widest bucket a u32 slot count holds.
+        assert!(issuer.dilute(47).is_ok());
+        assert!(matches!(issuer.dilute(48), Err(IssuerError::Geometry(_))));
+        assert_eq!(issuer.batch_depth(), 47);
     }
 
     mod proptests {
@@ -572,7 +634,7 @@ mod tests {
             ) {
                 let bucket_depth: BucketDepth = BucketDepth::new(bucket_depth).unwrap();
                 let mut depth = bucket_depth.get() + 1;
-                let mut issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, depth, bucket_depth);
+                let issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, depth, bucket_depth);
                 let mut marks = BTreeMap::<u16, u32>::new();
                 let mut issued = 0u64;
                 let mut ts = 0u64;

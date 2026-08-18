@@ -194,13 +194,11 @@ fn sole_issuance_path_cannot_evict_snapshot_slots() {
     }
 }
 
-/// Both crates advance counters through the one shared table, so a snapshot's
-/// immutable issuance and a standalone `MemoryIssuer` over the same geometry
-/// assign byte-identical slots for the same addresses. If `record_bucket` still
-/// hand-rolled its own watermark this parity would be a coincidence; with the
-/// delegation it is structural.
+/// The snapshot advances a sequential counter table and the issuer a lock-free
+/// one, so the identical fill sequence is a contract rather than a shared
+/// implementation.
 #[test]
-fn shared_counter_table_backs_both_crates_identically() {
+fn the_snapshot_and_the_lock_free_issuer_fill_identically() {
     use nectar_postage_issuer::MemoryIssuer;
 
     let batch_id = batch_id();
@@ -208,7 +206,7 @@ fn shared_counter_table_backs_both_crates_identically() {
     // advances exactly like a bare MemoryIssuer.
     let table = UsageTable::new(batch_id, 20, bucket_depth(), Mutability::Immutable).unwrap();
     let mut snapshot = Snapshot::new(table);
-    let mut memory = MemoryIssuer::new(batch_id, 20, bucket_depth());
+    let memory = MemoryIssuer::new(batch_id, 20, bucket_depth());
 
     for bucket in [0x0001u32, 0x0001, 0xCBE5, 0x0001, 0xCBE5] {
         for salt in 0..3u8 {
@@ -217,12 +215,12 @@ fn shared_counter_table_backs_both_crates_identically() {
             let from_memory = memory.prepare_stamp(&addr, 0).unwrap().index;
             assert_eq!(
                 from_snapshot, from_memory,
-                "snapshot and MemoryIssuer diverged; they no longer share one table"
+                "snapshot and MemoryIssuer diverged on the fill sequence"
             );
         }
     }
 
-    // The shared counter sum is the lifetime count in immutable mode for both.
+    // The counter sum is the lifetime count in immutable mode for both.
     assert_eq!(
         snapshot.table().total_issued(),
         memory.stamps_issued().unwrap()

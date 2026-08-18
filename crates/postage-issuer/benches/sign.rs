@@ -9,7 +9,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use nectar_postage_issuer::{
-    BatchId, BatchStamper, BucketDepth, MemoryIssuer, ShardedIssuer, StampPipeline, Stamper,
+    BatchId, BatchStamper, BucketDepth, MemoryIssuer, StampPipeline, Stamper,
 };
 use nectar_primitives::ChunkAddress;
 use rand::RngExt;
@@ -118,8 +118,8 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     group.throughput(Throughput::Elements(100));
     group.bench_function("throughput_100", |b| {
         b.iter(|| {
-            let issuer: ShardedIssuer =
-                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let results: Vec<_> = pipeline
                 .stamp(&mut handle, addresses_100.iter().copied())
@@ -131,8 +131,8 @@ fn bench_ecdsa_sign_parallel(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1000));
     group.bench_function("throughput_1000", |b| {
         b.iter(|| {
-            let issuer: ShardedIssuer =
-                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let results: Vec<_> = pipeline
                 .stamp(&mut handle, addresses_1000.iter().copied())
@@ -166,11 +166,11 @@ fn bench_sign_comparison(c: &mut Criterion) {
         })
     });
 
-    // Streaming pipeline over the sharded issuer
+    // Streaming pipeline over the lock-free issuer
     group.bench_function("pipeline", |b| {
         b.iter(|| {
-            let issuer: ShardedIssuer =
-                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let results: Vec<_> = pipeline
                 .stamp(&mut handle, addresses.iter().copied())

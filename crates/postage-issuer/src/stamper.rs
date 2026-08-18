@@ -100,7 +100,7 @@ pub trait Stamper {
 ///
 /// This implementation delegates bucket/index tracking to a [`StampIssuer`]
 /// and handles the signing of stamps. This composition allows using different
-/// issuer implementations (e.g., `MemoryIssuer`, `ShardedIssuer`) with any signer.
+/// issuer implementations (e.g., `MemoryIssuer`, `RingIssuer`) with any signer.
 ///
 /// Stamp timestamps come from the clock type parameter, defaulting to the
 /// system clock; [`with_clock`](Self::with_clock) injects a deterministic

@@ -26,7 +26,7 @@ use std::hint::black_box;
 
 use nectar_file::{File, HashWindow, Policy, PutWindow, ReadAt, ReadAtSource};
 use nectar_postage_issuer::{
-    BatchId, BatchStamper, BucketDepth, MemoryIssuer, ShardedIssuer, StampPipeline, Stamper,
+    BatchId, BatchStamper, BucketDepth, MemoryIssuer, StampPipeline, Stamper,
 };
 use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
@@ -238,8 +238,8 @@ fn bench_pipeline_fully_parallel(c: &mut Criterion) {
                 let (root, chunks) = split_parallel(source);
 
                 // Stream the addresses through the stamp pipeline
-                let issuer: ShardedIssuer =
-                    ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+                let issuer: MemoryIssuer =
+                    MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
                 let mut handle = &issuer;
                 let stamps: Vec<_> = pipeline
                     .stamp(&mut handle, chunks.iter().map(|c| *c.address()))
@@ -308,8 +308,8 @@ fn bench_pipeline_comparison(c: &mut Criterion) {
         b.iter(|| {
             let (root, chunks) = split_parallel(&source);
 
-            let issuer: ShardedIssuer =
-                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let stamps: Vec<_> = pipeline
                 .stamp(&mut handle, chunks.iter().map(|c| *c.address()))
@@ -371,8 +371,8 @@ fn bench_pipeline_stages(c: &mut Criterion) {
 
     group.bench_function("2_stamp_parallel", |b| {
         b.iter(|| {
-            let issuer: ShardedIssuer =
-                ShardedIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
+            let issuer: MemoryIssuer =
+                MemoryIssuer::new(BatchId::ZERO, 32, BucketDepth::new(16).unwrap());
             let mut handle = &issuer;
             let stamps: Vec<_> = pipeline
                 .stamp(&mut handle, addresses.iter().copied())
