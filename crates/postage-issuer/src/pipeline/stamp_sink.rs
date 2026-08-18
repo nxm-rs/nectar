@@ -20,7 +20,6 @@ use futures_util::stream::{FuturesUnordered, Stream};
 use nectar_clock::Clock;
 use nectar_governor::Admission;
 use nectar_marker::{MaybeSend, MaybeSync};
-use nectar_postage::StampDigest;
 use nectar_primitives::ChunkAddress;
 use nectar_tasks::{BoxFuture, Spawn, submit_on};
 
@@ -28,7 +27,8 @@ use super::task::sign_task;
 use super::{SignPrehash, StampPipeline, StampResult};
 use crate::error::SigningError;
 use crate::issuer::StampIssuer;
-use crate::prepared::prepare_stamps;
+use crate::permit::{AdmissionWindow, Prepared, WindowToken};
+use crate::stamper::stamp_timestamp;
 
 impl<Sg, C> StampPipeline<Sg, C>
 where
@@ -39,7 +39,7 @@ where
     /// and splitter-fed inputs: offer addresses through
     /// [`StampSink::poll_admit`], collect through
     /// [`StampSink::poll_next`]. Sign jobs run on `spawner`.
-    pub fn sink<'p, I, S>(&'p self, issuer: &'p mut I, spawner: S) -> StampSink<'p, Sg, C, I, S>
+    pub fn sink<'p, I, S>(&'p self, issuer: &'p I, spawner: S) -> StampSink<'p, Sg, C, I, S>
     where
         I: StampIssuer + ?Sized,
         S: Spawn,
@@ -48,6 +48,7 @@ where
             pipeline: self,
             issuer,
             spawner,
+            admission: AdmissionWindow::new(self.window),
             in_flight: FuturesUnordered::new(),
             ready: VecDeque::new(),
             failed: false,
@@ -64,8 +65,10 @@ where
 /// yield point.
 pub struct StampSink<'p, Sg, C, I: ?Sized, S> {
     pipeline: &'p StampPipeline<Sg, C>,
-    issuer: &'p mut I,
+    issuer: &'p I,
     spawner: S,
+    /// Occupancy: one token per admitted job, released as its result yields.
+    admission: AdmissionWindow,
     in_flight: FuturesUnordered<BoxFuture<'static, StampResult>>,
     /// Results complete at admission: allocation failures and `NotAdmitted`.
     ready: VecDeque<StampResult>,
@@ -154,8 +157,16 @@ where
             }
             match self.harvest(cx) {
                 Poll::Ready(Some(result)) => self.ready.push_back(result),
-                // Unreachable with a nonzero window; loop back to admit.
-                Poll::Ready(None) => {}
+                // A drained set holds no token, so this cannot happen; refuse
+                // rather than spin if it ever does.
+                Poll::Ready(None) => {
+                    debug_assert!(self.admits(), "an admission token outlived its job");
+                    self.ready.push_back(StampResult {
+                        address,
+                        result: Err(SigningError::NotAdmitted),
+                    });
+                    return Poll::Ready(());
+                }
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -177,23 +188,33 @@ where
     /// Completions yield unordered, so no slot is reserved for a serial head:
     /// every admission counts as head-served, opening the full window.
     pub(super) fn admits(&self) -> bool {
-        Admission::new(self.pipeline.window).admits(self.in_flight.len(), true)
+        Admission::new(self.pipeline.window).admits(self.admission.in_flight(), true)
     }
 
     /// Window slots currently free, sizing a refill micro-batch.
     pub(super) fn room(&self) -> usize {
-        usize::from(self.pipeline.window.get()).saturating_sub(self.in_flight.len())
+        self.admission.room()
     }
 
-    /// Allocates a digest per address with one clock read and submits each
-    /// for signing; an allocation failure queues its result instead. The
-    /// batch must not exceed [`room`](Self::room).
+    /// Claims a slot per address with one clock read and submits each for
+    /// signing; a refusal queues its result instead. The batch must not exceed
+    /// [`room`](Self::room).
     pub(super) fn admit_batch(&mut self, batch: &[ChunkAddress]) {
-        for preparation in prepare_stamps(&mut *self.issuer, batch, &self.pipeline.clock) {
-            match preparation.result {
-                Ok(digest) => self.submit(digest),
+        let timestamp = stamp_timestamp(&self.pipeline.clock);
+        for &address in batch {
+            // Backpressure before the claim, so a full window never burns a
+            // slot.
+            let Some(token) = self.admission.try_acquire() else {
+                self.ready.push_back(StampResult {
+                    address,
+                    result: Err(SigningError::NotAdmitted),
+                });
+                continue;
+            };
+            match self.issuer.reserve(&address, timestamp) {
+                Ok(permit) => self.submit(permit.with_token(token)),
                 Err(error) => self.ready.push_back(StampResult {
-                    address: preparation.address,
+                    address,
                     result: Err(SigningError::Stamp(error)),
                 }),
             }
@@ -206,14 +227,19 @@ where
     /// task; a cancelled handoff (the task dropped before replying) maps to a
     /// systemic [`SigningError::Dropped`] for the admitted address, so a lost
     /// job never wedges the sink.
-    fn submit(&mut self, digest: StampDigest) {
+    fn submit(&mut self, mut permit: Prepared<I::Spec>) {
         let signer = Arc::clone(&self.pipeline.signer);
-        let address = digest.chunk_address;
+        let address = *permit.address();
+        let digest = permit.digest();
+        // Held past the permit, so the slot frees when the result yields, not
+        // when the signature lands.
+        let token: Option<WindowToken> = permit.take_token();
         let handoff = submit_on(
             &self.spawner,
             async move { sign_task(signer.as_ref(), &digest) },
         );
         self.in_flight.push(Box::pin(handoff.map(move |reply| {
+            drop(token);
             reply.unwrap_or(StampResult {
                 address,
                 result: Err(SigningError::Dropped),
@@ -459,11 +485,11 @@ mod tests {
 
     #[test]
     fn multiset_one_to_one_unordered_inline() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
         let input = addresses(50);
 
-        let mut sink = pipeline.sink(&mut issuer, InlineSpawner);
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
         let results = drive(&mut sink, &input, 4);
         drop(sink);
 
@@ -478,11 +504,11 @@ mod tests {
 
     #[test]
     fn multiset_one_to_one_unordered_threaded() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
         let input = addresses(50);
 
-        let mut sink = pipeline.sink(&mut issuer, ThreadSpawner);
+        let mut sink = pipeline.sink(&issuer, ThreadSpawner);
         let results = drive(&mut sink, &input, 4);
         drop(sink);
 
@@ -498,7 +524,7 @@ mod tests {
     /// The threaded sink must overlap sign jobs, not serialise the window.
     #[test]
     fn threaded_sink_reaches_window_concurrency() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let max = Arc::new(AtomicUsize::new(0));
         let gauge = Gauge {
             current: Arc::new(AtomicUsize::new(0)),
@@ -506,7 +532,7 @@ mod tests {
         };
         let pipeline = StampPipeline::from_signer(gauge).with_window(window(4));
 
-        let mut sink = pipeline.sink(&mut issuer, ThreadSpawner);
+        let mut sink = pipeline.sink(&issuer, ThreadSpawner);
         let results = drive(&mut sink, &addresses(64), 4);
         drop(sink);
 
@@ -524,12 +550,12 @@ mod tests {
     #[test]
     fn duplicates_allocate_independently_mixed_ok_err() {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
-        let mut issuer: MemoryIssuer =
+        let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
         let address = ChunkAddress::new([0xAB; 32]);
 
-        let mut sink = pipeline.sink(&mut issuer, InlineSpawner);
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
         let results = drive(&mut sink, &[address, address, address], 4);
         assert!(!sink.is_failed());
         drop(sink);
@@ -547,11 +573,11 @@ mod tests {
 
     #[test]
     fn fail_fast_queues_not_admitted_after_systemic_failure() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FailingSigner).with_window(window(4));
         let input = addresses(10);
 
-        let mut sink = pipeline.sink(&mut issuer, InlineSpawner);
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
         let results = drive(&mut sink, &input, 4);
         assert!(sink.is_failed());
         drop(sink);
@@ -578,12 +604,12 @@ mod tests {
 
     #[test]
     fn fail_fast_off_yields_every_error() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FailingSigner)
             .with_window(window(4))
             .with_fail_fast(false);
 
-        let mut sink = pipeline.sink(&mut issuer, InlineSpawner);
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
         let results = drive(&mut sink, &addresses(10), 4);
         assert!(!sink.is_failed());
         drop(sink);
@@ -599,11 +625,11 @@ mod tests {
 
     #[test]
     fn panicking_signer_keeps_one_to_one_without_hanging() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(PanickingSigner).with_window(window(4));
         let input = addresses(10);
 
-        let mut sink = pipeline.sink(&mut issuer, InlineSpawner);
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
         let results = drive(&mut sink, &input, 4);
         drop(sink);
 
@@ -625,11 +651,11 @@ mod tests {
     /// rather than leaving its completion pending forever.
     #[test]
     fn dropped_unrun_task_yields_dropped_without_hanging() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
         let input = addresses(10);
 
-        let mut sink = pipeline.sink(&mut issuer, DroppingSpawner);
+        let mut sink = pipeline.sink(&issuer, DroppingSpawner);
         let results = drive(&mut sink, &input, 4);
         drop(sink);
 
@@ -648,13 +674,75 @@ mod tests {
         assert_eq!(issuer.stamps_issued(), Some(4));
     }
 
+    /// A permit that evaporates mid-flight must return its window token, or
+    /// admission wedges once the window has been filled once.
+    #[test]
+    fn evaporated_permits_release_their_window_tokens() {
+        let issuer = issuer24();
+        let pipeline = StampPipeline::from_signer(FixedSigner)
+            .with_window(window(2))
+            .with_fail_fast(false);
+
+        let mut sink = pipeline.sink(&issuer, DroppingSpawner);
+        let results = drive(&mut sink, &addresses(10), 2);
+
+        // Ten jobs passed through a window of two, so every token came back.
+        assert_eq!(results.len(), 10);
+        assert!(
+            results
+                .iter()
+                .all(|r| matches!(r.result, Err(SigningError::Dropped)))
+        );
+        assert_eq!(sink.room(), 2);
+        assert_eq!(sink.in_flight(), 0);
+        // Each evaporated permit burnt its slot, and nothing else.
+        assert_eq!(issuer.stamps_issued(), Some(10));
+
+        // The window recovered, so the same sink admits a full window again.
+        let more = drive(&mut sink, &addresses(2), 2);
+        assert_eq!(more.len(), 2);
+        assert_eq!(issuer.stamps_issued(), Some(12));
+    }
+
+    /// Dropping the sink with jobs parked in the signer must leave the issuer
+    /// coherent: the parked slots burn, and nothing else moves.
+    #[test]
+    fn a_sink_dropped_mid_flight_burns_only_the_parked_slots() {
+        let issuer = issuer24();
+        let (release_tx, release_rx) = mpsc::channel();
+        let pipeline = StampPipeline::from_signer(BlockingSigner(Mutex::new(release_rx)))
+            .with_window(window(2));
+
+        {
+            let mut sink = pipeline.sink(&issuer, ThreadSpawner);
+            for &address in &addresses(2) {
+                assert!(sink.poll_admit(&mut noop_cx(), address).is_ready());
+            }
+            // The window is full while both jobs sit in the signer.
+            let extra = addresses(1)[0];
+            assert!(sink.poll_admit(&mut noop_cx(), extra).is_pending());
+        }
+        release_tx.send(()).unwrap();
+        release_tx.send(()).unwrap();
+
+        assert_eq!(issuer.stamps_issued(), Some(2));
+
+        // A fresh sink over the same issuer admits a full window.
+        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(2));
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
+        let results = drive(&mut sink, &addresses(4), 2);
+        assert_eq!(results.len(), 4);
+        assert!(results.iter().all(|r| r.result.is_ok()));
+        assert_eq!(issuer.stamps_issued(), Some(6));
+    }
+
     #[test]
     fn pause_parks_admission_and_resume_wakes() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
         let address = ChunkAddress::new([0xCD; 32]);
 
-        let mut sink = pipeline.sink(&mut issuer, InlineSpawner);
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
         sink.pause();
         assert!(sink.is_paused());
 
@@ -681,12 +769,12 @@ mod tests {
     #[test]
     fn completion_wakes_latest_registration_not_first() {
         let (release_tx, release_rx) = mpsc::channel();
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(BlockingSigner(Mutex::new(release_rx)))
             .with_window(window(4));
         let address = ChunkAddress::new([0xEF; 32]);
 
-        let mut sink = pipeline.sink(&mut issuer, ThreadSpawner);
+        let mut sink = pipeline.sink(&issuer, ThreadSpawner);
         assert!(sink.poll_admit(&mut noop_cx(), address).is_ready());
         // First registration is the noop waker, split-style.
         assert!(sink.poll_next(&mut noop_cx()).is_pending());
@@ -711,11 +799,11 @@ mod tests {
 
     #[test]
     fn dropped_sink_abandons_at_most_one_window() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
 
         {
-            let mut sink = pipeline.sink(&mut issuer, InlineSpawner);
+            let mut sink = pipeline.sink(&issuer, InlineSpawner);
             for &address in &addresses(4) {
                 assert!(sink.poll_admit(&mut noop_cx(), address).is_ready());
             }
@@ -723,7 +811,7 @@ mod tests {
         assert_eq!(issuer.stamps_issued(), Some(4));
 
         // The issuer stays coherent for a fresh sink.
-        let mut sink = pipeline.sink(&mut issuer, InlineSpawner);
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
         let results = drive(&mut sink, &addresses(5), 4);
         drop(sink);
         assert_eq!(results.len(), 5);
@@ -733,10 +821,10 @@ mod tests {
 
     #[test]
     fn drained_sink_reports_none_and_stays_usable() {
-        let mut issuer = issuer24();
+        let issuer = issuer24();
         let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
 
-        let mut sink = pipeline.sink(&mut issuer, InlineSpawner);
+        let mut sink = pipeline.sink(&issuer, InlineSpawner);
         assert!(matches!(sink.poll_next(&mut noop_cx()), Poll::Ready(None)));
 
         let first = drive(&mut sink, &addresses(1), 4);

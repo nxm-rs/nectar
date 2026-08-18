@@ -2,8 +2,9 @@
 //! owner-aware issuance path so a snapshot can back a `BatchStamper` directly.
 
 use alloy_primitives::Address;
-use nectar_postage::{BatchId, StampDigest, StampError};
-use nectar_postage_issuer::StampIssuer;
+use core::cell::{Ref, RefCell};
+use nectar_postage::{BatchDepth, BatchId, Bucket, StampError};
+use nectar_postage_issuer::{Prepared, StampIssuer};
 use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
 
 use crate::Snapshot;
@@ -25,9 +26,12 @@ const fn map_usage_error(err: UsageError) -> StampError {
 /// slots so it never evicts the batch-state chunks. It owns the snapshot by
 /// value to drop into `BatchStamper::new`; recover it with
 /// [`into_snapshot`](Self::into_snapshot).
+///
+/// The table walk reads more than one word, so the cell serializes it and
+/// leaves the issuer `!Sync`.
 #[derive(Debug)]
 pub struct SnapshotIssuer<S: SwarmSpec = Mainnet> {
-    snapshot: Snapshot<S>,
+    snapshot: RefCell<Snapshot<S>>,
     owner: Address,
 }
 
@@ -37,7 +41,7 @@ pub struct SnapshotIssuer<S: SwarmSpec = Mainnet> {
 impl<S: SwarmSpec> Clone for SnapshotIssuer<S> {
     fn clone(&self) -> Self {
         Self {
-            snapshot: self.snapshot.clone(),
+            snapshot: RefCell::new(self.snapshot.borrow().clone()),
             owner: self.owner,
         }
     }
@@ -46,23 +50,27 @@ impl<S: SwarmSpec> Clone for SnapshotIssuer<S> {
 impl<S: SwarmSpec> SnapshotIssuer<S> {
     /// Wraps a snapshot and the batch owner address.
     pub const fn new(snapshot: Snapshot<S>, owner: Address) -> Self {
-        Self { snapshot, owner }
+        Self {
+            snapshot: RefCell::new(snapshot),
+            owner,
+        }
     }
 
-    /// Returns a reference to the wrapped snapshot.
-    pub const fn snapshot(&self) -> &Snapshot<S> {
-        &self.snapshot
+    /// Borrows the wrapped snapshot. A [`reserve`](StampIssuer::reserve) while
+    /// the borrow lives panics.
+    pub fn snapshot(&self) -> Ref<'_, Snapshot<S>> {
+        self.snapshot.borrow()
     }
 
     /// Returns a mutable reference to the wrapped snapshot, for example to plan
     /// a persist between batches of content stamping.
-    pub const fn snapshot_mut(&mut self) -> &mut Snapshot<S> {
-        &mut self.snapshot
+    pub fn snapshot_mut(&mut self) -> &mut Snapshot<S> {
+        self.snapshot.get_mut()
     }
 
     /// Consumes the adapter and returns the wrapped snapshot.
     pub fn into_snapshot(self) -> Snapshot<S> {
-        self.snapshot
+        self.snapshot.into_inner()
     }
 
     /// Returns the batch owner address.
@@ -72,52 +80,59 @@ impl<S: SwarmSpec> SnapshotIssuer<S> {
 }
 
 impl<S: SwarmSpec> StampIssuer for SnapshotIssuer<S> {
-    fn prepare_stamp(
-        &mut self,
+    type Spec = S;
+
+    fn reserve(
+        &self,
         address: &ChunkAddress,
         timestamp: u64,
-    ) -> core::result::Result<StampDigest, StampError> {
-        let index = self
-            .snapshot
+    ) -> core::result::Result<Prepared<S>, StampError> {
+        let snapshot = &mut *self.snapshot.borrow_mut();
+        let index = snapshot
             .record_address(self.owner, address)
             .map_err(map_usage_error)?;
-        Ok(StampDigest::new(
+        let table = snapshot.table_ref();
+        let bucket_depth = table.bucket_depth();
+        Ok(Prepared::new(
             *address,
-            self.snapshot.table_ref().batch_id(),
-            index,
+            table.batch_id(),
+            Bucket::checked(index.bucket(), bucket_depth)?,
+            BatchDepth::new(table.depth(), bucket_depth)?,
+            index.index(),
             timestamp,
         ))
     }
 
     fn batch_id(&self) -> BatchId {
-        self.snapshot.table_ref().batch_id()
+        self.snapshot.borrow().table_ref().batch_id()
     }
 
     fn batch_depth(&self) -> u8 {
-        self.snapshot.table_ref().depth()
+        self.snapshot.borrow().table_ref().depth()
     }
 
     fn bucket_depth(&self) -> u8 {
-        self.snapshot.table_ref().bucket_depth().get()
+        self.snapshot.borrow().table_ref().bucket_depth().get()
     }
 
     fn max_bucket_utilization(&self) -> u32 {
-        self.snapshot.table_ref().max_count()
+        self.snapshot.borrow().table_ref().max_count()
     }
 
     fn bucket_utilization(&self, bucket: u32) -> u32 {
-        self.snapshot.table_ref().count(bucket).unwrap_or(0)
+        self.snapshot
+            .borrow()
+            .table_ref()
+            .count(bucket)
+            .unwrap_or(0)
     }
 
     fn bucket_has_capacity(&self, bucket: u32) -> bool {
         // A mutable ring always has a slot (it wraps); an immutable bucket has
         // capacity until its watermark reaches the bound.
-        self.snapshot.table_ref().is_mutable()
-            || self
-                .snapshot
-                .table_ref()
-                .has_capacity(bucket)
-                .unwrap_or(false)
+        let snapshot = self.snapshot.borrow();
+        snapshot.table_ref().is_mutable()
+            || snapshot.table_ref().has_capacity(bucket).unwrap_or(false)
     }
 
     fn stamps_issued(&self) -> Option<u64> {
@@ -125,10 +140,11 @@ impl<S: SwarmSpec> StampIssuer for SnapshotIssuer<S> {
         // count. A mutable ring keeps only a wrapping cursor whose sum is a
         // checksum, so there is no lifetime count to give: return `None` rather
         // than forwarding the checksum as if it were a count.
-        if self.snapshot.table_ref().is_mutable() {
+        let snapshot = self.snapshot.borrow();
+        if snapshot.table_ref().is_mutable() {
             None
         } else {
-            Some(self.snapshot.table_ref().total_issued())
+            Some(snapshot.table_ref().total_issued())
         }
     }
 }

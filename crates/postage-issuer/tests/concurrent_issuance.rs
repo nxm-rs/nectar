@@ -49,8 +49,8 @@ fn contend(
                     let mut refusals = 0u64;
                     start.wait();
                     for timestamp in 0..attempts {
-                        match issuer.prepare_stamp(address, timestamp) {
-                            Ok(digest) => mine.push(digest.index.index()),
+                        match issuer.reserve(address, timestamp) {
+                            Ok(permit) => mine.push(permit.index().index()),
                             Err(StampError::BucketFull { .. }) => refusals += 1,
                             Err(other) => panic!("unexpected issuance error: {other}"),
                         }
@@ -81,7 +81,7 @@ fn one_bucket_under_contention_hands_out_each_slot_exactly_once() {
     assert_eq!(slots, (0..256).collect::<Vec<_>>());
     assert_eq!(refused, 8 * 256 - 256);
     assert!(matches!(
-        issuer.prepare_stamp(&address, 0),
+        issuer.reserve(&address, 0),
         Err(StampError::BucketFull { capacity: 256, .. })
     ));
     assert_eq!(StampIssuer::stamps_issued(&issuer), Some(256));
@@ -111,8 +111,8 @@ fn a_dilution_observed_mid_allocation_never_double_spends() {
                     let mut mine = Vec::new();
                     start.wait();
                     for timestamp in 0..64u64 {
-                        if let Ok(digest) = issuer.prepare_stamp(&address, timestamp) {
-                            mine.push(digest.index.index());
+                        if let Ok(permit) = issuer.reserve(&address, timestamp) {
+                            mine.push(permit.index().index());
                         }
                     }
                     mine
@@ -147,7 +147,7 @@ fn a_depth_decrease_racing_allocation_never_shrinks_the_batch() {
         scope.spawn(|| {
             // Depth 20 over bucket depth 16 leaves exactly 16 slots.
             for timestamp in 0..16u64 {
-                issuer.prepare_stamp(&address, timestamp).unwrap();
+                issuer.reserve(&address, timestamp).unwrap();
             }
         });
     });
@@ -170,9 +170,9 @@ fn the_whole_bucket_space_stamps_through_one_shared_handle() {
                     start.wait();
                     for _ in 0..1000 {
                         let address = ChunkAddress::from(B256::random());
-                        let mut handle = &issuer;
-                        let digest = StampIssuer::prepare_stamp(&mut handle, &address, 0).unwrap();
-                        mine.push(digest.index);
+                        let handle = &issuer;
+                        let permit = StampIssuer::reserve(&handle, &address, 0).unwrap();
+                        mine.push(permit.index());
                     }
                     mine
                 })
