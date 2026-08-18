@@ -1,10 +1,8 @@
 //! Content-only narrowing store adapter.
 
-use crate::chunk::{
-    AnyChunkSet, Chunk, ChunkAddress, ChunkRegistry, ContentOnlyChunkSet, Verified,
-};
+use crate::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
 
-use super::typed::{ChunkGet, ChunkHas, ChunkPut};
+use super::typed::{ChunkGet, ChunkHas, ChunkPut, PutUnit};
 
 /// Content-only view over a store typed at [`AnyChunkSet`].
 ///
@@ -61,11 +59,11 @@ where
 
 // Writes pass through untouched: only the read face narrows, so one wrapped
 // store serves a read-narrowed, write-wide surface.
-impl<R: ChunkRegistry, T: ChunkPut<R>> ChunkPut<R> for ContentGet<T> {
+impl<U: PutUnit, T: ChunkPut<U>> ChunkPut<U> for ContentGet<T> {
     type Error = T::Error;
 
-    async fn put(&self, chunk: Chunk<Verified, R>) -> Result<(), Self::Error> {
-        self.0.put(chunk).await
+    async fn put(&self, unit: U) -> Result<(), Self::Error> {
+        self.0.put(unit).await
     }
 }
 

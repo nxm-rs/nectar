@@ -90,7 +90,7 @@ impl<const B: usize> ChunkGet<AnyChunkSet<B>> for LatencyStore<B> {
     }
 }
 
-impl<const B: usize> ChunkPut<AnyChunkSet<B>> for LatencyStore<B> {
+impl<const B: usize> ChunkPut<Chunk<Verified, AnyChunkSet<B>>> for LatencyStore<B> {
     type Error = ChunkStoreError;
 
     async fn put(&self, chunk: Chunk<Verified, AnyChunkSet<B>>) -> Result<(), ChunkStoreError> {

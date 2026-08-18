@@ -64,7 +64,7 @@ impl DropStore {
     }
 }
 
-impl ChunkPut<AnyChunkSet<B>> for DropStore {
+impl ChunkPut<Chunk<Verified, AnyChunkSet<B>>> for DropStore {
     type Error = ChunkStoreError;
 
     async fn put(&self, chunk: Chunk<Verified, AnyChunkSet<B>>) -> Result<(), ChunkStoreError> {

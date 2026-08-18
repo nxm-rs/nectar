@@ -39,7 +39,7 @@ use core::time::Duration;
 
 use bytes::Bytes;
 use futures_util::stream::Stream;
-use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress, ContentOnlyChunkSet};
+use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, ContentOnlyChunkSet, Verified};
 use nectar_primitives::store::{ChunkPut, TrustedGet};
 use nectar_primitives::{DEFAULT_BODY_SIZE, EntryRef};
 
@@ -387,7 +387,7 @@ where
 
 impl<S, const B: usize> File<S, B>
 where
-    S: ChunkPut<AnyChunkSet<B>>,
+    S: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
 {
     /// Split `src` into a plain chunk tree, returning its root address.
     ///

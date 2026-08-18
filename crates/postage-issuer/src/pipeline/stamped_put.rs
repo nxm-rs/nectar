@@ -1,5 +1,6 @@
-//! Stamping store decorator: `ChunkPut` facing up, [`PutStamped`] facing
-//! down, so existing persistence call sites stamp at put with no changes.
+//! Stamping store decorator: a bare-chunk sink facing up, a stamped-pair
+//! sink facing down, so existing persistence call sites stamp at put with no
+//! changes.
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -15,7 +16,7 @@ use nectar_clock::Clock;
 #[cfg(feature = "std")]
 use nectar_clock::SystemClock;
 use nectar_marker::{MaybeSend, MaybeSync};
-use nectar_postage::{PutStamped, Stamp, StampDigest, StampError, StampedChunk, Unvalidated};
+use nectar_postage::{Stamp, StampDigest, StampError, StampedChunk, Unvalidated};
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, ChunkGet, ChunkHas, ChunkPut, Verified};
 
 #[cfg(feature = "std")]
@@ -231,12 +232,10 @@ enum Step {
     Refused(StampError),
 }
 
-/// Stamping decorator over a [`PutStamped`] sink.
+/// Stamping decorator over a stamped-pair sink.
 ///
-/// Implements `ChunkPut` facing up and requires `P: PutStamped<Unvalidated>`
-/// facing down: the stamp is minted here, not checked, so the pair carries no
-/// validation proof. One generic impl over `AnyChunkSet<B>` serves every
-/// wrapped call site.
+/// Takes bare chunks and puts pairs: the stamp is minted here, not checked,
+/// so the pair carries no validation proof.
 ///
 /// # Contracts
 ///
@@ -251,12 +250,12 @@ enum Step {
 ///   switches.
 /// - The decorator stamps per put, not per reachable chunk: a wrapped
 ///   re-commit stamps only newly-put chunks.
-/// - Transport retries compose below [`PutStamped`], reusing the already
+/// - Transport retries compose below the pair sink, reusing the already
 ///   signed stamp; a re-put through the decorator is idempotent anyway.
 /// - Wrapping a purely local store burns indices for chunks that may never
 ///   reach the network; filter for presence upstream where that matters.
-/// - Put-only sites need `P: PutStamped<Unvalidated>`; commit and apply sites
-///   need `P: PutStamped<Unvalidated> + TrustedGet + ChunkHas`, so a pure
+/// - Put-only sites need `P: ChunkPut<StampedChunk<Verified, Unvalidated, B>>`;
+///   commit and apply sites need `TrustedGet + ChunkHas` as well, so a pure
 ///   network sender takes a local or teed inner there.
 /// - A split's put slots double as sign-plus-put slots: widen the put
 ///   window toward [`StampPipeline`](super::StampPipeline)'s default
@@ -477,11 +476,12 @@ where
     }
 }
 
-impl<I, Sg, P, C, const B: usize> ChunkPut<AnyChunkSet<B>> for StampedPut<I, Sg, P, C>
+impl<I, Sg, P, C, const B: usize> ChunkPut<Chunk<Verified, AnyChunkSet<B>>>
+    for StampedPut<I, Sg, P, C>
 where
     I: StampIssuer + MaybeSend + 'static,
     Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
-    P: PutStamped<Unvalidated, B>,
+    P: ChunkPut<StampedChunk<Verified, Unvalidated, B>>,
     C: Clock,
 {
     type Error = StampedPutError<P::Error>;
@@ -521,7 +521,7 @@ where
             armed: true,
         });
         self.inner
-            .put_stamped(StampedChunk::new(chunk, stamp))
+            .put(StampedChunk::new(chunk, stamp))
             .await
             .map_err(StampedPutError::Put)?;
         if let Some(guard) = guard {
@@ -622,10 +622,10 @@ mod tests {
         seen: Arc<StdMutex<Vec<(ChunkAddress, Stamp)>>>,
     }
 
-    impl PutStamped<Unvalidated> for CountingSink {
+    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for CountingSink {
         type Error = Infallible;
 
-        async fn put_stamped(
+        async fn put(
             &self,
             stamped: StampedChunk<Verified, Unvalidated>,
         ) -> Result<(), Self::Error> {
@@ -648,10 +648,10 @@ mod tests {
         seen: Arc<StdMutex<Vec<Stamp>>>,
     }
 
-    impl PutStamped<Unvalidated> for FailOnceSink {
+    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for FailOnceSink {
         type Error = SinkRefused;
 
-        async fn put_stamped(
+        async fn put(
             &self,
             stamped: StampedChunk<Verified, Unvalidated>,
         ) -> Result<(), Self::Error> {
@@ -670,10 +670,10 @@ mod tests {
         store: Arc<MemoryStore<AnyChunkSet<4096>>>,
     }
 
-    impl PutStamped<Unvalidated> for StoreSink {
+    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for StoreSink {
         type Error = Infallible;
 
-        async fn put_stamped(
+        async fn put(
             &self,
             stamped: StampedChunk<Verified, Unvalidated>,
         ) -> Result<(), Self::Error> {

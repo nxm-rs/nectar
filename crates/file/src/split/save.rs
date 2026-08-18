@@ -9,7 +9,7 @@ use core::future::poll_fn;
 
 use alloc::vec;
 
-use nectar_primitives::chunk::AnyChunkSet;
+use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 use nectar_primitives::store::ChunkPut;
 
 use super::SplitStats;
@@ -39,7 +39,7 @@ pub(crate) async fn save_source<'a, T, M, Src, const B: usize>(
     mut src: Src,
 ) -> Result<(M::Root, SplitStats), SaveError<T::Error, Src::Error>>
 where
-    T: ChunkPut<AnyChunkSet<B>>,
+    T: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     M: SplitMode,
     Src: Source,
 {
@@ -75,7 +75,7 @@ pub(crate) async fn collect_into<T, M, const B: usize>(
     data: &[u8],
 ) -> Result<M::Root, SplitError<T::Error>>
 where
-    T: ChunkPut<AnyChunkSet<B>>,
+    T: ChunkPut<Chunk<Verified, AnyChunkSet<B>>>,
     M: SplitMode + Default,
 {
     let policy = Policy::DEFAULT.with_put_window(window);

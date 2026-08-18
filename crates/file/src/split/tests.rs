@@ -79,7 +79,7 @@ impl<const B: usize> TestStore<B> {
     }
 }
 
-impl<const B: usize> ChunkPut<AnyChunkSet<B>> for TestStore<B> {
+impl<const B: usize> ChunkPut<Chunk<Verified, AnyChunkSet<B>>> for TestStore<B> {
     type Error = ChunkStoreError;
 
     async fn put(&self, chunk: Chunk<Verified, AnyChunkSet<B>>) -> Result<(), ChunkStoreError> {
@@ -1202,7 +1202,7 @@ fn huge_stream_root_matches_the_batch_ingest() {
     #[derive(Clone)]
     struct Discard;
 
-    impl ChunkPut<AnyChunkSet<B>> for Discard {
+    impl ChunkPut<Chunk<Verified, AnyChunkSet<B>>> for Discard {
         type Error = std::convert::Infallible;
 
         async fn put(&self, _chunk: Chunk<Verified, AnyChunkSet<B>>) -> Result<(), Self::Error> {
@@ -1275,7 +1275,7 @@ mod borrowed {
         }
     }
 
-    impl<const B: usize> ChunkPut<AnyChunkSet<B>> for OverlapStore<B> {
+    impl<const B: usize> ChunkPut<Chunk<Verified, AnyChunkSet<B>>> for OverlapStore<B> {
         type Error = ChunkStoreError;
 
         async fn put(&self, _chunk: Chunk<Verified, AnyChunkSet<B>>) -> Result<(), Self::Error> {
