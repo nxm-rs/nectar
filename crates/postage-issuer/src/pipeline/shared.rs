@@ -1,5 +1,6 @@
 //! The clone-shared state cell behind the put decorators: a mutex under
-//! threads, a cell wherever the Send/Sync bounds relax.
+//! threads, a cell wherever the Send/Sync bounds relax. Hosted no-std builds
+//! without `unsync` have neither, so the surface is absent there.
 
 use alloc::vec::Vec;
 use core::task::Waker;

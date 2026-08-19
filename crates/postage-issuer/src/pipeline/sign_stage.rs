@@ -1,12 +1,14 @@
 //! The sign stage: chunks in, sealed pairs out, unordered, under a sign
 //! window of its own.
 //!
-//! The [pipeline module](super) contracts hold unchanged, stated once there,
-//! with the input an instance of a chunk rather than of an address. Stage
-//! shaped deltas: sealed pairs buffer at one sign window, so a stalled drain
-//! parks [`SignStage::poll_admit`] rather than growing the buffer, and the
+//! The [pipeline module](super) contracts hold unchanged, over chunk
+//! instances rather than address instances. Stage-shaped deltas: sealed pairs
+//! buffer at one sign window, so a stalled drain parks
+//! [`SignStage::poll_admit`] rather than growing the buffer, and the
 //! [`Stream`] ends only once [`SignStage::close`] has run and the stage has
-//! drained.
+//! drained. Admission and the drain must run in one task: a full buffer and
+//! an open, empty stage both park without a wake of their own, because only
+//! the peer call can free them.
 
 use alloc::collections::{BTreeMap, VecDeque};
 use core::fmt;
@@ -91,7 +93,8 @@ impl<Sg, C, I: ?Sized, S, const BODY_SIZE: usize> fmt::Debug
 }
 
 impl<Sg, C, I: ?Sized, S, const BODY_SIZE: usize> SignStage<'_, Sg, C, I, S, BODY_SIZE> {
-    /// Sign jobs admitted and not yet sealed.
+    /// Sign jobs with a signature outstanding; a job that failed at
+    /// allocation is already a queued result and counts none.
     pub fn in_flight(&self) -> usize {
         self.sink.in_flight()
     }
@@ -126,6 +129,16 @@ impl<Sg, C, I: ?Sized, S, const BODY_SIZE: usize> SignStage<'_, Sg, C, I, S, BOD
     }
 }
 
+impl<Sg, C, I: StampIssuer + ?Sized, S, const BODY_SIZE: usize>
+    SignStage<'_, Sg, C, I, S, BODY_SIZE>
+{
+    /// Free slots in the fullest bucket. Preflight a nearly-full batch: a
+    /// refused allocation seals as an error rather than a pair.
+    pub fn remaining_capacity(&self) -> u32 {
+        self.sink.remaining_capacity()
+    }
+}
+
 impl<Sg, C, I, S, const BODY_SIZE: usize> SignStage<'_, Sg, C, I, S, BODY_SIZE>
 where
     Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
@@ -154,7 +167,6 @@ where
         }
         let address = *chunk.address();
         ready!(self.sink.poll_admit(cx, address));
-        // Before any harvest, so every queued result finds its chunk.
         if let Some(chunk) = slot.take() {
             self.awaiting.entry(address).or_default().push_back(chunk);
         }
@@ -231,84 +243,15 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::testutil::{
+        FailingSigner, FixedSigner, InlineSpawner, TestChunk, chunk, issuer24, noop_cx, sorted,
+        window,
+    };
     use super::*;
     use crate::{BatchId, BucketDepth, MemoryIssuer, StampError};
     use alloc::vec::Vec;
-    use alloy_primitives::{B256, Signature, U256};
-    use alloy_signer::SignerSync;
-    use core::task::Waker;
     use futures_util::StreamExt;
-    use nectar_primitives::ContentChunk;
-    use nectar_tasks::TaskHandle;
     use std::time::{Duration, Instant};
-
-    type TestChunk = Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>;
-
-    fn issuer24() -> MemoryIssuer {
-        MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap())
-    }
-
-    fn window(slots: u16) -> Window {
-        Window::new(slots).unwrap()
-    }
-
-    fn noop_cx() -> Context<'static> {
-        Context::from_waker(Waker::noop())
-    }
-
-    fn chunk(payload: &[u8]) -> TestChunk {
-        let content: ContentChunk<DEFAULT_BODY_SIZE> = ContentChunk::new(payload.to_vec()).unwrap();
-        Chunk::from_envelope(content.into()).unwrap()
-    }
-
-    fn fixed_signature() -> Signature {
-        Signature::new(U256::from(1), U256::from(2), false)
-    }
-
-    /// Deterministic signature without ECDSA cost.
-    struct FixedSigner;
-
-    impl SignerSync for FixedSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Fails every signing call.
-    struct FailingSigner;
-
-    impl SignerSync for FailingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Completes each job synchronously inside `spawn`.
-    struct InlineSpawner;
-
-    impl Spawn for InlineSpawner {
-        fn spawn(&self, mut task: nectar_tasks::BoxFuture<'static, ()>) -> TaskHandle {
-            // Sign jobs are single-poll futures.
-            assert!(task.as_mut().poll(&mut noop_cx()).is_ready());
-            TaskHandle::new(|| {})
-        }
-    }
 
     /// Feeds every chunk, draining while the stage is full.
     fn drive<Sg, C, I, S, const B: usize>(
@@ -346,11 +289,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    fn sorted(mut addresses: Vec<ChunkAddress>) -> Vec<ChunkAddress> {
-        addresses.sort_unstable();
-        addresses
     }
 
     #[test]

@@ -123,6 +123,15 @@ impl<Sg, C, I: ?Sized, S> StampSink<'_, Sg, C, I, S> {
     }
 }
 
+impl<Sg, C, I: StampIssuer + ?Sized, S> StampSink<'_, Sg, C, I, S> {
+    /// Free slots in the fullest bucket of the issuer behind the sink.
+    pub fn remaining_capacity(&self) -> u32 {
+        self.issuer
+            .bucket_capacity()
+            .saturating_sub(self.issuer.max_bucket_utilization())
+    }
+}
+
 impl<Sg, C, I, S> StampSink<'_, Sg, C, I, S>
 where
     Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
@@ -263,177 +272,16 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::testutil::{
+        BlockingSigner, DroppingSpawner, FailingSigner, FixedSigner, Gauge, InlineSpawner,
+        PanickingSigner, SignalWaker, ThreadSpawner, addresses, issuer24, noop_cx, sorted, window,
+    };
     use super::*;
     use crate::{BatchId, BucketDepth, MemoryIssuer, StampError};
     use alloc::vec::Vec;
-    use alloy_primitives::{B256, Signature, U256};
-    use alloy_signer::SignerSync;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    use nectar_governor::Window;
-    use nectar_tasks::TaskHandle;
+    use core::sync::atomic::Ordering;
     use std::sync::{Mutex, mpsc};
-    use std::task::Wake;
     use std::time::{Duration, Instant};
-
-    fn issuer24() -> MemoryIssuer {
-        MemoryIssuer::new(BatchId::ZERO, 24, BucketDepth::new(16).unwrap())
-    }
-
-    fn addresses(n: usize) -> Vec<ChunkAddress> {
-        (0..n).map(|_| ChunkAddress::from(B256::random())).collect()
-    }
-
-    fn window(slots: u16) -> Window {
-        Window::new(slots).unwrap()
-    }
-
-    fn fixed_signature() -> Signature {
-        Signature::new(U256::from(1), U256::from(2), false)
-    }
-
-    fn noop_cx() -> Context<'static> {
-        Context::from_waker(Waker::noop())
-    }
-
-    /// Deterministic signature without ECDSA cost.
-    struct FixedSigner;
-
-    impl SignerSync for FixedSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Fails every signing call.
-    struct FailingSigner;
-
-    impl SignerSync for FailingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Panics on every signing call.
-    struct PanickingSigner;
-
-    impl SignerSync for PanickingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            panic!("signer panicked")
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            panic!("signer panicked")
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Blocks each signing call until released over the channel.
-    struct BlockingSigner(Mutex<mpsc::Receiver<()>>);
-
-    impl SignerSync for BlockingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            let _ = self.0.lock().unwrap().recv();
-            Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Signals each wake over a channel.
-    struct SignalWaker(mpsc::Sender<()>);
-
-    impl Wake for SignalWaker {
-        fn wake(self: Arc<Self>) {
-            let _ = self.0.send(());
-        }
-
-        fn wake_by_ref(self: &Arc<Self>) {
-            let _ = self.0.send(());
-        }
-    }
-
-    /// Completes each job synchronously inside `spawn`.
-    struct InlineSpawner;
-
-    impl Spawn for InlineSpawner {
-        fn spawn(&self, mut task: nectar_tasks::BoxFuture<'static, ()>) -> TaskHandle {
-            // Sign jobs are single-poll futures.
-            assert!(task.as_mut().poll(&mut noop_cx()).is_ready());
-            TaskHandle::new(|| {})
-        }
-    }
-
-    /// Tracks the highest number of concurrent signing calls.
-    struct Gauge {
-        current: Arc<AtomicUsize>,
-        max: Arc<AtomicUsize>,
-    }
-
-    impl SignerSync for Gauge {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max.fetch_max(now, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(1));
-            self.current.fetch_sub(1, Ordering::SeqCst);
-            Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Drops each job without polling it: the sign task and its sender die
-    /// unrun, cancelling the completion receiver.
-    struct DroppingSpawner;
-
-    impl Spawn for DroppingSpawner {
-        fn spawn(&self, _task: nectar_tasks::BoxFuture<'static, ()>) -> TaskHandle {
-            TaskHandle::new(|| {})
-        }
-    }
-
-    /// Runs each job on its own thread.
-    struct ThreadSpawner;
-
-    impl Spawn for ThreadSpawner {
-        fn spawn(&self, mut task: nectar_tasks::BoxFuture<'static, ()>) -> TaskHandle {
-            std::thread::spawn(move || {
-                // Sign jobs are single-poll futures.
-                assert!(task.as_mut().poll(&mut noop_cx()).is_ready());
-            });
-            TaskHandle::new(|| {})
-        }
-    }
 
     /// Feeds every address, harvesting while the window is full, then drains
     /// to `Ready(None)`; asserts the window bound throughout.
@@ -478,11 +326,6 @@ mod tests {
         results
     }
 
-    fn sorted(mut addresses: Vec<ChunkAddress>) -> Vec<ChunkAddress> {
-        addresses.sort_unstable();
-        addresses
-    }
-
     #[test]
     fn multiset_one_to_one_unordered_inline() {
         let issuer = issuer24();
@@ -525,11 +368,7 @@ mod tests {
     #[test]
     fn threaded_sink_reaches_window_concurrency() {
         let issuer = issuer24();
-        let max = Arc::new(AtomicUsize::new(0));
-        let gauge = Gauge {
-            current: Arc::new(AtomicUsize::new(0)),
-            max: Arc::clone(&max),
-        };
+        let (gauge, peak) = Gauge::new(Duration::from_millis(1));
         let pipeline = StampPipeline::from_signer(gauge).with_window(window(4));
 
         let mut sink = pipeline.sink(&issuer, ThreadSpawner);
@@ -537,11 +376,11 @@ mod tests {
         drop(sink);
 
         assert_eq!(results.len(), 64);
-        assert!(max.load(Ordering::SeqCst) <= 4);
+        assert!(peak.load(Ordering::SeqCst) <= 4);
         // A serialised window collapses the peak to 1; >= 2 proves genuine
         // overlap without demanding the full window on few-core CI.
         assert!(
-            max.load(Ordering::SeqCst) >= 2,
+            peak.load(Ordering::SeqCst) >= 2,
             "async sink serialised the window"
         );
         assert_eq!(issuer.stamps_issued(), Some(64));

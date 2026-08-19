@@ -57,14 +57,6 @@ where
     I: StampIssuer + ?Sized,
     P: ChunkPut<StampedChunk<Verified, Unvalidated, BODY_SIZE>>,
 {
-    fn tracks(&self) -> bool {
-        match self.bound {
-            IssuedBound::Off => false,
-            IssuedBound::Unbounded => true,
-            IssuedBound::AtMost(bound) => self.seen.len() < bound.get(),
-        }
-    }
-
     fn fail(&mut self, error: StampedPutError<P::Error>) {
         if !self.poisoned {
             self.failure = Some(error);
@@ -138,12 +130,16 @@ where
 /// - One failure poisons: a refused allocation, a failed signature or a
 ///   refused delivery surfaces once from the next put or flush, and every
 ///   later call reports [`StampedPutError::Poisoned`]. The failing chunk is
-///   not identified, because deliveries settle unordered.
+///   not identified, because deliveries settle unordered. A `BucketFull` is
+///   terminal here, unlike the per-item refusal of the other surfaces, so
+///   preflight a nearly-full batch with
+///   [`remaining_capacity`](Self::remaining_capacity).
 /// - Per-address idempotence: an address admitted once is never stamped or
 ///   delivered twice. Cost is one address per unique chunk; see
 ///   [`IssuedBound`] for the bound and off switches.
-/// - The stage holds at most one sign window of chunks in flight and one of
-///   sealed pairs, so memory sizes from the sign window, not from the input.
+/// - Chunks resident here are two sign windows' worth, one awaiting a
+///   signature and one sealed awaiting a put slot, so memory sizes from the
+///   sign window rather than from the input.
 /// - Wrapping a purely local store burns indices for chunks that may never
 ///   reach the network; filter for presence upstream where that matters.
 pub struct StagedPut<'p, Sg, C, I: StampIssuer + ?Sized, S, P, const BODY_SIZE: usize>
@@ -224,7 +220,7 @@ where
         self
     }
 
-    /// Sign jobs admitted and not yet sealed.
+    /// Sign jobs with a signature outstanding.
     pub fn signs_in_flight(&self) -> usize {
         with_state(&self.shared, |engine| engine.stage.in_flight())
     }
@@ -237,6 +233,12 @@ where
     /// Deliveries in flight.
     pub fn puts_in_flight(&self) -> usize {
         with_state(&self.shared, |engine| engine.puts.len())
+    }
+
+    /// Free slots in the fullest bucket. Preflight a nearly-full batch before
+    /// a split: one refused allocation poisons the decorator.
+    pub fn remaining_capacity(&self) -> u32 {
+        with_state(&self.shared, |engine| engine.stage.remaining_capacity())
     }
 }
 
@@ -314,7 +316,7 @@ where
             *slot = None;
             return Poll::Ready(Ok(()));
         }
-        let tracks = engine.tracks();
+        let tracks = engine.bound.tracks(engine.seen.len());
         ready!(engine.stage.poll_admit(cx, slot));
         if tracks {
             engine.seen.insert(address);
@@ -344,167 +346,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::super::shared::wake_all;
+    use super::super::testutil::{
+        BlockingSigner, CountingSink, FixedSigner, Gauge, InlineSpawner, RefusingSink, SinkRefused,
+        ThreadSpawner, WakeCount, chunk, issuer, window,
+    };
     use super::*;
-    use crate::{BatchId, BucketDepth, MemoryIssuer, StampError};
+    use crate::{MemoryIssuer, StampError};
     use alloc::sync::Arc;
     use alloc::vec::Vec;
-    use alloy_primitives::{B256, Signature, U256};
-    use alloy_signer::SignerSync;
     use core::convert::Infallible;
     use core::future::Future;
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use futures_util::stream::{FuturesUnordered, StreamExt};
     use nectar_file::{File, Policy};
-    use nectar_postage::Stamp;
-    use nectar_primitives::{ContentChunk, DEFAULT_BODY_SIZE};
-    use nectar_tasks::TaskHandle;
-    use std::sync::{Mutex, mpsc};
+    use nectar_primitives::DEFAULT_BODY_SIZE;
+    use std::sync::Mutex;
+    use std::sync::mpsc;
     use std::time::Duration;
-
-    type TestChunk = Chunk<Verified, AnyChunkSet<DEFAULT_BODY_SIZE>>;
-
-    fn issuer(depth: u8) -> MemoryIssuer {
-        MemoryIssuer::new(BatchId::ZERO, depth, BucketDepth::new(16).unwrap())
-    }
-
-    fn window(slots: u16) -> Window {
-        Window::new(slots).unwrap()
-    }
-
-    fn chunk(payload: &[u8]) -> TestChunk {
-        let content: ContentChunk<DEFAULT_BODY_SIZE> = ContentChunk::new(payload.to_vec()).unwrap();
-        Chunk::from_envelope(content.into()).unwrap()
-    }
-
-    fn fixed_signature() -> Signature {
-        Signature::new(U256::from(1), U256::from(2), false)
-    }
-
-    /// Deterministic signature without ECDSA cost.
-    struct FixedSigner;
-
-    impl SignerSync for FixedSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Blocks each signing call until released over the channel.
-    struct BlockingSigner(Mutex<mpsc::Receiver<()>>);
-
-    impl SignerSync for BlockingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            let _ = self.0.lock().unwrap().recv();
-            Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Tracks the highest number of concurrent signing calls.
-    struct Gauge {
-        current: Arc<AtomicUsize>,
-        peak: Arc<AtomicUsize>,
-        delay: Duration,
-    }
-
-    impl SignerSync for Gauge {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
-            self.peak.fetch_max(now, Ordering::SeqCst);
-            std::thread::sleep(self.delay);
-            self.current.fetch_sub(1, Ordering::SeqCst);
-            Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Completes each job synchronously inside `spawn`.
-    struct InlineSpawner;
-
-    impl Spawn for InlineSpawner {
-        fn spawn(&self, mut task: nectar_tasks::BoxFuture<'static, ()>) -> TaskHandle {
-            let mut cx = Context::from_waker(core::task::Waker::noop());
-            // Sign jobs are single-poll futures.
-            assert!(task.as_mut().poll(&mut cx).is_ready());
-            TaskHandle::new(|| {})
-        }
-    }
-
-    /// Runs each job on its own thread.
-    struct ThreadSpawner;
-
-    impl Spawn for ThreadSpawner {
-        fn spawn(&self, mut task: nectar_tasks::BoxFuture<'static, ()>) -> TaskHandle {
-            std::thread::spawn(move || {
-                let mut cx = Context::from_waker(core::task::Waker::noop());
-                // Sign jobs are single-poll futures.
-                assert!(task.as_mut().poll(&mut cx).is_ready());
-            });
-            TaskHandle::new(|| {})
-        }
-    }
-
-    /// Records every pair the sink receives.
-    #[derive(Clone, Default)]
-    struct CountingSink {
-        seen: Arc<Mutex<Vec<(ChunkAddress, Stamp)>>>,
-    }
-
-    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for CountingSink {
-        type Error = Infallible;
-
-        async fn put(
-            &self,
-            stamped: StampedChunk<Verified, Unvalidated>,
-        ) -> Result<(), Self::Error> {
-            self.seen
-                .lock()
-                .unwrap()
-                .push((*stamped.address(), stamped.stamp().clone()));
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, PartialEq, thiserror::Error)]
-    #[error("sink refused")]
-    struct SinkRefused;
-
-    /// Refuses every pair.
-    #[derive(Clone, Default)]
-    struct RefusingSink;
-
-    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for RefusingSink {
-        type Error = SinkRefused;
-
-        async fn put(
-            &self,
-            _stamped: StampedChunk<Verified, Unvalidated>,
-        ) -> Result<(), Self::Error> {
-            Err(SinkRefused)
-        }
-    }
 
     /// Parks every delivery until released, counting the parked ones and
     /// keeping their wakers so nothing is re-polled by accident.
@@ -544,23 +402,22 @@ mod tests {
         }
     }
 
-    /// Counts the wakes one poller receives.
-    #[derive(Default)]
-    struct WakeCount(AtomicUsize);
-
-    impl WakeCount {
-        fn count(self: &Arc<Self>) -> usize {
-            self.0.load(Ordering::SeqCst)
-        }
+    /// Occupies a put slot for one poll, then records the pair.
+    #[derive(Clone, Default)]
+    struct YieldingSink {
+        seen: Arc<AtomicUsize>,
     }
 
-    impl std::task::Wake for WakeCount {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
+    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for YieldingSink {
+        type Error = Infallible;
 
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
+        async fn put(
+            &self,
+            _stamped: StampedChunk<Verified, Unvalidated>,
+        ) -> Result<(), Self::Error> {
+            nectar_testing::yield_now().await;
+            self.seen.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
@@ -775,11 +632,7 @@ mod tests {
     #[test]
     fn concurrent_puts_never_wedge_on_a_displaced_wake() {
         let issuer = issuer(24);
-        let gauge = Gauge {
-            current: Arc::new(AtomicUsize::new(0)),
-            peak: Arc::new(AtomicUsize::new(0)),
-            delay: Duration::from_millis(1),
-        };
+        let (gauge, _peak) = Gauge::new(Duration::from_millis(1));
         let pipeline = StampPipeline::from_signer(gauge).with_window(window(4));
         let sink = CountingSink::default();
         let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(1));
@@ -796,6 +649,35 @@ mod tests {
 
         assert_eq!(sink.seen.lock().unwrap().len(), 32);
         assert_eq!(issuer.stamps_issued(), Some(32));
+    }
+
+    /// The parked-wake handoff has to hold across executors, not only across
+    /// siblings in one task: each thread parks on a waker of its own.
+    #[test]
+    fn threads_sharing_one_decorator_never_wedge() {
+        let issuer = issuer(24);
+        let (gauge, _peak) = Gauge::new(Duration::from_millis(1));
+        let pipeline = StampPipeline::from_signer(gauge).with_window(window(4));
+        let sink = YieldingSink::default();
+        let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(1));
+
+        std::thread::scope(|scope| {
+            for task in 0..4u32 {
+                let staged = staged.clone();
+                scope.spawn(move || {
+                    nectar_testing::run(async {
+                        for index in 0..16u32 {
+                            let payload = [task.to_be_bytes(), index.to_be_bytes()].concat();
+                            staged.put(chunk(&payload)).await.unwrap();
+                        }
+                    });
+                });
+            }
+        });
+        nectar_testing::run(staged.flush()).unwrap();
+
+        assert_eq!(sink.seen.load(Ordering::SeqCst), 64);
+        assert_eq!(issuer.stamps_issued(), Some(64));
     }
 
     /// A split over the staged decorator stores every chunk exactly once,
@@ -832,14 +714,9 @@ mod tests {
     #[test]
     fn a_split_overlaps_signatures_past_the_put_window() {
         let issuer = issuer(22);
-        let peak = Arc::new(AtomicUsize::new(0));
-        let gauge = Gauge {
-            current: Arc::new(AtomicUsize::new(0)),
-            peak: Arc::clone(&peak),
-            // Past the debug-build cost of hashing one leaf, so the split
-            // feeds the stage faster than a signature completes.
-            delay: Duration::from_millis(50),
-        };
+        // Past the debug-build cost of hashing one leaf, so the split feeds
+        // the stage faster than a signature completes.
+        let (gauge, peak) = Gauge::new(Duration::from_millis(50));
         let pipeline = StampPipeline::from_signer(gauge).with_window(window(16));
         let sink = CountingSink::default();
         let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(2));

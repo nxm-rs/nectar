@@ -45,6 +45,18 @@ pub enum IssuedBound {
     Off,
 }
 
+impl IssuedBound {
+    /// Whether one more address enters tracking, `tracked` being the count
+    /// already tracked.
+    pub(super) const fn tracks(self, tracked: usize) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Unbounded => true,
+            Self::AtMost(bound) => tracked < bound.get(),
+        }
+    }
+}
+
 /// A stamped put failure.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -84,17 +96,6 @@ struct State<I> {
     issuer: I,
     issued: BTreeMap<ChunkAddress, Issued>,
     bound: IssuedBound,
-}
-
-impl<I> State<I> {
-    /// Whether a new address enters the issued map under the bound.
-    fn tracks(&self) -> bool {
-        match self.bound {
-            IssuedBound::Off => false,
-            IssuedBound::Unbounded => true,
-            IssuedBound::AtMost(bound) => self.issued.len() < bound.get(),
-        }
-    }
 }
 
 type SharedState<I> = Shared<State<I>>;
@@ -378,7 +379,7 @@ where
             }
             Some(Issued::Pending(_) | Issued::Delivering(..)) => Step::Wait,
             None => {
-                let tracked = state.tracks();
+                let tracked = state.bound.tracks(state.issued.len());
                 match state.issuer.reserve(address, stamp_timestamp(&self.clock)) {
                     Ok(permit) => {
                         if tracked {
@@ -533,82 +534,23 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::testutil::{
+        CountingSink, FailingSigner, SinkRefused, TestChunk, chunk as sealed, issuer,
+    };
     use super::*;
-    use crate::{BatchId, BucketDepth, MemoryIssuer};
-    #[cfg(feature = "parallel")]
-    use alloy_primitives::U256;
-    use alloy_primitives::{B256, Signature};
-    use alloy_signer::SignerSync;
+    use crate::BucketDepth;
     use alloy_signer_local::PrivateKeySigner;
     use core::convert::Infallible;
     use nectar_file::{File, Policy};
     use nectar_postage::calculate_bucket;
-    use nectar_primitives::{ContentChunk, MemoryStore};
+    use nectar_primitives::MemoryStore;
     use nectar_testing::run;
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    type TestChunk = Chunk<Verified, AnyChunkSet<4096>>;
-
-    fn issuer(depth: u8) -> MemoryIssuer {
-        MemoryIssuer::new(BatchId::ZERO, depth, BucketDepth::new(16).unwrap())
-    }
-
     fn bucket_depth() -> BucketDepth {
         BucketDepth::new(16).unwrap()
     }
-
-    fn sealed(payload: &'static [u8]) -> TestChunk {
-        let content = ContentChunk::new(payload).unwrap();
-        Chunk::from_envelope(content.into()).unwrap()
-    }
-
-    #[cfg(feature = "parallel")]
-    fn fixed_signature() -> Signature {
-        Signature::new(U256::from(1), U256::from(2), false)
-    }
-
-    /// Fails every signing call.
-    struct FailingSigner;
-
-    impl SignerSync for FailingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
-        }
-
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
-        }
-    }
-
-    /// Records every pair the sink receives.
-    #[derive(Debug, Clone, Default)]
-    struct CountingSink {
-        seen: Arc<StdMutex<Vec<(ChunkAddress, Stamp)>>>,
-    }
-
-    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for CountingSink {
-        type Error = Infallible;
-
-        async fn put(
-            &self,
-            stamped: StampedChunk<Verified, Unvalidated>,
-        ) -> Result<(), Self::Error> {
-            self.seen
-                .lock()
-                .unwrap()
-                .push((*stamped.address(), stamped.stamp().clone()));
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, PartialEq, thiserror::Error)]
-    #[error("sink refused")]
-    struct SinkRefused;
 
     /// Refuses the first put, accepts afterwards; records every stamp.
     #[derive(Debug, Clone, Default)]
@@ -864,31 +806,16 @@ mod tests {
     #[cfg(feature = "parallel")]
     #[test]
     fn concurrent_duplicates_share_one_allocation_and_delivery() {
+        use super::super::testutil::Gauge;
         use core::pin::pin;
         use core::task::{Context, Poll, Waker};
         use std::thread;
         use std::time::{Duration, Instant};
 
-        /// Signs after a delay, pinning the pending window open.
-        struct SlowSigner;
-
-        impl SignerSync for SlowSigner {
-            fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-                Ok(fixed_signature())
-            }
-
-            fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-                thread::sleep(Duration::from_millis(50));
-                Ok(fixed_signature())
-            }
-
-            fn chain_id_sync(&self) -> Option<u64> {
-                None
-            }
-        }
-
+        // The delay pins the pending window open.
+        let (slow, _peak) = Gauge::new(Duration::from_millis(50));
         let sink = CountingSink::default();
-        let store = StampedPut::from_signer(issuer(20), SlowSigner, sink.clone());
+        let store = StampedPut::from_signer(issuer(20), slow, sink.clone());
         let chunk = sealed(b"concurrent");
 
         let mut owner = pin!(store.put(chunk.clone()));
