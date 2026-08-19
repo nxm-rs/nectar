@@ -9,8 +9,6 @@ use core::fmt;
 use core::future::{Future, poll_fn};
 use core::num::NonZeroUsize;
 use core::task::{Poll, Waker};
-#[cfg(multi_thread)]
-use std::sync::{Mutex, PoisonError};
 
 #[cfg(feature = "std")]
 use alloy_signer::{Signer, SignerSync};
@@ -23,13 +21,14 @@ use nectar_postage::Batch;
 use nectar_postage::{Stamp, StampDigest, StampError, StampedChunk, Validated};
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, ChunkGet, ChunkHas, ChunkPut, Verified};
 
+use super::shared::{Shared, new_shared, wake_all, with_state};
 #[cfg(feature = "std")]
 use super::signer::BatchSigner;
 #[cfg(feature = "std")]
 use super::signer::Eip191;
 #[cfg(not(feature = "std"))]
 use super::signer::sign_digest;
-use super::signer::{BoundSigner, SignPrehash};
+use super::signer::{BoundSigner, SignPrehash, allocates_from};
 #[cfg(feature = "std")]
 use super::task::sign_task;
 use crate::error::{IssuerError, SigningError};
@@ -52,6 +51,17 @@ pub enum IssuedBound {
     Off,
 }
 
+impl IssuedBound {
+    /// Whether a new address enters a tracking set already holding `tracked`.
+    pub const fn tracks(self, tracked: usize) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Unbounded => true,
+            Self::AtMost(bound) => tracked < bound.get(),
+        }
+    }
+}
+
 /// A stamped put failure.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +75,9 @@ pub enum StampedPutError<E> {
     /// The sink refused the pair; the signed stamp is retained for reuse.
     #[error("stamped sink refused the pair")]
     Put(#[source] E),
+    /// An earlier failure has already surfaced; the decorator is shut.
+    #[error("stamping is poisoned by an earlier failure")]
+    Poisoned,
 }
 
 /// One address's stamping progress, shared across clones.
@@ -91,46 +104,12 @@ struct State<I> {
 }
 
 impl<I> State<I> {
-    /// Whether a new address enters the issued map under the bound.
     fn tracks(&self) -> bool {
-        match self.bound {
-            IssuedBound::Off => false,
-            IssuedBound::Unbounded => true,
-            IssuedBound::AtMost(bound) => self.issued.len() < bound.get(),
-        }
+        self.bound.tracks(self.issued.len())
     }
 }
 
-#[cfg(multi_thread)]
-type SharedState<I> = Arc<Mutex<State<I>>>;
-#[cfg(not(multi_thread))]
-type SharedState<I> = alloc::rc::Rc<core::cell::RefCell<State<I>>>;
-
-#[cfg(multi_thread)]
-fn new_shared<I>(state: State<I>) -> SharedState<I> {
-    Arc::new(Mutex::new(state))
-}
-#[cfg(not(multi_thread))]
-fn new_shared<I>(state: State<I>) -> SharedState<I> {
-    alloc::rc::Rc::new(core::cell::RefCell::new(state))
-}
-
-/// Runs `f` under the state lock; never held across an await.
-#[cfg(multi_thread)]
-fn with_state<I, R>(shared: &SharedState<I>, f: impl FnOnce(&mut State<I>) -> R) -> R {
-    f(&mut shared.lock().unwrap_or_else(PoisonError::into_inner))
-}
-/// Runs `f` under the state cell; never held across an await.
-#[cfg(not(multi_thread))]
-fn with_state<I, R>(shared: &SharedState<I>, f: impl FnOnce(&mut State<I>) -> R) -> R {
-    f(&mut shared.borrow_mut())
-}
-
-fn wake_all(wakers: Vec<Waker>) {
-    for waker in wakers {
-        waker.wake();
-    }
-}
+type SharedState<I> = Shared<State<I>>;
 
 /// Publishes a sign outcome to the issued map; returns the wakers to wake
 /// after the lock drops. A failure removes the entry, so a later put
@@ -263,13 +242,13 @@ enum Step {
 /// - Put-only sites need `P: ChunkPut<StampedChunk<Verified, Validated, B>>`;
 ///   commit and apply sites need `TrustedGet + ChunkHas` as well, so a pure
 ///   network sender takes a local or teed inner there.
-/// - A split's put slots double as sign-plus-put slots: widen the put
-///   window toward [`StampPipeline`](super::StampPipeline)'s default
-///   window when wrapping a slow signer, and prefer an owned clone
-///   (`Split::new` or `collect`) over a borrowed relay, which serializes
-///   one signer round-trip per chunk. The inline engine signs on the
-///   driving thread, so async callers drive a split inside a blocking
-///   task.
+/// - A split's put slots double as sign-plus-put slots here, so signing
+///   never overlaps wider than the put window; take
+///   [`StagedPut`](super::StagedPut) for a slow signer, which signs in a
+///   stage of its own. Prefer an owned clone (`Split::new` or `collect`)
+///   over a borrowed relay, which serializes one signer round-trip per
+///   chunk. The inline engine signs on the driving thread, so async callers
+///   drive a split inside a blocking task.
 ///
 /// # Example
 ///
@@ -379,18 +358,7 @@ where
     /// [`IssuerError::BatchMismatch`] or [`IssuerError::BucketDepthMismatch`]
     /// when the issuer does not allocate from the batch the signer owns.
     pub fn with_parts(issuer: I, signer: Sg, inner: P, clock: C) -> Result<Self, IssuerError> {
-        if issuer.batch_id() != signer.batch().id() {
-            return Err(IssuerError::BatchMismatch {
-                issuer: issuer.batch_id(),
-                signer: signer.batch().id(),
-            });
-        }
-        if issuer.bucket_depth() != signer.batch().bucket_depth().get() {
-            return Err(IssuerError::BucketDepthMismatch {
-                issuer: issuer.bucket_depth(),
-                batch: signer.batch().bucket_depth().get(),
-            });
-        }
+        allocates_from(&issuer, &signer)?;
         Ok(Self {
             shared: new_shared(State {
                 issuer,

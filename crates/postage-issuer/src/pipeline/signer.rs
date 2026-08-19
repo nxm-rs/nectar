@@ -5,6 +5,7 @@ use alloy_primitives::{Address, B256, Signature};
 use alloy_signer::{Signer, SignerSync};
 
 use crate::error::{IssuerError, SigningError};
+use crate::issuer::StampIssuer;
 use nectar_postage::{Batch, Stamp, StampDigest};
 use nectar_primitives::{Mainnet, SwarmSpec};
 
@@ -122,6 +123,27 @@ impl<Sg: SignPrehash, S: SwarmSpec> BoundSigner for BatchSigner<Sg, S> {
     fn batch(&self) -> &Batch<S> {
         &self.batch
     }
+}
+
+/// Refuses a signer whose batch is not the one `issuer` allocates from.
+pub(crate) fn allocates_from<I, Sg>(issuer: &I, signer: &Sg) -> Result<(), IssuerError>
+where
+    I: StampIssuer + ?Sized,
+    Sg: BoundSigner<Spec = I::Spec>,
+{
+    if issuer.batch_id() != signer.batch().id() {
+        return Err(IssuerError::BatchMismatch {
+            issuer: issuer.batch_id(),
+            signer: signer.batch().id(),
+        });
+    }
+    if issuer.bucket_depth() != signer.batch().bucket_depth().get() {
+        return Err(IssuerError::BucketDepthMismatch {
+            issuer: issuer.bucket_depth(),
+            batch: signer.batch().bucket_depth().get(),
+        });
+    }
+    Ok(())
 }
 
 /// Signs an allocated digest into a wire-valid stamp.

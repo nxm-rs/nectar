@@ -14,6 +14,9 @@
 //!   [`BatchStamper::into_parts`] moves an issuer between the doors.
 //! - [`StampedPut`]: the store decorator; wraps a stamped sink so every
 //!   `ChunkPut` call site stamps at put.
+//! - [`StagedPut`]: the same decoration with signing in a stage of its own,
+//!   so a put slot holds store latency alone. Its puts resolve at admission,
+//!   so [`StagedPut::flush`] is part of the contract.
 //!
 //! # Self-issued stamps
 //!
@@ -200,7 +203,7 @@ pub use stamper::{BatchStamper, Stamper};
 // The streaming stamp pipeline; its sign window is the governor window.
 pub use nectar_governor::Window;
 #[cfg(feature = "std")]
-pub use pipeline::StampSink;
+pub use pipeline::{SealResult, SignStage, StagedPut, StampSink};
 pub use pipeline::{
     BatchSigner, BoundSigner, Eip191, SignPrehash, StampPipeline, StampResult, Stamped,
 };
