@@ -682,105 +682,60 @@ mod tests {
         assert_eq!(stamp, back);
     }
 
-    /// Test recover_signer using the Go interop test vector.
-    ///
-    /// This uses the same test data as stamper::tests::test_verify_go_created_stamp
-    /// to ensure the Stamp::recover_signer method works correctly.
+    /// The all-fields-zero boundary stamp, re-derived by `tools/stamp-vectors`
+    /// as `boundary/all-fields-zero`.
+    const REFERENCE_STAMP: &str = "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c";
+    const REFERENCE_CHUNK: &str =
+        "0000000000000000000000000000000000000000000000000000000000000002";
+    const REFERENCE_OWNER: &str = "8d3766440f0d7b949a5e32995d09619a7f86e632";
+
+    fn reference_stamp() -> (ChunkAddress, Stamp, Address) {
+        let chunk_bytes: [u8; 32] = hex::decode(REFERENCE_CHUNK).unwrap().try_into().unwrap();
+        let stamp = Stamp::try_from_slice(&hex::decode(REFERENCE_STAMP).unwrap()).unwrap();
+        (
+            ChunkAddress::new(chunk_bytes),
+            stamp,
+            REFERENCE_OWNER.parse().unwrap(),
+        )
+    }
+
     #[test]
     fn test_recover_signer() {
-        // Test vector from Go's TestGenerateInteropStamp
-        let chunk_addr_bytes =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
-                .unwrap();
-        let full_stamp_bytes = hex::decode(
-            "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
-        ).unwrap();
-        let expected_owner: Address = "8d3766440f0d7b949a5e32995d09619a7f86e632".parse().unwrap();
-
-        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
-        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
-
-        // Test recover_signer
-        let recovered = stamp.recover_signer(&chunk_address).unwrap();
-        assert_eq!(recovered, expected_owner);
+        let (chunk_address, stamp, owner) = reference_stamp();
+        assert_eq!(stamp.recover_signer(&chunk_address).unwrap(), owner);
     }
 
-    /// Test verify method using the Go interop test vector.
     #[test]
     fn test_verify() {
-        // Test vector from Go's TestGenerateInteropStamp
-        let chunk_addr_bytes =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
-                .unwrap();
-        let full_stamp_bytes = hex::decode(
-            "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
-        ).unwrap();
-        let expected_owner: Address = "8d3766440f0d7b949a5e32995d09619a7f86e632".parse().unwrap();
+        let (chunk_address, stamp, owner) = reference_stamp();
         let wrong_owner: Address = "0000000000000000000000000000000000000001".parse().unwrap();
 
-        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
-        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
-
-        // Verify with correct owner should succeed
-        assert!(stamp.verify(&chunk_address, expected_owner).is_ok());
-
-        // Verify with wrong owner should fail
-        let result = stamp.verify(&chunk_address, wrong_owner);
-        assert!(matches!(result, Err(StampError::OwnerMismatch { .. })));
+        assert!(stamp.verify(&chunk_address, owner).is_ok());
+        assert!(matches!(
+            stamp.verify(&chunk_address, wrong_owner),
+            Err(StampError::OwnerMismatch { .. })
+        ));
     }
 
-    /// Test recover_pubkey using the Go interop test vector.
     #[test]
     fn test_recover_pubkey() {
-        // Test vector from Go's TestGenerateInteropStamp
-        let chunk_addr_bytes =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
-                .unwrap();
-        let full_stamp_bytes = hex::decode(
-            "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
-        ).unwrap();
-        let expected_owner: Address = "8d3766440f0d7b949a5e32995d09619a7f86e632".parse().unwrap();
-
-        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
-        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
-
-        // Test recover_pubkey
+        let (chunk_address, stamp, owner) = reference_stamp();
         let pubkey = stamp.recover_pubkey(&chunk_address).unwrap();
-
-        // Convert to address and verify
-        let recovered_addr = Address::from_public_key(&pubkey);
-        assert_eq!(recovered_addr, expected_owner);
+        assert_eq!(Address::from_public_key(&pubkey), owner);
     }
 
-    /// Test verify_with_pubkey using the Go interop test vector.
     #[test]
     fn test_verify_with_pubkey() {
-        // Test vector from Go's TestGenerateInteropStamp
-        let chunk_addr_bytes =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
-                .unwrap();
-        let full_stamp_bytes = hex::decode(
-            "000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
-        ).unwrap();
-
-        let chunk_address = ChunkAddress::new(chunk_addr_bytes.try_into().unwrap());
-        let stamp = Stamp::try_from_slice(&full_stamp_bytes).unwrap();
-
-        // First recover the public key
+        let (chunk_address, stamp, _) = reference_stamp();
         let pubkey = stamp.recover_pubkey(&chunk_address).unwrap();
-
-        // Now verify using the cached pubkey
-        let result = stamp.verify_with_pubkey(&chunk_address, &pubkey);
-        assert!(result.is_ok());
+        assert!(stamp.verify_with_pubkey(&chunk_address, &pubkey).is_ok());
     }
 
-    /// Test that verify_with_pubkey fails with wrong pubkey.
     #[test]
     fn test_verify_with_wrong_pubkey() {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
 
-        // Create a stamp with one signer
         let signer = PrivateKeySigner::random();
         let chunk_address = ChunkAddress::new([0xAB; 32]);
         let batch_id = BatchId::ZERO;
@@ -790,25 +745,20 @@ mod tests {
         let digest = StampDigest::new(chunk_address, batch_id, index, timestamp);
         let prehash = digest.to_prehash();
 
-        // sign_message_sync returns alloy_primitives::Signature directly
         let sig = signer.sign_message_sync(prehash.as_slice()).unwrap();
         let stamp = Stamp::with_index(batch_id, index, timestamp, sig);
 
-        // Get the correct pubkey
         let correct_pubkey = stamp.recover_pubkey(&chunk_address).unwrap();
 
-        // Create a different signer for wrong pubkey
         let wrong_signer = PrivateKeySigner::random();
         let wrong_pubkey = wrong_signer.credential().verifying_key();
 
-        // Verify with correct pubkey should succeed
         assert!(
             stamp
                 .verify_with_pubkey(&chunk_address, &correct_pubkey)
                 .is_ok()
         );
 
-        // Verify with wrong pubkey should fail
         assert!(
             stamp
                 .verify_with_pubkey(&chunk_address, wrong_pubkey)

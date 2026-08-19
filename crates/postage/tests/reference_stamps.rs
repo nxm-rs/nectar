@@ -1,0 +1,266 @@
+//! Stamp vectors the reference client produced, emitted by `tools/stamp-vectors`.
+
+#![allow(clippy::expect_used)]
+
+use alloy_primitives::{Address, hex, keccak256};
+use nectar_postage::{
+    BatchDepth, BatchId, BucketDepth, STAMP_SIZE, Stamp, StampDigest, StampError, calculate_bucket,
+};
+use nectar_primitives::{ChunkAddress, Mainnet};
+use serde::Deserialize;
+
+const DOCUMENT: &str = include_str!("testdata/reference-stamps.json");
+
+#[derive(Deserialize)]
+struct Geometry {
+    bucket_depth: u8,
+    batch_depth: u8,
+}
+
+#[derive(Deserialize)]
+struct Vector {
+    name: String,
+    chunk_address: String,
+    owner: String,
+    batch_id: String,
+    bucket: u32,
+    index: u32,
+    timestamp: u64,
+    prehash: String,
+    stamp: String,
+    geometry: Option<Geometry>,
+}
+
+#[derive(Deserialize)]
+struct Document {
+    vectors: Vec<Vector>,
+}
+
+impl Vector {
+    fn image(&self) -> [u8; STAMP_SIZE] {
+        let raw = hex::decode(&self.stamp).expect("stamp is hex");
+        raw.try_into().expect("stamp is 113 bytes")
+    }
+
+    fn stamp(&self) -> Stamp {
+        Stamp::try_from_slice(&self.image()).expect("stamp parses")
+    }
+
+    fn address(&self) -> ChunkAddress {
+        ChunkAddress::new(bytes32(&self.chunk_address))
+    }
+
+    fn batch(&self) -> BatchId {
+        BatchId::new(bytes32(&self.batch_id))
+    }
+
+    fn owner(&self) -> Address {
+        self.owner.parse().expect("owner is an address")
+    }
+}
+
+fn bytes32(value: &str) -> [u8; 32] {
+    hex::decode(value)
+        .expect("hex")
+        .try_into()
+        .expect("32 bytes")
+}
+
+fn vectors() -> Vec<Vector> {
+    serde_json::from_str::<Document>(DOCUMENT)
+        .expect("vectors parse")
+        .vectors
+}
+
+#[test]
+fn the_wire_image_places_every_field_where_the_reference_client_wrote_it() {
+    for v in vectors() {
+        let image = v.image();
+        assert_eq!(&image[..32], v.batch().as_slice(), "{}: batch id", v.name);
+        assert_eq!(
+            &image[32..36],
+            v.bucket.to_be_bytes(),
+            "{}: bucket word",
+            v.name
+        );
+        assert_eq!(
+            &image[36..40],
+            v.index.to_be_bytes(),
+            "{}: index word",
+            v.name
+        );
+        assert_eq!(
+            &image[40..48],
+            v.timestamp.to_be_bytes(),
+            "{}: timestamp",
+            v.name
+        );
+    }
+}
+
+#[test]
+fn parsing_yields_the_fields_the_reference_client_signed() {
+    for v in vectors() {
+        let stamp = v.stamp();
+        assert_eq!(stamp.batch(), v.batch(), "{}: batch id", v.name);
+        assert_eq!(stamp.bucket(), v.bucket, "{}: bucket", v.name);
+        assert_eq!(stamp.index(), v.index, "{}: index", v.name);
+        assert_eq!(stamp.timestamp(), v.timestamp, "{}: timestamp", v.name);
+        assert_eq!(stamp.to_bytes(), v.image(), "{}: re-serialization", v.name);
+    }
+}
+
+#[test]
+fn the_digest_matches_the_reference_prehash() {
+    for v in vectors() {
+        let stamp = v.stamp();
+        let digest = StampDigest::new(
+            v.address(),
+            stamp.batch(),
+            stamp.stamp_index(),
+            stamp.timestamp(),
+        );
+        assert_eq!(
+            digest.to_prehash().as_slice(),
+            bytes32(&v.prehash),
+            "{}: prehash",
+            v.name
+        );
+    }
+}
+
+#[test]
+fn recovery_returns_the_reference_owner() {
+    for v in vectors() {
+        let stamp = v.stamp();
+        let owner = v.owner();
+        assert_eq!(
+            stamp.recover_signer(&v.address()).expect("recovers"),
+            owner,
+            "{}: signer",
+            v.name
+        );
+        stamp.verify(&v.address(), owner).expect("verifies");
+
+        let impostor = Address::repeat_byte(0x11);
+        assert!(
+            matches!(
+                stamp.verify(&v.address(), impostor),
+                Err(StampError::OwnerMismatch { .. })
+            ),
+            "{}: an unrelated owner must not verify",
+            v.name
+        );
+    }
+}
+
+#[test]
+fn buckets_agree_with_the_reference_derivation() {
+    let mut checked = 0;
+    for v in vectors() {
+        let Some(geometry) = &v.geometry else {
+            continue;
+        };
+        let bucket_depth = BucketDepth::<Mainnet>::new(geometry.bucket_depth).expect("depth");
+        let batch_depth =
+            BatchDepth::<Mainnet>::new(geometry.batch_depth, bucket_depth).expect("depth");
+
+        assert_eq!(
+            calculate_bucket(&v.address(), bucket_depth).value(),
+            v.bucket,
+            "{}: bucket derivation",
+            v.name
+        );
+        assert!(
+            batch_depth.contains(&v.stamp().stamp_index()),
+            "{}: index within the batch",
+            v.name
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no vector carries batch geometry");
+}
+
+#[test]
+fn swapping_the_index_word_halves_breaks_recovery() {
+    let mut checked = 0;
+    for v in vectors() {
+        if v.bucket == v.index {
+            continue;
+        }
+        let original = v.image();
+        let mut image = original;
+        image[32..36].copy_from_slice(&original[36..40]);
+        image[36..40].copy_from_slice(&original[32..36]);
+
+        let swapped = Stamp::try_from_slice(&image).expect("parses");
+        assert!(
+            swapped.verify(&v.address(), v.owner()).is_err(),
+            "{}: swapped halves verify",
+            v.name
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no vector distinguishes the two index halves");
+}
+
+#[test]
+fn reversing_the_timestamp_bytes_breaks_recovery() {
+    let mut checked = 0;
+    for v in vectors() {
+        let mut reversed = v.timestamp.to_be_bytes();
+        reversed.reverse();
+        if reversed == v.timestamp.to_be_bytes() {
+            continue;
+        }
+        let mut image = v.image();
+        image[40..48].copy_from_slice(&reversed);
+
+        let flipped = Stamp::try_from_slice(&image).expect("parses");
+        assert!(
+            flipped.verify(&v.address(), v.owner()).is_err(),
+            "{}: reversed timestamp verifies",
+            v.name
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no vector has an order-sensitive timestamp");
+}
+
+// The reference client derives the corpus batch id from this label, so an
+// edited or refabricated fixture cannot pass as the upstream corpus.
+#[test]
+fn the_corpus_batch_id_is_the_reference_label_hash() {
+    let expected = BatchId::new(keccak256("The Inverted Jenny").0);
+    let mut checked = 0;
+    for v in vectors().iter().filter(|v| v.name.starts_with("corpus/")) {
+        assert_eq!(v.batch(), expected, "{}: batch id", v.name);
+        assert_eq!(v.index, 525_059, "{}: index", v.name);
+        assert_eq!(v.timestamp, 197_384, "{}: timestamp", v.name);
+        assert_eq!(
+            v.owner(),
+            "0x827b44d53df2854057713b25cdd653eb70fe36c4"
+                .parse::<Address>()
+                .expect("owner"),
+            "{}: owner",
+            v.name
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3, "the corpus arm carries three stamps");
+}
+
+#[test]
+fn the_vectors_exercise_a_non_zero_bucket_index_and_timestamp() {
+    let vectors = vectors();
+    assert!(vectors.iter().any(|v| v.bucket != 0), "no non-zero bucket");
+    assert!(vectors.iter().any(|v| v.index != 0), "no non-zero index");
+    assert!(
+        vectors.iter().any(|v| v.timestamp > u64::from(u32::MAX)),
+        "no timestamp beyond 32 bits"
+    );
+    assert!(
+        vectors.iter().any(|v| v.bucket != 0 && v.index != 0),
+        "no vector separates the two index halves"
+    );
+}

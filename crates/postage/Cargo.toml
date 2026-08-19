@@ -45,6 +45,8 @@ alloy-primitives = { workspace = true, features = ["getrandom", "arbitrary"] }
 arbitrary = { workspace = true }
 nectar-primitives = { workspace = true, features = ["arbitrary"] }
 nectar-testing = { workspace = true, features = ["fixtures"] }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
 
 [features]
 default = [ "std" ]

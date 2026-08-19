@@ -1,0 +1,112 @@
+{
+  "provenance": {
+    "generator": "tools/stamp-vectors",
+    "command": "go run . -out ../../crates/postage/tests/testdata/reference-stamps.json",
+    "reference": "github.com/ethersphere/bee/v2 v2.7.0",
+    "corpus": "pkg/storageincentives/testdata/inclusion-proofs.json",
+    "generated_at": "2026-08-14T20:28:17Z",
+    "notes": [
+      "corpus vectors reproduce the committed upstream signatures byte for byte",
+      "corpus vectors sign a literal index, so their bucket is 0 and no geometry applies",
+      "stamper vectors are wall-clock timestamped, so regenerating changes their bytes"
+    ]
+  },
+  "vectors": [
+    {
+      "name": "corpus/proof1",
+      "origin": "pkg/storageincentives/testdata/inclusion-proofs.json",
+      "chunk_address": "0x535e6df58a122a8f5e6c851c19b3e042f4cd1b5c5a8c499581c9f6d4e3509182",
+      "owner": "0x827b44d53df2854057713b25cdd653eb70fe36c4",
+      "batch_id": "0x4c8efc14c8e3cee608174f995d7afe155897bf643a31226e4f1363bc97686aef",
+      "bucket": 0,
+      "index": 525059,
+      "timestamp": 197384,
+      "prehash": "0x72db148cd9a4fe75127fac2069811e233c93e54e4877c452a24cd708b89a5380",
+      "stamp": "0x4c8efc14c8e3cee608174f995d7afe155897bf643a31226e4f1363bc97686aef00000000000803030000000000030308b0274fcda59e8aaffee803021971a764a017ce2c0f41c8ceb6eefdea807056f621a98feab5ebf33bb6065e49c050f413ec8840b008fc224d882ce5244ce3e0171c"
+    },
+    {
+      "name": "corpus/proof2",
+      "origin": "pkg/storageincentives/testdata/inclusion-proofs.json",
+      "chunk_address": "0x04a60acb043bf6af06f8f102e1e7f566603162b471324df5c20234913c7bf878",
+      "owner": "0x827b44d53df2854057713b25cdd653eb70fe36c4",
+      "batch_id": "0x4c8efc14c8e3cee608174f995d7afe155897bf643a31226e4f1363bc97686aef",
+      "bucket": 0,
+      "index": 525059,
+      "timestamp": 197384,
+      "prehash": "0x9cc1b02a30da7bfcb51858a5778a3d1cfa71918c93ab4f64140ecc48e7854bcd",
+      "stamp": "0x4c8efc14c8e3cee608174f995d7afe155897bf643a31226e4f1363bc97686aef00000000000803030000000000030308bc302a0e738745d7f274b8be58ee3b38ddb2b5d191f041c26de54642443f703d64250fdc50cbd0a4b428e1b72090e497a7a217f18b55b204dc33dc65a873b1781b"
+    },
+    {
+      "name": "corpus/proofLast",
+      "origin": "pkg/storageincentives/testdata/inclusion-proofs.json",
+      "chunk_address": "0x5ba2c8b912fad4aeb4a11a960946d07b9f66bc40ac54d87224914d75f5aeea5f",
+      "owner": "0x827b44d53df2854057713b25cdd653eb70fe36c4",
+      "batch_id": "0x4c8efc14c8e3cee608174f995d7afe155897bf643a31226e4f1363bc97686aef",
+      "bucket": 0,
+      "index": 525059,
+      "timestamp": 197384,
+      "prehash": "0xd5c450bab74637fbb51a3a1eb20d712136a529cd7dee012208057c88dea25109",
+      "stamp": "0x4c8efc14c8e3cee608174f995d7afe155897bf643a31226e4f1363bc97686aef000000000008030300000000000303086747c58ce8613486c696f5bb7393c9c59094371969c3a52bfaf75192c605f4ad7c70c6e71fdd320e20d005e42e94ee32102c234eb465f4f5fd9db60fcad0356b1c"
+    },
+    {
+      "name": "boundary/all-fields-zero",
+      "origin": "pkg/crypto/signer_test.go key",
+      "chunk_address": "0x0000000000000000000000000000000000000000000000000000000000000002",
+      "owner": "0x8d3766440f0d7b949a5e32995d09619a7f86e632",
+      "batch_id": "0x0000000000000000000000000000000000000000000000000000000000000001",
+      "bucket": 0,
+      "index": 0,
+      "timestamp": 3,
+      "prehash": "0xf4fe8b1b61d3ac2155c07fbfe445599a4119fbd29b1125b5ac0d06964f76ec20",
+      "stamp": "0x000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003496cb9ac06221d39c3f6a7dd3b9c2301c1f923162b90d5443e42023f34ff908945b0da1c297190f111b7c6ebc828648ead8f7fce06c0364cb5a833410230c5c01c"
+    },
+    {
+      "name": "stamper/bucket-only",
+      "origin": "postage.NewStamper",
+      "chunk_address": "0xa53fa0152bc2dcf30e7246545646ea9d88ee20efcc1650c552eb7a7721575a2e",
+      "owner": "0x8d3766440f0d7b949a5e32995d09619a7f86e632",
+      "batch_id": "0xb3efd3908d0fc4f1b740b0bc56aa52babce3c5388fe799ecbaa8ecd55584cad4",
+      "bucket": 42303,
+      "index": 0,
+      "timestamp": 1786739294100367587,
+      "prehash": "0x50f4fc3565021baf88241978739a416880fcb51c4f0f929ea1d625bf414f327c",
+      "stamp": "0xb3efd3908d0fc4f1b740b0bc56aa52babce3c5388fe799ecbaa8ecd55584cad40000a53f0000000018cbc5ebe315a8e327b31fab8c44374edabf2a189f4e8d74d08a1e9d5d99d9957e3c39eae4c4c27541311ef4d3a6989494644626ae2759050e9090ada9e8c5596f9fc991cac8e7161b",
+      "geometry": {
+        "bucket_depth": 16,
+        "batch_depth": 32
+      }
+    },
+    {
+      "name": "stamper/bucket-and-index",
+      "origin": "postage.NewStamper",
+      "chunk_address": "0xa53f1104cc19c37bb902316b299fed2618c10a0b8fc8de468cf619282a65891c",
+      "owner": "0x8d3766440f0d7b949a5e32995d09619a7f86e632",
+      "batch_id": "0xb3efd3908d0fc4f1b740b0bc56aa52babce3c5388fe799ecbaa8ecd55584cad4",
+      "bucket": 42303,
+      "index": 1234,
+      "timestamp": 1786739294166325661,
+      "prehash": "0x895a68a3bacae7da52f6bcdede488118d0228e1e0270773c8cca829bf82d1212",
+      "stamp": "0xb3efd3908d0fc4f1b740b0bc56aa52babce3c5388fe799ecbaa8ecd55584cad40000a53f000004d218cbc5ebe704199d87e9f64d9c24e0e2c58b0f2f249f3d8eaea84b15119665f9ab457bcc6207370f79d8dbe49af4c73afe51e58e9efcb44345956dd7ef3d129b9f9d899c5c8690331b",
+      "geometry": {
+        "bucket_depth": 16,
+        "batch_depth": 32
+      }
+    },
+    {
+      "name": "stamper/index-upper-bound",
+      "origin": "postage.NewStamper",
+      "chunk_address": "0x8001ac928c1a983609e69da935ed86db97704a5ff682a33331b83e889ad35cf2",
+      "owner": "0x8d3766440f0d7b949a5e32995d09619a7f86e632",
+      "batch_id": "0xb3efd3908d0fc4f1b740b0bc56aa52babce3c5388fe799ecbaa8ecd55584cad4",
+      "bucket": 32769,
+      "index": 65535,
+      "timestamp": 1786739297490769984,
+      "prehash": "0x758393ec780fcef31a65fe4fc67063a7523e6a70cdc8c9daf31ded50b6d6a731",
+      "stamp": "0xb3efd3908d0fc4f1b740b0bc56aa52babce3c5388fe799ecbaa8ecd55584cad4000080010000ffff18cbc5ecad2b1840b6b86cd057f36cd186e77024cdff219bf5650be53ecfd886b6626590c601e9b73d540de2d498f9083345cb7ca08b3612ddd16a68bd915a611bf09c45163f10c91b",
+      "geometry": {
+        "bucket_depth": 16,
+        "batch_depth": 32
+      }
+    }
+  ]
+}
