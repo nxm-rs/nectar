@@ -26,9 +26,7 @@ pub trait SignPrehash: sealed::Sealed {
 
 /// A signer proven to hold the key of the batch it stamps for.
 ///
-/// Bind one with [`BatchSigner::bind`]; the binding is what lets
-/// [`Prepared::seal`](crate::Prepared::seal) mint a validated pair without
-/// recovering every signature.
+/// Sealed through [`SignPrehash`]: [`BatchSigner::bind`] is the only route.
 pub trait BoundSigner: SignPrehash {
     /// The network the batch was bought on.
     type Spec: SwarmSpec;
@@ -69,9 +67,6 @@ impl<S: SignerSync + Signer> SignPrehash for Eip191<S> {
 }
 
 /// A signer bound to the batch whose owner it is.
-///
-/// Everything sealed through this pairing is validated by construction: the
-/// owner check is one address comparison, taken once here.
 #[derive(Debug, Clone)]
 pub struct BatchSigner<Sg, S: SwarmSpec = Mainnet> {
     signer: Sg,
@@ -93,11 +88,6 @@ impl<Sg: SignPrehash, S: SwarmSpec> BatchSigner<Sg, S> {
             });
         }
         Ok(Self { signer, batch })
-    }
-
-    /// Returns the wrapped signer.
-    pub fn into_inner(self) -> Sg {
-        self.signer
     }
 }
 

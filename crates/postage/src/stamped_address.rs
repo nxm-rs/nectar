@@ -23,7 +23,9 @@ pub trait ValidationState: sealed::Sealed + Send + Sync + 'static {
     const NAME: &'static str;
 }
 
-/// The stamp's geometry and the owner's signature over this address are facts.
+/// The stamp's bucket and the owner's signature over this address are facts,
+/// recovered by [`validate`](StampedAddress::validate) or asserted by the
+/// issuer through [`issued_by`](StampedAddress::issued_by).
 ///
 /// Expiry and batch usability are not: they decay, so consumers still gate on
 /// them at the moment of use.
@@ -105,11 +107,11 @@ impl StampedAddress<Unvalidated> {
         Ok(StampedAddress::from_parts(self.address, self.stamp))
     }
 
-    /// Certify a pairing stamped here by the batch owner's own key, so the
-    /// signature is bound rather than recovered.
+    /// Certify a pairing stamped by the batch owner's own key.
     ///
-    /// `signer` is the address of the key that produced the signature; the
-    /// caller establishes that, and nothing here re-derives it.
+    /// `signer` is asserted, never re-derived: name an address that did not
+    /// sign and the pair reaches [`Validated`] anyway. The position is left
+    /// unbounded, so this certifies less than [`validate`](Self::validate).
     ///
     /// # Errors
     ///
@@ -132,8 +134,8 @@ impl StampedAddress<Unvalidated> {
                 actual: self.stamp.batch(),
             });
         }
-        // The position bound rises with dilution and the issuer allocates
-        // against the live depth, so a batch copy can sit below it.
+        // No position bound: dilution raises it, and the issuer allocates
+        // against the live depth a batch copy may already sit below.
         batch.validate_bucket(&self.stamp.stamp_index(), &self.address)?;
 
         Ok(StampedAddress::from_parts(self.address, self.stamp))
@@ -389,8 +391,6 @@ mod tests {
         assert_eq!(bound, recovered);
     }
 
-    /// The whole point: the producer pays no `ecrecover`, so a signature that
-    /// could never recover still passes once the signer is the owner.
     #[test]
     fn issued_by_pays_no_recovery() {
         let (batch, pairing) = coherent();
@@ -445,8 +445,6 @@ mod tests {
         ));
     }
 
-    /// The issuer allocates against the live depth, so a batch copy taken
-    /// before a dilution must not bound the position.
     #[test]
     fn issued_by_admits_a_position_the_batch_copy_cannot_bound() {
         let (batch, pairing) = coherent();

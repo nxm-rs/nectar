@@ -17,10 +17,9 @@
 //!
 //! # Self-issued stamps
 //!
-//! [`BatchSigner::bind`] checks once that the signer is the batch owner, which
-//! is one address comparison. A [`Prepared::seal`] through a bound signer then
-//! mints a validated pair without recovering a signature, so a sink that
-//! demands payment proof takes producer output directly.
+//! [`BatchSigner::bind`] checks once that the signer is the batch owner. What
+//! a bound signer seals is then validated by construction, with no signature
+//! recovery on the hot path.
 //!
 //! # Immutable and mutable issuance
 //!

@@ -91,11 +91,10 @@ impl<T: TrustState, const BODY_SIZE: usize> StampedChunk<T, Unvalidated, BODY_SI
         })
     }
 
-    /// Certify a pair stamped here by the batch owner's own key: the producer
-    /// route, which pays no signature recovery.
+    /// Certify a pair stamped by the batch owner's own key.
     ///
-    /// `signer` is the address of the key that produced the signature; the
-    /// caller establishes that, and nothing here re-derives it.
+    /// `signer` is asserted, never re-derived: name an address that did not
+    /// sign and the pair reaches [`Validated`] anyway.
     ///
     /// # Errors
     ///
@@ -439,7 +438,6 @@ mod tests {
         assert_eq!(ingest.to_typed_bytes(), bytes);
     }
 
-    /// The producer route and the ingest route reach the same sealed pair.
     #[test]
     fn issued_by_agrees_with_validate() {
         let (batch, pair) = signed(content_chunk());

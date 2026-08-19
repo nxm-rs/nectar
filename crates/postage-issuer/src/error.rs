@@ -32,8 +32,7 @@ pub enum IssuerError {
         requested: u8,
     },
 
-    /// The signer does not hold the batch owner's key, so nothing it signs
-    /// pays for the batch.
+    /// The signer does not hold the batch owner's key.
     #[error("signer {signer} does not own batch of {owner}")]
     NotBatchOwner {
         /// The owner the chain names.
@@ -49,6 +48,16 @@ pub enum IssuerError {
         issuer: BatchId,
         /// The batch the signer owns.
         signer: BatchId,
+    },
+
+    /// Issuer and batch cut collision buckets at different depths, so every
+    /// stamp the issuer allocates lands in a bucket the batch refuses.
+    #[error("issuer bucket depth {issuer} is not the batch's {batch}")]
+    BucketDepthMismatch {
+        /// The depth the issuer cuts buckets at.
+        issuer: u8,
+        /// The depth the batch cuts buckets at.
+        batch: u8,
     },
 
     /// A ring bucket had no unprotected slot to issue.

@@ -12,9 +12,9 @@ use core::task::{Poll, Waker};
 #[cfg(multi_thread)]
 use std::sync::{Mutex, PoisonError};
 
-use nectar_clock::Clock;
 #[cfg(feature = "std")]
 use alloy_signer::{Signer, SignerSync};
+use nectar_clock::Clock;
 #[cfg(feature = "std")]
 use nectar_clock::SystemClock;
 use nectar_marker::{MaybeSend, MaybeSync};
@@ -241,7 +241,7 @@ enum Step {
 /// Stamping decorator over a stamped-pair sink.
 ///
 /// Takes bare chunks and puts validated pairs: the signer is bound to the
-/// batch owner at construction, so no put pays a signature recovery.
+/// batch owner at construction.
 ///
 /// # Contracts
 ///
@@ -376,13 +376,19 @@ where
     ///
     /// # Errors
     ///
-    /// [`IssuerError::BatchMismatch`] when the issuer allocates from a batch
-    /// the signer does not own.
+    /// [`IssuerError::BatchMismatch`] or [`IssuerError::BucketDepthMismatch`]
+    /// when the issuer does not allocate from the batch the signer owns.
     pub fn with_parts(issuer: I, signer: Sg, inner: P, clock: C) -> Result<Self, IssuerError> {
         if issuer.batch_id() != signer.batch().id() {
             return Err(IssuerError::BatchMismatch {
                 issuer: issuer.batch_id(),
                 signer: signer.batch().id(),
+            });
+        }
+        if issuer.bucket_depth() != signer.batch().bucket_depth().get() {
+            return Err(IssuerError::BucketDepthMismatch {
+                issuer: issuer.bucket_depth(),
+                batch: signer.batch().bucket_depth().get(),
             });
         }
         Ok(Self {
@@ -565,13 +571,15 @@ where
                 Step::Wait => self.wait_progress(&address).await,
             }
         };
-        let pair =
-            StampedChunk::new(chunk, stamp).issued_by(self.signer.batch(), self.signer.address())?;
+        // Armed before the fallible pairing: an early return past a held
+        // delivery would park every duplicate for good.
         let guard = held.then(|| DeliveryGuard {
             shared: &self.shared,
             address,
             armed: true,
         });
+        let pair =
+            StampedChunk::new(chunk, stamp).issued_by(self.signer.batch(), self.signer.address())?;
         self.inner.put(pair).await.map_err(StampedPutError::Put)?;
         if let Some(guard) = guard {
             guard.stored();
@@ -664,7 +672,7 @@ mod tests {
         Signature::new(U256::from(1), U256::from(2), false)
     }
 
-    /// Fails every signing call, as the address it is built with.
+    /// Fails every signing call.
     struct FailingSigner(Address);
 
     impl crate::pipeline::signer::sealed::Sealed for FailingSigner {}
@@ -790,8 +798,6 @@ mod tests {
         });
     }
 
-    /// The validated claim is checkable: every stamp the decorator delivers
-    /// also recovers to the batch owner the long way.
     #[test]
     fn every_delivered_pair_validates_against_the_batch() {
         run(async {
@@ -828,6 +834,18 @@ mod tests {
         let refused =
             StampedPut::from_signer(issuer(20), key(2), CountingSink::default(), batch).unwrap_err();
         assert!(matches!(refused, IssuerError::NotBatchOwner { .. }));
+    }
+
+    /// Left open, this cuts every stamp into a bucket the batch refuses, and
+    /// the refusal lands after the issued map has parked the address.
+    #[test]
+    fn construction_refuses_an_issuer_cutting_buckets_at_another_depth() {
+        let batch = batch_at_depth(key(1).address(), BatchId::ZERO, 20);
+        let wide = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(17).unwrap());
+        let bound = BatchSigner::bind(Eip191::new(key(1)), batch).unwrap();
+
+        let refused = StampedPut::new(wide, bound, CountingSink::default()).unwrap_err();
+        assert!(matches!(refused, IssuerError::BucketDepthMismatch { .. }));
     }
 
     #[test]

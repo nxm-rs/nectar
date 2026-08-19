@@ -247,8 +247,8 @@ impl<S: SwarmSpec> Prepared<S> {
         Stamp::with_index(self.batch, self.index(), self.timestamp, signature)
     }
 
-    /// Mints the sealed pair, validated by construction: `signer` is bound to
-    /// the batch owner, so nothing here recovers a signature.
+    /// Mints the sealed pair, validated by construction: `signer` is already
+    /// proven to be the batch owner.
     ///
     /// # Errors
     ///
@@ -382,8 +382,6 @@ mod tests {
         assert_eq!(sealed.stamp().timestamp(), 42);
     }
 
-    /// The pair a real signer seals is validated by construction, and the
-    /// recovery route agrees with it.
     #[test]
     fn a_sealed_pair_also_validates_the_long_way() {
         let signer = key(1);
