@@ -219,6 +219,10 @@ jobs:
             # lives in the script so this file can be scanned too.
             - name: no em dashes
               run: .github/scripts/no-em-dash.sh
+            # JSON belongs to fixtures and tests. `nectar-mantaray` is exempt
+            # because mantaray metadata is JSON on the wire.
+            - name: serde_json stays a dev-dependency
+              run: .github/scripts/serde-json-dev-only.sh
 
     # The one required context for this workflow: later jobs append to `needs`
     # rather than to the branch ruleset.
