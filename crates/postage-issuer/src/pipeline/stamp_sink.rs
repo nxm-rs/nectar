@@ -123,6 +123,15 @@ impl<Sg, C, I: ?Sized, S> StampSink<'_, Sg, C, I, S> {
     }
 }
 
+impl<Sg, C, I: StampIssuer + ?Sized, S> StampSink<'_, Sg, C, I, S> {
+    /// Free slots in the fullest bucket of the issuer behind the sink.
+    pub fn remaining_capacity(&self) -> u32 {
+        self.issuer
+            .bucket_capacity()
+            .saturating_sub(self.issuer.max_bucket_utilization())
+    }
+}
+
 impl<Sg, C, I, S> StampSink<'_, Sg, C, I, S>
 where
     Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
