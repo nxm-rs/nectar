@@ -442,7 +442,10 @@ mod tests {
     fn issued_by_agrees_with_validate() {
         let (batch, pair) = signed(content_chunk());
 
-        let issued: Sealed = pair.clone().issued_by(&batch, batch.owner()).expect("bound");
+        let issued: Sealed = pair
+            .clone()
+            .issued_by(&batch, batch.owner())
+            .expect("bound");
         let ingested: Sealed = pair.validate(&batch).expect("recovered");
         assert_eq!(issued, ingested);
     }

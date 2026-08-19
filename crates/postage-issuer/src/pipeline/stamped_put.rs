@@ -27,9 +27,9 @@ use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, ChunkGet, ChunkHas, Ch
 use super::signer::BatchSigner;
 #[cfg(feature = "std")]
 use super::signer::Eip191;
-use super::signer::{BoundSigner, SignPrehash};
 #[cfg(not(feature = "std"))]
 use super::signer::sign_digest;
+use super::signer::{BoundSigner, SignPrehash};
 #[cfg(feature = "std")]
 use super::task::sign_task;
 use crate::error::{IssuerError, SigningError};
@@ -578,8 +578,8 @@ where
             address,
             armed: true,
         });
-        let pair =
-            StampedChunk::new(chunk, stamp).issued_by(self.signer.batch(), self.signer.address())?;
+        let pair = StampedChunk::new(chunk, stamp)
+            .issued_by(self.signer.batch(), self.signer.address())?;
         self.inner.put(pair).await.map_err(StampedPutError::Put)?;
         if let Some(guard) = guard {
             guard.stored();
@@ -831,8 +831,8 @@ mod tests {
     fn construction_refuses_a_signer_that_does_not_own_the_batch() {
         let batch = batch_at_depth(key(1).address(), BatchId::ZERO, 20);
 
-        let refused =
-            StampedPut::from_signer(issuer(20), key(2), CountingSink::default(), batch).unwrap_err();
+        let refused = StampedPut::from_signer(issuer(20), key(2), CountingSink::default(), batch)
+            .unwrap_err();
         assert!(matches!(refused, IssuerError::NotBatchOwner { .. }));
     }
 

@@ -702,8 +702,8 @@ mod tests {
     fn a_sink_dropped_mid_flight_burns_only_the_parked_slots() {
         let issuer = issuer24();
         let (release_tx, release_rx) = mpsc::channel();
-        let pipeline = StampPipeline::new(BlockingSigner(Mutex::new(release_rx)))
-            .with_window(window(2));
+        let pipeline =
+            StampPipeline::new(BlockingSigner(Mutex::new(release_rx))).with_window(window(2));
 
         {
             let mut sink = pipeline.sink(&issuer, ThreadSpawner);
@@ -762,8 +762,8 @@ mod tests {
     fn completion_wakes_latest_registration_not_first() {
         let (release_tx, release_rx) = mpsc::channel();
         let issuer = issuer24();
-        let pipeline = StampPipeline::new(BlockingSigner(Mutex::new(release_rx)))
-            .with_window(window(4));
+        let pipeline =
+            StampPipeline::new(BlockingSigner(Mutex::new(release_rx))).with_window(window(4));
         let address = ChunkAddress::new([0xEF; 32]);
 
         let mut sink = pipeline.sink(&issuer, ThreadSpawner);

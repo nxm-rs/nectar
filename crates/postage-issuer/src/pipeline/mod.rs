@@ -836,8 +836,7 @@ mod tests {
     #[test]
     fn fail_fast_keeps_yielding_admitted_ok_completions() {
         let issuer = issuer24();
-        let pipeline =
-            StampPipeline::new(FailOnce(AtomicUsize::new(0))).with_window(window(8));
+        let pipeline = StampPipeline::new(FailOnce(AtomicUsize::new(0))).with_window(window(8));
         let input = addresses(32);
 
         let results: Vec<_> = pipeline.stamp(&issuer, input.iter().copied()).collect();
