@@ -1,7 +1,7 @@
-//! Golden vectors pinning the worked examples in `README.md`.
+//! Golden vectors pinning section 12 of `docs/spec/sbu1.md`.
 //!
 //! If a test here fails, the wire format changed: either revert the change
-//! or bump the format version in the magic and update the README examples.
+//! or bump the format version in the magic and update the specification.
 //!
 //! The multi-leaf vector pins only the root payload bytes: the root carries
 //! the keccak digest of every leaf, so any change to leaf encoding fails the
@@ -16,7 +16,7 @@ use nectar_postage_usage::{
     Mutability, PublishedSequence, RootInfo, Snapshot, UsageTable, usage_chunk_address,
     usage_chunk_id,
 };
-// The README's small worked example runs at bucket depth 8, which mainnet's
+// The specification's small worked example runs at bucket depth 8, which mainnet's
 // floor of 16 forbids, so those vectors are pinned for `LowFloor`.
 use nectar_testing::{LowFloor, low_floor};
 
@@ -24,7 +24,7 @@ mod common;
 
 use common::{batch_id, owner};
 
-/// The full root payload from the README worked example: depth 12, bucket
+/// The full root payload of the first specified vector: depth 12, bucket
 /// depth 8, counts `3 + (b mod 4)` with bucket 200 full at 16, after one
 /// persist by owner `0x11..11` of batch `0x42..42`.
 const ROOT_PAYLOAD_HEX: &str = "5342553142424242424242424242424242424242424242424242424242424242424242420c0800020000000000000001000000000000048e00000003000100000001000000c800000010000000041b1b1b1b1b1b1b1b1b1b2b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1bdb1b1b1b1b1b1b1b1b1b1b1b1b1b";
@@ -33,7 +33,7 @@ const ROOT_ID_HEX: &str = "292b4137c7a5e52b62615fd3a0f9917fa09c5df5611976597fd4f
 const ROOT_ADDRESS_HEX: &str = "296daebd0b1cd7b78b83016fc9bc9cc62d378c2ff21fb934d7ee0a328145ac5d";
 
 #[test]
-fn readme_worked_example_vector() {
+fn spec_worked_example_vector() {
     let batch_id = batch_id();
     let owner = owner();
     let mut counts: Vec<u32> = (0..256u32).map(|b| 3 + (b & 3)).collect();
@@ -55,7 +55,7 @@ fn readme_worked_example_vector() {
     );
 
     // The root chunk's own stamp lands in bucket 41 at index 4, as
-    // narrated in the README.
+    // narrated in the specification.
     assert_eq!(
         calculate_bucket(&plan.chunks[0].address, low_floor(8)).value(),
         41
@@ -73,7 +73,7 @@ fn readme_worked_example_vector() {
     assert_eq!(recovered, snapshot);
 }
 
-/// The root payload of the README large-batch example: depth 29, bucket
+/// The root payload of the second specified vector: depth 29, bucket
 /// depth 16 (65536 buckets of 8192 slots), counts `100 + (b mod 50)` with
 /// bucket 0x1234 at 5000 and bucket 0xCBE5 full at 8192, after one persist
 /// by owner `0x11..11` of batch `0x42..42`. The encoder picks base 100 and
@@ -82,7 +82,7 @@ fn readme_worked_example_vector() {
 const LARGE_ROOT_PAYLOAD_HEX: &str = "5342553142424242424242424242424242424242424242424242424242424242424242421d100006000000000000000100000000007cb19900000064000e000d000200001234000013880000cbe500002000000000690000007d00000091000000880000007a000000760000006e00000079000000810000006c0000007d000000910000007a0000006b9c8de349a3c4b573d45db35c3585fcbe2e2c20d999ee2a5ead8c1600b5a5428a645b990e3f426220eda38496a262f6968b8a4d42f7becb602c51576f19112fe9fb1f9017218e72abf21947cb3290726dd5129c47e50562a22dfcaa64340dd76d5bb4cba42453e6cb20f8c1c0892bf2bf4873bd3b4850787f171952b662346708660c94f587fa4516af6eb9b083513f245d9bd9fc0559f48356021e51892201fb197b58a495d1305292904a61906b02e37e68101e3657b4e2ff9661d705a004c36ebbe152c039d8887c067cc8fa86636c62afc5f21cd8ca1afc4f546e77882de86c3e8248ce84ffd4c440f28c638007df05e9ea75a713a308e7ba48e6066903c88e6e5e60e48477ca6202b2333d5c06968f67baae3c03105bbb4a7a8491b04ce6f5c8fc3151cdfbc3136e8f0adac485df7ae4d866e1cce1cd1aa0d1cbbf33f19bf28b0420c19fcadaf197e1eaff36f8151ec107d59ad4e6d3a4cf1492a77828991d9c30151c90772df348891a627fa9a5046919dba774e2a388819e9e11aba2c68724aa66f7e98c8ec09b71685da6a49cf173a390ac1662a9e120712062d20fb8";
 
 #[test]
-fn readme_large_batch_multi_leaf_vector() {
+fn spec_large_batch_multi_leaf_vector() {
     let batch_id = batch_id();
     let owner = owner();
     let mut counts: Vec<u32> = (0..65536u32).map(|b| 100 + (b % 50)).collect();

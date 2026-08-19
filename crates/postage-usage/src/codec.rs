@@ -1,6 +1,7 @@
 //! Wire format encoder and decoder for usage snapshots.
 //!
-//! See the crate documentation and `README.md` for the format specification.
+//! Specified by
+//! [`docs/spec/sbu1.md`](https://github.com/nxm-rs/nectar/blob/main/docs/spec/sbu1.md).
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -107,7 +108,7 @@ impl<S: SwarmSpec> PartialEq for RootInfo<S> {
 impl<S: SwarmSpec> Eq for RootInfo<S> {}
 
 /// The fixed root header, stated once in wire order. Multi-byte fields are
-/// big-endian; `README.md` gives the full layout.
+/// big-endian; section 5 of the specification gives the full layout.
 struct RootHeader {
     magic: [u8; 4],
     batch_id: BatchId,

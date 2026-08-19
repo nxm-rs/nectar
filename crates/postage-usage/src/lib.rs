@@ -20,7 +20,8 @@
 //! counters, not the batch depth. A table is immutable (monotone fill
 //! watermarks) or mutable (wrapping ring cursors); see [`UsageTable`].
 //!
-//! See `README.md` for the full format specification.
+//! The wire format is specified in
+//! [`docs/spec/sbu1.md`](https://github.com/nxm-rs/nectar/blob/main/docs/spec/sbu1.md).
 //!
 //! # Example
 //!
