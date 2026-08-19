@@ -1,5 +1,7 @@
 //! Error types for postage issuing operations.
 
+use alloy_primitives::Address;
+use nectar_postage::BatchId;
 use thiserror::Error;
 
 /// Errors that can occur when constructing a stamp issuer.
@@ -28,6 +30,34 @@ pub enum IssuerError {
         current: u8,
         /// The requested depth.
         requested: u8,
+    },
+
+    /// The signer does not hold the batch owner's key.
+    #[error("signer {signer} does not own batch of {owner}")]
+    NotBatchOwner {
+        /// The owner the chain names.
+        owner: Address,
+        /// The address the signer stamps as.
+        signer: Address,
+    },
+
+    /// The issuer allocates from one batch and the signer is bound to another.
+    #[error("issuer batch {issuer} is not the signer's batch {signer}")]
+    BatchMismatch {
+        /// The batch the issuer allocates from.
+        issuer: BatchId,
+        /// The batch the signer owns.
+        signer: BatchId,
+    },
+
+    /// Issuer and batch cut collision buckets at different depths, so every
+    /// stamp the issuer allocates lands in a bucket the batch refuses.
+    #[error("issuer bucket depth {issuer} is not the batch's {batch}")]
+    BucketDepthMismatch {
+        /// The depth the issuer cuts buckets at.
+        issuer: u8,
+        /// The depth the batch cuts buckets at.
+        batch: u8,
     },
 
     /// A ring bucket had no unprotected slot to issue.

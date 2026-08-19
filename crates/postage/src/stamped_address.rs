@@ -5,6 +5,7 @@
 
 use core::marker::PhantomData;
 
+use alloy_primitives::Address;
 use nectar_primitives::{ChunkAddress, SwarmSpec};
 
 use crate::{Batch, BatchId, Stamp, StampError, StampIndex};
@@ -22,7 +23,9 @@ pub trait ValidationState: sealed::Sealed + Send + Sync + 'static {
     const NAME: &'static str;
 }
 
-/// The stamp's geometry and the owner's signature over this address are facts.
+/// The stamp's bucket and the owner's signature over this address are facts,
+/// recovered by [`validate`](StampedAddress::validate) or asserted by the
+/// issuer through [`issued_by`](StampedAddress::issued_by).
 ///
 /// Expiry and batch usability are not: they decay, so consumers still gate on
 /// them at the moment of use.
@@ -44,8 +47,10 @@ impl ValidationState for Unvalidated {
 /// A stamp together with the address it is bound to, carrying its validation
 /// state in the type.
 ///
-/// Pairing exists only at [`Unvalidated`], so [`validate`](Self::validate) is
-/// the only route to [`Validated`].
+/// Pairing exists only at [`Unvalidated`]. Two transitions reach
+/// [`Validated`]: [`validate`](Self::validate) recovers the signature, and
+/// [`issued_by`](Self::issued_by) stands on a signer already bound to the
+/// batch owner.
 ///
 /// The type carries no serde impls in any state, so no wire format can hand
 /// back a [`Validated`] value:
@@ -98,6 +103,40 @@ impl StampedAddress<Unvalidated> {
         batch.validate_index(&index)?;
         batch.validate_bucket(&index, &self.address)?;
         self.stamp.verify(&self.address, batch.owner())?;
+
+        Ok(StampedAddress::from_parts(self.address, self.stamp))
+    }
+
+    /// Certify a pairing stamped by the batch owner's own key.
+    ///
+    /// `signer` is asserted, never re-derived: name an address that did not
+    /// sign and the pair reaches [`Validated`] anyway. The position is left
+    /// unbounded, so this certifies less than [`validate`](Self::validate).
+    ///
+    /// # Errors
+    ///
+    /// [`StampError::OwnerMismatch`], [`StampError::BatchMismatch`] or
+    /// [`StampError::BucketMismatch`].
+    pub fn issued_by<S: SwarmSpec>(
+        self,
+        batch: &Batch<S>,
+        signer: Address,
+    ) -> Result<StampedAddress<Validated>, StampError> {
+        if signer != batch.owner() {
+            return Err(StampError::OwnerMismatch {
+                expected: batch.owner(),
+                actual: signer,
+            });
+        }
+        if self.stamp.batch() != batch.id() {
+            return Err(StampError::BatchMismatch {
+                expected: batch.id(),
+                actual: self.stamp.batch(),
+            });
+        }
+        // No position bound: dilution raises it, and the issuer allocates
+        // against the live depth a batch copy may already sit below.
+        batch.validate_bucket(&self.stamp.stamp_index(), &self.address)?;
 
         Ok(StampedAddress::from_parts(self.address, self.stamp))
     }
@@ -181,7 +220,7 @@ impl<V: ValidationState> core::fmt::Debug for StampedAddress<V> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, Signature};
     use alloy_signer_local::PrivateKeySigner;
     use arbitrary::Unstructured;
     use proptest::prelude::*;
@@ -340,6 +379,93 @@ mod tests {
         assert!(batch.is_expired(1));
         assert!(!batch.is_usable(batch.start(), 50));
         assert!(StampedAddress::new(address, stamp).validate(&batch).is_ok());
+    }
+
+    #[test]
+    fn issued_by_agrees_with_validate_on_a_coherent_pairing() {
+        let (batch, pairing) = coherent();
+        let owner = batch.owner();
+
+        let bound = pairing.clone().issued_by(&batch, owner).unwrap();
+        let recovered = pairing.validate(&batch).unwrap();
+        assert_eq!(bound, recovered);
+    }
+
+    #[test]
+    fn issued_by_pays_no_recovery() {
+        let (batch, pairing) = coherent();
+        let (address, stamp) = pairing.into_parts();
+        let junk = Stamp::with_index(
+            stamp.batch(),
+            stamp.stamp_index(),
+            stamp.timestamp(),
+            Signature::from_raw(&[1u8; 65]).unwrap(),
+        );
+
+        assert!(
+            StampedAddress::new(address, junk)
+                .issued_by(&batch, batch.owner())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn issued_by_refuses_a_signer_that_is_not_the_owner() {
+        let (batch, pairing) = coherent();
+
+        assert!(matches!(
+            pairing.issued_by(&batch, other_signer().address()),
+            Err(StampError::OwnerMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn issued_by_refuses_a_foreign_batch() {
+        let signer = signer();
+        let bought = batch_owned_by(signer.address(), BatchId::ZERO);
+        let spent = batch_owned_by(signer.address(), BatchId::from([1u8; 32]));
+        let address = address_with(0);
+        let stamp = stamp_for(&signer, &bought, &address);
+
+        assert!(matches!(
+            StampedAddress::new(address, stamp).issued_by(&spent, signer.address()),
+            Err(StampError::BatchMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn issued_by_refuses_a_re_paired_address() {
+        let (batch, pairing) = coherent();
+        let (_, stamp) = pairing.into_parts();
+        let other_bucket = ChunkAddress::new([0x12u8; 32]);
+
+        assert!(matches!(
+            StampedAddress::new(other_bucket, stamp).issued_by(&batch, batch.owner()),
+            Err(StampError::BucketMismatch)
+        ));
+    }
+
+    #[test]
+    fn issued_by_admits_a_position_the_batch_copy_cannot_bound() {
+        let (batch, pairing) = coherent();
+        let (address, stamp) = pairing.into_parts();
+        let diluted = StampIndex::new(stamp.bucket(), batch.bucket_upper_bound());
+        let stamp = Stamp::with_index(
+            stamp.batch(),
+            diluted,
+            stamp.timestamp(),
+            *stamp.signature(),
+        );
+
+        assert!(matches!(
+            StampedAddress::new(address, stamp.clone()).validate(&batch),
+            Err(StampError::InvalidIndex)
+        ));
+        assert!(
+            StampedAddress::new(address, stamp)
+                .issued_by(&batch, batch.owner())
+                .is_ok()
+        );
     }
 
     #[test]

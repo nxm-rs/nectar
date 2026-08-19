@@ -5,6 +5,8 @@
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+use alloy_primitives::Address;
+
 use nectar_primitives::{
     AnyChunkSet, Chunk, ChunkAddress, DEFAULT_BODY_SIZE, SwarmSpec, TrustState, Unverified,
     Verified, bytes::Bytes, wire::Cursor,
@@ -17,7 +19,8 @@ use crate::{
 /// A chunk together with its postage stamp, over trust and validation state.
 ///
 /// [`new`](Self::new) exists only at [`Unvalidated`], so a validated pair
-/// cannot be fabricated:
+/// comes only from [`validate`](Self::validate) or
+/// [`issued_by`](Self::issued_by):
 ///
 /// ```compile_fail
 /// use nectar_postage::{Stamp, StampedChunk, Validated};
@@ -80,6 +83,30 @@ impl<T: TrustState, const BODY_SIZE: usize> StampedChunk<T, Unvalidated, BODY_SI
         let address = *self.chunk.address_in_state();
         let (_, stamp) = StampedAddress::new(address, self.stamp)
             .validate(batch)?
+            .into_parts();
+        Ok(StampedChunk {
+            chunk: self.chunk,
+            stamp,
+            _validation: PhantomData,
+        })
+    }
+
+    /// Certify a pair stamped by the batch owner's own key.
+    ///
+    /// `signer` is asserted, never re-derived: name an address that did not
+    /// sign and the pair reaches [`Validated`] anyway.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`StampedAddress::issued_by`] refuses the pairing with.
+    pub fn issued_by<S: SwarmSpec>(
+        self,
+        batch: &Batch<S>,
+        signer: Address,
+    ) -> Result<StampedChunk<T, Validated, BODY_SIZE>, StampError> {
+        let address = *self.chunk.address_in_state();
+        let (_, stamp) = StampedAddress::new(address, self.stamp)
+            .issued_by(batch, signer)?
             .into_parts();
         Ok(StampedChunk {
             chunk: self.chunk,
@@ -409,6 +436,31 @@ mod tests {
 
         assert_eq!(ingest, producer);
         assert_eq!(ingest.to_typed_bytes(), bytes);
+    }
+
+    #[test]
+    fn issued_by_agrees_with_validate() {
+        let (batch, pair) = signed(content_chunk());
+
+        let issued: Sealed = pair
+            .clone()
+            .issued_by(&batch, batch.owner())
+            .expect("bound");
+        let ingested: Sealed = pair.validate(&batch).expect("recovered");
+        assert_eq!(issued, ingested);
+    }
+
+    #[test]
+    fn issued_by_refuses_a_signer_that_is_not_the_owner() {
+        let (batch, pair) = signed(content_chunk());
+        let stranger = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x33))
+            .expect("valid signer")
+            .address();
+
+        assert!(matches!(
+            pair.issued_by(&batch, stranger),
+            Err(StampError::OwnerMismatch { .. })
+        ));
     }
 
     #[test]

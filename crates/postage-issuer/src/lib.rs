@@ -15,6 +15,12 @@
 //! - [`StampedPut`]: the store decorator; wraps a stamped sink so every
 //!   `ChunkPut` call site stamps at put.
 //!
+//! # Self-issued stamps
+//!
+//! [`BatchSigner::bind`] checks once that the signer is the batch owner. What
+//! a bound signer seals is then validated by construction, with no signature
+//! recovery on the hot path.
+//!
 //! # Immutable and mutable issuance
 //!
 //! Immutable batches are fill-only: every slot is written at most once and a
@@ -166,6 +172,8 @@ mod permit;
 mod pipeline;
 mod ring;
 mod stamper;
+#[cfg(test)]
+mod testing;
 mod watermarks;
 
 // Re-export core types from nectar-postage (includes BatchEvent, BatchEventHandler)
@@ -193,7 +201,9 @@ pub use stamper::{BatchStamper, Stamper};
 pub use nectar_governor::Window;
 #[cfg(feature = "std")]
 pub use pipeline::StampSink;
-pub use pipeline::{Eip191, SignPrehash, StampPipeline, StampResult, Stamped};
+pub use pipeline::{
+    BatchSigner, BoundSigner, Eip191, SignPrehash, StampPipeline, StampResult, Stamped,
+};
 #[cfg(any(feature = "std", not(multi_thread)))]
 pub use pipeline::{IssuedBound, StampedPut, StampedPutError};
 

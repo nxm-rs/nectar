@@ -6,9 +6,11 @@ use core::fmt;
 use nectar_governor::Window;
 use nectar_postage::{
     BatchDepth, BatchId, Bucket, Stamp, StampDigest, StampError, StampIndex, StampedChunk,
-    Unvalidated,
+    Validated,
 };
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, Mainnet, SwarmSpec, Verified};
+
+use crate::pipeline::BoundSigner;
 
 #[cfg(multi_thread)]
 type Shared<T> = alloc::sync::Arc<T>;
@@ -245,36 +247,52 @@ impl<S: SwarmSpec> Prepared<S> {
         Stamp::with_index(self.batch, self.index(), self.timestamp, signature)
     }
 
-    /// Mints the sealed pair.
+    /// Mints the sealed pair, validated by construction: `signer` is already
+    /// proven to be the batch owner.
     ///
     /// # Errors
     ///
     /// [`StampError::AddressMismatch`] when `chunk` is not the one the slot
-    /// was allocated for; the slot burns with the returned permit.
-    pub fn seal<const BODY_SIZE: usize>(
+    /// was allocated for, or whatever [`StampedChunk::issued_by`] refuses the
+    /// pairing with; the slot burns with the returned permit.
+    pub fn seal<Sg, const BODY_SIZE: usize>(
         self,
         chunk: Chunk<Verified, AnyChunkSet<BODY_SIZE>>,
         signature: Signature,
-    ) -> Result<StampedChunk<Verified, Unvalidated, BODY_SIZE>, StampError> {
+        signer: &Sg,
+    ) -> Result<StampedChunk<Verified, Validated, BODY_SIZE>, StampError>
+    where
+        Sg: BoundSigner<Spec = S>,
+    {
         if chunk.address() != &self.address {
             return Err(StampError::AddressMismatch {
                 expected: self.address,
                 offered: *chunk.address(),
             });
         }
-        Ok(StampedChunk::new(chunk, self.stamp(signature)))
+        let (batch, owner) = (signer.batch(), signer.address());
+        StampedChunk::new(chunk, self.stamp(signature)).issued_by(batch, owner)
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+    use crate::pipeline::{BatchSigner, Eip191, SignPrehash};
+    use crate::testing::{batch_owned_by, key};
     use alloy_primitives::U256;
+    use alloy_signer_local::PrivateKeySigner;
     use nectar_postage::BucketDepth;
     use nectar_primitives::{ContentChunk, DEFAULT_BODY_SIZE};
 
-    fn window(slots: u16) -> Window {
+    const fn window(slots: u16) -> Window {
         Window::new(slots).unwrap()
+    }
+
+    fn bound() -> BatchSigner<Eip191<PrivateKeySigner>> {
+        let signer = key(1);
+        let batch = batch_owned_by(signer.address(), BatchId::ZERO);
+        BatchSigner::from_signer(signer, batch).unwrap()
     }
 
     fn signature() -> Signature {
@@ -356,11 +374,30 @@ mod tests {
         let chunk = chunk(b"hello swarm");
         let address = *chunk.address();
 
-        let sealed = permit(address).seal(chunk, signature()).unwrap();
+        let sealed: StampedChunk<Verified, Validated> =
+            permit(address).seal(chunk, signature(), &bound()).unwrap();
 
         assert_eq!(sealed.address(), &address);
         assert_eq!(sealed.stamp().index(), 7);
         assert_eq!(sealed.stamp().timestamp(), 42);
+    }
+
+    #[test]
+    fn a_sealed_pair_also_validates_the_long_way() {
+        let signer = key(1);
+        let batch = batch_owned_by(signer.address(), BatchId::ZERO);
+        let bound = BatchSigner::from_signer(signer, batch.clone()).unwrap();
+        let chunk = chunk(b"hello swarm");
+        let address = *chunk.address();
+        let permit = permit(address);
+        let signature = bound.sign_prehash(&permit.digest().to_prehash()).unwrap();
+
+        let sealed = permit.seal(chunk.clone(), signature, &bound).unwrap();
+
+        let recovered = StampedChunk::new(chunk, sealed.stamp().clone())
+            .validate(&batch)
+            .unwrap();
+        assert_eq!(sealed, recovered);
     }
 
     #[test]
@@ -376,9 +413,23 @@ mod tests {
         let held = permit(expected).with_token(admission.try_acquire().unwrap());
 
         assert_eq!(
-            held.seal(other, signature()).unwrap_err(),
+            held.seal::<_, DEFAULT_BODY_SIZE>(other, signature(), &bound())
+                .unwrap_err(),
             StampError::AddressMismatch { expected, offered }
         );
         assert_eq!(admission.in_flight(), 0);
+    }
+
+    #[test]
+    fn seal_refuses_a_permit_from_another_batch() {
+        let chunk = chunk(b"hello swarm");
+        let address = *chunk.address();
+        let elsewhere = batch_owned_by(key(1).address(), BatchId::new([0xEE; 32]));
+        let bound = BatchSigner::from_signer(key(1), elsewhere).unwrap();
+
+        assert!(matches!(
+            permit(address).seal::<_, DEFAULT_BODY_SIZE>(chunk, signature(), &bound),
+            Err(StampError::BatchMismatch { .. })
+        ));
     }
 }
