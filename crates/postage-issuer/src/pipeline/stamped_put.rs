@@ -14,19 +14,25 @@ use std::sync::{Mutex, PoisonError};
 
 use nectar_clock::Clock;
 #[cfg(feature = "std")]
+use alloy_signer::{Signer, SignerSync};
+#[cfg(feature = "std")]
 use nectar_clock::SystemClock;
 use nectar_marker::{MaybeSend, MaybeSync};
-use nectar_postage::{Stamp, StampDigest, StampError, StampedChunk, Unvalidated};
+#[cfg(feature = "std")]
+use nectar_postage::Batch;
+use nectar_postage::{Stamp, StampDigest, StampError, StampedChunk, Validated};
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkAddress, ChunkGet, ChunkHas, ChunkPut, Verified};
 
 #[cfg(feature = "std")]
+use super::signer::BatchSigner;
+#[cfg(feature = "std")]
 use super::signer::Eip191;
-use super::signer::SignPrehash;
+use super::signer::{BoundSigner, SignPrehash};
 #[cfg(not(feature = "std"))]
 use super::signer::sign_digest;
 #[cfg(feature = "std")]
 use super::task::sign_task;
-use crate::error::SigningError;
+use crate::error::{IssuerError, SigningError};
 use crate::issuer::StampIssuer;
 use crate::stamper::stamp_timestamp;
 
@@ -234,8 +240,8 @@ enum Step {
 
 /// Stamping decorator over a stamped-pair sink.
 ///
-/// Takes bare chunks and puts pairs: the stamp is minted here, not checked,
-/// so the pair carries no validation proof.
+/// Takes bare chunks and puts validated pairs: the signer is bound to the
+/// batch owner at construction, so no put pays a signature recovery.
 ///
 /// # Contracts
 ///
@@ -254,7 +260,7 @@ enum Step {
 ///   signed stamp; a re-put through the decorator is idempotent anyway.
 /// - Wrapping a purely local store burns indices for chunks that may never
 ///   reach the network; filter for presence upstream where that matters.
-/// - Put-only sites need `P: ChunkPut<StampedChunk<Verified, Unvalidated, B>>`;
+/// - Put-only sites need `P: ChunkPut<StampedChunk<Verified, Validated, B>>`;
 ///   commit and apply sites need `TrustedGet + ChunkHas` as well, so a pure
 ///   network sender takes a local or teed inner there.
 /// - A split's put slots double as sign-plus-put slots: widen the put
@@ -268,17 +274,21 @@ enum Step {
 /// # Example
 ///
 /// ```
+/// use alloy_signer::Signer;
 /// use alloy_signer_local::PrivateKeySigner;
 /// use nectar_postage_issuer::{
-///     BatchId, BucketDepth, MemoryIssuer, StampIndifferent, StampedPut,
+///     Batch, BatchId, BucketDepth, MemoryIssuer, StampIndifferent, StampedPut,
 /// };
 /// use nectar_primitives::{AnyChunkSet, MemoryStore};
 ///
-/// let issuer: MemoryIssuer = MemoryIssuer::new(BatchId::ZERO, 20, BucketDepth::new(16)?);
+/// let signer = PrivateKeySigner::random();
+/// let batch: Batch =
+///     Batch::new(BatchId::ZERO, 1_000, 0, signer.address(), 20, BucketDepth::new(16)?, true);
+/// let issuer = MemoryIssuer::from_batch(&batch)?;
 /// let sink = StampIndifferent::new(MemoryStore::<AnyChunkSet<4096>>::new());
-/// let store = StampedPut::from_signer(issuer, PrivateKeySigner::random(), sink);
+/// let store = StampedPut::from_signer(issuer, signer, sink, batch)?;
 /// assert_eq!(store.remaining_capacity(), 16);
-/// # Ok::<(), nectar_postage_issuer::StampError>(())
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[cfg(feature = "std")]
 pub struct StampedPut<I, Sg, P, C = SystemClock> {
@@ -316,28 +326,66 @@ impl<I, Sg, P: Clone, C: Clone> Clone for StampedPut<I, Sg, P, C> {
 }
 
 #[cfg(feature = "std")]
-impl<I, Sg, P> StampedPut<I, Sg, P> {
+impl<I, Sg, P> StampedPut<I, Sg, P>
+where
+    I: StampIssuer,
+    Sg: BoundSigner<Spec = I::Spec>,
+{
     /// Creates a decorator reading stamp timestamps from the system clock,
     /// tracking every unique address.
-    pub fn new(issuer: I, signer: Sg, inner: P) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`IssuerError::BatchMismatch`] when the issuer allocates from a batch
+    /// the signer does not own.
+    pub fn new(issuer: I, signer: Sg, inner: P) -> Result<Self, IssuerError> {
         Self::with_parts(issuer, signer, inner, SystemClock)
     }
 }
 
 #[cfg(feature = "std")]
-impl<I, S, P> StampedPut<I, Eip191<S>, P> {
-    /// [`new`](Self::new) over the [`Eip191`] adapter, so a synchronous
-    /// signer plugs in directly.
-    pub fn from_signer(issuer: I, signer: S, inner: P) -> Self {
-        Self::new(issuer, Eip191::new(signer), inner)
+impl<I, K, P> StampedPut<I, BatchSigner<Eip191<K>, I::Spec>, P>
+where
+    I: StampIssuer,
+    K: SignerSync + Signer,
+{
+    /// [`new`](Self::new) over the [`Eip191`] adapter, binding `signer` to
+    /// the batch it owns.
+    ///
+    /// # Errors
+    ///
+    /// [`IssuerError::NotBatchOwner`] when the signer is not the batch owner,
+    /// or [`IssuerError::BatchMismatch`] when the issuer serves another batch.
+    pub fn from_signer(
+        issuer: I,
+        signer: K,
+        inner: P,
+        batch: Batch<I::Spec>,
+    ) -> Result<Self, IssuerError> {
+        Self::new(issuer, BatchSigner::from_signer(signer, batch)?, inner)
     }
 }
 
-impl<I, Sg, P, C> StampedPut<I, Sg, P, C> {
+impl<I, Sg, P, C> StampedPut<I, Sg, P, C>
+where
+    I: StampIssuer,
+    Sg: BoundSigner<Spec = I::Spec>,
+{
     /// Creates a decorator from explicit parts, tracking every unique
     /// address.
-    pub fn with_parts(issuer: I, signer: Sg, inner: P, clock: C) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// [`IssuerError::BatchMismatch`] when the issuer allocates from a batch
+    /// the signer does not own.
+    pub fn with_parts(issuer: I, signer: Sg, inner: P, clock: C) -> Result<Self, IssuerError> {
+        if issuer.batch_id() != signer.batch().id() {
+            return Err(IssuerError::BatchMismatch {
+                issuer: issuer.batch_id(),
+                signer: signer.batch().id(),
+            });
+        }
+        Ok(Self {
             shared: new_shared(State {
                 issuer,
                 issued: BTreeMap::new(),
@@ -346,9 +394,11 @@ impl<I, Sg, P, C> StampedPut<I, Sg, P, C> {
             signer: Arc::new(signer),
             inner,
             clock,
-        }
+        })
     }
+}
 
+impl<I, Sg, P, C> StampedPut<I, Sg, P, C> {
     /// Replaces the issued-map bound. Applies to every clone: the map is
     /// clone-shared.
     #[must_use]
@@ -480,8 +530,8 @@ impl<I, Sg, P, C, const B: usize> ChunkPut<Chunk<Verified, AnyChunkSet<B>>>
     for StampedPut<I, Sg, P, C>
 where
     I: StampIssuer + MaybeSend + 'static,
-    Sg: SignPrehash + MaybeSend + MaybeSync + 'static,
-    P: ChunkPut<StampedChunk<Verified, Unvalidated, B>>,
+    Sg: BoundSigner<Spec = I::Spec> + MaybeSend + MaybeSync + 'static,
+    P: ChunkPut<StampedChunk<Verified, Validated, B>>,
     C: Clock,
 {
     type Error = StampedPutError<P::Error>;
@@ -515,15 +565,14 @@ where
                 Step::Wait => self.wait_progress(&address).await,
             }
         };
+        let pair =
+            StampedChunk::new(chunk, stamp).issued_by(self.signer.batch(), self.signer.address())?;
         let guard = held.then(|| DeliveryGuard {
             shared: &self.shared,
             address,
             armed: true,
         });
-        self.inner
-            .put(StampedChunk::new(chunk, stamp))
-            .await
-            .map_err(StampedPutError::Put)?;
+        self.inner.put(pair).await.map_err(StampedPutError::Put)?;
         if let Some(guard) = guard {
             guard.stored();
         }
@@ -565,15 +614,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{batch_at_depth, key};
     use crate::{BatchId, BucketDepth, MemoryIssuer};
     #[cfg(feature = "parallel")]
     use alloy_primitives::U256;
-    use alloy_primitives::{B256, Signature};
-    use alloy_signer::SignerSync;
+    use alloy_primitives::{Address, B256, Signature};
     use alloy_signer_local::PrivateKeySigner;
     use core::convert::Infallible;
     use nectar_file::{File, Policy};
-    use nectar_postage::calculate_bucket;
+    use nectar_postage::{StampedAddress, calculate_bucket};
     use nectar_primitives::{ContentChunk, MemoryStore};
     use nectar_testing::run;
     use std::sync::Mutex as StdMutex;
@@ -583,6 +632,22 @@ mod tests {
 
     fn issuer(depth: u8) -> MemoryIssuer {
         MemoryIssuer::new(BatchId::ZERO, depth, BucketDepth::new(16).unwrap())
+    }
+
+    /// A decorator whose signer owns the batch its issuer allocates from.
+    fn stamped<Sg: SignPrehash, P>(
+        depth: u8,
+        signer: impl FnOnce(Address) -> Sg,
+        inner: P,
+    ) -> StampedPut<MemoryIssuer, BatchSigner<Sg>, P> {
+        let owner = key(1).address();
+        let batch = batch_at_depth(owner, BatchId::ZERO, depth);
+        let bound = BatchSigner::bind(signer(owner), batch).unwrap();
+        StampedPut::new(issuer(depth), bound, inner).unwrap()
+    }
+
+    fn owner_key(_owner: Address) -> Eip191<PrivateKeySigner> {
+        Eip191::new(key(1))
     }
 
     fn bucket_depth() -> BucketDepth {
@@ -599,20 +664,20 @@ mod tests {
         Signature::new(U256::from(1), U256::from(2), false)
     }
 
-    /// Fails every signing call.
-    struct FailingSigner;
+    /// Fails every signing call, as the address it is built with.
+    struct FailingSigner(Address);
 
-    impl SignerSync for FailingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
+    impl crate::pipeline::signer::sealed::Sealed for FailingSigner {}
+
+    impl SignPrehash for FailingSigner {
+        fn address(&self) -> Address {
+            self.0
         }
 
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
+        fn sign_prehash(&self, _prehash: &B256) -> Result<Signature, SigningError> {
+            Err(SigningError::Signer(alloy_signer::Error::message(
+                "signer offline",
+            )))
         }
     }
 
@@ -622,13 +687,10 @@ mod tests {
         seen: Arc<StdMutex<Vec<(ChunkAddress, Stamp)>>>,
     }
 
-    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for CountingSink {
+    impl ChunkPut<StampedChunk<Verified, Validated>> for CountingSink {
         type Error = Infallible;
 
-        async fn put(
-            &self,
-            stamped: StampedChunk<Verified, Unvalidated>,
-        ) -> Result<(), Self::Error> {
+        async fn put(&self, stamped: StampedChunk<Verified, Validated>) -> Result<(), Self::Error> {
             self.seen
                 .lock()
                 .unwrap()
@@ -648,13 +710,10 @@ mod tests {
         seen: Arc<StdMutex<Vec<Stamp>>>,
     }
 
-    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for FailOnceSink {
+    impl ChunkPut<StampedChunk<Verified, Validated>> for FailOnceSink {
         type Error = SinkRefused;
 
-        async fn put(
-            &self,
-            stamped: StampedChunk<Verified, Unvalidated>,
-        ) -> Result<(), Self::Error> {
+        async fn put(&self, stamped: StampedChunk<Verified, Validated>) -> Result<(), Self::Error> {
             self.seen.lock().unwrap().push(stamped.stamp().clone());
             if self.failed.swap(true, Ordering::SeqCst) {
                 Ok(())
@@ -670,13 +729,10 @@ mod tests {
         store: Arc<MemoryStore<AnyChunkSet<4096>>>,
     }
 
-    impl ChunkPut<StampedChunk<Verified, Unvalidated>> for StoreSink {
+    impl ChunkPut<StampedChunk<Verified, Validated>> for StoreSink {
         type Error = Infallible;
 
-        async fn put(
-            &self,
-            stamped: StampedChunk<Verified, Unvalidated>,
-        ) -> Result<(), Self::Error> {
+        async fn put(&self, stamped: StampedChunk<Verified, Validated>) -> Result<(), Self::Error> {
             let (chunk, _stamp) = stamped.into_parts();
             ChunkPut::put(&self.store, chunk).await
         }
@@ -705,8 +761,7 @@ mod tests {
             // Depth 20 / bucket depth 16: capacity 16; 1 MiB of zeros is 256
             // identical leaves in one bucket.
             let sink = CountingSink::default();
-            let store =
-                StampedPut::from_signer(issuer(20), PrivateKeySigner::random(), sink.clone());
+            let store = stamped(20, owner_key, sink.clone());
             let data = vec![0u8; 1 << 20];
 
             File::<_, 4096>::new(store.clone(), Policy::DEFAULT)
@@ -735,13 +790,52 @@ mod tests {
         });
     }
 
+    /// The validated claim is checkable: every stamp the decorator delivers
+    /// also recovers to the batch owner the long way.
+    #[test]
+    fn every_delivered_pair_validates_against_the_batch() {
+        run(async {
+            let batch = batch_at_depth(key(1).address(), BatchId::ZERO, 20);
+            let sink = CountingSink::default();
+            let store = stamped(20, owner_key, sink.clone());
+
+            store.put(sealed(b"paid")).await.unwrap();
+            store.put(sealed(b"paid twice")).await.unwrap();
+
+            let seen = sink.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            for (address, stamp) in seen.iter() {
+                StampedAddress::new(*address, stamp.clone())
+                    .validate(&batch)
+                    .expect("the issued stamp pays for the address it is paired with");
+            }
+        });
+    }
+
+    #[test]
+    fn construction_refuses_a_signer_bound_to_another_batch() {
+        let elsewhere = batch_at_depth(key(1).address(), BatchId::new([0xEE; 32]), 20);
+        let bound = BatchSigner::from_signer(key(1), elsewhere).unwrap();
+
+        let refused = StampedPut::new(issuer(20), bound, CountingSink::default()).unwrap_err();
+        assert!(matches!(refused, IssuerError::BatchMismatch { .. }));
+    }
+
+    #[test]
+    fn construction_refuses_a_signer_that_does_not_own_the_batch() {
+        let batch = batch_at_depth(key(1).address(), BatchId::ZERO, 20);
+
+        let refused =
+            StampedPut::from_signer(issuer(20), key(2), CountingSink::default(), batch).unwrap_err();
+        assert!(matches!(refused, IssuerError::NotBatchOwner { .. }));
+    }
+
     #[test]
     fn issued_bound_off_reintroduces_bucket_refusal() {
         run(async {
             // Depth 17 / bucket depth 16: two slots per bucket.
             let sink = CountingSink::default();
-            let store = StampedPut::from_signer(issuer(17), PrivateKeySigner::random(), sink)
-                .with_issued_bound(IssuedBound::Off);
+            let store = stamped(17, owner_key, sink).with_issued_bound(IssuedBound::Off);
             let chunk = sealed(b"repetitive");
 
             store.put(chunk.clone()).await.unwrap();
@@ -758,8 +852,7 @@ mod tests {
     fn duplicate_put_short_circuits_after_store() {
         run(async {
             let sink = CountingSink::default();
-            let store =
-                StampedPut::from_signer(issuer(20), PrivateKeySigner::random(), sink.clone());
+            let store = stamped(20, owner_key, sink.clone());
             let chunk = sealed(b"dedup");
 
             store.put(chunk.clone()).await.unwrap();
@@ -774,8 +867,7 @@ mod tests {
     fn clones_share_one_issuer_and_issued_map() {
         run(async {
             let sink = CountingSink::default();
-            let store =
-                StampedPut::from_signer(issuer(20), PrivateKeySigner::random(), sink.clone());
+            let store = stamped(20, owner_key, sink.clone());
             let clone = store.clone();
             let chunk = sealed(b"shared");
 
@@ -791,8 +883,7 @@ mod tests {
     fn sink_refusal_keeps_the_signed_stamp_for_reuse() {
         run(async {
             let sink = FailOnceSink::default();
-            let store =
-                StampedPut::from_signer(issuer(20), PrivateKeySigner::random(), sink.clone());
+            let store = stamped(20, owner_key, sink.clone());
             let chunk = sealed(b"retry");
 
             let error = store.put(chunk.clone()).await.unwrap_err();
@@ -817,7 +908,7 @@ mod tests {
         run(async {
             // Depth 17 / bucket depth 16: two slots per bucket.
             let sink = CountingSink::default();
-            let store = StampedPut::from_signer(issuer(17), FailingSigner, sink.clone());
+            let store = stamped(17, FailingSigner, sink.clone());
             let chunk = sealed(b"burn");
 
             for _ in 0..2 {
@@ -844,9 +935,8 @@ mod tests {
     fn bounded_map_tracks_only_the_first_addresses() {
         run(async {
             let sink = CountingSink::default();
-            let store =
-                StampedPut::from_signer(issuer(20), PrivateKeySigner::random(), sink.clone())
-                    .with_issued_bound(IssuedBound::AtMost(NonZeroUsize::new(1).unwrap()));
+            let store = stamped(20, owner_key, sink.clone())
+                .with_issued_bound(IssuedBound::AtMost(NonZeroUsize::new(1).unwrap()));
             let tracked = sealed(b"tracked");
             let tracked_address = *tracked.address();
             let untracked = sealed(b"untracked");
@@ -877,7 +967,7 @@ mod tests {
     fn get_and_has_delegate_to_the_inner_sink() {
         run(async {
             let sink = StoreSink::default();
-            let store = StampedPut::from_signer(issuer(20), PrivateKeySigner::random(), sink);
+            let store = stamped(20, owner_key, sink);
             let chunk = sealed(b"delegate");
             let address = *chunk.address();
 
@@ -901,25 +991,23 @@ mod tests {
         use std::time::{Duration, Instant};
 
         /// Signs after a delay, pinning the pending window open.
-        struct SlowSigner;
+        struct SlowSigner(Address);
 
-        impl SignerSync for SlowSigner {
-            fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-                Ok(fixed_signature())
+        impl crate::pipeline::signer::sealed::Sealed for SlowSigner {}
+
+        impl SignPrehash for SlowSigner {
+            fn address(&self) -> Address {
+                self.0
             }
 
-            fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+            fn sign_prehash(&self, _prehash: &B256) -> Result<Signature, SigningError> {
                 thread::sleep(Duration::from_millis(50));
                 Ok(fixed_signature())
-            }
-
-            fn chain_id_sync(&self) -> Option<u64> {
-                None
             }
         }
 
         let sink = CountingSink::default();
-        let store = StampedPut::from_signer(issuer(20), SlowSigner, sink.clone());
+        let store = stamped(20, SlowSigner, sink.clone());
         let chunk = sealed(b"concurrent");
 
         let mut owner = pin!(store.put(chunk.clone()));

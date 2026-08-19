@@ -264,10 +264,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::signer::sealed::Sealed;
     use crate::{BatchId, BucketDepth, MemoryIssuer, StampError};
     use alloc::vec::Vec;
-    use alloy_primitives::{B256, Signature, U256};
-    use alloy_signer::SignerSync;
+    use alloy_primitives::{Address, B256, Signature, U256};
     use core::sync::atomic::{AtomicUsize, Ordering};
     use nectar_governor::Window;
     use nectar_tasks::TaskHandle;
@@ -298,69 +298,63 @@ mod tests {
     /// Deterministic signature without ECDSA cost.
     struct FixedSigner;
 
-    impl SignerSync for FixedSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
+    impl Sealed for FixedSigner {}
+
+    impl SignPrehash for FixedSigner {
+        fn address(&self) -> Address {
+            Address::ZERO
         }
 
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+        fn sign_prehash(&self, _prehash: &B256) -> Result<Signature, SigningError> {
             Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
         }
     }
 
     /// Fails every signing call.
     struct FailingSigner;
 
-    impl SignerSync for FailingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
+    impl Sealed for FailingSigner {}
+
+    impl SignPrehash for FailingSigner {
+        fn address(&self) -> Address {
+            Address::ZERO
         }
 
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
-            Err(alloy_signer::Error::message("signer offline"))
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
+        fn sign_prehash(&self, _prehash: &B256) -> Result<Signature, SigningError> {
+            Err(SigningError::Signer(alloy_signer::Error::message(
+                "signer offline",
+            )))
         }
     }
 
     /// Panics on every signing call.
     struct PanickingSigner;
 
-    impl SignerSync for PanickingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            panic!("signer panicked")
+    impl Sealed for PanickingSigner {}
+
+    impl SignPrehash for PanickingSigner {
+        fn address(&self) -> Address {
+            Address::ZERO
         }
 
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+        fn sign_prehash(&self, _prehash: &B256) -> Result<Signature, SigningError> {
             panic!("signer panicked")
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
         }
     }
 
     /// Blocks each signing call until released over the channel.
     struct BlockingSigner(Mutex<mpsc::Receiver<()>>);
 
-    impl SignerSync for BlockingSigner {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
+    impl Sealed for BlockingSigner {}
+
+    impl SignPrehash for BlockingSigner {
+        fn address(&self) -> Address {
+            Address::ZERO
         }
 
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+        fn sign_prehash(&self, _prehash: &B256) -> Result<Signature, SigningError> {
             let _ = self.0.lock().unwrap().recv();
             Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
         }
     }
 
@@ -394,21 +388,19 @@ mod tests {
         max: Arc<AtomicUsize>,
     }
 
-    impl SignerSync for Gauge {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
+    impl Sealed for Gauge {}
+
+    impl SignPrehash for Gauge {
+        fn address(&self) -> Address {
+            Address::ZERO
         }
 
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+        fn sign_prehash(&self, _prehash: &B256) -> Result<Signature, SigningError> {
             let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
             self.max.fetch_max(now, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(1));
             self.current.fetch_sub(1, Ordering::SeqCst);
             Ok(fixed_signature())
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
         }
     }
 
@@ -486,7 +478,7 @@ mod tests {
     #[test]
     fn multiset_one_to_one_unordered_inline() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
+        let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
         let input = addresses(50);
 
         let mut sink = pipeline.sink(&issuer, InlineSpawner);
@@ -505,7 +497,7 @@ mod tests {
     #[test]
     fn multiset_one_to_one_unordered_threaded() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
+        let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
         let input = addresses(50);
 
         let mut sink = pipeline.sink(&issuer, ThreadSpawner);
@@ -530,7 +522,7 @@ mod tests {
             current: Arc::new(AtomicUsize::new(0)),
             max: Arc::clone(&max),
         };
-        let pipeline = StampPipeline::from_signer(gauge).with_window(window(4));
+        let pipeline = StampPipeline::new(gauge).with_window(window(4));
 
         let mut sink = pipeline.sink(&issuer, ThreadSpawner);
         let results = drive(&mut sink, &addresses(64), 4);
@@ -552,7 +544,7 @@ mod tests {
         // depth=17, bucket_depth=16 gives 2 slots per bucket.
         let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
+        let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
         let address = ChunkAddress::new([0xAB; 32]);
 
         let mut sink = pipeline.sink(&issuer, InlineSpawner);
@@ -574,7 +566,7 @@ mod tests {
     #[test]
     fn fail_fast_queues_not_admitted_after_systemic_failure() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(FailingSigner).with_window(window(4));
+        let pipeline = StampPipeline::new(FailingSigner).with_window(window(4));
         let input = addresses(10);
 
         let mut sink = pipeline.sink(&issuer, InlineSpawner);
@@ -605,7 +597,7 @@ mod tests {
     #[test]
     fn fail_fast_off_yields_every_error() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(FailingSigner)
+        let pipeline = StampPipeline::new(FailingSigner)
             .with_window(window(4))
             .with_fail_fast(false);
 
@@ -626,7 +618,7 @@ mod tests {
     #[test]
     fn panicking_signer_keeps_one_to_one_without_hanging() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(PanickingSigner).with_window(window(4));
+        let pipeline = StampPipeline::new(PanickingSigner).with_window(window(4));
         let input = addresses(10);
 
         let mut sink = pipeline.sink(&issuer, InlineSpawner);
@@ -652,7 +644,7 @@ mod tests {
     #[test]
     fn dropped_unrun_task_yields_dropped_without_hanging() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
+        let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
         let input = addresses(10);
 
         let mut sink = pipeline.sink(&issuer, DroppingSpawner);
@@ -679,7 +671,7 @@ mod tests {
     #[test]
     fn evaporated_permits_release_their_window_tokens() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(FixedSigner)
+        let pipeline = StampPipeline::new(FixedSigner)
             .with_window(window(2))
             .with_fail_fast(false);
 
@@ -710,7 +702,7 @@ mod tests {
     fn a_sink_dropped_mid_flight_burns_only_the_parked_slots() {
         let issuer = issuer24();
         let (release_tx, release_rx) = mpsc::channel();
-        let pipeline = StampPipeline::from_signer(BlockingSigner(Mutex::new(release_rx)))
+        let pipeline = StampPipeline::new(BlockingSigner(Mutex::new(release_rx)))
             .with_window(window(2));
 
         {
@@ -728,7 +720,7 @@ mod tests {
         assert_eq!(issuer.stamps_issued(), Some(2));
 
         // A fresh sink over the same issuer admits a full window.
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(2));
+        let pipeline = StampPipeline::new(FixedSigner).with_window(window(2));
         let mut sink = pipeline.sink(&issuer, InlineSpawner);
         let results = drive(&mut sink, &addresses(4), 2);
         assert_eq!(results.len(), 4);
@@ -739,7 +731,7 @@ mod tests {
     #[test]
     fn pause_parks_admission_and_resume_wakes() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
+        let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
         let address = ChunkAddress::new([0xCD; 32]);
 
         let mut sink = pipeline.sink(&issuer, InlineSpawner);
@@ -770,7 +762,7 @@ mod tests {
     fn completion_wakes_latest_registration_not_first() {
         let (release_tx, release_rx) = mpsc::channel();
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(BlockingSigner(Mutex::new(release_rx)))
+        let pipeline = StampPipeline::new(BlockingSigner(Mutex::new(release_rx)))
             .with_window(window(4));
         let address = ChunkAddress::new([0xEF; 32]);
 
@@ -800,7 +792,7 @@ mod tests {
     #[test]
     fn dropped_sink_abandons_at_most_one_window() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
+        let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
 
         {
             let mut sink = pipeline.sink(&issuer, InlineSpawner);
@@ -822,7 +814,7 @@ mod tests {
     #[test]
     fn drained_sink_reports_none_and_stays_usable() {
         let issuer = issuer24();
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(4));
+        let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
 
         let mut sink = pipeline.sink(&issuer, InlineSpawner);
         assert!(matches!(sink.poll_next(&mut noop_cx()), Poll::Ready(None)));
