@@ -436,7 +436,9 @@ mod tests {
         let pipeline =
             StampPipeline::new(bound(BlockingSigner(Mutex::new(blocked)))).with_window(window(16));
         let sink = CountingSink::default();
-        let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(2)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, ThreadSpawner, sink.clone(), window(2))
+            .unwrap();
 
         nectar_testing::run(async {
             for index in 0..16u32 {
@@ -463,7 +465,9 @@ mod tests {
         let issuer = issuer(24);
         let pipeline = StampPipeline::new(bound(FixedSigner)).with_window(window(4));
         let sink = ParkingSink::default();
-        let staged = pipeline.staged_put(&issuer, InlineSpawner, sink.clone(), window(2)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, InlineSpawner, sink.clone(), window(2))
+            .unwrap();
 
         let mut admitted = 0;
         for index in 0..64u32 {
@@ -515,7 +519,9 @@ mod tests {
         let issuer = issuer(24);
         let pipeline = StampPipeline::new(bound(FixedSigner)).with_window(window(1));
         let sink = ParkingSink::default();
-        let staged = pipeline.staged_put(&issuer, InlineSpawner, sink.clone(), window(1)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, InlineSpawner, sink.clone(), window(1))
+            .unwrap();
         filled(&staged, &sink);
 
         let peer = Arc::new(WakeCount::default());
@@ -545,7 +551,9 @@ mod tests {
         let issuer = issuer(24);
         let pipeline = StampPipeline::new(bound(FixedSigner)).with_window(window(1));
         let sink = ParkingSink::default();
-        let staged = pipeline.staged_put(&issuer, InlineSpawner, sink.clone(), window(1)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, InlineSpawner, sink.clone(), window(1))
+            .unwrap();
         filled(&staged, &sink);
 
         let peer = Arc::new(WakeCount::default());
@@ -575,7 +583,9 @@ mod tests {
         let issuer = issuer(20);
         let pipeline = StampPipeline::new(bound(FixedSigner));
         let sink = CountingSink::default();
-        let staged = pipeline.staged_put(&issuer, InlineSpawner, sink.clone(), window(4)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, InlineSpawner, sink.clone(), window(4))
+            .unwrap();
 
         nectar_testing::run(async {
             let repeated = chunk(b"dedup");
@@ -621,7 +631,9 @@ mod tests {
     fn a_refused_delivery_surfaces_once_and_then_poisons() {
         let issuer = issuer(20);
         let pipeline = StampPipeline::new(bound(FixedSigner));
-        let staged = pipeline.staged_put(&issuer, InlineSpawner, RefusingSink, window(4)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, InlineSpawner, RefusingSink, window(4))
+            .unwrap();
 
         nectar_testing::run(async {
             let _ = staged.put(chunk(b"refused")).await;
@@ -642,7 +654,9 @@ mod tests {
         let (gauge, _peak) = Gauge::new(Duration::from_millis(1));
         let pipeline = StampPipeline::new(bound(gauge)).with_window(window(4));
         let sink = CountingSink::default();
-        let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(1)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, ThreadSpawner, sink.clone(), window(1))
+            .unwrap();
 
         nectar_testing::run(async {
             let mut puts: FuturesUnordered<_> = (0..32u32)
@@ -666,7 +680,9 @@ mod tests {
         let (gauge, _peak) = Gauge::new(Duration::from_millis(1));
         let pipeline = StampPipeline::new(bound(gauge)).with_window(window(4));
         let sink = YieldingSink::default();
-        let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(1)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, ThreadSpawner, sink.clone(), window(1))
+            .unwrap();
 
         std::thread::scope(|scope| {
             for task in 0..4u32 {
@@ -694,7 +710,9 @@ mod tests {
         let issuer = issuer(20);
         let pipeline = StampPipeline::new(bound(FixedSigner));
         let sink = CountingSink::default();
-        let staged = pipeline.staged_put(&issuer, InlineSpawner, sink.clone(), window(4)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, InlineSpawner, sink.clone(), window(4))
+            .unwrap();
 
         nectar_testing::run(async {
             let data = alloc::vec![0u8; 1 << 20];
@@ -726,7 +744,9 @@ mod tests {
         let (gauge, peak) = Gauge::new(Duration::from_millis(50));
         let pipeline = StampPipeline::new(bound(gauge)).with_window(window(16));
         let sink = CountingSink::default();
-        let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(2)).unwrap();
+        let staged = pipeline
+            .staged_put(&issuer, ThreadSpawner, sink.clone(), window(2))
+            .unwrap();
 
         nectar_testing::run(async {
             let data: Vec<u8> = (0..(128u32 * 1024))

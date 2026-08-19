@@ -6,14 +6,13 @@
 //! buffer at one sign window, so a stalled drain parks
 //! [`SignStage::poll_admit`] rather than growing the buffer, and the
 //! [`Stream`] ends only once [`SignStage::close`] has run and the stage has
-//! drained. Admission and the drain must run in one task: a full buffer and
-//! an open, empty stage both park without a wake of their own, because only
-//! the peer call can free them.
+//! drained. A full buffer parks the admitter and the drain wakes it, so
+//! admission and the drain may run in separate tasks.
 
 use alloc::collections::{BTreeMap, VecDeque};
 use core::fmt;
 use core::pin::Pin;
-use core::task::{Context, Poll, ready};
+use core::task::{Context, Poll, Waker, ready};
 
 use futures_util::stream::Stream;
 use nectar_clock::Clock;
@@ -67,6 +66,7 @@ where
             window: self.window(),
             awaiting: BTreeMap::new(),
             sealed: VecDeque::new(),
+            admit: None,
             closed: false,
         })
     }
@@ -86,6 +86,8 @@ pub struct SignStage<'p, Sg, C, I: ?Sized, S, const BODY_SIZE: usize = DEFAULT_B
     awaiting: BTreeMap<ChunkAddress, VecDeque<Chunk<Verified, AnyChunkSet<BODY_SIZE>>>>,
     /// Sealed pairs awaiting the drain, capped at one sign window.
     sealed: VecDeque<SealResult<BODY_SIZE>>,
+    /// Parked by `poll_admit` when the buffer is full; only a drain frees it.
+    admit: Option<Waker>,
     closed: bool,
 }
 
@@ -173,6 +175,7 @@ where
             return Poll::Ready(());
         };
         if self.room() == 0 {
+            self.admit = Some(cx.waker().clone());
             return Poll::Pending;
         }
         let address = *chunk.address();
@@ -191,6 +194,9 @@ where
     pub fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<SealResult<BODY_SIZE>>> {
         self.harvest(cx);
         if let Some(sealed) = self.sealed.pop_front() {
+            if let Some(waker) = self.admit.take() {
+                waker.wake();
+            }
             return Poll::Ready(Some(sealed));
         }
         if self.closed && self.is_drained() {
@@ -256,11 +262,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::super::testutil::{
-        FailingSigner, FixedSigner, InlineSpawner, TestChunk, bound, chunk, issuer24, noop_cx,
-        sorted, window,
+        FailingSigner, FixedSigner, InlineSpawner, TestChunk, WakeCount, bound, chunk, issuer24,
+        noop_cx, sorted, window,
     };
     use super::*;
     use crate::{BatchId, BucketDepth, MemoryIssuer, StampError};
+    use alloc::sync::Arc;
     use alloc::vec::Vec;
     use futures_util::StreamExt;
     use std::time::{Duration, Instant};
@@ -399,6 +406,38 @@ mod tests {
         // One window buffered, and no admission ran past it.
         assert_eq!(admitted, 4);
         assert_eq!(issuer.stamps_issued(), Some(4));
+    }
+
+    /// A full buffer parks the admitter with a wake of its own, so admission
+    /// and the drain need not share a task.
+    #[test]
+    fn a_drain_wakes_the_parked_admitter() {
+        let issuer = issuer24();
+        let pipeline = StampPipeline::new(bound(FixedSigner)).with_window(window(4));
+
+        let mut stage = pipeline.sign_stage(&issuer, InlineSpawner).unwrap();
+        for index in 0..64u32 {
+            let mut slot = Some(chunk(&index.to_be_bytes()));
+            if stage.poll_admit(&mut noop_cx(), &mut slot).is_pending() {
+                break;
+            }
+        }
+
+        // Park the admitter on a waker of its own, not the drain's.
+        let admitter = Arc::new(WakeCount::default());
+        let mut slot = Some(chunk(b"parked"));
+        let waker = Waker::from(Arc::clone(&admitter));
+        assert!(
+            stage
+                .poll_admit(&mut Context::from_waker(&waker), &mut slot)
+                .is_pending()
+        );
+        assert!(slot.is_some(), "a parked admission keeps its chunk");
+        assert_eq!(admitter.count(), 0);
+
+        // Draining one frees a slot, which must wake the parked admitter.
+        assert!(stage.poll_next(&mut noop_cx()).is_ready());
+        assert_eq!(admitter.count(), 1, "the drain woke the parked admitter");
     }
 
     #[test]
