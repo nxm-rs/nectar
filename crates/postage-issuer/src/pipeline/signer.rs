@@ -65,9 +65,9 @@ impl<S: Signer> Eip191<S> {
 }
 
 impl<S> Eip191<S> {
-    /// Wraps `signer` at a stated address, for a signer that reports none.
-    #[cfg(test)]
-    pub(crate) const fn with_address(signer: S, address: Address) -> Self {
+    /// Wraps `signer` at a stated address, for a signer that reports none of
+    /// its own, such as a remote signer behind a service.
+    pub const fn with_address(signer: S, address: Address) -> Self {
         Self { signer, address }
     }
 

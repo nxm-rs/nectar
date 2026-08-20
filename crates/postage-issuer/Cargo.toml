@@ -39,7 +39,7 @@ criterion = { workspace = true }
 # The upload pipeline bench measures the pooled batch ingest, so `rayon` here
 # is load-bearing: without it the split falls back to the sequential path.
 nectar-file = { workspace = true, features = ["rayon"] }
-nectar-testing = { workspace = true, features = ["fixtures"] }
+nectar-testing = { workspace = true, features = ["bench", "fixtures"] }
 proptest = { workspace = true }
 rand = { workspace = true }
 alloy-signer-local = { workspace = true }
@@ -104,6 +104,11 @@ harness = false
 [[bench]]
 name = "upload_pipeline"
 harness = false
+
+[[example]]
+name = "wrapped-split-perf"
+path = "examples/wrapped-split-perf/main.rs"
+test = true
 
 # `parallel` and `unsync` are mutually exclusive, so the doc build lists
 # features explicitly rather than enabling all at once.
