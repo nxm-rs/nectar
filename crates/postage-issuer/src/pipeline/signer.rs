@@ -50,17 +50,30 @@ pub trait BoundSigner: SignPrehash {
 
 /// EIP-191 personal-message adapter over a synchronous signer.
 #[derive(Debug, Clone)]
-pub struct Eip191<S>(S);
+pub struct Eip191<S> {
+    signer: S,
+    address: Address,
+}
+
+#[cfg(feature = "std")]
+impl<S: Signer> Eip191<S> {
+    /// Wraps `signer`, reading its address once.
+    pub fn new(signer: S) -> Self {
+        let address = signer.address();
+        Self { signer, address }
+    }
+}
 
 impl<S> Eip191<S> {
-    /// Wraps `signer`.
-    pub const fn new(signer: S) -> Self {
-        Self(signer)
+    /// Wraps `signer` at a stated address, for a signer that reports none.
+    #[cfg(test)]
+    pub(crate) const fn with_address(signer: S, address: Address) -> Self {
+        Self { signer, address }
     }
 
     /// Returns the wrapped signer.
     pub fn into_inner(self) -> S {
-        self.0
+        self.signer
     }
 }
 
@@ -74,29 +87,29 @@ fn eip191_sign<S: SignerSync>(signer: &S, prehash: &B256) -> Result<Signature, S
 }
 
 #[cfg(all(feature = "std", not(feature = "sign-parallel")))]
-impl<S: SignerSync + Signer> SignPrehash for Eip191<S> {
+impl<S: SignerSync> SignPrehash for Eip191<S> {
     fn address(&self) -> Address {
-        self.0.address()
+        self.address
     }
 
     fn sign_prehash(&self, prehash: &B256) -> Result<Signature, SigningError> {
-        eip191_sign(&self.0, prehash)
+        eip191_sign(&self.signer, prehash)
     }
 }
 
 #[cfg(feature = "sign-parallel")]
-impl<S: SignerSync + Signer + Sync> SignPrehash for Eip191<S> {
+impl<S: SignerSync + Sync> SignPrehash for Eip191<S> {
     fn address(&self) -> Address {
-        self.0.address()
+        self.address
     }
     fn sign_prehash(&self, prehash: &B256) -> Result<Signature, SigningError> {
-        eip191_sign(&self.0, prehash)
+        eip191_sign(&self.signer, prehash)
     }
 
     fn sign_prehashes(&self, prehashes: &[B256]) -> Vec<Result<Signature, SigningError>> {
         prehashes
             .par_iter()
-            .map(|prehash| eip191_sign(&self.0, prehash))
+            .map(|prehash| eip191_sign(&self.signer, prehash))
             .collect()
     }
 }
@@ -127,7 +140,7 @@ impl<Sg: SignPrehash, S: SwarmSpec> BatchSigner<Sg, S> {
 }
 
 #[cfg(feature = "std")]
-impl<K: SignerSync + Signer, S: SwarmSpec> BatchSigner<Eip191<K>, S> {
+impl<K: SignerSync + Signer + Sync, S: SwarmSpec> BatchSigner<Eip191<K>, S> {
     /// [`bind`](Self::bind) over the [`Eip191`] adapter, so a synchronous
     /// signer plugs in directly.
     ///
@@ -178,6 +191,7 @@ where
         });
     }
     Ok(())
+}
 
 const fn seal(digest: &StampDigest, signature: Signature) -> Stamp {
     Stamp::with_index(digest.batch_id, digest.index, digest.timestamp, signature)
@@ -212,53 +226,17 @@ where
             None => Err(SigningError::Dropped),
         })
         .collect()
-
-    #[test]
-    fn bind_accepts_the_batch_owner() {
-        let signer = key(1);
-        let batch = batch_owned_by(signer.address(), BatchId::ZERO);
-
-        let bound = BatchSigner::from_signer(signer.clone(), batch.clone()).unwrap();
-        assert_eq!(bound.address(), signer.address());
-        assert_eq!(bound.batch(), &batch);
-    }
-
-    #[test]
-    fn bind_refuses_a_signer_that_does_not_own_the_batch() {
-        let owner = key(1).address();
-        let stranger = key(2);
-        let batch = batch_owned_by(owner, BatchId::ZERO);
-
-        let refused = BatchSigner::from_signer(stranger.clone(), batch).unwrap_err();
-        let IssuerError::NotBatchOwner {
-            owner: expected,
-            signer,
-        } = refused
-        else {
-            panic!("the owner check must refuse a stranger");
-        };
-        assert_eq!(expected, owner);
-        assert_eq!(signer, stranger.address());
-    }
-
-    #[test]
-    fn the_adapter_reports_the_wrapped_key() {
-        let signer = PrivateKeySigner::random();
-        let address = signer.address();
-
-        assert_eq!(Eip191::new(signer).address(), address);
-    }
 }
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::testing::{batch_owned_by, key};
-    use nectar_postage::BatchId;
     use alloc::sync::Arc;
     use alloy_primitives::U256;
     use alloy_signer_local::PrivateKeySigner;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use nectar_postage::BatchId;
     use std::time::Duration;
 
     fn prehashes(n: usize) -> Vec<B256> {
@@ -291,10 +269,13 @@ mod tests {
 
     fn peak_concurrency(batch: usize) -> usize {
         let max = Arc::new(AtomicUsize::new(0));
-        let signer = Eip191::new(Gauge {
-            current: AtomicUsize::new(0),
-            max: Arc::clone(&max),
-        });
+        let signer = Eip191::with_address(
+            Gauge {
+                current: AtomicUsize::new(0),
+                max: Arc::clone(&max),
+            },
+            Address::ZERO,
+        );
 
         let signed = signer.sign_prehashes(&prehashes(batch));
 
@@ -358,5 +339,41 @@ mod tests {
         let signer = Eip191::new(PrivateKeySigner::random());
 
         assert!(signer.sign_prehashes(&[]).is_empty());
+    }
+
+    #[test]
+    fn bind_accepts_the_batch_owner() {
+        let signer = key(1);
+        let batch = batch_owned_by(signer.address(), BatchId::ZERO);
+
+        let bound = BatchSigner::from_signer(signer.clone(), batch.clone()).unwrap();
+        assert_eq!(bound.address(), signer.address());
+        assert_eq!(bound.batch(), &batch);
+    }
+
+    #[test]
+    fn bind_refuses_a_signer_that_does_not_own_the_batch() {
+        let owner = key(1).address();
+        let stranger = key(2);
+        let batch = batch_owned_by(owner, BatchId::ZERO);
+
+        let refused = BatchSigner::from_signer(stranger.clone(), batch).unwrap_err();
+        let IssuerError::NotBatchOwner {
+            owner: expected,
+            signer,
+        } = refused
+        else {
+            panic!("the owner check must refuse a stranger");
+        };
+        assert_eq!(expected, owner);
+        assert_eq!(signer, stranger.address());
+    }
+
+    #[test]
+    fn the_adapter_reports_the_wrapped_key() {
+        let signer = PrivateKeySigner::random();
+        let address = signer.address();
+
+        assert_eq!(Eip191::new(signer).address(), address);
     }
 }

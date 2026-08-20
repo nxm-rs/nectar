@@ -325,7 +325,7 @@ where
 impl<I, K, P> StampedPut<I, BatchSigner<Eip191<K>, I::Spec>, P>
 where
     I: StampIssuer,
-    K: SignerSync + Signer,
+    K: SignerSync + Signer + Sync,
 {
     /// [`new`](Self::new) over the [`Eip191`] adapter, binding `signer` to
     /// the batch it owns.

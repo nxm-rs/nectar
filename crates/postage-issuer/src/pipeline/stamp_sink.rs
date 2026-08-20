@@ -304,6 +304,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::testutil::bound;
     use super::*;
     use crate::pipeline::signer::sealed::Sealed;
     use crate::{BatchId, BucketDepth, MemoryIssuer, StampError};
@@ -448,21 +449,21 @@ mod tests {
     /// Fails the nth call, succeeds on every other.
     struct FailsOnCall(usize, AtomicUsize);
 
-    impl SignerSync for FailsOnCall {
-        fn sign_hash_sync(&self, _hash: &B256) -> Result<Signature, alloy_signer::Error> {
-            Ok(fixed_signature())
+    impl Sealed for FailsOnCall {}
+
+    impl SignPrehash for FailsOnCall {
+        fn address(&self) -> Address {
+            Address::ZERO
         }
 
-        fn sign_message_sync(&self, _message: &[u8]) -> Result<Signature, alloy_signer::Error> {
+        fn sign_prehash(&self, _prehash: &B256) -> Result<Signature, SigningError> {
             if self.1.fetch_add(1, Ordering::SeqCst) == self.0 {
-                Err(alloy_signer::Error::message("one call fails"))
+                Err(SigningError::Signer(alloy_signer::Error::message(
+                    "one call fails",
+                )))
             } else {
                 Ok(fixed_signature())
             }
-        }
-
-        fn chain_id_sync(&self) -> Option<u64> {
-            None
         }
     }
 
@@ -908,7 +909,7 @@ mod tests {
     fn an_admission_batch_costs_one_task() {
         let issuer = issuer24();
         let spawns = Arc::new(AtomicUsize::new(0));
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(16));
+        let pipeline = StampPipeline::new(bound(FixedSigner)).with_window(window(16));
 
         let mut sink = pipeline.sink(&issuer, CountingSpawner(Arc::clone(&spawns)));
         sink.admit_batch(&addresses(16));
@@ -931,7 +932,7 @@ mod tests {
         let issuer: MemoryIssuer =
             MemoryIssuer::new(BatchId::ZERO, 17, BucketDepth::new(16).unwrap());
         let spawns = Arc::new(AtomicUsize::new(0));
-        let pipeline = StampPipeline::from_signer(FixedSigner).with_window(window(8));
+        let pipeline = StampPipeline::new(bound(FixedSigner)).with_window(window(8));
         let address = ChunkAddress::new([0xAB; 32]);
 
         let mut sink = pipeline.sink(&issuer, CountingSpawner(Arc::clone(&spawns)));
@@ -958,7 +959,7 @@ mod tests {
         let issuer = issuer24();
         // Mid-batch, so a fail-fast that only reads the head of a batch misses it.
         let pipeline =
-            StampPipeline::from_signer(FailsOnCall(3, AtomicUsize::new(0))).with_window(window(8));
+            StampPipeline::new(bound(FailsOnCall(3, AtomicUsize::new(0)))).with_window(window(8));
 
         let mut sink = pipeline.sink(&issuer, InlineSpawner);
         sink.admit_batch(&addresses(8));

@@ -156,7 +156,7 @@ impl<Sg> StampPipeline<Sg> {
 }
 
 #[cfg(feature = "std")]
-impl<S> StampPipeline<Eip191<S>> {
+impl<S: alloy_signer::Signer> StampPipeline<Eip191<S>> {
     /// [`new`](Self::new) over the [`Eip191`] adapter, so a synchronous
     /// signer plugs in directly.
     pub fn from_signer(signer: S) -> Self {
@@ -702,6 +702,16 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
             self.current.fetch_sub(1, Ordering::SeqCst);
             Ok(fixed_signature())
+        }
+
+        /// Mirrors the adapter: a batch overlaps where the host allows it.
+        #[cfg(feature = "sign-parallel")]
+        fn sign_prehashes(&self, prehashes: &[B256]) -> Vec<Result<Signature, SigningError>> {
+            use rayon::prelude::*;
+            prehashes
+                .par_iter()
+                .map(|prehash| self.sign_prehash(prehash))
+                .collect()
         }
     }
 
