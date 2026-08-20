@@ -27,7 +27,8 @@
 //!   output. `next` may block for one signer round-trip, so async callers
 //!   wrap iteration in a blocking task.
 //! - Dropping a [`Stamped`] abandons at most one window of allocated,
-//!   unsigned indices; issuer state is coherent at every yield point.
+//!   unsigned indices plus one window of signed results still queued; issuer
+//!   state is coherent at every yield point.
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -155,7 +156,7 @@ impl<Sg> StampPipeline<Sg> {
 }
 
 #[cfg(feature = "std")]
-impl<S> StampPipeline<Eip191<S>> {
+impl<S: alloy_signer::Signer> StampPipeline<Eip191<S>> {
     /// [`new`](Self::new) over the [`Eip191`] adapter, so a synchronous
     /// signer plugs in directly.
     pub fn from_signer(signer: S) -> Self {
@@ -702,6 +703,16 @@ mod tests {
             self.current.fetch_sub(1, Ordering::SeqCst);
             Ok(fixed_signature())
         }
+
+        /// Mirrors the adapter: a batch overlaps where the host allows it.
+        #[cfg(feature = "sign-parallel")]
+        fn sign_prehashes(&self, prehashes: &[B256]) -> Vec<Result<Signature, SigningError>> {
+            use rayon::prelude::*;
+            prehashes
+                .par_iter()
+                .map(|prehash| self.sign_prehash(prehash))
+                .collect()
+        }
     }
 
     /// Counts reads; always reports the same instant.
@@ -936,23 +947,27 @@ mod tests {
         }
     }
 
-    /// The inline engine signs lazily: admission allocates a window, but
-    /// each `next` performs exactly one signer round-trip.
+    /// One sign job per admission batch, not one per digest: a round-trip
+    /// covers the whole micro-batch, and the rest of it yields without one.
     #[cfg(not(feature = "parallel"))]
     #[test]
-    fn next_signs_one_digest_per_call() {
+    fn next_signs_one_admission_batch_per_call() {
         let issuer = issuer24();
         let calls = Arc::new(AtomicUsize::new(0));
         let pipeline =
             StampPipeline::new(CountingSigner(Arc::clone(&calls))).with_window(window(8));
 
         let mut stream = pipeline.stamp(&issuer, addresses(20));
-        for expected in 1..=5 {
+        assert!(stream.next().is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 8);
+
+        for _ in 0..7 {
             assert!(stream.next().is_some());
-            assert_eq!(calls.load(Ordering::SeqCst), expected);
         }
-        drop(stream);
-        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        assert_eq!(calls.load(Ordering::SeqCst), 8);
+
+        assert!(stream.next().is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 16);
     }
 
     #[test]
@@ -995,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn dropped_stream_abandons_at_most_one_window() {
+    fn dropped_stream_abandons_at_most_two_windows() {
         let issuer = issuer24();
         let pipeline = StampPipeline::new(FixedSigner).with_window(window(4));
 
@@ -1006,9 +1021,10 @@ mod tests {
             }
         }
 
-        // At most the three yields plus one window were allocated.
+        // At most the three yields, one signed window buffered behind them and
+        // one window in flight.
         let allocated = issuer.stamps_issued().unwrap();
-        assert!((3..=7).contains(&allocated), "allocated {allocated}");
+        assert!((3..=11).contains(&allocated), "allocated {allocated}");
 
         // The issuer stays coherent for a fresh run.
         let results: Vec<_> = pipeline.stamp(&issuer, addresses(5)).collect();
@@ -1017,30 +1033,33 @@ mod tests {
         assert_eq!(issuer.stamps_issued(), Some(allocated + 5));
     }
 
+    /// Every stamp of a batch carries the signature over its own digest.
     #[test]
-    fn eip191_signature_recovers_to_signer() {
+    fn eip191_signatures_recover_to_signer_across_a_batch() {
         use nectar_postage::{StampDigest, StampIndex};
 
         let issuer = issuer24();
         let signer = PrivateKeySigner::random();
         let signer_address = signer.address();
-        let pipeline = StampPipeline::from_signer(signer);
-        let address = ChunkAddress::from(B256::random());
+        let pipeline = StampPipeline::from_signer(signer).with_window(window(8));
 
-        let results: Vec<_> = pipeline.stamp(&issuer, [address]).collect();
+        let results: Vec<_> = pipeline.stamp(&issuer, addresses(8)).collect();
 
-        let stamp = results[0].result.as_ref().unwrap();
-        let digest = StampDigest::new(
-            address,
-            stamp.batch(),
-            StampIndex::new(stamp.bucket(), stamp.index()),
-            stamp.timestamp(),
-        );
-        let recovered = stamp
-            .signature()
-            .recover_address_from_msg(digest.to_prehash().as_slice())
-            .unwrap();
-        assert_eq!(recovered, signer_address);
+        assert_eq!(results.len(), 8);
+        for result in &results {
+            let stamp = result.result.as_ref().unwrap();
+            let digest = StampDigest::new(
+                result.address,
+                stamp.batch(),
+                StampIndex::new(stamp.bucket(), stamp.index()),
+                stamp.timestamp(),
+            );
+            let recovered = stamp
+                .signature()
+                .recover_address_from_msg(digest.to_prehash().as_slice())
+                .unwrap();
+            assert_eq!(recovered, signer_address);
+        }
     }
 
     #[test]

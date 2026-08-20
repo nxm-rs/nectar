@@ -71,8 +71,13 @@ parallel = [
 	"dep:rayon",
 	"nectar-postage/parallel",
 	"nectar-primitives/parallel",
+	"sign-parallel",
 	"std",
 ]
+
+# Signs an admission batch across the rayon pool; the wrapped signer must be
+# `Sync`. Off, the signer seam runs its serial default.
+sign-parallel = [ "dep:rayon", "std" ]
 
 # Single-thread send escape: relaxes the signer bounds in lockstep with the
 # clock and primitives markers.

@@ -30,7 +30,7 @@ use super::signer::Eip191;
 use super::signer::sign_digest;
 use super::signer::{BoundSigner, SignPrehash, allocates_from};
 #[cfg(feature = "std")]
-use super::task::sign_task;
+use super::task::sign_caught;
 use crate::error::{IssuerError, SigningError};
 use crate::issuer::StampIssuer;
 use crate::stamper::stamp_timestamp;
@@ -183,14 +183,13 @@ impl<I> Drop for DeliveryGuard<'_, I> {
     }
 }
 
-/// Signs one digest inline through the crate's sole panic boundary,
-/// converting a signer panic into [`SigningError::Dropped`].
+/// Signs one digest inline through the crate's sole panic boundary.
 #[cfg(all(feature = "std", not(feature = "parallel")))]
 fn sign_now<Sg: SignPrehash + ?Sized>(
     signer: &Sg,
     digest: &StampDigest,
 ) -> Result<Stamp, SigningError> {
-    sign_task(signer, digest).result
+    sign_caught(signer, digest)
 }
 
 /// Signs one digest inline. Without `std` there is no unwind boundary: a
@@ -326,7 +325,7 @@ where
 impl<I, K, P> StampedPut<I, BatchSigner<Eip191<K>, I::Spec>, P>
 where
     I: StampIssuer,
-    K: SignerSync + Signer,
+    K: SignerSync + Signer + Sync,
 {
     /// [`new`](Self::new) over the [`Eip191`] adapter, binding `signer` to
     /// the batch it owns.
@@ -477,7 +476,7 @@ where
         // sent, so waiters wake in the same order as an inline sign; a lost
         // job reads as a dropped signature.
         nectar_tasks::submit(move || {
-            let result = sign_task(signer.as_ref(), &digest).result;
+            let result = sign_caught(signer.as_ref(), &digest);
             let wakers = with_state(&shared, |state| resolve(state, &address, &result, tracked));
             wake_all(wakers);
             result
