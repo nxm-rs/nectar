@@ -10,8 +10,8 @@ use alloy_primitives::{B256, Signature, U256};
 use alloy_signer::SignerSync;
 use nectar_file::{File, Policy, PutWindow};
 use nectar_postage_issuer::{
-    BatchId, BucketDepth, IssuedBound, MemoryIssuer, StampPipeline, StampedChunk, StampedPut,
-    StampedPutError, Unvalidated, Window,
+    Batch, BatchId, BatchSigner, BucketDepth, Eip191, IssuedBound, MemoryIssuer, StampPipeline,
+    StampedChunk, StampedPut, StampedPutError, Validated, Window,
 };
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkPut, ContentChunk, DEFAULT_BODY_SIZE, Verified};
 use nectar_tasks::{BoxFuture, Spawn, TaskHandle};
@@ -26,7 +26,7 @@ const DEPTH: u8 = 26;
 const FULL_DEPTH: u8 = 17;
 
 type Bare = Chunk<Verified, AnyChunkSet<BODY>>;
-type Pair = StampedChunk<Verified, Unvalidated, BODY>;
+type Pair = StampedChunk<Verified, Validated, BODY>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Outcome {
@@ -173,6 +173,29 @@ fn issuer(depth: u8) -> MemoryIssuer {
     MemoryIssuer::new(BatchId::ZERO, depth, BucketDepth::new(16).unwrap())
 }
 
+/// The batch every arm allocates from, owned by the address the bench
+/// signers report.
+fn batch(depth: u8) -> Batch {
+    Batch::new(
+        BatchId::ZERO,
+        1_000,
+        100,
+        alloy_primitives::Address::ZERO,
+        depth,
+        BucketDepth::new(16).unwrap(),
+        true,
+    )
+}
+
+/// Wraps a bench signer, which reports no address of its own.
+fn bind<S: SignerSync + Sync>(signer: S, depth: u8) -> BatchSigner<Eip191<S>> {
+    BatchSigner::bind(
+        Eip191::with_address(signer, alloy_primitives::Address::ZERO),
+        batch(depth),
+    )
+    .unwrap()
+}
+
 const fn policy(puts: u16) -> Policy {
     Policy::DEFAULT.with_put_window(PutWindow::new(puts).unwrap())
 }
@@ -202,7 +225,7 @@ pub fn plain(data: &[u8], puts: u16) -> Outcome {
 pub fn stamped(data: &[u8], puts: u16, latency: Duration) -> Outcome {
     let signer = LatentSigner::new(latency);
     let sink = PairSink::default();
-    let store = StampedPut::from_signer(issuer(DEPTH), signer.clone(), sink.clone());
+    let store = StampedPut::new(issuer(DEPTH), bind(signer.clone(), DEPTH), sink.clone()).unwrap();
     let start = Instant::now();
     nectar_testing::run(File::<_, BODY>::new(&store, policy(puts)).save(data)).unwrap();
     Outcome {
@@ -216,9 +239,11 @@ pub fn stamped(data: &[u8], puts: u16, latency: Duration) -> Outcome {
 pub fn staged(data: &[u8], puts: u16, latency: Duration, signs: u16) -> Outcome {
     let signer = LatentSigner::new(latency);
     let issuer = issuer(DEPTH);
-    let pipeline = StampPipeline::from_signer(signer.clone()).with_window(window(signs));
+    let pipeline = StampPipeline::new(bind(signer.clone(), DEPTH)).with_window(window(signs));
     let sink = PairSink::default();
-    let staged = pipeline.staged_put(&issuer, ThreadSpawner, sink.clone(), window(puts));
+    let staged = pipeline
+        .staged_put(&issuer, ThreadSpawner, sink.clone(), window(puts))
+        .unwrap();
     let start = Instant::now();
     nectar_testing::run(async {
         File::<_, BODY>::new(&staged, policy(puts))
@@ -253,8 +278,13 @@ fn probe_input() -> (Bare, Bare) {
 pub fn stamped_refusal() -> Refusal {
     let (repeated, distinct) = probe_input();
     let sink = PairSink::default();
-    let store = StampedPut::from_signer(issuer(FULL_DEPTH), LatentSigner::default(), sink.clone())
-        .with_issued_bound(IssuedBound::Off);
+    let store = StampedPut::new(
+        issuer(FULL_DEPTH),
+        bind(LatentSigner::default(), FULL_DEPTH),
+        sink.clone(),
+    )
+    .unwrap()
+    .with_issued_bound(IssuedBound::Off);
 
     let shut = nectar_testing::run(async {
         for _ in 0..3 {
@@ -273,10 +303,12 @@ pub fn stamped_refusal() -> Refusal {
 pub fn staged_refusal() -> Refusal {
     let (repeated, distinct) = probe_input();
     let issuer = issuer(FULL_DEPTH);
-    let pipeline = StampPipeline::from_signer(LatentSigner::default()).with_window(window(4));
+    let pipeline =
+        StampPipeline::new(bind(LatentSigner::default(), FULL_DEPTH)).with_window(window(4));
     let sink = PairSink::default();
     let staged = pipeline
         .staged_put(&issuer, ThreadSpawner, sink.clone(), window(4))
+        .unwrap()
         .with_issued_bound(IssuedBound::Off);
 
     let shut = nectar_testing::run(async {
