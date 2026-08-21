@@ -204,7 +204,7 @@ pub enum DecodeError {
     Underrun(#[from] Underrun),
     /// The payload does not open with this format's magic and version; no
     /// other format is co-decoded.
-    #[error("not a mantaray 1.0 manifest: preamble {found:02X?}")]
+    #[error("not an ldb v1 manifest: preamble {found:02X?}")]
     NotAManifest {
         /// The two bytes found in place of the preamble.
         found: [u8; 2],

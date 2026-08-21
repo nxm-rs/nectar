@@ -1,4 +1,4 @@
-//! Fuzz the mantaray 1.0 key-value node decoder with raw attacker-controlled
+//! Fuzz the ldb v1 key-value node decoder with raw attacker-controlled
 //! bytes.
 //!
 //! `Node::decode` is the entry point through which untrusted node chunks

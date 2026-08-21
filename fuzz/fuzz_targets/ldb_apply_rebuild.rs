@@ -1,4 +1,4 @@
-//! Fuzz the mantaray 1.0 batch-apply history-independence property.
+//! Fuzz the ldb v1 batch-apply history-independence property.
 //!
 //! A base key set is built, then a fuzzed changeset of puts and deletes is
 //! folded in with `apply`. The oracle is that folding a changeset into a

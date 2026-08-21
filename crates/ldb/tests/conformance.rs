@@ -1,10 +1,10 @@
-//! Conformance to the frozen mantaray 1.0 wire format, through the public
+//! Conformance to the frozen ldb v1 wire format, through the public
 //! API only: the normative byte vectors, the content-cut H64 anchors, and
 //! the canonical-or-reject bijection between logical trees and byte strings.
 //!
 //! The byte vectors and the H64 anchors are taken bit-exact from the frozen
-//! mantaray 1.0 spec (Draft v3, `mantaray-1.0.tex`, its vectors and worked
-//! sections); the document does not yet live in this repository.
+//! format's original spec (mantaray draft v3, `mantaray-1.0.tex`, its vectors
+//! and worked sections); the document does not yet live in this repository.
 
 use std::collections::HashSet;
 

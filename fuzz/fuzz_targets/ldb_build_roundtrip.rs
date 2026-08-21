@@ -1,4 +1,4 @@
-//! Structured build round-trip and canonical-bijection fuzz for mantaray 1.0.
+//! Structured build round-trip and canonical-bijection fuzz for ldb v1.
 //!
 //! An arbitrary key set is streamed through the builder into a memory store.
 //! The oracle is threefold: every node chunk the builder emits must decode and
