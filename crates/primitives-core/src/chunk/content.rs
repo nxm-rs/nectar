@@ -152,6 +152,7 @@ mod tests {
     use alloy_primitives::b256;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
+    use std::vec;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
 

@@ -3,6 +3,8 @@
 //! This module provides the implementation of BMT (Binary Merkle Tree) bodies,
 //! which form the basis for content-addressed chunks in the storage system.
 
+#[cfg(any(test, feature = "arbitrary"))]
+use alloc::vec;
 use bytes::{Bytes, BytesMut};
 use core::marker::PhantomData;
 
@@ -301,6 +303,8 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
+    use std::vec;
+    use std::vec::Vec;
 
     type DefaultBmtBody = BmtBody<DEFAULT_BODY_SIZE>;
 

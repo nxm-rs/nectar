@@ -13,17 +13,23 @@
 //! by mapping a byte-vector strategy through [`arbitrary::Unstructured`] for
 //! these generators.
 
+#[cfg(feature = "std")]
 use alloy_primitives::keccak256;
+#[cfg(feature = "std")]
 use alloy_signer::SignerSync;
+#[cfg(feature = "std")]
 use alloy_signer_local::PrivateKeySigner;
 use arbitrary::{Arbitrary, Unstructured};
 
-use crate::{AnyChunk, ContentChunk, SingleOwnerChunk};
+use crate::ContentChunk;
+#[cfg(feature = "std")]
+use crate::{AnyChunk, SingleOwnerChunk};
 
 /// A deterministic signer drawn from `u`.
 ///
 /// The key is the keccak-256 of 32 drawn bytes, so it is uniformly
 /// distributed and valid except with negligible probability.
+#[cfg(feature = "std")]
 pub fn signer(u: &mut Unstructured<'_>) -> arbitrary::Result<PrivateKeySigner> {
     let seed: [u8; 32] = u.arbitrary()?;
     PrivateKeySigner::from_bytes(&keccak256(seed)).map_err(|_| arbitrary::Error::IncorrectFormat)
@@ -45,6 +51,7 @@ pub fn content_chunk<const BODY_SIZE: usize>(
 /// Recover the owner from the chunk itself via
 /// [`SingleOwnerChunk::owner`]. To pin the owner, use
 /// [`single_owner_chunk_signed_by`].
+#[cfg(feature = "std")]
 pub fn single_owner_chunk<const BODY_SIZE: usize>(
     u: &mut Unstructured<'_>,
 ) -> arbitrary::Result<SingleOwnerChunk<BODY_SIZE>> {
@@ -53,6 +60,7 @@ pub fn single_owner_chunk<const BODY_SIZE: usize>(
 }
 
 /// A valid single-owner chunk signed by the given signer.
+#[cfg(feature = "std")]
 pub fn single_owner_chunk_signed_by<const BODY_SIZE: usize>(
     u: &mut Unstructured<'_>,
     signer: &impl SignerSync,
@@ -62,6 +70,7 @@ pub fn single_owner_chunk_signed_by<const BODY_SIZE: usize>(
 
 /// A valid chunk of either kind: content-addressed, or single-owner signed by
 /// a signer drawn from `u`.
+#[cfg(feature = "std")]
 pub fn any_chunk<const BODY_SIZE: usize>(
     u: &mut Unstructured<'_>,
 ) -> arbitrary::Result<AnyChunk<BODY_SIZE>> {
@@ -72,7 +81,7 @@ pub fn any_chunk<const BODY_SIZE: usize>(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::DEFAULT_BODY_SIZE;

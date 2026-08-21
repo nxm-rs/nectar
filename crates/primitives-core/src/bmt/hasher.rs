@@ -84,10 +84,11 @@ pub(super) fn hash_pairs<'a>(
     keccak_batch::keccak256_many_into(&inputs, out);
 }
 
-/// Hash 64-byte sibling pairs sequentially: the `no_std` baseline, one
-/// `keccak(prefix || left || right)` per pair on the patchable keccak seam.
-#[cfg(not(feature = "std"))]
-pub(super) fn hash_pairs<'a>(
+/// Hash 64-byte sibling pairs sequentially: one `keccak(prefix || left || right)`
+/// per pair on the patchable keccak seam. The `no_std` production step, and
+/// under `std` the differential oracle of the batched step.
+#[cfg(any(test, not(feature = "std")))]
+pub(super) fn hash_pairs_sequential<'a>(
     prefix: Option<&[u8]>,
     pairs: impl Iterator<Item = &'a [u8]>,
     out: &mut [[u8; 32]],
@@ -97,6 +98,16 @@ pub(super) fn hash_pairs<'a>(
         hasher.update(pair);
         slot.copy_from_slice(hasher.finalize().as_slice());
     }
+}
+
+/// The `no_std` production step is the sequential one.
+#[cfg(not(feature = "std"))]
+pub(super) fn hash_pairs<'a>(
+    prefix: Option<&[u8]>,
+    pairs: impl Iterator<Item = &'a [u8]>,
+    out: &mut [[u8; 32]],
+) {
+    hash_pairs_sequential(prefix, pairs, out)
 }
 
 /// BMT hasher with configurable body size.

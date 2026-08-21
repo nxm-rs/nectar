@@ -214,6 +214,7 @@ impl<'a> Writer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
 
     #[test]
     fn take_array_advances_and_underruns() {

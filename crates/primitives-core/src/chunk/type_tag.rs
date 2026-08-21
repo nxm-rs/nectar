@@ -130,6 +130,7 @@ impl TryFrom<u32> for ChunkTypeTag {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
 
     #[test]
     fn version_roundtrips_via_from_impls() {

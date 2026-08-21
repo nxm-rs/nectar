@@ -10,6 +10,8 @@ use alloy_primitives::{
 use digest::{Digest, FixedOutputReset};
 use proof::Prover;
 use rand::RngExt;
+use std::vec;
+use std::vec::Vec;
 
 type DefaultHasher = Hasher<DEFAULT_BODY_SIZE>;
 
@@ -288,6 +290,41 @@ fn test_prefix_proof_roundtrip() {
     }
 }
 
+/// Differential gate for the two hash-pair steps: the batched `std` step and
+/// the sequential baseline must return byte-identical digests for the same
+/// pair stream. A divergence fails here, before it can reach a proof.
+#[cfg(feature = "std")]
+#[test]
+fn test_hash_pairs_differential() {
+    use super::hasher::{hash_pairs, hash_pairs_sequential};
+
+    const PAIR: usize = 64;
+    // Counts cross the batch boundary so lane packing cannot hide a swap.
+    const COUNTS: [usize; 9] = [1, 2, 3, 5, 33, 64, 65, 128, 257];
+    const PREFIXES: [Option<&[u8]>; 2] = [None, Some(b"swarm-test-anchor-deterministic!")];
+
+    for &count in &COUNTS {
+        for prefix in PREFIXES {
+            let mut pairs = Vec::with_capacity(count);
+            for pair in 0..count {
+                let mut slot = [0u8; PAIR];
+                for (i, byte) in slot.iter_mut().enumerate() {
+                    *byte = (pair.wrapping_mul(7) + i) as u8;
+                }
+                pairs.push(slot);
+            }
+            let mut batched = vec![[0u8; 32]; count];
+            let mut sequential = vec![[0u8; 32]; count];
+            hash_pairs(prefix, pairs.iter().map(|p| p.as_slice()), &mut batched);
+            hash_pairs_sequential(prefix, pairs.iter().map(|p| p.as_slice()), &mut sequential);
+            assert_eq!(
+                batched, sequential,
+                "batched and sequential hash steps diverged: {count} pairs, prefix {prefix:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn test_bmt_hasher_large_data() {
     let mut hasher = DefaultHasher::new();
@@ -558,26 +595,32 @@ fn test_excess_data_ignored() {
         result_before_excess, result_after_excess,
         "Adding excess data should not change the hash"
     );
+}
 
-    // Test with Write trait
-    let mut hasher4 = DefaultHasher::new();
-    hasher4.set_span(exact_data.len() as u64);
+/// The `std::io::Write` arm of the same excess-data rule.
+#[cfg(feature = "std")]
+#[test]
+fn test_excess_data_ignored_via_write() {
+    let exact_data: Vec<u8> = (0..DEFAULT_BODY_SIZE).map(|i| (i % 256) as u8).collect();
 
-    // Write exact data
-    std::io::Write::write(&mut hasher4, &exact_data).unwrap();
-    let write_result_before = hasher4.sum();
+    let mut hasher = DefaultHasher::new();
+    hasher.set_span(exact_data.len() as u64);
 
-    // Try to write more data
-    std::io::Write::write(&mut hasher4, &[0xFF; 100]).unwrap();
-    let write_result_after = hasher4.sum();
+    // Write exact data, then more than the buffer holds.
+    std::io::Write::write(&mut hasher, &exact_data).unwrap();
+    let before = hasher.sum();
+    std::io::Write::write(&mut hasher, &[0xFF; 100]).unwrap();
+    let after = hasher.sum();
 
-    // Hash should remain unchanged when using Write trait
+    // Hash should remain unchanged when using the Write trait.
     assert_eq!(
-        write_result_before, write_result_after,
+        before, after,
         "Adding excess data via Write trait should not change the hash"
     );
 }
 
+/// The `std::io::Write` arm of the hasher's buffer accounting.
+#[cfg(feature = "std")]
 #[test]
 fn test_write_returns_actual_bytes_written() {
     use std::io::Write;

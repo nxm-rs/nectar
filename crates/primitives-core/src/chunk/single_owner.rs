@@ -4,7 +4,7 @@
 //! carrier under a [`SocHeader`], which binds the body to an owner via an
 //! id and a signature.
 
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 use alloy_primitives::b256;
 use alloy_primitives::{Address, B256, Keccak256, Signature, address, hex};
 #[cfg(feature = "std")]
@@ -314,7 +314,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     }
 
     // Checks if the chunk is a valid dispersed replica
-    #[cfg(test)]
+    #[cfg(all(test, feature = "std"))]
     fn is_valid_replica(&self) -> bool {
         self.header().is_valid_replica(self.body().hash().into())
     }
@@ -421,7 +421,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, Initial> {
     }
 
     /// Initialize with a specific body
-    #[cfg(any(feature = "std", test, feature = "arbitrary"))]
+    #[cfg(any(feature = "std", feature = "arbitrary"))]
     fn with_body(
         mut self,
         body: BmtBody<BODY_SIZE>,
@@ -519,7 +519,7 @@ impl<const BODY_SIZE: usize> SingleOwnerChunkBuilderImpl<BODY_SIZE, ReadyToBuild
     }
 }
 
-#[cfg(any(test, feature = "arbitrary"))]
+#[cfg(all(any(test, feature = "arbitrary"), feature = "std"))]
 impl<const BODY_SIZE: usize> SingleOwnerChunk<BODY_SIZE> {
     /// Valid-by-construction generator: a chunk with a `u`-drawn id and body,
     /// signed by `signer` so ownership recovery and `verify` succeed.
@@ -560,15 +560,20 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for SingleOwnerChunk<B
 
 #[cfg(test)]
 mod tests {
-    use crate::{DEFAULT_BODY_SIZE, PrimitivesError, chunk::ChunkOps};
+    #[cfg(feature = "std")]
+    use crate::PrimitivesError;
+    use crate::{DEFAULT_BODY_SIZE, chunk::ChunkOps};
 
     use super::*;
     use alloy_primitives::hex;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
+    use std::vec;
+    use std::vec::Vec;
 
     type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 
+    #[cfg(feature = "std")]
     fn get_test_wallet() -> PrivateKeySigner {
         // Test private key; the account is 0x654BFE2E030Ff82B8741c7a0BF9eC26Ea523b31C,
         // the same key the feeds sequence vectors sign with.
@@ -580,18 +585,6 @@ mod tests {
     // implementation (signature unconstrained, so no verify assertions).
     fn chunk_strategy() -> impl Strategy<Value = DefaultSingleOwnerChunk> {
         arb::<DefaultSingleOwnerChunk>()
-    }
-
-    // Strategy for valid-by-construction chunks via `arbitrary_signed`.
-    fn signed_chunk_strategy() -> impl Strategy<Value = DefaultSingleOwnerChunk> {
-        proptest::collection::vec(any::<u8>(), 64..1024).prop_filter_map(
-            "arbitrary_signed needs a signable draw",
-            |bytes| {
-                let mut u = arbitrary::Unstructured::new(&bytes);
-                let signer = crate::generators::signer(&mut u).ok()?;
-                DefaultSingleOwnerChunk::arbitrary_signed(&mut u, &signer).ok()
-            },
-        )
     }
 
     proptest! {
@@ -607,6 +600,29 @@ mod tests {
             prop_assert_eq!(chunk.data(), decoded.data());
         }
 
+        #[test]
+        fn test_chunk_too_small(data in proptest::collection::vec(any::<u8>(), 1..SocHeader::SIZE)) {
+            // Test insufficient data size
+            let chunk = DefaultSingleOwnerChunk::try_from(data.as_slice());
+            prop_assert!(chunk.is_err());
+        }
+    }
+
+    // Strategy for valid-by-construction chunks via `arbitrary_signed`.
+    #[cfg(feature = "std")]
+    fn signed_chunk_strategy() -> impl Strategy<Value = DefaultSingleOwnerChunk> {
+        proptest::collection::vec(any::<u8>(), 64..1024).prop_filter_map(
+            "arbitrary_signed needs a signable draw",
+            |bytes| {
+                let mut u = arbitrary::Unstructured::new(&bytes);
+                let signer = crate::generators::signer(&mut u).ok()?;
+                DefaultSingleOwnerChunk::arbitrary_signed(&mut u, &signer).ok()
+            },
+        )
+    }
+
+    #[cfg(feature = "std")]
+    proptest! {
         #[test]
         fn test_signed_chunk_verifies(chunk in signed_chunk_strategy()) {
             // The wire round trip the `chunk_roundtrip` fuzz target drives.
@@ -702,15 +718,9 @@ mod tests {
             // Owner recovery should fail for invalid signature
             prop_assert!(modified_chunk.owner().is_err());
         }
-
-        #[test]
-        fn test_chunk_too_small(data in proptest::collection::vec(any::<u8>(), 1..SocHeader::SIZE)) {
-            // Test insufficient data size
-            let chunk = DefaultSingleOwnerChunk::try_from(data.as_slice());
-            prop_assert!(chunk.is_err());
-        }
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn test_new() {
         let id = SocId::ZERO;
@@ -780,6 +790,7 @@ mod tests {
         assert_eq!(chunk.address().as_ref(), expected_address);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn test_invalid_dispersed_replica() -> Result<()> {
         let test_data = b"test data".to_vec();
@@ -894,9 +905,13 @@ mod tests {
         wire[ID_SIZE..ID_SIZE + SIGNATURE_SIZE].copy_from_slice(&[0xff; SIGNATURE_SIZE]);
         let forged = DefaultSingleOwnerChunk::try_from(wire.as_slice()).unwrap();
         assert_eq!(ChunkOps::owner(&forged), None);
+    }
 
-        // Replica-owner signature over a non-replica id: recovery succeeds
-        // but the pin rejects, so no owner is bound.
+    /// The replica pin is an acceptance rule: a replica-owner signature over a
+    /// non-replica id recovers the pinned owner but binds no owner fact.
+    #[cfg(feature = "std")]
+    #[test]
+    fn chunk_ops_owner_rejects_the_replica_pin() {
         let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();
         let chunk = DefaultSingleOwnerChunk::new(SocId::ZERO, b"data".to_vec(), &signer).unwrap();
         assert_eq!(chunk.owner().unwrap(), DISPERSED_REPLICA_OWNER);
@@ -905,6 +920,7 @@ mod tests {
 
     /// The seal lands exactly where the parse-then-verify route lands, with
     /// the owner fact seeded from provenance.
+    #[cfg(feature = "std")]
     #[test]
     fn seal_matches_the_from_envelope_route() {
         use crate::chunk::{Chunk, StandardChunkSet, Verified};
@@ -929,6 +945,7 @@ mod tests {
 
     /// The seal's accept set equals verify's: the replica pin holds on the
     /// provenance path too, in release builds as well.
+    #[cfg(feature = "std")]
     #[test]
     fn seal_enforces_the_replica_pin() {
         use crate::chunk::StandardChunkSet;
@@ -947,6 +964,7 @@ mod tests {
 
     /// The dispersed-replica rule lives inside validate: a replica-owner
     /// signature over a non-replica id fails even at its committed address.
+    #[cfg(feature = "std")]
     #[test]
     fn soc_header_validate_enforces_replica_rule() {
         let signer = PrivateKeySigner::from_slice(DISPERSED_REPLICA_OWNER_PK.as_slice()).unwrap();

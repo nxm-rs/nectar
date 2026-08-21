@@ -75,6 +75,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Nonce {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
 
     #[test]
     fn zero_is_all_zero_bytes() {

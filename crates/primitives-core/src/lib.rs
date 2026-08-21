@@ -40,6 +40,8 @@
     )
 )]
 extern crate alloc;
+#[cfg(any(test, feature = "std"))]
+extern crate std;
 
 // Signature recovery runs through alloy-primitives' k256 backend. The direct
 // dependency exists only so the `std` feature can switch that same k256 on to
