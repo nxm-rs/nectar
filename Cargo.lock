@@ -2773,6 +2773,7 @@ dependencies = [
  "proptest-arbitrary-interop",
  "rand 0.10.1",
  "serde",
+ "serde_json",
  "strum 0.28.0",
  "subtle",
  "thiserror",
