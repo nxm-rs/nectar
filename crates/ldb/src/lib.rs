@@ -1,4 +1,4 @@
-//! Mantaray 1.0: a content-addressed key-value database, stored as a
+//! ldb v1: a content-addressed key-value database, stored as a
 //! compacted radix-256 trie of content chunks.
 //!
 //! Every frozen layout parameter of the wire format lives as an associated

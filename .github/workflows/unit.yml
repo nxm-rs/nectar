@@ -193,7 +193,7 @@ jobs:
                     -p nectar-postage-usage --features client --locked \
                     --target wasm32-unknown-unknown
             - name: Check ldb builds for wasm32
-              # The mantaray 1.0 key-value database is memory-bounded and browser-facing,
+              # The ldb v1 key-value database is memory-bounded and browser-facing,
               # so its default build must stay wasm32-clean.
               run: |
                   cargo check \

@@ -39,7 +39,7 @@ OOM, no hang*:
 | Target | Entry point | Invariant |
 |---|---|---|
 | `mantaray_node_decode` | `hazmat::decode` over raw bytes | manifest decoding never panics |
-| `ldb_node_decode` | `Node::<V1>::decode` over raw bytes | mantaray 1.0 decoding never panics; an accepted image re-encodes byte-exactly and decodes back equal |
+| `ldb_node_decode` | `Node::<V1>::decode` over raw bytes | ldb v1 decoding never panics; an accepted image re-encodes byte-exactly and decodes back equal |
 | `mantaray_view_differential` | `hazmat::decode` at both widths vs `NodeView::try_from` over raw bytes | the decoders agree on accept/reject and structure; the view's emit/decode pair is a fixed point |
 | `chunk_decode` | `AnyChunk::from_wire_bytes` + direct CAC/SOC `TryFrom` | chunk decoding, BMT address forcing, and SOC owner recovery never panic |
 | `stamp_decode` | `Stamp::try_from_slice` (+ `recover_signer` over a stamp‖address split) | stamp decoding and EIP-191 signer recovery never panic |

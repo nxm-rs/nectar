@@ -17,7 +17,7 @@ libfuzzer-sys = "0.4"
 # engine driven for split-then-read consistency. `arbitrary` exposes the
 # shared malformed-walk oracle and the regime generators.
 nectar-file = { path = "../crates/file", features = ["arbitrary"] }
-# The mantaray 1.0 key-value codec, builder and apply path under test.
+# The ldb v1 key-value codec, builder and apply path under test.
 # `arbitrary` exposes the node-decode oracle, the value-model impls and the
 # regime generators.
 nectar-ldb = { path = "../crates/ldb", features = ["arbitrary"] }

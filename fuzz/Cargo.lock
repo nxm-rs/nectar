@@ -1891,6 +1891,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nectar-contracts"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "serde",
+]
+
+[[package]]
 name = "nectar-file"
 version = "0.4.0"
 dependencies = [
@@ -2002,12 +2011,12 @@ dependencies = [
  "alloy-signer",
  "futures-util",
  "nectar-clock",
+ "nectar-contracts",
  "nectar-governor",
  "nectar-marker",
  "nectar-postage",
  "nectar-primitives",
  "nectar-tasks",
- "parking_lot",
  "thiserror",
 ]
 

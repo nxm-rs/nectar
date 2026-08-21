@@ -1,4 +1,4 @@
-//! Memory-bound conformance for the mantaray 1.0 builder and reader.
+//! Memory-bound conformance for the ldb v1 builder and reader.
 //!
 //! The builder assembles bottom-up over an explicit stack of open nodes, so its
 //! peak retained node buffer count is the trie depth, never the key count; the
