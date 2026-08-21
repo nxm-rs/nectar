@@ -10,13 +10,14 @@ use crate::chunk::{Chunk, ChunkAddress, ChunkRegistry, StandardChunkSet, Verifie
 use super::ChunkStoreError;
 use super::typed::{ChunkGet, ChunkHas, ChunkPut};
 
-/// Single-threaded stand-in for `RwLock` on the `no_std` side: guests execute
-/// single-threaded, so a `RefCell` provides the same interior mutability.
-#[cfg(not(feature = "std"))]
+/// Single-threaded stand-in for `RwLock`, keyed on `multi_thread` like the
+/// `MaybeSend`/`MaybeSync` bounds, not on `std`: a `RefCell` is `!Sync` and
+/// must never exist where the bounds demand it.
+#[cfg(all(not(feature = "std"), not(multi_thread)))]
 #[derive(Debug)]
 struct RwLock<T>(core::cell::RefCell<T>);
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(multi_thread)))]
 impl<T> RwLock<T> {
     const fn new(value: T) -> Self {
         Self(core::cell::RefCell::new(value))
@@ -35,14 +36,20 @@ impl<T> RwLock<T> {
     }
 }
 
+#[cfg(all(not(feature = "std"), multi_thread))]
+compile_error!(
+    "no_std on a multi-thread target needs the unsync feature: the single-threaded RefCell \
+     store shim is not Sync while the MaybeSend and MaybeSync bounds demand it"
+);
+
 /// In-memory chunk storage over an address-keyed map.
 ///
 /// Holds only sealed chunks and is process-private, so reads are `Verified`:
 /// nothing can alter a chunk between put and get.
 ///
 /// Uses interior mutability so `ChunkPut::put(&self)` works without
-/// external synchronization: `parking_lot::RwLock` under `std`, an unsync
-/// cell on the single-threaded `no_std` side.
+/// external synchronization: `parking_lot::RwLock` under `std`, a
+/// single-threaded cell where the `Send`/`Sync` bounds are relaxed.
 #[derive(Debug)]
 pub struct MemoryStore<R: ChunkRegistry = StandardChunkSet> {
     chunks: RwLock<BTreeMap<ChunkAddress, Chunk<Verified, R>>>,
