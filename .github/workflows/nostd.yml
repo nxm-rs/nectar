@@ -47,6 +47,16 @@ jobs:
               run: |
                   cargo check --locked -p nectar-primitives --features unsync
                   cargo check --locked -p nectar-primitives-core --features unsync
+            # The native no_std quadrant must fail with the store guard diagnostic.
+            - name: Guard the native no_std quadrant
+              if: matrix.target == 'riscv64imac-unknown-none-elf'
+              run: |
+                  if cargo check --locked -p nectar-primitives \
+                      --no-default-features 2>guard.err; then
+                      echo "the native no_std quadrant must be rejected by the store guard" >&2
+                      exit 1
+                  fi
+                  grep -q "unsync feature" guard.err
 
     nostd-success:
         name: no_std success
