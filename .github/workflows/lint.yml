@@ -1,6 +1,7 @@
 # Clippy (runtime-safety restriction lints), unused-dependency checks, the
 # cargo-deny supply-chain gate (advisories, bans, sources, licences), the
-# MSRV compile on the declared `rust-version`, and the format/content sweep.
+# MSRV compile on the declared `rust-version`, a docs.rs-shape rustdoc lane,
+# and the format/content sweep.
 name: lint
 
 on:
@@ -227,13 +228,54 @@ jobs:
             - name: serde_json stays a dev-dependency
               run: .github/scripts/serde-json-dev-only.sh
 
+    docs:
+        name: docs
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            # `--cfg docsrs` mirrors `[workspace.metadata.docs.rs]`, under which
+            # the crates enable `feature(doc_cfg)`. The stable channel rejects
+            # that gate, so the lane runs a nightly, matching docs.rs itself.
+            RUSTDOCFLAGS: "-D warnings -D rustdoc::broken_intra_doc_links --cfg docsrs"
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
+            # rust-setup contributes sccache and the shared registry cache to
+            # this compiling lane; the date-pinned nightly then owns the
+            # default slot for the doc build.
+            - uses: ./.github/actions/rust-setup
+            - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master 2026-06-30
+              with:
+                  toolchain: "nightly-2026-08-19"
+            # A workspace `--all-features` pass unifies mutually exclusive
+            # pairs (`nectar-file`'s `rayon` against `unsync`, and
+            # `nectar-postage-issuer`'s `parallel` against `unsync`). Each
+            # published crate is documented the way docs.rs documents it:
+            # alone, with the feature set that crate's own
+            # `[package.metadata.docs.rs]` table declares.
+            - name: cargo doc
+              run: |
+                  TAB="$(printf "\t")"
+                  while IFS="$TAB" read -r pkg features; do
+                      if [ "$features" = "all" ]; then
+                          cargo doc --locked --no-deps --all-features -p "$pkg"
+                      else
+                          cargo doc --locked --no-deps --features "$features" -p "$pkg"
+                      fi
+                  done < <(cargo metadata --no-deps --locked --format-version 1 | jq -r '
+                      .packages[] | select(.publish == null)
+                      | [.name,
+                         (if (.metadata.docs.rs["all-features"] // false) then "all"
+                          else ((.metadata.docs.rs.features // ["default"]) | join(",")) end)]
+                      | join("\t")')
+
     # The one required context for this workflow: later jobs append to `needs`
     # rather than to the branch ruleset.
     lint-success:
         name: lint success
         runs-on: ubuntu-latest
         if: always()
-        needs: [clippy, unused-deps, deny, msrv, format]
+        needs: [clippy, unused-deps, deny, msrv, format, docs]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed

@@ -1,7 +1,7 @@
 //! Chunk-tree geometry: every fan-out fact derives from (body size, mode).
 //!
 //! Const-assert policy: each concrete profile is pinned by
-//! [`assert_tree_geometry`], evaluated at compile time with `u128` arithmetic
+//! `assert_tree_geometry`, evaluated at compile time with `u128` arithmetic
 //! so coverage of the full `u64` length range is provable without overflow. A
 //! violated invariant is a build error, never a runtime panic; `assert!` in
 //! const-evaluated items is the one sanctioned panicking form here.
@@ -37,7 +37,7 @@ impl Mode {
 
 /// References per intermediate chunk body: 128 plain, 64 encrypted at the
 /// default 4096-byte body. Valid profiles are pinned by
-/// [`assert_tree_geometry`].
+/// `assert_tree_geometry`.
 pub const fn branches(body_size: u32, mode: Mode) -> u32 {
     match mode {
         Mode::Plain => body_size / PLAIN_REF_SIZE,

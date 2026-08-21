@@ -275,6 +275,7 @@ mod type_tag;
 
 // Re-export the address type, error type, and core traits
 pub use address::ChunkAddress;
+pub use bmt_body::BmtBody;
 pub use error::ChunkError;
 pub use inner::ChunkInner;
 pub use traits::{ChunkHeader, ChunkOps, HeaderedChunk};
