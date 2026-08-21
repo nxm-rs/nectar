@@ -235,6 +235,8 @@ jobs:
         env:
             # nightly is required: --cfg docsrs enables feature(doc_cfg), which stable rejects.
             RUSTDOCFLAGS: "-D warnings -D rustdoc::broken_intra_doc_links --cfg docsrs"
+            # the env var beats the repo's rust-toolchain.toml pin, which outranks rustup's default.
+            RUSTUP_TOOLCHAIN: nightly-2026-08-19
         steps:
             - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
             - uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3  # v1
