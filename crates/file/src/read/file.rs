@@ -2,6 +2,7 @@
 
 use core::fmt;
 
+use nectar_primitives::bmt::decode_span;
 use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey, transcrypt_in_place};
 use nectar_primitives::chunk::{ChunkAddress, ChunkOps, ContentOnlyChunkSet};
 use nectar_primitives::store::TrustedGet;
@@ -89,10 +90,10 @@ where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
 {
     /// Open a plain file at its root address, reading the span off the root
-    /// chunk.
+    /// chunk and stripping any packed redundancy level from it.
     pub async fn open(store: S, root: ChunkAddress) -> Result<Self, OpenError<S::Error>> {
         let chunk = fetch_root(&store, root).await?;
-        let span = chunk.span();
+        let span = decode_span(chunk.span()).length;
         Ok(Self {
             store,
             root,
@@ -107,7 +108,8 @@ where
     S: TrustedGet<ContentOnlyChunkSet<B>> + Clone + 'static,
 {
     /// Open an encrypted file at its root reference, decrypting the span off
-    /// the root chunk with the reference's key.
+    /// the root chunk with the reference's key and stripping any packed
+    /// redundancy level from it.
     pub async fn open_encrypted(
         store: S,
         root: EncryptedChunkRef,
@@ -122,7 +124,9 @@ where
         // block count, so its bytes never share keystream with body bytes.
         let mut span_bytes = chunk.span().to_le_bytes();
         transcrypt_in_place(&key, span_counter(B), &mut span_bytes);
-        let span = u64::from_le_bytes(span_bytes);
+        // The level packs into the plaintext span, so the decode runs after
+        // the decryption, as in the reference client.
+        let span = decode_span(u64::from_le_bytes(span_bytes)).length;
         Ok(Self {
             store,
             root: address,

@@ -189,3 +189,10 @@ A comment states what is true of the code; where the work is tracked is not, and
 Remove such a reference from any file you edit, not only from the lines you add.
 Three things are not project management and stay: the `repository` field in `Cargo.toml`, links in README files, and identifiers such as RUSTSEC advisory and CVE numbers.
 `deny.toml` conforms: it explains why its ignore list diverges from `.cargo/audit.toml` without naming an issue.
+
+### No upstream file citations in code
+
+Do not cite upstream files, paths, line numbers or commits in rustdoc or comments.
+A cited location rots when the upstream repository moves, and nothing detects the break.
+The provenance of a ported algorithm lives in the crate's root `SPEC.md`, beside the ported algorithm, where a review catches the drift.
+Pinned-vector provenance headers keep the form the `## Vector provenance` section defines.

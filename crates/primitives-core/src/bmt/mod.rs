@@ -35,12 +35,14 @@ mod derived;
 pub(crate) mod error;
 mod hasher;
 mod proof;
+mod span;
 
 pub use constants::{BRANCHES, DEFAULT_BODY_SIZE, HASH_SIZE, SPAN_SIZE};
 pub use derived::DerivedAddress;
 pub use error::BmtError;
 pub use hasher::{Hasher, HasherFactory};
 pub use proof::{Proof, Prover};
+pub use span::{BYTE7_FLAG, SpanLevel, decode_span};
 
 // Re-export for convenience
 pub use crate::error::{PrimitivesError, Result};

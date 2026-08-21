@@ -37,6 +37,13 @@ pub enum SplitError<E> {
         /// Child span whose addition overflowed.
         add: u64,
     },
+    /// A file this long would write a root span whose byte 7 is set;
+    /// byte 7 is the level region of the span wire format.
+    #[error("file length {bytes} sets the span's byte 7")]
+    SpanLevelReserved {
+        /// The file length the split reached.
+        bytes: u64,
+    },
     /// A write arrived after `finish` began; the split accepts no more
     /// bytes.
     #[error("write after finish")]

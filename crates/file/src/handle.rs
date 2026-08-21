@@ -392,7 +392,9 @@ where
     /// Split `src` into a plain chunk tree, returning its root address.
     ///
     /// The put window bounds the chunks in flight against the store; the
-    /// retained memory is that window plus the spine height.
+    /// retained memory is that window plus the spine height. A file of at
+    /// least 2^63 bytes is refused: its root span would set the reserved
+    /// level byte.
     pub async fn save<Src: Source>(
         &self,
         src: Src,
