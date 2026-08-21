@@ -239,6 +239,7 @@ mod tests {
     #[test]
     fn unclassified_seed_fails_the_walk() {
         let corpus = Corpus::new(&[("valid-a.bin", b"a"), ("stray-b.bin", b"b")]);
+        // reinvention: seed-replay harness; the catch asserts the panic message, not a job boundary.
         let result = catch_unwind(AssertUnwindSafe(|| {
             SeedReplay::dir(&corpus.0).covers("valid-").run()
         }));
@@ -248,6 +249,7 @@ mod tests {
     #[test]
     fn stale_prefix_fails_the_walk() {
         let corpus = Corpus::new(&[("valid-a.bin", b"a")]);
+        // reinvention: seed-replay harness; the catch asserts the panic message, not a job boundary.
         let result = catch_unwind(AssertUnwindSafe(|| {
             SeedReplay::dir(&corpus.0)
                 .covers("valid-")
@@ -260,6 +262,7 @@ mod tests {
     #[test]
     fn floor_violation_fails_the_walk() {
         let corpus = Corpus::new(&[("valid-a.bin", b"a")]);
+        // reinvention: seed-replay harness; the catch asserts the panic message, not a job boundary.
         let result = catch_unwind(AssertUnwindSafe(|| {
             SeedReplay::dir(&corpus.0).covers("valid-").floor(2).run()
         }));
@@ -268,6 +271,7 @@ mod tests {
 
     #[test]
     fn missing_directory_fails_the_walk() {
+        // reinvention: seed-replay harness; the catch asserts the panic message, not a job boundary.
         let result = catch_unwind(AssertUnwindSafe(|| {
             SeedReplay::dir("/nonexistent/seed/dir").run()
         }));

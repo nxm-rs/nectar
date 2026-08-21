@@ -375,6 +375,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct ParkingSink {
         parked: Arc<AtomicUsize>,
+        // reinvention: test-only parking double; production parking lives under the pump's shared state.
         waiting: Arc<Mutex<Vec<Waker>>>,
         released: Arc<AtomicBool>,
     }

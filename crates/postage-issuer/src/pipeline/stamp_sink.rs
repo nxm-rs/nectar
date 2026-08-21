@@ -50,6 +50,7 @@ where
             issuer,
             spawner,
             admission: AdmissionWindow::new(self.window),
+            // reinvention: sanctioned write window; the stamp pump settles unordered against its fixed admission window.
             in_flight: FuturesUnordered::new(),
             ready: VecDeque::new(),
             failed: false,
@@ -403,6 +404,7 @@ mod tests {
     /// Signals each wake over a channel.
     struct SignalWaker(mpsc::Sender<()>);
 
+    // reinvention: test-only channel-signalling waker for the stamp-sink polls.
     impl Wake for SignalWaker {
         fn wake(self: Arc<Self>) {
             let _ = self.0.send(());

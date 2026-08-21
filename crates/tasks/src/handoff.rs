@@ -76,7 +76,9 @@ where
     F: FnOnce() -> T + Send + 'static,
 {
     let (tx, rx) = oneshot::channel();
+    // reinvention: the pool submit that owns this pairing; the reply rides the oneshot.
     rayon::spawn(move || {
+        // reinvention: panic boundary; an unwinding worker drops the reply unsent instead of aborting.
         if let Ok(value) = catch_unwind(AssertUnwindSafe(job)) {
             drop(tx.send(value));
         }
@@ -126,6 +128,7 @@ mod tests {
             if let Poll::Ready(value) = handoff.poll_recv(&mut cx) {
                 return value;
             }
+            // reinvention: test driver; the manual-poll loop parks to yield the thread.
             thread::park_timeout(budget.saturating_sub(start.elapsed()));
         }
     }

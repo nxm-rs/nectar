@@ -6,8 +6,10 @@ use std::task::Wake;
 use std::thread::{self, Thread};
 
 /// Waker that unparks the thread which registered it.
+// reinvention: single home of the thread-unpark waker; consume nectar_tasks::unpark_current.
 struct Unpark(Thread);
 
+// reinvention: single home of the thread-unpark waker; consume nectar_tasks::unpark_current.
 impl Wake for Unpark {
     fn wake(self: Arc<Self>) {
         self.0.unpark();

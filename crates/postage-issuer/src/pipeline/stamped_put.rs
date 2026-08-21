@@ -1023,6 +1023,7 @@ mod tests {
                 owner_done = true;
             }
             if !(owner_done && waiter_done) {
+                // reinvention: test driver; the manual-poll round loop parks to yield the thread.
                 thread::park_timeout(budget.saturating_sub(start.elapsed()));
             }
         }

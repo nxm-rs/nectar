@@ -228,6 +228,19 @@ jobs:
             - name: serde_json stays a dev-dependency
               run: .github/scripts/serde-json-dev-only.sh
 
+    reinvention-gate:
+        name: reinvention-gate
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+            # Source-only grep gate; fails if a burned-down concurrency shape
+            # (waker cell, boxed-future alias, hand-rolled put window)
+            # reappears without its in-source justification comment. Needs
+            # no toolchain.
+            - name: reinvention gate
+              run: bash tools/reinvention-gate.sh
+
     docs:
         name: docs
         runs-on: ubuntu-latest
@@ -268,7 +281,7 @@ jobs:
         name: lint success
         runs-on: ubuntu-latest
         if: always()
-        needs: [clippy, unused-deps, deny, msrv, format, docs]
+        needs: [clippy, unused-deps, deny, msrv, format, docs, reinvention-gate]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed

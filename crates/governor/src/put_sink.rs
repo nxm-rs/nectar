@@ -70,6 +70,7 @@ impl<F: Future> PutSink<F> {
     }
 
     /// Await one completion; `None` when the window is empty.
+    // reinvention: sanctioned put-window drain; nectar_governor::PutSink is the home of this vocabulary.
     pub async fn settle_one(&mut self) -> Option<F::Output> {
         poll_fn(|cx| self.poll_step(cx)).await
     }
@@ -94,6 +95,7 @@ impl<F: Future> PutSink<F> {
     /// Fold the completions ready now without parking, stopping on the first
     /// `fold` error: newly admitted puts start under the caller's waker before
     /// more work enters.
+    // reinvention: sanctioned put-window drain; nectar_governor::PutSink is the home of this vocabulary.
     pub async fn sweep<E>(
         &mut self,
         mut fold: impl FnMut(F::Output) -> Result<(), E>,
