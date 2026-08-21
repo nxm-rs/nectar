@@ -16,6 +16,7 @@ pub(crate) fn sign_caught<Sg>(signer: &Sg, digest: &StampDigest) -> Result<Stamp
 where
     Sg: SignPrehash + ?Sized,
 {
+    // reinvention: panic boundary; an unwinding signer drops its reply unsent instead of aborting.
     catch_unwind(AssertUnwindSafe(|| sign_digest(signer, digest)))
         .unwrap_or_else(|_| Err(SigningError::Dropped))
 }
@@ -29,6 +30,7 @@ pub(crate) fn sign_batch<Sg>(signer: &Sg, digests: &[StampDigest]) -> Vec<StampR
 where
     Sg: SignPrehash + ?Sized,
 {
+    // reinvention: panic boundary; an unwinding signer drops its reply unsent instead of aborting.
     catch_unwind(AssertUnwindSafe(|| sign_digests(signer, digests))).map_or_else(
         |_| {
             digests

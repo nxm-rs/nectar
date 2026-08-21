@@ -591,6 +591,7 @@ where
             admission: Admission::new(window),
             stack: alloc::vec![commit_frame(0, None, None, root)],
             inflight_nodes: BTreeMap::new(),
+            // reinvention: sanctioned write window; the commit walk settles nodes unordered over the bare admission window.
             in_flight: FuturesUnordered::new(),
             root: None,
             next_id: 1,

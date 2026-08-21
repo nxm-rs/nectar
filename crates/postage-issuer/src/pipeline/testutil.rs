@@ -160,6 +160,7 @@ impl WakeCount {
     }
 }
 
+// reinvention: test-only wake counter for the pump's poll drivers.
 impl Wake for WakeCount {
     fn wake(self: Arc<Self>) {
         self.0.fetch_add(1, Ordering::SeqCst);

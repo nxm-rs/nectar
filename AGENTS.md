@@ -73,8 +73,11 @@ Prefer them for new code, and align existing code when you touch it.
   Do not hand-roll a future-set, an executor, a waker, a oneshot, or a channel.
   The no_std excuse is false: futures-core, futures-util, and futures-channel are no_std plus alloc and compile for wasm32 and riscv64.
   `nectar-tasks` is the one sanctioned spawn seam and owns the single `BoxFuture` alias.
-- One sanctioned home per concurrency primitive; a copy elsewhere is a reinvention (code review enforces this).
-  Do not reintroduce hand-rolled `BoxFuture` aliases, copied `MaybeSend` or `MaybeSync`, `Mutex<Waker>` cells, `waker: Option<Waker>` slots, copied `Unpark` wakers, ad-hoc `impl Wake`, hand-rolled one-shots, `thread::park` loops, stray `FuturesUnordered::new()` put-windows, unpaired rayon plus oneshot submits, or stray `catch_unwind`.
+- One sanctioned home per concurrency primitive; a copy elsewhere is a reinvention, and `tools/reinvention-gate.sh` enforces the list in CI.
+  The gate fails only on an unannotated occurrence: a sanctioned site carries a `// reinvention: <reason>` comment on the line above, in the shape of the tree's `#[allow(..., reason = "...")]` attributes, so a rewire annotates its own line inside the same diff and the gate file never changes.
+  Do not reintroduce hand-rolled `BoxFuture` aliases, copied `MaybeSend` or `MaybeSync`, `Mutex`-guarded waker cells, copied `Unpark` wakers, `impl Wake` outside the sanctioned homes, hand-rolled one-shots, `thread::park` loops, the `settle_one`/`sweep` put-window drain outside `nectar_governor::PutSink`, unpaired rayon plus oneshot submits, or stray `catch_unwind`.
+  `FuturesUnordered` itself is banned nowhere: a walker owns its own set, and the governor deliberately does not re-export the type.
+  A single `waker: Option<Waker>` slot on a `&mut self` poll API is the parking idiom, and a write window that settles unordered over a bare admission window records itself as sanctioned with the same comment.
 - Keep production code panic-free.
   The clippy deny set forbids `unwrap`, `expect`, indexing, slicing, `as` casts, arithmetic overflow, `panic`, `todo`, `unimplemented`, and other panics.
   Test code is exempt through `#![cfg_attr(test, allow(...))]`.

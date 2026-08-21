@@ -3,7 +3,7 @@
 # `Drive`; ad-hoc executors and runtime-blocking calls are disallowed. The
 # park-loop block_on shortcuts (pollster, futures-lite) are named here so a
 # hand-rolled executor cannot slip in by way of a different crate; the
-# structural park loop itself is gated by tools/reinvention-gate.sh.
+# hand-rolled shapes clippy cannot name are gated by tools/reinvention-gate.sh.
 disallowed-methods = [
     { path = "futures_executor::block_on", reason = "use nectar_testing::run" },
     { path = "futures::executor::block_on", reason = "use nectar_testing::run" },

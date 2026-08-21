@@ -16,6 +16,7 @@ fn drive(mut task: BoxFuture<'static, ()>) {
     let waker = unpark_current();
     let mut cx = Context::from_waker(&waker);
     while task.as_mut().poll(&mut cx).is_pending() {
+        // reinvention: blocking bridge; manual poll-and-park against the shared unpark waker.
         thread::park();
     }
 }

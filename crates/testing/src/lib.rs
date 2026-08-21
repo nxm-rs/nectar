@@ -109,6 +109,7 @@ pub async fn yield_until(budget: usize, cond: impl Fn() -> bool) {
 
 struct CountWaker(AtomicUsize);
 
+// reinvention: test-only counting waker for the Drive manual-poll driver.
 impl Wake for CountWaker {
     fn wake(self: Arc<Self>) {
         self.wake_by_ref();

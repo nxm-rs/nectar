@@ -403,6 +403,7 @@ where
         if self.jobs.run_one() {
             return;
         }
+        // reinvention: blocking pump; the shared unpark waker wakes it on a pool completion.
         std::thread::park();
     }
 }
