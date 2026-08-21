@@ -160,6 +160,18 @@ sol! {
             uint256 normalisedBalance,
             uint256 lastUpdatedBlockNumber
         );
+
+        event BatchCreated(
+            bytes32 indexed batchId,
+            uint256 totalAmount,
+            uint256 normalisedBalance,
+            address owner,
+            uint8 depth,
+            uint8 bucketDepth,
+            bool immutableFlag
+        );
+        event BatchTopUp(bytes32 indexed batchId, uint256 topupAmount, uint256 normalisedBalance);
+        event BatchDepthIncrease(bytes32 indexed batchId, uint8 newDepth, uint256 normalisedBalance);
     }
 
     /// Stake registry contract interface.
@@ -447,7 +459,8 @@ pub mod testnet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::U256;
+    use alloy_primitives::{B256, U256, b256};
+    use alloy_sol_types::SolEvent;
 
     #[test]
     fn test_deployments_non_zero() {
@@ -468,6 +481,103 @@ mod tests {
         assert_ne!(testnet::STORAGE_PRICE_ORACLE.address, Address::ZERO);
         assert_ne!(testnet::CHEQUEBOOK_FACTORY.address, Address::ZERO);
         assert_ne!(testnet::SWAP_PRICE_ORACLE.address, Address::ZERO);
+    }
+
+    /// Vector provenance: generated, keccak-256 over the verbatim event
+    /// signatures of upstream `ethersphere/storage-incentives`
+    /// `src/PostageStamp.sol` (master `c8686806`); field names, order and
+    /// types checked against `go-storage-incentives-abi` v0.9.4. Upstream
+    /// publishes no topic vectors.
+    #[test]
+    fn the_batch_event_topics_match_the_upstream_signatures() {
+        assert_eq!(
+            IPostageStamp::BatchCreated::SIGNATURE_HASH,
+            b256!("9b088e2c89b322a3c1d81515e1c88db3d386d022926f0e2d0b9b5813b7413d58")
+        );
+        assert_eq!(
+            IPostageStamp::BatchTopUp::SIGNATURE_HASH,
+            b256!("af5756c62d6c0722ef9be1f82bef97ab06ea5aea7f3eb8ad348422079f01d88d")
+        );
+        assert_eq!(
+            IPostageStamp::BatchDepthIncrease::SIGNATURE_HASH,
+            b256!("af27998ec15e9d3809edad41aec1b5551d8412e71bd07c91611a0237ead1dc8e")
+        );
+    }
+
+    /// Vector provenance: generated, hand-encoded 32-byte ABI words over the
+    /// fixed inputs shown. Upstream publishes no decodable log vectors for
+    /// these events.
+    #[test]
+    fn the_batch_event_decoders_take_the_upstream_field_shapes() {
+        // One 32-byte word per field, big-endian.
+        fn word(value: u64) -> [u8; 32] {
+            let mut word = [0u8; 32];
+            word[24..].copy_from_slice(&value.to_be_bytes());
+            word
+        }
+        let batch_id = B256::with_last_byte(0x24);
+        let owner = address!("000000000000000000000000000000000000002a");
+
+        // batchId is indexed, so the body carries the other six fields.
+        let mut data = Vec::new();
+        data.extend(word(0xA));
+        data.extend(word(0xB));
+        let mut owner_word = [0u8; 32];
+        owner_word[12..].copy_from_slice(owner.as_slice());
+        data.extend(owner_word);
+        data.extend(word(20));
+        data.extend(word(16));
+        data.extend(word(1));
+        let decoded: IPostageStamp::BatchCreated = IPostageStamp::BatchCreated::decode_raw_log(
+            [IPostageStamp::BatchCreated::SIGNATURE_HASH, batch_id],
+            &data,
+        )
+        .unwrap();
+        assert_eq!(
+            decoded,
+            IPostageStamp::BatchCreated {
+                batchId: batch_id,
+                totalAmount: U256::from(0xA),
+                normalisedBalance: U256::from(0xB),
+                owner,
+                depth: 20,
+                bucketDepth: 16,
+                immutableFlag: true,
+            }
+        );
+
+        // BatchTopUp: topupAmount and normalisedBalance in the body.
+        let data: Vec<u8> = word(0xA).into_iter().chain(word(0xB)).collect();
+        let decoded: IPostageStamp::BatchTopUp = IPostageStamp::BatchTopUp::decode_raw_log(
+            [IPostageStamp::BatchTopUp::SIGNATURE_HASH, batch_id],
+            &data,
+        )
+        .unwrap();
+        assert_eq!(
+            decoded,
+            IPostageStamp::BatchTopUp {
+                batchId: batch_id,
+                topupAmount: U256::from(0xA),
+                normalisedBalance: U256::from(0xB),
+            }
+        );
+
+        // BatchDepthIncrease: newDepth and normalisedBalance in the body.
+        let data: Vec<u8> = word(21).into_iter().chain(word(0xB)).collect();
+        let decoded: IPostageStamp::BatchDepthIncrease =
+            IPostageStamp::BatchDepthIncrease::decode_raw_log(
+                [IPostageStamp::BatchDepthIncrease::SIGNATURE_HASH, batch_id],
+                &data,
+            )
+            .unwrap();
+        assert_eq!(
+            decoded,
+            IPostageStamp::BatchDepthIncrease {
+                batchId: batch_id,
+                newDepth: 21,
+                normalisedBalance: U256::from(0xB),
+            }
+        );
     }
 
     #[test]

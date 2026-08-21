@@ -6,37 +6,46 @@
 
 use crate::{Batch, BatchId};
 
-/// Events emitted by the postage stamp contract.
+/// State changes to batches on-chain, as a node registry reacts to them.
 ///
-/// These events represent state changes to batches on-chain.
+/// The domain shape; the wire shape is the generated `IPostageStamp` events
+/// of `nectar-contracts`. `Block` fields come from the log envelope, not
+/// the event body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchEvent {
-    /// A new batch was created.
+    /// A new batch was created, from `BatchCreated`. The event `totalAmount`
+    /// is not carried: the store keys the batch by its normalised balance
+    /// (`Batch::value`). `Batch::start` comes from the log envelope's block.
     Created {
         /// The batch that was created.
         batch: Batch,
     },
 
-    /// A batch was topped up with additional funds.
+    /// A batch was topped up, from `BatchTopUp`. The event `topupAmount` is
+    /// not carried: no component consumes the raw amount. `new_value` is the
+    /// event's `normalisedBalance`.
     TopUp {
         /// The batch ID.
         batch_id: BatchId,
-        /// The new normalized balance.
+        /// The new normalised balance.
         new_value: u128,
     },
 
-    /// A batch was diluted (depth increased).
+    /// A batch was diluted (depth increased), from `BatchDepthIncrease`.
     DepthIncrease {
         /// The batch ID.
         batch_id: BatchId,
         /// The new depth.
         new_depth: u8,
-        /// The block it was mined in, which the issuance gate counts
-        /// confirmations from.
+        /// The rescaled balance, the event's `normalisedBalance`.
+        new_value: u128,
+        /// The mined-in block, from the log envelope; the issuance gate
+        /// counts confirmations from it.
         block: u64,
     },
 
-    /// A batch expired.
+    /// A batch expired. Node-derived, not chain-emitted: the contract
+    /// emits no expiry event.
     Expired {
         /// The batch ID.
         batch_id: BatchId,
@@ -113,6 +122,7 @@ mod tests {
         let depth = BatchEvent::DepthIncrease {
             batch_id,
             new_depth: 21,
+            new_value: 400,
             block: 120,
         };
         assert_eq!(depth.batch_id(), batch_id);

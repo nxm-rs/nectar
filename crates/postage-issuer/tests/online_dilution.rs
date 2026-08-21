@@ -93,6 +93,7 @@ fn a_dilution_mid_stream_widens_the_batch_without_minting_an_invalid_stamp() {
                 .handle_event(BatchEvent::DepthIncrease {
                     batch_id: BatchId::ZERO,
                     new_depth: depth,
+                    new_value: 0,
                     block: DILUTION_BLOCK,
                 })
                 .unwrap();
@@ -178,6 +179,7 @@ fn an_unsynchronized_dilution_never_reissues_a_slot() {
                 .handle_event(BatchEvent::DepthIncrease {
                     batch_id: BatchId::ZERO,
                     new_depth: depth,
+                    new_value: 0,
                     block: DILUTION_BLOCK,
                 })
                 .unwrap();
