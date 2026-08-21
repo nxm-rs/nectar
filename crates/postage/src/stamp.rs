@@ -792,6 +792,10 @@ mod tests {
     /// `valid-*` must parse `Ok`, `invalid-*` must stay `Err`, `edge-*` only
     /// asserts no panic. This keeps the fuzz seeds meaningful on stable
     /// without running the fuzzer itself.
+    /// `valid-stamp-recovery-145b` is the 113-byte stamp with 32 bytes of
+    /// 0x99 padding appended, exercising recovery over trailing noise. The
+    /// 113-byte stamp's producing source is not recorded in the tree; the
+    /// corpus predates the vector-provenance rule.
     #[test]
     fn seed_replay_stamp_decode() {
         nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "stamp_decode")

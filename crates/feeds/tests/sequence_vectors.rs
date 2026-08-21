@@ -5,6 +5,11 @@
 //! and a reference-captured full signed update pinning the exact wire bytes.
 //! A feed update must remain a plain single-owner chunk
 //! (`address = keccak256(id || owner)`) on the wire.
+//!
+//! The middle-layer derivations are this crate's own keccak chain over the
+//! fixed identity, pinned at sequences 0, 1, and 42; they were checked
+//! against a from-scratch keccak derivation independently of the
+//! implementation.
 #![cfg_attr(
     test,
     allow(

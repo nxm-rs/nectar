@@ -114,6 +114,27 @@ Each rule below names a file and line that already conforms, so a reviewer can c
 Applying rule 3 across the workspace is #319, and rule 1 is #690.
 This section is the standard; those issues are the migration.
 
+## Vector provenance
+
+A pinned vector asserts bytes produced elsewhere.
+Without its origin, the vector only re-asserts nectar's own behaviour under a different name.
+Every pinned vector in the tree states its origin.
+
+The origin takes one of two forms, in a header beside the vector.
+Inline values carry the header in the module docs or the comment of their asserting file; golden files carry it beside the fixture.
+
+- Upstream: the value was copied or re-run from upstream.
+  State the upstream file path and the upstream test or data name.
+- Generated: no upstream value exists.
+  State what produced the value (a pinned reference-client module, a nectar generator tool, or nectar's own earlier output), the fixed inputs, and why no upstream vector exists.
+
+Values guarded by a periodic drift check against the canonical upstream source state the check and the source it compares.
+The contract deployments are guarded that way: `tools/upstream-check` compares them against `go-storage-incentives-abi` weekly in CI.
+
+A file that is committed generator output carries the machine-readable `provenance` block beside the prose header.
+The block records the `generator`, the regeneration `command`, the pinned `reference`, and the `generated_at` timestamp, with `notes` for the facts the bytes cannot show.
+`crates/postage/tests/testdata/reference-stamps.json` conforms: the block is written by `tools/stamp-vectors`, which pins the reference client in `go.mod`.
+
 ## Workflow
 
 - Run `cargo fmt`.
