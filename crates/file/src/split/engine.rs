@@ -15,7 +15,7 @@ use bytes::Bytes;
 use futures_util::stream::{FuturesOrdered, StreamExt};
 use nectar_governor::{PutSink, Window};
 use nectar_primitives::DEFAULT_BODY_SIZE;
-use nectar_primitives::bmt::SPAN_SIZE;
+use nectar_primitives::bmt::{BYTE7_FLAG, SPAN_SIZE};
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, ChunkAddress, Verified};
 use nectar_primitives::store::ChunkPut;
 use nectar_tasks::BoxFuture;
@@ -362,6 +362,11 @@ where
     /// Seal the tail leaf (or the empty stream's empty chunk) and enter the
     /// closing phase.
     fn flush_tail(&mut self) -> Result<(), SplitError<S::Error>> {
+        if self.stats.bytes >= BYTE7_FLAG {
+            return Err(SplitError::SpanLevelReserved {
+                bytes: self.stats.bytes,
+            });
+        }
         if !self.leaf.is_empty() || self.stats.bytes == 0 {
             self.begin_leaf();
             let mut payload = mem::take(&mut self.leaf);

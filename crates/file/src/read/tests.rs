@@ -12,7 +12,7 @@ use std::vec::Vec;
 use bytes::Bytes;
 use nectar_primitives::chunk::encryption::{EncryptedChunkRef, EncryptionKey};
 use nectar_primitives::chunk::{
-    Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk, ContentOnlyChunkSet,
+    BmtBody, Chunk, ChunkAddress, ChunkOps, ChunkRef, ContentChunk, ContentOnlyChunkSet,
 };
 use nectar_primitives::store::{ChunkStoreError, MemoryStore, TrustedGet};
 use nectar_primitives::{EntryRef, transcrypt};
@@ -316,6 +316,28 @@ fn any_file_opens_encrypted_on_a_64_byte_reference() {
         panic!("64-byte reference must open encrypted");
     };
     assert_eq!(drain_reader(&mut file.read().build()), data);
+}
+
+#[test]
+fn a_redundancy_encoded_root_reports_the_masked_length() {
+    const LEN: usize = 37;
+    let payload = fill(LEN);
+    // A redundancy-enabled upload packs the level into byte 7, so the wire
+    // span is far above the payload length.
+    let raw_span = (0x81u64 << 56) | LEN as u64;
+    let mut wire = [0u8; 8 + LEN];
+    wire[..8].copy_from_slice(&raw_span.to_le_bytes());
+    wire[8..].copy_from_slice(&payload);
+    let body = BmtBody::<TINY>::try_from(&wire[..]).unwrap();
+    let chunk = ContentChunk::<TINY>::from_body(body).seal::<ContentOnlyChunkSet<TINY>>();
+    let root = *chunk.address();
+    let store = TinyStore::from_chunks(core::iter::once(chunk));
+    run(async {
+        let file = Opened::<_, Plain, TINY>::open(store, root).await.unwrap();
+        assert_eq!(file.len(), LEN as u64);
+        let mut reader = file.read().window(Window::new(1).unwrap()).build();
+        assert_eq!(drain(&mut reader).await, payload);
+    });
 }
 
 #[test]
