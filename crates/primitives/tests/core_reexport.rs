@@ -72,7 +72,8 @@ fn content_address_survives_the_carve() {
 }
 
 /// The single-owner path: owner recovery and `keccak256(id || owner)` on the
-/// go-interop vector.
+/// go-interop vector, whose origin is declared in
+/// `nectar_primitives_core::chunk::single_owner`.
 #[test]
 fn single_owner_recovery_survives_the_carve() {
     let wire = hex!(

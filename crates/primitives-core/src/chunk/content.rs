@@ -289,7 +289,9 @@ mod tests {
         assert_eq!(chunk.size(), 8);
     }
 
-    /// The commit rule is the body hash itself, pinned on a known vector.
+    /// The commit rule is the body hash itself. The pinned root is the body
+    /// hash of the 3-byte payload "foo": a single-leaf BMT, which is the
+    /// keccak of the payload itself, an implementation-independent digest.
     #[test]
     fn cac_header_commit_is_body_hash() {
         let chunk = DefaultContentChunk::new(b"foo".to_vec()).unwrap();

@@ -211,6 +211,7 @@ mod tests {
     type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 
     /// Go-interop single-owner vector: id(32) || signature(65) || span(8) || "foo".
+    /// The origin is declared beside the vector in `single_owner.rs`.
     fn soc_test_vector() -> Vec<u8> {
         hex!(
             "000000000000000000000000000000000000000000000000000000000000000\

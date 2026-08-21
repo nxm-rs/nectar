@@ -407,6 +407,9 @@ mod tests {
         assert_eq!(prehash, prehash2);
     }
 
+    /// EIP-191 interop vector from the reference client: bee's
+    /// `pkg/crypto/signer_test.go` `TestDefaultSignerDeterministic` carries
+    /// the same key, message, and signature.
     #[test]
     fn test_eip191_signing_interop() {
         use alloy_primitives::hex;

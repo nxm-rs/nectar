@@ -84,6 +84,10 @@ mod tests {
     use super::*;
 
     /// Test vector: key=8abf1502..., 4096 zero bytes, init_ctr=0.
+    /// The expected value is the Go reference output for the stated inputs;
+    /// the cipher's behaviour is cited against `pkg/encryption` in `SPEC.md`.
+    /// No golden vector is committed upstream, and the fixed inputs keep the
+    /// value re-derivable.
     #[test]
     fn go_test_vector() {
         let key_hex = "8abf1502f557f15026716030fb6384792583daf39608a3cd02ff2f47e9bc6e49";

@@ -26,7 +26,8 @@ fn test_concurrent_simple() {
     // Use sum to get the hash
     let result = hasher.sum();
 
-    // Check against the expected hash from the original test
+    // The expected hash is carried from this repository's original BMT test;
+    // the reference client publishes no vector for this input.
     let expected = B256::from_slice(
         &hex::decode("ca6357a08e317d15ec560fef34e4c45f8f19f01c372aa70f1da72bfa7f1a4338").unwrap(),
     );
@@ -628,6 +629,11 @@ fn test_write_returns_actual_bytes_written() {
 
 /// Pinned root vectors: a byte-identical regression oracle for the hasher.
 ///
+/// The roots are nectar's own output, captured byte-identical as an oracle;
+/// the reference client publishes no per-length root table. The 4096 row
+/// equals the `TestSampleVectorCAC` parity root of
+/// `test_bee_sample_vector_cac_parity`.
+///
 /// Payload byte i is i % 256 and the span equals the payload length, covering
 /// every subtree size class (sub-pair, single pair, partial and full trees).
 #[test]
@@ -702,6 +708,9 @@ fn test_pinned_root_vectors() {
 
 /// Pinned zero-tree and prefixed root vectors: the zero fast paths and the
 /// per-prefix zero tables must stay byte-identical.
+///
+/// The roots are nectar's own output, captured byte-identical as an oracle;
+/// the prefix tables are anchor-keyed, so no upstream vector covers them.
 #[test]
 fn test_pinned_zero_and_prefix_vectors() {
     const ANCHOR: &[u8] = b"swarm-test-anchor-deterministic!";

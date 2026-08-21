@@ -521,6 +521,8 @@ mod tests {
     /// Test vector: valid manifest with correct metadata size (93 bytes).
     /// This is a v0.2 manifest with zero obfuscation key, a single fork at '/',
     /// and website-index-document metadata.
+    /// The wire image is the reference-client fixture pinned as
+    /// `REFERENCE_MANIFEST_V02` in `crates/mantaray/src/view.rs`.
     #[test]
     fn decode_valid_reference_manifest() {
         let data = hex::decode(
@@ -531,6 +533,9 @@ mod tests {
 
     /// Test vector: metadata size field says 89 but actual content needs 93.
     /// Should fail because there aren't enough bytes for the declared metadata.
+    /// A mutated copy of the reference fixture asserted by
+    /// `decode_valid_reference_manifest`; the metadata size field is the only
+    /// change.
     #[test]
     fn decode_invalid_manifest_size_89() {
         let data = hex::decode(
@@ -541,6 +546,8 @@ mod tests {
 
     /// Test vector: metadata size field says 95 but actual content is 93.
     /// Should fail because the size exceeds available bytes.
+    /// A mutated copy of the same reference fixture; the metadata size field
+    /// is the only change.
     #[test]
     fn decode_invalid_manifest_size_95() {
         let data = hex::decode(
@@ -551,6 +558,8 @@ mod tests {
 
     /// Test vector: metadata size field says 96 but actual content is 93.
     /// Should fail because the size exceeds available bytes.
+    /// A mutated copy of the same reference fixture; the metadata size field
+    /// is the only change.
     #[test]
     fn decode_invalid_manifest_size_96() {
         let data = hex::decode(

@@ -570,7 +570,8 @@ mod tests {
     type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 
     fn get_test_wallet() -> PrivateKeySigner {
-        // Test private key corresponding to address 0x8d3766440f0d7b949a5e32995d09619a7f86e632
+        // Test private key; the account is 0x654BFE2E030Ff82B8741c7a0BF9eC26Ea523b31C,
+        // the same key the feeds sequence vectors sign with.
         let pk = hex!("2c7536e3605d9c16a7a3d7b1898e529396a65c23a3bcbd4012a11cf2731b0fbc");
         PrivateKeySigner::from_slice(&pk).unwrap()
     }
@@ -727,7 +728,10 @@ mod tests {
         let id = SocId::ZERO;
         let data = b"foo".to_vec();
 
-        // Known good signature from Go tests
+        // Go-interop vector: the signature recovers, under the crate's SOC
+        // rule, to the bee standard test-key account 0x8D376644...; the key,
+        // message and signature of that test are pinned by
+        // `test_eip191_signing_interop` in nectar-postage-issuer.
         let sig = hex!(
             "5acd384febc133b7b245e5ddc62d82d2cded9182d2716126cd8844509af65a053deb418208027f548e3e88343af6f84a8772fb3cebc0a1833a0ea7ec0c1348311b"
         );
