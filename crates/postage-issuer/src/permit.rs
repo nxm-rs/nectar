@@ -17,8 +17,7 @@ type Shared<T> = alloc::sync::Arc<T>;
 #[cfg(not(multi_thread))]
 type Shared<T> = alloc::rc::Rc<T>;
 
-/// Atomics where threads exist, plain cells where they do not.
-#[cfg(multi_thread)]
+/// Core atomics, so the claim contract holds with or without threads.
 mod word {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -52,34 +51,6 @@ mod word {
 
         pub(super) fn give(&self) {
             self.0.fetch_sub(1, ORDER);
-        }
-    }
-}
-
-/// Atomics where threads exist, plain cells where they do not.
-#[cfg(not(multi_thread))]
-mod word {
-    use core::cell::Cell;
-
-    #[derive(Debug, Default)]
-    pub(super) struct Occupancy(Cell<usize>);
-
-    impl Occupancy {
-        pub(super) fn get(&self) -> usize {
-            self.0.get()
-        }
-
-        pub(super) fn take(&self, limit: usize) -> bool {
-            let held = self.0.get();
-            if held >= limit {
-                return false;
-            }
-            self.0.set(held.saturating_add(1));
-            true
-        }
-
-        pub(super) fn give(&self) {
-            self.0.set(self.0.get().saturating_sub(1));
         }
     }
 }

@@ -11,8 +11,7 @@ use nectar_primitives::{Mainnet, SwarmSpec};
 
 use crate::counter::CounterError;
 
-/// Atomics where threads exist, plain cells where they do not.
-#[cfg(multi_thread)]
+/// Core atomics, so the claim contract holds with or without threads.
 mod word {
     use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
@@ -78,73 +77,6 @@ mod word {
 
         pub(super) fn bump(&self) {
             self.0.fetch_add(1, ORDER);
-        }
-    }
-}
-
-/// Atomics where threads exist, plain cells where they do not.
-#[cfg(not(multi_thread))]
-mod word {
-    use core::cell::Cell;
-
-    #[derive(Debug)]
-    pub(super) struct Counter(Cell<u32>);
-
-    impl Counter {
-        pub(super) const fn new(value: u32) -> Self {
-            Self(Cell::new(value))
-        }
-
-        pub(super) fn get(&self) -> u32 {
-            self.0.get()
-        }
-
-        /// Moves the watermark to `to`. Nothing else can hold the cell, so
-        /// `from` cannot be stale and the claim never loses.
-        pub(super) fn claim(&self, _from: u32, to: u32) -> Result<(), u32> {
-            self.0.set(to);
-            Ok(())
-        }
-    }
-
-    #[derive(Debug)]
-    pub(super) struct Depth(Cell<u8>);
-
-    impl Depth {
-        pub(super) const fn new(value: u8) -> Self {
-            Self(Cell::new(value))
-        }
-
-        pub(super) fn get(&self) -> u8 {
-            self.0.get()
-        }
-
-        pub(super) fn reload(&self) -> u8 {
-            self.0.get()
-        }
-
-        /// Raises the depth, returning the depth before the call.
-        pub(super) fn raise(&self, value: u8) -> u8 {
-            let previous = self.0.get();
-            self.0.set(previous.max(value));
-            previous
-        }
-    }
-
-    #[derive(Debug)]
-    pub(super) struct Issued(Cell<u64>);
-
-    impl Issued {
-        pub(super) const fn new(value: u64) -> Self {
-            Self(Cell::new(value))
-        }
-
-        pub(super) fn get(&self) -> u64 {
-            self.0.get()
-        }
-
-        pub(super) fn bump(&self) {
-            self.0.set(self.0.get().wrapping_add(1));
         }
     }
 }
