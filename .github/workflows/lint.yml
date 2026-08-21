@@ -233,26 +233,17 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 30
         env:
-            # `--cfg docsrs` mirrors `[workspace.metadata.docs.rs]`, under which
-            # the crates enable `feature(doc_cfg)`. The stable channel rejects
-            # that gate, so the lane runs a nightly, matching docs.rs itself.
+            # nightly is required: --cfg docsrs enables feature(doc_cfg), which stable rejects.
             RUSTDOCFLAGS: "-D warnings -D rustdoc::broken_intra_doc_links --cfg docsrs"
         steps:
-            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-            - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444  # v1
-            # rust-setup contributes sccache and the shared registry cache to
-            # this compiling lane; the date-pinned nightly then owns the
-            # default slot for the doc build.
+            - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+            - uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3  # v1
             - uses: ./.github/actions/rust-setup
-            - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master 2026-06-30
+            # the date-pinned nightly then owns the default slot for the doc build.
+            - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # master 2026-08-05
               with:
                   toolchain: "nightly-2026-08-19"
-            # A workspace `--all-features` pass unifies mutually exclusive
-            # pairs (`nectar-file`'s `rayon` against `unsync`, and
-            # `nectar-postage-issuer`'s `parallel` against `unsync`). Each
-            # published crate is documented the way docs.rs documents it:
-            # alone, with the feature set that crate's own
-            # `[package.metadata.docs.rs]` table declares.
+            # workspace --all-features unifies mutually exclusive feature pairs (nectar-file rayon vs unsync), so each published crate is documented alone with the set its own [package.metadata.docs.rs] declares.
             - name: cargo doc
               run: |
                   TAB="$(printf "\t")"
