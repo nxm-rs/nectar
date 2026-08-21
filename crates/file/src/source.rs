@@ -4,7 +4,7 @@
 //! drains. Three adapters cover the shapes the pipeline meets: an in-memory
 //! slice (the blanket `&[u8]` impl), a positional [`ReadAt`] target through
 //! [`ReadAtSource`], and an async byte stream through
-//! [`AsyncReadSource`](crate::source::AsyncReadSource). A pull of zero bytes
+//! [`AsyncReadSource`]. A pull of zero bytes
 //! is the end of the source; a short non-zero pull is legal and the caller
 //! pulls again.
 

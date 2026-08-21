@@ -367,7 +367,7 @@ fn model(ops: &[EditorOp]) -> Model {
 }
 
 /// Differential of the manifest editor against a reader-based path-set
-/// model: a committed op log (capped at [`MAX_OPS`]) must expose exactly
+/// model: a committed op log (capped at `MAX_OPS`) must expose exactly
 /// the model's surviving paths at their last put references, removed paths
 /// must stay absent, the root documents must read back at their last set
 /// values, and two commits of one log must agree.

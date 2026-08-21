@@ -94,8 +94,7 @@ type Turn<F> = Result<Option<(Key, Entry<F>)>, ReaderError>;
 ///
 /// Every fault is non-terminal (a failed descent replays), so a fault rides
 /// the delivered turn rather than ending the walk. The walk advances inside
-/// [`admit`](Self::admit), where the launch a fresh descent needs is
-/// reachable.
+/// `admit`, where the launch a fresh descent needs is reachable.
 #[derive(Debug)]
 pub struct Cursor<'a, S, F: Format = V1, R: NodeRef = ChunkRef> {
     store: &'a S,

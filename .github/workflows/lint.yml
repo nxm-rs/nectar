@@ -1,6 +1,7 @@
 # Clippy (runtime-safety restriction lints), unused-dependency checks, the
 # cargo-deny supply-chain gate (advisories, bans, sources, licences), the
-# MSRV compile on the declared `rust-version`, and the format/content sweep.
+# MSRV compile on the declared `rust-version`, a docs.rs-shape rustdoc lane,
+# and the format/content sweep.
 name: lint
 
 on:
@@ -227,13 +228,47 @@ jobs:
             - name: serde_json stays a dev-dependency
               run: .github/scripts/serde-json-dev-only.sh
 
+    docs:
+        name: docs
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            # nightly is required: --cfg docsrs enables feature(doc_cfg), which stable rejects.
+            RUSTDOCFLAGS: "-D warnings -D rustdoc::broken_intra_doc_links --cfg docsrs"
+            # the env var beats the repo's rust-toolchain.toml pin, which outranks rustup's default.
+            RUSTUP_TOOLCHAIN: nightly-2026-08-19
+        steps:
+            - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+            - uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3  # v1
+            - uses: ./.github/actions/rust-setup
+            # the date-pinned nightly then owns the default slot for the doc build.
+            - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # master 2026-08-05
+              with:
+                  toolchain: "nightly-2026-08-19"
+            # workspace --all-features unifies mutually exclusive feature pairs (nectar-file rayon vs unsync), so each published crate is documented alone with the set its own [package.metadata.docs.rs] declares.
+            - name: cargo doc
+              run: |
+                  TAB="$(printf "\t")"
+                  while IFS="$TAB" read -r pkg features; do
+                      if [ "$features" = "all" ]; then
+                          cargo doc --locked --no-deps --all-features -p "$pkg"
+                      else
+                          cargo doc --locked --no-deps --features "$features" -p "$pkg"
+                      fi
+                  done < <(cargo metadata --no-deps --locked --format-version 1 | jq -r '
+                      .packages[] | select(.publish == null)
+                      | [.name,
+                         (if (.metadata.docs.rs["all-features"] // false) then "all"
+                          else ((.metadata.docs.rs.features // ["default"]) | join(",")) end)]
+                      | join("\t")')
+
     # The one required context for this workflow: later jobs append to `needs`
     # rather than to the branch ruleset.
     lint-success:
         name: lint success
         runs-on: ubuntu-latest
         if: always()
-        needs: [clippy, unused-deps, deny, msrv, format]
+        needs: [clippy, unused-deps, deny, msrv, format, docs]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed
