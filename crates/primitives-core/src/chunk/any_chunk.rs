@@ -368,6 +368,7 @@ impl<'a, const BODY_SIZE: usize> arbitrary::Arbitrary<'a> for AnyChunk<BODY_SIZE
 mod tests {
     use super::super::traits::ChunkOps;
     use super::*;
+    use std::vec;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
     type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
@@ -426,24 +427,31 @@ mod tests {
         assert_eq!(any.type_id(), cloned.type_id());
     }
 
+    #[cfg(feature = "std")]
     fn test_signer() -> alloy_signer_local::PrivateKeySigner {
         // Fixed key so addresses are deterministic across runs.
         let pk = [0x42u8; 32];
         alloy_signer_local::PrivateKeySigner::from_slice(&pk).unwrap()
     }
 
+    #[cfg(feature = "std")]
     fn sample_single_owner() -> DefaultSingleOwnerChunk {
         let id = crate::SocId::ZERO;
         DefaultSingleOwnerChunk::new(id, b"single owner payload".to_vec(), &test_signer()).unwrap()
     }
 
-    /// [`ChunkOps::owner`] delegates by variant: content chunks bind no
-    /// owner, single-owner chunks recover the signer.
+    /// [`ChunkOps::owner`] delegates by variant: a content chunk binds no
+    /// owner.
     #[test]
     fn chunk_ops_owner_delegates_by_variant() {
         let content: DefaultAnyChunk = DefaultContentChunk::new(&b"ownerless"[..]).unwrap().into();
         assert_eq!(content.owner(), None);
+    }
 
+    /// A single-owner chunk recovers the signer through the same delegation.
+    #[cfg(feature = "std")]
+    #[test]
+    fn chunk_ops_owner_recovers_the_signer() {
         let soc = sample_single_owner();
         let expected = soc.owner().unwrap();
         let any: DefaultAnyChunk = soc.into();
@@ -466,6 +474,7 @@ mod tests {
         assert_eq!(decoded.data(), any.data());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn test_typed_single_owner_round_trip() {
         let soc = sample_single_owner();
@@ -601,6 +610,7 @@ mod tests {
         assert_eq!(decoded.into_bytes(), wire);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn test_from_wire_bytes_single_owner_round_trip() {
         let soc = sample_single_owner();
@@ -638,6 +648,7 @@ mod tests {
     /// signed by the public replica key over a non-conforming id commits to
     /// a real replica address, and a bare address compare would mint
     /// arbitrary content there. The replica pin must reject it.
+    #[cfg(feature = "std")]
     #[test]
     fn test_from_wire_bytes_rejects_nonconforming_replica_id() {
         use super::super::single_owner::DISPERSED_REPLICA_OWNER_PK;
@@ -668,6 +679,7 @@ mod tests {
     /// A garbage signature commits under the zero owner; asking the wire
     /// path about exactly that address must still fail, where a bare
     /// address compare would lie its way through.
+    #[cfg(feature = "std")]
     #[test]
     fn test_from_wire_bytes_rejects_garbage_signature_at_committed_address() {
         let soc = sample_single_owner();

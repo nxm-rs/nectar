@@ -164,6 +164,7 @@ impl From<ChunkTypeId> for u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
 
     #[test]
     fn test_constants() {

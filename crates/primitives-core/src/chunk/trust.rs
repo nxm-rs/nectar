@@ -357,19 +357,25 @@ impl<R: ChunkRegistry> IntoVerified for Chunk<Unverified, R> {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::hex;
+    #[cfg(feature = "std")]
     use alloy_signer_local::PrivateKeySigner;
 
     use super::super::content::ContentChunk;
+    #[cfg(feature = "std")]
     use super::super::registry::ContentOnlyChunkSet;
     use super::super::single_owner::SingleOwnerChunk;
     use super::*;
     use crate::bmt::DEFAULT_BODY_SIZE;
-    use crate::chunk::{ChunkError, SocId};
+    use crate::chunk::ChunkError;
+    #[cfg(feature = "std")]
+    use crate::chunk::SocId;
     use crate::error::PrimitivesError;
+    use std::format;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
     type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;
 
+    #[cfg(feature = "std")]
     fn test_signer() -> PrivateKeySigner {
         // Fixed key so addresses are deterministic across runs.
         PrivateKeySigner::from_slice(&[0x42u8; 32]).unwrap()
@@ -413,6 +419,7 @@ mod tests {
         assert_eq!(unverified.verify().unwrap().address_in_state(), &claimed);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn verified_owner_is_recovered_and_memoized() {
         let signer = test_signer();
@@ -431,6 +438,7 @@ mod tests {
 
     /// A verify-routed mint seeds the owner fact from its acceptance run;
     /// reading it never pays a second recovery.
+    #[cfg(feature = "std")]
     #[test]
     fn verify_routed_mint_seeds_the_owner() {
         let signer = test_signer();
@@ -513,6 +521,7 @@ mod tests {
         assert_eq!(assumed.address(), &lie);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn decode_wire_certifies_in_one_step() {
         let signer = test_signer();
@@ -552,6 +561,7 @@ mod tests {
         assert!(certify(Chunk::<Unverified>::parse(lie, &typed).unwrap()).is_err());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn content_only_registry_rejects_single_owner_tags() {
         let signer = test_signer();
@@ -597,6 +607,7 @@ mod tests {
 
     /// Narrowing transfers the Verified fact without re-running any
     /// acceptance rule: the address and the memoized owner carry over.
+    #[cfg(feature = "std")]
     #[test]
     fn narrow_single_owner_preserves_the_verified_fact() {
         let signer = test_signer();
@@ -637,6 +648,7 @@ mod tests {
         assert_eq!(narrow.typed_bytes(), typed);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn narrow_content_rejects_a_single_owner_chunk() {
         let soc = DefaultSingleOwnerChunk::new(SocId::ZERO, b"stays wide".to_vec(), &test_signer())

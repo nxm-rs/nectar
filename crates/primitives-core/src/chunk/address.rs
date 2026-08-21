@@ -107,6 +107,7 @@ impl<'a> arbitrary::Arbitrary<'a> for ChunkAddress {
 mod tests {
     use super::*;
     use crate::error::PrimitivesError;
+    use std::format;
 
     #[test]
     fn zero_is_all_zero_bytes() {

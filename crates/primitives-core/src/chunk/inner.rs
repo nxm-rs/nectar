@@ -206,6 +206,7 @@ mod tests {
     use super::*;
     use crate::DEFAULT_BODY_SIZE;
     use alloy_primitives::hex;
+    use std::vec::Vec;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
     type DefaultSingleOwnerChunk = SingleOwnerChunk<DEFAULT_BODY_SIZE>;

@@ -275,6 +275,7 @@ mod tests {
     use super::*;
     use crate::bmt::DEFAULT_BODY_SIZE;
     use crate::error::PrimitivesError;
+    use std::vec;
 
     type DefaultContentChunk = ContentChunk<DEFAULT_BODY_SIZE>;
     type ContentOnly = ContentOnlyChunkSet<DEFAULT_BODY_SIZE>;
@@ -283,12 +284,14 @@ mod tests {
     const CAC_TAG: ChunkTypeTag = ChunkTypeTag::new(CacHeader::TYPE_ID, CacHeader::VERSION);
     const SOC_TAG: ChunkTypeTag = ChunkTypeTag::new(SocHeader::TYPE_ID, SocHeader::VERSION);
 
+    #[cfg(feature = "std")]
     fn test_signer() -> alloy_signer_local::PrivateKeySigner {
         // Fixed key so addresses are deterministic across runs.
         let pk = [0x42u8; 32];
         alloy_signer_local::PrivateKeySigner::from_slice(&pk).unwrap()
     }
 
+    #[cfg(feature = "std")]
     fn sample_single_owner() -> SingleOwnerChunk<DEFAULT_BODY_SIZE> {
         let id = crate::SocId::ZERO;
         SingleOwnerChunk::new(id, b"single owner payload".to_vec(), &test_signer()).unwrap()
@@ -394,6 +397,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn standard_wire_round_trip() {
         let soc = sample_single_owner();
@@ -421,6 +425,13 @@ mod tests {
         let content_only = ContentOnly::encode_typed(&content);
         assert!(ContentOnly::parse_typed(&content_only).is_ok());
         assert!(ContentOnly::decode_typed(&wrong, &content_only).is_err());
+    }
+
+    /// The `SocOnly` registry parses typed SOC bytes structurally as well.
+    #[cfg(feature = "std")]
+    #[test]
+    fn soc_only_parses_typed_structurally() {
+        let wrong: ChunkAddress = [0xFFu8; 32].into();
 
         let soc_only = SocOnly::encode_typed(&sample_single_owner());
         assert!(SocOnly::parse_typed(&soc_only).is_ok());
@@ -438,6 +449,7 @@ mod tests {
     /// written by either encoder decode through the other. Guards the registry
     /// against silently diverging from the established `AnyChunk` wire format
     /// even if its own encode/decode stayed self-consistent.
+    #[cfg(feature = "std")]
     #[test]
     fn standard_typed_interops_with_any_chunk_codec() {
         let content: AnyChunk = DefaultContentChunk::new(&b"interop cac"[..])
@@ -478,6 +490,7 @@ mod tests {
         assert_eq!(*decoded.address(), address);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn content_only_typed_rejects_soc_tag_as_unsupported() {
         let soc = sample_single_owner();
@@ -518,6 +531,7 @@ mod tests {
         assert_eq!(decoded.data(), content.data());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn content_only_wire_rejects_soc_bytes() {
         // A SOC's wire bytes parse structurally as a CAC (span plus payload)
@@ -529,6 +543,7 @@ mod tests {
         assert!(ContentOnly::decode_wire(&address, wire).is_err());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn soc_only_typed_round_trip() {
         let soc = sample_single_owner();
@@ -562,6 +577,7 @@ mod tests {
         assert!(SocOnly::decode_typed(&address, &[1]).is_err());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn soc_only_wire_round_trip() {
         let soc = sample_single_owner();
@@ -593,6 +609,7 @@ mod tests {
     /// garbage signature commits under the zero owner, and asking for
     /// exactly that committed address must fail, where a bare address
     /// compare would pass.
+    #[cfg(feature = "std")]
     #[test]
     fn soc_only_wire_rejects_garbage_signature_at_committed_address() {
         let soc = sample_single_owner();
@@ -671,7 +688,8 @@ mod tests {
     /// seed bytes feed `generators::any_chunk` and the built chunk must pass
     /// the shared round-trip oracle. `soc-*` seeds must build a single-owner
     /// chunk and `cac-*` seeds a content chunk, so both arms stay exercised
-    /// on stable.
+    /// on stable. The single-owner arm signs, so it rides the std side.
+    #[cfg(feature = "std")]
     #[test]
     fn seed_replay_chunk_roundtrip() {
         nectar_testing::SeedReplay::corpus(env!("CARGO_MANIFEST_DIR"), "chunk_roundtrip")
