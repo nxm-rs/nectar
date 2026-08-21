@@ -1,8 +1,5 @@
-# Gates the no_std core on a bare-metal rv64 target (the zkVM-guest shape)
-# and on wasm32 (the browser shape). Only the crates that already build
-# without std are listed; extend the -p list as crates flip to no_std. The
-# spike crate pins the streaming pipeline's dependency base (futures-util
-# with alloc only, bytes with default features off) on both targets.
+# no_std gate for the proving lane (decision 4, docs/RESTRUCTURE-PLAN.md).
+# A carved successor replaces its predecessor in the -p list.
 name: no_std
 
 on:
@@ -30,75 +27,21 @@ jobs:
                     - riscv64imac-unknown-none-elf
                     - wasm32-unknown-unknown
         steps:
-            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
             - uses: ./.github/actions/rust-setup
               with:
                   targets: ${{ matrix.target }}
-            - name: Check no_std crates without std
+            - name: Check proving-lane crates without std
               run: |
-                  # nectar-postage is the proving-grade surface (stamp wire
-                  # types and verification); nectar-postage-issuer rides as its
-                  # gated sequential core.
-                  # nectar-primitives-core is the guest-facing chunk
-                  # verification surface: it carries the BMT, the chunk
-                  # carriers and single-owner recovery, and rides both
-                  # targets bare.
+                  # nectar-primitives-core: the chunk proofs a guest verifies.
+                  # nectar-postage: the stamps a guest verifies.
+                  # nectar-marker: the bounds crate the other two name.
                   cargo check --locked \
-                    -p nectar-contracts -p nectar-file \
-                    -p nectar-marker -p nectar-clock -p nectar-governor \
-                    -p nectar-postage -p nectar-postage-issuer \
                     -p nectar-primitives-core \
+                    -p nectar-postage -p nectar-marker \
                     --no-default-features \
                     --target ${{ matrix.target }}
-                  # nectar-mantaray by path: the editor's differential gate pins a
-                  # second nectar-mantaray (0.3.0), so a bare -p spec is ambiguous.
-                  # The manifest path selects the workspace member independent of
-                  # version, so nothing here needs revisiting when the oracle is
-                  # removed or the workspace version bumps.
-                  cargo check --locked --manifest-path crates/mantaray/Cargo.toml \
-                    --no-default-features --target ${{ matrix.target }}
-            # The sequential read, join and walk core of nectar-file, with the
-            # primitives dependency on; the bare pass above keeps the hollow
-            # shape honest.
-            - name: Check nectar-file with the primitives core
-              run: |
-                  cargo check --locked -p nectar-file \
-                    --no-default-features --features primitives \
-                    --target ${{ matrix.target }}
-            # The manifest seam pins nectar-primitives, which unification
-            # would leak into the bare pass above.
-            - name: Check nectar-manifest without std
-              run: |
-                  cargo check --locked -p nectar-manifest \
-                    --no-default-features --target ${{ matrix.target }}
-            # The key-value database core, primitives-only. Separate from the shared
-            # list above to keep its bare-metal edge pinned in its own pass.
-            - name: Check nectar-ldb without std
-              run: |
-                  cargo check --locked -p nectar-ldb \
-                    --no-default-features \
-                    --target ${{ matrix.target }}
-            # The bare-metal core of nectar-primitives. Only in the rv64 lane:
-            # the wasm32 shape of the crate is the std build with the wasm
-            # target table (wasm-bindgen), not the no_std core.
-            - name: Check nectar-primitives bare-metal
-              if: matrix.target == 'riscv64imac-unknown-none-elf'
-              run: |
-                  cargo check --locked -p nectar-primitives \
-                    --no-default-features \
-                    --target ${{ matrix.target }}
-            # Envelope open and decap need no RNG, so a bare-metal or proving
-            # guest opens envelopes without std. Sealing rides encryption (rand)
-            # and is excluded here.
-            - name: Check envelope open builds bare-metal
-              if: matrix.target == 'riscv64imac-unknown-none-elf'
-              run: |
-                  cargo check --locked -p nectar-envelope \
-                    --no-default-features \
-                    --target ${{ matrix.target }}
-            # The single-thread send escape (the unsync feature) and its
-            # !Send-store compile proof, checked for the host inside the
-            # rv64 lane, the target shape the escape exists for.
+            # unsync: the !Send store's host shape, the rv64 lane standing in for the guest target.
             - name: Check the unsync send escape
               if: matrix.target == 'riscv64imac-unknown-none-elf'
               run: |
@@ -113,6 +56,6 @@ jobs:
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed
-              uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe  # release/v1
+              uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe  # v1.2.2
               with:
                   jobs: ${{ toJSON(needs) }}
