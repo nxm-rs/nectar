@@ -146,7 +146,11 @@ This blocks the api-crate car and must be settled first.
 
 ### Tier 3, implementations, `std`
 
-`nectar-contracts`, `nectar-file`, `nectar-ldb-core`, `nectar-ldb`, `nectar-mantaray`, `nectar-feeds`, `nectar-postage-issuer` (absorbs `nectar-postage-usage`).
+`nectar-contracts`, `nectar-file`, `nectar-ldb-core`, `nectar-ldb`, `nectar-mantaray`, `nectar-feeds`, `nectar-postage-issuer` (absorbs `nectar-postage-usage`), `nectar-redistribution`.
+
+`nectar-redistribution` is new, and it is where the absorbed node code lands: the reserve sample, transformed-address ordering, witness selection and the three-proof inclusion path.
+It does not sit behind `nectar-proof`, which owns the authentication layer for descent proofs and carries no domain vocabulary; a redistribution proof is three flat single-level proofs plus a stamp, with no descent at all.
+It is std rather than `no_std`, because its proofs are verified on chain rather than inside a guest, so it stays off the proving lane.
 
 `nectar-ldb-core` is the one crate here that is `no_std`: node decode, descent verification and the proof implementation.
 `nectar-ldb` above it is the engine, and is std.
