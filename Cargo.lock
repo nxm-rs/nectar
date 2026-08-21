@@ -2708,6 +2708,7 @@ dependencies = [
  "criterion",
  "futures-util",
  "nectar-clock",
+ "nectar-contracts",
  "nectar-file",
  "nectar-governor",
  "nectar-marker",

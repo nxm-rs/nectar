@@ -170,6 +170,8 @@ compile_error!("features `parallel` and `unsync` are mutually exclusive");
 #[cfg(all(feature = "sign-parallel", feature = "unsync"))]
 compile_error!("features `sign-parallel` and `unsync` are mutually exclusive");
 
+#[cfg(feature = "std")]
+mod batch_events;
 mod counter;
 #[cfg(feature = "std")]
 mod dilute_handler;
@@ -200,6 +202,10 @@ pub use counter::{CounterError, CounterMode, CounterTable};
 // Wiring on-chain depth-increase events through to issuer dilution (std only).
 #[cfg(feature = "std")]
 pub use dilute_handler::{Dilutable, IssuerHandle, IssuerRegistry};
+
+// Decoded contract batch logs to the domain BatchEvent (std only).
+#[cfg(feature = "std")]
+pub use batch_events::{EventError, created, depth_increase, expired, top_up};
 
 // Issuing
 pub use issuer::{MemoryIssuer, StampIssuer};

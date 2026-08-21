@@ -200,6 +200,7 @@ impl BatchEventHandler for IssuerRegistry {
                 batch_id,
                 new_depth,
                 block,
+                ..
             } => {
                 // An untracked batch belongs to another handler, but its event
                 // still proves the chain reached this block, so the head moves
@@ -251,6 +252,7 @@ mod tests {
         BatchEvent::DepthIncrease {
             batch_id,
             new_depth,
+            new_value: 0,
             block: DILUTION_BLOCK,
         }
     }
@@ -333,6 +335,7 @@ mod tests {
             .handle_event(BatchEvent::DepthIncrease {
                 batch_id: tracked,
                 new_depth: 19,
+                new_value: 0,
                 block: DILUTION_BLOCK + 1,
             })
             .unwrap();
@@ -353,6 +356,7 @@ mod tests {
             .handle_event(BatchEvent::DepthIncrease {
                 batch_id: tracked,
                 new_depth: 20,
+                new_value: 0,
                 block: DILUTION_BLOCK + 10,
             })
             .unwrap();
@@ -416,6 +420,7 @@ mod tests {
             .handle_event(BatchEvent::DepthIncrease {
                 batch_id: other,
                 new_depth: 24,
+                new_value: 0,
                 block: DILUTION_BLOCK + CONFIRMATIONS,
             })
             .unwrap();
