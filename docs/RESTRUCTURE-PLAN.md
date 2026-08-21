@@ -274,18 +274,24 @@ Presence survives only on the synchronous local seam, as a fallible `contains`.
 - Settle on one asynchronous convention across postage.
   There are currently four in one domain: synchronous, RPITIT with a hard `Send`, RPITIT with no bound at all, and RPITIT with `MaybeSend`.
 - Window the serial round trips: `postage-usage::open()` performs up to 65,535 strictly serial fetches.
+- Land erasure coding: parity-aware fan-out, the write side and the recovery getter.
+  It waits on the span level decode in M0, and it belongs here rather than later because the write side changes the split engine's fan-out and the recovery getter changes how the walk engine uses the store, which are the same surfaces this milestone reworks.
+  Landing it against the old seams would mean writing it twice.
 
 **Exit gate.** No presence verb on the asynchronous seam. Every public store error answers `is_definitely_absent`. Every cursor is a `Stream`, and every type named `Sink` implements `futures::Sink`. The membound integration tests still hold, and a benchmark shows the allocation count per gibibyte split has dropped.
 
-### M5. The two sweeps
+### M5. The workspace-wide sweeps
 
 Each gets a window with nothing else in flight.
+All three run after the tier carve and the seam repair, because each enumerates or edits a surface those milestones change.
 
 1. The `SwarmPrimitives` collapse, absorbing `SwarmSpec` and `const BODY_SIZE`.
    This is 180 plus 262 sites.
 2. Error-rule conformance: `#[non_exhaustive]` on all 27 public error types that lack it, no stringly-typed variants, and a retryability predicate on every public error with an exhaustive classification test.
+3. The restriction-lint suppression burn-down in shipped source.
+   Re-baseline the register first: the recorded count samples a crate set that no longer exists, and roughly two-thirds of the suppressions it counted were in the postage crates, which have since been rewritten wholesale.
 
-**Exit gate.** No `const B: usize` in any public signature. The `AGENTS.md` error conformance checklist passes, and it names items rather than line numbers, because two of its current citations have already drifted.
+**Exit gate.** No `const B: usize` in any public signature. The `AGENTS.md` error conformance checklist passes, and it names items rather than line numbers, because two of its current citations have already drifted. The suppression count is measured against the tree as it stands.
 
 ### M6. Substrate absorption and the vertex migration
 
