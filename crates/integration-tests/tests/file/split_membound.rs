@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use nectar_file::{File, Policy, PutWindow, Source};
 use nectar_primitives::chunk::{AnyChunkSet, Chunk, Verified};
 use nectar_primitives::store::{ChunkPut, ChunkStoreError};
-use nectar_testing::{measure_allocations, run};
+use nectar_testing::measure_allocations_async;
 
 /// Tiny body: fan-out 8, so a few thousand leaves build a deep tree at a
 /// modest byte count.
@@ -112,10 +112,8 @@ fn split_peak(total: usize) -> u64 {
         DropStore::new(),
         Policy::DEFAULT.with_put_window(PutWindow::new(WINDOW).unwrap()),
     );
-    let ((), info) = measure_allocations(|| {
-        run(async {
-            file.save(Splitmix { produced: 0, total }).await.unwrap();
-        })
+    let ((), info) = measure_allocations_async(async {
+        file.save(Splitmix { produced: 0, total }).await.unwrap();
     });
     info.bytes_max
 }

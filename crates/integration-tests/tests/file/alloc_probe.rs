@@ -14,7 +14,7 @@ use std::sync::Arc;
 use nectar_file::{Encrypted, File, Policy, RandomKeys};
 use nectar_primitives::chunk::ContentOnlyChunkSet;
 use nectar_primitives::store::MemoryStore;
-use nectar_testing::{AllocationInfo, measure_allocations, run, split_into};
+use nectar_testing::{AllocationInfo, measure_allocations_async, split_into};
 
 /// Body size of the default profile.
 const BODY: usize = nectar_primitives::DEFAULT_BODY_SIZE;
@@ -37,7 +37,7 @@ fn probe(leaves: usize) -> AllocationInfo {
 
     let file: File<Store, BODY> = File::new(store, Policy::DEFAULT);
     let (out, info) =
-        measure_allocations(|| run(async { file.collect(root.into(), u64::MAX).await.unwrap() }));
+        measure_allocations_async(async { file.collect(root.into(), u64::MAX).await.unwrap() });
 
     assert_eq!(out, data, "plaintext diverged at {leaves} leaves");
     info

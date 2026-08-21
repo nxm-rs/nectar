@@ -14,7 +14,7 @@ use std::sync::Arc;
 use nectar_file::{File, Policy};
 use nectar_primitives::chunk::{AnyChunkSet, ChunkAddress};
 use nectar_primitives::store::{ContentGet, MemoryStore};
-use nectar_testing::{AllocationInfo, measure_allocations, run};
+use nectar_testing::{AllocationInfo, measure_allocations_async, run};
 
 /// Body size of the default profile.
 const BODY: usize = nectar_primitives::DEFAULT_BODY_SIZE;
@@ -43,15 +43,13 @@ fn probe(leaves: usize) -> (AllocationInfo, u64) {
     let (root, store) = split_plain(&data);
 
     let file: File<ContentGet<Store>, BODY> = File::new(ContentGet::new(store), Policy::DEFAULT);
-    let ((read, fetches), info) = measure_allocations(|| {
-        run(async {
-            let mut reader = file.open(root.into()).await.unwrap();
-            let mut read = 0usize;
-            while let Some(segment) = reader.next_segment().await {
-                read += segment.unwrap().len();
-            }
-            (read, reader.stats().fetches)
-        })
+    let ((read, fetches), info) = measure_allocations_async(async {
+        let mut reader = file.open(root.into()).await.unwrap();
+        let mut read = 0usize;
+        while let Some(segment) = reader.next_segment().await {
+            read += segment.unwrap().len();
+        }
+        (read, reader.stats().fetches)
     });
 
     assert_eq!(read, data.len(), "plaintext short at {leaves} leaves");
