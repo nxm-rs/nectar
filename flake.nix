@@ -59,6 +59,7 @@
             git-cliff
             cargo-deny
             cargo-audit
+            cargo-machete
             # Agent tooling: fast code search (ripgrep) and structural search (ast-grep).
             ripgrep
             ast-grep
