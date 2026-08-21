@@ -63,10 +63,15 @@ alloy-primitives = { workspace = true, features = ["getrandom"] }
 getrandom_04.workspace = true
 
 [dev-dependencies]
-alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "asm-keccak"] }
-
-arbitrary = { workspace = true }
+alloy-primitives.workspace = true
 nectar-testing.workspace = true
+wasm-bindgen-test.workspace = true
+
+# Host-only test feature set: `asm-keccak` and its getrandom backends do not
+# build for the wasm32 test target.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "asm-keccak"] }
+arbitrary = { workspace = true }
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 rand.workspace = true
