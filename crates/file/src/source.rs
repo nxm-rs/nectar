@@ -112,7 +112,6 @@ impl ReadAt for alloc::vec::Vec<u8> {
     }
 }
 
-#[cfg(feature = "primitives")]
 impl ReadAt for bytes::Bytes {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         <[u8] as ReadAt>::read_at(self.as_ref(), offset, buf)

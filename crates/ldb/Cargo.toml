@@ -37,7 +37,7 @@ alloy-primitives = { workspace = true }
 anyhow.workspace = true
 arbitrary.workspace = true
 bytes.workspace = true
-nectar-file = { workspace = true, features = ["primitives"] }
+nectar-file = { workspace = true }
 # Self dev-dependency: exposes `generators` and the manifest seam to tests/.
 nectar-ldb = { workspace = true, features = ["arbitrary", "manifest"] }
 nectar-manifest.workspace = true

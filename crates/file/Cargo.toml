@@ -19,14 +19,14 @@ workspace = true
 
 [dependencies]
 arbitrary = { workspace = true, optional = true }
-bytes = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true }
-nectar-clock = { workspace = true, optional = true }
+bytes = { workspace = true, features = ["std"] }
+futures-util = { workspace = true, features = ["std"] }
+nectar-clock = { workspace = true, features = ["std"] }
 nectar-governor = { workspace = true }
 nectar-manifest = { workspace = true, optional = true }
 nectar-marker = { workspace = true }
-nectar-primitives = { workspace = true, optional = true }
-nectar-tasks = { workspace = true, optional = true }
+nectar-primitives = { workspace = true, features = ["std"] }
+nectar-tasks = { workspace = true, features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["sync"], optional = true }
 zeroize = { workspace = true, optional = true }
@@ -46,51 +46,37 @@ nectar-testing = { workspace = true, features = ["alloc", "fixtures"] }
 tokio = { workspace = true, features = ["io-util", "time"] }
 
 [features]
-default = [ "primitives" ]
-
-# The streaming engine core: the primitives dependency, the byte buffers
-# and the poll utilities.
-primitives = [
-	"bytes?/std",
-	"dep:bytes",
-	"dep:futures-util",
-	"dep:nectar-clock",
-	"dep:nectar-primitives",
-	"dep:nectar-tasks",
-	"futures-util?/std",
-	"nectar-clock?/std",
-	"nectar-primitives?/std",
-	"nectar-tasks?/std",
-]
+# The read/write pipeline and its buffers are unconditional; these features
+# are the back-ends and modes stacked on top of that base.
 
 # The manifest seam's shared data-load lane: one `load_reference` every
 # format adapter calls.
-manifest = [ "dep:nectar-manifest", "nectar-manifest?/std", "primitives" ]
+manifest = [ "dep:nectar-manifest", "nectar-manifest?/std" ]
 
 # Async reader adapter over the poll surface, plus the `AsyncRead` source.
-tokio = [ "dep:tokio", "primitives" ]
+tokio = [ "dep:tokio" ]
 
 # Pool leaf hashing: the split hash window and the read-at ingest; rayon on
 # wasm32 or under `unsync` is a compile error, never a silent fallback.
-rayon = [ "dep:nectar-tasks", "nectar-tasks/rayon", "primitives" ]
+rayon = [ "nectar-tasks/rayon" ]
 
 # The shared malformed-walk oracle, the structural-regime body generators
 # and the stable seed replays. Never reachable from `default` or any
 # shipped feature.
-arbitrary = [ "dep:arbitrary", "nectar-primitives?/arbitrary", "primitives" ]
+arbitrary = [ "dep:arbitrary", "nectar-primitives/arbitrary" ]
 
 # Split-side encrypted mode. Joining encrypted references stays unconditional.
-encryption = [ "dep:zeroize", "nectar-primitives?/encryption" ]
+encryption = [ "dep:zeroize", "nectar-primitives/encryption" ]
 
 # Single-thread send escape: relaxes the boxed fetch future off `Send` in
 # lockstep with the primitives store traits.
 unsync = [
-	"nectar-clock?/unsync",
+	"nectar-clock/unsync",
 	"nectar-governor/unsync",
 	"nectar-manifest?/unsync",
 	"nectar-marker/unsync",
-	"nectar-primitives?/unsync",
-	"nectar-tasks?/unsync",
+	"nectar-primitives/unsync",
+	"nectar-tasks/unsync",
 ]
 
 [[bench]]

@@ -35,7 +35,7 @@ serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 # Path-only: each depends on this crate, so a versioned dev-dependency would
 # have no publish order.
-nectar-file = { path = "../file", default-features = false, features = ["primitives"] }
+nectar-file = { path = "../file" }
 nectar-ldb = { path = "../ldb", features = ["manifest"] }
 nectar-mantaray = { path = "../mantaray", features = ["manifest"] }
 
