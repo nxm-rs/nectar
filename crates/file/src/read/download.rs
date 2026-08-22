@@ -3,7 +3,6 @@
 use alloc::boxed::Box;
 use core::fmt;
 use core::ops::Range;
-#[cfg(feature = "std")]
 use core::time::Duration;
 
 use futures_util::stream::StreamExt;
@@ -11,7 +10,6 @@ use nectar_primitives::DEFAULT_BODY_SIZE;
 use nectar_primitives::chunk::{ChunkAddress, ContentOnlyChunkSet};
 use nectar_primitives::store::TrustedGet;
 
-#[cfg(feature = "std")]
 use super::body_size;
 use super::error::LoadError;
 use super::frames::FileFrames;
@@ -86,7 +84,6 @@ impl<S, M: WalkMode, const B: usize> DownloadBuilder<S, M, B> {
     /// Adaptive cap: `policy` recomputes the window between admission
     /// rounds from realized occupancy; the built window is its seed. The
     /// policy runs in the poll path and must be cheap and non-blocking.
-    #[cfg(any(test, feature = "std"))]
     #[must_use]
     pub fn window_policy(mut self, policy: WindowPolicyFn) -> Self {
         self.policy = Some(policy);
@@ -96,8 +93,6 @@ impl<S, M: WalkMode, const B: usize> DownloadBuilder<S, M, B> {
     /// Closed-loop window: seed from the throughput hint and let an
     /// [`AdaptiveWindow`](super::AdaptiveWindow) controller retune the cap
     /// against realized latency, never past `max`.
-    #[cfg(feature = "std")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
     pub fn adaptive_throughput(
         self,

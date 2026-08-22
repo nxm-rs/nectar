@@ -18,16 +18,16 @@ categories = ["data-structures"]
 workspace = true
 
 [dependencies]
-alloy-primitives = { workspace = true }
+alloy-primitives = { workspace = true, features = ["std"] }
 alloy-signer.workspace = true
 alloy-signer-local = { workspace = true, optional = true }
 arbitrary = { workspace = true, optional = true }
-bytes.workspace = true
+bytes = { workspace = true, features = ["std"] }
 derive_more.workspace = true
-futures-util = { workspace = true }
+futures-util = { workspace = true, features = ["std"] }
 nectar-governor = { workspace = true }
-nectar-primitives = { workspace = true }
-thiserror.workspace = true
+nectar-primitives = { workspace = true, features = ["std"] }
+thiserror = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 alloy-signer-local.workspace = true
@@ -45,7 +45,6 @@ serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["time", "test-util"] }
 
 [features]
-default = [ "std" ]
 # The `Arbitrary` impls and the valid-by-construction `arbitrary` module.
 # Never reachable from `default` or any shipped feature.
 arbitrary = [
@@ -53,14 +52,6 @@ arbitrary = [
 	"dep:alloy-signer-local",
 	"dep:arbitrary",
 	"nectar-primitives/arbitrary",
-	"std",
-]
-std = [
-	"alloy-primitives/std",
-	"bytes/std",
-	"futures-util/std",
-	"nectar-primitives/std",
-	"thiserror/std",
 ]
 
 [package.metadata.docs.rs]
