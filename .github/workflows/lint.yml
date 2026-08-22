@@ -241,6 +241,24 @@ jobs:
             - name: reinvention gate
               run: bash tools/reinvention-gate.sh
 
+    # Property-test tooling does not ship. `proptest` must be a dev
+    # dependency; `arbitrary` may be an optional normal dependency (the
+    # shipped `arbitrary` feature) but never a required one.
+    test-deps-gate:
+        name: test-deps off the default build
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+            # Not `rust-setup`: this job runs `cargo metadata` and compiles
+            # nothing, so it must not claim the compiling jobs' registry
+            # cache key with an empty ~/.cargo.
+            - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master 2026-06-30
+              with:
+                  toolchain: "1.94"
+            - name: arbitrary and proptest stay off the default build
+              run: .github/scripts/arbitrary-proptest-dev-only.sh
+
     docs:
         name: docs
         runs-on: ubuntu-latest
@@ -281,7 +299,7 @@ jobs:
         name: lint success
         runs-on: ubuntu-latest
         if: always()
-        needs: [clippy, unused-deps, deny, msrv, format, docs, reinvention-gate]
+        needs: [clippy, unused-deps, deny, msrv, format, docs, reinvention-gate, test-deps-gate]
         timeout-minutes: 30
         steps:
             - name: Decide whether the needed jobs succeeded or failed
