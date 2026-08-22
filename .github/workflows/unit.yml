@@ -45,14 +45,6 @@ jobs:
                   cargo nextest run \
                     -p nectar-governor --locked \
                     --no-tests=warn --no-fail-fast
-            # The no-std engine core: the vector-pinned roots and the split
-            # parity batteries run on the exact arms a guest executes, rather
-            # than being merely type-checked by the no_std workflow.
-            - name: Run file no-std core tests
-              run: |
-                  cargo nextest run \
-                    -p nectar-file --no-default-features --features primitives --locked \
-                    --no-tests=warn --no-fail-fast
             # The proving lane's feature-off core arm executes on the host,
             # rather than being merely type-checked by the no_std workflow.
             - name: Run primitives-core no-std core tests

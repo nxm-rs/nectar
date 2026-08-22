@@ -11,13 +11,9 @@
 use core::convert::Infallible;
 use core::task::{Context, Poll};
 
-// The positional adapter needs `io`; a test build links std even when
-// the feature is off, so the in-crate tests keep covering it.
-#[cfg(any(test, feature = "std"))]
 use std::io;
 
 // Only the positional adapter measures lengths.
-#[cfg(any(test, feature = "std"))]
 use crate::num::u64_from_usize;
 
 /// Pull-based byte source feeding one write.
@@ -71,8 +67,6 @@ impl<T: Source + ?Sized> Source for &mut T {
 
 /// Random-access byte source; reads at distinct offsets are independent, so
 /// a positional target needs no cursor of its own.
-#[cfg(any(test, feature = "std"))]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub trait ReadAt {
     /// Read into `buf` at `offset`, returning the bytes read; zero at or
     /// past the end.
@@ -87,7 +81,6 @@ pub trait ReadAt {
     }
 }
 
-#[cfg(any(test, feature = "std"))]
 impl ReadAt for [u8] {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let Ok(offset) = usize::try_from(offset) else {
@@ -109,7 +102,6 @@ impl ReadAt for [u8] {
     }
 }
 
-#[cfg(any(test, feature = "std"))]
 impl ReadAt for alloc::vec::Vec<u8> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         self.as_slice().read_at(offset, buf)
@@ -120,7 +112,7 @@ impl ReadAt for alloc::vec::Vec<u8> {
     }
 }
 
-#[cfg(all(any(test, feature = "std"), feature = "primitives"))]
+#[cfg(feature = "primitives")]
 impl ReadAt for bytes::Bytes {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         <[u8] as ReadAt>::read_at(self.as_ref(), offset, buf)
@@ -131,7 +123,6 @@ impl ReadAt for bytes::Bytes {
     }
 }
 
-#[cfg(any(test, feature = "std"))]
 impl<T: ReadAt + ?Sized> ReadAt for &T {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         (**self).read_at(offset, buf)
@@ -142,7 +133,7 @@ impl<T: ReadAt + ?Sized> ReadAt for &T {
     }
 }
 
-#[cfg(all(any(test, feature = "std"), unix))]
+#[cfg(unix)]
 impl ReadAt for std::fs::File {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         std::os::unix::fs::FileExt::read_at(self, buf, offset)
@@ -153,7 +144,7 @@ impl ReadAt for std::fs::File {
     }
 }
 
-#[cfg(all(any(test, feature = "std"), windows))]
+#[cfg(windows)]
 impl ReadAt for std::fs::File {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         std::os::windows::fs::FileExt::seek_read(self, buf, offset)
@@ -166,8 +157,6 @@ impl ReadAt for std::fs::File {
 
 /// Terminal failure pulling from a [`ReadAt`] target; every variant is
 /// final for the write that met it.
-#[cfg(any(test, feature = "std"))]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[derive(Debug, thiserror::Error)]
 pub enum ReadAtError {
     /// Sizing the source failed.
@@ -209,8 +198,6 @@ pub enum ReadAtError {
 /// The declared length is read once, at the first pull, and every pull after
 /// it fills its request exactly; running out early is a typed
 /// [`ReadAtError::ShortRead`], never a silent truncation.
-#[cfg(any(test, feature = "std"))]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[derive(Debug)]
 pub struct ReadAtSource<R> {
     source: R,
@@ -218,7 +205,6 @@ pub struct ReadAtSource<R> {
     len: Option<u64>,
 }
 
-#[cfg(any(test, feature = "std"))]
 impl<R> ReadAtSource<R> {
     /// Adapt `source`; its length is read at the first pull.
     pub const fn new(source: R) -> Self {
@@ -235,7 +221,6 @@ impl<R> ReadAtSource<R> {
     }
 }
 
-#[cfg(any(test, feature = "std"))]
 impl<R: ReadAt> ReadAtSource<R> {
     /// The declared length, sized once and memoized.
     fn declared(&mut self) -> Result<u64, ReadAtError> {
@@ -270,7 +255,6 @@ impl<R: ReadAt> ReadAtSource<R> {
     }
 }
 
-#[cfg(any(test, feature = "std"))]
 impl<R: ReadAt> Source for ReadAtSource<R> {
     type Error = ReadAtError;
 
@@ -285,7 +269,6 @@ impl<R: ReadAt> Source for ReadAtSource<R> {
 
 /// Fill `buf` from `offset`, looping over short reads; running out of
 /// source is an error, never a silent truncation.
-#[cfg(any(test, feature = "std"))]
 fn read_full<R: ReadAt + ?Sized>(
     source: &R,
     offset: u64,

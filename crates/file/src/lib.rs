@@ -15,7 +15,6 @@
 //! crate-private; `tokio` is an optional adapter shim over the same
 //! handles.
 
-#![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 // Test code may freely unwrap/index/panic; the runtime-safety restriction
@@ -40,8 +39,6 @@
 // geometry vocabulary is alloc-free.
 #[cfg(feature = "primitives")]
 extern crate alloc;
-#[cfg(any(test, feature = "std"))]
-extern crate std;
 
 // The marker traits bound only the engine surfaces behind `primitives`.
 #[cfg(not(feature = "primitives"))]
@@ -112,12 +109,11 @@ pub use handle::{File, Policy, Reader, Segments};
 #[cfg(feature = "manifest")]
 #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
 pub use manifest::load_reference;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[cfg(feature = "primitives")]
 pub use read::AdaptiveWindow;
 #[cfg(feature = "primitives")]
 pub use read::{CollectError, LoadError, OpenError, Progress, ProgressFn, SeekPastEnd};
-#[cfg(feature = "std")]
+#[cfg(feature = "primitives")]
 pub use sink::FsSink;
 #[cfg(feature = "primitives")]
 pub use sink::{DataSink, MemSink, MemSinkError};
@@ -126,8 +122,7 @@ pub use sink::{DataSink, MemSink, MemSinkError};
 pub use source::AsyncReadSource;
 #[cfg(feature = "primitives")]
 pub use source::Source;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[cfg(feature = "primitives")]
 pub use source::{ReadAt, ReadAtError, ReadAtSource};
 #[cfg(all(feature = "primitives", feature = "encryption"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]

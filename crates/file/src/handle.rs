@@ -56,7 +56,6 @@ use crate::walk::{Encrypted, Plain, WalkError, WalkMode, WalkStats};
 
 /// Closed-loop window seed: the throughput hint an adaptive controller is
 /// built from, plus the cap it must never pass.
-#[cfg(feature = "std")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Adaptive {
     bytes_per_second: u64,
@@ -73,7 +72,6 @@ pub struct Policy {
     window: Window,
     put: PutWindow,
     hash: Option<HashWindow>,
-    #[cfg(feature = "std")]
     adaptive: Option<Adaptive>,
 }
 
@@ -84,7 +82,6 @@ impl Policy {
         window: Window::DEFAULT,
         put: PutWindow::DEFAULT,
         hash: None,
-        #[cfg(feature = "std")]
         adaptive: None,
     };
 
@@ -129,8 +126,6 @@ impl Policy {
     /// Closed-loop window: seed from the throughput hint and let an
     /// [`AdaptiveWindow`](crate::AdaptiveWindow) controller retune the cap
     /// against realized latency, never past `max`.
-    #[cfg(feature = "std")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
     pub const fn with_adaptive_throughput(
         mut self,
@@ -350,7 +345,6 @@ where
         range: Range<u64>,
     ) -> ReadBuilder<S, M, B> {
         let builder = file.read().window(self.policy.window).range(range);
-        #[cfg(feature = "std")]
         if let Some(adaptive) = self.policy.adaptive {
             return builder.adaptive_throughput(
                 adaptive.bytes_per_second,
@@ -369,7 +363,6 @@ where
         progress: Option<ProgressFn>,
     ) -> DownloadBuilder<S, M, B> {
         let builder = file.download().window(self.policy.window).range(range);
-        #[cfg(feature = "std")]
         let builder = match self.policy.adaptive {
             Some(adaptive) => builder.adaptive_throughput(
                 adaptive.bytes_per_second,

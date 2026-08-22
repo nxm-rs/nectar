@@ -1,21 +1,17 @@
 //! Filesystem sink oracles: assembly and idempotent overwrite on disk.
 //! The in-memory oracles live with the vocabulary in `nectar_primitives`.
 
-#[cfg(feature = "std")]
 use super::{DataSink, FsSink};
 
 /// Temp file path unique to this process; removed by the returned guard.
-#[cfg(feature = "std")]
 struct TempPath(std::path::PathBuf);
 
-#[cfg(feature = "std")]
 impl Drop for TempPath {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
 }
 
-#[cfg(feature = "std")]
 fn temp_path(name: &str) -> TempPath {
     let mut path = std::env::temp_dir();
     path.push(std::format!(
@@ -25,7 +21,6 @@ fn temp_path(name: &str) -> TempPath {
     TempPath(path)
 }
 
-#[cfg(feature = "std")]
 #[test]
 fn fs_sink_assembles_and_overwrites_like_mem_sink() {
     let path = temp_path("assemble");

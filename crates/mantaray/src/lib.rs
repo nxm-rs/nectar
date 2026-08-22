@@ -94,7 +94,6 @@
 //! encoder never emits the shapes. Run `git grep -n LEGACY-TOLERANCE` to
 //! enumerate them.
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(
     test,
@@ -114,31 +113,18 @@
 // `alloc` backs the fork maps (`BTreeMap`) and shared error sources (`Arc`).
 // `nectar-primitives`, a hard dependency of the trie modules, already
 // requires an allocator.
-#[cfg(feature = "std")]
 extern crate alloc;
 
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod codec;
 mod constants;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod cursor;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod editor;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod entry;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod error;
-#[cfg(feature = "std")]
 mod format;
 #[cfg(feature = "manifest")]
 #[cfg_attr(docsrs, doc(cfg(feature = "manifest")))]
 pub mod manifest;
-#[cfg(feature = "std")]
 mod node;
 pub mod obfuscation;
 /// Shared fuzz and test oracles over the raw node codec and the node view.
@@ -147,46 +133,30 @@ pub mod obfuscation;
 #[cfg(any(test, all(feature = "arbitrary", feature = "hazmat")))]
 #[doc(hidden)]
 pub mod oracles;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod persist;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod reader;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod view;
 
 // Re-export constants.
 pub use constants::metadata;
-#[cfg(feature = "std")]
 pub(crate) use constants::*;
 
 // Re-export public types.
-#[cfg(feature = "std")]
 pub use cursor::{AddressStream, Cursor, Window};
-#[cfg(feature = "std")]
 pub use editor::{ManifestEditor, Op};
-#[cfg(feature = "std")]
 pub use entry::Entry;
-#[cfg(feature = "std")]
 pub use error::{
     CursorError, DecodeError, DecodeResult, EditorError, MantarayError, ReaderError, Result,
 };
 #[cfg(feature = "manifest")]
 pub use manifest::{MantarayManifest, TrieCursor, TrieFormatError, TrieView};
-#[cfg(feature = "std")]
 pub use nectar_manifest::{NodeLoader, NodeSaver};
-#[cfg(feature = "std")]
 pub use node::NodeType;
 pub use obfuscation::ObfuscationKey;
-#[cfg(feature = "std")]
 pub use persist::MAX_NODE_BYTES;
 #[cfg(feature = "manifest")]
 pub use persist::{NodeCollectError, NodeLoadSaver};
-#[cfg(feature = "std")]
 pub use reader::{DEFAULT_MAX_DEPTH, Reader};
-#[cfg(feature = "std")]
 pub use view::{ForkView, NodeView, RefWidth, Version};
 
 /// Raw node internals for fuzz harnesses and benches only.
@@ -213,7 +183,5 @@ pub mod hazmat {
 }
 
 // Re-export typed storage traits from primitives.
-#[cfg(feature = "std")]
 pub use nectar_primitives::DefaultMemoryStore;
-#[cfg(feature = "std")]
 pub use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkPut, MemoryStore, TrustedGet};

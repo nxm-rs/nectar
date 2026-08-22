@@ -52,6 +52,6 @@ fixtures = [
 # chunk traits on wasm32; the same store cannot compile on native targets.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 futures.workspace = true
-nectar-file = { workspace = true, features = ["std"] }
+nectar-file = { workspace = true, features = ["primitives"] }
 nectar-primitives = { workspace = true, features = ["std"] }
 wasm-bindgen-test.workspace = true
