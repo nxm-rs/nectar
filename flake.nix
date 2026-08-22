@@ -38,6 +38,22 @@
         rustFuzz = pkgs.rust-bin.nightly.latest.default.override {
           extensions = [ "rust-src" "clippy" "rustfmt" "llvm-tools-preview" ];
         };
+
+        # Feature-propagation lint (`.github/workflows/zepter.yml`). It has no
+        # nixpkgs package, so it is built from source here. The rev must stay
+        # in sync with `binary:` in `zepter.yaml` and the CI `zepter` pin.
+        zepter = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "zepter";
+          version = "1.88.1";
+          src = pkgs.fetchFromGitHub {
+            owner = "ggwpez";
+            repo = "zepter";
+            rev = "v1.88.1";
+            hash = "sha256-Dxbnrr8vsmmo2BQNRMZMmFczJGK/ayJvjz2Phl8dUEs=";
+          };
+          cargoLock = { lockFile = src + "/Cargo.lock"; };
+          doCheck = false;
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -60,9 +76,11 @@
             cargo-deny
             cargo-audit
             cargo-machete
-            # Agent tooling: fast code search (ripgrep) and structural search (ast-grep).
+            # Agent tooling: fast code search (ripgrep), structural search
+            # (ast-grep), and the feature-propagation linter (zepter).
             ripgrep
             ast-grep
+            zepter
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.mold ];
 
           OPENSSL_DIR = "${pkgs.openssl.dev}";
