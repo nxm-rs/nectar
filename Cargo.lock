@@ -2807,6 +2807,7 @@ dependencies = [
  "rayon",
  "serde",
  "thiserror",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

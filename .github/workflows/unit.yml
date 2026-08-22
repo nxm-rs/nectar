@@ -53,6 +53,13 @@ jobs:
                   cargo nextest run \
                     -p nectar-file --no-default-features --features primitives --locked \
                     --no-tests=warn --no-fail-fast
+            # The proving lane's feature-off core arm executes on the host,
+            # rather than being merely type-checked by the no_std workflow.
+            - name: Run primitives-core no-std core tests
+              run: |
+                  cargo nextest run \
+                    -p nectar-primitives-core --no-default-features --locked \
+                    --no-tests=warn --no-fail-fast
             # The async io adapters are feature-gated off the default build;
             # cover their tests and the range-request doctest here.
             - name: Run tokio adapter tests
@@ -238,6 +245,14 @@ jobs:
               run: |
                   cargo test \
                     -p nectar-testing --test wasm_smoke --locked \
+                    --target wasm32-unknown-unknown
+            - name: Run proving-lane wasm smoke tests
+              # The lane's no_std shape executes under Node.
+              env:
+                  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+              run: |
+                  cargo test \
+                    -p nectar-primitives-core --no-default-features --test wasm_smoke --locked \
                     --target wasm32-unknown-unknown
 
     unit-success:
