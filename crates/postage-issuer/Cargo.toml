@@ -58,6 +58,7 @@ std = [
 	"dep:nectar-contracts",
 	"dep:nectar-tasks",
 	"nectar-clock/std",
+	"nectar-contracts/std",
 	"nectar-postage/std",
 	"nectar-primitives/std",
 	"nectar-tasks/rayon",

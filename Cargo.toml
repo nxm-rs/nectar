@@ -60,22 +60,22 @@ check.all_targets = true
 [workspace.dependencies]
 # nectar crates
 nectar-clock = { version = "0.4.0", path = "crates/clock", default-features = false }
-nectar-contracts = { version = "0.4.0", path = "crates/contracts" }
+nectar-contracts = { version = "0.4.0", path = "crates/contracts", default-features = false }
 nectar-envelope = { version = "0.4.0", path = "crates/envelope", default-features = false }
-nectar-feeds = { version = "0.4.0", path = "crates/feeds" }
+nectar-feeds = { version = "0.4.0", path = "crates/feeds", default-features = false }
 nectar-file = { version = "0.4.0", path = "crates/file", default-features = false }
 nectar-governor = { version = "0.4.0", path = "crates/governor", default-features = false }
-nectar-ldb = { version = "0.4.0", path = "crates/ldb" }
+nectar-ldb = { version = "0.4.0", path = "crates/ldb", default-features = false }
 nectar-manifest = { version = "0.4.0", path = "crates/manifest", default-features = false }
-nectar-mantaray = { version = "0.4.0", path = "crates/mantaray" }
-nectar-marker = { version = "0.4.0", path = "crates/marker" }
+nectar-mantaray = { version = "0.4.0", path = "crates/mantaray", default-features = false }
+nectar-marker = { version = "0.4.0", path = "crates/marker", default-features = false }
 nectar-primitives = { version = "0.4.0", path = "crates/primitives", default-features = false }
 nectar-primitives-core = { version = "0.4.0", path = "crates/primitives-core", default-features = false }
-nectar-tasks = { version = "0.4.0", path = "crates/tasks" }
+nectar-tasks = { version = "0.4.0", path = "crates/tasks", default-features = false }
 nectar-postage = { version = "0.4.0", path = "crates/postage", default-features = false }
-nectar-postage-issuer = { version = "0.4.0", path = "crates/postage-issuer" }
-nectar-postage-usage = { version = "0.4.0", path = "crates/postage-usage" }
-nectar-testing = { path = "crates/testing" }
+nectar-postage-issuer = { version = "0.4.0", path = "crates/postage-issuer", default-features = false }
+nectar-postage-usage = { version = "0.4.0", path = "crates/postage-usage", default-features = false }
+nectar-testing = { path = "crates/testing", default-features = false }
 
 # alloy
 alloy-primitives = { version = "1.6", default-features = false }
