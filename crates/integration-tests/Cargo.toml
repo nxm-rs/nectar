@@ -31,7 +31,7 @@ bytes.workspace = true
 nectar-file = { workspace = true }
 nectar-ldb = { workspace = true, features = ["arbitrary"] }
 nectar-manifest.workspace = true
-nectar-mantaray = { workspace = true, features = ["manifest"] }
+nectar-mantaray = { workspace = true, features = ["manifest", "rand"] }
 nectar-primitives = { workspace = true, features = ["std"] }
 nectar-testing = { workspace = true, features = ["alloc", "fixtures"] }
 proptest.workspace = true
