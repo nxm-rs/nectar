@@ -51,12 +51,12 @@ default = [ "primitives" ]
 # The streaming engine core: the primitives dependency, the byte buffers
 # and the poll utilities.
 primitives = [
+	"bytes?/std",
 	"dep:bytes",
 	"dep:futures-util",
 	"dep:nectar-clock",
 	"dep:nectar-primitives",
 	"dep:nectar-tasks",
-	"bytes?/std",
 	"futures-util?/std",
 	"nectar-clock?/std",
 	"nectar-primitives?/std",
@@ -65,11 +65,7 @@ primitives = [
 
 # The manifest seam's shared data-load lane: one `load_reference` every
 # format adapter calls.
-manifest = [
-	"dep:nectar-manifest",
-	"nectar-manifest?/std",
-	"primitives",
-]
+manifest = [ "dep:nectar-manifest", "nectar-manifest?/std", "primitives" ]
 
 # Async reader adapter over the poll surface, plus the `AsyncRead` source.
 tokio = [ "dep:tokio", "primitives" ]
