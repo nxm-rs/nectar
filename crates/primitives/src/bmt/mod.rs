@@ -26,6 +26,3 @@
 //! ```
 
 pub use nectar_primitives_core::bmt::*;
-
-#[cfg(target_arch = "wasm32")]
-pub mod wasm;

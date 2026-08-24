@@ -81,9 +81,6 @@ pub mod store;
 pub mod timestamp;
 pub mod xor_metric;
 
-#[cfg(target_arch = "wasm32")]
-pub mod wasm;
-
 // Re-export core constants
 pub use bmt::DEFAULT_BODY_SIZE;
 

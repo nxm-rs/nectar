@@ -173,11 +173,8 @@ jobs:
               run: cargo test --doc -p nectar-postage-issuer --locked
 
     wasm:
-        # The postage-usage client facade is meant to run in a browser. The
-        # thread pool (wasm-bindgen-rayon) is opt-in behind the primitives
-        # `parallel` / `wasm-threads` features, so the crate builds for wasm32
-        # single-threaded by default. A plain check on the default features is
-        # therefore the faithful one.
+        # The postage-usage client facade is meant to run in a browser. A
+        # plain check on the default features is therefore the faithful one.
         name: wasm / browser crates
         runs-on: ubuntu-latest
         timeout-minutes: 30
