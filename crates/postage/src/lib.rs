@@ -25,7 +25,6 @@
 //!
 //! # Traits
 //!
-//! - [`StampValidator`]: Validate stamps against batches
 //! - [`ChunkPut`](nectar_primitives::ChunkPut) over a [`StampedChunk`]: the
 //!   sink for a paid chunk, with [`StampIndifferent`] bridging a plain chunk
 //!   store into it
@@ -80,15 +79,16 @@ mod stamp;
 mod stamped;
 mod stamped_address;
 mod util;
-mod validation;
 
-// Storage and events (std only)
+// Storage, validation and events (std only)
 #[cfg(feature = "std")]
 mod events;
 #[cfg(feature = "std")]
 mod snapshot_store;
 #[cfg(feature = "std")]
 mod store;
+#[cfg(feature = "std")]
+mod validation;
 
 // Parallel verification (requires rayon)
 #[cfg(feature = "parallel")]
@@ -103,7 +103,6 @@ pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
 pub use stamped_address::{StampedAddress, Unvalidated, Validated, ValidationState};
 pub use util::PostageContext;
-pub use validation::StampValidator;
 #[cfg(feature = "std")]
 pub use validation::StoreValidator;
 
