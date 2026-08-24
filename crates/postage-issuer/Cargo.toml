@@ -73,7 +73,6 @@ local-signer = [ "dep:alloy-signer-local", "std" ]
 parallel = [
 	"dep:rayon",
 	"nectar-postage/parallel",
-	"nectar-primitives/parallel",
 	"sign-parallel",
 	"std",
 ]

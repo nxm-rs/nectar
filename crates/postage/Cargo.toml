@@ -65,7 +65,7 @@ std = [
 serde = [ "alloy-primitives/serde", "dep:serde", "nectar-primitives/serde" ]
 
 # Parallel verification using rayon (sync, CPU-bound).
-parallel = [ "dep:rayon", "nectar-primitives/parallel", "std" ]
+parallel = [ "dep:rayon", "std" ]
 
 # Arbitrary trait implementations and valid-by-construction generators for
 # property-based testing and fuzzing.

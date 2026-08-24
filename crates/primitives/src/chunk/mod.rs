@@ -15,9 +15,6 @@ mod encrypted_content;
 pub mod encryption;
 mod reference;
 
-#[cfg(target_arch = "wasm32")]
-pub mod wasm;
-
 // Re-export the reference types
 pub use reference::{ChunkRef, RefKind, Reference, WrongRefKind};
 
