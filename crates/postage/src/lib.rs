@@ -28,15 +28,11 @@
 //! - [`ChunkPut`](nectar_primitives::ChunkPut) over a [`StampedChunk`]: the
 //!   sink for a paid chunk, with [`StampIndifferent`] bridging a plain chunk
 //!   store into it
-//! - [`BatchStore`]: Persist and retrieve batches (requires `std`). The trait is
-//!   synchronous and, having an associated `Error` and no generic methods, is
-//!   naturally object-safe; drive it from an async edge (a gRPC service, an FFI
-//!   boundary) where async is genuinely needed, rather than colouring the core.
 //! - [`BatchEventHandler`]: Handle batch events from the blockchain (requires `std`)
 //!
 //! # Features
 //!
-//! - `std` (default): Enable standard library support, BatchStore, events
+//! - `std` (default): Enable standard library support and events
 //! - `serde`: Enable serde serialization/deserialization
 //! - `parallel`: Enable parallel verification with rayon
 //! - `arbitrary`: Raw `Arbitrary` impls plus the valid-by-construction
@@ -79,13 +75,9 @@ mod stamped;
 mod stamped_address;
 mod util;
 
-// Storage, validation and events (std only)
+// Events (std only)
 #[cfg(feature = "std")]
 mod events;
-#[cfg(feature = "std")]
-mod store;
-#[cfg(feature = "std")]
-mod validation;
 
 // Parallel verification (requires rayon)
 #[cfg(feature = "parallel")]
@@ -100,14 +92,10 @@ pub use stamp::{STAMP_SIZE, Stamp, StampBytes, StampDigest, StampIndex};
 pub use stamped::StampedChunk;
 pub use stamped_address::{StampedAddress, Unvalidated, Validated, ValidationState};
 pub use util::PostageContext;
-#[cfg(feature = "std")]
-pub use validation::StoreValidator;
 
-// Storage and events (std only)
+// Events (std only)
 #[cfg(feature = "std")]
 pub use events::{BatchEvent, BatchEventHandler};
-#[cfg(feature = "std")]
-pub use store::{BatchStore, BatchStoreError, BatchStoreExt};
 
 // Re-export VerifyingKey for cached pubkey verification optimization
 pub use k256::ecdsa::VerifyingKey;
