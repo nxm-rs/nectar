@@ -15,14 +15,11 @@ use alloy_primitives::hex;
 use alloy_signer_local::PrivateKeySigner;
 use nectar_feeds::{Feed, FeedError, Index, Latest, Publisher, Reader, Sequence, Topic};
 use nectar_primitives::chunk::{
-    ChunkAddress, ChunkOps, SingleOwnerChunk, SingleOwnerOnlyChunkSet, TrustedSource, Unverified,
+    ChunkAddress, ChunkOps, SingleOwnerOnlyChunkSet, TrustedSource, Unverified,
 };
-use nectar_primitives::store::{
-    ChunkGet, ChunkHas, ChunkPut, ChunkStoreError, MemoryStore, SingleOwnerGet,
-};
+use nectar_primitives::store::{ChunkGet, ChunkHas, ChunkStoreError, MemoryStore};
 use nectar_primitives::{
-    Chunk, ChunkRegistry, DEFAULT_BODY_SIZE, DefaultContentChunk, DefaultMemoryStore,
-    StandardChunkSet,
+    Chunk, ChunkRegistry, DEFAULT_BODY_SIZE, DefaultContentChunk, StandardChunkSet,
 };
 use nectar_testing::{Drive, run};
 use proptest::prelude::*;
@@ -277,22 +274,23 @@ fn relabelled_chunk_fails_certification() {
     });
 }
 
-/// Trusted general store lying about type: a content chunk vouched for at
-/// the feed slot must still be rejected on the narrowing seam.
+/// Trusted store lying about type: a content chunk vouched for at the feed
+/// slot must still be rejected, and the reader surfaces the failure as a
+/// typed store error.
 struct LyingTrusted {
     bytes: Vec<u8>,
     source: TrustedSource,
 }
 
-impl ChunkGet<StandardChunkSet> for LyingTrusted {
+impl ChunkGet<SingleOwnerOnlyChunkSet> for LyingTrusted {
     type Trust = nectar_primitives::Verified;
     type Error = ChunkStoreError;
 
     async fn get(
         &self,
         address: &ChunkAddress,
-    ) -> Result<Chunk<nectar_primitives::Verified, StandardChunkSet>, Self::Error> {
-        let parsed = Chunk::<Unverified, StandardChunkSet>::parse(*address, &self.bytes)
+    ) -> Result<Chunk<nectar_primitives::Verified, SingleOwnerOnlyChunkSet>, Self::Error> {
+        let parsed = Chunk::<Unverified, SingleOwnerOnlyChunkSet>::parse(*address, &self.bytes)
             .map_err(|_| ChunkStoreError::not_found(address))?;
         Ok(parsed.assume_verified(&self.source))
     }
@@ -310,7 +308,7 @@ fn content_chunk_at_a_feed_slot_is_a_typed_store_error() {
             source: unsafe { TrustedSource::grant() },
         };
 
-        let reader = Reader::new(feed, SingleOwnerGet::new(store));
+        let reader = Reader::new(feed, store);
         assert!(matches!(
             reader.at(Sequence::ZERO).await.unwrap_err(),
             FeedError::Store(_)
@@ -345,32 +343,6 @@ fn windowed_finders_agree_with_sequential() {
             assert!(empty.update.is_none());
             assert_eq!(empty.next, Some(Sequence::new(21)));
         }
-    });
-}
-
-#[test]
-fn shared_general_store_adapts_through_the_narrowing_get() {
-    run(async {
-        let signer = signer();
-        let feed = feed_for(&signer);
-        let shared = DefaultMemoryStore::new();
-        let soc = SingleOwnerChunk::new(
-            feed.update_id(&Sequence::ZERO),
-            b"payload".to_vec(),
-            &signer,
-        )
-        .unwrap();
-        ChunkPut::put(&shared, Chunk::from_envelope(soc.into()).unwrap())
-            .await
-            .unwrap();
-
-        let reader = Reader::new(feed, SingleOwnerGet::new(&shared));
-        let update = reader.at(Sequence::ZERO).await.unwrap();
-        assert_eq!(update.payload().as_ref(), b"payload");
-
-        let latest = reader.latest().await.unwrap();
-        assert_eq!(latest.update.unwrap().index(), &Sequence::ZERO);
-        assert_eq!(latest.next, Sequence::ZERO.next());
     });
 }
 

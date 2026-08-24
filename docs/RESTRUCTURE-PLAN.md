@@ -138,11 +138,13 @@ Fold the shared sibling levels across a contiguous segment run, which turns the 
 Every api crate ships a `noop` implementation, so a downstream crate never depends on an implementation in order to compile.
 No api crate contains a real implementation.
 
-**Open: the concrete stores have no home.**
+**The concrete stores have a home. Settled 2026-08-24 by `m1-store-decorator-decisions.md`.**
 `MemoryStore`, `VerifyingStore`, `Tee`, `RetryingChunkGet` and `NullLoader` are used by eleven crates in tests.
 The `noop` covers compiling without an implementor; it does not cover storing chunks.
-Either a tier-3 `nectar-storage`, or a `memory` feature on the api crate, or `nectar-testing`, which would lose them for downstream consumers.
-This blocks the api-crate car and must be settled first.
+The surviving set moves to the tier-3 `nectar-storage` crate.
+`NullLoader` is the exception, because it is the plan's `noop` and stays api-side.
+The verdict deletes `SingleOwnerGet`, the narrowing adapter with no production consumer.
+The api-crate car proceeds against that record.
 
 ### Tier 3, implementations, `std`
 
@@ -272,7 +274,7 @@ Then the consumers flip their pins to the published version.
 
 ## Open items
 
-- The home for the concrete stores, which blocks the api-crate car.
+- The home for the concrete stores: settled at the tier-3 `nectar-storage` crate by `m1-store-decorator-decisions.md`.
 - Whether a default survives on the chunk parameter after the generic collapse.
   If it does not, every chunk constructor call site in every consumer gains a turbofish, which roughly doubles the smallest consumer's diff.
 - Whether mantaray's `std` gate is deleted outright or its trie is made unconditional first.
