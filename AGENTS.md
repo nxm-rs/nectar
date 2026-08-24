@@ -10,7 +10,7 @@ When in doubt, one gate wins over anything written here: `cargo clippy -- -D war
 
 nectar provides low-level Ethereum Swarm primitives in Rust.
 These primitives are content addressing (BMT), chunks, proofs, postage stamps, manifest tries, feeds, and contract bindings.
-nectar is a Cargo workspace of `nectar-*` crates that publish to crates.io.
+nectar is a Cargo workspace of `nectar-*` crates, most of which publish to crates.io.
 nectar is pre-1.0, so the APIs can change between minor versions.
 The vertex Swarm node consumes nectar.
 The license is AGPL-3.0-or-later.
@@ -54,9 +54,20 @@ Prefer them for new code, and align existing code when you touch it.
   Reads cross the line by design: `load` is the sanctioned read bridge on a map view, because it pulls the bytes a reference points at.
   It is feature-gated, because it needs `nectar-file`, so it lives on the manifest-featured view rather than on the bare map handle.
 - Follow the packaging plan.
-  A no_std `nectar-primitives-core` carries the verify subset for the proving lane: BMT verify, keccak, SOC address, and ecrecover.
+  `docs/RESTRUCTURE-PLAN.md` carries the detail and the crate set, so this file states the shape only.
+  The crates form a tier ladder: data and proofs at the bottom, behaviour traits with `noop` implementations next, implementations above them, and the `nectar` facade on top.
+  A crate depends on its own tier and below only.
+  The api crates hold the behaviour traits and the `noop` implementations and no real implementation, so a downstream crate compiles without an implementation.
+  The ladder is the freeze mechanism: a milestone cutover is a crate boundary, not policy text.
+  Two names move at the carve.
+  The proving core, today `nectar-primitives-core`, takes the `nectar-primitives` name, and the routing predicates move into it.
+  The manifest trait crate, today `nectar-manifest`, becomes `nectar-manifest-api` beside three further api crates.
+  `no_std` is the proving lane and not a workspace property.
+  Six crates carry the proving-lane guarantee.
+  A guest links chunk verification, BMT hashing and segment proofs, single-owner chunk recovery, stamp verification and binding, and ldb node decode and descent.
+  Everything else is std-only.
+  Three infrastructure crates keep an unconditional `no_std` without the lane guarantee, because it is already true.
   The on-swarm KV database is `nectar-ldb`.
-  `nectar-manifest` is the trait crate that holds the `Manifest` trait and the shared vocabulary.
   Benches and examples fold back into their crates.
   They do not live as standalone members.
 - Make parallelism opt-in.
@@ -105,14 +116,15 @@ The error layer is where duplication now lives, so these six rules are the stand
 
 ### Conformance checklist
 
-Each rule below names a file and line that already conforms, so a reviewer can check the claim rather than take it.
+Each rule below names a conforming item, so a reviewer can check the claim rather than take it.
+Items name the type, not a line, so the checklist cannot drift with an unrelated edit.
 
-- Rule 1: `crates/feeds/src/error.rs:13`, `#[non_exhaustive]` on `FeedError`.
-- Rule 2: `crates/envelope/src/lib.rs:598`, a `#[from]` wrapping variant.
-- Rule 3: `crates/feeds/src/error.rs:17`, `AddressMismatch` carrying typed `expected` and `actual` fields rather than a formatted string.
-- Rule 4: `crates/primitives-core/src/error.rs:142`, the `BoxedError` alias.
-- Rule 5: `crates/postage-issuer/src/error.rs:38`, the one `RingExhausted`, which `IssuerError`, `CounterError` and `UsageError` each convert from with `#[from]`.
-- Rule 6: `crates/postage-usage/src/error.rs:268` and `:327`, `UsageError::is_corruption` and `is_recoverable`, with the exhaustive classification test at `:397` that fails to compile when a variant is added without being classified.
+- Rule 1: `FeedError` in `crates/feeds/src/error.rs` carries `#[non_exhaustive]`.
+- Rule 2: `AnySealError` in `crates/envelope/src/lib.rs` wraps each scheme seal error through a `#[from]` variant.
+- Rule 3: `AddressMismatch` in `crates/feeds/src/error.rs` carries typed `expected` and `actual` fields rather than a formatted string.
+- Rule 4: the `BoxedError` alias in `crates/primitives-core/src/error.rs`.
+- Rule 5: the one `RingExhausted` in `crates/postage-issuer/src/error.rs`, which `IssuerError`, `CounterError` and `UsageError` each convert from with `#[from]`.
+- Rule 6: `UsageError::is_corruption` and `UsageError::is_recoverable` in `crates/postage-usage/src/error.rs`, with the `every_variant_is_classified_into_exactly_one_group` test that fails to compile when a variant is added without being classified.
 
 Applying rule 3 across the workspace is #319, and rule 1 is #690.
 This section is the standard; those issues are the migration.
