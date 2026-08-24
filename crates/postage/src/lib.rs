@@ -32,7 +32,6 @@
 //!   synchronous and, having an associated `Error` and no generic methods, is
 //!   naturally object-safe; drive it from an async edge (a gRPC service, an FFI
 //!   boundary) where async is genuinely needed, rather than colouring the core.
-//! - [`SnapshotStore`]: Cache recovered issuer snapshot state by batch id (requires `std`)
 //! - [`BatchEventHandler`]: Handle batch events from the blockchain (requires `std`)
 //!
 //! # Features
@@ -84,8 +83,6 @@ mod util;
 #[cfg(feature = "std")]
 mod events;
 #[cfg(feature = "std")]
-mod snapshot_store;
-#[cfg(feature = "std")]
 mod store;
 #[cfg(feature = "std")]
 mod validation;
@@ -109,8 +106,6 @@ pub use validation::StoreValidator;
 // Storage and events (std only)
 #[cfg(feature = "std")]
 pub use events::{BatchEvent, BatchEventHandler};
-#[cfg(feature = "std")]
-pub use snapshot_store::SnapshotStore;
 #[cfg(feature = "std")]
 pub use store::{BatchStore, BatchStoreError, BatchStoreExt};
 
