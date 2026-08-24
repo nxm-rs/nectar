@@ -31,7 +31,7 @@ use core::cell::RefCell;
 use nectar_postage::{
     Batch, BatchDepth, BatchId, Bucket, BucketDepth, StampError, calculate_bucket,
 };
-use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec};
+use nectar_primitives::{ChunkAddress, Mainnet, SwarmSpec, error::BoxedError};
 
 use crate::StampIssuer;
 use crate::counter::{CounterError, CounterMode, CounterTable};
@@ -389,10 +389,25 @@ impl<R: Reservation, S: SwarmSpec> StampIssuer for RingIssuer<R, S> {
                     capacity: self.bucket_capacity(),
                 },
                 IssuerError::Geometry(geometry) => geometry,
+                // Ownership and batch-identity errors carry the same structured
+                // fields the validator's own variants name.
+                IssuerError::NotBatchOwner { owner, signer } => StampError::OwnerMismatch {
+                    expected: owner,
+                    actual: signer,
+                },
+                IssuerError::BatchMismatch { issuer, signer } => StampError::BatchMismatch {
+                    expected: signer,
+                    actual: issuer,
+                },
                 // `reserve_slot` yields nothing else: its slot source maps every
-                // counter error to RingExhausted.
-                #[allow(clippy::unreachable)]
-                _ => unreachable!("ring issuance only fails with RingExhausted"),
+                // counter error to RingExhausted, and the construction and
+                // geometry-shape conditions cannot reach the stamp loop. Carried
+                // boxed, a surprise keeps its type and message instead of
+                // panicking the caller.
+                err => {
+                    let boxed: BoxedError = Box::new(err);
+                    StampError::External(boxed)
+                }
             })
     }
 
