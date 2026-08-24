@@ -11,7 +11,6 @@ The chunk module is built around a trait-based architecture that allows for diff
 - `ChunkOps`: The header-free behaviour every chunk value offers (address, data, span, verify, transformed address, wire encode); implemented by the concrete chunk types and by `AnyChunk`
 - `Chunk`: Ties a carrier to its header type
 - `ChunkHeader`: The unsealed predicate a chunk type is: address derivation (`commit`), self-certification (`validate`), transformed-address sealing, and the wire header codec (`CacHeader` is empty, `SocHeader` is `id || signature`)
-- `ChunkType`: Compile-time type identification (type ID and name)
 - `ChunkRegistry`: Compile-time registry of the chunk types a network accepts; its closed envelope type is the type-level set
 
 ### Chunk Types

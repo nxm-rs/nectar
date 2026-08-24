@@ -12,9 +12,7 @@
 //!   and yields results unordered, tagged by address.
 //! - [`BatchStamper`]: the one-off entry for stamping a single chunk;
 //!   [`BatchStamper::into_parts`] moves an issuer between the doors.
-//! - [`StampedPut`]: the store decorator; wraps a stamped sink so every
-//!   `ChunkPut` call site stamps at put.
-//! - [`StagedPut`]: the same decoration with signing in a stage of its own,
+//! - [`StagedPut`]: the store decorator; signing runs in a stage of its own,
 //!   so a put slot holds store latency alone. Its puts resolve at admission,
 //!   so [`StagedPut::flush`] is part of the contract.
 //!
@@ -216,7 +214,7 @@ pub use pipeline::{
     BatchSigner, BoundSigner, Eip191, SignPrehash, StampPipeline, StampResult, Stamped,
 };
 #[cfg(any(feature = "std", not(multi_thread)))]
-pub use pipeline::{IssuedBound, StampedPut, StampedPutError};
+pub use pipeline::{IssuedBound, StampedPutError};
 #[cfg(feature = "std")]
 pub use pipeline::{SealResult, SignStage, StagedPut, StampSink};
 

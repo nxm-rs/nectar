@@ -9,6 +9,7 @@ use alloy_signer::{Signer, SignerSync};
 use rayon::prelude::*;
 
 use crate::error::{IssuerError, SigningError};
+#[cfg(feature = "std")]
 use crate::issuer::StampIssuer;
 use nectar_postage::{Batch, Stamp, StampDigest};
 use nectar_primitives::{Mainnet, SwarmSpec};
@@ -173,6 +174,7 @@ impl<Sg: SignPrehash, S: SwarmSpec> BoundSigner for BatchSigner<Sg, S> {
 }
 
 /// Refuses a signer whose batch is not the one `issuer` allocates from.
+#[cfg(feature = "std")]
 pub(crate) fn allocates_from<I, Sg>(issuer: &I, signer: &Sg) -> Result<(), IssuerError>
 where
     I: StampIssuer + ?Sized,
@@ -198,6 +200,7 @@ const fn seal(digest: &StampDigest, signature: Signature) -> Stamp {
 }
 
 /// Signs an allocated digest into a wire-valid stamp.
+#[cfg(not(feature = "std"))]
 pub(crate) fn sign_digest<Sg>(signer: &Sg, digest: &StampDigest) -> Result<Stamp, SigningError>
 where
     Sg: SignPrehash + ?Sized,

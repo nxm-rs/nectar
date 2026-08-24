@@ -15,7 +15,6 @@ use crate::wire;
 
 use super::address::ChunkAddress;
 use super::bmt_body::BmtBody;
-use super::chunk_type::ChunkType;
 use super::traits::{ChunkHeader, ChunkOps, HeaderedChunk};
 
 /// A chunk: a wire header committing to a BMT body.
@@ -152,11 +151,6 @@ impl<H: ChunkHeader, const BODY_SIZE: usize> HeaderedChunk for ChunkInner<H, BOD
     }
 }
 
-impl<H: ChunkHeader, const BODY_SIZE: usize> ChunkType for ChunkInner<H, BODY_SIZE> {
-    const TYPE_ID: super::type_id::ChunkTypeId = H::TYPE_ID;
-    const TYPE_NAME: &'static str = H::NAME;
-}
-
 /// Structural equality over header and body. A SOC address does not commit
 /// to the body, so address equality is slot identity, not chunk equality;
 /// compare `address()` where slot identity is meant.
@@ -202,7 +196,7 @@ impl<H: ChunkHeader, const BODY_SIZE: usize> TryFrom<&[u8]> for ChunkInner<H, BO
 #[cfg(test)]
 mod tests {
     use super::super::content::ContentChunk;
-    use super::super::single_owner::{SingleOwnerChunk, SocHeader};
+    use super::super::single_owner::SingleOwnerChunk;
     use super::*;
     use crate::DEFAULT_BODY_SIZE;
     use alloy_primitives::hex;
@@ -286,17 +280,5 @@ mod tests {
         let encoded: Bytes = soc.clone().into();
         assert_eq!(encoded.as_ref(), soc_wire.as_slice());
         assert!(soc.verify(soc.address()).is_ok());
-    }
-
-    /// The carrier derives type metadata from the header predicate.
-    #[test]
-    fn type_metadata_comes_from_the_header() {
-        use super::super::type_id::ChunkTypeId;
-
-        assert_eq!(DefaultContentChunk::TYPE_ID, ChunkTypeId::CONTENT);
-        assert_eq!(DefaultContentChunk::TYPE_NAME, "content");
-        assert_eq!(DefaultSingleOwnerChunk::TYPE_ID, ChunkTypeId::SINGLE_OWNER);
-        assert_eq!(DefaultSingleOwnerChunk::TYPE_NAME, "single_owner");
-        assert_eq!(DefaultSingleOwnerChunk::TYPE_NAME, SocHeader::NAME);
     }
 }

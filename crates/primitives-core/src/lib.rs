@@ -99,7 +99,6 @@ pub use chunk::{
     ChunkInner,
     ChunkOps,
     ChunkRegistry,
-    ChunkType,
     ChunkTypeId,
     ChunkTypeInfo,
     ChunkTypeTag,

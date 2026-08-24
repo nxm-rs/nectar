@@ -105,10 +105,6 @@ pub use spec::{Mainnet, NamedSwarm, Swarm, SwarmKind, SwarmSpec, Testnet};
 pub use timestamp::{Timestamp, TimestampError};
 pub use xor_metric::{MAX_PO, XorMetric};
 
-/// Former name of the node-identity address kind.
-#[deprecated(note = "use `OverlayAddress`; this alias is removed in the next release")]
-pub type SwarmAddress = OverlayAddress;
-
 // Core BMT functionality
 pub use bmt::{Hasher, HasherFactory, Proof, Prover};
 
@@ -129,7 +125,6 @@ pub use chunk::{
     ChunkOps,
     ChunkRef,
     ChunkRegistry,
-    ChunkType,
     ChunkTypeId,
     ChunkTypeInfo,
     ChunkTypeTag,
