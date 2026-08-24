@@ -22,7 +22,7 @@ use nectar_primitives::ChunkAddress;
 // Parallel Verification
 
 /// Result of a stamp verification.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VerifyResult {
     /// The index in the original input array.
     pub index: usize,

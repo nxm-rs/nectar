@@ -664,10 +664,14 @@ mod tests {
                                 }
                                 Err(err) => {
                                     prop_assert_eq!(*mark, capacity);
-                                    prop_assert_eq!(
+                                    let full = matches!(
                                         err,
-                                        StampError::BucketFull { bucket, capacity }
+                                        StampError::BucketFull {
+                                            bucket: b,
+                                            capacity: c
+                                        } if b == bucket && c == capacity
                                     );
+                                    prop_assert!(full);
                                 }
                             }
                             prop_assert_eq!(issuer.bucket_utilization(bucket), *mark);
