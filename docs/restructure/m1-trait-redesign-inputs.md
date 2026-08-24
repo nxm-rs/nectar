@@ -25,16 +25,20 @@ Three of the six have real out-of-tree implementors; the other three are pure de
 | Trait | In `#824`'s six | Real implementor | Disposition |
 |---|---|---|---|
 | `BatchStore` | yes | `vertex` `DbBatchStore` | delete in M1, redesign as the store seam in M2 |
-| `SnapshotSource` | yes | `vertex` browser `BrowserUsageSource` | delete in M1, redesign as the stamper seam in M2 |
-| `SnapshotSink` | yes | `vertex` browser `BrowserUsageSink` | delete in M1, redesign as the stamper seam in M2 |
+| `SnapshotSource` | yes | `vertex` browser `BrowserUsageSource` | delete in M1; the batch-hosted issuer read transport, role re-homed in the M2 stamper seam |
+| `SnapshotSink` | yes | `vertex` browser `BrowserUsageSink` | delete in M1; the batch-hosted issuer write transport, role re-homed in the M2 stamper seam |
 | `SnapshotStore` | yes | none | pure delete in M1 |
-| `BatchFactory` | yes | none | pure delete in M1 |
+| `BatchFactory` | yes | only the in-memory `MemoryBatchFactory` | pure delete in M1; the dead batch-creation seam, distinct from the live issuance seam |
 | `StampValidator` | yes | none | pure delete in M1 |
 | `BatchEventHandler` | no | `vertex` `DbBatchStore` | not a `#824` deletion; the ingest half of the store seam, captured for the M2 redesign |
+| `StampIssuer` | no | `MemoryIssuer`, `RingIssuer`, `SnapshotIssuer` | not a `#824` deletion; the live issuance seam, re-homed into `nectar-postage-api` in M2 |
 
 `BatchEventHandler` is captured because the same `vertex` type implements it alongside `BatchStore`
 and together they are the batch-store-and-ingest seam; it is a redesign input, not a `#824`
 deletion.
+`StampIssuer` (and its `Stamper` companion) is the live issuance seam the snapshot machinery
+implements; like `BatchEventHandler` it is a redesign input, re-homed into `nectar-postage-api` in
+M2, not a `#824` deletion.
 `StampValidator` is the dead one: zero implementors, and the wrong arity for its only real caller
 (`validate` takes three arguments where the live `StoreValidator::validate` takes two).
 
@@ -173,7 +177,59 @@ The M1 decision (D1, below) resolves where this lands.
 The M2 batch-store seam must apply all three on a depth increase, and `vertex` must bump its nectar
 pin to the rev that carries the four-field variant in the same change that extends the handler.
 
-## Seam two: the snapshot transport
+## Seam two: the stamp-issuance and stamper seam
+
+The machinery a first draft of this capture called the snapshot transport is the state retention of
+one concrete stamp issuer.
+The redesign input that matters is the issuer seam itself: which stamp is issued next for a chunk.
+The seam and its batch-hosted retention live in `nectar-postage-issuer` and
+`nectar-postage-usage`.
+
+### The seam: `StampIssuer` and `Stamper`
+
+`nectar-postage-issuer/src/issuer.rs` defines the issuance seam.
+`StampIssuer::reserve(address, timestamp) -> Prepared<S>` claims the next slot in the bucket the
+`address` falls into and returns the prepared permit for it.
+The batch geometry (`batch_id`, `batch_depth`, `bucket_depth`) and the per-bucket utilisation reads
+(`bucket_utilization`, `bucket_has_capacity`, `max_bucket_utilization`) ride alongside it.
+Slot allocation is the reserve half of a three-phase issue; signing and commit are outside it.
+The companion `Stamper` trait (`src/stamper.rs`) carries the reserve-plus-sign-plus-commit role, and
+`BatchStamper` wraps an issuer and a signer to run it.
+How an implementor knows what is next is not part of the seam: it exposes only `reserve` and the
+geometry and capacity reads, so the state retention stays implementer-defined.
+
+### The concrete issuers
+
+Three retention strategies implement the seam today.
+`MemoryIssuer` (`src/issuer.rs`) is fill-only and in-memory, the immutable-batch path;
+`MemoryIssuer::from_batch` refuses a mutable batch so a ring is never produced by accident.
+`RingIssuer` is the mutable, overwrite-aware path, with `external` for external tracking and
+`reserved` for self-hosting, where the protected slots come from `nectar-postage-usage`.
+`SnapshotIssuer` (`postage-usage/src/issuer.rs`) is the self-hosted, batch-hosted issuer: it
+implements `StampIssuer` over a `Snapshot`'s table so content stamping and the snapshot's own
+allocation share one table and never collide.
+
+### The batch-hosted retention (SBU1)
+
+The `Snapshot` is the state an issuer carries: a per-bucket counter table (`UsageTable`, immutable
+with monotone watermarks or a mutable ring), a published sequence, and the slots it has allocated.
+The snapshot persists inside the batch it describes, as single-owner chunks.
+Snapshot chunk `n` carries the single-owner id `keccak256("swarm-batch-usage" || batch_id ||
+u16_be(n))` and the address `keccak256(id || owner)`, owned and stamped by the batch owner, so a user
+recovers their issuer state on any machine from just their key and the batch id.
+Chunk 0 is the root; `RootInfo` commits to the batch geometry, the published sequence, the slots the
+snapshot chunks occupy, and the digests of the leaf counter-table chunks.
+Chunk ids never change for the life of the batch, so a persist overwrites in place and needs a
+strictly newer seal timestamp; `seal_plan` refuses `SealError::NonIncreasingTimestamp` otherwise.
+
+A persist is planned and sealed in two steps.
+`Snapshot::plan_persist(owner)` yields a `PersistPlan`, one `PlannedChunk` per chunk, each carrying
+the `stamp_index` it is stamped with.
+`seal_plan(owner_signer, plan)` signs each single-owner chunk and stamps it, returning
+`SealedChunk`s; the signer must be the batch owner because it signs both the single-owner chunks
+and the stamps.
+
+### The browser client transport
 
 `vertex` `bin/swarm-demo/src/client/usage.rs` implements the two usage traits over the browser
 routing provider and sender.
@@ -214,6 +270,18 @@ Two facts the redesign must keep.
 A retrieved chunk is already address-validated before it is handed back, so `fetch` returns the data
 payload directly and maps exhausted retrieval to `Ok(None)` rather than an error.
 The sink wraps the sealed chunk and its stamp in a `StampedChunk` before sending.
+
+### What is deleted and what survives
+
+`#824` deletes two of the surface pieces here: the `SnapshotSource` and `SnapshotSink` transport
+traits and the `BatchFactory` creation seam.
+`BatchFactory` (`postage-issuer/src/factory.rs`) is the batch-creation seam (create, top up,
+dilute a batch); its only implementor is the in-memory `MemoryBatchFactory`, so it is dead.
+It is distinct from the issuance seam: `StampIssuer` and `Stamper` have real implementors and
+survive M1, re-homed into the `nectar-postage-api` issuer and stamper seams in M2.
+Their implementations (`MemoryIssuer`, `RingIssuer`, `SnapshotIssuer`), the SBU1 codec, and the
+`Snapshot`/`UsageTable` state carry into `nectar-postage-issuer`, which absorbs
+`nectar-postage-usage`.
 
 ## The validator: current surface and the locked decisions
 
@@ -309,13 +377,22 @@ The validator surface it ships is the leaf predicate (D2), the composite (D4), a
 `is_expired` methods the composite calls.
 The batch-store seam it ships is the `BatchStore` interface the node `DbBatchStore` implements,
 with the ingest handler applying the full depth-increase write (D1).
+The issuer and stamper seams it ships are `StampIssuer`, whose `reserve` (the slot allocation, the
+next stamp for a chunk) returns the `Prepared` permit and whose geometry and capacity reads ride
+alongside it, and `Stamper`, the reserve-plus-sign-plus-commit role.
+The concrete issuers and the SBU1 retention stay downstream: `MemoryIssuer`, `RingIssuer` and
+`SnapshotIssuer`, the `Snapshot`/`UsageTable` state, and the SBU1 codec sit in
+`nectar-postage-issuer`, which absorbs `nectar-postage-usage`.
+The `SnapshotSource` and `SnapshotSink` transport traits retire in M1 and their read and write role
+re-homes into the M2 stamper seam.
 
 ## The pure deletions
 
 These three need no redesign input and delete cleanly in M1.
 
-`BatchFactory` has zero references outside `nectar` and is not an interface the node or the browser
-bind to.
+`BatchFactory` is the batch-creation seam (create, top up, dilute); its only implementor is the
+in-memory test double `MemoryBatchFactory`, and it is distinct from the live issuance seam
+`StampIssuer`, captured under seam two.
 `StampValidator` has zero implementors and is superseded by the leaf predicate and the composite.
 `SnapshotStore` has no real implementor and is a name collision with `vertex`'s unrelated
 `DbPeerSnapshotStore`.
