@@ -266,9 +266,7 @@ impl<const BODY_SIZE: usize> Chunk<Verified, AnyChunkSet<BODY_SIZE>> {
     ///
     /// The address fact and the memoized owner transfer as-is: the
     /// single-owner arm was certified by its full acceptance rule already,
-    /// so no crypto re-runs. The public seam for a single-owner view over a
-    /// general store is `nectar_primitives::store::SingleOwnerGet`, which
-    /// drives this narrowing per fetch; this method is its mechanism.
+    /// so no crypto re-runs.
     #[must_use]
     pub fn narrow_single_owner(
         self,
