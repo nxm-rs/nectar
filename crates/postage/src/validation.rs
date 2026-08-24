@@ -1,89 +1,10 @@
-//! Stamp validation traits and utilities.
+//! Store-coupled stamp validation.
 
-use crate::{PostageContext, Stamp, StampError};
+use crate::{Batch, BatchId, BatchStore, BatchStoreExt, Stamp, StampError, StampedAddress};
 use nectar_primitives::ChunkAddress;
 
-#[cfg(any(test, feature = "std"))]
-use crate::{Batch, BatchId};
-
 #[cfg(test)]
-use crate::StampIndex;
-
-#[cfg(feature = "std")]
-use crate::{BatchStore, BatchStoreExt, StampedAddress};
-
-/// A trait for validating postage stamps.
-///
-/// Implementations of this trait verify that stamps are valid for a given
-/// chunk address and postage context. Validation includes checking:
-///
-/// - The batch exists and is not expired
-/// - The stamp index is within valid bounds
-/// - The chunk address matches the expected bucket
-/// - The signature is valid (implementation-dependent)
-///
-/// # Example
-///
-/// ```ignore
-/// use nectar_postage::{StampValidator, Stamp, PostageContext};
-/// use nectar_primitives::ChunkAddress;
-///
-/// struct MyValidator { /* ... */ }
-///
-/// impl StampValidator for MyValidator {
-///     type Error = nectar_postage::StampError;
-///
-///     fn validate(&self, stamp: &Stamp, address: &ChunkAddress, state: &PostageContext) -> Result<(), Self::Error> {
-///         // Validation logic...
-///         Ok(())
-///     }
-/// }
-/// ```
-pub trait StampValidator {
-    /// The error type returned when validation fails.
-    type Error: From<StampError>;
-
-    /// Validates a stamp for a given chunk address.
-    ///
-    /// # Arguments
-    ///
-    /// * `stamp` - The stamp to validate
-    /// * `address` - The address of the chunk being validated
-    /// * `state` - The current postage context for expiry checks
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if the stamp is valid, or an error describing why validation failed.
-    fn validate(
-        &self,
-        stamp: &Stamp,
-        address: &ChunkAddress,
-        state: &PostageContext,
-    ) -> Result<(), Self::Error>;
-
-    /// Validates only the structural properties of a stamp without signature verification.
-    ///
-    /// This is useful for quick validation before performing more expensive
-    /// cryptographic operations. It checks:
-    ///
-    /// - The batch exists
-    /// - The batch is not expired
-    /// - The stamp index is within valid bounds
-    /// - The chunk address matches the expected bucket
-    ///
-    /// The default implementation calls `validate`, but implementations may
-    /// override this for performance.
-    fn validate_structure(
-        &self,
-        stamp: &Stamp,
-        address: &ChunkAddress,
-        state: &PostageContext,
-    ) -> Result<(), Self::Error> {
-        self.validate(stamp, address, state)
-    }
-}
-
-// Store-based Validator
+use crate::{PostageContext, StampIndex};
 
 /// A validator that uses a [`BatchStore`] for validation.
 ///

@@ -45,6 +45,8 @@ implements; like `BatchEventHandler` it is a redesign input, re-homed into `nect
 M2, not a `#824` deletion.
 `StampValidator` is the dead one: zero implementors, and the wrong arity for its only real caller
 (`validate` takes three arguments where the live `StoreValidator::validate` takes two).
+`vertex` re-exports the name through its `pub use nectar_postage` facade, with no other reference.
+The name leaves that facade at the M2 pin bump, beside the trait.
 
 `SnapshotStore` has no real implementor.
 `vertex` does have a `DbPeerSnapshotStore`, but it is a name collision in a different crate and does
@@ -508,6 +510,8 @@ These three need no redesign input and delete cleanly in M1.
 in-memory test double `MemoryBatchFactory`, and it is distinct from the live issuance seam
 `StampIssuer`, captured under seam two.
 `StampValidator` has zero implementors and is superseded by the leaf predicate and the composite.
+It is re-exported by the `vertex` `pub use nectar_postage` facade, where the name leaves with the
+trait at the M2 pin bump.
 `SnapshotStore` has no real implementor and is a name collision with `vertex`'s unrelated
 `DbPeerSnapshotStore`.
 
