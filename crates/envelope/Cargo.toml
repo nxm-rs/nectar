@@ -9,6 +9,8 @@ homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
 description = "Sealed messaging envelopes for Ethereum Swarm: RFC 9180 HPKE over the frozen ECIES baseline"
+# Parked: it has no in-workspace consumer and self-declares its wire unstable; it re-enters the release with its first consumer.
+publish = false
 documentation = "https://docs.rs/nectar-envelope"
 readme = "README.md"
 keywords = ["swarm", "ethereum", "hpke", "ecies", "encryption"]
