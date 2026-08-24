@@ -28,8 +28,6 @@ thiserror = { workspace = true }
 # optional
 alloy-signer = { workspace = true, optional = true }
 arbitrary = { workspace = true, optional = true }
-auto_impl = { workspace = true, optional = true }
-nectar-clock = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["getrandom"] }
@@ -39,7 +37,6 @@ nectar-primitives = { workspace = true, features = ["arbitrary"] }
 nectar-testing = { workspace = true, features = ["fixtures"] }
 proptest = { workspace = true }
 proptest-arbitrary-interop = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
 default = [ "std" ]
@@ -47,7 +44,6 @@ default = [ "std" ]
 # Standard library support.
 std = [
 	"alloy-primitives/std",
-	"nectar-clock?/std",
 	"nectar-postage-issuer/std",
 	"nectar-postage/std",
 	"nectar-primitives/std",
@@ -72,16 +68,6 @@ issuer = [ "std" ]
 
 # Turns persist plans into signed single-owner chunks and stamps.
 seal = [ "dep:alloy-signer", "std" ]
-
-# High-level async facade (`BatchStamper`) that collapses the open / stamp /
-# flush cross-machine roam into three calls. The consumer supplies the network
-# through the `SnapshotSource` and `SnapshotSink` traits. Implies `seal` (it seals
-# every persist) and `std` (the seal timestamp defaults to the system clock).
-client = [ "dep:auto_impl", "dep:nectar-clock", "seal", "std" ]
-
-[[example]]
-name = "roam_between_machines"
-required-features = ["client"]
 
 [package.metadata.docs.rs]
 all-features = true
