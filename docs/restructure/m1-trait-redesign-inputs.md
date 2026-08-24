@@ -13,8 +13,8 @@ The redesign lands in M2, when `nectar-postage-api` is created fresh.
 `nectar` `main` at `0ece5710`.
 `vertex` `main` at `a8180ec1`, which pins `nectar` at `ef89a5df` through a single shared git source
 (`Cargo.toml:148-155`).
-`ef89a5df` is behind `main`: `nectar` changed the `DepthIncrease` event between the two revs,
-and that divergence is the load-bearing fact in this document.
+`ef89a5df` is behind `main`: `nectar` changed the `DepthIncrease` event and the issuance seam
+surface between the two revs, and that divergence is the load-bearing fact in this document.
 
 ## The premise correction
 
@@ -30,12 +30,16 @@ Three of the six have real out-of-tree implementors; the other three are pure de
 | `SnapshotStore` | yes | none | pure delete in M1 |
 | `BatchFactory` | yes | only the in-memory `MemoryBatchFactory` | pure delete in M1; the dead batch-creation seam, distinct from the live issuance seam |
 | `StampValidator` | yes | none | pure delete in M1 |
-| `BatchEventHandler` | no | `vertex` `DbBatchStore` | not a `#824` deletion; the ingest half of the store seam, captured for the M2 redesign |
+| `BatchEventHandler` | no | `nectar` `IssuerRegistry`, `vertex` `DbBatchStore` | not a `#824` deletion; the ingest half of the store seam, captured for the M2 redesign |
 | `StampIssuer` | no | `MemoryIssuer`, `RingIssuer`, `SnapshotIssuer` | not a `#824` deletion; the live issuance seam, re-homed into `nectar-postage-api` in M2 |
 
 `BatchEventHandler` is captured because the same `vertex` type implements it alongside `BatchStore`
 and together they are the batch-store-and-ingest seam; it is a redesign input, not a `#824`
 deletion.
+`nectar` also ships one production implementor of the seam.
+The dilution `IssuerRegistry` in `postage-issuer/src/dilute_handler.rs` reacts to a
+`DepthIncrease` with the confirmation-gated dilution of its tracked issuers and advances its block
+head, and treats the other events as no-ops.
 `StampIssuer` (and its `Stamper` companion) is the live issuance seam the snapshot machinery
 implements; like `BatchEventHandler` it is a redesign input, re-homed into `nectar-postage-api` in
 M2, not a `#824` deletion.
@@ -77,7 +81,7 @@ impl<DB: Database> BatchStore for DbBatchStore<DB> {
     fn context(&self) -> Result<PostageContext, Self::Error> { ... }
     fn set_context(&self, state: PostageContext) -> Result<(), Self::Error> { ... }
     fn batch_ids(&self) -> Result<Vec<BatchId>, Self::Error> { ... }
-    fn count(&self) -> usize { ... }
+    fn count(&self) -> Result<usize, Self::Error> { ... }
 }
 ```
 
@@ -173,6 +177,13 @@ The node therefore stores a depth increase without revaluing the batch or advanc
 confirmation reference, and the next usability and expiry decisions run against a stale balance.
 `TopUp` already applies its `new_value`, so the asymmetry is local to `DepthIncrease`.
 
+The same interval moved the issuance seam.
+At the pinned rev the seam was `prepare_stamp(&mut self, &SwarmAddress) -> Result<StampDigest, StampError>`;
+at `main` it is `reserve(&self, &ChunkAddress) -> Result<Prepared<S>, StampError>`.
+`SwarmAddress` was renamed `ChunkAddress`, `BatchId` was promoted from a `B256` alias, and
+`BucketDepth` became a newtype.
+The M2 rebind carries all of it, not only the event variant.
+
 The M1 decision (D1, below) resolves where this lands.
 The M2 batch-store seam must apply all three on a depth increase, and `vertex` must bump its nectar
 pin to the rev that carries the four-field variant in the same change that extends the handler.
@@ -194,7 +205,7 @@ The batch geometry (`batch_id`, `batch_depth`, `bucket_depth`) and the per-bucke
 (`bucket_utilization`, `bucket_has_capacity`, `max_bucket_utilization`) ride alongside it.
 Slot allocation is the reserve half of a three-phase issue; signing and commit are outside it.
 The companion `Stamper` trait (`src/stamper.rs`) carries the reserve-plus-sign-plus-commit role, and
-`BatchStamper` wraps an issuer and a signer to run it.
+`BatchStamper` wraps an issuer, a signer, and a clock to run it.
 How an implementor knows what is next is not part of the seam: it exposes only `reserve` and the
 geometry and capacity reads, so the state retention stays implementer-defined.
 
@@ -386,6 +397,109 @@ The concrete issuers and the SBU1 retention stay downstream: `MemoryIssuer`, `Ri
 The `SnapshotSource` and `SnapshotSink` transport traits retire in M1 and their read and write role
 re-homes into the M2 stamper seam.
 
+## Redesign guidance (reth and alloy idioms)
+
+The captured seams were audited against the reth and alloy trait architecture, the reference
+standard for this workspace.
+Most of the surface already conforms, and the divergences below are the design direction for the
+M2 rewrite.
+
+### Already conforming
+
+- The `SigningError::is_systemic` and `UsageError::is_corruption` and `is_recoverable` predicates
+  give the public errors their retryability classification.
+- `ClientError` keeps its `#[source]` and `#[from]` chains and never interpolates an inner error
+  into message text.
+- The sealed `ValidationState` marker follows the private `Sealed` supertrait pattern, and
+  `Prepared` keeps its `Verified` and `Validated` state machine.
+- `#[auto_impl(&, Arc, Box)]` rides the source and sink seams.
+- `MemoryIssuer` keeps its state lock-free over atomics behind a `&self` API.
+- `handle_events` defaults to a sequential fold.
+
+### One core trait per concern
+
+- `StampIssuer` mixes the one mutating verb, `reserve`, with seven geometry and capacity reads.
+- M2 keeps `reserve` and the three geometry reads on the core seam.
+  The capacity and utilization reads move to an extension trait keyed on the core.
+- `BatchStore` mixes the core map verbs with the singleton context management (`context`,
+  `set_context`) and the scan reads (`batch_ids`, `count`).
+  The context and scan verbs are extension-trait candidates.
+  `BatchStoreExt::get_usable` is the same split done right and stays as it is.
+- The core map moves to `contains_key` so it matches the workspace map vocabulary.
+- `Stamper` re-declares the geometry reads that `StampIssuer` already carries.
+  M2 composes the stamper from the issuer seam instead of duplicating the reads.
+
+### The dyn boundary
+
+- The defaultless `type Error` on `BatchStore`, `BatchEventHandler`, and `Stamper` blocks a bare
+  `dyn` (rustc `E0191`).
+- The `BatchStore` doc comment claims object safety.
+  That claim is false and comes out in M2.
+- M2 gives the store-side seam error a `BoxedError`-based default or a concrete seam error so a
+  bare `dyn BatchStore` works, or documents the pinned `dyn X<Error = E>` form at the boundary.
+- `BatchEvent` carries no `#[non_exhaustive]`.
+  The four-field `DepthIncrease` break is exactly what forced the `vertex` matcher to recompile, so
+  the tag lands in M2 with the seam move.
+- `StampIssuer` keeps its spec associated type, and the pinned `dyn StampIssuer<Spec = Mainnet>`
+  form gets an `_ObjectSafe` compile test so a later generic-method addition breaks CI visibly.
+- The `SnapshotSource` and `SnapshotSink` `impl Future` returns stay.
+  A seam that returns `impl Future` stays generic and is never dyn'd.
+  The deliberate no-`Send` future is already tested.
+
+### Error boundaries
+
+- `SnapshotIssuer::map_usage_error` collapses the twenty-one `UsageError` variants into two
+  `StampError` variants.
+  It maps `RingExhausted` to `InvalidIndex` and drops the `is_corruption` and `is_recoverable`
+  classification.
+  M2 replaces it with a structured `From` that keeps the variants.
+- `StoreValidator` collapses `BatchStoreError::Store` into `StampError::BatchNotFound`.
+  It drops the source and the structured fields.
+  The wrap carries `#[source]` or its own variant instead.
+- The `unreachable!` in the `RingIssuer` slot mapping is a panic on a hot production path.
+  It leaves the house no-panic set and is replaced with a real error mapping in the M1 code wave,
+  independent of the deletion.
+- The store-side error bounds are inconsistent: `BatchStore::Error` is bounded by
+  `std::error::Error` while `BatchEventHandler::Error` is unbounded.
+  M2 places the bound once, on the store-side seams.
+
+### Generics
+
+- `Prepared::seal` carries a method-level const generic for the body size, which forces a turbofish
+  at every call site.
+  reth and alloy carry no const generics on public seams.
+  The M3 `SwarmPrimitives` bundle absorbs the body size, and the const leaves the signature with
+  it.
+- The client `BatchStamper` is generic over five parameters and spells its `ClientError` generic
+  pair in every method signature.
+  M2 converges the facade on one facade error, or on a builder that captures the generics once.
+- The client seam bounds the signer as `SignerSync + Signer` where the postage-issuer seam bounds
+  `SignerSync`.
+  The bound unifies on whichever the facade actually needs.
+- Both `BatchStamper` names collide across the two crates.
+  M2 renames the client facade to a distinct name.
+
+### Concurrency
+
+- `RingIssuer` and `SnapshotIssuer` are documented `!Sync` over `RefCell` cells with a `&self`
+  mutating API.
+  `MemoryIssuer` proves the atomic shape already works in-tree, so M2 atomizes the ring state or
+  stops handing out the `RefCell` guards that panic inside `reserve`.
+- `Stamper::stamp` takes `&mut self`, but the issuance core is `&self` over atomics and
+  `MemoryIssuer` is `Sync`.
+  The signature relaxes to `&self` where the signer is `Sync`.
+
+### Typestate markers and naming
+
+- Both `StampedAddress` transitions exit into the same `Validated` state.
+  The full `validate` check and the weaker `issued_by` check (no signature recovery, no index
+  bound) produce indistinguishable values.
+  M2 splits the state or drops the weak transition.
+- The `ValidationState` marker trait carries `Send`, `Sync`, and `'static` bounds that its two
+  `ZST` markers do not need.
+- The crate docs call `Prepared` the permit while the type is named `Prepared`.
+  The name and the doc line up on one.
+
 ## The pure deletions
 
 These three need no redesign input and delete cleanly in M1.
@@ -410,5 +524,7 @@ M2 seams land.
 The capture above is the contract the M2 seams must satisfy so that the interval is short and the
 node re-binds without a second redesign.
 The `DepthIncrease` four-field variant and the `vertex` pin bump land together in M2, not in M1.
+The pin bump carries the issuance-seam rename and the `BatchId` and `BucketDepth` shape changes with
+it.
 
 AI Assistance: Claude Code used for the caller capture, the drift analysis, and drafting this body.
