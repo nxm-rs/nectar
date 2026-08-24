@@ -1,4 +1,4 @@
-//! The three split arms and the instruments they share.
+//! The two split arms and the instruments they share.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use alloy_signer::SignerSync;
 use nectar_file::{File, Policy, PutWindow};
 use nectar_postage_issuer::{
     Batch, BatchId, BatchSigner, BucketDepth, Eip191, IssuedBound, MemoryIssuer, StampPipeline,
-    StampedChunk, StampedPut, StampedPutError, Validated, Window,
+    StampedChunk, StampedPutError, Validated, Window,
 };
 use nectar_primitives::{AnyChunkSet, Chunk, ChunkPut, ContentChunk, DEFAULT_BODY_SIZE, Verified};
 use nectar_tasks::{BoxFuture, Spawn, TaskHandle};
@@ -221,20 +221,6 @@ pub fn plain(data: &[u8], puts: u16) -> Outcome {
     }
 }
 
-/// The inline decorator: a put slot holds sign latency plus store latency.
-pub fn stamped(data: &[u8], puts: u16, latency: Duration) -> Outcome {
-    let signer = LatentSigner::new(latency);
-    let sink = PairSink::default();
-    let store = StampedPut::new(issuer(DEPTH), bind(signer.clone(), DEPTH), sink.clone()).unwrap();
-    let start = Instant::now();
-    nectar_testing::run(File::<_, BODY>::new(&store, policy(puts)).save(data)).unwrap();
-    Outcome {
-        elapsed: start.elapsed(),
-        delivered: sink.delivered(),
-        peak_signs: signer.peak(),
-    }
-}
-
 /// The staged decorator: signing runs under a window of its own.
 pub fn staged(data: &[u8], puts: u16, latency: Duration, signs: u16) -> Outcome {
     let signer = LatentSigner::new(latency);
@@ -262,8 +248,7 @@ pub fn staged(data: &[u8], puts: u16, latency: Duration, signs: u16) -> Outcome 
 /// What a decorator does once one allocation is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Refusal {
-    /// Pairs the sink took; three means the address after the refusal still
-    /// got through.
+    /// Pairs the sink took before it shut.
     pub delivered: usize,
     /// Whether every later call reports a failure.
     pub shut: bool,
@@ -272,31 +257,6 @@ pub struct Refusal {
 /// A repeated address to exhaust two bucket slots, then a fresh address.
 fn probe_input() -> (Bare, Bare) {
     (chunk(b"repetitive"), chunk(b"a bucket of its own"))
-}
-
-/// The inline decorator under a refusal: the error is per put.
-pub fn stamped_refusal() -> Refusal {
-    let (repeated, distinct) = probe_input();
-    let sink = PairSink::default();
-    let store = StampedPut::new(
-        issuer(FULL_DEPTH),
-        bind(LatentSigner::default(), FULL_DEPTH),
-        sink.clone(),
-    )
-    .unwrap()
-    .with_issued_bound(IssuedBound::Off);
-
-    let shut = nectar_testing::run(async {
-        for _ in 0..3 {
-            let _ = store.put(repeated.clone()).await;
-        }
-        store.put(distinct).await.is_err()
-    });
-
-    Refusal {
-        delivered: sink.delivered(),
-        shut,
-    }
 }
 
 /// The staged decorator under a refusal: the whole pipeline poisons.
@@ -359,45 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn the_inline_decorator_still_pays_the_signer_in_its_put_slots() {
-        let data = corpus(BYTES);
-        let stamped = stamped(&data, PUTS, LATENCY);
-        let staged = staged(&data, PUTS, LATENCY, SIGNS);
-
-        assert_eq!(stamped.delivered, staged.delivered);
-        assert!(
-            stamped.peak_signs <= usize::from(PUTS),
-            "inline sign concurrency {} passed the put window {PUTS}",
-            stamped.peak_signs
-        );
-        assert!(
-            stamped.elapsed > staged.elapsed * 2,
-            "inline {:?} against staged {:?}",
-            stamped.elapsed,
-            staged.elapsed
-        );
-    }
-
-    #[cfg(feature = "parallel")]
-    #[test]
-    fn the_rayon_engine_overlaps_its_put_slots_up_to_the_pool_width() {
-        let data = corpus(BYTES);
-        // A single-threaded pool binds before the put window does.
-        let bound = usize::from(PUTS).min(rayon::current_num_threads());
-        assert_eq!(stamped(&data, PUTS, LATENCY).peak_signs, bound);
-    }
-
-    #[test]
-    fn a_refusal_stops_the_staged_decorator_and_not_the_inline_one() {
-        let inline = stamped_refusal();
-        assert_eq!(
-            inline,
-            Refusal {
-                delivered: 3,
-                shut: false
-            }
-        );
-
+    fn a_refusal_poisons_the_staged_decorator() {
         let staged = staged_refusal();
         assert!(staged.shut, "a refusal left the staged decorator open");
         assert!(

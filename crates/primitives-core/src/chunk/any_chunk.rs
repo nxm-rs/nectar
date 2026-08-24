@@ -11,7 +11,6 @@ use alloc::vec::Vec;
 use crate::error::Result;
 
 use super::address::ChunkAddress;
-use super::chunk_type::ChunkType;
 use super::content::{CacHeader, ContentChunk};
 use super::single_owner::{SingleOwnerChunk, SocHeader};
 use super::traits::{ChunkHeader, ChunkOps};
@@ -131,11 +130,6 @@ impl<const BODY_SIZE: usize> AnyChunk<BODY_SIZE> {
             Self::Content(_) => ChunkTypeTag::new(CacHeader::TYPE_ID, CacHeader::VERSION),
             Self::SingleOwner(_) => ChunkTypeTag::new(SocHeader::TYPE_ID, SocHeader::VERSION),
         }
-    }
-
-    /// Check if this chunk is of a specific type.
-    pub fn is<T: ChunkType>(&self) -> bool {
-        self.type_id() == T::TYPE_ID
     }
 
     /// Check if this is a content chunk.
@@ -407,14 +401,6 @@ mod tests {
         let recovered = any.into_content().unwrap();
 
         assert_eq!(*recovered.address(), expected_addr);
-    }
-
-    #[test]
-    fn test_is_methods() {
-        let content: DefaultAnyChunk = DefaultContentChunk::new(&b"test"[..]).unwrap().into();
-
-        assert!(content.is::<DefaultContentChunk>());
-        assert!(!content.is::<DefaultSingleOwnerChunk>());
     }
 
     #[test]

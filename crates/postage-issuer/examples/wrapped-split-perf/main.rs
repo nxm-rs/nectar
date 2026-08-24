@@ -1,4 +1,4 @@
-//! Wrapped-split throughput: a plain split against both stamping decorators,
+//! Wrapped-split throughput: a plain split against the staged decorator,
 //! swept over signer latency and put-window width.
 //!
 //! Run: `cargo run --release -p nectar-postage-issuer --example wrapped-split-perf`.
@@ -20,11 +20,11 @@ use std::time::Duration;
 
 use nectar_testing::bench::RunMeta;
 
-use crate::arms::{Outcome, corpus, plain, staged, staged_refusal, stamped, stamped_refusal};
+use crate::arms::{Outcome, corpus, plain, staged, staged_refusal};
 use crate::report::{Row, render};
 
 /// Schema and harness version; bump it when a measured field changes meaning.
-const HARNESS_VERSION: &str = "1";
+const HARNESS_VERSION: &str = "2";
 
 struct Args {
     bytes: usize,
@@ -107,27 +107,21 @@ fn main() {
     let args = parse_args();
     let data = corpus(args.bytes);
     let mut rows = Vec::new();
-    let mut plain_rate = 0.0f64;
 
     for &puts in &args.put_windows {
         let baseline = plain(&data, puts);
         let rate = baseline.bytes_per_second(args.bytes);
-        plain_rate = plain_rate.max(rate);
         rows.push(row("plain", Duration::ZERO, puts, args.bytes, baseline));
 
         for &latency in &args.latencies {
-            for (arm, outcome) in [
-                ("stamped", stamped(&data, puts, latency)),
-                ("staged", staged(&data, puts, latency, args.sign_window)),
-            ] {
-                let mut cell = row(arm, latency, puts, args.bytes, outcome);
-                cell.of_plain = if rate > 0.0 {
-                    outcome.bytes_per_second(args.bytes) / rate
-                } else {
-                    0.0
-                };
-                rows.push(cell);
-            }
+            let outcome = staged(&data, puts, latency, args.sign_window);
+            let mut cell = row("staged", latency, puts, args.bytes, outcome);
+            cell.of_plain = if rate > 0.0 {
+                outcome.bytes_per_second(args.bytes) / rate
+            } else {
+                0.0
+            };
+            rows.push(cell);
         }
     }
 
@@ -138,8 +132,7 @@ fn main() {
             args.bytes,
             args.sign_window,
             &rows,
-            plain_rate,
-            (stamped_refusal(), staged_refusal()),
+            staged_refusal(),
         )
     );
 }

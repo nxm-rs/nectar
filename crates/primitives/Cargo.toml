@@ -40,8 +40,6 @@ strum.workspace = true
 
 # Core dependencies
 bytes.workspace = true
-# The boxed-stream alias in `marker`; nothing else here is async.
-futures-core.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, optional = true }
 
@@ -109,7 +107,6 @@ std = [
 	"alloy-chains/std",
 	"dep:parking_lot",
 	"dep:web-time",
-	"futures-core/std",
 	"nectar-clock/std",
 	"nectar-primitives-core/std",
 	"strum/std",

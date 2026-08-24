@@ -14,7 +14,6 @@
 //! - [`ChunkOps`] - Header-free behaviour shared by concrete chunks and
 //!   [`AnyChunk`]
 //! - [`HeaderedChunk`] - Ties a carrier to its header type
-//! - [`ChunkType`] - Adds compile-time type identification
 //! - [`ChunkRegistry`] - Compile-time registry of the chunk types a network
 //!   accepts, keyed by its closed envelope type
 //! - [`Chunk`] - The public chunk currency: a registry envelope under a
@@ -261,7 +260,6 @@
 mod address;
 mod any_chunk;
 mod bmt_body;
-mod chunk_type;
 mod content;
 pub(crate) mod error;
 mod inner;
@@ -285,7 +283,6 @@ pub use trust::{Chunk, IntoVerified, TrustState, TrustedSource, Unverified, Veri
 
 // Re-export the type system
 pub use any_chunk::AnyChunk;
-pub use chunk_type::ChunkType;
 pub use registry::{
     AnyChunkSet, ChunkRegistry, ChunkTypeInfo, ContentOnlyChunkSet, SingleOwnerOnlyChunkSet,
     StandardChunkSet,
