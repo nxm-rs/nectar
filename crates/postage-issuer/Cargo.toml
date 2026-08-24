@@ -50,8 +50,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 [features]
 default = [ "std" ]
 
-# Standard library support: the signer stack, the factory and the dilution
-# registry live behind this gate.
+# Standard library support: the signer stack and the dilution registry live
+# behind this gate.
 std = [
 	"dep:alloy-signer",
 	"dep:futures-util",
