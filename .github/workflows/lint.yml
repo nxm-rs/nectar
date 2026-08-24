@@ -62,11 +62,11 @@ jobs:
             # reference width, likewise outside the default-features pass.
             - name: cargo clippy (manifest encryption)
               run: cargo clippy --locked --all-targets -p nectar-manifest --features test-encryption -- -D warnings
-            # The postage-usage tokio surfaces are feature-gated, so their tests
+            # The postage-usage issuer surfaces are feature-gated, so their tests
             # are invisible to the passes above; compile them in so the
             # disallowed-methods gate sees them.
             - name: cargo clippy (postage-usage surfaces)
-              run: cargo clippy --workspace --all-targets --locked --features nectar-postage-usage/client,nectar-postage-usage/issuer -- -D warnings
+              run: cargo clippy --workspace --all-targets --locked --features nectar-postage-usage/issuer -- -D warnings
             # The postage serde impls are off the default build, so the passes
             # above never see them.
             - name: cargo clippy (postage serde)
