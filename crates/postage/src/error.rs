@@ -7,8 +7,8 @@ use thiserror::Error;
 
 /// Errors that can occur when working with stamps.
 ///
-/// No `Clone`, `PartialEq` or `Eq`: [`External`] holds a boxed source that is
-/// none of them.
+/// No `Clone`, `PartialEq` or `Eq`: the `External` variant holds a boxed
+/// source that is none of them.
 #[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum StampError {
