@@ -51,7 +51,7 @@ serde_json = { workspace = true, features = ["std"] }
 [features]
 default = [ "std" ]
 
-# Standard library support. Enables BatchStore, BatchFactory, and events.
+# Standard library support. Enables BatchStore and events.
 std = [
 	"alloy-primitives/std",
 	"k256/precomputed-tables",

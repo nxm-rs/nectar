@@ -9,9 +9,8 @@
 
 use alloy_signer_local::PrivateKeySigner;
 use nectar_postage_issuer::{
-    Batch, BatchId, BatchStamper, BucketDepth, CounterTable, IssuerError, Mainnet,
-    MemoryBatchFactory, MemoryIssuer, Reserved, RingIssuer, SigningError, StampError, StampIssuer,
-    Stamper, calculate_bucket,
+    Batch, BatchId, BatchStamper, BucketDepth, CounterTable, IssuerError, Mainnet, MemoryIssuer,
+    Reserved, RingIssuer, SigningError, StampError, StampIssuer, Stamper, calculate_bucket,
 };
 use nectar_primitives::ChunkAddress;
 use nectar_testing::HighFloor;
@@ -137,4 +136,3 @@ fn a_deep_reserved_ring_never_emits_a_reserved_slot() {
 const _: fn(MemoryIssuer) -> MemoryIssuer<Mainnet> = |x| x;
 const _: fn(CounterTable) -> CounterTable<Mainnet> = |x| x;
 const _: fn(RingIssuer<Reserved>) -> RingIssuer<Reserved, Mainnet> = |x| x;
-const _: fn(MemoryBatchFactory) -> MemoryBatchFactory<Mainnet> = |x| x;

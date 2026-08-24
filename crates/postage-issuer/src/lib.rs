@@ -176,8 +176,6 @@ mod counter;
 #[cfg(feature = "std")]
 mod dilute_handler;
 mod error;
-#[cfg(feature = "std")]
-mod factory;
 mod issuer;
 mod permit;
 mod pipeline;
@@ -224,7 +222,3 @@ pub use pipeline::{SealResult, SignStage, StagedPut, StampSink};
 
 // Mutable (ring) issuing with a type-state reservation guard
 pub use ring::{Reservation, Reserved, RingIssuer, Unreserved};
-
-// Factory (std only)
-#[cfg(feature = "std")]
-pub use factory::{BatchFactory, CreateResult, MemoryBatchFactory};
