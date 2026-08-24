@@ -137,8 +137,6 @@ pub mod oracles;
 mod snapshot;
 mod table;
 
-#[cfg(feature = "client")]
-mod client;
 #[cfg(feature = "issuer")]
 mod issuer;
 #[cfg(feature = "seal")]
@@ -157,9 +155,6 @@ pub use issuer::SnapshotIssuer;
 
 #[cfg(feature = "seal")]
 pub use seal::{SealError, SealedChunk, seal_plan};
-
-#[cfg(feature = "client")]
-pub use client::{BatchStamper, ClientError, SnapshotSink, SnapshotSource};
 
 pub use nectar_primitives::{ChunkAddress, Mainnet, NetworkId, SocId, SwarmSpec, Testnet};
 

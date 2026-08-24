@@ -173,8 +173,6 @@ jobs:
               run: cargo test --doc -p nectar-postage-issuer --locked
 
     wasm:
-        # The postage-usage client facade is meant to run in a browser. A
-        # plain check on the default features is therefore the faithful one.
         name: wasm / browser crates
         runs-on: ubuntu-latest
         timeout-minutes: 30
@@ -183,11 +181,6 @@ jobs:
             - uses: ./.github/actions/rust-setup
               with:
                   targets: wasm32-unknown-unknown
-            - name: Check postage-usage builds for wasm32
-              run: |
-                  cargo check \
-                    -p nectar-postage-usage --features client --locked \
-                    --target wasm32-unknown-unknown
             - name: Check ldb builds for wasm32
               # The ldb v1 key-value database is memory-bounded and browser-facing,
               # so its default build must stay wasm32-clean.

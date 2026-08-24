@@ -2698,9 +2698,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "arbitrary",
- "auto_impl",
  "bytes",
- "nectar-clock",
  "nectar-postage",
  "nectar-postage-issuer",
  "nectar-primitives",
@@ -2708,7 +2706,6 @@ dependencies = [
  "proptest",
  "proptest-arbitrary-interop",
  "thiserror",
- "tokio",
 ]
 
 [[package]]
